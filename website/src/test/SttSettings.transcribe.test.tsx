@@ -94,14 +94,14 @@ describe('SttSettings provider-aware install surface', () => {
   it('hides the Install button and shows the restart hint for Transcribe', async () => {
     mount({
       provider: 'transcribe',
-      prereqs: ["/opt/kirocrew/bin/python -m pip install 'kirocrew[voice]'"],
+      prereqs: ["/opt/kirocrew/bin/python -m pip install 'boto3>=1.34,<2' 'amazon-transcribe>=0.6,<1'"],
     })
     await loaded()
     // No install affordance of any kind — the button installs a local Whisper
     // runtime, which cannot change Transcribe's availability.
     expect(screen.queryByRole('button', { name: /install/i })).toBeNull()
     // The prerequisite command from the backend is rendered verbatim…
-    expect(screen.getByText(/kirocrew\[voice\]/)).toBeTruthy()
+    expect(screen.getByText(/amazon-transcribe>=0\.6,<1/)).toBeTruthy()
     // …with the next step that makes it take effect.
     expect(screen.getByText(/restart the gateway/i)).toBeTruthy()
     expect(screen.getByRole('button', { name: /restart gateway/i })).toBeTruthy()
@@ -112,7 +112,7 @@ describe('SttSettings provider-aware install surface', () => {
     mockApi.restartGateway.mockImplementation(() => new Promise<void>(resolve => { finish = resolve }))
     mount({
       provider: 'transcribe',
-      prereqs: ["/opt/kirocrew/bin/python -m pip install 'kirocrew[voice]'"],
+      prereqs: ["/opt/kirocrew/bin/python -m pip install 'boto3>=1.34,<2' 'amazon-transcribe>=0.6,<1'"],
     })
     await loaded()
 
@@ -132,7 +132,7 @@ describe('SttSettings provider-aware install surface', () => {
     // the same extra, and the in-dashboard installer that used to cover it is gone.
     mount({
       provider: 'local',
-      prereqs: ["/opt/kirocrew/bin/python -m pip install 'kirocrew[voice]'"],
+      prereqs: ["/opt/kirocrew/bin/python -m pip install 'boto3>=1.34,<2' 'amazon-transcribe>=0.6,<1'"],
     })
     await loaded()
     expect(screen.getByTestId('stt-restart-gateway')).toBeTruthy()

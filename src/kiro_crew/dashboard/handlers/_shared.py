@@ -7,7 +7,6 @@ import importlib.util
 import json
 import logging
 import os
-import shlex
 import sys
 import sysconfig
 import time
@@ -17,7 +16,7 @@ from typing import TYPE_CHECKING, Any, Callable, Iterable
 import aiohttp
 from aiohttp import web
 
-from kiro_crew import platform_compat
+from kiro_crew import extras, platform_compat
 from kiro_crew.agent_discovery import (
     SKILL_URI_PREFIX,
     expand_skill_uri,
@@ -2031,31 +2030,16 @@ def _pip_install_channel_available() -> bool:
 
 
 def pip_extra_install_command(extra: str) -> str:
-    r"""The command that installs ``kirocrew[extra]`` into THIS gateway's python.
+    """The command that installs *extra*'s dependencies into THIS gateway's python.
 
-    The interpreter is spelled out rather than left as a bare ``pip`` because
-    "which python" is the failure this string exists to prevent: a gateway run
-    from one venv while the user installs into another leaves the feature
-    missing, and nothing in the UI says the install landed somewhere else. The
-    extra is imported by the gateway process itself, so a system python or a
-    ``--user`` install is not importable here.
+    Thin wrapper over :func:`kiro_crew.extras.pip_install_command`, which owns
+    the two things that make this string correct: it names the extra's real
+    distributions rather than ``kirocrew[extra]`` (this project is not on any
+    index, so that form cannot resolve for anyone), and it spells out the
+    interpreter so the install cannot land in a different environment than the
+    one that has to import it.
 
-    On Windows the user's shell is unknowable here (they may paste this into
-    PowerShell OR cmd), so the form must be SILENT-CORRUPTION-FREE in both, and
-    PowerShell is the harder shell: a double-quoted string still expands
-    ``$name`` and honours backtick escapes, and so does a bare unquoted token —
-    both are legal path characters, so either form silently rewrites an
-    interpreter under e.g. ``C:\tools\$python\...`` into a path that does not
-    exist. Single quotes are PowerShell's LITERAL form (no expansion, no
-    escapes, spaces included), with ``&`` invoking the quoted path, so the
-    interpreter reaches pip byte-for-byte — including the all-users
-    ``C:\Program Files\...`` layout an unquoted form cannot express. cmd performs
-    no ``$`` or backtick processing at all and rejects the leading ``&`` loudly
-    ("... was unexpected"), so a cmd user gets a clear error to re-quote for,
-    never a corrupted install. A literal single quote in the path is escaped by
-    doubling, PowerShell's own rule.
+    Empty for an extra this build does not declare -- callers already treat an
+    empty command as "no install channel" and show the unsupported notice.
     """
-    if os.name == "nt":
-        exe = sys.executable.replace("'", "''")
-        return f"& '{exe}' -m pip install kirocrew[{extra}]"
-    return f"{shlex.quote(sys.executable)} -m pip install 'kirocrew[{extra}]'"
+    return extras.pip_install_command(extra)

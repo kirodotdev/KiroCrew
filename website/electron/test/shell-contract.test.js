@@ -20,7 +20,10 @@ const fs = require("node:fs");
 const path = require("node:path");
 
 const ROOT = path.join(__dirname, "..");
-const MAIN_SOURCE = fs.readFileSync(path.join(ROOT, "main.js"), "utf-8");
+const WINDOW_SOURCE = fs.readFileSync(path.join(ROOT, "window-lifecycle.js"), "utf-8");
+const GATEWAY_SOURCE = fs.readFileSync(path.join(ROOT, "gateway-supervisor.js"), "utf-8");
+const PRELOAD_SOURCE = fs.readFileSync(path.join(ROOT, "preload.js"), "utf-8");
+const IPC_REGISTRAR_SOURCE = fs.readFileSync(path.join(ROOT, "ipc-registrar.js"), "utf-8");
 
 /** Every shipped .js under electron/ (tests and deps excluded). */
 function sourceFiles() {
@@ -75,20 +78,26 @@ test("packaging allowlist has no stale entries", () => {
 
 test("macOS New Window opens the blank-session route on the existing gateway", () => {
   assert.match(
-    MAIN_SOURCE,
-    /createConnectionWindow\(BACKEND_URL, PORT, "\/chat\?new=1"\)/,
+    WINDOW_SOURCE,
+    /createConnectionWindow\(backendUrl, port, "\/chat\?new=1"\)/,
   );
   assert.match(
-    MAIN_SOURCE,
-    /showLoadingThenConnect\(win, BACKEND_URL, \{ initialPath: "\/chat\?new=1" \}\)/,
+    WINDOW_SOURCE,
+    /connectWindow\(win, backendUrl, \{ initialPath: "\/chat\?new=1" \}\)/,
   );
 });
 
 test("only the primary local window owns the gateway liveness monitor", () => {
-  const guardedStarts = MAIN_SOURCE.match(
-    /backendUrl === BACKEND_URL && win === mainWindow\) startLivenessMonitor\(win\)/g,
+  const guardedStarts = GATEWAY_SOURCE.match(
+    /if \(targetBackendUrl === BACKEND_URL && window === mainWindow\(\)\) \{\s*startLivenessMonitor\(window\);\s*\}/g,
   ) || [];
   assert.strictEqual(guardedStarts.length, 2, "authenticated and unauthenticated handoffs stay guarded");
+  const allStarts = GATEWAY_SOURCE.match(/startLivenessMonitor\(window\);/g) || [];
+  assert.strictEqual(
+    allStarts.length,
+    guardedStarts.length,
+    "every liveness start must remain inside the primary-local-window guard",
+  );
 });
 
 // ── IPC channel contract ──────────────────────────────────────────────────
@@ -111,6 +120,19 @@ function channels(src, pattern) {
   }
   return found;
 }
+
+test("the WSL preload invoke is registered by the IPC owner", () => {
+  assert.match(
+    PRELOAD_SOURCE,
+    /detect:\s*\(\)\s*=>\s*ipcRenderer\.invoke\("wsl:detect"\)/,
+    "window.wslAPI.detect must invoke the read-only wsl:detect channel",
+  );
+  assert.match(
+    IPC_REGISTRAR_SOURCE,
+    /ipcMain\.handle\("wsl:detect",\s*async\s*\(event\)\s*=>/,
+    "ipc-registrar must own the handler exposed by preload.js",
+  );
+});
 
 test("every mochi channel main SENDS is received by a preload", () => {
   const mainSrc = readAll(sourceFiles().map(rel).filter((f) => !PRELOADS.includes(f)));

@@ -51,6 +51,7 @@ from kiro_crew.dashboard.handlers.usage import (
 )
 from kiro_crew.dashboard.state import NEW_SESSION_TITLE
 from kiro_crew.hooks import validate_file_path
+from kiro_crew.jsonl_util import bounded_records
 from kiro_crew.metrics.provider import TELEMETRY_ENV_VAR, env_pin, otlp_egress_active
 from kiro_crew.metrics.schema import RESOURCE_ATTR_PROCESS_START_TIME
 from kiro_crew.metrics.turns import TURN_COST_METRIC, TURN_CREDITS_METRIC, TURN_METRIC
@@ -614,8 +615,8 @@ def _iter_export_cycles(
         shard_day = "-".join(stem_parts[1:4])
         shard_pid = stem_parts[4] if len(stem_parts) > 4 and stem_parts[4].isdigit() else ""
         try:
-            with p.open(encoding="utf-8") as fh:
-                for line in fh:
+            with p.open("rb") as fh:
+                for line in bounded_records(fh, p, label="telemetry"):
                     try:
                         obj = json.loads(line)
                     except ValueError:

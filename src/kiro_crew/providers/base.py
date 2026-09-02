@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator
-from typing import Literal
+from typing import Literal, Protocol, runtime_checkable
 
 # Event kinds — re-exported from the single source of truth
 from kiro_crew.acp.types import (  # noqa: F401
@@ -56,6 +56,22 @@ def resolve_billing_stats(holder: object | None) -> object | None:
         if declared is not None:
             return declared
     return getattr(holder, "last_prompt_stats", None)
+
+
+@runtime_checkable
+class SessionMcpReport(Protocol):
+    """What a session's MCP registration report offers its consumers.
+
+    Declared at the provider seam rather than imported from ``kiro_crew.acp`` so
+    a dashboard consumer can name the capability without taking an ACP-layer
+    edge. The concrete ``McpSessionReport`` satisfies it structurally.
+    """
+
+    def payload(self) -> dict | None: ...
+
+    def record_event(
+        self, kind: str, server_name: str, error: str = "", *, fanout_no_owner: bool = False
+    ) -> bool: ...
 
 
 class LLMProvider(ABC):
@@ -335,6 +351,17 @@ class LLMProvider(ABC):
         """Backend-advertised models (``[{modelId, name, ...}]``) for the model
         picker. Default empty for a provider that advertises none."""
         return []
+
+    def mcp_session_report(self) -> SessionMcpReport | None:
+        """This session's own MCP registration report, or None if it keeps none.
+
+        Declared HERE rather than probed with ``getattr`` at the consumer: a probe
+        answers "no report" for a provider that simply spells the accessor
+        differently, which is indistinguishable from a session that reported
+        nothing — and that silence is the false all-clear the report exists to
+        remove. A provider without one returns None explicitly.
+        """
+        return None
 
     def get_valid_effort_levels(self) -> list[str]:
         """Reasoning-effort levels the provider accepts. Default empty for a

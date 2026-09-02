@@ -85,10 +85,13 @@ test("gateway wait policy extends only the primary Windows gateway", () => {
   );
 });
 
-test("main extends the Windows deadline only for a gateway it spawned", () => {
-  const main = fs.readFileSync(path.join(__dirname, "..", "main.js"), "utf8");
+test("the supervisor extends the Windows deadline only for a gateway it spawned", () => {
+  const supervisor = fs.readFileSync(
+    path.join(__dirname, "..", "gateway-supervisor.js"),
+    "utf8",
+  );
   assert.match(
-    main,
+    supervisor,
     /watchSpawn: watchSpawn && gatewayOwnership === "spawned"/,
   );
 });

@@ -104,15 +104,19 @@ async def api_chat_nav_resolve_links(request: web.Request) -> web.Response:
     try:
         body = await request.json()
     except Exception:
-        return web.json_response({"error": "invalid JSON"}, status=400)
+        return web.json_response({"error": "invalid JSON", "code": "invalid_json"}, status=400)
     if not isinstance(body, dict):
         # A valid-but-non-dict JSON body (array/scalar/string) would raise on
         # body.get() below; reject it as malformed rather than 500.
-        return web.json_response({"error": "invalid request body"}, status=400)
+        return web.json_response(
+            {"error": "invalid request body", "code": "body_not_object"}, status=400
+        )
 
     links = body.get("links", [])
     if not isinstance(links, list) or not links:
-        return web.json_response({"error": "links array required"}, status=400)
+        return web.json_response(
+            {"error": "links array required", "code": "links_required"}, status=400
+        )
     # Cap at 20 links per request, then normalize each entry to a string
     # url/context at this boundary — a non-dict entry or non-string field would
     # otherwise raise during prompt construction and surface as a spurious 500.

@@ -727,6 +727,33 @@ export interface TodoList {
   current: string
 }
 
+/**
+ * What ONE agent session's MCP servers reported while starting.
+ *
+ * Distinct from every other MCP payload in the dashboard: `/api/mcp/active`
+ * reads an agent spec off disk and `/api/mcp/probe` records whether the gateway
+ * itself can start a server. Both answer a question about the host. This is the
+ * only one that answers "what did THIS session actually mount".
+ *
+ * Two properties callers must respect:
+ * - A name absent from every bucket means *no report yet*, never *not mounted*:
+ *   the backend's init drain is time bounded and a late frame still arrives.
+ * - The buckets are a SUPERSET of `configured`, because the backend also starts
+ *   the agent spec's own servers, not just the ones Kiro Crew injects.
+ */
+export interface McpSessionReport {
+  /** Server names Kiro Crew put on the wire for this session. */
+  configured: string[]
+  /** Reported initialized. */
+  ready: string[]
+  /** Reported a startup failure. */
+  failed: string[]
+  /** Asked for authorization and has not reported since. */
+  awaiting_auth: string[]
+  /** Server name -> its redacted failure reason, when one was reported. */
+  failures: Record<string, string>
+}
+
 export interface SessionLink {
   channel: string
   label: string
@@ -818,6 +845,16 @@ export interface ChatSlot {
   wait_state?: { wait_id: string; seconds: number; deadline_ts: number } | null
   /** Agent TODO list. Null/absent = the todo tool was never used in this slot. */
   todo?: TodoList | null
+  /**
+   * What this slot's agent session reported about its own MCP servers.
+   *
+   * Null/absent means this slot has no session that reported — render that as
+   * absence of knowledge, NOT as "no servers". It is deliberately separate from
+   * `/api/mcp/active` and `/api/mcp/probe`, which answer questions about the
+   * HOST (what an agent spec declares, what the gateway can start) rather than
+   * about this session.
+   */
+  mcp_report?: McpSessionReport | null
 }
 
 export interface PullRequestCommit {

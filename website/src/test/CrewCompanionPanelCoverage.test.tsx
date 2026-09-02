@@ -478,6 +478,11 @@ describe('what the panel reports back so it is not closed on blur', () => {
 describe('closing the panel', () => {
   it('closes on Escape', async () => {
     await mountPanel()
+    // The card DOM commits before passive effects run. `panelHold(false)` is the
+    // preceding effect in Panel, so observing it proves the effect flush reached
+    // the key-listener registration below it; firing as soon as the card exists
+    // races that registration under a loaded shard.
+    await waitFor(() => expect(api.panelHold).toHaveBeenCalledWith(false))
     fireEvent.keyDown(window, { key: 'Escape' })
     expect(api.panelClose).toHaveBeenCalled()
   })

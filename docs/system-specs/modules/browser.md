@@ -263,7 +263,9 @@ nicety: these tokens are base64url and can legitimately contain `=`, so a looser
 rule would corrupt a bare token. `export`/`set` keywords and a matched pair of
 surrounding quotes are removed for the same reason. Normalization also runs on
 read, so a stored value holding the whole assignment repairs itself instead of
-reporting "stored" while the extension keeps prompting.
+reporting "stored" while the extension keeps prompting. Clearing ignores an
+already-absent file, but any other unlink failure propagates through the API so
+the settings panel cannot report success while the credential remains active.
 
 ### Launch config
 

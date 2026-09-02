@@ -28,6 +28,7 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
+from kiro_crew import extras
 from kiro_crew.config.loader import (
     MAX_SUBAGENTS_FIXED_FLOOR,
     SUBAGENT_AUTO_MAX_CEILING,
@@ -424,7 +425,11 @@ class TestSttPrereqCommands:
         monkeypatch.setattr(core_mod.os, "name", "posix")
         cmds = core_mod._stt_prereq_commands("local")
         assert len(cmds) == 1
-        assert "kirocrew[voice]" in cmds[0]
+        # The extra's own distributions, never `kirocrew[voice]`: this project is
+        # published on no index, so the extras form cannot resolve for anyone.
+        assert "kirocrew[" not in cmds[0]
+        for req in extras.requirements_for_extra("voice"):
+            assert f"'{req}'" in cmds[0]
         assert "-m pip install" in cmds[0]
         assert core_mod.shlex.quote(sys.executable) in cmds[0]
 
@@ -457,7 +462,13 @@ class TestSttPrereqCommands:
         monkeypatch.setattr(core_mod.os, "name", "posix")
         cmds = core_mod._stt_prereq_commands("transcribe")
         assert len(cmds) == 1
-        assert "kirocrew[voice]" in cmds[0]
+        # The CLOUD half alone. An extra resolves atomically, so naming the full
+        # `voice` set here would drag in the local recogniser and fail the whole
+        # install on a platform that has no wheel for it.
+        assert "kirocrew[" not in cmds[0]
+        assert "pywhispercpp" not in cmds[0]
+        for req in extras.requirements_for_extra("voice-aws"):
+            assert f"'{req}'" in cmds[0]
         assert "-m pip install" in cmds[0]
         assert core_mod.shlex.quote(sys.executable) in cmds[0]
 
@@ -475,11 +486,19 @@ class TestSttPrereqCommands:
         monkeypatch.setattr(core_mod.os, "name", "nt")
         monkeypatch.setattr(sys, "executable", "C:\\Program Files\\Python312\\python.exe")
         cmds = core_mod._stt_prereq_commands("transcribe")
-        assert cmds == [
-            "& 'C:\\Program Files\\Python312\\python.exe' -m pip install kirocrew[voice]"
-        ]
-        # Named properties the exact match locks in:
-        assert '"' not in cmds[0]  # PS double quotes still expand $ and backtick
+        # Quoting is the shared helper's, not this module's: on Windows a
+        # specifier needs the cross-shell DOUBLE-quoted form, because cmd does
+        # not treat `'` as a quote and would redirect on a pin's `<`.
+        specs = " ".join(extras.quote_spec(r) for r in extras.requirements_for_extra("voice-aws"))
+        assert cmds == [f"& 'C:\\Program Files\\Python312\\python.exe' -m pip install {specs}"]
+        # Named properties the exact match locks in. The double-quote check is
+        # scoped to the INTERPRETER segment: a PS double-quoted path would
+        # expand `$name` and honour backticks, silently rewriting it. The
+        # SPECIFIER after `-m pip install` is deliberately double-quoted (the
+        # one form cmd and PowerShell both strip) and holds no `$` or backtick
+        # to expand -- test_extras.py pins that precondition.
+        interpreter = cmds[0].split(" -m pip install ", 1)[0]
+        assert '"' not in interpreter
         assert "`" not in cmds[0]  # never emit a PS escape character
 
     def test_transcribe_prereq_windows_metachar_paths_survive_literally(self, monkeypatch) -> None:
@@ -492,7 +511,11 @@ class TestSttPrereqCommands:
         monkeypatch.setattr(core_mod.os, "name", "nt")
         monkeypatch.setattr(sys, "executable", "C:\\tools\\$python\\o'brien.exe")
         cmds = core_mod._stt_prereq_commands("transcribe")
-        assert cmds == ["& 'C:\\tools\\$python\\o''brien.exe' -m pip install kirocrew[voice]"]
+        # Quoting is the shared helper's, not this module's: on Windows a
+        # specifier needs the cross-shell DOUBLE-quoted form, because cmd does
+        # not treat `'` as a quote and would redirect on a pin's `<`.
+        specs = " ".join(extras.quote_spec(r) for r in extras.requirements_for_extra("voice-aws"))
+        assert cmds == [f"& 'C:\\tools\\$python\\o''brien.exe' -m pip install {specs}"]
 
     def test_transcribe_prereq_without_install_channel_is_empty(self, monkeypatch) -> None:
         """When no install channel can make the extra importable (bundled
@@ -518,7 +541,8 @@ class TestSttPrereqCommands:
         monkeypatch.setattr(core_mod.os, "name", "posix")
         cmds = core_mod._stt_prereq_commands("transcribe")
         assert len(cmds) == 2
-        assert "kirocrew[voice]" in cmds[0]
+        assert "-m pip install" in cmds[0]
+        assert "amazon-transcribe" in cmds[0]
         assert cmds[1] == "brew install ffmpeg"
 
     def test_bundled_desktop_never_offers_a_system_decoder_command(self, monkeypatch) -> None:
@@ -2053,3 +2077,78 @@ class TestSessionAgentRoutes:
             resp = await client.get("/api/sessions/s1/agents/a1/stream")
             assert resp.status == 200
             assert await resp.text() == ""
+
+
+class TestSessionAgentPathIdValidation:
+    """A malformed path id must answer 400, not crash with a 500.
+
+    ``session_workspace`` validates both ids with ``_validate_id``, which RAISES
+    ``ValueError``. These three handlers called into it with no ``try``, so an id
+    outside ``^[a-zA-Z0-9_.:-]+$`` -- or the literal ``..`` -- escaped as an
+    unhandled exception. Every other test in this file monkeypatches
+    ``list_results`` / ``read_result`` / ``result_path``, so the real validator
+    never ran and the gap stayed invisible; nothing here patches them.
+
+    ``messaging.py`` is the in-tree pattern for the same seam: ``read_state``
+    wraps ``_agent_dir`` in ``try/except ValueError`` and answers ``None``.
+    """
+
+    #: Rejected by ``_validate_id``: a space is outside the charset, and ``..``
+    #: is refused by name. Both survive aiohttp routing -- the default pattern
+    #: for ``{id}`` is ``[^{}/]+``, which admits a space and admits ``..``.
+    BAD_IDS = ("bad id", "..", "a\\b", "a%b")
+
+    @pytest.mark.parametrize("bad", BAD_IDS)
+    @pytest.mark.asyncio
+    async def test_list_refuses_a_malformed_session_id(self, bad, fake_sel) -> None:
+        resp = await core_mod.api_session_agents_list(_req(match_info={"id": bad}))
+        assert resp.status == 400
+        assert json.loads(resp.body)["code"] == "invalid_session_id"
+
+    @pytest.mark.parametrize("bad", BAD_IDS)
+    @pytest.mark.asyncio
+    async def test_result_refuses_a_malformed_session_id(self, bad, fake_sel) -> None:
+        resp = await core_mod.api_session_agent_result(
+            _req(match_info={"id": bad, "agent_id": "a1"})
+        )
+        assert resp.status == 400
+        assert json.loads(resp.body)["code"] == "invalid_session_id"
+
+    @pytest.mark.parametrize("bad", BAD_IDS)
+    @pytest.mark.asyncio
+    async def test_result_refuses_a_malformed_agent_id(self, bad, fake_sel) -> None:
+        """The second param needs its own code -- ``read_result`` validates the
+        session id first, so a caller told only "invalid session id" would go
+        fix the wrong half of the URL."""
+        resp = await core_mod.api_session_agent_result(
+            _req(match_info={"id": "s1", "agent_id": bad})
+        )
+        assert resp.status == 400
+        assert json.loads(resp.body)["code"] == "invalid_agent_id"
+
+    @pytest.mark.asyncio
+    async def test_stream_refuses_before_it_prepares_an_sse_response(self, fake_sel) -> None:
+        """The refusal has to land while a normal response is still sendable.
+
+        ``result_path`` is called BEFORE ``resp.prepare(request)``, so the guard
+        can still answer 400. Once prepared, the status is on the wire and the
+        only way to signal a bad id would be an SSE payload no client reads.
+        """
+        resp = await core_mod.api_session_agent_stream(
+            _req(match_info={"id": "bad id", "agent_id": "a1"})
+        )
+        assert resp.status == 400
+        assert json.loads(resp.body)["code"] == "invalid_session_id"
+
+    # ── over-fixing guards: these pass on the base and must keep passing ──
+
+    @pytest.mark.parametrize("good", ("s1", "dashboard:slot-3", "chat-735-1788268870", "a.b_c"))
+    @pytest.mark.asyncio
+    async def test_the_accepted_charset_is_not_narrowed(self, good, monkeypatch, fake_sel) -> None:
+        """``_SAFE_ID_RE`` admits ``:``, ``.``, ``_`` and ``-``, and real session
+        keys use them (``dashboard:slot-3``). A guard that rejected any of these
+        would break working URLs, so pin the accepted set rather than only the
+        refused one."""
+        monkeypatch.setattr("kiro_crew.session_workspace.list_results", lambda _s: [])
+        resp = await core_mod.api_session_agents_list(_req(match_info={"id": good}))
+        assert resp.status == 200

@@ -2411,6 +2411,13 @@ async def _reset_slot_session(
     completed an LLM round-trip, and such a turn is visible to any caller's
     has_active_turn() fast path — so a decline here implies a turn that started
     microseconds ago, which cannot have posted a card yet.
+
+    A successful reset also drops the slot's MCP session report, for the same
+    reason the pending card goes: it describes the session being torn down.
+    Every caller here changes what the next session will mount (agent, model,
+    workspace) or restarts it outright, so keeping the old report would leave
+    the UI presenting a dead session's server list as the live one's — the
+    stale-evidence failure that report exists to remove.
     """
     _unblock_pending_waits(state, slot)
     try:
@@ -2439,6 +2446,12 @@ async def _reset_slot_session(
         # decline would throw the authoritative answer away and re-create exactly
         # that.
         slot.record_model_withheld(None)
+        # The MCP session report rides the same gate for the same reason: it
+        # describes the session that was just torn down. Clearing is a courtesy
+        # delta push -- correctness rests on the identity projector in
+        # serialize_slots -- so it only fires when something was recorded.
+        if slot.clear_mcp_report():
+            state.broadcast_ws("mcp_report_update", {"slot": slot.key, "mcp_report": None})
     return reloaded
 
 
@@ -3592,11 +3605,17 @@ async def api_chat_slot_reset_conversation(request: web.Request) -> web.Response
     mid-write, a plan between stages, and children still running after their
     parent's turn ended.
 
-    ``has_active_turn`` is the probe the reload route uses for this same teardown,
-    and it inherits that probe's edge: a turn holding the per-session semaphore
-    but not yet having a prompt in flight is not seen. Matching the sibling is
-    deliberate — a second, subtly different notion of "busy" for one teardown is
-    how the two drift apart.
+    The ``has_active_turn()`` check is a best-effort fast path; the
+    authoritative guard is the discard's ``skip_if_busy``, which probes the
+    per-session SEMAPHORE atomically with the session pop (see
+    :meth:`SessionManager.discard_conversation`). The fast path has a known
+    edge — a turn holding the semaphore but not yet having a prompt in flight
+    is invisible to it — and the atomic guard is what closes it, the same
+    contract the sibling reload route rests on, so the two teardowns keep one
+    notion of "busy". Of the refusal paths, only the atomic guard's decline is
+    SEL-recorded (``outcome="denied"``): it is the one refusal that happens
+    after the route has committed to the teardown, while the fast-path 409s
+    are pre-checks and stay unlogged, as they are on the sibling.
 
     The transcript is deliberately left in place, which means the tab still shows
     the earlier messages while the model no longer remembers them. That is the
@@ -3681,9 +3700,28 @@ async def api_chat_slot_reset_conversation(request: web.Request) -> web.Response
     if attached is not None:
         return attached
 
-    await state.sessions.discard_conversation(key, replay=replay)
+    # ``skip_if_busy``: the fast paths above cannot see a turn that holds the
+    # per-session semaphore but has not yet put a prompt in flight (an inbound
+    # channel message between the lease and its first stream event). The discard
+    # probes the semaphore atomically with the session pop, so a turn admitted
+    # after the guards above answered False is refused here instead of being
+    # torn down mid-lease.
+    discarded = await state.sessions.discard_conversation(key, replay=replay, skip_if_busy=True)
+    if not discarded:
+        sel().log_api_access(
+            caller=request.get("app", "") or "dashboard",
+            operation="slot_reset_conversation",
+            outcome="denied",
+            resources=f"slot={name} replay={replay}",
+        )
+        return web.json_response(
+            {"error": "a turn is in flight", "code": "turn_in_flight", "slot": name},
+            status=409,
+        )
     # The fresh conversation will advertise its own model list, so the previous
-    # one's withhold verdict no longer describes this slot.
+    # one's withhold verdict no longer describes this slot. Only on a performed
+    # discard: a refusal above leaves the old conversation (and its verdict) in
+    # place.
     slot.record_model_withheld(None)
     sel().log_api_access(
         caller=request.get("app", "") or "dashboard",

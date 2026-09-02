@@ -23,11 +23,12 @@
  * react-query key. All AWS access runs through the gateway's audited CLI
  * chokepoint; this surface never talks to AWS from the browser.
  */
-import { Fragment, useRef, useState } from 'react'
+import { Fragment, useEffect, useRef, useState } from 'react'
 import { useQuery, useInfiniteQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Link } from 'react-router-dom'
+import { Trans } from 'react-i18next'
 import {
-  ChevronLeft, ChevronDown, RefreshCw, HardDrive, Library, Archive, Share2,
+  ChevronDown, RefreshCw, Library, Archive, Share2,
   Download, Trash2, Upload, FolderClosed, FolderPlus, FileText, X,
   MoreHorizontal, Code, LayoutGrid, List, Search, CloudOff, Plus,
 } from 'lucide-react'
@@ -41,7 +42,6 @@ import type { LibraryColumn } from '../../components/library/LibraryTable'
 import {
   WidgetThumb, ContentThumb, ImageThumb, WebAppThumb,
 } from '../../components/library/ArtifactThumbs'
-import { useColumnCount } from '../../hooks/useColumnCount'
 import { usePersistedString } from '../../hooks/usePersistedString'
 import { api } from '../../api/client'
 import type { Artifact } from '../../types'
@@ -52,15 +52,10 @@ import { i18nT } from '../../i18n/t'
 import { fmtBytes, fmtNumber, fmtRelative } from '../../i18n/format'
 import { awsControlApi } from './api'
 import type {
-  AwsAccount, DriveSection, DriveStatus, ArtifactKind, LibraryArtifact,
-  BackupKind, Share, DriveUsage, DriveSectionUsage,
+  DriveSection, DriveStatus, ArtifactKind, LibraryArtifact,
+  BackupKind, Share, DriveUsage,
 } from './types'
-import { CopyBtn, SectionHeader } from './shared'
-
-/** The account's display name, or the not-connected label. */
-function accountNameOf(account: AwsAccount): string {
-  return account.name || i18nT('apps.awsControl.page.not_connected_yet')
-}
+import { CopyBtn, PaneHeader } from './shared'
 
 /* Literal-key maps from enum → full catalog key, so no i18nT() call assembles a
  * key by interpolation (dynamicKeys gate): extractors and unused-key tooling
@@ -272,10 +267,9 @@ function OrphanThumb() {
  * which is what lets a card recover the artifact's name, kind and preview from
  * the local library; an object with no local copy falls back to `OrphanThumb`.
  */
-function LibrarySection({ account, bucket }: { account: string; bucket: string }) {
+export function LibrarySection({ account, bucket }: { account: string; bucket: string }) {
   const [mode, setMode] = useViewMode('library', 'grid')
   const [picking, setPicking] = useState(false)
-  const [gridRef, cols] = useColumnCount(258)
 
   /* What is in the cloud, ACCUMULATED across pages. A plain query keyed by the
      continuation token replaced the visible page on every "Load more", which is
@@ -346,8 +340,8 @@ function LibrarySection({ account, bucket }: { account: string; bucket: string }
 
   return (
     <section data-testid="library-section">
-      <SectionHeader
-        icon={<Library size={15} />}
+      <PaneHeader
+        icon={<Library size={18} />}
         title={i18nT('apps.awsControl.console.section_library')}
         actions={
           <div className="flex flex-wrap items-center gap-2">
@@ -369,19 +363,7 @@ function LibrarySection({ account, bucket }: { account: string; bucket: string }
           back in as the listing resolves. */}
       {!(listQ.isSuccess && slugs.length === 0) && (
       <p className="mb-3 text-[12px] text-muted" data-testid="library-blurb">
-        {i18nT('apps.awsControl.console.library_blurb')}{' '}
-        {/* This folder can be filled from the picker and not emptied from here
-            yet, and storage costs money. Saying where the exit is beats letting
-            someone discover there isn't one.
-
-            Only once there is something to remove, though: on an empty folder it
-            warned about copies that do not exist, which is noise in front of the
-            one screen whose job is explaining what the folder is FOR. The picker
-            carries its own one-way warning, so the person about to create the
-            first copy is still told. */}
-        {slugs.length > 0 && (
-          <span data-testid="library-remove-hint">{i18nT('apps.awsControl.console.library_remove_hint')}</span>
-        )}
+        {i18nT('apps.awsControl.console.library_blurb')}
       </p>
       )}
 
@@ -451,8 +433,8 @@ function LibrarySection({ account, bucket }: { account: string; bucket: string }
       )}
 
       {slugs.length > 0 && mode === 'grid' && (
-        <div ref={gridRef} className="-mr-3" data-testid="library-grid">
-          <div className="grid items-start" style={{ gridTemplateColumns: `repeat(${cols}, minmax(0, 1fr))` }}>
+        <div className="-mr-3" data-testid="library-grid">
+          <div className="grid items-start" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(258px, 1fr))' }}>
             {slugs.map((slug) => (
               <LibraryCloudCard
                 key={slug}
@@ -695,7 +677,6 @@ function AddFromArtifactsDialog({ account, onClose }: { account: string; onClose
   const qc = useQueryClient()
   const [kind, setKind] = useState<ArtifactKind | 'all'>('all')
   const [q, setQ] = useState('')
-  const [gridRef, cols] = useColumnCount(258)
   const backdropDown = useRef(false)
 
   /**
@@ -734,6 +715,10 @@ function AddFromArtifactsDialog({ account, onClose }: { account: string; onClose
    */
   const [addingSlugs, setAddingSlugs] = useState<ReadonlySet<string>>(new Set())
   const [failedSlugs, setFailedSlugs] = useState<ReadonlySet<string>>(new Set())
+  // Removals share the per-slug discipline for the same reason: a removal's
+  // outcome must not depend on another removal (or an add) being in flight.
+  const [removingSlugs, setRemovingSlugs] = useState<ReadonlySet<string>>(new Set())
+  const [removeFailedSlugs, setRemoveFailedSlugs] = useState<ReadonlySet<string>>(new Set())
   const withoutSlug = (set: ReadonlySet<string>, slug: string) => {
     const next = new Set(set)
     next.delete(slug)
@@ -755,6 +740,23 @@ function AddFromArtifactsDialog({ account, onClose }: { account: string; onClose
       setFailedSlugs((prev) => new Set(prev).add(slug))
     } finally {
       setAddingSlugs((prev) => withoutSlug(prev, slug))
+    }
+  }
+  const removeOne = async (slug: string) => {
+    setRemovingSlugs((prev) => new Set(prev).add(slug))
+    setRemoveFailedSlugs((prev) => withoutSlug(prev, slug))
+    try {
+      await awsControlApi.libraryRemove(account, slug)
+      // Same two keys as addOne: the ledger forgot the record AND the folder
+      // behind this dialog lost the artifact's objects.
+      qc.invalidateQueries({ queryKey: ['aws-control', 'library', account] })
+      qc.invalidateQueries({ queryKey: ['aws-control', 'drive', account] })
+    } catch {
+      // The failure must render (delete_failed on the card): a confirm strip that
+      // closes before the outcome is known reports a delete that never happened.
+      setRemoveFailedSlugs((prev) => new Set(prev).add(slug))
+    } finally {
+      setRemovingSlugs((prev) => withoutSlug(prev, slug))
     }
   }
 
@@ -804,17 +806,16 @@ function AddFromArtifactsDialog({ account, onClose }: { account: string; onClose
           </button>
         </div>
 
-        {/* The disclosure has to be HERE, where the adding happens.
-            Adding fills storage the user pays for and there is no in-app
-            removal yet, and the folder's own hint was the only place that said
-            so -- which the empty-state button skips entirely, opening this
-            dialog directly. A warning the reader never passes is not a warning.
+        {/* The disclosure has to be HERE, where the adding happens: adding fills
+            storage the account pays for, and the empty-state button opens this
+            dialog directly, so a warning the reader never passes is not a
+            warning.
 
-            Its OWN string, not the folder's: that one ends by pointing at the
-            "Where this lives" drawer, which sits behind this overlay rather than
-            in it, so reusing it here would name something the reader cannot
-            find -- the same dangling pointer that copy was just fixed to
-            remove. */}
+            The COST is all it says, and that constraint is load-bearing: the
+            cards below carry a Remove control, so any claim about removal being
+            unavailable would be disproved by a button in the same dialog on
+            every open, and a banner a button contradicts costs the reader their
+            trust in both. */}
         <p className="border-b border-border px-4 py-2 text-[12px] leading-snug text-muted" data-testid="library-add-oneway">
           {i18nT('apps.awsControl.console.library_add_oneway')}
         </p>
@@ -851,7 +852,13 @@ function AddFromArtifactsDialog({ account, onClose }: { account: string; onClose
             support. Filtering is meaningless with nothing to filter anyway. */}
         {!libQ.isError && (
         <div className="flex flex-wrap gap-1.5 border-b border-border px-4 py-2.5" data-testid="library-chips">
-          {(['all', ...KIND_KEYS] as const).map((k) => (
+          {/* A chip you cannot usefully press is noise: a zero-count kind
+              filters the grid to nothing. 'All' always renders, and the
+              currently-selected kind stays visible even at zero so the reader
+              can see (and undo) an active filter that no longer matches. */}
+          {(['all', ...KIND_KEYS] as const)
+            .filter((k) => k === 'all' || k === kind || (counts[k] ?? 0) > 0)
+            .map((k) => (
             <button
               key={k}
               onClick={() => setKind(k)}
@@ -892,8 +899,8 @@ function AddFromArtifactsDialog({ account, onClose }: { account: string; onClose
             </p>
           )}
           {shown.length > 0 && (
-            <div ref={gridRef} className="-mr-3">
-              <div className="grid items-start" style={{ gridTemplateColumns: `repeat(${cols}, minmax(0, 1fr))` }}>
+            <div className="-mr-3">
+              <div className="grid items-start" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(258px, 1fr))' }}>
                 {shown.map((a) => (
                   <PickerCard
                     key={a.slug}
@@ -901,6 +908,10 @@ function AddFromArtifactsDialog({ account, onClose }: { account: string; onClose
                     onPush={() => { void addOne(a.slug) }}
                     pushing={addingSlugs.has(a.slug)}
                     failed={failedSlugs.has(a.slug)}
+                    onRemove={() => { void removeOne(a.slug) }}
+                    onCancelRemove={() => { setRemoveFailedSlugs((prev) => withoutSlug(prev, a.slug)) }}
+                    removing={removingSlugs.has(a.slug)}
+                    removeFailed={removeFailedSlugs.has(a.slug)}
                   />
                 ))}
               </div>
@@ -913,11 +924,17 @@ function AddFromArtifactsDialog({ account, onClose }: { account: string; onClose
 }
 
 /** One candidate in the picker: a real preview, and one action. */
-function PickerCard({ artifact, onPush, pushing, failed }: {
+function PickerCard({
+  artifact, onPush, pushing, failed, onRemove, onCancelRemove, removing, removeFailed,
+}: {
   artifact: LibraryArtifact
   onPush: () => void
   pushing: boolean
   failed: boolean
+  onRemove: () => void
+  onCancelRemove: () => void
+  removing: boolean
+  removeFailed: boolean
 }) {
   const synced = artifact.pushedVersion !== null
   const upToDate = artifact.pushedVersion === artifact.version
@@ -926,6 +943,18 @@ function PickerCard({ artifact, onPush, pushing, failed }: {
      than only grey out its button, because images are the bulk of a real
      library and a disabled control with no reason reads as a bug. */
   const notPushable = artifact.kind === 'image'
+  // A bare click must not delete a paid-bucket object, so removal is revealed
+  // behind an inline Cancel + danger confirm, mirroring the drive folder delete.
+  const [confirmRemove, setConfirmRemove] = useState(false)
+  // The card outlives its own sync state: it is keyed by slug, so a successful
+  // removal only re-renders it with `synced` false rather than unmounting it,
+  // and the confirm intent would survive into the next push. Dropping the intent
+  // the moment there is nothing to remove is what keeps a later Push from
+  // re-revealing an armed danger strip nobody asked for -- with its own trigger
+  // hidden, since that renders on `!confirmRemove`.
+  useEffect(() => {
+    if (!synced) setConfirmRemove(false)
+  }, [synced])
   return (
     <div className="mb-3 mr-3 overflow-hidden rounded-lg border border-border bg-card" data-testid="library-tile">
       <div className="pointer-events-none">
@@ -950,6 +979,18 @@ function PickerCard({ artifact, onPush, pushing, failed }: {
             {i18nT('apps.awsControl.console.library_push_failed')}
           </p>
         )}
+        {/* Cancel RETIRES the failure (`onCancelRemove` drops the slug), rather
+            than the render merely hiding it while the strip is closed. Hiding
+            alone leaves the slug in the failed set, so the next Remove opens a
+            fresh strip already showing a red "delete failed" for an attempt the
+            reader dismissed and has not retried. Otherwise the slug clears only
+            when a removal is retried, which leaves a reader who backs out with a
+            standing error beside a copy that is still there. */}
+        {removeFailed && (
+          <p className="mt-2 text-[11px] leading-snug text-danger" data-testid="library-remove-error">
+            {i18nT('apps.awsControl.console.delete_failed')}
+          </p>
+        )}
         {!notPushable && (
           <div className="mt-2.5">
             {/* Sync state is now a LABEL, not a locked door. The ledger is local,
@@ -962,25 +1003,108 @@ function PickerCard({ artifact, onPush, pushing, failed }: {
                 was up to date. A same-version push is idempotent (it rewrites the
                 same key plus its sidecar), so the worst case is one redundant
                 upload and the best case is recovering a copy you cannot
-                otherwise restore. */}
+                otherwise restore.
+
+                Neither the backend reconcile nor Remove makes the door safe to
+                lock. Reconcile is slug-granular: it prunes a record only when the
+                WHOLE `artifacts/<slug>/` prefix is absent, so a copy that lost
+                its content key but kept its sidecar still lists as present and
+                still reads as up to date. And Remove empties the prefix -- it
+                never puts the content back, so it is not the restore path a
+                disabled Push would need. */}
             {upToDate && (
               <p className="mb-1.5 text-[11px] text-muted" data-testid="library-already">
                 {i18nT('apps.awsControl.console.library_in_cloud')}
               </p>
             )}
-            <Btn onClick={onPush} disabled={pushing} data-testid="library-push">
-              <Upload size={13} />
-              {pushing
-                ? i18nT('apps.awsControl.console.library_adding')
-                : upToDate
-                  ? i18nT('apps.awsControl.console.library_add_again')
-                  : synced
-                    ? i18nT('apps.awsControl.console.library_update')
-                    : i18nT('apps.awsControl.console.library_add_one')}
-            </Btn>
+            <div className="flex flex-wrap items-center gap-2">
+              <Btn onClick={onPush} disabled={pushing} data-testid="library-push">
+                <Upload size={13} />
+                {pushing
+                  ? i18nT('apps.awsControl.console.library_adding')
+                  : upToDate
+                    ? i18nT('apps.awsControl.console.library_add_again')
+                    : synced
+                      ? i18nT('apps.awsControl.console.library_update')
+                      : i18nT('apps.awsControl.console.library_add_one')}
+              </Btn>
+              {/* A remove control only makes sense once an artifact has a cloud
+                  copy; an unsynced card has nothing to empty. */}
+              {synced && !confirmRemove && (
+                <Btn onClick={() => setConfirmRemove(true)} data-testid="library-remove">
+                  <Trash2 size={13} />
+                  {i18nT('apps.awsControl.console.library_remove')}
+                </Btn>
+              )}
+            </div>
           </div>
         )}
       </div>
+      {synced && confirmRemove && (
+        <div className="flex flex-wrap items-center gap-2 px-3 pb-3 text-[12px]" data-testid="library-remove-confirm">
+          {/* Removal targets the SLUG, not this local artifact: `libraryRemove`
+              empties the `artifacts/<slug>/` cloud prefix, and the ledger that
+              lit this tile's synced flag is keyed by slug alone (see the
+              identity note in LibrarySection). Slugs come from names and are
+              reused -- delete a pushed artifact locally, create another that
+              takes the same slug, and its never-pushed tile inherits the old
+              push record and offers this Remove, which would empty a DIFFERENT
+              artifact's cloud copy. This machine cannot prove the copy is this
+              artifact's without reading the pushed meta.json sidecar, so the
+              confirm names the cloud folder it will actually empty rather than
+              only the local name, turning a silent wrong-target delete into one
+              the reader confirms against its true identity.
+
+              The literal is the BUCKET key prefix (`artifacts/`, the drive's
+              library section — the same prefix the "Where this lives" drawer
+              hands the reader for `aws s3 ls`), not the `library/` API route
+              segment. A path that does not exist in the bucket cannot be
+              cross-checked in the S3 console, which is the only place the
+              wrong-target case is catchable. */}
+          {/* `basis-full` so the prompt takes its own line and the two controls
+              wrap under it. Sharing the line inside a grid-column-width card
+              squeezed the text to a few characters and broke the folder path
+              across lines mid-token, which is unreadable as the identity the
+              reader is supposed to check the delete against. */}
+          <span className="min-w-0 flex-1 basis-full text-text" data-testid="library-remove-confirm-text">
+            {i18nT('apps.awsControl.console.library_remove_confirm', { name: artifact.name })}{' '}
+            {/* `<Trans>` rather than a bare string plus a sibling `<code>`: the folder
+                path is a monospace chip inside the sentence, and splitting the sentence
+                around it would leave the translator a lead-in fragment they cannot
+                reorder around their own word order. One key carries the whole sentence
+                and names the chip with a `<folder>` tag. */}
+            <span className="text-muted">
+              <Trans
+                i18nKey="apps.awsControl.console.library_remove_confirm_slug"
+                values={{ folder: `artifacts/${artifact.slug}/` }}
+                components={{ folder: <code className="text-[11px] text-muted" /> }}
+              />
+            </span>
+          </span>
+          <Btn
+            onClick={() => { setConfirmRemove(false); onCancelRemove() }}
+            disabled={removing}
+            data-testid="library-remove-cancel"
+          >
+            {i18nT('apps.awsControl.console.cancel')}
+          </Btn>
+          {/* The strip stays open while the request runs, because closing it on
+              the click would hide the outcome entirely. On success the card's
+              synced flag flips false via the query invalidation, which unmounts
+              both the strip and its trigger; on failure the strip stays with the
+              button re-enabled and delete_failed rendered above, so a retry or a
+              Cancel are both one click. */}
+          <Btn
+            danger
+            disabled={removing}
+            onClick={onRemove}
+            data-testid="library-remove-action"
+          >
+            <Trash2 size={13} />
+            {i18nT('apps.awsControl.console.library_remove')}
+          </Btn>
+        </div>
+      )}
     </div>
   )
 }
@@ -1041,7 +1165,7 @@ const noSort = () => {}
 
 const KEY_SEGMENT = /^[A-Za-z0-9][A-Za-z0-9 ._()+@=-]*$/
 
-function DriveSectionView({ account, bucket }: { account: string; bucket: string }) {
+export function DriveSectionView({ account, bucket }: { account: string; bucket: string }) {
   const qc = useQueryClient()
   const [mode, setMode] = useViewMode('drive', 'list')
   const [path, setPath] = useState('')
@@ -1052,7 +1176,23 @@ function DriveSectionView({ account, bucket }: { account: string; bucket: string
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null)
   const [confirmFolder, setConfirmFolder] = useState<string | null>(null)
   const [newFolder, setNewFolder] = useState('')
+  /** Folder-name input is a disclosure: visible only after "New folder". */
+  const [creatingFolder, setCreatingFolder] = useState(false)
   const [folderError, setFolderError] = useState('')
+  /** The ONE way out of the folder disclosure (Escape, Cancel, blur-on-empty),
+   *  carrying the whole close invariant: (1) it refuses while a create is in
+   *  flight — collapsing mid-request would erase the very name being created,
+   *  so a failure comes back to a wiped input; (2) when it does close, it
+   *  clears ALL creation state — the name, the validation error, and the
+   *  mutation's own error — because any of the three left behind renders as an
+   *  orphan under a toolbar whose input is gone. */
+  const closeFolderDisclosure = () => {
+    if (folderCreateMut.isPending) return
+    setNewFolder('')
+    setFolderError('')
+    folderCreateMut.reset()
+    setCreatingFolder(false)
+  }
   /* How many objects the last folder delete actually removed. One click can
      remove far more than one file, and the count is only knowable AFTER the
      fact - the response carries it, while a figure shown BEFORE consent would
@@ -1060,7 +1200,6 @@ function DriveSectionView({ account, bucket }: { account: string; bucket: string
      what was removed rather than pretending to predict it. */
   const [deletedCount, setDeletedCount] = useState<number | null>(null)
   const fileRef = useRef<HTMLInputElement>(null)
-  const [filesGridRef, fileCols] = useColumnCount(258)
   /* The pinned Actions cell paints its seam only when the table actually
      overflows, so the edge is measured rather than assumed. */
   const [attachScroller, edges] = useScrollEdges<HTMLDivElement>()
@@ -1100,7 +1239,7 @@ function DriveSectionView({ account, bucket }: { account: string; bucket: string
   const folderCreateMut = useMutation({
     mutationFn: (name: string) =>
       awsControlApi.driveFolderCreate(account, 'drive', path ? `${path}/${name}` : name),
-    onSuccess: () => { setNewFolder(''); invalidate() },
+    onSuccess: () => { setNewFolder(''); setCreatingFolder(false); invalidate() },
   })
   const folderDeleteMut = useMutation({
     mutationFn: (folder: string) => awsControlApi.driveFolderDelete(account, 'drive', folder),
@@ -1168,26 +1307,51 @@ function DriveSectionView({ account, bucket }: { account: string; bucket: string
 
   return (
     <section data-testid="drive-section">
-      <SectionHeader icon={<FolderClosed size={15} />} title={i18nT('apps.awsControl.console.section_files')} actions={
+      <PaneHeader icon={<FolderClosed size={18} />} title={i18nT('apps.awsControl.console.section_files')} actions={
         <div className="flex flex-wrap items-center gap-2">
         <ViewModeToggle section="drive" mode={mode} onChange={setMode} />
-        <Input
-          value={newFolder}
-          onChange={(e) => setNewFolder(e.target.value)}
-          onKeyDown={(e) => { if (e.key === 'Enter') onCreateFolder() }}
-          placeholder={i18nT('apps.awsControl.console.folder_name')}
-          aria-label={i18nT('apps.awsControl.console.folder_new')}
-          className="w-full min-w-0 basis-full sm:w-[160px] sm:flex-none sm:basis-auto"
-          data-testid="drive-folder-name"
-        />
-        <Btn onClick={onCreateFolder} disabled={folderCreateMut.isPending || !newFolder.trim()} data-testid="drive-folder-create">
-          <FolderPlus size={13} />
-          {i18nT('apps.awsControl.console.folder_new')}
-        </Btn>
-        <Btn onClick={() => fileRef.current?.click()} disabled={uploadMut.isPending} data-testid="drive-upload-btn">
-          <Upload size={13} />
-          {uploadMut.isPending ? i18nT('apps.awsControl.console.drive_uploading') : i18nT('apps.awsControl.console.drive_upload')}
-        </Btn>
+        {/* The name field appears when the reader ASKS to create a folder.
+            Parked permanently in the toolbar it was two dead controls (an empty
+            input and a disabled button) on every visit that isn't about
+            folders — which is most of them. Escape, Cancel, or blurring the
+            empty field puts the toolbar back; Upload hides while creating so
+            the expanded row stays one action group of two buttons. */}
+        {creatingFolder ? (
+          <>
+            <Input
+              value={newFolder}
+              onChange={(e) => setNewFolder(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') onCreateFolder()
+                if (e.key === 'Escape') closeFolderDisclosure()
+              }}
+              onBlur={() => { if (!newFolder.trim()) closeFolderDisclosure() }}
+              autoFocus
+              placeholder={i18nT('apps.awsControl.console.folder_name')}
+              aria-label={i18nT('apps.awsControl.console.folder_new')}
+              className="w-full min-w-0 basis-full sm:w-[160px] sm:flex-none sm:basis-auto"
+              data-testid="drive-folder-name"
+            />
+            <Btn onClick={onCreateFolder} disabled={folderCreateMut.isPending || !newFolder.trim()} data-testid="drive-folder-create">
+              <FolderPlus size={13} />
+              {i18nT('apps.awsControl.console.folder_new')}
+            </Btn>
+            <Btn onClick={closeFolderDisclosure} disabled={folderCreateMut.isPending} data-testid="drive-folder-cancel">
+              {i18nT('apps.awsControl.console.cancel')}
+            </Btn>
+          </>
+        ) : (
+          <>
+            <Btn onClick={() => setCreatingFolder(true)} data-testid="drive-folder-toggle">
+              <FolderPlus size={13} />
+              {i18nT('apps.awsControl.console.folder_new')}
+            </Btn>
+            <Btn onClick={() => fileRef.current?.click()} disabled={uploadMut.isPending} data-testid="drive-upload-btn">
+              <Upload size={13} />
+              {uploadMut.isPending ? i18nT('apps.awsControl.console.drive_uploading') : i18nT('apps.awsControl.console.drive_upload')}
+            </Btn>
+          </>
+        )}
         </div>
       } />
       <input
@@ -1282,8 +1446,8 @@ function DriveSectionView({ account, bucket }: { account: string; bucket: string
           otherwise lose Share and Delete on every future visit with nothing to
           tell them the controls existed. */}
       {mode === 'grid' && (folders.length > 0 || files.length > 0) && (
-        <div ref={filesGridRef} className="-mr-3" data-testid="drive-grid">
-          <div className="grid items-start" style={{ gridTemplateColumns: `repeat(${fileCols}, minmax(0, 1fr))` }}>
+        <div className="-mr-3" data-testid="drive-grid">
+          <div className="grid items-start" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(258px, 1fr))' }}>
             {folders.map((name) => {
               const open = () => { setPath(name); setDeletedCount(null) }
               return (
@@ -1731,7 +1895,7 @@ function ShareDialog({ account, section, fileKey, onClose }: { account: string; 
 
 const BACKUP_KINDS: BackupKind[] = ['snapshot', 'sessions']
 
-function BackupSection({ account }: { account: string }) {
+export function BackupSection({ account }: { account: string }) {
   const qc = useQueryClient()
   const [showRemote, setShowRemote] = useState(false)
   const backupQ = useQuery({
@@ -1755,7 +1919,7 @@ function BackupSection({ account }: { account: string }) {
 
   return (
     <section data-testid="backup-section">
-      <SectionHeader icon={<Archive size={15} />} title={i18nT('apps.awsControl.console.backup_title')} />
+      <PaneHeader icon={<Archive size={18} />} title={i18nT('apps.awsControl.console.backup_title')} />
       {backupQ.isLoading && <ContentSkeleton rows={2} />}
       {data && (
         <div className="rounded-md border border-border bg-card divide-y divide-border">
@@ -1851,7 +2015,7 @@ function BackupSection({ account }: { account: string }) {
 
 /* ── Section 7: Access (shares ledger) ───────────────────────────────────── */
 
-function AccessSection({ account }: { account: string }) {
+export function AccessSection({ account }: { account: string }) {
   const qc = useQueryClient()
   const sharesQ = useQuery({
     queryKey: ['aws-control', 'shares', account],
@@ -1865,7 +2029,7 @@ function AccessSection({ account }: { account: string }) {
 
   return (
     <section data-testid="access-section">
-      <SectionHeader icon={<Share2 size={15} />} title={i18nT('apps.awsControl.console.access_title')} />
+      <PaneHeader icon={<Share2 size={18} />} title={i18nT('apps.awsControl.console.access_title')} />
       {sharesQ.isLoading && <ContentSkeleton rows={1} />}
       {sharesQ.data && shares.length === 0 && (
         <p className="text-[13px] text-muted" data-testid="access-empty">{i18nT('apps.awsControl.console.access_empty')}</p>
@@ -1915,20 +2079,7 @@ const SECTION_LABEL_ON_PAGE: Record<DriveSection, string> = {
   backup: 'apps.awsControl.console.section_backup',
 }
 
-const SECTION_ICON: Record<DriveSection, typeof HardDrive> = {
-  drive: FolderClosed,
-  library: Library,
-  backup: Archive,
-}
 
-/* Literal-key map from section → its one-line "what belongs here" description,
- * so no i18nT() call assembles a key by interpolation (dynamicKeys gate).
- * Mirrors SECTION_LABEL_ON_PAGE above. */
-const SECTION_DESC_KEY: Record<DriveSection, string> = {
-  drive: 'apps.awsControl.console.root_section_desc_drive',
-  library: 'apps.awsControl.console.root_section_desc_library',
-  backup: 'apps.awsControl.console.root_section_desc_backup',
-}
 
 /**
  * Each section's meter colour, as a SEMANTIC token — never a hex.
@@ -1957,7 +2108,7 @@ const SECTION_TONE: Record<DriveSection, string> = {
  * would silently drop it. When the whole drive is empty the bar renders as a
  * single muted track so the card is never a bare outline.
  */
-function StorageMeter({ usage }: { usage: DriveUsage }) {
+export function StorageMeter({ usage }: { usage: DriveUsage }) {
   const total = usage.bytes
   return (
     <div className="mb-4 rounded-lg border border-border bg-card p-4" data-testid="drive-storage-meter">
@@ -2010,54 +2161,6 @@ function StorageMeter({ usage }: { usage: DriveUsage }) {
 }
 
 /**
- * One section as a folder card.
- *
- * The whole card is the control that opens the section — the same navigation
- * the old row carried on `setSection`. It stays a real `<button>`, so it keeps
- * button semantics (focusable, Enter/Space activation) for free rather than
- * re-implementing role/tabIndex/onKeyDown by hand. The `data-testid` the tests
- * resolve (`drive-section-<s>`) stays on that button.
- */
-function SectionCard({ section, usage, onOpen }: {
-  section: DriveSection
-  usage: DriveSectionUsage
-  onOpen: () => void
-}) {
-  const Icon = SECTION_ICON[section]
-  return (
-    <button
-      type="button"
-      onClick={onOpen}
-      className="flex flex-col gap-2 rounded-lg border border-border bg-card p-4 text-left cursor-pointer hover:bg-bg-hover hover:border-accent/40 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
-      data-testid={`drive-section-${section}`}
-    >
-      <div className="flex items-center gap-2">
-        <Icon size={16} className="shrink-0 text-accent" />
-        <span className="min-w-0 flex-1 truncate text-[14px] font-semibold text-text-strong">
-          {i18nT(SECTION_LABEL_ON_PAGE[section])}
-        </span>
-        <span className="shrink-0 font-mono text-[13px] text-text" data-testid={`drive-section-size-${section}`}>
-          {fmtBytes(usage.bytes)}
-        </span>
-      </div>
-      <p className="text-[12px] leading-snug text-muted">
-        {i18nT(SECTION_DESC_KEY[section])}
-      </p>
-      <div className="mt-auto pt-1 text-[12px] text-muted" data-testid={`drive-section-count-${section}`}>
-        {/* `count` selects the plural form; `objects` is what actually renders.
-            Passing the raw count as the visible value printed "1234 items" under
-            the header's "1,234 items" -- the same number two ways, one line
-            apart, which is the defect this card was just cleaned up for. */}
-        {i18nT('apps.awsControl.console.root_section_objects', {
-          count: usage.objects,
-          objects: fmtNumber(usage.objects),
-        })}
-      </div>
-    </button>
-  )
-}
-
-/**
  * A drive that EXISTS.
  *
  * `DriveStatus` is a union whose `exists: false` arm carries no bucket, and this
@@ -2065,117 +2168,3 @@ function SectionCard({ section, usage, onOpen }: {
  * re-checking `exists` on every read of `drive.bucket`.
  */
 export type LiveDrive = Extract<DriveStatus, { exists: true }>
-
-export default function DrivePage({ account, drive: opened, onBack }: {
-  account: AwsAccount
-  /** The drive as it was when the reader opened this page. Initial data only -
-   *  the live figure comes from the query below. */
-  drive: LiveDrive
-  onBack: () => void
-}) {
-  /**
-   * Which section is open, or null at the drive's root.
-   *
-   * The bucket's three prefixes are the drive's top level, so the root is a
-   * three-row folder listing rather than a rail or a set of tabs: one reader
-   * gesture (open a folder) covers both this level and every level below it,
-   * and the breadcrumb that returns is the same breadcrumb the file browser
-   * already builds for its own subfolders.
-   */
-  const [section, setSection] = useState<DriveSection | null>(null)
-  const id = account.account
-
-  /**
-   * Subscribe to the drive rather than render the snapshot we were handed.
-   *
-   * Every mutation on this page invalidates `['aws-control', 'drive', id]`; a
-   * frozen prop would keep showing the size and object count from the moment the
-   * page opened, so an upload or a folder delete would visibly change the
-   * listing while the header kept the old totals. The snapshot is `initialData`,
-   * so the header still paints immediately on arrival.
-   */
-  const driveQ = useQuery({
-    queryKey: ['aws-control', 'drive', id],
-    queryFn: () => awsControlApi.drive(id),
-    initialData: opened,
-  })
-  const drive = driveQ.data.exists ? driveQ.data : opened
-
-  return (
-    <div className="flex h-full flex-col">
-      <div className="px-4 pt-2 pb-3 md:px-6">
-        <button
-          onClick={section ? () => setSection(null) : onBack}
-          className="mb-1 inline-flex items-center gap-1 text-[13px] text-muted hover:text-text cursor-pointer bg-transparent border-none p-0"
-          data-testid="drive-crumb-back"
-        >
-          <ChevronLeft size={14} />
-          {/* The crumb states where the reader IS, so at the drive's root it
-              names the account then the drive, and inside a section it names the
-              drive then that section. Rendering the console's own crumb here
-              (Accounts / <account>) said nothing about having changed page. */}
-          {section ? i18nT('apps.awsControl.console.drive_title') : accountNameOf(account)}
-          {' / '}
-          <span className="text-text">
-            {section ? i18nT(SECTION_LABEL_ON_PAGE[section]) : i18nT('apps.awsControl.console.drive_title')}
-          </span>
-        </button>
-        <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-          <HardDrive size={16} className="text-accent" />
-          <span className="text-lg font-semibold text-text-strong">
-            {i18nT('apps.awsControl.console.drive_title')}
-          </span>
-          <span className="font-mono text-[13px] text-muted" data-testid="drive-bucket">{drive.bucket}</span>
-          <CopyBtn text={drive.bucket} testId="drive-copy-bucket" />
-          <span className="text-[13px] text-muted">{drive.region}</span>
-          <span className="text-[13px] text-muted" data-testid="drive-usage">
-            {/* fmtNumber, not the raw count: the meter one line below already
-                formats its own totals, so an unformatted number here rendered
-                "100000" directly above "100,000" for the same quantity. */}
-            {i18nT('apps.awsControl.console.stat_stored_value', {
-              size: fmtBytes(drive.usage.bytes),
-              objects: fmtNumber(drive.usage.objects),
-            })}
-          </span>
-        </div>
-      </div>
-
-      <div className="flex-1 overflow-y-auto px-4 pb-6 md:px-6">
-        {section === null && (
-          <>
-            {/* The storage meter: totals, plus one bar split by section. */}
-            <StorageMeter usage={drive.usage} />
-
-            {/* The bucket's three prefixes, as folder cards that state their own
-                size. A responsive auto-fill grid so the cards reflow instead of
-                stretching to a full-bleed row with a dead gap at wide widths. */}
-            <div
-              className="grid gap-3"
-              style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(258px, 1fr))' }}
-              data-testid="drive-sections"
-            >
-              {SECTIONS.map((s) => (
-                <SectionCard
-                  key={s}
-                  section={s}
-                  usage={drive.usage.sections[s]}
-                  onOpen={() => setSection(s)}
-                />
-              ))}
-            </div>
-
-            {/* The share ledger governs links into all three sections, so it
-                belongs at the drive's root rather than inside one of them. */}
-            <div className="mt-8">
-              <AccessSection account={id} />
-            </div>
-          </>
-        )}
-
-        {section === 'drive' && <DriveSectionView account={id} bucket={drive.bucket} />}
-        {section === 'library' && <LibrarySection account={id} bucket={drive.bucket} />}
-        {section === 'backup' && <BackupSection account={id} />}
-      </div>
-    </div>
-  )
-}

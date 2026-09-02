@@ -303,7 +303,7 @@ def test_get_masks_credentials_and_reports_state(tmp_path: Path, monkeypatch) ->
 
     class _State:
         feishu_connected = False
-        feishu_connect_error = 'lark-oapi is not installed — run: pip install "kirocrew[feishu]"'
+        feishu_connect_error = "lark-oapi is not installed — run: pip install 'lark-oapi>=1.4,<2'"
 
     async def _run():
         app = web.Application()
@@ -741,7 +741,10 @@ def test_get_names_this_interpreter_when_the_sdk_is_missing(monkeypatch) -> None
     assert body["sdk_installed"] is False
     assert body["sdk_install_supported"] is True
     assert sys.executable in body["sdk_install_command"]
-    assert "kirocrew[feishu]" in body["sdk_install_command"]
+    # The dependency itself, because `pip install kirocrew[feishu]` cannot
+    # resolve -- this project is published on no index.
+    assert "lark-oapi" in body["sdk_install_command"]
+    assert "kirocrew[" not in body["sdk_install_command"]
     assert "-m pip install" in body["sdk_install_command"]
 
 

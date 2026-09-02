@@ -41,7 +41,7 @@ const MASK_Z = /className="bg-gradient-to-t from-bg from-\[\d+%\] to-transparent
  *  and QueueStack's -OVERLAP fuse would surface ON TOP of the composer. */
 const COMPOSER_Z = /<div ref=\{inputAreaRef\} className="relative z-(\d+)">/.exec(CHAT_PAGE)
 /** The stack wrapper's own className, and the JSX block it encloses. */
-const STACK = /<div className="([^"]*)" data-testid="composer-status-stack">([\s\S]*?)\n {14}<\/div>/.exec(CHAT_PAGE)
+const STACK = /<div ref=\{composerBandRef\} className="([^"]*)" data-testid="composer-status-stack">([\s\S]*?)\n {14}<\/div>/.exec(CHAT_PAGE)
 
 /** Every component the stack renders, paired with the z-index its own outermost
  *  wrapper declares. Each value is read out of that component's real source. */

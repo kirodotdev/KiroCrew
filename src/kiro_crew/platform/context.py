@@ -35,6 +35,7 @@ if TYPE_CHECKING:  # avoid import cycles — config.loader imports heavy modules
         CapabilityManager,
         CredentialPolicy,
         DashboardContributor,
+        DeniedRuleProvider,
         EmbeddingSource,
         ExternalAccessPolicy,
         FeatureApp,
@@ -294,6 +295,10 @@ class PlatformContext:
     agent_catalog: "AgentCatalogProvider"
     prompt_sources: "PromptSourceProvider"
     skill_discovery: "SkillDiscoveryProvider"
+    # Edition-contributed denied-command rules the OPERATOR can switch off.
+    # Distinct from ``security`` (the un-weakenable overlay floor).
+    # v1 addition (no CONTRACT_VERSION bump).
+    denied_rules: "DeniedRuleProvider"
     import_sources: "ImportSourceProvider"
     capability_manager: "CapabilityManager"
 

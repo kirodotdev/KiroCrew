@@ -43,12 +43,15 @@ jobs:
   codex-review:
     name: GPT 5.6 Review
     runs-on: ubuntu-latest
-    # Runaway/hang backstop only, NOT a per-review budget: the two-pass review
-    # self-terminates on its own long before this. Set generously at 90 min so
-    # it never cuts a completing review the way the old 30-min wall did, while
-    # still failing the gate closed on a true hang well under GitHub's 360-min
-    # job default. Keep in sync with claude-review.yml.
-    timeout-minutes: 90
+    # Runaway/hang backstop only, NOT a per-review budget: each pass carries its
+    # own PASS_WALL and self-terminates first. This wall MUST therefore stay
+    # above the sum of the pass walls plus setup -- otherwise it, not the named
+    # pass timeout, is what kills pass 2, and the job is cancelled with no
+    # verdict and no diagnostic. 2 x 55m + ~20m of setup/posting = 130, still
+    # well under GitHub's 360-min job default. Deliberately NOT the Opus lanes'
+    # 90 min: those drive the model through `claude-code-action`, which cannot be
+    # wrapped in `timeout`, so they have no pass walls to contain.
+    timeout-minutes: 130
     # Only run on PRs from the same repo (not forks) to prevent budget abuse,
     # prompt injection via malicious diffs, and secret exfiltration attempts.
     if: github.event.pull_request.head.repo.full_name == github.repository
@@ -355,24 +358,85 @@ jobs:
           role-to-assume: ${{ secrets.AWS_CODEX_BEDROCK_ROLE_ARN }}
           aws-region: us-east-1
 
-      - name: GPT 5.6 review (discovery + falsification)
+      - name: GPT 5.6 review (discovery pass)
+        if: github.actor != 'dependabot[bot]' && steps.human_override.outputs.active != 'true'
+        env:
+          AWS_REGION: us-east-1
+          # Bounded just under the one-hour Bedrock session so a pass that runs
+          # away dies on a named timeout instead of mid-call on an expired
+          # token, which reads as a model failure and buries the real cause.
+          PASS_WALL: 55m
+        # Pass 1 generates candidates; its output is never posted or gated
+        # directly -- the falsification pass below emits the only verdict the
+        # comment and gate consume.
+        #
+        # Actions runs this `run:` with `bash -e {0}`, so `|| rc=$?` is REQUIRED
+        # to keep a failed model call visible instead of aborting before the
+        # diagnostics. A failed pass strips the reviewed marker, so the gate
+        # fails closed rather than silently degrading coverage.
+        run: |
+          set -uo pipefail
+          # `rm -f` FIRST, never a bare `: >`: this checkout is the PR's merge
+          # ref, so a PR can commit a tracked symlink at this name and `>` would
+          # follow it and truncate the target -- including
+          # .review-base-rules/AUTOSDE.yaml, materialized into this same
+          # workspace above, which would leave the review running with no
+          # blocking rules. Removing the link first makes the write land on a
+          # fresh regular file. Same reason the codex-pass-N.md writes below are
+          # already `rm -f`-ed.
+          rm -f codex-failed-passes
+          : > codex-failed-passes
+          PROMPT=$(printf '%s\n\n%s\n' "$(cat /tmp/codex-prompt.md)" \
+            "DISCOVERY PASS: inspect the full current diff and report every candidate that meets the FINDING BAR. This is candidate generation, not the final verdict.")
+
+          rm -f codex-pass-1.md
+          rc=0
+          # Called by path, not from PATH: exporting the bin directory
+          # through $GITHUB_PATH is a run-step write to an environment
+          # file, which is an execution vector in a job holding Bedrock
+          # credentials (zizmor github-env). The path is under RUNNER_TEMP
+          # because the manifest that produced it was materialized from the
+          # BASE commit, not from this checkout -- see "Install review CLI".
+          timeout "$PASS_WALL" \
+            "$RUNNER_TEMP/review-cli/node_modules/.bin/codex" exec \
+            --sandbox read-only \
+            --output-last-message "codex-pass-1.md" \
+            "$PROMPT" || rc=$?
+          if [ "$rc" -ne 0 ] || [ ! -s codex-pass-1.md ]; then
+            echo "::warning::GPT 5.6 review pass 1 did not complete (exit ${rc}); the verdict will fail closed."
+            printf ' 1' >> codex-failed-passes
+          fi
+
+      # Re-assume the role BETWEEN the passes. The action's session lasts one
+      # hour and both passes used to share it, so a discovery pass that took
+      # most of that hour left pass 2 to die mid-call on `401 Unauthorized: The
+      # security token included in the request is expired` -- the gate then
+      # failed closed with no verdict and no way to tell a real hang from a
+      # spent session. Each pass now starts on a fresh session, so PASS_WALL --
+      # not session expiry, and not the job wall above it -- is what bounds it.
+      - uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6.2.3
+        if: github.actor != 'dependabot[bot]' && steps.human_override.outputs.active != 'true'
+        with:
+          role-to-assume: ${{ secrets.AWS_CODEX_BEDROCK_ROLE_ARN }}
+          aws-region: us-east-1
+
+      - name: GPT 5.6 review (falsification pass)
         if: github.actor != 'dependabot[bot]' && steps.human_override.outputs.active != 'true'
         env:
           AWS_REGION: us-east-1
           DISCOVERY_OUTPUT_MAX_BYTES: "50000"
-        # Pass 1 generates candidates. Pass 2 tries to KILL them, then emits the
-        # only verdict the comment and gate consume. Pass 1's output is never
-        # posted or gated directly.
-        #
-        # Actions runs this `run:` with `bash -e {0}`, so `|| rc=$?` is REQUIRED
-        # to keep a failed model call visible instead of aborting before the
-        # diagnostics. Any failed pass strips the reviewed marker, so the gate
-        # fails closed rather than silently degrading coverage.
+          PASS_WALL: 55m
+        # Pass 2 tries to KILL pass 1's candidates and emits the verdict. Both
+        # calls are required: if either failed, no verdict is published and the
+        # gate fails closed.
         run: |
           set -uo pipefail
           BASE_PROMPT="$(cat /tmp/codex-prompt.md)"
+          # Same PR-controlled-symlink hazard as the discovery pass: remove
+          # before truncating so `>` cannot follow a link out of this file.
+          rm -f codex-review-output.md
           : > codex-review-output.md
-          failed_passes=""
+          failed_passes="$(cat codex-failed-passes 2>/dev/null || true)"
           review_nonce="$(openssl rand -hex 16)"
 
           truncate_utf8() {
@@ -397,45 +461,30 @@ jobs:
             fi
           }
 
-          for pass in 1 2; do
-            case "$pass" in
-              1)
-                PROMPT=$(printf '%s\n\n%s\n' "$BASE_PROMPT" \
-                  "DISCOVERY PASS: inspect the full current diff and report every candidate that meets the FINDING BAR. This is candidate generation, not the final verdict.")
-                ;;
-              2)
-                discovery_one="$(bounded_output "codex-pass-1.md")"
-                PROMPT="$(
-                  printf '%s\n\n' "$BASE_PROMPT"
-                  cat .review-prompts-gpt/gpt-falsification-mandate.md
-                  printf '%s\n' \
-                    "(3) any candidate the ROUND CONVERGENCE section forbids — a variant that a recorded ruling's rationale equally covers is at most an advisory FINDING, while an independent same-class defect at a site the ruling never addressed is judged normally."
-                  cat .review-prompts-gpt/gpt-falsification-verdict.md
-                  printf '%s\n' \
-                    "DISCOVERY_1_BEGIN::${review_nonce}" \
-                    "$discovery_one" \
-                    "DISCOVERY_1_END::${review_nonce}"
-                )"
-                ;;
-            esac
+          discovery_one="$(bounded_output "codex-pass-1.md")"
+          PROMPT="$(
+            printf '%s\n\n' "$BASE_PROMPT"
+            cat .review-prompts-gpt/gpt-falsification-mandate.md
+            printf '%s\n' \
+              "(3) any candidate the ROUND CONVERGENCE section forbids — a variant that a recorded ruling's rationale equally covers is at most an advisory FINDING, while an independent same-class defect at a site the ruling never addressed is judged normally."
+            cat .review-prompts-gpt/gpt-falsification-verdict.md
+            printf '%s\n' \
+              "DISCOVERY_1_BEGIN::${review_nonce}" \
+              "$discovery_one" \
+              "DISCOVERY_1_END::${review_nonce}"
+          )"
 
-            rm -f "codex-pass-${pass}.md"
-            rc=0
-            # Called by path, not from PATH: exporting the bin directory
-            # through $GITHUB_PATH is a run-step write to an environment
-            # file, which is an execution vector in a job holding Bedrock
-            # credentials (zizmor github-env). The path is under RUNNER_TEMP
-            # because the manifest that produced it was materialized from the
-            # BASE commit, not from this checkout -- see "Install review CLI".
+          rm -f codex-pass-2.md
+          rc=0
+          timeout "$PASS_WALL" \
             "$RUNNER_TEMP/review-cli/node_modules/.bin/codex" exec \
-              --sandbox read-only \
-              --output-last-message "codex-pass-${pass}.md" \
-              "$PROMPT" || rc=$?
-            if [ "$rc" -ne 0 ] || [ ! -s "codex-pass-${pass}.md" ]; then
-              echo "::warning::GPT 5.6 review pass ${pass} did not complete (exit ${rc}); the verdict will fail closed."
-              failed_passes="${failed_passes} ${pass}"
-            fi
-          done
+            --sandbox read-only \
+            --output-last-message "codex-pass-2.md" \
+            "$PROMPT" || rc=$?
+          if [ "$rc" -ne 0 ] || [ ! -s codex-pass-2.md ]; then
+            echo "::warning::GPT 5.6 review pass 2 did not complete (exit ${rc}); the verdict will fail closed."
+            failed_passes="${failed_passes} 2"
+          fi
 
           if [ -n "$failed_passes" ]; then
             {

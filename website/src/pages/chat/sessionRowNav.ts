@@ -20,10 +20,12 @@ export const SESSION_ROW_SELECTOR = '[data-session-row]'
  * Every row rendered in the same scope as `row`, in DOM order, minus the ones
  * that cannot take focus.
  *
- * A collapsed folder still renders its rows — `FolderBody` hides them with
- * `inert` + `visibility: hidden` rather than unmounting, so the collapse can
- * animate to intrinsic height. Those rows are unfocusable, so leaving them in
- * would stall the rove on an invisible row instead of carrying on to the next
+ * A collapsed folder still renders its rows — `FolderBody` keeps them mounted
+ * and suppresses them with `inert` + `visibility: hidden` (and, once the
+ * collapse has finished animating, `content-visibility: hidden`) rather than
+ * unmounting, so the collapse can animate to intrinsic height and the settled
+ * state reserves no scroll height. Those rows are unfocusable, so leaving them
+ * in would stall the rove on an invisible row instead of carrying on to the next
  * visible session. `row` itself is always kept so the caller's `indexOf` holds.
  */
 export function sessionRowsInScope(row: HTMLElement): HTMLElement[] {

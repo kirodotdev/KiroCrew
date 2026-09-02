@@ -44,11 +44,39 @@ def _now() -> dt.datetime:
 
 
 def _load() -> list[dict[str, Any]]:
+    """Every recorded share, or ``[]`` when there is nothing readable.
+
+    A DISPLAY read: :func:`list_shares` must render on a store it could not
+    load rather than failing the Access section. See :func:`_load_for_update`
+    for why a mutation may not stand on the same answer.
+    """
     try:
         data = json.loads(_store_path().read_text(encoding="utf-8"))
         return data if isinstance(data, list) else []
     except (FileNotFoundError, OSError, json.JSONDecodeError):
         return []
+
+
+def _load_for_update() -> list[dict[str, Any]]:
+    """The ledger a read-modify-write is allowed to publish over.
+
+    Both mutations below rewrite the WHOLE file from what they read, so an
+    empty base is not "nothing to carry forward" -- it is "forget every share
+    already recorded". Only a missing file makes that true. An unreadable one
+    (a transient EACCES/EIO, a scanner holding the handle on Windows) is a
+    ledger we still have, and this one is the only local record of live
+    PRESIGNED URLs: they are bearer grants that cannot be revoked, so a
+    truncated ledger under-reports access that is still working. The error
+    propagates and the mutation is abandoned instead.
+
+    A corrupt document keeps reading as empty, matching the display read: it
+    parsed to nothing usable, so there is nothing to lose by replacing it.
+    """
+    try:
+        data = json.loads(_store_path().read_text(encoding="utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError):
+        return []
+    return data if isinstance(data, list) else []
 
 
 def _save(entries: list[dict[str, Any]]) -> None:
@@ -90,7 +118,7 @@ def record_share(
     _store_path().parent.mkdir(parents=True, exist_ok=True)
     with open(lock_path, "w") as fd:
         with file_lock(fd.fileno(), exclusive=True, required=True):
-            entries = _prune(_load())
+            entries = _prune(_load_for_update())
             entries.append(entry)
             _save(entries[-_MAX_SHARES:])
     return entry
@@ -110,7 +138,7 @@ def forget_share(share_id: str) -> Optional[dict[str, Any]]:
     _store_path().parent.mkdir(parents=True, exist_ok=True)
     with open(lock_path, "w") as fd:
         with file_lock(fd.fileno(), exclusive=True, required=True):
-            entries = _prune(_load())
+            entries = _prune(_load_for_update())
             kept = [e for e in entries if e.get("id") != share_id]
             removed = next((e for e in entries if e.get("id") == share_id), None)
             _save(kept)

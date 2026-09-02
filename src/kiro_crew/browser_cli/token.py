@@ -25,13 +25,10 @@ cloud credential and grants nothing off-host.
 
 from __future__ import annotations
 
-import logging
 from pathlib import Path
 
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.paths import config_dir
-
-logger = logging.getLogger(__name__)
 
 #: The variable `playwright-cli` reads. Its name is fixed by the CLI, not by us.
 TOKEN_ENV = "PLAYWRIGHT_MCP_EXTENSION_TOKEN"
@@ -143,13 +140,16 @@ def set_token(value: str) -> None:
 
 
 def clear_token() -> None:
-    """Remove the token. Absent is the default state, so this cannot fail loudly."""
+    """Remove the token, ignoring only the already-absent state.
+
+    Other failures propagate to the caller. Reporting a successful clear while
+    the credential remains on disk would also leave it active in new browser
+    processes, which is worse than making the storage failure visible.
+    """
     try:
         token_path().unlink()
     except FileNotFoundError:
         return
-    except OSError:
-        logger.debug("could not remove the extension token", exc_info=True)
 
 
 def cli_env_overrides() -> dict[str, str]:

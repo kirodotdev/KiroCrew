@@ -526,6 +526,11 @@ class KnowledgeWatcher:
 
     async def _run_reembed_job(self, embedder, job_id: str) -> None:
         try:
+            # Paced (the default) on purpose: nobody is waiting on a self-heal
+            # sweep, so it embeds at the bulk scheduling class on the reduced
+            # thread pool and idles between rows instead of pinning cores for
+            # the whole corpus. The dashboard-triggered rebuild, which a human
+            # watches, is the path that opts out with pace=False.
             processed = await rebuild_embeddings(self.store, embedder, job_id=job_id)
             # OFFLOADED: single-row write, but a commit can block up to the
             # busy_timeout behind a concurrent writer — keep it off the loop.

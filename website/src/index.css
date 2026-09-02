@@ -1321,8 +1321,16 @@ html:lang(ko) {
   .bg-accent::selection{background:rgba(255,255,255,.25);color:white}
   ::-webkit-scrollbar{width:6px;height:6px}
   ::-webkit-scrollbar-track{background:transparent}
-  ::-webkit-scrollbar-thumb{background:var(--border);border-radius:9999px}
-  ::-webkit-scrollbar-thumb:hover{background:var(--border-strong)}
+  /* --muted, not a --border rung: this thumb is the global scroll affordance for
+     every scroll box that carries neither .scroll-fade nor .scrollbar-overlay,
+     including on touch, where there is no hover to fall back on. It must clear
+     the WCAG 1.4.11 3:1 non-text floor against the surface it scrolls over, and
+     no border rung does in any theme but highcontrast. The grab rung is --text
+     because it has to stay legible AND read as stronger: --muted-strong is below
+     the floor in 9 themes and is not even lighter than --muted in 22 of them.
+     scrollbarThumbContrast.test.ts measures both rungs per theme. */
+  ::-webkit-scrollbar-thumb{background:var(--muted);border-radius:9999px}
+  ::-webkit-scrollbar-thumb:hover{background:var(--text)}
 }
 
 /* ── Ambient background ── */
@@ -1589,7 +1597,7 @@ file-tree-container{
   --trees-search-fg-override:var(--text);
   --trees-input-bg-override:var(--bg-elevated);
   --trees-indent-guide-bg-override:var(--border);
-  --trees-scrollbar-thumb-override:var(--border-strong);
+  --trees-scrollbar-thumb-override:var(--muted);
   --trees-font-family-override:var(--font-body);
   --trees-font-size-override:12.5px;
   --trees-padding-inline-override:0px;
@@ -1621,9 +1629,9 @@ file-tree-container{
 /* ── Auto-hiding scrollbar for code/diff blocks ── */
 .scroll-fade::-webkit-scrollbar{height:6px}
 .scroll-fade::-webkit-scrollbar-thumb{background:transparent;border-radius:3px;transition:background .2s}
-.scroll-fade:hover::-webkit-scrollbar-thumb{background:var(--border)}
+.scroll-fade:hover::-webkit-scrollbar-thumb{background:var(--muted)}
 .scroll-fade{scrollbar-width:thin;scrollbar-color:transparent transparent}
-.scroll-fade:hover{scrollbar-color:var(--border) transparent}
+.scroll-fade:hover{scrollbar-color:var(--muted) transparent}
 /* Same defect, same remedy as the overlay utility below: a finger never produces
    the :hover that reveals the thumb, so a code block wide enough to scroll shows
    no cue that it does. Predicate and token deliberately match that block rather
@@ -1642,24 +1650,25 @@ file-tree-container{
  * On WebKit the scrollbar is laid over the padding box (overlay); on
  * Firefox ``scrollbar-width:thin`` + transparent track approximates it. */
 .scrollbar-overlay{scrollbar-width:thin;scrollbar-color:transparent transparent}
-.scrollbar-overlay:hover{scrollbar-color:var(--border) transparent}
+.scrollbar-overlay:hover{scrollbar-color:var(--muted) transparent}
 .scrollbar-overlay::-webkit-scrollbar{width:6px}
 .scrollbar-overlay::-webkit-scrollbar-track{background:transparent}
 .scrollbar-overlay::-webkit-scrollbar-thumb{background:transparent;border-radius:9999px;transition:background .2s}
-.scrollbar-overlay:hover::-webkit-scrollbar-thumb{background:var(--border)}
-.scrollbar-overlay:hover::-webkit-scrollbar-thumb:hover{background:var(--border-strong)}
+.scrollbar-overlay:hover::-webkit-scrollbar-thumb{background:var(--muted)}
+.scrollbar-overlay:hover::-webkit-scrollbar-thumb:hover{background:var(--text)}
 /* On touch the overlay utility would stay perpetually transparent: a finger never
    produces the :hover that restores the thumb. A coarse pointer shows a persistent
    thin thumb instead, so a capped scroll surface keeps a real affordance. Fine
    pointers keep the hidden-until-hover behaviour so a scrollable box does not
    always carry the global always-visible thumb.
-   The token is --muted, NOT the hover reveal's --border: as a filled thumb this is
-   the sole scroll affordance on touch, so it must clear the WCAG 1.4.11 3:1
-   non-text-contrast floor against --bg-elevated in every theme, and --muted is the
-   only existing token that does (--border and both stronger border rungs sit below
-   the floor in nearly every theme). The :hover thumb keeps --border on purpose:
-   hover implies a pointer already engaged with the box, a separate decision from
-   this one. scrollbarThumbContrast.test.ts pins the floor per theme. */
+   One token, --muted, across this branch and the hover reveal above it. It was
+   chosen here first, as the sole scroll affordance on touch, for clearing the
+   WCAG 1.4.11 3:1 non-text-contrast floor against --bg-elevated in every theme
+   where no border rung does. The hover reveal then kept --border for one release
+   on the argument that hover implies a pointer already engaged with the box; that
+   argument was a product judgement, not a conformance one, and 1.4.11 grants
+   hover no exemption, so both rungs now name the same measured token.
+   scrollbarThumbContrast.test.ts pins the floor per theme. */
 @media (pointer: coarse) {
   .scrollbar-overlay{scrollbar-color:var(--muted) transparent}
   .scrollbar-overlay::-webkit-scrollbar-thumb{background:var(--muted)}

@@ -376,12 +376,26 @@ describe('McpTab needs_auth status', () => {
     ).toBeInTheDocument()
   })
 
-  it('leaves every other status without a hover explanation', async () => {
+  it('explains that Online is a host check, and leaves the rest without a hover explanation', async () => {
+    // "Online" is the gateway's own probe result and reads as a stronger claim
+    // than it is — it says nothing about whether a given chat session mounted
+    // the server — so it carries the caveat two words cannot. The other statuses
+    // still get none: this stays a named exception rather than blanket hints.
     mockApi.mcpServers.mockResolvedValue([remote('ok')])
     renderTab()
 
     const badge = await screen.findByText('Online')
-    expect(badge).not.toHaveAttribute('title')
+    expect(badge).toHaveAttribute('title', expect.stringContaining('gateway started this server'))
+
+    for (const status of ['error', 'outdated', 'disabled'] as const) {
+      mockApi.mcpServers.mockResolvedValue([remote(status)])
+      const { unmount } = renderTab()
+      const other = await screen.findByText(
+        status === 'error' ? 'Error' : status === 'outdated' ? 'Outdated' : 'Disabled',
+      )
+      expect(other).not.toHaveAttribute('title')
+      unmount()
+    }
   })
 
   it('still renders a real failure as an error badge with its message', async () => {

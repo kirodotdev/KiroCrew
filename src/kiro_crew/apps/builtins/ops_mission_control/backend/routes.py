@@ -1499,6 +1499,52 @@ async def _handle_put_provider_config(request: web.Request) -> web.StreamRespons
     return web.json_response({"ok": True, "provider": provider_id, "config": saved})
 
 
+async def _settings_write_or_refuse(
+    fn: Any,
+    *args: Any,
+    code: str,
+    applied: dict[str, Any],
+    **kwargs: Any,
+) -> web.Response | None:
+    """Run one settings write off-loop. ``None`` on success, else the 503 to return.
+
+    The keystone policy store refuses rather than publishing over a read it could not
+    make, so any write reaching it can raise ``OSError``. Letting one escape gives
+    aiohttp's default 500 -- a plain-text body with no ``code``, which the repo requires
+    on an error response. On this route the ambiguity is the security-relevant part:
+    ``mode`` and ``autonomy_rules`` ARE the authorization ceiling, so "did my change
+    land?" is exactly the question the operator cannot be left guessing about. 503 rather
+    than 500 because the condition is transient and retrying is correct.
+
+    Accepts ``**kwargs`` so the one write here that takes keyword arguments
+    (``policy_store.set_ceiling``, which must stay a single call to commit ``mode`` and
+    ``autonomy_rules`` under one lock) goes through this same path rather than being
+    spelled out a second time beside it.
+
+    NOT every store behind this handler has that guarantee yet. ``set_top_level`` writes
+    the app config, whose read still collapses a failure to ``{}`` -- so on a transient
+    ``config.json`` read failure it truncates the file and returns 200 without this
+    helper ever seeing an ``OSError``. The strict read that closes it is in the companion
+    PR for ``providers/__init__.py``; the ``app_config_unwritable`` code here covers only
+    the write-side failure that store can already raise today. Do not read this helper as
+    proof of coverage it does not have.
+
+    The refusal reports ``applied`` to the AUDIT LOG rather than in the response body.
+    Phase 2 is a SEQUENCE of writes, so an earlier one may already have committed and a
+    partial ceiling apply is a security state worth recording -- but the dashboard's own
+    ``req`` helper reads only ``error`` from a non-2xx body and discards the rest, so a
+    field there would have had no reader. The audit line has one, and it mirrors the
+    ``settings_put`` line the success path already writes.
+    """
+    try:
+        await asyncio.to_thread(fn, *args, **kwargs)
+    except OSError as exc:
+        logger.warning("ops-mission-control: settings write refused (%s)", code)
+        _audit("settings_put", f"refused after {sorted(applied)}", "failure")
+        return web.json_response({"ok": False, "error": str(exc), "code": code}, status=503)
+    return None
+
+
 async def _handle_put_settings(request: web.Request) -> web.StreamResponse:
     """Update app-level settings: autonomy mode, primary flag, cycle tuning.
 
@@ -1763,18 +1809,48 @@ async def _handle_put_settings(request: web.Request) -> web.StreamResponse:
     # Slack output. A channel ID is not a credential, so it belongs here rather
     # than in the secret store — and this app stores no Slack token at all, it
     # reuses Kiro Crew's own client (see slack_out for why).
+    #
+    # These three go through the refusal helper even though they do not name
+    # `policy_store` here: `slack_out.set_settings` and `ledger_sync.set_settings` reach
+    # `policy_store.put` INTERNALLY (their keys are operator-only, so they must), and
+    # `notify_out.set_settings` reaches `set_top_level`. Guarding only the call sites that
+    # spell `policy_store` left these three to answer a refused keystone write with a
+    # plain 500 — the destination keys are exactly the ones an agent must not be able to
+    # redirect, so they are the last place to leave the operator guessing whether their
+    # change landed. Found in review (GPT 5.6).
     if slack_enabled is not None:
-        await asyncio.to_thread(slack_out.set_settings, enabled=slack_enabled)
+        refused = await _settings_write_or_refuse(
+            slack_out.set_settings,
+            code="policy_store_unwritable",
+            applied=applied,
+            enabled=slack_enabled,
+        )
+        if refused is not None:
+            return refused
         applied["slack_enabled"] = slack_enabled
 
     if slack_channel is not None:
-        await asyncio.to_thread(slack_out.set_settings, channel_id=slack_channel)
+        refused = await _settings_write_or_refuse(
+            slack_out.set_settings,
+            code="policy_store_unwritable",
+            applied=applied,
+            channel_id=slack_channel,
+        )
+        if refused is not None:
+            return refused
         applied["slack_channel"] = slack_channel
 
     # Local desktop notifications. Nothing to configure beyond on/off — there is no
     # destination and no credential, which is the whole point of this channel.
     if notify_enabled is not None:
-        await asyncio.to_thread(notify_out.set_settings, enabled=notify_enabled)
+        refused = await _settings_write_or_refuse(
+            notify_out.set_settings,
+            code="app_config_unwritable",
+            applied=applied,
+            enabled=notify_enabled,
+        )
+        if refused is not None:
+            return refused
         applied["notify_enabled"] = notify_enabled
 
     if wants_sync:
@@ -1782,12 +1858,16 @@ async def _handle_put_settings(request: web.Request) -> web.StreamResponse:
         # the git/sandbox machinery, and this module is imported at gateway start.
         from kiro_crew.apps.builtins.ops_mission_control.backend import ledger_sync
 
-        await asyncio.to_thread(
+        refused = await _settings_write_or_refuse(
             ledger_sync.set_settings,
+            code="policy_store_unwritable",
+            applied=applied,
             enabled=sync_enabled,
             remote_url=remote_url,
             branch_name=branch_name,
         )
+        if refused is not None:
+            return refused
         for sync_key, sync_value in (
             ("ledger_sync_remote", remote_url),
             ("ledger_sync_branch", branch_name),
@@ -1797,14 +1877,26 @@ async def _handle_put_settings(request: web.Request) -> web.StreamResponse:
                 applied[sync_key] = sync_value
 
     for numeric_key, numeric_value in numerics.items():
-        await asyncio.to_thread(set_top_level, numeric_key, numeric_value)
+        refused = await _settings_write_or_refuse(
+            set_top_level, numeric_key, numeric_value, code="app_config_unwritable", applied=applied
+        )
+        if refused is not None:
+            return refused
         applied[numeric_key] = numeric_value
 
     # The authorization inputs go to the keystone store, not `set_top_level` (which writes
     # the agent-writable config.json): they ARE the security ceiling, and this authenticated PUT
     # is their sole writer. See `policy_store`.
     if primary is not None:
-        await asyncio.to_thread(policy_store.put, policy_store.PRIMARY_KEY, primary)
+        refused = await _settings_write_or_refuse(
+            policy_store.put,
+            policy_store.PRIMARY_KEY,
+            primary,
+            code="policy_store_unwritable",
+            applied=applied,
+        )
+        if refused is not None:
+            return refused
         applied["primary_instance"] = primary
     # ONE call for both halves, so they commit under ONE lock acquisition. `mode` and
     # `autonomy_rules` are a single authorization decision (`effective = min(app_mode,
@@ -1814,7 +1906,15 @@ async def _handle_put_settings(request: web.Request) -> web.StreamResponse:
     # cannot close that window, because the interleaving comes from another request rather
     # than from ordering inside this one. Found in review (GPT 5.6).
     if mode is not None or rules is not None:
-        await asyncio.to_thread(policy_store.set_ceiling, mode=mode, rules=rules)
+        refused = await _settings_write_or_refuse(
+            policy_store.set_ceiling,
+            code="policy_store_unwritable",
+            applied=applied,
+            mode=mode,
+            rules=rules,
+        )
+        if refused is not None:
+            return refused
         if mode is not None:
             applied["mode"] = mode
         if rules is not None:
@@ -1822,16 +1922,40 @@ async def _handle_put_settings(request: web.Request) -> web.StreamResponse:
     if login is not None:
         from kiro_crew.apps.builtins.ops_mission_control.backend.providers import schedule_file
 
-        await asyncio.to_thread(policy_store.put, policy_store.SCHEDULE_LOGIN_KEY, login)
+        refused = await _settings_write_or_refuse(
+            policy_store.put,
+            policy_store.SCHEDULE_LOGIN_KEY,
+            login,
+            code="policy_store_unwritable",
+            applied=applied,
+        )
+        if refused is not None:
+            return refused
         # A changed identity invalidates the cached `gh` answer, which is only a fallback for
         # an unset login — leaving it would keep answering with the previous operator.
         await asyncio.to_thread(schedule_file.reset_login_cache)
         applied["schedule_github_login"] = login
     if strict is not None:
-        await asyncio.to_thread(policy_store.put, policy_store.SCHEDULE_STRICT_KEY, strict)
+        refused = await _settings_write_or_refuse(
+            policy_store.put,
+            policy_store.SCHEDULE_STRICT_KEY,
+            strict,
+            code="policy_store_unwritable",
+            applied=applied,
+        )
+        if refused is not None:
+            return refused
         applied["schedule_strict_gating"] = strict
     if pd_user is not None:
-        await asyncio.to_thread(policy_store.put, policy_store.PAGERDUTY_USER_KEY, pd_user)
+        refused = await _settings_write_or_refuse(
+            policy_store.put,
+            policy_store.PAGERDUTY_USER_KEY,
+            pd_user,
+            code="policy_store_unwritable",
+            applied=applied,
+        )
+        if refused is not None:
+            return refused
         applied["pagerduty_user_id"] = pd_user
 
     _audit("settings_put", f"{sorted(applied)}", "success")
@@ -1879,7 +2003,20 @@ async def _handle_put_secret(request: web.Request) -> web.StreamResponse:
             status=400,
         )
 
-    await asyncio.to_thread(put_secret, provider_id, field_name, value)
+    try:
+        await asyncio.to_thread(put_secret, provider_id, field_name, value)
+    except OSError as exc:
+        # Reported, not raised — the same shape ``_handle_rotation_arm`` uses for a
+        # refusing cron store, and for the same reason its comment gives: escaping
+        # here becomes aiohttp's default 500, a plain-text body with no ``code`` for
+        # the UI to branch on. On THIS route the ambiguity is the security-relevant
+        # part: the operator cannot tell whether the credential they just typed is
+        # now stored. 503 rather than 500 because the condition is transient and
+        # retrying is the correct client behaviour.
+        logger.warning("ops-mission-control: secret save refused, store unwritable")
+        return web.json_response(
+            {"ok": False, "error": str(exc), "code": "secret_store_unwritable"}, status=503
+        )
     return web.json_response({"ok": True, "provider": provider_id, "field": field_name})
 
 
@@ -1889,7 +2026,18 @@ async def _handle_delete_secret(request: web.Request) -> web.StreamResponse:
         return web.json_response(
             {"error": "provider_id is required", "code": "missing_required_field"}, status=400
         )
-    removed = await asyncio.to_thread(delete_secret, provider_id)
+    try:
+        removed = await asyncio.to_thread(delete_secret, provider_id)
+    except OSError as exc:
+        # The revocation route needs this MORE than the save route. Its whole purpose
+        # is to let an operator stop trusting a credential, and the failure this
+        # replaces is the one where they were told the token was already gone. A
+        # coded refusal is the only answer that leaves them correctly believing the
+        # token is still live.
+        logger.warning("ops-mission-control: secret revocation refused, store unwritable")
+        return web.json_response(
+            {"ok": False, "error": str(exc), "code": "secret_store_unwritable"}, status=503
+        )
     return web.json_response({"ok": True, "removed": removed})
 
 

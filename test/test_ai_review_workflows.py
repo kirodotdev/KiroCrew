@@ -289,9 +289,12 @@ class TestPrReadiness:
 
         # The three-pass recall ratchet was replaced by discovery + an
         # authoritative FALSIFICATION pass whose primary job is to KILL
-        # candidates, not extend them.
-        assert "GPT 5.6 review (discovery + falsification)" in workflow
-        assert "for pass in 1 2; do" in workflow
+        # candidates, not extend them. The two passes are separate STEPS so a
+        # fresh Bedrock session can be minted between them.
+        assert "- name: GPT 5.6 review (discovery pass)" in workflow
+        assert "- name: GPT 5.6 review (falsification pass)" in workflow
+        assert workflow.index("(discovery pass)") < workflow.index("(falsification pass)")
+        assert "for pass in 1 2; do" not in workflow
         assert "for pass in 1 2 3; do" not in workflow
         # The falsification mandate lives in the shared prompt file (#5852);
         # the workflow splices it in by reference.
@@ -382,13 +385,18 @@ class TestPrReadiness:
 
     def test_gpt_review_uses_only_falsification_pass_for_comment_and_gate(self) -> None:
         workflow = _workflow("codex-review.yml")
+        discovery_step = workflow[
+            workflow.index("- name: GPT 5.6 review (discovery pass)") : workflow.index(
+                "- name: GPT 5.6 review (falsification pass)"
+            )
+        ]
         review_step = workflow[
-            workflow.index("- name: GPT 5.6 review (discovery + falsification)") : workflow.index(
+            workflow.index("- name: GPT 5.6 review (falsification pass)") : workflow.index(
                 "- name: Redact credential shapes from review output"
             )
         ]
 
-        assert "DISCOVERY PASS" in review_step
+        assert "DISCOVERY PASS" in discovery_step
         assert "cat .review-prompts-gpt/gpt-falsification-mandate.md" in review_step
         assert "cat .review-prompts-gpt/gpt-falsification-verdict.md" in review_step
         assert "DISCOVERY_OUTPUT_MAX_BYTES:" in review_step
@@ -396,6 +404,86 @@ class TestPrReadiness:
         # Pass 2 (falsification) is the only verdict consumed downstream.
         assert "cp codex-pass-2.md codex-review-output.md" in review_step
         assert 'cat "codex-pass-3.md"' not in review_step
+        # A pass-1 failure recorded in the earlier step must still reach the
+        # verdict assembly, or a half-completed review would publish a clean
+        # pass-2 verdict and pass the gate.
+        assert "printf ' 1' >> codex-failed-passes" in discovery_step
+        assert 'failed_passes="$(cat codex-failed-passes 2>/dev/null || true)"' in review_step
+
+    def test_each_model_call_starts_on_a_fresh_bedrock_session(self) -> None:
+        """One AssumeRole session lasts an hour; both model calls used to share
+        it, so a first call that consumed most of the hour left the second to
+        die on `401 ... security token ... expired` and fail the gate closed
+        with no verdict. Every lane whose job timeout exceeds the session
+        lifetime must re-assume between its two calls, and each call must be
+        wall-bounded under that lifetime where the lane drives the CLI itself.
+        """
+        lanes = {
+            "codex-review.yml": "GPT 5.6 review (falsification pass)",
+            "claude-review.yml": "Opus 4.8 validation",
+            "fork-gpt-review.yml": "GPT 5.6 review (falsification pass)",
+            "fork-opus-review.yml": "Opus 4.8 validation",
+        }
+        for name, second_call in lanes.items():
+            doc = yaml.safe_load((WORKFLOWS / name).read_text(encoding="utf-8"))
+            steps = list(doc["jobs"].values())[0]["steps"]
+            creds = [
+                i
+                for i, step in enumerate(steps)
+                if "configure-aws-credentials" in (step.get("uses") or "")
+            ]
+            second = next(i for i, step in enumerate(steps) if step.get("name") == second_call)
+            assert len(creds) == 2, f"{name}: expected a re-assume before {second_call}"
+            assert creds[0] < creds[1] < second, (
+                f"{name}: the second credential assume must sit between the two "
+                f"model calls, not before both"
+            )
+
+        for name in ("codex-review.yml", "fork-gpt-review.yml"):
+            workflow = _workflow(name)
+            assert "PASS_WALL: 55m" in workflow
+            assert workflow.count('timeout "$PASS_WALL" \\') == 2
+
+    def test_no_workspace_write_can_follow_a_pr_planted_symlink(self) -> None:
+        """`: > name` follows a symlink and truncates its TARGET. These lanes
+        check out the PR's merge ref and materialize the base-ref AUTOSDE rules
+        into that same workspace, so a PR committing a tracked symlink at one of
+        these names could erase the rules that judge it and then be reviewed
+        with no blocking rules. Every such write must `rm -f` the name first.
+        """
+        for name in ("codex-review.yml", "fork-gpt-review.yml"):
+            lines = _workflow(name).splitlines()
+            for i, line in enumerate(lines):
+                # Only bare relative targets are workspace paths; a quoted or
+                # $RUNNER_TEMP target is not PR-controlled.
+                m = re.match(r"^\s*: > (?P<path>[\w.-]+)$", line)
+                if m is None:
+                    continue
+                target = m.group("path")
+                assert re.match(rf"^\s*rm -f {re.escape(target)}$", lines[i - 1]), (
+                    f"{name}:{i + 1}: `: > {target}` must be preceded by "
+                    f"`rm -f {target}`, or a PR-planted symlink redirects the write"
+                )
+
+    def test_gpt_pass_walls_fit_inside_the_job_wall(self) -> None:
+        """A pass wall only buys a named timeout if the job wall outlasts it. Two
+        55m passes under a 90m job meant the job wall killed pass 2 first --
+        cancelling the run with no verdict and none of the diagnostic the pass
+        wall exists to produce. The sum of the walls plus setup must fit.
+        """
+        setup_headroom = 15
+        for name in ("codex-review.yml", "fork-gpt-review.yml"):
+            workflow = _workflow(name)
+            walls = [int(m) for m in re.findall(r"^\s*PASS_WALL: (\d+)m$", workflow, re.M)]
+            job_wall = list(
+                yaml.safe_load(workflow)["jobs"].values(),
+            )[0]["timeout-minutes"]
+            assert len(walls) == 2, f"{name}: expected one PASS_WALL per model call"
+            assert sum(walls) + setup_headroom <= job_wall, (
+                f"{name}: pass walls {walls} sum to {sum(walls)}m, which leaves "
+                f"under {setup_headroom}m of the {job_wall}m job wall for setup "
+                f"-- the job wall would cut pass 2 before its own timeout fires"
+            )
 
     def test_utf8_byte_bounds_tolerate_a_split_multibyte_character(self, tmp_path: Path) -> None:
         bash = _bash()
@@ -406,7 +494,7 @@ class TestPrReadiness:
         source = tmp_path / "source.md"
         source.write_bytes("AéB".encode())
 
-        for step_name in ("GPT 5.6 review (discovery + falsification)",):
+        for step_name in ("GPT 5.6 review (falsification pass)",):
             script = _step_script(workflow, step_name)
             function = _shell_function(script, "truncate_utf8")
             result = subprocess.run(

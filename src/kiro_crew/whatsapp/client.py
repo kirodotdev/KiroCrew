@@ -29,6 +29,7 @@ from io import BytesIO
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
+from kiro_crew import extras
 from kiro_crew.messaging.raster import SNIFF_BYTES, sniff_raster_mime
 from kiro_crew.platform_compat import make_owner_only_dir, restrict_to_owner
 from kiro_crew.whatsapp.jids import OwnIdentity, jid_to_str
@@ -36,7 +37,7 @@ from kiro_crew.whatsapp.jids import OwnIdentity, jid_to_str
 logger = logging.getLogger(__name__)
 
 MISSING_EXTRA_HINT = (
-    "The WhatsApp channel needs the optional dependency extra: " "pip install 'kirocrew[whatsapp]'"
+    f"The WhatsApp channel needs its optional dependency: {extras.install_hint('whatsapp')}"
 )
 
 STATE_UNPAIRED = "unpaired"

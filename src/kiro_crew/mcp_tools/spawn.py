@@ -544,7 +544,9 @@ def spawn_run(name: str, args: dict[str, Any]) -> str:
     inc_lessons = args.get("include_lessons", True) is not False
     inc_project = args.get("include_project", True) is not False
     if agents_list and len(agents_list) != len(task_list):
-        return f"Error: agents length ({len(agents_list)}) must match tasks length ({len(task_list)})"
+        return (
+            f"Error: agents length ({len(agents_list)}) must match tasks length ({len(task_list)})"
+        )
 
     agent_ids: list[str] = []
     agent_names: list[str] = []
@@ -739,8 +741,7 @@ def spawn_run(name: str, args: dict[str, Any]) -> str:
             )
         else:
             spawn_lines.append(
-                f"Error: acceptance status is unknown for "
-                f"{len(transport_errors)} task(s):"
+                f"Error: acceptance status is unknown for " f"{len(transport_errors)} task(s):"
             )
         for e in transport_errors:
             spawn_lines.append(f"  - {e}")
@@ -843,7 +844,17 @@ def spawn_list(name: str, args: dict[str, Any]) -> str:
         lines.append("No subagents running.")
     else:
         for a in agents:
-            status = "done" if a.get("done") else "running"
+            # A run parked on an unanswered spawn-approval prompt has launched
+            # no process and produced no turn, so reporting it as "running" is
+            # actively misleading to a caller this module itself points here
+            # ("Check spawn_list", above) -- it reads as work in progress when
+            # the truth is that a human has not approved it yet (#6484).
+            if a.get("done"):
+                status = "done"
+            elif a.get("awaiting_approval"):
+                status = "awaiting-approval"
+            else:
+                status = "running"
             err = f" error: {_redact(a['error'])}" if a.get("error") else ""
             progress = ""
             if not a.get("done"):
@@ -858,9 +869,7 @@ def spawn_list(name: str, args: dict[str, Any]) -> str:
                 progress = f" ({', '.join(parts)})"
             _withheld = a.get("context_withheld") or []
             scope = f"  ctx-withheld: {','.join(_withheld)}" if _withheld else ""
-            lines.append(
-                f"{a['id']}  [{status}]{err}{progress}{scope}  {_redact(a['task'])[:60]}"
-            )
+            lines.append(f"{a['id']}  [{status}]{err}{progress}{scope}  {_redact(a['task'])[:60]}")
     # Always append available agents (fresh read from disk). Same grammar filter and
     # redaction as the two rosters above, via the shared helper: this output is a
     # tool RESULT, so it lands in the same model context, and a spec's ``name``

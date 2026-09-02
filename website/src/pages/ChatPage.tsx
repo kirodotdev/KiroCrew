@@ -361,6 +361,14 @@ export function ChatHeaderMenu({ activeSlot, agent, onReveal, onRename, mode }: 
   )
   const sessionMessages = useAppSelector(s => s.chat.messages)
   const loadedTools = useMemo(() => deriveLoadedMcpTools(sessionMessages), [sessionMessages])
+  // What this slot's session actually reported about its MCP servers. Pushed by
+  // the gateway onto the same `slots` array the snapshot rehydrates, so it needs
+  // no query of its own — and unlike the ['mcp-servers'] query above it is keyed
+  // by SLOT, which is the whole point: that query answers a question about the
+  // agent's configuration and this answers one about this session.
+  const sessionReport = useAppSelector(
+    s => (activeSlot ? s.dashboard.slots?.find(sl => sl.key === activeSlot)?.mcp_report : null) ?? null,
+  )
 
   return (
     <DropdownMenu open={open} onOpenChange={setOpen}>
@@ -391,6 +399,7 @@ export function ChatHeaderMenu({ activeSlot, agent, onReveal, onRename, mode }: 
                   loaded={loadedTools}
                   toolSearchOn={toolSearchOn}
                   loading={servers.length === 0}
+                  sessionReport={sessionReport}
                 />
               </DropdownMenuSubContent>
             </DropdownMenuSub>,
@@ -3393,6 +3402,34 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     return () => cancelAnimationFrame(raf)
   }, [activeTip, surveyLayoutTick, scrollBottom])
 
+  // Same compensation for the composer status stack (progress bars, sub-agent
+  // delivery line, queue stack). The virtualizer's own viewport branch DOES
+  // re-pin when the band shrinks the scroller's box — but a queued send is a
+  // message-array append too, and the regroup remounts tail rows while the
+  // band's spring animates the viewport, so that re-pin can land on interior
+  // heights that are still settling. Measured frame-by-frame on the pre-fix
+  // build: `scrollTop - clientHeight` math reports "at bottom" while the
+  // content sits a card-height (~21px) low, and whether it recovers depends
+  // on which re-render lands last — the defect reads as intermittent. This
+  // observer re-anchors AFTER every layout step of the band (ResizeObserver
+  // fires post-layout), so the final write always follows the last height
+  // change instead of racing it. Effect deps cannot do that: a one-shot
+  // re-anchor at mount time measures a half-grown band. Gated on FOLLOW for
+  // the same reason as the tip/survey effect above. A callback ref (not
+  // useRef + effect) so the observer re-attaches when the chat column
+  // unmounts and remounts.
+  const composerBandObserverRef = useRef<ResizeObserver | null>(null)
+  const composerBandRef = useCallback((el: HTMLDivElement | null) => {
+    composerBandObserverRef.current?.disconnect()
+    composerBandObserverRef.current = null
+    if (!el || typeof ResizeObserver === 'undefined') return
+    const ro = new ResizeObserver(() => {
+      if (vGetFollowRef.current()) scrollBottom(true)
+    })
+    ro.observe(el)
+    composerBandObserverRef.current = ro
+  }, [scrollBottom])
+
   // Navigate to a (possibly off-window) display index: mount it first via the
   // virtualizer so the DOM-based scroll can find it, then scroll next frame.
   // Tracks the in-flight row-mount poll (below) so a newer navigation cancels
@@ -3896,6 +3933,20 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // Back/Forward (new location.key) from a re-render where navigationType is
   // still stuck at 'POP'.
   const lastLocKeyRef = useRef<string | null>(null)
+  /**
+   * True while THIS page's own `navigate(-1)` — consuming the history entry the
+   * mobile sessions drawer pushed — is in flight.
+   *
+   * Declared next to the other pop refs because it is read by the same effect.
+   * That pop is not the user retracing sessions: the entry it lands on carries
+   * the `?sid=` from before the drawer opened, which is the OUTGOING session
+   * whenever the drawer was closed by picking a different one. Honoring it would
+   * switch the user straight back to the session they just left — the conflict
+   * that kept #5795 out of #5794. The URL is corrected by the `activeSlot → ?sid`
+   * effect below, which replaces (never pushes) on mobile, so the entry ends up
+   * naming the session actually on screen at the pre-drawer stack depth.
+   */
+  const drawerPopRef = useRef(false)
   const [sidError, setSidError] = useState('')
   const [newSlotFailed, setNewSlotFailed] = useState(false)
   const [highlightTs, setHighlightTs] = useState<string | null>(null)
@@ -4020,6 +4071,18 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     // "the host drives ?sid" and would switch the panel onto whatever session the
     // host route happens to carry.
     if (noUrlSync) return
+    // Our own drawer-entry consumption, not a Back/Forward the user asked for.
+    // Cleared and returned BEFORE the arming block below so the flag can never
+    // outlive its pop and swallow a later genuine one — the `!popReadyRef` and
+    // duplicate-key guards there return early, so a check placed after them
+    // would leave the flag set. `lastLocKeyRef` is still advanced, because this
+    // entry HAS been visited and must not be honored again if the effect re-runs
+    // on it while navigationType is still 'POP'.
+    if (drawerPopRef.current) {
+      drawerPopRef.current = false
+      lastLocKeyRef.current = location.key
+      return
+    }
     // Embed: host app drives the URL — react to any ?sid change.
     // Main dashboard: honor only a genuine Back/Forward POP. react-router reports
     // the initial render as 'POP' and stays 'POP' until our own switch navigates
@@ -4137,8 +4200,16 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     // reasoning has somewhere to live and a test can pin it.
     const isSessionSwitch = !!current && current !== activeSlot
     navigate(`${basePath}${slug ? '/' + slug : ''}?${next}`, { replace: shouldReplaceSessionUrl({ isSessionSwitch, isMobile }) })
+    // `location.key` and not just `location.pathname`: consuming the mobile
+    // drawer's history entry lands on a DIFFERENT entry whose pathname is
+    // IDENTICAL (the entry was a duplicate), so pathname alone reports no change
+    // and this effect would not re-run — leaving `?sid=` naming the session the
+    // user just switched AWAY from, which a reload would then restore. The key
+    // changes on any history move, which is the thing that actually happened.
+    // POPs are still funnelled through the `popInFlightRef` bail above, so this
+    // adds a re-check, not a new writer.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeSlot, filteredSlots, navigate, basePath, location.pathname, embedded, noUrlSync, isMobile])
+  }, [activeSlot, filteredSlots, navigate, basePath, location.pathname, location.key, embedded, noUrlSync, isMobile])
   // Re-fetch slot messages on mount (handles nav away + back).
   // Skip when newSession=1 — createSlot in send() will set the active slot;
   // dispatching switchSlot here would race and overwrite it.
@@ -6864,7 +6935,8 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
    *
    * `open` is the intent (the toggle reads it, aria reads it); mount is
    * `phase !== 'closed'`. There is one writer per transition below, and the
-   * gesture reports through `onSettle` rather than writing the phase itself.
+   * gesture reports through its `onCommit` / `onSettle` callbacks rather than
+   * writing the phase itself.
    */
   const [drawerPhase, setDrawerPhase] = useState<'closed' | 'open' | 'closing'>('closed')
   const mobileSessions = drawerPhase === 'open'
@@ -6945,6 +7017,50 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // invoke an updater more than once, which would start the settle twice.
   const drawerPhaseRef = useRef(drawerPhase)
   drawerPhaseRef.current = drawerPhase
+  /**
+   * The drawer's history entry, so the platform back gesture dismisses the
+   * drawer instead of leaving `/chat` (#5795).
+   *
+   * ONE entry, and it exists exactly while the drawer is open: every open mints
+   * it and every close that was not itself the Back spends it. The alternative --
+   * leaving it behind -- is the twin-entry defect `SidePanelLayout`'s back control
+   * documents: two entries with the same URL, so the next back-swipe visibly does
+   * nothing.
+   *
+   * The entry is a bare DUPLICATE of the one below it. The drawer is view state,
+   * not a location: a URL that moved would have to be unwound on the pop, and
+   * unwinding a `?sid=` is exactly what the sid effect would misread as the user
+   * retracing sessions.
+   *
+   * Deliberately NOT marked in `history.state`, unlike `SUBNAV_PUSH_STATE`. That
+   * marker earns its place because a SubNav drill-in CHANGES the url, so a cold
+   * deep link can land on the drilled-in entry and the marker is the only way to
+   * tell "we pushed this" from "the user arrived here". Nothing can deep-link a
+   * drawer open, so there is no such question to answer and a marker would be
+   * write-only state. Ownership is this ref, which is also the only form that is
+   * correct: a marked entry can outlive the mount that pushed it -- a reload
+   * restores `history.state`, and Forward can walk back INTO one -- so reading a
+   * marker would have the page consume an entry it never pushed.
+   */
+  const drawerEntryRef = useRef(false)
+  const locationRef = useRef(location)
+  locationRef.current = location
+  const pushDrawerEntry = useCallback(() => {
+    // Desktop's sidebar is a persistent column with its own toggle, not a layer
+    // over the content, and Back there already means "leave the route".
+    if (!isMobile || drawerEntryRef.current) return
+    const loc = locationRef.current
+    drawerEntryRef.current = true
+    navigate({ pathname: loc.pathname, search: loc.search, hash: loc.hash })
+  }, [isMobile, navigate])
+  /** Spend the entry, if we still hold one. `drawerPopRef` is what tells the sid
+   *  effect this POP is bookkeeping rather than a session the user asked for. */
+  const consumeDrawerEntry = useCallback(() => {
+    if (!drawerEntryRef.current) return
+    drawerEntryRef.current = false
+    drawerPopRef.current = true
+    navigate(-1)
+  }, [navigate])
   const openSidebar = useCallback(() => {
     if (drawerPhaseRef.current === 'open') return
     // Seat it offscreen before the mount so the first painted frame is the
@@ -6953,31 +7069,63 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     drawerPhaseRef.current = 'open'
     setDrawerPhase('open')
     animateDrawer(drawerX, 0)
-  }, [drawerX, drawerTravel])
+    pushDrawerEntry()
+  }, [drawerX, drawerTravel, pushDrawerEntry])
   /** Mount the panel for a drag in progress. Deliberately NOT `openSidebar`:
    *  that one runs the settle to the rest position, which would race the finger
    *  for the same value and pull the panel out from under it. The gesture has
-   *  already seated the offset and owns it until release. */
+   *  already seated the offset and owns it until release.
+   *
+   *  No history entry here either — the drag has not committed to anything yet,
+   *  and one the user drags back would push and immediately pop. The entry is
+   *  minted where the gesture COMMITS, in `onCommit`. */
   const beginDrawerDrag = useCallback(() => {
     drawerPhaseRef.current = 'open'
     setDrawerPhase('open')
   }, [])
-  const closeSidebar = useCallback(() => {
-    if (drawerPhaseRef.current !== 'open') return
+  /** Run the close animation and nothing else. Split out because the Back that
+   *  closes the drawer must NOT consume an entry — that pop already spent it. */
+  const runDrawerClose = useCallback(() => {
+    if (drawerPhaseRef.current !== 'open') return false
     drawerPhaseRef.current = 'closing'
     setDrawerPhase('closing')
     animateDrawer(drawerX, -drawerTravel(), () => {
       drawerPhaseRef.current = 'closed'
       setDrawerPhase('closed')
     })
+    return true
   }, [drawerX, drawerTravel])
+  const closeSidebar = useCallback(() => {
+    // Phase first, then the pop: the POP effect below skips a drawer that is no
+    // longer 'open', which is what keeps this close from being counted twice.
+    if (runDrawerClose()) consumeDrawerEntry()
+  }, [runDrawerClose, consumeDrawerEntry])
+  /**
+   * The Back that lands on the entry BELOW the drawer's: close the drawer and
+   * stay put.
+   *
+   * While the drawer is open and we hold an entry, that entry is the one on top,
+   * so any POP is a pop off it. Closing WITHOUT `consumeDrawerEntry` is the
+   * point — the pop is the consumption. `location.key` in the deps rather than
+   * `location`, so this runs once per history entry and not on every search-param
+   * rewrite the sid effect makes.
+   */
+  useEffect(() => {
+    if (navigationType !== 'POP') return
+    if (!drawerEntryRef.current || drawerPhaseRef.current !== 'open') return
+    drawerEntryRef.current = false
+    runDrawerClose()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [location.key, navigationType])
   // Close the drawer when a session is selected. Routed through closeSidebar so
   // it slides out — flipping straight to 'closed' would unmount it on the spot.
   useEffect(() => { if (isMobile) closeSidebar() }, [activeSlot]) // eslint-disable-line react-hooks/exhaustive-deps
   // Leaving the mobile viewport: drop the panel with no slide. There is no
   // mobile drawer to animate on the other side of that crossing, and the
-  // desktop sidebar owns its own open state.
-  useEffect(() => { if (!isMobile) setDrawerPhase('closed') }, [isMobile])
+  // desktop sidebar owns its own open state. The history entry goes with it —
+  // the desktop sidebar is a column, not a layer, so an entry standing for
+  // "a drawer is open" would be left with nothing to dismiss.
+  useEffect(() => { if (!isMobile) { setDrawerPhase('closed'); consumeDrawerEntry() } }, [isMobile]) // eslint-disable-line react-hooks/exhaustive-deps
   const chatContainerRef = useRef<HTMLDivElement>(null)
   // Measured container height — sizes the sidebar border-box morph (the panel
   // rect the box shrinks from on collapse and grows back to on expand).
@@ -7111,11 +7259,36 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     open: mobileSessions,
     x: drawerX,
     onGestureOpen: beginDrawerDrag,
-    // Committed to closing: mark it now so the sibling's gate opens immediately.
-    // 'closing' rather than 'closed' because the panel is still on screen and
-    // `drawerMounted` keys on that — unmounting here would cut the slide short.
-    onCommit: open => { if (!open) { drawerPhaseRef.current = 'closing'; setDrawerPhase('closing') } },
-    onSettle: open => { if (!open) { drawerPhaseRef.current = 'closed'; setDrawerPhase('closed') } },
+    // The gesture's COMMIT points, which is where its history entry is minted and
+    // spent — `beginDrawerDrag` only mounts the panel, and a drag the user
+    // reconsiders commits to closed without ever having minted one (both helpers
+    // are guarded on `drawerEntryRef`, so the call is a no-op then).
+    //
+    // Deliberately NOT `onSettle`. That one waits for the 120-450ms slide so a
+    // consumer cannot unmount the panel mid-animation, which is exactly what
+    // makes it the wrong signal here: the entry stands for "a drawer is open, so
+    // Back dismisses it", an INTENT, and the hook reports intent at release.
+    // Minting on arrival left the whole opening slide with the panel covering the
+    // screen and no entry to pop, so a Back there leaked past the drawer and left
+    // /chat — #5795 again, reachable by drag rather than by tap. Spending on
+    // arrival had the mirror hazard: a Back during the closing slide popped the
+    // still-unspent entry while the POP effect above ignored it (the phase is
+    // 'closing', not 'open'), and the settle then spent a second, real entry.
+    onCommit: open => {
+      if (open) { pushDrawerEntry(); return }
+      // Committed to closing: mark it now so the sibling's gate opens immediately.
+      // 'closing' rather than 'closed' because the panel is still on screen and
+      // `drawerMounted` keys on that — unmounting here would cut the slide short.
+      drawerPhaseRef.current = 'closing'
+      setDrawerPhase('closing')
+      consumeDrawerEntry()
+    },
+    // Arrival, which is bookkeeping only: the phase flip that unmounts the panel.
+    onSettle: open => {
+      if (open) return
+      drawerPhaseRef.current = 'closed'
+      setDrawerPhase('closed')
+    },
   })
   // Right-hand side panel, same gesture mirrored. Not bound when the actbar
   // column owns the panel (desktop) or while the find pane holds the dock —
@@ -8096,7 +8269,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                   `overflow-y-auto overscroll-contain`): it replaces the global
                   always-visible `var(--border)` thumb with a hover-revealed
                   overlay one, so the capped box does not carry a permanent bar. */}
-              <div className="max-h-[50svh] overflow-y-auto overscroll-contain scrollbar-overlay pb-[11px] mb-[-11px]" data-testid="composer-status-stack">
+              <div ref={composerBandRef} className="max-h-[50svh] overflow-y-auto overscroll-contain scrollbar-overlay pb-[11px] mb-[-11px]" data-testid="composer-status-stack">
               {/* Not gated on activityOpen (unlike the two bars below): the
                   activity sidebar has no TODO view, so hiding it there would
                   lose the information rather than de-duplicate it. */}

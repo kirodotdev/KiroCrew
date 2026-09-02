@@ -96,6 +96,12 @@ jobs:
           fi
 
           echo "Deferral promise is incomplete — replying with requirements."
+          # Markdown emphasis next to an expansion MUST be braced: bash treats a
+          # trailing `_` as part of the variable name, so `$COMMENT_URL_` is a
+          # different, unset variable and `set -u` kills this script before the
+          # reply is posted. That failure is invisible from the outside — the
+          # refusal simply never arrives — so `test_fix_loop_discipline.py`
+          # pins every expansion in these workflows to a defined name.
           {
             echo "<!-- deferred-finding-check -->"
             echo "**This deferral is not yet tracked.** An \`accepted-and-deferred\` disposition must name an open follow-up issue that has:"
@@ -107,6 +113,6 @@ jobs:
             echo "What is missing:"
             echo "$problems"
             echo ""
-            echo "_An untracked deferral is how flagged findings ship anyway — 63% of this repo's traceable escaped bugs were flagged and then deferred without follow-through. Checked disposition: $COMMENT_URL_"
+            echo "_An untracked deferral is how flagged findings ship anyway — 63% of this repo's traceable escaped bugs were flagged and then deferred without follow-through. Checked disposition: ${COMMENT_URL}_"
           } > /tmp/reply.md
           gh api "repos/$REPO/issues/$PR_NUMBER/comments" -f body="$(cat /tmp/reply.md)" >/dev/null

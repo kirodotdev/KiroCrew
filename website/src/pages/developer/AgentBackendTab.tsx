@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Bot, Sparkles, Terminal } from 'lucide-react'
+import { Bot, Boxes, Sparkles, Terminal } from 'lucide-react'
 
 import { api } from '../../api/client'
 import type { AcpBackendProbe } from '../../api/client'
@@ -20,6 +20,17 @@ const CONFIG_KEY = 'agent.acp_backend'
 const KIRO = ''
 const CLAUDE = 'claude'
 const KAS = 'kas'
+
+/**
+ * The agents this frontend has a translated name and an icon for.
+ *
+ * A FLOOR for what the panel renders, never a ceiling — see `candidates`. Every id
+ * here is a core agent the server always knows, so listing them costs nothing and
+ * keeps the control populated while the schema and probe queries are still in
+ * flight. An agent absent from this list still gets a row once a server answer
+ * names it, labelled with its `policy_id`.
+ */
+const NAMED = [KIRO, CLAUDE, KAS]
 
 /**
  * DOM id of the row that states a backend's status.
@@ -63,9 +74,12 @@ const PROBE_REFRESH_MS = 30_000
  * values the wire accepts cannot disagree, and a build that ships another agent
  * lights it up here with no frontend change.
  *
- * Claude Code is the case that makes this worth doing: this build does not include
- * it. Hiding it would imply it does not exist; enabling it would produce a 400 from
- * a control that looked live. It is listed, disabled, and says which it is.
+ * That last clause is why `candidates` is a union of server answers rather than a
+ * list of ids written here. An earlier revision filtered a hard-coded
+ * `[KIRO, CLAUDE, KAS]` by the schema, which narrows correctly and can never widen —
+ * so an agent an edition registered through `register_selectable_backend` was
+ * selectable on the wire and invisible in the only control that sets it. Ids this
+ * frontend has no translated name for render under their `policy_id`.
  *
  * ## Why there is a SECOND gate, and why it is allowed to say nothing
  *
@@ -223,6 +237,57 @@ export function AgentBackendTab() {
     (selectable ? !selectable.includes(value) : false) || probe(value)?.selectable === false
 
   /**
+   * Every agent id this panel could render, from the SERVER rather than a literal.
+   *
+   * This used to be `[KIRO, CLAUDE, KAS]`, which quietly made the panel the last
+   * hard-coded copy of the selectable list — the very thing
+   * `register_selectable_backend` exists to retire. Filtering a literal by the live
+   * schema narrows correctly but can never WIDEN, so an agent an edition registered
+   * was selectable on the wire, valid to PATCH, present in the probe payload, and
+   * absent from this control. The module note above already promised the opposite
+   * ("a build that ships another agent lights it up here with no frontend change");
+   * this is what makes that true.
+   *
+   * Union of the schema enum and the probe payload, because the two answer different
+   * questions and either can be in flight: the enum is what PATCH accepts, the probe
+   * is every id the core knows (including ones this build cannot select, which
+   * `unavailable` then drops).
+   *
+   * `NAMED` is unioned in as a FLOOR, not a ceiling, and the distinction is the whole
+   * fix. As a ceiling it capped the panel at three ids forever. As a floor it only
+   * guarantees the core agents still have rows when neither query has answered —
+   * which the loading behaviour requires, since hiding a row on absent information is
+   * the same mistake as disabling one. `current` joins for the same reason: the saved
+   * value must always have a chip.
+   *
+   * Sorted rather than left in arrival order: KIRO first because it is the default
+   * and the floor, then by `policy_id`, which is the order the probe endpoint already
+   * sorts by. Set iteration order would otherwise follow whichever query resolved
+   * first and reshuffle the control between renders.
+   */
+  const candidates = Array.from(
+    new Set<string>([
+      ...NAMED,
+      current,
+      ...(selectable ?? []),
+      ...(probeQ.data?.backends ?? []).map(b => b.id),
+    ]),
+  ).sort((a, b) => {
+    if (a === KIRO) return -1
+    if (b === KIRO) return 1
+    // Byte order, not `localeCompare`/`compareText`: these are machine identifiers,
+    // and the point of the sort (see above) is to reproduce the order the probe
+    // endpoint already returned them in. A collator reads the READER's locale, so
+    // the same deployment would order the chips differently per browser -- the
+    // between-render reshuffle this sort exists to prevent, just keyed on locale
+    // instead of query timing.
+    const ka = probe(a)?.policy_id || a
+    const kb = probe(b)?.policy_id || b
+    if (ka === kb) return 0
+    return ka < kb ? -1 : 1
+  })
+
+  /**
    * The agents this panel renders at all.
    *
    * An agent the deployment may not select is HIDDEN, not shown disabled. A greyed
@@ -234,7 +299,7 @@ export function AgentBackendTab() {
    * persisted value to the floor on load, so this should not arise; if it ever does,
    * a control rendering no selected chip is a worse failure than one extra row.
    */
-  const visible = [KIRO, CLAUDE, KAS].filter(value => value === current || !unavailable(value))
+  const visible = candidates.filter(value => value === current || !unavailable(value))
 
   /**
    * Installed === 'missing' is the only verdict that disables. `'unknown'` and an
@@ -275,6 +340,12 @@ export function AgentBackendTab() {
   const caveat = (value: string): string =>
     value === CLAUDE ? i18nT('pages.developer.agentBackendTab.claude_uses_its_own_permissions') : ''
 
+  /**
+   * Translated display names for the agents this frontend knows by name.
+   *
+   * Deliberately NOT the list of agents the panel renders — see `candidates`. An id
+   * absent here still gets a row; `nameOf` falls back to the server's `policy_id`.
+   */
   const NAME: Record<string, string> = {
     [KIRO]: i18nT('pages.developer.agentBackendTab.kiro_cli'),
     [CLAUDE]: i18nT('pages.developer.agentBackendTab.claude_code'),
@@ -286,6 +357,27 @@ export function AgentBackendTab() {
     [CLAUDE]: <Sparkles size={14} />,
     [KAS]: <Bot size={14} />,
   }
+
+  /**
+   * A label for any selectable id, known to this frontend or not.
+   *
+   * The fallback is the server's `policy_id`, which exists precisely to be a
+   * human-readable wire name (`acp_backends.POLICY_ID_BY_BACKEND`) — it is what a
+   * governance rule spells, so it is already a word rather than an internal token.
+   * Untranslated, and that is the deliberate trade: a registered agent rendering
+   * under its policy name is legible, whereas `NAME[value]` returning `undefined`
+   * renders a chip with no text at all. A core agent that ships selectable gets a
+   * real translated entry above; this keeps a plugin-registered one usable until
+   * then.
+   *
+   * KIRO is the empty string, so the `||` chain must not treat it as absent — it is
+   * always in NAME, which is why the lookup comes first.
+   */
+  const nameOf = (value: string): string => NAME[value] || probe(value)?.policy_id || value
+
+  /** Generic mark for an agent this frontend has no icon for. */
+  const iconOf = (value: string): React.ReactNode => ICON[value] ?? <Boxes size={14} />
+
 
   /**
    * The one status line a row carries, derived rather than authored per agent.
@@ -332,8 +424,8 @@ export function AgentBackendTab() {
           disabled={patchMut.isPending}
           options={visible.map(value => ({
             value,
-            label: NAME[value],
-            icon: ICON[value],
+            label: nameOf(value),
+            icon: iconOf(value),
             disabled: disabledOption(value),
             describedById: statusId(value),
           }))}
@@ -347,7 +439,7 @@ export function AgentBackendTab() {
           {visible.map(value => (
             <div key={value} className="flex gap-2 text-[11px] leading-relaxed">
               <dt className={`shrink-0 font-semibold ${value === current ? 'text-text-strong' : 'text-muted'}`}>
-                {NAME[value]}
+                {nameOf(value)}
               </dt>
               <dd
                 id={statusId(value)}

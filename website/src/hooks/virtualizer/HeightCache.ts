@@ -74,10 +74,15 @@ export class HeightCache {
   private readonly storageKey: string
   private dirty = false
   private flushTimer: FlushTimer | null = null
-  // Running sum of MEASURED heights (every cache entry is a measurement), kept
-  // in lockstep with the map through set / overwrite / eviction / load so
-  // averageHeight() is O(1). The mean is sum / cache.size.
+  // Running sum of the LIVE measured heights, kept in lockstep with the map
+  // through set / overwrite / eviction / load / retire so averageHeight() is
+  // O(1). "Live" excludes retired keys (see `retired`), so the mean is
+  // measuredSum / (cache.size - retired.size).
   private measuredSum = 0
+  // Keys whose ROW HAS LEFT THE LIST but whose measurement is kept. They are
+  // excluded from the mean and from the persisted blob, and revived by a later
+  // set() -- see retire() for why the entry is kept rather than deleted.
+  private readonly retired: Set<string> = new Set()
   // Session row count driving the size-aware eviction cap. 0 means UNKNOWN,
   // never "this session is empty" — see setRowCount() and load().
   private rowCount = 0
@@ -146,8 +151,10 @@ export class HeightCache {
    * measurement beats a very-low flat one, so only the outlier ceiling is kept.
    */
   averageHeight(fallback: number = DEFAULT_ESTIMATED_HEIGHT): number {
-    const n = this.cache.size
-    if (n === 0) return fallback
+    // Retired entries are still in the map (their own rows can come back) but
+    // must not price OTHER rows, so they are out of both halves of the mean.
+    const n = this.cache.size - this.retired.size
+    if (n <= 0) return fallback
     return Math.min(this.measuredSum / n, MAX_MEAN_PX)
   }
 
@@ -184,11 +191,73 @@ export class HeightCache {
     const prev = this.cache.get(key)
     if (prev !== undefined) {
       this.cache.delete(key)
-      this.measuredSum -= prev
+      // A retired entry's height is ALREADY out of measuredSum, so subtracting
+      // it again would double-count. Measuring the row also revives it: a row
+      // being measured is mounted, so it is back in the list.
+      if (!this.retired.delete(key)) this.measuredSum -= prev
     }
     this.cache.set(key, height)
     this.measuredSum += height
     this.evictToCap()
+    this.dirty = true
+    this.scheduleFlush()
+  }
+
+  /**
+   * Retire the measurement for `key` -- the row it belonged to has LEFT the list.
+   *
+   * The entry is KEPT and only removed from the mean. That split is the whole
+   * point, because the two halves have opposite failure modes:
+   *
+   *  - Keeping it in the MEAN is wrong. `averageHeight()` prices every
+   *    UNMEASURED row, so a measurement is never local to its own row: a
+   *    transient streaming placeholder measured at a fraction of a real message
+   *    goes on dragging the estimate for rows that are still on screen, for the
+   *    rest of the session and across reloads once the blob is persisted.
+   *  - DELETING it is also wrong, because a row leaving the list is not always
+   *    permanent. An optimistically truncated transcript is restored wholesale
+   *    when the server refuses the press (regenerate and edit-resend both
+   *    snapshot, truncate, then replace the snapshot back), and rows that came
+   *    back without their measurements would be re-priced from the mean --
+   *    wrong spacers and a viewport jump, which is the very failure this cache
+   *    exists to prevent. Keeping the entry makes that restore exact.
+   *
+   * A later `set()` revives the key: a row being measured is mounted, so it is
+   * live again. Retired entries are evicted BEFORE any live measurement (see
+   * evictToCap), so they cannot accumulate and cannot cost a live row its
+   * height.
+   *
+   * Callers must pass only keys that left the DATA, never keys that merely
+   * UNMOUNTED -- remembering a row that scrolled out of the window is what this
+   * cache is for.
+   */
+  retire(key: string): void {
+    if (!this.cache.has(key) || this.retired.has(key)) return
+    this.retired.add(key)
+    this.measuredSum -= this.cache.get(key) as number
+    this.dirty = true
+    this.scheduleFlush()
+  }
+
+  /**
+   * Un-retire `key` because its row is in the list again, so its measurement
+   * counts toward the mean once more.
+   *
+   * The caller is the resolved-height read, not a removal site: a restore is not
+   * the mirror image of a removal. An optimistic TAIL truncation comes back as a
+   * plain append, which is not a splice at all, so there is no commit shape to
+   * hook a revive onto -- while a key resolving from a LIVE row index is itself
+   * proof the retirement's premise no longer holds. Idempotent and O(1); the
+   * mean it feeds converges on the next sync.
+   */
+  reviveIfRetired(key: string): void {
+    if (!this.retired.delete(key)) return
+    const h = this.cache.get(key)
+    // Cannot be missing (eviction drops the retired mark with the entry), but a
+    // silent no-op is the right answer if it ever is: adding an unknown height
+    // to the sum would corrupt every later mean.
+    if (h === undefined) return
+    this.measuredSum += h
     this.dirty = true
     this.scheduleFlush()
   }
@@ -207,6 +276,22 @@ export class HeightCache {
     const cap = this.effectiveCap()
     let evicted = 0
     while (this.cache.size > cap) {
+      // RETIRED FIRST, ahead of LRU order. A retired row has left the list and
+      // its entry exists only to serve a possible rollback, so it is strictly
+      // less valuable than any live measurement. LRU order alone gets this
+      // backwards: a transient row is measured immediately before it leaves, so
+      // it sits at the most-recently-used end and would be the LAST evicted,
+      // costing an older LIVE row its measurement while a dead one survives.
+      // The set is insertion-ordered, so this drops the longest-retired first.
+      const retiredKey = this.retired.values().next().value
+      if (retiredKey !== undefined) {
+        // Removed from `retired` first, so the loop makes progress even in the
+        // impossible case where the entry is already gone from the map.
+        this.retired.delete(retiredKey)
+        // Already out of measuredSum -- retire() subtracted it.
+        if (this.cache.delete(retiredKey)) evicted++
+        continue
+      }
       // Map iteration is in insertion order, so the first key is the oldest.
       const oldestEntry = this.cache.entries().next().value
       if (oldestEntry === undefined) break
@@ -235,7 +320,14 @@ export class HeightCache {
       // are stored as own properties instead of mutating the prototype.
       // (A naive `{}` literal swallows __proto__ on assignment.)
       const obj: Record<string, number> = Object.create(null)
-      for (const [k, v] of this.cache) obj[k] = v
+      // Retired keys are deliberately NOT persisted: the row is gone from the
+      // transcript, so after a reload its height would be back in the mean
+      // pricing rows that are still there. The in-memory entry is what serves a
+      // same-session rollback; a reload has no snapshot to roll back to.
+      for (const [k, v] of this.cache) {
+        if (this.retired.has(k)) continue
+        obj[k] = v
+      }
       this.storage.setItem(this.storageKey, JSON.stringify(obj))
     } catch {
       // Quota exceeded or transient failure — drop this flush. A future set()
@@ -247,6 +339,7 @@ export class HeightCache {
   /** Clears both in-memory and persisted state for this session. */
   clear(): void {
     this.cache.clear()
+    this.retired.clear()
     this.measuredSum = 0
     this.dirty = false
     if (this.flushTimer !== null) {
@@ -259,6 +352,16 @@ export class HeightCache {
     } catch {
       // Best-effort — swallow.
     }
+  }
+
+  /**
+   * True when any measurement is retired.
+   *
+   * The O(1) guard a caller uses to skip a live-row scan entirely on the
+   * overwhelmingly common commit, where nothing is retired at all.
+   */
+  hasRetired(): boolean {
+    return this.retired.size > 0
   }
 
   /** Number of entries currently in the cache. Visible for tests/debug. */

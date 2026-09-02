@@ -302,6 +302,113 @@ def replace_with_retry(src: Path | str, dst: Path | str) -> None:
     os.replace(str(src), str(dst))
 
 
+#: ``fsync`` on a directory that the platform or filesystem simply cannot express.
+#: Every other errno is a real failure and is raised, because a caller whose next
+#: step destroys the only other copy must not read "could not sync" as "synced".
+_DIR_SYNC_UNSUPPORTED = frozenset(
+    code
+    for code in (
+        getattr(errno, name, None)
+        for name in ("EINVAL", "ENOTSUP", "EOPNOTSUPP", "EPERM", "EACCES", "EBADF", "ENOSYS")
+    )
+    if code is not None
+)
+
+
+def _close_quietly(fd: int, path: Path | str) -> None:
+    """Close a directory descriptor, logging rather than raising.
+
+    POSIX releases the descriptor even when ``close`` reports an error, so there is no
+    leak to recover from — only a diagnostic, and one that is never the most useful
+    thing the caller could be told.
+    """
+    try:
+        os.close(fd)
+    except OSError:
+        logger.warning("could not close the directory descriptor for %s", path, exc_info=True)
+
+
+def fsync_dir(path: Path | str, *, best_effort: bool = False) -> None:
+    """Force a directory's own entries out, so a create or rename survives a crash.
+
+    The half that :func:`atomic_write`'s ``fsync=True`` does not cover. Syncing the
+    file descriptor forces the DATA; the name that reaches it lives in the parent
+    directory, and until that directory is synced a power-off can return from
+    ``os.replace`` and still come back to the old entry, with the new file's name
+    recorded nowhere. Any writer whose next step destroys the only other copy —
+    unlinking the source of a move, emptying a staging area — has to sync the
+    directory too, or its "the replacement is safely in place" is not yet true.
+
+    Deliberately NOT a ``sync_dir=`` option on :func:`atomic_write`: that would
+    change the durability cost of every existing caller. This is opt-in, so the
+    callers that need the guarantee pay for it and the rest are untouched.
+
+    **Quiet where a directory sync cannot be expressed, and only there.** Windows has
+    no directory descriptor to open, and some filesystems (network mounts in
+    particular) reject ``fsync`` on a directory; there the atomic rename plus the
+    file ``fsync`` are the guarantee available, and raising would turn a completed
+    write into a reported failure. But an ``EIO`` is not that case — it says the
+    device did not take the write — so it is raised. Swallowing it would hand the
+    caller a false "durable" just before it unlinks the only other copy, which is the
+    data loss this helper exists to prevent.
+
+    ``best_effort=True`` downgrades even that to a warning, and exists for one shape
+    of caller: one whose operation is ALREADY COMMITTED, where the sync only firms up
+    a step that has happened. Raising at such a point does not protect anything — it
+    reports completed work as failed, and a caller that then treats the work as
+    un-done is the worse outcome. It is a keyword rather than a bare
+    ``except OSError`` at the call site so the decision is visible, single-pathed, and
+    still logged.
+    """
+    try:
+        dir_fd = os.open(str(path), os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    except OSError:
+        if platform_compat.IS_WINDOWS:
+            # The platform case: no directory descriptors at all.
+            return
+        if best_effort:
+            logger.warning("could not open %s to sync it; its entries may not be durable", path)
+            return
+        raise
+    try:
+        os.fsync(dir_fd)
+    except OSError as exc:
+        # The fsync error is the informative one, so the close is quiet on every
+        # failing path here: raising a close error on top would mask the reason.
+        _close_quietly(dir_fd, path)
+        if exc.errno in _DIR_SYNC_UNSUPPORTED:
+            logger.debug(
+                "this filesystem does not support syncing the directory %s (%s)",
+                path,
+                errno.errorcode.get(exc.errno or 0, exc.errno),
+            )
+            return
+        if best_effort:
+            logger.warning(
+                "could not sync the directory %s; its entries may not be durable",
+                path,
+                exc_info=True,
+            )
+            return
+        raise
+    # The sync reported success — but ``close`` can report a write error the kernel
+    # deferred, which for a caller whose next step is to unlink the only other copy
+    # is the same signal as a failed fsync. So it is checked, and it honours
+    # best_effort for the same reason the fsync above does: a caller past its point of
+    # no return cannot act on it. Not in a ``finally``: that would let a close error
+    # replace an in-flight fsync error with a less informative one.
+    try:
+        os.close(dir_fd)
+    except OSError:
+        if not best_effort:
+            raise
+        logger.warning(
+            "could not close the descriptor for %s; its entries may not be durable",
+            path,
+            exc_info=True,
+        )
+
+
 def read_bytes_with_retry(path: Path | str) -> bytes:
     """``Path.read_bytes()``, retrying the Windows sharing-violation window.
 

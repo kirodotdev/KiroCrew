@@ -353,12 +353,28 @@ same way). Key details:
 
 ## How the app finds and launches the backend
 
-When the app starts, [`main.js`](../../website/electron/main.js) first checks
-whether a gateway is already running. An existing gateway—including a local SSH
-forward to a remote gateway—is reused. Otherwise the shell locates the backend
-binary via [`find-bin.js`](../../website/electron/find-bin.js), spawns it as
-`kirocrew gateway --no-open`, polls `/api/status`, and loads the dashboard once
-it is healthy.
+When the app starts, [`main.js`](../../website/electron/main.js) composes the
+desktop lifecycle and delegates gateway ownership to
+[`gateway-supervisor.js`](../../website/electron/gateway-supervisor.js). The
+supervisor first checks whether a gateway is already running. An existing
+gateway—including a local SSH forward to a remote gateway—is reused. Otherwise
+it locates the backend binary via
+[`find-bin.js`](../../website/electron/find-bin.js), spawns it as `kirocrew
+gateway --no-open`, polls `/api/status`, and loads the dashboard once it is
+healthy.
+
+Host-runtime discovery stays behind the same main-process ownership boundaries.
+The `wsl:detect` handler in
+[`ipc-registrar.js`](../../website/electron/ipc-registrar.js) fails closed unless
+the sender has the fixed primary origin,
+[`window-lifecycle.js`](../../website/electron/window-lifecycle.js) proves that
+its window uses a local gateway rather than a configured tunnel, and
+[`gateway-supervisor.js`](../../website/electron/gateway-supervisor.js)
+positively identifies the primary listener as Kiro Crew or its service. A
+manual SSH tunnel, foreign listener, unbound port, or unavailable owner probe is
+therefore refused; only then may
+[`wsl-detection.js`](../../website/electron/wsl-detection.js) run the trusted
+system `wsl.exe` path.
 
 Before spawning a **bundled** backend the shell checks that the bundle's Python
 stdlib is fully on disk
@@ -404,8 +420,9 @@ Only a **bundled** backend qualifies — a user's own install or a `PATH` `kiroc
 failing on a stdlib import is a broken environment, and "wait for the installer"
 would be misleading advice there. And only the **current launch attempt** is read:
 the log is append-only across launches, so the text is sliced from the last spawn
-marker (`SPAWN_MARKER`, owned by `bundle-integrity.js` and logged by `main.js` so
-writer and reader cannot drift). Without that, an older traceback could relabel
+marker (`SPAWN_MARKER`, owned by `bundle-integrity.js` and logged by
+`gateway-supervisor.js` so writer and reader cannot drift). Without that, an
+older traceback could relabel
 this attempt's unrelated failure — a `SIGKILL`, or a bound port whose real remedy
 is force-stop rather than a bare Retry — and show a reassuring dialog over a live
 fault. When the marker has scrolled out of the tail, attribution is unknowable and
@@ -560,7 +577,7 @@ The function is pure — `fs`, `os`, `path`, `process.resourcesPath`,
 `__dirname`, and the arch are injected — so both arch branches are
 unit-testable without mocking globals.
 
-### `main.js` — spawning the gateway
+### `gateway-supervisor.js` — owning the gateway lifecycle
 
 - Ensures `KIROCREW_HOME` (default `~/.kiro/crew`, overridable via the
   `KIROCREW_HOME` env var) exists, then spawns the backend with
@@ -585,8 +602,10 @@ unit-testable without mocking globals.
   per-user install at `%LOCALAPPDATA%\Kiro-Cli` — so desktop launches find
   user-local installations without mutating the shell environment or requiring
   the already-running gateway to inherit an installer-updated `PATH`.
-- On window close the app hides to the tray; quitting sends `SIGTERM` to the
-  gateway process.
+- [`window-lifecycle.js`](../../website/electron/window-lifecycle.js) hides the
+  app to the tray on window close; the composition root delegates quit-time
+  gateway teardown to the supervisor, which performs the graceful shutdown and
+  signal escalation contract.
 
 ## Code signing & notarization (macOS)
 

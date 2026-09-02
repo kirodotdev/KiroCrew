@@ -91,7 +91,6 @@ src/kiro_crew/apps/builtins/crew_companion/tests/test_routes.py
 src/kiro_crew/apps/builtins/crew_companion/tests/test_store.py
 src/kiro_crew/apps/builtins/crew_companion/tests/test_write_failures.py
 src/kiro_crew/apps/builtins/design_critique/tests/test_manifest.py
-src/kiro_crew/apps/builtins/design_tweak/backend/server.py
 src/kiro_crew/apps/builtins/dev_fleet/gateway_service.py
 src/kiro_crew/apps/builtins/dev_fleet/server.py
 src/kiro_crew/apps/builtins/dev_fleet/skills/pod-e2e/scripts/pod-playwright.py
@@ -330,7 +329,6 @@ src/kiro_crew/mcp_tools/artifacts.py
 src/kiro_crew/mcp_tools/control.py
 src/kiro_crew/mcp_tools/knowledge.py
 src/kiro_crew/mcp_tools/skills.py
-src/kiro_crew/mcp_tools/spawn.py
 src/kiro_crew/mcp_utils.py
 src/kiro_crew/metrics/http_metrics.py
 src/kiro_crew/metrics/provider.py
@@ -396,7 +394,6 @@ test/metrics/test_schema.py
 test/metrics/test_startup_channel_attrs.py
 test/metrics/test_telemetry_titles.py
 test/metrics/test_watchdog_metrics.py
-test/test_acp_backend_kas.py
 test/test_acp_dynamic_config.py
 test/test_acp_error_surface.py
 test/test_acp_liveness.py
@@ -813,7 +810,6 @@ test/test_knowledge_ingest_magic_byte.py
 test/test_knowledge_items_source_filter.py
 test/test_knowledge_kiroignore.py
 test/test_knowledge_project_docs.py
-test/test_knowledge_search_upgrade.py
 test/test_knowledge_source_spend.py
 test/test_knowledge_sync_local_file.py
 test/test_knowledge_workspace_autosource.py

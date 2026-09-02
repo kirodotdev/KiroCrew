@@ -796,10 +796,13 @@ class TestConsolidationOffsetAfterRotation:
         retained count and is stored verbatim (data-integrity failure).
         """
         log = ConversationLog(base_dir=tmp_path)
-        # ~11 KiB bodies: 100 messages stay under the 2 MiB cap, but appending
-        # ~200 more blows it and triggers a REAL rotation whose retained tail is
-        # still far larger than the offset=100 snapshot below.
-        body = "x" * (11 * 1024)
+        # Bodies sized off the byte cap so 100 messages stay under it while
+        # appending ~200 more blows it and triggers a REAL rotation whose
+        # retained tail is still far larger than the offset=100 snapshot below.
+        # The divisor keeps a full ``_SESSION_KEEP_LINES`` tail inside the cap;
+        # deriving it rather than hardcoding a KiB figure is what stops a change
+        # to the cap from silently leaving this test green without rotating.
+        body = "x" * (_SESSION_MAX_BYTES // (_SESSION_KEEP_LINES + 50))
         for i in range(100):
             log.append("k", "user", f"{i}:{body}")
         # Consolidator snapshots BEFORE the slow LLM call.
@@ -911,7 +914,10 @@ class TestConsolidationOffsetAfterRotation:
         atomic snapshot captures both from the SAME state so the generation it
         returns always matches the offset it returns.
         """
-        body = "x" * (11 * 1024)
+        # Sized off the byte cap for the same reason as
+        # ``test_offset_reset_when_rotation_retains_ge_offset``: the race this
+        # demonstrates only exists if the second batch really rotates.
+        body = "x" * (_SESSION_MAX_BYTES // (_SESSION_KEEP_LINES + 50))
         log = ConversationLog(base_dir=tmp_path)
         for i in range(100):
             log.append("k", "user", f"{i}:{body}")
@@ -981,6 +987,46 @@ class TestRotateOversizedFewLines:
         for i in range(20):
             log.append("k", "user", f"m{i}")
         assert len(log._read_messages("k")) == 20
+
+    def test_rotation_declines_when_archiving_the_dropped_lines_fails(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Archiving is a PRECONDITION of the rewrite, not a side effect.
+
+        The rewrite is what removes the leading lines, and until the archive
+        write lands the transcript is their only copy — so an unwritable archive
+        directory must leave the transcript intact rather than being logged and
+        rewritten past. An oversized file is recoverable; a dropped row is not.
+        """
+        from kiro_crew import history as history_mod
+
+        def _oversized(key: str) -> Path:
+            log = ConversationLog(base_dir=tmp_path / key)
+            chunk = _SESSION_MAX_BYTES // 4
+            for i in range(6):  # over the cap, under the line cap
+                log.append(key, "user", f"{i}" * chunk)
+            return log
+
+        real_archive = history_mod._archive_lines
+
+        def _failing_archive(*_a: object, **_kw: object) -> None:
+            raise OSError("archive directory is unwritable")
+
+        monkeypatch.setattr(history_mod, "_archive_lines", _failing_archive)
+        log_fail = _oversized("archive-fails")
+        msgs = log_fail._read_messages("archive-fails")
+        assert len(msgs) == 6, "rotation dropped rows it had nowhere to archive"
+        assert msgs[0]["content"].startswith("0"), "the oldest row was deleted"
+
+        # Positive control: with a working archive the SAME fixture does rotate,
+        # so the decline above is attributable to the archive failure and not to
+        # rotation having had nothing to do.
+        monkeypatch.setattr(history_mod, "_archive_lines", real_archive)
+        log_ok = _oversized("archive-succeeds")
+        assert len(log_ok._read_messages("archive-succeeds")) < 6, (
+            "the fixture does not rotate even with a healthy archive, so the "
+            "decline above proves nothing"
+        )
 
 
 # ── Bug 5: delete_session unlink(missing_ok=True) ─────────────────────────────

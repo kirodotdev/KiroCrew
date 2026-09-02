@@ -14,9 +14,11 @@ Comments explain WHY each case matters, matching the sibling file's style.
 
 from __future__ import annotations
 
+import contextlib
 import datetime as dt
 import json
 import time
+from pathlib import Path
 from types import SimpleNamespace as NS
 from unittest import mock
 
@@ -33,6 +35,14 @@ def _ledger_at(monkeypatch, tmp_path):
     path = tmp_path / "library.json"
     monkeypatch.setattr(library, "_ledger_path", lambda: path)
     return path
+
+
+def _adds_a_record(slugs):
+    """A mutation that really changes something -- `_update_ledger` skips the
+    write when the callback reports no change, so a falsy edit would never
+    reach the rewrite these tests are about."""
+    slugs["new"] = {"version": 1}
+    return True
 
 
 # --------------------------------------------------------------------------
@@ -396,6 +406,64 @@ class TestUpdateLedger:
         ledger = library.read_ledger()
         assert ledger[other] == {"kept": {"version": 7}}
         assert ledger[ACCOUNT] == {}
+
+    def test_a_read_that_failed_is_never_published_over(self, tmp_path, monkeypatch):
+        # `read_ledger` is a DISPLAY read: it collapses every failure to {} so a
+        # render never crashes. As the base of this whole-document rewrite that
+        # empty dict is not "nothing to carry forward", it is "delete every other
+        # account's push state". A transient EACCES (a scanner holding the handle)
+        # must abandon the mutation, not publish over state nobody read.
+        path = _ledger_at(monkeypatch, tmp_path)
+        other = "999988887777"
+        path.write_text(json.dumps({other: {"kept": {"version": 7}}}), encoding="utf-8")
+        real_read_text = Path.read_text
+        broken = {"on": True}
+
+        def guarded(path_self, *args, **kwargs):
+            if broken["on"] and Path(path_self) == path:
+                raise PermissionError(13, "Permission denied")
+            return real_read_text(path_self, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "read_text", guarded)
+        with contextlib.suppress(OSError):
+            library._update_ledger(ACCOUNT, _adds_a_record)
+
+        # The durable harm, asserted directly: the OTHER account's push state
+        # must still be on disk, whatever this mutation did or did not do.
+        broken["on"] = False
+        assert library.read_ledger() == {other: {"kept": {"version": 7}}}
+
+    def test_an_unreadable_ledger_refuses_the_mutation(self, tmp_path, monkeypatch):
+        # The caller must be told, rather than being handed a silent no-op that
+        # reads as success.
+        path = _ledger_at(monkeypatch, tmp_path)
+        path.write_text(json.dumps({ACCOUNT: {"kept": {"version": 7}}}), encoding="utf-8")
+        real_read_text = Path.read_text
+
+        def guarded(path_self, *args, **kwargs):
+            if Path(path_self) == path:
+                raise PermissionError(13, "Permission denied")
+            return real_read_text(path_self, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "read_text", guarded)
+        with pytest.raises(OSError):
+            library._update_ledger(ACCOUNT, _adds_a_record)
+
+    def test_a_missing_ledger_is_still_a_first_write(self, tmp_path, monkeypatch):
+        # Absent is the one failure where {} is the truth. The guard above must
+        # not turn the very first push into an error.
+        path = _ledger_at(monkeypatch, tmp_path)
+        assert not path.exists()
+        assert library._update_ledger(ACCOUNT, _adds_a_record) is True
+        assert library.read_ledger()[ACCOUNT] == {"new": {"version": 1}}
+
+    def test_a_corrupt_ledger_still_repairs_on_write(self, tmp_path, monkeypatch):
+        # Existing tolerance, pinned so the unreadable-file guard is not mistaken
+        # for a licence to start failing on corruption too.
+        path = _ledger_at(monkeypatch, tmp_path)
+        path.write_text("{not json", encoding="utf-8")
+        assert library._update_ledger(ACCOUNT, _adds_a_record) is True
+        assert library.read_ledger()[ACCOUNT] == {"new": {"version": 1}}
 
 
 # --------------------------------------------------------------------------

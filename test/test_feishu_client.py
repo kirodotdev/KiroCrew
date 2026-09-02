@@ -698,6 +698,141 @@ class TestHandleReceiveV1:
 
 
 # ---------------------------------------------------------------------------
+# Tests: _handle_receive_v1 drop logging
+# ---------------------------------------------------------------------------
+
+
+class TestHandleReceiveV1DropLogging:
+    """Every silent-drop branch must emit a log line naming the reason.
+
+    Without a log line a dropped inbound message leaves no trace anywhere --
+    nothing in gateway.log, nothing in the SEL audit log -- making a
+    delivered-and-ignored message indistinguishable from a dead WebSocket. Each
+    drop logs at INFO with its reason (and message_id where one is known), so
+    diagnosis is a one-minute read rather than an hours-long elimination.
+    """
+
+    def _make_client(self):
+        from kiro_crew.feishu.client import LarkClient
+
+        received: list[Any] = []
+
+        async def handler(inbound: Any) -> None:
+            received.append(inbound)
+
+        client = LarkClient(app_id="a", app_secret="s", on_message=handler)
+        return client, received
+
+    def test_missing_event_logs(self, caplog: Any) -> None:
+        client, received = self._make_client()
+
+        class Data:
+            event = None
+
+        with caplog.at_level("INFO", logger="kiro_crew.feishu.client"):
+            client._handle_receive_v1(Data())
+
+        assert received == []
+        assert any("no event" in r.message for r in caplog.records)
+
+    def test_missing_message_logs(self, caplog: Any) -> None:
+        client, received = self._make_client()
+
+        class Event:
+            message = None
+
+        class Data:
+            event = Event()
+
+        with caplog.at_level("INFO", logger="kiro_crew.feishu.client"):
+            client._handle_receive_v1(Data())
+
+        assert received == []
+        assert any("no message" in r.message for r in caplog.records)
+
+    def test_missing_message_id_logs(self, caplog: Any) -> None:
+        client, received = self._make_client()
+        data = _make_event(message_id="")
+
+        with caplog.at_level("INFO", logger="kiro_crew.feishu.client"):
+            client._handle_receive_v1(data)
+
+        assert received == []
+        assert any("no message_id" in r.message for r in caplog.records)
+
+    def test_non_text_message_type_logs_type_and_id(self, caplog: Any) -> None:
+        client, received = self._make_client()
+        data = _make_event(message_id="img-1", message_type="image")
+
+        with caplog.at_level("INFO", logger="kiro_crew.feishu.client"):
+            client._handle_receive_v1(data)
+
+        assert received == []
+        drop = next((r for r in caplog.records if "unsupported message_type" in r.message), None)
+        assert drop is not None
+        # The offending type and the message_id are both in the rendered line.
+        assert "image" in drop.getMessage()
+        assert "img-1" in drop.getMessage()
+
+    def test_missing_open_id_logs(self, caplog: Any) -> None:
+        client, received = self._make_client()
+        data = _make_event(message_id="no-sender", open_id="")
+
+        with caplog.at_level("INFO", logger="kiro_crew.feishu.client"):
+            client._handle_receive_v1(data)
+
+        assert received == []
+        assert any("open_id" in r.message for r in caplog.records)
+
+    def test_invalid_json_logs(self, caplog: Any) -> None:
+        client, received = self._make_client()
+        data = _make_event(message_id="bad-json", content="not-json{{{")
+
+        with caplog.at_level("INFO", logger="kiro_crew.feishu.client"):
+            client._handle_receive_v1(data)
+
+        assert received == []
+        assert any("not valid JSON" in r.message for r in caplog.records)
+
+    def test_mention_only_body_logs(self, caplog: Any) -> None:
+        client, received = self._make_client()
+        data = _make_event(
+            message_id="ws-only",
+            content=json.dumps({"text": "@_user_1   "}),
+        )
+
+        with caplog.at_level("INFO", logger="kiro_crew.feishu.client"):
+            client._handle_receive_v1(data)
+
+        assert received == []
+        assert any("mention-only" in r.message for r in caplog.records)
+
+    def test_empty_resolved_text_logs(self, caplog: Any, monkeypatch: Any) -> None:
+        """The empty-resolved-text guard also logs its drop.
+
+        Reaching this branch organically is hard -- any non-mention text keeps
+        the resolved text non-empty, and a mention-only body drops one guard
+        earlier. It is a defensive guard, so we drive it directly by forcing
+        ``_resolve_mentions`` to return whitespace for a body that clears the
+        mention-only check.
+        """
+        import kiro_crew.feishu.client as client_mod
+
+        client, received = self._make_client()
+        monkeypatch.setattr(client_mod, "_resolve_mentions", lambda raw, mentions: "   ")
+        data = _make_event(
+            message_id="empty-resolved",
+            content=json.dumps({"text": "real words here"}),
+        )
+
+        with caplog.at_level("INFO", logger="kiro_crew.feishu.client"):
+            client._handle_receive_v1(data)
+
+        assert received == []
+        assert any("resolved text is empty" in r.message for r in caplog.records)
+
+
+# ---------------------------------------------------------------------------
 # Tests: start()
 # ---------------------------------------------------------------------------
 

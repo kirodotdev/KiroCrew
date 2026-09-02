@@ -533,7 +533,10 @@ def test_probe_reports_a_missing_extra_with_its_own_code(monkeypatch):
     result = engine_mod.probe()
     assert not result.ok
     assert result.code == engine_mod.CODE_EXTRA_MISSING
-    assert "kirocrew[voice]" in result.detail
+    # The recogniser distribution, since `pip install kirocrew[voice]` resolves
+    # nowhere: this project is on no index.
+    assert "pywhispercpp" in result.detail
+    assert "kirocrew[" not in result.detail
 
 
 def test_probe_distinguishes_a_platform_with_no_wheel(monkeypatch):

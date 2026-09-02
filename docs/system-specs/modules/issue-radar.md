@@ -32,6 +32,19 @@ always the other client drifting and the failure names which one. That class als
 asserts its own table covers every entry in `provider.PROVIDERS`, so a fourth
 provider cannot be registered while the gate silently keeps comparing three.
 
+**Each client module is the stable composition façade for its provider.** The
+routes and tests continue to import `github_client`, `gitlab_client` and
+`azure_client`; those modules retain the protocol surface, exception aliases,
+constants and patchable I/O chokepoints. Provider-specific sibling modules keep
+the implementation boundaries explicit: `*_transport.py` owns URL, environment,
+request and pagination mechanics; `*_normalization.py` converts provider payloads
+into the shared GitHub-shaped records; and `github_queries.py` owns GitHub's
+GraphQL, dependency and search query plans. The façades inject their current
+bindings into those helpers so established monkeypatch seams remain authoritative.
+The reviewed real `glab` and `az` process spawns remain in
+`gitlab_client._glab_run` and `azure_client._az_run`, respectively, which keeps
+the spawn-audit allowlist tied to the same security chokepoints.
+
 | | GitHub | GitLab | Azure DevOps |
 |---|---|---|---|
 | Provider id | `github` | `gitlab` | `azure` |

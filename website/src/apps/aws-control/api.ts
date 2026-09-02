@@ -219,6 +219,11 @@ export const awsControlApi = {
     return postJson<{ pushed: true }>(`/library/${enc(account)}/push`, { slug })
   },
 
+  /** Remove one artifact's cloud copy (objects + ledger entry). */
+  libraryRemove(account: string, slug: string): Promise<{ removed: true }> {
+    return postJson<{ removed: true }>(`/library/${enc(account)}/remove`, { slug })
+  },
+
   /* ── Backup ── */
 
   /** Backup status: last local runs, remote archive, nightly toggle. */

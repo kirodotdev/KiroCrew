@@ -13,6 +13,7 @@ caught.
 """
 
 import json
+import os
 import shutil
 import tempfile
 import unittest
@@ -3267,3 +3268,163 @@ class TestApprovedProposalSchedulesVerification(unittest.IsolatedAsyncioTestCase
         stored = store.get_incident(iid)
         assert stored is not None
         self.assertNotIn(stored.verification, models.OPEN_VERIFICATIONS)
+
+
+class TestAStoreThatRefusesToWriteIsReportedNotCrashed(unittest.IsolatedAsyncioTestCase):
+    """A refused keystone write must answer with the app's coded error, not a bare 500.
+
+    The two stores behind these routes are read-modify-writes that now REFUSE rather than
+    publishing over a read they could not make, so each write can raise ``OSError``. Nothing
+    converts that into a body: ``sel_audit_middleware`` logs and re-raises, and
+    ``deny_audit_middleware`` only handles ``web.HTTPException`` — so an escaping error becomes
+    aiohttp's default ``500`` with a plain-text body and no ``code`` to branch on.
+
+    On these particular routes the ambiguity is the security-relevant part. ``mode`` and
+    ``autonomy_rules`` ARE the authorization ceiling, and the secret routes decide whether a
+    live credential is stored or revoked — "did my change land?" is exactly the question the
+    operator must not be left guessing about. ``_handle_rotation_arm`` already set the shape
+    for this in the same file (``503 cron_store_unreadable``, with its progress list attached).
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self._prev = os.environ.get("KIROCREW_HOME")
+        self.addCleanup(self._restore_home)
+        os.environ["KIROCREW_HOME"] = self.tmp
+
+    def _restore_home(self):
+        if self._prev is None:
+            os.environ.pop("KIROCREW_HOME", None)
+        else:
+            os.environ["KIROCREW_HOME"] = self._prev
+
+    @staticmethod
+    def _refuse(*_a, **_kw):
+        raise PermissionError(13, "Permission denied")
+
+    async def _client(self, app):
+        from aiohttp.test_utils import TestClient, TestServer
+
+        client = TestClient(TestServer(app))
+        await client.start_server()
+        self.addAsyncCleanup(client.close)
+        return client
+
+    async def test_a_refused_secret_save_is_a_coded_503_not_a_500(self):
+        token = "u+ThisIsTheActualTokenValue"
+        app = web.Application()
+        routes.register_routes(app)
+        with mock.patch.object(routes, "is_app_enabled", return_value=True):
+            with mock.patch.object(routes, "put_secret", self._refuse):
+                client = await self._client(app)
+                resp = await client.put(
+                    "/api/apps/ops-mission-control/providers/pagerduty/secret",
+                    json={"field": "api_token", "value": token},
+                )
+                self.assertEqual(resp.status, 503)
+                body = await resp.json()
+
+        self.assertEqual(body["code"], "secret_store_unwritable")
+        self.assertIs(body["ok"], False)
+        # A refusal must not echo the credential it failed to store.
+        self.assertNotIn(token, json.dumps(body))
+
+    async def test_a_refused_revocation_never_reports_success(self):
+        """The load-bearing one. The failure this replaces did not 500 — it returned
+        ``{"ok": true, "removed": false}``, i.e. "there was nothing to revoke", while the
+        live token was still on disk. Anything 2xx here is the bug."""
+        app = web.Application()
+        routes.register_routes(app)
+        with mock.patch.object(routes, "is_app_enabled", return_value=True):
+            with mock.patch.object(routes, "delete_secret", self._refuse):
+                client = await self._client(app)
+                resp = await client.delete(
+                    "/api/apps/ops-mission-control/providers/pagerduty/secret"
+                )
+                self.assertEqual(resp.status, 503, "a refused revocation answered as success")
+                body = await resp.json()
+
+        self.assertEqual(body["code"], "secret_store_unwritable")
+        self.assertNotIn("removed", body, "the refusal must not claim a removal verdict")
+
+    async def test_a_refused_ceiling_write_is_a_coded_503(self):
+        """The ceiling is the one value where a silent partial apply is a security state."""
+        from kiro_crew.apps.builtins.ops_mission_control.backend import policy_store
+
+        app = web.Application()
+        routes.register_routes(app)
+        with mock.patch.object(routes, "is_app_enabled", return_value=True):
+            with mock.patch.object(policy_store, "set_ceiling", self._refuse):
+                client = await self._client(app)
+                resp = await client.put(
+                    "/api/apps/ops-mission-control/settings", json={"mode": "observe"}
+                )
+                self.assertEqual(resp.status, 503)
+                body = await resp.json()
+
+        self.assertEqual(body["code"], "policy_store_unwritable")
+        self.assertIs(body["ok"], False)
+
+    async def test_a_refused_destination_write_is_a_coded_503_too(self):
+        """The keys reached THROUGH an intermediary, which the first pass missed.
+
+        `slack_out.set_settings` and `ledger_sync.set_settings` call `policy_store.put`
+        internally -- their keys are operator-only, so they must -- so guarding only the
+        call sites that literally spell `policy_store` left the destination writes
+        answering a refused keystone write with a plain 500. These are the keys an agent
+        must not be able to redirect, so they are the last place to leave the operator
+        guessing. Found in review (GPT 5.6).
+        """
+        from kiro_crew.apps.builtins.ops_mission_control.backend import slack_out
+
+        app = web.Application()
+        routes.register_routes(app)
+        with mock.patch.object(routes, "is_app_enabled", return_value=True):
+            with mock.patch.object(slack_out, "set_settings", self._refuse):
+                client = await self._client(app)
+                resp = await client.put(
+                    "/api/apps/ops-mission-control/settings", json={"slack_channel": "C123456"}
+                )
+                self.assertEqual(resp.status, 503, "a refused destination write answered 200")
+                body = await resp.json()
+
+        self.assertEqual(body["code"], "policy_store_unwritable")
+
+    async def test_a_refusal_body_carries_no_field_the_dashboard_discards(self):
+        """`req` in the app's own api.ts reads only `error` from a non-2xx body.
+
+        An earlier revision shipped an `applied` key here on the reasoning that naming
+        what landed is actionable. It is -- but not there, because nothing reads it. The
+        partial set goes to the audit log instead, which has a reader and mirrors the
+        `settings_put` line the success path already writes.
+        """
+        from kiro_crew.apps.builtins.ops_mission_control.backend import policy_store
+
+        app = web.Application()
+        routes.register_routes(app)
+        with mock.patch.object(routes, "is_app_enabled", return_value=True):
+            with mock.patch.object(policy_store, "set_ceiling", self._refuse):
+                client = await self._client(app)
+                resp = await client.put(
+                    "/api/apps/ops-mission-control/settings", json={"mode": "observe"}
+                )
+                body = await resp.json()
+
+        self.assertNotIn("applied", body)
+        self.assertEqual(sorted(body), ["code", "error", "ok"])
+
+    async def test_an_ordinary_settings_write_still_succeeds(self):
+        """Negative control: the guard must not break the route it protects."""
+        app = web.Application()
+        routes.register_routes(app)
+        with mock.patch.object(routes, "is_app_enabled", return_value=True):
+            client = await self._client(app)
+            resp = await client.put(
+                "/api/apps/ops-mission-control/settings", json={"mode": "observe"}
+            )
+            self.assertEqual(resp.status, 200)
+            body = await resp.json()
+
+        self.assertIs(body["ok"], True)
+        self.assertEqual(body["applied"]["mode"], "observe")

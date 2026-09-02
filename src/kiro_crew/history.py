@@ -2,7 +2,9 @@
 
 Session files: ~/.kiro/crew/sessions/{safe_key}.jsonl
 Each entry tracks provenance (source_thread, source_user) for citation.
-Files auto-rotate at 512KB, keeping last 200 lines.
+Appends through ``ConversationLog.append`` auto-rotate at 10MB, keeping up to 200
+lines within that byte cap. The dashboard whole-file save does not rotate, so a
+transcript written only through it is bounded by its message window instead.
 """
 
 from __future__ import annotations
@@ -239,7 +241,7 @@ def carry_unowned_metadata(
     return rebuilt
 
 
-_SESSION_MAX_BYTES = 2 * 1024 * 1024  # 2MB
+_SESSION_MAX_BYTES = 10 * 1024 * 1024  # 10MB
 _SESSION_KEEP_LINES = 200
 # Bounded cross-process lock acquisition. The per-session sidecar ``flock`` is
 # acquired on the hot ``append`` path, which some transports (Telegram/WeCom/
@@ -2704,5 +2706,5 @@ class ConversationLog:
     def _rewrite_session_locked(self, key: str, messages: list[dict]) -> None:
         self._rewrite_coordinator._rewrite_session_locked(key, messages)
 
-    def _maybe_rotate(self, path: Path, key: str, *, max_drop: int | None = None) -> int:
-        return self._rewrite_coordinator._maybe_rotate(path, key, max_drop=max_drop)
+    def _maybe_rotate(self, path: Path, key: str) -> None:
+        self._rewrite_coordinator._maybe_rotate(path, key)

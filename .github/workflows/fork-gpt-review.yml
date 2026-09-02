@@ -48,7 +48,10 @@ jobs:
   fork-gpt-review:
     name: Fork GPT 5.6 Review
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    # Must stay above the sum of the two PASS_WALLs plus setup, or this wall --
+    # not the named pass timeout -- kills pass 2 and the job ends with no
+    # verdict. Keep in sync with codex-review.yml.
+    timeout-minutes: 130
     # Only for a SUCCESSFUL Stage 1 run that was itself a fork pull_request.
     if: >-
       github.event.workflow_run.event == 'pull_request'
@@ -362,7 +365,7 @@ jobs:
           role-to-assume: ${{ secrets.AWS_CODEX_BEDROCK_ROLE_ARN }}
           aws-region: us-east-1
 
-      - name: GPT 5.6 review (discovery + falsification)
+      - name: GPT 5.6 review (discovery pass)
         id: review
         env:
           AWS_REGION: us-east-1
@@ -371,12 +374,16 @@ jobs:
           NONCE: ${{ steps.intent.outputs.nonce }}
           INTENT_FILE: ${{ runner.temp }}/pr-intent.txt
           INTENT_TRUNCATED: ${{ steps.intent.outputs.truncated }}
-          DISCOVERY_OUTPUT_MAX_BYTES: "50000"
-        # Pass 1 generates candidates. Pass 2 tries to KILL them, then emits the
-        # only verdict the comment and gate consume. Pass 1's output is never
-        # posted or gated directly. Mirrors codex-review.yml's two-pass design.
+          # Bounded just under the one-hour Bedrock session so a pass that runs
+          # away dies on a named timeout instead of mid-call on an expired
+          # token, which reads as a model failure and buries the real cause.
+          PASS_WALL: 55m
+        # Pass 1 generates candidates; its output is never posted or gated
+        # directly -- the falsification pass below emits the only verdict the
+        # comment and gate consume. Mirrors codex-review.yml's two-pass design.
         run: |
           set -uo pipefail
+          rm -f codex-review-output.md
           : > codex-review-output.md
           # The shared GPT prompt blocks are read from the checked-out tree,
           # which on this lane is the UNMODIFIED trusted BASE -- a fork PR
@@ -559,8 +566,58 @@ jobs:
             echo "PR_INTENT_END::${NONCE}"
           } >> /tmp/fork-codex-prompt.md
 
+          # `rm -f` FIRST, never a bare `: >`. This lane checks out the trusted
+          # base rather than the fork head, so a PR-committed symlink at this
+          # name cannot be planted here today -- but that is a property of the
+          # checkout step, not of this write, and codex-review.yml's identical
+          # write IS reachable. Keep both lanes spelled the same way so the safe
+          # form survives any future change to what this lane checks out.
+          rm -f codex-failed-passes
+          : > codex-failed-passes
+          BASE_PROMPT="$(cat /tmp/fork-codex-prompt.md)"
+          PROMPT=$(printf '%s\n\n%s\n' "$BASE_PROMPT" \
+            "DISCOVERY PASS: inspect the full current diff and report every candidate that meets the FINDING BAR. This is candidate generation, not the final verdict.")
+
+          rm -f codex-pass-1.md
           rc=0
-          failed_passes=""
+          # Called by path, not from PATH: exporting the bin directory
+          # through $GITHUB_PATH is a run-step write to an environment
+          # file, which is an execution vector in a job holding Bedrock
+          # credentials (zizmor github-env). The path is under RUNNER_TEMP
+          # because the manifest that produced it was materialized from the
+          # BASE commit, not from this checkout -- see "Install review CLI".
+          timeout "$PASS_WALL" \
+            "$RUNNER_TEMP/review-cli/node_modules/.bin/codex" exec \
+            --sandbox read-only \
+            --output-last-message "codex-pass-1.md" \
+            "$PROMPT" || rc=$?
+          if [ "$rc" -ne 0 ] || [ ! -s codex-pass-1.md ]; then
+            echo "::warning::GPT 5.6 fork review pass 1 did not complete (exit ${rc}); the verdict will fail closed."
+            printf ' 1' >> codex-failed-passes
+          fi
+
+      # Re-assume the role BETWEEN the passes: the session lasts one hour, and a
+      # discovery pass that consumes most of it used to leave pass 2 to die
+      # mid-call on an expired security token, failing the gate closed with no
+      # verdict. Keep in sync with codex-review.yml.
+      - uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6.2.3
+        with:
+          role-to-assume: ${{ secrets.AWS_CODEX_BEDROCK_ROLE_ARN }}
+          aws-region: us-east-1
+
+      - name: GPT 5.6 review (falsification pass)
+        env:
+          AWS_REGION: us-east-1
+          DISCOVERY_OUTPUT_MAX_BYTES: "50000"
+          PASS_WALL: 55m
+        # Pass 2 tries to KILL pass 1's candidates and emits the only verdict the
+        # comment and gate consume. Both calls are required: if either failed, no
+        # verdict is published and the gate fails closed.
+        run: |
+          set -uo pipefail
+          rm -f codex-review-output.md
+          : > codex-review-output.md
+          failed_passes="$(cat codex-failed-passes 2>/dev/null || true)"
           review_nonce="$(openssl rand -hex 16)"
 
           truncate_utf8() {
@@ -586,44 +643,28 @@ jobs:
           }
 
           BASE_PROMPT="$(cat /tmp/fork-codex-prompt.md)"
+          discovery_one="$(bounded_output "codex-pass-1.md")"
+          PROMPT="$(
+            printf '%s\n\n' "$BASE_PROMPT"
+            cat .github/review-prompts/gpt-falsification-mandate.md
+            cat .github/review-prompts/gpt-falsification-verdict.md
+            printf '%s\n' \
+              "DISCOVERY_1_BEGIN::${review_nonce}" \
+              "$discovery_one" \
+              "DISCOVERY_1_END::${review_nonce}"
+          )"
 
-          for pass in 1 2; do
-            case "$pass" in
-              1)
-                PROMPT=$(printf '%s\n\n%s\n' "$BASE_PROMPT" \
-                  "DISCOVERY PASS: inspect the full current diff and report every candidate that meets the FINDING BAR. This is candidate generation, not the final verdict.")
-                ;;
-              2)
-                discovery_one="$(bounded_output "codex-pass-1.md")"
-                PROMPT="$(
-                  printf '%s\n\n' "$BASE_PROMPT"
-                  cat .github/review-prompts/gpt-falsification-mandate.md
-                  cat .github/review-prompts/gpt-falsification-verdict.md
-                  printf '%s\n' \
-                    "DISCOVERY_1_BEGIN::${review_nonce}" \
-                    "$discovery_one" \
-                    "DISCOVERY_1_END::${review_nonce}"
-                )"
-                ;;
-            esac
-
-            rm -f "codex-pass-${pass}.md"
-            rc=0
-            # Called by path, not from PATH: exporting the bin directory
-            # through $GITHUB_PATH is a run-step write to an environment
-            # file, which is an execution vector in a job holding Bedrock
-            # credentials (zizmor github-env). The path is under RUNNER_TEMP
-            # because the manifest that produced it was materialized from the
-            # BASE commit, not from this checkout -- see "Install review CLI".
+          rm -f codex-pass-2.md
+          rc=0
+          timeout "$PASS_WALL" \
             "$RUNNER_TEMP/review-cli/node_modules/.bin/codex" exec \
-              --sandbox read-only \
-              --output-last-message "codex-pass-${pass}.md" \
-              "$PROMPT" || rc=$?
-            if [ "$rc" -ne 0 ] || [ ! -s "codex-pass-${pass}.md" ]; then
-              echo "::warning::GPT 5.6 fork review pass ${pass} did not complete (exit ${rc}); the verdict will fail closed."
-              failed_passes="${failed_passes} ${pass}"
-            fi
-          done
+            --sandbox read-only \
+            --output-last-message "codex-pass-2.md" \
+            "$PROMPT" || rc=$?
+          if [ "$rc" -ne 0 ] || [ ! -s codex-pass-2.md ]; then
+            echo "::warning::GPT 5.6 fork review pass 2 did not complete (exit ${rc}); the verdict will fail closed."
+            failed_passes="${failed_passes} 2"
+          fi
 
           if [ -n "$failed_passes" ]; then
             {

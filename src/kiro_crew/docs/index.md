@@ -72,6 +72,9 @@ in [Messaging Transport](messaging-transport.md).
 - [Configuration](configuration.md): config file reference, environment variables, sandbox
 - [Use Cases](use-cases.md): real-world workflows from the community
 - [Troubleshooting](troubleshooting.md): common issues and fixes
+- [Blocked commands and credential access](blocked-commands.md): why a command was
+  refused, what the agent is told to do instead, and how to check your AWS or SSO
+  credential setup
 - [MCP Apps](mcp-apps.md): render interactive MCP tool output (diagrams, viewers,
   forms) in chat, the two gates that enable it, what a server must declare, and why
   output stays plain text otherwise
@@ -84,7 +87,8 @@ in [Messaging Transport](messaging-transport.md).
 - Credential redaction across every LLM output path
 - HMAC-SHA256 signed, IP-pinned dashboard tokens
 - Denied-command rules enforced at Kiro Crew's own PreToolUse gate, with audit
-  logging
+  logging, and a refusal that names the sanctioned path instead of only the rule
+  ([Blocked commands](blocked-commands.md))
 - Prompt-injection credential-exfiltration protection
 - Slack access is owner-only: multi-user access and open channels are refused
 - [App Platform Trust Model](app-platform-trust-model.md): enabled apps run

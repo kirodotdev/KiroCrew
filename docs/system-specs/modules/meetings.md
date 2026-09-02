@@ -420,7 +420,7 @@ default visual rhythm. Empty copy distinguishes an active meeting from review or
 ended states, and the durable list is not an ARIA live region because the compact
 caption already announces recognizer updates.
 
-Cloud transcription is an optional extra (`pip install kirocrew[voice]`). When it
+Cloud transcription is optional (`pip install 'boto3>=1.34,<2' 'amazon-transcribe>=0.6,<1'`). When it
 is absent the endpoint answers a friendly WS error, the hook surfaces it as a
 toast, and the user can still type into the broadcast bar to feed the agents.
 

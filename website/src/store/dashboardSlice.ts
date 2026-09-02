@@ -3,7 +3,7 @@ import { jsonEqual } from '../utils/structuralEqual'
 import { createSlice, createAsyncThunk, createSelector, type PayloadAction } from '@reduxjs/toolkit'
 import { api } from '../api/client'
 import { sanitizeLlmOutput, isUnsafeKey } from '../utils/sanitize'
-import type { StatusData, ChatSlot, TodoList } from '../types'
+import type { StatusData, ChatSlot, TodoList, McpSessionReport } from '../types'
 import type { SessionColorMode, PaletteName, DefaultColorSetting, IntensityName } from '../utils/sessionColors'
 
 export interface SubagentDetail {
@@ -234,6 +234,18 @@ const dashboardSlice = createSlice({
       const slot = (state.slots ?? []).find(s => s.key === action.payload.slot)
       if (slot) slot.todo = action.payload.todo
     },
+    // Live MCP session-report delta, same merge discipline as sseTodoUpdate. A
+    // null payload is meaningful and must be stored: it is what the gateway
+    // pushes when a session reset makes the previous report describe a session
+    // that no longer exists, and keeping the old value would leave a dead
+    // session's server list on screen as the live one's.
+    sseMcpReportUpdate(
+      state,
+      action: PayloadAction<{ slot: string; mcp_report: McpSessionReport | null }>,
+    ) {
+      const slot = (state.slots ?? []).find(s => s.key === action.payload.slot)
+      if (slot) slot.mcp_report = action.payload.mcp_report
+    },
     // Bump a slot's recency timestamps on live message activity so the sidebar
     // re-ranks immediately off the finer-grained chat_message stream (vs waiting
     // for the next full sseSlots push). `last_ts` is the last message of any role,
@@ -443,7 +455,7 @@ const dashboardSlice = createSlice({
   },
 })
 
-export const { sseStatus, sseYolo, sseConnected, sseDisconnected, sseSlots, setSidebarOrder, sseTodoUpdate, touchSlotActivity, setChannelTrusted, sseSlotTitle, addSlotOptimistic, removeSlotOptimistic, updateSlot, updateSlotFolder, updateSlotPin, triggerRefresh, markSlotUnread, markSlotRead, setUpdateProgress,
+export const { sseStatus, sseYolo, sseConnected, sseDisconnected, sseSlots, setSidebarOrder, sseTodoUpdate, sseMcpReportUpdate, touchSlotActivity, setChannelTrusted, sseSlotTitle, addSlotOptimistic, removeSlotOptimistic, updateSlot, updateSlotFolder, updateSlotPin, triggerRefresh, markSlotUnread, markSlotRead, setUpdateProgress,
   setDesktopUpdateAvailable, sseSubagentStatus, sseSubagentText, sseSlotColor, setSessionDefaultColor, setSessionColorsMode, setSessionColorsPalette, setSessionColorsIntensity, setEnabledAppIds, patchSlotSourceLinks, patchSlotLink } = dashboardSlice.actions
 
 /**

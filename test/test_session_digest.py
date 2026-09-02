@@ -581,7 +581,13 @@ class TestBoundedRecords:
             assert not spy.iterated, "the handle was iterated, so one line is unbounded"
             assert spy.readline_limits, "no bounded read was issued"
             cap = session_digest._RECORD_CAP
-            assert all(0 < limit <= cap + 1 for limit in spy.readline_limits)
+            # cap + 2, relaxed from cap + 1 when the shared reader began bounding
+            # each read by what the CARRIED record has left rather than reading a
+            # full cap every time. cap + 2 is forced, not convenient: a legal
+            # at-cap record ending CRLF is cap + 2 bytes, so a read ceiling of
+            # cap + 1 could never assemble one and would refuse it. This assertion
+            # exists to pin that no read is UNBOUNDED, which it still does.
+            assert all(0 < limit <= cap + 2 for limit in spy.readline_limits)
 
     def test_record_exactly_at_cap_survives(self, sessions_dir: Path, cli_dir: Path) -> None:
         """The cap is inclusive: a record of exactly cap bytes still counts."""
@@ -748,18 +754,26 @@ class TestBoundedRecords:
         assert result.turns == 2
         assert result.first_message == "first crlf"
 
-    def test_crlf_record_at_the_cap_boundary_is_refused_by_one_byte(
+    def test_crlf_record_at_the_cap_boundary_is_accepted(
         self, sessions_dir: Path, cli_dir: Path
     ) -> None:
-        """A CRLF-terminated record of exactly cap bytes is refused, by one byte.
+        """A CRLF-terminated record of exactly cap bytes is accepted.
 
-        The carriage return counts toward the bounded read, so `readline(cap + 1)`
-        returns cap+1 bytes ending on the CR rather than the LF and the record
-        reads as over-cap. Pinned rather than fixed: it shifts the threshold by one
-        byte on a 128 MiB cap, and buying the byte back would cost the reader its
-        single invariant (a return shorter than cap+1 is a whole record). This is
-        also the shape that makes a text-mode test fixture fail on Windows and pass
-        on Linux, which is why the fixtures above pass `newline=""`.
+        This REVERSES a one-byte refusal that main pinned deliberately. The pin's
+        stated cost was that buying the byte back "would cost the reader its
+        single invariant (a return shorter than cap+1 is a whole record)" -- true
+        of the old reader, which decided over-cap straight from the length of one
+        `readline(cap + 1)`. The shared reader no longer has that invariant to
+        lose: it already defers a trailing carriage return across reads, because
+        it must not split a CRLF whose line feed has not arrived. Excluding that
+        pending byte from the body length therefore costs nothing that was not
+        already being paid, and the record below is legal by the cap's own
+        definition -- its body IS cap bytes.
+
+        Left refused, it suppressed a real participation entry in
+        `members.read_activity`, which is why this is a correctness fix rather
+        than a cosmetic one. Flagged to the reviewer as a main-owned behaviour
+        change rather than folded in silently.
         """
         cap = 200
         path = sessions_dir / "crlf_at_cap.jsonl"
@@ -770,23 +784,23 @@ class TestBoundedRecords:
             patch("kiro_crew.session_digest.data_home", return_value=sessions_dir.parent),
             patch("kiro_crew.session_digest.kiro_sessions_dir", return_value=cli_dir),
         ):
-            refused = digest("crlf_at_cap", ("crlf_at_cap",), "sid-nope")
+            at_cap = digest("crlf_at_cap", ("crlf_at_cap",), "sid-nope")
 
-        assert refused.turns == 0
+        assert at_cap.turns == 1
 
-        # One byte shorter and the same CRLF record is accepted, which locates the
-        # shift precisely instead of asserting only that something was refused.
-        shorter = sessions_dir / "crlf_under_cap.jsonl"
-        shorter.write_bytes(_user_record_of_length(cap - 1).encode("utf-8") + b"\r\n")
+        # One byte OVER the cap is still refused, which locates the boundary
+        # precisely instead of asserting only that something was accepted.
+        over = sessions_dir / "crlf_over_cap.jsonl"
+        over.write_bytes(_user_record_of_length(cap + 1).encode("utf-8") + b"\r\n")
 
         with (
             patch("kiro_crew.session_digest._RECORD_CAP", cap, create=True),
             patch("kiro_crew.session_digest.data_home", return_value=sessions_dir.parent),
             patch("kiro_crew.session_digest.kiro_sessions_dir", return_value=cli_dir),
         ):
-            accepted = digest("crlf_under_cap", ("crlf_under_cap",), "sid-nope")
+            refused = digest("crlf_over_cap", ("crlf_over_cap",), "sid-nope")
 
-        assert accepted.turns == 1
+        assert refused.turns == 0
 
     def test_over_cap_cli_record_drops_its_turn_and_images(
         self, sessions_dir: Path, cli_dir: Path

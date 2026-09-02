@@ -271,11 +271,15 @@ Because a `[project]` table exists, setuptools reads the entry points from
 there and ignores `setup.cfg`'s `console_scripts`, so `kirocrew` is the only
 command installed on `PATH`.
 
-Optional extras (install with e.g. `pip install "kirocrew[voice]"`):
+Optional extras. Kiro Crew is not on PyPI, so `pip install "kirocrew[voice]"`
+cannot resolve — install an extra's own distributions into the environment that
+runs the gateway instead (e.g. `pip install 'boto3>=1.34,<2'
+'amazon-transcribe>=0.6,<1' 'pywhispercpp>=1.5,<2'` for `voice`). The dashboard
+prints the exact command, already pointed at the right interpreter.
 
 | Extra | Adds | For |
 |-------|------|-----|
-| `voice` | `boto3`, `amazon-transcribe` | Speech-to-text transcription |
+| `voice` | `boto3`, `amazon-transcribe`, `pywhispercpp` | Speech-to-text transcription |
 | `otlp` | `opentelemetry-exporter-otlp-proto-http` | OTLP/HTTP metrics export. Installing it does not enable egress; that still needs an explicit `telemetry.otlp_endpoint` |
 | `perf` | `py-spy` | Out-of-process profiling (`kirocrew perf sample --pid`). The in-process sampler needs nothing extra |
 | `teams` | `PyJWT[crypto]` | Microsoft Teams channel (validates the inbound Bot Framework RS256 JWT) |

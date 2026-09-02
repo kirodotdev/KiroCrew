@@ -63,12 +63,15 @@ test("Windows consumes packaged bytecode while POSIX redirects runtime caches", 
 });
 
 test("the one desktop gateway spawn uses the hardened environment builder", () => {
-  const main = fs.readFileSync(path.join(__dirname, "..", "main.js"), "utf8");
-  const gatewaySpawns = [...main.matchAll(/spawn\(spawnBin, spawnArgs,/g)];
+  const supervisor = fs.readFileSync(
+    path.join(__dirname, "..", "gateway-supervisor.js"),
+    "utf8",
+  );
+  const gatewaySpawns = [...supervisor.matchAll(/spawn\(spawnBin, spawnArgs,/g)];
 
   assert.equal(gatewaySpawns.length, 1, "expected one owned gateway spawn boundary");
   assert.match(
-    main,
+    supervisor,
     /env:\s*buildGatewayEnvironment\(\{[\s\S]*?gatewayBytecodeEnvironment\([\s\S]*?\}\),/,
     "the owned gateway spawn must pass every initial launch and liveness respawn " +
       "through buildGatewayEnvironment",

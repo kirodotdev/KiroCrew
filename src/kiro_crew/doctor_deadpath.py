@@ -239,6 +239,13 @@ _CREDENTIAL_KEY_MARKERS: tuple[str, ...] = (
     "PRIVATE",
 )
 
+# Opaque identifier flag operands that merely look like absolute paths
+# (e.g. --scope /spaces/nsp_abc123). Not filesystem paths — must not be
+# stat-ed, otherwise a healthy install is permanently red (see #7375).
+# Strict literal set: a heuristic would trade bounded false positive for
+# unbounded false negative.
+_IDENTIFIER_FLAGS: frozenset[str] = frozenset({"--scope", "--namespace", "--space"})
+
 _REDACTED_VALUE = "<redacted: credential-shaped key>"
 
 
@@ -263,6 +270,12 @@ def _walk_server_paths(server: str, entry: dict) -> list[DeadPath]:
                 and _looks_like_single_absolute_path(arg)
                 and _path_is_dead(arg)
             ):
+                # Skip an arg whose preceding arg is an identifier flag — the
+                # value is an opaque id, not a filesystem path. Safe on
+                # non-string / out-of-bounds / args[0]: those fall through to
+                # the normal dead-path check.
+                if i > 0 and isinstance(args[i - 1], str) and args[i - 1] in _IDENTIFIER_FLAGS:
+                    continue
                 dead.append(DeadPath(spec="", server=server, where=f"args[{i}]", path=arg))
 
     env = entry.get("env")

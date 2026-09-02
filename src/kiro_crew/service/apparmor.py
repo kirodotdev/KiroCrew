@@ -688,7 +688,13 @@ def _substitutable_by_others(resolved: Path, expected_uid: int | None = None) ->
     not just the instant it is installed.
     """
     getuid = getattr(os, "getuid", None)  # absent on Windows, where this is moot
-    check_uid = expected_uid if expected_uid is not None else (getuid() if getuid is not None else None)
+    check_uid: int | None
+    if expected_uid is not None:
+        check_uid = expected_uid
+    elif getuid is not None:
+        check_uid = getuid()
+    else:
+        check_uid = None
     try:
         info = resolved.stat()
     except OSError as exc:

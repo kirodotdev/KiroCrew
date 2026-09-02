@@ -14,6 +14,7 @@ import ChatDropOverlay, { useChatFileDrop } from './ChatDropOverlay'
 import PendingQuestionCard from './PendingQuestionCard'
 import QueueStack, { SubagentDeliveryProgress, splitPaneMessages } from './QueueStack'
 import SubagentProgressBar from '../pages/chat/SubagentProgressBar'
+import ChatFooter from '../pages/chat/ChatFooter'
 import AgentDropdownList, { DefaultAgentRow, ManageAgentsFooter } from './AgentDropdownList'
 import { agentSwitchFailureMessage } from '../utils/agentSwitchFeedback'
 import ModelDropdownList from './ModelDropdownList'
@@ -713,6 +714,24 @@ export default function ChatPane({
             </button>
           )}
           <ChatMessageList messages={messages} running={running} renderers={renderers} hideCardOwnedOAuth={connectionsUiOn} />
+          {/* The same working indicator the full chat page shows (the ghost-pose
+              carousel, theme-swappable via themeBranding): a running turn in a
+              pane — a member DM, a split pane — was otherwise invisible between
+              tool steps. Inside the scroll container, after the last message,
+              so it reads as "the reply is coming" exactly where the reply will
+              land. Stop/regenerate chrome stays page-level: the pane derives
+              the footer's inputs from its own per-slot stream state. */}
+          <ChatFooter
+            running={running || !!paneSlot?.running}
+            stopping={streamState === 'stopping' || !!paneSlot?.stopping}
+            state={streamState}
+            lastRole={messages[messages.length - 1]?.role ?? ''}
+            streamTick={
+              messages[messages.length - 1]?.role === 'streaming'
+                ? (messages[messages.length - 1]?.content.length ?? 0)
+                : 0
+            }
+          />
           </div>
         </div>
         {/* Bottom fade overlays the scroller's last 24px above the status bars

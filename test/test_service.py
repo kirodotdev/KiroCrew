@@ -1151,6 +1151,54 @@ class TestControllerDispatch:
         ):
             assert controller.restart_service() is False
 
+    def test_manual_restart_hint_systemd_names_sudo_systemctl(self):
+        # The hint is printed precisely when the CLI restart path just failed
+        # for privileges, so it must name the privileged command — never a
+        # circular "kirocrew restart".
+        from kiro_crew.service import controller
+
+        with patch(
+            "kiro_crew.service.controller.current_platform",
+            return_value=Platform.SYSTEMD,
+        ), patch(
+            "kiro_crew.service.common.current_platform",
+            return_value=Platform.SYSTEMD,
+        ):
+            hint = controller.manual_restart_hint()
+        assert hint == "sudo systemctl restart kirocrew"
+
+    def test_manual_restart_hint_launchd_names_a_recovery_pair(self):
+        # Not kickstart: macos.restart() already ran kickstart and it was
+        # refused, so the hint must be a different mechanism (bootout +
+        # bootstrap from the installed plist), not a retry of the failure.
+        from kiro_crew.service import controller
+        from kiro_crew.service import macos as svc_macos
+        from kiro_crew.service.common import LAUNCHD_LABEL
+
+        with patch(
+            "kiro_crew.service.controller.current_platform",
+            return_value=Platform.LAUNCHD,
+        ), patch("kiro_crew.service.controller.os.getuid", return_value=501, create=True):
+            hint = controller.manual_restart_hint()
+        assert "kickstart" not in hint
+        assert f"launchctl bootout gui/501/{LAUNCHD_LABEL}" in hint
+        assert f'launchctl bootstrap gui/501 "{svc_macos.PLIST_PATH}"' in hint
+
+    def test_manual_restart_hint_never_circular(self):
+        # Whatever the platform, the hint must not send the operator back into
+        # the command that just failed.
+        from kiro_crew.service import controller
+
+        for plat in (Platform.SYSTEMD, Platform.LAUNCHD, Platform.UNSUPPORTED):
+            with patch(
+                "kiro_crew.service.controller.current_platform",
+                return_value=plat,
+            ), patch(
+                "kiro_crew.service.common.current_platform",
+                return_value=plat,
+            ):
+                assert controller.manual_restart_hint() != "kirocrew restart"
+
     def test_install_systemd_handles_install_error(self, capsys):
         """If linux.install raises ServiceInstallError, controller catches it,
         prints to stderr, and returns 1 — not propagating the exception."""

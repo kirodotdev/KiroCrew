@@ -1713,7 +1713,12 @@ async def _rebuild_embeddings_job(app: web.Application, store, embedder, job_id:
     degrades gracefully during the rebuild instead of going dark.
     """
     try:
-        processed = await rebuild_embeddings(store, embedder, job_id=job_id, force=force)
+        # pace=False: this job exists because a human clicked Rebuild and is
+        # watching its progress bar — the load is expected, so it runs at the
+        # interactive scheduling class with no idling. The watcher self-heal
+        # path stays on the paced default.
+        processed = await rebuild_embeddings(store, embedder, job_id=job_id, force=force,
+                                             pace=False)
         store.db.execute(
             "UPDATE ingestion_jobs SET status = 'completed', items_processed = ?, updated_at = ? "
             "WHERE id = ?",

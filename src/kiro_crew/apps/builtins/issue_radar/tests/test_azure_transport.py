@@ -81,6 +81,11 @@ class TestOrgUrl(unittest.TestCase):
     def test_the_org_url_is_always_on_the_pinned_host(self):
         self.assertEqual(azure_client._org_url("contoso"), "https://dev.azure.com/contoso")
 
+    def test_facade_quote_patch_seam_remains_authoritative(self):
+        with mock.patch.object(azure_client, "quote", return_value="encoded") as quote:
+            self.assertEqual(azure_client._org_url("contoso"), "https://dev.azure.com/encoded")
+        quote.assert_called_once_with("contoso", safe="")
+
     def test_the_org_becomes_exactly_one_path_segment(self):
         # Encoded with safe='', so a separator inside the name cannot add a
         # segment and retarget the call at a different organization. The segment
@@ -367,6 +372,12 @@ class TestAzEnv(unittest.TestCase):
             with self.subTest(key=key):
                 self.assertEqual(env.get(key), value)
 
+    def test_facade_minimal_env_patch_seam_remains_authoritative(self):
+        shaped = {"SENTINEL": "facade"}
+        with mock.patch.object(azure_client, "minimal_env", return_value=shaped) as build:
+            self.assertIs(azure_client._az_env(HOST), shaped)
+        build.assert_called_once()
+
     def test_the_personal_access_token_is_forwarded_only_for_the_pinned_host(self):
         # It is one ambient credential with no host binding, so forwarding it to
         # any other host would hand that server a dev.azure.com credential.
@@ -595,6 +606,14 @@ class TestFailureClassification(unittest.TestCase):
         proc = _proc(stderr="usage: az\nline2\nfirst\nsecond\nthird\n")
         self.assertEqual(azure_client._stderr_tail(proc), "first second third")
         self.assertEqual(azure_client._stderr_tail(_proc(stderr="")), "")
+
+    def test_facade_sanitizer_patch_seam_remains_authoritative(self):
+        proc = _proc(stderr="secret")
+        with mock.patch.object(
+            azure_client, "sanitize_cli_stderr", return_value="clean"
+        ) as sanitize:
+            self.assertEqual(azure_client._stderr_tail(proc), "clean")
+        sanitize.assert_called_once_with("secret")
 
     def test_forbidden_is_detected_by_status_and_by_prose(self):
         # Azure answers a permission problem three different ways depending on the
@@ -965,6 +984,57 @@ class TestAzInvokePaged(unittest.TestCase):
             return [{"id": 1}, {"id": 2}]
 
         self.assertEqual(self._walk(invoke, limit=2), [{"id": 1}, {"id": 2}])
+
+
+class TestTransportFacadeBindings(unittest.TestCase):
+    """The extracted helpers must still obey azure_client's patch boundary."""
+
+    def test_invoke_injects_the_facades_current_spawn_and_body_bindings(self):
+        captured: dict = {}
+        spawn = mock.Mock(name="patched_az_run")
+        body_file = mock.Mock(name="patched_body_file")
+
+        def invoke(**kwargs):
+            captured.update(kwargs)
+            return {"ok": True}
+
+        with mock.patch.object(azure_client._transport, "invoke", side_effect=invoke):
+            with mock.patch.object(azure_client, "_az_run", spawn):
+                with mock.patch.object(azure_client, "_body_file", body_file):
+                    out = azure_client._az_invoke(
+                        org="contoso",
+                        area="git",
+                        resource="repositories",
+                        host=HOST,
+                        api_version="7.1",
+                    )
+
+        self.assertEqual(out, {"ok": True})
+        self.assertIs(captured["run"], spawn)
+        self.assertIs(captured["body_file"], body_file)
+
+    def test_pager_injects_the_facades_current_invoke_binding(self):
+        captured: dict = {}
+        invoke_one = mock.Mock(name="patched_az_invoke")
+
+        def invoke_paged(**kwargs):
+            captured.update(kwargs)
+            return []
+
+        with mock.patch.object(azure_client._transport, "invoke_paged", side_effect=invoke_paged):
+            with mock.patch.object(azure_client, "_az_invoke", invoke_one):
+                out = azure_client._az_invoke_paged(
+                    org="contoso",
+                    area="git",
+                    resource="repositories",
+                    host=HOST,
+                    timeout=3.0,
+                    api_version="7.1",
+                )
+
+        self.assertEqual(out, [])
+        self.assertIs(captured["invoke_one"], invoke_one)
+        self.assertIs(captured["values"], azure_client._values)
 
 
 if __name__ == "__main__":  # pragma: no cover

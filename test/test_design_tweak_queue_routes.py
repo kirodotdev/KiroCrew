@@ -885,6 +885,211 @@ class TestSubmitFollowUp:
         assert saved["comments"][-1]["cid"] == cid
 
 
+class TestPersistedRequestLifecycle:
+    """Pin the complete persisted state machine, not only its individual cuts."""
+
+    def test_submit_through_history_preserves_order_and_opens_the_next_draft(
+        self, isolated_queue, tmp_path, monkeypatch
+    ):
+        project_root = (tmp_path / "project").resolve()
+        project_root.mkdir()
+        monkeypatch.setattr(
+            server,
+            "_CFG",
+            {
+                "projects": [
+                    {"id": "project-one", "path": str(project_root), "name": "project"}
+                ],
+                "activeId": "project-one",
+            },
+        )
+
+        ids = iter(("req-one", "comment-one", "req-two", "comment-two"))
+        expected_times = [
+            "2026-08-01T00:00:00+00:00",  # first request created
+            "2026-08-01T00:00:02+00:00",  # first request sealed
+            "2026-08-01T00:00:03+00:00",  # second request created
+            "2026-08-01T00:00:05+00:00",  # first request delivered
+            "2026-08-01T00:00:06+00:00",  # done note appended
+        ]
+        times = iter(expected_times)
+        time_calls = []
+
+        def _fixed_now():
+            value = next(times)
+            time_calls.append(value)
+            return value
+
+        monkeypatch.setattr(server, "_new_id", lambda: next(ids))
+        monkeypatch.setattr(server, "_now_iso", _fixed_now)
+
+        def _request(method: str, path: str, body: dict | None = None) -> _Response:
+            handler, response = _make_handler(method, path, body)
+            handler._authorized = lambda *_args: True
+            getattr(server.Handler, f"do_{method}")(handler)
+            return response
+
+        first_comment = "Make the save button primary"
+        first_comment_created = "2026-08-01T00:00:01+00:00"
+        submit = _request(
+            "POST",
+            "/api/submit/",
+            {
+                "type": "visual_edit_request",
+                "selection": {
+                    "mode": "single",
+                    "elements": [{"tag": "button", "id": "save", "locator": "#save"}],
+                },
+                "comment": first_comment,
+                "createdAt": first_comment_created,
+                "projectId": "project-one",
+            },
+        )
+        first_queue_file = server._request_file(isolated_queue, "req-one")
+        assert submit.code == 200
+        assert submit.payload == {
+            "ok": True,
+            "id": "req-one",
+            "number": 1,
+            "state": "draft",
+            "cid": "comment-one",
+            "index": 1,
+            "label": "1.1",
+            "commentCount": 1,
+            "savedTo": str(first_queue_file),
+        }
+        assert first_queue_file.is_file()
+
+        sealed = _request("POST", "/api/send/?id=req-one")
+        assert sealed.code == 200
+        assert sealed.payload["ok"] is True
+        assert {
+            key: sealed.payload["request"][key]
+            for key in ("id", "number", "state", "status", "sentAt", "deliveredAt")
+        } == {
+            "id": "req-one",
+            "number": 1,
+            "state": "sent",
+            "status": "sent",
+            "sentAt": "2026-08-01T00:00:02+00:00",
+            "deliveredAt": "",
+        }
+
+        # The sealed request deliberately remains in queue while the next
+        # capture arrives. That is what proves seal-on-send, rather than archive,
+        # is the boundary that opens a new draft.
+        second_comment_created = "2026-08-01T00:00:04+00:00"
+        second = _request(
+            "POST",
+            "/api/submit/",
+            {
+                "type": "visual_edit_request",
+                "selection": {"elements": [{"tag": "nav", "id": "primary"}]},
+                "comment": "Tighten the navigation spacing",
+                "createdAt": second_comment_created,
+                "projectId": "project-one",
+            },
+        )
+        second_queue_file = server._request_file(isolated_queue, "req-two")
+        assert second.code == 200
+        assert second.payload == {
+            "ok": True,
+            "id": "req-two",
+            "number": 2,
+            "state": "draft",
+            "cid": "comment-two",
+            "index": 1,
+            "label": "2.1",
+            "commentCount": 1,
+            "savedTo": str(second_queue_file),
+        }
+        assert first_queue_file.is_file()
+        assert second_queue_file.is_file()
+
+        delivered = _request("POST", "/api/delivered/?id=req-one")
+        assert delivered.code == 200
+        assert delivered.payload["ok"] is True
+        assert delivered.payload["request"]["deliveredAt"] == "2026-08-01T00:00:05+00:00"
+
+        done = _request(
+            "POST",
+            "/api/thread/?id=req-one&cid=comment-one",
+            {"role": "agent", "text": "Applied the change", "status": "done"},
+        )
+        assert done.code == 200
+        assert {
+            key: done.payload[key] for key in ("ok", "id", "cid", "status")
+        } == {
+            "ok": True,
+            "id": "req-one",
+            "cid": "comment-one",
+            "status": "done",
+        }
+        assert done.payload["request"]["doneCount"] == 1
+        assert done.payload["request"]["comments"][0]["status"] == "done"
+
+        archived = _request("POST", "/api/clear/?id=req-one")
+        handled_file = server._request_file(server.HANDLED_DIR, "req-one")
+        assert archived.code == 200
+        assert archived.payload == {"ok": True, "id": "req-one"}
+        assert not first_queue_file.exists()
+        assert handled_file.is_file()
+        assert second_queue_file.is_file(), "archiving one request must not move the next draft"
+
+        history = _request("GET", "/api/history/")
+        assert history.code == 200
+        assert history.payload == {
+            "history": [
+                {
+                    "id": "req-one",
+                    "number": 1,
+                    "state": "sent",
+                    "status": "done",
+                    "createdAt": "2026-08-01T00:00:00+00:00",
+                    "sentAt": "2026-08-01T00:00:02+00:00",
+                    "deliveredAt": "2026-08-01T00:00:05+00:00",
+                    "projectId": "project-one",
+                    "projectRoot": str(project_root),
+                    "thread": [],
+                    "doneCount": 1,
+                    "comments": [
+                        {
+                            "cid": "comment-one",
+                            "index": 1,
+                            "status": "done",
+                            "comment": first_comment,
+                            "createdAt": first_comment_created,
+                            "element": "button#save",
+                            "locator": "#save",
+                            "parentLocator": "",
+                            "point": {},
+                            "count": 1,
+                            "mode": "single",
+                            "previewUrl": "",
+                            "projectId": "project-one",
+                            "sourceFile": "",
+                            "source": {},
+                            "followUpTo": "",
+                            "thread": [
+                                {
+                                    "role": "user",
+                                    "text": first_comment,
+                                    "ts": first_comment_created,
+                                },
+                                {
+                                    "role": "agent",
+                                    "text": "Applied the change",
+                                    "ts": "2026-08-01T00:00:06+00:00",
+                                },
+                            ],
+                        }
+                    ],
+                }
+            ]
+        }
+        assert time_calls == expected_times
+
+
 class TestThreadEntryCap:
     """A full thread must refuse further appends rather than grow without bound.
 

@@ -56,6 +56,7 @@ from kiro_crew.acp.types import (
     AcpEvent,
     JsonRpcMessage,
 )
+from kiro_crew.metrics.tool_calls import note_tool_call_started, record_tool_call_finished
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
 logger = logging.getLogger(__name__)
@@ -879,6 +880,16 @@ def _build_tool_call_event(
     _mcp_server_name = _kiro_mcp_server_name(update)
     if tool_call_id and mcp_server_name_cache is not None:
         mcp_server_name_cache[_ck] = _mcp_server_name
+    # Round-trip clock for kirocrew.tool.call.duration. Placed after the trusted
+    # MCP identity is resolved so an MCP call is classified by its transport
+    # rather than by the kind it reported; the terminal status is stamped in
+    # _build_tool_result_event. Keyed by the SAME origin scope as the caches
+    # above, because one runtime hosts many sessions and a backend-assigned
+    # toolCallId is unique only within one of them. Idempotent per scoped id, so
+    # the tool_call_update refinements that follow cannot restart the clock.
+    note_tool_call_started(
+        tool_call_id, kind=kind, mcp_server_name=_mcp_server_name, scope=cache_scope
+    )
     # Same lifecycle for the trusted tool name (_meta.kiro.toolName) so the
     # permission event can reconstruct the canonical mcp__<server>__<tool> for
     # per-tool governance in the app-own-server auto-approve.
@@ -992,17 +1003,25 @@ def _mcp_content_text(payload: dict[str, Any]) -> str | None:
     return "\n".join(parts)
 
 
-def _build_tool_result_event(update: dict[str, Any]) -> AcpEvent | None:
+def _build_tool_result_event(update: dict[str, Any], cache_scope: str = "") -> AcpEvent | None:
     """Build an ``EVENT_TOOL_RESULT`` from a ``tool_call_update`` carrying output.
 
     Two output shapes: ``content[].content.text`` blocks (stream mid-turn), or
     ``rawOutput.items[]`` (``Text`` / ``Json.stdout``) on ``status=completed``.
     Returns None when the update carries no output (refinement-only updates are
     handled by :func:`_build_tool_refinement_event`).
+
+    ``cache_scope`` is the emitting session's origin scope, forwarded only so the
+    duration histogram closes the same registry entry its start opened.
     """
     tool_use_id = update.get("toolCallId", "")
     if not tool_use_id:
         return None
+    # Before the output parsing below, which returns None for an output-less
+    # update: a tool that completed with no output is still a completed
+    # round-trip. A non-terminal status is a no-op here, so a mid-stream update
+    # leaves the clock running for the real completion.
+    record_tool_call_finished(tool_use_id, status=update.get("status"), scope=cache_scope)
     # Parts are collected RAW and redaction runs once over their JOIN, before
     # the single 8000-char bound. Both orderings matter: bounding first can
     # split a credential at a cut into fragments no redaction regex matches,
@@ -1340,7 +1359,7 @@ def parse_session_update(
         )
         return events
     if kind == UPDATE_TOOL_CALL_UPDATE:
-        result = _build_tool_result_event(update)
+        result = _build_tool_result_event(update, cache_scope)
         if result is not None:
             events.append(result)
         refine = _build_tool_refinement_event(

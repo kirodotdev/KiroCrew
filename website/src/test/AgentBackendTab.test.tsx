@@ -215,6 +215,49 @@ describe('AgentBackendTab', () => {
     expect(patchConfigMock).not.toHaveBeenCalled()
   })
 
+  it('offers an agent this frontend has no name for, under its policy id', async () => {
+    // The case a hard-coded candidate list could not express. An edition calls
+    // `register_selectable_backend`, so the id reaches the schema enum and the probe
+    // payload -- but nothing in this file knows it exists. Before, the row was
+    // filtered out of a literal `[KIRO, CLAUDE, KAS]` and the only control that sets
+    // `agent.acp_backend` could not offer a backend the wire already accepted.
+    //
+    // `policy_id` carries the label because it is the name a governance rule spells,
+    // so it is already a word rather than an internal token. Untranslated on purpose:
+    // legible beats a chip with no text, and a core agent that ships selectable earns
+    // a real translated entry instead.
+    schemaMock.mockReturnValue(schemaWith(['', 'claude', 'kas', 'codex']))
+    acpBackendsMock.mockResolvedValue({
+      backends: [probeRow(''), probeRow('claude'), probeRow('kas'), probeRow('codex')],
+    })
+    wrap()
+    await waitFor(() => expect(button('codex')).toBeEnabled())
+
+    // Reachable, not merely rendered: the click has to write the id the wire accepts.
+    fireEvent.click(button('codex'))
+    await waitFor(() => expect(patchConfigMock).toHaveBeenCalledWith('agent.acp_backend', 'codex'))
+  })
+
+  it('hides a known-but-unselectable agent even when the probe lists it', async () => {
+    // `GET /api/acp-backends` returns a row per id the CORE knows, which is a wider
+    // set than the deployment may select -- codex ships known and not selectable. So
+    // widening `candidates` to the probe payload must not smuggle in a row the schema
+    // excludes, or the panel would offer an option PATCH answers 400 for.
+    schemaMock.mockReturnValue(schemaWith(['', 'claude', 'kas']))
+    acpBackendsMock.mockResolvedValue({
+      backends: [
+        probeRow(''),
+        probeRow('claude'),
+        probeRow('kas'),
+        probeRow('codex', { selectable: false }),
+      ],
+    })
+    wrap()
+    await waitFor(() => expect(button('Kiro CLI')).toBeEnabled())
+    expect(screen.queryByRole('button', { name: 'codex' })).not.toBeInTheDocument()
+    expect(screen.queryByText('codex')).not.toBeInTheDocument()
+  })
+
   it('saves the Claude Code selection the shipped build offers', async () => {
     wrap()
     await waitFor(() => expect(button('Claude Code')).toBeEnabled())

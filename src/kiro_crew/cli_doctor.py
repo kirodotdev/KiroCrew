@@ -67,6 +67,7 @@ from kiro_crew.dashboard.origin import (
     machine_hostname,
     parse_dashboard_url,
 )
+from kiro_crew.deny_guidance import credential_vendor_server_ids
 from kiro_crew.discord import install_url, intent_probe
 from kiro_crew.doctor_deadpath import doctor_dead_paths
 from kiro_crew.embeddings import (
@@ -79,6 +80,7 @@ from kiro_crew.embeddings import (
     resolve_custom_model,
     verify_vendored_libs,
 )
+from kiro_crew.extras import install_hint
 from kiro_crew.kiro_cli import mcp_governance_may_apply, resolve_kiro_cli
 from kiro_crew.mcp_cleanup import ALWAYS_ON_BIN_MCP_SERVERS as _ALWAYS_ON_MCPS
 from kiro_crew.mcp_cleanup import KIROCREW_BIN_MCP_SERVERS as _MANAGED_MCPS
@@ -87,9 +89,14 @@ from kiro_crew.mcp_discovery import McpServerInfo, probe_server
 from kiro_crew.model_registry import acp_id_correction
 from kiro_crew.platform import (
     PlatformCompositionError,
+)
+from kiro_crew.platform import context as platform_context
+from kiro_crew.platform import (
     current_context,
     safe_context_call,
 )
+from kiro_crew.platform.capability_bound import bind_capability_manager
+from kiro_crew.platform.defaults import DefaultCapabilityManager
 from kiro_crew.platform.governance import CU_MCP_SERVER, may_skip_gate_now
 from kiro_crew.sandbox import warm_backend
 from kiro_crew.security import is_sensitive_path
@@ -1951,6 +1958,228 @@ def _doctor_model_url_reachable(issues: list[str]) -> None:
         print("               keep retrying with backoff on every gateway boot.")
 
 
+#: Ceiling on each ``aws configure`` probe in the Credentials section. Doctor is
+#: interactive, and an AWS CLI that stalls on a network-backed credential source
+#: must cost a bounded pause rather than hanging the whole run.
+_AWS_PROBE_TIMEOUT_SECS = 10
+
+#: Where an operator can actually READ the packaged blocked-commands doc.
+#: Deliberately a GitHub URL rather than a dashboard page or a repo-relative
+#: path: the dashboard has no Docs surface (packaged docs are reached as GitHub
+#: links, the base `TipCard` uses), and `src/kiro_crew/...` does not exist on a
+#: host that installed the wheel. A pointer an operator cannot follow costs more
+#: trust than no pointer, and this line prints on every run where ~/.aws exists.
+_BLOCKED_COMMANDS_DOC_URL = (
+    "https://github.com/kirodotdev/KiroCrew/blob/main/src/kiro_crew/docs/blocked-commands.md"
+)
+
+
+def _aws_probe_env() -> dict[str, str]:
+    """Child environment for the ``aws configure`` probes.
+
+    Drops the two variables that relocate the CLI's files. This section decides
+    WHETHER to report from ``~/.aws`` existence but asks the CLI for the profile
+    NAMES, and a subprocess inherits the environment — so with
+    ``AWS_CONFIG_FILE`` / ``AWS_SHARED_CREDENTIALS_FILE`` set, the two halves
+    describe DIFFERENT files. That is not hypothetical: the agent sandbox points
+    both at a per-session directory, so ``doctor`` run from such a shell reported
+    a profile that is absent from the operator's own config while its own probe
+    said that config file does not exist. Dropping them makes the CLI resolve the
+    same default locations the existence probe checks, so the halves cannot
+    disagree. Everything else is inherited — ``PATH`` still has to work.
+    """
+    env = dict(os.environ)
+    for relocator in ("AWS_CONFIG_FILE", "AWS_SHARED_CREDENTIALS_FILE"):
+        env.pop(relocator, None)
+    return env
+
+
+def _aws_profile_names() -> list[str] | None:
+    """Profiles as the SANCTIONED path reports them. ``None`` = could not ask.
+
+    Deliberately NOT a parse of ``~/.aws/config``. That file sits inside a
+    directory ``security._SENSITIVE_HOME_DIRS`` fences from the agent, and
+    ``kirocrew doctor`` is reachable from a tool call — so opening it here would
+    hand back through a diagnostic exactly what the floor refuses directly,
+    which is the "just use a different reader" move this whole feature exists to
+    talk the agent out of. ``aws configure list-profiles`` is the command the
+    remediation text names and ``test_deny_guidance`` pins as allowed, so the
+    report now comes through the same door the guidance points at.
+
+    ``None`` rather than ``[]`` when the CLI is absent or fails, because "cannot
+    ask" and "asked, and there are none" are different things to tell an
+    operator.
+
+    Resolved through ``trusted_system_bin`` rather than ``PATH``: a gateway's
+    ``PATH`` can lead with a directory the agent itself can write (a worktree
+    venv's ``bin``), and this runs when an OPERATOR types ``kirocrew doctor`` —
+    outside the agent's sandbox. A miss degrades to the same "cannot ask" answer
+    as an absent CLI, which is the honest reading either way.
+    """
+    aws_bin = platform_compat.trusted_system_bin("aws")
+    if not aws_bin:
+        return None
+    try:
+        proc = subprocess.run(
+            [aws_bin, "configure", "list-profiles"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=_AWS_PROBE_TIMEOUT_SECS,
+            env=_aws_probe_env(),
+        )
+    except Exception:
+        return None
+    if proc.returncode != 0:
+        return None
+    names: list[str] = []
+    for line in (proc.stdout or "").splitlines():
+        name = line.strip()
+        if name and name not in names:
+            names.append(name)
+    return names
+
+
+def _aws_auto_refreshes() -> bool:
+    """Whether the profile the agent will ACTUALLY use auto-refreshes.
+
+    Asked of the CLI rather than by looking for the string ``credential_process``
+    somewhere in the config file — that substring test answered "yes" when the
+    key belonged to any other profile, so the effective-profile question is both
+    more accurate and reachable without a fenced read. One invocation, resolving
+    the same default profile the agent's own AWS calls will resolve.
+
+    Resolved through ``trusted_system_bin`` for the same reason as the profile
+    probe: this runs under an operator's ``kirocrew doctor``, and a ``PATH`` that
+    leads with an agent-writable directory would let a planted shim answer.
+    """
+    aws_bin = platform_compat.trusted_system_bin("aws")
+    if not aws_bin:
+        return False
+    try:
+        proc = subprocess.run(
+            [aws_bin, "configure", "get", "credential_process"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=_AWS_PROBE_TIMEOUT_SECS,
+            env=_aws_probe_env(),
+        )
+    except Exception:
+        return False
+    return proc.returncode == 0 and bool((proc.stdout or "").strip())
+
+
+def _credential_vendor_line() -> str:
+    """The edition's credential-vending MCP servers, or "" when there are none.
+
+    Phrased for the OPERATOR, not reused from the agent's refusal hint: that hint
+    tells its reader to prefer the vendor and says it supersedes "the guidance
+    above", neither of which is true for a human reading a terminal. Only the
+    server ids are shared with the refusal path.
+
+    Runs the capability-manager lookup on its own event loop because ``doctor`` is
+    synchronous. Degrades to "" on any failure — including an already-running loop
+    — since the absence of this line is indistinguishable from the public
+    edition's normal state and must never fail the run.
+    """
+    try:
+        manager = platform_context.safe_context_call(
+            lambda: platform_context.current_context().capability_manager,
+            fallback_factory=lambda: bind_capability_manager(DefaultCapabilityManager()),
+            log_message=None,
+        )
+        if not manager.available():
+            return ""
+        ids = credential_vendor_server_ids(asyncio.run(manager.list_mcp()))
+        if not ids:
+            return ""
+        listed = ", ".join(_safe_display(name) for name in ids)
+        return (
+            f"agents mint credentials through {listed} rather than reading these "
+            "files, so the files being unreadable to them is expected, not a fault."
+        )
+    except Exception:
+        return ""
+
+
+def _doctor_credentials(issues: list[str]) -> None:
+    """Report the AWS / credential posture the agent will actually see.
+
+    Exists because "my agent cannot reach AWS" had no self-service answer: the
+    agent is allowed to run AWS CLI calls but not to read credential files, so a
+    refused read looks identical to having no credentials at all, and nothing on
+    either side of that told the operator which one they had.
+
+    Advisory only, like the pod-session-bus and memory-pressure probes: ``issues``
+    is doctor's exit-code channel, and an unconfigured AWS profile is not a Kiro
+    Crew fault. Reporting it is right; failing on it would make ``doctor`` red on
+    every host that simply does not use AWS.
+
+    No secret value is read or printed, and nothing under ``~/.aws`` is OPENED:
+    the two files are probed for existence, and the profile set and refresh
+    posture come from ``aws configure``, the sanctioned path the guidance itself
+    names. A diagnostic that parsed the fenced file would be the "different
+    reader" this feature talks the agent out of looking for.
+    """
+    del issues  # advisory-only diagnostic; keeps the call-site signature uniform
+    print("\nCredentials")
+    aws_dir = Path.home() / ".aws"
+    has_config = (aws_dir / "config").is_file()
+    has_creds = (aws_dir / "credentials").is_file()
+    if not has_config and not has_creds:
+        print("  aws:         ⏹ no ~/.aws config — agents can still run AWS CLI calls")
+        _print_wrapped(
+            "once you configure one: the SDK resolves credentials itself, so the agent "
+            "never needs to read the files. If you use AWS, run `aws configure sso` or "
+            "`aws configure` in your own terminal."
+        )
+    else:
+        profiles = _aws_profile_names()
+        if profiles:
+            shown = ", ".join(_safe_display(name) for name in profiles[:6])
+            extra = f" (+{len(profiles) - 6} more)" if len(profiles) > 6 else ""
+            print(f"  profiles:    ✅ {shown}{extra}")
+        elif profiles is None:
+            # No aws CLI to ask, and the config file is not ours to read — so the
+            # honest report is that the files exist and the profile set is unknown.
+            print("  profiles:    ℹ️  ~/.aws present; install the AWS CLI to list profiles")
+        elif has_creds:
+            print("  profiles:    ✅ default (from ~/.aws/credentials)")
+        else:
+            print("  profiles:    ⚠️  ~/.aws present but `aws configure` lists no profile")
+        # credential_process is the setup worth calling out: it vends short-lived
+        # credentials on demand, so the agent's AWS calls keep working across a
+        # token expiry without anyone re-running a login.
+        if _aws_auto_refreshes():
+            print("  refresh:     ✅ credential_process configured (auto-refreshing)")
+        else:
+            print("  refresh:     ⏹ no credential_process — credentials may expire mid-task")
+    vendor = _credential_vendor_line()
+    if vendor:
+        print("  vending MCP: ✅ available")
+        _print_wrapped(vendor)
+    print("  note:        ℹ️  agents cannot READ credential files; AWS CLI calls are allowed")
+    if has_config or has_creds:
+        # Only true once something IS configured. On a host with nothing set up the
+        # missing setup is the real answer, and steering the operator away from it
+        # would contradict the "no ~/.aws config" line printed above.
+        _print_wrapped(
+            "So if an agent reports that AWS is unavailable, it most likely hit the "
+            "credential-file block rather than a missing setup — see:"
+        )
+        # Printed OUTSIDE the wrapper on purpose. `_print_wrapped` breaks on width
+        # and split this URL across two lines at its hyphen, which an operator
+        # cannot copy back out intact — a broken link is barely better than the
+        # dead pointer this replaced.
+        print(f"    {_BLOCKED_COMMANDS_DOC_URL}")
+    else:
+        _print_wrapped(
+            "With nothing configured, an agent reporting no AWS access is reporting "
+            "the truth — configure a profile first, then re-run this check."
+        )
+
+
 def _doctor_headless_auth(issues: list[str]) -> None:
     """Report an API-key credential the INSTALLED service cannot see.
 
@@ -2682,6 +2911,12 @@ def _doctor(platform_boot_error: "Exception | None" = None, bundle: bool = False
     _doctor_trust_root()
     _doctor_strict_identity(cfg)
 
+    # ── Credentials (AWS / credential-vending MCP) ──
+    # After identity, before the agent-facing sections: this is the answer to
+    # "the agent says it cannot reach AWS", which is a credential-posture
+    # question rather than an agent one.
+    _doctor_credentials(issues)
+
     # ── Agents dir janitor (orphaned atomic-write temps + stale backups) ──
     _doctor_agents_janitor(issues, cfg.agent.sweep_agents_backups)
 
@@ -2954,7 +3189,7 @@ def _doctor(platform_boot_error: "Exception | None" = None, bundle: bool = False
             print("  transcribe:  ✅ amazon_transcribe importable (optional)")
         except ImportError:
             print("  transcribe:  ⏹ optional cloud STT not installed")
-            print("               Install: pip install 'kirocrew[voice]'")
+            print(f"               Install: {install_hint('voice-aws')}")
 
         try:
             import boto3  # noqa: F401
@@ -2962,7 +3197,7 @@ def _doctor(platform_boot_error: "Exception | None" = None, bundle: bool = False
             print("  boto3:       ✅ importable (optional)")
         except ImportError:
             print("  boto3:       ⏹ optional AWS SDK not installed")
-            print("               Install: pip install 'kirocrew[voice]'")
+            print(f"               Install: {install_hint('voice-aws')}")
 
     # Apple's on-device speech is a host capability rather than an install, so the
     # only useful thing to print is the reason it cannot run. Reaching a not-ok
