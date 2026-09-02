@@ -4972,6 +4972,18 @@ class FeishuConfig:
             tags=["feishu"],
         ),
     )
+    streaming: bool = field(
+        default=False,
+        metadata=_meta(
+            "Streaming Card Replies",
+            "Stream the reply into a live Feishu interactive card instead of "
+            "sending one text message when the turn finishes. DIRECT MESSAGES "
+            "ONLY -- a group turn always uses the buffered text reply. Any "
+            "failure falls back to the text reply automatically, so the worst "
+            "case is the non-streaming behaviour. Off by default.",
+            tags=["feishu"],
+        ),
+    )
 
     def __post_init__(self) -> None:
         # Shared normalization: clamp both thresholds and guarantee soft <= hard

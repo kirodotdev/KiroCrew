@@ -10503,4 +10503,54 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
 
 ---
 
+## Feishu Streaming Card
+
+`src/kiro_crew/feishu/streaming_card.py` is a port, not an npm package. It
+implements the live CardKit reply for the Feishu channel and is derived from two
+MIT-licensed OpenClaw Feishu plugins:
+
+- Official Lark plugin
+    - License: MIT
+    - Copyright holders: Lark Technologies Pte. Ltd.; ByteDance Ltd. and/or its affiliates
+    - Homepage: https://github.com/larksuite/openclaw-lark
+    - Derived from it: the five-step card lifecycle, the sequence protocol, the
+      throttle constants, and the error taxonomy (the business codes that decide
+      drop-frame vs anchor-gone vs fall back to text).
+- Community plugin
+    - License: MIT
+    - Copyright holder: m1heng
+    - Homepage: https://github.com/m1heng/clawdbot-feishu
+    - Derived from it: the `streaming_config` pacing parameters, the schema-2.0
+      markdown card shape, and the link/fence normalisation workarounds.
+
+The MIT License text below covers both projects and all three copyright holders.
+
+```
+MIT License
+
+Copyright (c) 2026 Lark Technologies Pte. Ltd.
+Copyright (c) 2026 ByteDance Ltd. and/or its affiliates
+Copyright (c) 2026 m1heng
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
+---
+
 End of THIRD-PARTY-NOTICES
