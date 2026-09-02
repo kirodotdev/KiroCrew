@@ -845,7 +845,22 @@ async def test_update_surfaces_the_authorizer_refusal(monkeypatch: pytest.Monkey
     request = _mk("PATCH", "/api/autonudge/lp-x", match={"loop_id": "lp-x"}, body={"active": True})
     response = await h.api_autonudge_update(request)
     assert response.status == 404
-    assert _body(response) == {"error": "no such loop"}
+    assert _body(response) == {"error": "no such loop", "code": "autonudge_update_refused"}
+
+
+@pytest.mark.asyncio
+async def test_update_503_refusal_carries_a_retryable_code(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A fail-closed policy refusal must be machine-distinguishable from a 400."""
+    _svc(monkeypatch, _FakeSvc())
+    monkeypatch.setattr(
+        h,
+        "authorize_and_update_nudge",
+        AsyncMock(return_value=(None, "Safety checks are temporarily unavailable", 503)),
+    )
+    request = _mk("PATCH", "/api/autonudge/lp-x", match={"loop_id": "lp-x"}, body={"active": True})
+    response = await h.api_autonudge_update(request)
+    assert response.status == 503
+    assert _body(response)["code"] == "autonudge_policy_unavailable"
 
 
 # --- DELETE /api/autonudge/{loop_id} -----------------------------------------

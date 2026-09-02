@@ -81,6 +81,7 @@ from kiro_crew.messaging.session_trust import add_trusted_session, is_session_tr
 from kiro_crew.messaging.sessions_view import collect_recent_sessions_audited
 from kiro_crew.messaging.transport import InboundMessage
 from kiro_crew.messaging.upload_gate import uploads_restricted
+from kiro_crew.platform.context import redact_via_context
 from kiro_crew.safety_override import safety_override
 from kiro_crew.security import redact, redact_local_paths
 from kiro_crew.sel import sel
@@ -2817,6 +2818,10 @@ class TelegramDispatcher:
         # drained queue and the steered continuation alike.
         if privacy_mode.is_restricted(session_key):
             return
+        # This row is an EGRESS: persisted, then served to dashboard readers. The turn
+        # has already run, so scrubbing here cannot rewrite the prompt the model saw.
+
+        user_text = redact_via_context(user_text)
         self.conv_log.append(session_key, "user", user_text, agent=agent, mid=mint_row_mid())
         if reply_text:
             self.conv_log.append(

@@ -338,6 +338,18 @@ next turn into the same slot:
   credential-scrubbed at the write path with the same `redact_exfiltration_urls` /
   `redact_credentials` passes the `message` field gets, since a banner is persisted and
   served by `GET /api/autonudge`.
+- **The row is credential-scrubbed at the sink; the prompt is not rewritten there.** The row passes
+  through `redact_exfiltration_urls` then
+  `redact_credentials` before being appended and broadcast, because the row is
+  persisted and served to every connected dashboard client. Rewriting the prompt would
+  corrupt the instruction the model receives, so the sink leaves it alone. That is a claim about
+  the LIVE SINK only: `_load` separately credential-scrubs a persisted `message` in memory
+  before the loop is re-armed, so a store-sourced prompt is sanitized at load time even though
+  no sink rewrites it. For a loop written
+  through the arming surfaces below the scrub is a no-op — the authorizer already
+  redacts `message` on the way in, and redaction is idempotent — so it
+  alters a row only when that row's text reached the store by bypassing the authorizer
+  (a hand-edited `autonudge.json`, an internal `svc.add`).
 - A nudge arriving while the slot is already running is DROPPED, not queued.
   Queueing would stack identical multi-KB payloads and blow the context window; the
   next idle tick schedules again.

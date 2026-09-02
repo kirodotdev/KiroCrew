@@ -1169,9 +1169,14 @@ def _redact_at_write_boundary(role: str, content: str) -> str:
     channel thread persist to the same file through different code paths, so the
     rule has to live where the bytes are written rather than in either caller.
 
-    The gate is ``role != "user"``, matching the dashboard's own write-back
-    boundary: text the user typed is stored verbatim, and everything the model or
-    the system produced is scrubbed of credentials and exfiltration URLs.
+    The gate is ``role != "user"``: everything the model or the system produced is
+    scrubbed of credentials and exfiltration URLs here.
+
+    The ``user`` half is NO LONGER stored verbatim in general, and this function is not
+    what changed it. Channel persisters and the shared ``save_conversation_turn`` scrub
+    their user text BEFORE calling in, so for a user row the rule now lives in those
+    callers -- the opposite of the shape described above. The dashboard's own write-back
+    is the surface still relying on the exemption.
     Idempotent, so a caller that already redacted loses nothing by passing
     through here.
     """

@@ -445,3 +445,32 @@ describe('AutoNudgePopover next-trigger countdown', () => {
     expect(screen.queryByText(/Next cycle/i)).toBeNull()
   })
 })
+
+describe('AutoNudgePopover — a failed save surfaces through ErrorNotice', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it('renders a rejected PATCH through the shared error surface, hand-off omitted', async () => {
+    // The rule this pins is blocking BECAUSE the shared surface is what recovers the
+    // structured context; a hand-written red div silently throws that away.
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((url: string, init?: RequestInit) =>
+        init?.method === 'PATCH'
+          ? Promise.reject(new Error('autonudge PATCH refused'))
+          : Promise.resolve({ ok: true, json: () => Promise.resolve({ loop: null }) }),
+      ) as unknown as typeof fetch,
+    )
+
+    renderPopover(makeLoop())
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: 'a replacement goal' } })
+    fireEvent.click(screen.getByRole('button', { name: /save/i }))
+
+    const alert = await screen.findByRole('alert')
+    expect(alert.textContent ?? '').toContain('autonudge PATCH refused')
+    // The hand-off navigates away and unmounts the popover, so offering it here
+    // would discard the goal still sitting unsaved in the textarea.
+    expect(screen.queryByRole('button', { name: /ask.*agent|fix this/i })).toBeNull()
+  })
+})

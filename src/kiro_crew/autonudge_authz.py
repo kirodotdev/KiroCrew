@@ -27,12 +27,15 @@ from typing import Any, Callable, Protocol, runtime_checkable
 
 from kiro_crew.autonudge import (
     MAX_BANNER_CHARS,
+    AutoNudgeStoreUnvetted,
     MonitorUpdateConflict,
     NudgeAdmissionRefused,
     is_channel_key,
+    scrub_loop_text,
 )
 from kiro_crew.config.loader import workspace_dir_for
 from kiro_crew.monitoring.models import MAX_MONITOR_WAKE_INSTRUCTIONS_CHARS, MonitorState
+from kiro_crew.platform import PlatformCompositionError, redact_via_context
 from kiro_crew.security import (
     is_sensitive_path,
     redact_credentials,
@@ -269,6 +272,59 @@ def banner_unsupported_for(slot_key: str, banner: Any) -> str | None:
     )
 
 
+def message_is_echoed_projection(current: Any, message: Any) -> bool:
+    """True when *message* is exactly the scrubbed projection of the stored one.
+
+    THE single spelling of this predicate, and it has exactly ONE caller.
+    ``authorize_and_update_nudge`` evaluates it once against the row it is about to
+    write, drops the field when it matches, and reports that same decision through its
+    ``echo_decision`` out-param. The PATCH handler keys ``message_ignored`` on that
+    value rather than re-deriving it: a second evaluation reads the store again, and an
+    update landing between the two reads lets the response describe a decision the
+    write never made.
+
+    Raises ``PlatformCompositionError`` on a host that cannot compose its policy; the
+    caller answers for that with a 503.
+    """
+    if current is None or message is None:
+        return False
+    return scrub_loop_text(getattr(current, "message", None), field="message") == message
+
+
+def _scrub_policy_unavailable() -> bool:
+    """True when the active credential policy cannot scrub, so nothing may be written.
+
+    Both authorizers mutate and then hand the loop back to a caller that SERIALIZES
+    it -- ``dashboard/handlers/autonudge._serialize`` runs every field through
+    ``scrub_loop_text`` -> ``redact_via_context``, which is fail-closed. A request
+    that scrubs nothing during authorization (the message compare is gated on
+    ``message is not None``) therefore reached ``svc.add``/``svc.update``, COMMITTED,
+    and only then
+    hit the raise while rendering the response: HTTP 500 with the mutation persisted
+    and audited as a success. The store and the caller's belief about it then
+    disagree permanently, and a retry applies the change twice.
+
+    So the ordering is the fix: ask ONCE, before the critical ``invoked`` audit and
+    before the mutation, whether the projection will be able to scrub. If it cannot,
+    refuse with an audited 503 and write nothing.
+
+    ``redact_via_context("")`` is the probe, the same spelling ``autonudge._load``
+    uses for this question. The empty string is deliberate and sufficient: the shim
+    calls ``current_context().credentials.redact(text)`` with no short-circuit, so
+    composition -- the thing that fails on a mis-composed host -- is exercised
+    regardless of the text. It also scrubs nothing real, so the probe cannot leak.
+
+    Only ``PlatformCompositionError`` counts. Every other adapter failure already
+    degrades to ``security.redact`` inside the shim, so the projection will still
+    succeed and refusing would deny a request that would have worked.
+    """
+    try:
+        redact_via_context("")
+    except PlatformCompositionError:
+        return True
+    return False
+
+
 async def authorize_and_update_nudge(
     *,
     svc: Any,
@@ -281,6 +337,8 @@ async def authorize_and_update_nudge(
     banner: Any = None,
     source: str,
     caller: str = "",
+    echo_decision: dict[str, bool] | None = None,
+    row: Any = None,
 ) -> tuple[Any | None, str | None, int]:
     """Validate + audit + apply a loop update; return ``(loop, error, status)``.
 
@@ -329,11 +387,90 @@ async def authorize_and_update_nudge(
         return None, "auto-nudge disabled (KIROCREW_AUTONUDGE not set)", 503
     if not loop_id:
         return _deny("loop_id required", 400)
+    # ONE read serving BOTH consumers below -- the echo projection and the banner
+    # channel refusal. A caller already holding the row passes it so it is not re-read.
+    if row is None and hasattr(svc, "get_by_id"):
+        row = svc.get_by_id(loop_id)
     if message is not None:
         if not isinstance(message, str):
             return _deny("message must be a string", 400)
         if len(message) > 8000:
             return _deny("message too long (max 8000 chars)", 400)
+        # A client that RE-SUBMITS the projection it was served has not edited the
+        # message, and must not be allowed to overwrite the stored one with it.
+        #
+        # The two rules differ on purpose and that is what made this reachable: a
+        # message armed through ``svc.add`` skips the pair below, while the REST
+        # projection and the websocket broadcast run the WIDER
+        # ``redact_via_context`` (a composed host adds its own patterns). So the
+        # popover loads ``[REDACTED: ...]``, its Save PATCHes that back, and the
+        # operator's instruction is destroyed with no error and no warning.
+        #
+        # Compared with ``scrub_loop_text`` ITSELF -- the very function the
+        # projection uses, including its empty-string short-circuit -- and not a
+        # second hand-rolled redaction, because two copies of "what is
+        # credential-shaped" would drift and silently re-open this.
+        #
+        # Read BEFORE the pair below, since the projection was made from the STORED
+        # text. A missing loop is left alone: ``svc.update`` returns ``None`` and the
+        # existing 404 below reports it, rather than a second not-found path here.
+        #
+        # ACCEPTED, and the reason this is nulled here rather than under
+        # ``_update_unserialized``'s lock: a concurrent write landing between this
+        # read and the update could drop one genuine edit. That window is narrow and
+        # its worst case is the consequence this fix already accepts, whereas doing
+        # the comparison inside the service would leave the critical ``invoked``
+        # audit below claiming a ``message`` change on EVERY such save -- a record
+        # that disagrees with the store, systematically. Nulling here keeps
+        # ``fields`` truthful.
+        current = row
+        # ``scrub_loop_text`` routes through ``redact_via_context``, which is
+        # FAIL-CLOSED and re-raises ``PlatformCompositionError`` on a host that
+        # declares a credential policy it could not compose. Uncaught, that escaped
+        # BEFORE ``_deny`` and before the critical ``invoked`` audit below, so a PATCH
+        # carrying a message died as an unaudited 500 -- no SEL event at all, which is
+        # the one guarantee every refusal on this path carries. Caught
+        # here for two reasons: the status is 503 and must stay
+        # distinguishable from the 400s above, and ``_deny`` is nested per authorizer
+        # so the refusal lands in THIS path's audit. Refusing, not degrading: this is
+        # an ingress decision, unlike the loader arms in ``autonudge.py``.
+        #
+        # Reachable even though ``_load`` refuses persisted rows on such a host:
+        # ``svc.add`` does not scrub the message, so the arm path can still put a
+        # loop into ``_loops`` without any scrub having run.
+        #
+        # The try spans ONLY the comparison. ``get_by_id`` above is a plain
+        # ``_loops.get`` with no scrub, ``message`` is a plain dataclass field, and
+        # the ``message = None`` below cannot raise -- so widening the span would
+        # catch nothing more and would hide an unrelated raise.
+        try:
+            resubmitted_projection = message_is_echoed_projection(current, message)
+        except PlatformCompositionError:
+            return _deny(
+                "Safety checks are temporarily unavailable, so this goal cannot be saved. If this keeps happening, restart Kiro Crew.",
+                503,
+            )
+        # THE decision, handed to the caller so the response cannot re-derive it from a
+        # second read that may observe a value this write never considered.
+        if echo_decision is not None:
+            echo_decision["ignored"] = resubmitted_projection
+        if resubmitted_projection:
+            message = None
+            # NOT silent: the drop is recorded so a caller that really did mean to set
+            # this exact text can see why it had no effect. The popover now sends
+            # ``message`` only when the user edited it (a dirty check in
+            # ``AutoNudgePopover.save``), so this guard is the belt to that braces and
+            # should not fire from the shipped client at all -- if it does, the log line
+            # is the signal that some caller is echoing the scrubbed projection back.
+            logger.info(
+                "autonudge update: dropped a `message` identical to the scrubbed "
+                "projection of the stored one (loop=%s, source=%s); the stored message "
+                "is unchanged. A caller intending to set this exact text must change it "
+                "first -- see the popover dirty check.",
+                scrub_loop_text(loop_id, field="id"),
+                source,
+            )
+    if message is not None:
         message, _ = redact_exfiltration_urls(message)
         message, _ = redact_credentials(message)
     if banner is not None:
@@ -346,15 +483,9 @@ async def authorize_and_update_nudge(
         if banner_error:
             return _deny(banner_error, 400)
         if banner:
-            # This path holds an OPAQUE ``loop_id`` and no slot key, so the
-            # channel refusal has to resolve the loop first. Gated on a non-blank
-            # banner so a clear (``banner=""``) never pays for a lookup. An
-            # unresolvable id yields ``None`` and is left to ``svc.update``'s own
-            # 404 rather than guessed as channel-bound. Resolved through
-            # ``svc.get_by_id`` -- the SAME accessor the DELETE handler uses --
-            # and called directly rather than behind a ``hasattr`` probe, which
-            # would fail open and hide an attribute-name error at runtime.
-            bound = svc.get_by_id(loop_id)
+            # An OPAQUE ``loop_id`` with no slot key, so the refusal needs the stored
+            # row -- taken from the single read above, which the write also uses.
+            bound = row
             if bound is not None:
                 banner_channel_error = banner_unsupported_for(
                     getattr(bound, "slot_key", ""), banner
@@ -389,6 +520,17 @@ async def authorize_and_update_nudge(
     # unattended.
     if active is not None and not isinstance(active, bool):
         return _deny("active must be a boolean", 400)
+
+    # Last gate before anything is recorded or written: the caller will serialize the
+    # loop we return, and that projection is fail-closed. Asked here so an unusable
+    # policy costs a clean 503 instead of a 500 stacked on a committed mutation.
+    # AFTER the 400s above, deliberately -- a malformed request should still learn
+    # WHAT is malformed rather than be told the policy is down.
+    if _scrub_policy_unavailable():
+        return _deny(
+            "Safety checks are temporarily unavailable, so this goal cannot be saved. If this keeps happening, restart Kiro Crew.",
+            503,
+        )
 
     def _critical_invoked_audit() -> None:
         sel().log_tool_invocation(
@@ -429,6 +571,15 @@ async def authorize_and_update_nudge(
             active=active,
             max_runtime_secs=max_runtime_secs,
             banner=banner,
+        )
+    except AutoNudgeStoreUnvetted as exc:
+        # Same REFUSAL as the composition case above, so it must present identically:
+        # the store is untouched, and a bare 500 with no ``code`` reads as a crash.
+        _audit("error", f"svc.update refused: {type(exc).__name__}")
+        return (
+            None,
+            "Safety checks are temporarily unavailable, so this goal cannot be saved. If this keeps happening, restart Kiro Crew.",
+            503,
         )
     except Exception as exc:  # noqa: BLE001 - audit the failure, then propagate
         _audit("error", f"svc.update failed: {type(exc).__name__}")
@@ -683,6 +834,22 @@ async def authorize_and_add_nudge(
         admission_check = _dashboard_admission
     if len(message) > 8000:
         return _deny("message too long (max 8000 chars)", 400)
+    # BEFORE the sentinel unlink below, not after. The auto-default unlink is
+    # unconditional (`missing_ok=True`), so an operator's LIVE stop file for an
+    # already-running loop is deleted by it. Probing afterwards meant a host whose
+    # policy cannot compose destroyed that stop signal and only then refused the arm,
+    # leaving the old unattended loop running with no way to stop it.
+    #
+    # Nothing earlier on this path probes the policy, so this is the ONLY gate: an arm
+    # request reaches here with the policy still unprobed. Hoisted ABOVE the
+    # ``monitor is None`` arms rather than inside one, because the arm response is
+    # serialized through the fail-closed projection for a structured monitor too, so
+    # an unusable policy must cost a clean 503 rather than a 500 on an armed loop.
+    if _scrub_policy_unavailable():
+        return _deny(
+            "Safety checks are temporarily unavailable, so this goal cannot be saved. If this keeps happening, restart Kiro Crew.",
+            503,
+        )
     if monitor is None:
         get_by_slot = getattr(svc, "get_by_slot", None)
         existing = get_by_slot(slot_key) if callable(get_by_slot) else None
@@ -817,6 +984,15 @@ async def authorize_and_add_nudge(
         return _deny("session changed before nudge arm committed", 409)
     except MonitorUpdateConflict as exc:
         return _deny(str(exc), 409)
+    except AutoNudgeStoreUnvetted as exc:
+        # Mirrors the update path: a refused persist is not a crash, and the arm
+        # committed nothing.
+        _audit("error", f"svc.add refused: {type(exc).__name__}")
+        return (
+            None,
+            "Safety checks are temporarily unavailable, so this goal cannot be armed. If this keeps happening, restart Kiro Crew.",
+            503,
+        )
     except Exception as exc:  # noqa: BLE001 - audit the failure, then propagate
         _audit("error", f"svc.add failed: {type(exc).__name__}")
         raise
