@@ -31,6 +31,7 @@ import { fetchFileRead, fileReadQueryKey, isPartialRead } from '../utils/fileRea
 import { documentBodyEpochNow } from '../hooks/usePanelTabs'
 import { loadCommentDrafts, saveCommentDrafts, setCommentsForFile } from '../utils/commentDrafts'
 import { copyToClipboard } from '../utils/clipboard'
+import { WINDOWS_ABS_PATH_RE } from '../utils/urlTransform'
 import { useLanguageGeneration } from '../i18n/useLanguageGeneration'
 
 // ── CSS Custom Highlight API accessors ───────────────────────────────────────
@@ -90,16 +91,37 @@ export interface BreadcrumbSegment { seg: string; path: string; isFile: boolean 
  *
  * A leading slash is preserved explicitly: joining segments with '/' drops it,
  * which would turn an absolute path into a relative one the folder browser then
- * resolves against the wrong root. Exported for unit tests.
+ * resolves against the wrong root. A drive-rooted Windows path (`C:\x`, `C:/x`)
+ * needs no such restoration: unlike POSIX's leading '/', its root is not a
+ * separator at all, so split()+filter(Boolean) leaves it in place as the first
+ * segment ('C:') and the plain join reconstructs it correctly on its own — the
+ * bug here was never the missing prefix, it was that the OLD split (`/` only)
+ * read a whole backslash path as a single segment. Splitting on either
+ * separator, and rejoining with whichever one the input used, fixes the
+ * Windows shape. Only a drive-rooted path (`WINDOWS_ABS_PATH_RE`) is split on
+ * `\`: on POSIX a backslash is a legal filename character, so
+ * `/tmp/we\ird.md` stays one segment. One exception to the plain join: when the
+ * path is short enough (<= 3 segments) that the drive itself is a shown crumb,
+ * its own path is the drive ROOT (`C:\`), not the bare `C:` the join yields --
+ * on Windows a bare `C:` is drive-RELATIVE (the drive's current directory),
+ * which would break the absolute-path contract of `BreadcrumbSegment`.
+ * Exported for unit tests.
  */
 export function breadcrumbSegments(filePath: string): BreadcrumbSegment[] {
-  const isAbs = filePath.startsWith('/')
-  const allSegs = filePath.replace(/\/+$/, '').split('/').filter(Boolean)
+  const isPosixAbs = filePath.startsWith('/')
+  const isWindows = WINDOWS_ABS_PATH_RE.test(filePath)
+  const sep = isWindows && filePath.includes('\\') ? '\\' : '/'
+  const splitAt = isWindows ? /[\\/]+/ : /\/+/
+  const allSegs = filePath.split(splitAt).filter(Boolean)
   const shown = Math.min(3, allSegs.length)
   return allSegs.slice(-3).map((seg, j) => {
     const absIndex = allSegs.length - shown + j
-    const joined = allSegs.slice(0, absIndex + 1).join('/')
-    return { seg, path: isAbs ? '/' + joined : joined, isFile: absIndex === allSegs.length - 1 }
+    const joined = allSegs.slice(0, absIndex + 1).join(sep)
+    // The drive segment alone (`C:`) is drive-relative; its root needs the
+    // trailing separator (`C:\` / `C:/`) to be absolute.
+    const isDriveSeg = isWindows && absIndex === 0
+    const path = isPosixAbs ? '/' + joined : isDriveSeg ? joined + sep : joined
+    return { seg, path, isFile: absIndex === allSegs.length - 1 }
   })
 }
 

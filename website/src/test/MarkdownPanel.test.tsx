@@ -420,6 +420,63 @@ describe('breadcrumbSegments', () => {
     const crumbs = breadcrumbSegments('/README.md')
     expect(crumbs).toEqual([{ seg: 'README.md', path: '/README.md', isFile: true }])
   })
+
+  it('splits a drive-rooted Windows path on backslash, either separator', () => {
+    // A Windows gateway names its files with `\`. The old split('/') read the
+    // whole string as one segment (no '/' to split on), so a directory on that
+    // gateway rendered as a single giant non-navigable breadcrumb.
+    const crumbs = breadcrumbSegments('C:\\Users\\me\\Documents\\notes.md')
+    expect(crumbs.map(c => c.seg)).toEqual(['me', 'Documents', 'notes.md'])
+    expect(crumbs.map(c => c.isFile)).toEqual([false, false, true])
+  })
+
+  it('reconstructs each Windows ancestor path with the drive letter intact', () => {
+    const crumbs = breadcrumbSegments('C:\\Users\\me\\Documents\\notes.md')
+    // The drive root ('C:') is not a separator, so it survives as the first
+    // segment and needs no leading-slash restoration the way POSIX does.
+    expect(crumbs[0].path).toBe('C:\\Users\\me')
+    expect(crumbs[1].path).toBe('C:\\Users\\me\\Documents')
+    expect(crumbs[2].path).toBe('C:\\Users\\me\\Documents\\notes.md')
+  })
+
+  it('accepts the forward-slash spelling of a drive-rooted path too', () => {
+    const crumbs = breadcrumbSegments('C:/Users/me/notes.md')
+    expect(crumbs.map(c => c.seg)).toEqual(['Users', 'me', 'notes.md'])
+    expect(crumbs[2].path).toBe('C:/Users/me/notes.md')
+  })
+
+  it('gives the drive crumb of a shallow Windows path the drive ROOT, not a bare drive letter', () => {
+    // With <= 3 segments the drive itself is a shown crumb. A bare `C:` is
+    // drive-RELATIVE on Windows (the drive's current directory), so the crumb
+    // must carry the root `C:\` to honour the absolute-path contract.
+    const crumbs = breadcrumbSegments('C:\\Users\\notes.md')
+    expect(crumbs.map(c => c.seg)).toEqual(['C:', 'Users', 'notes.md'])
+    expect(crumbs.map(c => c.path)).toEqual(['C:\\', 'C:\\Users', 'C:\\Users\\notes.md'])
+    expect(crumbs.map(c => c.isFile)).toEqual([false, false, true])
+  })
+
+  it('uses the input separator for the drive root of a forward-slash Windows path', () => {
+    const crumbs = breadcrumbSegments('C:/notes.md')
+    expect(crumbs.map(c => c.path)).toEqual(['C:/', 'C:/notes.md'])
+    expect(crumbs.map(c => c.isFile)).toEqual([false, true])
+  })
+
+  it('leaves a deep Windows path (drive not shown) unchanged by the drive-root rule', () => {
+    const crumbs = breadcrumbSegments('C:\\Users\\me\\Documents\\notes.md')
+    expect(crumbs.map(c => c.path)).toEqual([
+      'C:\\Users\\me',
+      'C:\\Users\\me\\Documents',
+      'C:\\Users\\me\\Documents\\notes.md',
+    ])
+  })
+
+  it('keeps a backslash inside a POSIX filename', () => {
+    // Legal on Linux and macOS (an archive unpacked from Windows makes these):
+    // the file is `we\ird.md`, and its folder is `/home/me`, not `/home\me\we`.
+    const crumbs = breadcrumbSegments('/home/me/we\\ird.md')
+    expect(crumbs.map(c => c.seg)).toEqual(['home', 'me', 'we\\ird.md'])
+    expect(crumbs.map(c => c.path)).toEqual(['/home', '/home/me', '/home/me/we\\ird.md'])
+  })
 })
 
 describe('FileHeaderBreadcrumb accessibility (#7900)', () => {
