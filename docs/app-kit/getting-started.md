@@ -170,11 +170,30 @@ Available in `@kirocrew/app-sdk`:
 | `useAppApi()` | Permission-scoped HTTP client (GET/POST/PUT/DELETE) |
 | `useAppEvents(event, cb)` | Subscribe to real-time WebSocket events |
 | `useTheme()` | Reactive theme (mode, accent, colorTheme) |
-| `useAppInfo()` | App metadata (name, version, permissions) |
+| `useAppInfo()` | App metadata (name, version, permissions, `active`) |
 | `useNavigate()` | Navigate to KiroCrew routes |
 | `useNotify()` | Show toast notifications |
 | `useNavBadge()` | Update sidebar badge count |
 | `useChatLauncher()` | Navigate to chat with optional agent and message |
+
+`useAppInfo().active` tells your app whether its host surface is the one the user is
+looking at. A routed `ui.pages` page is always the visible surface, so it reads `true`.
+A `contributes.panelTabs` side-panel tab is different: it stays MOUNTED while hidden —
+behind another tab, with the panel closed, or while another chat is active — so that
+switching back does not discard your component's state. Poll on an interval, hold a
+global hotkey, or run an animation loop and it keeps costing while nobody can see it.
+
+```tsx
+const { active } = useAppInfo()
+useEffect(() => {
+  if (!active) return           // hidden: do not start the interval at all
+  const id = setInterval(refresh, 5000)
+  return () => clearInterval(id)
+}, [active])
+```
+
+Treat `undefined` as `true`: the field is optional, so an app running on a host that
+predates it must still render rather than assume it is hidden.
 
 ## Chat Marker Protocol
 

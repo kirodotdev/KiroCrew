@@ -131,12 +131,12 @@ installed against:
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `ui.entry` | string | | Path to ESM bundle (relative to app root) |
+| `ui.entry` | string | | Path to ESM bundle (relative to ui/) |
 | `ui.pages[].route` | string | | URL path for the page |
 | `ui.pages[].label` | string | | Sidebar label |
 | `ui.pages[].icon` | string | | Lucide icon name (e.g. `"Shield"`, `"Package"`) |
 | `ui.pages[].iconUrl` | string | | Custom icon image path (relative to ui/) |
-| `ui.pages[].entryPoint` | string | | Per-page ESM bundle path (overrides `ui.entry`) |
+| `ui.pages[].entryPoint` | string | | Per-page ESM bundle path, relative to ui/ (overrides `ui.entry`) |
 | `ui.pages[].mountFunction` | string | `"mount"` | Exported function name in the ESM bundle |
 | `ui.sidebar.section` | string | `"Apps"` | Sidebar section name |
 | `ui.sidebar.order` | number | `10` | Sort order within section |
@@ -443,6 +443,52 @@ and detail cards. The path form depends on how the app is distributed:
 
 Hero images are illustrative marketing art. `screenshots` are separate and must
 show the real product UI; the detail page renders both when both are declared.
+
+## Contributions
+
+### `contributes` — Declarative contribution points
+
+`contributes` groups the surfaces an app adds to parts of the dashboard it does
+not own. Core reads each declaration as data and renders/dispatches it — it never
+imports app code — exactly like `publishProvider`. The block is inert when absent.
+
+#### `contributes.panelTabs` — Chat side-panel tabs
+
+A body-owning tab in the chat side panel, declared like a page and mounted through
+the **same in-process ESM app host `ui.pages` use** (never an iframe). The
+frontend keys the tab on `app:<app_name>:<id>` and persists it as metadata, so it
+survives a reload and re-mounts its `entry`.
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `contributes.panelTabs[].id` | string | | Stable tab id, unique within the app; storage-safe slug (`[a-z][a-z0-9_-]{0,63}`) |
+| `contributes.panelTabs[].title` | string | | Tab strip label |
+| `contributes.panelTabs[].menuLabel` | string | | Row label in the side-panel "+" menu and the empty-panel launcher |
+| `contributes.panelTabs[].menuDescription` | string | | Optional one-line description shown under the launcher card |
+| `contributes.panelTabs[].icon` | string | | Icon name from the app icon set below (e.g. `"BookOpen"`) |
+| `contributes.panelTabs[].entry` | string | | ESM bundle path mounted as the tab body, relative to the app's `ui/` directory |
+
+The `entry` base is the app's `ui/` directory, not the app root: the reader mounts
+it from the one static route apps are served through, `/apps/<name>/ui/<entry>`, so
+`"panel.mjs"` is the file at `<app root>/ui/panel.mjs` and a leading `"ui/"` would
+resolve to `ui/ui/`. Same base as `ui.entry`.
+
+An app may declare at most 8 panel tabs; the cap is enforced by the manifest and
+by the reader, so tabs past it are dropped with a warning rather than rendered.
+Labels are the app's own literals (the core has no i18n catalog key for a tab it
+does not know), so they render as declared. The tab body is a normal app UI
+bundle: it runs in-process behind the same permission-scoped API provider as an
+app page.
+
+`icon` accepts one of the following names. The set is fixed rather than the whole
+Lucide catalog, because resolving an arbitrary name would mean bundling every
+icon; an unrecognised or absent name renders a generic panel glyph.
+
+`Activity`, `Bell`, `BookOpen`, `Bot`, `Boxes`, `Bug`, `Cloud`, `Code`,
+`Database`, `FileText`, `Files`, `Folder`, `FolderTree`, `GitBranch`, `Globe`,
+`Inbox`, `Layers`, `Link`, `ListTodo`, `MessageSquare`, `Package`, `PanelRight`,
+`Pin`, `Search`, `Settings`, `Shield`, `Sparkles`, `Star`, `Table`, `Tag`,
+`Terminal`, `Users`, `Wrench`, `Zap`
 
 ## Backend
 

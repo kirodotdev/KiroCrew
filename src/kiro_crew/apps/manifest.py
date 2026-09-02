@@ -408,7 +408,9 @@ class UIPage:
     # Optional INACTIVE-state variant of iconUrl (a muted/dark rendering shown when
     # the nav row is not the active route — matches how lucide nav icons gray out).
     iconInactiveUrl: str = ""  # noqa: N815
-    entryPoint: str = ""  # path to JS bundle relative to app root  # noqa: N815
+    # Per-page JS bundle path, resolved against the app's ``ui`` directory like
+    # ``UIConfig.entry`` below, because one static route serves both.
+    entryPoint: str = ""  # noqa: N815
     mountFunction: str = "mount"  # exported function name  # noqa: N815
 
     def to_dict(self) -> dict[str, Any]:
@@ -597,7 +599,11 @@ class SessionControlContribution:
 class UIConfig:
     """Frontend configuration for an app."""
 
-    entry: str = ""  # ESM bundle path relative to app root, e.g. "dist/index.mjs"
+    # ESM bundle path resolved against the app's ``ui`` directory, e.g.
+    # "dist/index.mjs" is the file at ``<app root>/ui/dist/index.mjs``. One static
+    # route (``/apps/<name>/ui/<entry>``) serves every entry an app declares, so a
+    # leading ``ui/`` here would resolve to ``ui/ui/``.
+    entry: str = ""
     pages: list[UIPage] = field(default_factory=list)
     overlays: list[UIOverlay] = field(default_factory=list)
     sidebar: UISidebar = field(default_factory=UISidebar)
@@ -1274,6 +1280,21 @@ _MAX_PROMPT_TEMPLATE = 4000
 #: The placeholder a prompt template uses to interpolate the collected argument.
 ARGUMENT_TOKEN = "{argument}"  # noqa: S105 - a template placeholder, not a secret
 
+# A panel-tab id keys the frontend side-panel tab registry and is joined into the
+# persisted tab kind ``app:<app_name>:<id>``, so it is a narrow storage-safe slug --
+# no dots, no path separators, no leading digit. Applied with ``.fullmatch()`` for the
+# reason spelled out for ``_COMMAND_SLUG_RE`` above: ``.match()`` would accept a
+# trailing newline that the persisted kind then carries into localStorage.
+_PANEL_TAB_ID_RE = re.compile(r"^[a-z][a-z0-9_-]{0,63}$")
+
+#: Most side-panel tabs one app may contribute, mirroring ``MAX_PANEL_TABS_PER_APP`` in
+#: ``panelTabRegistry.ts``. The strip is a fixed-width surface shared with the built-in
+#: tabs, so this bounds how much of it one app can claim -- and, like the command caps
+#: above, it is enforced on BOTH sides: a cap only the manifest enforces would let the
+#: read path render the overflow, and one only the reader enforces is a silent
+#: truncation the app author is never told about.
+_MAX_PANEL_TABS_PER_APP = 8
+
 
 def _mirrored_len(text: str) -> int:
     """Length in UTF-16 code units -- what JavaScript's ``.length`` counts.
@@ -1645,6 +1666,85 @@ class CommandContribution:
 
 
 @dataclass
+class PanelTabConfig:
+    """One chat side-panel tab an app contributes.
+
+    Declarative for the same reason a command is: core reads this and mounts
+    ``entry`` through the in-process ESM app host that ``ui.pages`` already use --
+    it never imports app code, and no live component crosses the app boundary. The
+    frontend keys the tab on ``app:<app_name>:<id>``, which is what lets a tab
+    survive a reload and disappear cleanly when the app is disabled.
+    """
+
+    id: str = ""  # stable tab id, unique within the app
+    title: str = ""  # strip label
+    menuLabel: str = ""  # '+' menu row label  # noqa: N815
+    menuDescription: str = ""  # one-line description shown in the launcher  # noqa: N815
+    icon: str = ""  # lucide icon name, resolved by the reader against lucide-react
+    # ESM entry mounted as the tab body, resolved against the app's ``ui`` directory
+    # -- the same base ``ui.entry`` uses, because the reader mounts both through the
+    # one static route (``/apps/<name>/ui/<entry>``). So ``panel.mjs`` is the file at
+    # ``<app root>/ui/panel.mjs``, and a leading ``ui/`` would resolve to ``ui/ui/``.
+    entry: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        d: dict[str, Any] = {}
+        if self.id:
+            d["id"] = self.id
+        if self.title:
+            d["title"] = self.title
+        if self.menuLabel:
+            d["menuLabel"] = self.menuLabel
+        if self.menuDescription:
+            d["menuDescription"] = self.menuDescription
+        if self.icon:
+            d["icon"] = self.icon
+        if self.entry:
+            d["entry"] = self.entry
+        return d
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> PanelTabConfig:
+        return cls(
+            id=str(data.get("id", "")),
+            title=str(data.get("title", "")),
+            menuLabel=str(data.get("menuLabel", "")),  # noqa: N815
+            menuDescription=str(data.get("menuDescription", "")),  # noqa: N815
+            icon=str(data.get("icon", "")),
+            entry=str(data.get("entry", "")),
+        )
+
+    def validate(self) -> list[str]:
+        errors: list[str] = []
+        where = f"contributes.panelTabs[{self.id or '?'}]"
+        if not self.id:
+            errors.append("contributes.panelTabs: entry missing id")
+        elif not _PANEL_TAB_ID_RE.fullmatch(self.id):
+            errors.append(f"{where}: id must be a storage-safe slug ({self.id!r})")
+        for name, value in (
+            ("title", self.title),
+            ("menuLabel", self.menuLabel),
+            ("entry", self.entry),
+        ):
+            if not value:
+                errors.append(f"{where}: missing {name}")
+        # `menuDescription` is capped alongside the two required labels because the
+        # launcher card renders it: an uncapped one would be the single field an app
+        # could use to blow out that surface's layout.
+        for name, value in (
+            ("title", self.title),
+            ("menuLabel", self.menuLabel),
+            ("menuDescription", self.menuDescription),
+        ):
+            if _mirrored_len(value) > _MAX_TITLE:
+                got = _mirrored_len(value)
+                errors.append(f"{where}: {name} exceeds {_MAX_TITLE} characters ({got})")
+        # `entry` traversal is checked in `AppManifest.validate`, which is the only
+        # scope that knows the app root -- see `_path_escapes_app_root` there.
+        return errors
+
+
+@dataclass
 class Contributes:
     """What an app adds to host surfaces it does not own.
 
@@ -1656,6 +1756,10 @@ class Contributes:
     """
 
     commands: list[CommandContribution] = field(default_factory=list)
+    #: Side-panel tabs. Unlike a command, a tab does carry a bundle (``entry``), but it
+    #: is still a contribution rather than ``ui``: the strip, the persistence and the
+    #: mounting are the host's, and the app only says which body to put in one slot.
+    panelTabs: list[PanelTabConfig] = field(default_factory=list)  # noqa: N815
     #: Whether the source manifest's ``commands`` was present but not a list. Same reason
     #: as ``CommandArgument.bad_hosts``: coercing to ``[]`` is indistinguishable from a
     #: deliberate empty list, so the declaration would pass validation and then vanish
@@ -1677,6 +1781,13 @@ class Contributes:
     #: as ``bad_commands``: coercing to ``[]`` reads as a deliberate empty list, so the
     #: declaration would install clean and then never render a chip. Not serialized.
     bad_session_controls: bool = False
+    #: Whether the source manifest's ``panelTabs`` was present but not a list, and how
+    #: many entries of a well-formed array were not objects. Same reasoning as the two
+    #: ``commands`` flags above, and the failure is if anything quieter here: a tab that
+    #: never parses leaves no row in the ``+`` menu, no card in the launcher and no
+    #: error, which reads exactly like an app that simply has no panel. Not serialized.
+    bad_panel_tabs: bool = False
+    dropped_panel_tabs: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         d: dict[str, Any] = {}
@@ -1689,6 +1800,10 @@ class Contributes:
             d["commands"] = kept
         if self.sessionControls:
             d["sessionControls"] = [c.to_dict() for c in self.sessionControls]
+        tabs = [t.to_dict() for t in self.panelTabs]
+        kept_tabs = [t for t in tabs if t]
+        if kept_tabs:
+            d["panelTabs"] = kept_tabs
         return d
 
     @classmethod
@@ -1714,15 +1829,18 @@ class Contributes:
             if isinstance(raw_controls, list)
             else []
         )
+        tabs_raw = data.get("panelTabs", [])
+        tab_entries = tabs_raw if isinstance(tabs_raw, list) else []
         return cls(
-            commands=[
-                CommandContribution.from_dict(c) for c in entries if isinstance(c, dict)
-            ],
+            commands=[CommandContribution.from_dict(c) for c in entries if isinstance(c, dict)],
+            panelTabs=[PanelTabConfig.from_dict(t) for t in tab_entries if isinstance(t, dict)],
             bad_commands="commands" in data and not isinstance(raw, list),
             dropped_commands=sum(1 for c in entries if not isinstance(c, dict)),
             sessionControls=controls,
             bad_session_controls="sessionControls" in data
             and not isinstance(raw_controls, list),
+            bad_panel_tabs="panelTabs" in data and not isinstance(tabs_raw, list),
+            dropped_panel_tabs=sum(1 for t in tab_entries if not isinstance(t, dict)),
         )
 
     def validate(self) -> list[str]:
@@ -1772,6 +1890,37 @@ class Contributes:
                     # record and one of them becomes unreachable by usage.
                     errors.append(f"contributes.commands: duplicate id {cmd.id!r}")
                 seen.add(cmd.id)
+        if self.bad_panel_tabs:
+            errors.append(
+                "contributes.panelTabs must be an array -- a non-array value passes as "
+                "empty and then disappears from the serialized manifest, so the app "
+                "author sees neither an error nor a tab"
+            )
+        if self.dropped_panel_tabs:
+            errors.append(
+                f"contributes.panelTabs: {self.dropped_panel_tabs} entr"
+                f"{'y' if self.dropped_panel_tabs == 1 else 'ies'} "
+                "must be an object -- a non-object entry is filtered out before "
+                "validation, so the app installs with the remaining tabs and its "
+                "author is never told one was dropped"
+            )
+        if len(self.panelTabs) > _MAX_PANEL_TABS_PER_APP:
+            # Mirrors the reader's slice in `panelTabRegistry.ts`, for the reason the
+            # command cap above spells out: enforced on one side only, the overflow is
+            # dropped by whichever side is stricter and nobody is told.
+            errors.append(
+                f"contributes.panelTabs: {len(self.panelTabs)} tabs exceeds the "
+                f"limit of {_MAX_PANEL_TABS_PER_APP}"
+            )
+        tab_ids: set[str] = set()
+        for tab in self.panelTabs:
+            errors.extend(tab.validate())
+            if tab.id:
+                if tab.id in tab_ids:
+                    # Two tabs with one id collapse onto a single persisted kind, so the
+                    # second is unreachable and the first answers for both.
+                    errors.append(f"contributes.panelTabs: duplicate id {tab.id!r}")
+                tab_ids.add(tab.id)
         return errors
 
 
@@ -1931,6 +2080,12 @@ class AppManifest:
                 f"backend.entryPoint contains path traversal: {self.backend.entryPoint!r}"
             )
 
+        # A panel-tab entry is mounted by the same ESM host as ui.pages, so it is
+        # subject to the same path-containment check.
+        for tab in self.contributes.panelTabs:
+            if tab.entry and _path_escapes_app_root(tab.entry, app_root):
+                errors.append(f"contributes.panelTabs entry contains path traversal: {tab.entry!r}")
+
         # UI page validation
         for page in self.ui.pages:
             if not page.route:
@@ -2055,7 +2210,8 @@ class AppManifest:
         # Notification channel validation (RFC Phase 2: 8-channel cap, kebab ids)
         errors.extend(self.notifications.validate())
 
-        # Contributed commands: ids, caps, prompt/argument agreement, matcher kind.
+        # Contributed commands and panel tabs: ids, caps, prompt/argument
+        # agreement, matcher kind, entry paths.
         errors.extend(self.contributes.validate())
 
         return errors
@@ -2089,7 +2245,11 @@ class AppManifest:
             # command/script/env. Included only when non-empty so manifests
             # signed before crons existed keep producing the identical payload.
             body["crons"] = [c.to_dict() for c in self.crons]
-        if self.contributes.commands or self.contributes.sessionControls:
+        if (
+            self.contributes.commands
+            or self.contributes.sessionControls
+            or self.contributes.panelTabs
+        ):
             # A contributed command's `prompt` is sent to an agent with tools as if
             # the reader typed it, and `autoSend` fires it without a further
             # keystroke -- the same class of surface as a cron's `command`/`script`
@@ -2109,6 +2269,13 @@ class AppManifest:
             # List order preserved, so reordering is a signature-relevant change.
             # Included only when non-empty, so manifests signed before contributions
             # existed keep producing the identical payload.
+            #
+            # `panelTabs` is in the guard for a sharper version of the same reason: a
+            # tab's `entry` names an ESM module the AppHost imports and RUNS in the
+            # dashboard's own origin. Guarding on commands/sessionControls alone left a
+            # panelTabs-ONLY manifest out of the payload entirely, so its `entry` was
+            # the one part of a signed app an attacker could repoint with the signature
+            # still verifying.
             body["contributes"] = self.contributes.to_dict()
         return json.dumps(body, sort_keys=True, separators=(",", ":")).encode("utf-8")
 

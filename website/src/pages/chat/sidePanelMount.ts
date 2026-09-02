@@ -8,8 +8,13 @@ import type { TargetAndTransition } from 'framer-motion'
  * the app and destroys whatever the user has drawn — there is nothing to restore
  * from. See `docs/architecture/dashboard-iframe-hosts.md`.
  *
+ * An app-contributed tab (`contributes.panelTabs`) is the same class of loss for
+ * a different reason: it mounts the app's bundle in-process through `AppHost`, so
+ * an unmount discards the app component's own in-body state — an unsaved form, a
+ * scroll position, an editor buffer — which nothing outside the component holds.
+ *
  * The panel is normally render-gated on `activityOpen`, so closing it unmounts
- * the whole subtree. While an app tab is live we keep the subtree mounted and
+ * the whole subtree. While such a tab is live we keep the subtree mounted and
  * hide it instead, matching the hide-not-unmount rule SidePanel already applies
  * to its own tab bodies and `InstancesViewport` applies to instance frames.
  *
@@ -19,7 +24,9 @@ import type { TargetAndTransition } from 'framer-motion'
 export interface SidePanelMountInput {
   /** User-facing open/closed state of the panel. */
   activityOpen: boolean
-  /** True while at least one `app` tab exists in the current slot's strip. */
+  /** True while at least one body-owning app tab exists in ANY slot's strip: an
+   *  MCP `app` render, or an app-contributed tab (`app:<appName>:<id>`) whose
+   *  `AppHost` holds the app component's own in-body state. */
   hasLiveAppTab: boolean
   /** True while a `browser` tab is live. Its Electron WebContentsView is
    *  destroyed on unmount, so — like an app tab — closing the panel must hide,

@@ -3,6 +3,11 @@ import type { Artifact } from '../types'
 import { i18nT } from '../i18n/t'
 import { safeSetItem } from '../utils/safeStorage'
 import { secureRandomId } from '../utils/secureId'
+import {
+  isPanelTabKind,
+  panelTabDescriptor,
+  type PanelTabDescriptor,
+} from './panelTabRegistry'
 
 /** Singleton "view" tabs (opened from the + menu, one instance each). */
 export type ViewKind = 'changes' | 'issues' | 'links' | 'files' | 'artifacts' | 'subagents' | 'workflows' | 'logs' | 'context' | 'side' | 'browser' | 'git' | 'summary' | 'pins'
@@ -11,7 +16,15 @@ export type ViewKind = 'changes' | 'issues' | 'links' | 'files' | 'artifacts' | 
  *  It is deliberately a TabKind and NOT a ViewKind: SidePanel unmounts
  *  category views on tab switch (`if (!isActive) return null`), which would
  *  reload the app's iframe and destroy whatever the user has drawn. */
-export type TabKind = ViewKind | 'file' | 'diff' | 'artifact' | 'terminal' | 'folder' | 'app'
+// The `app:${string}` arm admits an app-contributed body-owning tab (kind
+// `app:<appName>:<id>` from `panelTabRegistry`) WITHOUT widening `ViewKind` — so
+// the exhaustive `Record<ViewKind, …>` tables (VIEW_TITLE_KEY, the + menu
+// label/desc maps) keep their compile-time "a view without a label is an error"
+// guarantee. A template-literal member (not `(string & {})`) also keeps every
+// built-in literal REQUIRED in mapped types and preserves `tab.kind === 'termnal'`
+// typo errors; `KIND_ICON` is keyed by the non-app arms and app tabs fall back to
+// the descriptor's own icon.
+export type TabKind = ViewKind | 'file' | 'diff' | 'artifact' | 'terminal' | 'folder' | 'app' | `app:${string}`
 
 /** The PERMANENT pinned block: these views are ALWAYS present — pinned to the
  *  front, non-closable, and absent from the + menu — regardless of whether they
@@ -88,6 +101,13 @@ export interface PanelTab {
    *  a user who keeps returning to an early diagram does not have it evicted
    *  out from under them while newer renders stream in. */
   appActiveAt?: number
+  // ── App-contributed panel-tab fields (kind `app:<appName>:<id>`) ──
+  /** Contributing app's name — persisted metadata that lets the tab re-mount its
+   *  bundle after a reload; `title`/`icon`/`entry` are re-read from the live
+   *  descriptor, so a renamed tab needs no rewrite of the stored bucket. */
+  appName?: string
+  /** The `contributes.panelTabs[].id` within that app. */
+  appTabId?: string
   // ── terminal fields ──
   /** PTY session id — one live shell per terminal tab. */
   sessionId?: string
@@ -288,28 +308,46 @@ function subscribe(cb: () => void): () => void {
  *
  *  Bounded by the per-slot warm cap (MAX_APP_TABS_PER_CHAT) times the number of
  *  slots holding app tabs — under the per-slot payload cap that already governs
- *  how many frames can be live at once. */
+ *  how many frames can be live at once.
+ *
+ *  BOTH body-owning kinds: an MCP `app` frame and an app-contributed tab
+ *  (`app:<appName>:<id>`). They share one list because they share the bug it exists
+ *  to prevent — a chat switch that changes a body's React key remounts it and
+ *  discards state nothing outside the component holds (an iframe's document, or an
+ *  `AppHost` component's unsaved buffer). The active slot's own tab loop therefore
+ *  skips both kinds; rendering a body in both places would mount it twice. */
 export function useAllAppTabs(): PanelTab[] {
   const bySlot = useSyncExternalStore(subscribe, getSnapshot, getSnapshot)
   return useMemo(() => {
     const out: PanelTab[] = []
     for (const slot of Object.keys(bySlot).sort()) {
-      for (const t of bySlot[slot].tabs) if (t.kind === 'app') out.push(t)
+      for (const t of bySlot[slot].tabs) {
+        if (t.kind === 'app' || isPanelTabKind(t.kind)) out.push(t)
+      }
     }
     return out
   }, [bySlot])
 }
 
-/** Whether ANY slot holds a live app tab.
+/** Whether ANY slot holds a live body-owning app tab — an MCP `app` render or an
+ *  app-contributed tab (`app:<appName>:<id>`).
  *
- *  The mount guard must consult every slot, not just the active one: with
- *  cross-slot hosting, a frame belonging to chat A lives in the panel subtree
- *  while chat B is active, so deciding to unmount on B's (empty) tab list would
- *  destroy A's canvas. */
+ *  BOTH kinds gate the mount, because both lose state that cannot be restored:
+ *  the MCP tab's null-origin frame has nothing to reload from, and a contributed
+ *  tab's `AppHost` holds the app component's own in-body state, which an unmount
+ *  discards. `isPanelTabKind` is the single owner of what a contributed kind is,
+ *  so this guard cannot drift from the resolver that mints them.
+ *
+ *  The guard must consult every slot, not just the active one: with cross-slot
+ *  hosting, a frame belonging to chat A lives in the panel subtree while chat B
+ *  is active, so deciding to unmount on B's (empty) tab list would destroy A's
+ *  canvas. */
 export function useAnyLiveAppTab(): boolean {
   const bySlot = useSyncExternalStore(subscribe, getSnapshot, getSnapshot)
   return useMemo(
-    () => Object.values(bySlot).some(b => b.tabs.some(t => t.kind === 'app')),
+    () => Object.values(bySlot).some(
+      b => b.tabs.some(t => t.kind === 'app' || isPanelTabKind(t.kind)),
+    ),
     [bySlot],
   )
 }
@@ -409,6 +447,12 @@ function loadPersisted(): BySlot {
       try {
         const b = JSON.parse(localStorage.getItem(k) ?? 'null') as Partial<Bucket> | null
         if (b && Array.isArray(b.tabs)) {
+          // No descriptor prune here: this runs at module evaluation, before an
+          // app's manifest-fed descriptors are fetched, so pruning an app tab
+          // here would drop it on every reload purely on load timing. Orphaned
+          // app tabs are hidden on the READ path instead (see `usePanelTabs`),
+          // which also handles an app disabled mid-session and restores the tab
+          // if it is re-enabled.
           out[slot] = { tabs: b.tabs as PanelTab[], activeId: (b.activeId as string | null) ?? null }
         }
       } catch { /* skip malformed bucket */ }
@@ -477,14 +521,66 @@ export function __resetPanelTabs(): void {
  * tab metadata is persisted; document-tab content is re-fetched lazily by the
  * consumer after a reload (ChatPage's cold-tab hydration effect).
  */
-export function usePanelTabs(slotKey: string | null = null) {
+export function usePanelTabs(
+  slotKey: string | null = null,
+  /** App-contributed tab descriptors, resolved by a caller that sits inside the
+   *  React Query provider (`usePanelTabDescriptors()`). Passed in rather than
+   *  read here so this hook stays provider-free: it is the strip's model for
+   *  every surface, and making it require a `QueryClientProvider` would put that
+   *  requirement on every consumer.
+   *
+   *  `undefined` means "this caller does not resolve manifests", which is NOT the
+   *  same as an empty set: an app tab is then left exactly as stored, because a
+   *  caller that cannot know the descriptors must never be the reason a user's
+   *  persisted tab disappears. `[]` is a known-empty set and does hide app tabs. */
+  panelTabDescriptors?: PanelTabDescriptor[],
+) {
   const key = bucketKey(slotKey)
   const bySlot = useSyncExternalStore(subscribe, getSnapshot, getSnapshot)
   const { tabs: storedTabs, activeId } = bySlot[key] ?? EMPTY_BUCKET
   // View-tab labels are re-resolved from `kind` on every read so the strip is in
   // the CURRENT language — see `localiseTitles`. Memoized on the stored array so
   // an unchanged strip keeps a stable `tabs` identity.
-  const tabs = useMemo(() => localiseTitles(storedTabs), [storedTabs])
+  //
+  // An app tab whose descriptor is absent (app disabled / uninstalled / removed
+  // mid-session) is HIDDEN, not deleted — the stored bucket keeps it, so
+  // re-enabling the app restores it. `title` is re-projected from the live
+  // descriptor so a renamed tab reflects without rewriting the bucket.
+  const { tabs, prunedIds } = useMemo(() => {
+    const localised = localiseTitles(storedTabs)
+    const out: PanelTab[] = []
+    const gone = new Set<string>()
+    for (const t of localised) {
+      if (!isPanelTabKind(t.kind)) { out.push(t); continue }
+      // Descriptors unknown to this caller: keep the tab as stored rather than
+      // treating "not resolved" as "app gone".
+      if (!panelTabDescriptors) { out.push(t); continue }
+      const d = panelTabDescriptor(t.kind, panelTabDescriptors)
+      if (!d) { gone.add(t.id); continue } // orphan: hide until its app is present again
+      out.push(t.title === d.title ? t : { ...t, title: d.title })
+    }
+    return { tabs: out, prunedIds: gone }
+  }, [storedTabs, panelTabDescriptors])
+
+  // If the prune above HID the stored active tab, focus the last visible tab for
+  // display without rewriting the stored bucket (a re-enabled app should restore
+  // its own active tab).
+  //
+  // Keyed on whether the ACTIVE id is one of the pruned ones, not on whether
+  // anything was pruned at all. The looser test also "repaired" a stored `activeId`
+  // that names no tab whatsoever — a bucket drifted by a hand-edited or
+  // downgrade-written localStorage — whenever some unrelated orphan happened to be
+  // pruned in the same pass. Core answers a stale `activeId` with NO active tab, not
+  // with the last one, and silently focusing a tab the user did not choose is a
+  // behaviour change for every strip rather than just one holding a contributed tab.
+  const effectiveActiveId = useMemo(
+    () => (
+      activeId !== null && prunedIds.has(activeId)
+        ? (tabs.length ? tabs[tabs.length - 1].id : null)
+        : activeId
+    ),
+    [tabs, activeId, prunedIds],
+  )
 
   /** Apply a bucket transform to the CURRENT slot's strip. */
   const update = useCallback((fn: (b: Bucket) => Bucket) => {
@@ -503,6 +599,19 @@ export function usePanelTabs(slotKey: string | null = null) {
   const openView = useCallback((kind: ViewKind) => {
     upsert({ id: kind, kind, title: viewTitle(kind) })
   }, [upsert])
+
+  /** Open an app-contributed body-owning tab (one instance per kind, like a
+   *  view). Persists the metadata (`appName`/`appTabId`) needed to re-mount the
+   *  bundle after a reload; title/icon/entry are re-read from the descriptor.
+   *
+   *  `slot` is stamped like `openApp` does, and for the same reason: the body is
+   *  hosted from the cross-slot `useAllAppTabs` list, whose React key is
+   *  `tab.slot ?? currentSlot`. Left unstamped, that fallback resolves to whichever
+   *  chat is active, so the key CHANGED on a chat switch and remounted the very
+   *  `AppHost` the cross-slot list exists to keep alive. */
+  const openPanelTab = useCallback((d: PanelTabDescriptor) => {
+    upsert({ id: d.kind, kind: d.kind, title: d.title, appName: d.appName, appTabId: d.tabId, slot: slotKey })
+  }, [upsert, slotKey])
 
   /** Reconcile the pinned views (Changes / Artifacts / Files) to exactly the
    *  ``available`` set: its members are kept (or created), pinned to the FRONT in
@@ -677,7 +786,31 @@ export function usePanelTabs(slotKey: string | null = null) {
   }, [update])
 
   /** Replace the tab order wholesale (drag-to-reorder in the strip). */
-  const setOrder = useCallback((next: PanelTab[]) => { update(b => ({ ...b, tabs: next })) }, [update])
+  /** Apply a reorder of the VISIBLE tabs to the stored bucket.
+   *
+   *  `next` is the caller's list, which is `tabs` — the pruned, visible projection.
+   *  A stored tab whose descriptor is absent (app disabled mid-session) is hidden
+   *  from that list on purpose, so writing `next` over the bucket wholesale would
+   *  DELETE it, and the "hidden, not deleted, so re-enabling the app restores it"
+   *  contract above would hold only until the user next dragged a tab.
+   *
+   *  So the visible SLOTS — the stored positions of the tabs the caller could see —
+   *  are refilled in `next`'s order, and every other stored tab keeps its own index.
+   *  A tab in `next` that the bucket does not hold (opened in the same tick as the
+   *  drag) is appended rather than dropped. */
+  const setOrder = useCallback((next: PanelTab[]) => {
+    update(b => {
+      const visible = new Set(next.map(t => t.id))
+      const out: PanelTab[] = []
+      let i = 0
+      for (const stored of b.tabs) {
+        if (visible.has(stored.id) && i < next.length) out.push(next[i++])
+        else out.push(stored)
+      }
+      for (; i < next.length; i++) out.push(next[i])
+      return { ...b, tabs: out }
+    })
+  }, [update])
 
   /** Open a NEW terminal tab (its own PTY session). Unlike singleton views,
    *  every call mints a fresh session so a chat can hold several shells; the
@@ -705,12 +838,12 @@ export function usePanelTabs(slotKey: string | null = null) {
     return sessionId
   }, [tabs, upsert, setActive])
 
-  const activeTab = useMemo(() => tabs.find(t => t.id === activeId) ?? null, [tabs, activeId])
+  const activeTab = useMemo(() => tabs.find(t => t.id === effectiveActiveId) ?? null, [tabs, effectiveActiveId])
 
   return useMemo(() => ({
-    tabs, activeId, activeTab,
-    openView, openTerminal, openFile, openDiff, openArtifact, openFolder, openApp,
+    tabs, activeId: effectiveActiveId, activeTab,
+    openView, openPanelTab, openTerminal, openFile, openDiff, openArtifact, openFolder, openApp,
     patchTab, closeTab, closeAll, setActive, setOrder, syncPinned,
     hasTabs: tabs.length > 0,
-  }), [tabs, activeId, activeTab, openView, openTerminal, openFile, openDiff, openArtifact, openFolder, openApp, patchTab, closeTab, closeAll, setActive, setOrder, syncPinned])
+  }), [tabs, effectiveActiveId, activeTab, openView, openPanelTab, openTerminal, openFile, openDiff, openArtifact, openFolder, openApp, patchTab, closeTab, closeAll, setActive, setOrder, syncPinned])
 }

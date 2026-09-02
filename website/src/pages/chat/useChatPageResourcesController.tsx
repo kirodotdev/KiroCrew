@@ -14,6 +14,7 @@ import { useChatFileDrop } from '../../components/ChatDropOverlay'
 import { makeRelative } from '../../components/FilePickerMenu'
 import { PREVIEW_SNIP_EVENT } from '../../components/WebPreviewPanel'
 import { useMessageSearch } from '../../hooks/useMessageSearch'
+import { usePanelTabDescriptors } from '../../hooks/panelTabRegistry'
 import {
   clearInlineDraft,
   getInlineDraft,
@@ -129,7 +130,11 @@ export function useChatPageResourcesController({
     snipSlotRef,
     setSnipFrame,
   } = capture
-  const tabsCtl = usePanelTabs(activeSlot)
+  // Resolved here, inside the query provider, and handed to the strip model:
+  // `usePanelTabs` stays provider-free so every other consumer of it does not
+  // inherit a `QueryClientProvider` requirement.
+  const panelTabDescriptors = usePanelTabDescriptors()
+  const tabsCtl = usePanelTabs(activeSlot, panelTabDescriptors)
   // An MCP App tab hosts a null-origin iframe with no storage: unmounting it
   // reloads the app and destroys whatever the user has drawn (see
   // docs/architecture/dashboard-iframe-hosts.md). The whole SidePanel subtree is normally

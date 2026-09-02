@@ -53,6 +53,25 @@ describe('side panel mount decision', () => {
   })
 
   /**
+   * The cross-slot keep-mounted list needs the SAME composition. It renders a
+   * contributed `panelTabs` body, whose `entry` module runs in the dashboard's own
+   * origin and typically polls and binds global handlers — so selection alone would
+   * leave a collapsed panel's app live. Its sibling one branch up already reads
+   * `isActive && !panelHidden`; these two must not drift apart.
+   *
+   * `display` deliberately stays on `shown` ALONE: the body has to keep its box while
+   * the panel is merely collapsed, or the `AppHost` would remount and lose its state.
+   */
+  it('composes the cross-slot app-tab body from BOTH selection and panel visibility', () => {
+    const src = readSource(join(__dirname, '..', 'pages', 'chat', 'SidePanel.tsx'))
+    expect(src).toMatch(/<AppPanelTabBody kind=\{t\.kind\} active=\{shown && !panelHidden\}/)
+    // The visibility style must NOT pick up the same flag, or a collapsed panel
+    // remounts the host instead of merely hiding it.
+    expect(src).toContain("display: shown ? 'block' : 'none'")
+    expect(src).not.toContain("display: shown && !panelHidden")
+  })
+
+  /**
    * Every tab body in the keep-mounted branch that binds a document-level key
    * needs the same signal, not just the file one. `ArtifactPanel` binds Escape
    * and would otherwise close an artifact that is off screen. `CliPanel` and

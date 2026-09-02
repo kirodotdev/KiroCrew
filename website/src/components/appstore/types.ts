@@ -120,10 +120,12 @@ export type InstalledApp = {
      * `contributedCommands.ts` (which carries its own record type, and validates the
      * shape because this data is third-party) could not otherwise see the field
      * exists. Left as `unknown` on purpose — the only code allowed to decide what a
-     * contribution IS is the module that checks it.
+     * contribution IS is the module that checks it. `panelTabs` is read the same way,
+     * by `hooks/panelTabRegistry.ts`.
      */
     contributes?: {
       commands?: unknown
+      panelTabs?: unknown
     }
     permissions?: { api?: string[]; events?: string[]; mcpTools?: string[]; storage?: boolean; cron?: boolean; network?: boolean }
     setup?: { onInstall?: string; onUpdate?: string; onUninstall?: string; onEnable?: string; onDisable?: string }
