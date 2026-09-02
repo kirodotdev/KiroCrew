@@ -201,11 +201,11 @@ def _read_job_records(path: Path) -> tuple[list[dict[str, Any]], bool]:
       NOT ``ValueError``, so it escapes a decode-error tuple and would abort
       the caller from inside the read it expected to be safe.
     * Shape — a document that parses but is not an object holding a ``jobs``
-      list (a top-level ``[]``, a scalar, ``{"jobs": null}``): #4674.
+      list (a top-level ``[]``, a scalar, ``{"jobs": null}``).
 
     Non-dict entries are dropped here so that no caller repeats the check.
     All three already discarded them — two by an explicit ``isinstance``
-    guard, one by letting :func:`_job_from_record` reject them (#4664) — so
+    guard, one by letting :func:`_job_from_record` reject them — so
     filtering centrally preserves each caller's behaviour exactly.
 
     Three readers are deliberately NOT served, because each owes the user or
@@ -255,7 +255,7 @@ def _read_job_records(path: Path) -> tuple[list[dict[str, Any]], bool]:
     # is nothing. Ask the LOADER, not `isinstance(dict)`: `{}` is a dict it
     # rejects, so `{"jobs":[{}]}` would otherwise report healthy while the
     # scheduler loads zero jobs. `kept` is returned UNCHANGED either way, so
-    # partial salvage still reaches the runtime readers (#4664).
+    # partial salvage still reaches the runtime readers.
     return (kept, (not records) or any(_is_loadable_record(j) for j in kept))
 
 
@@ -591,8 +591,9 @@ class CronJob:
     folder_id: str = ""
     model: str = ""  # per-job model override (canonical key or provider id); "" = inherit
 
-    # When agent_sequence is set, it takes precedence over agent_id.
-    # The execution logic runs agents in order; see Phase 3.
+    # A sequence of MORE THAN ONE agent takes precedence over agent_id: the
+    # gateway runs those agents in order, each on its own session key. A
+    # one-element sequence does NOT, and falls through to agent_id.
     agent_sequence: list[str] = field(default_factory=list)
     env: dict[str, str] = field(default_factory=dict)  # per-job environment variables
     timeout_secs: int = _JOB_TIMEOUT_SECS
@@ -673,7 +674,7 @@ class CronJob:
         clearing ``auto_paused`` therefore produces a job that is paused in
         memory and enabled on disk — it stays stopped until the next restart
         silently resumes it, which is the surprise a manual "Run Now" on an
-        auto-paused job used to create.
+        auto-paused job would otherwise spring.
 
         A job the user paused stays paused: ``user_paused`` is never mutated by
         execution, so it is the discriminator here, and re-enabling THAT is the
@@ -1046,15 +1047,16 @@ def enabled_count_from_disk(path: Path) -> tuple[int, bool]:
     different halves: :meth:`CronService.count_enabled_from_disk` takes the count
     and degrades a fault to 0 (its caller is a status pusher that must keep
     running), while the telemetry probe needs ``loadable`` to report a fault as a
-    fault rather than as a plausible number. Both spellings of the loop existed
-    before this; the shared ``_is_loadable_record`` / ``_record_is_enabled``
-    predicates capped the drift, but only one loop removes it.
+    fault rather than as a plausible number. One loop serves both, so the two
+    readers cannot drift apart on which records count; sharing only the
+    ``_is_loadable_record`` / ``_record_is_enabled`` predicates would cap that
+    drift without removing it.
     """
     count = 0
     records, loadable = _read_job_records(path)
     for j in records:
-        # Same skip decision as _load (#4664): a record _job_from_record rejects
-        # is not a schedulable job, so it must not be counted.
+        # Same skip decision as _load: a record _job_from_record rejects is not
+        # a schedulable job, so it must not be counted.
         if not _is_loadable_record(j):
             continue
         if _record_is_enabled(j):
@@ -1068,7 +1070,7 @@ def _job_from_record(j: dict[str, Any]) -> CronJob:
     Raises ``KeyError``/``TypeError`` when the record is malformed (missing
     required keys, or not shaped like a job object at all). The caller
     (:meth:`CronService._load`) isolates that failure to THIS entry — one bad
-    record must never discard the rest of the store (#4664).
+    record must never discard the rest of the store.
 
     It does NOT raise ``AttributeError`` for any record ``json.loads`` can
     produce: every ``.get()`` below is dominated by a ``[...]`` subscript on the
@@ -2246,12 +2248,11 @@ class CronService:
                     job.model = str(kwargs["model"] or "").strip()
                 # Per-wake budget (the asyncio.wait_for deadline in
                 # _execute_with_timeout). Distinct from ``timeout``, which
-                # bounds only script/command subprocesses. Until this branch
-                # existed the field was read, clamped and persisted but
-                # unreachable through every public writer — a job could only
-                # ever carry the creation-time default (Phase 0, Intervention
-                # 2: the operator had to edit the store under _file_lock by
-                # hand to keep an agent alive).
+                # bounds only script/command subprocesses. This is the only
+                # writer that changes the field after creation: with no branch
+                # here an existing job is stuck on its creation-time value, and
+                # raising its budget means editing the store under _file_lock
+                # by hand.
                 if _tsecs is not None:
                     job.timeout_secs = _tsecs
                 if _tsub is not None:
@@ -2384,10 +2385,9 @@ class CronService:
         """SEL-audit one automated one-shot removal. Call AFTER the store lock.
 
         An automated removal with no human caller is exactly the delete an
-        operator cannot otherwise distinguish from data loss (issue #5408).
-        Emits the ``cron.remove`` shape PR #5405 introduces for the
-        dashboard/MCP/CLI single-delete paths (on base, the plural
-        ``cron.batch_delete`` is the only audited removal), with an
+        operator cannot otherwise distinguish from data loss. Emits the same
+        ``cron.remove`` shape as the caller-requested single-delete path
+        (:meth:`_audit_requested_removal`, serving dashboard/MCP/CLI), with an
         automated-actor identity and a ``one_shot_completed`` outcome.
         ``source`` stays ``"cron"`` — the SEL spec treats ``source`` as a
         constrained identity vocabulary (it skips redaction on that promise),
@@ -2945,11 +2945,11 @@ class CronService:
 
         The read, parse and shape guards are :func:`_read_job_records`, shared
         with the other two direct readers. Routing through it is what keeps the
-        WS status pusher alive on a corrupt store: this method previously
-        caught only ``(OSError, json.JSONDecodeError)``, so invalid UTF-8
+        WS status pusher alive on a corrupt store: catching only
+        ``(OSError, json.JSONDecodeError)`` here would let invalid UTF-8
         (``UnicodeDecodeError``, from a bare locale-dependent ``read_text()``)
-        and deeply nested JSON (``RecursionError``, a ``RuntimeError``) both
-        escaped and killed the pusher. A count of 0 is the correct degrade: an
+        and deeply nested JSON (``RecursionError``, a ``RuntimeError``) escape
+        and kill the pusher. A count of 0 is the correct degrade: an
         unreadable store has no jobs anyone can schedule.
 
         The reduction itself lives in :func:`enabled_count_from_disk`, whose
@@ -3307,13 +3307,13 @@ class CronService:
         # during jitter still counts as fired. ``kind`` is the dispatch shape --
         # ``script`` and ``command`` bypass the model entirely, so this is the
         # split between jobs that cost tokens and jobs that cost none.
-        emit_counter(
-            CRON_FIRES,
-            {
-                "kind": "script" if job.script else "command" if job.command else "agent",
-                "trigger": trigger,
-            },
-        )
+        if job.script:
+            kind = "script"
+        elif job.command:
+            kind = "command"
+        else:
+            kind = "agent"
+        emit_counter(CRON_FIRES, {"kind": kind, "trigger": trigger})
         # Apply jitter to spread execution unless strict_schedule is set or manual
         jitter = self._compute_jitter(job) if trigger != "manual" else 0
         self._job_jitter[job.id] = jitter
@@ -3324,14 +3324,14 @@ class CronService:
         # (see build_cron_session_context): result-less runs leave the
         # previous value in place so the next run's prompt keeps its dedup
         # context. Command and script jobs have theirs cleared once in the
-        # finally below, because the prompt built for them is never dispatched. The history recorder in
-        # the finally block must NOT attribute that carried-over value to
-        # THIS run, so clear the freshness marker here; executor callbacks
-        # set it via CronJob.set_run_result() when the run actually produces
-        # a result. (String identity/equality can't stand in for the marker:
-        # CPython interns equal literals and caches single-char strings, so
-        # a run re-producing the previous text looks identical to one that
-        # produced nothing.)
+        # finally below, because the prompt built for them is never dispatched.
+        # The history recorder in the finally block must NOT attribute that
+        # carried-over value to THIS run, so clear the freshness marker here;
+        # executor callbacks set it via CronJob.set_run_result() when the run
+        # actually produces a result. (String identity/equality can't stand in
+        # for the marker: CPython interns equal literals and caches single-char
+        # strings, so a run re-producing the previous text looks identical to
+        # one that produced nothing.)
         job.result_produced = False
         being_cancelled = False
         try:
@@ -3376,10 +3376,10 @@ class CronService:
                     self._push_refresh("crons")
             except Exception:
                 logger.debug("push_refresh failed on job end", exc_info=True)
-            # For 'every' jobs, use started_at to prevent cumulative drift
-            if not reaped and not cancelled and job.schedule.kind == "every":
-                job.last_run_ts = started_at
             if not reaped and not cancelled:
+                # For 'every' jobs, use started_at to prevent cumulative drift
+                if job.schedule.kind == "every":
+                    job.last_run_ts = started_at
                 # One clear per result-less run. Scattering it over exit sites is
                 # what let the fire-time deny and script Skip paths keep a result.
                 if (job.command or job.script) and not being_cancelled:
@@ -3732,8 +3732,8 @@ class CronService:
                 return
         if removed_one_shot:
             # The delete_after_run consume is an automated removal with no
-            # handler-level caller (issue #5408), so the emit lives with the
-            # removal. AFTER the lock: only a saved removal is recorded, and
+            # handler-level caller, so the emit lives with the removal.
+            # AFTER the lock: only a saved removal is recorded, and
             # the sel call never extends the store-lock hold.
             self.audit_one_shot_removal(job.id, "cron_run_complete")
 
@@ -4051,7 +4051,7 @@ class CronService:
                 # any job — same salvage story as unparseable JSON (there is
                 # nothing to keep), and without this guard data.get() / the
                 # loop below would raise an uncaught AttributeError/TypeError
-                # into _sync and gateway startup (#4674).
+                # into _sync and gateway startup.
                 logger.warning(
                     "Failed to load cron store: document is not an object with a jobs list"
                 )
@@ -4059,8 +4059,8 @@ class CronService:
                 self._reset_fingerprint()
                 self._load_failed = True
                 return
-            # Per-entry isolation (#4664): one malformed or legacy record must
-            # not discard the whole registry. Each record is built in its own
+            # Per-entry isolation: one malformed or legacy record must not
+            # discard the whole registry. Each record is built in its own
             # try block; a bad one is warned about and skipped, and every
             # well-formed job survives. The whole-store reset below is reserved
             # for a file that yields nothing parseable at all, where there is
