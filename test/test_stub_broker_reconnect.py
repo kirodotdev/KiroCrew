@@ -52,6 +52,16 @@ _REPLY_TIMEOUT = 60.0
 #: How long to wait for a freshly started daemon to bind its endpoint.
 _BIND_TIMEOUT = 10.0
 
+#: The verdict when the stub loses its servers on a broker restart -- the
+#: process exits, its toolset frozen at session/new, so tools stay listed
+#: while every later call fails with no way back short of a new session.
+SERVERS_LOST = (
+    "the stub process exited when the broker went away, so this "
+    "session lost those MCP servers permanently -- its toolset is "
+    "frozen at session/new, so the tools stay listed and every "
+    "later call fails with no way back short of a new session"
+)
+
 pytestmark = pytest.mark.xdist_group("mcp_gateway")
 
 
@@ -137,12 +147,16 @@ async def _spawn_stub(
     )
 
 
-async def _drive(proc: asyncio.subprocess.Process, frame: str, req_id: int) -> dict:
-    """Write one JSON-RPC frame through the stub and read the matching reply."""
-    assert proc.stdin is not None and proc.stdout is not None
-    stdin, stdout = proc.stdin, proc.stdout
-    stdin.write(frame.encode("utf-8"))
-    await stdin.drain()
+async def _read_reply_id(proc: asyncio.subprocess.Process, req_id: int) -> dict:
+    """Read (only) the reply matching ``req_id`` from the stub's stdout.
+
+    Split out from :func:`_drive` so a caller that has already written a frame
+    can wait for its reply without re-writing it -- the post-restart tools/call
+    is sent exactly once and then raced against the process dying, so writing
+    it here too would duplicate the frame and inflate the observed caller count.
+    """
+    assert proc.stdout is not None
+    stdout = proc.stdout
 
     async def _read_reply() -> dict:
         while True:
@@ -157,6 +171,15 @@ async def _drive(proc: asyncio.subprocess.Process, frame: str, req_id: int) -> d
                 return msg
 
     return await asyncio.wait_for(_read_reply(), timeout=_REPLY_TIMEOUT)
+
+
+async def _drive(proc: asyncio.subprocess.Process, frame: str, req_id: int) -> dict:
+    """Write one JSON-RPC frame through the stub and read the matching reply."""
+    assert proc.stdin is not None and proc.stdout is not None
+    stdin = proc.stdin
+    stdin.write(frame.encode("utf-8"))
+    await stdin.drain()
+    return await _read_reply_id(proc, req_id)
 
 
 def _resolver_for(
@@ -267,31 +290,95 @@ async def test_session_survives_a_broker_restart(tmp_path: Path, short_sock_dir)
 
         second_stop, second_daemon = await _start_daemon(sock, resolver)
 
-        # Give the stub a bounded window to notice the peer died and re-handshake
-        # against the new generation before judging it.
-        deadline = asyncio.get_running_loop().time() + 30.0
-        while asyncio.get_running_loop().time() < deadline:
-            if proc.returncode is not None:
-                break
-            await asyncio.sleep(0.2)
+        assert proc.stdin is not None
+        # Write the post-restart call ONCE. If the stub already lost its bridge
+        # on the broker's departure its stdin is closed and the write raises --
+        # that is the servers-lost defect itself, named here instead of
+        # surfacing as a bare pipe error. OSError is the superclass of
+        # ConnectionResetError/BrokenPipeError AND the bare OSError (winerror
+        # 232) a dead-child pipe write raises on Windows, so catch it whole.
+        try:
+            proc.stdin.write(_tool_frame(3).encode("utf-8"))
+            await proc.stdin.drain()
+        except OSError as exc:
+            raise AssertionError(SERVERS_LOST) from exc
 
-        assert proc.returncode is None, (
-            "the stub process exited when the broker went away, so this "
-            "session lost those MCP servers permanently -- its toolset is "
-            "frozen at session/new, so the tools stay listed and every later "
-            "call fails with no way back short of a new session"
-        )
+        # Wait event-driven for whichever happens first: the stub replies (it
+        # re-handshook against the new generation and carried the call through)
+        # or the stub process exits (it lost its servers permanently). A fixed
+        # sleep here would burn the whole ceiling on every success; racing the
+        # reply against the exit advances the instant the reconnect completes.
+        # The ceiling is _REPLY_TIMEOUT, not a tight 30s: production may spend
+        # up to its full reconnect budget (see the note at _REPLY_TIMEOUT), so a
+        # tighter ceiling would read a legal slow reconnect as a hang. It costs
+        # nothing on the success path, which advances the instant the reply
+        # lands.
+        #
+        # The id=3 frame is written exactly once above. The one case that sends
+        # a second frame is the gateway-restart race below, and it is counted.
+        expected_callers = 2
+        next_id = 3
+        while True:
+            reply_task = asyncio.create_task(_read_reply_id(proc, next_id))
+            exit_task = asyncio.create_task(proc.wait())
+            done, pending = await asyncio.wait(
+                {reply_task, exit_task},
+                timeout=_REPLY_TIMEOUT,
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            for t in pending:
+                t.cancel()
+            await asyncio.gather(*pending, return_exceptions=True)
 
-        reply = await _drive(proc, _tool_frame(3), req_id=3)
+            reply_exc = reply_task.exception() if reply_task in done else None
+
+            if reply_task in done and reply_exc is None:
+                reply = reply_task.result()
+            elif exit_task in done:
+                # The process exited: the stub lost those MCP servers
+                # permanently -- its toolset is frozen at session/new, so the
+                # tools stay listed and every later call fails with no way back
+                # short of a new session.
+                raise AssertionError(SERVERS_LOST)
+            elif reply_exc is not None:
+                # The read failed with a connection error while the process is
+                # still alive: the stub tore down the bridge that served these
+                # servers, which is the same servers-lost outcome for the
+                # session even though the process itself lingers.
+                raise AssertionError(SERVERS_LOST) from reply_exc
+            else:
+                raise AssertionError(
+                    "the stub neither replied to nor died from the "
+                    f"post-restart call within the {_REPLY_TIMEOUT:.0f}s "
+                    "ceiling -- the reconnect hung"
+                )
+
+            # The gateway-restart race: if id=3 reached the dying bridge before
+            # the peer death was noticed, the stub fails it RETRYABLY rather
+            # than carrying it, exactly as it is designed to ("Gateway
+            # restarted; ... Retry it."). That is not a lost session -- retry
+            # once with a fresh id; the retry produces the one post-restart
+            # caller line the errored frame never did.
+            if "error" in reply and next_id == 3:
+                # The errored id=3 was failed AT THE STUB, never carried to the
+                # backend, so it wrote no caller line; the retry produces the
+                # single post-restart line. The expected count is unchanged.
+                next_id = 4
+                assert proc.stdin is not None
+                try:
+                    proc.stdin.write(_tool_frame(next_id).encode("utf-8"))
+                    await proc.stdin.drain()
+                except OSError as exc:
+                    raise AssertionError(SERVERS_LOST) from exc
+                continue
+            break
+
         assert "result" in reply, f"the stub did not carry a call to the restarted broker: {reply}"
 
         # A reconnect that reopened the socket but did not re-register would
         # carry an empty caller block, and every session-scoped path in the
         # backend would silently fall back to unattached behaviour.
-        assert _observed_callers(caller_log) == [
-            "dashboard:reconnect",
-            "dashboard:reconnect",
-        ], (
+        assert _observed_callers(caller_log) == (["dashboard:reconnect"] * expected_callers), (
             "the post-restart call did not reach the backend carrying this "
             f"session's identity: {_observed_callers(caller_log)!r}"
         )
