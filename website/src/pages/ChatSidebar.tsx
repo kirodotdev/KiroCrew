@@ -3595,14 +3595,20 @@ function ChatSidebar({
         clear: () => clearTagFilter(),
       },
       {
-        // Text search. Scoped to title while the backend ranking is live: that
-        // is the field a rename mutates, and widening it to key/agent appends
-        // rows the backend's content search deliberately excluded.
+        // Text search: title + source links, never key/agent (rows the backend
+        // excluded) — a badge id is a card-visible PROPERTY, like tags above.
         filtersRow: slot => {
           if (!slotFilter) return true
-          const titleMatch = (slot.title || '').toLowerCase().includes(slotFilter.toLowerCase())
-          if (searchRanked) return searchRanked.has(slot.key) || titleMatch
-          return ((slot.title || '') + slot.key + (slot.agent || '')).toLowerCase().includes(slotFilter.toLowerCase())
+          const q = slotFilter.toLowerCase()
+          const titleMatch = (slot.title || '').toLowerCase().includes(q)
+          // Both id spellings match by PREFIX, so progressive typing works while an
+          // interior run of the digits — an accident, not an id — does not.
+          const sourceMatch = (slot.source_links ?? []).some(link =>
+            String(link.number).startsWith(q)
+            || chipLabel(link).toLowerCase().startsWith(q))
+          if (searchRanked) return searchRanked.has(slot.key) || titleMatch || sourceMatch
+          return sourceMatch
+            || ((slot.title || '') + slot.key + (slot.agent || '')).toLowerCase().includes(q)
         },
         narrows: () => Boolean(slotFilter),
         hides: (slot, excluded) => Boolean(slotFilter) && excluded(slot),
