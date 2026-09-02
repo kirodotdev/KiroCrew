@@ -9928,6 +9928,8 @@
         "set_is_fixed_at_gateway_start": "Les agents affichés ici sont déterminés au démarrage du gateway. Un déploiement géré peut restreindre l'ensemble par politique ; modifier cette politique prend effet au prochain démarrage."
       },
       "featurePreviewsTab": {
+        "chat_on_a_crew": "Discuter sur un Crew",
+        "chat_on_a_crew_desc": "Ajoute « New chat on crew » au menu de création, qui démarre une session exécutée sur un Crew connecté. Inachevé : elle s’ouvre dans le panneau propre à ce Crew, et les sessions exécutées sur un Crew ne sont pas encore listées ici.",
         "crew": "Crew",
         "inbound_webhook_tokens_registered_contexts_and_r": "Jetons de webhooks entrants, contextes enregistrés et historique des exécutions. L'API fonctionne, mais la page n'est pas terminée.",
         "open_webhooks": "Ouvrir Webhooks",
@@ -13243,8 +13245,6 @@
       "remoteCrewPanel": {
         "your_crews": "Tes instances",
         "set_up_a_new_one": "Set up a new one",
-        "chat_on_a_crew": "Discuter sur un Crew",
-        "chat_on_a_crew_desc": "Ajoute « New chat on crew » au menu de création, qui démarre une session exécutée sur un Crew connecté. Inachevé : elle s’ouvre dans le panneau propre à ce Crew, et les sessions exécutées sur un Crew ne sont pas encore listées ici.",
         "auto_connect": "Connecter les crews automatiquement",
         "auto_connect_desc": "Lorsque cette option est activée, l'ouverture de l'application web connecte automatiquement chaque crew et les reconnecte lorsque vous revenez sur l'onglet. Désactivez-la pour ne connecter un crew que lorsque vous basculez dessus.",
         "crews_you_can_switch_to": "Instances vers lesquelles tu peux basculer",

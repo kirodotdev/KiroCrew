@@ -3,7 +3,7 @@ import { ArrowRight } from 'lucide-react'
 
 import { SettingsCard, SettingsToggle } from '../../components/settings'
 import { usePreviewFlag } from '../../hooks/usePreviewFlag'
-import { PREVIEW_CREW, PREVIEW_WEBHOOKS, setPreviewFlag } from '../../utils/previewFlags'
+import { PREVIEW_CREW, PREVIEW_REMOTE_CREW_CHAT, PREVIEW_WEBHOOKS, setPreviewFlag } from '../../utils/previewFlags'
 import { i18nT } from '../../i18n/t'
 
 /**
@@ -39,6 +39,7 @@ export function FeaturePreviewsTab() {
   const navigate = useNavigate()
   const webhooks = usePreviewFlag(PREVIEW_WEBHOOKS)
   const crew = usePreviewFlag(PREVIEW_CREW)
+  const remoteCrewChat = usePreviewFlag(PREVIEW_REMOTE_CREW_CHAT)
 
   return (
     <>
@@ -84,6 +85,22 @@ export function FeaturePreviewsTab() {
         description={i18nT('pages.developer.featurePreviewsTab.the_crew_members_page_and_crew_mode_chats_both_a')}
         checked={crew}
         onChange={v => setPreviewFlag(PREVIEW_CREW, v)}
+      />
+    </SettingsCard>
+    {/* A SEPARATE card from Crew above, because the word names two unrelated
+        things: that flag holds Crew Mode and the Crew Members page, this one
+        holds a chat dispatched to another MACHINE over the instances tunnel.
+        One card each keeps a reader from flipping the wrong switch.
+
+        NO ingress button, for the same reason as the crew card: turning it on
+        puts the create-menu entry back in the same tick, and that menu is
+        already in front of the user. */}
+    <SettingsCard>
+      <SettingsToggle
+        label={i18nT('pages.developer.featurePreviewsTab.chat_on_a_crew')}
+        description={i18nT('pages.developer.featurePreviewsTab.chat_on_a_crew_desc')}
+        checked={remoteCrewChat}
+        onChange={v => setPreviewFlag(PREVIEW_REMOTE_CREW_CHAT, v)}
       />
     </SettingsCard>
     </>

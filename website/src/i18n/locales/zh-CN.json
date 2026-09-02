@@ -9636,6 +9636,8 @@
         "set_is_fixed_at_gateway_start": "此处显示哪些 agent 在 gateway 启动时确定。受管部署可通过策略限制该集合；修改策略需下次启动才生效。"
       },
       "featurePreviewsTab": {
+        "chat_on_a_crew": "在 crew 上聊天",
+        "chat_on_a_crew_desc": "在新建菜单里加入“New chat on crew”，用它创建的会话运行在已连接的 crew 上。尚未完善：它会打开该 crew 自己的面板，而运行在 crew 上的会话还不会显示在这里。",
         "crew": "Crew",
         "inbound_webhook_tokens_registered_contexts_and_r": "入站 Webhook 令牌、已注册的上下文和运行历史。API 可用，但页面尚未完成。",
         "open_webhooks": "打开 Webhook",
@@ -12906,8 +12908,6 @@
       "remoteCrewPanel": {
         "your_crews": "你的实例",
         "set_up_a_new_one": "Set up a new one",
-        "chat_on_a_crew": "在 crew 上聊天",
-        "chat_on_a_crew_desc": "在新建菜单里加入“New chat on crew”，用它创建的会话运行在已连接的 crew 上。尚未完善：它会打开该 crew 自己的面板，而运行在 crew 上的会话还不会显示在这里。",
         "auto_connect": "自动连接 crew",
         "auto_connect_desc": "开启后，打开网页应用时会自动连接所有 crew，并在你切回该标签页时重新连接。关闭后，仅在切换到某个 crew 时才连接它。",
         "crews_you_can_switch_to": "可切换到的实例",
