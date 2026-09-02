@@ -973,6 +973,34 @@ describe('WidgetFrame exists-vs-pinned states', () => {
 // the space below the toolbar. These tests pin that CLASS STRUCTURE only —
 // happy-dom computes no layout, so they cannot observe rendered geometry.
 // Real display regressions need a browser-level geometry assertion.
+describe('WidgetFrame paint contract', () => {
+  it('gives the frame its own compositing layer so a skipped first paint cannot blank it', async () => {
+    // The artifact frame was promoted after an engine was measured laying its
+    // document out, running its scripts and reporting a correct height while
+    // rasterizing nothing — a correctly sized, visible frame painting an empty
+    // box. This frame loads the same kind of document, through the same mint,
+    // behind the same opacity-on-load reveal, and was left un-promoted, so the
+    // inline-widget surface kept the gap the artifact surface had closed.
+    //
+    // Chromium in this DOM paints fine either way, so removing the property
+    // looks completely harmless here: this assertion is the whole guard.
+    const { container } = wrap(<WidgetFrame html="<p>promoted</p>" title="T" />)
+    const iframe = await frameIn(container)
+    expect(iframe.style.transform).toBe('translateZ(0)')
+  })
+
+  it('still reveals on load rather than replacing the reveal with the promotion', async () => {
+    // The promotion is additive. If it had displaced the opacity gate the frame
+    // would show the browser's own canvas for the length of the document fetch,
+    // which some engines paint white regardless of the element background.
+    const { container } = wrap(<WidgetFrame html="<p>reveal</p>" title="T" />)
+    const iframe = await frameIn(container)
+    expect(iframe.style.opacity).toBe('0')
+    act(() => { iframe.dispatchEvent(new Event('load')) })
+    await waitFor(() => expect(iframe.style.opacity).toBe('1'))
+  })
+})
+
 describe('WidgetFrame expanded layout (structural contract)', () => {
   const expandLabel = () => i18nT('components.widgetFrame.expand')
 

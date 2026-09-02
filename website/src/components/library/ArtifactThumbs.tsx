@@ -171,7 +171,17 @@ export function WidgetThumb({ content, slug }: { content: string; slug: string }
           style={{
             width: BASE_W,
             height: renderH,
-            transform: `scale(${scale})`,
+            // `translateZ(0)` composed onto the scale, not instead of it: the
+            // scale is the thumbnail's whole geometry. A 2D transform makes a
+            // stacking context but does NOT force this frame onto its own
+            // compositing layer, and an engine can then lay the document out,
+            // run its scripts and report a correct height while rasterizing
+            // nothing -- an empty card behind the same opacity-on-load reveal,
+            // which across a grid is the whole gallery blank. The 3D form is
+            // what promotes; it adds no visual offset with no perspective set.
+            // Same remedy as ArtifactBody / WidgetFrame / RemoteArtifactDetail;
+            // keep the four in step.
+            transform: `scale(${scale}) translateZ(0)`,
             transformOrigin: 'top left',
             // Hidden until the document reports load: until then the engine may
             // paint its own WHITE canvas over this element's background, which

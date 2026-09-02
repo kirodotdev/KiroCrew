@@ -360,7 +360,16 @@ export default function RemoteArtifactDetailPage() {
                     src={blobUrl}
                     sandbox="allow-scripts allow-popups allow-popups-to-escape-sandbox"
                     className="w-full border-none bg-card"
-                    style={{ height: 'calc(100vh - 240px)', minHeight: 480 }}
+                    style={{
+                      height: 'calc(100vh - 240px)',
+                      minHeight: 480,
+                      // See ArtifactBody's frame: a laid-out document whose first
+                      // paint is skipped shows an empty box, and promoting the
+                      // frame to its own compositing layer is the remedy that
+                      // needs no post-load timing. The remote detail frame was
+                      // left out when the local one was promoted.
+                      transform: 'translateZ(0)',
+                    }}
                     title={i18nT('pages.remoteArtifactDetailPage.remote_artifact_3', { name: externalId })}
                   />
                 ) : failed ? (

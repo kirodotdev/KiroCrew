@@ -236,6 +236,25 @@ describe('ArtifactsPage keeps the axis on the page at one column', () => {
     expect(text).toMatch(/const THUMB_HEIGHT_SPACE = 'thumb900'/)
   })
 
+  it('gives the thumbnail frame its own compositing layer without losing its scale', async () => {
+    // Fourth consumer of `useSandboxDoc`, and the one a First Principles review
+    // caught this PR miscounting. The thumb loads the same minted document
+    // behind the same opacity-on-load reveal as the other three frames, so it
+    // needs the same promotion -- but its transform is load-bearing geometry,
+    // so the 3D form has to be COMPOSED onto the scale rather than replace it.
+    // A 2D scale alone makes a stacking context and does not promote.
+    //
+    // Asserted at source level like its siblings above, because the regression
+    // is invisible in Chromium and in a jsdom mount: nothing else here would
+    // catch the property being dropped or the scale being clobbered.
+    const text = thumbsSrc()
+    const thumb = text.slice(text.indexOf('function WidgetThumb('), text.indexOf('function ContentThumb('))
+    expect(thumb).toMatch(/transform: `scale\(\$\{scale\}\) translateZ\(0\)`/)
+    // The scale must survive: a bare translateZ(0) here would render every
+    // thumbnail at full width inside a column-width box.
+    expect(thumb).not.toMatch(/transform: `translateZ\(0\)`/)
+  })
+
   it('reserves ONE box for a thumbnail, before and after the iframe exists', async () => {
     // A different placeholder height that is swapped once the blob URL resolves
     // is a SECOND height change per card, on top of the report — and in a
