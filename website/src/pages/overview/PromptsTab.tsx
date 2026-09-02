@@ -332,17 +332,21 @@ export default function PromptsTab() {
   useSidePanelLeaveGuard(() =>
     !editDirty() || confirm(i18nT('pages.overview.promptsTab.discard_unsaved_changes')))
 
-  // The guard above only sees exits this shell owns. A reload, a tab close, or
-  // navigating the browser off the dashboard entirely destroys the same draft,
-  // and `beforeunload` is the only thing the platform offers there — the same
-  // idiom, for the same reason, as ArtifactDetailPage, PapyrusPage, MdNotebook
-  // and ChatPage.
+  // The guard above is consulted by every exit that has been wired to ask: this
+  // layout's own rail and mobile back bar, the global sidebar, and the command
+  // palette. A reload, a tab close, or navigating the browser off the dashboard
+  // entirely destroys the same draft, and `beforeunload` is the only thing the
+  // platform offers there — the same idiom, for the same reason, as
+  // ArtifactDetailPage, PapyrusPage, MdNotebook and ChatPage.
   //
-  // What this deliberately does NOT cover: an in-app route change (the global
-  // sidebar, or browser back inside the SPA). `beforeunload` does not fire for
-  // those — the document never unloads — so they need a router-level blocker,
-  // which is a larger change than this fix and is recorded as a follow-up
-  // rather than half-done here.
+  // NOT covered, and deliberately named rather than implied: the browser's own
+  // Back/Forward button, and in-app `navigate()` callers that have not been
+  // wired (notification jumps, and any future one). `beforeunload` does not fire
+  // for Back (the document never unloads) and react-router's `useBlocker` needs
+  // a data router the dashboard does not mount, so vetoing Back means pushing
+  // sentinel history entries under a router that owns the stack. The structural
+  // retirement of this per-caller wiring is tracked in #8010; until then a new
+  // navigation surface has to opt in, and forgetting fails silently.
   useEffect(() => {
     if (!editDirty()) return
     const warn = (e: BeforeUnloadEvent) => { e.preventDefault(); e.returnValue = '' }

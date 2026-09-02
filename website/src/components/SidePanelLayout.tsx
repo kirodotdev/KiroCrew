@@ -2,6 +2,7 @@ import React from 'react'
 import { useSearchParams, useLocation, useNavigate } from 'react-router-dom'
 import { ChevronRight } from 'lucide-react'
 import { NavBackBar } from './NavBackBar'
+import { useRegisterNavigationLeaveGuard } from './NavigationLeaveGuard'
 import { hasSubSelection, deleteSubSelection, COARSE_TOUCH_TARGET, SUBNAV_PUSH_STATE, toPathSegment, parsePathSegments } from './subNavParams'
 import { useIsMobile } from '../hooks/useIsMobile'
 import { useVisualViewport } from '../hooks/useVisualViewport'
@@ -108,6 +109,11 @@ const SidePanelLeaveGuardContext = React.createContext<
  * dirtiness test and the confirm copy. The question a user reads about losing a
  * draft belongs next to the draft — the shell has no idea what is in it, and a
  * shell-owned string would have to be vague enough to cover every pane.
+ *
+ * One registration, several askers: this layout also forwards the guard to the
+ * app shell (see NavigationLeaveGuard), so the same answer covers an in-app
+ * route change that unmounts the layout itself. A pane declares dirtiness here
+ * and nowhere else.
  */
 export function useSidePanelLeaveGuard(guard: SidePanelLeaveGuard) {
   const register = React.useContext(SidePanelLeaveGuardContext)
@@ -212,6 +218,14 @@ export default function SidePanelLayout({ title, tabs, defaultTab, rememberKey, 
    *  may show a confirm, so this must only ever be called from an event
    *  handler — never during render. */
   const mayLeavePane = () => leaveGuard.current?.() !== false
+  // The pane's guard answers for exits this layout owns. An in-app route change
+  // unmounts this whole layout and takes the pane's draft with it, and that click
+  // belongs to the app shell. Forwarding the SAME guard keeps a pane registering
+  // its dirtiness in ONE place: it publishes one answer, and every asker wired to
+  // the channel — the rail here, the global sidebar, the command palette — reads
+  // it. An in-app navigation surface that has NOT been wired still bypasses it;
+  // see PromptsTab for what that leaves open.
+  useRegisterNavigationLeaveGuard(mayLeavePane)
   /** The pane, with the leave-guard channel open to it. A function, not a
    *  precomputed element: the mobile root list renders no pane, and building
    *  one there would start invoking the host's render prop on a branch that

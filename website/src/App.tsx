@@ -54,6 +54,7 @@ import PrivacyChapter from './components/PrivacyChapter'
 import { OnboardingShellHost } from './components/OnboardingChapterShell'
 import { PREVIEW_EXPAND_EVENT } from './components/WebPreviewPanel'
 import { canRenderMobileConnectKind } from './components/mobileConnectRenderers'
+import { useMayLeaveForNavigation, useIsCurrentUrl } from './components/NavigationLeaveGuard'
 import { motion, AnimatePresence, useMotionValue, useTransform } from 'framer-motion'
 import { useDrawerSwipe, animateDrawer, registerDrawerTargets, takeOverDrawer, safeAreaLeft } from './hooks/useDrawerSwipe'
 
@@ -580,7 +581,22 @@ function NavItem({ path, label, icon, active, collapsed, badge, onClickOverride,
   const isMobileRow = useIsMobile()
   const iconEl = <span className={`app-icon-nav w-4 h-4 flex items-center justify-center shrink-0 transition-opacity ${active ? 'opacity-100 text-accent is-lit' : 'opacity-70'}`}>{icon}</span>
   const { tip, tipOn, rowRef, showTip, hideTip } = useNavTip<HTMLDivElement>(collapsed)
-  const activate = () => { onClick?.(); (onClickOverride || (() => navigate(path)))() }
+  const mayLeave = useMayLeaveForNavigation()
+  const isCurrentUrl = useIsCurrentUrl()
+  const activate = () => {
+    // Navigating swaps the whole page, and the page leaving may hold a draft the
+    // user typed — `beforeunload` cannot defend it, because a client-side route
+    // change never unloads the document. Ask its guard first.
+    //
+    // Gated on this row actually going SOMEWHERE ELSE (see `useIsCurrentUrl` for
+    // why that test is the whole URL and not `active`). A row with an
+    // `onClickOverride` toggles a surface — the docked terminal, the phone
+    // dialog — and unmounts nothing, so it keeps its exemption; an unqualified
+    // ask would pop a discard-confirm over a click that was never going to
+    // destroy anything.
+    if (!onClickOverride && !isCurrentUrl(path) && !mayLeave()) return
+    onClick?.(); (onClickOverride || (() => navigate(path)))()
+  }
   return (
     <motion.div layout={isMobileRow ? undefined : 'position'}
       ref={rowRef}

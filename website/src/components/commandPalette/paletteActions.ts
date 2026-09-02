@@ -5,6 +5,7 @@ import { useMutation } from '@tanstack/react-query'
 
 import { useAppDispatch, useAppSelector } from '../../store'
 import { createSlot, setPendingInput } from '../../store/chatSlice'
+import { useMayLeaveForNavigation, useIsCurrentUrl } from '../NavigationLeaveGuard'
 
 /**
  * Shared §2 Enter-matrix engine for the Search Everywhere command palette.
@@ -96,6 +97,13 @@ export interface PaletteActions {
 export function usePaletteActions(): PaletteActions {
   const dispatch = useAppDispatch()
   const navigate: NavigateFunction = useNavigate()
+  // The palette jumps between whole pages, so it destroys an unsaved draft on
+  // the page it leaves exactly as the global sidebar does — and it is a headline
+  // affordance, one keystroke from anywhere. One ask here covers every palette
+  // consumer, because they all navigate through the single delegate returned
+  // below rather than calling `navigate` themselves.
+  const mayLeave = useMayLeaveForNavigation()
+  const isCurrentUrl = useIsCurrentUrl()
   const hasActiveChat = useAppSelector((s) => s.chat.activeSlot !== null)
 
   const { mutate: doCreateSlot } = useMutation({
@@ -119,6 +127,10 @@ export function usePaletteActions(): PaletteActions {
     newSessionWithToken,
     enterInsertOrNewSession: (token: string) =>
       resolveInvokableEnter(hasActiveChat, token, { insertToken, newSessionWithToken })(),
-    navigate: (route: string) => navigate(route),
-  }), [hasActiveChat, insertToken, newSessionWithToken, navigate])
+    navigate: (route: string) => {
+      // A jump to where we already are unmounts nothing, so it must not ask.
+      if (!isCurrentUrl(route) && !mayLeave()) return
+      navigate(route)
+    },
+  }), [hasActiveChat, insertToken, newSessionWithToken, navigate, mayLeave, isCurrentUrl])
 }

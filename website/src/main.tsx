@@ -15,6 +15,7 @@ import { ProviderProvider } from './providers'
 import { ThemeProvider } from './hooks/useTheme'
 import { UIModeProvider } from './hooks/useUIMode'
 import ThemeExperienceLayer from './components/ThemeExperienceLayer'
+import { NavigationLeaveGuardProvider } from './components/NavigationLeaveGuard'
 import { initRum } from './rum'
 import { isEmbeddedPane } from './lib/embedded'
 // i18n must initialize before the first render — a component rendering ahead of
@@ -148,21 +149,23 @@ createRoot(document.getElementById('root')!).render(
             <ThemeProvider>
               <UIModeProvider>
                 <ThemeExperienceLayer />
-                <BrowserRouter>
-                  <Routes>
-                    <Route path="/worlds-popout" element={<BrandingProvider><ProviderProvider><Suspense fallback={null}><WorldsPopout /></Suspense></ProviderProvider></BrandingProvider>} />
-                    <Route
-                      path="*"
-                      element={(
-                        <BrandingProvider>
-                          <ProviderProvider>
-                            <DashboardBootstrap>{withCommitProfiler('app', <App />)}</DashboardBootstrap>
-                          </ProviderProvider>
-                        </BrandingProvider>
-                      )}
-                    />
-                  </Routes>
-                </BrowserRouter>
+                <NavigationLeaveGuardProvider>
+                  <BrowserRouter>
+                    <Routes>
+                      <Route path="/worlds-popout" element={<BrandingProvider><ProviderProvider><Suspense fallback={null}><WorldsPopout /></Suspense></ProviderProvider></BrandingProvider>} />
+                      <Route
+                        path="*"
+                        element={(
+                          <BrandingProvider>
+                            <ProviderProvider>
+                              <DashboardBootstrap>{withCommitProfiler('app', <App />)}</DashboardBootstrap>
+                            </ProviderProvider>
+                          </BrandingProvider>
+                        )}
+                      />
+                    </Routes>
+                  </BrowserRouter>
+                </NavigationLeaveGuardProvider>
               </UIModeProvider>
             </ThemeProvider>
           </LanguageProvider>
