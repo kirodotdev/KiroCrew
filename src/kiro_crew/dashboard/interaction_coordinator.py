@@ -104,7 +104,12 @@ class ApprovalCoordinator:
         rejected_once: bool,
         permission_marker: Callable[[list[dict], str, str], bool],
     ) -> bool:
-        decision = "approved" if approved else ("rejected_once" if rejected_once else "rejected")
+        if approved:
+            decision = "approved"
+        elif rejected_once:
+            decision = "rejected_once"
+        else:
+            decision = "rejected"
         if state.resolve_state_approval(approval_id, approved):
             if rejected_once:
                 state._log.warning(

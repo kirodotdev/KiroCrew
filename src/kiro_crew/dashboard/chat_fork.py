@@ -229,10 +229,11 @@ async def api_chat_slot_fork(request: web.Request) -> web.Response:
             # without marking dirty. There is deliberately no ``_dirty`` gate on
             # the merge below: the boundary alone is authoritative and the slice is
             # empty when everything is persisted, so a flush clearing ``_dirty``
-            # mid-read can no longer skip the reconciliation and drop the tail.
+            # mid-read cannot skip the reconciliation and drop the tail.
             # ``pending_retry`` carries a SUSPICION across the ``continue`` below.
-            # The save at :209 clears ``_pending_rewrite`` unconditionally once the
-            # archive-safe rewrite succeeds (``chat_persistence``: ``if rewrite:
+            # The pending-rewrite save below clears ``_pending_rewrite``
+            # unconditionally once the archive-safe rewrite succeeds
+            # (``chat_persistence``: ``if rewrite:
             # slot._pending_rewrite = False``) with NO check that the flag it clears
             # is the one its own snapshot was taken for. So a rewind landing while
             # that save is suspended has its flag erased, and without this carry the
@@ -355,8 +356,8 @@ async def api_chat_slot_fork(request: web.Request) -> web.Response:
                 if disk_len_before <= count_before:
                     # The boundary is a usable index and authoritative: the slice
                     # is empty exactly when everything is persisted. Deliberately
-                    # NO ``_dirty`` gate here -- that is what let a flush clearing
-                    # ``_dirty`` mid-read skip the merge and drop the tail.
+                    # NO ``_dirty`` gate here -- a gate is what lets a flush
+                    # clearing ``_dirty`` mid-read skip the merge and drop the tail.
                     tail = list(slot.messages[disk_len_before:])
                 elif slot._dirty:
                     # The boundary can run AHEAD of the resident window, and is
@@ -508,12 +509,15 @@ async def api_chat_slot_fork(request: web.Request) -> web.Response:
             # callers MUST treat the result as immutable and slice or ``list(...)``
             # it before mutating.
             #
-            # Base mutated it here too, but base always took the durable save when
-            # dirty, and that save invalidates the entry -- so the mutation was
-            # transient and self-healing. The skip-the-save branch below is
-            # deliberate and correct, and it is also what removes the eviction that
-            # used to hide this: nothing corrects the entry, so every later reader
-            # of this key sees the UNPERSISTED tail as though it were history.
+            # An in-place mutation is unsafe here because this handler can finish
+            # with no durable save at all, and only a save invalidates the cache
+            # entry: the skip-the-save branch below is deliberate, and both save
+            # arms are gated on ``slot._dirty``, so neither runs when it is
+            # already False -- while the tail snapshot above is ungated and can
+            # still be non-empty. Nothing in this handler then corrects the entry,
+            # so readers of this key see the UNPERSISTED tail as though it were
+            # history until the next write to this transcript invalidates it, or
+            # the LRU evicts it.
             #
             # A rebind rather than ``list(all_messages)`` + ``extend``: one
             # expression, the surrounding control flow untouched, and it leaves no
@@ -666,21 +670,24 @@ async def api_chat_slot_fork(request: web.Request) -> web.Response:
     elif at_index is not None:
         visible = visible[: at_index + 1]
 
+    # A fork of a member DM thread is an ordinary chat, never a second "member"
+    # slot: the fork mints a chat-* key, so member mode would make it invisible
+    # everywhere (excluded from Sessions by surface mode, and absent from the
+    # roster, whose threads live only on member-<slug> keys). The override
+    # allowlist deliberately cannot name "member".
+    if mode_override is not None:
+        fork_mode = mode_override
+    elif slot.mode == "member":
+        fork_mode = ""
+    else:
+        fork_mode = slot.mode
+
     new_slot = state.get_or_create_slot(
         name=None,
         agent=slot.agent,
         workspace=slot.workspace,
         model=slot.model,
-        # A fork of a member DM thread is an ordinary chat, never a second
-        # "member" slot: the fork mints a chat-* key, so member mode would make
-        # it invisible everywhere (excluded from Sessions by surface mode, and
-        # absent from the roster, whose threads live only on member-<slug>
-        # keys). The override allowlist deliberately cannot name "member".
-        mode=(
-            mode_override
-            if mode_override is not None
-            else ("" if slot.mode == "member" else slot.mode)
-        ),
+        mode=fork_mode,
         app=request_app,
         origin=request_slot_origin(request_app),
         # Human request-layer path: a person forking a conversation. The

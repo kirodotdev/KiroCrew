@@ -13488,6 +13488,49 @@ class TestForkSlot:
         assert new_slot.mode == "custom-mode"
 
     @pytest.mark.asyncio
+    async def test_fork_of_member_slot_is_not_member_mode(self, tmp_path):
+        """A fork of a member DM thread must be an ordinary chat, never a second
+        "member" slot: the fork mints a chat-* key, so member mode would make it
+        invisible everywhere (excluded from Sessions by surface mode, and absent
+        from the roster, whose threads live only on member-<slug> keys)."""
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("src")
+        slot.mode = "member"
+        slot.append("user", "hi", "msg msg-u")
+        slot.drain()
+
+        app = _make_app(state)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post("/api/chat/slots/src/fork", json={})
+            assert resp.status == 200
+            data = await resp.json()
+
+        new_slot = state._slots.get(data["key"])
+        assert new_slot is not None
+        assert new_slot.mode == ""
+
+    @pytest.mark.asyncio
+    async def test_fork_mode_override_wins_over_inheritance(self, tmp_path):
+        """An allowlisted ``mode`` in the body overrides the source slot's mode.
+        The empty string is a legal override, so the override arm is selected on
+        ``is not None``, not on truthiness."""
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("src")
+        slot.mode = "orchestrator"
+        slot.append("user", "hi", "msg msg-u")
+        slot.drain()
+
+        app = _make_app(state)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post("/api/chat/slots/src/fork", json={"mode": ""})
+            assert resp.status == 200
+            data = await resp.json()
+
+        new_slot = state._slots.get(data["key"])
+        assert new_slot is not None
+        assert new_slot.mode == ""
+
+    @pytest.mark.asyncio
     async def test_fork_inherits_folder(self, tmp_path):
         """Fork must land in the same project folder as the source slot."""
         state = _make_state(tmp_path)
