@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from 'react'
+import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from 'react'
+import { createPortal } from 'react-dom'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useTranslation } from 'react-i18next'
 import {
@@ -51,6 +52,9 @@ export type Feedback = {
   // passing status update.
   kind: 'success' | 'warning' | 'error'
   text: string
+  /** Localized supplemental guidance appended after `text` (e.g. a provider's
+   *  prerequisite steps on a zero-tools verdict). */
+  detail?: string
   revoke?: { href: string; provider: string }
   help?: { href: string }
 }
@@ -389,6 +393,132 @@ const VALUE_PROP_KEYS = {
   gitlab: 'pages.connectionsPage.value_prop_gitlab',
 } as const
 
+/** Localized prerequisite warnings, slug-keyed like VALUE_PROP_KEYS: the
+ *  registry's `prerequisite_copy` decides WHETHER a card warns (and is the
+ *  English fallback); the catalogs carry what non-English users read. */
+const PREREQUISITE_KEYS = {
+  gitlab: 'pages.connectionsPage.prerequisite_gitlab',
+  atlassian: 'pages.connectionsPage.prerequisite_atlassian',
+} as const
+
+/**
+ * Amber warning icon beside Connect for a provider with a blocking
+ * provider-side prerequisite. Hover or focus previews the message as a small
+ * bubble; clicking the icon pins the bubble open; clicking anywhere else (or
+ * Escape) dismisses it. Modeled on InfoTip: portal-rendered so card overflow
+ * cannot clip it, name/description split so the icon's accessible NAME stays a
+ * short phrase while the prose rides as its DESCRIPTION.
+ */
+function PrerequisiteTip({ label, heading, text }: { label: string; heading: string; text: string }) {
+  const [pinned, setPinned] = useState(false)
+  const [hovered, setHovered] = useState(false)
+  const btnRef = useRef<HTMLButtonElement>(null)
+  const tipRef = useRef<HTMLDivElement>(null)
+  const hoverOff = useRef<number | undefined>(undefined)
+  const tipId = useId()
+  const open = pinned || hovered
+
+  // WCAG 1.4.13 hoverable: the pointer must be able to travel from the icon
+  // into the bubble, so hover-off waits a short grace instead of dismissing
+  // the instant the pointer leaves the icon; entering either surface cancels it.
+  const holdHover = () => {
+    window.clearTimeout(hoverOff.current)
+    setHovered(true)
+  }
+  const releaseHover = () => {
+    window.clearTimeout(hoverOff.current)
+    hoverOff.current = window.setTimeout(() => setHovered(false), 120)
+  }
+  useEffect(() => () => window.clearTimeout(hoverOff.current), [])
+
+  useEffect(() => {
+    // Gated on `open`, not `pinned`: a tip opened by keyboard focus alone must
+    // still dismiss on Escape (WCAG 1.4.13), and an outside click may as well
+    // clear a merely-hovered tip too. A press INSIDE the bubble neither passes
+    // through (the bubble is pointer-eventful, so a control hidden beneath it —
+    // worst case a sibling Connect starting an unchosen OAuth flow — is never
+    // the target) nor dismisses, so the steps stay drag-selectable; dismissal
+    // is the icon, an outside press, Escape, or scroll.
+    if (!open) return
+    const onDown = (e: MouseEvent) => {
+      if (btnRef.current?.contains(e.target as Node)) return
+      if (tipRef.current?.contains(e.target as Node)) return
+      setPinned(false)
+      setHovered(false)
+    }
+    const onKey = (e: globalThis.KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setPinned(false)
+        setHovered(false)
+      }
+    }
+    // The bubble is position:fixed and computed once, so scrolling the gallery
+    // would detach it from its icon — dismiss instead (capture phase, so any
+    // scrolling ancestor counts, not just the window).
+    const onScroll = () => {
+      setPinned(false)
+      setHovered(false)
+    }
+    document.addEventListener('mousedown', onDown)
+    document.addEventListener('keydown', onKey)
+    document.addEventListener('scroll', onScroll, true)
+    return () => {
+      document.removeEventListener('mousedown', onDown)
+      document.removeEventListener('keydown', onKey)
+      document.removeEventListener('scroll', onScroll, true)
+    }
+  }, [open])
+
+  // Bottom-anchored above the icon so bubble height never matters; clamped to
+  // the viewport the same way InfoTip clamps, falling below only when the icon
+  // sits within bubble reach of the top edge.
+  const pos = () => {
+    if (!btnRef.current) return { top: 0, left: 0 }
+    const r = btnRef.current.getBoundingClientRect()
+    const tipW = 300
+    let left = r.left + r.width / 2 - tipW / 2
+    left = Math.max(8, Math.min(left, window.innerWidth - tipW - 8))
+    if (r.top > 132) return { bottom: window.innerHeight - r.top + 6, left }
+    return { top: r.bottom + 6, left }
+  }
+
+  return (
+    <>
+      <button
+        ref={btnRef}
+        type="button"
+        aria-label={label}
+        aria-expanded={open}
+        aria-describedby={open ? tipId : undefined}
+        onClick={e => { e.stopPropagation(); setPinned(p => !p) }}
+        onMouseEnter={holdHover}
+        onMouseLeave={releaseHover}
+        onFocus={holdHover}
+        onBlur={releaseHover}
+        className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-warn transition-colors hover:bg-warn-subtle"
+      >
+        <AlertTriangle className="h-4 w-4" aria-hidden="true" />
+      </button>
+      {open && createPortal(
+        /* eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions -- the mouse listeners implement WCAG 1.4.13 "hoverable" (pointer may cross into the tooltip without it dismissing); keyboard users have their own complete path on the button (focus opens, Escape dismisses), so there is no keyboard operation to mirror here */
+        <div
+          ref={tipRef}
+          id={tipId}
+          role="tooltip"
+          onMouseEnter={holdHover}
+          onMouseLeave={releaseHover}
+          className="fixed z-[9999] max-w-[300px] whitespace-normal rounded-lg border border-warn/30 p-2.5 text-[12px] leading-relaxed text-text"
+          style={{ ...pos(), backgroundColor: 'var(--card)', boxShadow: 'var(--shadow-lg)' }}
+        >
+          <span className="block font-medium text-text-strong">{heading}</span>
+          <span className="mt-0.5 block">{text}</span>
+        </div>,
+        document.body,
+      )}
+    </>
+  )
+}
+
 function ConnectionCard({
   provider,
   server,
@@ -566,6 +696,22 @@ function ConnectionCard({
   const valueProp = provider.slug in VALUE_PROP_KEYS
     ? t(VALUE_PROP_KEYS[provider.slug as keyof typeof VALUE_PROP_KEYS])
     : t('pages.connectionsPage.service_value_prop', { provider: provider.name })
+  // One shared element so EVERY consent-initiating action (Connect, Authorize,
+  // Reconnect) carries the provider-side prerequisite — a GitLab whose Duo is
+  // off fails identically whichever button started the OAuth flow.
+  const prerequisiteTip = provider.prerequisite_copy ? (
+    <PrerequisiteTip
+      label={t('pages.connectionsPage.prerequisites_for_provider', { provider: provider.name })}
+      heading={t('pages.connectionsPage.before_you_connect')}
+      text={
+        provider.slug in PREREQUISITE_KEYS
+          ? t(PREREQUISITE_KEYS[provider.slug as keyof typeof PREREQUISITE_KEYS], {
+              defaultValue: provider.prerequisite_copy,
+            })
+          : provider.prerequisite_copy
+      }
+    />
+  ) : null
   const stateMeta: Record<ConnectionCardState, { label: string; icon: ReactNode; tone: string }> = {
     'not-connected': {
       label: t('pages.connectionsPage.not_connected'),
@@ -665,10 +811,13 @@ function ConnectionCard({
             <a href={provider.docs_url} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 text-[12px] text-muted hover:text-text">
               {t('pages.connectionsPage.documentation')} <ExternalLink className="w-3 h-3" aria-hidden="true" />
             </a>
-            <Btn primary onClick={() => void startMint(onConnect)} disabled={!!busy}>
-              {busy === 'connect' && <Loader2 className="w-3.5 h-3.5 animate-spin" aria-hidden="true" />}
-              {busy === 'connect' ? t('pages.connectionsPage.connecting') : t('pages.connectionsPage.connect')}
-            </Btn>
+            <div className="flex items-center gap-2">
+              {prerequisiteTip}
+              <Btn primary onClick={() => void startMint(onConnect)} disabled={!!busy}>
+                {busy === 'connect' && <Loader2 className="w-3.5 h-3.5 animate-spin" aria-hidden="true" />}
+                {busy === 'connect' ? t('pages.connectionsPage.connecting') : t('pages.connectionsPage.connect')}
+              </Btn>
+            </div>
           </div>
         )}
 
@@ -758,7 +907,8 @@ function ConnectionCard({
                   : t('pages.connectionsPage.not_verified_help', { provider: provider.name })}
               </span>
             </div>
-            <div className="flex justify-end">
+            <div className="flex items-center justify-end gap-2">
+              {prerequisiteTip}
               <Btn primary onClick={() => void startMint(onReconnect)} disabled={!!busy}>
                 {busy === 'connect' ? <Loader2 className="w-3.5 h-3.5 animate-spin" aria-hidden="true" /> : <KeyRound className="w-3.5 h-3.5" aria-hidden="true" />}
                 {busy === 'connect' ? t('pages.connectionsPage.connecting') : t('pages.connectionsPage.authorize')}
@@ -796,7 +946,8 @@ function ConnectionCard({
                 {(oauth?.error || server?.error) && <span className="mt-1 block text-[11px] text-muted">{oauth?.error || server?.error}</span>}
               </span>
             </div>
-            <div className="flex justify-end">
+            <div className="flex items-center justify-end gap-2">
+              {prerequisiteTip}
               <Btn primary onClick={() => void startMint(onReconnect)} disabled={!!busy}>
                 {busy === 'connect' ? <Loader2 className="w-3.5 h-3.5 animate-spin" aria-hidden="true" /> : <RotateCw className="w-3.5 h-3.5" aria-hidden="true" />}
                 {busy === 'connect' ? t('pages.connectionsPage.reconnecting') : t('pages.connectionsPage.reconnect')}
@@ -821,7 +972,7 @@ function ConnectionCard({
                 <div
                   key={slot.slug}
                   aria-hidden="true"
-                  data-placeholder={[slot.value.text, revokeLabel, helpLabel].filter(Boolean).join(' ')}
+                  data-placeholder={[slot.value.text, slot.value.detail, revokeLabel, helpLabel].filter(Boolean).join(' ')}
                   className="invisible col-start-1 row-start-1 before:content-[attr(data-placeholder)]"
                 />
               )
@@ -839,6 +990,12 @@ function ConnectionCard({
                 }`}
               >
                 {slot.value.text}
+                {slot.value.detail && (
+                  <>
+                    {' '}
+                    <span className="mt-1 block">{slot.value.detail}</span>
+                  </>
+                )}
                 {slot.value.revoke && (
                   <>
                     {' '}
@@ -1330,13 +1487,20 @@ export default function ConnectionsPage({ servicesEnabled = false }: { servicesE
       return
     }
     if (result.verdict === 'no_tools') {
+      // A connected-but-toolless GitLab is exactly who needs the provider-side
+      // steps, and its prerequisite copy describes this very state ("connecting
+      // succeeds but exposes no tools"), so it rides along localized. Atlassian's
+      // copy describes a pre-connect consent gate the user already passed, so it
+      // deliberately does not.
       setFeedback(current => ({
         ...current,
         [provider.slug]: {
           kind: 'warning',
           text: t('pages.mcpManagement.assessment.reason_no_tools_listed'),
-          // GitLab documents the provider-side Duo/group prerequisites. Link to
-          // that separately maintained source instead of copying volatile text.
+          detail:
+            provider.slug === 'gitlab'
+              ? t('pages.connectionsPage.prerequisite_gitlab_steps')
+              : undefined,
           help: provider.slug === 'gitlab' ? { href: provider.docs_url } : undefined,
         },
       }))

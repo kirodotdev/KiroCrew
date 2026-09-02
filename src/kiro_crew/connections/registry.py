@@ -83,6 +83,15 @@ class Provider(_RequiredProviderFields, total=False):
     pending the Kiro app registration, which is why the field is optional
     rather than required — an entry without it simply carries no clientId.
 
+    ``prerequisite_copy`` is the one string the Connections card renders as a
+    warning before Connect. It exists only for a provider with a BLOCKING,
+    actionable provider-side requirement — one whose absence makes a connect
+    fail or silently yield no tools — and it must stay to one or two imperative
+    sentences. Everything else a user might want to know (protocol mechanics,
+    where the grant is listed, scope trivia) belongs in ``gotcha_copy``, which
+    is reference material for docs and agents and is deliberately NOT rendered
+    on cards: a warning box on every card means no effective warning on any.
+
     ``revoke_manual_path`` is the in-app navigation to the same page as
     ``revoke_page_url``, for a provider whose settings link is a single-page app
     that re-routes after sign-in and can land the user somewhere else. A URL
@@ -98,6 +107,7 @@ class Provider(_RequiredProviderFields, total=False):
     """
 
     client_id: str
+    prerequisite_copy: str
     revoke_manual_path: str
     tool_aliases: dict[str, str]
 
@@ -164,7 +174,7 @@ _L0_EXPECTATION_FIELDS = {"authorization_server", "dcr", "pkce", "verified_on"}
 # until the Kiro app is registered, so absence must remain a valid entry shape.
 # ``tool_aliases`` is optional for the same class of reason: a provider whose
 # tool names do not collide with any other mounted provider declares none.
-_OPTIONAL_PROVIDER_FIELDS = {"client_id", "revoke_manual_path", "tool_aliases"}
+_OPTIONAL_PROVIDER_FIELDS = {"client_id", "prerequisite_copy", "revoke_manual_path", "tool_aliases"}
 
 
 def _validation_error(index: int, message: str) -> RegistryValidationError:
@@ -298,7 +308,7 @@ def _validate_provider(raw: object, index: int) -> Provider:
     if extra:
         raise _validation_error(index, f"unknown fields: {', '.join(sorted(extra))}")
 
-    for optional in ("client_id", "revoke_manual_path"):
+    for optional in ("client_id", "prerequisite_copy", "revoke_manual_path"):
         if optional in raw:
             value = raw[optional]
             if not isinstance(value, str) or not value.strip():

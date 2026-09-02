@@ -69,6 +69,7 @@ vi.mock('../pages/overview/McpTab', () => ({
 
 import ConnectionsPage from '../pages/connections/ConnectionsPage'
 import { CONNECTION_PROVIDERS } from '../pages/connections/registry'
+import { i18next } from '../i18n'
 import { createTestStore, renderWithProviders } from './helpers'
 
 const NOTION_URL = 'https://mcp.notion.com/mcp'
@@ -283,6 +284,117 @@ describe('the provider gallery', () => {
     expect(within(notion).getByRole('button', { name: 'Connect' })).toBeEnabled()
   })
 
+  it('marks only providers with a blocking prerequisite, as an icon beside Connect', async () => {
+    mount()
+
+    await waitFor(() => expect(cards()).toHaveLength(CONNECTION_PROVIDERS.length))
+    for (const provider of CONNECTION_PROVIDERS) {
+      const icon = within(card(provider.slug)).queryByRole('button', { name: `${provider.name} prerequisites` })
+      if (provider.prerequisite_copy) expect(icon).toBeInTheDocument()
+      else expect(icon).not.toBeInTheDocument()
+    }
+    // The launch set's two provider-side prerequisites: GitLab (Duo/group
+    // access, else zero tools) and Atlassian (site required, else Accept stays
+    // disabled). Pinned here so a registry edit that drops either surfaces as
+    // a failure instead of silently deleting the warning.
+    expect(within(card('gitlab')).getByRole('button', { name: 'GitLab prerequisites' })).toBeInTheDocument()
+    expect(within(card('atlassian')).getByRole('button', { name: 'Atlassian prerequisites' })).toBeInTheDocument()
+  })
+
+  it('previews the prerequisite on hover and pins it on click until an outside click', async () => {
+    mount()
+
+    const gitlab = CONNECTION_PROVIDERS.find(provider => provider.slug === 'gitlab')
+    expect(gitlab?.prerequisite_copy).toBeTruthy()
+    const icon = await waitFor(() =>
+      within(card('gitlab')).getByRole('button', { name: 'GitLab prerequisites' }),
+    )
+
+    // Hover previews the bubble (portal-rendered, so queried on the document).
+    fireEvent.mouseEnter(icon)
+    const bubble = screen.getByRole('tooltip')
+    expect(within(bubble).getByText(gitlab?.prerequisite_copy ?? '__missing_gitlab_copy__')).toBeInTheDocument()
+    expect(bubble).toHaveTextContent('GitLab Duo')
+    // All three provider-side blockers stay named — dropping any one recreates
+    // the silent zero-tools connect this warning exists to prevent.
+    expect(bubble).toHaveTextContent('beta and experimental features')
+    expect(bubble).toHaveTextContent('top-level group')
+    expect(bubble).toHaveTextContent('exposes no tools')
+
+    // Leaving without clicking dismisses the preview — after the short grace
+    // that lets the pointer travel into the bubble (WCAG 1.4.13 hoverable).
+    fireEvent.mouseLeave(icon)
+    expect(screen.getByRole('tooltip')).toBeInTheDocument()
+    await waitFor(() => expect(screen.queryByRole('tooltip')).not.toBeInTheDocument())
+
+    // Crossing from the icon into the bubble keeps it open, and a mousedown
+    // inside it (starting a drag-selection of the steps) does not dismiss.
+    fireEvent.mouseEnter(icon)
+    const hoverBubble = screen.getByRole('tooltip')
+    fireEvent.mouseLeave(icon)
+    fireEvent.mouseEnter(hoverBubble)
+    expect(screen.getByRole('tooltip')).toBeInTheDocument()
+    fireEvent.mouseDown(hoverBubble)
+    expect(screen.getByRole('tooltip')).toBeInTheDocument()
+    fireEvent.mouseLeave(hoverBubble)
+    await waitFor(() => expect(screen.queryByRole('tooltip')).not.toBeInTheDocument())
+
+    // Clicking pins the bubble open past mouse-leave...
+    fireEvent.click(icon)
+    fireEvent.mouseLeave(icon)
+    expect(icon).toHaveAttribute('aria-expanded', 'true')
+    expect(screen.getByRole('tooltip')).toBeInTheDocument()
+
+    // ...and a click anywhere else dismisses it.
+    fireEvent.mouseDown(document.body)
+    expect(screen.queryByRole('tooltip')).not.toBeInTheDocument()
+    expect(icon).toHaveAttribute('aria-expanded', 'false')
+
+    // A tip opened by hover/focus alone (never pinned) must also dismiss on
+    // Escape (WCAG 1.4.13) — regression for the pinned-only listener gate.
+    fireEvent.mouseEnter(icon)
+    expect(screen.getByRole('tooltip')).toBeInTheDocument()
+    fireEvent.keyDown(document, { key: 'Escape' })
+    expect(screen.queryByRole('tooltip')).not.toBeInTheDocument()
+
+    // The bubble is position:fixed and computed once, so a scroll anywhere
+    // dismisses it rather than letting it detach from its icon.
+    fireEvent.click(icon)
+    expect(screen.getByRole('tooltip')).toBeInTheDocument()
+    fireEvent.scroll(document)
+    expect(screen.queryByRole('tooltip')).not.toBeInTheDocument()
+  })
+
+  it('hides the prerequisite icon once the provider is connected', async () => {
+    mcpServers.mockResolvedValue([
+      server({ name: 'gitlab', url: 'https://gitlab.com/api/v4/mcp' }),
+    ])
+    mount()
+
+    const gitlab = await waitFor(() => card('gitlab'))
+    expect(gitlab).toHaveAttribute('data-state', 'connected')
+    expect(within(gitlab).queryByRole('button', { name: 'GitLab prerequisites' })).not.toBeInTheDocument()
+  })
+
+  it('keeps the prerequisite icon beside Authorize when a configured provider is ungranted', async () => {
+    // A GitLab entry whose grant is confirmed absent offers Authorize instead
+    // of Connect — the same consent flow with the same Duo/group wall, so the
+    // warning must ride this CTA too, not only the first-connect one.
+    mcpServers.mockResolvedValue([
+      server({ name: 'gitlab', url: 'https://gitlab.com/api/v4/mcp', status: 'needs_auth' }),
+    ])
+    connectionsStatus.mockResolvedValue({
+      schema_version: 1,
+      connections: [{ slug: 'gitlab', status: 'not_connected', grantPresent: false }],
+    })
+    mount()
+
+    const gitlab = await waitFor(() => card('gitlab'))
+    await waitFor(() => expect(gitlab).toHaveAttribute('data-state', 'not-verified'))
+    expect(within(gitlab).getByRole('button', { name: /Authorize/ })).toBeInTheDocument()
+    expect(within(gitlab).getByRole('button', { name: 'GitLab prerequisites' })).toBeInTheDocument()
+  })
+
   it('renders a skeleton while the server list is in flight, then the cards', async () => {
     const pending = deferred<McpServer[]>()
     mcpServers.mockReturnValue(pending.promise)
@@ -460,8 +572,26 @@ describe('a connected provider', () => {
     fireEvent.click(await waitFor(() => within(card('gitlab')).getByRole('button', { name: 'Test' })))
 
     const warning = await screen.findByRole('alert')
+    // The connected-but-toolless user gets the exact provider-side steps, not
+    // just a generic reason and a link. The steps render localized via the
+    // slug-keyed catalog entry, whose English value must stay in lockstep with
+    // the registry's prerequisite_copy (the drift guard below).
+    expect(warning).toHaveTextContent('beta and experimental features')
+    expect(warning).toHaveTextContent('top-level group')
+    expect(within(warning).getByText(i18next.t('pages.connectionsPage.prerequisite_gitlab_steps'))).toBeInTheDocument()
     expect(within(warning).getByRole('link', { name: 'Documentation' }))
       .toHaveAttribute('href', 'https://docs.gitlab.com/user/model_context_protocol/mcp_server/')
+  })
+
+  it('keeps the localized prerequisite catalogs in lockstep with the registry English', () => {
+    // The registry decides WHETHER a card warns and is the English fallback;
+    // the en catalog is what actually renders in the default locale. If they
+    // drift, English users silently read different steps than the registry
+    // documents — so equality is pinned here for every provider that warns.
+    for (const provider of CONNECTION_PROVIDERS) {
+      if (!provider.prerequisite_copy) continue
+      expect(i18next.t(`pages.connectionsPage.prerequisite_${provider.slug}`)).toBe(provider.prerequisite_copy)
+    }
   })
 
   it('surfaces an authenticated failure as an error on the card', async () => {

@@ -9323,6 +9323,7 @@
     "connectionsPage": {
       "action_failed": "操作失败：{{error}}",
       "authorize": "授权",
+      "before_you_connect": "连接前",
       "cancel": "取消",
       "complete_connection": "完成",
       "connect": "连接",
@@ -9360,6 +9361,10 @@
       "not_verified_help": "{{productName}} 无法查看 {{provider}} 的授权状态：令牌由 Kiro CLI 保存。如果智能体已能调用它，说明它可用；否则仍需授权。",
       "official_mcp_server": "官方 MCP 服务器",
       "open_managed_connection": "打开 {{provider}} 连接卡片",
+      "prerequisite_atlassian": "需要一个拥有 Jira 或 Confluence 站点的 Atlassian 账户——否则同意页面的 Accept 按钮将保持禁用状态。",
+      "prerequisite_gitlab": "启用 GitLab Duo（包含测试版和实验性功能），并为你的顶级群组允许 MCP 服务器访问——否则连接虽会成功，但不会提供任何工具。",
+      "prerequisite_gitlab_steps": "启用 GitLab Duo（包含测试版和实验性功能），并为你的顶级群组允许 MCP 服务器访问。",
+      "prerequisites_for_provider": "{{provider}} 前提条件",
       "reconnect": "重新连接",
       "reconnecting": "正在重新连接…",
       "relaying": "正在发送…",

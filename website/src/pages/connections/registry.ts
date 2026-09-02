@@ -8,6 +8,13 @@ export interface ConnectionProvider {
   mcp_url: string
   revoke_page_url: string
   docs_url: string
+  /**
+   * Short, imperative, BLOCKING provider-side requirement — the only string a
+   * card renders as a pre-connect warning, and only when present. Long
+   * reference notes live in `gotcha_copy`, which cards deliberately do not
+   * render: a warning on every card is a warning on none.
+   */
+  prerequisite_copy?: string
   gotcha_copy: string
   smoke_fixture: {
     tool: string

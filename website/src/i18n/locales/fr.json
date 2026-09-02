@@ -9613,6 +9613,7 @@
     "connectionsPage": {
       "action_failed": "Échec de l’action : {{error}}",
       "authorize": "Autoriser",
+      "before_you_connect": "Avant la connexion",
       "cancel": "Annuler",
       "complete_connection": "Terminer",
       "connect": "Connecter",
@@ -9650,6 +9651,10 @@
       "not_verified_help": "{{productName}} ne peut pas voir l’autorisation de {{provider}} : c’est Kiro CLI qui détient le jeton. Si un agent parvient déjà à l’appeler, tout fonctionne ; sinon, une autorisation reste nécessaire.",
       "official_mcp_server": "Serveur MCP officiel",
       "open_managed_connection": "Ouvrir la carte de connexion {{provider}}",
+      "prerequisite_atlassian": "Nécessite un compte Atlassian avec un site Jira ou Confluence — sans cela, le bouton Accept de la page de consentement reste désactivé.",
+      "prerequisite_gitlab": "Activez GitLab Duo avec les fonctionnalités bêta et expérimentales, et autorisez l'accès au serveur MCP pour votre groupe de premier niveau — sans cela, la connexion réussit mais n'expose aucun outil.",
+      "prerequisite_gitlab_steps": "Activez GitLab Duo avec les fonctionnalités bêta et expérimentales, et autorisez l'accès au serveur MCP pour votre groupe de premier niveau.",
+      "prerequisites_for_provider": "Prérequis {{provider}}",
       "reconnect": "Reconnecter",
       "reconnecting": "Reconnexion…",
       "relaying": "Envoi…",

@@ -9468,6 +9468,7 @@
     "connectionsPage": {
       "action_failed": "অ্যাকশন ব্যর্থ: {{error}}",
       "authorize": "অনুমোদন দিন",
+      "before_you_connect": "সংযোগ করার আগে",
       "cancel": "বাতিল",
       "complete_connection": "সম্পন্ন করুন",
       "connect": "সংযুক্ত করুন",
@@ -9505,6 +9506,10 @@
       "not_verified_help": "{{productName}} {{provider}}-এর অনুমোদন দেখতে পায় না — টোকেন Kiro CLI-এর কাছে থাকে। কোনো এজেন্ট যদি এটি ইতিমধ্যে ব্যবহার করতে পারে তবে এটি কাজ করছে; না হলে অনুমোদন এখনও দরকার।",
       "official_mcp_server": "অফিশিয়াল MCP সার্ভার",
       "open_managed_connection": "{{provider}} সংযোগ কার্ড খুলুন",
+      "prerequisite_atlassian": "Jira বা Confluence সাইটসহ একটি Atlassian অ্যাকাউন্ট প্রয়োজন — এটি ছাড়া সম্মতি পৃষ্ঠার Accept বোতামটি নিষ্ক্রিয় থাকে।",
+      "prerequisite_gitlab": "GitLab Duo বিটা ও পরীক্ষামূলক বৈশিষ্ট্যসহ চালু করুন এবং আপনার শীর্ষ-স্তরের গ্রুপের জন্য MCP সার্ভার অ্যাক্সেসের অনুমতি দিন — এগুলি ছাড়া সংযোগ সফল হলেও কোনো টুল পাওয়া যায় না।",
+      "prerequisite_gitlab_steps": "GitLab Duo বিটা ও পরীক্ষামূলক বৈশিষ্ট্যসহ চালু করুন এবং আপনার শীর্ষ-স্তরের গ্রুপের জন্য MCP সার্ভার অ্যাক্সেসের অনুমতি দিন।",
+      "prerequisites_for_provider": "{{provider}} এর পূর্বশর্ত",
       "reconnect": "পুনরায় সংযুক্ত করুন",
       "reconnecting": "পুনরায় সংযুক্ত হচ্ছে…",
       "relaying": "পাঠানো হচ্ছে…",

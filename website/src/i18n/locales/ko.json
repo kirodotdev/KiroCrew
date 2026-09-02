@@ -9323,6 +9323,7 @@
     "connectionsPage": {
       "action_failed": "작업에 실패했습니다: {{error}}",
       "authorize": "인증하기",
+      "before_you_connect": "연결하기 전에",
       "cancel": "취소",
       "complete_connection": "완료",
       "connect": "연결",
@@ -9360,6 +9361,10 @@
       "not_verified_help": "{{productName}}은(는) {{provider}}의 인증 상태를 확인할 수 없습니다. 토큰은 Kiro CLI가 보관합니다. 에이전트가 이미 호출할 수 있다면 정상 작동 중이며, 그렇지 않다면 아직 인증이 필요합니다.",
       "official_mcp_server": "공식 MCP 서버",
       "open_managed_connection": "{{provider}} 연결 카드 열기",
+      "prerequisite_atlassian": "Jira 또는 Confluence 사이트가 있는 Atlassian 계정이 필요합니다. 없으면 동의 페이지의 Accept 버튼이 비활성화된 상태로 유지됩니다.",
+      "prerequisite_gitlab": "GitLab Duo를 베타 및 실험적 기능과 함께 활성화하고 최상위 그룹에 대해 MCP 서버 액세스를 허용하세요. 이 설정이 없으면 연결은 성공하지만 도구가 제공되지 않습니다.",
+      "prerequisite_gitlab_steps": "GitLab Duo를 베타 및 실험적 기능과 함께 활성화하고 최상위 그룹에 대해 MCP 서버 액세스를 허용하세요.",
+      "prerequisites_for_provider": "{{provider}} 사전 요구 사항",
       "reconnect": "다시 연결",
       "reconnecting": "다시 연결 중…",
       "relaying": "전송 중…",

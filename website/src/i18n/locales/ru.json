@@ -9758,6 +9758,7 @@
     "connectionsPage": {
       "action_failed": "Не удалось выполнить действие: {{error}}",
       "authorize": "Авторизовать",
+      "before_you_connect": "Перед подключением",
       "cancel": "Отмена",
       "complete_connection": "Завершить",
       "connect": "Подключить",
@@ -9795,6 +9796,10 @@
       "not_verified_help": "{{productName}} не видит авторизацию для {{provider}}: токен хранит Kiro CLI. Если агент уже может обращаться к серверу, он работает; иначе авторизация всё ещё нужна.",
       "official_mcp_server": "Официальный MCP-сервер",
       "open_managed_connection": "Открыть карточку подключения {{provider}}",
+      "prerequisite_atlassian": "Требуется учётная запись Atlassian с сайтом Jira или Confluence — без него кнопка Accept на странице согласия остаётся неактивной.",
+      "prerequisite_gitlab": "Включите GitLab Duo с бета- и экспериментальными функциями и разрешите доступ к серверу MCP для вашей группы верхнего уровня — без этого подключение выполняется, но не предоставляет ни одного инструмента.",
+      "prerequisite_gitlab_steps": "Включите GitLab Duo с бета- и экспериментальными функциями и разрешите доступ к серверу MCP для вашей группы верхнего уровня.",
+      "prerequisites_for_provider": "Предварительные требования {{provider}}",
       "reconnect": "Подключить снова",
       "reconnecting": "Повторное подключение…",
       "relaying": "Отправка…",

@@ -9468,6 +9468,7 @@
     "connectionsPage": {
       "action_failed": "कार्रवाई विफल: {{error}}",
       "authorize": "प्राधिकृत करें",
+      "before_you_connect": "कनेक्ट करने से पहले",
       "cancel": "रद्द करें",
       "complete_connection": "पूरा करें",
       "connect": "कनेक्ट करें",
@@ -9505,6 +9506,10 @@
       "not_verified_help": "{{productName}} {{provider}} का प्राधिकरण नहीं देख सकता — टोकन Kiro CLI के पास रहता है। यदि कोई एजेंट इसे पहले से बुला सकता है तो यह काम कर रहा है; अन्यथा प्राधिकरण अभी भी आवश्यक है।",
       "official_mcp_server": "आधिकारिक MCP सर्वर",
       "open_managed_connection": "{{provider}} कनेक्शन कार्ड खोलें",
+      "prerequisite_atlassian": "Jira या Confluence साइट वाले Atlassian खाते की आवश्यकता है — इसके बिना सहमति पृष्ठ का Accept बटन निष्क्रिय रहता है।",
+      "prerequisite_gitlab": "GitLab Duo को बीटा और प्रयोगात्मक सुविधाओं के साथ सक्षम करें और अपने शीर्ष-स्तरीय समूह के लिए MCP सर्वर एक्सेस की अनुमति दें — इनके बिना कनेक्शन सफल होता है लेकिन कोई टूल उपलब्ध नहीं होता।",
+      "prerequisite_gitlab_steps": "GitLab Duo को बीटा और प्रयोगात्मक सुविधाओं के साथ सक्षम करें और अपने शीर्ष-स्तरीय समूह के लिए MCP सर्वर एक्सेस की अनुमति दें।",
+      "prerequisites_for_provider": "{{provider}} की पूर्व-आवश्यकताएँ",
       "reconnect": "फिर से कनेक्ट करें",
       "reconnecting": "फिर से कनेक्ट हो रहा है…",
       "relaying": "भेजा जा रहा है…",
