@@ -1,0 +1,12 @@
+{
+  "_provenance": {
+    "source": "live_probe",
+    "reference": "Authorized probe against ilinkai.weixin.qq.com during PR #711 (WeChat QR render fix). Observed Content-Type: text/html; qrcode_img_content was a scannable liteapp login URL, NOT image bytes -- the assumption that broke production.",
+    "captured_at": "2026-07-28",
+    "note": "Field VALUES are redacted/short-lived (the qrcode id expires); only the SHAPE is load-bearing. Re-probe and rewrite this file if iLink changes the contract."
+  },
+  "payload": {
+    "qrcode": "7GiQu1",
+    "qrcode_img_content": "https://liteapp.weixin.qq.com/q/7GiQu1?qrcode=7GiQu1&bot_type=3"
+  }
+}

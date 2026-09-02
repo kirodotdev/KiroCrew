@@ -1,0 +1,47 @@
+@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+
+@keyframes shimmer {
+  0%, 100% { background-position: 0% 50%; }
+  50% { background-position: 100% 50%; }
+}
+@keyframes float {
+  0%, 100% { transform: translate(0, 0) scale(1); }
+  33% { transform: translate(40px, -50px) scale(1.05); }
+  66% { transform: translate(-30px, 40px) scale(0.95); }
+}
+@keyframes rise {
+  0% { opacity: 0; transform: translateY(0); }
+  10% { opacity: 0.5; }
+  90% { opacity: 0.15; }
+  100% { opacity: 0; transform: translateY(-100vh); }
+}
+@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
+@keyframes blink { 50% { opacity: 0; } }
+
+.font-space { font-family: 'Space Grotesk', -apple-system, sans-serif; }
+.font-mono { font-family: 'JetBrains Mono', monospace; }
+.animate-shimmer {
+  background: linear-gradient(135deg, #fff 0%, #f59e0b 40%, #d97706 80%, #92400e 100%);
+  background-size: 200% 200%;
+  animation: shimmer 6s ease-in-out infinite;
+  -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text;
+}
+.animate-float { animation: float 20s ease-in-out infinite; }
+.animate-float-reverse { animation: float 25s ease-in-out infinite reverse; }
+.animate-float-slow { animation: float 30s ease-in-out infinite 5s; }
+.animate-rise { animation: rise linear infinite; }
+.animate-pulse-dot { animation: pulse 2s infinite; }
+.animate-blink { animation: blink 1s step-end infinite; }
+
+.bg-grid {
+  background-image: linear-gradient(rgba(245,158,11,0.04) 1px, transparent 1px), linear-gradient(90deg, rgba(245,158,11,0.04) 1px, transparent 1px);
+  background-size: 60px 60px;
+  mask-image: radial-gradient(ellipse 80% 60% at 50% 30%, black 30%, transparent 100%);
+}
+.dark .bg-grid {
+  background-image: linear-gradient(rgba(245,158,11,0.04) 1px, transparent 1px), linear-gradient(90deg, rgba(245,158,11,0.04) 1px, transparent 1px);
+}
+.gradient-text {
+  background: linear-gradient(135deg, #f59e0b, #d97706);
+  -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text;
+}

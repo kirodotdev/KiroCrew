@@ -1,0 +1,51 @@
+{
+  "name": "aws-control",
+  "version": "0.1.0",
+  "displayName": "AWS Control",
+  "description": "Your cloud accounts, in plain language. See every AWS account Kiro Crew can use with a health light per account and matched reconnect guidance, plus an S3-backed cloud drive — files, a cloud artifact library, and backups — with time-boxed share links. Nothing is public unless you say so, and every paid service asks for your confirmation before it can bill you.",
+  "author": "kirocrew",
+  "license": "MIT",
+  "defaultEnabled": false,
+  "highlights": [
+    "One health light per account, each with reconnect guidance matched to how the profile authenticates",
+    "Private, encrypted, versioned storage that is created only after you confirm it",
+    "Your cloud artifact library, files, and backups all live on one bucket you own",
+    "Share links always expire — nothing is public unless you say so",
+    "Every paid service is confirmed per account before its first use, and every change is on the record"
+  ],
+  "backend": {
+    "hooks": {
+      "on_startup": "hooks:on_startup",
+      "on_shutdown": "hooks:on_shutdown"
+    },
+    "routes": "backend.routes:register_routes"
+  },
+  "ui": {
+    "pages": [
+      {
+        "route": "/aws-control",
+        "label": "AWS Control",
+        "icon": "Cloud"
+      }
+    ]
+  },
+  "permissions": {
+    "api": [
+      "/api/apps/aws-control",
+      "/api/apps/aws-control/*"
+    ],
+    "storage": true,
+    "network": true
+  },
+  "tags": [
+    "aws",
+    "accounts",
+    "cloud-drive",
+    "cost",
+    "governance"
+  ],
+  "iconUrl": "/app-assets/aws-control/icon.svg",
+  "screenshots": [
+    "/app-assets/aws-control/screenshot-main.png"
+  ]
+}

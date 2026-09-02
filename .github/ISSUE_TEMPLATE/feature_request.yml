@@ -1,0 +1,57 @@
+name: Feature request
+description: Propose a new capability or a change to how KiroCrew behaves.
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        For anything significant, this issue is the right place to agree on the
+        approach before code gets written — see
+        [CONTRIBUTING.md](https://github.com/kirodotdev/KiroCrew/blob/main/CONTRIBUTING.md).
+
+  - type: checkboxes
+    id: search
+    attributes:
+      label: Existing issues
+      options:
+        - label: I searched open issues and this is not already requested.
+          required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: >-
+        What are you trying to do, and what stops you today? Describe the
+        situation rather than the solution — it often admits a simpler fix than
+        the one you had in mind.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behaviour
+      description: >-
+        What should happen instead. Concrete beats abstract: name the command,
+        surface, or setting where you would expect to find it.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: >-
+        Other approaches you weighed, including whether an existing feature gets
+        you part of the way. "None" is a fine answer.
+    validations:
+      required: false
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Anything else
+      description: Mockups, prior art in other tools, or links to related discussion.
+    validations:
+      required: false

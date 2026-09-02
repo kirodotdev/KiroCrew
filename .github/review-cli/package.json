@@ -1,0 +1,9 @@
+{
+  "name": "kirocrew-review-cli",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Locked manifest for the AI review lanes' CLI. Not shipped, not part of the product build -- it exists so codex-review.yml and fork-gpt-review.yml install from a committed lockfile (npm ci) instead of resolving a floating registry version at job time. Those jobs hold Bedrock credentials and read PR content, so the exact code they execute must change only by a commit to this repo. Bump deliberately: edit the exact version below, run `npm install --package-lock-only` in this directory, and commit both files.",
+  "dependencies": {
+    "@openai/codex": "0.150.1"
+  }
+}

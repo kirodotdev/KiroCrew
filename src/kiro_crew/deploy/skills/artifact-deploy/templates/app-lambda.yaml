@@ -1,0 +1,88 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  KiroCrew One-Click Deploy - per-app backend (M2.1). A Lambda with an AWS_IAM
+  Function URL that is invoked ONLY by the shared CloudFront distribution via
+  Origin Access Control (SigV4). There is NO public naked URL - the public entry
+  is CloudFront at /<slug>/api/*. One stack per slug: kirocrew-deploy-app-<slug>.
+
+Parameters:
+  Slug:
+    Type: String
+  CodeBucket:
+    Type: String
+  CodeKey:
+    Type: String
+  Runtime:
+    Type: String
+    Default: python3.12
+  Handler:
+    Type: String
+    Default: index.handler
+  DistributionArn:
+    Type: String
+    Description: ARN of the shared CloudFront distribution permitted to invoke this URL.
+
+Resources:
+
+  ExecRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub 'kirocrew-deploy-app-${Slug}-exec'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      # Least privilege: CloudWatch Logs only.
+      # R23 F1: mandatory permissions boundary — the deploy principal's
+      # iam:CreateRole is conditioned on this boundary being attached.
+      PermissionsBoundary: !Sub 'arn:aws:iam::${AWS::AccountId}:policy/kirocrew-deploy-app-boundary'
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Tags:
+        - { Key: 'kirocrew:managed', Value: 'true' }
+        - { Key: 'kirocrew:slug', Value: !Ref Slug }
+
+  Fn:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub 'kirocrew-deploy-app-${Slug}'
+      Runtime: !Ref Runtime
+      Handler: !Ref Handler
+      Role: !GetAtt ExecRole.Arn
+      Timeout: 10
+      MemorySize: 256
+      Code:
+        S3Bucket: !Ref CodeBucket
+        S3Key: !Ref CodeKey
+      Tags:
+        - { Key: 'kirocrew:managed', Value: 'true' }
+        - { Key: 'kirocrew:slug', Value: !Ref Slug }
+
+  # AWS_IAM = the naked URL is NOT public; only a SigV4-signed caller works.
+  Url:
+    Type: AWS::Lambda::Url
+    Properties:
+      TargetFunctionArn: !GetAtt Fn.Arn
+      AuthType: AWS_IAM
+
+  # Allow ONLY the shared CloudFront distribution (OAC) to invoke the URL.
+  CfInvokePerm:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref Fn
+      Action: lambda:InvokeFunctionUrl
+      Principal: cloudfront.amazonaws.com
+      SourceArn: !Ref DistributionArn
+      FunctionUrlAuthType: AWS_IAM
+
+Outputs:
+  FunctionName:
+    Value: !Ref Fn
+  FunctionUrl:
+    Value: !GetAtt Url.FunctionUrl
+  FunctionUrlDomain:
+    Description: Host part of the function URL (used as the CloudFront origin domain).
+    Value: !Select [2, !Split ['/', !GetAtt Url.FunctionUrl]]

@@ -1,0 +1,33 @@
+{
+  "version": 1,
+  "boot": {
+    "fail_closed": true
+  },
+  "distribution": {
+    "source": "https://config.corp.example/kirocrew/security_policy.json",
+    "refresh_interval_secs": 900,
+    "timeout_secs": 10,
+    "max_cache_age_secs": 86400,
+    "on_unavailable": "fail_closed"
+  },
+  "network": {
+    "egress": {
+      "mode": "allow",
+      "allow": [
+        "*.amazonaws.com",
+        "*.kiro.dev",
+        "management.*.kiro.dev",
+        "runtime.*.kiro.dev"
+      ]
+    }
+  },
+  "commands": {
+    "mode": "deny",
+    "deny": [
+      "curl*://*",
+      "wget*://*",
+      "nc *",
+      "ncat *"
+    ]
+  }
+}

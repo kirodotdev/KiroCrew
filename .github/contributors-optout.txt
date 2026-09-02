@@ -1,0 +1,14 @@
+# Contributors opt-out list.
+#
+# One GitHub login per line. Any login here is NEVER added to the README
+# Contributors block by the Add Contributor workflow
+# (.github/workflows/add-contributor.yml), even though that workflow rebuilds
+# the list from every merged pull request on each run.
+#
+# This is what keeps the README's removal promise ("if you contributed and would
+# like to be ... removed, please open an issue or a pull request") enforceable:
+# without it, a full rebuild would re-add a contributor who asked to be removed.
+# To remove someone: delete their <a> entry from the README AND add their login
+# here in the same pull request, so the next rebuild does not bring them back.
+#
+# Blank lines and text after a '#' are ignored; matching is case-insensitive.

@@ -1,0 +1,310 @@
+name: Fork PR Description
+
+# Tells an EXTERNAL contributor, on the PR itself, why the fork-workflow
+# auto-approval bot is not approving their workflow runs yet: the PR is a draft,
+# or its description is missing sections the PR template requires.
+#
+# WHY THIS IS A CHECK AND NOT A COMMENT.
+# The same two rules are evaluated by the maintainer-side auto-approval cron,
+# which each maintainer runs on their own machine. That cron used to post the
+# explanation as a PR comment and de-duplicate against a LOCAL state file --
+# state no other maintainer's cron can see. With four maintainers running it,
+# one non-compliant PR collected one comment per maintainer per tick (#5038 took
+# eight). A check-run has no such failure mode: it is keyed on (head SHA, check
+# name), so every publisher converges on the same single row instead of
+# appending. The cron keeps EVALUATING the rules -- that is what decides
+# approval, is side-effect-free, and cannot deadlock on a workflow that is
+# itself awaiting approval -- and no longer NOTIFIES.
+#
+# WHY `pull_request_target` AND AN EXPLICIT check-run.
+#   - A `pull_request` run from a first-time contributor's fork lands in
+#     `action_required` and waits for the very approval this check exists to
+#     explain, so it would never run on the PRs that need it. `_target` runs
+#     immediately in the trusted base context.
+#   - `_target` runs report against the BASE sha, so they do not appear in the
+#     PR's own check list. Creating the check-run explicitly against
+#     `head.sha` puts it beside the other checks (same idiom as the Stage-2
+#     fork AI reviewers).
+#
+# TRUST MODEL: nothing here checks out, builds, or executes fork code. The only
+# fork-controlled value read is the PR body, which is passed through the
+# environment and matched with `grep -F` -- never interpolated into a script.
+#
+# Fork-only by design: same-repo PRs are authored by maintainers who own this
+# template, and pr-scope.yml already covers the shape questions that apply to
+# both paths. No check-run is created for them at all.
+#
+# LIMIT, stated plainly: this verifies that the required HEADINGS are present,
+# not that they are filled in. A PR that keeps the template verbatim passes.
+# Judging whether the prose actually explains the change is the AI reviewers'
+# job; this gate only catches the description that was replaced wholesale or
+# never written.
+
+on:
+  pull_request_target:
+    types:
+      # `edited` is the one the cron structurally cannot see: it fires when the
+      # author fixes the description WITHOUT pushing, which is exactly the
+      # remedy this check asks for. `synchronize` re-publishes against the new
+      # head SHA, since a check-run belongs to one commit.
+      - opened
+      - reopened
+      - edited
+      - ready_for_review
+      - converted_to_draft
+      - synchronize
+
+permissions:
+  checks: write
+
+concurrency:
+  # NOT cancel-in-progress. This job's whole contract is a single idempotent row,
+  # and it reaches that by reading the row then writing it. Cancelling a run
+  # mid-sequence can stop it between the read and the write, so a second run's
+  # read misses the row the first was about to create and both create one.
+  # Serialising per PR closes that window outright; the job takes seconds, so
+  # queueing costs nothing, and the last edit still produces the final verdict.
+  group: fork-pr-description-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+jobs:
+  describe:
+    name: Fork PR Description
+    # Fork PRs only. `head.repo.full_name` is null for a PR from a deleted
+    # fork, which compares unequal and is therefore treated as a fork -- the
+    # fail-toward-evaluating direction.
+    if: github.event.pull_request.head.repo.full_name != github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Evaluate PR description
+        id: evaluate
+        env:
+          # Fork-controlled. Read as data only.
+          PR_BODY: ${{ github.event.pull_request.body }}
+          PR_DRAFT: ${{ github.event.pull_request.draft }}
+          # Kept byte-identical to the maintainer cron's REQUIRED_SECTIONS so
+          # the check and the approval decision can never disagree. Matched as
+          # a case-insensitive prefix, so a heading may carry a suffix (the
+          # template's own "## What changed (motivation -> approach -> change)"
+          # matches "## What changed").
+          REQUIRED_SECTIONS: |
+            ## Problem / Motivation
+            ## Why it matters
+            ## What changed
+            ## Tests
+        run: |
+          set -uo pipefail
+
+          # Strip CR at the input. GitHub returns a web-authored PR body with
+          # CRLF line endings, so a closing fence arrives as "```\r" -- and a
+          # fence closer may carry nothing but whitespace after the marker, so
+          # the stray CR would stop it closing, swallow every heading below the
+          # code block, and mark a template-compliant PR non-compliant. Fixing
+          # it here rather than in the scanner keeps the CommonMark rules below
+          # reading like the spec, and covers the heading text too.
+          body_file="$(mktemp)"
+          printf '%s' "${PR_BODY:-}" | tr -d '\r' > "$body_file"
+
+          # Collect the body's real ATX heading lines, lowercased, EXCLUDING
+          # anything inside a fenced code block.
+          #
+          # Why a scanner and not a grep. Matching the raw body passes a PR that
+          # merely mentions "## Tests" mid-sentence, or that pastes the template
+          # into a fence to ask a question about it -- both report full
+          # compliance for a description that has no sections at all. And
+          # matching whole lines is equally wrong in the other direction: the
+          # template's own heading is "## What changed (motivation -> approach
+          # -> change)", so the match must stay a PREFIX of a heading line.
+          #
+          # Why CommonMark's real rules rather than a toggle. A naive
+          # "any fence line flips a boolean" scanner is wrong for nested
+          # examples: a ````-fenced block that CONTAINS ``` lines flips the
+          # boolean off mid-block and starts accepting the enclosed text as
+          # headings. The invariant that makes that whole family unreachable is
+          # the spec's own: a fence closes only on the SAME character, at a
+          # length >= the opener, with nothing but whitespace after it; and an
+          # ATX heading takes at most 3 leading spaces (4+ is indented code).
+          # Implemented below with substr/while rather than regex interval
+          # expressions, because `awk` is mawk on the Ubuntu runners and its
+          # interval support is not something to bet a gate on.
+          headings="$(awk '
+            {
+              s = $0
+              n = 0
+              while (n < 3 && substr(s, 1, 1) == " ") { s = substr(s, 2); n++ }
+
+              mch = ""
+              if (substr(s, 1, 3) == "```") mch = "`"
+              else if (substr(s, 1, 3) == "~~~") mch = "~"
+              mlen = 0
+              if (mch != "") {
+                while (substr(s, mlen + 1, 1) == mch) mlen++
+                rest = substr(s, mlen + 1)
+              }
+
+              if (open == "") {
+                # An opening fence may carry an info string; a closing one may not.
+                if (mch != "") { open = mch; olen = mlen; next }
+              } else {
+                if (mch == open && mlen >= olen && rest ~ /^[ \t]*$/) {
+                  open = ""; olen = 0
+                }
+                next
+              }
+
+              hn = 0
+              while (hn < 7 && substr(s, hn + 1, 1) == "#") hn++
+              if (hn >= 1 && hn <= 6) {
+                c = substr(s, hn + 1, 1)
+                if (c == " " || c == "\t") print tolower(s)
+              }
+            }
+          ' "$body_file")"
+
+          missing=()
+          while IFS= read -r section; do
+            [ -n "$section" ] || continue
+            # Prefix-compare with `case`, not a regex: the needle is data, and
+            # this way no section name ever needs regex-escaping.
+            needle="$(printf '%s' "$section" | tr '[:upper:]' '[:lower:]')"
+            found=0
+            while IFS= read -r heading; do
+              case "$heading" in
+                "$needle"*) found=1; break ;;
+              esac
+            done <<< "$headings"
+            if [ "$found" -eq 0 ]; then
+              missing+=("$section")
+            fi
+          done <<< "$REQUIRED_SECTIONS"
+
+          if [ "${#missing[@]}" -gt 0 ]; then
+            conclusion="failure"
+            if [ "${#missing[@]}" -eq 1 ]; then
+              title="1 required description section is missing"
+            else
+              title="${#missing[@]} required description sections are missing"
+            fi
+          elif [ "$PR_DRAFT" = "true" ]; then
+            # Not a defect -- the author parked it deliberately. `neutral`
+            # renders grey rather than red while still carrying the reason.
+            conclusion="neutral"
+            title="Draft — workflow runs are not auto-approved yet"
+          else
+            conclusion="success"
+            title="Description follows the PR template"
+          fi
+
+          {
+            echo "conclusion=$conclusion"
+            echo "title=$title"
+          } >> "$GITHUB_OUTPUT"
+
+          # Multiline output via a delimiter that cannot occur in the body.
+          {
+            echo "summary<<__FORK_PR_DESCRIPTION__"
+            if [ "${#missing[@]}" -gt 0 ]; then
+              echo "Your PR description is missing these sections from the"
+              echo "[PR template](https://github.com/${GITHUB_REPOSITORY}/blob/main/.github/PULL_REQUEST_TEMPLATE.md):"
+              echo
+              for section in "${missing[@]}"; do
+                echo "- \`$section\`"
+              done
+              echo
+              echo "Add them and save the description — no push needed. This check"
+              echo "re-runs on edit, and automatic approval of your workflow runs"
+              echo "resumes on the next cycle."
+            fi
+            if [ "$PR_DRAFT" = "true" ]; then
+              echo
+              echo "This PR is also a **draft**. Workflow runs are not"
+              echo "auto-approved until it is marked ready for review."
+            fi
+            if [ "${#missing[@]}" -eq 0 ] && [ "$PR_DRAFT" != "true" ]; then
+              echo "All required template sections are present and the PR is"
+              echo "ready for review."
+            fi
+            echo "__FORK_PR_DESCRIPTION__"
+          } >> "$GITHUB_OUTPUT"
+
+          rm -f "$body_file"
+
+      - name: Publish check-run
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          # The PR head, not `github.sha` (which is the base on `_target`).
+          HEAD: ${{ github.event.pull_request.head.sha }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          CONCLUSION: ${{ steps.evaluate.outputs.conclusion }}
+          TITLE: ${{ steps.evaluate.outputs.title }}
+          SUMMARY: ${{ steps.evaluate.outputs.summary }}
+        run: |
+          set -uo pipefail
+
+          # THE ROW'S IDENTITY IS EXPLICIT, NOT INFERRED.
+          #
+          # `POST /check-runs` always CREATES -- it is not an upsert. Since this
+          # workflow re-runs on every `edited` against an unchanged head, a blind
+          # POST would stack one row per edit and reproduce, in check-runs, the
+          # very duplication this change removes. So the publisher must find and
+          # update its own row. Two things make "its own row" well-defined:
+          #
+          #   1. A check-run belongs to a COMMIT, not to a pull request. Two PRs
+          #      can share a head SHA (same branch tip opened against different
+          #      bases, or a reopen), and they have different descriptions -- so
+          #      matching on the name alone would hand both runs the SAME row and
+          #      let each overwrite the other's verdict. `external_id` is the
+          #      field GitHub gives a publisher for its own identity, so the row
+          #      is keyed on it and the PR number is what makes it unique.
+          #   2. A FAILED lookup is not "no row exists". Swallowing the error
+          #      would send a transient 5xx / rate-limit down the POST path and
+          #      create the duplicate the lookup exists to prevent. So the step
+          #      fails closed: the previous row survives untouched and the next
+          #      `edited` / `synchronize` republishes. A missing explanation for
+          #      one cycle is recoverable; a wrong or duplicated row is not.
+          #
+          # The two together are one rule -- only ever touch the row matching
+          # this exact key, and never guess when the key cannot be read.
+          case "$PR_NUMBER" in
+            ''|*[!0-9]*)
+              echo "::error::unexpected PR number '$PR_NUMBER'"
+              exit 1
+              ;;
+          esac
+          external_id="fork-pr-description:$PR_NUMBER"
+
+          # `id` and `external_id` are emitted as a pair and matched in the
+          # shell, so no shell value is ever interpolated into the jq program.
+          if ! lookup="$(gh api --paginate "repos/$REPO/commits/$HEAD/check-runs" \
+            --jq '.check_runs[] | select(.name == "Fork PR Description")
+                  | "\(.external_id)\t\(.id)"')"; then
+            echo "::error::could not list check-runs for $HEAD; refusing to POST (would duplicate the row)"
+            exit 1
+          fi
+
+          existing=""
+          tab="$(printf '\t')"
+          while IFS="$tab" read -r row_eid row_id; do
+            [ "$row_eid" = "$external_id" ] || continue
+            existing="$row_id"
+            break
+          done <<< "$lookup"
+
+          if [ -n "$existing" ]; then
+            gh api --method PATCH "repos/$REPO/check-runs/$existing" \
+              -f status="completed" \
+              -f conclusion="$CONCLUSION" \
+              -f "output[title]=$TITLE" \
+              -f "output[summary]=$SUMMARY" >/dev/null
+          else
+            gh api --method POST "repos/$REPO/check-runs" \
+              -f name="Fork PR Description" \
+              -f head_sha="$HEAD" \
+              -f external_id="$external_id" \
+              -f status="completed" \
+              -f conclusion="$CONCLUSION" \
+              -f "output[title]=$TITLE" \
+              -f "output[summary]=$SUMMARY" >/dev/null
+          fi

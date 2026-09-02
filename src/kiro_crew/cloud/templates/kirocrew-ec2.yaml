@@ -1,0 +1,646 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  KiroCrew self-hosted gateway on a single EC2 instance in the user's own AWS
+  account. Reached over SSM Session Manager (no inbound ports, no SSH key).
+  Managed by `kirocrew cloud`. Delete this stack to remove all resources.
+
+# ---------------------------------------------------------------------------
+# Parameters — all defaulted; `kirocrew cloud launch` overrides via
+# --parameter-overrides. The wizard resolves VpcId/SubnetId from the account's
+# default VPC and passes them, so the user never picks networking by hand.
+# ---------------------------------------------------------------------------
+Parameters:
+  InstanceType:
+    Type: String
+    Default: m7g.2xlarge
+    Description: EC2 instance type (from the chosen size tier; default = Development).
+  Architecture:
+    Type: String
+    Default: arm64
+    AllowedValues: [arm64, x86_64]
+    Description: CPU architecture; selects the matching Amazon Linux 2023 AMI.
+  VolumeSizeGb:
+    Type: Number
+    Default: 60
+    MinValue: 20
+    MaxValue: 1000
+    Description: gp3 root volume size in GiB.
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Description: VPC to launch into (the wizard passes the default VPC).
+  SubnetId:
+    Type: AWS::EC2::Subnet::Id
+    Description: Subnet to launch into (a public subnet in the chosen VPC).
+  AssociatePublicIp:
+    Type: String
+    Default: "true"
+    AllowedValues: ["true", "false"]
+    Description: >-
+      Attach a public IP to the instance ENI. The launcher passes "false" for
+      NAT-routed (private) subnets, where a public IP is unused surface and can
+      trip SCPs that deny RunInstances-with-public-IP, and "true" for
+      IGW-routed subnets, where it is REQUIRED for egress. Default "true"
+      preserves the historical behavior for direct template deploys.
+  StackTag:
+    Type: String
+    Default: kirocrew
+    # Cap at 51 (not 63) to mirror the CLI's _TAG_RE: the IAM role /
+    # instance-profile is named "kirocrew-ec2-${StackTag}" and IAM role names
+    # max at 64 (13 + 51 = 64). A 52-63 char tag would pass template validation
+    # here but then fail opaquely at AWS::IAM::Role creation on a direct
+    # `aws cloudformation deploy`; failing early in validation is clearer.
+    AllowedPattern: "[a-zA-Z0-9-]{1,51}"
+    Description: Discovery tag value written as kirocrew:instance.
+  PermissionsBoundaryArn:
+    Type: String
+    # The launcher fills this with the deterministic ARN of the SHARED, PRE-CREATED
+    # immutable instance permissions boundary (arn:aws:iam::<account>:policy/
+    # kirocrew-ec2-boundary). It is created ONCE by launcher code
+    # (source.ensure_instance_boundary), NOT per-launch here, so a leaked launcher
+    # credential can't author a permissive boundary (see cloud/iam.py). The
+    # AllowedPattern mirrors the other ARN params: an IAM policy ARN naming exactly
+    # the boundary. InstanceRole references this by ARN — the CEILING on what the
+    # role can EVER do, regardless of inline/attached policies.
+    AllowedPattern: "^arn:aws:iam::[0-9]{12}:policy/kirocrew-ec2-boundary$"
+    Description: >-
+      ARN of the pre-created shared instance permissions boundary
+      (arn:aws:iam::<account>:policy/kirocrew-ec2-boundary). The launcher creates
+      it once and passes it here; the InstanceRole is capped by it.
+  # NB: the AllowedPatterns below mirror the launcher CLI's FieldSpec charsets
+  # (cloud/ec2.py). These values flow into the root user-data script, so the
+  # template itself must reject shell metacharacters even when someone deploys
+  # it directly with `aws cloudformation deploy`, bypassing the CLI validation.
+  SourceBucket:
+    Type: String
+    Default: ""
+    AllowedPattern: "^$|^[a-z0-9.-]{3,63}$"
+    Description: >-
+      S3 bucket holding the KiroCrew source tarball uploaded by the launcher.
+      When set, the instance downloads the source from S3 (using its IAM role);
+      no GitHub access needed. Empty = fall back to a public git clone.
+  SourceKey:
+    Type: String
+    Default: ""
+    AllowedPattern: "^$|^[A-Za-z0-9_./-]{1,255}$"
+    Description: S3 key of the source tarball (kirocrew-src.tar.gz) within SourceBucket.
+  KirocrewRepo:
+    Type: String
+    Default: https://github.com/kirodotdev/KiroCrew.git
+    AllowedPattern: "^[A-Za-z0-9_.:/@+-]{1,255}$"
+    Description: Git repo to clone when SourceBucket is not set (public-repo fallback).
+  KirocrewRef:
+    Type: String
+    Default: main
+    AllowedPattern: "^[A-Za-z0-9_./-]{1,128}$"
+    Description: Git ref (branch/tag) to install when cloning.
+  DashboardPort:
+    Type: Number
+    Default: 5476
+    MinValue: 1024
+    MaxValue: 65535
+    Description: >-
+      Port the crew's gateway listens on. The launcher registers the instance
+      with the registry's own stock remote-port default, so this Default must
+      equal DEFAULT_REMOTE_DASHBOARD_PORT in cloud/connect.py -- a test pins
+      the two together. Crews may share this value: the hub allocates its LOCAL
+      forward port independently, so simultaneously-connected crews do not
+      collide. Override only for a direct (non-launcher) deploy.
+  AllowSshCidr:
+    Type: String
+    Default: ""
+    # Valid IPv4 octets (0-255) and mask /16-/32 only — mirrors the CLI's
+    # _validate_cidr (which hard-refuses anything wider than /16), so a
+    # direct-to-CloudFormation deploy fails at validation with a clear message
+    # instead of opaquely at security-group creation. SSM needs no inbound at all.
+    AllowedPattern: "^$|^((25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\\.){3}(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])/(3[0-2]|2[0-9]|1[6-9])$"
+    Description: >-
+      Advanced/optional. If set (e.g. 1.2.3.4/32), opens inbound TCP 22 from that
+      CIDR. The stack provisions NO key pair, so this only yields a usable login
+      when combined with EC2 Instance Connect (which pushes an ephemeral key over
+      the AWS API). Empty (default, recommended) = SSM-only: no inbound ports and
+      no key material - use `kirocrew cloud connect` (SSM port-forward) instead.
+
+# The AMI is resolved at deploy time from the public SSM Parameter Store alias —
+# never a hardcoded per-region AMI id. Latest Amazon Linux 2023 for the arch.
+# Mapping keys must be alphanumeric (no underscores), so x86_64 -> "x8664".
+Mappings:
+  ArchToAmiParam:
+    arm64:
+      Param: /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-arm64
+    x8664:
+      Param: /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64
+
+Conditions:
+  HasSshCidr: !Not [!Equals [!Ref AllowSshCidr, ""]]
+  IsArm: !Equals [!Ref Architecture, arm64]
+  HasS3Source: !Not [!Equals [!Ref SourceBucket, ""]]
+  WantPublicIp: !Equals [!Ref AssociatePublicIp, "true"]
+
+Resources:
+  # --- IAM: instance role trusts EC2 and gets SSM core (enables Session Manager
+  #     with zero inbound ports). Role name is prefixed so the launcher IAM
+  #     policy can scope PassRole to it.
+  #
+  #     PermissionsBoundary references the SHARED, PRE-CREATED, IMMUTABLE boundary
+  #     (kirocrew-ec2-boundary) by ARN via the PermissionsBoundaryArn parameter —
+  #     it is NOT created per-launch here anymore. That boundary is the CEILING on
+  #     what the role can EVER do, regardless of inline/attached policies: even if
+  #     a holder of the launcher policy inlined an admin policy onto this role and
+  #     passed it to EC2, the effective permissions are capped to exactly SSM
+  #     Session Manager + the launcher-bucket source read. Because the boundary is
+  #     created once by launcher code (not authored per-launch by whoever holds
+  #     the launcher policy) and can't be re-versioned, the ceiling holds even
+  #     against a leaked launcher credential. The launcher IAM policy requires this
+  #     boundary on iam:CreateRole (see cloud/iam.py), so a created kirocrew-ec2-*
+  #     role MUST carry it.
+  InstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "kirocrew-ec2-${StackTag}"
+      PermissionsBoundary: !Ref PermissionsBoundaryArn
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: ec2.amazonaws.com }
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+      # Read-only access to just this launch's source object (when S3-sourced).
+      # ARN derived from the deterministic launcher path, NOT SourceBucket/
+      # SourceKey params (see the boundary statement above for why).
+      Policies: !If
+        - HasS3Source
+        - - PolicyName: SourceObjectRead
+            PolicyDocument:
+              Version: "2012-10-17"
+              Statement:
+                - Effect: Allow
+                  Action: s3:GetObject
+                  Resource: !Sub "arn:aws:s3:::kirocrew-src-${AWS::AccountId}-${AWS::Region}/${StackTag}/kirocrew-src.tar.gz"
+        - !Ref AWS::NoValue
+      Tags:
+        - { Key: "kirocrew:managed", Value: "true" }
+        - { Key: "kirocrew:instance", Value: !Ref StackTag }
+
+  InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      InstanceProfileName: !Sub "kirocrew-ec2-${StackTag}"
+      Roles: [!Ref InstanceRole]
+
+  # --- Security group: no ingress by default (SSM is outbound-only). Egress all
+  #     so the box can pull packages, reach SSM, and the kiro-cli/LLM endpoints.
+  InstanceSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: !Sub "KiroCrew ${StackTag} - SSM-only (no inbound by default)"
+      VpcId: !Ref VpcId
+      SecurityGroupEgress:
+        - IpProtocol: "-1"
+          CidrIp: 0.0.0.0/0
+          Description: Allow all outbound
+      Tags:
+        - { Key: "kirocrew:managed", Value: "true" }
+        - { Key: "kirocrew:instance", Value: !Ref StackTag }
+
+  # Optional SSH ingress — only created when AllowSshCidr is non-empty.
+  SshIngress:
+    Type: AWS::EC2::SecurityGroupIngress
+    Condition: HasSshCidr
+    Properties:
+      GroupId: !Ref InstanceSecurityGroup
+      IpProtocol: tcp
+      FromPort: 22
+      ToPort: 22
+      CidrIp: !Ref AllowSshCidr
+      Description: SSH fallback from the user's CIDR
+
+  # --- The instance. UserData installs KiroCrew + kiro-cli + the systemd service
+  #     and signals the WaitCondition when the gateway is healthy (or fails it
+  #     with the tail of the setup log, so the stack rolls back cleanly).
+  Instance:
+    Type: AWS::EC2::Instance
+    Properties:
+      InstanceType: !Ref InstanceType
+      ImageId: !Sub
+        - "{{resolve:ssm:${Param}}}"
+        - Param: !If
+            - IsArm
+            - !FindInMap [ArchToAmiParam, arm64, Param]
+            - !FindInMap [ArchToAmiParam, x8664, Param]
+      IamInstanceProfile: !Ref InstanceProfile
+      # Attach the ENI explicitly so the public-IP decision is instance-level
+      # (the subnet's MapPublicIpOnLaunch may disagree either way). The launcher
+      # computes the subnet's egress kind and passes AssociatePublicIp
+      # accordingly: "true" for IGW-routed subnets — where a public IP is
+      # REQUIRED for egress or bootstrap (dnf/npm/pip + SSM) silently hangs to
+      # the WaitCondition timeout — and "false" for NAT-routed (private)
+      # subnets, where a public IP is unused attack surface and can violate
+      # SCPs that deny RunInstances-with-public-IP. SubnetId/SecurityGroupIds
+      # move here because they're mutually exclusive with the top-level forms.
+      NetworkInterfaces:
+        - DeviceIndex: 0
+          # ── Documented accepted tradeoff (CWE-1188) ──
+          # On IGW-only subnets a public IP widens attack surface but is
+          # REQUIRED for egress (bootstrap would otherwise hang). It is
+          # accepted, not an oversight, because it is defense-in-depth capped:
+          #   * InstanceSecurityGroup has NO default inbound ingress (SSM-only,
+          #     egress-only); optional SSH is gated behind HasSshCidr with a
+          #     validated CIDR (rejects ranges wider than /16).
+          #   * IMDSv2 enforced (HttpTokens: required, HopLimit: 1) below.
+          #   * EBS root encrypted.
+          # NAT-routed (private) subnets — discovery's first preference and the
+          # --subnet flag's advertised posture — launch with NO public IP.
+          AssociatePublicIpAddress: !If [WantPublicIp, true, false]
+          SubnetId: !Ref SubnetId
+          GroupSet: [!Ref InstanceSecurityGroup]
+      # Enforce IMDSv2 (token-required) and a hop limit of 1. KiroCrew runs a
+      # prompt-injectable agent that executes arbitrary tools, so an SSRF or
+      # injection that reaches 169.254.169.254 must NOT be able to read the
+      # instance role's STS credentials via unauthenticated IMDSv1.
+      MetadataOptions:
+        HttpTokens: required
+        HttpPutResponseHopLimit: 1
+        HttpEndpoint: enabled
+      BlockDeviceMappings:
+        - DeviceName: /dev/xvda
+          Ebs:
+            VolumeSize: !Ref VolumeSizeGb
+            VolumeType: gp3
+            Encrypted: true
+            DeleteOnTermination: true
+      Tags:
+        - { Key: "Name", Value: !Sub "kirocrew-${StackTag}" }
+        - { Key: "kirocrew:managed", Value: "true" }
+        - { Key: "kirocrew:instance", Value: !Ref StackTag }
+      # --- Bootstrap script rationale (kept OUT of UserData for size) -------
+      # EC2 rejects a launch whose DECODED UserData exceeds 16,384 bytes, and
+      # the !Sub expansion below grows at render time (the WaitHandle
+      # presigned URL alone is roughly 250 chars), so the script carries only
+      # what the instance needs and the reasoning lives here, keyed by the
+      # quoted names the script's short comments reference. The worst-case
+      # EXPANDED size is guarded by test_cloud_ec2.py's UserData size test;
+      # when it trips, trim the script or move knowledge here, never delete it.
+      #
+      # "Logging": log via a plain file redirect (NOT `tee` via process
+      #   substitution) and do NOT set `pipefail` -- install.sh's progress
+      #   spinner writes many \r updates through a pipe, and a tee+pipefail
+      #   combination turns a harmless SIGPIPE on that pipe into a fatal
+      #   SIGTERM mid-install.
+      # "fail()": CloudFormation terminates the instance the instant a FAILURE
+      #   signal lands, destroying the setup log -- so fail() folds the last
+      #   log lines INTO the signal reason (CFN allows ~1KB), letting the real
+      #   error survive in the stack event where `kirocrew cloud launch` can
+      #   surface it. Quotes/backslashes are stripped because the fallback
+      #   curl embeds the reason in hand-built JSON; an unescaped quote would
+      #   malform the body and the WaitCondition would hang to timeout instead
+      #   of failing cleanly. Both the log tail and the caller's message are
+      #   then filtered to printable ASCII (space..tilde): CloudFormation
+      #   rejects a Reason carrying control or non-ASCII bytes ("Resource
+      #   status reason contains invalid characters"), which would replace
+      #   the real error with a charset complaint -- and dnf/git/npm/vite
+      #   routinely emit ANSI escapes and UTF-8 glyphs. Newlines fold to '|'
+      #   BEFORE the filter (newline is itself a control byte); the filter
+      #   drops ESC so an ANSI sequence degrades to printable residue, and an
+      #   all-ASCII payload means the byte-level 1000-byte cap can no longer
+      #   split a multi-byte UTF-8 sequence at the reason= point (an upstream
+      #   byte cap like fe_err's tail -c 500 may still split one, but the "$1"
+      #   filter drops the orphan continuation bytes). The ${!tail_ctx} inside fail() is
+      #   CloudFormation's !Sub literal escape, NOT bash indirect expansion:
+      #   !Sub renders it as the plain dollar-brace form, an ordinary bash
+      #   expansion at runtime; without the "!" escape, !Sub would try to
+      #   resolve tail_ctx as a template parameter and the deploy would fail.
+      # "SELinux reboot": AL2023 ships /etc/cloud/cloud.cfg.d/
+      #   40_selinux-reboot.cfg, a cloud-init power_state drop-in that runs
+      #   `shutdown -r now` (to apply an SELinux kernel commandline) whenever
+      #   /run/cloud-init-selinux-reboot exists. That reboot fires ~60-90s
+      #   into first boot -- straight through the long dnf + npm build --
+      #   SIGTERM-killing the in-flight install.sh build (seen as "Terminated"
+      #   mid-vite, then WaitCondition FAILURE). It is NOT OOM and NOT the
+      #   build itself (both re-run clean on the warm box); it is the stock
+      #   reboot racing the bootstrap. SELinux runs Permissive here (the
+      #   kernel-cmdline tweak is cosmetic), so the script removes the trigger
+      #   flag AND the drop-in before the heavy work. cloud-init may already
+      #   have SCHEDULED the reboot in parallel ("The system will reboot at
+      #   ..." ~60s out) and removing the flag won't cancel an in-flight
+      #   schedule, so `shutdown -c` cancels any pending timed shutdown
+      #   (harmless if none is set). Best-effort: never fails the bootstrap.
+      # "Swap": provisioned BEFORE install.sh as defense-in-depth headroom.
+      #   The frontend build (`tsc -b && vite build` over ~900 npm packages)
+      #   runs alongside dnf + a fresh `npm ci` during first boot and peaks
+      #   ~3.4 GB (measured). The smallest tier is 16 GB (8 GB was retired),
+      #   so this is NOT the primary bring-up fix (that is the SELinux reboot
+      #   suppression) -- just cheap insurance so first boot degrades to swap
+      #   instead of a kill under a transient spike. Unused headroom on every
+      #   tier is harmless. Best-effort: never fails on swap.
+      # "System packages": install.sh needs Python >= 3.10; AL2023's default
+      #   python3 is 3.9, so python3.11 is installed explicitly (install.sh's
+      #   _find_python prefers python3.12/3.11/3.10 over the bare python3).
+      #   ripgrep is optional and must never fail the bootstrap.
+      # "Node.js": the frontend build (vite 8 + rolldown) REQUIRES Node >= 22;
+      #   AL2023's default AppStream nodejs is 18, on which the build dies
+      #   with "SyntaxError: ... 'node:util' does not provide an export named
+      #   'styleText'". Keep AppStream node only if it is already >= 22,
+      #   otherwise install Node 24 from the signed NodeSource repo. That path
+      #   does NOT pipe a remote script into bash (a supply-chain risk if
+      #   NodeSource were MITM'd): it imports NodeSource's GPG key over pinned
+      #   TLS and writes a signed dnf repo with gpgcheck=1, so every RPM is
+      #   signature-verified before install. NodeSource rotated its GPG key
+      #   URL once (the old nodesource-repo.gpg.key now 404s, which caused a
+      #   BOOTSTRAP FAILED); the current key is ns-operations-public.key. A
+      #   transient dnf cache/mirror race can drop a dependency RPM
+      #   mid-transaction ("No such file: .../libbrotli-...rpm"), hence the
+      #   clean-cache-and-retry on the first nodejs install failure.
+      #   --allowerasing lets NodeSource's nodejs replace an AppStream node 18.
+      # "kiro-cli": AL2023 ships glibc 2.34; the standard kiro-cli build needs
+      #   glibc 2.39+, so the musl build is REQUIRED (validated on AL2023).
+      #   The install step tolerates a nonzero exit (two installer invocations
+      #   + `|| true`), so the script VERIFIES the binary actually landed --
+      #   otherwise the gateway would serve HTTP but every chat would error
+      #   (no ACP backend). A missing binary fails the WaitCondition so the
+      #   stack rolls back cleanly instead of handing the user a broken box.
+      # "Source fetch": prefer the S3 source tarball the launcher uploaded
+      #   (works for a private repo, using the instance role); fall back to a
+      #   public git clone when no S3 source was provided. The CloudFormation
+      #   values are inlined into a script file (via !Sub) and run as the
+      #   target user -- this avoids passing env through `sudo`, whose
+      #   env_reset strips VAR=value assignments by default, which silently
+      #   emptied SourceBucket and took the git-clone branch. The `--` before
+      #   the clone URL ends option parsing: defense-in-depth so a repo/ref
+      #   value can't be interpreted as a git flag (both are AllowedPattern-
+      #   validated already; the separator costs nothing).
+      #   KIROCREW_REQUIRE_FRONTEND=1 makes install.sh exit non-zero on a
+      #   failed frontend build (non-fatal by default, for local CLI users) --
+      #   which is what lets the retry actually re-run it. install.sh is
+      #   retried once on a cold first boot: observed on the light tier, the
+      #   very first run can be signal-killed mid-build (no clean error, no
+      #   kernel OOM) under first-boot contention (cloud-init + SSM
+      #   registration + dnf + kiro-cli install + a fresh `npm ci` all
+      #   compressed together); a retry on the now-warm box (primed caches,
+      #   node_modules present) reliably reaches "installed successfully".
+      #   `set -e` is relaxed only for the first attempt (the `if` guard); a
+      #   failed retry still exits nonzero so the outer `|| fail` signals the
+      #   WaitCondition.
+      # "Dashboard build verification": install.sh treats a frontend build
+      #   failure as a NON-FATAL warning (it falls back to a "legacy" page) --
+      #   correct for a local CLI user who may not even have Node, wrong for a
+      #   cloud crew whose entire purpose is the remote dashboard. With no
+      #   built SPA the gateway serves a ~782-byte "not built" stub that still
+      #   returns HTTP 200, so the health probe passes and the stack reaches
+      #   CREATE_COMPLETE while the crew's pane can never load -- a green
+      #   launch that hands the user a dead, billing box. So a missing build
+      #   is FATAL here, and the failure reason greps the actual npm/vite/tsc
+      #   error out of the setup log (fail() otherwise only carries the log
+      #   tail, which at that point is install.sh's success banner, not the
+      #   earlier build error) -- diagnosable even when the crew installed
+      #   from a CLONED source whose install.sh does not itself hard-fail
+      #   (the default clone-of-main path). install.sh stages website/dist ->
+      #   src/kiro_crew/static/dist.
+      # "systemd unit": a system-level unit so the gateway survives reboots
+      #   and runs as ec2-user. The registry records DashboardPort as the
+      #   instance's remote_port, so the gateway must listen on exactly this
+      #   parameter -- hence the KIROCREW_PORT Environment line.
+      # Editing hazard: the whole UserData is ONE CloudFormation !Sub, so any
+      #   dollar-brace token in the script -- even inside a bash comment -- is
+      #   parsed as a Sub variable and breaks change-set creation. Use plain
+      #   "$var" bash expansions only; a genuine literal dollar-brace must use
+      #   the "!"-escaped form (see "fail()"). Heredoc/printf bodies must stay
+      #   indented: a column-1 line would terminate the YAML block scalar.
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          # Kiro Crew EC2 bootstrap (cloud-init, first boot, root). EC2 caps
+          # decoded UserData at 16384 bytes AFTER !Sub expansion, so this
+          # script carries only what the instance needs: the rationale for
+          # every non-obvious choice lives in the template comments right
+          # above UserData, keyed by the section names quoted below.
+          # No pipefail + plain-file logging: see "Logging" above.
+          set -u
+          exec >>/var/log/kirocrew-setup.log 2>&1
+          echo "=== KiroCrew bootstrap starting $(date -u) ==="
+
+          HANDLE="${WaitHandle}"
+          LOG=/var/log/kirocrew-setup.log
+          # Folds the log tail into the FAILURE reason: see "fail()" above.
+          fail() {
+            echo "BOOTSTRAP FAILED: $1"
+            tail_ctx=$(tail -n 25 "$LOG" 2>/dev/null | tr -d '\r"\\' \
+              | grep -aviE 'Installing (npm|kirocrew and) depend|building React app' \
+              | tr '\n' '|' | tr -cd '\40-\176' | tail -c 900)
+            # NB: ${!tail_ctx} is the !Sub literal escape, not bash indirection.
+            reason="$(printf '%s' "$1" | tr -d '"\\' | tr '\n' '|' | tr -cd '\40-\176') :: ...${!tail_ctx}"
+            /opt/aws/bin/cfn-signal -e 1 -r "$(echo "$reason" | head -c 1000)" "$HANDLE" || \
+              curl -s -X PUT -H 'Content-Type:' --data-binary \
+                "{\"Status\":\"FAILURE\",\"Reason\":\"$(echo "$reason" | head -c 1000)\",\"UniqueId\":\"kirocrew\",\"Data\":\"fail\"}" "$HANDLE" || true
+            exit 1
+          }
+
+          # The stock AL2023 reboot would SIGTERM the build mid-install: see
+          # "SELinux reboot" above. Best-effort, never fails the bootstrap.
+          echo "--- suppressing AL2023 first-boot SELinux reboot ---"
+          rm -f /run/cloud-init-selinux-reboot 2>/dev/null || true
+          rm -f /etc/cloud/cloud.cfg.d/40_selinux-reboot.cfg 2>/dev/null || true
+          # Also cancel an already-SCHEDULED reboot; harmless if none is set.
+          shutdown -c 2>/dev/null || true
+
+          # Per-user tools: install as non-root; the systemd unit runs as it.
+          RUN_USER=ec2-user
+          RUN_HOME=/home/$RUN_USER
+
+          # Insurance against a first-boot memory spike: see "Swap" above.
+          echo "--- provisioning swap (headroom for the vite build) ---"
+          if [ ! -e /swapfile ] && [ "$(free -m | awk '/^Swap:/ {print $2}')" = "0" ]; then
+            ( fallocate -l 4G /swapfile || dd if=/dev/zero of=/swapfile bs=1M count=4096 ) 2>/dev/null \
+              && chmod 600 /swapfile && mkswap /swapfile >/dev/null 2>&1 && swapon /swapfile \
+              && echo '/swapfile none swap sw 0 0' >> /etc/fstab \
+              && echo "swap on: $(free -m | awk '/^Swap:/ {print $2}') MB" \
+              || echo "swap provisioning skipped (non-fatal)"
+          else
+            echo "swap already present or /swapfile exists - skipping"
+          fi
+
+          echo "--- installing system packages ---"
+          # python3.11 explicitly: install.sh needs >= 3.10, AL2023's default
+          # python3 is 3.9 (see "System packages" above).
+          dnf install -y git tmux python3.11 python3.11-pip python3 python3-pip \
+            unzip tar gzip which \
+            || fail "essential package install failed (git/python3.11/unzip)"
+          dnf install -y ripgrep || echo "ripgrep unavailable (optional), continuing"
+
+          echo "--- installing Node.js ---"
+          # The frontend build (vite 8 + rolldown) needs Node >=22; AL2023 ships
+          # node 18 (build dies with node:util/styleText). Try AppStream first, then
+          # fall back to a pinned official nodejs.org tarball -- we AVOID
+          # dnf/NodeSource because AL2023's modular filtering kept reinstalling the
+          # distro node 18. /usr/local/bin precedes /usr/bin so the tarball shadows it.
+          NODE_MAJOR_MIN=22
+          command -v node >/dev/null 2>&1 || dnf install -y nodejs npm || true
+          NODE_MAJOR=$(node --version 2>/dev/null | sed -n 's/^v\([0-9][0-9]*\).*/\1/p' | head -1)
+          [ -n "$NODE_MAJOR" ] || NODE_MAJOR=0
+          if [ "$NODE_MAJOR" -lt "$NODE_MAJOR_MIN" ]; then
+            NODE_V=v22.12.0
+            case "$(uname -m)" in
+              aarch64) NODE_ARCH=linux-arm64; NODE_SHA=9e7905fdee722f9650a03ae644b51c4c6effd3b98ac93c588700072ab35c9ddb ;;
+              x86_64) NODE_ARCH=linux-x64; NODE_SHA=e05a4d65232ae2b27b3d77da2e368522fb46b923335b8e0d5f77624c32484044 ;;
+              *) fail "unsupported arch for Node install: $(uname -m)" ;;
+            esac
+            NODE_TARB=node-$NODE_V-$NODE_ARCH
+            echo "installing Node $NODE_V ($NODE_ARCH) from the official nodejs.org tarball"
+            curl --proto '=https' --tlsv1.2 -fsSL "https://nodejs.org/dist/$NODE_V/$NODE_TARB.tar.gz" -o /tmp/node.tar.gz || fail "Node download failed"
+            # Verify the PINNED SHA-256 before extracting as root: TLS protects the
+            # transport, not the artifact, so a tampered/compromised mirror must not
+            # get its Node extracted and run. Fails closed on any mismatch.
+            echo "$NODE_SHA  /tmp/node.tar.gz" | sha256sum -c - || fail "Node tarball checksum mismatch (possible tampering)"
+            tar -xzf /tmp/node.tar.gz -C /usr/local || fail "Node extract failed"
+            ln -sf /usr/local/$NODE_TARB/bin/node /usr/local/bin/node
+            ln -sf /usr/local/$NODE_TARB/bin/npm /usr/local/bin/npm
+            ln -sf /usr/local/$NODE_TARB/bin/npx /usr/local/bin/npx
+            hash -r 2>/dev/null || true
+            NODE_MAJOR=$(node --version 2>/dev/null | sed -n 's/^v\([0-9][0-9]*\).*/\1/p' | head -1)
+            [ -n "$NODE_MAJOR" ] || NODE_MAJOR=0
+          fi
+          [ "$NODE_MAJOR" -ge "$NODE_MAJOR_MIN" ] || fail "Node.js too old (major $NODE_MAJOR, need >=$NODE_MAJOR_MIN)"
+          echo "node: $(command -v node) $(node --version 2>/dev/null || echo missing)"
+          echo "npm:  $(command -v npm) $(npm --version 2>/dev/null || echo missing)"
+
+          echo "--- installing kiro-cli ---"
+          # AL2023 glibc 2.34 is too old for the standard build: musl required.
+          ARCH=$(uname -m)
+          if [ "$ARCH" = "aarch64" ]; then KIRO_URL="https://desktop-release.q.us-east-1.amazonaws.com/latest/kirocli-aarch64-linux-musl.zip"; else KIRO_URL="https://desktop-release.q.us-east-1.amazonaws.com/latest/kirocli-x86_64-linux-musl.zip"; fi
+          sudo -u $RUN_USER bash -lc "
+            set -e
+            cd \$HOME
+            curl --proto '=https' --tlsv1.2 -sSf '$KIRO_URL' -o kirocli.zip
+            unzip -o -q kirocli.zip
+            ./kirocli/install.sh --no-confirm || yes | ./kirocli/install.sh || true
+          " || echo 'kiro-cli install returned nonzero (verifying the binary below)'
+          # The install tolerates nonzero exits, so verify the binary landed;
+          # without it every chat would error (see "kiro-cli" above).
+          sudo -u $RUN_USER bash -lc 'command -v kiro-cli >/dev/null 2>&1 || [ -x "$HOME/.local/bin/kiro-cli" ] || [ -x /usr/local/bin/kiro-cli ]' \
+            || fail "kiro-cli did not install (the chat backend would not work)"
+
+          echo "--- fetching + installing KiroCrew ---"
+          # S3 source preferred, git clone fallback. Values are inlined into a
+          # script file to dodge sudo env_reset: see "Source fetch" above.
+          cat > /tmp/kcfetch.sh <<KCFETCH
+          #!/bin/bash
+          set -e
+          # sudo resets PATH to secure_path, which can resolve `node` to the distro
+          # node 18 in /usr/bin over the Node 22 tarball in /usr/local/bin -- so the
+          # vite build would still fail. Prepend /usr/local/bin so the build sees 22.
+          export PATH="/usr/local/bin:\$PATH"
+          cd "$RUN_HOME"
+          rm -rf kirocrew && mkdir kirocrew
+          if [ -n "${SourceBucket}" ]; then
+            echo "downloading source from s3://${SourceBucket}/${SourceKey}"
+            aws s3 cp "s3://${SourceBucket}/${SourceKey}" /tmp/kirocrew-src.tar.gz
+            tar -xzf /tmp/kirocrew-src.tar.gz -C kirocrew
+          else
+            echo "cloning ${KirocrewRepo}@${KirocrewRef}"
+            rm -rf kirocrew
+            # `--` ends option parsing so the URL can't read as a git flag.
+            git clone --depth 1 --branch "${KirocrewRef}" -- "${KirocrewRepo}" kirocrew
+          fi
+          cd kirocrew
+          # Make a failed frontend build fatal so the retry below re-runs it.
+          export KIROCREW_REQUIRE_FRONTEND=1
+          # One retry: first-boot contention can signal-kill the first build;
+          # the warm re-run reliably succeeds (see "Source fetch" above).
+          if ! bash install.sh --voice; then
+            echo "install.sh failed on first attempt - settling then retrying once"
+            sleep 20
+            bash install.sh --voice
+          fi
+          KCFETCH
+          chmod +x /tmp/kcfetch.sh
+          chown $RUN_USER /tmp/kcfetch.sh
+          sudo -u $RUN_USER bash /tmp/kcfetch.sh || fail "kirocrew install.sh failed"
+
+          echo "--- verifying the dashboard SPA was actually built ---"
+          # A missing SPA means a green stack serving a dead dashboard, so it
+          # is FATAL, with the real build error grepped from the setup log
+          # into the failure reason: see "Dashboard build verification" above.
+          # NB: plain "$var" only in this whole script; any dollar-brace token,
+          # even in a comment, is parsed by !Sub and breaks change-set creation.
+          DIST_INDEX="$RUN_HOME/kirocrew/src/kiro_crew/static/dist/index.html"
+          if [ ! -f "$DIST_INDEX" ]; then
+            fe_err="$(grep -aiE 'npm error|npm ERR|error TS[0-9]|vite|Killed|Cannot find module|ENOSPC|no space left|out of memory|FATAL ERROR|Skipping frontend build' "$LOG" 2>/dev/null | tr -d '\r"\\' | tail -n 12 | tr '\n' '|' | tail -c 500)"
+            if [ -z "$fe_err" ]; then
+              fe_err="<none captured; check /var/log/kirocrew-setup.log on the instance>"
+            fi
+            fail "dashboard frontend build missing (no static/dist). Build errors: $fe_err"
+          fi
+
+          echo "--- installing the systemd service ---"
+          sudo -u $RUN_USER bash -lc "
+            export PATH=\$HOME/.local/bin:\$PATH
+            kirocrew setup --agent-only || true
+          " || true
+
+          # System-level unit so the gateway survives reboots and runs as ec2-user.
+          KIROCREW_BIN=$(sudo -u $RUN_USER bash -lc 'command -v kirocrew || echo $HOME/.local/bin/kirocrew')
+          cat > /etc/systemd/system/kirocrew.service <<UNIT
+          [Unit]
+          Description=KiroCrew AI Agent Gateway
+          After=network-online.target
+          Wants=network-online.target
+
+          [Service]
+          Type=simple
+          User=$RUN_USER
+          ExecStart=$KIROCREW_BIN gateway
+          Restart=on-failure
+          RestartSec=10
+          WorkingDirectory=$RUN_HOME
+          Environment=HOME=$RUN_HOME
+          Environment=PATH=$RUN_HOME/.local/bin:/usr/local/bin:/usr/bin:/bin
+          # The registry records this port as the instance's remote_port.
+          Environment=KIROCREW_PORT=${DashboardPort}
+
+          [Install]
+          WantedBy=multi-user.target
+          UNIT
+          systemctl daemon-reload
+          systemctl enable --now kirocrew.service || fail "could not start kirocrew.service"
+
+          echo "--- waiting for the gateway to answer on 127.0.0.1:${DashboardPort} ---"
+          ok=0
+          for i in $(seq 1 60); do
+            if curl -fsS -o /dev/null http://127.0.0.1:${DashboardPort}/ 2>/dev/null; then ok=1; break; fi
+            sleep 5
+          done
+          [ "$ok" = "1" ] || fail "gateway did not become healthy within 5 minutes"
+
+          echo "=== KiroCrew bootstrap complete $(date -u) ==="
+          /opt/aws/bin/cfn-signal -e 0 -r "kirocrew healthy" "$HANDLE" || \
+            curl -s -X PUT -H 'Content-Type:' --data-binary \
+              "{\"Status\":\"SUCCESS\",\"Reason\":\"kirocrew healthy\",\"UniqueId\":\"kirocrew\",\"Data\":\"ok\"}" "$HANDLE" || true
+
+  # --- WaitCondition: `aws cloudformation deploy` blocks until the box is
+  #     actually serving. cfn-signal in UserData reports success/failure.
+  WaitHandle:
+    Type: AWS::CloudFormation::WaitConditionHandle
+
+  WaitCondition:
+    Type: AWS::CloudFormation::WaitCondition
+    DependsOn: Instance
+    Properties:
+      Handle: !Ref WaitHandle
+      # 25 min: cold boot + dnf + NodeSource + npm build (vite) + pip install.
+      Timeout: "1500"
+      Count: 1
+
+Outputs:
+  InstanceId:
+    Description: EC2 instance id (SSM target).
+    Value: !Ref Instance
+  Region:
+    Description: Region the stack was deployed to.
+    Value: !Ref AWS::Region
+  PublicDnsName:
+    Description: Public DNS (diagnostics only - access is via SSM, never direct).
+    Value: !GetAtt Instance.PublicDnsName
+  StackTag:
+    Description: The kirocrew:instance discovery tag value.
+    Value: !Ref StackTag

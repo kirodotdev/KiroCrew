@@ -1,0 +1,173 @@
+name: Connections L0 Static Metadata Probe
+
+# Nightly, account-free conformance check on the STATIC OAuth metadata every
+# provider in the Connections registry publishes. It fetches only PUBLIC
+# discovery documents, so it needs no repository secrets and no provider account.
+#
+# SCOPE -- read this before trusting a green run. This checks the static metadata
+# documents (RFC 9728 protected-resource, RFC 8414 authorization-server) against
+# the committed `l0_expectations` baseline. It does NOT check challenge shape --
+# whether an unauthenticated request answers 401 with a well-formed
+# `WWW-Authenticate: Bearer resource_metadata=...`. Two of the seven providers
+# fail that today while serving good metadata (Stripe omits the parameter, Vercel
+# answers HTTP 500), so it needs its own baseline of known exceptions and is a
+# separate follow-up (L0b). A green run here says nothing about it.
+#
+# Deliberately NOT a pull_request check. The probe talks to seven third-party
+# services, so on a per-PR trigger its result would depend on those services'
+# availability rather than on the diff -- every contributor would learn to
+# ignore it, and a rate limit somewhere would block unrelated work. Nightly is
+# the right cadence for "has a provider changed its OAuth surface"; the drift
+# gate is what keeps a single bad night from being reported as a change.
+#
+# ── RUNBOOK ──────────────────────────────────────────────────────────────
+#
+# "STALE BASELINES" / this job red on staleness
+#   A baseline has not been re-derived from its provider in
+#   L0_VERIFICATION_WARN_AGE_DAYS. This job cannot fix it: refreshing needs live
+#   network AND a commit, and this job has neither `contents: write` nor any
+#   business pushing to a protected branch. On a networked machine:
+#       python -m kiro_crew.connections.l0_probe --record
+#       git add src/kiro_crew/connections/registry.json && commit
+#   The PR suite only WARNS until L0_VERIFICATION_MAX_AGE_DAYS, and then only
+#   hard-fails for providers actually visible to users -- so this red is the
+#   early signal, and ignoring it eventually blocks PRs.
+#
+# "NEEDS APPROVAL <slug>" from --record
+#   The provider now advertises a different issuer than the one committed. The
+#   recorder never follows or writes it: a provider is untrusted input, and
+#   relocating the single URL we fetch is a decision for a reviewed commit.
+#   Verify the new issuer resolves and self-declares the same value, then edit
+#   `l0_expectations.authorization_server` by hand and re-run --record.
+#
+# "returned HTTP 30x" on a well-known URL
+#   Redirects are NOT followed (`allow_redirects=False`) and this scores as a
+#   failure on purpose. A discovery document is an identity statement; following
+#   a redirect to read it means trusting an intermediary to say who the issuer
+#   is. If a provider legitimately moves to a redirect-fronted well-known URL,
+#   update the committed issuer to the final location -- do not start following
+#   redirects.
+#
+# "unsupported Content-Encoding" on a well-known URL
+#   Compressed responses are refused (`Accept-Encoding: identity`,
+#   `auto_decompress=False`) so the byte cap applies to what actually crosses
+#   the wire rather than to a post-inflation size. A CDN that forces gzip
+#   despite the request header scores as a failure; the fix is a provider-side
+#   or CDN-side conversation, not a client-side inflate.
+#
+# "prior streak state discarded" / "artifact_missing"
+#   The state artifact was missing or unusable, so streaks restarted at zero.
+#   Fail-safe but not free: it can hide the third consecutive failure that would
+#   have gone red. "artifact_missing" specifically means a prior run EXISTED but
+#   its artifact did not arrive -- expired past retention-days, or the download
+#   failed. A genuine first run reports null instead. If artifact_missing repeats,
+#   the artifact plumbing is broken, not the providers.
+
+on:
+  schedule:
+    - cron: "20 7 * * *" # 07:20 UTC, clear of the 06:00 nightly build
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  # Only to read this workflow's own previous run and download its state
+  # artifact. Nothing here writes to the repository -- the drift state is
+  # carried as an artifact precisely so this job never needs contents: write.
+  actions: read
+
+concurrency:
+  group: connections-l0
+  # NOT cancel-in-progress: a cancelled run uploads no artifact, which drops a
+  # night out of the streak lineage the drift gate depends on.
+  cancel-in-progress: false
+
+jobs:
+  probe:
+    name: Probe official MCP static metadata
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          enable-cache: true
+          cache-dependency-glob: |
+            pyproject.toml
+            setup.cfg
+
+      - name: Install dependencies
+        run: uv pip install --system -e .
+
+      # Streak state travels as an artifact from this workflow's previous run on
+      # the same branch. Per-branch so a manual dispatch on a feature branch
+      # cannot advance the default branch's streaks. A failure to find it is
+      # non-fatal -- streaks restart at zero, which errs green -- but it is never
+      # silent: this step reports whether a prior run EXISTED, and the probe turns
+      # "prior run existed but its artifact did not arrive" into an explicit
+      # artifact_missing in the report, rather than letting a lost two-night
+      # streak look identical to a first run.
+      - name: Restore drift state from the previous run
+        id: restore
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BRANCH: ${{ github.ref_name }}
+        run: |
+          # -e so an API failure is not read as "no prior run". Without it a
+          # failing `gh run list` yields an empty ID, which is indistinguishable
+          # from a genuine first run: the streak restarts at zero and the third
+          # failing night never reports drift. Both nonzero-tolerant commands
+          # below sit in `if` conditions, which -e does not act on, so a missing
+          # artifact stays non-fatal exactly as before.
+          set -euo pipefail
+          previous="$(gh run list --workflow connections-l0.yml --branch "$BRANCH" \
+            --status completed --limit 1 --json databaseId --jq '.[0].databaseId // empty')"
+          if [ -z "$previous" ]; then
+            echo "No completed prior run on $BRANCH; streaks start from zero."
+            echo "prior_run=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "prior_run=true" >> "$GITHUB_OUTPUT"
+          if gh run download "$previous" --name connections-l0 --dir .; then
+            echo "Restored drift state from run $previous."
+          else
+            echo "Run $previous exists but its state artifact did not arrive."
+          fi
+
+      # --fail-on-stale is passed HERE and nowhere else: the reminder to re-record
+      # a baseline belongs on the nightly, where someone can act on it, not on
+      # every contributor's PR (see the runbook above).
+      - name: Run account-free static metadata probe
+        env:
+          PRIOR_RUN: ${{ steps.restore.outputs.prior_run }}
+        run: |
+          set -uo pipefail
+          expected=""
+          if [ "$PRIOR_RUN" = "true" ]; then
+            expected="--prior-run-expected"
+          fi
+          python -m kiro_crew.connections.l0_probe \
+            --report connections-l0-report.json \
+            --state l0-state.json \
+            --drift-threshold 3 \
+            --fail-on-stale \
+            $expected
+
+      # always(): the report and the advanced state are the only record of a
+      # failing night, and the next run needs the state to count the streak.
+      - name: Upload report and drift state
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: connections-l0
+          path: |
+            connections-l0-report.json
+            l0-state.json
+          if-no-files-found: error
+          retention-days: 14

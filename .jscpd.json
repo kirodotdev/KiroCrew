@@ -1,0 +1,19 @@
+{
+  "threshold": 0,
+  "minTokens": 180,
+  "reporters": ["console"],
+  "ignore": [
+    "**/node_modules/**",
+    "**/dist/**",
+    "**/build/**",
+    "**/__pycache__/**",
+    "**/static/dist/**",
+    "**/*.egg-info/**",
+    "**/defaults.json",
+    "**/static/css/**",
+    "**/pages/scenes/**",
+    "**/_vendor/**"
+  ],
+  "absolute": true,
+  "gitignore": true
+}

@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" role="img" aria-label="iMessage">
+  <defs>
+    <linearGradient id="imessage-bubble" x1="12" y1="1" x2="12" y2="23" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#5BF675" />
+      <stop offset="1" stop-color="#0ABF3D" />
+    </linearGradient>
+  </defs>
+  <path
+    d="M12 2.4c5.6 0 9.6 3.5 9.6 8s-4 8-9.6 8a11 11 0 0 1-2.6-.3l-4 2.1a.5.5 0 0 1-.7-.6l.8-3A7.6 7.6 0 0 1 2.4 10.4c0-4.5 4-8 9.6-8Z"
+    fill="url(#imessage-bubble)"
+  />
+</svg>
