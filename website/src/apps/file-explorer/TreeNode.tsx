@@ -91,7 +91,7 @@ export default function TreeNode({ node, depth, expanded, toggleExpand, selected
         className={'mc-fe-tree-row' + (isSelected ? ' is-selected' : '')}
         style={{ paddingLeft: 6 + depth * 14 }}
         onClick={() => isDir ? toggleExpand(node) : onSelect(node)}
-        onContextMenu={(e) => { if (onContextMenu) { e.preventDefault(); onContextMenu(e, node) } }}
+        onContextMenu={(e) => { if (onContextMenu) onContextMenu(e, node) }}
         role="button"
         tabIndex={0}
         onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); if (isDir) toggleExpand(node); else onSelect(node) } }}
