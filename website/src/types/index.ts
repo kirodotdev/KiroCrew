@@ -403,6 +403,15 @@ export interface CronJob {
   skip_dates?: string[] | null
   script?: string | null; command?: string | null; last_result?: string | null; last_error?: string | null
   is_running?: boolean; running_since?: number | null
+  /** Operator-granted vault secrets injected into a script/command job's env at
+   * fire time: env-var name -> vault secret NAME (values never leave the vault).
+   * Absent/null when the job holds no grant. */
+  secret_env?: Record<string, string> | null
+  /** Agent-requested grant awaiting the operator's approve/deny. Approving
+   * re-verifies the request's code pin server-side, so a job whose script or
+   * command changed after the request refuses with `code_changed`. */
+  secret_env_pending?: Record<string, string> | null
+  secret_env_pending_ts?: number | null
   folder_id?: string
   /** Chat session that owns this job — ownership decides chat-side reachability
    * (cron_list only lists a session its own jobs). Null for an ownerless job,

@@ -83,6 +83,12 @@ _CRON_STRING_FIELD_CAPS: tuple[tuple[str, int], ...] = (
     ("command", 5000),
     ("script", 200),
     ("timezone", 50),
+    # Secret-grant fields have no boundary FieldSpec: the pins are sha256 hex
+    # digests computed server-side by the grant endpoint / cron_secret_request
+    # tool (grant validity is enforced by pin equality at fire time, not by
+    # this length gate). Per the no-schema convention they use the general ID cap.
+    ("secret_env_pin", MAX_SHORT_STRING),
+    ("secret_env_pending_pin", MAX_SHORT_STRING),
 )
 
 
@@ -436,6 +442,17 @@ _FILE_LOCK_TIMEOUT_SECS = 10.0  # max wall-time to wait for the store lock
 _FILE_LOCK_POLL_SECS = 0.02  # sleep between non-blocking acquire attempts
 
 
+class CronPendingMismatch(RuntimeError):
+    """The job's pending secret request changed after the caller read it.
+
+    Raised inside the locked update when an ``expect_secret_env_pending``
+    precondition does not match the freshly reloaded record — the
+    compare-and-swap that keeps an approval or denial from acting on a request
+    the decider never saw (the agent can replace a pending request at any
+    moment). Callers surface it as HTTP 409 ``stale_request``.
+    """
+
+
 class CronStoreBusy(TimeoutError):
     """Raised when a cron-store mutator cannot acquire the store lock in time.
 
@@ -636,6 +653,27 @@ class CronJob:
     timeout: int = (
         0  # script/command timeout in seconds (0 = use default: 30s script, 300s command)
     )
+    # Operator-approved vault secrets for SCRIPT jobs: env-var name ->
+    # vault secret NAME (kiro_crew.secrets.SecretVault; plaintext never touches
+    # this store). Minted ONLY by the owner approving an agent request on the
+    # Schedule page — no surface writes an active grant directly, so an agent
+    # cannot grant itself vault access. secret_env_pin (keyed, epoch-bound
+    # HMAC over the script spec + message + body bytes, see
+    # cron_script.compute_secret_env_pin) binds the grant to the code the
+    # operator approved: the crons/ scripts stay agent-writeable by design, so
+    # a body rewritten after approval fails closed at fire time instead of
+    # running with the secrets.
+    secret_env: dict[str, str] = field(default_factory=dict)
+    secret_env_pin: str = ""
+    # Agent-REQUESTED grant awaiting operator approval. The MCP
+    # ``cron_secret_request`` tool may write ONLY these fields — never the
+    # active pair above — so the agent-first flow is "agent proposes, human
+    # disposes": the dashboard approve endpoint re-verifies the pending pin
+    # against the job's CURRENT code before promoting pending -> active, so an
+    # approval never blesses code that changed after the request.
+    secret_env_pending: dict[str, str] = field(default_factory=dict)
+    secret_env_pending_pin: str = ""
+    secret_env_pending_ts: float = 0.0
 
     def set_run_result(self, value: str) -> None:
         """Record a result produced by the CURRENT run.
@@ -1214,6 +1252,11 @@ def _job_from_record(j: dict[str, Any]) -> CronJob:
         script=j.get("script", ""),
         command=j.get("command", ""),
         timeout=j.get("timeout", 0),
+        secret_env=j.get("secret_env", {}),
+        secret_env_pin=j.get("secret_env_pin", ""),
+        secret_env_pending=j.get("secret_env_pending", {}),
+        secret_env_pending_pin=j.get("secret_env_pending_pin", ""),
+        secret_env_pending_ts=j.get("secret_env_pending_ts", 0.0),
     )
 
 
@@ -2207,11 +2250,30 @@ class CronService:
         :class:`CronStoreBusy` on lock contention and ``ValueError`` on invalid
         input. Safe to run in an executor thread (does no ``_arm_timer``).
         """
+        # Preconditions, not fields: popped before the field gates below ever
+        # see them. When present, the freshly reloaded (locked) record must
+        # still carry exactly the pending request the caller decided on.
+        expect_pending = kwargs.pop("expect_secret_env_pending", None)
+        expect_pending_ts = kwargs.pop("expect_secret_env_pending_ts", None)
+        # Same shape for the ACTIVE grant fields: the approval's compensating
+        # restore names the just-promoted (dead) grant here, so a concurrent
+        # revoke that already cleared the fields makes the restore a no-op
+        # instead of resurrecting state the operator withdrew.
+        expect_active = kwargs.pop("expect_secret_env", None)
+        expect_active_pin = kwargs.pop("expect_secret_env_pin", None)
         with self._file_lock():
             self._sync_for_write()
             for job in self._jobs:
                 if job.id != job_id:
                     continue
+                if expect_pending is not None and job.secret_env_pending != expect_pending:
+                    raise CronPendingMismatch("pending secret request changed")
+                if expect_pending_ts is not None and job.secret_env_pending_ts != expect_pending_ts:
+                    raise CronPendingMismatch("pending secret request was re-issued")
+                if expect_active is not None and job.secret_env != expect_active:
+                    raise CronPendingMismatch("active grant changed concurrently")
+                if expect_active_pin is not None and job.secret_env_pin != expect_active_pin:
+                    raise CronPendingMismatch("active grant pin changed concurrently")
                 # Validate approval_mode if provided
                 if "approval_mode" in kwargs:
                     valid_approval_modes = ("", "auto")
@@ -2279,6 +2341,50 @@ class CronService:
                         raise ValueError(f"Invalid timeout: {kwargs['timeout']!r}") from e
                     if not 0 <= _tsub <= 86400:
                         raise ValueError(f"timeout must be within 0..86400, got {_tsub}")
+                # Vault secret grant: validated with the other pre-mutation
+                # checks so a rejected grant cannot strand earlier field
+                # mutations. An empty dict revokes (clears the pin too); a
+                # non-empty grant requires a script job and the code
+                # pin computed by the grant endpoint. This kwarg is reachable
+                # only from operator surfaces — mcp_cron never passes it.
+                if "secret_env" in kwargs and kwargs["secret_env"] is not None:
+                    _se = kwargs["secret_env"]
+                    if not isinstance(_se, dict) or not all(
+                        isinstance(k, str) and isinstance(v, str) for k, v in _se.items()
+                    ):
+                        raise ValueError("secret_env must be a str->str mapping")
+                    if _se:
+                        cron_script.validate_secret_env_grant(_se)
+                        if not job.script:
+                            raise ValueError(
+                                "secret_env grants apply only to SCRIPT jobs. "
+                                "An agent job's session would expose the plaintext "
+                                "to the model; a command job's pin can cover only "
+                                "the command TEXT — a command invoking an "
+                                "agent-writable helper file would run changed "
+                                "bytes under a still-valid pin."
+                            )
+                        if not kwargs.get("secret_env_pin"):
+                            raise ValueError("a non-empty secret_env requires secret_env_pin")
+                # Pending grant REQUEST (agent-reachable via the MCP
+                # cron_secret_request tool). Same validation as the active
+                # grant — a request the operator could never approve is
+                # refused at write time, not at approval time. Writing this
+                # field never touches the active pair.
+                if "secret_env_pending" in kwargs and kwargs["secret_env_pending"] is not None:
+                    _sp = kwargs["secret_env_pending"]
+                    if not isinstance(_sp, dict) or not all(
+                        isinstance(k, str) and isinstance(v, str) for k, v in _sp.items()
+                    ):
+                        raise ValueError("secret_env_pending must be a str->str mapping")
+                    if _sp:
+                        cron_script.validate_secret_env_grant(_sp)
+                        if not job.script:
+                            raise ValueError("secret grants apply only to script jobs")
+                        if not kwargs.get("secret_env_pending_pin"):
+                            raise ValueError(
+                                "a non-empty secret_env_pending requires " "secret_env_pending_pin"
+                            )
                 # Cross-field: the wake budget must cover the subprocess bound
                 # plus cleanup, evaluated on the POST-update effective values —
                 # the wake deadline cancels only the executor future, so a
@@ -2330,6 +2436,23 @@ class CronService:
                     job.folder_id = kwargs["folder_id"] or ""
                 if "model" in kwargs:
                     job.model = str(kwargs["model"] or "").strip()
+                if "secret_env" in kwargs and kwargs["secret_env"] is not None:
+                    job.secret_env = dict(kwargs["secret_env"])
+                    # Pin travels with the grant; a revoke (empty map) clears it.
+                    job.secret_env_pin = (
+                        str(kwargs.get("secret_env_pin") or "") if job.secret_env else ""
+                    )
+                if "secret_env_pending" in kwargs and kwargs["secret_env_pending"] is not None:
+                    job.secret_env_pending = dict(kwargs["secret_env_pending"])
+                    if job.secret_env_pending:
+                        job.secret_env_pending_pin = str(kwargs.get("secret_env_pending_pin") or "")
+                        job.secret_env_pending_ts = float(
+                            kwargs.get("secret_env_pending_ts") or 0.0
+                        )
+                    else:
+                        # Withdraw/deny clears the whole request record.
+                        job.secret_env_pending_pin = ""
+                        job.secret_env_pending_ts = 0.0
                 # Per-wake budget (the asyncio.wait_for deadline in
                 # _execute_with_timeout). Distinct from ``timeout``, which
                 # bounds only script/command subprocesses. This is the only
@@ -2545,6 +2668,16 @@ class CronService:
         to_remove = pending & present
         if not to_remove:
             return []
+        # BACKGROUND tick: a failed epoch bump must not crash the scan, but
+        # it must also not let the delete proceed (the saved grant record
+        # would be replayable once the epoch state heals). Requeue exactly
+        # like the store-unreadable case and retry next tick.
+        try:
+            self._bump_grant_epochs_for(to_remove)
+        except (OSError, ValueError):
+            logger.warning("Deferred cron removals held: grant-epoch bump failed", exc_info=True)
+            self._pending_removals |= pending
+            return []
         self._jobs = [j for j in self._jobs if j.id not in to_remove]
         # BACKGROUND writer: this runs inside the due-scan, so an unreadable
         # store must not abort the tick and stop every other job. The deferred
@@ -2572,11 +2705,40 @@ class CronService:
         # never extend the store-lock hold past the CronStoreBusy timeout.
         return sorted(to_remove)
 
+    def _bump_grant_epochs_for(self, removed_ids: set[str]) -> None:
+        """Kill the secret grants of jobs about to be deleted from the store.
+
+        A deleted job's record (mapping + active pin) survives as
+        agent-readable history, and the store file is agent-writable:
+        without an epoch bump, re-creating the job from the saved record
+        would let the runner verify the old pin and inject the secret
+        again. Bumping BEFORE the store swap keeps the revoke fence's
+        fail-closed direction — and a FAILED bump (unwritable/corrupt epoch
+        state) raises so the caller ABORTS the delete: deleting while the
+        old epoch is still live would leave the saved record replayable the
+        moment the epoch state heals. Owner-driven removal paths propagate
+        the error; background ticks catch it and requeue/skip the delete
+        instead of crashing the scan.
+        """
+        # An id with a LIVE epoch entry must bump even when the record no
+        # longer carries grant fields: the store is agent-writable, so an
+        # agent can CLEAR the fields, delete the job, and replay the saved
+        # mapping+pin into a re-created job — the pin was minted under the
+        # still-committed epoch. An id with neither grant fields nor an
+        # epoch entry never had an active pin minted (pins are HMAC-keyed
+        # and only the approval path commits entries), so skipping it is
+        # safe and keeps the epoch file bounded across one-shot job churn.
+        epoch_ids = cron_script.grant_epoch_ids() if removed_ids else set()
+        for j in self._jobs:
+            if j.id in removed_ids and (j.secret_env or j.secret_env_pin or j.id in epoch_ids):
+                cron_script.bump_grant_epoch(j.id)
+
     def _remove_job_locked(self, job_id: str) -> bool:
         """Lock/reload/mutate/save core of :meth:`remove_job` (no timer work)."""
         with self._file_lock():
             self._sync_for_write()
             before = len(self._jobs)
+            self._bump_grant_epochs_for({job_id})
             self._jobs = [j for j in self._jobs if j.id != job_id]
             if len(self._jobs) < before:
                 self._save()
@@ -2606,6 +2768,7 @@ class CronService:
                 else:
                     missing.append(jid)
             if targets:
+                self._bump_grant_epochs_for(targets)
                 self._jobs = [j for j in self._jobs if j.id not in targets]
                 self._save()
                 logger.info("Removed %d cron job(s) in batch", len(targets))
@@ -2711,6 +2874,7 @@ class CronService:
             removed = [j.id for j in self._jobs if getattr(j, "created_by", "") == owner_prefix]
             if removed:
                 targets = set(removed)
+                self._bump_grant_epochs_for(targets)
                 self._jobs = [j for j in self._jobs if j.id not in targets]
                 self._save()
                 logger.info("Removed %d cron job(s) owned by %s", len(removed), owner_prefix)
@@ -3786,7 +3950,33 @@ class CronService:
                 # already removed by the gateway path leaves nothing to delete
                 # here, and that path owns the audit record.
                 removed_one_shot = job.id in by_id
-                self._jobs = [j for j in self._jobs if j.id != job.id]
+                # BACKGROUND writer: a failed epoch bump must not crash the
+                # run path, but the delete is skipped — the deferred drain
+                # retries once the epoch state heals, never deleting a
+                # still-live grant record. The job has ALREADY RUN, so the
+                # held delete needs the same two-layer guard as
+                # `defer_removal`: the run path deliberately leaves `enabled`
+                # untouched for a delete_after_run at-job (the delete is what
+                # stops it), so without a persisted pause the save below
+                # writes it back live and every tick re-fires it until the
+                # bump succeeds; and without the queue entry no later pass
+                # ever retries the delete. `user_paused` is the persisted
+                # spelling `enabled` is re-derived from on reload.
+                try:
+                    self._bump_grant_epochs_for({job.id})
+                except (OSError, ValueError):
+                    logger.warning(
+                        "One-shot delete held for %s: grant-epoch bump failed",
+                        job.id,
+                        exc_info=True,
+                    )
+                    removed_one_shot = False
+                    if job.id in by_id:
+                        by_id[job.id].enabled = False
+                        by_id[job.id].user_paused = True
+                    self._pending_removals.add(job.id)
+                else:
+                    self._jobs = [j for j in self._jobs if j.id != job.id]
             # BACKGROUND writer: a job has already run, so an unreadable store
             # must not surface as a job-runner crash. The run result is lost,
             # which is strictly better than clobbering the store.
@@ -4376,6 +4566,11 @@ class CronService:
                     "script": j.script,
                     "command": j.command,
                     "timeout": j.timeout,
+                    "secret_env": j.secret_env,
+                    "secret_env_pin": j.secret_env_pin,
+                    "secret_env_pending": j.secret_env_pending,
+                    "secret_env_pending_pin": j.secret_env_pending_pin,
+                    "secret_env_pending_ts": j.secret_env_pending_ts,
                 }
                 for j in self._jobs
             ],

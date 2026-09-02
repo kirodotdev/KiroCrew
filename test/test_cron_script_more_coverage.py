@@ -131,8 +131,9 @@ class _FakeProc:
             raise subprocess.TimeoutExpired(cmd="fake", timeout=timeout or 0)
         return self.returncode
 
-    def communicate(self, timeout=None):
+    def communicate(self, input=None, timeout=None):  # noqa: A002 - match Popen
         self.communicate_calls += 1
+        self.communicate_input = input
         if self._comm_raises_timeout > 0:
             self._comm_raises_timeout -= 1
             raise subprocess.TimeoutExpired(cmd="fake", timeout=timeout or 0)

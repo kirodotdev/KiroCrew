@@ -114,6 +114,7 @@ from kiro_crew.dashboard.handlers.cron import (  # noqa: E402, F401
     api_cron_history_detail,
     api_cron_run,
     api_cron_script_source,
+    api_cron_secret_grant,
     api_cron_to_chat,
     api_cron_update,
     api_crons,

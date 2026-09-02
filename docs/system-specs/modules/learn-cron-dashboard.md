@@ -258,6 +258,282 @@ Deterministic cron jobs that bypass the LLM entirely:
 - **Safety**: scripts must live under `~/.kiro/crew/crons/`. `is_sensitive_path()` blocks credential file access. SEL audit on every invocation. Auto-pause after 5 consecutive failures (`_AUTO_PAUSE_THRESHOLD`, single-sourced in `CronJob.record_failure`/`record_success`). The auto-pause is **persistent**: an execution-owned `auto_paused` flag (distinct from `user_paused`) is written by `_save`, propagated by `_merge_job_result`, and folded into the effective `enabled` derivation in `_load` — so a failing job stays paused across a daemon restart; `enable_job(True)` or a later success clears it (SEL-audited transitions). Concurrent execution guard prevents double-fire. The script **body** is scanned as well — at authoring time and again at every fire, via `_vet_script_file` on the freshly re-resolved path — for credential-path references, protected secret environment variables, exfiltration URLs, and the shared sensitive-path matcher. Two shell-grammar heuristics are deliberately excluded there, because a body is Python source rather than a command line: `is_denied` (tool-name semantics such as `*git*push*`) and the raw-text separator-run collapse (in source a backslash run is an escape, so collapsing it manufactures paths the body never contained). The collapse is **replaced, not dropped** — `security.is_sensitive_source_body()` owns both halves, applying the same fence checks to each decoded string or bytes literal and exonerating one only when it sits provably in the pattern operand of a pattern-consuming call that is the outermost expression it reaches, and the body has neither rebound `re` or one of its attributes nor read a pattern back off an `re` object, so a run that survives into a real path (`open(r"…\\kiro-cli\\c.json")`, which Win32 collapses at open time) is still refused; docstrings are scanned, because Python retains them as `__doc__` where a body can read them back; see [security.md](security.md). A body that does not parse, or one too deep to traverse, keeps the raw-text collapse instead. The passes that need a command line are likewise pointed at the command strings the body CONTAINS rather than at the document: two of them walk shell structure under a fail-closed budget and every line of a Python file counts as a pipeline stage — so before that a body of a few hundred lines was refused for its LENGTH, on every fire, carrying no shell at all — and the third, the env-credential rules, are ordered-existence patterns that over a document match pieces lying arbitrarily far apart (`_SOURCE_COMMAND_SUBJECT_CAP` bounds the subject count; an unparseable body keeps the whole-document scan). A fire-time denial keeps the job and does not feed the auto-pause counter, so a body the scan misjudges is denied on every tick until it is edited.
 - **Kind tag**: `cron_list` labels each job as `script`, `command`, or `agent` based on which mode is configured.
 
+#### Operator-Granted Vault Secrets (`secret_env` / `secret_env_pin`)
+
+SCRIPT crons (and only script crons — command jobs are refused at every
+layer, because a pin over command text cannot cover the helper files the
+command invokes) can receive secrets from the encrypted `SecretVault`
+(`kiro_crew.secrets`) without a plaintext token ever living in `.env`, the cron
+store, or the script. A grant is a per-job map `secret_env: {ENV_NAME:
+vault-secret-name}` plus a code pin, persisted on the job and resolved only at
+fire time:
+
+- **Grant surface is operator-only, but requests are agent-first.** The MCP
+  tool `cron_secret_request` (job ownership enforced) lets the agent record a
+  PENDING request — mapping + a pin of the code at request time, written to the
+  separate `secret_env_pending*` fields, never the active pair — after which
+  the operator approves or denies. `PUT /api/crons/{id}/secrets` accepts
+  `{"approve_pending": true}` (routes through `_promote_pending_grant`, which
+  re-verifies the pending pin against the job's CURRENT code and refuses 409
+  `code_changed` on drift, so an approval never blesses code that changed
+  after the request), `{"deny_pending": true}`, or a revoke (empty map) — a
+  non-empty `secret_env` map is refused 400 `direct_grant_removed`, because
+  the request->approve flow is the only mint path (see the pin bullet
+  below). **The machine/human
+  boundary is enforced IN the handlers**, because `/api/crons` is a prefix
+  entry in the mixed internal paths: the grant route refuses a proven
+  `X-Internal-Secret` caller (`request["internal_auth"]`, 403 `operator_only`)
+  — machines request, humans grant — while the agent-side request path is
+  the `cron_secret_request` MCP tool, which records the pending request
+  through the cron store directly (no dashboard endpoint is exposed for
+  it). **Granting is additionally owner-only**: a
+  dashboard token minted for an allowed Slack user (`!dashboard`) clears the
+  machine check but is not the vault's owner, so the grant route also requires
+  the shared owner gate (`require_owner_dashboard_request`, 403 `owner_only`
+  otherwise). **Both denials are SEL-audited** (`api_access` / `denied`,
+  operation `cron.secret_grant`) — a machine or non-owner probing the grant
+  endpoint is exactly the signal the audit log exists to record. `GET
+  /api/crons` serializes the `secret_env*` metadata fields (names only even
+  for the owner) exclusively into owner-view responses, with every key and
+  value passed through the credential/exfil-URL redaction like the sibling
+  fields — the store is agent-writable and the read path loads these dicts
+  verbatim, so a mapping planted directly in `crons.json` cannot carry
+  credential- or URL-shaped content to the dashboard. For the same reason
+  the grant endpoint checks that both stored grant fields are
+  string-to-string mappings before it snapshots them, refusing a planted
+  list or string with a structured 400 `malformed_grant_state` instead of
+  letting the copy raise into a 500. The grant endpoint's
+  own echoes take the same scrub: the `secret_env` in its success body and
+  the names listed in its `unknown_secret` error are agent-authored (they
+  came in via the request), and the vault-name slug grammar admits a bare
+  access-key id, so neither is serialized raw. The persistence layer
+  (`_update_job_locked`)
+  re-validates every grant AND every pending request: env-name grammar
+  (`[A-Z][A-Z0-9_]*`), the protected-name deny set (`_CRON_ENV_DENY`, `PATH`,
+  loader-hijack prefixes `LD_`/`DYLD_`/`PYTHON`, product-internal
+  `KIROCREW*`/`_KIROCREW*`), a 16-entry cap, and script/command jobs only — an
+  `agent` job is refused because its session would hand the plaintext to the
+  model, defeating the vault's agent fence.
+- **Approval lives EXCLUSIVELY on the owner-gated Schedule page.** There is
+  deliberately no in-chat approval card for a pending grant: an approval
+  record registered with the generic approval broker is reachable from
+  resolution surfaces (chat state-approval fallbacks, the approvals
+  endpoint) whose identity floor is "authenticated dashboard caller", not
+  "owner", and its `tool_input` summary carries vault secret NAMES — so a
+  card kept widening the owner-only boundary. The MCP tool records the
+  pending request and tells the agent to point the user at
+  Schedule > job > Secrets, where the pending banner renders and
+  approve/deny are owner-gated server-side. An in-chat surface can return
+  later behind a dedicated owner-only delivery channel.
+- **The pin binds the grant to the code the operator approved.**
+  `compute_secret_env_pin` digests, in one payload: the HMAC **domain**
+  (`pending` for an agent request awaiting approval, `active` for an
+  operator-minted grant — a pending pin copied verbatim into the active
+  store fields never verifies), the **job id** (no cross-job replay), the
+  **delivery fingerprint** (a canonical blob of every agent-mutable field
+  deciding where or whether the run's output is delivered — `session_key`,
+  `silent`, `channel`, `thread_ts`; binding them one by one invites the
+  next omission, so the pin binds the blob and rewiring ANY of them under
+  a still-valid pin fails the run closed and asks for re-approval), the
+  **canonical grant mapping** (re-pointing which secrets flow under an
+  existing pin breaks it), and the job's code — the script spec + the job
+  `message` (the script's agent-updatable *arguments*, so re-aiming an
+  approved script requires re-approval) + current body bytes. The two
+  domains differ in trust model: a **pending** pin is an UNKEYED sha256 —
+  it authorizes nothing (only approval mints the pin the runners honour)
+  and it must be computable by the MCP server, whose sandbox hides the
+  `.vault` dir; its job is integrity, since approval recomputes it against
+  the current code and refuses on drift. An **active** pin is HMAC-SHA256
+  under a purpose-scoped derivation of the existing vault key
+  (`SecretVault.derive_subkey("cron-grant-pin")`) and additionally binds
+  the job's **grant epoch**, held in the agent-fenced
+  `.vault/.grant_epochs.json`: every owner grant WRITE (grant, replace,
+  promote, revoke) bumps the epoch before minting, and **every job-removal
+  path bumps it before the store swap** (single delete, batch delete,
+  by-owner teardown, one-shot delete-after-run, deferred removals) — a
+  deleted job's record is agent-readable history in an agent-writable
+  store, so without the bump a re-created job carrying the saved record
+  would still verify. The removal bump keys on the id's **committed epoch
+  entry**, not on the grant fields the record shows at delete time: the
+  agent can clear the fields before deleting, but an id with an entry once
+  had an active pin minted under it and stays replayable until bumped (an
+  id with neither never had one — only approval commits entries — so the
+  epoch file stays bounded across one-shot churn). A formerly valid
+  mapping+pin the agent copied out of
+  the store and writes back after a revoke is therefore always minted under
+  a dead epoch and fails closed. Epoch reads-modify-
+  writes are serialized under a CROSS-PROCESS guard (an in-process thread
+  lock plus an exclusive flock on a dedicated lockfile — removal paths also
+  run from the CLI, so the writer set is no longer one gateway process)
+  with unique-temp atomic
+  replaces that fsync the file and directory (a bump rolled back by a crash
+  would revive every pin under the old epoch), so overlapping
+  grant/revoke requests cannot collapse a revoke's bump. The approval's
+  epoch commit is **compare-and-swap** on the value its mint peeked: a
+  concurrent bump landing between the store swap and the commit refuses
+  the commit, bumps once more (killing the just-swapped pin), and returns
+  409 `grant_conflict` — never re-committing the value the concurrent bump
+  minted. A **failed bump aborts the job delete** (owner paths propagate
+  the error; background ticks requeue and retry), so a delete can
+  never leave a still-live grant record behind. When the held delete is a
+  completed `delete_after_run` one-shot, the run path also **parks it**
+  (persisted `user_paused`) and queues it for the deferred drain: the job
+  has already run and the delete is what normally stops it, so a held
+  delete without a persisted pause would re-fire it on every tick until
+  the epoch state healed. **Corrupt epoch
+  state fails closed**: a file that exists but cannot be parsed refuses
+  every verification, mint, and bump (never silently restarting the
+  counter at 0, which would revive low-epoch pins) — only a genuinely
+  missing file reads as epoch 0. Neither key nor
+  epochs are reachable by the agent's tools or sandboxed cron children, so
+  a forged store entry cannot mint a pin the runner accepts, even on hosts
+  whose OS sandbox backend degrades to "none"; a vault store whose key is
+  missing fails every grant path closed. **The request->approve flow is the
+  ONLY mint path**: direct grants were removed because nothing binds what
+  the owner's page displayed to what a save would pin — the agent could
+  rewrite the script between render and click and the pin would bless the
+  rewrite. A request pins the code at request time; approval refuses on
+  drift; pins are always computed server-side and any client value is
+  ignored. The endpoint keeps revoke and pending decisions only.
+  Scripts under `crons/` stay agent-writeable by
+  design, so at fire time `run_script_sandboxed` reads the body ONCE,
+  re-verifies the pin (constant-time compare), and hands those verified
+  bytes to the child **over stdin** (base64 in a JSON line) — the launcher
+  executes exactly what was verified, never re-opening any pathname a
+  same-UID writer could swap after verification, and a granted script's
+  `sys.path[0]` is an **empty private temp dir** AND both the live `crons/`
+  dir and the **script's own parent directory** are **hidden at the sandbox
+  layer** (`extra_hidden_dirs`) for granted runs — the verified bytes travel
+  over stdin so the child never needs the script file —
+  so it cannot `import` — or re-add to `sys.path` and then import — an
+  unpinned sibling module the agent rewrites after approval (the import
+  fails instead of running with the secrets; ungranted scripts keep sibling
+  imports). The granted **launcher file itself** is created inside that
+  private dir, never the shared temp dir, and its prelude strips that
+  directory from `sys.path` by value before the first stdlib import: `-I`
+  implies `safe_path` only on Python 3.11+, so on the 3.10 floor the
+  interpreter still prepends the launcher's own directory, and a
+  `json.py` an agent parked in the shared temp dir would otherwise be
+  imported before the secrets payload is read. A pin mismatch fails the run
+  closed with a re-approve message;
+  the grantable body is capped at the dashboard's script-preview ceiling
+  (`_MAX_GRANTED_SCRIPT_BYTES` = `_SCRIPT_SOURCE_MAX_BYTES`), because the
+  approval signs the WHOLE body while the owner reviews the preview — a
+  larger grantable script would let an agent hide executable tail bytes
+  behind the preview truncation and have the operator approve code they
+  never saw (a pinned regression test keeps the two caps aligned).
+  Command jobs cannot carry grants at all: a pin over the command TEXT
+  cannot cover the bytes of a helper file the command invokes (`bash
+  helper.sh` runs whatever the agent last wrote there under a still-valid
+  pin), so every surface refuses them and the command runner fails closed on
+  any grant a hand-edited store smuggles in.
+- **Secrets never ride in an `execve` environment.** `/proc/<pid>/environ`
+  is the startup-env snapshot, readable by any same-UID process for the
+  child's whole lifetime, so the runner never puts grant values in the
+  child's spawn env. The script launcher receives them over stdin and applies
+  them with `os.environ.update` AFTER its own exec (the kernel snapshot never
+  contains them), behind the protected-key filter (`_filter_grant_env`), so a
+  grant can never name a product-internal `_KIROCREW*` key. The launcher
+  also seeds `_GRANTED_ENV_KEYS` with the granted names, and
+  `_clean_cron_env` — the base env for every descendant subprocess the
+  granted child spawns, notably `ctx.call_tool`'s MCP server — strips them:
+  the grant authorizes the approved script body, never the server binaries
+  it calls.
+- **Granted values are scrubbed from child diagnostics.** Pattern-based
+  redaction only recognises known credential shapes, and a vault value has
+  no required shape — so the runner, which resolved the exact values to
+  build the stdin payload, replaces every occurrence of them in the child's
+  stderr tail, the launcher's status JSON (which carries `str(e)` from the
+  script's own exception and would otherwise bypass the stderr path), and
+  the bad-stdout diagnostic with `[redacted-grant-value]` before the result
+  reaches gateway logs or the persisted `last_error`. Longest values first,
+  so containment between values cannot leave a recognisable fragment. The
+  launcher JSON's `status` field is exempt: it is a closed vocabulary the
+  launcher itself emits (`ok`/`skip`/`done`/`report`/`error`) and the caller
+  only compares it against those literals, so it can neither carry a secret
+  nor be rendered — scrubbing it would let a vault value that happens to
+  equal a token rewrite a successful run into an unrecognised (failed) one.
+- **A grant decision is audit-or-deny.** Approve, deny and revoke each write
+  their SEL intent record (awaited, off-loop) BEFORE the store mutates, as a
+  **critical** write — synchronous and re-raising, because the default SEL
+  path enqueues for a background writer and swallows a filesystem failure,
+  which would make the gate a no-op. An unwritable audit store refuses the
+  decision with a structured 503
+  (`audit_unavailable`) and nothing mutated, so a grant can never exist
+  without a durable permission record. The terminal success event stays
+  best-effort — an applied grant is already covered by the intent record.
+- **The agent surface cannot enumerate vault names.** `cron_secret_request`
+  performs NO existence check against the vault — a request naming an
+  unstored secret is recorded as pending exactly like a stored one, so
+  guessing names reveals nothing. Existence is validated on the owner-only
+  approval surfaces (grant endpoint and promotion), where the operator sees
+  the vault and the request side by side.
+- **A decision acts on exactly the request the human saw.** The agent can
+  replace a pending request at any moment, so approve and deny both restate
+  the displayed mapping (`expected_secret_env`, plus the request timestamp on
+  approve). On approve both fields are **required** and compared
+  unconditionally — an optional check is one the agent can arrange to skip,
+  so an approval that omits either is refused with 400 `invalid_secret_env`
+  before anything is promoted — and the final swap runs as a
+  **compare-and-swap inside the cron store lock** (`expect_secret_env_pending*`
+  → `CronPendingMismatch` → HTTP 409 `stale_request`): a request replaced
+  after render is neither promoted nor silently discarded.
+- **A decision acts on exactly the CODE the human saw, too.** The request
+  binding above cannot carry this on its own: an agent can rewrite the script
+  and re-issue the request, and a Schedule page whose request banner
+  refreshed while its source view did not would restate the NEW request's
+  mapping and timestamp — passing both request checks, with the pin verifying
+  against the new file — while the operator is still reading the OLD code.
+  The pin proves the code matches the request, never that the approver read
+  it. So the pending banner loads the script INSIDE itself, keyed to the
+  request's timestamp (a re-issued request re-fetches; a job-id-keyed view
+  would keep the stale body under the fresh approve button), keeps **Approve
+  disabled until that exact source has rendered** (loading, unreadable, or
+  truncated all leave it disabled), and the approve call echoes the digest the
+  source endpoint returned (`expected_source_sha256`, the raw-bytes `sha256`
+  of GET `/api/crons/{id}/script`). The field is REQUIRED — an approval
+  without it is 400 `invalid_secret_env`, because it attests to nothing about
+  the code — and the promotion compares it against the ONE body snapshot both
+  pins derive from: a mismatch is 409 `stale_source` (checked after
+  `code_changed`, so a rewrite without a re-issue still reports the more
+  actionable code-drift reason). Approving therefore requires having been
+  shown the body, which is the premise the whole flow rests on made
+  enforceable rather than assumed. A digest can only attest to what was
+  SHOWN, so the source endpoint also reports `reviewable` — true only when
+  the rendered text equals the raw UTF-8 decode byte-for-byte (nothing
+  masked by credential/exfil-URL redaction, no undecodable bytes replaced,
+  not truncated). The banner keeps Approve disabled and says why when it is
+  false, and the promotion RE-DERIVES the verdict from its own body snapshot
+  (never the client's flag), refusing with 409 `source_not_reviewable`:
+  otherwise an agent could hide executable content behind exactly the span
+  the redactor masks and the operator would approve a raw digest over code
+  the display never let them read.
+- The promoting write also CONSUMES the pending
+  request in the same atomic swap — leaving it behind would let a concurrent
+  deny (or a second approval) pass its own compare-and-swap against the same
+  snapshot and misreport success against the just-activated grant. When the
+  epoch commit then fails (503 `epoch_commit_failed`), a compensating write
+  restores the PRIOR active grant (its pin is still valid — the failed
+  commit never advanced the epoch) AND the consumed request (original
+  mapping, pin, and timestamp) so
+  the owner re-approves once epoch storage heals; the restore is CAS-guarded
+  on an empty pending slot, so a newer request the agent posted into the gap
+  is never overwritten — the prior grant is then restored in its own write.
+  The restore is ALSO CAS-guarded on the active fields still holding the
+  just-promoted (dead) grant: a concurrent revoke that cleared them in the
+  gap owns the state, and the compensation yields instead of resurrecting a
+  grant the operator withdrew.
+- **Resolution is in-memory only and fail-closed.** The runner resolves
+  vault names via `SecretVault.get_many` immediately before spawn and
+  delivers the values over the child's stdin (see the delivery bullet
+  above); the product-internal keys (`_KIROCREW_SECRET_FILE`,
+  `_KIROCREW_DIAL_PORT`) live only in the spawn env and are shielded from
+  grants by the protected-key filter. A missing vault entry aborts the run;
+  error messages name the env-var KEY only (the CWE-117 no-echo discipline
+  of `mcp_gateway/secret_uri.py`). `GET /api/crons` exposes grant NAMES for
+  the UI; plaintext never leaves the vault. Grants and revokes are
+  SEL-audited (`cron.secret_grant` / `cron.secret_revoke`, names only).
+
 #### Auto-pause applies to `agent` (message) crons too
 
 Auto-pause is not script/command-only. An `agent` cron's turn signals failure
@@ -1006,7 +1282,7 @@ Bounds (`validation.py`, single source of truth) still gate the tool's arguments
 **Theme / display**: GET `/api/theme/boot` (**unauthenticated** — same boundary as `/api/health`; returns `{mode, color, language, onboarded, import_onboarded}` so the SPA can apply the workspace theme, pick its UI language, and resolve onboarding gates before the token flow completes; no secrets), GET/PUT `/api/config/theme` (read/persist workspace display prefs `{mode?, color?, language?, onboarded?, import_onboarded?}`; `mode` restricted to `""`/`dark`/`light`/`system`; `language` is `""` (auto-detect from the browser) or a BCP-47 tag validated for **shape only** via `_LANGUAGE_TAG_RE`, so adding a shipped language stays a frontend-only data change). All four response sites are built by one helper (`handlers/core.py::_theme_payload`) so a newly-added display pref cannot be surfaced by some and omitted by others — see `config.md` → "Dashboard UI language".
 **Foreign-agent import**: authenticated GET `/api/onboarding/import/scan`, POST `/api/onboarding/import/apply`, PUT `/api/onboarding/import/state`; see "Foreign-Agent First-Run Import".
 **Memory**: GET/PUT `/api/memory/preferences`, GET/PUT `/api/memory/projects`, GET/PUT `/api/memory/history`, GET/PUT `/api/memory/settings` (consolidation config: `history_idle_hours`, `history_max_days`; writes to config.json, applies immediately to running consolidator)
-**Cron**: GET `/api/crons` (includes `last_run_ts`, `has_result`, `has_slot`, `hide_in_chat`, `folder_id`, per-job `timezone`, top-level `server_tz`, `skip_dates`), POST `/api/crons` (create, optional `agent`, `hide_in_chat`, `folder_id` fields), DELETE `/api/crons/{id}` (single delete; SEL-audited `cron.remove` with the job id and `ok`/`not_found` outcome — the audit lands before history cleanup so a history-store failure cannot lose the record of a completed delete, and it is exception-contained so a SEL construction failure can never report a completed delete as failed; the single-delete MCP tool `cron_remove` and CLI `kirocrew cron remove` emit the same `cron.remove` event, spelling the success outcome `allowed` to match their own `cron.create`/`cron.update` neighbours), DELETE `/api/crons` (batch delete; body `{"ids": [...]}`, ids de-duplicated, capped at 500, per-id failure isolation, returns `{ok, deleted, failed}` with `ok` true iff anything was deleted; history purged per removed job; single `crons` refresh push; SEL-audited), PATCH `/api/crons/{id}` (partial update: name, message, cron, every, agent (or agent_id), channel, approval_mode, silent, strict_schedule, hide_in_chat, folder_id, timezone), POST `/api/crons/{id}/enable`, POST `/api/crons/{id}/run` (immediate execution, returns `{name}`, non-blocking via `create_task`), POST `/api/crons/{id}/to-chat` (creates linked chat slot `cron-{id}` with `linked_session_key="cron:{id}"`, hydrates from session history, reuses existing slot), GET `/api/crons/{id}/script` (read-only source of a script cron's callable: `{source, file, function, truncated}`; the path is derived server-side from the job's stored `script` field — never from the client — re-validated by `resolve_script_path` and read through `safe_read_file_bytes_nolink` pinned to `<config_dir>/crons/`, capped at 256 KiB with truncation flagged; source is credential/exfil-URL redacted before leaving the backend; 404 for unknown job or a job with no `script` (`code: job_not_found` / `no_script`), 404 `script_not_found` for a missing file, 422 `script_path_refused`/`script_read_refused` for containment refusals, 501 `unsupported_platform` on Windows where the nolink chokepoint is unavailable; the blocking resolve+read runs off-loop in `discovery_executor`)
+**Cron**: GET `/api/crons` (includes `last_run_ts`, `has_result`, `has_slot`, `hide_in_chat`, `folder_id`, per-job `timezone`, top-level `server_tz`, `skip_dates`), POST `/api/crons` (create, optional `agent`, `hide_in_chat`, `folder_id` fields), DELETE `/api/crons/{id}` (single delete; SEL-audited `cron.remove` with the job id and `ok`/`not_found` outcome — the audit lands before history cleanup so a history-store failure cannot lose the record of a completed delete, and it is exception-contained so a SEL construction failure can never report a completed delete as failed; the single-delete MCP tool `cron_remove` and CLI `kirocrew cron remove` emit the same `cron.remove` event, spelling the success outcome `allowed` to match their own `cron.create`/`cron.update` neighbours), DELETE `/api/crons` (batch delete; body `{"ids": [...]}`, ids de-duplicated, capped at 500, per-id failure isolation, returns `{ok, deleted, failed}` with `ok` true iff anything was deleted; history purged per removed job; single `crons` refresh push; SEL-audited), PATCH `/api/crons/{id}` (partial update: name, message, cron, every, agent (or agent_id), channel, approval_mode, silent, strict_schedule, hide_in_chat, folder_id, timezone), POST `/api/crons/{id}/enable`, POST `/api/crons/{id}/run` (immediate execution, returns `{name}`, non-blocking via `create_task`), POST `/api/crons/{id}/to-chat` (creates linked chat slot `cron-{id}` with `linked_session_key="cron:{id}"`, hydrates from session history, reuses existing slot), GET `/api/crons/{id}/script` (read-only source of a script cron's callable: `{source, file, function, truncated, reviewable, sha256}` — `reviewable` says the rendered `source` equals the raw body verbatim (no redaction masking, lossless decode, not truncated), `sha256` is over the raw bytes read, pre-redaction, and is what a grant approval echoes back as `expected_source_sha256`; the path is derived server-side from the job's stored `script` field — never from the client — re-validated by `resolve_script_path` and read through `safe_read_file_bytes_nolink` pinned to `<config_dir>/crons/`, capped at 256 KiB with truncation flagged; source is credential/exfil-URL redacted before leaving the backend; 404 for unknown job or a job with no `script` (`code: job_not_found` / `no_script`), 404 `script_not_found` for a missing file, 422 `script_path_refused`/`script_read_refused` for containment refusals, 501 `unsupported_platform` on Windows where the nolink chokepoint is unavailable; the blocking resolve+read runs off-loop in `discovery_executor`)
 **JSON body shape**: every route above that reads a JSON body requires a top-level
 object, and answers a scalar, array, or `null` the same way it already answers a body
 it cannot parse at all. `PATCH /api/crons/{id}` and `DELETE /api/lessons` refuse with

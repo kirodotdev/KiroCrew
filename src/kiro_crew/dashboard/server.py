@@ -1381,6 +1381,11 @@ def _register_mcp_routes(app: web.Application) -> None:
     app.router.add_get("/api/crons/history", handlers.api_cron_history_all)
     app.router.add_delete("/api/crons/{job_id}", handlers.api_cron_delete)
     app.router.add_patch("/api/crons/{job_id}", handlers.api_cron_update)
+    # Operator-only vault-secret grants. The "/api/crons" prefix above makes
+    # this reachable with X-Internal-Secret, so the HANDLER refuses proven
+    # internal-secret callers (request["internal_auth"]) — machines request,
+    # humans grant. See the handler docstring.
+    app.router.add_put("/api/crons/{job_id}/secrets", handlers.api_cron_secret_grant)
     app.router.add_post("/api/crons/{job_id}/enable", handlers.api_cron_enable)
     app.router.add_post("/api/crons/{job_id}/run", handlers.api_cron_run)
     app.router.add_post("/api/crons/{job_id}/cancel", handlers.api_cron_cancel)

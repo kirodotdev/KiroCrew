@@ -95,7 +95,7 @@ from kiro_crew.cron import (
     build_cron_session_context,
     effective_wake_budget,
 )
-from kiro_crew.cron_script import run_command_sandboxed, run_script_sandboxed
+from kiro_crew.cron_script import delivery_fingerprint, run_command_sandboxed, run_script_sandboxed
 from kiro_crew.dashboard import cautious_boot, start_dashboard
 from kiro_crew.dashboard.chat_persistence import rehydrate_slot_from_history_async
 from kiro_crew.dashboard.chat_runner import (
@@ -3682,6 +3682,8 @@ class GatewayOrchestrator:
                         job.command,
                         cmd_timeout,
                         job.id,
+                        job.secret_env,
+                        job.secret_env_pin,
                         timeout=_claim_backstop(job, cmd_timeout),
                     )
                     if result.get("status") == "cancelled":
@@ -4009,6 +4011,14 @@ class GatewayOrchestrator:
                         job.id,
                         job.message,
                         script_timeout,
+                        job.secret_env,
+                        job.secret_env_pin,
+                        delivery_fingerprint(
+                            job.session_key,
+                            job.silent,
+                            job.channel or "",
+                            job.thread_ts or "",
+                        ),
                         timeout=_claim_backstop(job, script_timeout),
                     )
                     status = result.get("status", "error")

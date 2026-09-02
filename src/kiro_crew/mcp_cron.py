@@ -10,6 +10,9 @@ Tools:
     cron_remove_all — remove all jobs
     cron_pause      — pause a job
     cron_resume     — resume a paused job
+    cron_secret_request — request vault secrets for an owned script cron
+                          job (records a PENDING grant; operator approves in
+                          the dashboard — this tool never grants)
 """
 
 from __future__ import annotations
@@ -36,7 +39,12 @@ from kiro_crew.cron import (
     is_valid_skip_date,
     is_valid_timezone,
 )
-from kiro_crew.cron_script import resolve_script_path
+from kiro_crew.cron_script import (
+    compute_secret_env_pin,
+    delivery_fingerprint,
+    resolve_script_path,
+    validate_secret_env_grant,
+)
 from kiro_crew.cron_trigger import _JOB_ID_RE, trigger_cron_job
 from kiro_crew.mcp_caller import current_caller
 from kiro_crew.mcp_core import (
@@ -1288,6 +1296,37 @@ def _list_tools() -> list[dict[str, Any]]:
                 "required": ["job_id"],
             },
         },
+        {
+            "name": "cron_secret_request",
+            "description": (
+                "Request vault secrets for a SCRIPT cron job you own. "
+                "This does NOT grant anything: it records a PENDING request "
+                "(env-var name -> vault secret name, pinned to the job's "
+                "current code) that the operator must approve in the dashboard "
+                "(Schedule > job > Secrets) before the values are injected "
+                "into the job's subprocess env at fire time. Tell the user to "
+                "approve it. Secrets must already exist in the vault "
+                "(Settings > Secrets). An empty 'secrets' object withdraws a "
+                "pending request."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "job_id": {"type": "string", "description": "Job ID to request secrets for"},
+                    "secrets": {
+                        "type": "object",
+                        "additionalProperties": {"type": "string"},
+                        "description": (
+                            "Mapping of env-var name (e.g. 'MY_SANDBOX_TOKEN', "
+                            "[A-Z][A-Z0-9_]*) to the vault secret name to "
+                            "inject under it. Empty object withdraws the "
+                            "pending request."
+                        ),
+                    },
+                },
+                "required": ["job_id", "secrets"],
+            },
+        },
     ]
 
 
@@ -2134,6 +2173,92 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
         if ok:
             return f"{msg} - executing now."
         return msg
+
+    if name == "cron_secret_request":
+        jid = args["job_id"]
+        # Ownership check — a session may only request secrets for a job it owns.
+        own_err = _check_cron_job_ownership(svc, jid)
+        if own_err:
+            return own_err
+        secrets = args.get("secrets")
+        if not isinstance(secrets, dict) or not all(
+            isinstance(k, str) and isinstance(v, str) for k, v in secrets.items()
+        ):
+            return "Error: secrets must be an object mapping env-var names to vault secret names"
+        sjob = svc.get_job(jid)
+        if sjob is None:
+            return f"Error: job not found: {jid}"
+        if not secrets:
+            try:
+                svc.update_job(jid, secret_env_pending={})
+            except CronStoreBusy:
+                return "Error: cron store busy, please retry"
+            return "Withdrew the pending secret request."
+        if not sjob.script:
+            return (
+                "Error: secret grants apply only to SCRIPT jobs. An agent "
+                "job's session would expose the plaintext to the model; a "
+                "command job's pin can cover only the command text, not the "
+                "bytes of any helper file the command invokes."
+            )
+        try:
+            validate_secret_env_grant(secrets)
+        except ValueError as exc:
+            return f"Error: {redact(str(exc))}"
+        # Deliberately NO vault-name existence probe here: distinguishing
+        # "stored" from "not stored" to an agent caller would let it enumerate
+        # the owner's vault names by guessing. Names are validated on the
+        # owner-only approval surfaces, where the operator sees the vault and
+        # the request side by side; a request naming a missing secret is
+        # simply refused there.
+        try:
+            # Pin the REQUEST to the job's current code. Approval re-verifies
+            # this pin against the code at approval time, so what the operator
+            # blesses is exactly what the agent showed them.
+            pin = compute_secret_env_pin(
+                sjob.script,
+                sjob.command,
+                sjob.message,
+                job_id=sjob.id,
+                grant=secrets,
+                domain="pending",
+                delivery=delivery_fingerprint(
+                    sjob.session_key, sjob.silent, sjob.channel or "", sjob.thread_ts or ""
+                ),
+            )
+        except (ValueError, FileNotFoundError, PermissionError, RuntimeError) as exc:
+            return f"Error: {redact(str(exc))}"
+        try:
+            svc.update_job(
+                jid,
+                secret_env_pending=dict(secrets),
+                secret_env_pending_pin=pin,
+                secret_env_pending_ts=time.time(),
+            )
+        except CronStoreBusy:
+            return "Error: cron store busy, please retry"
+        except CronStoreUnreadable as exc:
+            return f"Error: {exc}"
+        except ValueError as exc:
+            return f"Error: {redact(str(exc))}"
+        sel().log_api_access(
+            caller="mcp",
+            operation="cron.secret_request",
+            outcome="allowed",
+            source="mcp",
+            resources=f"job_id={jid}:{','.join(sorted(secrets))}",
+        )
+        # No in-chat approval surface, deliberately: an approval record
+        # reachable from generic chat resolution paths kept widening the
+        # owner-only boundary in review, so approval lives EXCLUSIVELY on the
+        # owner-gated Schedule page. The durable pending record above is the
+        # source of truth.
+        return (
+            f"Recorded a PENDING secret request for job {jid} "
+            f"({', '.join(sorted(secrets))}). Nothing is granted yet: the "
+            "operator must approve it in the dashboard under Schedule > this "
+            "job > Secrets. Tell the user to review and approve it there."
+        )
 
     return f"Unknown tool: {name}"
 

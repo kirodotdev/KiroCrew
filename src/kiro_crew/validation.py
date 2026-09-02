@@ -2918,6 +2918,17 @@ MCP_CRON_SCHEMAS: dict[str, ToolSchema] = {
             FieldSpec("job_id", str, required=True, max_len=16, pattern=_JOB_ID_RE),
         ],
     ),
+    # Agent-initiated vault-secret REQUEST for a script cron. Records a
+    # pending grant only; the operator approves in the dashboard. The mapping's
+    # keys/values are re-validated at the persistence layer
+    # (cron_script.validate_secret_env_grant) — this schema bounds shape/size.
+    "cron_secret_request": ToolSchema(
+        tool_name="cron_secret_request",
+        fields=[
+            FieldSpec("job_id", str, required=True, max_len=16, pattern=_JOB_ID_RE),
+            FieldSpec("secrets", dict, required=True),
+        ],
+    ),
 }
 
 
