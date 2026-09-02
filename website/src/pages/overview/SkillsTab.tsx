@@ -2,12 +2,12 @@ import { useState, useMemo, useEffect, useRef } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Download, Loader2, RefreshCw, Sparkles } from 'lucide-react'
-import { api } from '../../api/client'
+import { api, ApiError } from '../../api/client'
 import ProjectSkillsTrustList from '../../components/ProjectSkillsTrustList'
 import { Card, Btn, SearchInput, EmptyState, Toggle } from '../../components/ui'
 import InfoTip from '../../components/InfoTip'
 import Modal from '../../components/Modal'
-import SkillForm, { assembleSkillContent, parseSkillContent, type SkillFormData } from '../../components/SkillForm'
+import SkillForm, { assembleSkillContent, parseSkillContent, skillPathProblem, skillPostPath, type SkillFormData } from '../../components/SkillForm'
 import SkillDirectoryBrowser from '../../components/SkillDirectoryBrowser'
 import SkillBrowserModal from '../../components/SkillBrowserModal'
 import DiffBlock from '../../components/DiffBlock'
@@ -21,6 +21,7 @@ import { Trans } from 'react-i18next'
 
 import { fmtBytes, fmtCompact } from '../../i18n/format'
 import { i18nT } from '../../i18n/t'
+import { parseErrorCode } from '../../utils/errorReport'
 import { SettingRef } from '../../components/settingRef/SettingRef'
 const EMPTY_FORM: SkillFormData = { name: '', category: '', description: '', triggers: '', tags: '', always: false, body: '' }
 
@@ -73,6 +74,7 @@ export default function SkillsTab() {
   const [detailEditing, setDetailEditing] = useState(false)
   // Multi-provider skill browser drawer (Add Skill button).
   const [skillBrowserOpen, setSkillBrowserOpen] = useState(false)
+  const [createError, setCreateError] = useState('')
 
   // Deep-linkable view param: ?view=budget swaps to the control plane.
   // Entering the budget view PUSHES a history entry so browser Back returns to
@@ -111,7 +113,20 @@ export default function SkillsTab() {
     onSuccess: () => {
       setFormData(EMPTY_FORM)
       setCreating(false)
+      setCreateError('')
       queryClient.invalidateQueries({ queryKey: ['skills'] })
+    },
+    // The form's sanitizeSkillName mirror gates most bad names before they leave
+    // the browser, but it is a mirror rather than the authority: a name the
+    // preview accepted and the server did not still lands here. `invalid_name`
+    // is the empty-sanitize refusal a non-Latin name earns, and it is the one
+    // whose English prose the user seeing it is least able to read, so it gets a
+    // translated hint; every other code's server prose is already actionable.
+    onError: (e: Error) => {
+      const code = e instanceof ApiError ? parseErrorCode(e.body) : undefined
+      setCreateError(code === 'invalid_name'
+        ? i18nT('components.skillForm.invalid_name_hint')
+        : e.message)
     },
   })
 
@@ -231,15 +246,35 @@ export default function SkillsTab() {
   // Control plane: full-page budget view, deep-linkable via ?view=budget.
   if (viewBudget) return <SkillContextBudget onBack={hideBudget} />
 
+  // One predicate for the Create button's `disabled` and its onClick guard, so
+  // the two can never disagree — a keyboard activation that races the disabled
+  // attribute would otherwise send a request the button was already refusing.
+  // `.trim()` is what makes a whitespace-only name a non-submission rather than a
+  // truthy string that earns an untranslated `name is required` 400.
+  const createCanSubmit = formData.name.trim() !== ''
+    && skillPathProblem(formData.name, formData.category) === null
+    && !createSkill.isPending
+
   return (<>
     <PendingSkillsPanel />
     <ProjectSkillsTrustList />
     {/* Create Skill Modal */}
-    <Modal open={creating} onClose={() => setCreating(false)} title={i18nT('pages.overview.skillsTab.create_new_skill')} maxWidth={560} footer={<>
-      <Btn onClick={() => setCreating(false)}>{i18nT('pages.overview.skillsTab.cancel')}</Btn>
-      <Btn primary onClick={() => { if (formData.name) { const path = formData.category ? `${formData.category}/${formData.name}` : formData.name; createSkill.mutate({ name: path, content: assembleSkillContent(formData) }) } }} disabled={!formData.name}>{i18nT('pages.overview.skillsTab.create')}</Btn>
+    {/* The gate reads the SANITIZED name and category, not the raw ones and not
+        the combined path: a segment that sanitizes to nothing (typically one
+        written entirely in a non-Latin script) would otherwise pass
+        `!formData.name`, or hide behind a surviving sibling segment, and reach the
+        server only to be silently renamed or refused with an English 400. A name
+        that is nothing BUT separators (`/`) is the sharpest case, because the
+        surviving sibling is the category and the skill lands under it with the
+        name discarded — hence skillPathProblem, not a bare emptiness test.
+        `isPending` closes the same window a second time over, since an in-flight
+        create must not be re-sent or abandoned mid-request. */}
+    <Modal open={creating} onClose={() => { if (createSkill.isPending) return; setCreating(false) }} title={i18nT('pages.overview.skillsTab.create_new_skill')} maxWidth={560} footer={<>
+      <Btn disabled={createSkill.isPending} onClick={() => setCreating(false)}>{i18nT('pages.overview.skillsTab.cancel')}</Btn>
+      <Btn primary onClick={() => { if (!createCanSubmit) return; createSkill.mutate({ name: skillPostPath(formData.name, formData.category), content: assembleSkillContent(formData) }) }} disabled={!createCanSubmit}>{i18nT('pages.overview.skillsTab.create')}</Btn>
     </>}>
       <SkillForm data={formData} onChange={setFormData} />
+      {createError && <p className="text-danger text-[12px] mt-2">{createError}</p>}
     </Modal>
 
     {/* No top margin: the pane that hosts this tab owns the gap under the tab
@@ -250,7 +285,7 @@ export default function SkillsTab() {
       * null when nothing is pending — this heading moves in and out of
       * `:first-child` with the pending count, so a positional rule would make
       * the gap depend on it. */}
-    <h4 className="text-sm font-semibold text-text-strong mb-2 flex flex-wrap items-center gap-2">{i18nT('pages.overview.skillsTab.skills_count', { count: skills.length })} <InfoTip text={i18nT('pages.overview.skillsTab.skills_tip')} /> <span className="w-full md:w-auto md:ml-auto flex flex-col md:flex-row items-stretch md:items-center [&>button]:justify-center md:[&>button]:justify-start gap-2"><Btn onClick={showBudget} className="text-accent border-accent/30 bg-accent/5 hover:bg-accent/10">{i18nT('pages.overview.skillsTab.budget_doorway_static')}</Btn><Btn onClick={() => setSkillBrowserOpen(true)}><Download size={14} /> {i18nT('pages.overview.skillsTab.add_skill')}</Btn><Btn primary onClick={() => { setFormData(EMPTY_FORM); setCreating(true) }}>{i18nT('pages.overview.skillsTab.create_new_skill')}</Btn></span></h4>
+    <h4 className="text-sm font-semibold text-text-strong mb-2 flex flex-wrap items-center gap-2">{i18nT('pages.overview.skillsTab.skills_count', { count: skills.length })} <InfoTip text={i18nT('pages.overview.skillsTab.skills_tip')} /> <span className="w-full md:w-auto md:ml-auto flex flex-col md:flex-row items-stretch md:items-center [&>button]:justify-center md:[&>button]:justify-start gap-2"><Btn onClick={showBudget} className="text-accent border-accent/30 bg-accent/5 hover:bg-accent/10">{i18nT('pages.overview.skillsTab.budget_doorway_static')}</Btn><Btn onClick={() => setSkillBrowserOpen(true)}><Download size={14} /> {i18nT('pages.overview.skillsTab.add_skill')}</Btn><Btn primary onClick={() => { setFormData(EMPTY_FORM); setCreateError(''); setCreating(true) }}>{i18nT('pages.overview.skillsTab.create_new_skill')}</Btn></span></h4>
     <p className="text-[12px] text-muted mb-2"><Trans i18nKey="pages.overview.skillsTab.auto_create_hint" components={{ settingRef: <SettingRef configKey="skills.auto_create_from_sessions" /> }} /></p>
     <Card>
       <div className="flex items-center gap-2 mb-3">

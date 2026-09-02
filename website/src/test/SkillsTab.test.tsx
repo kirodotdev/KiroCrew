@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, waitFor, fireEvent } from '@testing-library/react'
+import { render, screen, waitFor, fireEvent, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter } from 'react-router-dom'
 
@@ -13,7 +13,21 @@ const mockApi = vi.hoisted(() => ({
   updateSkill: vi.fn(),
   deleteSkill: vi.fn(),
 }))
-vi.mock('../api/client', () => ({ api: mockApi }))
+// A stub ApiError declared inside vi.hoisted so the mock factory (hoisted above
+// the imports) can close over it: createSkill.onError branches on
+// `instanceof ApiError` before reading the coded body, so the mock has to
+// export something that branch recognizes. Same shape as PromptsTab.test.tsx.
+const StubApiError = vi.hoisted(() => class ApiError extends Error {
+  status: number
+  body: string
+  constructor(status: number, message: string, body = '') {
+    super(message)
+    this.name = 'ApiError'
+    this.status = status
+    this.body = body
+  }
+})
+vi.mock('../api/client', () => ({ api: mockApi, ApiError: StubApiError }))
 
 vi.mock('../providers', () => ({
   useProvider: () => ({ labels: { pluginRegistryName: 'Packages' } }),
@@ -261,5 +275,221 @@ describe('SkillsTab', () => {
     await waitFor(() => expect(screen.getByTestId('dir-browser')).toBeInTheDocument())
     expect(screen.queryByText('Edit')).not.toBeInTheDocument()
     expect(screen.queryByText('Delete')).not.toBeInTheDocument()
+  })
+})
+
+describe('SkillsTab create gate and coded refusal', () => {
+  // A non-empty list keeps the EmptyState (which has no Create button) out of the
+  // DOM, and lets the tab settle out of its loading state -- while loading, the
+  // header "Create New Skill" button is rendered DISABLED, so it must not be
+  // clicked until a skill row is on screen.
+  const ONE_SKILL = [
+    { key: 'existing', name: 'existing', description: 'here already', source: 'kirocrew', loaded_by_agents: [] },
+  ]
+
+  // Katakana as code-point escapes: the repo forbids CJK literals in source, and
+  // the sanitizer only cares that no character lands in [a-z0-9-/]. This is the
+  // name that sanitizes to nothing -- the case the whole change is about.
+  const NON_LATIN = '\u30b9\u30ad\u30eb'
+
+  /** Render, wait for the list to load (the loading state disables Create), open
+   *  the create modal, and return the dialog plus its footer Create button. */
+  async function openCreateModal() {
+    renderWithQuery()
+    // The directory browser only mounts once `skills` has resolved; before that
+    // the tab is in its loading branch, where Create is disabled.
+    await screen.findByTestId('dir-browser')
+    fireEvent.click(screen.getByText('Create New Skill'))
+    // The footer Create button, scoped to the dialog: the header button that
+    // opened it also reads "Create New Skill", and the modal title repeats it.
+    const dialog = await screen.findByRole('dialog')
+    return { dialog, create: within(dialog).getByText('Create') }
+  }
+
+  it('keeps Create disabled for a name that sanitizes to nothing, enabled for a valid one', async () => {
+    mockApi.skills.mockResolvedValue(ONE_SKILL)
+    const { dialog, create } = await openCreateModal()
+
+    // Empty field: still disabled (nothing to save yet), but no spurious refusal.
+    expect(create).toBeDisabled()
+
+    // A name that sanitizes away: gating on the raw name would have sent a
+    // request that could only 400, so the gate reads the sanitized stem instead.
+    fireEvent.change(within(dialog).getByPlaceholderText('e.g. my-tool'), { target: { value: NON_LATIN } })
+    expect(create).toBeDisabled()
+    // The form's own hint explains why, so the disable is not silent.
+    expect(within(dialog).getByText(/has none of them/)).toBeInTheDocument()
+
+    // One character in the allowed set produces a filename, so Create enables.
+    fireEvent.change(within(dialog).getByPlaceholderText('e.g. my-tool'), { target: { value: 'My Skill!' } })
+    expect(create).not.toBeDisabled()
+    expect(within(dialog).getByText(/Saved as my-skill/)).toBeInTheDocument()
+    // The gate never fired the mutation on its own.
+    expect(mockApi.createSkill).not.toHaveBeenCalled()
+  })
+
+  it('drives the preview and gate off the COMBINED category/name the tab POSTs', async () => {
+    mockApi.skills.mockResolvedValue(ONE_SKILL)
+    const { dialog, create } = await openCreateModal()
+
+    // SkillsTab POSTs `category ? "{category}/{name}" : name`, so the modal's
+    // preview and gate have to sanitize that same combined value -- not `name`
+    // alone -- or the filename shown would disagree with what the server writes.
+    fireEvent.change(within(dialog).getByPlaceholderText('e.g. utils, code'), { target: { value: 'Utils Code' } })
+    fireEvent.change(within(dialog).getByPlaceholderText('e.g. my-tool'), { target: { value: 'My Skill' } })
+
+    // category-then-name, each sanitized and joined by the surviving slash.
+    expect(within(dialog).getByText(/Saved as utils-code\/my-skill/)).toBeInTheDocument()
+    expect(create).not.toBeDisabled()
+  })
+
+  /* The three rows below are the states where gating on the COMBINED
+     `category/name` gets the answer wrong. Category is an ordinary optional
+     field, so each is reachable by typing into two inputs -- and in each one a
+     combined check reports no problem, leaves Create enabled, and lets the server
+     store something other than what the user described. */
+
+  it('keeps Create disabled for a vanishing name even when the category survives', async () => {
+    mockApi.skills.mockResolvedValue(ONE_SKILL)
+    const { dialog, create } = await openCreateModal()
+
+    fireEvent.change(within(dialog).getByPlaceholderText('e.g. utils, code'), { target: { value: 'utils' } })
+    fireEvent.change(within(dialog).getByPlaceholderText('e.g. my-tool'), { target: { value: NON_LATIN } })
+
+    // `utils/<non-Latin>` sanitizes to a non-empty `utils`, so gating on the
+    // combined value would enable Create and the server would store a skill
+    // literally named `utils` with the typed name discarded -- no refusal, and
+    // nothing for the coded-error path to translate.
+    expect(create).toBeDisabled()
+    expect(within(dialog).getByText(/has none of them/)).toBeInTheDocument()
+    expect(within(dialog).queryByText(/Saved as utils$/)).not.toBeInTheDocument()
+  })
+
+  it('keeps Create disabled for a separator-only name the category would carry', async () => {
+    mockApi.skills.mockResolvedValue(ONE_SKILL)
+    const { dialog, create } = await openCreateModal()
+
+    fireEvent.change(within(dialog).getByPlaceholderText('e.g. utils, code'), { target: { value: 'utils' } })
+    fireEvent.change(within(dialog).getByPlaceholderText('e.g. my-tool'), { target: { value: '/' } })
+
+    // The same discard as the non-Latin row, reached without leaving ASCII: every
+    // segment of the Name is blank, so a per-segment check finds nothing to object
+    // to, `utils//` sanitizes to a non-empty `utils`, and the server would store
+    // the skill under the CATEGORY with the required Name gone.
+    expect(create).toBeDisabled()
+    expect(within(dialog).getByText(/has none of them/)).toBeInTheDocument()
+    expect(mockApi.createSkill).not.toHaveBeenCalled()
+
+    // And a blank segment the handler does NOT collapse: `a/ /b` is stored as the
+    // unreadable `a/-/b`, which the identical `a/-/b` is already refused for.
+    fireEvent.change(within(dialog).getByPlaceholderText('e.g. utils, code'), { target: { value: '' } })
+    fireEvent.change(within(dialog).getByPlaceholderText('e.g. my-tool'), { target: { value: 'a/ /b' } })
+    expect(create).toBeDisabled()
+  })
+
+  it('keeps Create disabled for a vanishing category, which would be dropped silently', async () => {
+    mockApi.skills.mockResolvedValue(ONE_SKILL)
+    const { dialog, create } = await openCreateModal()
+
+    fireEvent.change(within(dialog).getByPlaceholderText('e.g. my-tool'), { target: { value: 'code' } })
+    fireEvent.change(within(dialog).getByPlaceholderText('e.g. utils, code'), { target: { value: NON_LATIN } })
+
+    // The mirror image: the skill would land at the top level as `code`, with the
+    // nesting the user asked for gone.
+    expect(create).toBeDisabled()
+  })
+
+  it('keeps Create disabled for a vanishing segment nested inside the name', async () => {
+    mockApi.skills.mockResolvedValue(ONE_SKILL)
+    const { dialog, create } = await openCreateModal()
+
+    // Nesting is typed into the Name field directly, and the hint advertises it, so
+    // this needs no category at all: `utils/<non-Latin>` sanitizes to a non-empty
+    // `utils`, and checking the field whole would leave Create enabled.
+    fireEvent.change(within(dialog).getByPlaceholderText('e.g. my-tool'), { target: { value: `utils/${NON_LATIN}` } })
+    expect(create).toBeDisabled()
+    expect(within(dialog).getByText(/has none of them/)).toBeInTheDocument()
+
+    // A nested name whose every segment survives is still perfectly creatable.
+    fireEvent.change(within(dialog).getByPlaceholderText('e.g. my-tool'), { target: { value: 'utils/code' } })
+    expect(create).not.toBeDisabled()
+    expect(within(dialog).getByText(/Saved as utils\/code/)).toBeInTheDocument()
+  })
+
+  it('keeps Create disabled for a whitespace-only name', async () => {
+    mockApi.skills.mockResolvedValue(ONE_SKILL)
+    const { dialog, create } = await openCreateModal()
+
+    // A truthy string, so a bare `!formData.name` gate passes it; and
+    // skillPathProblem reports nothing, because an unfinished field is not a
+    // mangled name. Only `.trim()` catches it -- otherwise Create sends a request
+    // that can only earn the untranslated English `name is required`.
+    fireEvent.change(within(dialog).getByPlaceholderText('e.g. my-tool'), { target: { value: '   ' } })
+    expect(create).toBeDisabled()
+    expect(mockApi.createSkill).not.toHaveBeenCalled()
+  })
+
+  it('accepts a category whose name is merely blank, which the server drops anyway', async () => {
+    mockApi.skills.mockResolvedValue(ONE_SKILL)
+    const { dialog, create } = await openCreateModal()
+
+    // The gate must not over-refuse: a blank category sanitizes away server-side
+    // too, so the stored name is the same with or without it.
+    fireEvent.change(within(dialog).getByPlaceholderText('e.g. my-tool'), { target: { value: 'code' } })
+    fireEvent.change(within(dialog).getByPlaceholderText('e.g. utils, code'), { target: { value: '  ' } })
+    expect(create).not.toBeDisabled()
+  })
+
+  it('blocks a second submit and the modal close while a create is in flight', async () => {
+    mockApi.skills.mockResolvedValue(ONE_SKILL)
+    // Never resolves: the mutation stays pending for the whole assertion.
+    mockApi.createSkill.mockReturnValue(new Promise(() => {}))
+    const { dialog, create } = await openCreateModal()
+
+    fireEvent.change(within(dialog).getByPlaceholderText('e.g. my-tool'), { target: { value: 'ok-name' } })
+    fireEvent.click(create)
+    await waitFor(() => expect(mockApi.createSkill).toHaveBeenCalledTimes(1))
+
+    // Re-clicking must not create the skill twice, and Cancel must not discard a
+    // request already on the wire.
+    await waitFor(() => expect(create).toBeDisabled())
+    fireEvent.click(create)
+    expect(mockApi.createSkill).toHaveBeenCalledTimes(1)
+    expect(within(dialog).getByText('Cancel')).toBeDisabled()
+    expect(screen.getByPlaceholderText('e.g. my-tool')).toBeInTheDocument()
+  })
+
+  it('translates a 400 invalid_name into the hint rather than echoing server English', async () => {
+    mockApi.skills.mockResolvedValue(ONE_SKILL)
+    // A name the client mirror accepts, so the request is actually sent: the
+    // mapping has to hold for a name the preview and the server disagree on
+    // (the safety net for any client the gate did not run in).
+    mockApi.createSkill.mockRejectedValue(new StubApiError(
+      400,
+      'invalid skill name',
+      JSON.stringify({ error: 'invalid skill name', code: 'invalid_name' }),
+    ))
+    const { dialog, create } = await openCreateModal()
+
+    fireEvent.change(within(dialog).getByPlaceholderText('e.g. my-tool'), { target: { value: 'ok-name' } })
+    fireEvent.click(create)
+
+    await waitFor(() => expect(mockApi.createSkill).toHaveBeenCalled())
+    // The translated hint, keyed on the coded body, not the raw server prose.
+    await waitFor(() => expect(screen.getByText(/has none of them/)).toBeInTheDocument())
+    expect(screen.queryByText('invalid skill name')).not.toBeInTheDocument()
+  })
+
+  it('surfaces an uncoded create failure with the server message, and keeps the modal open', async () => {
+    mockApi.skills.mockResolvedValue(ONE_SKILL)
+    mockApi.createSkill.mockRejectedValue(new Error("skill 'ok-name' already exists"))
+    const { dialog, create } = await openCreateModal()
+
+    fireEvent.change(within(dialog).getByPlaceholderText('e.g. my-tool'), { target: { value: 'ok-name' } })
+    fireEvent.click(create)
+
+    await waitFor(() => expect(screen.getByText(/already exists/)).toBeInTheDocument())
+    // The form stays put so the typed work is not lost.
+    expect(screen.getByPlaceholderText('e.g. my-tool')).toBeInTheDocument()
   })
 })

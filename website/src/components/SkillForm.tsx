@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useId, useState } from 'react'
 import { Document, isAlias, isMap, isScalar, isSeq, parseDocument, Scalar, visit } from 'yaml'
 import type { Node, Pair, YAMLSeq } from 'yaml'
 import { Input } from './ui'
@@ -871,6 +871,118 @@ export function parseSkillContent(raw: string, key: string): SkillFormData {
   return isRewritable(split.block, doc) ? { ...parsed, frontmatter: split.block } : { ...parsed, raw }
 }
 
+/** The name the skills create handler will store this under, mirrored from
+ *  `api_skills_create` in `src/kiro_crew/dashboard/handlers/prompts.py`.
+ *
+ *  This is NOT `sanitizePromptName`, and the difference is deliberate: the skills
+ *  rule PERMITS `/` so a name can nest (`utils/code`), it strips leading and
+ *  trailing SLASHES as well as hyphens, and it collapses runs of `/` to a single
+ *  separator. The handler applies, in this exact order:
+ *
+ *    safe_name = re.sub(r"[^a-z0-9\-/]", "-", name.lower()).strip("-").strip("/")
+ *    safe_name = re.sub(r"/+", "/", safe_name)
+ *
+ *  so the order matters and is reproduced faithfully: replace every character
+ *  outside [a-z0-9-/] with `-`, then Python's `.strip("-")` (leading/trailing
+ *  hyphens) BEFORE `.strip("/")` (leading/trailing slashes), then collapse `/`
+ *  runs. Hyphen-then-slash is the order Python runs, and it can change the result
+ *  (`-/` strips to `` while `/` first would leave a `-`), so it is not swapped.
+ *
+ *  The `u` flag is load-bearing. Without it the class matches UTF-16 code UNITS,
+ *  so one astral character -- an emoji, a rare CJK ideograph -- becomes TWO
+ *  hyphens where the server writes one, and the preview would disagree with the
+ *  saved name for every name containing one. A drift guard
+ *  (website/src/test/SkillFormName.test.tsx) pins this to the handler expression. */
+export function sanitizeSkillName(raw: string): string {
+  return raw
+    .toLowerCase()
+    .replace(/[^a-z0-9/-]/gu, '-')
+    .replace(/^-+/, '')
+    .replace(/-+$/, '')
+    .replace(/^\/+/, '')
+    .replace(/\/+$/, '')
+    .replace(/\/+/g, '/')
+}
+
+/** The `name` the tab POSTs for these two fields: category-then-name, joined by
+ *  the slash the sanitizer preserves.
+ *
+ *  Shared rather than spelled out at each site because THREE things have to agree
+ *  on it -- the Create gate, the filename preview, and the request itself -- and a
+ *  gate reading a different path from the one being sent is the whole defect class
+ *  this file guards. */
+export function skillPostPath(name: string, category: string): string {
+  return category ? `${category}/${name}` : name
+}
+
+/** Why the server would refuse to save under this name, or null when it would.
+ *
+ *  Skills have NO name byte cap in the handler (unlike prompts), so the only
+ *  refusal a name can earn is `no-stem`: everything sanitized away and nothing
+ *  survives. There is deliberately no `too-long` branch to mirror -- inventing
+ *  one would predict a refusal the server never makes. */
+export function skillNameProblem(raw: string): 'no-stem' | null {
+  if (!raw.trim()) return null
+  return sanitizeSkillName(raw) ? null : 'no-stem'
+}
+
+/** Why the server would not store the skill the user described, or null when it
+ *  would store it faithfully. This is the predicate the Create gate and the red
+ *  hint both read, and it is deliberately NOT `skillNameProblem(combined)`.
+ *
+ *  The combined `category/name` path is what the server sanitizes, so it is the
+ *  right thing to PREVIEW -- but it is the wrong thing to GATE on, because a
+ *  surviving sibling segment hides one that vanished. The unit of judgment is the
+ *  SEGMENT, not the field: both fields may nest (`Name` accepts `utils/code`, and
+ *  the hint advertises slashes), so checking each field whole has the same blind
+ *  spot one level down. `utils/<non-Latin>` typed into Name alone sanitizes to
+ *  `utils` -- non-empty, so a whole-field check passes -- and the server stores a
+ *  skill named `utils` with the word the user typed gone.
+ *
+ *  The rule is therefore: every populated segment must keep a stem of its own.
+ *  That is SOUND, in the direction that matters. A segment holding at least one
+ *  `[a-z0-9]` character survives replacement (which is 1 char to 1 char), and the
+ *  handler's `.strip("-")` / `.strip("/")` only eat the ends of the whole string
+ *  and stop at that character -- so it can never be the segment that disappears.
+ *  Vanishing needs a segment reduced entirely to hyphens, which is exactly what
+ *  this refuses. It over-refuses only on a segment with no representable
+ *  character at all (`a/-/b`, or a middle segment that would be stored as the
+ *  unreadable `---`), which is the answer worth giving anyway.
+ *
+ *  A segment the user left blank is skipped rather than reported: `a//b` is stored
+ *  as `a/b` by the handler's `/+` collapse, a normalization that loses nothing, and
+ *  the preview shows it. An empty NAME is likewise not reported -- it is not a name
+ *  the server would mangle, it is a form the user has not finished, and the caller
+ *  gates it separately so the field does not turn red before anything is typed. A
+ *  blank CATEGORY counts as absent for the same reason.
+ *
+ *  That skip leaves two residuals, and they are why there are three checks below
+ *  rather than one loop:
+ *
+ *  - A NAME built only from separators and blanks (`/`, `//`, `  /  `) is nothing
+ *    BUT skipped segments, so the loop finds nothing to object to. Alone that earns
+ *    a server 400, but with a category filled the server stores the skill under the
+ *    CATEGORY alone (`utils` for `utils//`) and the name the user typed is gone. So
+ *    the name must keep a stem of its own before its segments are judged.
+ *  - The handler only collapses a LITERALLY empty segment. A segment of blanks
+ *    becomes hyphens instead, and end-stripping reaches only one segment at each
+ *    end of the whole path -- so a blank segment anywhere else is STORED, as `---`.
+ *    Judging the STORED path (rather than modelling which end-strip absorbs what)
+ *    refuses that without refusing the leading blank category the server really
+ *    does drop. It also makes `a/ /b` and `a/-/b` agree, which they must: they are
+ *    the same file. */
+export function skillPathProblem(name: string, category: string): 'no-stem' | null {
+  if (!name.trim()) return null
+  if (!sanitizeSkillName(name)) return 'no-stem'
+  for (const segment of [category, name].flatMap(field => field.split('/'))) {
+    if (!segment.trim()) continue
+    if (skillNameProblem(segment) !== null) return 'no-stem'
+  }
+  const stored = sanitizeSkillName(skillPostPath(name, category))
+  if (stored.split('/').some(segment => !/[a-z0-9]/.test(segment))) return 'no-stem'
+  return null
+}
+
 export default function SkillForm({ data, onChange, hideIdentity, allowRaw = true }: SkillFormProps) {
   /* A skill whose frontmatter YAML does not parse arrives with `raw` set, because
      the structured form cannot locate its fields in bytes the parser rejected.
@@ -880,6 +992,31 @@ export default function SkillForm({ data, onChange, hideIdentity, allowRaw = tru
 
   const set = <K extends keyof SkillFormData>(key: K, value: SkillFormData[K]) =>
     onChange({ ...data, [key]: value })
+
+  // useId keeps the hint's id unique even when two SkillForms are mounted at
+  // once (create modal + an open inline editor).
+  const nameHintId = `${useId()}-skill-name-hint`
+  // The FILENAME PREVIEW is computed from the path the tab actually POSTs, not
+  // from `name` alone, or the name shown would disagree with what the server
+  // sanitizes.
+  const stem = sanitizeSkillName(skillPostPath(data.name, data.category))
+  // The two judgments read `name` and `category` separately, because the combined
+  // path answers neither. "Has the user named this yet?" is about `name`: a
+  // category alone makes the posted path non-empty (`utils/`) and would otherwise
+  // promise a filename for a skill with no name. And "would the server store what
+  // was typed?" needs every filled segment to survive on its own -- see
+  // skillPathProblem.
+  const typed = data.name.trim() !== ''
+  const nameProblem = skillPathProblem(data.name, data.category)
+  // ONE sentence for the valid/empty state, plus the refusal string for the
+  // no-stem case. The empty state passes the literal `<name>` placeholder so
+  // there is no second catalog string that would rot the moment a translator
+  // improved one of the pair.
+  const nameHint = !typed
+    ? i18nT('components.skillForm.name_preview', { filename: '<name>' })
+    : nameProblem === 'no-stem'
+      ? i18nT('components.skillForm.invalid_name_hint')
+      : i18nT('components.skillForm.name_preview', { filename: stem })
 
   const switchToRaw = () => {
     const assembled = assembleSkillContent({ ...data, raw: undefined })
@@ -951,7 +1088,21 @@ export default function SkillForm({ data, onChange, hideIdentity, allowRaw = tru
           {/* label-has-for can't resolve the control through the custom <Input>
               component; the runtime association via htmlFor + id + aria-label is correct. */}
           <label htmlFor="skill-name" className="text-[13px] font-semibold text-text mb-1 block">{i18nT('components.skillForm.name')}</label>
-          <Input id="skill-name" aria-label={i18nT('components.skillForm.name')} placeholder={i18nT('components.skillForm.e_g_my_tool')} value={data.name} onChange={e => set('name', e.target.value)} className="w-full" />
+          <Input id="skill-name" aria-label={i18nT('components.skillForm.name')} aria-describedby={nameHintId} placeholder={i18nT('components.skillForm.e_g_my_tool')} value={data.name} onChange={e => set('name', e.target.value)} className="w-full" />
+          {/* The hint carries the one fact only the server knows: the name the
+              file gets, computed from category-then-name as the server sees it.
+              It is associated (aria-describedby) rather than merely adjacent,
+              and announced on change (aria-live) so a screen-reader user learns
+              the name was rewritten, or that Create is disabled because the server
+              would refuse it. `polite` waits for a pause, so it does not speak on
+              every keystroke. */}
+          <p
+            id={nameHintId}
+            aria-live="polite"
+            className={`text-[11px] mt-1 ${nameProblem ? 'text-danger' : 'text-muted'}`}
+          >
+            {nameHint}
+          </p>
         </div>
         <div>
           <label htmlFor="skill-category" className="text-[13px] font-semibold text-text mb-1 block">{i18nT('components.skillForm.category')} <span className="text-muted font-normal">{i18nT('components.skillForm.optional')}</span></label>

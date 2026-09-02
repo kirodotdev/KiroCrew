@@ -2163,20 +2163,26 @@ async def api_skills_create(request: web.Request) -> web.Response:
     try:
         body = await request.json()
     except Exception:
-        return web.json_response({"error": "invalid JSON"}, status=400)
+        return web.json_response({"error": "invalid JSON", "code": "invalid_json"}, status=400)
     name = body.get("name", "").strip()
     content = body.get("content", "").strip()
     if not name:
-        return web.json_response({"error": "name is required"}, status=400)
+        return web.json_response({"error": "name is required", "code": "name_required"}, status=400)
     if not content:
-        return web.json_response({"error": "content is required"}, status=400)
+        return web.json_response(
+            {"error": "content is required", "code": "content_required"}, status=400
+        )
     # Sanitize name: lowercase, alphanumeric + hyphens + slashes for nesting
     safe_name = re.sub(r"[^a-z0-9\-/]", "-", name.lower()).strip("-").strip("/")
     safe_name = re.sub(r"/+", "/", safe_name)  # collapse multiple slashes
     if not safe_name:
-        return web.json_response({"error": "invalid skill name"}, status=400)
+        return web.json_response(
+            {"error": "invalid skill name", "code": "invalid_name"}, status=400
+        )
     skills = _get_skills(state)
     ok = skills.create_skill(safe_name, content)
     if not ok:
-        return web.json_response({"error": f"skill '{safe_name}' already exists"}, status=409)
+        return web.json_response(
+            {"error": f"skill '{safe_name}' already exists", "code": "skill_exists"}, status=409
+        )
     return web.json_response({"ok": True, "name": safe_name})
