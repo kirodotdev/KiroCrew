@@ -1693,6 +1693,24 @@ it the model receives a reason and no sanctioned path, which is what produced th
 reported failure mode — an agent that retries the same shape under a different
 reader and then reports the capability missing.
 
+The class is resolved by asking which PRODUCER refused. A producer that names a
+catalog rule — the regex tier and the argv-structural self-protection floor lead
+with the rule's pattern, the git-publish gated floor with its id — yields the
+class from that rule's identity (`_RULE_CLASSES`, else its category via
+`_CATEGORY_CLASSES`), and nothing else is consulted for such a refusal, including
+when the rule has no guidance to offer. A producer that refuses generically — the
+un-weakenable fnmatch overlay, the sensitive-path floor, the exfiltration-shape
+audit — yields it from anchor phrases in the refusal text plus the subject, which
+is the only signal those have. Inferring the class from a rule's REGEX SOURCE
+mis-keys ten `credential-exfil` rules: their patterns name the AWS credential
+environment variables, so rules that block moving credentials OUT draw
+credential-READ prose inviting the caller to run the command it wanted. The
+subject is read on the generic path only, because a command refused for moving a
+credential necessarily contains that credential's name. A census in
+`test_deny_guidance.py` fails when a rule in a remediation category resolves to no
+guidance, and when any rule's class comes from the anchor scan rather than its
+identity.
+
 That guidance is rendered as **indented prose, never as `- ` bullets**. The
 frontend's `RecoveryCard` counts every bullet in this body as one blocked tool
 call (`BULLET_RE`), so a guidance paragraph written as a list makes one refusal

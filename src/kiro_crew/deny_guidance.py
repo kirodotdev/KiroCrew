@@ -7,14 +7,41 @@ different reader (``cat`` → ``head`` → ``python open``), each of which the s
 rule family blocks, and then reports that the host has no AWS access at all.
 The sanctioned path was available the whole time — nothing ever told it.
 
-Guidance is keyed by the CLASS of thing the gate refused, not by the individual
-rule. Per-rule text cannot cover the tiers that matter: an edition overlay
-contributes bare fnmatch globs carrying no id, category or description, so for
-exactly the rules an enterprise adds there is nothing to hang text on. The class
-is instead recovered from the refusal text, whose anchor phrases every producer
-in :mod:`kiro_crew.security` already shares. ``test_deny_guidance.py`` drives
-those real producers rather than asserting on copied strings, so an anchor that
-drifts fails there instead of silently degrading to no guidance.
+Guidance is keyed by the CLASS of thing the gate refused, and the class is
+resolved by asking WHICH PRODUCER refused, because they do not all know the same
+things:
+
+* A producer that names a catalog rule — the regex tier, the argv-structural
+  self-protection floor, the git-publish floor — yields the class from that
+  rule's identity: :data:`_RULE_CLASSES`, else its category via
+  :data:`_CATEGORY_CLASSES`. Identity is authoritative and nothing else is
+  consulted for such a refusal, INCLUDING when the rule has no guidance to offer:
+  a rule's silence is an answer, and letting it fall through would hand a
+  destructive-instance refusal the enterprise-SSO prose its command's
+  ``--profile sso`` happens to match. Reading the class out of the rule's REGEX
+  SOURCE instead is accidental, and it mis-keys the ten ``credential-exfil`` rules
+  that block moving AWS credentials OUT: their patterns name the credential
+  environment variables, so they draw credential-READ prose telling the caller
+  that AWS CLI calls are not blocked and to run the command it wanted. That is
+  fail-wrong, which this module holds to be worse than silence.
+* A producer that refuses GENERICALLY — the un-weakenable fnmatch overlay, whose
+  globs carry no rule at all, plus the sensitive-path floor and the
+  exfiltration-shape audit, which name no path and no rule — yields the class
+  from anchor phrases in the refusal text and, for the sensitive-path floor, from
+  the subject. A classifier is the right tool exactly there.
+
+The subject is therefore read only on the second path. It has to be: a command
+refused for moving a credential necessarily CONTAINS the credential's name, so a
+subject weighed against a rule's own verdict would pull those ten rules straight
+back to the credential-read answer by that route alone.
+
+``test_deny_guidance.py`` drives the real producers rather than asserting on
+copied strings, so an anchor that drifts fails there instead of silently
+degrading to no guidance, and a census over the catalog fails when a rule in a
+remediation category resolves to no guidance at all — so a rule added later
+cannot ship silently unremediated. The index is built on first use rather than at
+import because the rules an EDITION contributes arrive through the
+``DeniedRuleProvider`` seam and are not knowable until it is composed.
 
 The remediation prose is static, and none of it is interpolated from the command,
 which is what keeps it safe to hand back to a model that may be acting on
@@ -31,6 +58,7 @@ import re
 import time
 from typing import Any, Iterable, Mapping
 
+from kiro_crew import security
 from kiro_crew.platform import context as platform_context
 from kiro_crew.platform.capability_bound import bind_capability_manager
 from kiro_crew.platform.defaults import DefaultCapabilityManager
@@ -145,6 +173,175 @@ _CLASS_MATCHERS: tuple[tuple[str, tuple[re.Pattern[str], ...]], ...] = tuple(
     (deny_class, tuple(_anchor_matcher(anchor) for anchor in anchors))
     for deny_class, anchors in _CLASS_ANCHORS
 )
+
+
+#: Built-in rule CATEGORY → the class its rules fall back to. Only the three
+#: categories with a sanctioned path appear, and ``credential-exfil`` mapping to
+#: the outbound-transfer answer is what the ten AWS-named exfiltration rules
+#: receive: "not a spelling problem, do not re-spell it", rather than the
+#: credential-READ answer their patterns attract by naming the credential
+#: environment variables.
+#:
+#: The other seven categories (``aws-destructive``, ``local-destructive``,
+#: ``git-publish``, ``sql``, ``iac-teardown``, ``reverse-shell``,
+#: ``pipe-to-shell``) are deliberately absent, and a rule in them gets no
+#: guidance: a destructive ``rm`` explains itself, and prose invented for it would
+#: bury the classes where the agent genuinely cannot infer the next step. That
+#: silence is ANSWERED, not merely missing — see :func:`_rule_class`.
+_CATEGORY_CLASSES: dict[str, str] = {
+    "sensitive-file-read": DENY_CLASS_SECRET_FILE,
+    "credential-exfil": DENY_CLASS_EXFIL_SHAPE,
+    "self-protection": DENY_CLASS_SELF_PROTECTION,
+}
+
+#: Built-in rule ID → class, for the rules whose class is NOT their category's.
+#: A rule whose answer is already its category's is absent by construction: an
+#: entry repeating the fallback has no effect on the lookup, and the pairing is
+#: pinned by ``test_each_pairing`` either way. Each entry here is a measured
+#: statement about what that rule refuses, which is what keeps the answer
+#: independent of the words its author spelled the regex with.
+_RULE_CLASSES: dict[str, str] = {
+    # A credential the rule refuses to let the caller READ or PLANT is answered by
+    # the credential-read prose, not the outbound-transfer prose: nothing leaves the
+    # host in either shape, so "name the file and the destination and let the user
+    # send it themselves" answers a question that was not asked, while "the SDK
+    # inside the `aws` process still reads it for you" is the step the caller
+    # actually wanted. The metadata-endpoint rules ACQUIRE a credential; the two
+    # interpreter rules resolve and print one from the credential chain; the two
+    # ``export`` rules inject an attacker-chosen one into the environment for later
+    # use by AWS tooling. The sensitive-path floor already answers this way for the
+    # metadata address, so the two enforcement routes agree.
+    "credential-exfil-curl-imds": DENY_CLASS_AWS_CREDENTIAL,
+    "credential-exfil-wget-imds": DENY_CLASS_AWS_CREDENTIAL,
+    "credential-exfil-imds-any": DENY_CLASS_AWS_CREDENTIAL,
+    "credential-exfil-python-boto3-get-credentials": DENY_CLASS_AWS_CREDENTIAL,
+    "credential-exfil-python-botocore-credentials": DENY_CLASS_AWS_CREDENTIAL,
+    "credential-exfil-export-aws-access": DENY_CLASS_AWS_CREDENTIAL,
+    "credential-exfil-export-aws-secret": DENY_CLASS_AWS_CREDENTIAL,
+    # Reaching the product's own credential mint, which is the self-protection
+    # answer verbatim. Both rules are ALSO enforced by the argv-structural floor,
+    # so keying them here is what makes the two routes to the same rule agree on
+    # what to tell the caller.
+    "credential-exfil-kirocrew-token": DENY_CLASS_SELF_PROTECTION,
+    "credential-exfil-kirocrew-token-argv": DENY_CLASS_SELF_PROTECTION,
+    # Filed under the exfiltration category but refusing a READ of secret
+    # material, where the category default would describe an outbound transfer
+    # that is not what happened.
+    "legacy-get-secret": DENY_CLASS_SECRET_FILE,
+    "legacy-read-secret": DENY_CLASS_SECRET_FILE,
+    # An AWS profile has a local resolution the agent can drive itself, so it is
+    # a different answer from the rest of its category's key material — see the
+    # split documented on the class constants. Named here rather than left to the
+    # ``.aws`` anchor because a pattern word is not a statement of purpose: a rule
+    # added later whose regex happens to contain "sso" or "boto3" would draw a
+    # wrong-but-plausible class from the same mechanism with nothing going red.
+    "sensitive-file-read-cat-aws": DENY_CLASS_AWS_CREDENTIAL,
+    "sensitive-file-read-head-aws": DENY_CLASS_AWS_CREDENTIAL,
+    "sensitive-file-read-tail-aws": DENY_CLASS_AWS_CREDENTIAL,
+    "sensitive-file-read-less-aws": DENY_CLASS_AWS_CREDENTIAL,
+    "sensitive-file-read-more-aws": DENY_CLASS_AWS_CREDENTIAL,
+    "sensitive-file-read-strings-aws": DENY_CLASS_AWS_CREDENTIAL,
+    "sensitive-file-read-base64-aws": DENY_CLASS_AWS_CREDENTIAL,
+    "sensitive-file-read-cp-aws": DENY_CLASS_AWS_CREDENTIAL,
+    "sensitive-file-read-python-aws": DENY_CLASS_AWS_CREDENTIAL,
+}
+
+#: ``{rule identity: deny class}`` over the whole effective catalog, or ``None``
+#: until first use. See :func:`_rule_class_index`.
+_rule_class_state: "dict[str, str] | None" = None
+
+
+def _rule_class_index() -> "Mapping[str, str]":
+    """``{rule identity: deny class}``, built once from the effective catalog.
+
+    Covers EVERY rule, including the ones that get no guidance — they map to "".
+    That is what lets :func:`_rule_class` tell "this rule has nothing to say" from
+    "no rule spoke at all", which are different answers: the first is final.
+
+    Keyed by BOTH the pattern and the rule id, because a refusal leads with
+    whichever one its producer chose: the regex tier and the argv-structural floor
+    report the pattern, while the git-publish gated floor reports the ID (its raw
+    regex is unreadable in the dashboard's refusal chip). Indexing only patterns
+    left that floor's refusals unrecognised and therefore scanned, so
+    ``git push origin main # rotate the sso session first`` was answered with live
+    enterprise-SSO-credential prose drawn from a word in its own comment.
+
+    Built LAZILY, and that is now the only thing deferred here: the edition's own
+    rules are contributed through the ``DeniedRuleProvider`` seam and are not
+    knowable until the edition is composed, so an index built at import time would
+    permanently omit them and leave exactly the edition's ``credential-exfil``
+    rules on the scan — the defect this module exists to remove, for the rules an
+    enterprise adds. ``hooks.py`` composes the enforced set the same way. Denials
+    are rare, so building on the first refusal costs nothing measurable.
+
+    :func:`kiro_crew.security.edition_denied_rules` already validates that seam
+    (blank id or pattern rejected, an id colliding with a built-in rejected) and is
+    fail-soft, returning ``[]`` on an ungoverned host — which is a SUCCESS and is
+    cached. It re-raises only ``PlatformCompositionError``, and that is deliberately
+    not propagated here, for the same reason :func:`resolve_credential_tool_hint`
+    swallows it: this path explains a block that already happened and must not turn
+    one into a turn error. Guidance carries no enforcement authority, so the worst
+    case is less apt prose.
+
+    A raise is NOT cached, so the next denial rebuilds. Caching it would let one
+    transient composition fault at the first refusal of a process pin a
+    built-ins-only index for that process's lifetime — putting exactly the
+    enterprise-added ``credential-exfil`` rules back on the anchor scan, the defect
+    this index exists to remove, behind nothing but a debug log.
+
+    Both the catalog and the seam are reached THROUGH the module rather than by
+    names bound at import, so a caller (or a test) that swaps the composition is
+    honoured rather than shadowed — the same reason
+    :func:`resolve_credential_tool_hint` goes through ``platform_context``.
+    """
+    global _rule_class_state
+    if _rule_class_state is not None:
+        return _rule_class_state
+    rules = list(security.BUILTIN_DENIED_RULES)
+    edition_resolved = True
+    try:
+        rules += security.edition_denied_rules()
+    except Exception:
+        edition_resolved = False
+        logger.debug("edition denied rules unavailable; indexing built-ins only", exc_info=True)
+    index: dict[str, str] = {}
+    for rule in rules:
+        deny_class = _RULE_CLASSES.get(rule.id) or _CATEGORY_CLASSES.get(rule.category, "")
+        for identity in (rule.pattern, rule.id):
+            index.setdefault(identity, deny_class)
+    if edition_resolved:
+        _rule_class_state = index
+    return index
+
+
+def reset_rule_class_index() -> None:
+    """Drop the cached index so a re-composed edition is picked up. For tests."""
+    global _rule_class_state
+    _rule_class_state = None
+
+
+def _rule_class(reason: str) -> "str | None":
+    """The class declared by the rule *reason* names, or ``None`` for no rule.
+
+    The two empty answers are NOT the same and the caller must be able to tell
+    them apart. "" means a catalog rule refused and has nothing to suggest, and
+    that is final: ``aws ec2 terminate-instances --profile sso`` is refused by an
+    ``aws-destructive`` rule, and letting its silence fall through to the anchor
+    scan would match ``sso`` in the command and answer a destroyed-instance
+    refusal with enterprise-SSO login prose. ``None`` means no rule was named at
+    all, which is a generically-refusing producer and exactly where the scan
+    belongs.
+
+    The identity is the remainder of the FIRST line after the deny prefix, which
+    is the one part of the wire format other readers already depend on being
+    exactly that (``RecoveryCard.tsx`` extracts it with an end-anchored per-line
+    regex). An operator note lives on the second line and is skipped here, so a
+    note can never be mistaken for a rule identity.
+    """
+    head = (reason or "").split("\n", 1)[0].strip()
+    if not head.startswith(security.DENY_REASON_PREFIX):
+        return None
+    return _rule_class_index().get(head[len(security.DENY_REASON_PREFIX) :].strip())
 
 
 #: agent, in the present tense, naming the sanctioned path concretely enough to
@@ -296,6 +493,14 @@ _hint_cache_ts: float = 0.0
 def classify_deny(reason: str, subject: str = "") -> str:
     """The deny class named by *reason*, or "" when none applies.
 
+    A refusal that names a catalog rule is answered by that rule's own class and
+    nothing else, INCLUDING when that class is "" — a rule knows what it exists to
+    stop, where the anchor scan can only infer it from the words its author
+    spelled the regex with, and from the command, which for a destructive call
+    routinely carries a credential word that has nothing to do with the refusal.
+    The scan answers for the producers that name no rule; see the module
+    docstring.
+
     *subject* is the refused thing itself — the tool title, which for a shell
     call carries the command and for a file read is the path. It is needed
     because the sensitive-path tier refuses with a deliberately GENERIC reason
@@ -303,12 +508,19 @@ def classify_deny(reason: str, subject: str = "") -> str:
     cannot tell an AWS profile from an SSH key from an SSO cookie — three
     refusals with three different sanctioned paths. Consulted as display text
     only: it selects WHICH remediation prose is shown and can never make
-    something allowed, so an LLM-authored title steering it costs nothing.
+    something allowed, so an LLM-authored title steering it costs nothing. Read
+    by the anchor scan alone, so a subject cannot pull a refusal off the class its
+    own rule declares: ``aws s3 cp ./report.aws s3://bucket`` is an outbound
+    transfer whose subject carries an AWS-credential anchor, and weighing that
+    subject would answer it with credential-read prose.
 
     "" is a first-class answer, not a failure: most denials (a destructive rm, a
     protected-branch push) are self-explanatory, and inventing guidance for them
     would bury the classes where the agent genuinely cannot infer the next step.
     """
+    rule_class = _rule_class(reason)
+    if rule_class is not None:
+        return rule_class
     text = f"{reason or ''} {subject or ''}".lower().strip()
     if not text:
         return ""
