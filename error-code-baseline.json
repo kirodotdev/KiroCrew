@@ -3,7 +3,7 @@
   "_totals": {
     "missing_code": 1127,
     "opaque_body": 18,
-    "dynamic_status": 39
+    "dynamic_status": 38
   },
   "_compliant": 1837,
   "files": {
@@ -61,7 +61,6 @@
       "missing_code": 8
     },
     "dashboard/handlers/autonudge.py": {
-      "dynamic_status": 1,
       "missing_code": 3
     },
     "dashboard/handlers/core.py": {

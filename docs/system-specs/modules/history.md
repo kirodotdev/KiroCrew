@@ -71,6 +71,72 @@ injected into every component.
 
 Per-thread JSONL files at `~/.kiro/crew/sessions/{safe_key}.jsonl`. First line is metadata, subsequent lines are messages with `role`, `content`, `ts`, `tools`, `source_thread`, `source_user`. A writer can also supply `cls` (presentation class) and `mid` — persisted as `meta.mid`, the same field shape the dashboard slot save writes, so a dual-write injector's durable copy carries the SAME delivery identity as its in-memory window copy and a bounded slot-detail read reconciles the two as one message instead of re-appending the injection. A row appended without an id carries no `meta` at all (the pre-id shape readers keep an id-less fallback for; existing transcripts are never migrated).
 
+**Write-boundary redaction, and its one-way door.** Every row whose `role` is not `user`
+is scrubbed by `_redact_at_write_boundary` on its way into the transcript, so the rule
+lives where the bytes are written rather than in either caller — a conversation's
+dashboard tab and its channel thread persist through different paths to the same file.
+Inbound `user` text is scrubbed by the persisters BEFORE they call in, an interim split
+enforced by a test (`TestEveryUserRowPersisterScrubs`) rather than by narration, with the
+dashboard write-back the one surface still relying on the exemption. A rewritten row
+carries NO marker distinguishing it from one stored verbatim: a warning log line at the
+boundary is the whole record, and a user row has not even that, because the boundary
+returns early for `role == "user"` and never sees the source text to compare against.
+That is the transparency cost of scrubbing in the callers, and it lands on exactly the
+rows the false-positive risk below describes.
+
+The redaction is NOT reversible. The original span is not retained, so a false positive
+rewrites a user's own text at rest permanently, and a later pattern fix cannot restore an
+already-rewritten row. That is the accepted cost of the sink-side rule.
+
+**Flipping the `role == "user"` exemption is the smaller shape on paper, and it was
+measured rather than argued about.** Removing the early return makes `append` scrub every
+role, which is one edit covering every present and future persister instead of a rule
+repeated in each caller — the reason to want it. It is not free: with the exemption
+removed, `test_history_consolidation_retry.py` and `test_history_locking_remediation.py`
+go from 152 passing in under six seconds to four hard timeouts above 120 seconds each, in
+the rotation, consolidation-retry and locking-remediation paths.
+
+**The cause is now diagnosed, and it is not in this file.** Per-row cost is negligible —
+about 0.006 ms for an ordinary row, and linear in length on prose at roughly 0.042 µs per
+character. The blowup is input-SHAPE driven: on a long run of one repeated character, with no
+word boundaries, `_might_contain_credential` in `security/redaction.py` grows quadratically —
+measured 4.6 ms at 2 kB, 70 ms at 8 kB, 280 ms at 16 kB, 1116 ms at 32 kB, so each doubling
+quadruples the time. The rotation fixtures write exactly that shape (one digit repeated to a
+quarter of the session cap), which extrapolates to about a minute per row and explains the
+timeouts. Ordinary chat never approaches it.
+
+So centralising the scrub is safe for real traffic and blocked only by pathological rows, and
+the fix belongs in the detector rather than in this boundary: bound or pre-filter the
+uniform-run case there, then the `user` exemption can be removed without a cost. The
+exemption therefore stands as a DEFERRAL with a measurement attached, not as a judgement
+that the caller-side shape is better.
+
+Two consequences follow while it stands. The dashboard slot save does not route through
+this boundary at all — it builds its rows in `chat_persistence` and writes them itself —
+so a typed dashboard row is unaffected either way. And the channel-side call sites are not
+pure duplication of the row rule: each transport feeds the same inbound string to
+`set_title`, so deleting a call-site scrub as newly redundant would leave the row clean and
+put the credential in the session title the sidebar serves.
+
+**Serve-time scrubbing was evaluated as the alternative, and rejected.** Storing the row
+verbatim and scrubbing on the way out would keep the user's own words recoverable, which
+is the one real advantage and the reason it was considered. It was rejected on three
+grounds, all of them properties of this file rather than preferences. First, the
+transcript at rest IS an egress: the JSONL sits on the host, is carried by whatever backs
+that directory up, and is read by the search index — so storing a credential verbatim
+defers the exposure instead of removing it, and the threat this rule exists for is the
+copy that outlives the conversation. Second, it would move the rule from a few writers to
+MANY more readers: `read_messages`, `read_messages_chained`, `recent`,
+`recent_with_provenance`, `search_sessions`, the snippet builders and the archive
+endpoints would each have to remember, which is the same "the rule lives in each caller"
+weakness reviewers rightly name against the write side, relocated to the side with more
+callers. Third, the memos above (`_folded_cache`, `_snippet_cache`, `_msg_cache`) are
+filled from the stored bytes and keyed by mtime, so a scrub applied on read is bypassed by
+any warm entry filled before it. The residual cost of choosing the write side is the
+irreversible false positive, and the mitigation is at the decision point rather than in
+the store: the redaction notice tells the user, in every locale, that placeholder text
+left in the box is saved as written and that the goal should be retyped in full.
+
 - Append-only for LLM cache efficiency
 - Rotation at 10MB (keeps metadata + last 200 messages, atomic write), enforced
   by `ConversationLog.append`. The dashboard whole-file save

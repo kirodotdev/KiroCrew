@@ -49,9 +49,13 @@ interface UserMessageProps {
    *  send while the member works is a steer), the badge would label every
    *  such send with the mechanics the surface exists to hide. */
   hideSteerBadge?: boolean
+  /** This stored row is a REWRITE, not what the user typed: a persister's credential
+   *  scrub replaced a span and kept no original. Without the cue a false positive is
+   *  indistinguishable from the user's own words (design watch 1 / UX review). */
+  redacted?: boolean
 }
 
-const UserMessage = memo(function UserMessage({ content, meta, timestamp, timestampTitle, renderContent, canEdit, messageIndex, messageTs, onEditResend, slotKey, slotTitle, mode, pinned, onTogglePin, slotRunning, hideSteerBadge }: UserMessageProps) {
+const UserMessage = memo(function UserMessage({ content, meta, timestamp, timestampTitle, renderContent, canEdit, messageIndex, messageTs, onEditResend, slotKey, slotTitle, mode, pinned, onTogglePin, slotRunning, hideSteerBadge, redacted }: UserMessageProps) {
   useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
   const [editing, setEditing] = useState(false)
   const ime = useImeGuard()
@@ -414,6 +418,14 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp, timest
         {/* No `font-mono`: see the twin in AssistantMessage's footer — a
             formatted date is prose, and `font-mono` pinned `var(--mono)`, which
             the Font Family setting never writes. */}
+        {redacted && (
+          <span
+            data-testid="user-message-redacted"
+            className="text-muted text-[12px] leading-5"
+          >
+            {i18nT('pages.chat.userMessage.row_redacted')}
+          </span>
+        )}
         {timestamp && <span className="text-muted text-[12px] leading-5 tabular-nums" title={timestampTitle}>{timestamp}</span>}
       </div>
     </div>

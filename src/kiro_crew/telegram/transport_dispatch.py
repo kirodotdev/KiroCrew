@@ -95,6 +95,7 @@ from kiro_crew.messaging.upload_gate import (
     session_is_restricted,
     uploads_restricted,
 )
+from kiro_crew.platform.context import redact_row_via_context
 from kiro_crew.safety_override import safety_override
 from kiro_crew.security import redact, redact_local_paths
 from kiro_crew.sel import sel
@@ -1136,17 +1137,20 @@ class TelegramDispatcher:
                 # writer were skipped.
                 dashboard_restricted = await self._session_restricted(session_key)
                 if not dashboard_restricted:
+                    # BOTH sinks take the scrubbed body: the projection broadcasts and
+                    # marks the slot dirty, so a persist-side scrub alone is too late.
+                    safe_text = redact_row_via_context(text)
                     mirror_mids = project_channel_turn_live(
                         self.dashboard_state,
                         session_key,
-                        text,
+                        safe_text,
                         accumulated,
                         broadcast_user=True,
                     )
                     await asyncio.to_thread(
                         self._persist_turn,
                         session_key,
-                        text,
+                        safe_text,
                         accumulated,
                         is_new_own_session,
                         agent=agent,
@@ -3198,6 +3202,9 @@ class TelegramDispatcher:
         """
         if self.conv_log is None or privacy_mode.is_restricted(session_key):
             return
+        # This row is an EGRESS: persisted, then served to dashboard readers. The turn
+        # has already run, so scrubbing here cannot rewrite the prompt the model saw.
+        user_text = redact_row_via_context(user_text)
         with self.conv_log.atomic_appends(session_key):
             if mirror_mids is not None:
                 user_mid, assistant_mid = mirror_mids

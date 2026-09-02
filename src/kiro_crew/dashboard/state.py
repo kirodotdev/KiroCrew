@@ -86,6 +86,7 @@ from kiro_crew.notifications.bus import (
 from kiro_crew.notifications.rate_limit import AppRateLimiter
 from kiro_crew.notifications.resource_pressure import ResourcePressureNotifier
 from kiro_crew.notifications.settings import ChannelSettings
+from kiro_crew.platform.context import carries_redaction_marker
 from kiro_crew.preview_text import strip_markdown_preview
 from kiro_crew.release_channel import channel as _release_channel_of_build
 from kiro_crew.safety_override import cached_disabled_approval_modes, safety_override
@@ -2393,6 +2394,8 @@ def append_and_surface(
         }
         if cls:
             frame["cls"] = cls
+        if msg.get("redacted"):
+            frame["redacted"] = True
         row_meta = msg.get("meta")
         if isinstance(row_meta, dict) and row_meta:
             frame["meta"] = row_meta
@@ -4597,6 +4600,9 @@ class _ChatSlot:
             "role": role,
             "content": content,
             "cls": cls,
+            # Same fact the durable row carries, for the window that is served as the
+            # snapshot: a reader cannot otherwise tell a rewrite from the real text.
+            **({"redacted": True} if carries_redaction_marker(content) else {}),
             # This window is re-serialized into the SAME transcript file that
             # ConversationLog.append writes, so it owes the reader the same
             # ordering guarantee: strictly after the row before it, even when
