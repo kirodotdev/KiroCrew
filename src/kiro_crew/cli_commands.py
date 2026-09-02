@@ -593,6 +593,49 @@ def _register_app_crons_to_scheduler(app_name: str) -> list[str]:
     return registered
 
 
+def _warn_hooks_need_restart(app_name: str) -> bool:
+    """Say plainly that a running gateway will not pick up this app's backend hooks.
+
+    Everything else a CLI enable writes is re-read by a running gateway:
+    ``enable_app`` writes ``installed.json``, ``register_app`` writes agent and
+    skill files, and ``_register_app_crons_to_scheduler`` writes through the
+    shared cron store that the gateway's timer tick re-syncs by content digest.
+    Backend hooks are the exception -- they are Python modules imported INTO the
+    gateway process, and only the gateway can replace them (``on_app_enable`` ->
+    ``RouteRegistry.register_app_routes`` -> ``load_app_module``, reached by the
+    HTTP enable route and by ``on_gateway_startup``). This process has no handle
+    on that one's ``sys.modules``, so a CLI enable cannot load them.
+
+    Printing only "enabled <app>" reads as though it had. The operator then
+    verifies a hook change against the code the gateway imported earlier and
+    concludes the change did not work -- or that it did, when it never ran
+    (issue #7880).
+
+    Deliberately NOT gated on a live-gateway probe. ``_marker_port`` is the only
+    verified one available here, and it writes its own multi-gateway warning to
+    stderr, which would surface out of context on an app enable. The notice is
+    phrased conditionally instead, so it stays true when no gateway is up.
+
+    Only for apps that declare ``backend.hooks``: there is nothing stale to warn
+    about otherwise. Returns whether the notice was printed.
+    """
+    info = get_app(app_name)
+    manifest = info.get("manifest") if isinstance(info, dict) else None
+    backend = manifest.get("backend") if isinstance(manifest, dict) else None
+    hooks = backend.get("hooks") if isinstance(backend, dict) else None
+    if not isinstance(hooks, dict) or not hooks:
+        return False
+    declared = ", ".join(sorted(str(k) for k in hooks))
+    print(
+        f"  note: this app declares backend hooks ({declared}).\n"
+        "  A gateway that is already running keeps executing the hook code it\n"
+        "  imported earlier; this command cannot replace it. Run `kirocrew\n"
+        "  restart`, or disable and re-enable the app from the dashboard, for\n"
+        "  hook changes to take effect."
+    )
+    return True
+
+
 def _run_app_mcp_server(app_name: str) -> None:
     """Run the named app's stdio MCP server in this process.
 
@@ -676,6 +719,7 @@ def _handle_app(args: argparse.Namespace) -> None:
             if reg.skills:
                 print(f"   Skills registered: {len(reg.skills)}")
             _register_app_crons_to_scheduler(args.name)
+            _warn_hooks_need_restart(args.name)
         else:
             print(f"❌ {result.error}", file=sys.stderr)
             sys.exit(1)

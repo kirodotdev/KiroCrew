@@ -301,9 +301,18 @@ root (validated against `HooksConfig._HOOK_PATH_RE`).
 | `backend.hooks.on_startup` | string | `module.path:callable` invoked when the app's hooks are wired up |
 | `backend.hooks.on_shutdown` | string | `module.path:callable` invoked when the app is disabled/torn down |
 
-`hooks.routes` handlers are wired up when the app is enabled (via
-`on_app_enable`, also re-run at gateway startup via `on_gateway_startup`), so
-they go live without waiting for a Gateway restart.
+`hooks.routes` handlers are wired up when the app is enabled **through the
+Gateway** -- the dashboard's enable action (`on_app_enable`), also re-run at
+gateway startup (`on_gateway_startup`) -- so on that path they go live without
+waiting for a Gateway restart.
+
+`kirocrew app enable` is not that path. The CLI is a separate process with no
+handle on a running Gateway's imported modules, so it cannot load or replace
+hooks: a Gateway that is already up keeps executing the hook module it imported
+earlier, even though the command succeeds and `app info` reports the new
+version. Restart the Gateway, or disable and re-enable the app from the
+dashboard, for hook changes to take effect. The CLI prints this reminder after
+enabling any app that declares `backend.hooks`.
 
 **Importing your own modules.** Hook entry files are loaded from their file path
 into a synthetic package named after the app, never via `sys.path`, so use a
