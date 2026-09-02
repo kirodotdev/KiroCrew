@@ -209,6 +209,8 @@ def _collect_recent_sessions(
             except ValueError:
                 # Covers json.JSONDecodeError, which subclasses ValueError.
                 continue
+            if not isinstance(d, dict):
+                continue
             if d.get("_type") == "metadata":
                 title = d.get("title") or title
                 agent = d.get("agent") or agent
