@@ -36,7 +36,7 @@ from kiro_crew.acp.client import AcpError
 from kiro_crew.agent_discovery import list_agents
 from kiro_crew.config.loader import ACTIVATION_MENTION, ACTIVATION_OFF
 from kiro_crew.executors import run_in_embed_pool
-from kiro_crew.history import mint_row_mid
+from kiro_crew.history import is_incognito_transcript, mint_row_mid
 from kiro_crew.hooks import TOOL_AUTO_APPROVE, TOOL_DENY
 from kiro_crew.messaging import auto_title, privacy_mode
 from kiro_crew.messaging.attachments import IngestLimits, append_attachment_context
@@ -74,6 +74,7 @@ from kiro_crew.messaging.renderer import (
     display_safe,
     session_provenance_tag,
 )
+from kiro_crew.messaging.session_resume import SEARCH_FETCH_LIMIT, history_dashboard_key
 from kiro_crew.messaging.session_trust import add_trusted_session, is_session_trusted
 from kiro_crew.messaging.sessions_view import collect_recent_sessions_audited
 from kiro_crew.messaging.transport import InboundMessage
@@ -217,6 +218,7 @@ _SESSIONS_LIMIT = 10
 #: Per-row caps, so one pathological title cannot consume the whole message.
 _SESSION_TITLE_CHARS = 60
 _SESSION_AGENT_CHARS = 24
+_SESSION_QUERY_CHARS = 100
 #: ``/title`` ceiling. The dashboard sidebar row truncates well before this; the
 #: cap is here so a persisted transcript never carries an unbounded title.
 _TITLE_MAX_CHARS = 80
@@ -575,7 +577,12 @@ class TelegramDispatcher:
                 cmd, route, chat_id, user_id, thread=reply_thread, subject="conversation list"
             ):
                 return
-            await self._handle_sessions(chat_id, caller=str(user_id), thread=reply_thread)
+            await self._handle_sessions(
+                chat_id,
+                parse_command_argument(text),
+                caller=str(user_id),
+                thread=reply_thread,
+            )
             return
         if cmd == "title":
             await self._handle_title(route, chat_id, parse_command_argument(text))
@@ -1992,43 +1999,120 @@ class TelegramDispatcher:
     # ── /sessions, /title and the service-backed commands ──────────────────
 
     async def _handle_sessions(
-        self, chat_id: int, *, caller: str = "", thread: int | None = None
+        self,
+        chat_id: int,
+        query: str = "",
+        *,
+        caller: str = "",
+        thread: int | None = None,
     ) -> None:
-        """List the most recent conversations, newest first.
+        """List recent conversations, or search their titles and message content.
 
-        Read-only. A Resume button would need per-chat inbound rerouting (the
+        Still read-only. A Resume button would need per-chat inbound rerouting (the
         machinery Discord carries in ``discord/session_resume.py``) which this
         channel does not have, and a button that binds a session the next typed
-        message then bypasses is worse than no button — so the card points at the
-        dashboard instead of implying a capability.
+        message then bypasses is worse than no button. Search uses ConversationLog's
+        dashboard ranking rather than a Telegram-only title filter, but renders the
+        same bounded title/agent rows as the recent list.
 
         *caller* is the requesting user's id, and the audit record's subject. It was
         the constant ``"telegram"``, which is the SOURCE, not the subject: with more
-        than one entry in ``allowed_user_ids`` — the forum case this channel now
-        serves — a read of every conversation's titles could not be attributed to a
-        participant. Slack passes its own caller id for the same reason.
+        than one entry in ``allowed_user_ids`` — the forum case this channel serves —
+        a read of every conversation's titles must be attributable to a participant.
         """
-        rows = await collect_recent_sessions_audited(
-            self.sessions,
-            caller=caller or "telegram",
-            source="telegram",
-            limit=_SESSIONS_LIMIT,
-            with_messages=False,
-        )
-        if rows is None:
-            await self._reply(chat_id, "Sessions unavailable.", thread=thread)
-            return
+        normalized_query = " ".join(query.split())
+        rows: list[dict] | None
+        if normalized_query:
+            operation = "telegram.sessions_data_access"
+            if self.conv_log is None:
+                sel().log_api_access(
+                    caller=caller or "telegram",
+                    operation=operation,
+                    outcome="error",
+                    source="telegram",
+                    resources="0 sessions read (conversation log unavailable)",
+                )
+                await self._reply(chat_id, "Sessions unavailable.", thread=thread)
+                return
+            try:
+                found = await asyncio.to_thread(
+                    self.conv_log.search_sessions,
+                    query,
+                    SEARCH_FETCH_LIMIT,
+                )
+                rows = [
+                    row
+                    for row in found
+                    if isinstance(row, dict) and not is_incognito_transcript(row.get("memory_mode"))
+                ][:_SESSIONS_LIMIT]
+            except Exception as exc:
+                sel().log_api_access(
+                    caller=caller or "telegram",
+                    operation=operation,
+                    outcome="error",
+                    source="telegram",
+                    resources="0 sessions read (search failed)",
+                    error=display_safe(str(exc))[:200],
+                )
+                logger.exception("telegram: session search failed")
+                await self._reply(chat_id, "Sessions unavailable.", thread=thread)
+                return
+            sel().log_api_access(
+                caller=caller or "telegram",
+                operation=operation,
+                outcome="allowed",
+                source="telegram",
+                resources=f"{len(rows)} sessions read",
+            )
+        else:
+            rows = await collect_recent_sessions_audited(
+                self.sessions,
+                caller=caller or "telegram",
+                source="telegram",
+                limit=_SESSIONS_LIMIT,
+                with_messages=False,
+            )
+            if rows is None:
+                await self._reply(chat_id, "Sessions unavailable.", thread=thread)
+                return
+
+        query_label = display_safe(normalized_query)[:_SESSION_QUERY_CHARS]
         if not rows:
-            await self._reply(chat_id, "No recent conversations.", thread=thread)
+            if normalized_query:
+                await self._reply(
+                    chat_id,
+                    f"No conversations matched “{query_label}”. Try fewer words, "
+                    "or use /sessions to see the most recent conversations.",
+                    thread=thread,
+                )
+            else:
+                await self._reply(chat_id, "No recent conversations.", thread=thread)
             return
-        lines = ["🧵 Recent conversations:"]
+
+        if normalized_query:
+            lines = [f"🔎 Conversation search for “{query_label}”:"]
+        else:
+            lines = ["🧵 Recent conversations:"]
         for row in rows:
-            mark = "🟢" if row["active"] else "⚫"
-            title = redact(str(row["title"]))[:_SESSION_TITLE_CHARS]
-            agent = redact(str(row["agent"]))[:_SESSION_AGENT_CHARS]
+            key = str(row.get("key") or "")
+            if normalized_query:
+                logical_key = (
+                    history_dashboard_key(key) or self.sessions.channel_key_for_stem(key) or key
+                )
+                active = bool(logical_key and self.sessions.has_session(logical_key))
+            else:
+                active = bool(row["active"])
+            mark = "🟢" if active else "⚫"
+            title = redact(str(row.get("title") or key or "Untitled session"))[
+                :_SESSION_TITLE_CHARS
+            ]
+            agent = redact(str(row.get("agent") or "kirocrew"))[:_SESSION_AGENT_CHARS]
             lines.append(f"{mark} {title} — {agent}")
         lines.append("")
-        lines.append("Open one with /kirocrew dashboard.")
+        if normalized_query:
+            lines.append("Open one with /kirocrew dashboard.")
+        else:
+            lines.append("Search with /sessions <words>, or open one with /kirocrew dashboard.")
         await self._reply(chat_id, "\n".join(lines), thread=thread)
 
     async def _handle_title(self, route: tuple[str, str], chat_id: int, arg: str) -> None:

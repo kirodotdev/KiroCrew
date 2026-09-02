@@ -1739,6 +1739,24 @@ The channel's transport, forum routing and mid-turn machinery are described in
 the sections above; what follows is what is specific to its rendering and its
 Bot API surface.
 
+### Telegram's read-only session search
+
+`/sessions` and its singular `/session` alias remain direct-message-only,
+single-operator, and read-only. With no argument they use the shared recent-sessions
+collector, preserving the ten-row newest-first list, live marker and agent label. With
+search words they call `ConversationLog.search_sessions` off the event loop, so title
+and message-content matching, AND-term semantics, CJK handling, recency weighting,
+and ranking are the same as dashboard history search rather than a Telegram-only title
+filter. Incognito and temporary rows are excluded after a bounded over-fetch, before
+the ten-row display cap, so private content cannot leave a match trace and private hits
+cannot starve later public results. Live markers restore dashboard stems through the
+shared history-key helper and resolve irreversible channel filename folds through
+`SessionMap`, never by guessing colon positions. Both successful and failed reads emit
+`telegram.sessions_data_access`; displayed query text, titles, agents and errors are
+redacted and bounded. Search results contain no callback controls and direct users to
+`/kirocrew dashboard`, so this capability does not claim inbound session binding
+before Telegram owns the resume transaction and routing path.
+
 ### Telegram's upload half (`telegram/`)
 
 The second channel wired onto `outbound_files.py`, and it differs from Discord in

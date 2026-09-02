@@ -1024,6 +1024,7 @@ class TestCommandSurface:
             ("/status", "status"),
             ("/ping", "ping"),
             ("/sessions", "sessions"),
+            ("/session launch plan", "sessions"),
             ("/title rename me", "title"),
             ("/cron list", "cron"),
             ("/crons list", "cron"),
@@ -1254,10 +1255,22 @@ class TestSessionsCommand:
     async def test_rows_are_listed_with_a_live_marker_and_redacted(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        dispatcher, client, _ = _dispatcher({1})
+        dispatcher, client, sessions = _dispatcher({1})
+        stem_lookup = MagicMock(return_value="")
+        sessions.channel_key_for_stem = stem_lookup  # type: ignore[method-assign]
         rows = [
-            {"title": f"leak {_AWS_KEY}", "agent": "kirocrew", "active": True},
-            {"title": "older thing", "agent": "researcher", "active": False},
+            {
+                "key": "telegram_kirocrew_direct_1",
+                "title": f"leak {_AWS_KEY}",
+                "agent": "kirocrew",
+                "active": True,
+            },
+            {
+                "key": "other_session",
+                "title": "older thing",
+                "agent": "researcher",
+                "active": False,
+            },
         ]
         monkeypatch.setattr(
             "kiro_crew.telegram.transport_dispatch.collect_recent_sessions_audited",
@@ -1268,6 +1281,152 @@ class TestSessionsCommand:
         assert "🟢" in out and "⚫" in out
         assert "older thing" in out and "researcher" in out
         assert _AWS_KEY not in out
+        stem_lookup.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_the_singular_alias_searches_titles_and_message_content(
+        self, tmp_path: Any
+    ) -> None:
+        from kiro_crew.history import ConversationLog
+
+        dispatcher, client, _ = _dispatcher({1})
+        log = ConversationLog(base_dir=tmp_path / "sessions")
+        await asyncio.to_thread(
+            log.append,
+            "dashboard:matching",
+            "user",
+            "The blue marmot owns the launch checklist",
+        )
+        await asyncio.to_thread(log.set_title, "dashboard:matching", "Unrelated title")
+        await asyncio.to_thread(log.append, "dashboard:other", "user", "Different topic")
+        await asyncio.to_thread(log.set_title, "dashboard:other", "Other session")
+        dispatcher.conv_log = log
+
+        await dispatcher.handle_message(_msg("/session blue marmot"))
+
+        out = client.sent[-1][0]
+        assert "Conversation search" in out and "Unrelated title" in out
+        assert "Other session" not in out
+
+    @pytest.mark.asyncio
+    async def test_search_excludes_both_private_modes_and_overfetches(self) -> None:
+        dispatcher, client, _ = _dispatcher({1})
+        limits: list[int] = []
+
+        def _search(_query: str, limit: int) -> list[dict]:
+            limits.append(limit)
+            return [
+                {
+                    "key": "dashboard_incognito",
+                    "title": "Incognito secret",
+                    "memory_mode": "incognito",
+                },
+                {
+                    "key": "dashboard_temporary",
+                    "title": "Temporary secret",
+                    "memory_mode": "temporary",
+                },
+                {
+                    "key": "dashboard_public",
+                    "title": "Public launch plan",
+                    "memory_mode": "persistent",
+                },
+            ]
+
+        dispatcher.conv_log = SimpleNamespace(search_sessions=_search)
+
+        await dispatcher.handle_message(_msg("/session launch"))
+
+        out = client.sent[-1][0]
+        assert "Public launch plan" in out
+        assert "Incognito secret" not in out and "Temporary secret" not in out
+        assert limits and limits[0] > 10, "filtering after a 10-row fetch can starve public hits"
+
+    @pytest.mark.asyncio
+    async def test_search_restores_dashboard_stems_before_the_live_check(self) -> None:
+        dispatcher, client, sessions = _dispatcher({1})
+        seen: list[str] = []
+
+        def _has_session(key: str) -> bool:
+            seen.append(key)
+            return key == "dashboard:matching"
+
+        sessions.has_session = _has_session  # type: ignore[method-assign]
+        dispatcher.conv_log = SimpleNamespace(
+            search_sessions=lambda *_a, **_kw: [
+                {
+                    "key": "dashboard_matching",
+                    "title": "Matching session",
+                    "memory_mode": "persistent",
+                }
+            ]
+        )
+
+        await dispatcher.handle_message(_msg("/session matching"))
+
+        assert "🟢 Matching session" in client.sent[-1][0]
+        assert seen == ["dashboard:matching"]
+
+    @pytest.mark.asyncio
+    async def test_search_uses_the_session_map_for_channel_stems(self) -> None:
+        dispatcher, client, sessions = _dispatcher({1})
+        seen: list[str] = []
+        channel_key = "telegram:kirocrew:direct:1"
+
+        sessions.channel_key_for_stem = (  # type: ignore[method-assign]
+            lambda stem: channel_key if stem == "telegram_kirocrew_direct_1" else ""
+        )
+
+        def _has_session(key: str) -> bool:
+            seen.append(key)
+            return key == channel_key
+
+        sessions.has_session = _has_session  # type: ignore[method-assign]
+        dispatcher.conv_log = SimpleNamespace(
+            search_sessions=lambda *_a, **_kw: [
+                {
+                    "key": "telegram_kirocrew_direct_1",
+                    "title": "Live Telegram work",
+                    "memory_mode": "persistent",
+                }
+            ]
+        )
+
+        await dispatcher.handle_message(_msg("/session live work"))
+
+        assert "🟢 Live Telegram work" in client.sent[-1][0]
+        assert seen == [channel_key]
+
+    @pytest.mark.asyncio
+    async def test_a_search_with_no_matches_says_what_was_searched(self) -> None:
+        dispatcher, client, _ = _dispatcher({1})
+        dispatcher.conv_log = SimpleNamespace(search_sessions=lambda *_a, **_kw: [])
+
+        await dispatcher.handle_message(_msg("/sessions missing phrase"))
+
+        assert "No conversations matched “missing phrase”" in client.sent[-1][0]
+
+    @pytest.mark.asyncio
+    async def test_a_search_failure_is_audited_and_fails_closed(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        seen: list[dict] = []
+        monkeypatch.setattr(
+            "kiro_crew.telegram.transport_dispatch.sel",
+            lambda: SimpleNamespace(log_api_access=lambda **kw: seen.append(kw)),
+        )
+        dispatcher, client, _ = _dispatcher({1})
+
+        def _boom(*_a: Any, **_kw: Any) -> list[dict]:
+            raise OSError("search index unavailable")
+
+        dispatcher.conv_log = SimpleNamespace(search_sessions=_boom)
+
+        await dispatcher.handle_message(_msg("/session launch"))
+
+        assert seen and seen[-1]["outcome"] == "error"
+        assert seen[-1]["source"] == "telegram"
+        assert client.sent[-1][0] == "Sessions unavailable."
 
 
 class TestAgentPicker:
@@ -2278,7 +2437,9 @@ class TestSessionsIsDirectMessageOnly:
         assert "direct message" not in reply
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("command", ["/sessions", "/cron list", "/spawn list"])
+    @pytest.mark.parametrize(
+        "command", ["/sessions", "/session launch", "/cron list", "/spawn list"]
+    )
     async def test_a_listing_needs_an_unambiguous_owner_even_in_a_dm(self, command: str) -> None:
         """A DM is the right audience; it also has to be the right PERSON.
 

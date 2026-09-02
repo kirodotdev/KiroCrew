@@ -436,6 +436,9 @@ class FakeSessions:
     def has_session(self, key: str) -> bool:
         return self._has
 
+    def channel_key_for_stem(self, stem: str) -> str:
+        return ""
+
     async def try_acquire(self, key: str) -> bool:
         # Mirror the real atomic acquire-if-idle: refuse if a turn holds the
         # semaphore or no session exists; otherwise "acquire" and record it.
@@ -630,6 +633,7 @@ class TestBotMentionSuffix:
 
     def test_parse_command_with_mention_and_trailing_args(self) -> None:
         assert parse_command("/yolo@KiroCrewBot on", "KiroCrewBot") == "yolo"
+        assert parse_command("/session@KiroCrewBot launch", "KiroCrewBot") == "sessions"
 
     def test_parse_command_mention_is_case_insensitive(self) -> None:
         assert parse_command("/NEW@KiroCrewBot", "kirocrewbot") == "new"

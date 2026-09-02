@@ -92,12 +92,16 @@ At startup the bot publishes the menu commands from `COMMAND_SPEC` through `setM
 - `/status` — uptime, message counts, tool decisions, sessions
 - `/ping` — answers `pong`. Answered by the gateway itself, never by the model,
   so it still works when the thing that is wedged is the model.
-- `/sessions` — the ten most recent conversations, newest first, with a mark for
-  whichever is live. Read-only: opening one is `/kirocrew dashboard`. **Direct
-  message only**, like `/kirocrew dashboard`: the listing names every conversation
-  on the host, and a forum Topic is readable by the whole supergroup, so answering
-  there would show your conversation titles to members who are not on
-  `allowed_user_ids` at all. In a Topic it refuses and points you to a DM.
+- `/sessions [search words]` (or `/session [search words]`) — with no words, the ten
+  most recent conversations, newest first, with a mark for whichever is live. Add
+  words to use the same title-and-message-content ranking as dashboard history search;
+  incognito and temporary transcripts stay excluded. Results remain read-only and
+  open through `/kirocrew dashboard`. **Direct message only**, like `/kirocrew
+  dashboard`: either form can name conversations from across the host, and a forum
+  Topic is readable by the whole supergroup, so answering there would show titles to
+  members who are not on `allowed_user_ids` at all. In a Topic it refuses and points
+  you to a DM. It also refuses when `allowed_user_ids` contains several people,
+  because the bot cannot tell which one owns the host-wide history.
 - `/title <text>` — rename this conversation, so its dashboard sidebar row reads
   as something other than the first forty characters you happened to type.
 - `/cron` (or `/crons`) `list | pause <id> | resume <id> | remove <id>|all` — manage scheduled
