@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import asyncio
 import base64
 import fnmatch
@@ -27,6 +28,7 @@ try:
     import resource as _resource
 except ImportError:
     _resource = None  # type: ignore[assignment]  # Windows/non-POSIX
+from collections.abc import Sequence
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, NamedTuple
@@ -8821,8 +8823,825 @@ def _separator_collapsed_variants(command: str) -> tuple[str, ...]:
     return tuple(variants)
 
 
+# ── The escape-aware counterpart of pass 1b, for SOURCE-CODE subjects ──
+# Pass 1b collapses separator runs in a shell command line, where a run is
+# redundant. Source code cannot be scanned that way: there a backslash run is an
+# ESCAPE, so collapsing the raw text strips escapes and manufactures paths the
+# source never contained. But the run still EXISTS once the literal is decoded --
+# ``open(r"%LOCALAPPDATA%\\kiro-cli\\c.json")`` hands the OS a value carrying two
+# backslashes, Win32 collapses it, and the fenced store is reached. So the fence
+# must be checked against the DECODED value, not the raw text.
+#
+# Decoding alone is not enough to decide, which is the whole reason this is
+# sink-aware. A regex escape and a path separator are the SAME CHARACTER in a
+# decoded literal, so these two are indistinguishable by any transform of the
+# value:
+#
+#     re.compile(r"%LOCALAPPDATA%\\kiro-cli")          <- a pattern; reads nothing
+#     open(r"%LOCALAPPDATA%\\kiro-cli\\c.json")        <- opens the fenced store
+#
+# Only the SINK differs. So a literal is exonerated ONLY when it provably flows
+# into a pattern-consuming call, and the deny verdict is the default for
+# everything else -- an unknown call, no call at all, a name bound first. An
+# unenumerated sink therefore over-blocks rather than opening the fence, the same
+# direction ``_TRUST_ROOT_READ_LISTERS`` argues for a few hundred lines up: naming
+# the writers fails OPEN and is the wrong way round.
+#
+# Every entry below must consume its argument as a PATTERN and never as a path.
+# ``re.escape`` is deliberately ABSENT: it consumes plain TEXT and returns it escaped
+# for onward flow, so it fails that rule and would exonerate a literal that continues
+# to a real sink. Do not reinstate it by symmetry with its neighbours.
+_SOURCE_PATTERN_SINKS: frozenset[tuple[str | None, str]] = frozenset(
+    {
+        ("re", "compile"),
+        ("re", "findall"),
+        ("re", "split"),
+        ("re", "sub"),
+        ("re", "subn"),
+    }
+)
+
+
+def _mentions_module_alias(node: ast.AST, aliases: set[str]) -> bool:
+    """True when ``node``'s subtree can resolve to the ``re`` module object.
+
+    Covers a direct alias name, and the two indirect routes to the same object that
+    carry no alias name at all: ``sys.modules["re"]`` and a ``vars``/``getattr`` call
+    over one. Deny-first -- a subtree naming ``sys.modules`` cannot be proved NOT to
+    hand back the module, so it counts.
+    """
+    for inner in ast.walk(node):
+        if isinstance(inner, ast.Name) and inner.id in aliases:
+            return True
+        if isinstance(inner, ast.Attribute) and inner.attr == "modules":
+            return True
+        if isinstance(inner, ast.Constant) and inner.value == "re":
+            return True
+    return False
+
+
+def _compile_result_is_untrackable(tree: ast.AST) -> bool:
+    """True when a compile result is bound somewhere the escape analysis cannot follow.
+
+    ``_compiled_pattern_names`` can only track a plain ``ast.Name`` target, so the
+    deny-first escape check silently covers nothing when the result is bound to a
+    SUBSCRIPT, an ATTRIBUTE or a tuple element -- ``d["p"] = re.compile(FENCED)`` is
+    exonerated in the pattern slot and then ``str(d["p"])`` recovers the literal with
+    no name for the guard to watch. Rather than attempt alias analysis into containers,
+    the untrackable binding itself withdraws the exoneration.
+
+    Enumerating binding SHAPES is not sufficient, because a result that is never bound
+    reaches no binding node at all: ``return re.compile(FENCED)`` hands
+    ``_compiled_name_escapes`` an EMPTY set, which cannot fail. So the rule is inverted
+    -- exoneration requires the compile result to be the DIRECT value of an assignment
+    whose every target is a plain Name, which is exactly what the tracker can follow,
+    and every other position forfeits. That single inverted rule SUBSUMES the shape
+    enumeration it replaced: a binding with a non-Name target fails the ``all(...)``
+    below, so the compile ``Call``'s id never reaches ``trackable`` and the final walk
+    already forfeits it.
+    """
+    # An unbound result reaches no binding node at all, so the escape check would be
+    # handed an EMPTY set and could not fail; only a plain-Name target is trackable.
+    trackable: set[int] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign):
+            bound, bound_targets = node.value, tuple(node.targets)
+        elif isinstance(node, ast.AnnAssign) and node.value is not None:
+            bound, bound_targets = node.value, (node.target,)
+        elif isinstance(node, ast.NamedExpr):
+            bound, bound_targets = node.value, (node.target,)
+        else:
+            continue
+        if all(isinstance(t, ast.Name) for t in bound_targets):
+            trackable.add(id(bound))
+
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        if not (isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name)):
+            continue
+        if (func.value.id, func.attr) != _COMPILING_SINK:
+            continue
+        if id(node) not in trackable:
+            return True
+    return False
+
+
+_DYNAMIC_NAMESPACE_BUILTINS = frozenset({"globals", "locals", "vars"})
+"""Builtins handing back a namespace MAPPING, so a write through one rebinds a name.
+
+``globals()["re"] = Fake`` rebinds the name ``re`` without producing a Name in
+``Store`` context, an Attribute, or any argument mentioning the module -- the subscript's
+``value`` is the bare ``globals()`` call, which names nothing this walk recognises. So
+every binding branch is bypassed while the module reads authentic and a fenced literal
+in a pattern slot stays exonerated.
+
+Matched on the NAME rather than on the subscript, because the mapping can be bound
+first: ``g = globals()`` then ``g["re"] = Fake`` leaves the subscript's value a plain
+local, which no amount of inspecting that subscript can resolve back to the namespace.
+``locals()`` at module scope IS the global namespace, and ``vars()`` with no argument is
+``locals()``, so all three spellings are the same capability and forfeit together.
+"""
+
+_DYNAMIC_EXECUTION_BUILTINS = frozenset({"exec", "eval", "compile", "__import__"})
+"""Builtins that run code this checker cannot see, so their presence forfeits trust.
+
+Every other guard in ``_re_module_is_authentic`` is a STATIC read of the parse tree, so
+a body that builds its rebinding at run time defeats all of them at once:
+``exec("re.compile = open")`` carries the mutation inside a STRING, reaching no Name,
+Attribute, Subscript or argument the tree can be asked about. Enumerating spellings
+cannot close that -- the string is opaque by construction -- so the presence of the
+mechanism withdraws the exoneration instead, the same way an untrackable binding does.
+
+``compile`` is the BUILTIN, matched only as a bare ``ast.Name``. ``re.compile`` spells
+its name in an ``ast.Attribute``'s ``attr`` STRING and so is not a Name node at all,
+which is why the ordinary redactor this gate exists to permit is unaffected.
+"""
+
+
+def _re_module_is_authentic(tree: ast.AST) -> bool:
+    """True when the name ``re`` in this body is bound ONLY by a plain ``import re``.
+
+    The exoneration set keys on the SPELLING ``re.<func>``, so a body that rebinds the
+    name could otherwise launder a path read through a call that merely looks
+    allowlisted. Every binding spelling counts, and they do NOT all reach the AST as a
+    ``Name`` node: ``import evil as re``, ``re = something``, ``class re``, a parameter
+    or loop variable named ``re`` bind through nodes, while ``except E as re:``,
+    ``case re:``, ``case [*re]`` and ``case {**re}`` bind through plain STRING
+    attributes (``ExceptHandler.name``, ``MatchAs``/``MatchStar.name``,
+    ``MatchMapping.rest``) that a Name-only walk cannot see at all.
+
+    Reassigning an ATTRIBUTE of the module counts too: ``re.compile = open`` leaves the
+    NAME bound to the genuine module while the call it spells now opens a file, so the
+    allowlist would exonerate a literal flowing into ``open``. Passing the module to a
+    CALL counts as well -- ``setattr(re, "compile", open)``, or an ordinary
+    ``helper(re)`` whose body does the same -- because the callee's effect on the object
+    is not readable from this tree, so any argument resolving to the module forfeits
+    rather than only the callees somebody thought to enumerate. The check is therefore
+    that the module, its attributes and the name are all untouched, that the module is
+    never handed to a call, and that the body has no way to run code this walk cannot
+    see (see ``_DYNAMIC_EXECUTION_BUILTINS``).
+
+    Storing the module through a CONTAINER or a derived expression is the same escape
+    one level out: ``holder = [re]`` then ``m = holder[0]`` puts the module object
+    behind a subscript no static walk can resolve, so ``m.compile = reader`` mutates
+    the module while an alias walk keyed on bare ``m = re`` assignments records
+    nothing. Enumerating container shapes would rebuild the allow-by-default
+    blocklist this function already had to abandon once, so the rule closes the class
+    instead: a module reference may only be READ through an attribute or bound as a
+    tracked bare alias, and every other mention forfeits.
+
+    Known over-block, by design: this is a WHOLE-BODY verdict, so a local variable named
+    ``re`` anywhere withdraws exoneration for every literal in the body -- erring toward
+    the false positive this PR exists to clear rather than toward the fence. Narrowing it
+    to lexical scope would need full scope resolution; recorded here so it is understood
+    as a deliberate trade rather than rediscovered as a bug.
+    """
+    imported = False
+    # A body can hold the SAME module object under another name -- ``m = re``, or
+    # ``import re as m`` -- and mutate it from there. ``m.compile = open`` rebinds
+    # exactly the attribute that ``re.compile`` spells, so an ``re``-keyed check sees
+    # nothing while the call it exonerates now opens a file. Collect every alias first
+    # and treat mutation through any of them as mutation of the module.
+    aliases = {"re"}
+    assigned_pairs: list[tuple[ast.expr, ast.expr]] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign):
+            pairs: list[tuple[ast.expr, ast.expr]] = [
+                (t, node.value) for t in node.targets
+            ]
+        elif isinstance(node, ast.AnnAssign) and node.value is not None:
+            pairs = [(node.target, node.value)]
+        elif isinstance(node, ast.NamedExpr):
+            pairs = [(node.target, node.value)]
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name == "re" and alias.asname:
+                    aliases.add(alias.asname)
+            continue
+        else:
+            continue
+        for target, value in pairs:
+            assigned_pairs.append((target, value))
+            if (
+                isinstance(target, ast.Name)
+                and isinstance(value, ast.Name)
+                and value.id in aliases
+            ):
+                aliases.add(target.id)
+
+    # An attribute READ (``re.compile``) and a tracked bare alias (``m = re``) are the
+    # only sanctioned mentions; any other reference hands the object somewhere opaque.
+    sanctioned = {
+        id(value)
+        for target, value in assigned_pairs
+        if isinstance(target, ast.Name)
+        and isinstance(value, ast.Name)
+        and value.id in aliases
+    }
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name):
+            sanctioned.add(id(node.value))
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.Name)
+            and node.id in aliases
+            and isinstance(node.ctx, ast.Load)
+            and id(node) not in sanctioned
+        ):
+            return False
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name):
+            # Store/Del covers assignment, augmented assignment, walrus, for/with
+            # targets and comprehension variables -- every rebinding spelling that
+            # goes through a Name node.
+            if node.id == "re" and isinstance(node.ctx, (ast.Store, ast.Del)):
+                return False
+            # Dynamic execution defeats every static check in this function at once,
+            # because the mutation travels inside a string the tree cannot be asked
+            # about. Matched on the NAME rather than the call, so binding it to
+            # another name first -- ``e = exec`` then ``e("re.compile = open")`` --
+            # forfeits just the same.
+            if node.id in _DYNAMIC_EXECUTION_BUILTINS:
+                return False
+            # A namespace mapping is the same problem one level down: a write through
+            # ``globals()``/``locals()``/``vars()`` rebinds the name with no Name in
+            # Store context to see. Also matched on the NAME, because the mapping can
+            # be bound first (``g = globals()`` then ``g["re"] = Fake``), which leaves
+            # the subscript's own value an unresolvable local.
+            if node.id in _DYNAMIC_NAMESPACE_BUILTINS:
+                return False
+        elif isinstance(node, ast.ExceptHandler) and node.name == "re":
+            # ``except Exception as re:`` binds the name through a plain STRING
+            # attribute, not a Name node, so the Name branch above cannot see it.
+            return False
+        elif isinstance(node, (ast.MatchAs, ast.MatchStar)):
+            # ``case re:`` / ``case [*re]`` -- also plain string attributes.
+            if getattr(node, "name", None) == "re":
+                return False
+        elif isinstance(node, ast.MatchMapping) and node.rest == "re":
+            # ``case {**re}`` -- likewise a string.
+            return False
+        elif isinstance(node, ast.Subscript) and isinstance(
+            node.ctx, (ast.Store, ast.Del)
+        ):
+            # ``vars(re)["compile"] = open``, ``re.__dict__["compile"] = open`` and
+            # ``sys.modules["re"].compile = open`` all reach the module's namespace
+            # through a SUBSCRIPT, so neither the Attribute nor the Call branch fires.
+            if _mentions_module_alias(node.value, aliases):
+                return False
+        elif isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name):
+            # ``re.compile = open`` / ``del re.sub`` -- the module survives, the
+            # function does not. Any ALIAS of the module counts: ``m = re`` then
+            # ``m.compile = open`` mutates the same object.
+            if node.value.id in aliases and isinstance(node.ctx, (ast.Store, ast.Del)):
+                return False
+        elif isinstance(node, ast.Attribute) and isinstance(
+            node.ctx, (ast.Store, ast.Del)
+        ):
+            # The base is an expression rather than a plain name, e.g.
+            # ``sys.modules["re"].compile = open``.
+            if _mentions_module_alias(node.value, aliases):
+                return False
+        elif isinstance(node, ast.Call):
+            # Handing the module OBJECT to a call hands over the ability to mutate it,
+            # and what the callee does with it is not readable from this tree. The
+            # branch used to recognise only ``setattr``/``delattr``, which made it an
+            # allow-by-default blocklist inside a deny-by-default checker: any other
+            # call taking the module -- ``helper(re)``, whose body does
+            # ``m.compile = open`` -- reached no branch at all and the module still
+            # read authentic. So ANY argument resolving to the module forfeits, which
+            # closes the class instead of enumerating callees.
+            #
+            # Only the ARGUMENTS are inspected, never ``node.func``: ``re.sub(...)``
+            # and ``re.compile(...)`` name the module in the func position, and those
+            # are exactly the calls this exoneration exists to permit.
+            for argument in (*node.args, *(kw.value for kw in node.keywords)):
+                if _mentions_module_alias(argument, aliases):
+                    return False
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.asname is None and alias.name == "re":
+                    imported = True
+                elif alias.asname == "re":
+                    return False
+        elif isinstance(node, ast.ImportFrom):
+            # ``from evil import *`` can bind ``re`` while no alias in the node names
+            # it, so an UNKNOWABLE binding set forfeits -- the class, not a spelling.
+            for alias in node.names:
+                if alias.name == "*" or (alias.asname or alias.name) == "re":
+                    return False
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            if node.name == "re":
+                return False
+        elif isinstance(node, ast.arg) and node.arg == "re":
+            return False
+    return imported
+
+
+def _replacement_is_provably_non_callable(call: ast.Call, position: int = 1) -> bool:
+    """True only when a substituting call's ``repl`` argument provably cannot be called.
+
+    ``re.sub``/``re.subn`` accept a replacement that may be a FUNCTION, and ``re`` hands
+    that function the ``Match`` -- from which ``Match.re.pattern`` returns the verbatim
+    pattern literal. So a fenced literal is safe in the pattern slot only when nothing
+    can receive that Match.
+
+    ``position`` is where ``repl`` sits positionally, which differs by spelling: the
+    module-level ``re.sub(pattern, repl, string)`` puts it at 1, while a COMPILED
+    ``p.sub(repl, string)`` binds the pattern in the object and puts it at 0. The
+    keyword spelling is ``repl=`` either way.
+
+    Provable means a ``str`` or ``bytes`` CONSTANT, which cannot be called at all.
+    Everything else fails closed: a Name or Attribute may be bound to a function, a
+    lambda plainly is one, a Starred puts the replacement at a position nobody can know
+    statically, and a missing argument means there is nothing to prove. Deciding on the
+    argument's shape rather than on the recovery spelling is what closes the class --
+    the read itself can be spelled to defeat any enumeration.
+    """
+    replacement: ast.expr | None = None
+    if len(call.args) > position:
+        replacement = call.args[position]
+    for keyword in call.keywords:
+        if keyword.arg == "repl":
+            replacement = keyword.value
+    if replacement is None:
+        return False
+    return isinstance(replacement, ast.Constant) and isinstance(
+        replacement.value, (str, bytes)
+    )
+
+
+def _enclosing_call_slot(
+    chain: "Sequence[ast.AST]", leaf: ast.AST
+) -> "tuple[tuple[str | None, str] | None, bool]":
+    """``((module, attr), literal_is_in_the_pattern_slot)`` for the innermost call.
+
+    Walks outward, so an f-string or a nested expression still resolves to the call
+    that actually receives the value. A bare name (``open(...)``) yields
+    ``(None, 'open')``, which is deliberately NOT in the exoneration set.
+
+    The second element is what makes the exoneration argument-position-aware. An
+    allowlisted ``re.*`` call is only safe for the literal in its PATTERN operand:
+    ``re.sub(pattern, repl, string)`` returns its SUBJECT verbatim and its
+    REPLACEMENT substantially so, so a fenced path in either of those slots flows on
+    to a real sink. Only ``args[0]`` / ``pattern=`` describes a regex.
+
+    Occupying that slot means BEING the operand, not merely reaching it. ``inner`` is
+    the top of the argument subtree, so an expression feeding the operand satisfies
+    ``args[0] is inner`` while the literal sits underneath it -- and evaluating that
+    expression runs code before ``re`` ever sees a pattern. ``re.compile(FENCED +
+    Reader())`` hands the expanded path to ``Reader.__radd__``, and every other
+    operator protocol (``__rmod__`` for ``%`` formatting, ``__ror__``, and so on) is
+    the same shape. Requiring ``inner is leaf`` keeps the exoneration to a literal
+    that IS the operand, which also subsumes the walrus and f-string spellings.
+
+    The exoneration additionally requires the matched call to be the OUTERMOST
+    expression the literal reaches. A pattern-consuming call whose RESULT is consumed
+    by another call, or has an attribute read off it, hands the verbatim literal
+    onward -- ``open(re.sub(FENCED, ...))`` and ``re.compile(FENCED).pattern`` both
+    recover the fenced spelling through a call that merely looks safe.
+
+    Known over-block, by design: a chained-but-harmless form such as
+    ``re.compile(FENCED).search(s)`` is denied too, because an attribute read is not
+    distinguishable here from a ``.pattern`` re-extraction. That errs toward the
+    false positive rather than toward the fence, the same trade the rebinding rule
+    makes.
+    """
+    for index in range(len(chain) - 1, -1, -1):
+        parent = chain[index]
+        if isinstance(parent, ast.Call):
+            # The next node down the chain toward the leaf is the top of whichever
+            # argument subtree the literal sits in (the leaf itself when the call is
+            # the literal's direct parent).
+            inner = chain[index + 1] if index + 1 < len(chain) else leaf
+            # ``args[0] is inner`` proves the position ONLY when arg 0 is a plain
+            # operand. ``re.sub(*seq)`` makes args[0] a Starred whose unpacked
+            # contents land at positions nobody can know statically, so the literal
+            # may really be the SUBJECT -- treat an unprovable position as not the
+            # pattern slot and let the deny default stand.
+            in_pattern_slot = (
+                bool(parent.args)
+                and parent.args[0] is inner
+                and inner is leaf
+                and not isinstance(parent.args[0], ast.Starred)
+            )
+            for keyword in parent.keywords:
+                # ``ast.iter_child_nodes(Call)`` yields the KEYWORD node, so ``inner``
+                # is that keyword and never its ``.value``. Comparing against the
+                # value could therefore never be true, which left this branch dead and
+                # denied the keyword spelling of a redactor while its positional twin
+                # was exonerated.
+                if (
+                    keyword.arg == "pattern"
+                    and keyword is inner
+                    and keyword.value is leaf
+                ):
+                    in_pattern_slot = True
+            if in_pattern_slot:
+                for ancestor in chain[:index]:
+                    if isinstance(ancestor, (ast.Call, ast.Attribute)):
+                        in_pattern_slot = False
+                        break
+            if in_pattern_slot:
+                # The ancestor walk above only sees nodes ABOVE the call. A walrus
+                # sits BELOW it, inside the argument subtree -- ``re.compile(p :=
+                # FENCED)`` puts the literal in a genuine pattern slot while ALSO
+                # binding it to a name that outlives the call, so a later
+                # ``open(p)`` gets the verbatim fenced spelling. The exoneration
+                # argument is that a pattern operand goes nowhere else; a walrus is
+                # precisely the counter-example, so withdraw it.
+                for descendant in (*chain[index + 1 :], leaf):
+                    if isinstance(descendant, ast.NamedExpr):
+                        in_pattern_slot = False
+                        break
+            func = parent.func
+            if isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name):
+                key: tuple[str | None, str] | None = (func.value.id, func.attr)
+            elif isinstance(func, ast.Name):
+                key = (None, func.id)
+            else:
+                key = None
+            # A callable replacement receives the Match, whose ``.re.pattern`` hands
+            # back the verbatim literal, so the slot is safe only without one.
+            if (
+                in_pattern_slot
+                and key in _SUBSTITUTING_SINKS
+                and not _replacement_is_provably_non_callable(parent)
+            ):
+                in_pattern_slot = False
+            return (key, in_pattern_slot)
+    return (None, False)
+
+
+def _compiled_pattern_names(tree: ast.AST) -> set[str]:
+    """Names bound to the RESULT of a call that returns a COMPILED PATTERN.
+
+    Only ``re.compile`` qualifies. The other members of ``_SOURCE_PATTERN_SINKS`` are
+    pattern CONSUMERS whose results are ordinary values -- ``re.sub``/``re.subn``
+    return a string, ``match``/``search``/``fullmatch`` a Match, ``findall``/``split``
+    a list -- and none of them can hand back the verbatim pattern. Tracking them made
+    ``redacted = re.sub(F, "<X>", s)`` followed by ``str(redacted)`` read as a
+    re-extraction, which refused the very redactor shape this change exists to allow.
+
+    A Match object does expose the pattern as ``m.re``, but that is an attribute read
+    and is caught by name in ``_pattern_reextracted`` rather than needing this set.
+    """
+    names: set[str] = set()
+    for node in ast.walk(tree):
+        value: ast.expr | None = None
+        targets: tuple[ast.expr, ...] = ()
+        if isinstance(node, ast.Assign):
+            value, targets = node.value, tuple(node.targets)
+        elif isinstance(node, ast.AnnAssign) and node.value is not None:
+            value, targets = node.value, (node.target,)
+        elif isinstance(node, ast.NamedExpr):
+            value, targets = node.value, (node.target,)
+        if not isinstance(value, ast.Call):
+            continue
+        func = value.func
+        if isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name):
+            key: tuple[str | None, str] = (func.value.id, func.attr)
+        elif isinstance(func, ast.Name):
+            key = (None, func.id)
+        else:
+            continue
+        if key != _COMPILING_SINK:
+            continue
+        for target in targets:
+            if isinstance(target, ast.Name):
+                names.add(target.id)
+    return names
+
+
+def _compiled_name_escapes(tree: ast.AST, compiled: set[str]) -> bool:
+    """True unless every READ of a compiled-pattern name sits in a SAFE position.
+
+    This is the deny-by-default half of the re-extraction guard. Enumerating recovery
+    spellings cannot work: the ways to get a pattern back out of a compiled object are
+    open-ended -- ``p.pattern``, ``getattr(p, "pattern")``,
+    ``p.__getattribute__("pattern")``, ``object.__getattribute__(p, "pattern")``,
+    ``operator.attrgetter("pattern")(p)``, an aliased ``g = getattr``, and every
+    stringify form (``"%s" % p``, ``"{}".format(p)``, ``f"{p!r}"``, ``str``/``repr``/
+    ``vars``) -- so a blocklist is one unenumerated spelling away from reopening the
+    fence. That is backwards inside a checker whose stated invariant is deny-first.
+
+    So the direction inverts: a compiled pattern may be USED through its own matching
+    API and nothing else. Anything that passes the object to a call, formats it,
+    subscripts it, stores it in a container or returns it forfeits the exoneration for
+    the whole body, because any of those can recover the literal.
+
+    Known over-block, accepted on the same reasoning as the sibling trades: a read of
+    a genuinely harmless attribute (``p.flags``, ``p.groupindex``) is not enumerated
+    and therefore withdraws the exoneration too. That errs toward the false positive
+    rather than toward the fence.
+    """
+    parents: dict[ast.AST, ast.AST] = {}
+    for node in ast.walk(tree):
+        for child in ast.iter_child_nodes(node):
+            parents[child] = node
+
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.Name) and node.id in compiled):
+            continue
+        if not isinstance(node.ctx, ast.Load):
+            # Binding the name is not a read of the object.
+            continue
+        parent = parents.get(node)
+        if (
+            isinstance(parent, ast.Attribute)
+            and parent.attr in _SAFE_COMPILED_PATTERN_METHODS
+            and isinstance(parents.get(parent), ast.Call)
+            and getattr(parents.get(parent), "func", None) is parent
+        ):
+            call = parents.get(parent)
+            assert isinstance(call, ast.Call)
+            # The method NAME is not safety for the two families that hand a Match out:
+            # `p.sub` passes one to its replacement, `p.search` returns one.
+            if parent.attr in _SUBSTITUTING_METHODS:
+                if not _replacement_is_provably_non_callable(call, position=0):
+                    return True
+            elif parent.attr in _MATCH_RETURNING_METHODS:
+                if not isinstance(parents.get(call), ast.Expr):
+                    return True
+            continue
+        return True
+    return False
+
+
+def _pattern_reextracted(tree: ast.AST) -> bool:
+    """True when the body reads a compiled pattern back off an ``re`` object.
+
+    ``re.compile(x).pattern`` and ``m.re.pattern`` hand back the VERBATIM literal, so
+    a fenced path parked in an exonerated pattern slot can be recovered in a LATER
+    statement and handed to a real sink -- ``p = re.compile(FENCED)`` then
+    ``open(p.pattern)``. That crosses statements, so the per-literal slot check cannot
+    see it; this is a whole-body verdict for the same reason
+    ``_re_module_is_authentic`` is one.
+
+    An attribute read is not the only spelling, and the set of spellings is open-ended:
+    ``getattr(p, "pattern")`` carries the name in a string argument,
+    ``p.__getattribute__("pattern")`` and ``object.__getattribute__(p, "pattern")``
+    are Calls whose ``func`` is itself an Attribute, ``operator.attrgetter("pattern")``
+    defers the read, an aliased ``g = getattr`` hides the callee's name, and every
+    stringify form (``"%s" % p``, ``"{}".format(p)``, ``f"{p!r}"``, ``str``/``repr``/
+    ``vars``) embeds the pattern in its output. Enumerating them is therefore the wrong
+    shape for a deny-first checker, so the decision is delegated to
+    ``_compiled_name_escapes``: a compiled pattern may be used through its own
+    matching API, and any other use forfeits the exoneration.
+
+    The direct attribute-name check is kept as well, because it also covers reads off
+    objects this body never bound to a name -- ``m.re`` on a Match, or a chained
+    ``re.compile(F).pattern``.
+
+    Known over-block, by design: any body reading an attribute named ``pattern`` or
+    ``re`` loses the exoneration for EVERY literal in it, including where the name
+    means something unrelated. That errs toward the false positive rather than toward
+    the fence.
+    """
+    compiled = _compiled_pattern_names(tree)
+    if _compile_result_is_untrackable(tree):
+        return True
+    if compiled and _compiled_name_escapes(tree, compiled):
+        return True
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Attribute) and node.attr in (
+            "pattern",
+            "re",
+            "__dict__",
+        ):
+            return True
+        # ``getattr(x, "pattern")`` on an object this body never bound -- the escape
+        # analysis above is keyed on tracked names, so this covers the rest.
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        name = func.id if isinstance(func, ast.Name) else getattr(func, "attr", None)
+        if name in ("getattr", "__getattribute__") and len(node.args) >= 2:
+            attr = node.args[1]
+            if isinstance(attr, ast.Constant) and attr.value in (
+                "pattern",
+                "re",
+                "__dict__",
+            ):
+                return True
+        elif name == "attrgetter" and node.args:
+            attr = node.args[0]
+            if isinstance(attr, ast.Constant) and attr.value in ("pattern", "re"):
+                return True
+    return False
+
+
+_COMPILING_SINK: tuple[str | None, str] = ("re", "compile")
+"""The one sink in ``_SOURCE_PATTERN_SINKS`` whose RESULT is a compiled pattern.
+
+Every other member consumes a pattern and returns an ordinary value, so binding its
+result cannot give a body a route back to the verbatim literal.
+"""
+
+_MATCH_RETURNING_METHODS = frozenset({"match", "search", "fullmatch", "finditer"})
+"""Compiled-object methods whose RESULT is a ``Match``.
+
+``_SAFE_COMPILED_PATTERN_METHODS`` admits a compiled pattern's whole matching API on
+the METHOD NAME alone, which is not safety for these four: ``p.search(s)`` hands back a
+Match, and a Match carries ``.re``, so ``Match.re.pattern`` is the verbatim pattern
+literal. Nothing tracks a Match -- ``_compiled_pattern_names`` follows only
+``_COMPILING_SINK`` results -- and the recovery read cannot be enumerated, since
+``getattr(m, "r" + "e")`` builds the attribute name from a `BinOp`. So the literal is
+recoverable through the returned object while the compiled name itself never escapes.
+
+This set has no module-level counterpart, and deliberately so: ``re.match``,
+``re.search``, ``re.fullmatch`` and ``re.finditer`` are simply ABSENT from
+``_SOURCE_PATTERN_SINKS``, so deny-by-default refuses a fenced literal in their pattern
+slot outright. Withdrawing an exoneration they never receive would be dead code. The
+compiled route is different because the exoneration is earned by ``re.compile``, which
+IS in the set, and only then is the Match produced by a later method call.
+"""
+
+_SUBSTITUTING_METHODS = frozenset({"sub", "subn"})
+"""The compiled-object counterparts of ``_SUBSTITUTING_SINKS``.
+
+``p.sub(repl, s)`` passes ``repl`` the Match just as the module-level call does, so the
+same replacement-is-provably-non-callable test applies -- at position 0, because the
+pattern is bound in the object rather than passed.
+"""
+
+_SUBSTITUTING_SINKS: frozenset[tuple[str | None, str]] = frozenset(
+    {("re", "sub"), ("re", "subn")}
+)
+"""The members of ``_SOURCE_PATTERN_SINKS`` that accept a CALLABLE replacement.
+
+These take a ``repl`` that may be a function, and ``re`` hands that function the
+``Match``. A Match carries ``.re``, so ``Match.re.pattern`` returns the verbatim
+pattern literal -- a route back to a fenced spelling that exists for no other member
+of the set. It is not reachable through the compiled-name escape analysis either,
+because that tracks only ``_COMPILING_SINK`` results, and a Match is never bound by
+the exonerated statement at all. Chasing the recovery spelling is the wrong layer for
+the same reason it was for the compile result: the read can be spelled to defeat any
+enumeration (``getattr(m, "r" + "e")`` builds the name, ``g = getattr`` hides the
+callee), so the exoneration is withdrawn at the SLOT unless the replacement provably
+cannot be called.
+"""
+
+_SAFE_COMPILED_PATTERN_METHODS = frozenset(
+    {"search", "match", "fullmatch", "split", "findall", "finditer", "sub", "subn"}
+)
+"""The matching API a compiled pattern may be used THROUGH.
+
+This is an allowlist by design: the re-extraction guard denies by default, so a use
+that is not one of these withdraws the exoneration rather than being waved through.
+"""
+
+
+def _fence_hit_in_collapsed(
+    value: str, *, value_already_scanned: bool = False
+) -> str | None:
+    """The three pass-1b checks over ``value`` and its separator-collapsed copies.
+
+    ``_separator_collapsed_variants`` yields NOTHING when the value carries no
+    separator run, so iterating it alone leaves a value whose separators are already
+    single completely unchecked. On the shell path that is harmless -- pass 1a checked
+    the unmodified subject before the collapse ran -- but the source-literal scan has
+    no such earlier pass over the DECODED literal, so a non-raw
+    ``"…\\\\kiro-cli\\\\c.json"`` (one separator each once decoded) reached the fence
+    through no layer of its own and depended on a later pass to catch it. Checking the
+    value first makes this layer self-sufficient rather than sharing the blind spot of
+    the pass behind it.
+
+    ``value_already_scanned`` drops only that self-sufficiency check, for a caller that
+    has ALREADY put the identical bytes through these same three matchers. It exists
+    because "harmless" above was true of correctness but not of cost: on the shell path
+    the raw subject is re-scanned in full, and the sensitive-path regex over a long
+    newline-free line is the most expensive matcher on this gate, so a 20 KB subject
+    paid for it twice and doubled the wall time of a linearity-guarded path. The
+    collapsed copies are still checked in every case; what is skipped is a provably
+    duplicate pass, never a layer. The default stays False so a new caller is
+    self-sufficient unless it opts out deliberately.
+    """
+    candidates = _separator_collapsed_variants(value)
+    for candidate in candidates if value_already_scanned else (value, *candidates):
+        if _get_sensitive_re().search(candidate):
+            return "Blocked: command accesses sensitive credential path"
+        if _extracts_into_trust_root(candidate):
+            return "Blocked: command extracts into the governance trust-root directory"
+        if _RELATIVE_SENSITIVE_RE.search(candidate):
+            return (
+                "Blocked: command references a sensitive credential path "
+                "via relative traversal"
+            )
+    return None
+
+
+def _sensitive_run_in_source_literals(source: str) -> tuple[bool, str | None]:
+    """Fence check for a separator RUN inside a decoded literal of a source body.
+
+    Returns ``(parsed, reason)``. ``parsed`` is False when the body is not valid
+    Python, in which case there were no literals to inspect and ``reason`` is None —
+    the caller must then fall back to the raw scan WITH the collapse, so an
+    unparseable body is never quietly exonerated. Parse status is returned rather
+    than re-derived so the body is parsed once.
+
+    A bare string constant in STATEMENT position is skipped, but a DOCSTRING is not:
+    Python evaluates and discards the former, while it retains a module, class or
+    function docstring as ``__doc__``, which a body can read back and hand to a sink
+    (``open(f.__doc__)``). So a docstring naming a fenced store IS scanned — which
+    over-blocks a docstring that merely warns a reader off one, the same direction the
+    other trades here take. Comments never reach this function at all; the parser
+    discards them.
+
+    Both ``str`` and ``bytes`` constants are inspected, because ``open`` and
+    ``os.open`` accept a bytes path. An allowlisted ``re.*`` call exonerates a
+    literal only in its PATTERN operand, only when that call is the outermost
+    expression the literal reaches, and only when the body has neither rebound the
+    name ``re`` nor read a pattern back off an ``re`` object; every other position and
+    spelling denies.
+    """
+    try:
+        tree = ast.parse(source)
+    except (SyntaxError, ValueError, RecursionError):
+        return (False, None)
+
+    # Statement-position constants are evaluated and thrown away by Python -- EXCEPT a
+    # DOCSTRING, which Python RETAINS as ``__doc__`` on its module, class or function.
+    # A fenced literal parked in a docstring is therefore readable at runtime and can
+    # be handed to a sink (``open(f.__doc__)``), so only a bare string that is NOT a
+    # docstring is genuinely discarded.
+    retained: set[int] = set()
+    for node in ast.walk(tree):
+        if isinstance(
+            node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)
+        ):
+            body = getattr(node, "body", None)
+            if body and isinstance(body[0], ast.Expr):
+                first = body[0].value
+                if isinstance(first, ast.Constant) and isinstance(
+                    first.value, (str, bytes)
+                ):
+                    retained.add(id(first))
+
+    discarded: set[int] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Expr) and isinstance(node.value, ast.Constant):
+            if (
+                isinstance(node.value.value, (str, bytes))
+                and id(node.value) not in retained
+            ):
+                discarded.add(id(node.value))
+
+    re_authentic = _re_module_is_authentic(tree) and not _pattern_reextracted(tree)
+
+    def visit(node: ast.AST, parents: list[ast.AST]) -> str | None:
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, ast.Constant) and id(child) not in discarded:
+                # bytes are decoded because open()/os.open accept a bytes path, so a
+                # rb"..." literal reaches the same sinks as its str twin. latin-1 is
+                # total over a byte range and preserves each byte as one code point,
+                # so a separator run survives the decode unchanged.
+                if isinstance(child.value, str):
+                    value: str | None = child.value
+                elif isinstance(child.value, bytes):
+                    value = child.value.decode("latin-1")
+                else:
+                    value = None
+                if value is not None:
+                    reason = _fence_hit_in_collapsed(value)
+                    if reason:
+                        key, in_pattern_slot = _enclosing_call_slot(
+                            parents + [node], child
+                        )
+                        # Every condition here DENIES unless positively cleared: no
+                        # enclosing call (ambiguous), a call outside the allowlist, a
+                        # slot other than the pattern operand, or an ``re`` name this
+                        # body rebound. Spelled out rather than left to ``not in`` so
+                        # the deny direction is explicit.
+                        if (
+                            key is None
+                            or key not in _SOURCE_PATTERN_SINKS
+                            or not in_pattern_slot
+                            or not re_authentic
+                        ):
+                            return reason
+            nested = visit(child, parents + [node])
+            if nested:
+                return nested
+        return None
+
+    try:
+        return (True, visit(tree, []))
+    except RecursionError:
+        # A legitimately deep expression must not crash the caller. Reporting
+        # ``parsed=False`` routes it to the raw scan WITH the collapse, which is the
+        # conservative direction: the body is still fence-checked, just textually.
+        return (False, None)
+
+
 def is_sensitive_bash_command(
-    command: str, *, enabled_ids: "frozenset[str] | None" = None
+    command: str,
+    *,
+    enabled_ids: "frozenset[str] | None" = None,
+    _subject_is_shell_grammar: bool = True,
 ) -> str | None:
     """Check if a bash command reads sensitive paths, accesses IMDS, or leaks env creds.
 
@@ -8834,6 +9653,23 @@ def is_sensitive_bash_command(
        relative paths), then routes each path-like token through
        ``is_sensitive_path()`` to catch obfuscation (e.g. ``ca""t ~/.aws/credentials``,
        ``awk '{print}' $HOME/.ssh/id_rsa``, ``sed -n p ~/../../etc/shadow``).
+
+    Between them runs **pass 1b**, which repeats the pass-1 matchers over
+    separator-run-COLLAPSED copies of the subject. That is a Win32 *shell grammar*
+    heuristic: a shell opens the store ``%LOCALAPPDATA%\\kiro-cli`` names when
+    handed ``%LOCALAPPDATA%\\\\kiro-cli``, so the run carries no meaning and
+    collapsing it closes the doubled spelling (#6350).
+
+    ``_subject_is_shell_grammar=False`` skips ONLY pass 1b, for a caller scanning a
+    subject that is not a shell command line -- a **source-code body**, where a
+    backslash run is an ESCAPE rather than a redundant separator. There ``\\\\`` is
+    one backslash and ``\\.`` is a literal dot, so collapsing strips the escapes and
+    manufactures a path the subject never contained: a ``re`` pattern that redacts a
+    fenced store, or a docstring merely naming one, reads as an access to it. Every
+    other pass still runs, so a source body keeps the path matcher, the extraction
+    control, the relative-traversal matcher, the normalizer, IMDS and env-credential
+    detection -- and its own caller keeps its ``is_sensitive_path`` check on the
+    resolved file path.
 
     Returns denial reason string, or None if clean.
     """
@@ -8860,20 +9696,24 @@ def is_sensitive_bash_command(
     # ALL THREE pass-1 checks are repeated, not just the path matcher: the
     # extraction check is a separate control, and omitting it let
     # ``tar -xf evil.tar -C $HOME//.kiro/crew`` overwrite governance files
-    # through the doubled separator (found in review).
+    # through the doubled separator (found in review). That is why the skip below
+    # is keyed on the SUBJECT and never on a single check: a caller either has
+    # shell grammar, and gets all three, or does not, and gets none of them.
     #
     # Run only after the original missed, so nothing that needs the run intact
     # (a UNC ``\\server\share`` anchor) loses its match.
-    for collapsed in _separator_collapsed_variants(command):
-        if _get_sensitive_re().search(collapsed):
-            return "Blocked: command accesses sensitive credential path"
-        if _extracts_into_trust_root(collapsed):
-            return "Blocked: command extracts into the governance trust-root directory"
-        if _RELATIVE_SENSITIVE_RE.search(collapsed):
-            return (
-                "Blocked: command references a sensitive credential path "
-                "via relative traversal"
-            )
+    if _subject_is_shell_grammar:
+        # ONE spelling of the three collapsed-copy checks, shared with the source
+        # literal scan -- a second copy here would let the two drift apart.
+        #
+        # ``value_already_scanned`` because pass 1 above put THIS command through
+        # these same three matchers and missed; re-scanning it here bought nothing
+        # and cost a second sensitive-path regex pass over the whole subject, which
+        # on a long newline-free line is the dominant cost on this gate. Only the
+        # duplicate is dropped: every collapsed copy is still checked.
+        collapsed_reason = _fence_hit_in_collapsed(command, value_already_scanned=True)
+        if collapsed_reason:
+            return collapsed_reason
 
     # ── Pass 2: normalizer-based sensitive path detection ──
     normalizer_result = _check_sensitive_via_normalizer(command)
@@ -8915,6 +9755,26 @@ def is_sensitive_bash_command(
     if env_result:
         return env_result
     return None
+
+
+def is_sensitive_source_body(text: str) -> str | None:
+    """The keystone fence for a subject that is Python SOURCE, not a shell command line.
+
+    THE ONLY supported entry point for a source body, and the reason
+    ``_subject_is_shell_grammar`` is internal. The two halves are safe only in
+    composition: skipping pass 1b is sound *because* the literal scan replaces it, so a
+    caller that reached for the flag alone would silently reopen the doubled-separator
+    fence inside scripts (#6350). Owning the pairing here makes that a property of the
+    API rather than a convention a second caller has to know.
+
+    Order matters. The literal scan runs first and its verdict wins; only then does the
+    shell matcher run, and it keeps pass 1b exactly when the body did NOT parse -- an
+    uninspected body is scanned as text rather than waved through.
+    """
+    parses, literal_reason = _sensitive_run_in_source_literals(text)
+    if literal_reason:
+        return literal_reason
+    return is_sensitive_bash_command(text, _subject_is_shell_grammar=not parses)
 
 
 # `NAME=value` prefix. `normalize_shell_command` keeps it as a single token, and
