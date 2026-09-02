@@ -1552,6 +1552,26 @@ def _redact_acp_string(s: str) -> str:
 _MAX_NATIVE_CARD_ERROR = 200
 _RE_TRAILING_REQUEST_ID = re.compile(r"\(request_id:\s*[0-9a-fA-F-]+\)\s*$")
 
+# Events that end a denied tool group, clearing ``slot._batch_rejected``.
+#
+# A plain "Deny" suppresses the REST OF THE GROUP the user just refused: the
+# other tool calls the model dispatched from the same assistant message are part
+# of the same action, so re-prompting for each is nagging. The flag used to be
+# cleared only in the turn runner's ``finally``, which made its lifetime the
+# whole TURN — so a call the model issued LATER in that turn, after taking the
+# denial as feedback and revising, was auto-denied without ever being shown
+# (issue #7681). That silently broke deny -> discuss -> revise -> retry.
+#
+# Model-authored output is the boundary: a group's text/reasoning is streamed
+# BEFORE its tool_use blocks, so neither of these events ever falls between two
+# members of one group, while a revised retry necessarily follows fresh model
+# output. Deliberately NOT included is ``EVENT_TOOL_RESULT`` — the denied call's
+# own result can arrive as one, which would end the group the user just refused.
+#
+# Clearing only ever restores the interactive prompt; it never auto-approves. A
+# denial still denies, and only its blast radius changes.
+_BATCH_REJECT_CLEARED_BY = frozenset({EVENT_TEXT_CHUNK, EVENT_THINKING_CHUNK})
+
 
 def _clip_card_error(text: str, limit: int = _MAX_NATIVE_CARD_ERROR) -> str:
     """Clip *text* to *limit* characters, keeping any trailing request id."""
@@ -6389,6 +6409,18 @@ async def _run_chat(
             # credential split across thinking chunks can't cross the wire raw.
             if event.kind != EVENT_THINKING_CHUNK:
                 _flush_thinking_stream()
+
+            # The model produced new output, so the tool group the user denied is
+            # over: end the batch-rejection suppression instead of letting it run
+            # to the end of the turn and swallow a revised call the user never
+            # saw (#7681). See _BATCH_REJECT_CLEARED_BY.
+            if event.kind in _BATCH_REJECT_CLEARED_BY and getattr(slot, "_batch_rejected", False):
+                slot._batch_rejected = False
+                logger.info(
+                    "batch rejection cleared on %s — later tool calls in this "
+                    "turn are approved independently",
+                    event.kind,
+                )
 
             if event.kind == EVENT_TEXT_CHUNK:
                 # If we just exited a tool group, finalize the streaming

@@ -26,6 +26,8 @@ from kiro_crew.hooks import HOOK_EVENT_PRE_TOOL_USE, ToolHookResult
 from kiro_crew.providers.base import (
     EVENT_COMPLETE,
     EVENT_PERMISSION_REQUEST,
+    EVENT_TEXT_CHUNK,
+    EVENT_THINKING_CHUNK,
     LLMEvent,
 )
 
@@ -854,6 +856,82 @@ class TestBatchRejection:
                 pass
 
         assert slot._batch_rejected is False
+
+
+class TestDenialCascadeLifetime:
+    """The batch-rejection suppression must not outlive the group it belongs to.
+
+    Issue #7681: ``_batch_rejected`` was only cleared in the turn runner's
+    ``finally``, so it lived for the whole TURN. A user who denied one call had
+    every later call in that turn auto-denied without ever being shown a card —
+    breaking deny → discuss → agent revises → agent retries, and reporting the
+    phantom denial to the model as "User denied tool execution".
+    """
+
+    @pytest.mark.parametrize("resume_kind", [EVENT_TEXT_CHUNK, EVENT_THINKING_CHUNK])
+    @pytest.mark.asyncio
+    async def test_later_sequential_call_is_evaluated_independently(
+        self, tmp_path, resume_kind
+    ):
+        """Call N+1 gets its own prompt once the model resumed after N was denied."""
+        state, client = _make_state(tmp_path, context_builder=_context_builder())
+        slot = _make_slot()
+        denied = _permission_event(title="tool_a")
+        denied.request_id = "req-1"
+        denied.tool_call_id = "tc-1"
+        # Model-authored output between the two calls: the denied group is over
+        # and req-2 is a NEW decision, not a remaining member of that group.
+        resumed = LLMEvent(kind=resume_kind, text="Understood - trying a different edit.")
+        revised = _permission_event(title="tool_b")
+        revised.request_id = "req-2"
+        revised.tool_call_id = "tc-2"
+        _set_stream(client, [denied, resumed, revised, _complete_event()])
+
+        async def _answer_both() -> None:
+            await _answer_approval(slot, "req-1", "rejected")
+            await _answer_approval(slot, "req-2", "approved")
+
+        answerer = asyncio.get_event_loop().create_task(_answer_both())
+
+        with _patch_stats():
+            await _run_chat(state, slot, "hello")
+        await _drain(answerer)
+
+        # The denial itself still denies.
+        client.reject_tool.assert_any_call("req-1")
+        # The revised call was PROMPTED and could be approved — never swallowed.
+        client.approve_tool.assert_any_call("req-2")
+        assert ("req-2",) not in [c.args for c in client.reject_tool.call_args_list]
+
+    @pytest.mark.asyncio
+    async def test_same_group_still_cascades_after_the_fix(self, tmp_path):
+        """No model output between the calls → the remaining member stays denied.
+
+        Pins the blast-radius reduction as a LIFETIME change only: suppression
+        of the group the user actually refused is preserved.
+        """
+        state, client = _make_state(tmp_path, context_builder=_context_builder())
+        slot = _make_slot()
+        evt1 = _permission_event(title="tool_a")
+        evt1.request_id = "req-1"
+        evt1.tool_call_id = "tc-1"
+        evt2 = _permission_event(title="tool_b")
+        evt2.request_id = "req-2"
+        evt2.tool_call_id = "tc-2"
+        _set_stream(client, [evt1, evt2, _complete_event()])
+
+        async def _reject_first() -> None:
+            await _answer_approval(slot, "req-1", "rejected")
+
+        rejecter = asyncio.get_event_loop().create_task(_reject_first())
+
+        with _patch_stats():
+            await _run_chat(state, slot, "hello")
+        await _drain(rejecter)
+
+        client.reject_tool.assert_any_call("req-1")
+        client.reject_tool.assert_any_call("req-2")
+        client.approve_tool.assert_not_called()
 
 
 class TestDenyOnce:
