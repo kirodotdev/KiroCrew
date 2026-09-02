@@ -211,7 +211,19 @@ export function PierreWorkspaceTreeImpl({ projectDir, onFileOpen, onAddToContext
   // the SAME tree component either way, so both modes share look, keyboard
   // model, search, and git-status lanes.
   const paths = useMemo<string[]>(
-    () => (mode === 'changed' ? statusEntries.map(e => e.path) : tree?.paths ?? []),
+    () =>
+      mode === 'changed'
+        ? statusEntries.map(e => e.path)
+        : // The full-workspace list can still carry a duplicate — e.g. two
+          // genuinely different paths that collapse to the same string once
+          // egress redaction flattens a differing segment. @pierre/trees
+          // `appendPresortedPaths` throws 'Duplicate path' on adjacent
+          // identical entries, and that throw is uncaught inside the
+          // resetPaths useLayoutEffect below, taking down the whole route.
+          // De-dup here (preserving order + first occurrence, mirroring the
+          // `changed` branch's statusEntries seen-Set) so a duplicate degrades
+          // to a single (missing) row instead of a render crash.
+          Array.from(new Set(tree?.paths ?? [])),
     [mode, statusEntries, tree],
   )
   const ready = mode === 'changed' ? status != null : tree != null
