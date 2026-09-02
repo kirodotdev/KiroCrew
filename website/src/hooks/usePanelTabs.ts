@@ -3,6 +3,11 @@ import type { Artifact } from '../types'
 import { i18nT } from '../i18n/t'
 import { safeSetItem } from '../utils/safeStorage'
 import { secureRandomId } from '../utils/secureId'
+import {
+  isPanelTabKind,
+  panelTabDescriptor,
+  type PanelTabDescriptor,
+} from './panelTabRegistry'
 
 /** Singleton "view" tabs (opened from the + menu, one instance each). */
 export type ViewKind = 'changes' | 'issues' | 'links' | 'files' | 'artifacts' | 'subagents' | 'workflows' | 'logs' | 'context' | 'side' | 'browser' | 'git' | 'summary' | 'pins'
@@ -11,7 +16,15 @@ export type ViewKind = 'changes' | 'issues' | 'links' | 'files' | 'artifacts' | 
  *  It is deliberately a TabKind and NOT a ViewKind: SidePanel unmounts
  *  category views on tab switch (`if (!isActive) return null`), which would
  *  reload the app's iframe and destroy whatever the user has drawn. */
-export type TabKind = ViewKind | 'file' | 'diff' | 'artifact' | 'terminal' | 'folder' | 'app'
+// The `app:${string}` arm admits an app-contributed body-owning tab (kind
+// `app:<appName>:<id>` from `panelTabRegistry`) WITHOUT widening `ViewKind` — so
+// the exhaustive `Record<ViewKind, …>` tables (VIEW_TITLE_KEY, the + menu
+// label/desc maps) keep their compile-time "a view without a label is an error"
+// guarantee. A template-literal member (not `(string & {})`) also keeps every
+// built-in literal REQUIRED in mapped types and preserves `tab.kind === 'termnal'`
+// typo errors; `KIND_ICON` is keyed by the non-app arms and app tabs fall back to
+// the descriptor's own icon.
+export type TabKind = ViewKind | 'file' | 'diff' | 'artifact' | 'terminal' | 'folder' | 'app' | `app:${string}`
 
 /** Views that are AUTO-managed by content (see `syncPinned`): they appear —
  *  pinned to the front, non-closable, and absent from the + menu — only while
@@ -81,6 +94,13 @@ export interface PanelTab {
    *  a user who keeps returning to an early diagram does not have it evicted
    *  out from under them while newer renders stream in. */
   appActiveAt?: number
+  // ── App-contributed panel-tab fields (kind `app:<appName>:<id>`) ──
+  /** Contributing app's name — persisted metadata that lets the tab re-mount its
+   *  bundle after a reload; `title`/`icon`/`entry` are re-read from the live
+   *  descriptor, so a renamed tab needs no rewrite of the stored bucket. */
+  appName?: string
+  /** The `contributes.panelTabs[].id` within that app. */
+  appTabId?: string
   // ── terminal fields ──
   /** PTY session id — one live shell per terminal tab. */
   sessionId?: string
@@ -402,6 +422,12 @@ function loadPersisted(): BySlot {
       try {
         const b = JSON.parse(localStorage.getItem(k) ?? 'null') as Partial<Bucket> | null
         if (b && Array.isArray(b.tabs)) {
+          // No descriptor prune here: this runs at module evaluation, before an
+          // app's manifest-fed descriptors are fetched, so pruning an app tab
+          // here would drop it on every reload purely on load timing. Orphaned
+          // app tabs are hidden on the READ path instead (see `usePanelTabs`),
+          // which also handles an app disabled mid-session and restores the tab
+          // if it is re-enabled.
           out[slot] = { tabs: b.tabs as PanelTab[], activeId: (b.activeId as string | null) ?? null }
         }
       } catch { /* skip malformed bucket */ }
@@ -470,14 +496,63 @@ export function __resetPanelTabs(): void {
  * tab metadata is persisted; document-tab content is re-fetched lazily by the
  * consumer after a reload (ChatPage's cold-tab hydration effect).
  */
-export function usePanelTabs(slotKey: string | null = null) {
+export function usePanelTabs(
+  slotKey: string | null = null,
+  /** App-contributed tab descriptors, resolved by a caller that sits inside the
+   *  React Query provider (`usePanelTabDescriptors()`). Passed in rather than
+   *  read here so this hook stays provider-free: it is the strip's model for
+   *  every surface, and making it require a `QueryClientProvider` would put that
+   *  requirement on every consumer.
+   *
+   *  `undefined` means "this caller does not resolve manifests", which is NOT the
+   *  same as an empty set: an app tab is then left exactly as stored, because a
+   *  caller that cannot know the descriptors must never be the reason a user's
+   *  persisted tab disappears. `[]` is a known-empty set and does hide app tabs. */
+  panelTabDescriptors?: PanelTabDescriptor[],
+) {
   const key = bucketKey(slotKey)
   const bySlot = useSyncExternalStore(subscribe, getSnapshot, getSnapshot)
   const { tabs: storedTabs, activeId } = bySlot[key] ?? EMPTY_BUCKET
   // View-tab labels are re-resolved from `kind` on every read so the strip is in
   // the CURRENT language — see `localiseTitles`. Memoized on the stored array so
   // an unchanged strip keeps a stable `tabs` identity.
-  const tabs = useMemo(() => localiseTitles(storedTabs), [storedTabs])
+  //
+  // An app tab whose descriptor is absent (app disabled / uninstalled / removed
+  // mid-session) is HIDDEN, not deleted — the stored bucket keeps it, so
+  // re-enabling the app restores it. `title` is re-projected from the live
+  // descriptor so a renamed tab reflects without rewriting the bucket.
+  const { tabs, pruned } = useMemo(() => {
+    const localised = localiseTitles(storedTabs)
+    const out: PanelTab[] = []
+    for (const t of localised) {
+      if (!isPanelTabKind(t.kind)) { out.push(t); continue }
+      // Descriptors unknown to this caller: keep the tab as stored rather than
+      // treating "not resolved" as "app gone".
+      if (!panelTabDescriptors) { out.push(t); continue }
+      const d = panelTabDescriptor(t.kind, panelTabDescriptors)
+      if (!d) continue // orphan: hide until its app is present again
+      out.push(t.title === d.title ? t : { ...t, title: d.title })
+    }
+    return { tabs: out, pruned: out.length !== localised.length }
+  }, [storedTabs, panelTabDescriptors])
+
+  // If the prune above HID the stored active tab, focus the last visible tab for
+  // display without rewriting the stored bucket (a re-enabled app should restore
+  // its own active tab).
+  //
+  // Scoped to that case on purpose. Applied unconditionally it also "repairs" a
+  // stored `activeId` that names no tab at all — a bucket drifted by a hand-edited
+  // or downgrade-written localStorage — which core answers with no active tab, not
+  // with the last one. Silently focusing a tab the user did not choose is a
+  // behaviour change for every strip, not just one holding a contributed tab.
+  const effectiveActiveId = useMemo(
+    () => (
+      tabs.some(t => t.id === activeId) || !pruned
+        ? activeId
+        : (tabs.length ? tabs[tabs.length - 1].id : null)
+    ),
+    [tabs, activeId, pruned],
+  )
 
   /** Apply a bucket transform to the CURRENT slot's strip. */
   const update = useCallback((fn: (b: Bucket) => Bucket) => {
@@ -495,6 +570,13 @@ export function usePanelTabs(slotKey: string | null = null) {
 
   const openView = useCallback((kind: ViewKind) => {
     upsert({ id: kind, kind, title: viewTitle(kind) })
+  }, [upsert])
+
+  /** Open an app-contributed body-owning tab (one instance per kind, like a
+   *  view). Persists the metadata (`appName`/`appTabId`) needed to re-mount the
+   *  bundle after a reload; title/icon/entry are re-read from the descriptor. */
+  const openPanelTab = useCallback((d: PanelTabDescriptor) => {
+    upsert({ id: d.kind, kind: d.kind, title: d.title, appName: d.appName, appTabId: d.tabId })
   }, [upsert])
 
   /** Reconcile the AUTO-managed pinned views (Changes / Files / Artifacts) to
@@ -694,12 +776,12 @@ export function usePanelTabs(slotKey: string | null = null) {
     return sessionId
   }, [tabs, upsert, setActive])
 
-  const activeTab = useMemo(() => tabs.find(t => t.id === activeId) ?? null, [tabs, activeId])
+  const activeTab = useMemo(() => tabs.find(t => t.id === effectiveActiveId) ?? null, [tabs, effectiveActiveId])
 
   return useMemo(() => ({
-    tabs, activeId, activeTab,
-    openView, openTerminal, openFile, openDiff, openArtifact, openFolder, openApp,
+    tabs, activeId: effectiveActiveId, activeTab,
+    openView, openPanelTab, openTerminal, openFile, openDiff, openArtifact, openFolder, openApp,
     patchTab, closeTab, closeAll, setActive, setOrder, syncPinned,
     hasTabs: tabs.length > 0,
-  }), [tabs, activeId, activeTab, openView, openTerminal, openFile, openDiff, openArtifact, openFolder, openApp, patchTab, closeTab, closeAll, setActive, setOrder, syncPinned])
+  }), [tabs, effectiveActiveId, activeTab, openView, openPanelTab, openTerminal, openFile, openDiff, openArtifact, openFolder, openApp, patchTab, closeTab, closeAll, setActive, setOrder, syncPinned])
 }

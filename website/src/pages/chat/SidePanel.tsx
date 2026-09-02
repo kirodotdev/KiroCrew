@@ -22,6 +22,9 @@ import { api } from '../../api/client'
 import { useTerminalEnabled, useTerminalTitle } from '../../utils/terminalRegistry'
 import type { usePanelTabs, ViewKind, PanelTab, TabKind } from '../../hooks/usePanelTabs'
 import { PINNED_VIEWS, useAllAppTabs } from '../../hooks/usePanelTabs'
+import { usePanelTabDescriptors, panelTabDescriptor, isPanelTabKind, type PanelTabDescriptor } from '../../hooks/panelTabRegistry'
+import AppHost from '../../components/AppHost'
+import { appIcon } from '../../apps/appIcons'
 import { scrollMemoryKeyFor } from '../../hooks/useScrollMemory'
 import { usePersistedBool } from '../../hooks/usePersistedBool'
 import { useSidePanelDock } from '../../hooks/useSidePanelDock'
@@ -38,13 +41,27 @@ import type { PullRequestLink } from '../../utils/pullRequestLinks'
 import type { ChatPin } from '../../api/pins'
 
 import { i18nT } from '../../i18n/t'
-const KIND_ICON: Record<TabKind, ReactNode> = {
+// Every non-app tab kind maps to a glyph; app-contributed kinds (`app:<…>`) are
+// excluded so this stays an EXHAUSTIVE map a forgotten built-in fails to satisfy
+// — their icon comes from the manifest descriptor via `iconForKind` instead.
+type BuiltinTabKind = Exclude<TabKind, `app:${string}`>
+const KIND_ICON: Record<BuiltinTabKind, ReactNode> = {
   changes: <GitPullRequest size={16} />, issues: <CircleDot size={16} />, files: <Folders size={16} />, links: <LinkIcon size={16} />, artifacts: <Component size={16} />, subagents: <Bot size={16} />, workflows: <Workflow size={16} />,
   logs: <ScrollText size={16} />, context: <Layers size={16} />, side: <MessageCircleQuestionMark size={16} />, terminal: <TerminalSquare size={16} />, browser: <Globe size={16} />,
   summary: <ListTree size={16} />,
   pins: <Pin size={16} />,
   file: <FileText size={16} />, diff: <GitCompare size={16} />, artifact: <Component size={16} />, folder: <Folder size={16} />,
   app: <PanelRight size={16} />, git: <GitBranch size={16} />,
+}
+
+/** The strip/menu glyph for a tab kind. A built-in reads `KIND_ICON`; an
+ *  app-contributed kind resolves its manifest lucide icon NAME through the
+ *  app-facing icon set, falling back to a generic panel glyph. */
+function iconForKind(kind: TabKind, descriptors: readonly PanelTabDescriptor[]): ReactNode {
+  if (isPanelTabKind(kind)) {
+    return appIcon(panelTabDescriptor(kind, descriptors)?.icon)
+  }
+  return KIND_ICON[kind]
 }
 
 /**
@@ -374,7 +391,10 @@ export default function SidePanel({
   slotTitle, chatMode,
   expanded, fillWidth, canDockBottom = true,
 }: SidePanelProps) {
-  const { tabs, activeId, openView, openTerminal, setActive, closeTab, patchTab, setOrder, syncPinned } = tabsCtl
+  const { tabs, activeId, openView, openPanelTab, openTerminal, setActive, closeTab, patchTab, setOrder, syncPinned } = tabsCtl
+  // App-contributed side-panel tabs from the installed-app manifests. Empty ⇒
+  // the "+" menu and launcher show nothing extra and the strip renders no app tab.
+  const panelTabDescriptors = usePanelTabDescriptors()
   // EVERY app frame, every slot, rendered from one stable-keyed list below so a
   // chat switch cannot change a frame's React key and remount its iframe.
   const allAppTabs = useAllAppTabs()
@@ -651,6 +671,25 @@ export default function SidePanel({
                 ))}
               </Fragment>
             ))}
+            {/* App-contributed tabs (contributes.panelTabs). Their labels are the
+                app's own literals — the core has no i18n key for a tab it does not
+                know — so they render descriptor.menuLabel directly rather than
+                through NEW_MENU_LABEL_KEY. No contributing app ⇒ nothing. */}
+            {panelTabDescriptors.length > 0 && (
+              <Fragment key="app-panel-tabs">
+                <DropdownMenuSeparator />
+                {panelTabDescriptors.map(d => (
+                  <DropdownMenuItem
+                    key={d.kind}
+                    className="gap-2.5 py-2"
+                    onSelect={() => openPanelTab(d)}
+                  >
+                    <span className="text-muted shrink-0">{appIcon(d.icon)}</span>
+                    <span className="flex-1">{d.menuLabel}</span>
+                  </DropdownMenuItem>
+                ))}
+              </Fragment>
+            )}
           </DropdownMenuContent>
         </DropdownMenu>
         {/* Flexible gap: the tabs and + hug the leading edge; this absorbs the
@@ -734,6 +773,24 @@ export default function SidePanel({
                   </button>
                 )
               })}
+              {/* App-contributed tabs share the launcher grid, so it presents the
+                  full set rather than the "+" menu carrying tabs the launcher
+                  hides. This is the one surface that renders menuDescription. */}
+              {panelTabDescriptors.map(d => (
+                <button
+                  key={d.kind}
+                  className="flex flex-col items-start gap-1.5 px-3.5 py-3 rounded-xl border border-border bg-transparent hover:bg-bg-hover hover:border-border-strong text-left cursor-pointer transition-colors"
+                  onClick={() => openPanelTab(d)}
+                >
+                  <div className="flex items-center gap-2.5 w-full text-text">
+                    <span className="shrink-0 opacity-80">{appIcon(d.icon)}</span>
+                    <span className="text-[13px] font-medium">{d.menuLabel}</span>
+                  </div>
+                  {d.menuDescription && (
+                    <div className="text-[11px] text-muted leading-snug">{d.menuDescription}</div>
+                  )}
+                </button>
+              ))}
               </div>
             </div>
           </div>
@@ -852,6 +909,24 @@ export default function SidePanel({
  *  type on every SidePanel render, forcing React to unmount/remount the whole
  *  subtree — which reset editor state and re-fired xterm's focus-on-visible
  *  effect, stealing focus from the chat input on every keystroke. */
+/** Body for an app-contributed side-panel tab (`contributes.panelTabs`). Resolves
+ *  the tab's descriptor and its installed-app record from the shared `['apps']`
+ *  query and mounts the app's declared `entry` through the ESM `AppHost` — the
+ *  same in-process host `ui.pages` use, so no app code crosses the boundary and
+ *  no iframe is involved. Renders nothing while the app is absent (disabled /
+ *  uninstalled); `active` is forwarded so a hidden body can pause work. */
+function AppPanelTabBody({ kind, active }: { kind: string; active: boolean }) {
+  const descriptors = usePanelTabDescriptors()
+  const { data: apps } = useQuery({ queryKey: ['apps'], queryFn: api.listApps })
+  const d = panelTabDescriptor(kind, descriptors)
+  // Array-checked, not just nullish-checked: `api.listApps` can answer with a
+  // non-array (the normalizer passes a bad payload through), and `.find` on it would
+  // throw inside this body's render.
+  const app = d && Array.isArray(apps) ? apps.find(a => a.name === d.appName) : undefined
+  if (!d || !app) return null
+  return <AppHost app={app} entry={d.entry} active={active} />
+}
+
 /** Host for one MCP App, keyed by session + tool-call id — the same
  *  `chat.mcpApps` store the inline path (`ToolCallLine`) reads, so the panel and
  *  the chat bubble are never two sources of truth.
@@ -984,6 +1059,10 @@ function TabBody({ tab, active, slot, projectDir, onClose, onContentChange, onDi
   diffLineNumbers: boolean; setDiffLineNumbers: (fn: (v: boolean) => boolean) => void
   diffSideBySide: boolean; setDiffSideBySide: (fn: (v: boolean) => boolean) => void
 }) {
+  // App-contributed body-owning tab (contributes.panelTabs). Intercepted here,
+  // like app/terminal, so it stays mounted and never reaches ActivityViewer's
+  // closed ViewKind multiplexer. No contributing app ⇒ this never matches.
+  if (isPanelTabKind(tab.kind)) return <AppPanelTabBody kind={tab.kind} active={active} />
   if (tab.kind === 'terminal') return <CliPanel sessionId={tab.sessionId ?? ''} cwd={tab.cwd} visible={active} onSendToChat={onTerminalSendToChat} />
   if (tab.kind === 'browser') return <WebPreviewPanel sessionKey={slot} active={active} />
   if (tab.kind === 'app') return <McpAppTabBody tab={tab} slot={slot} />
@@ -1117,6 +1196,9 @@ function DraggableTabItem({ tab, active, separator, instantLayout, onSelect, onC
 }
 
 function TabChip({ tab, active, onSelect, onClose, closable = true, pinned = false }: { tab: PanelTab; active: boolean; onSelect: () => void; onClose: () => void; closable?: boolean; pinned?: boolean }) {
+  // App-tab glyphs come from the manifest descriptor (resolved by name); a built-in
+  // reads KIND_ICON. Reuses the shared ['apps'] query, so no extra fetch.
+  const panelTabDescriptors = usePanelTabDescriptors()
   // Pinned views (Changes / Files / Artifacts) are icon-only when inactive and
   // expand to icon + label when active — a hybrid that keeps the strip compact
   // while still naming the current view. Dynamic (document / terminal) tabs
@@ -1153,7 +1235,7 @@ function TabChip({ tab, active, onSelect, onClose, closable = true, pinned = fal
         active ? 'side-tab-active bg-bg text-accent border-x-border border-t-border border-b-transparent' : 'side-tab-inactive border-transparent text-muted hover:text-text'
       }`}
     >
-      <span className="shrink-0">{KIND_ICON[tab.kind]}</span>
+      <span className="shrink-0">{iconForKind(tab.kind, panelTabDescriptors)}</span>
       {showLabel && (
         <span className="min-w-0 text-[12px] truncate text-left">
           {tab.kind === 'terminal' && tab.sessionId
