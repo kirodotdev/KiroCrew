@@ -21,7 +21,7 @@ import logging
 import os
 import re
 import time
-from collections.abc import Awaitable, Callable, Iterable, Iterator
+from collections.abc import Awaitable, Callable, Iterable, Iterator, Sequence
 from dataclasses import dataclass, fields, replace
 from pathlib import PurePosixPath
 from typing import Any, Protocol, TypedDict, TypeVar
@@ -50,6 +50,10 @@ from kiro_crew.github_runner import (
 )
 from kiro_crew.github_runner import strict_provider_bins as _strict_provider_bins
 from kiro_crew.github_runner import validate_provider_executable as _validate_provider_executable
+from kiro_crew.history_search import register_search_ref_resolver as _register_search_ref_resolver
+from kiro_crew.history_search import (
+    reset_search_ref_resolver_for_tests as _reset_search_ref_resolver,
+)
 from kiro_crew.loop_lock import LoopBoundLock
 from kiro_crew.sandbox import (
     create_subprocess_limited,
@@ -631,6 +635,18 @@ class SourceProviderPlugin(Protocol):
     #
     #   def chip_label(self, ref: SourceRef) -> str
     #   def path_markers(self) -> Sequence[str]
+    #   def search_ref(self, token: str) -> tuple[str, Sequence[str]] | None
+    #       Recognize ONE casefolded query token as this provider's item and
+    #       answer `(canonical_spelling, alternative_spellings)` -- every spelling
+    #       casefolded -- or None. Contributed to transcript search through
+    #       `source_search_ref()`, so a query naming a review by id gates on the
+    #       item rather than on the literal string. Spellings only: a provider
+    #       cannot contribute lead-in vocabulary, and a bare all-digit token is
+    #       never offered to a provider at all. Must be PURE and allocation-cheap -- no
+    #       I/O, no network, no config read -- it is called for every term of
+    #       every query, at least twice per search. Nothing in this repo registers
+    #       a provider, so `FakeAcmePlugin.search_ref` in
+    #       test/test_source_provider_plugin.py is the reference implementation.
     #   async def fetch_check_status(self, ref: SourceRef) -> dict[str, str]
     #   async def comment(self, ref: SourceRef, body: str) -> None
     #   async def resolve_thread(self, ref: SourceRef, thread_id: str,
@@ -664,6 +680,15 @@ def register_source_provider(plugin: SourceProviderPlugin) -> None:
         if not callable(getattr(plugin, method, None)):
             raise ValueError(f"source provider {provider_id!r} is missing {method}()")
     _SOURCE_PROVIDER_PLUGINS[provider_id] = plugin
+    # Publish the transcript-search seam DOWNWARD into core (dashboard -> core,
+    # the allowed direction; core never reaches up into this module). Done here,
+    # at registration, rather than from a route handler: `parse_search_query` is
+    # also reached from paths that serve no HTTP -- the Discord title-only resume
+    # gate and the `kirocrew memory search` CLI -- and a process that never ran a
+    # dashboard route would then answer the SAME query differently, a divergence
+    # that presents as flakiness rather than as a missing registration. Idempotent
+    # by identity, so registering several providers consults one collector.
+    _register_search_ref_resolver(source_search_ref)
     logger.info("registered source provider %s", provider_id)
 
 
@@ -675,6 +700,58 @@ def registered_source_provider(provider_id: str) -> SourceProviderPlugin | None:
 def reset_source_providers_for_tests() -> None:
     """Drop every registration. Test-only: the registry is module state."""
     _SOURCE_PROVIDER_PLUGINS.clear()
+    # The search seam is module state in core, published from here, so reset it
+    # with the registry it serves — otherwise a stale collector outlives the
+    # plugins it reads and a later test observes a registered resolver it never
+    # asked for.
+    _reset_search_ref_resolver()
+
+
+def source_search_ref(token: str) -> tuple[str, Sequence[str]] | None:
+    """Spellings of the provider item a query *token* names, or None.
+
+    The transcript search recognizes the built-in forge shapes itself (``#4411``,
+    ``pull/4411``, a PR URL) and expands them to every spelling of the same item,
+    so whichever form a transcript used is found. A registered provider whose ids
+    look like ``REV-987654321`` matches none of those shapes, so WITHOUT this its
+    ids degrade to plain literal needles: a query finds only the exact string it
+    typed, and never a transcript that cited the same review by URL.
+
+    A plugin contributes spellings through the optional ``search_ref()`` hook.
+
+    The FIRST plugin to ANSWER wins, for every token shape. Several plugins may be
+    registered, so the loop asks each in turn until one answers -- but nothing here
+    adjudicates BETWEEN two real answers: two registrants holding a real item at the
+    SAME token cannot arise in this repo, which registers no provider at all, so
+    merging them would ship surface no code path can reach. It is additive if a
+    second registrant appears.
+
+    Nothing here judges an answer's SHAPE. Skipping a malformed one would only
+    matter so a LATER plugin could still be asked, which is the same two-registrant
+    scenario the merge above is declined for, so the collector hands the first
+    answer through and lets the one normalizer decide what it is. A RAISE is
+    different: it costs no ``alts`` to contain and one broken edition must not hide
+    every later provider's items, so it is caught per provider here.
+
+    Shape belongs to the search module's ``_provider_search_ref``, the single
+    normalizer: casefolding, the dedup, the spelling cap and every shape check. Its
+    guard also wraps this whole collector, because it IS the resolver core calls.
+    """
+    for plugin in _SOURCE_PROVIDER_PLUGINS.values():
+        hook = getattr(plugin, "search_ref", None)
+        if not callable(hook):
+            continue
+        try:
+            found = hook(token)
+        except Exception:
+            # One broken edition must not hide every later provider's items, so the
+            # raise is contained HERE as well as in the normalizer's own guard.
+            logger.debug("source provider %s search_ref failed", plugin.id, exc_info=True)
+            continue
+        if found is None:
+            continue
+        return found
+    return None
 
 
 def source_link_path_markers() -> tuple[str, ...]:

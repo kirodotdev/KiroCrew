@@ -14,6 +14,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from kiro_crew import history, history_search
 from kiro_crew.dashboard.handlers import source_providers as source
 from kiro_crew.dashboard.slot_projection import SlotProjection
 
@@ -82,6 +83,21 @@ class FakeAcmePlugin:
 
     def path_markers(self) -> list[str]:
         return ["/cr/"]
+
+    def search_ref(self, token: str) -> tuple[str, tuple[str, ...]] | None:
+        """Recognize this edition's own review ids, however a transcript wrote them.
+
+        A real implementation of the optional hook rather than a lambda: this is
+        the seam's only in-tree consumer, so it has to be driven the way a
+        downstream edition would drive it.
+        """
+        import re
+
+        match = re.fullmatch(r"(?:cr-)?(\d{2,9})", token.casefold())
+        if match is None:
+            return None
+        number = match.group(1)
+        return (f"cr-{number}", (f"review.acme.example/cr/{number}", f"cr {number}"))
 
     def setup_message(self) -> str:
         return "Set ACME_TOKEN to load Acme reviews."
@@ -546,3 +562,178 @@ def test_sidebar_keeps_same_host_jira_context_paths_distinct(plugin, monkeypatch
         "https://jira.acme.internal/teamA/browse/PROJ-9",
         "https://jira.acme.internal/teamB/browse/PROJ-9",
     }
+
+
+def test_search_ref_is_absent_until_a_plugin_offers_the_hook(plugin, monkeypatch) -> None:
+    # Every optional hook is looked up with getattr, so a plugin offering no
+    # callable contributes nothing rather than failing obscurely.
+    monkeypatch.setattr(plugin, "search_ref", None)
+    assert source.source_search_ref("cr-123") is None
+
+
+def test_search_ref_hands_the_contribution_through_unchanged(plugin) -> None:
+    # The collector is the FAN-OUT across plugins and nothing else. Casefolding,
+    # the cap and the dedup are the search module's, applied once there.
+    plugin.search_ref = lambda token: ("CR-123", ("Reviews/CR-123", "CR 123"))
+
+    assert source.source_search_ref("CR-123") == (
+        "CR-123",
+        ("Reviews/CR-123", "CR 123"),
+    )
+
+
+def test_search_ref_drops_a_malformed_contribution(plugin) -> None:
+    # A bare string would iterate into characters, and an empty canonical names
+    # no item -- both degrade to "this provider does not claim the token". The
+    # collector hands the answer through; the single normalizer is what rejects
+    # it, so the contract is asserted where the search actually consumes it.
+    for answer in (("", ("a/1",)), ("cr-123", "reviews/cr-123"), (), "cr-123", (1, ["a/1"])):
+        plugin.search_ref = lambda token, answer=answer: answer
+        assert history_search._provider_search_ref("cr-123") is None, answer
+
+
+def test_the_search_caps_a_contribution_the_collector_passed_through(plugin) -> None:
+    # End-to-end: each spelling costs one substring scan of every scanned session
+    # per field, so the ceiling has to hold wherever the answer came from.
+    plugin.search_ref = lambda token: ("cr-123", tuple(f"s{i}/123" for i in range(50)))
+
+    found = history_search._provider_search_ref("cr-123")
+
+    assert found is not None
+    assert len(found[1]) == history_search._MAX_SEARCH_REF_SPELLINGS
+
+
+def test_search_ref_survives_a_raising_hook(plugin) -> None:
+    def boom(token: str):
+        raise RuntimeError("provider is on fire")
+
+    plugin.search_ref = boom
+
+    # Contained by the normalizer's call guard, which wraps the whole fan-out
+    # because this collector IS the resolver it calls -- so a plugin defect
+    # cannot escape into an HTTP 500 on every search.
+    assert history_search._provider_search_ref("cr-123") is None
+
+
+def test_registration_publishes_the_collector_into_the_search(plugin) -> None:
+    # dashboard -> core, at registration rather than from a route handler:
+    # parse_search_query is also reached from paths that serve no HTTP, and a
+    # process that never ran a route would answer the same query differently.
+    assert history_search._search_ref_resolver is source.source_search_ref
+    plugin.search_ref = lambda token: (
+        ("rev-987654321", ("reviews/rev-987654321",)) if token == "rev-987654321" else None
+    )
+
+    needles, _, _ = history.parse_search_query("rev-987654321")
+
+    required = [n for n in needles if n.required]
+    assert len(required) == 1, required
+    assert required[0].text == "rev-987654321"
+    assert required[0].alts == ("reviews/rev-987654321",)
+
+
+def test_resetting_the_registry_also_unpublishes_the_collector() -> None:
+    source.register_source_provider(FakeAcmePlugin())
+    assert history_search._search_ref_resolver is source.source_search_ref
+
+    source.reset_source_providers_for_tests()
+
+    assert history_search._search_ref_resolver is None
+
+
+class FakeBetaPlugin(FakeAcmePlugin):
+    """A SECOND edition, whose items carry their own numbers."""
+
+    id = "beta"
+
+    def parse(self, raw_url: str) -> source.SourceRef | None:
+        return None
+
+    def search_ref(self, token: str) -> tuple[str, tuple[str, ...]] | None:
+        import re
+
+        match = re.fullmatch(r"(?:rev-)?(\d{2,9})", token.casefold())
+        if match is None:
+            return None
+        number = match.group(1)
+        return (f"rev-{number}", (f"review.beta.example/r/{number}",))
+
+
+def test_a_raising_provider_does_not_abort_the_fan_out(plugin) -> None:
+    # One broken edition must not hide every later provider's items: without
+    # per-provider isolation the raise escapes and the beta match never surfaces.
+    def boom(token: str):
+        raise RuntimeError("provider is on fire")
+
+    plugin.search_ref = boom
+    source.register_source_provider(FakeBetaPlugin())
+
+    found = source.source_search_ref("4287")
+
+    assert found is not None, "the second provider's match was lost"
+    canonical, alts = found
+    assert canonical == "rev-4287", canonical
+    assert "review.beta.example/r/4287" in alts, alts
+
+
+def test_a_numeric_token_also_stops_at_the_first_matching_provider(plugin) -> None:
+    # First answer wins for EVERY token shape. A cross-plugin merge would serve
+    # two registrants holding the same number, and this repo registers none.
+    source.register_source_provider(FakeBetaPlugin())
+
+    found = source.source_search_ref("4287")
+
+    assert found is not None
+    canonical, alts = found
+    assert canonical == "cr-4287"
+    assert "review.acme.example/cr/4287" in alts
+    assert not any("beta" in alt for alt in alts), alts
+
+
+def test_a_prefixed_token_still_stops_at_the_first_provider(plugin) -> None:
+    # A prefixed id names ONE item, so merging would conflate distinct items.
+    source.register_source_provider(FakeBetaPlugin())
+
+    found = source.source_search_ref("cr-4287")
+
+    assert found is not None
+    canonical, alts = found
+    assert canonical == "cr-4287"
+    assert not any("beta" in alt for alt in alts), alts
+
+
+def test_core_bounds_the_spellings_one_provider_can_contribute(plugin, monkeypatch) -> None:
+    # The cap lives once, in core: the collector keeps no ceiling of its own,
+    # which would be a second number pinned equal to core's by a comment.
+    monkeypatch.setattr(
+        plugin, "search_ref", lambda token: ("cr-4287", tuple(f"a{i}/4287" for i in range(50)))
+    )
+
+    normalized = history_search._provider_search_ref("4287")
+
+    assert normalized is not None
+    assert len(normalized[1]) == history_search._MAX_SEARCH_REF_SPELLINGS
+    assert not hasattr(source, "_MAX_SEARCH_SPELLINGS_PER_PROVIDER")
+
+
+def test_the_seam_finds_a_transcript_that_cited_the_item_only_by_url(plugin, tmp_path) -> None:
+    """End to end through the registered plugin's own hook -- the seam's point.
+
+    Nothing in this repo registers a source provider in production, so this is
+    the only place the hook is driven the way a downstream edition drives it.
+    """
+    log = history.ConversationLog(base_dir=tmp_path)
+    log.append("by_url", "assistant", f"opened {CR_URL} for review")
+    log.append("unrelated", "assistant", "notes about the deploy window")
+
+    keys = {s["key"] for s in log.search_sessions("cr-123", 10)}
+
+    assert keys == {"by_url"}, keys
+    # The control: the transcript spells the id `cr/123`, never `cr-123`, so the
+    # hit came from the plugin's spelling. Withhold the hook and it disappears.
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(plugin, "search_ref", None)
+    try:
+        assert log.search_sessions("cr-123", 10) == []
+    finally:
+        monkeypatch.undo()
