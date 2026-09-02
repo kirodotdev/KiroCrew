@@ -1466,7 +1466,15 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # app's own queue JSON (`/thread`). Because the stored copy is already
         # scrubbed, every later read of it — the panel's own `/queue`, and the
         # thread rendered beside a pin — serves clean data, so there is no
-        # separate egress boundary to register.
+        # separate egress boundary to register. Three modules of this backend
+        # match the call-site scan and the boundary between them adds no new
+        # transport or audience: `server.py` owns the redactor pair itself and
+        # the app's whole security-policy surface, `request_state.py` applies it
+        # while BUILDING the panel-facing request and comment shapes, and
+        # `http_api.py` runs the ingest pass and re-applies the same floor on
+        # the read path it serves.
+        "apps/builtins/design_tweak/backend/http_api.py",
+        "apps/builtins/design_tweak/backend/request_state.py",
         "apps/builtins/design_tweak/backend/server.py",
         "sync_bridge.py",
         "suggestions.py",

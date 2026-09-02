@@ -91,7 +91,6 @@ src/kiro_crew/apps/builtins/crew_companion/tests/test_routes.py
 src/kiro_crew/apps/builtins/crew_companion/tests/test_store.py
 src/kiro_crew/apps/builtins/crew_companion/tests/test_write_failures.py
 src/kiro_crew/apps/builtins/design_critique/tests/test_manifest.py
-src/kiro_crew/apps/builtins/design_tweak/backend/server.py
 src/kiro_crew/apps/builtins/dev_fleet/gateway_service.py
 src/kiro_crew/apps/builtins/dev_fleet/server.py
 src/kiro_crew/apps/builtins/dev_fleet/skills/pod-e2e/scripts/pod-playwright.py

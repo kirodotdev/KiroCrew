@@ -189,6 +189,36 @@ class TestPkgScripts:
         )
         assert server._pkg_scripts(tmp_path) == {}
 
+    def test_uses_hardened_reader_with_project_root_and_cap(self, tmp_path, monkeypatch):
+        """User-selected package metadata stays inside the guarded read boundary."""
+        seen = {}
+
+        def guarded_read(raw, within_root=None, *, max_bytes=None):
+            seen.update(raw=raw, within_root=within_root, max_bytes=max_bytes)
+            return b'{"scripts":{"dev":"vite"}}'
+
+        monkeypatch.setattr(server, "safe_read_file_bytes_nolink", guarded_read)
+
+        assert server._pkg_scripts(tmp_path) == {"dev": "vite"}
+        assert Path(seen["raw"]) == tmp_path / "package.json"
+        assert seen["within_root"] == str(tmp_path)
+        assert seen["max_bytes"] == server.MAX_BODY_BYTES
+
+    def test_rejected_or_oversized_package_metadata_fails_closed(
+        self, tmp_path, monkeypatch
+    ):
+        """A rejected inode or oversized package file cannot influence commands."""
+        monkeypatch.setattr(
+            server, "safe_read_file_bytes_nolink", lambda *args, **kwargs: None
+        )
+        assert server._pkg_scripts(tmp_path) == {}
+
+        def oversized(*args, **kwargs):
+            raise server.FileTooLargeError("too large")
+
+        monkeypatch.setattr(server, "safe_read_file_bytes_nolink", oversized)
+        assert server._pkg_scripts(tmp_path) == {}
+
 
 # ---------------------------------------------------------------------------
 # _node_bin_dirs tests
@@ -622,3 +652,41 @@ class TestClassifyProject:
         result = server._classify_project(tmp_path)
         assert result["needsDevServer"] is True
         assert result["hasEntry"] is False
+
+    def test_entry_scan_uses_hardened_reader_with_project_root_and_cap(
+        self, tmp_path, monkeypatch
+    ):
+        """Classification cannot follow an entry inode outside the selected project."""
+        entry = tmp_path / "index.html"
+        entry.write_text(
+            '<script type="module" src="/src/main.tsx"></script>', encoding="utf-8"
+        )
+        seen = []
+
+        def guarded_read(raw, within_root=None, *, max_bytes=None):
+            seen.append(
+                {"raw": raw, "within_root": within_root, "max_bytes": max_bytes}
+            )
+            return entry.read_bytes()
+
+        monkeypatch.setattr(server, "safe_read_file_bytes_nolink", guarded_read)
+
+        result = server._classify_project(tmp_path)
+        assert result["unbundledEntry"] == "/src/main.tsx"
+        entry_read = next(call for call in seen if Path(call["raw"]) == entry)
+        assert entry_read["within_root"] == str(tmp_path)
+        assert entry_read["max_bytes"] == server.MAX_STATIC_BYTES
+
+    def test_rejected_or_oversized_entry_scan_fails_closed(self, tmp_path, monkeypatch):
+        """Rejected entry content never reaches the HTML classifier."""
+        (tmp_path / "index.html").write_text("<html></html>", encoding="utf-8")
+        monkeypatch.setattr(
+            server, "safe_read_file_bytes_nolink", lambda *args, **kwargs: None
+        )
+        assert server._classify_project(tmp_path)["unbundledEntry"] == ""
+
+        def oversized(*args, **kwargs):
+            raise server.FileTooLargeError("too large")
+
+        monkeypatch.setattr(server, "safe_read_file_bytes_nolink", oversized)
+        assert server._classify_project(tmp_path)["unbundledEntry"] == ""
