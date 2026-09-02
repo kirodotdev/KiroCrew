@@ -464,11 +464,8 @@ async def _run_side_turn(
 
         if not chunks:
             response_text = (
-                "I tried to use a tool to answer that, but tool "
-                "execution is not available in /side conversations. "
-                "Let me try again using only the context I have — "
-                "please rephrase your question if you'd like a "
-                "different approach."
+                "Tool and MCP execution is intentionally unavailable in Side Chat. "
+                "Ask in the main chat if you want me to use tools or take action."
             )
             logger.info(
                 "Side turn produced no text (tool rejection): " "slot=%s run_id=%s",

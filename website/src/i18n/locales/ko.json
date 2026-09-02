@@ -8684,6 +8684,7 @@
         "ask_a_side_question_2": "사이드 질문하기…",
         "ask_a_side_question_main_agent_keeps_working": "실행 중인 작업을 멈추지 않고 사이드에서 질문할 수 있습니다. 여기 내용은 대화에 저장되지 않습니다.",
         "context_from": "컨텍스트 출처",
+        "context_only_tools_unavailable": "컨텍스트 전용 · 여기서는 도구와 MCP를 사용할 수 없습니다. 작업은 기본 채팅에서 요청하세요.",
         "question_too_long": "질문이 너무 깁니다 — 약 {{max}} 글자 이내로 줄여 주세요 (현재: {{current}})",
         "queue_cancel_failed": "대기열에 있는 해당 질문을 취소할 수 없습니다",
         "queue_edit_failed": "대기열에 있는 해당 질문을 수정할 수 없습니다",

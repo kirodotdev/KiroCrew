@@ -8932,6 +8932,7 @@
         "ask_a_side_question_2": "Fai una domanda a parte…",
         "ask_a_side_question_main_agent_keeps_working": "Fai una domanda a parte senza interrompere l’esecuzione attiva. Niente di tutto questo viene salvato nella chat.",
         "context_from": "Contesto da",
+        "context_only_tools_unavailable": "Solo contesto · Strumenti e MCP non sono disponibili qui. Usa la chat principale per eseguire azioni.",
         "question_too_long": "Domanda troppo lunga — riducila a meno di circa {{max}} caratteri (la tua: {{current}})",
         "queue_cancel_failed": "Impossibile annullare quella domanda in coda",
         "queue_edit_failed": "Impossibile aggiornare quella domanda in coda",

@@ -8684,6 +8684,7 @@
         "ask_a_side_question_2": "随手问一句…",
         "ask_a_side_question_main_agent_keeps_working": "随手问一句，不会打断正在运行的任务。这里的内容不会存进对话。",
         "context_from": "上下文来自",
+        "context_only_tools_unavailable": "仅使用上下文 · 此处无法使用工具和 MCP。请在主对话中执行操作。",
         "question_too_long": "问题过长 — 请缩减到约 {{max}} 个字符以内（当前：{{current}}）",
         "queue_cancel_failed": "无法取消排队中的这个问题",
         "queue_edit_failed": "无法更新排队中的这个问题",

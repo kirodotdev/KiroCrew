@@ -8932,6 +8932,7 @@
         "ask_a_side_question_2": "Poser une question annexe…",
         "ask_a_side_question_main_agent_keeps_working": "Posez une question annexe sans interrompre l’exécution active. Rien ici n’est enregistré dans la conversation.",
         "context_from": "Contexte de",
+        "context_only_tools_unavailable": "Contexte uniquement · Les outils et les MCP ne sont pas disponibles ici. Utilisez la conversation principale pour agir.",
         "question_too_long": "Question trop longue — réduis-la à moins d'environ {{max}} caractères (la tienne : {{current}})",
         "queue_cancel_failed": "Impossible d'annuler cette question en file d'attente",
         "queue_edit_failed": "Impossible de modifier cette question en file d'attente",

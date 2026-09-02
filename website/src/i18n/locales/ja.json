@@ -8684,6 +8684,7 @@
         "ask_a_side_question_2": "サイドで質問…",
         "ask_a_side_question_main_agent_keeps_working": "実行中の処理を止めずにサイドで質問できます。ここの内容はチャットには保存されません。",
         "context_from": "コンテキスト元",
+        "context_only_tools_unavailable": "コンテキストのみ · ここではツールや MCP は利用できません。操作はメインチャットで依頼してください。",
         "question_too_long": "質問が長すぎます — 約 {{max}} 文字未満に短くしてください（現在は {{current}} 文字）",
         "queue_cancel_failed": "キューに入っている質問をキャンセルできませんでした",
         "queue_edit_failed": "キューに入っている質問を更新できませんでした",

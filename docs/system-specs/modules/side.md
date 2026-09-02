@@ -284,7 +284,9 @@ answer and a queued one is a card, so both are placed by the server frame.
 While a turn is in flight the composer stays editable and swaps its send button
 for the shared `BusySendButton`; queued entries render as `QueueStack` cards whose
 cancel and edit wait for the server's own frame before changing what the user
-sees.
+sees. A persistent helper beneath the composer states that Side Chat is
+context-only, tools and MCPs are unavailable, and action-taking belongs in the
+main chat; unlike an empty-state note, it remains visible after messages exist.
 
 The composer's DRAFT behaviour is not owned here. It comes from the chat SDK's
 `app-sdk/useComposerDraft`, which this surface was the first consumer of

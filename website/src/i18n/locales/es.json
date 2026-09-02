@@ -8932,6 +8932,7 @@
         "ask_a_side_question_2": "Hacer una pregunta paralela…",
         "ask_a_side_question_main_agent_keeps_working": "Haz una pregunta paralela sin interrumpir la ejecución activa. Nada de esto se guarda en el chat.",
         "context_from": "Contexto de",
+        "context_only_tools_unavailable": "Solo contexto · Aquí no están disponibles las herramientas ni los MCP. Usa el chat principal para realizar acciones.",
         "question_too_long": "Pregunta demasiado larga — redúcela a menos de unos {{max}} caracteres (la tuya: {{current}})",
         "queue_cancel_failed": "No se pudo cancelar esa pregunta en cola",
         "queue_edit_failed": "No se pudo actualizar esa pregunta en cola",
