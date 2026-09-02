@@ -197,11 +197,13 @@ class KeystoneFileBackend:
     def _path(self) -> Path:
         return self._pinned_path if self._pinned_path is not None else secrets_path()
 
-    def _read(self) -> dict[str, dict[str, str]]:
-        try:
-            raw = json.loads(self._path.read_text(encoding="utf-8"))
-        except (FileNotFoundError, OSError, json.JSONDecodeError):
-            return {}
+    @staticmethod
+    def _coerce(raw: Any) -> dict[str, dict[str, str]]:
+        """Normalize a parsed store to ``provider -> {field: value}``, all strings.
+
+        Shared by both readers below so the only thing that can differ between
+        them is which read FAILURES are allowed to answer "empty".
+        """
         if not isinstance(raw, dict):
             return {}
         out: dict[str, dict[str, str]] = {}
@@ -209,6 +211,45 @@ class KeystoneFileBackend:
             if isinstance(fields, dict):
                 out[str(provider)] = {str(k): str(v) for k, v in fields.items()}
         return out
+
+    def _read(self) -> dict[str, dict[str, str]]:
+        """Every stored secret, or ``{}`` when there is nothing readable.
+
+        A LOOKUP read: ``get``/``configured_fields`` answer "not configured"
+        rather than raising, so the Settings UI still renders and a provider
+        whose token cannot be loaded is refused by the fail-closed
+        ``has_secrets`` check instead of 500ing the route. See
+        :meth:`_read_for_update` for why a mutation may not stand on the same
+        answer.
+        """
+        try:
+            raw = json.loads(self._path.read_text(encoding="utf-8"))
+        except (FileNotFoundError, OSError, json.JSONDecodeError):
+            return {}
+        return self._coerce(raw)
+
+    def _read_for_update(self) -> dict[str, dict[str, str]]:
+        """The store a read-modify-write is allowed to publish over.
+
+        ``put`` and ``delete`` rewrite the WHOLE file from what they read, so an
+        empty base is not "no secrets to carry forward" -- it is "delete every
+        provider token already stored". Only a MISSING file makes that true. An
+        unreadable one (a transient EACCES/EIO, a scanner holding the handle on
+        Windows) is a store we still have, and this file is the only copy that
+        exists: a provider token is not derivable from anything else on the box,
+        so truncating it means the operator must mint new credentials at
+        PagerDuty and Datadog, and every poll fails closed until they do. The
+        error propagates and the mutation is abandoned instead.
+
+        Corruption keeps reading as empty, matching :meth:`_read`: the document
+        parsed to nothing usable, so there is no stored token left to lose by
+        replacing it.
+        """
+        try:
+            raw = json.loads(self._path.read_text(encoding="utf-8"))
+        except (FileNotFoundError, json.JSONDecodeError):
+            return {}
+        return self._coerce(raw)
 
     def _lock(self) -> "_SecretLock":
         return _SecretLock(self._path)
@@ -243,14 +284,24 @@ class KeystoneFileBackend:
         # onto a stale snapshot and the later atomic replace would DELETE the first secret while
         # both returned 200. On the credential store a lost update is a lost secret. Found in
         # review — the same class as the config/index/ledger/policy locks elsewhere in this app.
+        #
+        # The base is ``_read_for_update``, not ``_read``: the lock serializes
+        # writers but says nothing about a read that FAILED, and this write
+        # replaces the whole file. See that method for why one transient EACCES
+        # must abandon the save rather than publish an empty store over it.
         with self._lock():
-            data = self._read()
+            data = self._read_for_update()
             data.setdefault(provider_id, {})[field_name] = value
             self._write(data)
 
     def delete(self, provider_id: str) -> bool:
+        # ``_read_for_update`` for the same reason as ``put``, plus one specific to
+        # revocation: on an unreadable store the lenient read reported the provider
+        # absent, so this returned False and the audit logged ``not_found`` — telling
+        # the operator there was nothing to revoke while the live token was still on
+        # disk and still working. A raise is the honest answer.
         with self._lock():
-            data = self._read()
+            data = self._read_for_update()
             if provider_id not in data:
                 return False
             del data[provider_id]
