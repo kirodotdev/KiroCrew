@@ -333,6 +333,31 @@ class TestAnswerOnlyBlock:
         )
         assert "evidence is opt-in: leave it out and offer it" in result
 
+    def test_answer_only_bounds_a_halted_or_deviated_task(self):
+        """Measured gap this closes: told to fold three things into a PR, the
+        model found that main had moved, correctly stopped -- and then wrote
+        seven paragraphs justifying the stop (what landed, a quoted docstring,
+        the design collision, why its own call was right) before the two
+        decisions the user actually had to make. Every other rule frames the
+        reply as answering a QUESTION, so a deviation had no answer shape and
+        the derivation became the reply. Justifying a deviation feels
+        non-optional in a way that explaining an answer does not, so the rule
+        has to say the reasoning is opt-in like any other explanation. ORDER is
+        the load-bearing half: the user's own manual repair of that reply
+        ("what is the suggested action here with simple words") produced an
+        imperative first line followed by two sentences of state, so the rule
+        names the action as the opener explicitly -- an unordered "state and
+        call" still licenses opening on the situation, which is the wall.
+        """
+        result = _resolve("{{VERBOSITY_BLOCK}}", "dashboard:x", verbosity="answer_only")
+        assert "Stopping or deviating is still an answer" in result
+        assert "LEAD WITH THE ACTION you recommend" in result
+        assert "not with what you found, not with the situation" in " ".join(
+            result.split()
+        )
+        assert "at most two sentences of the state" in result
+        assert "Justifying a deviation feels mandatory; it is not" in result
+
     def test_the_answer_itself_is_bounded_per_item(self):
         """The gap the user was papering over by hand. Every length rule in the
         block governed EXPLANATION -- the one-sentence cap, the cut list, plain
