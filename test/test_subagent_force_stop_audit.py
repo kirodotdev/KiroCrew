@@ -1076,7 +1076,7 @@ class TestTheRunsOwnReportWaitsForItsTeardown:
         assert seen == [None] or seen == [""], f"a clean completion carried an error: {seen!r}"
         assert info.outcome == "completed"
         group_kill.assert_not_called()
-        delivered.assert_called_once_with(info.id)
+        delivered.assert_called_once_with(info.id, elapsed=info.elapsed, credits=info.credits)
         assert not [
             call
             for call in mock_sel().log_tool_invocation.call_args_list

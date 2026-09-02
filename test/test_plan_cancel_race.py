@@ -28,6 +28,8 @@ import pytest
 from aiohttp.test_utils import TestClient, TestServer
 from chat_test_helpers import _make_app, _make_state
 
+from kiro_crew.subagent import SubagentDelivery
+
 
 @pytest.fixture(autouse=True)
 def _isolate_config_dir(tmp_path, monkeypatch):
@@ -78,7 +80,9 @@ def _arm_owned_stage_delivery(slot) -> None:
         kind=SUBAGENT_COMPLETION_KIND,
         meta=slot.stage_boundary.tag_meta(),
     )
-    slot.note_pending_subagent_delivery(announce, ["stage-agent"])
+    slot.note_pending_subagent_delivery(
+        announce, [SubagentDelivery("stage-agent", elapsed=0.0, credits=0.0)]
+    )
 
 
 @pytest.mark.asyncio
@@ -143,10 +147,10 @@ async def test_double_cancel_appends_exactly_one_cancelled_row(tmp_path):
 async def test_idle_cancel_settles_owned_stage_delivery_debt(tmp_path):
     """A paused boundary releases its queue row and retention debt on Cancel."""
     state, slot = _make_orchestrator_state(tmp_path, "cancel-idle-debt", ["First"])
-    settled: list[list[str]] = []
+    settled: list[list[SubagentDelivery]] = []
 
-    async def _settle(agent_ids: list[str]) -> None:
-        settled.append(agent_ids)
+    async def _settle(deliveries: list[SubagentDelivery]) -> None:
+        settled.append(deliveries)
 
     state.subagents.settle_queued_delivery = _settle
     _arm_owned_stage_delivery(slot)
@@ -157,7 +161,7 @@ async def test_idle_cancel_settles_owned_stage_delivery_debt(tmp_path):
 
     assert slot._queue == [], "idle Cancel left the stage-owned completion queued"
     assert slot._subagent_delivery_pending == {}, "idle Cancel stranded delivery debt"
-    assert settled == [["stage-agent"]]
+    assert [[delivery.agent_id for delivery in batch] for batch in settled] == [["stage-agent"]]
     assert slot.stage_boundary.stage is None
 
 
@@ -171,10 +175,10 @@ async def test_typed_stop_releases_owned_stage_delivery_debt(tmp_path):
     tracker._stage_rounds[1] = MAX_STAGE_ROUNDS
     slot._orch_tracker = tracker
     _arm_owned_stage_delivery(slot)
-    settled: list[list[str]] = []
+    settled: list[list[SubagentDelivery]] = []
 
-    async def _settle(agent_ids: list[str]) -> None:
-        settled.append(agent_ids)
+    async def _settle(deliveries: list[SubagentDelivery]) -> None:
+        settled.append(deliveries)
 
     state.subagents.settle_queued_delivery = _settle
     async with TestClient(TestServer(_make_app(state))) as client:
@@ -183,7 +187,7 @@ async def test_typed_stop_releases_owned_stage_delivery_debt(tmp_path):
 
     assert slot._queue == []
     assert slot._subagent_delivery_pending == {}
-    assert settled == [["stage-agent"]]
+    assert [[delivery.agent_id for delivery in batch] for batch in settled] == [["stage-agent"]]
     assert slot.stage_boundary.stage is None
 
 
@@ -561,7 +565,7 @@ async def test_cancel_holds_admission_until_settlement_and_terminal_broadcast(
     settle_started, finish_settle = asyncio.Event(), asyncio.Event()
     order: list[str] = []
 
-    async def _settle(_agent_ids: list[str]) -> None:
+    async def _settle(_deliveries: list[SubagentDelivery]) -> None:
         order.append("settle-start")
         settle_started.set()
         await finish_settle.wait()
@@ -622,7 +626,7 @@ async def test_concurrent_cancels_start_only_one_queued_turn(tmp_path, monkeypat
     started: list[str] = []
     live_tasks: list[asyncio.Task] = []
 
-    async def _settle(_agent_ids: list[str]) -> None:
+    async def _settle(_deliveries: list[SubagentDelivery]) -> None:
         settle_started.set()
         await finish_settle.wait()
 
