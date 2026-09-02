@@ -8,6 +8,11 @@ refused connection drops the resolution caches, re-resolves, and replays the
 request exactly once — and only when re-resolution actually produced a
 different base. ``mcp_computer._invoke`` applies the same rule to its one
 request path.
+
+``TestSameBaseRefusalRetry`` covers the case that rule deliberately declines --
+a gateway restarting on its OWN port, where there is no moved base to find. That
+used to fall through to a bare errno; it now gets a short bounded retry of the
+same target and, on exhaustion, an actionable message.
 """
 
 from __future__ import annotations
@@ -168,10 +173,17 @@ def test_every_verb_rediscovers_and_replays(refusing_gateway, verb: str) -> None
 
 
 def test_no_replay_when_rediscovery_returns_the_same_base(mcp: Any, monkeypatch) -> None:
-    """Retrying an unchanged dead base would only double the latency."""
+    """Re-resolution proving the same base earns no REPLAY — only the retry window.
+
+    The replay exists to chase a MOVED gateway, and there is none here. What the
+    unchanged base does get is the short same-target retry
+    (``TestSameBaseRefusalRetry``), for the gateway that is merely restarting on
+    its own port, so the dials stay on that one base.
+    """
     attempts: list[str] = []
     _bases(monkeypatch, mcp, ["http://127.0.0.1:7788"])
     _retry_resolution(monkeypatch, mcp, 7788, "marker")
+    monkeypatch.setattr(mcp, "_REFUSED_RETRY_BACKOFFS", (0.0, 0.0))
 
     def fake_open(req, timeout=None, unix_socket_path=None):
         attempts.append(req.full_url)
@@ -179,7 +191,8 @@ def test_no_replay_when_rediscovery_returns_the_same_base(mcp: Any, monkeypatch)
 
     monkeypatch.setattr(mcp, "_api_urlopen", fake_open)
     assert "error" in mcp._post("/api/x", {"k": "v"})
-    assert len(attempts) == 1
+    assert len(attempts) == 1 + len(mcp._REFUSED_RETRY_BACKOFFS)
+    assert all(":7788" in u for u in attempts), attempts
 
 
 def test_no_replay_when_rediscovery_falls_through_to_default(mcp: Any, monkeypatch) -> None:
@@ -189,10 +202,16 @@ def test_no_replay_when_rediscovery_falls_through_to_default(mcp: Any, monkeypat
     nothing and falls through to the default port. A listener there is
     unverified — it could be any local process — and the request carries the
     internal secret, so the replay is skipped even though the base differs.
+
+    The SAME evidence rule bounds the same-base retry. Re-resolution proving
+    nothing means the refused port is no longer proven to be ours either, so the
+    retry window is not spent dialling it: one dial in total, and the caller is
+    told the gateway is unreachable.
     """
     attempts: list[str] = []
     _bases(monkeypatch, mcp, ["http://127.0.0.1:9999"])
     _retry_resolution(monkeypatch, mcp, 5476, "default")
+    monkeypatch.setattr(mcp, "_REFUSED_RETRY_BACKOFFS", (0.0, 0.0))
 
     def fake_open(req, timeout=None, unix_socket_path=None):
         attempts.append(req.full_url)
@@ -202,7 +221,11 @@ def test_no_replay_when_rediscovery_falls_through_to_default(mcp: Any, monkeypat
     out = mcp._post("/api/x", {"k": "v"})
     assert "error" in out
     assert "transport_error" not in out
-    assert len(attempts) == 1  # nothing was sent to the unverified default port
+    # Neither the unverified default port NOR the refused base receives a
+    # further secret-bearing dial: re-resolution proved nothing, so ownership of
+    # 9999 is no longer established and the retry stops before sleeping again.
+    assert all(":9999" in u for u in attempts), attempts
+    assert len(attempts) == 1
 
 
 def test_only_post_reports_transport_error(mcp: Any, monkeypatch) -> None:
@@ -547,3 +570,404 @@ class TestOneResolutionPerAttempt:
         replayed = _sock_for(7788)
         assert sock2 == replayed, f"the replay aimed TCP at {url2} and the unix socket at {sock2}"
         assert sock2 != _sock_for(5476), "the replay must not reuse the refused resolution"
+
+
+class TestSameBaseRefusalRetry:
+    """A gateway restarting on its OWN port gets a short bounded retry.
+
+    ``_replay_target`` deliberately answers ``None`` when re-resolution names the
+    base that was just refused — there is no moved gateway to chase. That left
+    ``_send`` with a bare ``return {"error": str(e)}``, so an MCP write issued
+    during the sub-second window a restarting gateway is rebinding its port came
+    back as the raw ``<urlopen error [Errno 61] Connection refused>``: no retry,
+    and an errno the caller cannot act on.
+
+    The retry is legal precisely because the connect never completed, so nothing
+    was handed to the gateway and the request cannot have been executed. These
+    tests pin that it happens for a refusal, that exhaustion is reported
+    actionably, and that no other failure class is retried — an ``HTTPError`` has
+    a real response, and a post-connect failure leaves acceptance undetermined,
+    which spawn_run's reconcile reads off ``transport_error``.
+    """
+
+    @pytest.fixture
+    def unchanged_base(self, mcp: Any, monkeypatch) -> Any:
+        """Resolution and re-resolution both name 7788, so no replay is allowed."""
+        _bases(monkeypatch, mcp, ["http://127.0.0.1:7788"])
+        _retry_resolution(monkeypatch, mcp, 7788, "marker")
+        monkeypatch.setattr(mcp, "_REFUSED_RETRY_BACKOFFS", (0.0, 0.0))
+        return mcp
+
+    @staticmethod
+    def _refusal() -> urllib.error.URLError:
+        return urllib.error.URLError(ConnectionRefusedError(111, "refused"))
+
+    @staticmethod
+    def _resolution_sequence(
+        monkeypatch: pytest.MonkeyPatch, mcp: Any, sequence: list[tuple[int, str]]
+    ) -> None:
+        """Script successive ``_resolve_api_port`` answers, last value repeating.
+
+        ``_retry_resolution`` pins ONE answer, which cannot express a gateway
+        that moves BETWEEN the replay decision and a later re-verification {EM}
+        exactly the window these cases are about.
+        """
+        it = iter(sequence)
+        last = sequence[-1]
+        monkeypatch.setattr(mcp, "_resolve_api_port", lambda: next(it, last))
+
+    def test_reverify_demands_positive_evidence_for_this_same_base(
+        self, mcp: Any, monkeypatch
+    ) -> None:
+        """The proof is per attempt, so each re-dial must re-earn it.
+
+        Three outcomes, one helper: the same base still named by a real source is
+        the only one that authorises another dial. A default fall-through proves
+        nothing, and a different base means the port was freed {EM} in both cases
+        the answer is ``None`` and the caller stops.
+        """
+        base = "http://127.0.0.1:7788"
+
+        _retry_resolution(monkeypatch, mcp, 7788, "marker")
+        assert mcp._reverify_refused_target(base) == (base, _sock_for(7788))
+
+        _retry_resolution(monkeypatch, mcp, 5476, "default")
+        assert mcp._reverify_refused_target(base) is None
+
+        _retry_resolution(monkeypatch, mcp, 9999, "marker")
+        assert mcp._reverify_refused_target(base) is None
+
+    def test_an_unproven_port_is_never_re_dialled(self, mcp: Any, monkeypatch) -> None:
+        """``bound`` is the NORMAL source, and it carries no ownership evidence.
+
+        ``KIROCREW_BOUND_PORT`` is inherited process state naming the gateway that
+        spawned us, exported once its site was listening, and it ranks ABOVE the
+        marker step -- so every gateway-spawned MCP server resolves ``bound``,
+        never ``marker``. That label says the value has not changed, not that the
+        gateway is still on it, so a re-dial has to prove the port is still held
+        by this user's gateway.
+        """
+        base = "http://127.0.0.1:7788"
+        _retry_resolution(monkeypatch, mcp, 7788, "bound")
+        monkeypatch.setattr(mcp, "port_is_gateway_owned", lambda port: False)
+        assert mcp._reverify_refused_target(base) is None
+
+    def test_a_proven_port_still_gets_its_retry(self, mcp: Any, monkeypatch) -> None:
+        """The proof is a gate, not a ban -- the retry survives where it matters.
+
+        Refusing ``bound`` outright (or trusting only ``marker``) would have
+        disabled this retry for the one deployment it exists to serve. A gateway
+        that really did come back on its own port passes the proof and is dialled.
+        """
+        base = "http://127.0.0.1:7788"
+        _retry_resolution(monkeypatch, mcp, 7788, "bound")
+        asked: list[int] = []
+
+        def owns(port: int) -> bool:
+            asked.append(port)
+            return True
+
+        monkeypatch.setattr(mcp, "port_is_gateway_owned", owns)
+        assert mcp._reverify_refused_target(base) == (base, _sock_for(7788))
+        assert asked == [7788], f"the proof must name the port about to be dialled: {asked}"
+
+    def test_a_marker_resolution_is_not_re_proven(self, mcp: Any, monkeypatch) -> None:
+        """Step 5 already ran the proof, so running it again is pure cost.
+
+        ``_marker_port`` discards every candidate a verified gateway does not
+        hold, so a ``marker`` answer IS an ownership-checked answer. Re-forking a
+        port lookup for it would double the cost of the common recovery path.
+        """
+        base = "http://127.0.0.1:7788"
+        _retry_resolution(monkeypatch, mcp, 7788, "marker")
+
+        def boom(port: int) -> bool:
+            raise AssertionError("a marker resolution must not be re-proven")
+
+        monkeypatch.setattr(mcp, "port_is_gateway_owned", boom)
+        assert mcp._reverify_refused_target(base) == (base, _sock_for(7788))
+
+    def test_an_unproven_port_ends_the_retry_instead_of_replaying_the_secret(
+        self, mcp: Any, monkeypatch
+    ) -> None:
+        """End to end: one dial, and the credential is never offered a second time.
+
+        The unit assertions above pin the rule; this pins that ``_send`` obeys it,
+        which is where the exposure would actually land.
+        """
+        _bases(monkeypatch, mcp, ["http://127.0.0.1:7788"])
+        _retry_resolution(monkeypatch, mcp, 7788, "bound")
+        monkeypatch.setattr(mcp, "_REFUSED_RETRY_BACKOFFS", (0.0, 0.0))
+        monkeypatch.setattr(mcp, "port_is_gateway_owned", lambda port: False)
+        dials: list[str] = []
+
+        def fake_open(req, timeout=None, unix_socket_path=None):
+            dials.append(req.full_url)
+            raise self._refusal()
+
+        monkeypatch.setattr(mcp, "_api_urlopen", fake_open)
+        result = mcp._post("/api/x", {"k": "v"})
+        assert len(dials) == 1, f"an unproven port must not be re-dialled: {dials}"
+        assert "error" in result, result
+
+    def test_a_gateway_not_back_yet_keeps_its_remaining_budget(self, mcp: Any, monkeypatch) -> None:
+        """An unprovable target is a not-yet, not a stop signal.
+
+        Between the old process releasing the port and the new one binding it,
+        nothing is listening and no ownership can be shown -- which is exactly the
+        window this retry covers. Ending the schedule on the first such reading
+        would limit recovery to a gateway that rebinds inside the first backoff.
+        """
+        _bases(monkeypatch, mcp, ["http://127.0.0.1:7788"])
+        _retry_resolution(monkeypatch, mcp, 7788, "bound")
+        monkeypatch.setattr(mcp, "_REFUSED_RETRY_BACKOFFS", (0.0, 0.0))
+        proofs = iter([False, True])
+        monkeypatch.setattr(mcp, "port_is_gateway_owned", lambda port: next(proofs, True))
+        dials: list[str] = []
+
+        def fake_open(req, timeout=None, unix_socket_path=None):
+            dials.append(req.full_url)
+            if len(dials) == 1:
+                raise self._refusal()
+            return _Resp()
+
+        monkeypatch.setattr(mcp, "_api_urlopen", fake_open)
+        assert mcp._post("/api/x", {"k": "v"}) == {"ok": True}
+        assert len(dials) == 2, f"the second backoff must still be spent: {dials}"
+
+    def test_the_retry_re_reads_the_credential_for_the_restarted_gateway(
+        self, unchanged_base, monkeypatch
+    ) -> None:
+        """A restarted gateway is a new GENERATION, so the secret is re-read.
+
+        ``read_local_secret`` resolves ``run/gateway-<port>.secret`` before the
+        shared file because the credential identifies one gateway generation, and
+        authenticating for a different generation than the one owning the dialled
+        port earns a 403. The request was built with the pre-restart secret, so a
+        retry that replays it reaches the gateway this fix exists to reach and is
+        rejected — the credential has to be re-read for the re-proven target.
+        """
+        mcp = unchanged_base
+        # Patched at the credential seam itself. The FIRST dial's header was built
+        # by the caller before this test could reach it, so the property under test
+        # is that the retry re-reads rather than replays -- not a literal for a
+        # value this test never supplied.
+        monkeypatch.setattr(mcp, "read_local_secret", lambda port: "regenerated-secret")
+        sent: list[str | None] = []
+
+        def fake_open(req, timeout=None, unix_socket_path=None):
+            sent.append(req.get_header("X-internal-secret"))
+            if len(sent) == 1:
+                raise self._refusal()
+            return _Resp()
+
+        monkeypatch.setattr(mcp, "_api_urlopen", fake_open)
+        assert mcp._post("/api/x", {"k": "v"}) == {"ok": True}
+        # The retry carries the credential belonging to the generation now on
+        # that port, not the one the request was originally built with.
+        assert sent[1] == "regenerated-secret", sent
+        assert sent[1] != sent[0], sent
+
+    def test_a_credential_that_cannot_be_re_read_keeps_the_original(
+        self, unchanged_base, monkeypatch
+    ) -> None:
+        """A failed secret read must not downgrade the retry to a guaranteed 403.
+
+        Sending an empty credential would be strictly worse than replaying the one
+        the request already had, so an unreadable secret leaves the original in
+        place.
+        """
+        mcp = unchanged_base
+
+        def boom(port):
+            raise OSError("unreadable")
+
+        monkeypatch.setattr(mcp, "read_local_secret", boom)
+        sent: list[str | None] = []
+
+        def fake_open(req, timeout=None, unix_socket_path=None):
+            sent.append(req.get_header("X-internal-secret"))
+            if len(sent) == 1:
+                raise self._refusal()
+            return _Resp()
+
+        monkeypatch.setattr(mcp, "_api_urlopen", fake_open)
+        assert mcp._post("/api/x", {"k": "v"}) == {"ok": True}
+        assert sent[1] == sent[0], sent
+
+    def test_a_port_freed_mid_backoff_is_never_re_dialled(self, mcp: Any, monkeypatch) -> None:
+        """The security property: sleeping must not outlive the ownership proof.
+
+        Re-resolution names the refused base while ``_replay_target`` runs, so
+        there is no moved gateway to chase and the retry window opens. During the
+        backoff the gateway exits and the port is taken: the next resolution
+        names a DIFFERENT base. Re-dialling 7788 now would hand the internal
+        secret and the session key to whatever bound it, so the retry stops with
+        the unreachable message instead.
+        """
+        attempts: list[str] = []
+        _bases(monkeypatch, mcp, ["http://127.0.0.1:7788"])
+        # First answer keeps the replay closed; the second is the port moving.
+        self._resolution_sequence(monkeypatch, mcp, [(7788, "marker"), (9999, "marker")])
+        monkeypatch.setattr(mcp, "_REFUSED_RETRY_BACKOFFS", (0.0, 0.0))
+
+        def fake_open(req, timeout=None, unix_socket_path=None):
+            attempts.append(req.full_url)
+            raise self._refusal()
+
+        monkeypatch.setattr(mcp, "_api_urlopen", fake_open)
+        out = mcp._post("/api/x", {"k": "v"})
+
+        assert "error" in out
+        assert "not reachable" in out["error"]
+        assert attempts == ["http://127.0.0.1:7788/api/x"], attempts
+        assert not any(":9999" in u for u in attempts), attempts
+
+    def test_two_refusals_then_success_yields_one_payload(
+        self, unchanged_base, monkeypatch
+    ) -> None:
+        """The restart window closes mid-retry: one payload, no duplicate send."""
+        mcp = unchanged_base
+        attempts: list[str] = []
+
+        def fake_open(req, timeout=None, unix_socket_path=None):
+            attempts.append(req.full_url)
+            if len(attempts) <= 2:
+                raise self._refusal()
+            return _Resp()
+
+        monkeypatch.setattr(mcp, "_api_urlopen", fake_open)
+        out = mcp._post("/api/learn", {"rule": "x"})
+        assert out == {"ok": True}
+        assert len(attempts) == 3, f"expected the first dial plus two retries: {attempts}"
+        assert all(":7788" in u for u in attempts), attempts
+
+    def test_exhaustion_names_the_port_the_restart_and_the_errno(
+        self, unchanged_base, monkeypatch
+    ) -> None:
+        """The caller must get something to act on, without losing the diagnostic."""
+        mcp = unchanged_base
+        attempts: list[str] = []
+
+        def fake_open(req, timeout=None, unix_socket_path=None):
+            attempts.append(req.full_url)
+            raise self._refusal()
+
+        monkeypatch.setattr(mcp, "_api_urlopen", fake_open)
+        out = mcp._post("/api/learn", {"rule": "x"})
+        assert len(attempts) == 1 + len(mcp._REFUSED_RETRY_BACKOFFS), attempts
+        message = out["error"]
+        assert "127.0.0.1:7788" in message, message
+        assert "restarting" in message, message
+        assert "retry shortly" in message, message
+        assert "[Errno 111]" in message, "the raw errno must survive for a bug report"
+        assert "transport_error" not in out, "nothing reached the gateway"
+
+    def test_the_retry_budget_is_bounded_and_brief(self, mcp: Any, monkeypatch) -> None:
+        """A down gateway must not feel hung: a couple of sub-second pauses.
+
+        Asserted on the SHIPPED backoffs (this one does not stub them), because
+        the budget is the whole reason a retry is acceptable on a hot path — the
+        5s keepalive poll goes through here too.
+        """
+        _bases(monkeypatch, mcp, ["http://127.0.0.1:7788"])
+        _retry_resolution(monkeypatch, mcp, 7788, "marker")
+        slept: list[float] = []
+        monkeypatch.setattr(mcp.time, "sleep", slept.append)
+
+        def fake_open(req, timeout=None, unix_socket_path=None):
+            raise self._refusal()
+
+        monkeypatch.setattr(mcp, "_api_urlopen", fake_open)
+        assert "error" in mcp._post("/api/learn", {"rule": "x"})
+        assert 2 <= len(slept) <= 3, f"retry budget drifted: {slept}"
+        assert sum(slept) <= 2.0, f"a refused gateway blocked the caller for {sum(slept)}s"
+
+    def test_a_refused_replay_also_gets_the_window(self, mcp: Any, monkeypatch) -> None:
+        """Both bases refused: the retry follows the fresher re-resolved base."""
+        _bases(monkeypatch, mcp, ["http://127.0.0.1:5476"])
+        _retry_resolution(monkeypatch, mcp, 7788, "marker")
+        monkeypatch.setattr(mcp, "_REFUSED_RETRY_BACKOFFS", (0.0,))
+        attempts: list[str] = []
+
+        def fake_open(req, timeout=None, unix_socket_path=None):
+            attempts.append(req.full_url)
+            raise self._refusal()
+
+        monkeypatch.setattr(mcp, "_api_urlopen", fake_open)
+        out = mcp._post("/api/spawn", {"tasks": ["x"]})
+        assert [":5476" in attempts[0], ":7788" in attempts[1], ":7788" in attempts[2]] == [
+            True,
+            True,
+            True,
+        ], attempts
+        assert "127.0.0.1:7788" in out["error"], out
+        assert "transport_error" not in out
+
+    def test_an_http_error_is_never_retried(self, unchanged_base, monkeypatch) -> None:
+        """A 4xx is a real response — retrying it would re-send an accepted write."""
+        mcp = unchanged_base
+        attempts: list[str] = []
+
+        def fake_open(req, timeout=None, unix_socket_path=None):
+            attempts.append(req.full_url)
+            raise urllib.error.HTTPError(
+                req.full_url, 400, "Bad Request", None, None  # type: ignore[arg-type]
+            )
+
+        monkeypatch.setattr(mcp, "_api_urlopen", fake_open)
+        out = mcp._post("/api/learn", {"rule": "x"})
+        assert len(attempts) == 1, attempts
+        assert "transport_error" not in out
+
+    def test_a_post_connect_failure_stays_ambiguous_and_unretried(
+        self, unchanged_base, monkeypatch
+    ) -> None:
+        """Acceptance is undetermined, so a retry could double-execute the verb."""
+        mcp = unchanged_base
+        attempts: list[str] = []
+
+        def fake_open(req, timeout=None, unix_socket_path=None):
+            attempts.append(req.full_url)
+            raise TimeoutError("read timed out after the spawn was accepted")
+
+        monkeypatch.setattr(mcp, "_api_urlopen", fake_open)
+        out = mcp._post("/api/spawn", {"tasks": ["x"]})
+        assert len(attempts) == 1, attempts
+        assert out == {
+            "error": "read timed out after the spawn was accepted",
+            "transport_error": True,
+        }
+        assert "transport_error" not in mcp._get("/api/x"), "mark stays opt-in per verb"
+
+    def test_a_non_refusal_urlerror_is_never_retried(self, unchanged_base, monkeypatch) -> None:
+        """A connect timeout may have reached the gateway; only refusals are safe."""
+        mcp = unchanged_base
+        attempts: list[str] = []
+
+        def fake_open(req, timeout=None, unix_socket_path=None):
+            attempts.append(req.full_url)
+            raise urllib.error.URLError(socket.timeout("slow"))
+
+        monkeypatch.setattr(mcp, "_api_urlopen", fake_open)
+        out = mcp._post("/api/spawn", {"tasks": ["x"]})
+        assert len(attempts) == 1, attempts
+        assert out.get("transport_error") is True
+
+    def test_a_refusal_that_turns_into_a_post_connect_failure_is_ambiguous(
+        self, unchanged_base, monkeypatch
+    ) -> None:
+        """The gateway came back mid-retry and then failed after accepting."""
+        mcp = unchanged_base
+        attempts: list[str] = []
+
+        def fake_open(req, timeout=None, unix_socket_path=None):
+            attempts.append(req.full_url)
+            if len(attempts) == 1:
+                raise self._refusal()
+            raise TimeoutError("read timed out after the spawn was accepted")
+
+        monkeypatch.setattr(mcp, "_api_urlopen", fake_open)
+        out = mcp._post("/api/spawn", {"tasks": ["x"]})
+        assert len(attempts) == 2, "the retry must stop at the first non-refusal"
+        assert out.get("transport_error") is True

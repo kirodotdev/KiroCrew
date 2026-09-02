@@ -177,6 +177,25 @@ def _gateway_owns_port(port: int) -> bool:
     return _patchable("_is_kirocrew_process")(recorded)
 
 
+def port_is_gateway_owned(port: int) -> bool:
+    """The chain's ownership proof, for a credential-bearing caller outside it.
+
+    :func:`_gateway_owns_port` is step 5's own guard, and step 5 is the only
+    step that has one. A caller whose port arrived through a step carrying NO
+    ownership evidence — an inherited ``KIROCREW_BOUND_PORT``, an operator
+    ``KIROCREW_PORT``, a configured ``dashboard.url`` — and which is about to
+    attach the internal secret to a request needs that same proof on its own
+    account. Exposing it here keeps such a caller from reaching for a private
+    name, and routing through :func:`_patchable` keeps a test that patches
+    ``cli_server._gateway_owns_port`` intercepting as it always has.
+
+    Inherits the underlying proof's contract unchanged: fails closed on every
+    missing or unverifiable step, and denies outright on non-POSIX, where the
+    file-permission argument the proof rests on does not hold.
+    """
+    return bool(_patchable("_gateway_owns_port")(port))
+
+
 def _marker_port() -> int | None:
     """Port of the sole gateway-owned run-marker, or ``None``.
 

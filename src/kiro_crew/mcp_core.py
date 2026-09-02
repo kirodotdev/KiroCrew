@@ -61,7 +61,7 @@ from kiro_crew.mcp_tools import build_tool_list, dispatch
 from kiro_crew.members import record_activity
 from kiro_crew.messaging.link import is_legacy_slack_key, legacy_key
 from kiro_crew.platform import redact_via_context as redact
-from kiro_crew.port_resolution import resolve_client_port_src
+from kiro_crew.port_resolution import port_is_gateway_owned, resolve_client_port_src
 from kiro_crew.security import (
     redact_credentials,
     redact_exfiltration_urls,
@@ -337,6 +337,96 @@ def _replay_target(refused_base: str) -> tuple[str, str] | None:
         return None
     base = f"http://127.0.0.1:{port}"
     if base == refused_base:
+        return None
+    return base, _socket_path_for(port)
+
+
+def _secret_for_base(base: str) -> str:
+    """The internal-API credential belonging to the gateway on *base*.
+
+    ``read_local_secret`` resolves per LISTENER (``run/gateway-<port>.secret``)
+    before the shared file, because the credential identifies ONE gateway
+    GENERATION — its docstring is explicit that authenticating for a different
+    generation than the one owning the dialled port earns a 403 on every
+    internal call. A restarted gateway is a new generation, so a retry that
+    re-proves the target must re-read the credential for it too; carrying the
+    pre-restart secret is the desync that helper exists to close.
+
+    The port comes from the base being dialled rather than a fresh resolution,
+    so the credential and the target cannot name different gateways.
+    """
+    try:
+        return read_local_secret(int(base.rsplit(":", 1)[-1]))
+    except Exception:
+        return ""
+
+
+def _reverify_refused_target(refused_base: str) -> tuple[str, str] | None:
+    """The FRESH pair for *refused_base*, or ``None`` if it is no longer proven.
+
+    :func:`_replay_target`'s sibling, and the inverse test. That one answers
+    "has the gateway MOVED, so is there a new base worth dialling"; this one
+    answers "does re-resolution still positively identify the SAME base, so is
+    re-dialling it still addressed to the gateway proved to own it".
+
+    Why a same-base retry needs this at all: the ownership proof is per
+    ATTEMPT, not per process (see :func:`_resolve_api_target`). A marker
+    resolution is never pinned precisely because the gateway can exit and
+    something else can take the port — and a retry that SLEEPS first is exactly
+    that window. Re-dialling the cached pair would hand the internal secret and
+    the session key to whatever now listens there, which is the same exposure
+    the ``source == "default"`` rule above refuses, for the same reason.
+
+    Three outcomes answer ``None``, so the caller stops instead of dialling:
+
+    * the re-resolution fell through to the DEFAULT port — no evidence at all,
+      so the listener could be any local process.
+    * the re-resolution names a DIFFERENT base. The gateway moved mid-backoff,
+      so the refused base is no longer owned and this retry is over. Chasing the
+      new base is :func:`_replay_target`'s job on the caller's next attempt, not
+      a second replay smuggled into a retry loop.
+    * the port is not PROVEN to be held by this user's gateway. The source
+      label alone cannot carry that proof: ``KIROCREW_BOUND_PORT`` is
+      inherited process state naming the gateway that SPAWNED us, exported
+      once its site was listening (``dashboard.server._export_bound_port``),
+      and it ranks above the marker step — so ``bound``, not ``marker``, is
+      the source for every gateway-spawned process, and it is never
+      ownership-checked. A refusal is affirmative evidence the previous owner
+      is gone, and a retry that SLEEPS first is exactly the window in which
+      another local user can rebind the port, so the proof is re-earned here
+      via :func:`port_is_gateway_owned` before the secret is dialled anywhere.
+      A ``marker`` resolution already ran that proof inside its own step, so it
+      is not re-run for one.
+
+    Gating on the proof rather than on a list of trusted labels is deliberate.
+    Trusting ``bound`` because it is "stable for the process lifetime" (which is
+    what :data:`_STABLE_PORT_SOURCES` means, and all it means) confuses a value
+    that does not change with a gateway that is still there; refusing it instead
+    would have disabled this retry for the deployment it exists to serve, since
+    ``bound`` is the only source that ever fires there. Verifying the port keeps
+    the retry working when the gateway really did come back on it, and refuses
+    only when something else answers.
+
+    On non-POSIX the proof denies outright, so the retry is unavailable rather
+    than approximated — the same trade :func:`_gateway_owns_port` already makes
+    for marker discovery, and for the same reason: the file-permission argument
+    that carries it does not hold there. ``--port`` / ``KIROCREW_PORT`` users on
+    Windows get the actionable exhaustion message instead of a silent re-dial.
+
+    Both halves of the returned pair come from the one resolution whose source
+    was checked, keeping :func:`_resolve_api_target`'s "both transports derive
+    from one resolution" invariant.
+    """
+    _invalidate_api_base()
+    port, source = _resolve_api_port()
+    if source == "default":
+        return None
+    base = f"http://127.0.0.1:{port}"
+    if base != refused_base:
+        return None
+    # Cheapest checks first: the two above are string work, this one forks a
+    # port lookup, and it is only worth paying when a dial is otherwise due.
+    if source != "marker" and not port_is_gateway_owned(port):
         return None
     return base, _socket_path_for(port)
 
@@ -1110,6 +1200,36 @@ def _transport_failure(message: str, mark: bool) -> dict:
     return out
 
 
+# Extra attempts a REFUSED target gets, and the pause before each.
+#
+# A refusal is the one failure where nothing reached the gateway, so re-dialling
+# the identical request cannot double-execute a verb — that invariant is what
+# makes this retry legal (see ``_retry_refused`` inside :func:`_send`). Two extra
+# dials, pausing ~250ms then ~500ms, cover the sub-second window in which a
+# restarting gateway is rebinding its port, without making a genuinely-down
+# gateway feel hung.
+_REFUSED_RETRY_BACKOFFS: tuple[float, ...] = (0.25, 0.5)
+
+
+def _refused_message(refused_base: str, exc: BaseException) -> str:
+    """Actionable text for a base that refused every attempt.
+
+    A bare ``<urlopen error [Errno 61] Connection refused>`` tells the caller
+    nothing it can act on, so name the address that was dialled and the likely
+    reason (the gateway is down, or restarting) together with the advice that
+    follows from it. The raw error is appended so the original diagnostic
+    survives for a bug report.
+
+    The address comes from the base that was actually refused; re-resolving here
+    would name a port nobody dialled.
+    """
+    host = refused_base.split("//", 1)[-1].rstrip("/") or refused_base
+    return (
+        f"Kiro Crew gateway not reachable on {host} — it may be down or "
+        f"restarting; retry shortly ({exc})"
+    )
+
+
 def _send(
     path: str,
     *,
@@ -1119,25 +1239,108 @@ def _send(
     timeout: float = 30,
     mark_transport_error: bool = False,
 ) -> dict:
-    """Send one gateway request, re-resolving the base once if it is refused.
+    """Send one gateway request, recovering from a refused connection.
 
-    A refused connection usually means the resolved base is stale: the gateway
-    came up, or moved to another port, after this tool server booted, and that
-    port is recorded only in the run marker. The replay runs only when
-    re-resolution actually produced a different base — retrying an unchanged
-    dead port just doubles the caller's latency to reach the identical failure.
+    Two layers, in order. A refused connection may mean the resolved base is
+    stale: the gateway came up, or moved to another port, after this tool server
+    booted, and that port is recorded only in the run marker — so the base is
+    re-resolved and the request replayed once, but only when re-resolution
+    actually produced a different base (the rule lives in
+    :func:`_replay_target`). When there is no moved gateway to chase, the base
+    that refused is the only candidate, and a gateway RESTARTING on its own port
+    lands there: it gets a short bounded retry of the same target
+    (``_retry_refused``) before the caller is told, actionably, that the gateway
+    is unreachable.
 
-    Every verb goes through here. Keeping the replay in one place is what stops
+    Every verb goes through here. Keeping both layers in one place is what stops
     PATCH-shaped calls from staying pinned to a base that POST already learned
     was wrong.
     """
 
-    def _once(target: tuple[str, str]) -> dict:
+    def _once(target: tuple[str, str], hdrs: dict[str, str] | None = None) -> dict:
         base, socket_path = target
-        req = urllib.request.Request(f"{base}{path}", data=data, headers=headers, method=method)
+        req = urllib.request.Request(
+            f"{base}{path}", data=data, headers=hdrs if hdrs is not None else headers, method=method
+        )
         # nosemgrep: python.lang.security.audit.dynamic-urllib-use-detected.dynamic-urllib-use-detected -- URL is the loopback gateway (_resolve_api_target(): 127.0.0.1 plus a port from config/env or a run-marker whose ownership is re-verified per request) + a fixed internal path; never user-controlled  # noqa: E501
         with _api_urlopen(req, timeout=timeout, unix_socket_path=socket_path) as resp:
             return json.loads(resp.read())
+
+    def _refreshed_headers(base: str) -> dict[str, str]:
+        """*headers* with the credential re-read for *base*, caller's dict intact.
+
+        A copy, never an in-place edit: ``headers`` belongs to the caller and is
+        reused for its own error reporting. An unreadable secret leaves the
+        original value rather than sending an empty one, so a transient read
+        failure cannot turn a retry into a guaranteed 403.
+        """
+        fresh = dict(headers)
+        secret = _secret_for_base(base)
+        if secret:
+            fresh["X-Internal-Secret"] = secret
+        return fresh
+
+    def _retry_refused(refused: tuple[str, str], refusal: urllib.error.URLError) -> dict:
+        """Re-dial the SAME refused target a few times, then report it actionably.
+
+        A refusal is the one failure that is safe to replay: the connect itself
+        never completed, so nothing was handed to the gateway and the request
+        cannot have been executed — an identical retry therefore cannot
+        double-execute a verb. That invariant is why this loop retries ONLY
+        ``ConnectionRefusedError`` / ``socket.gaierror``; every other failure
+        keeps its existing route, because an ``HTTPError`` carries a real
+        response and any post-connect failure leaves acceptance undetermined,
+        and spawn_run's reconcile depends on that ambiguity being reported
+        rather than retried.
+
+        The window this covers is a gateway restarting on its own port, which
+        :func:`_replay_target` deliberately declines to chase — there is no
+        moved base to find, so before this the caller got the raw errno with no
+        retry at all. On exhaustion it gets the port and the restart hypothesis
+        instead, with the raw error appended.
+
+        Sleeping does NOT let the target go unproven. The ownership proof is per
+        ATTEMPT, so every re-dial re-resolves through
+        :func:`_reverify_refused_target` and proceeds only while positive
+        evidence still names this same base — otherwise the port could have been
+        taken by another local process during the backoff, and the retry would
+        hand it the internal secret.
+
+        A check that cannot prove the target consumes one step of the budget
+        rather than ending it. "Not proven" is the EXPECTED reading mid-restart:
+        between the old process releasing the port and the new one binding it
+        nothing is listening, so no ownership can be shown — and that is the very
+        window this retry exists to cover. Abandoning the schedule on the first
+        such reading would have limited recovery to a gateway that rebinds inside
+        the FIRST backoff, discarding the longer half of the budget for the case
+        it was sized for. The schedule stays the bound: when the last step is
+        still unproven, the caller gets the same actionable message as a
+        dialled-and-refused exhaustion.
+        """
+        for backoff in _REFUSED_RETRY_BACKOFFS:
+            time.sleep(backoff)
+            # Re-prove ownership AFTER the sleep, never before it: the whole
+            # point is that the gateway may have gone during the pause.
+            proven = _reverify_refused_target(refused[0])
+            if proven is None:
+                # Spend the next step rather than the whole schedule: a gateway
+                # part-way through rebinding is unprovable but about to be back.
+                continue
+            # The target was re-proven; the CREDENTIAL has to be re-read for it
+            # too. A gateway that restarted on this port is a new generation with
+            # a new per-listener secret, so replaying the header this request was
+            # built with would earn a 403 instead of the retry this exists for.
+            try:
+                return _once(proven, _refreshed_headers(proven[0]))
+            except urllib.error.HTTPError as exc:
+                return _http_error_body(exc)
+            except urllib.error.URLError as exc:
+                if not isinstance(exc.reason, (ConnectionRefusedError, socket.gaierror)):
+                    return _transport_failure(str(exc), mark_transport_error)
+                refusal = exc
+            except Exception as exc:
+                return _transport_failure(str(exc), mark_transport_error)
+        return {"error": _refused_message(refused[0], refusal)}
 
     # ONE resolution for this attempt; both transports derive from it.
     target = _resolve_api_target()
@@ -1156,18 +1359,25 @@ def _send(
         # THE replay rule lives in _replay_target, shared with
         # mcp_computer._invoke: None means "do not replay" (no evidence, or the
         # re-resolution named the same dead base). Nothing was handed to a live
-        # gateway in either case, so the first-attempt refusal stands as a
-        # definite rejection — no transport ambiguity to report.
+        # gateway in either case, so no refusal below carries transport
+        # ambiguity — the outcome is a definite rejection once the retry window
+        # for the refused target is spent.
         retry_target = _replay_target(base)
         if retry_target is None:
-            return {"error": str(e)}
+            # No moved gateway to chase, so the base that refused is the only
+            # candidate — the same-port restart case. Give it the short retry
+            # window rather than surfacing a bare errno.
+            return _retry_refused(target, e)
         try:
             return _once(retry_target)
         except urllib.error.HTTPError as retry_exc:
             return _http_error_body(retry_exc)
         except urllib.error.URLError as retry_exc:
             if isinstance(retry_exc.reason, (ConnectionRefusedError, socket.gaierror)):
-                return {"error": str(e)}
+                # Both bases refused. The re-resolved one is the fresher
+                # evidence of where the gateway lives, so the retry window
+                # applies to it.
+                return _retry_refused(retry_target, retry_exc)
             return _transport_failure(str(retry_exc), mark_transport_error)
         except Exception as retry_exc:
             # The replay reached the gateway and failed afterwards (a read timeout
