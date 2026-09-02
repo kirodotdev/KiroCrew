@@ -340,7 +340,7 @@ Triggers in-place ACP `/compact` on the current thread's session:
 
 ## Wedged-Session Recovery (`AcpPromptBusy`)
 
-When kiro-cli reports a prompt is still in flight ("already in progress" — a tool stall, timeout, or message race), `AcpClient` raises `AcpPromptBusy` (`acp/client.py`) with a friendly "I'm still processing a previous request… if it persists, send `!restart`" message. `handle_message` catches it and auto-resets the wedged session via `sessions.reset(session_key)` so the next message cold-starts cleanly, then records the failure (the reset itself is best-effort — a reset failure is logged, not raised).
+When kiro-cli reports a prompt is still in flight ("already in progress" — a tool stall, timeout, or message race), `AcpClient` raises `AcpPromptBusy` (`acp/client.py`) with a friendly "I'm still processing a previous request… it clears on its own once the stale turn expires" message. `handle_message` catches it and auto-resets the wedged session via `sessions.reset(session_key)` so the next message cold-starts cleanly, then records the failure (the reset itself is best-effort — a reset failure is logged, not raised). The message deliberately names no command: the auto-reset above is what recovers the session, so the text has nothing to ask the user for (it used to say `!restart`, which is Slack-only, owner-gated, and restarts the gateway rather than the session -- see `common/error-handling.md`).
 
 ## OPTIONS Buttons (`format.py`)
 

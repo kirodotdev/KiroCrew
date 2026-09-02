@@ -1778,16 +1778,20 @@ def _format_acp_error(error: object, available_models: Sequence[str] | None = No
             # because of its shape, not a momentary fault. Retrying the same
             # payload will be rejected identically, so the guidance is to REPAIR
             # or reset the conversation rather than retry. /compact shrinks and
-            # rebuilds the conversation; a fresh chat (/chat new) drops whatever
-            # in the accumulated context tripped the parser. Kept plain and
+            # rebuilds the conversation; a new conversation drops whatever in the
+            # accumulated context tripped the parser. Kept plain and
             # non-alarmist, matching the other branches. Matched against `data`
             # only via the shared _RE_MALFORMED_REQUEST, so a phrase echo in the
             # JSON-RPC `message` can't flip an unrelated error into this branch.
+            #
+            # Only `/compact` is named, because this formatter does not know
+            # which surface renders its output and the reset command differs per
+            # surface -- see docs/system-specs/common/error-handling.md (#7213).
             formatted = (
                 "The request was rejected as malformed. This is a structural "
                 "problem with the request, so retrying it as-is will not help. "
                 "Try `/compact` to shrink and repair the conversation, or start "
-                "a fresh chat (`/chat new`)."
+                "a new conversation."
                 f"{req_id_suffix}"
             )
         elif _PROMPT_BUSY_RE.search(data):
@@ -1795,9 +1799,18 @@ def _format_acp_error(error: object, available_models: Sequence[str] | None = No
             # This means a previous turn didn't complete cleanly (tool stall,
             # timeout, or race between messages). The session will auto-recover
             # on the next attempt once the stale turn expires.
+            #
+            # Names no command, for the reason given in the malformed-request
+            # branch above: this formatter is surface-blind. The text used to say
+            # "send `!restart`", which was wrong three ways -- it is a Slack-only
+            # bang alias, it is owner-gated even there, and it restarts the
+            # GATEWAY rather than the session. It was also unnecessary: the
+            # handlers reset and re-queue on AcpPromptBusy by themselves (see
+            # dashboard/chat_runner.py's retry-eligible branch).
             formatted = (
                 "I'm still processing a previous request. Please wait a moment "
-                "and try again — if it persists, send `!restart` to reset the session."
+                "and try again; it clears on its own once the stale turn "
+                "expires. If it persists, start a new conversation."
             )
         else:
             # Unrecognised failure mode. Show the PROVIDER'S OWN message when

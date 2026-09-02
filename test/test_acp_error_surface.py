@@ -150,6 +150,24 @@ class TestNoRawDictInUserFacingError:
         assert "still processing a previous request" in str(exc)
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("driver", [_raise_via_wait, _raise_via_dispatch])
+    async def test_prompt_busy_guidance_names_no_unknown_command(self, driver):
+        """The busy branch must not name `!restart` either.
+
+        Same defect class as the malformed-request branch, in the same
+        surface-blind formatter: `!restart` is a Slack-only bang alias, it is
+        owner-gated even there, and it restarts the GATEWAY rather than the
+        session -- so on every other surface it is an inert instruction. It was
+        also unnecessary, because the handlers reset and re-queue on
+        AcpPromptBusy on their own. Asserted as an absence, and paired with a
+        positive check that the recovery advice survived (#7213).
+        """
+        msg = str(await driver(_PROMPT_BUSY))
+
+        assert "!restart" not in msg
+        assert "clears on its own" in msg
+
+    @pytest.mark.asyncio
     async def test_unknown_shape_still_preserved(self):
         """An unrecognised frame must not be swallowed — the raw shape is kept."""
         msg = str(await _raise_via_wait({"code": -32602, "message": "Invalid params"}))
@@ -366,9 +384,35 @@ class TestMalformedRequestReachesTheHandlePath:
         assert "Internal error" not in msg
         # It names the failure class and offers a repair affordance.
         assert "malformed" in msg.lower()
-        assert "/compact" in msg or "/chat new" in msg
+        assert "/compact" in msg
         # request_id survives for support correlation.
         assert "863ae6fe-de1d-4149-b3ff-6ee02d8d58a2" in msg
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("driver", [_raise_via_wait, _raise_via_dispatch])
+    async def test_malformed_request_guidance_names_no_unknown_command(self, driver):
+        """Every command the guidance names must exist on the reader's surface.
+
+        This error is TERMINAL, so a channel dispatcher hands the formatted
+        string straight to the user (telegram's ``_user_safe_failure_reason``
+        only surfaces ``transient is False``). The formatter does not know which
+        surface will render it, so it may name only commands spelled the same
+        everywhere. ``/chat new`` was not one: it exists nowhere in the product
+        (``/new`` on Telegram and Discord, a new tab on the dashboard), so the
+        one actionable instruction a stuck user received was inert -- and on a
+        session this broken the non-command is forwarded as a prompt and
+        re-fails with this same error (#7213).
+
+        Asserted as an absence rather than by re-stating the sentence, so the
+        test constrains the CLASS of mistake (a fabricated command) instead of
+        pinning wording a later copy edit is entitled to change.
+        """
+        msg = str(await driver(_MALFORMED_REQUEST))
+
+        assert "/chat new" not in msg
+        # The reset affordance survives as prose, so the guidance still tells the
+        # user what to do -- deleting the wrong command must not delete the advice.
+        assert "new conversation" in msg.lower()
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("driver", [_raise_via_wait, _raise_via_dispatch])

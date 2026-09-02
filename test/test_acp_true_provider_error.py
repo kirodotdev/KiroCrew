@@ -166,8 +166,11 @@ class TestMalformedRequestIsTerminalAndActionable:
         assert "structural" in out.lower()
         # It says retrying as-is won't help.
         assert "will not help" in out.lower()
-        # It offers a concrete repair affordance (#6022).
-        assert "/compact" in out or "/chat new" in out
+        # It offers a concrete repair affordance (#6022). Only `/compact` is
+        # accepted, and the disjunction that once also accepted the non-existent
+        # `/chat new` is why the defect passed -- see
+        # docs/system-specs/common/error-handling.md (#7213).
+        assert "/compact" in out
 
     def test_request_id_is_preserved(self):
         out = _format_acp_error(self._MALFORMED)
