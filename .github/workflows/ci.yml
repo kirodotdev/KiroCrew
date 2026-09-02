@@ -63,9 +63,15 @@ jobs:
       only_backend: ${{ steps.decide.outputs.only_backend }}
       only_frontend: ${{ steps.decide.outputs.only_frontend }}
       linux_packaging: ${{ steps.filter.outputs.linux_packaging }}
+      leaf_tests: ${{ steps.leaf.outputs.leaf_tests }}
+      leaf_targets: ${{ steps.leaf.outputs.leaf_targets }}
+      leaf_gates: ${{ steps.leaf.outputs.leaf_gates }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          # The leaf-test selector diffs against the PR base, so the base commit
+          # must be present. Paid once here rather than on every shard job.
+          fetch-depth: 0
           persist-credentials: false
 
       - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
@@ -127,6 +133,61 @@ jobs:
           echo "only_backend=$only_backend"   >> "$GITHUB_OUTPUT"
           echo "only_frontend=$only_frontend" >> "$GITHUB_OUTPUT"
           echo "backend=$BACKEND frontend=$FRONTEND meta=$META full_run=$FULL_RUN -> only_backend=$only_backend only_frontend=$only_frontend"
+
+      # A diff that touches ONLY leaf test modules cannot change a production code
+      # path, and cannot change another test file's outcome either -- the selector
+      # escalates on conftest, shared helpers, fixture trees, and any test module
+      # some other file imports. So the sharded suite is replaced by the changed
+      # files plus the gates that read the test/ tree as data, run several times.
+      #
+      # This exists because a one-line flaky-test fix used to wait ~30 minutes for
+      # the full matrix, which is what makes a flake block every open PR. Repeats
+      # matter more than breadth here: a flaky test run once in isolation passes.
+      #
+      # Every failure path below yields the FULL suite. `ci-full-run` still forces
+      # the whole matrix when a fix depends on suite-wide interleaving.
+      - name: Decide leaf-test scope
+        id: leaf
+        env:
+          FULL_RUN: ${{ contains(github.event.pull_request.labels.*.name, 'ci-full-run') }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -uo pipefail
+          leaf_tests=false
+          # BOTH must be pre-initialized: the heredoc below expands each one
+          # unconditionally, while they are assigned only in the `else` branch. A
+          # push build (no PR base) and a `ci-full-run` PR both take the `if`
+          # branch, so an uninitialized variable there dies on `set -u` and takes
+          # the whole `changes` job -- and every job that needs it -- with it,
+          # breaking the very full-matrix escape hatch this branch exists to serve.
+          targets=""
+          gates=""
+          if [ "$FULL_RUN" = "true" ] || [ -z "${BASE_SHA:-}" ]; then
+            echo "Full suite: ci-full-run label set, or no PR base (push build)."
+          else
+            rc=0
+            targets="$(SCOPED_TESTS_BASE_REF="$BASE_SHA" \
+              python3 scripts/leaf_test_scope.py --targets)" || rc=$?
+            gates="$(SCOPED_TESTS_BASE_REF="$BASE_SHA" \
+              python3 scripts/leaf_test_scope.py --gates)" || true
+            if [ "$rc" = "0" ] && [ -n "$targets" ]; then
+              leaf_tests=true
+              echo "Leaf-test diff: $(printf '%s\n' "$targets" | grep -c .) target file(s)."
+              printf '%s\n' "$targets" | sed 's/^/  - /'
+            else
+              echo "Full suite: not a leaf-test-only diff (selector rc=$rc)."
+              gates=""
+            fi
+          fi
+          echo "leaf_tests=$leaf_tests" >> "$GITHUB_OUTPUT"
+          {
+            echo "leaf_targets<<LEAF_EOF"
+            printf '%s\n' "$targets"
+            echo "LEAF_EOF"
+            echo "leaf_gates<<GATE_EOF"
+            printf '%s\n' "$gates"
+            echo "GATE_EOF"
+          } >> "$GITHUB_OUTPUT"
 
   # Build the Linux desktop packages and install them for real, but ONLY when the
   # diff could change what a package installs. The check is expensive (a PBS
@@ -653,6 +714,8 @@ jobs:
         id: scope
         env:
           ONLY_FRONTEND: ${{ needs.changes.outputs.only_frontend }}
+          LEAF_TESTS: ${{ needs.changes.outputs.leaf_tests }}
+          LEAF_TARGETS: ${{ needs.changes.outputs.leaf_targets }}
           TARGETS_FILE: ${{ runner.temp }}/backend-targets.txt
         # A frontend-only diff cannot affect a backend test that never touches
         # the frontend surface, so we run only the files the selector could NOT
@@ -660,6 +723,20 @@ jobs:
         # Every failure path here falls back to the FULL suite on purpose --
         # never trade a missed test for a faster run.
         run: |
+          # Leaf-test verdict wins: it is the narrower and more specific reduction,
+          # and it is computed once in the `changes` job. `reduced=true` rides along
+          # so every existing coverage guard keyed on it keeps working unchanged --
+          # a subset's coverage is not comparable to the repo floor either way.
+          if [ "$LEAF_TESTS" = "true" ] && [ -n "${LEAF_TARGETS//[[:space:]]/}" ]; then
+            printf '%s\n' "$LEAF_TARGETS" | grep . > "$TARGETS_FILE" || true
+            if [ -s "$TARGETS_FILE" ]; then
+              echo "reduced=true" >> "$GITHUB_OUTPUT"
+              echo "leaf=true" >> "$GITHUB_OUTPUT"
+              echo "Leaf-test scope: $(wc -l < "$TARGETS_FILE") file(s), repeated."
+              exit 0
+            fi
+            echo "::warning::leaf targets arrived empty -- running the FULL backend suite."
+          fi
           if [ "$ONLY_FRONTEND" != "true" ]; then
             echo "reduced=false" >> "$GITHUB_OUTPUT"
             echo "Full backend suite (diff is not frontend-only)."
@@ -689,6 +766,9 @@ jobs:
         # job.
         env:
           REDUCED: ${{ steps.scope.outputs.reduced }}
+          LEAF: ${{ steps.scope.outputs.leaf }}
+          LEAF_REPEAT: "3"
+          LEAF_GATES: ${{ needs.changes.outputs.leaf_gates }}
           TARGETS_FILE: ${{ runner.temp }}/backend-targets.txt
         run: |
           # Take the `python` problem matcher registered by actions/setup-python
@@ -709,9 +789,48 @@ jobs:
           # files, still sharded, with coverage off -- a subset's coverage is
           # not comparable to the repo floor, so Coverage Combine/Gate skip the
           # backend lane for this run (see coverage-gate).
+          TARGETS=()
           if [ "$REDUCED" = "true" ]; then
-            TARGETS=()
             while IFS= read -r line; do line=${line%$'\r'}; if [ -n "$line" ]; then TARGETS+=("$line"); fi; done < "$TARGETS_FILE"
+          fi
+          # Leaf-test scope: run the whole narrow set on every matrix job, NOT
+          # split across shards -- 14 files do not shard usefully, and the point
+          # is repeats. Each shard job is then an independent roll on its own
+          # runner, which is what a flake fix actually needs. Measured
+          # on this checkout: one pass over the narrow set is ~38s (910 tests)
+          # against ~29 minutes for the slowest full shard.
+          if [ "$LEAF" = "true" ]; then
+            # The corpus gates run ONCE: they are deterministic content assertions,
+            # so repeating them buys nothing and -- at ~3 minutes a pass over ~158
+            # files -- would dominate the run and undo the reduction. Only the
+            # CHANGED files repeat, because that is where a flake lives.
+            GATES=()
+            while IFS= read -r line; do line=${line%$'\r'}; if [ -n "$line" ]; then GATES+=("$line"); fi; done <<< "$LEAF_GATES"
+            CHANGED=()
+            for target in "${TARGETS[@]}"; do
+              keep=1
+              for gate in "${GATES[@]}"; do
+                if [ "$target" = "$gate" ]; then keep=0; break; fi
+              done
+              if [ "$keep" = "1" ]; then CHANGED+=("$target"); fi
+            done
+            if [ "${#CHANGED[@]}" -eq 0 ]; then
+              echo "::error::leaf run resolved no changed files -- refusing to report green."
+              exit 1
+            fi
+            if [ "${#GATES[@]}" -gt 0 ]; then
+              echo "::group::leaf corpus gates (${#GATES[@]} file(s), once)"
+              pytest -q -n auto --timeout=120 --no-cov "${GATES[@]}"
+              echo "::endgroup::"
+            fi
+            for pass in $(seq 1 "$LEAF_REPEAT"); do
+              echo "::group::leaf changed files, pass $pass/$LEAF_REPEAT"
+              pytest -q -n auto --timeout=120 --no-cov "${CHANGED[@]}"
+              echo "::endgroup::"
+            done
+            exit 0
+          fi
+          if [ "$REDUCED" = "true" ]; then
             pytest -q -n auto --timeout=120 \
               --splits "$SHARD_COUNT" --group ${{ matrix.group }} \
               --no-cov \
@@ -1007,7 +1126,14 @@ jobs:
     # A frontend-only diff runs the backend suite as a coverage-free subset, so
     # there are no shard artifacts to combine. Coverage Gate asserts this job is
     # exactly `skipped` in that case, and `success` otherwise.
-    if: needs.changes.outputs.only_frontend != 'true'
+    #
+    # A leaf-test diff is the SAME situation for a different reason, and it needs
+    # naming separately: it is a BACKEND diff, so `only_frontend` is false, and
+    # without this clause the job would run and fail on artifacts the leaf lane
+    # deliberately never uploaded.
+    if: >-
+      needs.changes.outputs.only_frontend != 'true'
+      && needs.changes.outputs.leaf_tests != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -1150,6 +1276,7 @@ jobs:
       - name: Require upstream coverage jobs to have succeeded
         env:
           CC: ${{ needs.coverage-combine.result }}
+          LEAF_TESTS: ${{ needs.changes.outputs.leaf_tests }}
           FE: ${{ needs.frontend-test.result }}
           FCM: ${{ needs.frontend-coverage-merge.result }}
           BE: ${{ needs.backend-test.result }}
@@ -1196,7 +1323,18 @@ jobs:
           # coverage-combine is therefore skipped by design. Anything else
           # (failure, cancellation, dependency-skip, or a run that happened when
           # it shouldn't have) fails closed.
-          if [ "$ONLY_FRONTEND" = "true" ]; then
+          # A leaf-test run is coverage-free by design (the backend lane runs a
+          # subset, whose coverage is not comparable to the repo floor), so
+          # coverage-combine is skipped for it exactly as it is for a
+          # frontend-only run. Checked BEFORE the frontend branch because the two
+          # flags are independent and a leaf diff sets only this one.
+          if [ "$LEAF_TESTS" = "true" ]; then
+            if [ "$CC" != "skipped" ]; then
+              echo "::error::coverage-combine=$CC but this run was a leaf-test run (expected exactly 'skipped') -- inconsistent."
+              exit 1
+            fi
+            echo "Leaf-test run: coverage-combine skipped by design; backend coverage not asserted."
+          elif [ "$ONLY_FRONTEND" = "true" ]; then
             if [ "$CC" != "skipped" ]; then
               echo "::error::coverage-combine=$CC but this run was frontend-only (expected exactly 'skipped') -- inconsistent."
               exit 1
