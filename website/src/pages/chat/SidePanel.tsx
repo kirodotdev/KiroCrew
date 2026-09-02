@@ -1131,7 +1131,13 @@ function TabChip({ tab, active, onSelect, onClose, closable = true, pinned = fal
       // accessible name + hover tooltip. Harmless (and a nice tooltip) when the
       // label is also shown.
       aria-label={pinned ? tab.title : undefined}
-      title={pinned && !showLabel ? tab.title : undefined}
+      // A file/diff/folder tab's label is `basename(path)` inside a truncating
+      // 240px chip, so a long name and a deep directory are both unreadable and
+      // two same-named files in different directories are indistinguishable.
+      // Prefer the full path as the tooltip whenever the tab carries one; fall
+      // back to the title for the tabs that have no path (terminal, app) and for
+      // the icon-only pinned chips that need a name for their glyph.
+      title={tab.path ?? (pinned && !showLabel ? tab.title : undefined)}
       // Browser-tab chip: 32px tall, top corners only (8px), bottom edge fused
       // into the panel body. Active = the body's own background (--bg) plus a
       // top/side hairline (--border, bottom open) so the silhouette survives a
