@@ -480,35 +480,62 @@ def config_local_path() -> Path:
     return config_dir() / "config.local.json"
 
 
+def _inside_data_home(path: Path) -> bool:
+    """Whether *path* lives in ``config_dir()``, the one directory we own.
+
+    ``load()`` reads whatever ``config_path()`` resolves to, and callers can
+    redirect that at a file they own -- tests and embedders point it at a
+    ``tempfile`` entry in the shared ``TMPDIR``. Anything the loader drops beside
+    such a path is a file nobody collects: the caller unlinks the path it created
+    and never learns a sibling appeared. One dev host accumulated 72k orphaned
+    ``tmpXXXXXXXX.json.bak`` files this way, 7% of a tmpfs inode budget whose
+    exhaustion fails every process on the box.
+
+    Ask about the path the sibling will ACTUALLY be written beside, which is not
+    always the one you started from: ``<path>.bak`` lands beside the path as
+    given, but ``update_config_locked`` resolves a symlinked config first, so its
+    ``<path>.lock`` lands beside the TARGET. A ``config.json`` inside the data
+    home that symlinks out of it is contained by one question and foreign by the
+    other -- see :func:`_lock_target`.
+
+    Containment is unprovable for a symlink loop or a vanished parent; treat that
+    as foreign, since acting on a failed check is the worse error.
+    """
+    try:
+        return path.parent.resolve() == config_dir().resolve()
+    except OSError:
+        return False
+
+
+def _lock_target(path: Path) -> Path:
+    """The path ``update_config_locked`` would put its lock sidecar beside.
+
+    It resolves a symlinked config before locking, so that -- not *path* -- is
+    what the containment question has to be asked about. Returns *path* unchanged
+    when it is not a symlink or cannot be resolved, which is the conservative
+    answer either way: an unresolvable path fails the containment check.
+    """
+    try:
+        return path.resolve() if path.is_symlink() else path
+    except OSError:
+        return path
+
+
 def _write_migration_backup(path: Path) -> None:
     """Copy the pre-migration config aside, but ONLY inside our own data home.
 
-    ``load()`` reads whatever ``config_path()`` resolves to, and callers can
-    redirect that at a file they own — tests and embedders point it at a
-    ``tempfile`` entry in the shared ``TMPDIR``. Writing ``<path>.bak`` beside
-    such a path leaks a file nobody collects: the caller unlinks the path it
-    created and never learns a sibling appeared. One dev host accumulated 72k
-    orphaned ``tmpXXXXXXXX.json.bak`` files this way, 7% of a tmpfs inode
-    budget whose exhaustion fails every process on the box.
-
-    So the copy is gated on the config living in ``config_dir()``, the one
-    directory whose contents we own. In production that is always true
-    (``config_path()`` is ``config_dir() / "config.json"``), which keeps the
-    real backup exactly where it has always been; for a redirected path we
-    write nothing rather than litter a directory belonging to someone else.
+    The copy is gated on :func:`_inside_data_home`, which explains the orphan
+    problem the gate exists for. In production the config always lives there
+    (``config_path()`` is ``config_dir() / "config.json"``), which keeps the real
+    backup exactly where it has always been; for a redirected path we write
+    nothing rather than litter a directory belonging to someone else.
 
     Only the LOCATION decision is contained here. A failing copy still
     propagates, because the caller's ``except`` is what skips the migration
-    ``save()`` -- so a config we could not copy aside is not rewritten either,
+    write -- so a config we could not copy aside is not rewritten either,
     and the migration retries on the next load.
     """
-    try:
-        inside_data_home = path.parent.resolve() == config_dir().resolve()
-    except OSError:
-        # Containment is unprovable (symlink loop, vanished parent): treat the
-        # path as foreign, since writing on a failed check is the worse error.
-        inside_data_home = False
-    if not inside_data_home:
+    if not _inside_data_home(path):
         # info, not debug: the migration save that follows rewrites this
         # caller-owned file in place, and that now happens with no backup.
         logger.info("Config migrated; no backup written for %s (outside the data home)", path)
@@ -518,6 +545,249 @@ def _write_migration_backup(path: Path) -> None:
     backup = Path(str(path) + ".bak")
     shutil.copy2(path, backup)
     logger.info("Config migrated — backup saved to %s", backup)
+
+
+#: The write-back migrations a load can find pending, as recorded by
+#: :meth:`KiroCrewConfig._load_resolved` and re-checked against the on-disk
+#: document by :func:`_apply_document_migrations`.
+MIGRATE_WORKSPACES = "workspaces"
+MIGRATE_AGENTS = "agents"
+MIGRATE_DEFAULT_AGENT = "default_agent"
+
+
+def _apply_document_migrations(
+    data: dict,
+    pending: frozenset[str],
+    *,
+    overlay_kiro_agent: str | None,
+    default_kiro_agent: str,
+) -> bool:
+    """Apply the pending write-back migrations to a raw config document in place.
+
+    *data* is ``config.json`` as read **inside the write lock**, not the merged
+    snapshot the calling load parsed. That is the whole point: the migration is
+    expressed as a delta against the document that is actually on disk right now,
+    so a config write that landed after this load's read survives instead of being
+    replaced by a re-serialization of the older snapshot.
+
+    *pending* names the migrations the load decided on, so this never widens what
+    the migration writes. The load's decisions are taken against the MERGED
+    base+overlay view; the overlay is user-owned and never written back, so a
+    migration the merged view did not ask for must not be invented here.
+
+    The seeded agent's kiro agent resolves the same three-way precedence the
+    loader itself applies, because it has to be the MERGED effective value (that
+    is what the default crew dispatched before the migration) computed against a
+    CURRENT base: *overlay_kiro_agent* first, since ``config.local.json`` wins the
+    deep-merge and the base can say nothing about it; then the base document's own
+    ``agent.default_agent`` as read here, so a ``config set`` that landed after
+    the load's read is honored rather than reverted; then *default_kiro_agent*,
+    the value the load resolved, which is the only one carrying the dataclass
+    default. Taking any single one of the three is wrong in a different direction.
+
+    Every entry is re-checked against *data* before it is applied, which makes the
+    function idempotent and makes a concurrent writer that already migrated a
+    no-op rather than a second rewrite. Returns True when anything changed; the
+    caller skips the write entirely when it returns False.
+    """
+    changed = False
+
+    # Flat workspace strings -> {"dir": ...}. Per entry, and only for entries the
+    # document still holds as a string: a workspace added or rewritten by another
+    # writer since this load's read is left exactly as that writer left it.
+    if MIGRATE_WORKSPACES in pending:
+        raw_workspaces = data.get("workspaces")
+        if isinstance(raw_workspaces, dict):
+            for name, value in list(raw_workspaces.items()):
+                if isinstance(value, str):
+                    raw_workspaces[name] = asdict(WorkspaceConfig(dir=value))
+                    changed = True
+
+    # Seed the default agent when the document still has none.
+    if MIGRATE_AGENTS in pending:
+        stored_agents = data.get("agents")
+        if not isinstance(stored_agents, dict) or not stored_agents:
+            stored_agent_section = data.get("agent")
+            stored_kiro = (
+                stored_agent_section.get("default_agent")
+                if isinstance(stored_agent_section, dict)
+                else None
+            )
+            base_kiro = stored_kiro if isinstance(stored_kiro, str) and stored_kiro else None
+            data["agents"] = {
+                "default": asdict(
+                    KiroCrewAgentConfig(
+                        kiro_agent=overlay_kiro_agent or base_kiro or default_kiro_agent,
+                        workspace="default",
+                        memory_store="default",
+                    )
+                )
+            }
+            changed = True
+
+    # Point default_agent at an agent that exists. Resolved against the
+    # document's OWN agents (after any seeding above), so a concurrent writer's
+    # newly added agent is a valid target rather than something we overwrite.
+    if MIGRATE_DEFAULT_AGENT in pending:
+        stored_agents = data.get("agents")
+        known = stored_agents if isinstance(stored_agents, dict) else {}
+        stored_default = data.get("default_agent")
+        if not isinstance(stored_default, str) or not stored_default or stored_default not in known:
+            if "default" in known:
+                data["default_agent"] = "default"
+            elif known:
+                data["default_agent"] = next(iter(known))
+            else:
+                data["default_agent"] = "default"
+            changed = data["default_agent"] != stored_default or changed
+
+    return changed
+
+
+def _overlay_kiro_agent() -> str | None:
+    """``agent.default_agent`` as ``config.local.json`` states it, if it does.
+
+    The overlay is deep-merged OVER the base at load time, so where it names this
+    field the base cannot be the effective value. The seeded agent has to carry
+    the effective one -- that is what the default crew dispatched before the
+    migration existed -- so the seed consults this first.
+
+    Best-effort by design: an unreadable or malformed overlay means "the overlay
+    says nothing here", which lets the base value stand. It must not abort the
+    migration, because the loader itself already tolerates a bad overlay (it warns
+    and marks the file degraded) and a stricter rule here would make one broken
+    user-owned file block a write that is correct without it.
+    """
+    try:
+        local_path = config_local_path()
+        if not local_path.is_file():
+            return None
+        raw = json.loads(local_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, UnicodeDecodeError, OSError):
+        return None
+    if not isinstance(raw, dict):
+        return None
+    section = raw.get("agent")
+    if not isinstance(section, dict):
+        return None
+    value = section.get("default_agent")
+    return value if isinstance(value, str) and value else None
+
+
+def _persist_config_migration(
+    path: Path,
+    pending: frozenset[str],
+    *,
+    default_kiro_agent: str,
+) -> bool:
+    """Write the pending migrations to *path* as a read-modify-write.
+
+    Replaces the ``cfg.save()`` this used to be. ``save()`` re-serializes the
+    WHOLE snapshot the load parsed, and that snapshot was read before this call:
+    a dashboard PATCH or ``kirocrew config set`` landing in between was silently
+    dropped, because nothing ordered the two (#7793). ``load()`` already runs off
+    the event loop in places (``chat_runner``'s stop-hook nudge-cap site awaits
+    ``asyncio.to_thread(KiroCrewConfig.load)``), so the interleave is reachable.
+
+    Two parts carry the fix, and they are worth separating because only one of
+    them can be applied everywhere:
+
+    * **The write is a delta.** Only the keys *pending* names are touched, and
+      each is re-decided against the document as read HERE rather than against
+      the load's older snapshot. A concurrent write to any other setting is
+      therefore not merely ordered but untouchable -- those bytes are never part
+      of our write. This part always applies.
+    * **The read and the write are one critical section**, via
+      :func:`update_config_locked`, so the migration's own keys are decided from
+      current state and cannot interleave with another locked writer.
+
+    The ordering the loader uses next door -- ``publish_autocompact_pct``'s
+    monotonic ticket -- cannot close this. A ticket orders load against load, and
+    the writer being lost here is not a load: no config writer outside this module
+    draws a ticket, so the comparison never sees the PATCH at all. Nor is it
+    enough to take a lock around the write alone, since the snapshot was read
+    before the lock; the read has to move inside it.
+
+    ``update_config_locked`` takes its advisory lock on a ``<path>.lock`` sidecar,
+    which for a config path we do not own is the orphan the backup gate above
+    exists to prevent -- and ``TestMigrationBackupContainment`` pins that a
+    migrating ``load()`` leaves a caller-owned directory exactly as it found it.
+    So the same containment predicate decides the lock, asked about the path the
+    lock will actually land beside: ``update_config_locked`` resolves a symlinked
+    config first, so a ``config.json`` inside the data home that points OUT of it
+    would otherwise be classified as contained and drop its sidecar in a directory
+    belonging to someone else. Contained, take the lock; foreign, do the delta off
+    an immediate fresh read and skip the sidecar. What the foreign path gives up is
+    ordering on the migration's OWN keys against an unlocked writer of those same
+    keys -- and a redirected config has no gateway writing it, since the dashboard
+    and CLI paths write ``config_path()``.
+
+    The lock is taken WITHOUT waiting. ``load()`` is called from the event loop
+    all over the tree, and a POSIX ``flock`` wait there would stall the gateway
+    for as long as the holder keeps the lock -- so this asks once and gives up.
+    Giving up costs nothing, because a held lock means another writer is mid-write
+    and that writer's bytes are precisely what must not be clobbered: declining is
+    the correct outcome, not a compromise. The migration is already
+    retry-on-next-load by construction (the degraded-sections branch in
+    ``_load_resolved`` relies on the same property), so the next uncontended load
+    performs it. The remaining file I/O on the loop -- one read, one atomic
+    rename -- is what ``cfg.save()`` did here before, unchanged.
+
+    The backup is taken immediately before the write -- inside the lock hold where
+    there is one -- so it is the bytes being replaced rather than whatever was
+    there when the load started. A failing copy still propagates and aborts the
+    write, keeping :func:`_write_migration_backup`'s contract: a config we could
+    not copy aside is not rewritten, and the migration retries on the next load.
+
+    Returns True when a write happened.
+    """
+    wrote = False
+    # The overlay is user-owned and never written back, so it is read OUTSIDE the
+    # lock: there is no update of ours to lose against it, and a concurrent edit
+    # to it is the operator's own action rather than a race. Read here rather than
+    # taken from the load's snapshot so the seed reflects the file as it is now.
+    overlay_kiro_agent = _overlay_kiro_agent()
+
+    def _mutate(current: dict) -> dict | None:
+        nonlocal wrote
+        if not _apply_document_migrations(
+            current,
+            pending,
+            overlay_kiro_agent=overlay_kiro_agent,
+            default_kiro_agent=default_kiro_agent,
+        ):
+            # Nothing left to migrate -- another writer got here first. Returning
+            # None skips the write, so we do not rewrite a file we agree with.
+            return None
+        _write_migration_backup(path)
+        wrote = True
+        return current
+
+    if _inside_data_home(_lock_target(path)):
+        try:
+            update_config_locked(path, mutate=_mutate, wait_for_lock=False)
+        except BlockingIOError:
+            # POSIX reports a contended single-shot acquire this way. Not a
+            # failure worth a warning: info, because the migration simply moves
+            # to the next load and nothing was written or lost.
+            logger.info(
+                "config: migration deferred -- another writer holds %s.lock; "
+                "the next load will migrate",
+                path.name,
+            )
+            return False
+    else:
+        # read_config_for_update fails CLOSED on an unreadable or non-object
+        # file, and that exception reaches load()'s except: the file is left
+        # alone and the migration retries. Same contract as the locked path.
+        result = _mutate(read_config_for_update(path))
+        if result is not None:
+            write_config_atomically(path, stamp_config_meta(result))
+    if wrote:
+        # Same reason save() did: drop the validated-data cache so the next load
+        # re-reads this write even where the filesystem mtime resolution is coarse.
+        _invalidate_config_cache()
+    return wrote
 
 
 def denied_commands_path() -> Path:
@@ -847,6 +1117,7 @@ def update_config_locked(
     fsync: bool = False,
     stamp_meta: bool = True,
     on_corrupt: Literal["fail", "reset"] = "fail",
+    wait_for_lock: bool = True,
 ) -> dict:
     """Perform an atomic read-modify-write of a config file under an advisory lock.
 
@@ -910,6 +1181,14 @@ def update_config_locked(
         update.  ``"reset"`` catches the error inside the lock hold and invokes
         *mutate* with ``{}``; the caller's write proceeds in the same critical
         section so no concurrent writer can land between.
+    wait_for_lock : bool
+        If True (default), block until the advisory lock is free -- correct for
+        a caller whose update must happen.  If False, the acquire is single-shot
+        and raises :class:`OSError` when another writer holds the lock; for a
+        caller whose write is OPTIONAL and retried later, and which may run on
+        the event-loop thread, where a POSIX ``flock`` wait would stall the
+        gateway for as long as the holder keeps it.  It never relaxes the
+        serialization -- a contended acquire declines instead of proceeding.
 
     Returns
     -------
@@ -922,7 +1201,8 @@ def update_config_locked(
         If the existing config is unreadable or malformed and
         ``on_corrupt="fail"``.
     OSError
-        If the lockfile cannot be opened/created or the lock cannot be acquired.
+        If the lockfile cannot be opened/created or the lock cannot be acquired
+        (including a contended ``wait_for_lock=False`` acquire).
     """
     p = path if path is not None else config_path()
     # Resolve symlinks before locking (same logic as write_config_atomically)
@@ -936,7 +1216,7 @@ def update_config_locked(
     p.parent.mkdir(parents=True, exist_ok=True)
     fd = os.open(str(lock_path), os.O_RDWR | os.O_CREAT, 0o600)
     try:
-        with platform_compat.file_lock(fd, exclusive=True):
+        with platform_compat.file_lock(fd, exclusive=True, wait=wait_for_lock):
             try:
                 data = read_config_for_update(p)
             except ConfigReadError:
@@ -3232,12 +3512,19 @@ class KiroCrewConfig:
         # (flat workspace strings, missing sections), back up the original
         # and save the migrated version.  One-shot — subsequent loads see
         # the canonical format and skip.
+        #
+        # The in-memory half below mutates `cfg` and RECORDS which migrations it
+        # decided on; the on-disk half re-reads config.json inside the write lock
+        # and applies exactly those as a delta (see _persist_config_migration).
+        # It used to be `cfg.save()`, which re-serialized this load's whole
+        # snapshot and so dropped any config write that landed after this load's
+        # read (#7793).
         try:
-            needs_migration = False
+            pending: set[str] = set()
             # Flat workspace strings → need migration to {"dir": ...}
             for v in raw_workspaces.values():
                 if isinstance(v, str):
-                    needs_migration = True
+                    pending.add(MIGRATE_WORKSPACES)
                     break
 
             # One-time migration: create default agent when none exists
@@ -3248,7 +3535,7 @@ class KiroCrewConfig:
                     workspace="default",
                     memory_store="default",
                 )
-                needs_migration = True
+                pending.add(MIGRATE_AGENTS)
             if not cfg.default_agent or cfg.default_agent not in cfg.agents:
                 # Prefer "default" if it exists, otherwise use first available agent
                 if "default" in cfg.agents:
@@ -3257,14 +3544,19 @@ class KiroCrewConfig:
                     cfg.default_agent = next(iter(cfg.agents))
                 else:
                     cfg.default_agent = "default"
-                needs_migration = True
+                pending.add(MIGRATE_DEFAULT_AGENT)
+
+            needs_migration = bool(pending)
 
             if needs_migration and not cfg._degraded_sections:
-                _write_migration_backup(path)
-                cfg.save()
+                _persist_config_migration(
+                    path,
+                    frozenset(pending),
+                    default_kiro_agent=cfg.agent.default_agent or "kirocrew",
+                )
             elif needs_migration:
                 # This load DISCARDED something (a malformed section, an
-                # unreadable file). cfg.save() serializes only the parsed
+                # unreadable file). The write-back serializes only the parsed
                 # fields, so writing back here would replace the operator's
                 # malformed narrowing with clean defaults — erasing the only
                 # on-disk evidence and turning the denial into silent

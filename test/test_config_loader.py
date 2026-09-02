@@ -14,6 +14,7 @@ import os
 import platform
 import re
 import tempfile
+import threading
 import unittest.mock
 from pathlib import Path
 
@@ -22,6 +23,7 @@ from hypothesis import assume, given, settings
 from hypothesis import strategies as st
 
 import kiro_crew.config.loader as loader_module
+from kiro_crew import platform_compat
 from kiro_crew.config.loader import (
     _HAS_JSONSCHEMA,
     STT_PROVIDER_LOCAL,
@@ -6069,3 +6071,402 @@ class TestSameDispatchBindingDriftPin:
                 f"exempt field {name!r} — restore the exclusion rationale or "
                 "reclassify the field"
             )
+
+
+class TestMigrationWriteBackOrdering:
+    """The write-back migration must not lose a concurrent config write (#7793).
+
+    ``load()``'s migration used to call ``cfg.save()``, which re-serializes the
+    whole snapshot this load parsed. A config write landing after that read and
+    before the save was silently replaced by the older snapshot. ``load()`` runs
+    off the event loop in places (``chat_runner``'s stop-hook nudge-cap site
+    awaits ``asyncio.to_thread(KiroCrewConfig.load)``), so the interleave is
+    reachable rather than theoretical.
+    """
+
+    #: Bounded so a regression fails the test instead of hanging the suite.
+    _TIMEOUT = 30.0
+
+    @staticmethod
+    def _legacy_config() -> dict:
+        """A config whose only legacy shape is the missing ``agents`` section.
+
+        Deliberately NOT the flat-workspace shape: advisory schema validation
+        normalizes ``workspaces.<name>`` from a string to the structured form
+        before the migration block reads it, so that trigger only fires where
+        jsonschema is unavailable. The missing-``agents`` trigger fires either
+        way, so it is the one the interleave can be pinned on.
+
+        Carries no ``session`` section, so the setting the concurrent writer adds
+        below is genuinely absent from the migrating load's snapshot.
+        """
+        return {"workspaces": {"default": {"dir": "workspace"}}}
+
+    @staticmethod
+    def _owned_config(tmp_path: Path) -> Path:
+        """A config inside the loader's own data home, as in production.
+
+        ``config_dir()`` is redirected at the same directory, because the
+        migration's advisory lock is gated on containment there -- a config we do
+        not own gets no sidecar (see ``TestMigrationBackupContainment``).
+        """
+        home = tmp_path / "home"
+        home.mkdir(exist_ok=True)
+        return home / "config.json"
+
+    def test_a_write_landing_mid_migration_survives(self, tmp_path: Path) -> None:
+        """Two writers, deterministically interleaved: neither may lose the other.
+
+        Writer A is a migrating ``load()``, suspended after it has decided to
+        migrate but before its bytes reach the file. Writer B is an ordinary
+        locked config write (the shape the dashboard PATCH and ``kirocrew config
+        set`` both use) carrying a setting the operator just changed.
+
+        Both must be observable afterwards: the seeded default agent, and B's
+        ``autocompact_pct``. Before the fix, A re-serialized its whole snapshot --
+        which predates B's write and so carries the default threshold -- over the
+        file, and B's setting was gone.
+        """
+        cfg_path = self._owned_config(tmp_path)
+        cfg_path.write_text(json.dumps(self._legacy_config()), encoding="utf-8")
+
+        reached_write = threading.Event()
+        release_write = threading.Event()
+        real_backup = loader_module._write_migration_backup
+
+        def _suspend_then_backup(path: Path) -> None:
+            # Called on the migration's write path in both the old and the new
+            # shape, which is what makes one test able to fail before the fix and
+            # pass after it.
+            reached_write.set()
+            assert release_write.wait(self._TIMEOUT), "migration release timed out"
+            real_backup(path)
+
+        errors: list[BaseException] = []
+
+        def _migrating_load() -> None:
+            try:
+                KiroCrewConfig.load()
+            except BaseException as exc:  # pragma: no cover - surfaced below
+                errors.append(exc)
+
+        def _concurrent_setting_write() -> None:
+            try:
+
+                def _mutate(data: dict) -> dict:
+                    data.setdefault("session", {})["autocompact_pct"] = 42.0
+                    return data
+
+                loader_module.update_config_locked(cfg_path, mutate=_mutate)
+            except BaseException as exc:  # pragma: no cover - surfaced below
+                errors.append(exc)
+
+        with (
+            unittest.mock.patch.object(loader_module, "config_dir", return_value=cfg_path.parent),
+            unittest.mock.patch.object(loader_module, "config_path", return_value=cfg_path),
+            unittest.mock.patch.object(
+                loader_module, "_write_migration_backup", _suspend_then_backup
+            ),
+        ):
+            writer_a = threading.Thread(target=_migrating_load, daemon=True)
+            writer_b = threading.Thread(target=_concurrent_setting_write, daemon=True)
+            # try/finally, not a bare sequence: an assertion or a timeout below
+            # would otherwise exit the test with a writer still running against
+            # this test's paths and patched state, and leak it into later tests.
+            try:
+                writer_a.start()
+                assert reached_write.wait(self._TIMEOUT), "migration never reached its write"
+
+                # B starts while A is mid-migration. Under the fix A holds the
+                # config lock, so B waits for it; without the fix B writes
+                # straight away and A's snapshot rewrite replaces the result.
+                writer_b.start()
+                # Give B a chance to reach (or block on) the write before A
+                # resumes. A short join, not a bare sleep: it returns as soon as
+                # B is done in the unlocked case, and simply times out while B is
+                # blocked.
+                writer_b.join(timeout=1.0)
+
+                release_write.set()
+                writer_a.join(timeout=self._TIMEOUT)
+                writer_b.join(timeout=self._TIMEOUT)
+                assert not writer_a.is_alive(), "migrating load did not finish"
+                assert not writer_b.is_alive(), "concurrent config write did not finish"
+            finally:
+                # Idempotent: releases a writer still parked on the event and
+                # drains both threads before the patches come off, whether we got
+                # here by success or by assertion.
+                release_write.set()
+                for writer in (writer_a, writer_b):
+                    if writer.is_alive():
+                        writer.join(timeout=self._TIMEOUT)
+
+        assert not errors, f"writer raised: {errors!r}"
+
+        on_disk = json.loads(cfg_path.read_text(encoding="utf-8"))
+        assert on_disk["default_agent"] == "default", "the migration did not reach disk"
+        assert "default" in on_disk["agents"], "the migration did not reach disk"
+        assert on_disk.get("session", {}).get("autocompact_pct") == 42.0, (
+            "the config write that landed while the migration was in flight was "
+            "lost -- the write-back is not ordered against concurrent writers"
+        )
+
+    @pytest.mark.parametrize("owned", [True, False], ids=["data-home", "redirected"])
+    def test_the_migration_only_rewrites_the_keys_it_owns(
+        self, tmp_path: Path, owned: bool
+    ) -> None:
+        """The write is a delta, not a whole-snapshot re-serialization.
+
+        That is the property the ordering rests on, and the half that holds
+        wherever the config lives: a write confined to the keys the migration
+        decided on cannot carry a stale value for anything else, whoever wrote it
+        and whenever. So it is pinned on BOTH the data-home path (which also takes
+        the advisory lock) and a redirected path (which cannot, without leaving a
+        sidecar orphan). Asserted on the top-level key set, because a snapshot
+        rewrite materializes every section in the schema.
+        """
+        cfg_path = self._owned_config(tmp_path) if owned else tmp_path / "caller" / "cfg.json"
+        cfg_path.parent.mkdir(parents=True, exist_ok=True)
+        stored = self._legacy_config()
+        cfg_path.write_text(json.dumps(stored), encoding="utf-8")
+        data_home = cfg_path.parent if owned else tmp_path / "elsewhere"
+
+        with (
+            unittest.mock.patch.object(loader_module, "config_dir", return_value=data_home),
+            unittest.mock.patch.object(loader_module, "config_path", return_value=cfg_path),
+        ):
+            KiroCrewConfig.load()
+
+        on_disk = json.loads(cfg_path.read_text(encoding="utf-8"))
+        # "meta" is stamped by the shared writer, not by the migration.
+        assert set(on_disk) == set(stored) | {"agents", "default_agent", "meta"}, (
+            "the migration wrote sections it did not migrate -- it is "
+            "re-serializing a snapshot rather than applying its own delta"
+        )
+        assert on_disk["workspaces"] == stored["workspaces"]
+        assert on_disk["default_agent"] == "default"
+
+    def test_a_held_lock_defers_the_migration_instead_of_waiting(self, tmp_path: Path) -> None:
+        """A contended lock must not park the caller -- ``load()`` runs on the loop.
+
+        ``load()`` is reached from the event loop all over the tree, so a POSIX
+        ``flock`` wait here would stall the gateway for as long as the holder
+        keeps the lock. The acquire is single-shot instead: it declines, writes
+        nothing, and the next uncontended load migrates.
+
+        Run on a thread with a bounded join, so a regression that goes back to
+        waiting FAILS here rather than hanging the suite -- a waiting acquire
+        would block until the holder below releases, which is forever from this
+        test's point of view.
+        """
+        cfg_path = self._owned_config(tmp_path)
+        stored = self._legacy_config()
+        cfg_path.write_text(json.dumps(stored), encoding="utf-8")
+
+        outcome: list[object] = []
+
+        def _migrate() -> None:
+            with unittest.mock.patch.object(
+                loader_module, "config_dir", return_value=cfg_path.parent
+            ):
+                outcome.append(
+                    loader_module._persist_config_migration(
+                        cfg_path,
+                        frozenset({loader_module.MIGRATE_AGENTS}),
+                        default_kiro_agent="kirocrew",
+                    )
+                )
+
+        lock_fd = os.open(str(cfg_path) + ".lock", os.O_RDWR | os.O_CREAT, 0o600)
+        migrator = threading.Thread(target=_migrate, daemon=True)
+        try:
+            with platform_compat.file_lock(lock_fd, exclusive=True):
+                migrator.start()
+                migrator.join(timeout=10.0)
+                parked = migrator.is_alive()
+                # Assert INSIDE the hold, before the file can be touched: with a
+                # waiting acquire the migration is still parked here, and what it
+                # would eventually write is not the question.
+                assert not parked, "migration waited on a held lock instead of deferring"
+                assert outcome == [False]
+                assert json.loads(cfg_path.read_text(encoding="utf-8")) == stored
+                assert not Path(str(cfg_path) + ".bak").exists()
+        finally:
+            # Releasing the hold above lets a parked migrator (the regression
+            # case) drain instead of surviving this test.
+            if migrator.is_alive():
+                migrator.join(timeout=self._TIMEOUT)
+            os.close(lock_fd)
+
+    def test_a_symlink_out_of_the_data_home_gets_no_lock_sidecar(self, tmp_path: Path) -> None:
+        """Containment is about where the sidecar LANDS, not where the path sits.
+
+        ``update_config_locked`` resolves a symlinked config before locking, so a
+        ``config.json`` inside the data home that points out of it would drop its
+        ``.lock`` beside the external target -- the same orphan the backup gate
+        exists to prevent, one indirection further out.
+        """
+        home = tmp_path / "home"
+        home.mkdir()
+        outside = tmp_path / "elsewhere"
+        outside.mkdir()
+        target = outside / "real-config.json"
+        target.write_text(json.dumps(self._legacy_config()), encoding="utf-8")
+        link = home / "config.json"
+        link.symlink_to(target)
+
+        before = {p.name for p in outside.iterdir()}
+        with unittest.mock.patch.object(loader_module, "config_dir", return_value=home):
+            wrote = loader_module._persist_config_migration(
+                link,
+                frozenset({loader_module.MIGRATE_AGENTS}),
+                default_kiro_agent="kirocrew",
+            )
+
+        assert wrote is True, "the migration should still reach the symlinked config"
+        assert "default" in json.loads(target.read_text(encoding="utf-8"))["agents"]
+        assert {
+            p.name for p in outside.iterdir()
+        } == before, "the migration left a sidecar beside the symlink's external target: %s" % sorted(
+            {p.name for p in outside.iterdir()} - before
+        )
+
+    def test_the_overlay_wins_the_seed_over_the_base_document(self, tmp_path: Path) -> None:
+        """``config.local.json`` decides the effective agent, so it decides the seed.
+
+        The overlay is deep-merged over the base at load time, so where it names
+        ``agent.default_agent`` the base value is not what anything dispatches.
+        Seeding from the base there would silently switch the default crew's agent
+        on the next load.
+        """
+        cfg_path = self._owned_config(tmp_path)
+        cfg_path.write_text(
+            json.dumps({"agent": {"default_agent": "base-agent"}}), encoding="utf-8"
+        )
+        local_path = cfg_path.parent / "config.local.json"
+        local_path.write_text(
+            json.dumps({"agent": {"default_agent": "overlay-agent"}}), encoding="utf-8"
+        )
+
+        with (
+            unittest.mock.patch.object(loader_module, "config_dir", return_value=cfg_path.parent),
+            unittest.mock.patch.object(loader_module, "config_local_path", return_value=local_path),
+        ):
+            wrote = loader_module._persist_config_migration(
+                cfg_path,
+                frozenset({loader_module.MIGRATE_AGENTS, loader_module.MIGRATE_DEFAULT_AGENT}),
+                default_kiro_agent="base-agent",
+            )
+
+        assert wrote is True
+        on_disk = json.loads(cfg_path.read_text(encoding="utf-8"))
+        assert on_disk["agents"]["default"]["kiro_agent"] == "overlay-agent", (
+            "the seed took the base document's agent while the overlay named a "
+            "different one -- the effective agent silently changed"
+        )
+        # The overlay itself is user-owned and must come back untouched.
+        assert json.loads(local_path.read_text(encoding="utf-8")) == {
+            "agent": {"default_agent": "overlay-agent"}
+        }
+
+    def test_a_malformed_overlay_lets_the_base_value_stand(self, tmp_path: Path) -> None:
+        """A broken user-owned overlay must not block a write correct without it."""
+        cfg_path = self._owned_config(tmp_path)
+        cfg_path.write_text(
+            json.dumps({"agent": {"default_agent": "base-agent"}}), encoding="utf-8"
+        )
+        local_path = cfg_path.parent / "config.local.json"
+        local_path.write_text("{ not json", encoding="utf-8")
+
+        with (
+            unittest.mock.patch.object(loader_module, "config_dir", return_value=cfg_path.parent),
+            unittest.mock.patch.object(loader_module, "config_local_path", return_value=local_path),
+        ):
+            wrote = loader_module._persist_config_migration(
+                cfg_path,
+                frozenset({loader_module.MIGRATE_AGENTS}),
+                default_kiro_agent="resolved-by-the-load",
+            )
+
+        assert wrote is True
+        on_disk = json.loads(cfg_path.read_text(encoding="utf-8"))
+        assert on_disk["agents"]["default"]["kiro_agent"] == "base-agent"
+
+    def test_the_seeded_agent_takes_its_kiro_agent_from_the_reread(self, tmp_path: Path) -> None:
+        """The seed must not carry a value the document has since moved past.
+
+        ``agent.default_agent`` decides which kiro agent the seeded crew
+        dispatches. The load's snapshot is read before the lock, so a
+        ``kirocrew config set agent.default_agent`` landing in between would
+        otherwise be ignored and every default session would dispatch the
+        superseded agent.
+        """
+        cfg_path = self._owned_config(tmp_path)
+        # What the document says NOW -- the concurrent writer's value.
+        cfg_path.write_text(
+            json.dumps({"agent": {"default_agent": "newer-agent"}}), encoding="utf-8"
+        )
+
+        with unittest.mock.patch.object(loader_module, "config_dir", return_value=cfg_path.parent):
+            wrote = loader_module._persist_config_migration(
+                cfg_path,
+                frozenset({loader_module.MIGRATE_AGENTS, loader_module.MIGRATE_DEFAULT_AGENT}),
+                # What the load's older snapshot said.
+                default_kiro_agent="stale-agent",
+            )
+
+        assert wrote is True
+        on_disk = json.loads(cfg_path.read_text(encoding="utf-8"))
+        assert on_disk["agents"]["default"]["kiro_agent"] == "newer-agent", (
+            "the seeded agent carried the snapshot's kiro agent instead of the "
+            "one the document holds now"
+        )
+
+    def test_the_seed_falls_back_when_the_document_names_no_kiro_agent(
+        self, tmp_path: Path
+    ) -> None:
+        """With nothing stored, the load's resolved value is still the best answer.
+
+        It carries the overlay and the dataclass default, which a raw document
+        read cannot see -- so the fallback is the caller's value, not a literal.
+        """
+        cfg_path = self._owned_config(tmp_path)
+        cfg_path.write_text(json.dumps(self._legacy_config()), encoding="utf-8")
+
+        with unittest.mock.patch.object(loader_module, "config_dir", return_value=cfg_path.parent):
+            wrote = loader_module._persist_config_migration(
+                cfg_path,
+                frozenset({loader_module.MIGRATE_AGENTS, loader_module.MIGRATE_DEFAULT_AGENT}),
+                default_kiro_agent="resolved-by-the-load",
+            )
+
+        assert wrote is True
+        on_disk = json.loads(cfg_path.read_text(encoding="utf-8"))
+        assert on_disk["agents"]["default"]["kiro_agent"] == "resolved-by-the-load"
+
+    def test_a_migration_another_writer_already_did_writes_nothing(self, tmp_path: Path) -> None:
+        """When the re-read shows the work already done, skip the write.
+
+        The migration decision is taken from this load's snapshot, so a writer
+        that migrated in between leaves us holding a stale reason to write. The
+        re-read before the write is what turns that into a no-op instead of a
+        redundant rewrite (and, with it, a redundant ``.bak``).
+        """
+        cfg_path = self._owned_config(tmp_path)
+        already_migrated = {
+            "workspaces": {"default": {"dir": "workspace"}},
+            "agents": {"default": {"kiro_agent": "kirocrew"}},
+            "default_agent": "default",
+        }
+        cfg_path.write_text(json.dumps(already_migrated), encoding="utf-8")
+
+        with unittest.mock.patch.object(loader_module, "config_dir", return_value=cfg_path.parent):
+            wrote = loader_module._persist_config_migration(
+                cfg_path,
+                frozenset({loader_module.MIGRATE_AGENTS, loader_module.MIGRATE_DEFAULT_AGENT}),
+                default_kiro_agent="kirocrew",
+            )
+
+        assert wrote is False
+        assert not Path(str(cfg_path) + ".bak").exists()
+        assert json.loads(cfg_path.read_text(encoding="utf-8")) == already_migrated

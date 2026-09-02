@@ -535,6 +535,7 @@ def file_lock(
     *,
     exclusive: bool = True,
     required: bool = False,
+    wait: bool = True,
 ) -> Iterator[None]:
     """Acquire an advisory lock on ``fd`` for the duration of the block.
 
@@ -557,12 +558,28 @@ def file_lock(
     the outcome (both paths refuse to proceed without the lock). On POSIX the
     acquire blocks until the lock is free, as before.
 
+    *wait* is for a caller whose work is OPTIONAL and retried later, and which
+    may run on the event-loop thread: with ``wait=False`` the acquire is
+    single-shot on every platform and raises :class:`BlockingIOError` at once
+    when the lock is held, instead of blocking the loop for as long as the holder
+    keeps it. POSIX gets that from ``LOCK_NB``; Windows already behaves this way
+    on the loop thread, and a zero timeout makes it uniform off the loop too.
+    ``BlockingIOError`` is an ``OSError``, so it is a NARROWING of what a caller
+    already had to handle, and it separates "someone else is writing right now"
+    from the stuck-holder ceiling above. It changes only how long we are willing
+    to wait, never whether the critical section is serialized -- a contended
+    ``wait=False`` acquire raises rather than proceeding.
+
     Note: on Windows, ``msvcrt.locking`` requires seeking to byte 0, so the
     ``fd`` must be a dedicated lock file; callers must not rely on the file
     offset being preserved across the context manager boundary.
     """
     if IS_POSIX:
         mode = fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH
+        if not wait:
+            # BlockingIOError (an OSError) when held: same fail-closed contract
+            # as the Windows branch, reported by the platform rather than by us.
+            mode |= fcntl.LOCK_NB
         fcntl.flock(fd, mode)
         try:
             yield
@@ -579,9 +596,17 @@ def file_lock(
         # strictly safer, and callers already run under `with`, so the fd is
         # cleaned up. `required` is retained for call-site intent but no longer
         # changes the outcome — both paths now refuse to proceed lock-less.
-        if not _win_acquire_blocking(fd):
+        timeout = _WIN_LOCK_TIMEOUT_SECS if wait else 0.0
+        # Called with no keyword on the waiting path, so the default-argument
+        # call shape existing tests stub out stays exactly as it was.
+        acquired = _win_acquire_blocking(fd) if wait else _win_acquire_blocking(fd, timeout=0.0)
+        if not acquired:
+            if not wait:
+                # Held right now. BlockingIOError so the caller can tell this
+                # from the stuck-holder ceiling below, matching POSIX LOCK_NB.
+                raise BlockingIOError("file lock is held; not waiting for it")
             raise OSError(
-                f"could not acquire exclusive file lock within {_WIN_LOCK_TIMEOUT_SECS:g}s "
+                f"could not acquire exclusive file lock within {timeout:g}s "
                 "(a holder is stuck); refusing to proceed unserialized"
             )
         try:
