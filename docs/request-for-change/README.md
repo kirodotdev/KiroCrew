@@ -21,11 +21,17 @@ not been re-audited since 2026-08-03. The durable-run-coordinator row was added
 verified against `6d3e30bbbd`. The `rfc-global-workflow-library` row was added
 2026-08-25 and audited against `749468d42`; its implementation exists only in
 the active detached worktree. The `rfc-agentcore-identity-gateway` row
-was added 2026-08-27. The `rfc-crew-agent-sdk-boundary` row was added 2026-08-28 and verified against `dc88f142b`. The `rfc-transcript-section-markers` row was added 2026-08-30 and verified against `202770d13`. The `rfc-mcp-lifecycle-event-log` row was added 2026-09-01 and verified against `1ee69f225`.
+was added 2026-08-27. The `rfc-crew-agent-sdk-boundary` row was added
+2026-08-28 and verified against `dc88f142b`. The
+`rfc-transcript-section-markers` row was added 2026-08-30 and verified against
+`202770d13`. The `rfc-mcp-lifecycle-event-log` row was added 2026-09-01 and
+verified against `1ee69f225`. The `rfc-terminal-session-ownership` row was added
+2026-09-01 and verified against `1ee69f225c`.
 
 | Document | Status | What is actually on main |
 |---|---|---|
 | [rfc-mcp-lifecycle-event-log.md](rfc-mcp-lifecycle-event-log.md) | `draft` | The events package it builds on is real (`src/kiro_crew/events/`: envelope, registry, read-only backfill validator, landed by [#3808](https://github.com/kirodotdev/KiroCrew/pull/3808)), but nothing emits and nothing reads: no writer module, no `seq` field, no `mcp/` kinds. The #7366 capture points it names as emit sites are on an open PR, not on main |
+| [rfc-terminal-session-ownership.md](rfc-terminal-session-ownership.md) | `draft` | Nothing. Live terminal IDs still cross windows through `localStorage`; reconnects replace one output WebSocket while displaced handlers can still submit input and resize frames |
 | [rfc-transcript-section-markers.md](rfc-transcript-section-markers.md) | `draft` | Nothing. No `section_marker` role exists; every collapse affordance is intra-turn (`CollapsibleToolGroup`, `TurnBlock`, `ToolCallLine`) and nothing collapses rows above a point |
 | [rfc-crew-agent-sdk-boundary.md](rfc-crew-agent-sdk-boundary.md) | `draft` | Nothing. Audited at `dc88f142b`: `providers/base.py:30` still aliases `AcpEvent` as the "provider-agnostic" event type, 68 direct `kiro_crew.acp` import edges remain across 42 files outside `acp/` and `providers/`, and `acp/worker_pool.py:49` still imports back from `session_pid.py` behind a cycle guard. No `agent_sdk` package and no import ratchet exist |
 | [rfc-global-workflow-library.md](rfc-global-workflow-library.md) | `in-progress` | Nothing. The active detached worktree adds the global definition library, local adaptation and lineage, exact `/workflow <name>` invocation, MCP/HTTP contracts, and the Agent Capabilities management surface |
