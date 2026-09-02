@@ -38,6 +38,7 @@ from kiro_crew.subagent import (
     AGENT_NOT_AVAILABLE_CODE,
     AGENT_NOT_FOUND_CODE,
     agent_matches_allowlist,
+    format_subagent_usage,
     parent_spawn_allowlists,
     resolve_max_subagents,
     visible_agent_names,
@@ -518,7 +519,8 @@ def schemas() -> list[dict[str, Any]]:
                 "context. While a run is still going the partial transcript is a live view "
                 "that grows (and past the manager's bound is truncated from the front), so "
                 "line offsets can shift between polls and offset/limit paging is best-effort "
-                "until completion."
+                "until completion. Terminal responses include elapsed time and credit "
+                "usage when recorded."
             ),
             "inputSchema": {
                 "type": "object",
@@ -1128,8 +1130,10 @@ def spawn_status(name: str, args: dict[str, Any]) -> str:
     if spawn_params:
         path += "?" + urlencode(spawn_params)
     d = mcp_core._get(path)
+    usage = format_subagent_usage(d.get("credits"), d.get("elapsed"))
     if d.get("error"):
-        return f"Error: {d['error']}"
+        error = f"Error: {d['error']}"
+        return f"[usage: {usage}]\n{error}" if usage else error
 
     meta = d.get("result_meta")
     if isinstance(meta, dict) and meta.get("grep_error"):
@@ -1169,6 +1173,8 @@ def spawn_status(name: str, args: dict[str, Any]) -> str:
         # Paged/grepped read — prepend a compact header so the LLM knows how
         # much it saw and how to continue, without re-reading the whole file.
         hdr: list[str] = []
+        if usage:
+            hdr.append(f"usage: {usage}")
         total = meta.get("total_lines", "?")
         if "matched_lines" in meta:
             hdr.append(f"{meta['matched_lines']} line(s) matched grep of {total} total")
@@ -1191,7 +1197,9 @@ def spawn_status(name: str, args: dict[str, Any]) -> str:
         header, _ = redact_exfiltration_urls(header)
         header, _ = redact_credentials(header)
         return f"{header}\n{result}"
-    return result
+    if isinstance(meta, dict) and meta:
+        return result
+    return f"[usage: {usage}]\n{result}" if usage else result
 
 
 #: Server-side hold per resume-poll request (seconds); under the client GET

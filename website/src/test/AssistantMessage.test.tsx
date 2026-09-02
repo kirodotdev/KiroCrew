@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest'
 import { render, screen, fireEvent, act, cleanup } from '@testing-library/react'
-import AssistantMessage, { fmtTurnElapsed, fmtCredits, fmtTurnModel } from '../pages/chat/AssistantMessage'
+import AssistantMessage, { fmtTurnElapsed, fmtTurnModel } from '../pages/chat/AssistantMessage'
+import { fmtCredits } from '../i18n/format'
 import { parseOptions } from '../app-sdk/protocol'
 // Imported from the defining module, not the `protocol` barrel, which deliberately
 // does not re-export a g-flagged regex. Only `.source` is read below — a string

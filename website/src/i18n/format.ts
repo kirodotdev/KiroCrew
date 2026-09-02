@@ -159,6 +159,15 @@ export function fmtNumber(value: number, options?: NumberOptions): string {
   ).format(value)
 }
 
+/** Trim credit noise: 2 decimals under 10, 1 decimal beyond ("0.25", "12.5"). */
+export function fmtCredits(credits: number): string {
+  const digits = credits >= 10 ? 1 : 2
+  return fmtNumber(credits, {
+    minimumFractionDigits: digits,
+    maximumFractionDigits: digits,
+  })
+}
+
 /**
  * A ratio in 0..1 as a percentage.
  *

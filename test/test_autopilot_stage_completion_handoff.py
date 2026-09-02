@@ -14,7 +14,7 @@ from chat_test_helpers import _make_state
 
 from kiro_crew.acp.client import AcpAuthRequired
 from kiro_crew.dashboard.chat_utils import SUBAGENT_COMPLETION_KIND
-from kiro_crew.subagent import SubagentManager
+from kiro_crew.subagent import SubagentDelivery, SubagentManager
 
 
 @pytest.fixture(autouse=True)
@@ -1579,7 +1579,8 @@ async def test_hard_stop_settles_discarded_queued_completion_debt(tmp_path):
     manager._latch_report_failure(info)
     manager.settle_queued_delivery = AsyncMock()
     state.subagents = manager
-    slot.note_pending_subagent_delivery(content, [info.id])
+    delivery = SubagentDelivery(info.id, elapsed=0.0, credits=0.0)
+    slot.note_pending_subagent_delivery(content, [delivery])
     assert slot._subagent_delivery_pending
     assert manager._boundary_report_payloads
 
@@ -1589,7 +1590,7 @@ async def test_hard_stop_settles_discarded_queued_completion_debt(tmp_path):
 
     assert slot._queue == []
     assert slot._subagent_delivery_pending == {}
-    manager.settle_queued_delivery.assert_awaited_once_with([info.id])
+    manager.settle_queued_delivery.assert_awaited_once_with([delivery])
     assert manager._boundary_report_payloads == {}
     assert await manager.wait_for_parent_reports(parent, owner) is False
 
