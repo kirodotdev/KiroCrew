@@ -63,6 +63,11 @@ from kiro_crew.context_management import (
     validate_plan_format,
 )
 from kiro_crew.dashboard import directive_queue
+from kiro_crew.dashboard.chat_delivery import (
+    STEER_STATE_CONSUMED,
+    STEER_STATE_REQUEUED,
+    find_written_steer_row,
+)
 from kiro_crew.dashboard.chat_persistence import _build_history_prefix, save_slot_off_loop
 from kiro_crew.dashboard.chat_summary import generate_session_summary
 from kiro_crew.dashboard.chat_title import (
@@ -4028,12 +4033,71 @@ async def _handle_goal_command(state: "DashboardState", slot: "_ChatSlot", messa
     slot.append("done", "", "done")
 
 
-def _settle_consumed_steers(slot: "_ChatSlot", snapshot: str) -> None:
+def _mark_steer_row_state(
+    state: "DashboardState",
+    slot: "_ChatSlot",
+    message: str,
+    new_state: str,
+    siblings: list[str] | None = None,
+) -> None:
+    """Move *message*'s persisted steer row to *new_state* and tell open clients.
+
+    One writer for both lifecycle transitions, so `consumed` and `requeued` can
+    never disagree about how a row is patched. Best-effort by design: a row that
+    cannot be found or updated must never stop the settle or the requeue, because
+    losing the message is worse than a row left in `written`.
+
+    Reuses the existing `chat_message_update` patch rather than inventing a
+    steer-specific event -- the client already applies that to a rendered row --
+    and keys it on the row's `mid` where it has one, because `ts` is not an
+    identity: two rows minted in the same clock tick share it, so a ts-only lookup
+    takes whichever came first.
+    """
+    row = find_written_steer_row(slot, message, siblings)
+    if row is None:
+        return
+    ts = str(row.get("ts") or "")
+    new_meta = dict(row.get("meta") or {})
+    new_meta["steerState"] = new_state
+    _mid_raw = new_meta.get("mid")
+    _mid = _mid_raw if isinstance(_mid_raw, str) and _mid_raw else None
+    if not ts and not _mid:
+        return
+    # Patch by `mid` where the row has one: `ts` is not an identity, so a ts-only
+    # lookup takes the FIRST row carrying it and could patch a same-tick twin.
+    if slot.update_message(ts, meta=new_meta, mid=_mid) is None:
+        return
+    payload: dict[str, object] = {"slot": slot.key, "ts": ts, "meta": new_meta}
+    if _mid:
+        # Carried so the client resolves the same row this did; omitted when the
+        # row has no mid, keeping the payload shape unchanged for legacy rows.
+        payload["mid"] = _mid
+    try:
+        state.broadcast_ws("chat_message_update", payload)
+    except Exception:
+        # The row on the slot is already correct; clients reconcile from slot
+        # detail on the next fetch.
+        logger.warning(
+            "steer state broadcast failed for slot %s (state %s)",
+            slot.key,
+            new_state,
+            exc_info=True,
+        )
+
+
+def _settle_consumed_steers(
+    slot: "_ChatSlot", snapshot: str, state: "DashboardState | None" = None
+) -> None:
     """Settle pending steers covered by a ``steering_consumed`` echo.
 
     The parse-and-match rules live in ``steer_settle.settle_consumed_steers``,
     shared with the ``/side`` sidecar, which hands kiro-cli the same
     fire-and-forget steers and needs the same answer.
+
+    ``state`` is optional only so existing direct callers keep working; the
+    production call site passes it, and without it the settled rows keep the
+    ``written`` state they were persisted with rather than being promoted to
+    ``consumed``.
     """
     if not slot._pending_steers:
         return
@@ -4049,6 +4113,48 @@ def _settle_consumed_steers(slot: "_ChatSlot", snapshot: str) -> None:
         len(slot._pending_steers) - len(remaining),
         len(remaining),
     )
+    if state is not None and snapshot.strip():
+        # Promote ONLY on an echo that carried evidence. `settle_all_on_empty=True`
+        # makes an EMPTY echo clear the pending list -- this path's long-standing
+        # behaviour, which suppresses the requeue -- but an empty echo is no
+        # evidence of consumption at all (``steer_settle`` says so in as many
+        # words). Writing `consumed` on it would put the PR's own defect back:
+        # the row, the transcript and the history would all assert an injection
+        # nothing confirmed. Left `written`, which is what is actually known.
+        #
+        # Promote exactly the entries this echo accounted for. Computed as a
+        # multiset difference against `remaining` so a duplicate identical steer
+        # that stayed pending does not get its row promoted by its twin's echo.
+        _still = list(remaining)
+        for _msg in slot._pending_steers:
+            if _msg in _still:
+                _still.remove(_msg)
+                continue
+            # Record the evidence before promoting. `chat_delivery` decides a row's
+            # INITIAL state by whether its entry is still registered, and an entry
+            # removed by the empty-echo sweep is indistinguishable from one removed
+            # by a matched echo at that point -- so it read an empty frame as a
+            # confirmed injection. Keyed on the delivery id so a later identical
+            # steer cannot inherit this one's evidence.
+            _cdid = getattr(slot, "_steer_delivery_ids", {}).get(_msg, "")
+            if _cdid:
+                _confirmed_ids = getattr(slot, "_steer_confirmed", None)
+                if _confirmed_ids is None:
+                    _confirmed_ids = set()
+                    slot._steer_confirmed = _confirmed_ids
+                _confirmed_ids.add(_cdid)
+            # `remaining + [_msg]` is the live-steer list, NOT `_pending_steers`:
+            # the resolver refuses to patch when two live steers share the
+            # sanitized content, and `_pending_steers` still holds this whole
+            # echo's entries until the assignment below. So a redaction collision
+            # whose members the echo ALL accounted for looked ambiguous and both
+            # rows kept `written` forever -- understating a confirmed injection,
+            # the mirror of the defect this fix exists for. Ambiguity is about
+            # attribution, and only a steer that is still PENDING can also claim
+            # this row; ``steer_settle`` already draws the line this way for its
+            # own keys. When a twin stayed pending the count is 2 again and the
+            # refusal stands, because then which row is which is unknowable.
+            _mark_steer_row_state(state, slot, _msg, STEER_STATE_CONSUMED, remaining + [_msg])
     slot._pending_steers[:] = remaining
 
 
@@ -4076,6 +4182,17 @@ def _requeue_unconsumed_steers(state: "DashboardState", slot: "_ChatSlot") -> No
     requeued = slot._pending_steers[:]
     slot._pending_steers.clear()
     for steer_msg in reversed(requeued):
+        # The turn is over and never confirmed this steer, so the row persisted at
+        # write time is now WRONG if it still reads as a successful injection.
+        # Correct it before the queue card goes out, so the transcript and the card
+        # tell the same story: this message did not redirect that turn, it runs as
+        # its own (#7246). Done for every requeued entry, including the ones whose
+        # delivery id below is still live -- the row is the user-facing claim and it
+        # has to be corrected either way.
+        # `requeued` is passed as the live-steer list because `_pending_steers` was
+        # cleared above: the resolver needs to know how many steers in THIS batch
+        # share the sanitized content before it trusts the newest matching row.
+        _mark_steer_row_state(state, slot, steer_msg, STEER_STATE_REQUEUED, requeued)
         # Raw-at-rest by design: slot._queue is a DELIVERY payload (the drained
         # entry becomes the next turn's LLM input), matching every other queue
         # producer (queue_append in chat_handlers / messaging). All dashboard
@@ -8410,7 +8527,7 @@ async def _run_chat(
                     )
                     continue
             elif event.kind == EVENT_STEER_CONSUMED:
-                _settle_consumed_steers(slot, event.text or "")
+                _settle_consumed_steers(slot, event.text or "", state)
                 if _refusal_notices:
                     # Same echo, same parser as the user-steer ledger, but
                     # settle_all_on_empty stays False here: an empty echo is no

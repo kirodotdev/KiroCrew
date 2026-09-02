@@ -1353,9 +1353,20 @@ export function useWebSocket() {
             // into the meta so the reconcile in appendSlotMessage can match the
             // optimistic bubble by id instead of by content (#6075).
             const steerSid = (data as { sendId?: unknown }).sendId
+            // `steerState` says which of written/consumed/requeued this row is in.
+            // The server sends `written` here and patches the row to consumed or
+            // requeued later via `chat_message_update`, so the badge only claims a
+            // successful mid-turn injection once the backend has confirmed one
+            // (#7246). Absent on a pre-#7246 server, which the renderer treats as
+            // the legacy row shape.
+            const steerState = (data as { steerState?: unknown }).steerState
+            // The server row's own id. Stored so the later `chat_message_update`,
+            // which is keyed on `mid`, resolves this row -- without it that patch
+            // matches nothing and the state never moves until a reload.
+            const steerMid = (data as { mid?: unknown }).mid
             dispatch(appendSlotMessage({
               slot: (data as { slot?: string }).slot || store.getState().chat.activeSlot || '',
-              message: { role: 'user', content: (data as { content?: string }).content || '', cls: 'msg msg-u', meta: { steer: true, ...(typeof steerSid === 'string' && steerSid ? { sendId: steerSid } : {}) }, ts: (data as { ts?: string }).ts },
+              message: { role: 'user', content: (data as { content?: string }).content || '', cls: 'msg msg-u', meta: { steer: true, ...(typeof steerSid === 'string' && steerSid ? { sendId: steerSid } : {}), ...(typeof steerState === 'string' && steerState ? { steerState } : {}), ...(typeof steerMid === 'string' && steerMid ? { mid: steerMid } : {}) }, ts: (data as { ts?: string }).ts },
             }))
             // Steering is the other way to type into a busy session, so it
             // settles the rank exactly like a queued send. The server appends a

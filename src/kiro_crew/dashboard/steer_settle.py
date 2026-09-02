@@ -25,10 +25,12 @@ def settle_consumed_steers(
     """Return the entries of *pending* that ``snapshot`` did NOT account for.
 
     kiro-cli injects the CONCATENATION of every steer queued since the last
-    consumption, and the echo carries each one ``<user_message>``-wrapped. Parse
-    the snapshot into blocks and settle by EQUALITY: substring containment would
-    false-positive a short steer against a longer one or against the wrapper
-    text itself, and a falsely-settled steer is silently lost when the turn ends.
+    consumption, and the echo carries each one ``<user_message>``-wrapped. KAS does
+    not wrap: its ``steering_injected`` frame carries the content verbatim, so that
+    echo is a single BARE block. Both shapes are parsed, and settling is by
+    EQUALITY either way: substring containment would false-positive a short steer
+    against a longer one or against the wrapper text itself, and a falsely-settled
+    steer is silently lost when the turn ends.
 
     Settling is COUNT-AWARE — each block settles at most one pending entry, so a
     duplicate identical steer registered after the snapshot stays pending
@@ -40,7 +42,9 @@ def settle_consumed_steers(
     steer is requeued when the turn ends, so keeping everything costs at worst a
     visible, cancellable duplicate card, whereas settling on no evidence marks
     steers CONSUMED, suppresses the requeue, and loses the question with no trace.
-    That matches an echo which is present but carries no recognisable envelope.
+    A NON-empty echo carrying no envelope is treated as one bare block rather than
+    as no evidence, so it settles only the entry it EQUALS -- unrelated prose still
+    matches nothing and still settles nothing.
 
     ``settle_all_on_empty=True`` selects the opposite, and exists only because the
     main chat has long behaved that way; this argument keeps that path byte-identical
@@ -50,7 +54,28 @@ def settle_consumed_steers(
     if not snapshot.strip():
         return [] if settle_all_on_empty else list(pending)
     counts: dict[str, int] = {}
-    for block in _BLOCK_RE.findall(snapshot):
+    blocks = _BLOCK_RE.findall(snapshot)
+    if not blocks:
+        # KAS does not wrap, and only kiro-cli does. kiro-cli sends
+        # ``steering_consumed`` with every injected steer ``<user_message>``-wrapped,
+        # but the KAS path -- ``_meta.kiro.kind == "steering_injected"``, routed in
+        # ``session_handle`` -- yields its ``content`` field VERBATIM, so a KAS-backed
+        # turn produces a bare echo with no envelope to find. Parsing for the wrapper
+        # alone left those entries pending, and a pending steer is requeued when the
+        # turn ends: a question the backend had ALREADY injected ran a second time,
+        # while the row claimed it never applied.
+        #
+        # The whole snapshot becomes one candidate block. Settling stays
+        # EQUALITY-based, so this recognises a second echo SHAPE without relaxing the
+        # rule that guards against a silent loss -- prose that merely mentions a steer
+        # still matches nothing and settles nothing, which is what
+        # ``test_an_echo_without_recognisable_blocks_keeps_entries_pending`` pins.
+        #
+        # Stripped for the same parity reason the pending side is: the steer RPC wraps
+        # ``message.strip()`` and a wrapped block is therefore already stripped by its
+        # producer, while a bare ``content`` field carries whatever KAS put there.
+        blocks = [snapshot.strip()]
+    for block in blocks:
         # Already redacted upstream; re-running is idempotent and makes both
         # sides of the comparison come from the identical function rather than
         # relying on the caller having done it.

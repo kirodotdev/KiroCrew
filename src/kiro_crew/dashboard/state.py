@@ -3122,6 +3122,7 @@ class _ChatSlot:
         "_steer_segment_cut",
         "_native_subagent_tracker",
         "_native_subagent_output",
+        "_steer_confirmed",
         "_pending_steers",
         "_steer_delivery_ids",
         "_wait_state",
@@ -3702,6 +3703,15 @@ class _ChatSlot:
         # live and terminal state on the slot so reconnects can hydrate cards.
         self._native_subagent_tracker: dict[str, dict[str, Any]] = {}
         self._native_subagent_output: dict[str, list[str]] = {}
+        # Delivery ids whose steer a NON-EMPTY echo actually accounted for. The
+        # settle path can remove an entry from `_pending_steers` for two reasons
+        # that look identical afterwards: a matched echo (evidence), or the
+        # `settle_all_on_empty` sweep on an EMPTY echo (no evidence at all).
+        # `chat_delivery` infers `consumed` from the entry being gone, so without
+        # this it reads an empty frame as a confirmed injection and persists a
+        # success badge nothing proved. Keyed on the delivery id, not the text, so
+        # a later identical steer cannot inherit an earlier one's evidence.
+        self._steer_confirmed: set[str] = set()
         # Mid-turn steers handed to the backend but not yet confirmed consumed
         # (no steering_consumed / EVENT_STEER_CONSUMED echo yet). Appended by
         # the dashboard steer handler BEFORE the steer RPC's await (so a turn

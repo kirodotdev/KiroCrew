@@ -1316,3 +1316,27 @@ class TestConcurrentCloseDuringBodyRead:
         resp = await api_side_queue_edit(req)  # type: ignore[arg-type]
 
         assert resp.status < 500, resp.status
+
+
+def test_a_bare_kas_echo_lets_the_sidecar_render_its_steer():
+    """The sidecar's RENDER is a distinct observable from the shared settle.
+
+    `steer_settle` MARKS rather than removes, and its contract is that the caller
+    renders exactly what it returns -- so an empty return is silence, not an error.
+    Before the shared function recognised KAS's envelope-less echo, a bare frame
+    settled nothing here: the steer was never marked consumed, never returned, and
+    therefore never entered the transcript, while a submitter awaiting its RPC never
+    learned it had been delivered. That is the INVERSE of the main chat's symptom on
+    the identical input, which is why it earns its own pin at this level.
+    """
+    from kiro_crew.dashboard.side_state import STEER_CONSUMED, SideState
+
+    side = SideState(open=True)
+    side.steer_register("use QUIC")
+
+    settled = side.steer_settle("use QUIC")
+
+    assert [e["text"] for e in settled] == ["use QUIC"], (
+        "a bare KAS echo must settle -- and therefore render -- its own steer"
+    )
+    assert [e["state"] for e in side.steers] == [STEER_CONSUMED]

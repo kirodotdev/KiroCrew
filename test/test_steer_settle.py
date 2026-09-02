@@ -86,8 +86,9 @@ def test_an_unusable_echo_settles_everything():
 
 
 def test_an_echo_without_recognisable_blocks_keeps_entries_pending():
-    """Text that is present but carries no envelope settles nothing — the safe
-    direction is a duplicate card, never a silent loss."""
+    """Text present but carrying no envelope settles nothing unless it EQUALS the
+    steer — the bare-echo path reads it as one block, and this prose matches none,
+    so the safe direction is a duplicate card, never a silent loss."""
     assert settle_consumed_steers(["a"], "some unrelated prose") == ["a"]
 
 
@@ -121,3 +122,47 @@ def test_redaction_parity_does_not_settle_an_unrelated_steer():
     # Only a's echo arrives.
     remaining = settle_consumed_steers([a, b], _echo(redact_text(a)))
     assert remaining == [b], f"b must stay pending, got {remaining}"
+
+
+def test_a_bare_kas_echo_settles_its_steer():
+    """KAS's ``steering_injected`` carries its content VERBATIM, with no
+    ``<user_message>`` envelope, so wrapper-only parsing found no blocks and left the
+    steer pending. A pending steer is requeued when the turn ends, so a question the
+    backend had already injected ran a SECOND time while its row claimed it never
+    applied. The bare echo is evidence of consumption and must settle its own entry.
+    """
+    assert settle_consumed_steers(["use QUIC"], "use QUIC") == []
+
+
+def test_a_bare_echo_settles_by_equality_not_containment():
+    """The bare path is a SECOND enforcement site for the equality rule, so it needs
+    its own case: a snapshot that merely CONTAINS the steer must settle nothing, or a
+    KAS turn would mark a question consumed that was never injected and lose it."""
+    assert settle_consumed_steers(["ls"], "please run ls in /tmp") == ["ls"]
+
+
+def test_a_bare_echo_stays_count_aware():
+    """One bare block settles at most one pending entry, matching the wrapped path:
+    a duplicate identical steer registered after the snapshot must survive."""
+    assert settle_consumed_steers(["retry", "retry"], "retry") == ["retry"]
+
+
+def test_a_bare_echo_settles_a_redacted_steer():
+    """Redaction parity has to hold on the bare path too. ACP redacts the echo
+    before it reaches any surface, so a credential-bearing steer comes back masked;
+    comparing that against the RAW pending text would never match and the entry
+    would be requeued — re-running an already-injected question, on exactly the
+    questions where that is least acceptable."""
+    question = "deploy using AKIAIOSFODNN7EXAMPLE now"
+    echoed = redact_text(question)
+    assert echoed != question, "fixture is pointless unless redaction changes it"
+    assert settle_consumed_steers([question], echoed) == []
+
+
+def test_a_bare_echo_tolerates_surrounding_whitespace():
+    """Mirrors the wrapped path's whitespace case for the bare one. A wrapped block
+    arrives already stripped because the RPC wraps ``message.strip()``, but a bare
+    ``content`` field carries whatever the backend put there, so the bare block is
+    stripped for the same parity — otherwise a padded echo is a false NON-match and
+    the steer is requeued and re-run."""
+    assert settle_consumed_steers(["deploy now"], "  deploy now\n") == []
