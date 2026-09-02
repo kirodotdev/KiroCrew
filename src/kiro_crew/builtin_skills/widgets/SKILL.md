@@ -12,10 +12,11 @@ a sandboxed iframe with Tailwind CSS preloaded. Use this for styled visual
 content plain markdown cannot express: charts, color-coded tables, styled
 cards, visual summaries, simple interactive probes.
 
-The iframe CSP allows `script-src` from three CDNs: `cdn.tailwindcss.com`
-(preloaded), `cdn.jsdelivr.net`, and `cdnjs.cloudflare.com`. Tailwind is
-ready without any setup; other libraries (Chart.js, D3, etc.) need a
-`<script src="…">` tag pulling from one of those two CDNs.
+Tailwind is preloaded and ready without any setup — it is served from the
+dashboard's own origin, not from `cdn.tailwindcss.com`, which the iframe CSP
+does NOT allow. Other libraries (Chart.js, D3, etc.) need a
+`<script src="…">` tag pulling from one of the CSP-allowed CDNs listed under
+Rules below.
 
 ## When to use
 
@@ -102,6 +103,19 @@ Rules:
   <canvas id="c"></canvas>
   <script>new Chart(document.getElementById('c'), { /* config */ })</script>
   ```
+- **Give a responsive canvas a definite height, or leave the aspect ratio
+  alone.** The Chart.js defaults (`responsive: true`,
+  `maintainAspectRatio: true`) are safe exactly as written above. Only set
+  `maintainAspectRatio: false` when the canvas's parent has an explicit pixel
+  height:
+  ```html
+  <div style="height:180px"><canvas id="c"></canvas></div>
+  ```
+  Without one, the canvas and its parent size each other and the self-sizing
+  iframe re-feeds the loop, so the chart never settles and the widget renders
+  blank. Any library that sizes a canvas from its container — Chart.js,
+  ECharts, Plotly's responsive mode — carries the same hazard; inline SVG with
+  a fixed `viewBox` has no feedback path at all.
 - The dashboard sanitizes CSS via `src/lib/cssSanitize.ts` (shared with
   `WidgetFrame.tsx`) — a small allowlist of properties plus a denylist of
   dangerous functions (`expression()`, `javascript:`, `url(` with external
