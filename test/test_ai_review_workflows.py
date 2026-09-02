@@ -211,6 +211,121 @@ class TestHumanOverrideHandler:
         assert 'if [ "${#reason}" -gt 500 ]; then' in workflow
         assert "only a repository writer" in workflow
 
+    def test_permission_read_no_longer_swallows_its_exit_status(self) -> None:
+        # The authority read that decides whether the actor may override must
+        # not treat "the API did not answer" as "the actor is not a writer".
+        # `2>/dev/null || true` made those two the same empty string.
+        script = _step_script(
+            _workflow("ai-review-human-override.yml"), "Validate and record the decision"
+        )
+        permission_read = _line_containing(script, "collaborators/$ACTOR/permission")
+
+        assert "2>/dev/null" not in permission_read
+        assert "|| true" not in permission_read
+        # An explicit 404 stays a legitimate negative, so it must be matched
+        # by name rather than folded into the unknown-failure arm.
+        assert "HTTP 404|Not Found" in script
+        # Fail-closed on an unknown read must stay BOUNDED: a permanently
+        # failing API cannot be allowed to hold this job open.
+        assert "for attempt in 1 2 3; do" in script
+
+    def _override_step(self) -> str:
+        return _step_script(
+            _workflow("ai-review-human-override.yml"), "Validate and record the decision"
+        )
+
+    @pytest.mark.parametrize(
+        ("perm_mode", "want_rc", "want_notice", "want_error_annotation"),
+        [
+            # The read answered "write": the override is recorded.
+            ("write", 0, "Human judgment recorded", False),
+            # The read answered 404 -- the API saying "not a collaborator".
+            # A real denial: same refusal wording as before, and NOT an
+            # infrastructure error, so no ::error:: annotation.
+            ("notfound", 1, "only a repository writer may override", False),
+            # The read never answered. Also denies -- an unreadable permission
+            # is not authorization -- but it must be DISTINGUISHABLE from the
+            # 404 above, or an operator reads a GitHub outage as having lost
+            # write access to the repository.
+            ("transient", 1, "could not be READ", True),
+        ],
+    )
+    def test_unreadable_permission_denies_but_says_so(
+        self,
+        perm_mode: str,
+        want_rc: int,
+        want_notice: str,
+        want_error_annotation: bool,
+        tmp_path: Path,
+    ) -> None:
+        bash = _bash()
+        if bash is None:
+            pytest.skip("the handler step is Bash; skip where Bash is absent")
+        if shutil.which("jq") is None:
+            pytest.skip("the handler step shells out to jq")
+
+        head = "a" * 40
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        notices = tmp_path / "notices.json"
+        notices.touch()
+        # Stub only the two calls this step makes, so a third call is a loud
+        # failure rather than a silent pass.
+        (bin_dir / "gh").write_text(
+            "#!/usr/bin/env bash\n"
+            'if [ "${1:-}" = "api" ] && [ "${2:-}" = "--method" ]; then\n'
+            f'  cat >> "{notices}"\n'
+            "  exit 0\n"
+            "fi\n"
+            'case "${2:-}" in\n'
+            f'  */pulls/*) printf \'{{"head":{{"sha":"{head}","repo":{{"full_name":"o/r"}}}}}}\'; exit 0 ;;\n'
+            "  */permission)\n"
+            '    case "$PERM_MODE" in\n'
+            "      write) printf 'write\\n'; exit 0 ;;\n"
+            '      notfound) echo "gh: Not Found (HTTP 404)" >&2; exit 1 ;;\n'
+            '      transient) echo "gh: Internal Server Error (HTTP 500)" >&2; exit 1 ;;\n'
+            "    esac ;;\n"
+            "esac\n"
+            'echo "unexpected gh call: $*" >&2\n'
+            "exit 9\n",
+            encoding="utf-8",
+        )
+        # Keep the bounded backoff from costing this test its own wall clock.
+        (bin_dir / "sleep").write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+        for stub in ("gh", "sleep"):
+            (bin_dir / stub).chmod(0o755)
+
+        out_file = tmp_path / "gh-output"
+        out_file.touch()
+        proc = subprocess.run(
+            [bash, "-e", "-c", self._override_step()],
+            check=False,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            env={
+                **os.environ,
+                "PATH": f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}",
+                "PERM_MODE": perm_mode,
+                "GH_TOKEN": "stub",
+                "REPO": "o/r",
+                "PR": "1",
+                "ACTOR": "someone",
+                "COMMENT_ID": "42",
+                "COMMENT_BODY": f"/ai-review override gpt {head}: a stated reason",
+                "GITHUB_OUTPUT": str(out_file),
+            },
+            cwd=tmp_path,
+        )
+
+        assert proc.returncode == want_rc, f"stdout={proc.stdout!r} stderr={proc.stderr!r}"
+        assert want_notice in notices.read_text(encoding="utf-8"), notices.read_text(
+            encoding="utf-8"
+        )
+        assert ("::error::" in proc.stdout) is want_error_annotation, proc.stdout
+        if perm_mode == "write":
+            assert "actor=someone" in out_file.read_text(encoding="utf-8")
+
     def test_handler_records_a_bot_marker_before_changing_checks(self) -> None:
         workflow = _workflow("ai-review-human-override.yml")
         marker = (
