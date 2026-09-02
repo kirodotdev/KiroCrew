@@ -68,6 +68,7 @@ from kiro_crew.effort import EFFORT_LEVELS
 from kiro_crew.executors import discovery_executor
 from kiro_crew.metrics import provider as _metrics_provider
 from kiro_crew.security_posture import build_posture_snapshot_async, posture_counts_async
+from kiro_crew.session_workspace import is_valid_id
 from kiro_crew.stt import models as stt_models
 from kiro_crew.stt.limits import (
     MAX_IDLE_EVICT_SECS,
@@ -2300,9 +2301,49 @@ async def api_token_local(request: web.Request) -> web.Response:
 # ── Session workspace (Orchestrated Chat) ────────────────────────────
 
 
+def _invalid_session_path_id(session_id: str, agent_id: str | None = None) -> web.Response | None:
+    """400 for a path id ``session_workspace`` would refuse, else ``None``.
+
+    Both ids reach a filesystem path (``sessions/{session_id}/agent-{agent_id}.md``)
+    and are validated there by ``_validate_id``, which RAISES. The raise is the
+    correct containment behaviour -- it is what stops ``..`` from escaping the
+    session root -- but an un-caught one leaves the route answering 500 to what
+    is really a malformed request, so it is translated here instead.
+
+    The predicate is imported rather than restated: this must refuse exactly the
+    set the path join refuses, no wider (a narrower guard would break the ``:``
+    in a real key like ``dashboard:slot-3``) and no narrower (a wider one puts
+    the 500 back). Shape follows ``cron.py``'s ``_invalid_path_id_response`` --
+    400 with an ``invalid_<name>`` ``code`` -- which is the contract #6301 names
+    and which AGENTS.md's code-field rule requires.
+
+    ``agent_id`` is checked second because that is the order the sinks validate
+    in, so the reported code names the half the caller must actually fix.
+
+    ``is_valid_id`` is imported at module scope per AUTOSDE ``top-level-imports``
+    -- there is no cycle, ``session_workspace`` pulling only stdlib and
+    ``config.paths``. The three ``list_results`` / ``read_result`` /
+    ``result_path`` imports below stay function-local: they are pre-existing, and
+    hoisting them would bind the names here at import time, which is exactly what
+    the existing tests' ``monkeypatch`` of ``kiro_crew.session_workspace.<fn>``
+    relies on NOT happening. That is a separate change with its own test fallout.
+    """
+    if not is_valid_id(session_id):
+        return web.json_response(
+            {"error": "invalid session id", "code": "invalid_session_id"}, status=400
+        )
+    if agent_id is not None and not is_valid_id(agent_id):
+        return web.json_response(
+            {"error": "invalid agent id", "code": "invalid_agent_id"}, status=400
+        )
+    return None
+
+
 async def api_session_agents_list(request: web.Request) -> web.Response:
     """GET /api/sessions/{id}/agents — list sub-agent results for a session."""
     session_id = request.match_info["id"]
+    if (_e := _invalid_session_path_id(session_id)) is not None:
+        return _e
     from kiro_crew.session_workspace import list_results  # noqa: F811
 
     results = list_results(session_id)
@@ -2320,6 +2361,8 @@ async def api_session_agent_result(request: web.Request) -> web.Response:
     """GET /api/sessions/{id}/agents/{agent_id} — read sub-agent result."""
     session_id = request.match_info["id"]
     agent_id = request.match_info["agent_id"]
+    if (_e := _invalid_session_path_id(session_id, agent_id)) is not None:
+        return _e
     from kiro_crew.session_workspace import read_result  # noqa: F811
 
     content = read_result(session_id, agent_id)
@@ -2343,6 +2386,11 @@ async def api_session_agent_stream(request: web.Request) -> web.StreamResponse:
     """GET /api/sessions/{id}/agents/{agent_id}/stream — SSE stream of result file."""
     session_id = request.match_info["id"]
     agent_id = request.match_info["agent_id"]
+    # Before the ok-record below as well as before prepare(): a refused request
+    # is not a stream that happened to be empty, so it must not be audited as
+    # one, and once the response is prepared the status is already on the wire.
+    if (_e := _invalid_session_path_id(session_id, agent_id)) is not None:
+        return _e
     _sel().log_api_access(
         caller=request.get("user", "dashboard"),
         operation="session.agent.stream",

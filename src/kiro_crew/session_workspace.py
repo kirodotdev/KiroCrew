@@ -22,6 +22,26 @@ def _validate_id(value: str, label: str = "id") -> str:
     return value
 
 
+def is_valid_id(value: str) -> bool:
+    """Whether :func:`_validate_id` would accept ``value``.
+
+    Every function in this module validates by RAISING, which is right for an
+    internal caller that has no answer for a bad id. An HTTP handler does have
+    one -- a 400 -- and reaching it needs the question asked without the
+    exception.
+
+    This delegates to :func:`_validate_id` rather than re-testing
+    ``_SAFE_ID_RE``, so a caller's notion of a valid id cannot drift from the
+    one the path join actually enforces. Widening the validator widens this in
+    the same commit, by construction.
+    """
+    try:
+        _validate_id(value)
+    except ValueError:
+        return False
+    return True
+
+
 def workspace_dir(session_id: str) -> Path:
     """Return ~/.kiro/crew/sessions/{session_id}/, creating if needed."""
     d = config_dir() / _SESSIONS_DIR / _validate_id(session_id, "session_id")
