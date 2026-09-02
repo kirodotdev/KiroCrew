@@ -90,6 +90,7 @@ async def run_stale_asset_watchdog(
     count_in_flight: Callable[[], int] | None = None,
     drain_timeout: float = _DRAIN_TIMEOUT_SECS,
     drain_poll: float = _DRAIN_POLL_SECS,
+    on_confirmed_vanish: Callable[[], None] | None = None,
 ) -> None:
     """Background loop: check asset presence, trigger shutdown if stale.
 
@@ -132,6 +133,14 @@ async def run_stale_asset_watchdog(
         Max seconds to wait for in-flight work to finish. Default 120s.
     drain_poll:
         Seconds between in-flight re-counts while draining. Default 2s.
+    on_confirmed_vanish:
+        Optional callback invoked once a vanish is confirmed, immediately
+        before ``shutdown_event.set()``. The gateway uses this to mark the
+        eventual process exit as supervisor-restart-worthy: a plain
+        ``shutdown_event.set()`` looks identical to a SIGINT/SIGTERM here, and
+        those two cases need different exit codes so ``Restart=on-failure``
+        (the shipped systemd unit) fires for one and not the other. See
+        ``slack/gateway.py``'s ``_supervisor_restart_requested``.
     """
     if not assets_present():
         # Assets were never here — this is likely a dev/source install that
@@ -203,6 +212,8 @@ async def run_stale_asset_watchdog(
                 "pruned the running install. Initiating graceful shutdown "
                 "so a supervisor can restart a fresh gateway."
             )
+            if on_confirmed_vanish is not None:
+                on_confirmed_vanish()
             shutdown_event.set()
             return
 

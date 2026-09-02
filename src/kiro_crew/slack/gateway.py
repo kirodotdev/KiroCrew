@@ -1648,6 +1648,15 @@ class GatewayOrchestrator:
         # tells the writer thread to self-clear after publishing, closing the
         # write-after-clear race without any event-loop dependency.
         self._marker_clear_pending = threading.Event()
+        # Set by the stale-asset watchdog right before it triggers shutdown_event,
+        # so the final os._exit() at the end of run() can exit non-zero instead of
+        # 0. Restart=on-failure (the shipped systemd unit) only respawns on a
+        # non-zero exit, a signal, or a watchdog timeout -- a clean exit(0) is
+        # "stop and stay stopped" to systemd, which is right for an operator-
+        # initiated SIGINT/SIGTERM but defeats the one purpose this watchdog
+        # exists for. Mirrors the same non-zero-exit-for-supervisor-restart idiom
+        # `_handle_restart` already uses for the Slack `/restart` command.
+        self._supervisor_restart_requested = False
         self._dashboard_runner: web.AppRunner | None = None
         self._handler_tasks: set[asyncio.Task] = set()  # type: ignore[type-arg]
         self._session_tasks: dict[str, asyncio.Task] = {}  # type: ignore[type-arg]
@@ -10555,8 +10564,15 @@ class GatewayOrchestrator:
         # supervisor can restart a fresh process. It first drains in-flight
         # backend turns (count_in_flight) so active work isn't killed
         # mid-prompt by the restart.
+        def _mark_supervisor_restart_requested() -> None:
+            self._supervisor_restart_requested = True
+
         _watchdog = asyncio.create_task(
-            run_stale_asset_watchdog(shutdown_event, count_in_flight=self._count_in_flight_work)
+            run_stale_asset_watchdog(
+                shutdown_event,
+                count_in_flight=self._count_in_flight_work,
+                on_confirmed_vanish=_mark_supervisor_restart_requested,
+            )
         )
         self._background_tasks.add(_watchdog)
         _watchdog.add_done_callback(self._background_tasks.discard)
@@ -10651,7 +10667,14 @@ class GatewayOrchestrator:
         from kiro_crew.cli import drain_log_queue_before_hard_exit
 
         await drain_log_queue_before_hard_exit()
-        os._exit(0)
+        # Exit 1, not 0, when the stale-asset watchdog is why we're here: a
+        # clean exit(0) tells systemd's Restart=on-failure "stop and stay
+        # stopped" -- fine for an operator SIGINT/SIGTERM, but it defeats the
+        # one purpose this watchdog exists for (see
+        # _supervisor_restart_requested and stale_asset_watchdog.py). Same
+        # non-zero-exit-for-supervisor-restart idiom `_handle_restart` already
+        # uses for the Slack `/restart` command.
+        os._exit(1 if self._supervisor_restart_requested else 0)
 
     async def _start_channel_transports(
         self, descriptors: "tuple[ChannelDescriptor, ...] | None" = None

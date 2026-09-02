@@ -42,12 +42,56 @@ async def test_watchdog_shuts_down_when_assets_vanish():
 
 
 @pytest.mark.asyncio
+async def test_watchdog_calls_on_confirmed_vanish_before_shutdown():
+    """The gateway's supervisor-restart marker fires, and fires before shutdown.
+
+    A plain ``shutdown_event.set()`` looks identical whether it came from this
+    watchdog or from SIGINT/SIGTERM, so the gateway needs a distinct signal to
+    know it should exit non-zero (see ``slack/gateway.py``'s
+    ``_supervisor_restart_requested``). Ordering matters: the callback must run
+    BEFORE the event is set, since the gateway's shutdown path could otherwise
+    observe the event and race to exit before the flag is marked.
+    """
+    from kiro_crew.dashboard.stale_asset_watchdog import run_stale_asset_watchdog
+
+    shutdown = asyncio.Event()
+    call_count = 0
+    on_vanish_calls = []
+
+    def _mock_assets_present() -> bool:
+        nonlocal call_count
+        call_count += 1
+        return call_count <= 1
+
+    def _on_confirmed_vanish() -> None:
+        on_vanish_calls.append(shutdown.is_set())
+
+    with patch(
+        "kiro_crew.dashboard.stale_asset_watchdog.assets_present",
+        side_effect=_mock_assets_present,
+    ):
+        await asyncio.wait_for(
+            run_stale_asset_watchdog(
+                shutdown,
+                interval=0.05,
+                confirm_delay=0.01,
+                on_confirmed_vanish=_on_confirmed_vanish,
+            ),
+            timeout=5.0,
+        )
+
+    assert shutdown.is_set()
+    assert on_vanish_calls == [False]  # called once, before the event was set
+
+
+@pytest.mark.asyncio
 async def test_watchdog_survives_transient_asset_gap():
     """A brief asset gap (e.g. frontend rebuild) does NOT shut the gateway down."""
     from kiro_crew.dashboard.stale_asset_watchdog import run_stale_asset_watchdog
 
     shutdown = asyncio.Event()
     call_count = 0
+    on_vanish_calls = []
 
     def _mock_assets_present() -> bool:
         nonlocal call_count
@@ -64,13 +108,22 @@ async def test_watchdog_survives_transient_asset_gap():
         side_effect=_mock_assets_present,
     ):
         await asyncio.wait_for(
-            run_stale_asset_watchdog(shutdown, interval=0.05, confirm_delay=0.01),
+            run_stale_asset_watchdog(
+                shutdown,
+                interval=0.05,
+                confirm_delay=0.01,
+                on_confirmed_vanish=on_vanish_calls.append,
+            ),
             timeout=5.0,
         )
 
     # Shutdown was set by the test (normal-shutdown path), not the watchdog:
     # the transient gap was re-checked, found recovered, and the loop resumed.
     assert call_count == 3
+    # A recovered gap is not a confirmed vanish -- the supervisor-restart
+    # marker must not fire, or an ordinary SIGTERM shutdown that merely raced
+    # a frontend rebuild would wrongly exit non-zero.
+    assert on_vanish_calls == []
 
 
 @pytest.mark.asyncio

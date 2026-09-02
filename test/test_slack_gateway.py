@@ -2609,6 +2609,93 @@ class TestRunMethod:
         orch._shutdown.assert_awaited_once()
 
     @pytest.mark.asyncio
+    async def test_run_exits_zero_on_ordinary_shutdown(self):
+        """An operator-initiated shutdown (SIGINT/SIGTERM) exits 0.
+
+        Restart=on-failure in the shipped systemd unit only respawns on a
+        non-zero exit; exit 0 must stay 0 here so a deliberate stop stays
+        stopped.
+        """
+        import kiro_crew
+
+        orch = _make_orchestrator()
+        orch._init_services = AsyncMock()
+        orch._start_embeddings = AsyncMock()
+        orch._auto_migrate_memory = AsyncMock()
+        orch._init_cron = AsyncMock()
+        orch._init_heartbeat = AsyncMock()
+        orch._init_mcp_discovery = MagicMock()
+        orch._init_subagents = MagicMock()
+        orch._init_task_runner = MagicMock()
+        orch._init_dashboard = AsyncMock()
+        orch._init_autonudge = AsyncMock()
+        orch._check_for_updates = AsyncMock()
+        orch._shutdown = AsyncMock()
+
+        assert orch._supervisor_restart_requested is False
+        kiro_crew.shutdown_event.set()
+        loop = asyncio.get_running_loop()
+        try:
+            with patch.object(loop, "add_signal_handler"):
+                with patch("kiro_crew.slack.events.init_socket_mode"):
+                    with patch("kiro_crew.slack.interactions.init"):
+                        with patch("kiro_crew.slack.events.SeenCache"):
+                            with patch("kiro_crew.session.cleanup_orphaned_sessions"):
+                                with patch("kiro_crew.dashboard.handlers._bg_mcp_probe", new_callable=AsyncMock):
+                                    with patch("os._exit") as mock_exit:
+                                        with patch("resource.getrlimit", return_value=(256, 10240)):
+                                            with patch("resource.setrlimit"):
+                                                await orch.run()
+        finally:
+            kiro_crew.shutdown_event.clear()
+
+        mock_exit.assert_called_once_with(0)
+
+    @pytest.mark.asyncio
+    async def test_run_exits_nonzero_when_supervisor_restart_requested(self):
+        """The stale-asset watchdog's restart request survives to the final exit.
+
+        Mirrors the ``os._exit(1)`` idiom ``_handle_restart`` already uses for
+        the Slack ``/restart`` command, so Restart=on-failure fires.
+        """
+        import kiro_crew
+
+        orch = _make_orchestrator()
+        orch._init_services = AsyncMock()
+        orch._start_embeddings = AsyncMock()
+        orch._auto_migrate_memory = AsyncMock()
+        orch._init_cron = AsyncMock()
+        orch._init_heartbeat = AsyncMock()
+        orch._init_mcp_discovery = MagicMock()
+        orch._init_subagents = MagicMock()
+        orch._init_task_runner = MagicMock()
+        orch._init_dashboard = AsyncMock()
+        orch._init_autonudge = AsyncMock()
+        orch._check_for_updates = AsyncMock()
+        orch._shutdown = AsyncMock()
+
+        # Simulates what the stale-asset watchdog's on_confirmed_vanish
+        # callback does before it sets shutdown_event.
+        orch._supervisor_restart_requested = True
+        kiro_crew.shutdown_event.set()
+        loop = asyncio.get_running_loop()
+        try:
+            with patch.object(loop, "add_signal_handler"):
+                with patch("kiro_crew.slack.events.init_socket_mode"):
+                    with patch("kiro_crew.slack.interactions.init"):
+                        with patch("kiro_crew.slack.events.SeenCache"):
+                            with patch("kiro_crew.session.cleanup_orphaned_sessions"):
+                                with patch("kiro_crew.dashboard.handlers._bg_mcp_probe", new_callable=AsyncMock):
+                                    with patch("os._exit") as mock_exit:
+                                        with patch("resource.getrlimit", return_value=(256, 10240)):
+                                            with patch("resource.setrlimit"):
+                                                await orch.run()
+        finally:
+            kiro_crew.shutdown_event.clear()
+
+        mock_exit.assert_called_once_with(1)
+
+    @pytest.mark.asyncio
     async def test_run_no_dashboard_uses_api_server(self, tmp_path, monkeypatch):
         """--no-dashboard waits for and then clears its run marker."""
         import kiro_crew
