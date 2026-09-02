@@ -22,7 +22,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from kiro_crew.subagent import SubagentInfo, SubagentManager
+from kiro_crew.subagent import SubagentDelivery, SubagentInfo, SubagentManager
 from kiro_crew.subagent_scale import SubagentEventCoalescer
 
 # ``SubagentManager.spawn`` refuses -- registering no task -- while the host
@@ -814,7 +814,7 @@ def _wire_hold_settlement(orch, slot, mgr):
     Returns ``(ledger, settled)``: the content-keyed debts still parked, and
     the id batches the manager was asked to settle.
     """
-    ledger: dict[str, list[str]] = {}
+    ledger: dict[str, list[SubagentDelivery]] = {}
     slot.note_pending_subagent_delivery = MagicMock(
         side_effect=lambda content, ids: ledger.setdefault(content, []).extend(ids)
     )
@@ -823,12 +823,16 @@ def _wire_hold_settlement(orch, slot, mgr):
     )
     settled: list[list[str]] = []
 
-    async def _record_settle(ids):
-        settled.append(list(ids))
+    async def _record_settle(deliveries):
+        settled.append([delivery.agent_id for delivery in deliveries])
 
     mgr.settle_queued_delivery = MagicMock(side_effect=_record_settle)
     orch.dashboard_state.subagents = mgr
     return ledger, settled
+
+
+def _ledger_ids(ledger) -> list[list[str]]:
+    return [[delivery.agent_id for delivery in debts] for debts in ledger.values()]
 
 
 class TestWaveDigest:
@@ -858,6 +862,8 @@ class TestWaveDigest:
         info.error = error
         info.result = f"result {i}"
         info.result_path = f"/tmp/w{i}/result.txt"
+        info.elapsed = 10.0 + i
+        info.credits = 0.25 + i
         return info
 
     @pytest.mark.asyncio
@@ -911,6 +917,8 @@ class TestWaveDigest:
         # Chunk 1 carries the first 10 members' lines, exception-first.
         assert first.index("w2") < first.index("w0")
         assert "/tmp/w0/result.txt" in first
+        assert "Usage: 2.25 credits · 12s" in first
+        assert "0.25 credits · 10s" in first
         # Chunk 2 (final): summary counts + release guidance, and ONLY the
         # remaining members' lines (chunk buffers reset between flushes).
         assert "Batch results 2/2" in final
@@ -1247,7 +1255,8 @@ class TestWaveDigest:
         delivered tombstone would hide it from orphan reconciliation after a
         restart). The gateway must NOT settle them at chunk COMPOSITION
         either (routing could still fail); instead it stashes each chunk's
-        held OK ids on that chunk's FLUSHING member (``_digest_settle_ids``)
+        held OK deliveries on that chunk's FLUSHING member
+        (``_digest_settle_deliveries``)
         and settlement waits for the route that owns the hand-off: the
         dashboard route below detaches the ids when the injection turn is
         launched and owes them to the turn's CONSUMPTION through the slot's
@@ -1310,8 +1319,8 @@ class TestWaveDigest:
         # manager once the turn consumed the digest, so what is asserted is the
         # hand-off, not a residue left on the member: the member is
         # left clean and the ids reach the manager exactly once, per chunk.
-        assert members[9]._digest_settle_ids == []
-        assert members[11]._digest_settle_ids == []
+        assert members[9]._digest_settle_deliveries == []
+        assert members[11]._digest_settle_deliveries == []
         # Each debt leads with the FLUSHING member's own id: its tombstone is
         # deferred to the same consumption (`_delivery_queued`), closing the
         # identical loss window for the flusher's own result.
@@ -1333,11 +1342,17 @@ class TestWaveDigest:
         mgr = SubagentManager(sessions=_mock_sessions(), ctx_builder=_mock_ctx())
         marked: list[str] = []
         info = SubagentInfo(id="last", task="t")
-        info._digest_settle_ids = ["h1", "h2"]
-        with patch("kiro_crew.subagent.mark_delivered", side_effect=marked.append):
+        info._digest_settle_deliveries = [
+            SubagentDelivery("h1", 1.0, 0.1),
+            SubagentDelivery("h2", 2.0, 0.2),
+        ]
+        with patch(
+            "kiro_crew.subagent.mark_delivered",
+            side_effect=lambda agent_id, **_: marked.append(agent_id),
+        ):
             mgr._settle_digest_holds(info)
         assert marked == ["h1", "h2"]
-        assert info._digest_settle_ids == []  # idempotent re-entry safe
+        assert info._digest_settle_deliveries == []  # idempotent re-entry safe
         # Structural guarantee: the settle call sits AFTER the awaited
         # _on_done inside the same try-block, so an _on_done exception
         # (routing failure / crash) skips it entirely. The terminal report
@@ -1357,7 +1372,7 @@ class TestWaveDigest:
         """Ownership: the dashboard route hands off asynchronously, so a
         bare ``_on_done`` return is not proof the digest reached the parent.
 
-        ``_report_terminal`` settles ``info._digest_settle_ids`` right after
+        ``_report_terminal`` settles ``info._digest_settle_deliveries`` right after
         ``_on_done`` returns. On the dashboard branch that return happens while
         the injection turn is still a *pending task* — so a shutdown or a
         cancelled slot turn between the two leaves the held siblings carrying
@@ -1432,12 +1447,12 @@ class TestWaveDigest:
             )
 
             flusher = members[9]
-            assert flusher._digest_settle_ids == [], (
+            assert flusher._digest_settle_deliveries == [], (
                 "the flushing member must not still be carrying the settle ids "
                 "while the hand-off is unconfirmed: the run loop settles that "
                 "list as soon as _on_done returns, which is now"
             )
-            assert list(ledger.values()) == [owed], (
+            assert _ledger_ids(ledger) == [owed], (
                 "the ids — the flusher's own tombstone included — are parked "
                 "in the slot's delivery ledger, owed, not settled: a process "
                 "death here leaves them tombstone-free and recoverable by "
@@ -1529,7 +1544,7 @@ class TestWaveDigest:
             "shutdown here loses the digest, and a delivered tombstone would "
             "hide the held results from orphan reconciliation forever"
         )
-        assert members[9]._digest_settle_ids == [], (
+        assert members[9]._digest_settle_deliveries == [], (
             "the ids must have left the flushing member, so the run loop's "
             "settle on the bare _on_done return is a no-op for this route too"
         )
@@ -1542,7 +1557,7 @@ class TestWaveDigest:
         # drain settles them all once a turn actually consumes the announce.
         held = [members[i].id for i in range(9)]
         assert list(ledger.keys()) == [queued[0]["content"]]
-        assert ledger[queued[0]["content"]] == [members[9].id] + held
+        assert [d.agent_id for d in ledger[queued[0]["content"]]] == [members[9].id] + held
 
     @pytest.mark.asyncio
     async def test_an_auth_required_turn_is_not_a_confirmed_hand_off(self):
@@ -1607,12 +1622,12 @@ class TestWaveDigest:
             "a signed-out CLI never received the digest — the held siblings' "
             "results are still only on disk"
         )
-        assert members[9]._digest_settle_ids == [], (
+        assert members[9]._digest_settle_deliveries == [], (
             "and the run loop must not settle them either: the ids left the "
             "flushing member when the turn was launched"
         )
         held = [members[i].id for i in range(9)]
-        assert list(ledger.values()) == [[members[9].id] + held], (
+        assert _ledger_ids(ledger) == [[members[9].id] + held], (
             "the debt — the flusher's own tombstone included — stays owed, "
             "tombstone-free and recoverable, rather than settled on a clean "
             "return that delivered nothing"
@@ -1664,12 +1679,12 @@ class TestWaveDigest:
             "a failed hand-off must not tombstone the held siblings — their "
             "results are still only on disk"
         )
-        assert members[9]._digest_settle_ids == [], (
+        assert members[9]._digest_settle_deliveries == [], (
             "and the run loop must not settle them either: the ids left the "
             "flushing member when the turn was launched"
         )
         held = [members[i].id for i in range(9)]
-        assert list(ledger.values()) == [[members[9].id] + held], (
+        assert _ledger_ids(ledger) == [[members[9].id] + held], (
             "the debt stays parked for a recovery replay to claim"
         )
 
@@ -1797,11 +1812,14 @@ class TestWaveDigest:
         )
         solo.done = True
         solo.result = "solo result"
+        solo.elapsed = 12.0
+        solo.credits = 0.25
         with patch("kiro_crew.slack.gateway._run_chat", side_effect=_fake_run_chat):
             await on_done(solo)
             await _settle(lambda: len(injected) >= 1)
         assert len(injected) == 1
         assert injected[0].startswith("[Subagent completion event]")
+        assert "Usage: 0.25 credits · 12s" in injected[0]
         assert "Batch results" not in injected[0]
 
 
@@ -1941,17 +1959,26 @@ class TestDigestHoldDeadline:
         mgr = self._mgr()
         info = SubagentInfo(id="flush", task="t", batch_id="wv")
         info._digest_flush_only = True
-        info._digest_settle_ids = ["h0", "h1"]
+        info._digest_settle_deliveries = [
+            SubagentDelivery("h0", 1.0, 0.1),
+            SubagentDelivery("h1", 2.0, 0.2),
+        ]
 
         marked: list[str] = []
         mgr._on_done = AsyncMock(side_effect=RuntimeError("routing blew up"))
-        with patch("kiro_crew.subagent.mark_delivered", side_effect=marked.append):
+        with patch(
+            "kiro_crew.subagent.mark_delivered",
+            side_effect=lambda agent_id, **_: marked.append(agent_id),
+        ):
             await mgr._announce_digest_flush(info)
         assert marked == []  # failure → nothing tombstoned
-        assert info._digest_settle_ids == ["h0", "h1"]
+        assert [d.agent_id for d in info._digest_settle_deliveries] == ["h0", "h1"]
 
         mgr._on_done = AsyncMock()
-        with patch("kiro_crew.subagent.mark_delivered", side_effect=marked.append):
+        with patch(
+            "kiro_crew.subagent.mark_delivered",
+            side_effect=lambda agent_id, **_: marked.append(agent_id),
+        ):
             await mgr._announce_digest_flush(info)
         assert marked == ["h0", "h1"]
 
@@ -2124,7 +2151,7 @@ class TestDigestHoldDeadline:
         # slot's delivery ledger. The forced hold-deadline flush is
         # one of the settle callers, so it inherits the same ownership rule
         # without a second code path.
-        assert flush._digest_settle_ids == []
+        assert flush._digest_settle_deliveries == []
         await _settle(lambda: bool(settled))
         assert settled == [["s0", "s1"]]
 
