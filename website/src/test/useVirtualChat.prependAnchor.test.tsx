@@ -34,6 +34,20 @@ const REAL_H = 100
 const CLIENT = 400
 const SCROLL_HEIGHT = 3000
 
+/** Per-key rendered heights, keyed by the row's virtual key. Empty for every
+ *  case but the equal-count SWAP, whose replacement row has to render TALLER
+ *  than the row it replaces: an equal-height swap moves nothing on screen and
+ *  would pass with no fix at all. Reset in beforeEach. */
+let rowHeightByKey: Record<string, number> = {}
+
+/** Rendered height of one row node — its override when it has one, else the
+ *  flat REAL_H every other case in this file uses. */
+function rowHeightOf(node: HTMLElement): number {
+  const key = node.getAttribute('data-key')
+  const override = key !== null ? rowHeightByKey[key] : undefined
+  return override ?? REAL_H
+}
+
 function rect(top: number, height: number): DOMRect {
   return {
     top, bottom: top + height, height, left: 0, right: 0, width: 0, x: 0, y: top,
@@ -142,7 +156,7 @@ describe('useVirtualChat: prepend compensation (load older history)', () => {
     const origOffsetH = Object.getOwnPropertyDescriptor(proto, 'offsetHeight')
 
     const childHeight = (child: Element): number => {
-      if ((child as HTMLElement).getAttribute('data-index') !== null) return REAL_H
+      if ((child as HTMLElement).getAttribute('data-index') !== null) return rowHeightOf(child as HTMLElement)
       const h = (child as HTMLElement).style?.height
       return h ? parseFloat(h) : 0
     }
@@ -162,7 +176,7 @@ describe('useVirtualChat: prepend compensation (load older history)', () => {
     Object.defineProperty(proto, 'offsetHeight', {
       configurable: true,
       get(this: HTMLElement) {
-        return this.getAttribute('data-index') !== null ? REAL_H : 0
+        return this.getAttribute('data-index') !== null ? rowHeightOf(this) : 0
       },
     })
 
@@ -178,6 +192,7 @@ describe('useVirtualChat: prepend compensation (load older history)', () => {
   beforeEach(() => {
     localStorage.clear()
     frames = []
+    rowHeightByKey = {}
     origRaf = globalThis.requestAnimationFrame
     globalThis.requestAnimationFrame = ((cb: FrameRequestCallback) => {
       frames.push(cb)
@@ -241,7 +256,7 @@ describe('useVirtualChat: prepend compensation (load older history)', () => {
       configurable: true,
       get: () => Array.from(el.children).reduce((h, c) => {
         const node = c as HTMLElement
-        if (node.getAttribute('data-index') !== null) return h + REAL_H
+        if (node.getAttribute('data-index') !== null) return h + rowHeightOf(node)
         return h + (parseFloat(node.style?.height || '0') || 0)
       }, 0),
     })
@@ -572,6 +587,59 @@ describe('useVirtualChat: prepend compensation (load older history)', () => {
     expect(Math.abs(after! - before!.top)).toBeLessThanOrEqual(1)
   })
 
+  it('holds the reading position when a row is SWAPPED at equal count above the reader', () => {
+    const base = mkItems(30)
+    const { el, view, scrollerRef } = mountScrolledUp(base)
+
+    const before = topVisible(el)
+    expect(before).not.toBeNull()
+    const at = indexOf(base, before!.key)
+    expect(at).toBeGreaterThan(0)
+
+    // The ordinary streaming shape: React batches the placeholder LEAVING and its
+    // replacement ARRIVING into one commit, so the net count never moves. The
+    // replacement renders 3x taller than the row it replaces — an equal-height
+    // swap displaces nothing and would pass without any fix.
+    const replaced = base[at - 1].id
+    rowHeightByKey = { out0: REAL_H * 3 }
+    const swapped = base.map((it, i) => (i === at - 1 ? { id: 'out0' } : it))
+    act(() => { view.rerender(<Harness items={swapped} scrollerRef={scrollerRef} />) })
+
+    // Not vacuous: the placeholder really left and the taller replacement really
+    // mounted in its place, at the same index.
+    expect(screenTopOf(el, replaced)).toBeNull()
+    expect(screenTopOf(el, 'out0')).not.toBeNull()
+    const after = screenTopOf(el, before!.key)
+    expect(after).not.toBeNull()
+    expect(Math.abs(after! - before!.top)).toBeLessThanOrEqual(1)
+  })
+
+  it('holds the reading position across an equal-count SWAP when getKey is INDEX-ADDRESSED', () => {
+    // Same contract as the splice cases: the swap anchor resolves the PREVIOUS
+    // render's items at the mounted nodes' PREVIOUS indices, so it must price
+    // them with the getKey captured WITH them. This render's closure reads the
+    // post-swap key list, which names the replacement where the anchor expects
+    // the row it replaced.
+    const base = mkItems(30)
+    const { el, view, scrollerRef } = mountScrolledUp(base, PositionalHarness)
+
+    const before = topVisible(el)
+    expect(before).not.toBeNull()
+    const at = indexOf(base, before!.key)
+    expect(at).toBeGreaterThan(0)
+
+    const replaced = base[at - 1].id
+    rowHeightByKey = { out0: REAL_H * 3 }
+    const swapped = base.map((it, i) => (i === at - 1 ? { id: 'out0' } : it))
+    act(() => { view.rerender(<PositionalHarness items={swapped} scrollerRef={scrollerRef} />) })
+
+    expect(screenTopOf(el, replaced)).toBeNull()
+    expect(screenTopOf(el, 'out0')).not.toBeNull()
+    const after = screenTopOf(el, before!.key)
+    expect(after).not.toBeNull()
+    expect(Math.abs(after! - before!.top)).toBeLessThanOrEqual(1)
+  })
+
   it('still follows to the bottom when a row is SPLICED IN while PINNED', () => {
     const base = mkItems(30)
     const { el, view, scrollerRef, readScrollTop } = mountAtBottom(base)
@@ -604,6 +672,34 @@ describe('useVirtualChat: prepend compensation (load older history)', () => {
 
     expect(el.scrollTop).toBe(el.scrollHeight - CLIENT)
     const appended = screenTopOf(el, 'z0')
+    expect(appended).not.toBeNull()
+    expect(appended!).toBeGreaterThanOrEqual(0)
+    expect(appended!).toBeLessThan(CLIENT)
+  })
+
+  it('does not hold position for a PINNED reader across an equal-count SWAP', () => {
+    const base = mkItems(30)
+    const { el, view, scrollerRef, readScrollTop } = mountAtBottom(base)
+
+    const beforeTop = readScrollTop()
+    rowHeightByKey = { out0: REAL_H * 3 }
+    const swapped = base.map((it, i) => (i === 10 ? { id: 'out0' } : it))
+    act(() => { view.rerender(<Harness items={swapped} scrollerRef={scrollerRef} />) })
+    act(() => { frames.forEach((cb) => cb(0)); frames.length = 0 })
+
+    // The swap capture is gated on stick, so a pinned reader must never be pulled
+    // BACK UP to where a row used to sit. (Following the taller replacement down
+    // is the ResizeObserver's job, which this harness does not provide — the
+    // assertion here is only that the anchor correction stays out of it.)
+    expect(readScrollTop()).toBeGreaterThanOrEqual(beforeTop)
+
+    // And stick survives: the next streamed message still lands at the bottom.
+    act(() => {
+      view.rerender(<Harness items={[...swapped, { id: 'z1' }]} scrollerRef={scrollerRef} />)
+    })
+    act(() => { frames.forEach((cb) => cb(0)); frames.length = 0 })
+    expect(el.scrollTop).toBe(el.scrollHeight - CLIENT)
+    const appended = screenTopOf(el, 'z1')
     expect(appended).not.toBeNull()
     expect(appended!).toBeGreaterThanOrEqual(0)
     expect(appended!).toBeLessThan(CLIENT)

@@ -476,7 +476,7 @@ export function useVirtualChat<T>(
   const heightAnchorPendingRef = useRef<{ key: string; top: number } | null>(null)
 
   /**
-   * ONE compensation routine, FIVE triggers, ONE capture point.
+   * ONE compensation routine, SIX triggers, ONE capture point.
    *
    *   TRIGGER 1 — prepend (load-older history): every index shifts up, so
    *     pre-existing rows move down by the inserted height.
@@ -501,15 +501,16 @@ export function useVirtualChat<T>(
    *   TRIGGER 6 — mid-list SWAP: the thinking row leaves and its replacement
    *     arrives in ONE commit, which React batching makes the ordinary streaming
    *     shape. The net count is unchanged, so a count-delta trigger reads it as a
-   *     no-op. It participates in the height RETIREMENT below but deliberately
-   *     captures NO anchor: the single consumer is invalidated by `windowRange`
-   *     and `itemCount`, and an equal-count swap moves neither, so an anchor
-   *     taken here would sit in the slot and be spent on an unrelated later
-   *     commit — the exact stranded-anchor hazard the render-phase capture
-   *     exists to remove. Compensating it needs a new invalidation key in that
-   *     consumer, which is its own change; tracked in #7234.
+   *     no-op — and the single consumer is invalidated by `windowRange` and
+   *     `itemCount`, neither of which an equal-count commit moves. So this
+   *     trigger carries its OWN invalidation key (`spliceCommit`, bumped in the
+   *     render that captures here), which is what makes the capture safe: the
+   *     anchor is spent in the very commit it describes instead of sitting in the
+   *     slot for an unrelated later commit — the stranded-anchor hazard the
+   *     render-phase capture exists to remove. It participates in the height
+   *     RETIREMENT below on the same commit.
    *
-   * All five are "the height above the reader changed"; the correction is
+   * All six are "the height above the reader changed"; the correction is
    * identical, so they share this slot and the single consumer below. A parallel
    * path would fight this one for `scrollTop`, which is why append folds in here
    * rather than getting an anchor slot of its own.
@@ -539,6 +540,27 @@ export function useVirtualChat<T>(
   const shiftAnchorRef = useRef<{ key: string; top: number } | null>(null)
   const shiftStageRef = useRef<'awaiting-rebase' | 'rebased' | 'ready' | null>(null)
   const prependCountRef = useRef(0)
+  /**
+   * TRIGGER 6's invalidation key for part 2, bumped in the render that captures a
+   * swap anchor. Every other trigger rides a key part 2 already watches — a
+   * prepend, splice or append moves `itemCount`, a window shift moves
+   * `windowRange` — and an equal-count swap moves neither, so without this the
+   * consumer would not run in the commit the anchor was taken for.
+   *
+   * Real state rather than a ref token, for the reason `heightCommit` is: a
+   * counter this effect does not subscribe to is invisible to tooling and needs
+   * an exhaustive-deps exemption to sit in the dep array at all. The bump is the
+   * render-time state-update pattern the session and cache sentinels above use,
+   * and terminates for the same reason they do: `prependPrevRef` has already
+   * advanced by the time React re-invokes the render, so the re-render detects no
+   * swap, captures nothing, and bumps nothing.
+   *
+   * Cost is one extra render pass, and only on a commit that actually captures:
+   * the capture is gated on `!stickRef.current`, so the primary reading mode
+   * (pinned to the bottom) never pays it, and a token append — the commit that
+   * lands per streamed chunk — is not a swap and never reaches the bump.
+   */
+  const [spliceCommit, setSpliceCommit] = useState(0)
   /** Set by part 1 in the commit it schedules a re-base in, cleared by part 2 in
    *  that same commit. Part 2 now also watches `itemCount` (for trigger 3), so
    *  it shares a commit with part 1 and would otherwise consume a prepend anchor
@@ -649,20 +671,25 @@ export function useVirtualChat<T>(
    *  on. Retirement has its own gate below and deliberately does not share this
    *  one. */
   const rowsRemoved = itemCount < prependPrev.count && sameSessionCount && frontKeyHeld
-  // TRIGGERS 4 and 5 — a mid-list splice, either direction. Both capture the
-  // anchor, through the one capture point and the one consumer: both are "a row
-  // came or went above the reader", and the correction part 2 already performs
-  // does not care which direction. Placed BEFORE trigger 2 so that in a render
-  // which does both, the splice's key mapping wins over the window branch's
-  // live-items mapping — the whole point being that live-items mapping is what is
-  // wrong here.
+  /** TRIGGER 6 — an equal-count SWAP: a shared index changed hands while the count
+   *  stood still, which is the placeholder leaving and its replacement arriving in
+   *  one React-batched commit. Same `frontKeyHeld` requirement as 4 and 5, for the
+   *  same reason (the mounted nodes' indices must still name their own rows), and
+   *  the indices do not even shift here — only one row's identity does. */
+  const rowSwapped = itemCount === prependPrev.count && sameSessionCount && frontKeyHeld && anyIndexMoved
+  // TRIGGERS 4, 5 and 6 — a mid-list splice: a row in, a row out, or one row
+  // traded for another. All three capture the anchor, through the one capture
+  // point and the one consumer: each is "a row came or went above the reader",
+  // and the correction part 2 already performs does not care which direction it
+  // moved. Placed BEFORE trigger 2 so that in a render which does both, the
+  // splice's key mapping wins over the window branch's live-items mapping — the
+  // whole point being that live-items mapping is what is wrong here.
   //
-  // There is no equal-count trigger. One existed only to reach the retirement
-  // below, and retirement is now gated on departure directly, so an equal-count
-  // swap is served by that gate with no trigger and no anchor of its own — the
-  // anchor it would have captured had no consumer on a commit that moves neither
-  // `windowRange` nor `itemCount`, and stranded in the slot for an unrelated
-  // later commit to spend. See #7234.
+  // The equal-count SWAP is here rather than excluded because it now brings its
+  // own invalidation key (`spliceCommit`, bumped below). Before that key existed
+  // the anchor had no consumer on a commit that moves neither `windowRange` nor
+  // `itemCount`, so capturing would have stranded it in the slot for an unrelated
+  // later commit to spend — see #7234, and `spliceCommit`'s own doc.
   //
   // Staged 'ready' (correct only, never a re-base): a transient row moves the
   // anchor by one index, so it stays inside the mounted window and is
@@ -689,10 +716,11 @@ export function useVirtualChat<T>(
     const survivingKeys = new Set<string>()
     for (let i = 0; i < items.length; i++) survivingKeys.add(getKey(items[i], i))
     // The anchor keeps the narrower gate: it needs index 0 held (so the mounted
-    // nodes' indices still name their own rows) and a count that actually moved
-    // (so part 2, invalidated by `windowRange` and `itemCount`, runs and spends
-    // it). Retirement has neither dependency, which is why it sits outside.
-    if ((midListInserted || rowsRemoved) && !anchorCapturedThisRender && !stickRef.current) {
+    // nodes' indices still name their own rows) and a commit whose consumer will
+    // actually run — a count change for triggers 4 and 5, and for trigger 6 the
+    // `spliceCommit` bump below, which is what an equal-count commit has instead.
+    // Retirement has neither dependency, which is why it sits outside.
+    if ((midListInserted || rowsRemoved || rowSwapped) && !anchorCapturedThisRender && !stickRef.current) {
       const spliceEl = scrollerRef.current
       const spliceAnchor = spliceEl
         ? captureTopAnchorFrom(spliceEl, elIndexRef.current.entries(), (idx) => {
@@ -709,6 +737,11 @@ export function useVirtualChat<T>(
         shiftAnchorRef.current = spliceAnchor
         shiftStageRef.current = 'ready'
         anchorCapturedThisRender = true
+        // Only the swap needs the bump — the other two already move `itemCount`,
+        // and bumping there would buy an extra render pass for a consumer that
+        // was going to run anyway. The three shapes are mutually exclusive by
+        // their count arithmetic, so this cannot double-fire.
+        if (rowSwapped) setSpliceCommit((n) => n + 1)
       }
     }
     // Keyed on KEY DEPARTURE, not on the net count falling: the harm is a
@@ -1864,8 +1897,9 @@ export function useVirtualChat<T>(
     // `itemCount` is an invalidation key, not a value this body reads: TRIGGER 3
     // captures in a render that changes no windowRange, so without it the
     // correction would wait for an unrelated window commit and be applied to
-    // geometry that had already drifted.
-  }, [windowRange, itemCount, scrollerRef, writeScrollTop, recomputeWindow])
+    // geometry that had already drifted. `spliceCommit` is the same kind of key
+    // for TRIGGER 6, which moves neither of the other two.
+  }, [windowRange, itemCount, spliceCommit, scrollerRef, writeScrollTop, recomputeWindow])
 
   // Same correction for a HEIGHT-SYNC commit (spacer repricing), keyed on the
   // owner's announced version. See heightAnchorPendingRef for why this cannot
