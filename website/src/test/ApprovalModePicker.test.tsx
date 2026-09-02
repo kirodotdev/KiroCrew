@@ -130,3 +130,96 @@ describe('ApprovalModePicker — trigger follows the Font Family setting', () =>
     }
   })
 })
+
+
+/** The `approval_modes` policy scope surfaces its deny-list on the status frame
+ *  as `disabled_approval_modes`. The picker HIDES each listed mode outright
+ *  (maintainer feedback: hide, don't grey) — a mode that cannot be chosen is
+ *  simply absent, and `normal` (never deniable) keeps the menu non-empty.
+ *
+ *  ONE exception: a denied mode that is STILL THE ACTIVE one keeps its row,
+ *  disabled and labelled with the reason. The trigger renders `mode` unfiltered,
+ *  so hiding that row too would show "Trust" on the button with no Trust row and
+ *  no checkmark anywhere — a control contradicting itself with no explanation. */
+describe('ApprovalModePicker — policy-disabled modes are hidden, not greyed', () => {
+  beforeEach(() => { localStorage.clear() })
+
+  function renderWithDisabled(disabled: string[], mode = 'normal') {
+    const store = createTestStore({
+      dashboard: { status: { disabled_approval_modes: disabled } } as never,
+    })
+    render(
+      <Provider store={store}>
+        <MemoryRouter>
+          <ApprovalModePicker mode={mode} slotKey="dashboard:1" />
+        </MemoryRouter>
+      </Provider>,
+    )
+    return store
+  }
+
+  it('hides each mode listed in disabled_approval_modes', () => {
+    renderWithDisabled(['yolo', 'trust_reads'])
+    fireEvent.click(screen.getByLabelText('Approval mode: Normal'))
+    const items = screen.getAllByRole('menuitem')
+    const texts = items.map(i => i.textContent || '')
+    expect(items).toHaveLength(2)
+    expect(texts.some(t => t.includes('Normal'))).toBe(true)
+    expect(texts.some(t => t.includes('Trust'))).toBe(true)
+    expect(texts.some(t => t.includes('YOLO'))).toBe(false)
+    expect(texts.some(t => t.includes('Reads'))).toBe(false)
+    // Hidden, not greyed: no policy-reason line for a mode that isn't active.
+    expect(screen.queryByText(/Disabled by your organization/i)).not.toBeInTheDocument()
+  })
+
+  it('shows all four modes when disabled_approval_modes is empty', () => {
+    renderWithDisabled([])
+    fireEvent.click(screen.getByLabelText('Approval mode: Normal'))
+    expect(screen.getAllByRole('menuitem')).toHaveLength(4)
+  })
+
+  it('leaves only Normal selectable when every auto-approve mode is denied', () => {
+    renderWithDisabled(['trust_reads', 'trust', 'yolo'])
+    fireEvent.click(screen.getByLabelText('Approval mode: Normal'))
+    const items = screen.getAllByRole('menuitem')
+    expect(items).toHaveLength(1)
+    expect(items[0].textContent).toContain('Normal')
+  })
+
+  it('keeps the ACTIVE denied mode visible, disabled, with the policy reason', () => {
+    // Policy landed while this slot was already in `trust`.
+    renderWithDisabled(['trust', 'yolo'], 'trust')
+    fireEvent.click(screen.getByLabelText('Approval mode: Trust'))
+    const items = screen.getAllByRole('menuitem')
+    const texts = items.map(i => i.textContent || '')
+    // Normal + Reads (not denied) + the active-but-denied Trust; YOLO is hidden.
+    expect(items).toHaveLength(3)
+    expect(texts.some(t => t.includes('Trust'))).toBe(true)
+    expect(texts.some(t => t.includes('YOLO'))).toBe(false)
+    // The reason is on the row, and the row cannot be chosen.
+    expect(screen.getByText(/Disabled by your organization/i)).toBeInTheDocument()
+    // And it cannot be chosen. Asserted behaviorally rather than on Radix's
+    // `data-disabled`, because this suite stubs @radix-ui/react-dropdown-menu —
+    // the stub forwards `disabled` without Radix's pointer-events handling, so
+    // the guard inside `onSelect` is what has to hold here (and in production it
+    // is the second of the two).
+    vi.mocked(api.chatMode).mockClear()
+    const trustRow = items.find(i => (i.textContent || '').includes('Trust'))!
+    fireEvent.click(trustRow)
+    expect(api.chatMode).not.toHaveBeenCalled()
+  })
+
+  it('reports a 403 policy refusal instead of failing silently', async () => {
+    // The load race: before the first status frame `disabled_approval_modes` is
+    // undefined, so every mode renders and a denied pick reaches the gateway.
+    const { ApiError } = await import('../api/apiError')
+    vi.mocked(api.chatMode).mockRejectedValueOnce(
+      new ApiError(403, 'denied', JSON.stringify({ code: 'mode_disabled_by_policy' })),
+    )
+    renderWithDisabled([])
+    fireEvent.click(screen.getByLabelText('Approval mode: Normal'))
+    const reads = screen.getAllByRole('menuitem').find(i => (i.textContent || '').includes('Reads'))!
+    fireEvent.click(reads)
+    expect(await screen.findByText(/Disabled by your organization/i)).toBeInTheDocument()
+  })
+})

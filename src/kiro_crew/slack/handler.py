@@ -110,6 +110,7 @@ from kiro_crew.safety_override import (
     describe_new_grant,
     grant_declared_yolo,
     safety_override,
+    yolo_policy_verdict,
 )
 from kiro_crew.security import (
     CREDENTIAL_REDACTION_TAGS,
@@ -1283,8 +1284,14 @@ def is_owner(user_id: str) -> bool:
 
 
 def disable_yolo() -> None:
-    """Disable YOLO mode (global auto-approve)."""
-    if not safety_override().is_active():
+    """Disable YOLO mode (global auto-approve).
+
+    Gated on ``has_grant()``, NOT ``is_active()``. The latter is policy-filtered and
+    reports False while the governance verdict is momentarily unknown, so gating an
+    explicit off on it skipped the teardown and let the grant resume once the refresh
+    settled -- the operator's revocation silently undone.
+    """
+    if not safety_override().has_grant():
         return
     safety_override().deactivate("slack")
     # Through the shared revoke, which undoes BOTH halves of each grant. Dropping
@@ -1436,7 +1443,16 @@ async def _handle_slash_command(
         parts = cmd_text.split()
         yolo_active = is_yolo_mode()
         if len(parts) >= 2 and parts[1].lower() == "off":
-            if yolo_active:
+            # ``has_grant()``, NOT ``yolo_active``. The two ask different questions
+            # and only one of them belongs here: ``is_yolo_mode`` is policy-filtered
+            # ("may a tool be auto-approved"), while an explicit off asks "is there
+            # something to tear down". While the governance verdict is momentarily
+            # unknown the filtered answer is False, so this branch reported "already
+            # off" and never called ``disable_yolo()`` -- and the retained grant then
+            # resumed once the refresh settled, silently undoing the operator's
+            # revocation. ``disable_yolo`` was already corrected to read
+            # ``has_grant``; this is its CALLER, which was still gating it out.
+            if safety_override().has_grant():
                 disable_yolo()
                 sel().log_api_access(
                     caller=user_id,
@@ -1450,19 +1466,66 @@ async def _handle_slash_command(
                 await slack.post_message(channel, "YOLO mode is already off.", reply_ts)
         elif len(parts) >= 2 and parts[1].lower() == "on":
             if not yolo_active:
-                _result = safety_override().activate("slack")
-                sel().log_api_access(
-                    caller=user_id,
-                    operation="slack.yolo_mode",
-                    outcome="allowed",
-                    source="slack",
-                    resources="yolo_on",
-                )
-                await slack.post_message(
-                    channel,
-                    f"🔓 YOLO mode enabled ({describe_new_grant(_result.ttl)}).",
-                    reply_ts,
-                )
+                # Off-loop like the sibling renew() below: activate() writes a
+                # SEL event, and that filesystem I/O must not run on the loop.
+                _result = await asyncio.to_thread(safety_override().activate, "slack")
+                if not _result.active:
+                    # Arming can now be REFUSED -- an ``approval_modes`` deny of
+                    # ``yolo`` turns the mode off entirely. Reporting "enabled" over
+                    # a refused arm would tell the operator auto-approve is on while
+                    # every tool still stops to ask, and would audit it as allowed.
+                    #
+                    # NAME THE ACTUAL CAUSE. ``activate`` refuses for three different
+                    # reasons and they send the operator to three different places,
+                    # so a single message is wrong for two of them:
+                    #
+                    # | verdict   | why the arm failed          | where to look     |
+                    # |-----------|-----------------------------|-------------------|
+                    # | denied    | an admin's policy forbids   | the org's policy  |
+                    # | unknown   | policy could not be READ    | the profiles dir  |
+                    # | permitted | the fail-closed SEL audit   | the audit system  |
+                    #
+                    # This branch used to post the policy line unconditionally, so a
+                    # solo operator with no policy at all was told a phantom
+                    # organization had blocked them and went hunting a file that does
+                    # not exist, while the real fault went unnamed.
+                    _verdict = await asyncio.to_thread(yolo_policy_verdict)
+                    if _verdict == "denied":
+                        _outcome, _error = "approval_mode_denied_by_policy", (
+                            "mode_disabled_by_policy"
+                        )
+                        _msg = "🔒 YOLO mode is disabled by your organization's policy."
+                    elif _verdict == "unknown":
+                        _outcome, _error = "approval_mode_policy_unreadable", ("policy_unreadable")
+                        _msg = (
+                            "❌ Failed to activate YOLO mode "
+                            "(the governance policy could not be read)."
+                        )
+                    else:
+                        _outcome, _error = "activation_failed", "audit_unavailable"
+                        _msg = "❌ Failed to activate YOLO mode (audit system unavailable)."
+                    sel().log_api_access(
+                        caller=user_id,
+                        operation="slack.yolo_mode",
+                        outcome=_outcome,
+                        source="slack",
+                        resources="yolo_on",
+                        error=_error,
+                    )
+                    await slack.post_message(channel, _msg, reply_ts)
+                else:
+                    sel().log_api_access(
+                        caller=user_id,
+                        operation="slack.yolo_mode",
+                        outcome="allowed",
+                        source="slack",
+                        resources="yolo_on",
+                    )
+                    await slack.post_message(
+                        channel,
+                        f"🔓 YOLO mode enabled ({describe_new_grant(_result.ttl)}).",
+                        reply_ts,
+                    )
             else:
                 await slack.post_message(
                     channel, f"YOLO mode is already on ({describe_grant_lifetime()}).", reply_ts

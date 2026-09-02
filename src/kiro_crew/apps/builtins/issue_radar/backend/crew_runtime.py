@@ -663,7 +663,7 @@ async def ensure_crew_session(state: Any, owner: str, repo: str, crew: dict[str,
                     exc_info=True,
                 )
         _call_if_present(state, "push_slot_title", slot.key, title)
-    sync_trust(slot, crew)
+    await asyncio.to_thread(sync_trust, slot, crew)
     _call_if_present(state, "push_slots_update")
     return slot
 
@@ -785,7 +785,7 @@ async def wake_crew(
             "issue-radar crew %s: no session to wake (%s)", crew.get("id"), reason or "signal"
         )
         return False
-    sync_trust(slot, crew)
+    await asyncio.to_thread(sync_trust, slot, crew)
     prompt = await compose_turn_prompt_async(slot, owner, repo, crew, root, key)
     svc = _autonudge_instance() if _autonudge_instance is not None else None
     if svc is not None:
@@ -1100,7 +1100,7 @@ async def watchdog_cycle(
             # first, so the crew keeps its own transcript (and its brief).
             slot = await _rehydrate(state, slot_key)
         if slot is not None:
-            sync_trust(slot, crew)
+            await asyncio.to_thread(sync_trust, slot, crew)
         if svc is None:
             continue
         loop = svc.get_by_slot(slot_key)

@@ -16,6 +16,7 @@ import pytest
 from hypothesis import HealthCheck, settings
 
 from kiro_crew.safety_override import reset_singleton as _reset_safety_override
+from kiro_crew.safety_override import reset_yolo_policy_cache as _reset_yolo_policy_cache
 from kiro_crew.slack.client import SlackClientOps
 from kiro_crew.slack.handler import _PHASE_EMOJIS, _build_phase_emojis
 
@@ -421,10 +422,28 @@ def _release_stt_engine():
 
 @pytest.fixture(autouse=True)
 def _reset_safety_override_between_tests():
-    """Reset the SafetyOverride singleton between tests to prevent state leaking."""
+    """Reset the SafetyOverride singleton between tests to prevent state leaking.
+
+    The cached ``approval_modes`` verdict is reset WITH it, because it is the same
+    leak wearing different clothes. That cache stamps the governance generation it
+    was resolved under, and this suite reinstalls the platform context constantly
+    (~30 files call ``set_context``/``reset_context``, and each install bumps the
+    counter). A stamp left by an earlier test therefore names a ceiling that is no
+    longer installed, which the verdict correctly reads as "current policy unknown"
+    and — being a safety predicate — fails closed on.
+
+    That surfaced as INTERMITTENT failures in files that never touch governance:
+    which tests share an xdist worker decides whether a stale stamp is present, so
+    a yolo arm would be honoured in one run and refused in the next. The state was
+    always leaking; it used to be invisible only because an unstamped cache read as
+    the permissive default, which is precisely the stale-permit behaviour that is
+    now fixed.
+    """
     _reset_safety_override()
+    _reset_yolo_policy_cache()
     yield
     _reset_safety_override()
+    _reset_yolo_policy_cache()
 
 
 @pytest.fixture(autouse=True)

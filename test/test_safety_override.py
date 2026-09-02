@@ -1340,7 +1340,11 @@ class TestStatusDoesNotBlockTheEventLoop:
         from kiro_crew.dashboard import handlers_system
 
         src = inspect.getsource(handlers_system.api_status)
-        assert "to_thread(_yolo_duration_fields)" in src, (
+        # Whitespace-insensitive: black may wrap the to_thread(...) call across
+        # lines, so collapse whitespace before matching rather than relying on a
+        # literal substring that a line-break would defeat.
+        compact = "".join(src.split())
+        assert "to_thread(_yolo_duration_fields)" in compact, (
             "the duration/permission fields must be resolved via asyncio.to_thread"
         )
 
@@ -1355,6 +1359,9 @@ class TestStatusDoesNotBlockTheEventLoop:
             "kiro_crew.dashboard.handlers_system.until_shutdown_permitted",
             side_effect=RuntimeError("governance down"),
         ):
-            label, permitted = _yolo_duration_fields()
+            label, permitted, disabled_modes = _yolo_duration_fields()
         assert label == "6h"
         assert permitted is True
+        # Fail-soft: the call returns cleanly. disabled_modes reflects the
+        # real governance layer (not patched here), so assert only its type.
+        assert isinstance(disabled_modes, list)

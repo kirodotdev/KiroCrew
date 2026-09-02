@@ -10955,7 +10955,17 @@ class GatewayOrchestrator:
 
         # Wire up event routing and interactive handlers
         init_interactions(self)
-        init_socket_mode(self, seen)
+        # Offloaded WHOLE rather than at the yolo line inside it. The blocking work
+        # this PR introduced is ``set_yolo_mode`` -> ``grant_declared_yolo`` ->
+        # a profiles-dir walk, and that call sits between two of the function's early
+        # returns (owner check, enterprise validation), so hoisting just it out here
+        # would grant YOLO on a Slack-DISABLED gateway that currently never reaches
+        # it. Offloading the call preserves every one of those returns in order.
+        # The function was already doing network I/O on the loop
+        # (``validate_enterprise``), so moving it off is strictly an improvement; it
+        # only mutates ``orch`` attributes and module globals, at startup, with
+        # nothing running concurrently.
+        await asyncio.to_thread(init_socket_mode, self, seen)
 
         await self._start_channel_transports()
 

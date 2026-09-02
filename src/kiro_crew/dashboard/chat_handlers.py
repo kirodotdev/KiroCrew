@@ -123,7 +123,11 @@ from kiro_crew.history import carry_provenance, is_incognito_transcript, transcr
 from kiro_crew.messaging.link import is_channel_session_key
 from kiro_crew.providers.acp import AcpProvider
 from kiro_crew.providers.base import LLMProvider
-from kiro_crew.safety_override import safety_override
+from kiro_crew.safety_override import (
+    approval_mode_permitted,
+    safety_override,
+    yolo_policy_verdict,
+)
 from kiro_crew.sandbox import voice_runtime_workspace_conflict
 from kiro_crew.security import (
     is_sensitive_path,
@@ -8215,6 +8219,51 @@ async def api_chat_mode(request: web.Request) -> web.Response:
         return body_err
     assert body is not None  # read_bounded_json returns (dict, None) on success
     mode = body.get("mode", "normal")
+    # Governance gate: the ``approval_modes`` policy scope governs ``yolo`` and
+    # only ``yolo``. Refuse a denied mode here, before any mutation, so it is
+    # blocked regardless of the UI. ``normal`` is the interactive floor, and
+    # ``trust`` / ``trust_reads`` are non-deniable because their live consumption
+    # predicates are not gated -- ``approval_mode_permitted`` short-circuits all
+    # three, and a policy naming one is refused at parse time. Kept as a general
+    # mode check rather than a YOLO special case so that widening the scope needs
+    # no change here; YOLO is additionally guarded at arming in ``safety_override``.
+    #
+    # ``mode_disabled_by_policy`` is reserved for a DEFINITE deny. Reading the
+    # boolean alone conflated two different answers: ``approval_mode_permitted``
+    # fails closed, so a governance READ FAILURE also returned False and the caller
+    # was told their organization's policy forbids the mode -- sending them to look
+    # for a policy that may not exist, while the real fault (governance unreadable)
+    # went unnamed. Same defect, and same three-way split, as the two Slack paths.
+    # ``yolo`` is the only deniable mode, so it is the only one that can be unknown.
+    if mode == "yolo":
+        _verdict = await asyncio.to_thread(yolo_policy_verdict)
+        if _verdict == "denied":
+            return _deny_approval_mode(
+                caller="dashboard:chat_mode",
+                operation=f"chat_mode:{mode}",
+                mode=mode,
+                resource=str(body.get("slot") or ""),
+            )
+        if _verdict != "permitted":
+            return web.json_response(
+                {
+                    "ok": False,
+                    "error": (
+                        "could not read the governance policy for approval mode "
+                        f"{mode!r}; try again"
+                    ),
+                    "code": "approval_mode_policy_unreadable",
+                    "mode": mode,
+                },
+                status=503,
+            )
+    elif not await asyncio.to_thread(approval_mode_permitted, mode):
+        return _deny_approval_mode(
+            caller="dashboard:chat_mode",
+            operation=f"chat_mode:{mode}",
+            mode=mode,
+            resource=str(body.get("slot") or ""),
+        )
     raw_slot = body.get("slot")
     slot_key = raw_slot or None
 
@@ -8270,6 +8319,17 @@ async def api_chat_mode(request: web.Request) -> web.Response:
     if mode == "yolo":
         result = await asyncio.to_thread(safety_override().activate, "dashboard")
         if not result.active:
+            # Arming can be refused for two reasons and the client needs to tell
+            # them apart: an ``approval_modes`` deny of ``yolo`` is a permanent
+            # policy answer (403, same code the picker already understands),
+            # while anything else is a transient activation failure (503).
+            if not await asyncio.to_thread(approval_mode_permitted, "yolo"):
+                return _deny_approval_mode(
+                    caller="dashboard:chat_mode",
+                    operation="mode_change:yolo",
+                    mode="yolo",
+                    resource=slot_key or "",
+                )
             return web.json_response(
                 {"ok": False, "error": "safety override activation refused"},
                 status=503,
@@ -8493,6 +8553,42 @@ def _get_pattern_from_pending(slot: _ChatSlot, request_id: str, field: str) -> s
     return ""
 
 
+def _deny_approval_mode(
+    *,
+    caller: str,
+    operation: str,
+    mode: str,
+    resource: str = "",
+) -> web.Response:
+    """Refuse a policy-denied approval mode, audited, WITHOUT any mutation.
+
+    One helper for every surface that can arm an auto-approve mode, so a refusal
+    always lands in the security event log. A governance refusal that leaves no
+    trace is indistinguishable from the request never having been made, which is
+    exactly the record an operator needs after an attempted escalation. The audit
+    is best-effort: an SEL write failure must not turn a refusal into a grant.
+    """
+    try:
+        sel().log_api_access(
+            caller=caller,
+            operation=operation,
+            outcome="approval_mode_denied_by_policy",
+            resources=resource or mode,
+            error="mode_disabled_by_policy",
+        )
+    except Exception:
+        logger.warning("SEL audit failed for policy-refused approval mode %s", mode, exc_info=True)
+    return web.json_response(
+        {
+            "ok": False,
+            "error": f"approval mode {mode!r} is disabled by your organization's policy",
+            "code": "mode_disabled_by_policy",
+            "mode": mode,
+        },
+        status=403,
+    )
+
+
 def _deny_trust_pattern(name: str, request_id: str, action: str, code: str) -> web.Response:
     """Refuse and audit a command-scoped trust grant without resolving it."""
     try:
@@ -8646,6 +8742,17 @@ async def api_chat_slot_approve(request: web.Request) -> web.Response:
     elif action == "yolo":
         result = await asyncio.to_thread(safety_override().activate, "dashboard")
         if not result.active:
+            # Same two-reason split as ``api_chat_mode``: an ``approval_modes``
+            # deny of ``yolo`` is a permanent policy answer the client can render
+            # (403 + the code the picker already understands), while anything else
+            # is a transient activation failure worth retrying (503).
+            if not await asyncio.to_thread(approval_mode_permitted, "yolo"):
+                return _deny_approval_mode(
+                    caller=f"dashboard:{name}",
+                    operation="tool_approval:yolo",
+                    mode="yolo",
+                    resource=request_id,
+                )
             return web.json_response(
                 {"ok": False, "error": "safety override activation refused"},
                 status=503,
