@@ -1526,7 +1526,7 @@ function DraggableTabItem({ tab, active, separator, instantLayout, onSelect, onC
 function TabChip({ tab, active, onSelect, onClose, closable = true, pinned = false, icon, testId }: {
   /** A stored tab, or — for the host's leading tab — just a title: that chip has
    *  no `kind` (it is not a `PanelTab`) and brings its own `icon`. */
-  tab: Pick<PanelTab, 'title'> & Partial<Pick<PanelTab, 'kind' | 'sessionId'>>
+  tab: Pick<PanelTab, 'title'> & Partial<Pick<PanelTab, 'kind' | 'sessionId' | 'path'>>
   active: boolean; onSelect: () => void; onClose: () => void; closable?: boolean; pinned?: boolean
   /** Overrides the kind-derived glyph. Required when `tab.kind` is absent. */
   icon?: ReactNode
@@ -1558,7 +1558,12 @@ function TabChip({ tab, active, onSelect, onClose, closable = true, pinned = fal
       // Labeled chips CSS-truncate at max-w-[240px], so the hover tooltip is
       // the only way to read a long title in full (e.g. an MCP app's
       // server/tool identity, #9868). Icon-only chips need it as their name.
-      title={tab.title}
+      // A file/diff/folder tab's label is only `basename(path)`, so a deep tree
+      // and two same-named files in different directories are indistinguishable
+      // from the label alone — prefer the full path whenever the tab carries
+      // one, and fall back to the title for the tabs that have none (terminal,
+      // app, pinned views).
+      title={tab.path ?? tab.title}
       data-testid={testId}
       // Browser-tab chip: 32px tall, top corners only (8px), bottom edge fused
       // into the panel body. Active = the body's own background (--bg) plus a
