@@ -76,6 +76,29 @@ def test_pools_execute_work() -> None:
     assert ex.cron_executor().submit(lambda: 2 + 3).result(timeout=5) == 5
 
 
+def test_path_resolve_pool_is_isolated_bounded_named_and_reset() -> None:
+    # The sensitive-path gates' realpath used to run inline on the event loop and
+    # could block in the kernel on a stalled automount for as long as the mount
+    # did.  The caller now bounds its wait, but a timed-out future does NOT free
+    # its thread -- so a wedged lstat must only ever be able to starve OTHER
+    # path resolution, never the sweeps, teardown, or the default executor.
+    pool = ex.path_resolve_executor()
+    assert pool is ex.path_resolve_executor()
+    for other in (
+        ex.maintenance_executor(),
+        ex.subprocess_executor(),
+        ex.cron_executor(),
+        ex.discovery_executor(),
+        ex.governance_executor(),
+    ):
+        assert pool is not other
+    assert pool._max_workers == ex._MAX_PATH_RESOLVE_WORKERS
+    assert pool._thread_name_prefix == "mc-pathres"
+    assert pool.submit(lambda: 6 * 7).result(timeout=5) == 42
+    ex.shutdown_maintenance_executor()
+    assert ex.path_resolve_executor() is not pool
+
+
 def test_governance_pool_is_isolated_bounded_and_reset() -> None:
     # GPT round-7 pass 3: the governance pool (externally-paced inbound channels
     # gate + dashboard governance GETs) must be a DISTINCT, bounded, shutdown-

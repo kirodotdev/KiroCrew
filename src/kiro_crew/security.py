@@ -15,9 +15,12 @@ import shlex
 import socket
 import string
 import sys
+import threading
 import time
 import uuid
 from collections import Counter
+from concurrent.futures import Future
+from concurrent.futures import TimeoutError as FutureTimeoutError
 from dataclasses import asdict, dataclass
 
 try:
@@ -30,7 +33,11 @@ from typing import TYPE_CHECKING, NamedTuple
 from urllib.parse import parse_qs, unquote, unquote_plus, urlparse
 
 from kiro_crew.credential_patterns import AWS_KEY_ID, JWT_MULTI_SEGMENT
-from kiro_crew.executors import maintenance_executor
+from kiro_crew.executors import (
+    _MAX_PATH_RESOLVE_WORKERS,
+    maintenance_executor,
+    path_resolve_executor,
+)
 from kiro_crew.identity_stores import fenced_home_dirs
 from kiro_crew.sel import SecurityEvent, SecurityEventLog
 from kiro_crew.trust_patterns import ENV_ASSIGNMENT_RE
@@ -7453,6 +7460,248 @@ def _get_sensitive_re() -> re.Pattern[str]:
     return _SENSITIVE_RE
 
 
+# ── Bounded symlink resolution for the sensitive-path gates ──
+#
+# ``os.path.realpath`` / ``Path.resolve`` ``lstat`` every component of the path
+# they are handed.  The path gates hand them AGENT-SUPPLIED tokens -- including
+# tokens that name nothing on this host at all, like the remote side of
+# ``ssh host 'cd /home/user/ws && ...'`` -- and a component that lands on a
+# stalled automount (macOS ``/home`` is an autofs map resolved through
+# opendirectoryd; a dead NFS/SSHFS mount; a disconnected mapped drive) blocks in
+# the kernel for as long as the mount does.  No exception is raised, so the
+# ``except OSError`` around the call never fired: the call simply never
+# returned.  Because :func:`is_sensitive_path` / :func:`is_sensitive_bash_command`
+# run synchronously inside ``on_tool_call`` on the event loop, that was a loop
+# wedge and the stall watchdog's dump-then-exit -- ten identical crash dumps on
+# a corp macOS during a VPN transition, the loop parked in ``_joinrealpath`` for
+# the full watchdog budget.  Widening the budget only moved the crash.
+#
+# So resolution runs on its own tiny pool and the caller waits a BOUNDED time.
+# A timeout is NOT treated like the ``OSError`` fallback (lexical forms only):
+# that would make the degraded state a lever -- stall one token under a wedged
+# mount and, for the cooldown, a workspace symlink into a credential store
+# would pass on its lexical spelling.  A path whose canonical form cannot be
+# established is instead REFUSED (:class:`PathResolutionStalled`, fail-closed
+# in every gate), the same posture the rest of this module takes when a proof
+# is missing.  The cost is a false refusal of paths under a wedged mount for
+# the cooldown window -- the ``ssh`` command above is refused for 30s during a
+# VPN transition instead of killing the gateway -- and the refusal names why.
+#
+# A timeout also opens a short cooldown during which paths under the SAME
+# prefix are refused without touching the filesystem: one bash command can
+# carry many path tokens against the same wedged mount, each of which would
+# otherwise pay the full timeout -- ten tokens at 2s would put the loop back
+# past the watchdog.  The cooldown is scoped to the stalled prefix
+# (:func:`_stall_prefix`), never process-wide, so a stall on ``/home/<user>``
+# leaves ``/tmp`` and the workspace fully resolved.  It doubles on every
+# repeat stall under the same prefix (up to the cap below) and a re-probe is
+# only attempted while it leaves a worker free, because a timed-out worker is
+# NOT reclaimed: a mount that stays dead would otherwise be handed a fresh
+# worker every cooldown until every worker is pinned and every healthy path
+# queues behind wedged futures -- the per-prefix isolation would hold only
+# while free workers remained.
+#
+# The thread is NOT freed by the timeout (a started future cannot be cancelled);
+# that is why this has its own pool -- see ``executors.path_resolve_executor``.
+_PATH_RESOLVE_TIMEOUT_SECS = 2.0
+_PATH_RESOLVE_COOLDOWN_SECS = 30.0
+_PATH_RESOLVE_COOLDOWN_MAX_SECS = 1800.0
+# stall prefix -> (monotonic deadline until which paths under it are refused,
+# consecutive stalls recorded under it -- drives the exponential backoff)
+_path_resolve_degraded: dict[str, tuple[float, int]] = {}
+# futures that timed out and still hold an mc-pathres worker; pruned as they finish
+_path_resolve_wedged: list[Future[set[str]]] = []
+_path_resolve_lock = threading.Lock()
+_path_resolve_clock: Callable[[], float] = time.monotonic  # tests advance this
+
+
+def _resolved_spellings(expanded: str) -> set[str]:
+    """Symlink-resolved spellings of *expanded*; runs on the ``mc-pathres`` pool."""
+    out: set[str] = set()
+    try:
+        out.add(os.path.realpath(expanded))
+    except (OSError, ValueError):
+        pass
+    try:
+        # Guarded false-positive: this resolve() is INSIDE is_sensitive_path — the
+        # sanitizer itself — building candidate forms to CHECK a path against the
+        # sensitive denylist. It performs no read/write. CodeQL surfaces
+        # py/path-injection here only because a new caller (artifact relocate)
+        # reaches it with user input; the function's whole purpose is to vet that
+        # input, so suppress the alert on the resolution step.
+        out.add(str(Path(expanded).resolve()))  # lgtm[py/path-injection]
+    except (OSError, ValueError, RuntimeError):
+        pass
+    return out
+
+
+class PathResolutionStalled(RuntimeError):
+    """Symlink resolution of an agent-supplied path did not complete in time.
+
+    Raised by :func:`_resolved_forms_bounded` when the bounded ``realpath``
+    times out, and for the cooldown that follows under the same path prefix.
+    The sensitive-path gates treat it as FAIL-CLOSED: a path whose canonical
+    form cannot be established is refused, never matched on its lexical
+    spelling alone -- a lexical-only match would let a workspace symlink into a
+    credential store pass while the mount it does not even live on is wedged.
+    """
+
+    def __init__(self, path: str, prefix: str) -> None:
+        super().__init__(
+            f"symlink resolution of {path!r} is unavailable (stalled mount under {prefix!r})"
+        )
+        self.path = path
+        self.prefix = prefix
+
+
+def _stall_prefix(expanded: str) -> str:
+    """The path prefix a stall is charged to: the first two components.
+
+    A wedged mount stalls everything beneath its mount point, and mount points
+    sit at depth one or two (``/home/<user>`` autofs, ``/Volumes/<share>``,
+    ``/net/<host>``, ``C:\\Users``), so two components is the narrowest key
+    that still covers the whole stalled subtree.  Scoping the cooldown here is
+    what keeps a stall on the REMOTE half of an ``ssh`` command from switching
+    resolution off for the local workspace where a bypass symlink would live.
+    """
+    normalized = os.path.normpath(expanded)
+    parts = normalized.split(os.sep)
+    keep = 3 if parts and parts[0] == "" else 2  # leading "" for an absolute path
+    return os.sep.join(parts[:keep]) or normalized
+
+
+def _wedged_workers() -> int:
+    """How many ``mc-pathres`` workers are still pinned by a timed-out resolution.
+
+    A future that timed out is not cancelled -- its thread stays in the kernel
+    until the mount answers -- so it is kept here and forgotten once it finally
+    completes.  The count gates re-probes: a mount that stays dead (hard NFS,
+    not the transient VPN case) must not be handed a fresh worker every cooldown
+    until none is left and every healthy path queues behind wedged futures.
+    """
+    with _path_resolve_lock:
+        _path_resolve_wedged[:] = [f for f in _path_resolve_wedged if not f.done()]
+        return len(_path_resolve_wedged)
+
+
+def _mark_stalled(prefix: str, budget: float) -> None:
+    """Record an OBSERVED stall under *prefix*: back off exponentially on repeats.
+
+    Only a resolution that actually timed out is recorded.  A refusal issued
+    because every worker was already pinned costs nothing (nothing is
+    submitted) and must not charge the refused prefix -- often the local
+    workspace -- a backoff it never earned, or a transient dual-mount outage
+    would keep refusing healthy paths for the accrued window after the mounts
+    recover.  The log line deliberately omits the path: the token is
+    agent-supplied and is what the gates exist to keep out of clear-text logs.
+    """
+    now = _path_resolve_clock()
+    with _path_resolve_lock:
+        if len(_path_resolve_degraded) > 64:
+            _path_resolve_degraded.clear()
+        _, stalls = _path_resolve_degraded.get(prefix, (0.0, 0))
+        stalls += 1
+        cooldown = min(
+            _PATH_RESOLVE_COOLDOWN_SECS * (2 ** (stalls - 1)),
+            _PATH_RESOLVE_COOLDOWN_MAX_SECS,
+        )
+        _path_resolve_degraded[prefix] = (now + cooldown, stalls)
+    logger.warning(
+        "sensitive-path symlink resolution did not complete in %.1fs (stalled "
+        "mount?); refusing paths under the stalled prefix for the next %.0fs "
+        "(stall #%d, %d resolver worker(s) pinned)",
+        budget,
+        cooldown,
+        stalls,
+        len(_path_resolve_wedged),
+    )
+
+
+_UNC_PREFIX_RE = re.compile(r"^[\\/]{2}[^\\/]")
+_ON_WINDOWS = os.name == "nt"
+
+
+def _is_unc_path(expanded: str) -> bool:
+    """``\\\\server\\share\\...`` in either separator spelling.
+
+    On Windows ``os.path.realpath`` on a UNC path opens it
+    (``GetFinalPathNameByHandle``), which is a network round-trip to the named
+    host -- a dead or slow host stalls the caller for the SMB timeout, and a
+    UNC token in an agent's command is the ordinary way to name a share, not a
+    symlink-bypass vector: the fence's targets are local drive spellings that a
+    UNC realpath never produces (``\\\\?\\UNC\\...``).  So a UNC token is matched
+    lexically and never probed, the same stance the mapped-drive fence below
+    takes for a foreign drive letter.
+    """
+    return bool(_UNC_PREFIX_RE.match(expanded))
+
+
+def _resolved_forms_bounded(expanded: str) -> set[str]:
+    """Return the symlink-resolved spellings of *expanded*, or an empty set.
+
+    Empty means resolution FAILED (``OSError``/``ValueError`` inside the
+    worker, or the pool refusing work at interpreter exit) or was deliberately
+    not attempted (a UNC path on Windows -- see :func:`_is_unc_path`): the
+    caller keeps the lexical forms, exactly as before the bound existed.  A
+    resolution that does not COMPLETE is different and raises
+    :class:`PathResolutionStalled` instead, both on the timing-out call and,
+    without touching the filesystem, for every later call under the same
+    :func:`_stall_prefix` until the cooldown lapses.  Repeated stalls under one
+    prefix double the cooldown up to ``_PATH_RESOLVE_COOLDOWN_MAX_SECS``, and a
+    prefix with a stall history is only re-probed while that leaves at least one
+    worker free for everything else -- so a permanently dead mount is probed
+    rarely and can never pin the whole pool.  Never blocks the caller for longer
+    than ``_PATH_RESOLVE_TIMEOUT_SECS``.  Tests swap :func:`_resolved_spellings`
+    at module level for a blocking stub and advance ``_path_resolve_clock``.
+    """
+    if _ON_WINDOWS and _is_unc_path(expanded):
+        return set()
+    budget = _PATH_RESOLVE_TIMEOUT_SECS
+    now = _path_resolve_clock()
+    prefix = _stall_prefix(expanded)
+    with _path_resolve_lock:
+        history = _path_resolve_degraded.get(prefix)
+    if history is not None and now < history[0]:
+        raise PathResolutionStalled(expanded, prefix)
+    wedged = _wedged_workers()
+    if wedged >= _MAX_PATH_RESOLVE_WORKERS or (history is not None and wedged >= _MAX_PATH_RESOLVE_WORKERS - 1):
+        # Every worker is pinned, or this re-probe of a known-stalled prefix
+        # would pin the last free one.  Queueing behind a wedged future can only
+        # time out, so refuse now.  Nothing was submitted, so nothing is charged
+        # to the prefix: the next call re-evaluates the gate for free.
+        logger.debug(
+            "sensitive-path symlink resolution refused without probing: %d of %d "
+            "resolver worker(s) pinned by earlier stalls",
+            wedged,
+            _MAX_PATH_RESOLVE_WORKERS,
+        )
+        raise PathResolutionStalled(expanded, prefix)
+    try:
+        future = path_resolve_executor().submit(_resolved_spellings, expanded)
+    except RuntimeError:
+        # Pool already shut down (interpreter exit).  Lexical forms only.
+        return set()
+    try:
+        forms = future.result(timeout=budget)
+    except FutureTimeoutError:
+        with _path_resolve_lock:
+            _path_resolve_wedged.append(future)
+        _mark_stalled(prefix, budget)
+        raise PathResolutionStalled(expanded, prefix) from None
+    except Exception:
+        # The worker's own exceptions are already swallowed inside
+        # _resolved_spellings; anything else here is a pool fault, and the gate's
+        # contract is to keep the lexical forms rather than fail the tool call.
+        logger.debug("sensitive-path symlink resolution failed", exc_info=True)
+        return set()
+    if history is not None:
+        # The mount answered again: forget the stall history so the next stall
+        # starts from the base cooldown rather than an inherited backoff.
+        with _path_resolve_lock:
+            _path_resolve_degraded.pop(prefix, None)
+    return forms
+
+
 def _candidate_forms(path_str: str, base_dir: str | None = None) -> set[str]:
     """Expand *path_str* into every candidate form the sensitive-path gates match.
 
@@ -7476,23 +7725,14 @@ def _candidate_forms(path_str: str, base_dir: str | None = None) -> set[str]:
         expanded = os.path.join(os.path.abspath(base_dir), expanded)
 
     # Build the candidate forms.  Symlink-resolved forms defeat a link bypass;
-    # the lexical forms are the fail-safe fallback when resolution cannot
-    # complete (over-matching a sensitive-looking path is the safe direction).
-    candidates: set[str] = set()
-    try:
-        candidates.add(os.path.realpath(expanded))
-    except (OSError, ValueError):
-        pass
-    try:
-        # Guarded false-positive: this resolve() is INSIDE is_sensitive_path — the
-        # sanitizer itself — building candidate forms to CHECK a path against the
-        # sensitive denylist. It performs no read/write. CodeQL surfaces
-        # py/path-injection here only because a new caller (artifact relocate)
-        # reaches it with user input; the function's whole purpose is to vet that
-        # input, so suppress the alert on the resolution step.
-        candidates.add(str(Path(expanded).resolve()))  # lgtm[py/path-injection]
-    except (OSError, ValueError, RuntimeError):
-        pass
+    # the lexical forms are the fail-safe fallback when resolution FAILS
+    # (over-matching a sensitive-looking path is the safe direction).
+    # Resolution is BOUNDED -- see _resolved_forms_bounded: an unbounded lstat on
+    # a stalled automount used to wedge the event loop from inside on_tool_call.
+    # A resolution that does not COMPLETE raises PathResolutionStalled through
+    # here, and every gate turns that into a refusal: no lexical-only matching
+    # of a path whose canonical form is unknown.
+    candidates: set[str] = _resolved_forms_bounded(expanded)
     candidates.add(os.path.normpath(expanded))
     candidates.add(expanded)
     return candidates
@@ -7500,7 +7740,7 @@ def _candidate_forms(path_str: str, base_dir: str | None = None) -> set[str]:
 
 def _home_dir_targets_uncached(
     home_dirs: list[str],
-    roots: tuple[str, str | None, str | None] | None = None,
+    roots: tuple[str, str | None, str | None, str] | None = None,
 ) -> set[str]:
     """Anchor the ``$HOME``-relative *home_dirs* entries into absolute, casefolded
     on-disk targets.
@@ -7528,9 +7768,9 @@ def _home_dir_targets_uncached(
     this is a no-op there.
     """
     if roots is not None:
-        home, crew_home, kiro_home_override = roots
+        home, crew_home, kiro_home_override, logical_home = roots
     else:
-        home, crew_home, kiro_home_override = _resolved_root_key()
+        home, crew_home, kiro_home_override, logical_home = _resolved_root_key()
 
     def _anchor(root: str, d: str) -> str:
         return os.path.join(root, *d.split("/")).casefold()
@@ -7539,6 +7779,15 @@ def _home_dir_targets_uncached(
     home_real = os.path.realpath(home)
     if home_real.casefold() != home.casefold():
         sensitive_targets |= {_anchor(home_real, d) for d in home_dirs}
+    # ``home`` arrives RESOLVED (the cache is keyed on the resolved roots), so
+    # the realpath above is normally a no-op and the LOGICAL spelling of a
+    # symlinked ``$HOME`` was never anchored -- a gap masked as long as every
+    # candidate was itself resolved.  Candidate resolution is now bounded and
+    # degrades to the lexical spelling, so anchor the logical home explicitly:
+    # ``~/.ssh/id_rsa`` spelled through ``/home/x`` must match even when
+    # ``/home/x -> /local/home/x`` could not be followed in time.
+    if logical_home.casefold() != home.casefold():
+        sensitive_targets |= {_anchor(logical_home, d) for d in home_dirs}
     # When KIROCREW_HOME points to a non-default path, the keystone secrets
     # (token_signing.key, refresh_chains.json, .local_secret, sel_hmac.key,
     # security_policy.json etc.) live directly under it — NOT under either of
@@ -7634,8 +7883,8 @@ _HOME_TARGETS_TTL_SECS = 0.1
 _home_targets_cache: dict[tuple[object, ...], tuple[float, set[str]]] = {}
 
 
-def _resolved_root_key() -> tuple[str, str | None, str | None]:
-    """Return the (home, crew_home, kiro_home) roots the target set is anchored on.
+def _resolved_root_key() -> tuple[str, str | None, str | None, str]:
+    """Return the (home, crew_home, kiro_home, logical_home) roots the target set is anchored on.
 
     Mirrors how :func:`_home_dir_targets_uncached` derives its anchors, so the
     cache key changes exactly when the anchors would. Falls back to the
@@ -7647,11 +7896,22 @@ def _resolved_root_key() -> tuple[str, str | None, str | None]:
     must invalidate the cache. No validity check here (an unsafe value falls back
     to ``~/.kiro`` in ``kiro_home()``, already covered by the default form); it is
     resolved only so a symlinked override keys and anchors identically.
+
+    ``logical_home`` is ``Path.home()`` UNRESOLVED.  It is a separate anchor, not
+    a duplicate: on a host where ``$HOME`` is itself a symlink (``/home/x`` ->
+    ``/local/home/x`` on cloud desktops) the resolved home spells every target
+    one way while an agent-supplied ``~/.ssh/id_rsa`` spells it the other.  The
+    resolved CANDIDATE normally bridges that -- but candidate resolution is
+    bounded (:func:`_resolved_forms_bounded`) and degrades to the lexical
+    spelling, which must still hit a target or the gate fails OPEN on exactly
+    the hosts where ``$HOME`` is a link.  Keyed here so an env change that
+    moves the logical spelling invalidates the cache like any other anchor.
     """
+    logical_home = str(Path.home())
     try:
         home = str(Path.home().resolve())
     except (OSError, ValueError):
-        home = str(Path.home())
+        home = logical_home
     crew_env = os.environ.get("KIROCREW_HOME")
     if crew_env:
         try:
@@ -7668,7 +7928,7 @@ def _resolved_root_key() -> tuple[str, str | None, str | None]:
             kiro = os.path.abspath(os.path.expanduser(kiro_env))
     else:
         kiro = None
-    return home, crew, kiro
+    return home, crew, kiro, logical_home
 
 
 def _home_dir_targets(home_dirs: list[str]) -> set[str]:
@@ -7735,7 +7995,13 @@ def _path_in_home_dirs(path_str: str, home_dirs: list[str], base_dir: str | None
     if not path_str:
         return False
 
-    candidates = _candidate_forms(path_str, base_dir)
+    try:
+        candidates = _candidate_forms(path_str, base_dir)
+    except PathResolutionStalled:
+        # Canonical form unavailable (wedged mount under the path): refuse.  A
+        # lexical-only match here would pass a workspace symlink into a
+        # credential store for the length of the stall.
+        return True
     sensitive_targets = _home_dir_targets(home_dirs)
 
     # Case-fold both sides for the membership test.  On a case-insensitive
@@ -7778,7 +8044,11 @@ def _is_keystone_publish_artifact(path_str: str, base_dir: str | None = None) ->
     if not path_str:
         return False
     artifact_parents = _home_dir_targets(_KEYSTONE_ARTIFACT_PARENTS)
-    for cand in _candidate_forms(path_str, base_dir):
+    try:
+        candidates = _candidate_forms(path_str, base_dir)
+    except PathResolutionStalled:
+        return True  # fail closed: see _path_in_home_dirs
+    for cand in candidates:
         cand_cf = cand.casefold()
         # Suffixes are authored lowercase and the candidate is casefolded, so this is
         # the same case-insensitive comparison the rest of the gate makes -- on
@@ -7844,7 +8114,11 @@ def path_contains_sensitive(dir_str: str, base_dir: str | None = None) -> bool:
     if not dir_str:
         return False
     sensitive_targets = _home_dir_targets(_SENSITIVE_HOME_DIRS)
-    for cand in _candidate_forms(dir_str, base_dir):
+    try:
+        candidates = _candidate_forms(dir_str, base_dir)
+    except PathResolutionStalled:
+        return True  # fail closed: see _path_in_home_dirs
+    for cand in candidates:
         # Normalize away a trailing separator so `/home/u/` and `/home/u`
         # produce the same prefix (a bare `/` or `C:\` root rstrips to ""/"C:",
         # whose prefix form still matches everything under it — correct: every
@@ -9011,10 +9285,14 @@ def _dir_holds_sensitive_leaf(directory: str) -> bool:
     # targets are anchored against the RESOLVED home, and a home reached through a
     # symlink (`/home/x` -> `/local/home/x`) spells the same directory two ways.
     candidates = {os.path.normpath(probe)}
+    # Bounded for the same reason as _candidate_forms: this probe is an
+    # agent-supplied token checked synchronously on the event loop, and a
+    # stalled automount under it would otherwise wedge the loop.  A stall is
+    # fail-closed here too: the directory is treated as holding a leaf.
     try:
-        candidates.add(os.path.realpath(probe))
-    except OSError:
-        pass
+        candidates |= _resolved_forms_bounded(probe)
+    except PathResolutionStalled:
+        return True
     return any(candidate.casefold() in targets for candidate in candidates)
 
 

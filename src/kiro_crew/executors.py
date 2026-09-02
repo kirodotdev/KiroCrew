@@ -86,6 +86,7 @@ __all__ = [
     "embed_executor",
     "image_executor",
     "stt_executor",
+    "path_resolve_executor",
     "governance_executor",
     "cron_gate_executor",
     "CronGateTimeout",
@@ -244,6 +245,25 @@ _MAX_IMAGE_WORKERS = 2
 # to starve other STT work.
 _MAX_STT_WORKERS = 2
 
+# Symlink resolution for the sensitive-path gates (``security._candidate_forms``).
+# ``os.path.realpath`` walks every component with ``lstat``, and a component that
+# lands on a stalled automount (macOS ``/home`` autofs backed by an unreachable
+# directory server, a dead NFS/SSHFS mount, a disconnected Windows mapped drive)
+# blocks in the kernel for as long as the mount does -- effectively unbounded.
+# The gate runs SYNCHRONOUSLY inside ``on_tool_call`` on the event loop, so that
+# block was a loop wedge -> watchdog dump-then-exit (ten identical crash dumps
+# on a corp macOS around a VPN transition, the path tokens being the remote
+# side of an ``ssh host 'cd /home/...'`` command that never existed locally).
+# The caller bounds its wait and REFUSES the path on timeout (fail-closed --
+# a lexical-only fallback would let a symlink into a credential store ride a
+# stall; only a resolution that FAILS with OSError keeps the lexical forms);
+# the wait does NOT free the worker, so this is its OWN tiny pool: a wedged
+# resolution can only ever starve other path resolution, never the sweeps or
+# the default executor's DNS.  Two workers is deliberate -- healthy resolution is
+# microseconds, so the cap only bites when the filesystem is wedged, which is
+# exactly when queueing behind a wedged sibling is the correct outcome.
+_MAX_PATH_RESOLVE_WORKERS = 2
+
 _lock = threading.Lock()
 _pool: ThreadPoolExecutor | None = None
 _subprocess_pool: ThreadPoolExecutor | None = None
@@ -254,6 +274,7 @@ _image_pool: ThreadPoolExecutor | None = None
 _stt_pool: ThreadPoolExecutor | None = None
 _governance_pool: ThreadPoolExecutor | None = None
 _cron_gate_pool: ThreadPoolExecutor | None = None
+_path_resolve_pool: ThreadPoolExecutor | None = None
 
 
 def configure_default_executor() -> None:
@@ -403,6 +424,33 @@ def stt_executor() -> ThreadPoolExecutor:
                 )
                 atexit.register(shutdown_maintenance_executor)
     return _stt_pool
+
+
+def path_resolve_executor() -> ThreadPoolExecutor:
+    """Return the process-wide sensitive-path symlink-resolution pool, creating it on first use.
+
+    Threads are named ``mc-pathres``.  Serves ``security._candidate_forms``, whose
+    ``os.path.realpath`` / ``Path.resolve`` on an agent-supplied path token used
+    to run inline on the event loop and could block in the kernel for as long as
+    a stalled automount did.  The caller bounds its wait
+    (``security._PATH_RESOLVE_TIMEOUT_SECS``) and refuses the path on timeout
+    (fail-closed; only a resolution that FAILS keeps the lexical forms); the
+    wait releases the CALLER, never the thread, which is why this
+    work gets a pool it can only starve for itself -- on
+    :func:`subprocess_executor` a wedged ``lstat`` would consume one of the PTY
+    teardown workers, and on the default executor it would starve the loop's own
+    DNS resolution.
+    """
+    global _path_resolve_pool
+    if _path_resolve_pool is None:
+        with _lock:
+            if _path_resolve_pool is None:
+                _path_resolve_pool = ThreadPoolExecutor(
+                    max_workers=_MAX_PATH_RESOLVE_WORKERS,
+                    thread_name_prefix="mc-pathres",
+                )
+                atexit.register(shutdown_maintenance_executor)
+    return _path_resolve_pool
 
 
 def embed_executor() -> ThreadPoolExecutor:
@@ -767,7 +815,7 @@ def shutdown_maintenance_executor() -> None:
     loop and shut down by asyncio when the loop closes.
     """
     global _pool, _subprocess_pool, _cron_pool, _discovery_pool, _embed_pool
-    global _governance_pool, _image_pool, _cron_gate_pool, _stt_pool
+    global _governance_pool, _image_pool, _cron_gate_pool, _stt_pool, _path_resolve_pool
     with _lock:
         pool, _pool = _pool, None
         subprocess_pool, _subprocess_pool = _subprocess_pool, None
@@ -778,6 +826,7 @@ def shutdown_maintenance_executor() -> None:
         image_pool, _image_pool = _image_pool, None
         cron_gate_pool, _cron_gate_pool = _cron_gate_pool, None
         stt_pool, _stt_pool = _stt_pool, None
+        path_resolve_pool, _path_resolve_pool = _path_resolve_pool, None
     if pool is not None:
         pool.shutdown(wait=False, cancel_futures=True)
     if subprocess_pool is not None:
@@ -796,3 +845,5 @@ def shutdown_maintenance_executor() -> None:
         cron_gate_pool.shutdown(wait=False, cancel_futures=True)
     if stt_pool is not None:
         stt_pool.shutdown(wait=False, cancel_futures=True)
+    if path_resolve_pool is not None:
+        path_resolve_pool.shutdown(wait=False, cancel_futures=True)
