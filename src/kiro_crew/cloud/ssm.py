@@ -405,9 +405,20 @@ def kill_port_forward(proc: Optional[subprocess.Popen]) -> None:
         pid = getattr(proc, "pid", None)
         if pid is None:
             return False
+        # Resolved from the fixed system directories, never a bare argv name:
+        # CreateProcess searches the calling image's directory and the CWD before
+        # PATH, and a gateway PATH can legitimately lead with agent-writable
+        # directories -- so `["taskkill", ...]` lets a planted shim run with this
+        # process's privileges on the teardown path. `platform_compat` already
+        # resolves the SAME binary this way at both of its own taskkill sites.
+        # ``None`` means unavailable, which is the case this helper already
+        # returns False for so the caller escalates.
+        taskkill_bin = platform_compat.trusted_system_bin("taskkill")
+        if taskkill_bin is None:
+            return False
         try:
             subprocess.run(
-                ["taskkill", "/T", "/F", "/PID", str(pid)],
+                [taskkill_bin, "/T", "/F", "/PID", str(pid)],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 timeout=10,

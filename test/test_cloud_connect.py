@@ -254,6 +254,10 @@ class TestConnect:
             connect.connect("i-0abc", "dev", "us-east-1")
 
 
+#: Stands in for what `trusted_system_bin` returns on Windows; never spawned.
+TASKKILL_BIN = r"C:\Windows\System32	askkill.exe"
+
+
 class TestKillProcessTree:
     def test_kills_whole_group_not_just_parent(self, tmp_path):
         # The SSM tunnel is spawned with start_new_session=True, so the parent
@@ -336,11 +340,19 @@ class TestKillProcessTree:
 
         monkeypatch.setattr(ssm_mod.os, "name", "nt")
         monkeypatch.setattr(ssm_mod.subprocess, "run", fake_run)
+        # `taskkill` is resolved through `platform_compat.trusted_system_bin`, so
+        # the real lookup answers None off Windows. Stubbed, or the tree kill is
+        # skipped and this test falls through to the POSIX branch -- which would
+        # `killpg` the REAL pid 4321 on a CI host, taking the worker with it.
+        monkeypatch.setattr(
+            ssm_mod.platform_compat, "trusted_system_bin", lambda name: TASKKILL_BIN
+        )
         ssm_mod.kill_port_forward(FakeProc())
 
         assert calls, "Windows must attempt a tree kill"
         argv = calls[0]
-        assert argv[0] == "taskkill"
+        assert argv[0] == TASKKILL_BIN
+        assert argv[0] != "taskkill", "the binary must not come from PATH"
         assert "/T" in argv, "/T is what reaps the plugin child"
         assert "/F" in argv
         assert str(FakeProc.pid) in argv
