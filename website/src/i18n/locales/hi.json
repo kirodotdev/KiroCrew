@@ -4806,7 +4806,11 @@
         "files_empty_body": "इस फ़ोल्डर में कंप्यूटर से अपलोड की गई फ़ाइलें रहती हैं। यह लाइब्रेरी से अलग है, जिसमें Kiro द्वारा बनाई गई चीज़ें रहती हैं।",
         "library_remove": "हटाएँ",
         "library_remove_confirm": "“{{name}}” को क्लाउड लाइब्रेरी से हटाएँ?",
-        "library_remove_confirm_slug": "यह क्लाउड फ़ोल्डर <folder>{{folder}}</folder> खाली करता है।"
+        "library_remove_confirm_slug": "यह क्लाउड फ़ोल्डर <folder>{{folder}}</folder> खाली करता है।",
+        "library_actions": "लाइब्रेरी आइटम क्रियाएँ",
+        "library_remove_action": "प्रतिलिपि हटाएँ",
+        "library_removing": "हटाया जा रहा है…",
+        "library_remove_failed": "हटाना विफल रहा — क्लाउड प्रतिलिपि अपरिवर्तित है। फिर से आज़माएं।"
       },
       "page": {
         "totals_summary": "{{accounts}} खाते · {{keys}} कुंजियाँ · {{healthy}} स्वस्थ",

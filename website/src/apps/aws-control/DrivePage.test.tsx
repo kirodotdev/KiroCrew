@@ -118,6 +118,23 @@ async function renderDrive(section: 'drive' | 'library' | 'backup' | 'access') {
   renderWithProviders(el)
 }
 
+/**
+ * Open a per-item overflow menu and choose one of its items.
+ *
+ * Every per-item action in both folders lives behind a `⋮`, so a test that used
+ * to click a bare button has to open the menu first. Enter on the trigger rather
+ * than a click: the menu is a portaled Radix dropdown, and a bare click does not
+ * open one in jsdom -- which is how the row-overflow tests in this file already
+ * drive theirs.
+ *
+ * `trigger` is an element rather than a test id because a listing with several
+ * rows has several triggers and the caller has to say which.
+ */
+async function chooseFromMenu(trigger: HTMLElement, itemTestId: string) {
+  fireEvent.keyDown(trigger, { key: 'Enter' })
+  fireEvent.click(await screen.findByTestId(itemTestId))
+}
+
 describe('DrivePage sections', () => {
   it('mints a share link and shows the URL exactly once in the dialog', async () => {
     stubDrivePresent()
@@ -570,10 +587,15 @@ describe('DrivePage sections: folder disclosure and downloads', () => {
 
     await renderDrive('drive')
 
-    fireEvent.click(await screen.findByTestId('drive-download'))
+    await chooseFromMenu(await screen.findByTestId('drive-more'), 'drive-download')
     // The tab was opened blank inside the click, then navigated to the presign.
     // No 'noopener' feature: with it the standard makes window.open return null,
     // so requesting it would hand back no tab to navigate at all.
+    // Opening from a MENU ITEM keeps that synchronous: Radix dispatches
+    // `onSelect` from the item's own click handler, so the window.open still runs
+    // inside the user gesture and is not treated as an unattended popup. That is
+    // the non-obvious half of moving Download into the overflow, and this
+    // assertion is what proves it did not break.
     expect(openSpy).toHaveBeenCalledWith('', '_blank')
     await waitFor(() => expect(fakeTab.location.href).toBe('https://example-presigned/dl?sig=y'))
     expect(fakeTab.close).not.toHaveBeenCalled()
@@ -593,7 +615,7 @@ describe('DrivePage sections: folder disclosure and downloads', () => {
 
     await renderDrive('drive')
 
-    fireEvent.click(await screen.findByTestId('drive-download'))
+    await chooseFromMenu(await screen.findByTestId('drive-more'), 'drive-download')
     await waitFor(() => expect(fakeTab.close).toHaveBeenCalled())
     // The tab was never navigated anywhere.
     expect((fakeTab as unknown as { location: { href: string } }).location.href).toBe('')
@@ -784,131 +806,468 @@ describe('DrivePage sections: Library', () => {
   })
 
   /**
-   * Removal is gated on a cloud copy existing: a synced card offers Remove, an
-   * unsynced one has nothing to empty. The gate matters more than the button --
-   * one synced fixture would look identical whether the control were gated or
-   * hardcoded.
+   * Removal lives on the CLOUD LISTING, behind the same `⋮` the Files folder's
+   * cards use, and the confirm names the prefix it empties.
+   *
+   * The picker cannot host this control soundly: its rows are local artifacts
+   * joined to a slug-keyed ledger, so a reused slug lends a never-pushed
+   * artifact another one's push record and a removal there empties a different
+   * artifact's copy. A row of this folder comes from `driveList`, so removing it
+   * empties the object the reader was shown. The fixture makes that concrete --
+   * the bucket holds `notes` while the LOCAL artifact of that slug reports
+   * pushedVersion null, which is exactly the reused-slug shape the picker could
+   * not tell apart, and the removal still targets the listed slug.
+   *
+   * DELETE THIS TEST and a visible danger button on every browse card, or a
+   * removal keyed to local state, both pass again.
    */
-  it('offers Remove on synced cards only, behind an inline confirm', async () => {
+  it('removes from the cloud listing, naming the artifacts/ prefix it empties', async () => {
     stubDrivePresent()
-    vi.mocked(awsControlApi.driveList).mockResolvedValue({ files: [], folders: [] })
+    vi.mocked(awsControlApi.driveList).mockResolvedValue({ files: [], folders: ['notes'] })
     vi.mocked(awsControlApi.library).mockResolvedValue({
       artifacts: [
-        { slug: 'notes', name: 'Notes', kind: 'markdown', version: 4, updatedAt: '2026-08-20T00:00:00Z', pushedVersion: 4, pushedAt: '2026-08-20T00:00:00Z' },
-        { slug: 'draft', name: 'Draft', kind: 'markdown', version: 2, updatedAt: '2026-08-20T00:00:00Z', pushedVersion: null, pushedAt: null },
+        { slug: 'notes', name: 'Notes', kind: 'markdown', version: 1, updatedAt: '2026-08-20T00:00:00Z', pushedVersion: null, pushedAt: null },
       ],
     })
     vi.mocked(awsControlApi.libraryRemove).mockResolvedValue({ removed: true } as never)
 
     await renderDrive('library')
-    fireEvent.click(await screen.findByTestId('library-add-open'))
-    await screen.findByTestId('library-add-dialog')
+    expect(await screen.findByTestId('library-card')).toBeTruthy()
 
-    // Only the synced card carries the trigger.
-    expect(await screen.findAllByTestId('library-tile')).toHaveLength(2)
-    expect(screen.getAllByTestId('library-remove')).toHaveLength(1)
-
-    // The trigger opens a named confirm; nothing is deleted yet.
-    fireEvent.click(screen.getByTestId('library-remove'))
+    // Hidden behind the card's `⋮`. A visible danger button on every card of a
+    // browse surface is the design this replaces, so the control being a menu
+    // item rather than a button is part of the contract.
+    await chooseFromMenu(screen.getByTestId('library-more'), 'library-remove')
     const confirm = await screen.findByTestId('library-remove-confirm')
-    expect(confirm).toBeTruthy()
-    // The removal is slug-keyed: `libraryRemove` empties `artifacts/<slug>/`, and
-    // the ledger that lit this tile is keyed by slug alone, so a reused slug can
-    // point the delete at a different artifact's cloud copy. The confirm must
-    // name that cloud folder, not only the local artifact, so the destructive
-    // click is confirmed against the identity the deletion actually uses.
-    //
     // The BUCKET prefix, pinned literally: the library section maps to
     // `artifacts/` (`SECTION_PREFIXES`), which is what the page's own "Where this
     // lives" drawer tells the reader to `aws s3 ls`. Naming the `library/` API
-    // route segment instead would print a folder the bucket does not contain, so
-    // the one cross-check that catches a wrong-target delete would come up empty.
+    // route segment instead prints a folder the bucket does not contain, so the
+    // one cross-check that catches a wrong-target delete comes up empty.
     expect(confirm).toHaveTextContent('artifacts/notes/')
     expect(confirm).not.toHaveTextContent('library/notes/')
     expect(awsControlApi.libraryRemove).not.toHaveBeenCalled()
 
     // Cancel closes the strip without a call.
-    fireEvent.click(screen.getByTestId('library-remove-cancel'))
+    fireEvent.click(screen.getByTestId('library-remove-confirm-cancel'))
     expect(screen.queryByTestId('library-remove-confirm')).toBeNull()
     expect(awsControlApi.libraryRemove).not.toHaveBeenCalled()
 
-    // Confirming actually removes.
-    fireEvent.click(screen.getByTestId('library-remove'))
-    fireEvent.click(await screen.findByTestId('library-remove-action'))
+    // Confirming removes the LISTED slug.
+    await chooseFromMenu(screen.getByTestId('library-more'), 'library-remove')
+    fireEvent.click(await screen.findByTestId('library-remove-confirm-action'))
     await waitFor(() => expect(awsControlApi.libraryRemove).toHaveBeenCalledWith(ACCOUNT_ID, 'notes'))
   })
 
   /**
-   * A failed cloud delete must render, not vanish. A strip that closes on the
-   * click reports a delete that never happened, so it stays open and
-   * delete_failed appears on the card.
+   * A copy with no local row is removable, which is the whole reason the control
+   * moved.
+   *
+   * `list_pushable` walks the LOCAL store, so a copy pushed from another machine
+   * has no picker row to carry it -- under the old placement it was unreachable
+   * while a locally reused slug could delete the wrong one, exactly backwards
+   * from the console the spec asks for. Nothing here may be gated on local
+   * state, so the fixture gives the local library none at all.
+   *
+   * DELETE THIS TEST and gating removal on `synced` passes again, which strands
+   * every copy pushed from a second machine.
    */
-  it('keeps the confirm open and says so when the removal fails', async () => {
+  it('removes a cloud copy that has no local artifact behind it', async () => {
+    stubDrivePresent()
+    vi.mocked(awsControlApi.driveList).mockResolvedValue({ files: [], folders: ['from-elsewhere'] })
+    vi.mocked(awsControlApi.library).mockResolvedValue({ artifacts: [] })
+    vi.mocked(awsControlApi.libraryRemove).mockResolvedValue({ removed: true } as never)
+
+    await renderDrive('library')
+    expect(await screen.findByTestId('library-card')).toBeTruthy()
+
+    await chooseFromMenu(screen.getByTestId('library-more'), 'library-remove')
+    expect(await screen.findByTestId('library-remove-confirm')).toHaveTextContent('artifacts/from-elsewhere/')
+    fireEvent.click(screen.getByTestId('library-remove-confirm-action'))
+    await waitFor(() =>
+      expect(awsControlApi.libraryRemove).toHaveBeenCalledWith(ACCOUNT_ID, 'from-elsewhere'))
+  })
+
+  /**
+   * The list view is a way of LOOKING at this folder, not a capability tier.
+   *
+   * The view choice PERSISTS per section, so a control the grid has and the rows
+   * do not is one a reader who once switched to the list can never reach again --
+   * the same rule this folder's stale-version warning already follows.
+   */
+  it('carries the removal in list view too', async () => {
+    stubDrivePresent()
+    vi.mocked(awsControlApi.driveList).mockResolvedValue({ files: [], folders: ['notes'] })
+    vi.mocked(awsControlApi.library).mockResolvedValue({ artifacts: [] })
+    vi.mocked(awsControlApi.libraryRemove).mockResolvedValue({ removed: true } as never)
+
+    await renderDrive('library')
+    fireEvent.click(await screen.findByTitle('List view'))
+    expect(await screen.findByTestId('library-list-row')).toBeTruthy()
+
+    await chooseFromMenu(screen.getByTestId('library-more'), 'library-remove')
+    expect(await screen.findByTestId('library-remove-confirm')).toHaveTextContent('artifacts/notes/')
+    fireEvent.click(screen.getByTestId('library-remove-confirm-action'))
+    await waitFor(() => expect(awsControlApi.libraryRemove).toHaveBeenCalledWith(ACCOUNT_ID, 'notes'))
+  })
+
+  /**
+   * The picker must NOT offer removal. This is the regression guard for the
+   * defect the relocation fixes, not a test of absence for its own sake.
+   *
+   * A picker row cannot identify which cloud copy is its own: `synced` IS the
+   * possibly-inherited ledger record, and `pushedVersion === version` is
+   * satisfied by a never-pushed artifact at v1 against a pushed v1. Any Remove
+   * reachable from these cards is unsound by construction, in either form -- a
+   * button or a menu -- which is why both ids are asserted absent.
+   *
+   * DELETE THIS TEST and the wrong-target delete can be reintroduced into the
+   * dialog labelled "Add from Artifacts" without a single test going red.
+   */
+  it('does not offer removal from the picker, where identity is unprovable', async () => {
     stubDrivePresent()
     vi.mocked(awsControlApi.driveList).mockResolvedValue({ files: [], folders: [] })
     vi.mocked(awsControlApi.library).mockResolvedValue({
       artifacts: [
         { slug: 'notes', name: 'Notes', kind: 'markdown', version: 4, updatedAt: '2026-08-20T00:00:00Z', pushedVersion: 4, pushedAt: '2026-08-20T00:00:00Z' },
+        { slug: 'draft', name: 'Draft', kind: 'markdown', version: 1, updatedAt: '2026-08-20T00:00:00Z', pushedVersion: 1, pushedAt: '2026-08-20T00:00:00Z' },
       ],
     })
-    vi.mocked(awsControlApi.libraryRemove).mockRejectedValue(new Error('boom'))
 
     await renderDrive('library')
     fireEvent.click(await screen.findByTestId('library-add-open'))
-    fireEvent.click(await screen.findByTestId('library-remove'))
-    fireEvent.click(await screen.findByTestId('library-remove-action'))
+    const dialog = await screen.findByTestId('library-add-dialog')
 
-    // The failure renders on the card, and the strip is still there to retry
-    // or cancel -- a silent close would report a delete that never ran.
-    expect(await screen.findByTestId('library-remove-error')).toBeTruthy()
-    expect(screen.getByTestId('library-remove-confirm')).toBeTruthy()
-
-    // Backing out retires the error with the attempt it describes. The failed
-    // slug is otherwise cleared only by a retry, so a reader who cancels would
-    // keep a standing red "delete failed" beside a copy that is still there.
-    fireEvent.click(screen.getByTestId('library-remove-cancel'))
-    expect(screen.queryByTestId('library-remove-error')).toBeNull()
-
-    // And retired means GONE, not merely hidden with the strip: re-opening the
-    // confirm must not greet the reader with a red failure for the attempt they
-    // just dismissed and have not retried.
-    fireEvent.click(await screen.findByTestId('library-remove'))
-    await screen.findByTestId('library-remove-confirm')
-    expect(screen.queryByTestId('library-remove-error')).toBeNull()
+    // Both cards are synced -- the state that used to reveal the control.
+    expect(await screen.findAllByTestId('library-tile')).toHaveLength(2)
+    expect(within(dialog).queryByTestId('library-remove')).toBeNull()
+    expect(within(dialog).queryByTestId('library-more')).toBeNull()
+    expect(within(dialog).queryByTestId('library-remove-confirm')).toBeNull()
   })
 
   /**
-   * The card is keyed by slug, so a successful removal re-renders it rather than
-   * unmounting it -- and a confirm intent left standing would arm the danger
-   * strip again on the next push, with its own trigger hidden.
+   * The COMPLEMENT of the picker guard, and the boundary between them.
+   *
+   * A local twin existing does NOT make a listed copy's identity unprovable, so
+   * Remove is offered here even when `local` is defined. The two surfaces differ
+   * in where the row comes from:
+   *
+   *   picker   a row is a LOCAL artifact, and whether any cloud object belongs to
+   *            it is inferred from a slug-keyed ledger. Nothing on that surface
+   *            observes the bucket, so the delete target is a guess -- which is
+   *            why the test above pins the absence of the control.
+   *   listing  a row exists if and only if `artifacts/<slug>/` is in the bucket
+   *            (`driveList(account, 'library')` enumerates the prefix). The
+   *            removal empties exactly the prefix the row was listed from, so the
+   *            target is the observed object, not an inference.
+   *
+   * `local` here supplies only the card's LABEL and thumbnail. This test uses the
+   * slug-reuse shape deliberately -- a listed cloud object whose local twin is a
+   * different artifact that took its slug -- and asserts the control stays and
+   * targets the LISTED slug. Deleting this test would let a later round "fix" a
+   * misread of the picker guard by hiding Remove wherever a local twin exists,
+   * which is most copies, restoring the no-way-to-remove-a-copy gap this PR
+   * exists to close.
    */
-  it('does not re-arm the remove confirm when a removed card is pushed again', async () => {
+  it('offers removal on a listed copy with a local twin, and targets the listed prefix', async () => {
     stubDrivePresent()
-    vi.mocked(awsControlApi.driveList).mockResolvedValue({ files: [], folders: [] })
-    const synced = { slug: 'notes', name: 'Notes', kind: 'markdown' as const, version: 4, updatedAt: '2026-08-20T00:00:00Z', pushedVersion: 4, pushedAt: '2026-08-20T00:00:00Z' }
-    const gone = { ...synced, pushedVersion: null, pushedAt: null }
-    vi.mocked(awsControlApi.library).mockResolvedValue({ artifacts: [synced] })
-    vi.mocked(awsControlApi.libraryRemove).mockResolvedValue({ removed: true } as never)
-    vi.mocked(awsControlApi.libraryPush).mockResolvedValue({ pushed: true } as never)
+    vi.mocked(awsControlApi.driveList).mockResolvedValue({ files: [], folders: ['notes'] })
+    // The local twin is a DIFFERENT artifact wearing the same slug: the exact
+    // case the picker cannot resolve, and the case the listing resolves by
+    // having observed the object it is about to empty.
+    vi.mocked(awsControlApi.library).mockResolvedValue({
+      artifacts: [
+        { slug: 'notes', name: 'A Later Artifact', kind: 'markdown', version: 1, updatedAt: '2026-08-20T00:00:00Z', pushedVersion: 1, pushedAt: '2026-08-20T00:00:00Z' },
+      ],
+    })
+    vi.mocked(awsControlApi.libraryRemove).mockResolvedValue(undefined as never)
 
     await renderDrive('library')
-    fireEvent.click(await screen.findByTestId('library-add-open'))
-    fireEvent.click(await screen.findByTestId('library-remove'))
-    await screen.findByTestId('library-remove-confirm')
+    const card = (await screen.findAllByTestId('library-card'))[0]
+    // The local join supplies the label, so the twin's name is what shows.
+    expect(card).toHaveTextContent('A Later Artifact')
 
-    // The removal lands and the ledger forgets the record, so the refetch says
-    // unsynced: no strip, and Remove has nothing left to offer.
-    vi.mocked(awsControlApi.library).mockResolvedValue({ artifacts: [gone] })
-    fireEvent.click(screen.getByTestId('library-remove-action'))
-    await waitFor(() => expect(screen.queryByTestId('library-remove')).toBeNull())
-    expect(screen.queryByTestId('library-remove-confirm')).toBeNull()
+    // The control is present despite the twin.
+    await chooseFromMenu(within(card).getByTestId('library-more'), 'library-remove')
 
-    // Pushing the same card back makes it synced again. That must restore the
-    // TRIGGER, never the armed confirm.
-    vi.mocked(awsControlApi.library).mockResolvedValue({ artifacts: [synced] })
-    fireEvent.click(screen.getByTestId('library-push'))
-    await waitFor(() => expect(screen.getByTestId('library-remove')).toBeTruthy())
-    expect(screen.queryByTestId('library-remove-confirm')).toBeNull()
+    // The confirm names the folder it empties -- the identity that was observed,
+    // not the one joined from the ledger.
+    const strip = await screen.findByTestId('library-remove-confirm')
+    expect(strip).toHaveTextContent('artifacts/notes/')
+
+    // And the request targets the LISTED slug.
+    fireEvent.click(screen.getByTestId('library-remove-confirm-action'))
+    await waitFor(() =>
+      expect(awsControlApi.libraryRemove).toHaveBeenCalledWith(ACCOUNT_ID, 'notes'))
+
+    /* The LIST row carries the same guarantee, and it needs its own assertion:
+       the existing list-view test lists an ORPHAN (no local twin), so a guard
+       that hid Remove wherever a twin exists would pass it untouched. Measured --
+       without these four lines that mutant survives. */
+    fireEvent.click(await screen.findByTitle('List view'))
+    const row = await screen.findByTestId('library-list-row')
+    expect(row).toHaveTextContent('A Later Artifact')
+    await chooseFromMenu(screen.getByTestId('library-more'), 'library-remove')
+    expect(await screen.findByTestId('library-remove-confirm')).toHaveTextContent('artifacts/notes/')
+  })
+
+  /**
+   * One removal completing must not close a DIFFERENT row's confirm.
+   *
+   * The section holds one `useMutation` for every row, which is what removed the
+   * per-card confirm flag -- but its completion callback then has to prove it
+   * still owns the state it clears. A `delete_prefix` sweep over several S3
+   * objects is not instant, so the interleave needs nothing unusual: remove A,
+   * open B's confirm while A is still running, and an unconditional
+   * `setConfirmSlug(null)` closes B when A lands.
+   *
+   * DELETE the ownership guard and this reds. In user terms that redness is: a
+   * removal you were about to confirm silently vanishes, along with any pending
+   * or error state it was showing, because an unrelated removal finished.
+   */
+  it('does not close one card\'s confirm when a different removal completes', async () => {
+    stubDrivePresent()
+    vi.mocked(awsControlApi.driveList).mockResolvedValue({ files: [], folders: ['alpha', 'beta'] })
+    vi.mocked(awsControlApi.library).mockResolvedValue({ artifacts: [] })
+    // A's removal is held open, so B's confirm is opened while it is in flight.
+    let resolveAlpha: (v: unknown) => void = () => {}
+    vi.mocked(awsControlApi.libraryRemove).mockImplementation(
+      () => new Promise((res) => { resolveAlpha = res }) as never)
+
+    await renderDrive('library')
+    const triggers = await screen.findAllByTestId('library-more')
+    expect(triggers).toHaveLength(2)
+
+    // Start A's removal and leave it pending.
+    await chooseFromMenu(triggers[0], 'library-remove')
+    fireEvent.click(await screen.findByTestId('library-remove-confirm-action'))
+    await waitFor(() => expect(awsControlApi.libraryRemove).toHaveBeenCalledTimes(1))
+
+    // Open B's confirm while A is still running.
+    await chooseFromMenu(screen.getAllByTestId('library-more')[1], 'library-remove')
+    const bStrip = await screen.findByTestId('library-remove-confirm')
+    expect(bStrip).toHaveTextContent('artifacts/beta/')
+    // B is a different row, so it must not wear A's in-flight state: its own
+    // danger button still offers the action rather than reading "Removing", and
+    // Cancel stays live so the reader can back out at all.
+    expect(screen.getByTestId('library-remove-confirm-action')).not.toBeDisabled()
+    expect(screen.getByTestId('library-remove-confirm-cancel')).not.toBeDisabled()
+
+    // A lands. B's confirm must survive it.
+    resolveAlpha({ removed: true })
+    await waitFor(() => expect(awsControlApi.driveList).toHaveBeenCalled())
+    expect(screen.getByTestId('library-remove-confirm')).toHaveTextContent('artifacts/beta/')
+  })
+
+  /**
+   * A failed removal belongs to the card that asked for it, and opening another
+   * card must not erase it.
+   *
+   * This is the second direction of the shared-observer coupling. One
+   * `useMutation` has ONE slot for the outcome, so the first version of this
+   * section called `removeMut.reset()` when a confirm opened -- which threw away
+   * the in-flight state, and a removal that then FAILED had nowhere to report it:
+   * the copy was still there and nothing on screen said so. The failure is keyed
+   * by slug instead, and rendered on the card rather than inside whichever strip
+   * happens to be open.
+   *
+   * DELETE the keying (restore `reset()` in `askRemove`) and this reds. In user
+   * terms: a removal you asked for failed, and the app told you nothing because
+   * you happened to be looking at a different card while it ran.
+   */
+  it('keeps a failure on the card that owns it when another confirm is opened', async () => {
+    stubDrivePresent()
+    vi.mocked(awsControlApi.driveList).mockResolvedValue({ files: [], folders: ['alpha', 'beta'] })
+    vi.mocked(awsControlApi.library).mockResolvedValue({ artifacts: [] })
+    let failAlpha: (e: unknown) => void = () => {}
+    vi.mocked(awsControlApi.libraryRemove).mockImplementation(
+      () => new Promise((_res, rej) => { failAlpha = rej }) as never)
+
+    await renderDrive('library')
+    const cards = await screen.findAllByTestId('library-card')
+    expect(cards).toHaveLength(2)
+
+    // Start A's removal, then open B's confirm while A is still in flight.
+    await chooseFromMenu(screen.getAllByTestId('library-more')[0], 'library-remove')
+    fireEvent.click(await screen.findByTestId('library-remove-confirm-action'))
+    await waitFor(() => expect(awsControlApi.libraryRemove).toHaveBeenCalledTimes(1))
+    await chooseFromMenu(screen.getAllByTestId('library-more')[1], 'library-remove')
+    expect(await screen.findByTestId('library-remove-confirm')).toHaveTextContent('artifacts/beta/')
+
+    // A fails. Its failure must report on A's own card, not vanish and not
+    // appear on B, whose confirm is the one currently open.
+    failAlpha(new Error('boom'))
+    const err = await screen.findByTestId('library-remove-error')
+    expect(err).toHaveTextContent(i18nT('apps.awsControl.console.library_remove_failed'))
+    expect(within(screen.getAllByTestId('library-card')[0]).getByTestId('library-remove-error'))
+      .toBeTruthy()
+    expect(within(screen.getAllByTestId('library-card')[1]).queryByTestId('library-remove-error'))
+      .toBeNull()
+    // B's own strip is untouched by A's outcome and still offers its action.
+    expect(screen.getByTestId('library-remove-confirm')).toHaveTextContent('artifacts/beta/')
+    expect(screen.getByTestId('library-remove-confirm-action')).not.toBeDisabled()
+  })
+
+  /**
+   * Two failed removals each keep their own error.
+   *
+   * The third layer of the shared-slot defect, and the one a slug-keyed SCALAR
+   * still had: `errorFor` held one slug, so of two overlapping failures the later
+   * write hid the earlier card's error. Membership in `failedSlugs` gives N cards
+   * N slots.
+   *
+   * COLLAPSE `failedSlugs` to a scalar and this reds. In user terms: two removals
+   * failed and the app only admits to one, so the reader retries a card it was
+   * never told about -- or worse, believes that copy is gone.
+   */
+  it('keeps both failures when two removals fail', async () => {
+    stubDrivePresent()
+    vi.mocked(awsControlApi.driveList).mockResolvedValue({ files: [], folders: ['alpha', 'beta'] })
+    vi.mocked(awsControlApi.library).mockResolvedValue({ artifacts: [] })
+    const rejects: Record<string, (e: unknown) => void> = {}
+    vi.mocked(awsControlApi.libraryRemove).mockImplementation(
+      (_acct: string, slug: string) => new Promise((_res, rej) => { rejects[slug] = rej }) as never)
+
+    await renderDrive('library')
+    expect(await screen.findAllByTestId('library-card')).toHaveLength(2)
+
+    // Start both removals before either settles.
+    await chooseFromMenu(screen.getAllByTestId('library-more')[0], 'library-remove')
+    fireEvent.click(await screen.findByTestId('library-remove-confirm-action'))
+    await chooseFromMenu(screen.getAllByTestId('library-more')[1], 'library-remove')
+    fireEvent.click(await screen.findByTestId('library-remove-confirm-action'))
+    await waitFor(() => expect(awsControlApi.libraryRemove).toHaveBeenCalledTimes(2))
+
+    // Fail both, earlier first, so a single slot would end up holding only beta.
+    rejects['alpha'](new Error('boom'))
+    rejects['beta'](new Error('boom'))
+
+    await waitFor(() => expect(screen.getAllByTestId('library-remove-error')).toHaveLength(2))
+    const cards = screen.getAllByTestId('library-card')
+    expect(within(cards[0]).getByTestId('library-remove-error')).toBeTruthy()
+    expect(within(cards[1]).getByTestId('library-remove-error')).toBeTruthy()
+  })
+
+  /**
+   * The in-flight label belongs to the card being removed.
+   *
+   * `isPending` is one boolean for the section and `variables` holds only the most
+   * recent slug, so either would put "Removing" and a disabled Cancel on whichever
+   * card the reader opened last rather than the one actually being worked on.
+   *
+   * COLLAPSE `pendingSlugs` to `removeMut.isPending` and this reds. In user terms:
+   * the app says it is working on a card it is not touching, and disables the
+   * Cancel of a removal that has not started.
+   */
+  it('shows the in-flight label only on the card being removed', async () => {
+    stubDrivePresent()
+    vi.mocked(awsControlApi.driveList).mockResolvedValue({ files: [], folders: ['alpha', 'beta'] })
+    vi.mocked(awsControlApi.library).mockResolvedValue({ artifacts: [] })
+    let finishAlpha: () => void = () => {}
+    vi.mocked(awsControlApi.libraryRemove).mockImplementation(
+      () => new Promise((res) => { finishAlpha = () => res(undefined as never) }) as never)
+
+    await renderDrive('library')
+    expect(await screen.findAllByTestId('library-card')).toHaveLength(2)
+
+    // A is in flight; the reader then opens B's confirm.
+    await chooseFromMenu(screen.getAllByTestId('library-more')[0], 'library-remove')
+    fireEvent.click(await screen.findByTestId('library-remove-confirm-action'))
+    await waitFor(() => expect(awsControlApi.libraryRemove).toHaveBeenCalledTimes(1))
+    await chooseFromMenu(screen.getAllByTestId('library-more')[1], 'library-remove')
+
+    // B's strip is the open one and B is NOT being removed, so it must offer its
+    // action and a usable Cancel rather than A's progress.
+    const strip = await screen.findByTestId('library-remove-confirm')
+    expect(strip).toHaveTextContent('artifacts/beta/')
+    expect(strip).not.toHaveTextContent(i18nT('apps.awsControl.console.library_removing'))
+    expect(screen.getByTestId('library-remove-confirm-action')).toHaveTextContent(
+      i18nT('apps.awsControl.console.library_remove_action'))
+    expect(screen.getByTestId('library-remove-confirm-cancel')).not.toBeDisabled()
+    finishAlpha()
+  })
+
+  /**
+   * An existing failure survives another card's confirm opening.
+   *
+   * The reverse order of the interleave above, and a distinct property: there the
+   * failure arrives while a sibling's strip is already open, here it is already on
+   * screen when the reader opens one. A blanket clear on open -- which is what
+   * `removeMut.reset()` amounted to -- erases a failure for a copy that is still
+   * in the bucket, purely because the reader looked at something else.
+   *
+   * DELETE the slug scoping on the clear and this reds. In user terms: the app
+   * told you a removal failed, then quietly took the message back.
+   */
+  it('does not erase an existing failure when another confirm opens', async () => {
+    stubDrivePresent()
+    vi.mocked(awsControlApi.driveList).mockResolvedValue({ files: [], folders: ['alpha', 'beta'] })
+    vi.mocked(awsControlApi.library).mockResolvedValue({ artifacts: [] })
+    vi.mocked(awsControlApi.libraryRemove).mockRejectedValue(new Error('boom'))
+
+    await renderDrive('library')
+    expect(await screen.findAllByTestId('library-card')).toHaveLength(2)
+
+    // A fails first, so its error is on screen BEFORE any other confirm opens.
+    await chooseFromMenu(screen.getAllByTestId('library-more')[0], 'library-remove')
+    fireEvent.click(await screen.findByTestId('library-remove-confirm-action'))
+    await screen.findByTestId('library-remove-error')
+
+    // Now open B's confirm. A's failure must still be reported on A's card.
+    await chooseFromMenu(screen.getAllByTestId('library-more')[1], 'library-remove')
+    expect(await screen.findByTestId('library-remove-confirm')).toHaveTextContent('artifacts/beta/')
+    expect(within(screen.getAllByTestId('library-card')[0]).getByTestId('library-remove-error'))
+      .toBeTruthy()
+    expect(within(screen.getAllByTestId('library-card')[1]).queryByTestId('library-remove-error'))
+      .toBeNull()
+
+    // And backing out of B retires B's attempt, not A's failure. Cancel is the
+    // one place a failure is deliberately retired, so it has to be as narrowly
+    // owned as the clear on open.
+    fireEvent.click(screen.getByTestId('library-remove-confirm-cancel'))
+    await waitFor(() => expect(screen.queryByTestId('library-remove-confirm')).toBeNull())
+    expect(within(screen.getAllByTestId('library-card')[0]).getByTestId('library-remove-error'))
+      .toBeTruthy()
+  })
+
+  /**
+   * A failed removal reports, and backing out retires it.
+   *
+   * The strip stays open on failure so a retry is one click, the failure renders
+   * on the card that owns it, and Cancel retires that card's failure with the
+   * attempt it describes -- otherwise a reader who backs out keeps a standing red
+   * beside a copy that is still there.
+   *
+   * This replaces the old per-card re-arm test wholesale. That test guarded a
+   * confirm flag surviving on a card that outlived its own sync state; holding
+   * the state on the SECTION removes the flag, so there is nothing left to
+   * re-arm and the property is now structural rather than asserted.
+   */
+  it('reports a failed removal on its card and retires it on cancel', async () => {
+    stubDrivePresent()
+    vi.mocked(awsControlApi.driveList).mockResolvedValue({ files: [], folders: ['notes', 'other'] })
+    vi.mocked(awsControlApi.library).mockResolvedValue({ artifacts: [] })
+    vi.mocked(awsControlApi.libraryRemove).mockRejectedValue(new Error('boom'))
+
+    await renderDrive('library')
+    expect(await screen.findAllByTestId('library-card')).toHaveLength(2)
+
+    await chooseFromMenu(screen.getAllByTestId('library-more')[0], 'library-remove')
+    fireEvent.click(await screen.findByTestId('library-remove-confirm-action'))
+
+    // The failure renders on the card, and the strip is still there to retry.
+    expect(await screen.findByTestId('library-remove-error')).toHaveTextContent(
+      i18nT('apps.awsControl.console.library_remove_failed'))
+    expect(screen.getByTestId('library-remove-confirm')).toBeTruthy()
+
+    // Cancel retires this card's failure along with the attempt it describes.
+    fireEvent.click(screen.getByTestId('library-remove-confirm-cancel'))
+    await waitFor(() => expect(screen.queryByTestId('library-remove-error')).toBeNull())
+
+    // And the OTHER card's confirm opens clean.
+    await chooseFromMenu(screen.getAllByTestId('library-more')[1], 'library-remove')
+    expect(await screen.findByTestId('library-remove-confirm')).toBeTruthy()
+    expect(screen.queryByTestId('library-remove-error')).toBeNull()
   })
 
   it('the picker searches by name and reports when nothing matches', async () => {
@@ -950,9 +1309,15 @@ describe('DrivePage sections: capability parity, honest counts, no self-contradi
     fireEvent.click(await screen.findByTitle('Grid view'))
     await screen.findByTestId('drive-grid')
 
-    // A file tile keeps Download AND gains the overflow the list row has.
-    expect(screen.getByTestId('drive-grid-download')).toBeTruthy()
+    // ONE overflow per file tile, holding every per-item action. Download used to
+    // sit outside it as a bare button while Share and Delete were inside, so the
+    // assertion is now that there is no second control: a card must offer one
+    // grammar for "act on this item", not two.
     expect(screen.getByTestId('drive-grid-more')).toBeTruthy()
+    fireEvent.keyDown(screen.getByTestId('drive-grid-more'), { key: 'Enter' })
+    expect(await screen.findByTestId('drive-grid-download')).toBeTruthy()
+    expect(screen.getByTestId('drive-grid-share')).toBeTruthy()
+    expect(screen.getByTestId('drive-grid-delete')).toBeTruthy()
     // A folder tile is no longer action-less.
     expect(screen.getByTestId('drive-grid-folder-more')).toBeTruthy()
   })
@@ -1324,12 +1689,23 @@ describe('DrivePage sections: Library integrity and view modes', () => {
     const cards = await screen.findAllByTestId('library-card')
     expect(cards).toHaveLength(2)
 
-    const linked = cards.filter((c) => c.tagName === 'A')
+    // The card SHELL is a plain container and the link is inside it, which is
+    // what lets the overflow trigger be a real button: interactive content inside
+    // an anchor is invalid, and a trigger that had to `preventDefault` its way
+    // out of the surrounding navigation is the nested-control hijack this page
+    // avoids. So these assert the link WITHIN a card, and the last one pins the
+    // trigger out of it.
+    const linked = cards.filter((c) => c.querySelector('a') !== null)
     expect(linked).toHaveLength(1)
-    expect(linked[0].getAttribute('href')).toBe('/artifacts/notes')
-    expect(linked[0].getAttribute('aria-label')).toContain('Notes')
-    // The orphan stays a plain container: no link to a page that does not exist.
-    expect(cards.filter((c) => c.tagName === 'DIV')).toHaveLength(1)
+    const anchor = linked[0].querySelector('a') as HTMLAnchorElement
+    expect(anchor.getAttribute('href')).toBe('/artifacts/notes')
+    expect(anchor.getAttribute('aria-label')).toContain('Notes')
+    // The orphan stays inert: no link to a page that does not exist.
+    expect(cards.filter((c) => c.querySelector('a') === null)).toHaveLength(1)
+    // Both cards offer the actions menu, and on neither is its trigger inside
+    // the link -- which is what lets it be a real button at all.
+    expect(screen.getAllByTestId('library-more')).toHaveLength(2)
+    expect(anchor.querySelector('[data-testid="library-more"]')).toBeNull()
   })
 
   /**
@@ -1702,7 +2078,10 @@ describe('download tab: the noopener trap', () => {
     const openSpy = vi.spyOn(window, 'open').mockReturnValue(fakeTab)
 
     await renderDrive('drive')
-    fireEvent.click(await screen.findByTestId('drive-download'))
+    // Download moved into the row's overflow, so the gesture now starts from the
+    // menu item. It still survives: Radix dispatches onSelect synchronously from
+    // the item's own click handler, so window.open keeps the user gesture.
+    await chooseFromMenu(await screen.findByTestId('drive-more'), 'drive-download')
 
     const firstArgs = openSpy.mock.calls[0]
     expect(firstArgs[0]).toBe('')

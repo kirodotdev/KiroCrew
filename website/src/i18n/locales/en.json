@@ -3702,7 +3702,11 @@
         "files_empty_title": "Files is empty",
         "files_empty_body": "This folder holds files you upload from your computer. It is separate from Library, which holds things Kiro made for you.",
         "library_remove": "Remove",
-        "library_remove_confirm": "Remove “{{name}}” from the cloud library?"
+        "library_remove_confirm": "Remove “{{name}}” from the cloud library?",
+        "library_actions": "Library item actions",
+        "library_remove_action": "Remove copy",
+        "library_removing": "Removing…",
+        "library_remove_failed": "Remove failed — the cloud copy is unchanged. Try again."
       },
       "page": {
         "totals_summary": "{{accounts}} accounts · {{keys}} keys · {{healthy}} healthy",

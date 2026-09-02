@@ -4726,7 +4726,11 @@
         "files_empty_body": "이 폴더에는 컴퓨터에서 업로드한 파일이 있습니다. Kiro가 만들어 준 항목이 있는 ‘라이브러리’와는 별개입니다.",
         "library_remove": "제거",
         "library_remove_confirm": "‘{{name}}’을(를) 클라우드 라이브러리에서 제거하시겠습니까?",
-        "library_remove_confirm_slug": "이 작업은 클라우드 폴더 <folder>{{folder}}</folder>를 비웁니다."
+        "library_remove_confirm_slug": "이 작업은 클라우드 폴더 <folder>{{folder}}</folder>를 비웁니다.",
+        "library_actions": "라이브러리 항목 작업",
+        "library_remove_action": "사본 제거",
+        "library_removing": "제거 중…",
+        "library_remove_failed": "제거하지 못했습니다. 클라우드 사본은 그대로입니다. 다시 시도하세요."
       },
       "page": {
         "totals_summary": "계정 {{accounts}}개 · 키 {{keys}}개 · 정상 {{healthy}}개",

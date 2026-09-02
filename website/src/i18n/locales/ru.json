@@ -4966,7 +4966,11 @@
         "files_empty_body": "В этой папке хранятся файлы, загруженные с компьютера. Она отделена от раздела «Библиотека», где хранится то, что Kiro создал для вас.",
         "library_remove": "Убрать",
         "library_remove_confirm": "Убрать «{{name}}» из облачной библиотеки?",
-        "library_remove_confirm_slug": "Это очистит облачную папку <folder>{{folder}}</folder>."
+        "library_remove_confirm_slug": "Это очистит облачную папку <folder>{{folder}}</folder>.",
+        "library_actions": "Действия с элементом библиотеки",
+        "library_remove_action": "Убрать копию",
+        "library_removing": "Убираем…",
+        "library_remove_failed": "Не удалось убрать — облачная копия не изменена. Повторите попытку."
       },
       "page": {
         "totals_summary": "Аккаунтов: {{accounts}} · Ключей: {{keys}} · Исправно: {{healthy}}",

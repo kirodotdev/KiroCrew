@@ -4726,7 +4726,11 @@
         "files_empty_body": "このフォルダーには、コンピューターからアップロードしたファイルが入ります。Kiro が作成したものが入る「ライブラリ」とは別です。",
         "library_remove": "削除",
         "library_remove_confirm": "「{{name}}」をクラウドライブラリから削除しますか？",
-        "library_remove_confirm_slug": "これによりクラウドフォルダー <folder>{{folder}}</folder> が空になります。"
+        "library_remove_confirm_slug": "これによりクラウドフォルダー <folder>{{folder}}</folder> が空になります。",
+        "library_actions": "ライブラリ項目の操作",
+        "library_remove_action": "コピーを削除",
+        "library_removing": "削除中…",
+        "library_remove_failed": "削除に失敗しました。クラウドのコピーは変更されていません。もう一度お試しください。"
       },
       "page": {
         "totals_summary": "アカウント {{accounts}} 件 · キー {{keys}} 個 · 正常 {{healthy}} 個",

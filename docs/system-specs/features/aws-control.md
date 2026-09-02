@@ -198,7 +198,11 @@ metadata should say about when the push started.
 Cloud copies with no local artifact row are reported to the caller as
 `remoteOnly` rather than being hidden: `list_pushable` walks the local store, so
 a copy pushed from another machine has no row to carry it and would otherwise be
-unreachable from the console that must be able to remove it.
+unreachable from the console that must be able to remove it. The dashboard keeps
+that promise through the Library folder's listing rather than through this field:
+the folder renders one card per listed prefix and offers removal on all of them,
+so a copy with no local row is reachable by construction rather than by a second,
+separately-derived set.
 
 `costs.fetch_month_costs` calls Cost Explorer for the requested linked account
 and groups results by service. `routes._handle_costs` serves a fresh local cache
@@ -234,14 +238,34 @@ Drive bootstrap is the only API-level preview-plus-confirm flow. Upload, profile
 registration, library push, library removal, share creation, and backup
 mutations have no separate confirmation request; the dashboard separately
 confirms object deletion, folder deletion, and library removal. Library removal
-is gated the way folder deletion is: the picker's per-card Remove control reveals
-an inline Cancel-plus-danger strip naming the artifact, and that strip stays open
-until the request resolves, so a failed delete renders on the card instead of
-vanishing with the confirm. The strip also names the `artifacts/<slug>/` bucket
-folder the sweep will empty, because the ledger that reveals the control is keyed
-by slug alone: a reused slug can point the delete at a different artifact's cloud
-copy, and the bucket prefix is the only identity a reader can cross-check in the
-S3 console. Every mutation is owner-gated, restricted-session
+is offered on the Library folder's own listing — one overflow menu per listed
+cloud copy, in both the grid and the list view, the same `⋮` shape the Files
+folder's cards and rows use — and never on the "Add from Artifacts" picker. That
+placement is the correctness boundary, not a layout preference: a picker row is a
+LOCAL artifact joined to the `account -> slug` ledger, and because
+`ArtifactStore.delete` does not prune that ledger and a new artifact starts at
+version 1, a reused slug lends a never-pushed artifact another one's push record,
+so a removal offered there empties a different artifact's copy under the wrong
+name. No predicate available on such a row separates the two, and naming the
+bucket folder in the confirm narrows the blast radius without fixing it — the
+reader is still asked to vouch for an identity this machine cannot establish. A
+folder row comes from the bucket listing, so removing it empties the object that
+was LISTED rather than one inferred from the ledger. That fixes the target, not
+the name: the card's label still comes from the slug-keyed join, and the folder
+named in the confirm is built from that same shared slug, so under slug reuse the
+reader can be shown one artifact's name over another's bytes with nothing on
+screen able to separate them. Establishing whose copy it is needs the pushed
+`meta.json` sidecar and is tracked by #6987; the same slug-targeted removal is
+offered from the picker on the current release, so this placement neither
+introduces that gap nor closes it. Removal is therefore not gated on local state
+at all, which is
+what makes a copy pushed from another machine (`remoteOnly` above) removable
+rather than stranded. It is gated the way folder deletion is: the menu item
+reveals an inline Cancel-plus-danger strip that names both the item and the
+`artifacts/<slug>/` prefix it will empty, and that strip stays open until the
+request resolves — it is the only place the outcome can render, so neither its
+Cancel nor an early close may discard an in-flight answer. Every mutation is
+owner-gated, restricted-session
 refused, and SEL-audited. Account-targeted AWS operations additionally enforce
 live identity and service consent, and egress paths enforce publish governance.
 Library removal is deliberately outside that egress set: it sends no bytes out,

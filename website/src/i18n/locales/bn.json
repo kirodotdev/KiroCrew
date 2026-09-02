@@ -4806,7 +4806,11 @@
         "files_empty_body": "এই ফোল্ডারে কম্পিউটার থেকে আপলোড করা ফাইল থাকে। এটি লাইব্রেরি থেকে আলাদা, যেখানে Kiro আপনার জন্য তৈরি করেছে এমন জিনিস থাকে।",
         "library_remove": "সরান",
         "library_remove_confirm": "“{{name}}” ক্লাউড লাইব্রেরি থেকে সরাবেন?",
-        "library_remove_confirm_slug": "এটি ক্লাউড ফোল্ডার <folder>{{folder}}</folder> খালি করে।"
+        "library_remove_confirm_slug": "এটি ক্লাউড ফোল্ডার <folder>{{folder}}</folder> খালি করে।",
+        "library_actions": "লাইব্রেরি আইটেমের ক্রিয়া",
+        "library_remove_action": "কপি সরান",
+        "library_removing": "সরানো হচ্ছে…",
+        "library_remove_failed": "সরাতে ব্যর্থ — ক্লাউড কপি অপরিবর্তিত আছে। আবার চেষ্টা করুন।"
       },
       "page": {
         "totals_summary": "{{accounts}} অ্যাকাউন্ট · {{keys}} কী · {{healthy}} সুস্থ",

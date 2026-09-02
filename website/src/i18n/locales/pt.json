@@ -4886,7 +4886,11 @@
         "files_empty_body": "Esta pasta guarda arquivos que você envia do seu computador. É separada de Biblioteca, que guarda as coisas que o Kiro criou para você.",
         "library_remove": "Remover",
         "library_remove_confirm": "Remover “{{name}}” da biblioteca na nuvem?",
-        "library_remove_confirm_slug": "Isto esvazia a pasta na nuvem <folder>{{folder}}</folder>."
+        "library_remove_confirm_slug": "Isto esvazia a pasta na nuvem <folder>{{folder}}</folder>.",
+        "library_actions": "Ações do item da biblioteca",
+        "library_remove_action": "Remover a cópia",
+        "library_removing": "A remover…",
+        "library_remove_failed": "Falha ao remover — a cópia na nuvem está inalterada. Tente novamente."
       },
       "page": {
         "totals_summary": "{{accounts}} contas · {{keys}} chaves · {{healthy}} íntegras",

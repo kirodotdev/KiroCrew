@@ -4886,7 +4886,11 @@
         "files_empty_body": "Questa cartella contiene i file che carichi dal computer. È separata da Libreria, che contiene gli elementi creati da Kiro per te.",
         "library_remove": "Rimuovi",
         "library_remove_confirm": "Rimuovere «{{name}}» dalla libreria cloud?",
-        "library_remove_confirm_slug": "Questo svuota la cartella cloud <folder>{{folder}}</folder>."
+        "library_remove_confirm_slug": "Questo svuota la cartella cloud <folder>{{folder}}</folder>.",
+        "library_actions": "Azioni sull'elemento della libreria",
+        "library_remove_action": "Rimuovi la copia",
+        "library_removing": "Rimozione in corso…",
+        "library_remove_failed": "Rimozione non riuscita: la copia cloud è invariata. Riprova."
       },
       "page": {
         "totals_summary": "{{accounts}} account · {{keys}} chiavi · {{healthy}} integre",

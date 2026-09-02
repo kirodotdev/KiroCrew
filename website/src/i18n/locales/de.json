@@ -4806,7 +4806,11 @@
         "files_empty_body": "Dieser Ordner enthält Dateien, die Sie vom Computer hochladen. Er ist getrennt von Bibliothek, die von Kiro für Sie erstellte Inhalte enthält.",
         "library_remove": "Entfernen",
         "library_remove_confirm": "„{{name}}“ aus der Cloud-Bibliothek entfernen?",
-        "library_remove_confirm_slug": "Dies leert den Cloud-Ordner <folder>{{folder}}</folder>."
+        "library_remove_confirm_slug": "Dies leert den Cloud-Ordner <folder>{{folder}}</folder>.",
+        "library_actions": "Aktionen für Bibliothekselement",
+        "library_remove_action": "Kopie entfernen",
+        "library_removing": "Wird entfernt…",
+        "library_remove_failed": "Entfernen fehlgeschlagen — die Cloud-Kopie ist unverändert. Erneut versuchen."
       },
       "page": {
         "totals_summary": "{{accounts}} Konten · {{keys}} Schlüssel · {{healthy}} fehlerfrei",

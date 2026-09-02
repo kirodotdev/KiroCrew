@@ -6,11 +6,21 @@
  * fixtures — no gateway, no dashboard token. Modelled on
  * capture-aws-control.mjs, which drives the same page down the same click path.
  *
- * Captures:
- *   library-remove-at-rest.png  the Library tiles at rest: a synced tile shows
- *                               Remove next to Push, an unsynced tile does not.
- *   library-remove-confirm.png  the inline confirm strip open on that tile
- *                               (Cancel + danger Remove).
+ * The fixtures are the reason this is not a pod: the frames need a bucket that
+ * already HOLDS cloud copies, one of them pushed from a machine that is not this
+ * one. A pod has no AWS profile, no S3 consent and no bucket, so its Library
+ * folder is empty and the control under test is unreachable. The bundle served
+ * here is the same `website/dist` a pod provisions; only the JSON is faked.
+ *
+ * Captures the FULL app window (viewport, not a crop) at deviceScaleFactor 2:
+ *   library-remove-at-rest.png  the Library folder's listing of what is really
+ *                               in the bucket: one card per object, each with
+ *                               the same `⋮` the Files folder's cards use, and
+ *                               no destructive control on display.
+ *   library-remove-menu.png     that menu OPEN, which is the only frame in which
+ *                               a deliberately hidden control can be seen.
+ *   library-remove-confirm.png  the inline confirm the item opens, naming the
+ *                               item AND the artifacts/<slug>/ prefix it empties.
  *
  * Usage: node scripts/capture-aws-control-library-remove.mjs <outDir>
  */
@@ -77,9 +87,64 @@ const DRIVE = {
 const LIBRARY = {
   artifacts: [
     { slug: 'release-notes', name: 'Release notes', kind: 'markdown', version: 4, updatedAt: '2026-08-27T10:15:00Z', pushedVersion: 4, pushedAt: '2026-08-27T10:20:00Z' },
-    { slug: 'cost-dashboard', name: 'Cost dashboard', kind: 'widget', version: 7, updatedAt: '2026-08-29T08:02:00Z', pushedVersion: 5, pushedAt: '2026-08-26T21:44:00Z' },
+    { slug: 'cost-dashboard', name: 'Cost dashboard', kind: 'svg', version: 7, updatedAt: '2026-08-29T08:02:00Z', pushedVersion: 5, pushedAt: '2026-08-26T21:44:00Z' },
     { slug: 'draft-onboarding', name: 'Draft onboarding', kind: 'html', version: 2, updatedAt: '2026-08-30T12:30:00Z', pushedVersion: null, pushedAt: null },
   ],
+}
+
+/**
+ * What is actually in the bucket, which is what the folder lists and what the
+ * removal targets. Chosen so the frame proves the placement rather than just the
+ * control:
+ *
+ *   release-notes         a copy whose local artifact matches -- the ordinary case;
+ *   cost-dashboard        pushed at v5 while the local copy moved to v7, so the
+ *                         stale-version disclosure sits beside a live removal;
+ *   from-another-machine  NO local artifact at all. This is the case the picker
+ *                         placement could not reach: it walks the local store, so
+ *                         a copy pushed elsewhere had no row to carry a control.
+ *
+ * `draft-onboarding` is deliberately absent: it was never pushed, so nothing of
+ * it is in the bucket and no card of it may appear in this folder.
+ */
+const CLOUD_FOLDERS = ['cost-dashboard', 'from-another-machine', 'release-notes']
+
+/**
+ * The artifact bodies the CARD PREVIEWS render.
+ *
+ * `ArtifactPreview` fetches the full artifact on the shared `['artifact', slug]`
+ * key, so without these the previews stay the reserved grey box and the frame
+ * shows cards that look half-loaded. Only the pushed slugs need one --
+ * `from-another-machine` has no local artifact by construction and draws the
+ * cloud-only thumb instead.
+ */
+const ARTIFACT_BODIES = {
+  'release-notes': {
+    slug: 'release-notes', name: 'Release notes', kind: 'markdown', version: 4,
+    updatedAt: '2026-08-27T10:15:00Z',
+    // Short on purpose: ContentThumb gives markdown up to 300px, and a long body
+    // makes this card tower over its neighbours in a frame meant to show three
+    // cards carrying the same control.
+    content: '## Cloud drive\n\n- Copies are removable from the folder that lists them.\n- A copy pushed elsewhere is reachable like any other.\n',
+  },
+  'cost-dashboard': {
+    slug: 'cost-dashboard', name: 'Cost dashboard', kind: 'svg', version: 7,
+    updatedAt: '2026-08-29T08:02:00Z',
+    // svg rather than widget: ContentThumb draws an svg INLINE, while WidgetThumb
+    // renders through a sandboxed srcdoc iframe that paints nothing headless, so
+    // the preview photographs as an empty panel and the card reads as broken UI.
+    // Still a DRAWN artifact rather than a second block of prose, so the frame
+    // keeps two different kinds side by side.
+    content: [
+      '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 300 150" width="300" height="150">',
+      '<rect width="300" height="150" rx="10" fill="#1e1b2e" stroke="#322c4d"/>',
+      '<text x="18" y="34" fill="#a79fd0" font-family="system-ui" font-size="10" letter-spacing="1.4">MONTH TO DATE</text>',
+      '<text x="18" y="62" fill="#ece9f7" font-family="system-ui" font-size="24" font-weight="600">$2.25</text>',
+      [34, 52, 41, 68, 47, 73, 58].map((h, i) =>
+        `<rect x="${18 + i * 38}" y="${130 - h * 0.62}" width="26" height="${h * 0.62}" rx="3" fill="#8b7cf6"/>`).join(''),
+      '</svg>',
+    ].join(''),
+  },
 }
 
 const BASE = '/api/apps/aws-control'
@@ -90,6 +155,13 @@ const json = (route, body) => route.fulfill({ status: 200, contentType: 'applica
 async function answer(route) {
   const path = new URL(route.request().url()).pathname
   if (path.endsWith('/accounts')) return json(route, ACCOUNTS)
+  // The card previews' shared artifact key. Matched before the app routes since
+  // it is a dashboard path, not an app-scoped one.
+  const art = /^\/api\/artifacts\/([^/]+)$/.exec(path)
+  if (art) {
+    const body = ARTIFACT_BODIES[decodeURIComponent(art[1])]
+    return body ? json(route, body) : route.fulfill({ status: 404, contentType: 'application/json', body: '{}' })
+  }
   if (path === '/api/aws/consent') {
     const svc = new URL(route.request().url()).searchParams.get('service') || 's3'
     return json(route, CONSENT(svc))
@@ -97,7 +169,12 @@ async function answer(route) {
   // App paths are BASE-prefixed and account-scoped, so match on the segment
   // after the base rather than on a suffix.
   const app = path.startsWith(BASE) ? path.slice(BASE.length) : ''
-  if (/^\/drive\/[^/]+\/list$/.test(app)) return json(route, { folders: [], files: [] })
+  if (/^\/drive\/[^/]+\/list$/.test(app)) {
+    const section = new URL(route.request().url()).searchParams.get('section')
+    // Only the LIBRARY section holds these; Files must stay empty or the frame
+    // would show the same names under two folders that do not share objects.
+    return json(route, { folders: section === 'library' ? CLOUD_FOLDERS : [], files: [] })
+  }
   if (/^\/drive\/[^/]+$/.test(app)) return json(route, DRIVE)
   if (/^\/costs\/[^/]+$/.test(app)) return json(route, COSTS)
   if (app === '/profiles/available') return json(route, { supported: true, profiles: [], max: 20 })
@@ -156,40 +233,64 @@ const click = async (t) => {
   return true
 }
 
-// Accounts list → the account console → the drive → the Library section → the
-// PICKER dialog. Same click path capture-aws-control.mjs walks; the Remove
-// control lives on the picker's cards (PickerCard), not the folder listing, so
-// the dialog must be open for either frame.
+// Accounts list → the account console → the drive → the Library section. The
+// control lives on the FOLDER's listing of what is really in the bucket, so no
+// dialog is opened: the picker deliberately has no removal to photograph.
 await page.goto(`${base}/aws-control`, { waitUntil: 'domcontentloaded' })
 await page.waitForTimeout(1200)
 if (await click('account-card')) await page.waitForTimeout(1200)
 if (await click('capability-drive')) await page.waitForTimeout(900)
-if (await click('drive-section-library')) await page.waitForTimeout(1200)
-if (await click('library-add-open')) await page.waitForTimeout(900)
+if (await click('drive-section-library')) await page.waitForTimeout(2600)
 
-// ---- frame (a): picker cards at rest --------------------------------------
-await expectCount('library-add-dialog', 1)
-await expectCount('library-tile', 3)
-// The gate itself: Remove on the two synced cards, absent on the unsynced one.
-await expectCount('library-remove', 2)
+// ---- frame (a): the cloud listing at rest ---------------------------------
+// One card per object in the bucket, each with the SAME `⋮` the Files folder's
+// cards use, and no visible destructive control anywhere. Three triggers rather
+// than two is the assertion that matters: `from-another-machine` has no local
+// artifact behind it, and gating on local state is what made a copy pushed
+// elsewhere unremovable, so 3 is the fix, photographed.
+await expectCount('library-card', 3)
+await expectCount('library-more', 3)
+// The item is inside a portaled menu, so it must NOT be in the document yet --
+// which is also the point of the change: the destructive path is not on display.
+await expectCount('library-remove', 0)
 await expectCount('library-remove-confirm', 0)
+// The never-pushed local artifact has nothing in the bucket, so this folder must
+// not show it. A 4th card would mean the listing had drifted back to local state.
+const bodyText = await page.locator('[data-testid="library-section"]').innerText().catch(() => '')
+if (bodyText.includes('Draft onboarding')) failures.push('folder shows a never-pushed artifact')
 await page.screenshot({ path: `${OUT}/library-remove-at-rest.png`, fullPage: false })
 console.log('shot library-remove-at-rest')
 
-// ---- frame (b): the confirm strip open ------------------------------------
-if (await click('library-remove')) await page.waitForTimeout(400)
-// Opening the confirm swaps that tile's Remove trigger for the strip, so one
-// trigger remains (the other synced tile) and the strip's two controls appear.
-await expectCount('library-remove-confirm', 1)
-await expectCount('library-remove-cancel', 1)
-await expectCount('library-remove-action', 1)
+// ---- frame (b): the menu open --------------------------------------------
+// A hidden control that cannot be seen in a screenshot is the whole point of the
+// change, so the menu gets a frame of its own.
+if (await click('library-more')) await page.waitForTimeout(500)
 await expectCount('library-remove', 1)
-// The confirm names the artifact rather than asking a bare "are you sure?" —
-// pinned here because a generic string screenshots just as plausibly.
+await expectCount('library-remove-confirm', 0)
+await page.screenshot({ path: `${OUT}/library-remove-menu.png`, fullPage: false })
+console.log('shot library-remove-menu')
+
+// ---- frame (c): the confirm strip open ------------------------------------
+if (await click('library-remove')) await page.waitForTimeout(500)
+// Selecting the item closes the menu and opens the strip on THAT card. One
+// confirm at a time is a property of holding the state on the SECTION rather
+// than the card, so a second strip appearing here would mean that moved back.
+await expectCount('library-remove-confirm', 1)
+await expectCount('library-remove-confirm-cancel', 1)
+await expectCount('library-remove-confirm-action', 1)
+await expectCount('library-more', 3)
+// The confirm must name BOTH the item and the prefix it empties: a generic "are
+// you sure?" screenshots just as plausibly, and the prefix is the half that says
+// which cloud folder actually goes. `artifacts/`, never `library/`.
 const strip = await page.locator('[data-testid="library-remove-confirm"]').innerText().catch(() => '')
-const named = strip.includes('Release notes')
-console.log(`ASSERT confirm-names-artifact ${named ? 'ok' : 'MISMATCH: ' + JSON.stringify(strip.slice(0, 160))}`)
-if (!named) failures.push('confirm strip does not name the artifact')
+for (const [what, ok] of [
+  ['confirm-names-item', /Cost dashboard|Release notes|from-another-machine/.test(strip)],
+  ['confirm-names-artifacts-prefix', /artifacts\/[a-z-]+\//.test(strip)],
+  ['confirm-avoids-library-prefix', !strip.includes('library/')],
+]) {
+  console.log(`ASSERT ${what} ${ok ? 'ok' : 'MISMATCH: ' + JSON.stringify(strip.slice(0, 200))}`)
+  if (!ok) failures.push(`${what} failed on: ${strip.slice(0, 200)}`)
+}
 await page.screenshot({ path: `${OUT}/library-remove-confirm.png`, fullPage: false })
 console.log('shot library-remove-confirm')
 
