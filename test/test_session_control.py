@@ -22,6 +22,7 @@ from chat_test_helpers import _make_state
 
 from kiro_crew.config import loader
 from kiro_crew.dashboard import chat_delivery as cd
+from kiro_crew.dashboard import create_rate_limit
 from kiro_crew.dashboard import session_control as sc
 from kiro_crew.dashboard import stop_retry
 from kiro_crew.dashboard.chat_utils import slot_history_key
@@ -51,6 +52,30 @@ def _fresh_stop_windows():
     stop_retry.reset_for_tests()
     yield
     stop_retry.reset_for_tests()
+
+
+@pytest.fixture(autouse=True)
+def _fresh_create_budget():
+    """The create-rate-limit bucket is process-wide module state, keyed per caller.
+
+    Every test here builds its caller as ``_slot(state, "chat-1")``, so they all
+    share one bucket key, and the budget is 20 creates per 300 s. This file makes
+    more than that, and the tests run far faster than the window — so without this
+    reset the creates ACCUMULATE and a later test is refused a create it is the
+    first to ask for, failing on ``create_rate_limited`` instead of exercising
+    whatever it was written for.
+
+    Sharding is why this reads as an intermittent CI failure rather than a
+    permanent one: ``pytest-split`` distributes this file across groups, so
+    whether any one group carries enough creates to cross the budget depends on
+    the split. Running the file whole fails deterministically.
+
+    Same shape as ``test_create_rate_limit.py`` and ``test_chat_folder_cap.py``,
+    which already reset this bucket.
+    """
+    create_rate_limit.reset_for_tests()
+    yield
+    create_rate_limit.reset_for_tests()
 
 
 def _slot(state, name: str, **kwargs):
