@@ -18,6 +18,7 @@ from typing import Any
 
 from aiohttp import web
 
+from kiro_crew.apps.backend import spawned_backend_names, stop_app_backend
 from kiro_crew.apps.bridges import (
     disarm_app_crons_for_execution,
     register_app_crons_with_service,
@@ -34,6 +35,7 @@ from kiro_crew.apps.lifecycle import LifecycleDispatcher
 from kiro_crew.apps.manager import app_dir, list_apps
 from kiro_crew.apps.route_registry import RouteRegistry
 from kiro_crew.cron import CronStoreBusy, CronStoreUnreadable
+from kiro_crew.executors import subprocess_executor
 from kiro_crew.sel import sel
 
 logger = logging.getLogger(__name__)
@@ -614,15 +616,106 @@ async def on_gateway_startup(
         )
 
 
-async def on_gateway_shutdown() -> None:
-    """Called during gateway shutdown — invoke on_shutdown hooks for all enabled apps."""
-    if not _lifecycle_dispatcher:
-        return
+#: One shared deadline for the whole backend-stop sweep at gateway shutdown.
+#: The sweep runs inside the gateway's cooperative shutdown, which
+#: ``GRACEFUL_SHUTDOWN_SECS`` caps at 10s before the supervisor force-exits;
+#: each individual stop can spend up to the 5s SIGTERM grace before its SIGKILL
+#: escalation, so the stops run concurrently and this bound keeps the sweep as
+#: a whole from consuming the budget the rest of cleanup still needs.
+_BACKEND_STOP_BUDGET_SECS = 6.0
 
+
+async def on_gateway_shutdown() -> None:
+    """Called during gateway shutdown — invoke on_shutdown hooks for enabled
+    apps, then stop the backend processes this gateway spawned.
+
+    The backend stop is the load-bearing half. Spawned backends are child
+    processes of the gateway: without an explicit stop they reparent to PID 1
+    when the gateway exits and keep listening on their ports, so anything
+    probing those ports reads a stopped gateway as "connected". The next boot
+    reaps them only lazily (``_reap_stale_app_backends``), which does not help
+    a gateway that stays down. Hooks run FIRST so an app's ``on_shutdown``
+    still has its own backend alive.
+
+    Stop targets come from the runtime tracking table
+    (:func:`spawned_backend_names`), never from persisted ``enabled`` metadata:
+    the metadata filter is wrong in both directions here (it would signal an
+    ADOPTED externally-managed backend whose contract is to survive gateway
+    exit, and it would miss a still-running child whose app was disabled
+    cross-process, metadata-only). It also keeps :func:`stop_app_backend` — and
+    its pidfile-record erasure — away from apps with nothing running, so a
+    retained prior-generation orphan record stays recoverable by the next
+    boot's stale-reap.
+    """
     # list_apps() walks the apps dir (two file reads per app) — off the loop.
     installed = await asyncio.to_thread(list_apps)
     enabled = [a for a in installed if a.get("enabled")]
-    if enabled:
-        invoked = await _lifecycle_dispatcher.dispatch_shutdown(enabled)
-        if invoked:
-            logger.info("Shutdown hooks invoked for: %s", ", ".join(invoked))
+
+    try:
+        if _lifecycle_dispatcher and enabled:
+            invoked = await _lifecycle_dispatcher.dispatch_shutdown(enabled)
+            if invoked:
+                logger.info("Shutdown hooks invoked for: %s", ", ".join(invoked))
+    finally:
+        # The sweep MUST run even when hook dispatch hangs or raises: hooks are
+        # third-party code, and dispatch awaits an invoked on_shutdown hook to
+        # completion — so a wedged hook would hold this coroutine until the
+        # gateway's graceful-shutdown deadline CANCELS it right here. Running
+        # the sweep from the finally block means that cancellation still stops
+        # the spawned backends (a task may keep awaiting during cleanup after
+        # a single cancel request), instead of force-exiting with every one of
+        # them orphaned — the exact defect this function exists to fix.
+        await _stop_spawned_backends()
+
+
+async def _stop_spawned_backends() -> None:
+    """Stop every backend this gateway spawned, concurrently, under one budget.
+
+    Deliberately NOT gated on ``_lifecycle_dispatcher`` or on the enabled list:
+    backends are started by the boot path independently of the hooks system, so
+    neither absence may leave them orphaned. The tracking-table read takes the
+    module lock — off the loop like every other blocking step.
+    """
+    names = await asyncio.to_thread(spawned_backend_names)
+    if not names:
+        return
+
+    # Each stop signals a process group and waits on it — blocking syscalls,
+    # so offloaded to the subprocess executor. All stops start CONCURRENTLY
+    # under ONE shared deadline: awaiting them serially would multiply the
+    # per-app SIGTERM grace by the number of apps and blow the gateway's
+    # cooperative shutdown budget, so the supervisor's force-exit would orphan
+    # every backend the sweep had not reached yet.
+    loop = asyncio.get_running_loop()
+    stops = [loop.run_in_executor(subprocess_executor(), stop_app_backend, name) for name in names]
+    gathered = asyncio.gather(*stops, return_exceptions=True)
+    try:
+        # The gather is SHIELDED so a deadline overrun (or a cancellation of
+        # this coroutine) releases the caller WITHOUT cancelling the stops.
+        # The executor is shared with the rest of shutdown, so a stop can
+        # still be QUEUED when the deadline fires — cancelling it then would
+        # drop it before stop_app_backend ever ran, and that backend would
+        # never be signalled at all. A running stop's thread cannot be
+        # interrupted anyway; the shield extends the same guarantee to the
+        # queued ones, which keep running in the background.
+        results = await asyncio.wait_for(
+            asyncio.shield(gathered),
+            timeout=_BACKEND_STOP_BUDGET_SECS,
+        )
+    except asyncio.TimeoutError:
+        logger.warning(
+            "app backend stop sweep did not finish within %.0fs at gateway "
+            "shutdown; unfinished stops continue in the background: %s",
+            _BACKEND_STOP_BUDGET_SECS,
+            ", ".join(names),
+        )
+        return
+    for name, result in zip(names, results):
+        if isinstance(result, BaseException):
+            logger.warning(
+                "stopping backend for app %r on gateway shutdown failed: %s",
+                name,
+                result,
+            )
+        elif result:
+            logger.info("Stopped app backend on gateway shutdown: %s", name)
