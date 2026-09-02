@@ -421,13 +421,12 @@ class RunEventCoordinator(ManagerComponent):
             # Set once this finally's session teardown has finished, so the
             # already-spawned report holds its "delivered" tombstone until the
             # child is provably gone (see `_report_terminal`).
-            teardown_done = asyncio.Event()
+            teardown_done = self._manager._lifecycle.open_teardown(info.id)
             # Published where it survives this record being evicted: a settlement
             # that happens OUTSIDE this report (the parent's queue drain, issue
             # #4839) can come due after a dashboard clear/cancel has removed the run
             # from _agents AND _tasks, and it still must not tombstone a child that
             # is being killed.
-            self._manager._teardown_gates[info.id] = teardown_done
             if self._manager._claim_finalize(info):
                 info.elapsed = time.time() - info.started
                 self._manager._record_cost(info)
@@ -452,17 +451,15 @@ class RunEventCoordinator(ManagerComponent):
                 # arrives first (and is NOT skipped just because the reaper set
                 # `reaped`, which is how an earlier revision leaked slots).
                 if self._manager._release_slot(info):
-                    self._manager._running_count -= 1
+                    self._manager._scheduler.running_count = max(
+                        0, self._manager._scheduler.running_count - 1
+                    )
                     self._manager._drain_queue()
                 self._manager._tasks.pop(info.id, None)
                 # Teardown is done (or was skipped because the reaper did it) —
                 # release the report's delivered-tombstone gate. Unconditional,
                 # so the report can never wedge on a cancelled teardown.
-                teardown_done.set()
-                # Set BEFORE the entry is dropped: a waiter that already holds the
-                # event is released by the line above, and one arriving after finds
-                # no entry, which now means exactly "nothing left to wait for".
-                self._manager._teardown_gates.pop(info.id, None)
+                self._manager._lifecycle.close_teardown(info.id, teardown_done)
 
         # The report itself already ran (or is running) on the shielded task
         # spawned in the finally above; block until it completes so sequencing is
@@ -509,9 +506,7 @@ class RunEventCoordinator(ManagerComponent):
     def _queued_depth_impl(self, parent_session_key: str) -> int:
         """Number of spawns currently queued for *parent_session_key* (waiting
         behind the concurrency cap / stagger gate, not yet started)."""
-        return sum(
-            1 for q in self._manager._queue if q.get("parent_session_key", "") == parent_session_key
-        )
+        return self._manager._scheduler.queued_depth(parent_session_key)
 
     def queued_count_for_impl(self, parent_session_key: str) -> int:
         """Public queued-spawn count for *parent_session_key*.

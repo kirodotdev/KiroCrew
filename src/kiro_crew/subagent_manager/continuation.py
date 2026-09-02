@@ -58,16 +58,13 @@ class ContinuationCoordinator(ManagerComponent):
         for a in self._manager._agents.values():
             if not a.done and (a.conversation_key or f"subagent:{a.id}") == conv_key:
                 return a
-        for p in self._manager._queue:
-            pkey = str(p.get("conversation_key") or "") or (
-                f"subagent:{p.get('_preassigned_id', '')}"
+        queued = self._manager._scheduler.find_conversation(conv_key)
+        if queued is not None:
+            return SubagentInfo(
+                id=str(queued.get("_preassigned_id") or "queued"),
+                task="",
+                queued=True,
             )
-            if pkey == conv_key:
-                return SubagentInfo(
-                    id=str(p.get("_preassigned_id") or "queued"),
-                    task="",
-                    queued=True,
-                )
         # Checked last: a live or queued run gives the caller a better message.
         # Same synthetic-marker shape as the queued branch above — the run may
         # already have been evicted from _agents, which is exactly why this record

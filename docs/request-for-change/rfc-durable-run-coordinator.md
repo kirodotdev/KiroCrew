@@ -14,13 +14,14 @@ superseded-by: []
 ---
 # RFC: Durable Run Coordinator — typed lifecycle, idempotent commands, and recoverable delivery
 
-- Status: in-progress — PR 2 is prepared on local branch
-  `codex/run-coordinator-types`: the typed port, deterministic in-memory
-  implementation, contract suite, and facade injection exist. Legacy manager
-  fields and run files remain authoritative; PRs 3–7 are unimplemented.
+- Status: in-progress — PRs 1–2 are committed locally and PR 3 is prepared on
+  `codex/run-coordinator-boundaries`: the typed port, memory contract, scheduler
+  policy, and terminal arbitration have narrow boundaries. Legacy run files
+  remain authoritative; PRs 4–7 are unimplemented.
 - Author: Kyle Seaman, with Codex
 - Created: 2026-08-22
-- Audited against: PR 1 commit `c8eda3c6f` plus the PR 2 working tree
+- Audited against: PR 1 commit `c8eda3c6f`, PR 2 commit `53f365a17`, and the PR 3
+  working tree
 - Related: `docs/system-specs/modules/subagent.md`,
   `docs/system-specs/modules/session.md`, and
   `docs/request-for-change/rfc-orchestrator-chat-sessions.md`
@@ -169,8 +170,8 @@ The code is split along lifecycle boundaries rather than by transport:
 | `run_coordinator/memory.py` | Deterministic in-memory implementation used by contract and lifecycle tests |
 | `run_coordinator/sqlite.py` | SQLite schema, migration runner, transactions, WAL setup, and fenced updates |
 | `run_coordinator/legacy.py` | Shadow writer, parity checker, importer, and compatibility artifact policy |
-| `subagent_lifecycle.py` | Run-finalization state machine and terminal event construction |
-| `subagent_scheduler.py` | Admission, queue order, capacity lease, and queue draining |
+| `subagent_lifecycle.py` | Terminal arbitration, shielded report ownership, and teardown gates |
+| `subagent_scheduler.py` | Admission, queue order, capacity lease, and drain readiness |
 | `subagent.py` | Backward-compatible facade plus local ACP/session executor |
 | gateway delivery adapter | Claims outbox events, calls the existing parent/DM delivery paths, and acknowledges accepted events |
 
@@ -523,9 +524,10 @@ Branch: `run-coordinator-boundaries`
 - Replace private-field tests for moved behavior with boundary tests, retaining
   targeted regression tests for the known reap/report interleavings.
 
-**Exit criteria:** `SubagentManager` no longer owns queue policy or terminal
-transition rules; current public and wire behavior is byte-for-byte compatible;
-race tests prove one terminal record, one report claim, and one slot release.
+**Exit criteria:** `SubagentManager` no longer owns queue policy, report-task
+lifetime, or teardown-gate state; current public and wire behavior is
+byte-for-byte compatible; race tests prove one terminal record, one report
+claim, and one slot release.
 
 ### PR 4 — SQLite store, migrations, and shadow parity
 

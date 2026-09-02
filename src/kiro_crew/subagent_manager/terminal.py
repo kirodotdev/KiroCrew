@@ -15,6 +15,7 @@ if TYPE_CHECKING:
         SubagentInfo,
         _done_result,
         _injection_notice_outcome,
+        _load_child_process_helpers,
         _redact,
         _timeout_context,
         _ws_result_path,
@@ -66,20 +67,10 @@ class TerminalCoordinator(ManagerComponent):
         has its own one-shot token (:meth:`_release_slot`); three concerns, three
         guards. Session teardown stays keyed on ``reaped``.
         """
-        if info._recovering and not supersede_recovery:
-            return False
-        if info._finalized:
-            return False
-        if info._recovering:
-            # A terminal reap/stop SUPERSEDES a pending cancel-recovery respawn:
-            # the agent is being killed, so there is nothing left to respawn.
-            # Clearing the flag here is what keeps `False` from meaning two
-            # different things to this caller ("someone else already reported"
-            # vs "withheld for a respawn that will report later") — the exact
-            # conflation this token exists to remove.
-            info._recovering = False
-        info._finalized = True
-        return True
+        return self._manager._lifecycle.claim_report(
+            info,
+            supersede_recovery=supersede_recovery,
+        )
 
     async def _report_terminal_impl(
         self,
@@ -286,29 +277,17 @@ class TerminalCoordinator(ManagerComponent):
         awaiter is cancelled, and so ``cancel_all()`` can drain it) and
         self-removes on completion.
         """
-        task = asyncio.create_task(
-            self._manager._report_terminal(
+        return self._manager._lifecycle.spawn_report(
+            info,
+            lambda: self._manager._report_terminal(
                 info,
                 source=source,
                 injection_timeout_reason=injection_timeout_reason,
                 mark_delivered_on_success=mark_delivered_on_success,
                 settle_digest=settle_digest,
                 teardown_done=teardown_done,
-            )
+            ),
         )
-        self._manager._report_tasks.add(task)
-        # Owner map so `cancel_all()` can identify WHOSE outcome it is about to
-        # abandon (and re-admit it to orphan recovery). Kept alongside the set
-        # rather than replacing it: `_report_tasks` is the strong reference that
-        # keeps the task alive, and both are cleared by the one done callback.
-        self._manager._report_owners[task] = info
-
-        def _forget(t: "asyncio.Task") -> None:  # type: ignore[type-arg]
-            self._manager._report_tasks.discard(t)
-            self._manager._report_owners.pop(t, None)
-
-        task.add_done_callback(_forget)
-        return task
 
     def _release_slot_impl(self, info: SubagentInfo) -> bool:
         """Claim the exclusive right to free ``info``'s concurrency slot.
@@ -326,14 +305,10 @@ class TerminalCoordinator(ManagerComponent):
         ``_running_count`` and permanently starving the spawn queue. An explicit
         one-shot token makes the count independent of report and record ordering.
 
-        Note the recovery respawn's own ``_running_count += 1`` re-admit is
-        unaffected: it runs after the interrupted run's ``finally`` has already
-        released, and this token is per-``SubagentInfo``.
+        Recovery uses the scheduler's atomic capacity check and reoccupation
+        after the interrupted run's ``finally`` has released its old slot.
         """
-        if info._slot_released:
-            return False
-        info._slot_released = True
-        return True
+        return self._manager._scheduler.claim_release(info)
 
     async def _force_reap_impl(
         self, agent_id: str, info: SubagentInfo, elapsed: float, *, reason: str = ""
@@ -350,7 +325,7 @@ class TerminalCoordinator(ManagerComponent):
         # `_reap_started`, NOT `reaped`: setting `reaped` this early makes a run
         # woken by our own session reset skip its error synthesis and report a
         # false SUCCESS before we own the record. See `_reap_started`.
-        info._reap_started = True
+        self._manager._lifecycle.begin_reap(info)
         # A pending cancel-recovery respawn is moot — this agent is being killed.
         # Cancel it rather than letting it sit in its bounded handshake wait
         # (_RESET_TIMEOUT + 60s) only to discover `reaped` and bare-return.
@@ -427,16 +402,15 @@ class TerminalCoordinator(ManagerComponent):
             # intentional-cancel contract: visible when the task's
             # CancelledError arm runs. The recovery scheduler reads the earlier
             # `_reap_started` instead, so it is not affected by this placement.
-            info.reaped = True
+            self._manager._lifecycle.mark_reaped(info)
             self._manager._cancel_task_intentionally(task, info, reason=reason or "reaped")
 
         # No live task to cancel above (already exited) — the reap still owns
         # teardown bookkeeping from here, so mark it now.
-        info.reaped = True
+        self._manager._lifecycle.mark_reaped(info)
         # Guard 1 of 3 — the terminal RECORD (done/error/stat/tombstone/cost) is
         # first-arrival-wins on `info.done`, so it is never written twice.
-        if not info.done:
-            info.done = True
+        if self._manager._lifecycle.claim_record(info):
             if not info.error and not info.user_stopped:
                 # A user stop is neutral — never synthesize a reap error for it.
                 if approval_parked:
@@ -461,7 +435,9 @@ class TerminalCoordinator(ManagerComponent):
         # so queued spawns would sit stranded until an unrelated agent finished.
         # Drain here so the freed slot is used immediately.
         if self._manager._release_slot(info):
-            self._manager._running_count = max(0, self._manager._running_count - 1)
+            self._manager._scheduler.running_count = max(
+                0, self._manager._scheduler.running_count - 1
+            )
             self._manager._drain_queue()
 
         try:
@@ -531,13 +507,12 @@ class TerminalCoordinator(ManagerComponent):
         ``taskkill.exe``.
         """
         try:
-            # circular import: subagent → acp.client → session → subagent
-            from kiro_crew.acp.client import (
+            (
                 _capture_child_records,
                 _get_child_pids,
-                _is_our_child,
                 _kill_escaped_children,
-            )
+                _is_our_child,
+            ) = _load_child_process_helpers()
 
             session = self._manager._sessions._sessions.get(session_key)
             if not session:

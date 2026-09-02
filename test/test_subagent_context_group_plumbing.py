@@ -27,6 +27,7 @@ from kiro_crew.subagent import (
 )
 from kiro_crew.subagent_manager.continuation import ContinuationCoordinator
 from kiro_crew.subagent_persistence import create_agent_folder, read_state
+from kiro_crew.subagent_scheduler import AdmissionDecision
 
 # ``SubagentManager.spawn`` refuses -- registering no task -- while the host
 # looks short of memory, which is the runner's state, not this test's input.
@@ -93,7 +94,9 @@ class TestQueueRoundTrip:
     def test_queue_entry_carries_flags(self):
         mgr = _mgr()
         # Force the stagger gate so the spawn queues instead of starting.
-        mgr._should_stagger_queue = MagicMock(return_value=(True, False))  # type: ignore[method-assign]
+        mgr._scheduler.admission = MagicMock(  # type: ignore[method-assign]
+            return_value=AdmissionDecision(True, False, 0.0)
+        )
         info = mgr.spawn("summarize this log", include_memory=False)
         assert info is not None and info.queued is True
         assert len(mgr._queue) == 1
@@ -105,7 +108,9 @@ class TestQueueRoundTrip:
     def test_queued_placeholder_reports_the_scope(self):
         """spawn_list shows queued members too, so the record must carry it."""
         mgr = _mgr()
-        mgr._should_stagger_queue = MagicMock(return_value=(True, False))  # type: ignore[method-assign]
+        mgr._scheduler.admission = MagicMock(  # type: ignore[method-assign]
+            return_value=AdmissionDecision(True, False, 0.0)
+        )
         info = mgr.spawn("summarize this log", include_lessons=False)
         assert info is not None
         assert info.include_lessons is False
@@ -113,7 +118,9 @@ class TestQueueRoundTrip:
     def test_drained_spawn_receives_the_flags(self):
         """The drain forwards the FULL kwarg set, flags included."""
         mgr = _mgr()
-        mgr._should_stagger_queue = MagicMock(return_value=(True, False))  # type: ignore[method-assign]
+        mgr._scheduler.admission = MagicMock(  # type: ignore[method-assign]
+            return_value=AdmissionDecision(True, False, 0.0)
+        )
         mgr.spawn("validate this finding", include_memory=False, include_project=False)
         captured: dict[str, object] = {}
 
@@ -124,6 +131,7 @@ class TestQueueRoundTrip:
         mgr._max_concurrent = 4
         mgr._running_count = 0
         mgr._spawn_stagger_secs = 0.0
+        mgr._scheduler.admission.return_value = AdmissionDecision(False, True, 0.0)
         mgr._drain_queue()
         assert captured["include_memory"] is False
         assert captured["include_lessons"] is True
@@ -142,9 +150,7 @@ class TestContinuationInheritsScope:
 
     def test_inherits_from_the_live_record(self):
         mgr = _mgr()
-        original = SubagentInfo(
-            id="conv1", task="t", include_memory=False, include_project=False
-        )
+        original = SubagentInfo(id="conv1", task="t", include_memory=False, include_project=False)
         mgr._agents["conv1"] = original
         assert mgr._inherited_context_groups("conv1") == (False, True, False)
 
@@ -159,9 +165,7 @@ class TestContinuationInheritsScope:
     def test_all_groups_withheld_is_not_confused_with_a_legacy_run(self, monkeypatch):
         """An empty recorded scope means "all withheld", not "unknown"."""
         mgr = _mgr()
-        monkeypatch.setattr(
-            "kiro_crew.subagent.read_state", lambda _id: {"context_groups": ""}
-        )
+        monkeypatch.setattr("kiro_crew.subagent.read_state", lambda _id: {"context_groups": ""})
         assert mgr._inherited_context_groups("stripped") == (False, False, False)
 
     def test_run_predating_the_field_defaults_to_all_on(self, monkeypatch):
@@ -209,9 +213,7 @@ class TestContinuationInheritsScope:
 
         # No caller cwd -> nothing invented here; spawn applies its own default.
         # A recorded state.json must NOT be consulted on this path.
-        monkeypatch.setattr(
-            "kiro_crew.subagent.read_state", lambda _id: {"cwd": str(proj)}
-        )
+        monkeypatch.setattr("kiro_crew.subagent.read_state", lambda _id: {"cwd": str(proj)})
         captured.clear()
         mgr.continue_conversation("conv3", "follow up")
         assert captured["cwd"] == ""
@@ -224,9 +226,7 @@ class TestContinuationInheritsScope:
         mgr = _mgr()
         proj = tmp_path / "alpha"
         proj.mkdir()
-        monkeypatch.setattr(
-            "kiro_crew.subagent.read_state", lambda _id: {"cwd": str(proj)}
-        )
+        monkeypatch.setattr("kiro_crew.subagent.read_state", lambda _id: {"cwd": str(proj)})
         assert mgr.recorded_cwd("conv9") == str(proj)
 
         # A project that no longer exists is forwarded ANYWAY, so `spawn` refuses
@@ -236,7 +236,8 @@ class TestContinuationInheritsScope:
         # A loud refusal is recoverable; a silent write to the wrong tree is not.
         gone = tmp_path / "deleted-project"
         monkeypatch.setattr(
-            "kiro_crew.subagent.read_state", lambda _id: {"cwd": str(gone)},
+            "kiro_crew.subagent.read_state",
+            lambda _id: {"cwd": str(gone)},
         )
         assert mgr.recorded_cwd("conv9") == str(gone)
         # Only a run that never recorded a cwd yields "": for it the pool default
@@ -250,9 +251,7 @@ class TestContinuationInheritsScope:
         src = Path(ContinuationCoordinator.__module__.replace(".", "/") + ".py")
         src = (Path(__file__).parents[1] / "src" / src).read_text(encoding="utf-8")
         body = src.split("def continue_conversation_impl")[1].split("\n    def ")[0]
-        code = "\n".join(
-            ln for ln in body.splitlines() if not ln.lstrip().startswith("#")
-        )
+        code = "\n".join(ln for ln in body.splitlines() if not ln.lstrip().startswith("#"))
         assert "is_dir(" not in code, "a blocking probe is back on the event loop"
         assert "read_state(" in code, "premise: the seed read is still there to compare"
 
@@ -286,9 +285,7 @@ class TestScopePersistence:
         create_agent_folder("r3", task="t", context_groups="lessons")
         assert (read_state("r3") or {}).get("context_groups") == "lessons"
 
-    def test_scope_survives_to_inheritance_without_the_live_record(
-        self, tmp_path, monkeypatch
-    ):
+    def test_scope_survives_to_inheritance_without_the_live_record(self, tmp_path, monkeypatch):
         """The real write -> real read path, not a patched read_state."""
         monkeypatch.setattr("kiro_crew.subagent_persistence._subagents_dir", lambda: tmp_path)
         mgr = _mgr()

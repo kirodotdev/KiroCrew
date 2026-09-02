@@ -80,21 +80,27 @@ class CancellationCoordinator(ManagerComponent):
                             info.id,
                         )
                         raise RuntimeError("original task teardown timed out")
-                if info.done or info._reap_started or info.reaped or self._manager._shutting_down:
+                if info.done or info._reap_started or info.reaped:
                     info._recovering = False
                     return
+                if self._manager._shutting_down:
+                    raise RuntimeError("gateway shut down before recovery respawn")
                 # Re-acquire a slot through capacity, not blind increment:
                 # the old finally freed our slot and may have drained a queued
                 # spawn into it. Wait (bounded) for a free slot so recovery
                 # never pushes the pool past max_concurrent.
                 deadline = time.time() + _RECOVERY_SLOT_WAIT_SECS
-                while self._manager._running_count >= self._manager._max_concurrent:
-                    if time.time() >= deadline or self._manager._shutting_down:
+                while True:
+                    if info.done or info._reap_started or info.reaped:
+                        info._recovering = False
+                        return
+                    if self._manager._shutting_down:
+                        raise RuntimeError("gateway shut down before recovery respawn")
+                    if self._manager._scheduler.try_reoccupy(info):
+                        break
+                    if time.time() >= deadline:
                         raise RuntimeError("no free slot for recovery respawn")
                     await asyncio.sleep(0.25)
-                if info.done or info._reap_started or info.reaped or self._manager._shutting_down:
-                    info._recovering = False
-                    return
                 info._recovering = False
                 # Claim the slot and launch the respawn ATOMICALLY (no await
                 # between capacity check, increment, and create_task). An await
@@ -104,12 +110,6 @@ class CancellationCoordinator(ManagerComponent):
                 # here (its finally decrements). The informational
                 # subagent_recovering emit happens after, where a cancellation
                 # can no longer leak the counter.
-                self._manager._running_count += 1
-                # The interrupted run's finally already consumed this info's
-                # slot token to free its slot. The respawn occupies a FRESH slot,
-                # so re-arm the token or the respawned run's finally would no-op
-                # and leave `_running_count` permanently inflated.
-                info._slot_released = False
                 self._manager._tasks[info.id] = asyncio.create_task(self._manager._run(info))
                 try:
                     await self._manager._fire_event("subagent_recovering", info, {"attempt": 1})
@@ -206,13 +206,9 @@ class CancellationCoordinator(ManagerComponent):
         parent's queued depth, or the chip keeps counting an agent that will never
         run.
         """
-        keep = [p for p in self._manager._queue if str(p.get("_preassigned_id") or "") != agent_id]
-        if len(keep) == len(self._manager._queue):
+        dropped = self._manager._scheduler.remove(agent_id)
+        if not dropped:
             return False
-        dropped = [
-            p for p in self._manager._queue if str(p.get("_preassigned_id") or "") == agent_id
-        ]
-        self._manager._queue = keep
         for p in dropped:
             try:
                 self._manager._emit_queue_depth(
@@ -322,7 +318,7 @@ class CancellationCoordinator(ManagerComponent):
         # cancelled (that is the point). Drain them with a BOUNDED wait so a
         # report is not orphaned by a closing event loop, without letting a
         # wedged injection block shutdown indefinitely.
-        pending_reports = [t for t in self._manager._report_tasks if not t.done()]
+        pending_reports = self._manager._lifecycle.pending_reports()
         if pending_reports:
             try:
                 await asyncio.wait(pending_reports, timeout=_REPORT_DRAIN_TIMEOUT)
@@ -344,7 +340,7 @@ class CancellationCoordinator(ManagerComponent):
                     len(stragglers),
                     _REPORT_DRAIN_TIMEOUT,
                 )
-                abandoned = [self._manager._report_owners.get(t) for t in stragglers]
+                abandoned = [self._manager._lifecycle.owner_for(t) for t in stragglers]
                 for report_task in stragglers:
                     report_task.cancel()
                 try:

@@ -181,7 +181,12 @@ class SessionLifecycleDeps:
     get_unlink_session_queue: Callable[[], Callable[[Any], None]]
     get_child_process_helpers: Callable[
         [],
-        tuple[Callable[..., Any], Callable[..., Any], Callable[..., Any]],
+        tuple[
+            Callable[..., Any],
+            Callable[..., Any],
+            Callable[..., Any],
+            Callable[..., Any],
+        ],
     ]
     get_subprocess_executor: Callable[[], Executor]
     get_platform_compat: Callable[[], Any]
@@ -425,7 +430,7 @@ class SessionLifecycleService:
             child_pids: dict[Any, Any] = (
                 dict(raw_children) if isinstance(raw_children, dict) else {}
             )
-            capture_child_records, get_child_pids, kill_escaped_children = (
+            capture_child_records, get_child_pids, kill_escaped_children, _ = (
                 self._deps.get_child_process_helpers()
             )
 

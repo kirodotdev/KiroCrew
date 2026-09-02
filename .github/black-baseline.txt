@@ -868,7 +868,6 @@ test/test_mcp_gateway_stub_poolable_ack.py
 test/test_mcp_gateway_stub_recaller.py
 test/test_mcp_gateway_transport.py
 test/test_mcp_gateway_wedge_ping_gate.py
-test/test_mcp_gatewayd_coverage.py
 test/test_mcp_internal_caller.py
 test/test_mcp_knowledge_add_document.py
 test/test_mcp_oauth_banner.py
@@ -1107,7 +1106,6 @@ test/test_stable_release_gate.py
 test/test_stale_asset_watchdog.py
 test/test_steering_api.py
 test/test_stop_handler_idempotent.py
-test/test_stop_kill_cancel.py
 test/test_streaming_meta_redaction.py
 test/test_stt_config_atomic.py
 test/test_stt_endpointing.py
@@ -1115,7 +1113,6 @@ test/test_stt_stream_cov80.py
 test/test_stub_bridge_liveness.py
 test/test_stuck_turn_watchdog.py
 test/test_subagent.py
-test/test_subagent_context_group_plumbing.py
 test/test_subagent_context_groups.py
 test/test_subagent_continuable.py
 test/test_subagent_cost.py

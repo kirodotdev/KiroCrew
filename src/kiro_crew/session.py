@@ -266,15 +266,17 @@ def _load_child_process_helpers() -> tuple[
     Callable[..., Any],
     Callable[..., Any],
     Callable[..., Any],
+    Callable[..., Any],
 ]:
     """Resolve reset's process-tree helpers at call time for patch compatibility."""
     from kiro_crew.acp.client import (
         _capture_child_records,
         _get_child_pids,
+        _is_our_child,
         _kill_escaped_children,
     )
 
-    return _capture_child_records, _get_child_pids, _kill_escaped_children
+    return _capture_child_records, _get_child_pids, _kill_escaped_children, _is_our_child
 
 
 def _resolve_allocation_crew_identity(
