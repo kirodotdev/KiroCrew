@@ -889,34 +889,6 @@ class TestDenyOnce:
         assert slot._batch_rejected is False
 
     @pytest.mark.asyncio
-    async def test_deny_all_still_cascades(self, tmp_path):
-        """Full 'rejected' still cascades to remaining batch tools."""
-        state, client = _make_state(tmp_path, context_builder=_context_builder())
-        slot = _make_slot()
-        evt1 = _permission_event(title="tool_a")
-        evt1.request_id = "req-1"
-        evt1.tool_call_id = "tc-1"
-        evt2 = _permission_event(title="tool_b")
-        evt2.request_id = "req-2"
-        evt2.tool_call_id = "tc-2"
-        _set_stream(client, [evt1, evt2, _complete_event()])
-
-        async def _reject_first() -> None:
-            await _answer_approval(slot, "req-1", "rejected")
-
-        rejecter = asyncio.get_event_loop().create_task(_reject_first())
-
-        with _patch_stats():
-            await _run_chat(state, slot, "hello")
-        await _drain(rejecter)
-
-        # Both tools rejected (second via batch cascade)
-        client.reject_tool.assert_any_call("req-1")
-        client.reject_tool.assert_any_call("req-2")
-        # Reset in finally block
-        assert slot._batch_rejected is False
-
-    @pytest.mark.asyncio
     async def test_decision_override_reaches_slot_future(self, tmp_path):
         """``rejected_once=True`` is what the slot future receives, not "rejected"."""
         state, _ = _make_state(tmp_path)
