@@ -28,10 +28,13 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import functools
 import json
 import logging
 import math
 import os
+import re
+import secrets
 import tempfile
 import time
 import uuid
@@ -42,7 +45,7 @@ from pathlib import Path
 from typing import Any, AsyncIterator, Awaitable, Callable, Iterator
 
 from kiro_crew import irq, platform_compat, probes, shutdown_event
-from kiro_crew.atomic_write import replace_with_retry
+from kiro_crew.atomic_write import fsync_dir, replace_with_retry
 from kiro_crew.config.loader import config_dir, data_home
 from kiro_crew.config.paths import legacy_home
 from kiro_crew.constants import MAX_BANNER_CHARS
@@ -73,8 +76,13 @@ from kiro_crew.monitoring.models import (
     quarantine_monitor_state,
 )
 from kiro_crew.monitoring.registry import REVIEW_READY, kind_supports_objective
+from kiro_crew.platform import (
+    PlatformCompositionError,
+    redact_log_via_context,
+    redact_via_context,
+)
 from kiro_crew.probes import targets
-from kiro_crew.security import is_sensitive_path, redact_credentials, redact_exfiltration_urls
+from kiro_crew.security import is_sensitive_path
 
 logger = logging.getLogger(__name__)
 
@@ -104,9 +112,66 @@ _WAKE_FOLLOWUP_TICKS = 1
 _MAX_QUIET_STREAK = 10
 
 _NUDGES_FILE = "autonudge.json"
+# A build predating the ``quarantined`` key writes only ``autonudge.json``, so an
+# embedded copy dies with its next wholesale write; a sidecar it never opens survives.
+_QUARANTINE_FILE = "autonudge.quarantine.json"
 _STORE_VERSION = 1
 _MIN_IDLE_SECS = 15
 _MAX_IDLE_SECS = 86400  # 24h
+
+
+#: The fields a CLIENT uses to ADDRESS a loop. ``PATCH``/``DELETE`` target by
+#: ``id`` and the dashboard resolves the session by ``slot_key``, so rewriting
+#: either would break the UI's ability to act on the row it is shown -- which is
+#: why the REST serializer exempts them from its scrub (see
+#: ``dashboard/handlers/autonudge.py``, which imports this set rather than
+#: spelling it again).
+#:
+#: That exemption is only safe if an addressing field can never CARRY a
+#: credential, and the store is a file an agent writes directly, so nothing
+#: upstream guarantees it. ``_load`` therefore enforces the invariant at the
+#: trust boundary: a persisted loop whose addressing fields change under either
+#: redactor is REFUSED rather than scrubbed. Scrubbing would rewrite the very
+#: value the client addresses the row by; refusing keeps the exemption honest.
+ADDRESSING_FIELDS = frozenset({"id", "slot_key"})
+
+
+def _quarantine_row_key(row: dict) -> str:
+    """Stable identity for a held-aside row, for de-duplicating an additive write.
+
+    The WHOLE serialized row, never just ``id``: two held rows can share an id while
+    differing in content, and collapsing those drops the copy an operator repaired --
+    which a failed main-store replacement then loses permanently.
+    """
+    return json.dumps(row, sort_keys=True, default=repr)
+
+
+def _addressing_value_unsafe_why(got: object) -> str:
+    """Why the load guard holds a row aside for THIS addressing value, or ``""``.
+
+    ONE definition, shared by the guard that refuses a row and the matcher that decides a
+    repair superseded it. Two copies could disagree, and a matcher with a laxer notion of
+    unsafe would retire a held row against a loop the guard never accepted.
+    """
+    if not isinstance(got, str):
+        return "is not a string"
+    if not got.isprintable():
+        return "contains a non-printable character"
+    if redact_via_context(got) != got:
+        return "is credential-shaped"
+    return ""
+
+
+def _rows_or_empty(value: Any) -> list:
+    """Return ``value`` if it is a list, else ``[]``.
+
+    ``data.get(key, [])`` yields the default only when the key is ABSENT, so a
+    hand-edited store carrying ``"loops": null`` returns ``None`` and every
+    iteration or unpack of it raises ``TypeError`` uncaught during startup.
+    """
+    return value if isinstance(value, list) else []
+
+
 # Re-arm delay after a skipped/failed fire so a busy slot or a transient fire
 # error can't silently orphan the loop. The delay escalates exponentially per
 # consecutive failure (base << streak) up to _REARM_MAX_BACKOFF_SECS, and is
@@ -115,6 +180,8 @@ _MAX_IDLE_SECS = 86400  # 24h
 _REARM_BACKOFF_SECS = 15
 _REARM_MAX_BACKOFF_SECS = 300  # 5m ceiling for the escalated re-arm delay
 _REARM_BACKOFF_MAX_SHIFT = 16  # clamp the 2**shift exponent
+_SETTLEMENT_WRITE_ATTEMPTS = 3
+_SETTLEMENT_RETRY_SECS = 0.2
 _MONITOR_RETRY_BACKOFF_SECS = 15
 _MONITOR_RETRY_MAX_BACKOFF_SECS = 300
 
@@ -151,6 +218,53 @@ AUTONUDGE_STOP_REASON = "autonudge_stop"
 # different in kind: the cap and the budget are raised, this one needs an
 # authorization the loop cannot grant itself.
 APPROVAL_STALL_REASON = "approval_stalled"
+
+# ``secrets.token_hex(16)`` renders exactly 32 lowercase hex characters.
+_GOAL_TOKEN_RE = re.compile(r"[0-9a-f]{32}")
+
+
+def _is_generator_shaped_token(value: object) -> bool:
+    """Whether *value* could have come from ``new_goal_token``.
+
+    Served verbatim as ``message_fingerprint``, so a token the generator cannot have
+    produced is unvetted text on an egress path that exempts nothing.
+    """
+    return isinstance(value, str) and _GOAL_TOKEN_RE.fullmatch(value) is not None
+
+
+def new_goal_token() -> str:
+    """A fresh opaque identity for a goal write.
+
+    Random rather than content-derived so the value can be served next to the goal's
+    own redaction without becoming a brute-force oracle against the masked span. Its
+    only consumer compares it for equality against a value from a prior GET.
+    """
+    return secrets.token_hex(16)
+
+
+class AutoNudgeStaleBaseline(RuntimeError):
+    """Raised when an update's confirmed baseline does not match the stored goal.
+
+    Compared INSIDE ``_update_unserialized``'s lock, because any check outside it is the
+    TOCTOU this exists to close: a second client committing between a caller's read and
+    its write would otherwise have its goal silently overwritten last-write-wins. The
+    HTTP layer answers this with 409 so the loss becomes a refusal the user can see.
+    """
+
+
+class AutoNudgeStoreUnvetted(RuntimeError):
+    """Raised when a persist is attempted after the loader refused the store.
+
+    An empty ``_loops`` then means "could not vet" rather than "store is empty", so
+    writing it would delete rows the operator still has to correct. Cron answers the
+    same state by raising ``CronStoreUnreadable`` from ``_save``.
+
+    This must RAISE rather than return: every mutation caller already wraps its persist
+    in ``except BaseException`` and rolls back (``_add_locked`` restores the previous
+    loop, ``update`` restores the previous field values, the removal path calls
+    ``_restore_failed_removal``). Returning success defeated those handlers and left the
+    caller confirming a loop that existed only in memory.
+    """
 
 
 class NudgeAdmissionRefused(RuntimeError):
@@ -320,6 +434,113 @@ def enabled() -> bool:
     return os.environ.get("KIROCREW_AUTONUDGE", "1").lower() not in ("0", "false", "no")
 
 
+@functools.cache
+def _numeric_loop_fields() -> frozenset[str]:
+    """The ``NudgeLoop`` fields declared ``int``/``float``/``bool``.
+
+    Derived at CALL time rather than module scope: ``scrub_loop_text`` is defined above
+    the class, so the annotations do not exist yet at import -- which is why this was
+    once a hand-written set kept honest by a drift test. Deriving removes the second
+    copy instead of policing it. Cached because every serialized field consults it.
+    """
+    return frozenset(
+        name
+        for name, spec in NudgeLoop.__dataclass_fields__.items()
+        if str(spec.type).replace("'", "") in {"int", "float", "bool"}
+    )
+
+
+def scrub_loop_text(value: Any, field: str | None = None) -> Any:
+    """Credential-scrub one serialized ``NudgeLoop`` field value.
+
+    ONE definition, five callers: the REST serializer ``_serialize`` in
+    ``dashboard/handlers/autonudge.py`` (which ``slack/gateway.py`` imports as
+    ``_serialize_loop_for_clients`` for its ``autonudge_state`` broadcast, so Slack
+    reaches this scrub only through that serializer, never directly),
+    ``autonudge_authz`` twice -- comparing a submitted message against the projection a
+    client was served, and scrubbing the id it audits -- and ``_load`` twice below, for
+    a persisted banner and message.
+
+    It lives HERE, in the lowest layer, because that third caller made the old home
+    unreachable: ``dashboard/handlers/autonudge`` imports ``autonudge_authz``, so
+    authz importing the handler back would be a cycle. Both modules already import
+    from this one, so this is the only place a single definition can serve all
+    three -- and a single definition is the whole point. A projection rule and a
+    "did this change?" rule that drift apart silently re-open the overwrite this
+    comparison exists to prevent.
+
+    Three branches. The first two key on TYPE alone; the numeric passthrough needs the
+    FIELD NAME as well, and both conditions must hold:
+
+    * ``None`` passes through UNTOUCHED. Deliberately not coerced: ``str(None)`` is
+      the four-character string ``"None"``, so coercing would turn an absent value
+      into a message that reads like content. Clients already treat it as absent.
+    * A value in one of the DECLARED NUMERIC fields (``_numeric_loop_fields()``, derived
+      from the dataclass) passes through untouched when it really is numeric.
+      ``idle_secs``, ``max_cycles``, ``cycle_count``, ``max_runtime_secs``,
+      ``active``, ``approval_stalled``, ``gate``, ``last_fire_ts``, ``created_ts``
+      and ``next_due_ts`` are compared and arithmetic'd by clients, so coercing
+      ``300`` to ``"300"`` would break the contract these surfaces exist to serve.
+      ``bool`` is named explicitly for the reader even though it is an ``int``
+      subclass.
+
+      The exemption keys on the FIELD, not on the value's type, and that is the
+      whole point: keying on type meant a hand-edited ``{"message": 42}`` was served
+      raw, and the goal popover reads ``loop?.message || DEFAULT_MSG`` -- ``42`` is
+      truthy, so the number reached ``message.trim()`` and threw. A numeric field
+      carrying a NON-numeric value is still coerced and scrubbed, because a numeric
+      field name is not a licence to put arbitrary text on the wire.
+    * A string is scrubbed through ``platform.redact_via_context``, the canonical
+      egress shim -- the same one ``_redact_monitor_value`` already uses, so one
+      file does not scrub provider-controlled monitor evidence and this REST
+      projection by two different policies. It routes to
+      ``current_context().credentials.redact`` (running the exfiltration-URL and
+      credential passes, so callers still do not hand-roll the pair) and a composed
+      host's own patterns apply; the Default policy delegates to
+      ``security.redact``, so a standalone process is byte-for-byte unchanged. An
+      empty string is returned as-is: there is nothing to scrub.
+    * Anything else is REDACT-COERCED via ``str()``. Coerced rather than blanked,
+      because blanking destroys the operator's ability to see what is wrong with
+      the row, while ``str()`` plus the scrub removes the credential and leaves the
+      value inspectable -- and the field is declared ``str``, so a string is what
+      the contract already promises.
+
+    ``field`` is the dataclass field name the value came from. It defaults to
+    ``None``, which coerces: an unknown caller gets the wire-safe answer rather than
+    the exemption.
+    """
+    if value is None:
+        return value
+    if isinstance(value, str):
+        if not value:
+            return value
+        return redact_via_context(value)
+    if field in _numeric_loop_fields() and isinstance(value, (bool, int, float)):
+        return value
+    return redact_via_context(str(value))
+
+
+def redact_store_value(value: object) -> str:
+    """Render a store-sourced value safe for a log line in this module.
+
+    Two jobs, and only the first is this function's own. ``repr`` supplies the
+    ESCAPE: a store value can carry a newline or an ANSI sequence, and a raw
+    ``%r``/``%s`` would let it forge a second log record. ``repr`` renders those
+    inert on one line.
+
+    The SCRUB is delegated to ``platform.redact_log_via_context``, which already
+    owns exactly this contract -- context-aware redaction for a log line that must
+    not raise, yielding ``LOG_WITHHELD_PLACEHOLDER`` when a declared companion
+    policy cannot be composed. That matters here because several callers sit inside
+    ``except`` arms whose documented job is to never raise (``repair_sentinel_path``
+    and ``_load``'s malformed-entry arm, where an escape would leave
+    ``run_in_executor(None, self._load)`` unguarded and arm NO loops at all).
+    Delegating also keeps its ``installed_context()`` fast path, which is a bare
+    attribute read rather than a per-line config load.
+    """
+    return redact_log_via_context(repr(value))
+
+
 def repair_sentinel_path(raw: str) -> str:
     """Re-home a persisted ``stop_sentinel_path`` onto the CURRENT data home.
 
@@ -422,21 +643,30 @@ def repair_sentinel_path(raw: str) -> str:
                 )
                 path = str(rehomed)
     except Exception:  # noqa: BLE001 - a repair failure must never block startup
-        logger.warning("AutoNudge: could not re-home sentinel %r", raw, exc_info=True)
+        # NO ``exc_info``: the traceback's last line is the exception's own
+        # ``str()``, and the failures this arm exists to catch put the offending
+        # path there verbatim (``OSError: [Errno 36] File name too long:
+        # '<path>'``). Attaching it served an unscrubbed copy of the value right
+        # beside the ``redact_store_value``ed one, on the same record, out of the same
+        # ``/api/logs`` stream -- so the scrub was doing nothing. The scrubbed path
+        # plus the message is what an operator needs to find the row; the
+        # exception type adds nothing they cannot get from the path itself.
+        logger.warning("AutoNudge: could not re-home sentinel %s", redact_store_value(raw))
     try:
         sensitive = is_sensitive_path(path)
     except Exception:  # noqa: BLE001 - fail closed: unvalidated ⇒ untrusted
+        # NO ``exc_info``, same reason as the arm above: the traceback would carry
+        # the raw path in the exception's own text, undoing this ``redact_store_value``.
         logger.warning(
-            "AutoNudge: sensitivity re-check failed for %r — dropping the sentinel",
-            path,
-            exc_info=True,
+            "AutoNudge: sensitivity re-check failed for %s — dropping the sentinel",
+            redact_store_value(path),
         )
         return ""
     if sensitive:
         logger.warning(
-            "AutoNudge: dropping stop sentinel %r — path is now sensitive; "
+            "AutoNudge: dropping stop sentinel %s — path is now sensitive; "
             "the loop will be deactivated rather than left unstoppable by file",
-            path,
+            redact_store_value(path),
         )
         return ""
     return path
@@ -510,6 +740,9 @@ class NudgeLoop:
     last_fire_ts: float = 0.0
     created_ts: float = 0.0
     stop_sentinel_path: str = ""  # optional absolute path; if present loop halts
+    # Opaque per-write identity of ``message``, for stale-baseline (409) detection.
+    # RANDOM: a digest served beside its own redaction is an oracle for the masked span.
+    goal_token: str = ""
     # Wall-clock budget in seconds, measured from ``created_ts`` (0 = unlimited).
     # A cycle cap alone cannot bound COST: a loop whose turns are slow or whose
     # idle gap is long can run for days within its cycle budget. Anchoring on
@@ -755,9 +988,28 @@ class AutoNudgeService:
     ) -> None:
         self._base_dir = base_dir or config_dir()
         self._path = self._base_dir / _NUDGES_FILE
+        self._quarantine_path = self._base_dir / _QUARANTINE_FILE
         self._on_fire = on_fire
         self._on_monitor_tick = on_monitor_tick
         self._loops: dict[str, NudgeLoop] = {}
+        # Rows withheld from the live map but preserved on disk for repair. Kept off
+        # every egress path because ADDRESSING_FIELDS are exempt from the scrub.
+        self._quarantined: list[dict] = []
+        # Whole-row keys THIS instance enumerated from the sidecar at load. Compaction may
+        # remove only these: a row it never saw belongs to a writer it cannot account for.
+        self._sidecar_seen: set[str] = set()
+        # Rows ``_load`` could not parse, kept VERBATIM so a rewrite round-trips them:
+        # skipping a row must not delete the entry the operator was warned to repair.
+        self._unparsed_rows: list[Any] = []
+        # Cycle claims persisted but rolled back in memory for the delivery window, so any
+        # OTHER writer snapshotting mid-turn still records the claim rather than erasing it.
+        # Count AND timestamp together: overlaying one alone persists a self-contradiction.
+        self._delivering_claim: dict[str, tuple[int, float]] = {}
+        #: loop id -> the claimed cycle that loaded unresolved, awaiting a
+        #: deliberate re-activation to settle it.
+        self._unreconciled_claim: dict[str, int] = {}
+        # Depth, not a flag: the sidecar lock is taken on nested paths within one process.
+        self._sidecar_lock_depth = 0
         self._timers: dict[str, asyncio.Task] = {}
         # Loop ids whose re-arm was requested while their fire window was open.
         # Applied when the window closes (see _timer): a dashboard turn can
@@ -781,6 +1033,9 @@ class AutoNudgeService:
         # fire callback runs the unattended turn INLINE, so cancelling it kills
         # the in-flight turn and loses its transcript and cycle bookkeeping.
         self._firing: set[str] = set()
+        # Loops whose DELIVERED terminal turn never reached disk. The reconciler
+        # must not rescue one: its rescue re-enters _on_fire and re-delivers.
+        self._settlement_owed: set[str] = set()
         # Loop ids owned by an administrative cleanup. Public mutations on the
         # same firing loop must not wait for the maintenance mutex: the cleanup
         # is waiting for that timer to finish, so waiting would invert the lock.
@@ -791,6 +1046,16 @@ class AutoNudgeService:
         # Set by _load() when persisted state is repaired in memory so start()
         # flushes the correction before any loop can re-arm.
         self._store_dirty = False
+        # Set when ``_load`` could not vet the store AT ALL -- the host declared a
+        # credential policy it could not compose, so no row's addressing fields can be
+        # checked. ``_load`` then clears ``_loops``, so the in-memory list is empty FOR
+        # THAT REASON rather than because the store is empty, and every persist raises
+        # ``AutoNudgeStoreUnvetted`` until the host is fixed and the process restarted.
+        # Mirrors cron's ``_load_failed``.
+        #
+        # NOT set for a single unusable row: an unusable addressing field is quarantined
+        # per row and a malformed row is dropped, both leaving the siblings armed.
+        self._load_refused: bool = False
         # Consecutive non-delivery count per loop (drives escalating re-arm
         # backoff + once-per-streak failure logging). Not persisted; resets on
         # a delivered fire, on removal, and on restart.
@@ -828,7 +1093,113 @@ class AutoNudgeService:
         """
         with _locked_file(self._path, "r") as fh:
             data = json.load(fh)
-        for raw in data.get("loops", []):
+        # Reset per load: a re-read must not inherit a refusal from a prior one.
+        self._load_refused = False
+        # Prior quarantine is re-read and kept HELD, never armed and never carried
+        # into the live map: repairing the offending field is not enough on its own,
+        # because the sidecar must not be the only durable copy of a running loop.
+        self._quarantined = []
+        # And the ownership set with it: it is the LICENCE to remove, so a key surviving a
+        # pass the row did not lets compaction delete a row a peer wrote afterwards.
+        self._sidecar_seen = set()
+        # Re-read per load: a row repaired between loads must stop being carried.
+        self._unparsed_rows = []
+        # No turn is in flight across a load, so no claim can be owed.
+        self._delivering_claim = {}
+        # The sidecar is the SINGLE durable location. Held-aside rows are deliberately
+        # not embedded in the store too -- two copies of one state can disagree.
+        prior_quarantined = self._read_quarantine_sidecar()
+        # Arming while writes are refused is worse than arming nothing: a delivered cycle
+        # cannot persist its counter, so a restart re-fires it past its own cycle cap.
+        if self._load_refused:
+            logger.warning(
+                "AutoNudge: arming no loops — the quarantine sidecar at %s could not be "
+                "read, so a delivered cycle could not record itself. Fix the file and "
+                "restart.",
+                self._quarantine_path,
+            )
+            return
+        # A quarantined row says nothing about the main store; the row that MOVES into
+        # quarantine flags it below. Rewriting here deleted rows the parser could not read.
+        # Resolve the ACTIVE credential policy ONCE, before the row loop.
+        #
+        # The addressing guard below decides whether a persisted ``id``/``slot_key``
+        # is credential-shaped, and it must ask the host's policy, not the OSS
+        # baseline. ``redact_via_context`` is fail-closed and re-raises
+        # ``PlatformCompositionError`` for a host that declares a companion policy
+        # it could not compose -- and that exception is ``RuntimeError``-derived, so
+        # probing it HERE rather than per row is what keeps the failure legible:
+        # inside the loop the per-row ``except Exception`` would swallow it once per
+        # row and report N rows as "malformed", which names the wrong defect.
+        #
+        # On failure we refuse to arm ANYTHING. That is the fail-closed answer for a
+        # security predicate we cannot evaluate -- arming a loop whose addressing
+        # fields we could not vet is exactly the exposure this guard exists to close
+        # -- and it is deliberately NOT a downgrade to the weaker baseline, which is
+        # what the shim exists to prevent. It is contained: ``start()`` does not
+        # raise, so the gateway still comes up.
+        #
+        # Nothing is armed AND nothing may be written: ``_load_refused`` makes
+        # ``_write_state`` refuse, exactly as cron's ``_load_failed`` makes ``_save``
+        # raise. That is what keeps the refusal non-destructive now that rows are no
+        # longer carried in memory -- an empty ``_loops`` here means "could not vet",
+        # not "store is empty", and persisting it would delete everything.
+        try:
+            redact_via_context("")
+        except PlatformCompositionError:
+            self._load_refused = True
+            logger.error(
+                "AutoNudge: refusing to arm any loop — this host declares a credential "
+                "policy it could not compose, so a persisted addressing field cannot be "
+                "vetted. The store is left untouched (writes are refused while this "
+                "holds); fix the host and restart.",
+                exc_info=True,
+            )
+            return
+        # The list guard below cannot see a NON-DICT root: ``"loops" in []`` is False, so
+        # a hand-edited ``[]`` or bare number reached the row loop and aborted boot.
+        if not isinstance(data, dict):
+            self._load_refused = True
+            logger.error(
+                "AutoNudge: refusing to arm any loop — the store at %s holds %s at its "
+                "root instead of an object, so no row can be read. Writes are refused (a "
+                "write would delete them); fix the file and restart.",
+                self._path,
+                type(data).__name__,
+            )
+            return
+        # PRESENT-BUT-NOT-A-LIST is corruption, not an empty store. Reading it as empty
+        # arms nothing and then lets the next mutation replace the file, deleting every
+        # row it still held -- so refuse both arming and persistence, as the unreadable
+        # sidecar already does. ABSENT stays legal: that is a genuinely empty store.
+        if "loops" in data and not isinstance(data["loops"], list):
+            self._load_refused = True
+            logger.error(
+                "AutoNudge: refusing to arm any loop — the store at %s carries %s under "
+                "'loops' instead of a list, so its rows cannot be enumerated. Writes are "
+                "refused (a write would delete them); fix the file and restart.",
+                self._path,
+                type(data["loops"]).__name__,
+            )
+            return
+        store_rows = _rows_or_empty(data.get("loops"))
+        # HELD, NEVER ARMED. Arming a held-aside row made the sidecar the only durable
+        # copy of a LIVE loop, and compaction is the only path that removes a sidecar
+        # row -- so a failed compaction plus a delete, which commits the store alone,
+        # left the row on disk for the next load to re-arm. Withhold-and-warn is the
+        # contract the malformed-row arm below already keeps.
+        for raw in prior_quarantined:
+            self._quarantined.append(deepcopy(raw))
+            # Accounted for by THIS instance, so compaction may later drop it once repaired.
+            # A row a peer adds after this read stays outside the set, and so survives.
+            self._sidecar_seen.add(_quarantine_row_key(raw))
+            logger.warning(
+                "autonudge: not arming held-aside loop %s -- held rows are kept for "
+                "repair, never armed; move the repaired row into %s to arm it",
+                redact_store_value(raw.get("id") if isinstance(raw, dict) else None),
+                self._path,
+            )
+        for raw in store_rows:
             try:
                 loop_values = {
                     key: raw[key]
@@ -850,10 +1221,12 @@ class AutoNudgeService:
                 # instruction merely mentioned a pull request. Only an explicit
                 # boolean true gates.
                 if "gate" in loop_values and not isinstance(loop_values["gate"], bool):
+                    # BOTH args scrubbed: these normalisation sinks fire ABOVE the addressing
+                    # guard, so each one must scrub every store-sourced value it names.
                     logger.warning(
-                        "AutoNudge: loop %s stored a non-boolean gate (%r); leaving it ungated",
-                        raw.get("id"),
-                        loop_values["gate"],
+                        "AutoNudge: loop %s stored a non-boolean gate (%s); leaving it ungated",
+                        redact_store_value(raw.get("id")),
+                        redact_store_value(loop_values["gate"]),
                     )
                     loop_values["gate"] = False
                 # ``self_armed`` is the ONE bit that relaxes the crew/member
@@ -864,13 +1237,141 @@ class AutoNudgeService:
                 # admits, and the fire-time check compares ``is True`` besides.
                 if "self_armed" in loop_values and not isinstance(loop_values["self_armed"], bool):
                     logger.warning(
-                        "AutoNudge: loop %s stored a non-boolean self_armed (%r); "
+                        "AutoNudge: loop %s stored a non-boolean self_armed (%s); "
                         "treating it as externally armed",
-                        raw.get("id"),
-                        loop_values["self_armed"],
+                        redact_store_value(raw.get("id")),
+                        redact_store_value(loop_values["self_armed"]),
                     )
                     loop_values["self_armed"] = False
                 loop = NudgeLoop(**loop_values)
+                # Owed in BOTH arms: a cap applied later is refused against ``cycle_count``, so
+                # committing an unconfirmed cycle is not inert even on an uncapped loop.
+                inflight = raw.get("inflight_cycle")
+                if isinstance(inflight, bool):
+                    # ``isinstance(True, int)`` is TRUE, so a stored boolean would read as
+                    # cycle 1 and spend a phantom cycle that no turn ever claimed.
+                    logger.warning(
+                        "AutoNudge: loop %s stored a non-integer cycle claim (%s); ignoring it",
+                        redact_store_value(raw.get("id")),
+                        redact_store_value(inflight),
+                    )
+                    inflight = None
+                    self._store_dirty = True
+                if isinstance(inflight, int) and inflight > loop.cycle_count:
+                    # The claim reaches disk BEFORE the turn it claims, so an unresolved one
+                    # cannot say whether the reader already received that turn.
+                    logger.warning(
+                        "AutoNudge: loop %s was interrupted mid-delivery on cycle %d — it is "
+                        "owed, not spent, and is held stopped until re-activated",
+                        redact_store_value(raw.get("id")),
+                        inflight,
+                    )
+                    self._unreconciled_claim[loop.id] = inflight
+                    loop.active = False
+                    # A reason the UI can render: without it a routine restart mid-fire
+                    # surfaced as an unexplained pause with only a log line behind it.
+                    loop.stopped_reason = "interrupted_cycle"
+                    self._store_dirty = True
+                # A row persisted before goal tokens existed carries none, and an empty
+                # one would refuse every baselined save. No client can hold it yet.
+                if not _is_generator_shaped_token(loop.goal_token):
+                    if loop.goal_token:
+                        logger.warning(
+                            "AutoNudge: replaced a non-conforming goal identity for loop "
+                            "%s -- the stored value is not one this service can have "
+                            "generated, and it is served to clients",
+                            redact_store_value(loop.id),
+                        )
+                    # A REPAIR (absent or non-conforming) must reach disk; the rotation
+                    # below need not, because the comparison reads the in-memory value.
+                    self._store_dirty = True
+                # Rotated on EVERY load: a human may have hand-edited the goal while this
+                # process was down, leaving a pre-restart token still able to authorise it.
+                loop.goal_token = new_goal_token()
+                # TRUST BOUNDARY for the addressing fields. The REST serializer
+                # exempts ``ADDRESSING_FIELDS`` from its scrub because the client
+                # addresses the row by them, so a credential placed in one would
+                # reach every dashboard client verbatim -- through
+                # ``GET /api/autonudge`` and through the transcript row's
+                # ``meta.nudge.loop_id`` -- and nothing upstream prevents it: the
+                # store is a file an agent writes directly.
+                #
+                # REFUSED, not scrubbed. Scrubbing would rewrite the identity that
+                # ``PATCH``/``DELETE`` and the UI's session lookup resolve by,
+                # leaving a row that is displayed but cannot be acted on -- a
+                # functional regression dressed as a fix. Refusing is also the
+                # arm-time contract: ``authorize_and_add_nudge`` never mints an id
+                # like this, so a store row carrying one did not come from the API.
+                #
+                # Detection is THREE conditions, and the warning says which fired:
+                #   * not a ``str`` at all -- the field is DECLARED ``str``, and a
+                #     non-string rides both the serializer's exemption and its
+                #     ``isinstance`` early-out. For ``id`` it is worse than a leak: a
+                #     list is unhashable, so ``self._loops[loop.id] = loop`` below
+                #     raises UNCAUGHT, escapes ``_load`` and the unguarded
+                #     ``run_in_executor`` in ``start()``, and NO loop arms at all.
+                #   * not PRINTABLE -- ``redact`` only rewrites credential- and
+                #     URL-shaped text, so a newline rides straight through it. That
+                #     matters because the id reaches ~15 ``logger`` calls as a bare
+                #     ``%s`` (the cycle-cap and runtime-budget arms among them), and
+                #     one embedded newline splits a record in two, so the operator
+                #     reads an attacker-authored second line as though the gateway
+                #     emitted it. Escaping at each sink was rejected: they are many
+                #     and each new one would have to remember, whereas this loader is
+                #     the single trust boundary every persisted row crosses. ``\r``,
+                #     ``\t``, ANSI escapes and ``NUL`` are all caught by the same
+                #     predicate -- measured, none of them is caught by ``redact``.
+                #   * credential-shaped -- either redactor CHANGES it, which is exactly
+                #     the predicate the serializer would have applied, so the two
+                #     surfaces cannot disagree about what counts.
+                #
+                # Warn naming the field and the SCRUBBED id, then QUARANTINE this row --
+                # siblings keep arming. Never logged; ``repr`` escapes a non-printable.
+                #
+                # RUNS HERE, immediately after construction and BEFORE the monitor branch,
+                # because every sink below is downstream of it. The quarantined-malformed-
+                # monitor warning interpolates a bare ``loop.id``, and it fires on exactly
+                # the row this guard exists to reject -- a hand-edited entry whose id is
+                # credential-shaped AND whose monitor will not parse.
+                #
+                # NOT every sink in the loop, though: the gate warning ABOVE this guard also
+                # names the id, so ordering alone did not cover it and that sink scrubs at
+                # itself. Ordering is the control for everything BELOW; a new sink above
+                # this point must scrub its own values.
+                unsafe_field = None
+                unsafe_why = ""
+                for name in sorted(ADDRESSING_FIELDS):
+                    why = _addressing_value_unsafe_why(getattr(loop, name, None))
+                    if why:
+                        unsafe_field, unsafe_why = name, why
+                        break
+                if unsafe_field is not None:
+                    logger.warning(
+                        "AutoNudge: refusing loop %s — its %s %s and addressing fields are "
+                        "served unscrubbed; fix the store entry",
+                        redact_store_value(loop.id),
+                        unsafe_field,
+                        unsafe_why,
+                    )
+                    # QUARANTINE this row rather than refusing the store: siblings keep
+                    # arming, writes keep working, and recovery needs no restart.
+                    #
+                    # Same shape as the malformed-monitor arm below, which already calls
+                    # ``quarantine_monitor_state`` to hold a payload inert and verbatim.
+                    #
+                    # It is held OUT of ``self._loops`` deliberately. ADDRESSING_FIELDS are
+                    # exempt from the egress scrub, so a live row would serve this value raw.
+                    #
+                    # ``_load_refused`` is NOT set. That flag is what strands
+                    # healthy loops -- armed against a store refusing every persist -- so
+                    # leaving the store writable removes that hazard rather than reviving it.
+                    # DE-DUPLICATE: after a main-store replacement failed following the
+                    # sidecar write, this row is in BOTH files and is reached twice here.
+                    key = _quarantine_row_key(raw)
+                    if key not in {_quarantine_row_key(r) for r in self._quarantined}:
+                        self._quarantined.append(deepcopy(raw))
+                    self._store_dirty = True
+                    continue
                 if "monitor" in raw:
                     monitor_raw = raw["monitor"]
                     monitor_quarantined = False
@@ -899,6 +1400,33 @@ class AutoNudgeService:
                         # restarts cannot mistake the inert payload for a typed
                         # controller record.
                         loop.monitor = None
+                        self._store_dirty = True
+                    if (
+                        loop.monitor is not None
+                        and loop.monitor.version == MONITOR_STATE_VERSION
+                        and loop.monitor.terminal_delivered is True
+                        and loop.monitor.terminal_pending
+                    ):
+                        # The turn REACHED the user before the settlement write failed, so
+                        # settling here is the recovery; firing would send it a second time.
+                        loop.monitor.outcome = (
+                            MonitorOutcome.SUCCESS
+                            if loop.monitor.terminal_pending == "success"
+                            else MonitorOutcome.BLOCKED
+                        )
+                        loop.monitor.stopped_reason = MONITOR_TERMINAL_REASON
+                        loop.monitor.stopped_at = time.time()
+                        loop.monitor.terminal_pending = ""
+                        loop.monitor.terminal_delivered = False
+                        loop.stopped_reason = MONITOR_TERMINAL_REASON
+                        loop.active = False
+                        if isinstance(inflight, int) and inflight > loop.cycle_count:
+                            loop.cycle_count = inflight
+                        logger.warning(
+                            "AutoNudge: loop %s delivered its final turn before the "
+                            "settlement write failed -- settling it instead of repeating it",
+                            loop.id,
+                        )
                         self._store_dirty = True
                     if loop.monitor is None:
                         pass
@@ -1092,8 +1620,7 @@ class AutoNudgeService:
                     # makes elsewhere: a value the authorized write path would have
                     # rejected is not invented back by keeping a shrunk remnant,
                     # and the row falls back to the full message.
-                    scrubbed, _ = redact_exfiltration_urls(loop.banner)
-                    scrubbed, _ = redact_credentials(scrubbed)
+                    scrubbed = scrub_loop_text(loop.banner, field="banner")
                     if len(loop.banner) > MAX_BANNER_CHARS or len(scrubbed) > MAX_BANNER_CHARS:
                         scrubbed = ""
                     if scrubbed != loop.banner:
@@ -1110,13 +1637,49 @@ class AutoNudgeService:
                 # ``message`` is the payload the model receives and has no
                 # fallback row, and its 8000-char limit is a write-path concern.
                 if isinstance(loop.message, str) and loop.message:
-                    scrubbed_msg, _ = redact_exfiltration_urls(loop.message)
-                    scrubbed_msg, _ = redact_credentials(scrubbed_msg)
+                    scrubbed_msg = scrub_loop_text(loop.message, field="message")
                     if scrubbed_msg != loop.message:
                         loop.message = scrubbed_msg
                         self._store_dirty = True
             except Exception:
-                logger.warning("AutoNudge: skipping malformed loop entry: %r", raw, exc_info=True)
+                # The row is withheld, and it is the ONE object here guaranteed to
+                # be attacker-shaped: construction failed precisely because it was
+                # not the shape we expected. ``%r`` of it put every field --
+                # ``message`` and any credential inside it -- into
+                # the log ring and the ``/api/logs`` stream that the repair arms
+                # above deliberately keep values out of. The rule belongs to the
+                # SINK, so the arm WRAPPING those arms has to obey it too.
+                #
+                # Diagnosability is preserved without the values: the id (scrubbed,
+                # since it comes out of the same hand-editable store) plus the
+                # field NAMES present, which is what tells an operator which row to
+                # fix and what it was carrying. ``exc_info`` still gives the
+                # exception and its traceback, and a TypeError from the dataclass
+                # names the missing or unexpected field itself.
+                # A row need not be an OBJECT at all -- ``loops`` is hand-editable
+                # JSON, so ``[null]``, ``[42]`` or ``["oops"]`` are all reachable.
+                # ``raw.get`` does not exist on those, and this is the arm whose
+                # whole job is to SKIP the row: raising here escapes ``_load``,
+                # escapes the unguarded ``run_in_executor(None, self._load)`` in
+                # ``start()``, and arms NO loops at all. So the id is read
+                # defensively rather than assumed to be a mapping.
+                #
+                # The KEYS are scrubbed too, not just the id: they come out of the
+                # same hand-editable store, so a key can itself be a credential.
+                if isinstance(raw, dict):
+                    bad_id = redact_store_value(raw.get("id", "<no id>"))
+                    fields = redact_store_value(", ".join(sorted(map(str, raw))))
+                else:
+                    bad_id = "<not an object>"
+                    fields = type(raw).__name__
+                logger.warning(
+                    "AutoNudge: skipping malformed loop entry %s (fields present: %s)",
+                    bad_id,
+                    fields,
+                    exc_info=True,
+                )
+                # Held for the next write. Skipping arms no loop; it must not delete one.
+                self._unparsed_rows.append(raw)
                 continue
             self._loops[loop.id] = loop
             if repaired != loop.stop_sentinel_path:
@@ -1181,11 +1744,70 @@ class AutoNudgeService:
         the serialization must happen there too — a worker thread iterating
         ``self._loops`` concurrently with a mutation would race. The returned
         payload is immutable-by-convention and safe to hand to an executor.
+        Loops are built from ``self._loops`` alone, so a row ``_load`` declined is
+        absent from ``loops``. An unusable addressing field is NOT dropped: it is held
+        in the ``autonudge.quarantine.json`` sidecar, which this payload does not carry
+        and this write does not touch, so the entry the operator was warned about is
+        still there to repair. It is kept out of ``loops`` because addressing fields are
+        served unscrubbed. A row that could not be PARSED is carried here verbatim from
+        ``_unparsed_rows``: it arms nothing, but any cause that flags the store dirty would
+        otherwise make this write delete a neighbour nobody chose to remove.
+
+        A whole-store refusal covers three causes, and ``_write_state`` honours all of
+        them by refusing rather than persisting a payload that is empty because nothing
+        could be vetted: a credential policy this host declares but cannot compose, a
+        ``loops`` value that is present but not a list, and a quarantine sidecar that
+        could not be read. An unusable addressing field is quarantined per row instead,
+        so it is never refused wholesale.
+
+        DELIBERATE, and the alternative named: held rows could instead be re-emitted into
+        this payload's own ``loops`` and never armed, which would delete the sidecar and its
+        whole ordering apparatus -- and with it the cross-process race its lock now covers.
+        Not taken here because a build PREDATING the ``quarantined`` key (see
+        ``_QUARANTINE_FILE``) reads this payload back with no held-row concept, so an
+        embedded row is an ordinary loop to it and it ARMS the addressing field this
+        quarantine refuses. Serving is NOT the reason: a held row is absent from ``_loops``,
+        so no client frame can carry it, exactly as ``_unparsed_rows`` rides this list
+        unserved. Revisiting it means accepting that downgrade-arming risk.
         """
-        return {
+        payload: dict[str, Any] = {
             "version": _STORE_VERSION,
-            "loops": [self._serialize_loop(lp) for lp in self._loops.values()],
+            "loops": self._serialized_loops(),
         }
+        return payload
+
+    def _serialized_loops(
+        self,
+        *,
+        replace: dict[str, NudgeLoop] | None = None,
+        skip: set[str] | None = None,
+        extra: list[NudgeLoop] | None = None,
+    ) -> list[Any]:
+        """Build EVERY store payload's ``loops`` list, so no writer can omit a row.
+
+        Two classes of row are invisible in ``_loops`` and were dropped by any builder that
+        walked it directly -- which the monitor paths did, replacing the whole store:
+
+        * a row ``_load`` could not PARSE, held verbatim in ``_unparsed_rows``;
+        * a cycle CLAIM persisted before a turn went out and rolled back in memory for the
+          delivery window, which a concurrent write would otherwise erase.
+        """
+        rows: list[Any] = []
+        for candidate in list(self._loops.values()) + list(extra or []):
+            if skip and candidate.id in skip:
+                continue
+            row = self._serialize_loop((replace or {}).get(candidate.id, candidate))
+            claimed = self._delivering_claim.get(candidate.id)
+            if claimed is not None:
+                # BESIDE the spent count, never inside it: a restart must be able to tell a
+                # claimed-but-undelivered cycle from a spent one. Disk-only, so no client sees it.
+                row["inflight_cycle"], row["last_fire_ts"] = claimed
+            elif candidate.id in self._unreconciled_claim:
+                # Carried from an earlier run: dropping it here would leave the next restart
+                # with no marker at all, and re-activation would then replay that turn.
+                row["inflight_cycle"] = self._unreconciled_claim[candidate.id]
+            rows.append(row)
+        return rows + list(self._unparsed_rows)
 
     @staticmethod
     def _serialize_loop(loop: NudgeLoop) -> dict[str, Any]:
@@ -1207,6 +1829,27 @@ class AutoNudgeService:
         # fail with PermissionError while another handle is transiently open on
         # the fresh temp file (indexer / AV), which loses the write.
         # Blocking (fsync) — async callers offload this to an executor.
+        #
+        # REFUSE after a load that could not vet the store. ``_loops`` is then empty
+        # for that reason rather than because the store is empty, so writing would
+        # delete every row the operator still has to correct. Cron answers the same
+        # state by RAISING ``CronStoreUnreadable`` from ``_save``, and this now does the
+        # same, because a bare ``return`` was worse than merely quiet: every mutation
+        # caller already wraps its persist in ``except BaseException`` and rolls back
+        # (``_add_locked`` restores the previous loop, ``update`` restores the previous
+        # field values, the removal path calls ``_restore_failed_removal``). Reporting
+        # success DEFEATED those handlers, so the caller confirmed a loop that lived
+        # only in memory and vanished on restart. Raising is what makes them fire.
+        #
+        # The detached background persist (``_persist_soon``) is supervised and logs a
+        # failed task, so the raise is recorded there rather than lost or fatal.
+        if self._load_refused:
+            raise AutoNudgeStoreUnvetted(
+                "refusing to persist — the last load could not vet the store, so the "
+                "in-memory list is empty for that reason rather than because the store "
+                "is empty. Fix the store entry or the host's credential policy and "
+                "restart; the file on disk is untouched."
+            )
         self._path.parent.mkdir(parents=True, exist_ok=True)
         fd, tmp_path = tempfile.mkstemp(dir=self._path.parent, suffix=".tmp")
         try:
@@ -1214,11 +1857,37 @@ class AutoNudgeService:
                 json.dump(payload, fh, indent=2)
                 fh.flush()
                 os.fsync(fh.fileno())
+            # BEFORE the main store lands: if this raises, the file on disk is still the
+            # old consistent one rather than a new one whose rows have no durable copy.
+            self._write_quarantine_sidecar()
             replace_with_retry(tmp_path, self._path)
         except BaseException:
             with contextlib.suppress(OSError):
                 os.unlink(tmp_path)
             raise
+        # The rename is the COMMIT POINT, so nothing past it may raise: the caller rolls
+        # its loop back on an exception while disk KEEPS the change.
+        try:
+            fsync_dir(self._path.parent)
+        except OSError:
+            # Compaction DELETES rows and its durability rests on this sync, so an
+            # unsynced store keeps the superset exactly as a failed compaction does.
+            logger.warning(
+                "autonudge: could not sync the store directory after a committed write; "
+                "the write STANDS and the quarantine superset is kept uncompacted",
+                exc_info=True,
+            )
+            return
+        # Non-fatal for the same reason. Compaction drops only rows this write observed,
+        # so a failure leaves a superset that the next successful write retries.
+        try:
+            self._compact_quarantine_sidecar()
+        except Exception:
+            logger.warning(
+                "autonudge: could not compact the quarantine sidecar after a committed "
+                "store write; the durable copy is kept and the next write retries",
+                exc_info=True,
+            )
 
     def _save(self) -> None:
         self._write_state(self._serialize_state())
@@ -1559,17 +2228,16 @@ class AutoNudgeService:
                     idle_secs=cadence,
                     created_ts=created,
                     next_due_ts=due,
+                    goal_token=new_goal_token(),
                     monitor=monitor,
                     self_armed=self_armed,
                 )
                 replacement_payload = {
                     "version": _STORE_VERSION,
-                    "loops": [
-                        self._serialize_loop(candidate)
-                        for candidate in self._loops.values()
-                        if existing is None or candidate.id != existing.id
-                    ]
-                    + [self._serialize_loop(loop)],
+                    "loops": self._serialized_loops(
+                        skip={existing.id} if existing is not None else None,
+                        extra=[loop],
+                    ),
                 }
                 await self._write_monitor_snapshot_locked(replacement_payload)
                 if existing is not None:
@@ -1722,6 +2390,7 @@ class AutoNudgeService:
                 idle_secs=idle_secs,
                 max_cycles=max(0, int(max_cycles)),
                 created_ts=now,
+                goal_token=new_goal_token(),
                 stop_sentinel_path=stop_sentinel_path,
                 max_runtime_secs=max(0, int(max_runtime_secs)),
                 # Anchor the first deadline at arm time (set BEFORE the
@@ -1786,7 +2455,34 @@ class AutoNudgeService:
         logger.info("AutoNudge: added loop %s on slot %s (idle=%ds)", loop.id, slot_key, idle_secs)
         return loop
 
-    async def _persist_locked(self) -> None:
+    async def _persist_locked(
+        self, before: Callable[[], Callable[[], None] | None] | None = None
+    ) -> None:
+        """Persist as a supervised, shielded task so cancellation cannot strand a write.
+
+        Same contract as ``add``/``update``: a caller cancelled while the executor
+        thread is still committing the snapshot must not release ``_lock``, because
+        the thread cannot be interrupted -- the claim lands on disk anyway, and a
+        later writer that acquired the freed lock can then land behind it.
+        """
+        inner: "asyncio.Task[None]" = asyncio.ensure_future(self._persist_locked_body(before))
+        self._inflight_adds.add(inner)
+
+        def _finish(t: "asyncio.Task[None]") -> None:
+            self._inflight_adds.discard(t)
+            if t.cancelled():
+                return
+            exc = t.exception()
+            if exc is None:
+                return
+            logger.warning("AutoNudge: detached persist failed", exc_info=exc)
+
+        inner.add_done_callback(_finish)
+        await asyncio.shield(inner)
+
+    async def _persist_locked_body(
+        self, before: Callable[[], Callable[[], None] | None] | None = None
+    ) -> None:
         """Snapshot under the service lock and write on a worker thread.
 
         The SINGLE async persistence path for post-arm mutations. Two properties
@@ -1802,8 +2498,16 @@ class AutoNudgeService:
           event loop.
         """
         async with self._lock:
-            payload = self._serialize_state()
-            await asyncio.get_running_loop().run_in_executor(None, self._write_state, payload)
+            # ``before`` mutates state that must reach disk in THIS snapshot and no earlier
+            # one, so it runs inside the lock -- and its undo runs if the write never lands.
+            undo = before() if before is not None else None
+            try:
+                payload = self._serialize_state()
+                await asyncio.get_running_loop().run_in_executor(None, self._write_state, payload)
+            except BaseException:
+                if undo is not None:
+                    undo()
+                raise
 
     async def update(
         self,
@@ -1816,6 +2520,7 @@ class AutoNudgeService:
         max_runtime_secs: int | None = None,
         stopped_reason: str | None = None,
         banner: str | None = None,
+        expect_fingerprint: str | None = None,
     ) -> NudgeLoop | None:
         # CANCELLATION SAFETY: same contract as add(). The mutate+persist runs
         # as a SHIELDED, supervised task so a caller cancelled mid-write cannot
@@ -1832,14 +2537,21 @@ class AutoNudgeService:
                 max_runtime_secs=max_runtime_secs,
                 stopped_reason=stopped_reason,
                 banner=banner,
+                expect_fingerprint=expect_fingerprint,
             )
         )
         self._inflight_adds.add(inner)
 
         def _finish(t: "asyncio.Task[NudgeLoop | None]") -> None:
             self._inflight_adds.discard(t)
-            if not t.cancelled() and t.exception() is not None:
-                logger.warning("AutoNudge: detached update() failed", exc_info=t.exception())
+            if t.cancelled():
+                return
+            exc = t.exception()
+            # A stale baseline is the 409 this update's caller already surfaces, so it is
+            # an answer rather than a fault; every other exception keeps its warning.
+            if exc is None or isinstance(exc, AutoNudgeStaleBaseline):
+                return
+            logger.warning("AutoNudge: detached update() failed", exc_info=exc)
 
         inner.add_done_callback(_finish)
         return await asyncio.shield(inner)
@@ -1907,6 +2619,7 @@ class AutoNudgeService:
         max_runtime_secs: int | None = None,
         stopped_reason: str | None = None,
         banner: str | None = None,
+        expect_fingerprint: str | None = None,
     ) -> NudgeLoop | None:
         lock = await self._acquire_mutation_lock(loop_id)
         if lock is None:
@@ -1921,6 +2634,7 @@ class AutoNudgeService:
                 max_runtime_secs=max_runtime_secs,
                 stopped_reason=stopped_reason,
                 banner=banner,
+                expect_fingerprint=expect_fingerprint,
             )
         finally:
             lock.release()
@@ -1936,6 +2650,7 @@ class AutoNudgeService:
         max_runtime_secs: int | None = None,
         stopped_reason: str | None = None,
         banner: str | None = None,
+        expect_fingerprint: str | None = None,
     ) -> NudgeLoop | None:
         async with self._lock:
             loop = self._loops.get(loop_id)
@@ -1946,6 +2661,12 @@ class AutoNudgeService:
                 # touching even one shared scheduling field so a non-HTTP
                 # caller cannot bypass structured policy.
                 return loop
+            # Under the lock, so no write can land between this and the mutation. The
+            # fingerprint is authoritative: a projection baseline cannot distinguish goals.
+            if expect_fingerprint is not None and (
+                not expect_fingerprint or loop.goal_token != expect_fingerprint
+            ):
+                raise AutoNudgeStaleBaseline(loop_id)
             # Keep typed nested values intact. ``asdict`` recursively converts
             # MonitorState to a plain dict, which is not a valid rollback value.
             previous = {item.name: getattr(loop, item.name) for item in fields(loop)}
@@ -1957,6 +2678,9 @@ class AutoNudgeService:
             if message is not None:
                 retarget = message != loop.message
                 loop.message = message
+                # A new goal is a new identity, so a baseline served for the old text
+                # cannot authorise a write.
+                loop.goal_token = new_goal_token()
                 if retarget:
                     # The instruction IS the target, so a changed instruction can
                     # change the subject. Re-infer, or the loop keeps polling the
@@ -2135,6 +2859,31 @@ class AutoNudgeService:
                     else:
                         loop.stopped_reason = stopped_reason or "manual"
             revived = loop.active and not was_active
+            owed = self._unreconciled_claim.get(loop.id)
+            spent_claim: int | None = None
+            settled_claim: tuple[int, float] | None = None
+            discharged_debt: tuple[str, bool] | None = None
+            if owed is not None and loop.active:
+                # Settled, not replayed: whoever re-activated it accepted the interrupted
+                # cycle as spent, the only reading that cannot deliver the turn twice.
+                spent_claim = self._unreconciled_claim.pop(loop.id, None)
+                loop.cycle_count = max(loop.cycle_count, owed)
+                settled_claim = self._delivering_claim.pop(loop.id, None)
+                claim_monitor = loop.monitor
+                if claim_monitor is not None and claim_monitor.terminal_pending:
+                    # Spending the cycle says the final turn reached its reader, so the debt
+                    # for that turn is discharged too; leaving it owed delivers it twice.
+                    discharged_debt = (
+                        claim_monitor.terminal_pending,
+                        claim_monitor.terminal_delivered,
+                    )
+                    claim_monitor.terminal_pending = ""
+                    claim_monitor.terminal_delivered = False
+                logger.info(
+                    "AutoNudge: loop %s reconciled interrupted cycle %d as spent",
+                    loop.id,
+                    owed,
+                )
             # Deadline bookkeeping (BEFORE the snapshot below so it persists):
             # an interval change restarts an EXISTING countdown at the new
             # interval — the old deadline encodes the old cadence and honouring
@@ -2164,6 +2913,15 @@ class AutoNudgeService:
             except BaseException:
                 for field_name, value in previous.items():
                     setattr(loop, field_name, value)
+                if spent_claim is not None:
+                    # The failed write left ``inflight_cycle`` on disk, so dropping the
+                    # in-memory claim lets the next write erase it and replay the turn.
+                    self._unreconciled_claim[loop.id] = spent_claim
+                if settled_claim is not None:
+                    self._delivering_claim[loop.id] = settled_claim
+                if discharged_debt is not None and loop.monitor is not None:
+                    loop.monitor.terminal_pending = discharged_debt[0]
+                    loop.monitor.terminal_delivered = discharged_debt[1]
                 if claim_was_held:
                     # The retarget above dropped this loop's pending wake claim,
                     # because a claim earned by the OLD subject must not be spent on
@@ -2346,6 +3104,10 @@ class AutoNudgeService:
         in between. A refused precondition changes nothing.
         """
         async with self._lock:
+            # A refused load leaves the map EMPTY, so absence below reported a delete that
+            # never happened while the durable row re-arms on the next start.
+            if self._load_refused:
+                raise AutoNudgeStoreUnvetted(loop_id)
             existed = loop_id in self._loops
             if not existed and loop_id not in self._pending_removals:
                 return False
@@ -2418,11 +3180,12 @@ class AutoNudgeService:
     def get_by_id(self, loop_id: str) -> NudgeLoop | None:
         """The loop with this id, or ``None``.
 
-        Public because the update authorizer holds only an opaque ``loop_id`` and
-        must resolve it to a slot key to decide whether a banner is supported
-        there. An accessor rather than reaching into ``_loops`` from another
-        module, matching ``get_by_slot``/``list_all``. Returns the LIVE object,
-        not a copy; callers here only read from it.
+        Public because ``autonudge_authz`` needs it twice: to resolve an opaque
+        ``loop_id`` to a slot key when deciding whether a banner is supported there,
+        and to read the CURRENT message when deciding whether a submitted one is
+        merely the scrubbed projection it served. An accessor rather than reaching
+        into ``_loops`` from another module, matching ``get_by_slot``/``list_all``.
+        Returns the LIVE object, not a copy; callers here only read from it.
         """
         return self._loops.get(loop_id)
 
@@ -2432,6 +3195,314 @@ class AutoNudgeService:
     def list_all(self) -> list[NudgeLoop]:
         return list(self._loops.values())
 
+    def _read_quarantine_sidecar(self) -> list:
+        """Read held-aside rows from the sidecar, tolerating absence but not corruption.
+
+        A missing file is the normal case and reads as "nothing held aside".
+
+        Content we cannot parse is different, and returning ``[]`` for it was a data-loss
+        path: the loader would report nothing held aside, and the next write would call
+        ``_drop_quarantine_sidecar`` and UNLINK the only surviving copy of rows the
+        loader itself refused. So an unreadable or wrongly-shaped sidecar refuses every
+        persist in this process with ``AutoNudgeStoreUnvetted``, and MOVES THE FILE ASIDE
+        under a ``.corrupt-<ts>`` name so recovery is a restart rather than a human
+        editing JSON -- the bytes an operator needs are preserved either way.
+
+        ``_load`` also ARMS NOTHING once this flag is set. Arming while writes are refused
+        is worse than arming nothing: a delivered cycle cannot persist its counter, so a
+        restart re-fires it past its own cycle cap.
+        """
+        try:
+            raw = json.loads(self._quarantine_path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return []
+        except (OSError, ValueError):
+            logger.warning(
+                "autonudge: quarantine sidecar at %s is unreadable; refusing writes so "
+                "it is not replaced or unlinked before it can be recovered",
+                self._quarantine_path,
+            )
+            self._refuse_writes_and_preserve_sidecar()
+            return []
+        # Not a startup failure on its own -- `raw.get` would raise AttributeError straight
+        # out of `_load` -- but it is still an unreadable copy, so writes stay refused.
+        if not isinstance(raw, dict):
+            logger.warning(
+                "autonudge: quarantine sidecar at %s is not an object (%s); refusing "
+                "writes so it is not replaced or unlinked",
+                self._quarantine_path,
+                type(raw).__name__,
+            )
+            self._refuse_writes_and_preserve_sidecar()
+            return []
+        # `_rows_or_empty` answers a dict- or scalar-shaped value with [], which reads as
+        # "nothing is held aside" and lets the next persist unlink the only copy.
+        if "quarantined" in raw and not isinstance(raw["quarantined"], list):
+            logger.warning(
+                "autonudge: quarantine sidecar at %s has a non-list `quarantined` (%s); "
+                "refusing writes so it is not replaced or unlinked",
+                self._quarantine_path,
+                type(raw["quarantined"]).__name__,
+            )
+            self._refuse_writes_and_preserve_sidecar()
+            return []
+        # ABSENT is not EMPTY: `raw.get` answers a dict with no `quarantined` key with None,
+        # which read as "nothing held aside" and let the next persist unlink the only copy.
+        if "quarantined" not in raw:
+            logger.warning(
+                "autonudge: quarantine sidecar at %s has no `quarantined` key; refusing "
+                "writes so it is not replaced or unlinked",
+                self._quarantine_path,
+            )
+            self._refuse_writes_and_preserve_sidecar()
+            return []
+        rows = _rows_or_empty(raw["quarantined"])
+        # FILTERING a non-dict member would silently shrink the held-aside set and let the
+        # load proceed, so an unreadable member refuses the store exactly as a bad file does.
+        if any(not isinstance(row, dict) for row in rows):
+            logger.warning(
+                "autonudge: quarantine sidecar at %s holds a non-object entry; refusing "
+                "writes so it is not replaced or unlinked",
+                self._quarantine_path,
+            )
+            self._refuse_writes_and_preserve_sidecar()
+            return []
+        return rows
+
+    def _drop_quarantine_sidecar(self) -> None:
+        """Remove the sidecar once no rows remain -- ONLY after the main store landed.
+
+        Removing it is itself the deletion of a durable copy: a row repaired in the
+        sidecar and dropped from ``_quarantined`` exists nowhere else until the new
+        store is on disk, so unlinking before a replacement that can fail would lose
+        it permanently.
+
+        """
+        if self._quarantined:
+            return
+        with contextlib.suppress(OSError):
+            self._quarantine_path.unlink()
+
+    def _refuse_writes_and_preserve_sidecar(self) -> None:
+        """Refuse persistence for THIS process, and move the unreadable file aside.
+
+        Both halves are load-bearing. Refusing keeps the store consistent now, because
+        a write would compact around rows nothing enumerated. The move-aside is what
+        stops that being a permanent outage: recovery becomes a restart, not a human
+        editing JSON, and the original bytes survive under a ``.corrupt-<ts>`` name.
+        """
+        self._load_refused = True
+        self._move_aside_unreadable_sidecar()
+
+    def _move_aside_unreadable_sidecar(self) -> None:
+        """Rename an unreadable sidecar so recovery does not need a human repair.
+
+        The bytes are PRESERVED under a ``.corrupt-<ts>`` suffix rather than unlinked --
+        an operator still needs them to re-inject the held rows -- but the service can
+        persist again after a restart instead of staying down until someone edits JSON.
+        """
+        stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+        base = f"{self._quarantine_path.name}.corrupt-{stamp}"
+        target = self._quarantine_path.with_name(base)
+        try:
+            with self._sidecar_transaction():
+                # REVALIDATE inside the lock. Detection ran earlier and unlocked, so a peer may
+                # have published a readable replacement whose rows this rename would discard.
+                if self._quarantine_rows_on_disk() is not None:
+                    logger.warning(
+                        "autonudge: the quarantine sidecar at %s is readable again -- another "
+                        "instance replaced it since detection, so it is left in place",
+                        self._quarantine_path,
+                    )
+                    return
+                self._move_aside_locked(target, base)
+        except OSError:
+            # The LOCK itself can be unopenable -- a directory in its place, an exhausted
+            # disk -- and this runs during startup, where raising ends the process.
+            logger.warning(
+                "autonudge: could not take the quarantine sidecar lock at %s to move the "
+                "unreadable file aside; it stays in place and writes remain refused",
+                self._quarantine_path,
+                exc_info=True,
+            )
+
+    def _move_aside_locked(self, target: Path, base: str) -> None:
+        """Reserve a free ``.corrupt-`` name and rename the sidecar onto it."""
+        # ``replace`` CLOBBERS and the stamp is second-granular, so RESERVE the name with
+        # O_EXCL first -- two instances in one second would otherwise destroy these bytes.
+        for _ in range(8):
+            try:
+                os.close(os.open(target, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600))
+                break
+            except FileExistsError:
+                target = self._quarantine_path.with_name(f"{base}-{secrets.token_hex(4)}")
+            except OSError:
+                break
+        try:
+            self._quarantine_path.replace(target)
+        except OSError:
+            logger.warning(
+                "autonudge: could not move the unreadable quarantine sidecar at %s "
+                "aside; it stays in place and writes remain refused",
+                self._quarantine_path,
+                exc_info=True,
+            )
+            return
+        logger.warning(
+            "autonudge: quarantine sidecar at %s was unreadable and has been moved to "
+            "%s; its held-aside rows must be re-injected from there",
+            self._quarantine_path,
+            target,
+        )
+
+    def _quarantine_rows_on_disk(self) -> list[dict] | None:
+        """Read the sidecar's rows, or None when it cannot be enumerated."""
+        try:
+            raw = self._quarantine_path.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            return []
+        except OSError:
+            return None
+        try:
+            data = json.loads(raw)
+        except ValueError:
+            return None
+        if not isinstance(data, dict):
+            return None
+        rows = data.get("quarantined")
+        if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows):
+            return None
+        return rows
+
+    @contextmanager
+    def _sidecar_transaction(self) -> Iterator[None]:
+        """Hold an EXCLUSIVE cross-process lock for a sidecar read-modify-write.
+
+        The union below is not atomic across PROCESSES: a second AutoNudge writing the
+        same home can add a row between the read and the replace, and the sidecar is that
+        row's only durable copy. Within one event loop the pair is synchronous so the
+        intra-process race cannot happen -- this closes the inter-process one.
+
+        Distinct from the stat bracket removed earlier: that COMPARED a snapshot identity
+        and hoped nothing moved, which POSIX rename cannot make atomic. This EXCLUDES the
+        other writer, so there is no window to lose a row in.
+
+        The lock lives on a stable sentinel beside the sidecar rather than on the sidecar
+        itself, which is renamed and replaced underneath. Mode ``a+`` is exclusive without
+        tripping ``_locked_file``'s seed-a-store-shaped-file branch.
+        """
+        lock_path = self._quarantine_path.with_name(self._quarantine_path.name + ".lock")
+        if self._sidecar_lock_depth:
+            # RE-ENTRANT: ``flock`` is per-fd, so a second open here would block on a lock
+            # this process already holds, and the nested body is already excluded by it.
+            yield
+            return
+        with _locked_file(lock_path, "a+"):
+            self._sidecar_lock_depth += 1
+            try:
+                yield
+            finally:
+                self._sidecar_lock_depth -= 1
+
+    def _write_quarantine_sidecar(self) -> None:
+        """Publish held-aside rows under the cross-process sidecar lock."""
+        with self._sidecar_transaction():
+            self._write_quarantine_sidecar_locked()
+
+    def _write_quarantine_sidecar_locked(self) -> None:
+        """Persist held-aside rows ADDITIVELY, before the main store replacement.
+
+        Writing only the in-memory set SHRINKS the file whenever a row was repaired
+        this pass while a sibling stayed held: if the replacement then fails, that
+        repaired row is in neither the reduced sidecar nor the unchanged store. So
+        union with what is already on disk, and compact once the store has landed.
+
+        The union is not STAT-BRACKETED. That bracket was a check-then-mutate that could
+        not close the window it narrowed, and it made a repair an operator saved inside
+        that window destroyable. Exclusion by ``_sidecar_transaction`` replaces it.
+
+        Callers here must NOT re-enter the lock: the flock is per-fd, so a second
+        acquisition from this process on a fresh fd would block against itself.
+        """
+        on_disk = self._quarantine_rows_on_disk()
+        if on_disk is None:
+            # Fail CLOSED: returning here let the store land and the sidecar compact
+            # around rows this process never enumerated, overwriting or unlinking them.
+            self._refuse_writes_and_preserve_sidecar()
+            raise AutoNudgeStoreUnvetted(
+                f"quarantine sidecar at {self._quarantine_path} could not be read, so "
+                "this write is refused; it has been moved aside for inspection"
+            )
+        rows = deepcopy(self._quarantined)
+        seen = {_quarantine_row_key(row) for row in rows}
+        for row in on_disk:
+            key = _quarantine_row_key(row)
+            if key not in seen:
+                seen.add(key)
+                rows.append(row)
+        self._write_quarantine_rows(rows)
+
+    def _compact_quarantine_sidecar(self) -> None:
+        """Compact the sidecar under the cross-process sidecar lock."""
+        with self._sidecar_transaction():
+            self._compact_quarantine_sidecar_locked()
+
+    def _compact_quarantine_sidecar_locked(self) -> None:
+        """Reduce the sidecar to rows this write can PROVE it superseded, after the commit.
+
+        Compacting from ``self._quarantined`` alone deletes rows this process never saw. The
+        cross-process lock does not help: it SERIALIZES writers, so a peer's row is already
+        durably on disk and simply absent from this instance's memory, which is stale rather
+        than racing. An empty local set then unlinked the file and took the peer's only
+        durable copy with it.
+
+        So the licence to remove a row is having ENUMERATED it at load and not holding
+        it. Absence from ``_sidecar_seen`` means another writer owns it, and it is kept. The
+        file is dropped only when nothing survives that test.
+
+        Called with the lock ALREADY held, so neither the read nor the drop re-enters it.
+        """
+        on_disk = self._quarantine_rows_on_disk()
+        if on_disk is None:
+            # Cannot enumerate: keeping the superset is the whole point of the file.
+            return
+        held = {_quarantine_row_key(row) for row in self._quarantined}
+        keep = [
+            row
+            for row in on_disk
+            if _quarantine_row_key(row) in held
+            or _quarantine_row_key(row) not in self._sidecar_seen
+        ]
+        if not keep:
+            self._drop_quarantine_sidecar()
+            return
+        self._write_quarantine_rows(keep)
+
+    def _write_quarantine_rows(self, rows: list[dict]) -> None:
+        """Atomically write exactly ``rows``. Never REMOVES the file -- see the drop half.
+
+        Written from a single sink so EVERY caller is correct by construction rather
+        than each having to remember the atomicity and never-unlink invariants.
+        """
+        if not rows:
+            return
+        payload = {"version": _STORE_VERSION, "quarantined": rows}
+        self._quarantine_path.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp_path = tempfile.mkstemp(dir=self._quarantine_path.parent, suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                json.dump(payload, fh, indent=2)
+                fh.flush()
+                os.fsync(fh.fileno())
+            replace_with_retry(tmp_path, self._quarantine_path)
+            # Fsyncing the bytes leaves the RENAME unflushed, so a crash could drop
+            # these rows from the only place still holding them.
+            fsync_dir(self._quarantine_path.parent)
+        except BaseException:
+            with contextlib.suppress(OSError):
+                os.unlink(tmp_path)
+            raise
+
     def _monitor_snapshot_with_replacement(
         self,
         loop: NudgeLoop,
@@ -2440,10 +3511,7 @@ class AutoNudgeService:
         """Serialize one staged monitor replacement without changing live state."""
         return {
             "version": _STORE_VERSION,
-            "loops": [
-                self._serialize_loop(replacement if candidate.id == loop.id else candidate)
-                for candidate in self._loops.values()
-            ],
+            "loops": self._serialized_loops(replace={loop.id: replacement}),
         }
 
     def _apply_staged_monitor(self, loop: NudgeLoop, staged: NudgeLoop) -> None:
@@ -3459,6 +4527,10 @@ class AutoNudgeService:
         wrote it and must survive the downgrade so an upgrade resumes the watch.
         Inertness is the local consequence, not a change of intent.
         """
+        if loop.id in self._settlement_owed:
+            # A delivered turn whose accounting never reached disk: arming it
+            # again re-enters the fire path and repeats that turn.
+            return
         monitor = loop.monitor
         if monitor is not None and monitor.version != MONITOR_STATE_VERSION:
             logger.info(
@@ -3624,7 +4696,11 @@ class AutoNudgeService:
             # refuse every replacement watch on the slot forever.
             if not loop.active and not self._waits_for_terminal_completion(loop):
                 continue
-            if loop.id in self._firing or loop.id in self._maintenance_quiescing:
+            if (
+                loop.id in self._firing
+                or loop.id in self._maintenance_quiescing
+                or loop.id in self._settlement_owed
+            ):
                 continue
             monitor = loop.monitor
             if monitor is not None and monitor.version != MONITOR_STATE_VERSION:
@@ -4163,6 +5239,15 @@ class AutoNudgeService:
             logger.info("AutoNudge: stop sentinel found for %s — removing loop", loop.id)
             await self.remove(loop.id)
             return
+        # ``_persist_soon`` only LOGS a failed persist, so with writes refused the
+        # post-fire bump below never lands. Stop rather than spend unrecordable cycles.
+        if self._load_refused:
+            logger.error(
+                "AutoNudge: not firing loop %s -- persistence is refused, so a delivered "
+                "cycle could not be recorded; fix the store and restart",
+                loop.id,
+            )
+            return
         # Cycle cap reached?
         if loop.max_cycles and loop.cycle_count >= loop.max_cycles:
             logger.info("AutoNudge: loop %s reached max_cycles — deactivating", loop.id)
@@ -4389,6 +5474,26 @@ class AutoNudgeService:
         # on _persist_locked(), so the delivered cycle was never written and the
         # loop could run extra cycles after a restart. _run_fire_cycle owns the
         # window; this method is the body.
+        # CLAIMED SEPARATELY from the spent count: a claim records an unconfirmed delivery
+        # without charging it, so a cap is never spent by a turn that may not have landed.
+        claim_from = loop.cycle_count
+        claim_ts = loop.last_fire_ts
+        loop.last_fire_ts = time.time()
+        claimed_ts = loop.last_fire_ts
+        self._delivering_claim[loop.id] = (claim_from + 1, claimed_ts)
+        try:
+            await self._persist_locked()
+        except Exception:
+            loop.last_fire_ts = claim_ts
+            self._delivering_claim.pop(loop.id, None)
+            logger.error(
+                "AutoNudge: not firing loop %s -- the cycle claim could not be persisted, "
+                "so a delivered turn would repeat after a restart",
+                loop.id,
+                exc_info=True,
+            )
+            return
+        rollback_undurable = False
         try:
             delivered = await self._on_fire(loop)
         except Exception:
@@ -4452,6 +5557,7 @@ class AutoNudgeService:
                 # stays owed rather than being recorded or dropped.
                 self._pending_floor_tick.add(loop.id)
             self._persist_soon()
+        staged_delivery: tuple[int, float] | None = None
         if delivered:
             # BEFORE the settlement below, not after. That block carries a comment
             # forbidding an early RETURN precisely so this bookkeeping still runs --
@@ -4461,8 +5567,72 @@ class AutoNudgeService:
             # the news went uncounted. Recording a delivery that has already happened
             # cannot be wrong; deferring it past a re-raise can.
             self._rearm_fail_count.pop(loop.id, None)
-            loop.cycle_count += 1
-            loop.last_fire_ts = time.time()
+            # STAGED, not applied: the settlement below awaits with ``_lock`` free, so a rival
+            # persist would serialize a spent cycle while the terminal turn was still owed.
+            staged_delivery = (claim_from + 1, time.time())
+        else:
+            # Release the claim DURABLY before the re-arm: the detached persist promised
+            # only a fresh countdown, and a cancelled one strands a claim on disk.
+            loop.last_fire_ts = claim_ts
+            self._delivering_claim.pop(loop.id, None)
+            try:
+                await self._persist_locked()
+            except Exception as exc:
+                # Keep the claim so the marker stays on disk rather than reading as delivered,
+                # and keep its clock with it: memory and the retained marker must not disagree.
+                self._delivering_claim[loop.id] = (claim_from + 1, claimed_ts)
+                loop.last_fire_ts = claimed_ts
+                rollback_undurable = True
+                logger.warning(
+                    "AutoNudge: loop %s could not release its cycle claim (%s) — "
+                    "leaving it claimed and not re-arming",
+                    loop.id,
+                    exc,
+                )
+        # The window is closed either way -- memory and disk agree from here on. EXCEPT on a failed
+        # release write: the marker stays and the claim is PRESERVED until reactivation settles it.
+        if not rollback_undurable and staged_delivery is None:
+            self._delivering_claim.pop(loop.id, None)
+
+        def _commit_delivery() -> Callable[[], None] | None:
+            # Runs ONLY under ``_lock``, so the spent cycle, the charges and the settlement
+            # reach disk in one snapshot. Returns the undo for a write that never lands.
+            nonlocal staged_delivery
+            if staged_delivery is None:
+                return None
+            spent = staged_delivery
+            was = (loop.cycle_count, loop.last_fire_ts, self._delivering_claim.get(loop.id))
+            charged_wake = bool(claimed_wake and loop.monitor is not None)
+            charged_floor = bool(claimed_floor and loop.monitor is not None)
+            was_followup = loop.monitor.followup_ticks if loop.monitor is not None else 0
+            loop.cycle_count, loop.last_fire_ts = spent
+            staged_delivery = None
+            self._delivering_claim.pop(loop.id, None)
+            if charged_wake and loop.monitor is not None:
+                loop.monitor.wakes += 1
+                loop.monitor.followup_ticks = _WAKE_FOLLOWUP_TICKS
+            if charged_floor and loop.monitor is not None:
+                loop.monitor.floor_ticks += 1
+
+            def _undo() -> None:
+                # Both surfaces or neither: the claim is still on disk, so memory must keep
+                # owing the cycle too, or a restart re-fires a turn that already went out.
+                nonlocal staged_delivery
+                loop.cycle_count, loop.last_fire_ts, held = was
+                if held is not None:
+                    self._delivering_claim[loop.id] = held
+                if charged_wake and loop.monitor is not None:
+                    loop.monitor.wakes -= 1
+                    loop.monitor.followup_ticks = was_followup
+                if charged_floor and loop.monitor is not None:
+                    loop.monitor.floor_ticks -= 1
+                staged_delivery = spent
+
+            return _undo
+
+        # Fire-cycle scope, never the settlement block's: the persist below reads it
+        # whether or not that block ran.
+        resettle_owed = False
         if delivered and loop.monitor is not None and loop.monitor.terminal_pending:
             # The owed turn landed, so the watch can be closed now -- and only now.
             # Until this point the loop stayed live on purpose, so a refused fire
@@ -4552,16 +5722,44 @@ class AutoNudgeService:
                         # write left memory reporting a finish while the record
                         # still said active-and-owed, and the restart would deliver
                         # the final turn a second time.
-                        try:
-                            async with self._lock:
-                                await self._write_monitor_snapshot_locked()
-                        except asyncio.CancelledError:
-                            # Committed before the cancellation propagates, so the
-                            # user must hear it now or never -- a restart reads the
-                            # loop as settled and no longer owes a turn.
+                        undo_delivery: Callable[[], None] | None = None
+                        settle_error: BaseException | None = None
+                        backoff_cancelled: BaseException | None = None
+                        # Retried in place, never by re-arming: a re-arm re-enters the fire
+                        # path and re-delivers a turn the user already received.
+                        for _attempt in range(_SETTLEMENT_WRITE_ATTEMPTS):
+                            settle_error = None
+                            try:
+                                async with self._lock:
+                                    if undo_delivery is None:
+                                        undo_delivery = _commit_delivery()
+                                    await self._write_monitor_snapshot_locked()
+                            except asyncio.CancelledError:
+                                # Committed before the cancellation propagates, so the
+                                # user must hear it now: a restart reads this as settled.
+                                self._emit("expired", loop)
+                                raise
+                            except Exception as exc:
+                                settle_error = exc
+                                if _attempt + 1 < _SETTLEMENT_WRITE_ATTEMPTS:
+                                    try:
+                                        await asyncio.sleep(_SETTLEMENT_RETRY_SECS)
+                                    except asyncio.CancelledError as cancel:
+                                        # This backoff sits INSIDE the handler, so the
+                                        # clause above never sees its cancellation.
+                                        backoff_cancelled = cancel
+                                        break
+                            else:
+                                break
+                        if settle_error is None:
+                            monitor.terminal_delivered = False
+                            self._settlement_owed.discard(loop.id)
                             self._emit("expired", loop)
-                            raise
-                        except Exception:
+                        else:
+                            # The settlement never reached disk, so the delivery accounting
+                            # goes back with it rather than reading as spent in memory alone.
+                            if undo_delivery is not None:
+                                undo_delivery()
                             (
                                 monitor.terminal_pending,
                                 monitor.outcome,
@@ -4570,33 +5768,31 @@ class AutoNudgeService:
                                 loop.active,
                                 loop.stopped_reason,
                             ) = restore
-                            logger.exception(
+                            logger.error(
                                 "AutoNudge: could not persist the delivered terminal "
-                                "settlement for %s -- leaving the watch live so it "
-                                "retries",
+                                "settlement for %s after %d attempts -- leaving it "
+                                "unarmed so the delivered turn is never repeated",
                                 loop.id,
+                                _SETTLEMENT_WRITE_ATTEMPTS,
+                                exc_info=settle_error,
                             )
-                        else:
-                            self._emit("expired", loop)
+                            # Suppresses the re-commit below AND the self-re-arm; the set
+                            # closes the third way -- the reconciler's rescue.
+                            self._settlement_owed.add(loop.id)
+                            # The fall-through persist below carries this to disk, so a
+                            # restart settles the debt instead of re-delivering the turn.
+                            monitor.terminal_delivered = True
+                            resettle_owed = True
+                        if backoff_cancelled is not None:
+                            # The unwind above lives only in memory, and the fall-through
+                            # persist is unreachable once this propagates.
+                            try:
+                                await self._persist_locked()
+                            except asyncio.CancelledError:
+                                pass
+                            raise backoff_cancelled
                 finally:
                     settle_lock.release()
-        if claimed_wake and delivered and loop.monitor is not None:
-            # The turn happened, so it is a wake, and only now does the agent own
-            # work the probe cannot see -- which is what the follow-up allowance
-            # protects. A refused fire falls through here uncharged.
-            #
-            # No persist call of its own: the delivered path below reaches
-            # ``await self._persist_locked()`` with no await in between, so these
-            # counters are already in the state that write serialises -- and that
-            # write is the stronger one, since it holds the lock and cannot be
-            # clobbered by a concurrent update()'s snapshot.
-            loop.monitor.wakes += 1
-            loop.monitor.followup_ticks = _WAKE_FOLLOWUP_TICKS
-        if delivered and claimed_floor and loop.monitor is not None:
-            # The floor's turn happened. No follow-up allowance goes with it: the floor
-            # exists to break a silence, not to protect work the agent had already
-            # started, so there is nothing in progress for a bypassed tick to shield.
-            loop.monitor.floor_ticks += 1
         if not delivered:
             # If the fire path already removed the loop (e.g. slot missing →
             # remove()), do NOT resurrect it with a fresh timer — that would
@@ -4615,6 +5811,11 @@ class AutoNudgeService:
                     "AutoNudge: loop %s was deactivated mid-fire — not re-arming",
                     loop.id,
                 )
+                self._rearm_fail_count.pop(loop.id, None)
+                return
+            if rollback_undurable:
+                # The claim is still on disk, so this cycle is already spent. Re-arming
+                # would keep firing into a store that cannot record the outcome.
                 self._rearm_fail_count.pop(loop.id, None)
                 return
             # Slot was busy mid-turn, or the fire callback errored. Do NOT end
@@ -4639,7 +5840,13 @@ class AutoNudgeService:
         # Persist through the shared locked+offloaded path so this bookkeeping
         # cannot be clobbered by a concurrent update()'s snapshot (and so the
         # fsync stays off the event loop).
-        await self._persist_locked()
+        try:
+            await self._persist_locked(before=None if resettle_owed else _commit_delivery)
+        except BaseException:
+            # The delivered cycle was never charged, so ANY re-arm repeats it past
+            # max_cycles until a later write settles the accounting.
+            self._settlement_owed.add(loop.id)
+            raise
         # At INFO, deliberately. Delivered fires used to be unlogged entirely,
         # so a loop that died and a loop with nothing to report were
         # byte-identical in the journal. One line per DELIVERED turn -- each of
@@ -4677,7 +5884,12 @@ class AutoNudgeService:
         # callback runs the turn inline, so the next fire lands idle_secs
         # after the previous turn finished; the busy-skip + backoff above
         # handles any overlap.
-        if is_channel_key(loop.slot_key) and loop.active and loop.id in self._loops:
+        if (
+            is_channel_key(loop.slot_key)
+            and loop.active
+            and loop.id in self._loops
+            and not resettle_owed
+        ):
             self._arm_from_deadline(loop)
 
     async def fire_now(self, loop_id: str) -> tuple["NudgeLoop | None", str, int]:
@@ -4703,7 +5915,7 @@ class AutoNudgeService:
         by typing. A manual trigger IS the user asking, so the condition the beat
         protects against is not present.
 
-        Three refusals, and each one is load-bearing rather than defensive:
+        Four refusals, and each one is load-bearing rather than defensive:
 
         * **Not registered** -> 404. Nothing to fire. This is also where the stop
           SENTINEL lands: it goes through ``remove``, so the loop is gone rather
@@ -4720,6 +5932,10 @@ class AutoNudgeService:
           ``notify_turn_complete``/``notify_user_input`` defer around, and the
           same answer the sibling immediate-trigger route gives for a run
           already in flight (``POST /api/crons/{id}/run`` -> 409).
+        * **Owes a settlement write** -> 409. A delivered cycle whose accounting
+          never reached disk. ``_arm_from_deadline`` and ``_reconcile_once`` both
+          refuse such a record, but this route arms through :meth:`_arm_timer`
+          directly and reached neither, so the delivered turn ran a second time.
 
         NO SUSPENSION POINT, and that is the design rather than an omission.
         ``async def`` for the caller's convenience, but nothing inside awaits, so
@@ -4761,6 +5977,10 @@ class AutoNudgeService:
             return None, "loop is not active", 409
         if loop_id in self._firing:
             return None, "loop is already firing", 409
+        if loop_id in self._settlement_owed:
+            # ``_arm_from_deadline`` and ``_reconcile_once`` refuse an owed record, but
+            # this route arms through ``_arm_timer`` and so reached neither.
+            return None, "loop owes a settlement write for its last delivered cycle", 409
         self._arm_timer(loop, delay=0.0)
         logger.info(
             "AutoNudge: loop %s brought forward by hand — cycle %d armed to run now",

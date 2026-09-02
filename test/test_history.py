@@ -5619,3 +5619,59 @@ class TestConsolidationDoesNotImpersonateUser:
             assert lesson["source"] == "user_explicit"
         finally:
             store.close()
+
+
+class TestAMiscomposedHostPersistsAWholeTurn:
+    """A full user+assistant turn must land, not strand half a transcript.
+
+    The user row already took the non-raising shim, so on a host whose companion cannot
+    compose, the assistant append two lines later was the one that raised -- inside
+    ``with self._locked(key)``, where the baseline redactors never raised -- leaving the
+    turn half written. Named BLOCKING by one review lane and independently by another.
+
+    The user row is asserted for PRESENCE only: the boundary returns early for
+    role == "user", so append stores it verbatim and the persisters scrub it
+    before calling in -- the interim split the AST ratchet enforces.
+    """
+
+    class _BrokenPolicy:
+        def redact(self, text: str) -> str:
+            from kiro_crew.platform import PlatformCompositionError
+
+            raise PlatformCompositionError("companion credential policy unreadable")
+
+    def _install(self, monkeypatch) -> None:
+        from kiro_crew.platform import context as ctx_mod
+
+        class _Ctx:
+            credentials = TestAMiscomposedHostPersistsAWholeTurn._BrokenPolicy()
+
+        # A context IS installed on such a host -- only its policy fails to compose. Stubbing
+        # current_context alone left installed_context() None, the OTHER no-companion state.
+        monkeypatch.setattr(ctx_mod, "installed_context", lambda: _Ctx())
+        monkeypatch.setattr(ctx_mod, "current_context", lambda: _Ctx())
+
+    def test_both_rows_persist(self, tmp_path, monkeypatch) -> None:
+        from kiro_crew.history import ConversationLog
+        from kiro_crew.platform.context import LOG_WITHHELD_PLACEHOLDER
+
+        log = ConversationLog(tmp_path)
+        key = "dashboard:miscomposed"
+        self._install(monkeypatch)
+
+        log.append(key, "user", "please deploy AKIAIOSFODNN7EXAMPLE")
+        log.append(key, "assistant", "done with AKIAIOSFODNN7EXAMPLE")
+
+        rows = log.read_messages(key)
+        roles = [r.get("role") for r in rows]
+        assert roles == [
+            "user",
+            "assistant",
+        ], "a miscomposed host stranded a half-written turn instead of persisting it: " + repr(
+            roles
+        )
+        assistant = str(rows[1].get("content", ""))
+        assert (
+            "AKIAIOSFODNN7EXAMPLE" not in assistant
+        ), "the boundary let the raw secret through instead of withholding the row"
+        assert assistant == LOG_WITHHELD_PLACEHOLDER, assistant

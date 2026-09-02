@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -542,4 +543,60 @@ async def test_banner_cannot_silently_patch_a_structured_monitor(tmp_path):
 
     assert result.startswith("monitor_update cannot apply")
     assert "banner" in result
+    service.stop()
+
+
+@pytest.mark.asyncio
+async def test_monitor_update_message_carries_the_loop_goal_token_as_baseline(tmp_path):
+    """A directive message write must hand the service a baseline to compare against.
+
+    The service gates on ``expect_fingerprint is not None``, so passing None SKIPS the
+    stale-baseline check rather than failing it -- a concurrent goal change would be
+    overwritten unseen.
+    """
+    service = AutoNudgeService(base_dir=tmp_path)
+    legacy = await service.add("chat-1", "legacy prompt", idle_secs=60)
+    assert legacy.goal_token
+    slot = SimpleNamespace(key="chat-1", workspace="default", _app="")
+    state = SimpleNamespace(_slots={"chat-1": slot}, sessions=None, channel_transports={})
+    authorize = AsyncMock(return_value=(legacy, None, 200))
+    with (
+        patch("kiro_crew.autonudge.get_instance", return_value=service),
+        patch("kiro_crew.autonudge_authz.authorize_and_update_nudge", authorize),
+    ):
+        await apply_session_directive(
+            state,
+            slot,
+            "dashboard:chat-1",
+            "monitor_update",
+            {"patch": {"message": "revised goal"}},
+        )
+
+    assert authorize.await_args.kwargs["expect_fingerprint"] == legacy.goal_token
+    service.stop()
+
+
+@pytest.mark.asyncio
+async def test_monitor_update_refuses_a_message_write_against_a_rotated_goal_token(tmp_path):
+    """A goal changed after the directive's read is refused, not overwritten."""
+    service = AutoNudgeService(base_dir=tmp_path)
+    legacy = await service.add("chat-1", "legacy prompt", idle_secs=60)
+    stale = replace(legacy, goal_token="stale-token")
+    slot = SimpleNamespace(key="chat-1", workspace="default", _app="")
+    state = SimpleNamespace(_slots={"chat-1": slot}, sessions=None, channel_transports={})
+    with (
+        patch("kiro_crew.autonudge.get_instance", return_value=service),
+        patch.object(service, "get_by_slot", return_value=stale),
+    ):
+        result = await apply_session_directive(
+            state,
+            slot,
+            "dashboard:chat-1",
+            "monitor_update",
+            {"patch": {"message": "revised goal"}},
+        )
+
+    assert result.startswith("Failed to update monitor loop")
+    assert "changed in another window" in result
+    assert service.get_by_slot("chat-1").message == "legacy prompt"
     service.stop()

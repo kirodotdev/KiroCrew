@@ -119,8 +119,8 @@ from kiro_crew.llm_helpers import (  # noqa: F401 - facade re-exports
     stream_and_collect_json,
 )
 from kiro_crew.messaging.link import canonical_key, is_legacy_slack_key, legacy_key
+from kiro_crew.platform.context import redact_row_via_context
 from kiro_crew.preview_text import strip_markdown_preview  # noqa: F401 - facade re-export
-from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel  # noqa: F401 - facade re-export
 from kiro_crew.skills import (  # noqa: F401 - facade re-export
     AUTO_SKILL_MAX_PROCEDURE_CHARS,
@@ -1198,16 +1198,34 @@ def _redact_at_write_boundary(role: str, content: str) -> str:
     channel thread persist to the same file through different code paths, so the
     rule has to live where the bytes are written rather than in either caller.
 
-    The gate is ``role != "user"``, matching the dashboard's own write-back
-    boundary: text the user typed is stored verbatim, and everything the model or
-    the system produced is scrubbed of credentials and exfiltration URLs.
+    The gate is ``role != "user"``: everything the model or the system produced is
+    scrubbed of credentials and exfiltration URLs here.
+
+    The ``user`` half is not stored verbatim in general, and this function is not
+    what changed it. Channel persisters and the shared ``save_conversation_turn`` scrub
+    their user text BEFORE calling in, so for a user row the rule now lives in those
+    callers -- the opposite of the shape described above. The dashboard's own write-back
+    is the surface still relying on the exemption.
+
+    That split-across-callers shape is INTERIM, and the enforcement is a test rather than
+    a narrative: ``TestEveryUserRowPersisterScrubs`` enumerates every persister it relies
+    on, so a new inbound one fails that suite instead of leaking silently.
+
     Idempotent, so a caller that already redacted loses nothing by passing
     through here.
     """
     if role == "user":
         return content
-    content, _ = redact_exfiltration_urls(content)
-    content, _ = redact_credentials(content)
+    original = content
+    content = redact_row_via_context(content)
+    if content != original:
+        # No text, and no length: a placeholder can be LONGER than what it replaced, so a
+        # signed delta reads negative, and an equal-length rewrite reads zero and never fires.
+        logger.warning(
+            "history: redacted a %s row at the write boundary; the stored row is the "
+            "rewritten one and the original is not retained",
+            role,
+        )
     return content
 
 
@@ -2017,9 +2035,10 @@ class ConversationLog:
                     created_with_tab_id = True
                 path.write_text(json.dumps(meta) + "\n", encoding="utf-8")
 
+            scrubbed = _redact_at_write_boundary(role, content)
             msg: dict = {
                 "role": role,
-                "content": _redact_at_write_boundary(role, content),
+                "content": scrubbed,
                 **({"cls": cls} if cls else {}),
                 # Strictly after the row already on disk, so the pair written by
                 # one turn stays ordered on a host whose clock cannot separate

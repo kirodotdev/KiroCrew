@@ -44,6 +44,10 @@ export interface LegacyGoalLoop {
   nextDueAt?: number
   maxRuntimeSecs?: number
   stoppedReason: string
+  /** Baseline for a stale-write check; '' when the server served no goal token. */
+  messageFingerprint?: string
+  /** True when the served goal is a redaction of the stored one. */
+  messageRedacted?: boolean
 }
 
 export interface StructuredMonitor {
@@ -253,6 +257,10 @@ export function normalizeAutomationRecord(raw: unknown): AutomationRecord | null
       nextDueAt: finite(loop.next_due_ts),
       maxRuntimeSecs: count(loop.max_runtime_secs),
       stoppedReason: text(loop.stopped_reason),
+      // Dropping these made every ordinary goal edit send a falsy baseline, which the
+      // service refuses, so the edit could never be saved and the 409 retry re-dropped it.
+      messageFingerprint: text(loop.message_fingerprint),
+      messageRedacted: loop.message_redacted === true,
     }
   }
 

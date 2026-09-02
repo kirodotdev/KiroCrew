@@ -96,6 +96,8 @@ function legacyWire(loop: LegacyGoalLoop): AutoNudgeLoop {
     active: loop.active,
     last_fire_ts: loop.lastFireAt,
     next_due_ts: loop.nextDueAt ?? 0,
+    message_fingerprint: loop.messageFingerprint ?? '',
+    message_redacted: loop.messageRedacted ?? false,
   }
 }
 

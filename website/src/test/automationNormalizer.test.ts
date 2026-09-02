@@ -17,8 +17,19 @@ describe('automation transport normalizer', () => {
       kind: 'legacy_goal_loop', id: 'legacy-1', slotKey: 'chat-1',
       message: 'Keep going', idleSecs: 60, maxCycles: 0, cycleCount: 7,
       active: true, lastFireAt: 123, nextDueAt: 0, maxRuntimeSecs: 0,
-      stoppedReason: '',
+      stoppedReason: '', messageFingerprint: '', messageRedacted: false,
     })
+  })
+
+  it('carries the stale-write baseline and the redaction flag onto a legacy record', () => {
+    const record = normalizeAutomationRecord({
+      id: 'legacy-1', slot_key: 'chat-1', message: 'Keep going', idle_secs: 60,
+      max_cycles: 24, cycle_count: 7, active: true, last_fire_ts: 123,
+      message_fingerprint: 'fp-real', message_redacted: true,
+    })
+
+    expect(record?.kind).toBe('legacy_goal_loop')
+    expect(record).toMatchObject({ messageFingerprint: 'fp-real', messageRedacted: true })
   })
 
   it('folds channel session keys into dashboard slot keys', () => {

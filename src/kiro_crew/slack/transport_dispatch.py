@@ -39,6 +39,7 @@ from kiro_crew.messaging.driver import APPROVAL_INTERACTIVE, TurnDriver
 from kiro_crew.messaging.identity import channel_inbound_permitted, publish_turn_identity
 from kiro_crew.messaging.link import canonical_key
 from kiro_crew.platform import current_context
+from kiro_crew.platform.context import redact_row_via_context
 from kiro_crew.security import redact, redact_local_paths
 from kiro_crew.sel import sel
 from kiro_crew.session_allocation import SessionClosingError
@@ -529,7 +530,9 @@ async def handle_message_transport(
                     conversation_log.append,
                     session_key,
                     "user",
-                    text,
+                    # Scrubbed for this row ONLY: `text` itself still reaches
+                    # `build_message` below, and the prompt is never redacted.
+                    redact_row_via_context(text),
                     source_thread=session_key,
                     source_user=user_id,
                     # This is the write that creates the session file, and the
