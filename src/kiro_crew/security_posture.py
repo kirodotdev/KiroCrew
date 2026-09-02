@@ -608,6 +608,18 @@ _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
         "through command-status lookup.",
     ),
     (
+        "Legacy subagent recovery",
+        "run_coordinator/legacy.py",
+        "Task, agent, and failure text imported from legacy run folders before a "
+        "durable completion event can be delivered to the parent session.",
+    ),
+    (
+        "Coordinator recovery",
+        "run_coordinator/recovery.py",
+        "Task, agent, and interruption text in restart-recovery completion events "
+        "before durable delivery to the parent session.",
+    ),
+    (
         "Voice reply (TTS)",
         "voice_reply.py",
         "Spoken text is redacted before synthesis so a credential is never read " "aloud.",

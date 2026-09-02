@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import re
 from pathlib import Path
 from types import SimpleNamespace
@@ -28,6 +29,9 @@ from aiohttp import web
 
 import kiro_crew.config.loader as loader
 import kiro_crew.dashboard.handlers.messaging as mod
+import kiro_crew.subagent_persistence as subagent_persistence
+from conftest import requires_symlinks
+from kiro_crew.pinned_fs import supports_pinned_walk
 from kiro_crew.subagent import AGENT_NOT_FOUND_CODE
 
 
@@ -65,6 +69,15 @@ class _Req:
 
 
 _BAD_JSON = ValueError("not json")
+requires_pinned_walk = pytest.mark.skipif(
+    not supports_pinned_walk(),
+    reason="spawn transcript reads require descriptor-pinned traversal",
+)
+
+
+@pytest.mark.skipif(not hasattr(os, "O_NONBLOCK"), reason="O_NONBLOCK unavailable")
+def test_spawn_result_opens_are_nonblocking() -> None:
+    assert mod._SPAWN_RESULT_OPEN_FLAGS & os.O_NONBLOCK
 
 
 def _run(handler: Any, req: _Req) -> web.Response:
@@ -618,6 +631,7 @@ class TestApiSpawnStatus:
         req = _Req(_state(subagents=mgr), None, match_info={"agent_id": "a1"})
         assert _run(mod.api_spawn_status, req).status == 404
 
+    @requires_pinned_walk
     def test_disk_fallback_returns_result_and_tombstone_cause(
         self, monkeypatch, tmp_path: Path
     ) -> None:
@@ -631,6 +645,7 @@ class TestApiSpawnStatus:
         mgr.get.return_value = None
         monkeypatch.setattr(mod, "read_state", lambda aid: {"task": "t", "started": 1.0})
         monkeypatch.setattr(mod, "_agent_dir", lambda aid: agent_dir)
+        monkeypatch.setattr(mod, "agent_dir_for_display", lambda aid: agent_dir)
         req = _Req(_state(subagents=mgr), None, match_info={"agent_id": "a1"})
         data = _payload(_run(mod.api_spawn_status, req))
         assert data["done"] is True
@@ -652,6 +667,7 @@ class TestApiSpawnStatus:
         assert data["error"] == "Orphaned (unknown cause)"
         assert data["result"] == "_No result._"
 
+    @requires_pinned_walk
     def test_disk_fallback_paging_adds_result_meta(self, monkeypatch, tmp_path: Path) -> None:
         agent_dir = tmp_path / "a1"
         agent_dir.mkdir()
@@ -660,6 +676,7 @@ class TestApiSpawnStatus:
         mgr.get.return_value = None
         monkeypatch.setattr(mod, "read_state", lambda aid: {"task": "t"})
         monkeypatch.setattr(mod, "_agent_dir", lambda aid: agent_dir)
+        monkeypatch.setattr(mod, "agent_dir_for_display", lambda aid: agent_dir)
         req = _Req(
             _state(subagents=mgr),
             None,
@@ -680,8 +697,12 @@ class TestApiSpawnStatus:
         assert data["turns"] == 2 and data["last_tool"] == "fs_read"
         assert isinstance(data["elapsed"], int)
 
-    def test_done_agent_prefers_full_result_from_disk(self, tmp_path: Path) -> None:
-        result_file = tmp_path / "result.txt"
+    @requires_pinned_walk
+    def test_done_agent_prefers_full_result_from_disk(self, monkeypatch, tmp_path: Path) -> None:
+        agent_dir = tmp_path / "a1"
+        agent_dir.mkdir()
+        monkeypatch.setattr(mod, "agent_dir_for_display", lambda _agent_id: agent_dir)
+        result_file = agent_dir / "result.txt"
         result_file.write_text("full transcript", encoding="utf-8")
         mgr = _mgr()
         mgr.get.return_value = _info(
@@ -699,6 +720,71 @@ class TestApiSpawnStatus:
         )
         req = _Req(_state(subagents=mgr), None, match_info={"agent_id": "a1"})
         assert _payload(_run(mod.api_spawn_status, req))["result"] == "in-memory"
+
+    def test_done_agent_refuses_hardlinked_result_path(self, monkeypatch, tmp_path: Path) -> None:
+        agent_dir = tmp_path / "a1"
+        agent_dir.mkdir()
+        monkeypatch.setattr(mod, "agent_dir_for_display", lambda _agent_id: agent_dir)
+        outside = tmp_path / "outside.txt"
+        outside.write_text("outside secret", encoding="utf-8")
+        result_file = agent_dir / "result.txt"
+        os.link(outside, result_file)
+        mgr = _mgr()
+        mgr.get.return_value = _info(
+            done=True,
+            result="in-memory",
+            result_path=str(result_file),
+        )
+        req = _Req(_state(subagents=mgr), None, match_info={"agent_id": "a1"})
+
+        assert _payload(_run(mod.api_spawn_status, req))["result"] == "in-memory"
+
+    @requires_symlinks
+    def test_done_agent_refuses_linked_result_directory(self, monkeypatch, tmp_path: Path) -> None:
+        subagents = tmp_path / "subagents"
+        subagents.mkdir()
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        (outside / "result.txt").write_text("outside secret", encoding="utf-8")
+        (subagents / "a1").symlink_to(outside, target_is_directory=True)
+        result_path = subagents / "a1" / "result.txt"
+        monkeypatch.setattr(subagent_persistence, "_SUBAGENTS_DIR", subagents)
+        mgr = _mgr()
+        mgr.get.return_value = _info(
+            done=True,
+            result="in-memory",
+            result_path=str(result_path),
+        )
+        req = _Req(_state(subagents=mgr), None, match_info={"agent_id": "a1"})
+
+        assert _payload(_run(mod.api_spawn_status, req))["result"] == "in-memory"
+
+    @requires_symlinks
+    @requires_pinned_walk
+    def test_done_agent_reads_result_through_linked_home_spelling(
+        self, monkeypatch, tmp_path: Path
+    ) -> None:
+        real_subagents = tmp_path / "real" / "subagents"
+        agent_dir = real_subagents / "a1"
+        agent_dir.mkdir(parents=True)
+        (agent_dir / "result.txt").write_text("full transcript", encoding="utf-8")
+        declared_subagents = tmp_path / "declared-subagents"
+        declared_subagents.symlink_to(real_subagents, target_is_directory=True)
+        declared_agent_dir = declared_subagents / "a1"
+        monkeypatch.setattr(
+            mod,
+            "agent_dir_for_display",
+            lambda _agent_id: declared_agent_dir,
+        )
+        mgr = _mgr()
+        mgr.get.return_value = _info(
+            done=True,
+            result="in-memory",
+            result_path=str(declared_agent_dir / "result.txt"),
+        )
+        req = _Req(_state(subagents=mgr), None, match_info={"agent_id": "a1"})
+
+        assert _payload(_run(mod.api_spawn_status, req))["result"] == "full transcript"
 
 
 # ── api_spawn_list / retry / delete / clear ──

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Iterable
 
 from ._component import ManagerComponent
 
@@ -17,7 +17,7 @@ if TYPE_CHECKING:
         SubagentInfo,
         _redact,
         asyncio,
-        clear_tombstone,
+        clear_tombstone_for_recovery,
         logger,
         time,
     )
@@ -54,13 +54,13 @@ class CancellationCoordinator(ManagerComponent):
         task object to fully complete (its finally does session release/reset,
         slot decrement, and pops the task registry) before respawning. This
         guarantees the old finally can neither pop the new task out of
-        ``self._tasks`` nor emit a duplicate completion, and the respawn never
+        ``self._manager._tasks`` nor emit a duplicate completion, and the respawn never
         starts against a session whose reset is still in flight. The respawn
         then re-acquires a slot by waiting for capacity (the old finally's
         ``_drain_queue`` may have admitted a queued spawn into the freed slot),
         so the concurrency ceiling is never exceeded.
 
-        The pending ``_resume`` task itself is registered in ``self._tasks``
+        The pending ``_resume`` task itself is registered in ``self._manager._tasks``
         (under ``"<id>:recovery"``) so ``cancel_all()`` reaches it during
         shutdown — a recovery can never outlive or escape manager teardown.
         """
@@ -82,7 +82,12 @@ class CancellationCoordinator(ManagerComponent):
                             info.id,
                         )
                         raise RuntimeError("original task teardown timed out")
-                if info.done or info._reap_started or info.reaped:
+                if (
+                    info.done
+                    or info.user_stopped
+                    or info._reap_started
+                    or info.reaped
+                ):
                     info._recovering = False
                     return
                 if self._manager._shutting_down:
@@ -93,7 +98,12 @@ class CancellationCoordinator(ManagerComponent):
                 # never pushes the pool past max_concurrent.
                 deadline = time.time() + _RECOVERY_SLOT_WAIT_SECS
                 while True:
-                    if info.done or info._reap_started or info.reaped:
+                    if (
+                        info.done
+                        or info.user_stopped
+                        or info._reap_started
+                        or info.reaped
+                    ):
                         info._recovering = False
                         return
                     if self._manager._shutting_down:
@@ -279,6 +289,9 @@ class CancellationCoordinator(ManagerComponent):
                         await self._manager._finalize_queued_cancel(remaining[0])
                         remaining.pop(0)
                 except Exception:
+                    # The command still owns a durable claim. Keep its local
+                    # queue record, but mark it non-runnable until a caller
+                    # retries cancellation and commits the rejection.
                     for entry in remaining:
                         entry["_coordinator_cancel_pending"] = True
                         self._manager._scheduler.enqueue(entry)
@@ -296,6 +309,10 @@ class CancellationCoordinator(ManagerComponent):
                 return True
             return False
         if info._coordinator_waiting:
+            # Stop the approval task before settlement yields: approval may
+            # resolve during the coordinator write, and must not enter _run
+            # after the operator has cancelled it. The neutral marker prevents
+            # the intentional task cancellation from triggering recovery.
             info.user_stopped = True
             approval_task = self._manager._tasks.get(agent_id)
             if (
@@ -304,10 +321,16 @@ class CancellationCoordinator(ManagerComponent):
                 and not approval_task.done()
             ):
                 self._manager._cancel_task_intentionally(
-                    approval_task, info, reason="approval_wait_cancel"
+                    approval_task,
+                    info,
+                    reason="approval_wait_cancel",
                 )
+            # Keep the record and its lease retryable when durable rejection
+            # fails; the stopped approval task makes that retained state
+            # explicitly non-runnable.
             await self._manager.command_authority.reject_waiting_execution(
-                agent_id, "spawn cancelled before start"
+                agent_id,
+                "spawn cancelled before start",
             )
             info._coordinator_waiting = False
             info._coordinator_claim_uncertain = False
@@ -321,6 +344,18 @@ class CancellationCoordinator(ManagerComponent):
         # Preserve whatever streamed before the stop as a partial result.
         if not info.result and info.streaming_text:
             info.result = info.streaming_text
+        # Admission is strongly retained across cancellation. Let it resolve
+        # before the reap claims terminal reporting so a committed coordinator
+        # row receives the STOPPED result through its fence instead of recovery
+        # later producing a second terminal outcome.
+        submission_durable = await self._manager._drain_retained_shadow_submits(info)
+        if info._coordinator_fence is not None or submission_durable is False:
+            info._coordinator_claim_uncertain = False
+        if (
+            info._coordinator_claim_uncertain
+            and not await self._manager._resolve_stopped_shadow_claim(info)
+        ):
+            return True
         # _force_reap emits the (single) stopped-aware ``subagent_done`` event
         # and drives _on_done delivery — no second event here.
         await self._manager._force_reap(
@@ -328,11 +363,34 @@ class CancellationCoordinator(ManagerComponent):
         )
         return True
 
+    async def _readmit_unsettled_shadow_submissions_impl(
+        self,
+        owners: Iterable[SubagentInfo],
+    ) -> None:
+        """Expose accepted legacy runs when shutdown abandons durable admission."""
+
+        seen: set[str] = set()
+        for owner in owners:
+            if owner.id in seen or owner._coordinator_fence is not None:
+                continue
+            seen.add(owner.id)
+            try:
+                if await asyncio.to_thread(clear_tombstone_for_recovery, owner.id):
+                    logger.warning(
+                        "cancel_all: %s's coordinator submission did not settle — "
+                        "re-admitted to orphan recovery",
+                        owner.id,
+                    )
+            except Exception:
+                logger.debug(
+                    "cancel_all: failed to re-admit unsettled coordinator submission %s",
+                    owner.id,
+                    exc_info=True,
+                )
+
     async def cancel_all_impl(self) -> None:
-        """Cancel all running subagents and wait for cleanup."""
-        # Shutdown-driven cancellations must never trigger the one-shot
-        # unexpected-cancel auto-continue (the loop is going away).
-        self._manager._shutting_down = True
+        """Run shutdown cleanup under ``cancel_all``'s recovery boundary."""
+
         if self._manager._reaper_task and not self._manager._reaper_task.done():
             self._manager._reaper_task.cancel()
             self._manager._reaper_task = None
@@ -394,6 +452,13 @@ class CancellationCoordinator(ManagerComponent):
         if tasks_to_await:
             await asyncio.gather(*tasks_to_await, return_exceptions=True)
         self._manager._tasks.clear()
+        # A retained submission can settle by scheduling a local terminal
+        # reporter. Drain the full submission/settlement chain before taking
+        # the report snapshot so shutdown cannot miss that newly created task.
+        while self._manager._coordinator_shadow_submits:
+            shadow_submits = list(self._manager._coordinator_shadow_submits)
+            self._manager._coordinator_shadow_submits.clear()
+            await asyncio.gather(*shadow_submits, return_exceptions=True)
         # Shielded terminal reports keep running after their awaiter is
         # cancelled (that is the point). Drain them with a BOUNDED wait so a
         # report is not orphaned by a closing event loop, without letting a
@@ -450,7 +515,7 @@ class CancellationCoordinator(ManagerComponent):
                     if owner._reported_to_parent:
                         continue
                     try:
-                        if clear_tombstone(owner.id):
+                        if await asyncio.to_thread(clear_tombstone_for_recovery, owner.id):
                             logger.warning(
                                 "cancel_all: %s's completion was not delivered — "
                                 "re-admitted to orphan recovery for the next start",

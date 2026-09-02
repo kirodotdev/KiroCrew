@@ -1874,6 +1874,12 @@ without that disclosure. Likewise, the `suspicious_patterns` row states it is
 not enforced at the PreToolUse gate — the gate uses the narrower
 `audit_bash_exfiltration` plus the denied-command rules.
 
+Coordinator restart recovery is an output boundary too: both legacy imports and
+native lease takeovers redact task, agent, and error fields before constructing a
+durable completion event. The security-posture registry names those two modules
+separately so a recovery-only delivery path cannot disappear from the coverage
+inventory.
+
 **`/api/security/stats` is retained but no longer used by the dashboard**, which
 reads `/api/security/posture` (same counts plus the items). It re-sources via
 `posture_counts_async`, which resolves every `items_fn` — so the count is still

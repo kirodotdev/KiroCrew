@@ -5,7 +5,7 @@ revision: v1
 author: Kyle Seaman, with Codex
 created: 2026-08-22
 last-audited: 2026-08-22
-audited-at: c8eda3c6f
+audited-at: 09b58e9b4
 doc-pr:
 implementation-prs: []
 tracking-issues: []
@@ -14,16 +14,16 @@ superseded-by: []
 ---
 # RFC: Durable Run Coordinator — typed lifecycle, idempotent commands, and recoverable delivery
 
-- Status: in-progress — PRs 1–6 are implemented locally; PR 6 lives on
-  `codex/run-coordinator-outbox`. Keyed execution carries a renewable run fence
-  through `starting`, `running`, and atomic terminal/outbox commit; fenced
-  delivery retries reuse one stable event identity. Legacy run files still
-  mirror lifecycle/terminal state; PR 7 is unimplemented.
+- Status: implemented locally — PRs 1–7 are prepared as a stack. Keyed
+  execution carries a renewable run fence through `starting`, `running`, and
+  atomic terminal/outbox commit; fenced delivery retries reuse one stable event
+  identity. Restart recovery imports legacy folders read-only, takes over only
+  expired leases, reports uncertain work as interrupted, and never replays it.
 - Author: Kyle Seaman, with Codex
 - Created: 2026-08-22
-- Audited against: PR 1 commit `c8eda3c6f`, PR 2 commit `53f365a17`, PR 3 commit
-  `4aa0cba4d`, PR 4 commit `3ed006642`, PR 5 commit `f9b73887a`, and the PR 6
-  working tree
+- Audited against: PR 1 commit `09b58e9b4`, PR 2 commit `ffe2b0f76`, PR 3 commit
+  `6db805ec2`, PR 4 commit `458472368`, PR 5 commit `ee198e741`, PR 6 commit
+  `391ccd202`, and local branch `run-coordinator-recovery` for PR 7
 - Related: `docs/system-specs/modules/subagent.md`,
   `docs/system-specs/modules/session.md`, and
   `docs/request-for-change/rfc-orchestrator-chat-sessions.md`
@@ -633,6 +633,22 @@ terminal commit, destination acceptance, and delivery acknowledgement converges
 to a documented state; a stale owner cannot commit after takeover; uncertain
 execution is reported once without automatic replay; legacy-only installs
 upgrade without losing retained results.
+
+**Local status:** implemented. Schema v4 records the source version on imported
+runs, and schema v5 records process identity and ownership inside the protected
+coordinator store. The importer reads known legacy fields without modifying
+source files and is idempotent against native coordinator rows; agent-writable
+legacy process fields never authorize termination, non-finite timestamps are
+skipped per folder, and legacy destinations never manufacture pending outbox
+work. A dedicated child does not receive a prompt until its fenced process
+identity is durably stored; failure aborts execution while the legacy state
+mirror remains best-effort. Recovery claims expired
+nonterminal leases with a fresh epoch, signals only a coordinator-owned PID with
+an exact fenced start identity, retains partial output, commits `interrupted`,
+emits a SEL termination audit, and drains terminal outbox work separately. The
+periodic reaper retries leases that had not expired at startup while excluding
+locally active run IDs. A hermetic sleeper-process test exercises the real
+takeover/termination path.
 
 ### Deferred cleanup after the compatibility window
 

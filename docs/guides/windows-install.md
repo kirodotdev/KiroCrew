@@ -411,6 +411,12 @@ process EXISTS and must never be conflated with `ProcessLookupError` — and on
 Windows they ask `OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION)` instead of
 signalling anything.
 
+Persisted termination authority uses `platform_compat.process_identity_token`,
+which versions the Windows creation FILETIME and has reboot-unique,
+locale-independent counterparts on Linux and macOS. A platform without such a
+token records the PID as non-owned, so restart recovery can observe it but can
+never use it to authorize a signal.
+
 `test/test_windows_kill_probe_audit.py` enforces this as a tripwire rather than a
 convention: it walks the AST of every module under `src/kiro_crew` and fails on a
 raw signal-0 probe until the author either routes it through the shim or records

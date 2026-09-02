@@ -9,6 +9,7 @@ from ._component import ManagerComponent
 if TYPE_CHECKING:
     from ..subagent import (
         _RESET_TIMEOUT,
+        _SHADOW_SUBMISSION_FAILURE_DETAIL,
         _TERMINAL_RETRY_SECONDS,
         _WAVE_STUCK_SECS,
         DIGEST_HOLD_SECS,
@@ -20,6 +21,7 @@ if TYPE_CHECKING:
         sel,
         time,
         uuid,
+        write_tombstone,
     )
 
 
@@ -62,6 +64,19 @@ class WaveDigestCoordinator(ManagerComponent):
                 return
             await asyncio.sleep(_TERMINAL_RETRY_SECONDS)
 
+    def _write_error_delivery_tombstone_impl(self, agent_id: str) -> None:
+        info = self._manager._agents.get(agent_id)
+        if info is not None:
+            self._manager._write_tombstone(info, "error")
+            return
+        write_tombstone(
+            agent_id,
+            cause="error",
+            recovery_action="pending",
+            outcome="failed",
+            detail=_SHADOW_SUBMISSION_FAILURE_DETAIL,
+        )
+
     def batch_members_pending_impl(self, batch_id: str) -> bool:
         """True while ANY member of *batch_id* is still outstanding — running
         (registered, not done), queued behind the stagger gate (not yet
@@ -75,7 +90,10 @@ class WaveDigestCoordinator(ManagerComponent):
         _bs = self._manager._batch_submitted.get(batch_id)
         if _bs is not None and _bs[1] > 0 and _bs[0] < _bs[1]:
             return True  # submissions still in flight
-        if any(a.batch_id == batch_id and not a.done for a in self._manager._agents.values()):
+        if any(
+            a.batch_id == batch_id and (not a.done or a._coordinator_claim_uncertain)
+            for a in self._manager._agents.values()
+        ):
             return True
         return self._manager._scheduler.contains_batch(batch_id)
 
@@ -312,7 +330,12 @@ class WaveDigestCoordinator(ManagerComponent):
             return
         await self._manager._settle_digest_holds(info)
 
-    async def settle_queued_delivery_impl(self, agent_ids: list[str]) -> None:
+    async def settle_queued_delivery_impl(
+        self,
+        agent_ids: list[str],
+        *,
+        error_tombstone_ids: set[str] | frozenset[str] | None = None,
+    ) -> None:
         """Write the ``delivered`` tombstones for completions consumed from a queue.
 
         The queued-injection path (issue #4839) deliberately leaves a completion
@@ -336,6 +359,8 @@ class WaveDigestCoordinator(ManagerComponent):
         The tombstone write itself is offloaded: it fsyncs, and this runs on the
         gateway event loop.
         """
+        carried_error_ids: frozenset[str] = getattr(agent_ids, "error_tombstone_ids", frozenset())
+        errors = set(error_tombstone_ids if error_tombstone_ids is not None else carried_error_ids)
         for agent_id in agent_ids:
             gate = self._manager._lifecycle.gate_for(agent_id)
             if gate is not None and not gate.is_set():
@@ -348,14 +373,21 @@ class WaveDigestCoordinator(ManagerComponent):
                         agent_id,
                     )
             context = self._manager._delivery_context_for_run(agent_id)
-            if context is None or context.info.outcome == "completed":
+            if agent_id in errors:
+                try:
+                    await asyncio.to_thread(self._manager._write_error_delivery_tombstone, agent_id)
+                except Exception:
+                    logger.debug(
+                        "Failed to mark drained subagent %s failed",
+                        agent_id,
+                        exc_info=True,
+                    )
+            elif context is None or context.info.outcome == "completed":
                 try:
                     await asyncio.to_thread(mark_delivered, agent_id)
                 except Exception:
                     logger.debug(
-                        "Failed to mark drained subagent %s delivered",
-                        agent_id,
-                        exc_info=True,
+                        "Failed to mark drained subagent %s delivered", agent_id, exc_info=True
                     )
             await self._manager._ack_delivery_for_run(agent_id)
 
@@ -379,9 +411,16 @@ class WaveDigestCoordinator(ManagerComponent):
         unwritable run folder must not strand the rest of the chunk.
         """
         ids, info._digest_settle_ids = info._digest_settle_ids, []
+        error_ids = set(info._digest_error_tombstone_ids)
+        info._digest_error_tombstone_ids = []
         for _hid in ids:
             context = self._manager._delivery_context_for_run(_hid)
-            if context is None or context.info.outcome == "completed":
+            if _hid in error_ids:
+                try:
+                    await asyncio.to_thread(self._manager._write_error_delivery_tombstone, _hid)
+                except Exception:
+                    logger.debug("Failed to settle held failed subagent %s", _hid, exc_info=True)
+            elif context is None or context.info.outcome == "completed":
                 try:
                     await asyncio.to_thread(mark_delivered, _hid)
                 except Exception:

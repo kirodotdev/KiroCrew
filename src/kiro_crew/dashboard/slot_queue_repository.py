@@ -33,6 +33,7 @@ class SlotQueueRepository:
         timestamp_provider: Callable[[], str] | None = None,
         delivery_key: Callable[[str], str] = _delivery_key,
         max_pending_deliveries: Callable[[], int] | None = None,
+        delivery_claim_factory: Callable[[list[str], set[str]], list[str]] | None = None,
     ) -> None:
         self._id_provider = id_provider or (lambda: uuid.uuid4().hex[:12])
         self._timestamp_provider = timestamp_provider or (
@@ -41,6 +42,9 @@ class SlotQueueRepository:
         self._delivery_key = delivery_key
         self._max_pending_deliveries = max_pending_deliveries or (
             lambda: MAX_PENDING_SUBAGENT_DELIVERIES
+        )
+        self._delivery_claim_factory = delivery_claim_factory or (
+            lambda agent_ids, _errors: agent_ids
         )
 
     def queue_append(
@@ -118,6 +122,8 @@ class SlotQueueRepository:
         owner: Any,
         content: str,
         agent_ids: list[str],
+        *,
+        error_tombstone_ids: set[str] | None = None,
     ) -> None:
         """Remember which agents a queued completion still owes delivery."""
         if not content or not agent_ids:
@@ -125,11 +131,16 @@ class SlotQueueRepository:
         key = self._delivery_key(content)
         owed = owner._subagent_delivery_pending.setdefault(key, [])
         owed.extend(agent_id for agent_id in agent_ids if agent_id not in owed)
+        error_ids = set(error_tombstone_ids or ()).intersection(agent_ids)
+        if error_ids:
+            owner._subagent_error_tombstone_pending.setdefault(key, set()).update(error_ids)
         # Only the consuming row may settle an entry.  A turn tail can dequeue
         # its successor before the current settlement callback runs, so sweeping
         # merely because content left the queue would lose the successor's debt.
         while len(owner._subagent_delivery_pending) > self._max_pending_deliveries():
-            owner._subagent_delivery_pending.pop(next(iter(owner._subagent_delivery_pending)))
+            evicted = next(iter(owner._subagent_delivery_pending))
+            owner._subagent_delivery_pending.pop(evicted)
+            owner._subagent_error_tombstone_pending.pop(evicted, None)
 
     def owes_subagent_delivery(self, owner: Any, contents: list[str]) -> bool:
         """Return whether any named completion has unsettled delivery debt."""
@@ -140,9 +151,12 @@ class SlotQueueRepository:
     def take_pending_subagent_deliveries(self, owner: Any, contents: list[str]) -> list[str]:
         """Claim delivery marks in consumed-row order and forget only those rows."""
         claimed: list[str] = []
+        error_ids: set[str] = set()
         for content in contents:
-            claimed.extend(owner._subagent_delivery_pending.pop(self._delivery_key(content), []))
-        return claimed
+            key = self._delivery_key(content)
+            claimed.extend(owner._subagent_delivery_pending.pop(key, []))
+            error_ids.update(owner._subagent_error_tombstone_pending.pop(key, set()))
+        return self._delivery_claim_factory(claimed, error_ids.intersection(claimed))
 
     def queue_remove_by_id(self, owner: Any, queue_id: str) -> str | None:
         """Remove the matching entry and return its content."""

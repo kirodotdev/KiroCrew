@@ -93,15 +93,20 @@ from kiro_crew.providers.base import (
 )
 from kiro_crew.resource_status import cached_admission_check
 from kiro_crew.run_coordinator import (
+    LEGACY_SHADOW_SOURCE_VERSION,
     CommandOperation,
+    CommandStatus,
     CoordinatorDecision,
     DeliveryState,
+    LegacyRunImporter,
     OutboxEvent,
+    OwnerLease,
     RunCommand,
     RunCompletion,
     RunCoordinator,
     RunFence,
     RunOutcome,
+    RunRecovery,
     SQLiteRunCoordinator,
     SubmitRun,
     TerminalRun,
@@ -151,7 +156,7 @@ from kiro_crew.subagent_persistence import (
     _cleanup_session_files_sync,
     _subagents_dir,
     agent_dir_for_display,
-    clear_tombstone,
+    clear_tombstone_for_recovery,
     create_agent_folder,
     list_orphans,
     mark_delivered,
@@ -494,7 +499,6 @@ _STEER_STARTUP_POLL_SECS = 0.5
 # latency is irrelevant next to permanent wedging.
 _WAVE_STUCK_SECS = 1800
 _RESET_TIMEOUT = 30.0  # max seconds for session reset in finally block
-_SHADOW_SUBMIT_TIMEOUT_SECS = 1.0
 _RECOVERY_SLOT_WAIT_SECS = 60.0
 _REPORT_DRAIN_TIMEOUT = (
     30.0  # max seconds cancel_all() waits for shielded terminal reports to drain
@@ -1178,6 +1182,11 @@ _SYSTEM_PREFIX = (
     "Only output meaningful, actionable results. Never output greetings or filler.\n\n"
 )
 
+# This bounds only reconciliation after the coordinator itself reports an
+# uncertain claim timeout; normal submit and claim calls own their deadlines.
+_COORDINATOR_CLAIM_LOOKUP_TIMEOUT_SECS = 1.0
+_SHADOW_SUBMISSION_FAILURE_DETAIL = "run coordinator submission failed after timeout"
+
 
 @dataclass
 class SubagentInfo:
@@ -1313,6 +1322,7 @@ class SubagentInfo:
     # digest COMPOSITION would re-open the restart-loss window between
     # composing and routing.
     _digest_settle_ids: list[str] = field(default_factory=list)
+    _digest_error_tombstone_ids: list[str] = field(default_factory=list)
     # True when async command authority admitted this run before invoking the
     # compatibility executor, so run start must settle that durable command.
     _coordinator_admitted: bool = False
@@ -1324,8 +1334,13 @@ class SubagentInfo:
     # Durable start settlement is unknown, so terminal delivery must wait for
     # cancellation retry or fenced recovery.
     _coordinator_claim_uncertain: bool = False
+    _coordinator_shadow_generation: int = 0
+    _coordinator_shadow_submission_durable: bool | None = None
     _coordinator_started: bool = False
     _coordinator_running: bool = False
+    # True only after the coordinator has durably recorded a child identity
+    # that outbox claims must protect until teardown proves the child stopped.
+    _coordinator_process_protected: bool = False
     _delivery_event_id: str = ""
     _delivery_failed: bool = False
     _delivery_retry: bool = False
@@ -1335,6 +1350,7 @@ class SubagentInfo:
     _delivery_orchestration_tracker: Any = None
     _delivery_batch_progress: dict[str, Any] | None = None
     _delivery_batch_final: bool = False
+    _recovered_outcome: str = ""
     # True when the gateway QUEUED this completion's injection because the
     # parent's slot was busy. Delivery is not consumption: the announce sits in
     # the slot queue until a turn drains it, and that wait is bounded only by the
@@ -1345,6 +1361,7 @@ class SubagentInfo:
     # settles the tombstone instead — see
     # ``_ChatSlot.take_pending_subagent_deliveries`` (issue #4839).
     _delivery_queued: bool = False
+    _legacy_delivery_tombstone: bool = False
     max_turns: int = 0
     reaped: bool = False
     streaming_text: str = ""
@@ -1487,7 +1504,7 @@ class SubagentInfo:
 
     @property
     def outcome(self) -> str:
-        """Canonical three-way terminal outcome: 'stopped' | 'failed' | 'completed'.
+        """Canonical terminal outcome, including coordinator recovery interruption.
 
         THE single source of truth for terminal-state classification. Consumers
         MUST use this (or the ``outcome`` field carried on every subagent_done
@@ -1496,6 +1513,8 @@ class SubagentInfo:
         user-stopped agent as completed. ``stopped``/``error`` remain on the
         wire for compatibility.
         """
+        if self._recovered_outcome == OUTCOME_INTERRUPTED:
+            return OUTCOME_INTERRUPTED
         if self.user_stopped:
             return "stopped"
         if self.error:
@@ -1682,13 +1701,26 @@ class SubagentManager:
         # compatibility executor. Legacy synchronous callers remain mirrored
         # at async run entry during migration.
         self._coordinator = coordinator or SQLiteRunCoordinator()
-        self.command_authority = SubagentCommandAuthority(self._coordinator, self)
+        self._coordinator_owner_id = f"gateway:{uuid.uuid4().hex}"
+        self.command_authority = SubagentCommandAuthority(
+            self._coordinator,
+            self,
+            owner_id=self._coordinator_owner_id,
+        )
         self._outbox_contexts: dict[str, _OutboxDeliveryContext] = {}
         self._outbox_live_contexts: dict[str, _OutboxDeliveryContext] = {}
+        self._outbox_live_run_batches: dict[str, tuple[str, int]] = {}
+        self._coordinator_shadow_submits: set[asyncio.Task[Any]] = set()
+        self._coordinator_shadow_submit_owners: dict[asyncio.Task[Any], SubagentInfo] = {}
         self._lease_tasks: dict[str, asyncio.Task[None]] = {}
         self._outbox_delivery = OutboxDeliveryAdapter(
             self._coordinator,
             self._deliver_outbox_event,
+        )
+        self._legacy_run_importer = LegacyRunImporter(self._coordinator)
+        self._run_recovery = RunRecovery(
+            self._coordinator,
+            self._outbox_delivery,
         )
         self._lifecycle: SubagentLifecycle[SubagentInfo] = SubagentLifecycle()
         # follow_up watchers (spawn_steer mode="follow_up"), keyed by run id.
@@ -1937,6 +1969,12 @@ class SubagentManager:
     def start_reaper(self) -> None:
         return self._monitor.start_reaper_impl()
 
+    def _coordinator_active_run_ids(self) -> frozenset[str]:
+        return self._monitor._coordinator_active_run_ids_impl()
+
+    async def _reconcile_startup(self) -> None:
+        return await self._monitor._reconcile_startup_impl()
+
     async def _reconcile_orphans(self) -> None:
         return await self._monitor._reconcile_orphans_impl()
 
@@ -2099,6 +2137,20 @@ class SubagentManager:
     async def _coordinator_mark_running(self, info: SubagentInfo) -> None:
         return await self._terminal._coordinator_mark_running_impl(info)
 
+    async def _coordinator_record_process(
+        self,
+        info: SubagentInfo,
+        process_id: int,
+        process_start_id: str,
+        process_owned: bool,
+    ) -> None:
+        return await self._terminal._coordinator_record_process_impl(
+            info, process_id, process_start_id, process_owned
+        )
+
+    async def _record_process_identity(self, info: SubagentInfo, session_key: str) -> None:
+        return await self._terminal._record_process_identity_impl(info, session_key)
+
     def _start_coordinator_heartbeat(self, info: SubagentInfo) -> None:
         return self._terminal._start_coordinator_heartbeat_impl(info)
 
@@ -2113,6 +2165,9 @@ class SubagentManager:
 
     async def _commit_terminal_event(self, info: SubagentInfo) -> OutboxEvent | None:
         return await self._terminal._commit_terminal_event_impl(info)
+
+    async def _clear_terminal_process(self, info: SubagentInfo) -> bool:
+        return await self._terminal._clear_terminal_process_impl(info)
 
     def _info_from_outbox(self, event: OutboxEvent) -> SubagentInfo:
         return self._terminal._info_from_outbox_impl(event)
@@ -2129,6 +2184,8 @@ class SubagentManager:
         mark_delivered_on_success: bool,
         settle_digest: bool = False,
         teardown_done: "asyncio.Event | None" = None,
+        process_stopped: "asyncio.Event | None" = None,
+        tombstone_error_on_success: bool = False,
     ) -> None:
         return await self._terminal._report_terminal_impl(
             info,
@@ -2137,6 +2194,8 @@ class SubagentManager:
             mark_delivered_on_success=mark_delivered_on_success,
             settle_digest=settle_digest,
             teardown_done=teardown_done,
+            process_stopped=process_stopped,
+            tombstone_error_on_success=tombstone_error_on_success,
         )
 
     async def _run_terminal_report(
@@ -2148,6 +2207,8 @@ class SubagentManager:
         mark_delivered_on_success: bool,
         settle_digest: bool = False,
         teardown_done: "asyncio.Event | None" = None,
+        process_stopped: "asyncio.Event | None" = None,
+        tombstone_error_on_success: bool = False,
     ) -> None:
         return await self._terminal._run_terminal_report_impl(
             info,
@@ -2156,6 +2217,8 @@ class SubagentManager:
             mark_delivered_on_success=mark_delivered_on_success,
             settle_digest=settle_digest,
             teardown_done=teardown_done,
+            process_stopped=process_stopped,
+            tombstone_error_on_success=tombstone_error_on_success,
         )
 
     async def _reject_waiting_before_terminal(self, info: SubagentInfo, error: str) -> None:
@@ -2170,6 +2233,8 @@ class SubagentManager:
         mark_delivered_on_success: bool,
         settle_digest: bool = False,
         teardown_done: "asyncio.Event | None" = None,
+        process_stopped: "asyncio.Event | None" = None,
+        tombstone_error_on_success: bool = False,
     ) -> "asyncio.Task":  # type: ignore[type-arg]
         return self._terminal._spawn_terminal_report_impl(
             info,
@@ -2178,6 +2243,8 @@ class SubagentManager:
             mark_delivered_on_success=mark_delivered_on_success,
             settle_digest=settle_digest,
             teardown_done=teardown_done,
+            process_stopped=process_stopped,
+            tombstone_error_on_success=tombstone_error_on_success,
         )
 
     @staticmethod
@@ -2489,8 +2556,18 @@ class SubagentManager:
     async def _announce_digest_flush(self, info: SubagentInfo) -> None:
         return await self._waves._announce_digest_flush_impl(info)
 
-    async def settle_queued_delivery(self, agent_ids: list[str]) -> None:
-        return await self._waves.settle_queued_delivery_impl(agent_ids)
+    async def settle_queued_delivery(
+        self,
+        agent_ids: list[str],
+        *,
+        error_tombstone_ids: set[str] | frozenset[str] | None = None,
+    ) -> None:
+        return await self._waves.settle_queued_delivery_impl(
+            agent_ids, error_tombstone_ids=error_tombstone_ids
+        )
+
+    def _write_error_delivery_tombstone(self, agent_id: str) -> None:
+        return self._waves._write_error_delivery_tombstone_impl(agent_id)
 
     def _delivery_event_for_run(self, run_id: str) -> str:
         return self._waves._delivery_event_for_run_impl(run_id)
@@ -2511,10 +2588,15 @@ class SubagentManager:
     def count(self) -> int:
         return len(self.running)
 
-    async def _teardown_run_session(self, info: SubagentInfo, session_key: str) -> None:
+    async def _teardown_run_session(self, info: SubagentInfo, session_key: str) -> bool:
         return await self._run_events._teardown_run_session_impl(info, session_key)
 
-    async def _shadow_submit_accepted_run(self, info: SubagentInfo) -> None:
+    async def _shadow_submit_accepted_run(
+        self,
+        info: SubagentInfo,
+        *,
+        generation: int | None = None,
+    ) -> bool:
         """Best-effort mirror of a legacy-accepted run into the coordinator.
 
         The legacy manager and run folder remain authoritative in this phase.
@@ -2522,9 +2604,9 @@ class SubagentManager:
         any coordinator failure is diagnostic rather than an execution failure.
         """
         try:
-            await asyncio.wait_for(
-                self._shadow_submit_accepted_run_unchecked(info),
-                timeout=_SHADOW_SUBMIT_TIMEOUT_SECS,
+            return await self._shadow_submit_accepted_run_unchecked(
+                info,
+                generation=generation,
             )
         except Exception:
             # Request construction, injected adapters, and result inspection
@@ -2535,11 +2617,19 @@ class SubagentManager:
                 info.id,
                 exc_info=True,
             )
+            return False
 
-    async def _shadow_submit_accepted_run_unchecked(self, info: SubagentInfo) -> None:
+    async def _shadow_submit_accepted_run_unchecked(
+        self,
+        info: SubagentInfo,
+        *,
+        generation: int | None = None,
+    ) -> bool:
         coordinator = self._coordinator
         if coordinator is None:
-            return
+            return False
+        if info._coordinator_fence is not None:
+            return True
         operation = CommandOperation.CONTINUE if info.conversation_key else CommandOperation.SPAWN
         raw_task = info._raw_task or info.task
         stored_task = _redact(raw_task).encode("utf-8", errors="replace").decode("utf-8")[:1000]
@@ -2584,8 +2674,15 @@ class SubagentManager:
             task=stored_task,
             conversation_key=info.conversation_key,
             operation=operation,
+            source_version=LEGACY_SHADOW_SOURCE_VERSION,
         )
         result = await coordinator.submit(request)
+
+        # Cancellation retains this coroutine after its `_run` has exited. A
+        # replacement can begin meanwhile, so the old attempt may observe the
+        # durable result but must not claim or mutate the replacement's fence.
+        if generation is not None and generation != info._coordinator_shadow_generation:
+            return True
 
         if result is None:
             # Injected adapters are expected to honor the typed port. Keep this
@@ -2594,20 +2691,20 @@ class SubagentManager:
                 "run coordinator shadow returned no result for run=%s boundary=submit",
                 info.id,
             )
-            return
+            return False
         if result.decision is CoordinatorDecision.REJECTED:
             logger.warning(
                 "run coordinator shadow rejected legacy run=%s boundary=submit reason=%s",
                 info.id,
                 result.reason.value,
             )
-            return
+            return False
         if result.value is None:
             logger.warning(
                 "run coordinator shadow omitted receipt for run=%s boundary=submit",
                 info.id,
             )
-            return
+            return False
 
         run = result.value.run
         command = result.value.command
@@ -2633,6 +2730,399 @@ class SubagentManager:
             logger.warning(
                 "run coordinator legacy mismatch at boundary=submit fields=%s",
                 ",".join(sorted(mismatches)),
+            )
+
+        try:
+            claim = await self._coordinator.claim_command(
+                command_id,
+                OwnerLease(
+                    owner_id=self._coordinator_owner_id,
+                    lease_expires_at=time.time() + EXECUTION_LEASE_SECONDS,
+                ),
+            )
+        except Exception:
+            # Any claim failure happens after the durable submit receipt exists.
+            # Treating it as a failed submission would emit one local failure
+            # and let recovery emit a second interruption. Read the stable
+            # command once: an owned, unexpired committed claim is safe to
+            # resume; every other result stays exclusively recoverable.
+            if generation is not None and generation != info._coordinator_shadow_generation:
+                return True
+            if await self._adopt_owned_shadow_claim(
+                info,
+                command_id=command_id,
+                generation=generation,
+            ):
+                return True
+            if generation is None or generation == info._coordinator_shadow_generation:
+                info._coordinator_claim_uncertain = True
+            logger.error(
+                "Subagent %s coordinator claim outcome is uncertain; "
+                "deferring terminal ownership to durable recovery",
+                info.id,
+                exc_info=True,
+            )
+            return True
+        if claim is None or claim.fence is None or claim.run is None:
+            # An older generation can commit the idempotent claim before its
+            # response is cancelled. The replacement then receives no new
+            # claim, but it owns the same durable owner lease and must adopt
+            # that fence instead of reporting a competing local failure.
+            if generation is not None and generation != info._coordinator_shadow_generation:
+                return True
+            if await self._adopt_owned_shadow_claim(
+                info,
+                command_id=command_id,
+                generation=generation,
+            ):
+                return True
+            if generation is None or generation == info._coordinator_shadow_generation:
+                info._coordinator_claim_uncertain = True
+            logger.error(
+                "Subagent %s coordinator claim is unavailable; "
+                "deferring terminal ownership to durable recovery",
+                info.id,
+            )
+            return True
+        if generation is not None and generation != info._coordinator_shadow_generation:
+            return True
+        info._coordinator_command = claim.command
+        info._coordinator_fence = claim.fence
+        info._coordinator_version = claim.run.version
+        return True
+
+    async def _await_retained_shadow_submit(self, info: SubagentInfo) -> None:
+        """Keep an accepted run's durable submission alive across cancellation."""
+
+        info._coordinator_shadow_generation += 1
+        generation = info._coordinator_shadow_generation
+        info._coordinator_shadow_submission_durable = None
+        # A recovery respawn is a new local admission attempt. Uncertainty from
+        # the cancelled attempt remains owned by its generation and cannot make
+        # this replacement discard a fence it acquires itself.
+        info._coordinator_claim_uncertain = False
+        origin_task = asyncio.current_task()
+        submit_task = asyncio.create_task(
+            self._shadow_submit_accepted_run(info, generation=generation)
+        )
+        self._coordinator_shadow_submits.add(submit_task)
+        self._coordinator_shadow_submit_owners[submit_task] = info
+        settlement_scheduled = False
+
+        def _schedule_failed_settlement() -> None:
+            nonlocal settlement_scheduled
+            if (
+                settlement_scheduled
+                or not submit_task.done()
+                or generation != info._coordinator_shadow_generation
+                or not info._coordinator_claim_uncertain
+                or info._coordinator_fence is not None
+            ):
+                return
+            try:
+                submission_durable = submit_task.result()
+            except asyncio.CancelledError:
+                submission_durable = False
+            except Exception:
+                submission_durable = False
+            if submission_durable:
+                return
+            settlement_scheduled = True
+            settlement_task = asyncio.create_task(
+                self._resume_legacy_terminal_after_failed_shadow_submit(
+                    info,
+                    generation=generation,
+                    origin_task=origin_task,
+                )
+            )
+            self._coordinator_shadow_submits.add(settlement_task)
+            self._coordinator_shadow_submit_owners[settlement_task] = info
+
+            def _settlement_done(done: asyncio.Task[None]) -> None:
+                self._coordinator_shadow_submits.discard(done)
+                if not done.cancelled():
+                    self._coordinator_shadow_submit_owners.pop(done, None)
+
+            settlement_task.add_done_callback(_settlement_done)
+
+        def _settled(done: asyncio.Task[bool]) -> None:
+            if generation == info._coordinator_shadow_generation and not done.cancelled():
+                try:
+                    info._coordinator_shadow_submission_durable = done.result()
+                except Exception:
+                    info._coordinator_shadow_submission_durable = False
+            self._coordinator_shadow_submits.discard(done)
+            if not done.cancelled():
+                self._coordinator_shadow_submit_owners.pop(done, None)
+            _schedule_failed_settlement()
+
+        submit_task.add_done_callback(_settled)
+        try:
+            await asyncio.shield(submit_task)
+        except asyncio.CancelledError:
+            # The SQLite worker cannot be cancelled once it starts. Treat its
+            # outcome as uncertain until this strongly-held task proves whether
+            # a durable run and execution fence exist.
+            if generation == info._coordinator_shadow_generation:
+                info._coordinator_claim_uncertain = True
+                self._retain_recovery_batch(info)
+            _schedule_failed_settlement()
+            raise
+
+    async def _drain_retained_shadow_submits(self, info: SubagentInfo) -> bool | None:
+        """Wait for this run's retained admission chain and return its outcome."""
+
+        settled = info._coordinator_shadow_submission_durable
+        durable_seen = settled is True
+        failed_seen = settled is False
+        while True:
+            tasks = [
+                task
+                for task, owner in list(self._coordinator_shadow_submit_owners.items())
+                if owner is info
+            ]
+            if not tasks:
+                if durable_seen:
+                    return True
+                if failed_seen:
+                    return False
+                return None
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            for result in results:
+                if result is True:
+                    durable_seen = True
+                elif result is False:
+                    failed_seen = True
+            # ``gather`` completes synchronously when every task was already
+            # done. Yield once so their completion callbacks can remove the
+            # finished link and install any fallback-settlement successor
+            # before this loop inspects the retained chain again.
+            await asyncio.sleep(0)
+
+    async def _resolve_stopped_shadow_claim(self, info: SubagentInfo) -> bool:
+        """Return whether this manager still owns stopped-run reporting."""
+
+        operation = CommandOperation.CONTINUE if info.conversation_key else CommandOperation.SPAWN
+        command_id = f"{operation.value}:{info.id}"
+        generation = info._coordinator_shadow_generation
+        while info._coordinator_claim_uncertain and info._coordinator_fence is None:
+            claim = None
+            try:
+                claim = await self._coordinator.claim_command(
+                    command_id,
+                    OwnerLease(
+                        owner_id=self._coordinator_owner_id,
+                        lease_expires_at=time.time() + EXECUTION_LEASE_SECONDS,
+                    ),
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.warning(
+                    "Subagent %s stopped claim retry failed",
+                    info.id,
+                    exc_info=True,
+                )
+            if claim is not None and claim.fence is not None and claim.run is not None:
+                info._coordinator_command = claim.command
+                info._coordinator_fence = claim.fence
+                info._coordinator_version = claim.run.version
+            elif await self._adopt_owned_shadow_claim(
+                info,
+                command_id=command_id,
+                generation=generation,
+            ):
+                pass
+            if info._coordinator_fence is not None:
+                info._coordinator_claim_uncertain = False
+                return True
+            if await self._shadow_claim_taken_over(
+                info,
+                command_id=command_id,
+                generation=generation,
+            ):
+                return False
+            await asyncio.sleep(_TERMINAL_RETRY_SECONDS)
+        return info._coordinator_fence is not None
+
+    async def _shadow_claim_taken_over(
+        self,
+        info: SubagentInfo,
+        *,
+        command_id: str,
+        generation: int,
+    ) -> bool:
+        """Detect terminal or live foreign ownership after an uncertain claim."""
+
+        receipt = None
+        try:
+            receipt = await asyncio.wait_for(
+                self._coordinator.get_command_by_key(command_id),
+                timeout=_COORDINATOR_CLAIM_LOOKUP_TIMEOUT_SECS,
+            )
+        except Exception:
+            logger.warning(
+                "run coordinator stopped-claim lookup failed for run=%s",
+                info.id,
+                exc_info=True,
+            )
+        if generation != info._coordinator_shadow_generation:
+            return True
+        if receipt is None or receipt.run is None:
+            return False
+        run = receipt.run
+        if run.outcome is not None:
+            return True
+        return bool(
+            run.owner_id
+            and run.owner_id != self._coordinator_owner_id
+            and run.lease_expires_at > time.time()
+        )
+
+    async def _adopt_owned_shadow_claim(
+        self,
+        info: SubagentInfo,
+        *,
+        command_id: str,
+        generation: int | None,
+    ) -> bool:
+        """Adopt a stable same-owner claim after an inconclusive claim response."""
+
+        receipt = None
+        try:
+            receipt = await asyncio.wait_for(
+                self._coordinator.get_command_by_key(command_id),
+                timeout=_COORDINATOR_CLAIM_LOOKUP_TIMEOUT_SECS,
+            )
+        except Exception:
+            logger.warning(
+                "run coordinator shadow claim lookup failed for run=%s",
+                info.id,
+                exc_info=True,
+            )
+        # The lookup itself yields control. A replacement generation may have
+        # started while it was pending, so stale attempts cannot mutate its
+        # fence or uncertainty state.
+        if generation is not None and generation != info._coordinator_shadow_generation:
+            return True
+        now = time.time()
+        if (
+            receipt is None
+            or receipt.run is None
+            or receipt.command.status is not CommandStatus.CLAIMED
+            or receipt.command.owner_id != self._coordinator_owner_id
+            or receipt.command.claim_expires_at <= now
+            or receipt.run.owner_id != self._coordinator_owner_id
+            or receipt.run.lease_expires_at <= now
+        ):
+            return False
+        info._coordinator_command = receipt.command
+        info._coordinator_fence = RunFence(
+            run_id=receipt.run.run_id,
+            owner_id=receipt.run.owner_id,
+            lease_epoch=receipt.run.lease_epoch,
+        )
+        info._coordinator_version = receipt.run.version
+        return True
+
+    async def _resume_legacy_terminal_after_failed_shadow_submit(
+        self,
+        info: SubagentInfo,
+        *,
+        generation: int | None = None,
+        origin_task: asyncio.Task[Any] | None = None,
+    ) -> None:
+        """Report locally when an uncertain submission later proves non-durable."""
+
+        settlement_generation = (
+            info._coordinator_shadow_generation if generation is None else generation
+        )
+
+        def owns_settlement() -> bool:
+            return (
+                settlement_generation == info._coordinator_shadow_generation
+                and info._coordinator_claim_uncertain
+                and not info._finalized
+                and not info._reap_started
+                and not info.reaped
+                and not info.user_stopped
+            )
+
+        while True:
+            # Check before EVERY destructive attempt. A user Stop or a newer
+            # shadow generation owns any marker written after this point.
+            if not owns_settlement():
+                return
+            cleared = await asyncio.to_thread(
+                clear_tombstone_for_recovery,
+                info.id,
+            )
+            if not owns_settlement():
+                # A terminal owner can write its marker while the unlink runs
+                # in the worker. Restore the abnormal marker if this attempt
+                # removed it; completed owners intentionally remain visible
+                # until their delivery path writes the delivered marker.
+                if cleared and info._finalized and info.outcome != "completed":
+                    cause = "cancelled" if info.user_stopped else "error"
+                    await asyncio.to_thread(self._write_tombstone, info, cause)
+                return
+            if cleared:
+                break
+            logger.warning(
+                "Subagent %s cannot resume legacy reporting while its recovery "
+                "tombstone remains; retrying",
+                info.id,
+            )
+            await asyncio.sleep(_TERMINAL_RETRY_SECONDS)
+
+        # Tombstone clearance yields, so durable admission or the one-shot
+        # cancel recovery can win while it is retried. A fence transfers
+        # ownership to durable recovery. A different live task is the cancel
+        # recovery's respawn; its own retained submit will either establish a
+        # fence or schedule a settlement tied to that newer task.
+        if info._coordinator_fence is not None:
+            return
+        live_task = self._tasks.get(info.id)
+        if (
+            origin_task is not None
+            and live_task is not None
+            and live_task is not origin_task
+            and not live_task.done()
+        ):
+            return
+
+        # The claim and state transition contain no await, so a pending recovery
+        # sees either the open pre-terminal state or the completed terminal one.
+        # Superseding clears `_recovering`; otherwise both paths can decline and
+        # strand the parent notification.
+        if not self._claim_finalize(info, supersede_recovery=True):
+            return
+        info._coordinator_claim_uncertain = False
+        info.done = True
+        info.error = _SHADOW_SUBMISSION_FAILURE_DETAIL
+        info.elapsed = time.time() - info.started
+        Stats().inc_subagent_failed()
+        info._legacy_delivery_tombstone = True
+        self._record_cost(info)
+        self._spawn_terminal_report(
+            info,
+            source="Subagent",
+            injection_timeout_reason=(
+                f"delivery timed out after {int(_ON_DONE_TIMEOUT)}s "
+                "(late coordinator submission failure)"
+            ),
+            mark_delivered_on_success=False,
+            settle_digest=True,
+            tombstone_error_on_success=True,
+        )
+
+    def _retain_recovery_batch(self, info: SubagentInfo) -> None:
+        """Keep live-only wave routing for a run handed to durable recovery."""
+
+        if info.batch_id:
+            self._outbox_live_run_batches[info.id] = (
+                info.batch_id,
+                info.batch_total,
             )
 
     async def _run(self, info: SubagentInfo) -> None:
@@ -2778,7 +3268,28 @@ class SubagentManager:
     async def cancel(self, agent_id: str) -> bool:
         return await self._cancellation.cancel_impl(agent_id)
 
+    async def _readmit_unsettled_shadow_submissions(
+        self,
+        owners: Iterable[SubagentInfo],
+    ) -> None:
+        return await self._cancellation._readmit_unsettled_shadow_submissions_impl(owners)
+
     async def cancel_all(self) -> None:
+        """Cancel all running subagents and wait for cleanup."""
+
+        self._shutting_down = True
+        try:
+            await self._cancel_all_impl()
+        except asyncio.CancelledError:
+            owners = list(self._coordinator_shadow_submit_owners.values())
+            for report_task in self._lifecycle.pending_reports():
+                owner = self._lifecycle.owner_for(report_task)
+                if owner is not None and not owner._reported_to_parent:
+                    owners.append(owner)
+            await self._readmit_unsettled_shadow_submissions(owners)
+            raise
+
+    async def _cancel_all_impl(self) -> None:
         return await self._cancellation.cancel_all_impl()
 
 
@@ -2848,7 +3359,7 @@ _COMPONENT_GLOBAL_BINDINGS = (
     asyncio,
     cached_admission_check,
     cap_result_file,
-    clear_tombstone,
+    clear_tombstone_for_recovery,
     compact_cost_log,
     configured_fallback_chain,
     consult_offloaded,

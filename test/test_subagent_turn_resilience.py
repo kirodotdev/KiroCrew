@@ -974,9 +974,9 @@ def test_no_raw_cancel_outside_chokepoint():
     """Source scan: every raw ``.cancel()`` on a managed run task in
     subagent.py must route through ``_cancel_task_intentionally`` (the
     mechanical enforcement of the intentional-cancel marker contract).
-    Allowed raw sites: the chokepoint body itself, the reaper-loop task, and a
-    pending cancel-recovery scheduler task — none of the latter two are managed
-    runs, so the marker contract (and recovery) never applies to them."""
+    Allowed raw sites: the chokepoint body itself and observer or recovery
+    tasks — none of the latter are managed runs, so the marker contract (and
+    recovery) never applies to them."""
     import inspect
     from pathlib import Path
 
@@ -1003,8 +1003,9 @@ def test_no_raw_cancel_outside_chokepoint():
         # Shielded terminal-report tasks drained at shutdown — also not managed
         # runs; cancelling them cannot trigger a respawn.
         "report_task.cancel()",
-        # Coordinator lease-heartbeat tasks are observers, not managed runs.
-        # Cancelling them cannot trigger run recovery.
+        # Coordinator reconciliation and lease-heartbeat tasks are observers,
+        # not managed runs. Cancelling them cannot trigger run recovery.
+        "reconcile_task.cancel()",
         "lease_task.cancel()",
         # follow_up watchers (spawn_steer mode="follow_up") — observers, not
         # managed runs: no terminal marker applies, and cancelling one cannot
@@ -1029,6 +1030,7 @@ def test_no_raw_cancel_outside_chokepoint():
         and "recovery_task" not in line
         and "report_task" not in line
         and "lease_task" not in line
+        and "submit_task" not in line
     ]
     assert len(generic) == 1, (
         f"expected exactly one raw task.cancel() (the chokepoint body), " f"found: {generic}"

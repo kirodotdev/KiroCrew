@@ -92,6 +92,18 @@ class TestPendingDeliveryLedger:
         # Claimed once: a second drain of the same row owes nothing.
         assert slot.take_pending_subagent_deliveries([_ann("one"), _ann("two")]) == []
 
+    def test_error_tombstone_kind_survives_the_consumption_ledger(self):
+        slot = _ChatSlot("s1")
+        slot.note_pending_subagent_delivery(
+            _ann("one"), ["failed", "completed"], error_tombstone_ids={"failed"}
+        )
+
+        agent_ids = slot.take_pending_subagent_deliveries([_ann("one")])
+
+        assert agent_ids == ["failed", "completed"]
+        assert agent_ids.error_tombstone_ids == frozenset({"failed"})
+        assert slot.take_pending_subagent_deliveries([_ann("one")]) == []
+
     def test_empty_ids_record_nothing(self):
         """A failed member keeps the tombstone its own error path wrote, and a
         flush-only record has no folder — neither owes a mark."""
@@ -189,6 +201,32 @@ class TestDeferQueuedDelivery:
 
         assert slot._subagent_delivery_pending == {_key(COMPLETION): ["a1"]}
         assert info._delivery_queued is True
+
+    def test_shadow_fallback_preserves_its_error_tombstone_debt(self):
+        slot = _ChatSlot("s1")
+        info = _member(error="coordinator submission failed")
+        info._legacy_delivery_tombstone = True
+
+        _defer(slot, info)
+
+        assert slot._subagent_delivery_pending == {_key(COMPLETION): ["a1"]}
+        assert slot._subagent_error_tombstone_pending == {_key(COMPLETION): {"a1"}}
+        assert info._delivery_queued is True
+
+    def test_wave_digest_transfers_error_tombstone_kinds(self):
+        slot = _ChatSlot("s1")
+        info = _member("flusher")
+        info._digest_settle_ids = ["failed", "completed"]
+        info._digest_error_tombstone_ids = ["failed"]
+
+        _defer(slot, info)
+
+        assert slot._subagent_delivery_pending == {
+            _key(COMPLETION): ["flusher", "failed", "completed"]
+        }
+        assert slot._subagent_error_tombstone_pending == {_key(COMPLETION): {"failed"}}
+        assert info._digest_settle_ids == []
+        assert info._digest_error_tombstone_ids == []
 
     def test_stopped_durable_member_owes_acknowledgement_without_a_tombstone(self):
         """A user stop leaves ``error`` EMPTY (it is a neutral outcome), so the
@@ -415,6 +453,23 @@ class TestTeardownGateOnQueuedSettlement:
 
         assert (agent_root / info.id / "tombstone.json").exists()
         assert (agent_root / "evicted" / "tombstone.json").exists()
+
+    @pytest.mark.asyncio
+    async def test_shadow_fallback_settles_with_error_retention(self, agent_root):
+        mgr = SubagentManager(sessions=MagicMock(), ctx_builder=MagicMock())
+        info = _member("failed", error="run coordinator submission failed after timeout")
+        _finished_run(info.id, agent_root)
+        mgr._agents[info.id] = info
+        mgr._agents.pop(info.id)  # dashboard clear evicted the live record
+
+        await mgr.settle_queued_delivery([info.id], error_tombstone_ids={info.id})
+
+        tombstone = json.loads(
+            (agent_root / info.id / "tombstone.json").read_text(encoding="utf-8")
+        )
+        assert tombstone["cause"] == "error"
+        assert tombstone["outcome"] == "failed"
+        assert tombstone["detail"] == "run coordinator submission failed after timeout"
 
     @pytest.mark.asyncio
     async def test_an_evicted_run_still_waits_for_its_teardown(self, agent_root):
@@ -896,9 +951,10 @@ class TestReaperDoesNotPruneAQueuedPromise:
         assert not (agent_root / info.id / "tombstone.json").exists()
 
     @pytest.mark.asyncio
-    async def test_gateway_idle_route_settles_only_after_turn_consumption(self):
-        """Dispatching an idle dashboard turn is not durable delivery; the
-        outbox debt clears only after the model consumes the completion."""
+    @pytest.mark.parametrize("legacy_error", [False, True])
+    async def test_gateway_idle_route_settles_only_after_turn_consumption(self, legacy_error):
+        """An idle dashboard dispatch settles durable and legacy-error debt
+        only after the model consumes the completion."""
         from test_subagent_scale import _mock_dashboard_state, _mock_sessions
 
         orch = _make_orchestrator()
@@ -930,7 +986,11 @@ class TestReaperDoesNotPruneAQueuedPromise:
             consumed.set()
 
         info = _member()
-        info._delivery_event_id = "event-1"
+        if legacy_error:
+            info.error = "coordinator submission failed"
+            info._legacy_delivery_tombstone = True
+        else:
+            info._delivery_event_id = "event-1"
         with patch("kiro_crew.slack.gateway._run_chat", side_effect=consume_turn):
             await on_done(info)
             assert info._delivery_queued is True
@@ -939,6 +999,10 @@ class TestReaperDoesNotPruneAQueuedPromise:
             await _settled(lambda: mock_sm_inst.settle_queued_delivery.await_count == 1)
 
         mock_sm_inst.settle_queued_delivery.assert_awaited_once_with([info.id])
+        claimed = mock_sm_inst.settle_queued_delivery.await_args.args[0]
+        assert claimed.error_tombstone_ids == (
+            frozenset({info.id}) if legacy_error else frozenset()
+        )
 
 
 def _make_orchestrator():

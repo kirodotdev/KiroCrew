@@ -880,7 +880,7 @@ class TestReaperOffloadsTheSweep:
             patch.object(asyncio.get_running_loop(), "run_in_executor", side_effect=_capture),
             patch.object(mgr, "_sample_live_costs") as sample,
             patch.object(mgr, "_rebuild_conversation_registry", new=AsyncMock()),
-            patch.object(mgr, "_drain_pending_outbox", new=AsyncMock()),
+            patch.object(mgr._run_recovery, "reconcile", new=AsyncMock()),
         ):
             task = asyncio.ensure_future(mgr._reaper_loop())
             await asyncio.sleep(0.05)

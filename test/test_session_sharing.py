@@ -8,6 +8,7 @@ fresh processes — and that fallback to legacy path works correctly.
 from __future__ import annotations
 
 import asyncio
+import threading
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -16,6 +17,7 @@ from kiro_crew.acp.runtime import AcpRuntimeDead
 from kiro_crew.acp.session_provider import AcpSessionProvider
 from kiro_crew.acp.types import AcpEvent
 from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_TEXT_CHUNK
+from kiro_crew.run_coordinator import MemoryRunCoordinator
 from kiro_crew.subagent import SubagentManager
 
 # ``SubagentManager.spawn`` refuses -- registering no task -- while the host
@@ -285,6 +287,43 @@ class TestSessionSharingSpawn:
         assert isinstance(info._shared_provider, AcpSessionProvider)
 
     @pytest.mark.asyncio
+    async def test_shared_session_never_persists_kill_authority(self):
+        """Recovery must not treat the parent runtime as this run's child."""
+        from kiro_crew.subagent import SubagentInfo
+
+        sessions = _mock_sessions(sharing_eligible=True)
+        manager = SubagentManager(
+            sessions=sessions,
+            ctx_builder=_mock_ctx_builder_auto(),
+            is_yolo=lambda: True,
+        )
+        info = SubagentInfo(
+            id="shared1",
+            task="hello",
+            parent_session_key="dashboard:slot1",
+        )
+
+        event_loop_thread = threading.get_ident()
+        update_threads: list[int] = []
+        with (
+            patch(
+                "kiro_crew.subagent.update_state",
+                side_effect=lambda *_args, **_kwargs: update_threads.append(threading.get_ident()),
+            ) as update,
+            patch("kiro_crew.subagent.platform_compat.process_start_time") as process_start_time,
+        ):
+            provider = await manager._create_shared_session(info, "subagent:shared1", "kirocrew")
+
+        process_start_time.assert_not_called()
+        update.assert_called_once()
+        assert update.call_args.args == ("shared1",)
+        assert update.call_args.kwargs["pid"] == 12345
+        assert update.call_args.kwargs["pid_start_id"] == ""
+        assert update.call_args.kwargs["process_owned"] is False
+        assert update_threads != [event_loop_thread]
+        await provider.shutdown()
+
+    @pytest.mark.asyncio
     async def test_shared_session_cleanup_destroys_handle(self):
         """On completion, shared session calls provider.shutdown() not reset()."""
         sessions = _mock_sessions(sharing_eligible=True)
@@ -475,6 +514,7 @@ class TestSessionSharingMultiAgent:
             ctx_builder=_mock_ctx_builder_auto(),
             is_yolo=lambda: True,
             max_concurrent=4,
+            coordinator=MemoryRunCoordinator(),
         )
         # Disable stagger so both spawns start immediately
         manager._spawn_stagger_secs = 0.0
@@ -486,7 +526,8 @@ class TestSessionSharingMultiAgent:
         ):
             info1 = manager.spawn("task A", parent_session_key="dashboard:slot1")
             info2 = manager.spawn("task B", parent_session_key="dashboard:slot1")
-            await asyncio.gather(_wait_until_done(info1), _wait_until_done(info2))
+            tasks = [manager._tasks[info1.id], manager._tasks[info2.id]]
+            await asyncio.gather(*tasks)
 
         # Both should use session sharing
         assert info1._session_sharing is True
@@ -506,6 +547,7 @@ class TestSessionSharingMultiAgent:
             ctx_builder=_mock_ctx_builder_auto(),
             is_yolo=lambda: True,
             max_concurrent=4,
+            coordinator=MemoryRunCoordinator(),
         )
         manager._spawn_stagger_secs = 0.0
 
@@ -516,7 +558,8 @@ class TestSessionSharingMultiAgent:
         ):
             info1 = manager.spawn("task A", parent_session_key="dashboard:slot1")
             info2 = manager.spawn("task B", parent_session_key="dashboard:slot2")
-            await asyncio.gather(_wait_until_done(info1), _wait_until_done(info2))
+            tasks = [manager._tasks[info1.id], manager._tasks[info2.id]]
+            await asyncio.gather(*tasks)
 
         assert info1._session_sharing is True
         assert info2._session_sharing is True

@@ -103,6 +103,13 @@ class SubagentScheduler:
     def contains_batch(self, batch_id: str) -> bool:
         return any(entry.get("batch_id") == batch_id for entry in self.queue)
 
+    def queued_run_ids(self) -> frozenset[str]:
+        """Return stable run identities still waiting in the local queue."""
+
+        return frozenset(
+            run_id for entry in self.queue if (run_id := str(entry.get("_preassigned_id") or ""))
+        )
+
     def find_conversation(self, conversation_key: str) -> dict[str, Any] | None:
         for entry in self.queue:
             key = str(entry.get("conversation_key") or "") or (

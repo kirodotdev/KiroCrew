@@ -256,7 +256,7 @@ class RunEventCoordinator(ManagerComponent):
         """Get agent info by ID."""
         return self._manager._agents.get(agent_id)
 
-    async def _teardown_run_session_impl(self, info: SubagentInfo, session_key: str) -> None:
+    async def _teardown_run_session_impl(self, info: SubagentInfo, session_key: str) -> bool:
         """Release and reset the run's own session (skipped when reaped).
 
         Split out of ``_run``'s ``finally`` so the caller can wrap it in a nested
@@ -309,36 +309,58 @@ class RunEventCoordinator(ManagerComponent):
                     )
                 except Exception:
                     logger.exception("Subagent %s: SEL audit failed", info.id)
+                return False
             except Exception:
                 logger.exception("Subagent %s: reset failed", info.id)
+                return False
+        return True
 
     async def _run_impl(self, info: SubagentInfo) -> None:
         """Execute a subagent task in its own session."""
         session_key = info.conversation_key or f"subagent:{info.id}"
         try:
-            if not info._coordinator_admitted:
-                await self._manager._shadow_submit_accepted_run(info)
-            else:
+            authority_admitted = info._coordinator_admitted
+            if not authority_admitted:
+                await self._manager._await_retained_shadow_submit(info)
+            if info.user_stopped or info._reap_started:
+                return
+            if info._coordinator_claim_uncertain:
+                self._manager._retain_recovery_batch(info)
+                return
+            if info._coordinator_fence is None:
+                # A definite admission failure has no durable owner. Keep the
+                # accepted run tombstone-free until the legacy reporter can
+                # deliver its terminal result or restart reconciliation can
+                # recover it.
+                info._coordinator_claim_uncertain = True
+                self._manager._retain_recovery_batch(info)
+                await self._manager._resume_legacy_terminal_after_failed_shadow_submit(info)
+                return
+            try:
+                await self._manager._coordinator_mark_starting(info)
+            except Exception:
+                if not authority_admitted:
+                    raise
+                # A lost lifecycle response is retried inside the transition.
+                # If both attempts fail, command settlement must not run: it
+                # would apply a command whose STARTING state is still unknown.
+                info._coordinator_claim_uncertain = True
+                await self._manager.command_authority.stop_execution_heartbeat(info.id)
+                self._manager._retain_recovery_batch(info)
+                logger.warning(
+                    "Subagent %s starting transition is uncertain",
+                    info.id,
+                    exc_info=True,
+                )
+                return
+            if authority_admitted:
                 try:
-                    await self._manager._coordinator_mark_starting(info)
-                except Exception:
-                    # A lost lifecycle response is retried inside the transition.
-                    # If both attempts fail, command settlement must not run: it
-                    # would apply a command whose STARTING state is still unknown.
-                    info._coordinator_claim_uncertain = True
-                    logger.warning(
-                        "Subagent %s starting transition is uncertain",
-                        info.id,
-                        exc_info=True,
-                    )
-                    return
-                try:
+                    # The command fence makes the same result idempotent.
+                    # Reconcile a commit whose response was lost before
+                    # deciding that recovery must own the accepted run.
                     await self._manager.command_authority.execution_started(info.id)
                 except Exception:
                     try:
-                        # The command fence makes the same result idempotent.
-                        # Reconcile a commit whose response was lost before
-                        # deciding that recovery must own the accepted run.
                         await self._manager.command_authority.execution_started(info.id)
                     except Exception:
                         # The claimed command remains the only safe retry path.
@@ -346,14 +368,15 @@ class RunEventCoordinator(ManagerComponent):
                         # delivery until cancellation or recovery settles it.
                         info._coordinator_claim_uncertain = True
                         await self._manager.command_authority.stop_execution_heartbeat(info.id)
+                        self._manager._retain_recovery_batch(info)
                         logger.warning(
                             "Subagent %s start settlement is uncertain",
                             info.id,
                             exc_info=True,
                         )
                         return
-                info._coordinator_waiting = False
-                self._manager._start_coordinator_heartbeat(info)
+            info._coordinator_waiting = False
+            self._manager._start_coordinator_heartbeat(info)
             await asyncio.wait_for(
                 self._manager._run_inner(info, session_key), timeout=self._manager._default_timeout
             )
@@ -460,6 +483,7 @@ class RunEventCoordinator(ManagerComponent):
             # already-spawned report holds its "delivered" tombstone until the
             # child is provably gone (see `_report_terminal`).
             teardown_done = self._manager._lifecycle.open_teardown(info.id)
+            process_stopped = asyncio.Event() if info._coordinator_process_protected else None
             # Published where it survives this record being evicted: a settlement
             # that happens OUTSIDE this report (the parent's queue drain, issue
             # #4839) can come due after a dashboard clear/cancel has removed the run
@@ -477,12 +501,17 @@ class RunEventCoordinator(ManagerComponent):
                     mark_delivered_on_success=True,
                     settle_digest=True,
                     teardown_done=teardown_done,
+                    process_stopped=process_stopped,
                 )
             # Nested try/finally: the teardown awaits must never be able to skip
             # the bookkeeping below (see `_teardown_run_session`).
             try:
                 if not info.reaped:
-                    await self._manager._teardown_run_session(info, session_key)
+                    teardown_succeeded = await self._manager._teardown_run_session(
+                        info, session_key
+                    )
+                    if teardown_succeeded and process_stopped is not None:
+                        process_stopped.set()
             finally:
                 # Guard 2 of 3 — SLOT accounting on its own one-shot token, so
                 # the count is released exactly once whichever terminal path
@@ -781,6 +810,8 @@ class RunEventCoordinator(ManagerComponent):
             # Detect CC provider to skip permission event loop
             is_cc = self._manager._is_cc_provider(client)
         await self._manager._coordinator_mark_running(info)
+        if info._session_sharing and info._pid:
+            await self._manager._coordinator_record_process(info, info._pid, "", False)
         # Intentionally check info.agent (not resolved `agent`) so only
         # explicitly requested agents skip _SYSTEM_PREFIX (defense-in-depth).
         named_agent = bool(info.agent and _AGENT_NAME_RE.fullmatch(info.agent))
@@ -900,21 +931,9 @@ class RunEventCoordinator(ManagerComponent):
         )
         # Stream results to disk for orchestrated chat.
 
-        # Record PID for orphan recovery. Off-loop and drained on cancellation
-        # via _write_state_off_loop (#6288, #7302): update_state ends in a
-        # synchronous fsync, and the reaper, every chat turn and the heartbeat
-        # share this loop. Off-loop also means the write TAKES update_state's
-        # per-agent lock, which on-loop callers skip (#7280), so it can no longer
-        # interleave with another pool writer's read-merge-rewrite.
-        try:
-            pid = self._manager._sessions.get_pid(session_key)
-            if pid:
-                info._pid = pid  # make available for _write_tombstone
-                await self._manager._write_state_off_loop(
-                    info, "PID record", pid=pid, pid_recorded_at=time.time()
-                )
-        except Exception:
-            logger.debug("Failed to record PID for %s", info.id, exc_info=True)
+        # Protected identity is the only restart authority for terminating this
+        # process tree. Failure must abort before the child receives a prompt.
+        await self._manager._record_process_identity(info, session_key)
 
         # Record session_id and provider type for session file cleanup
         try:
@@ -1719,12 +1738,13 @@ class RunEventCoordinator(ManagerComponent):
         info._shared_provider = provider
         if runtime.pid:
             info._pid = runtime.pid
-            # Same off-loop, drained write as the non-shared spawn path's PID
-            # record (#6288, #7302). Unguarded here as before: this method has no
-            # best-effort contract, so an _atomic_write failure still propagates
-            # to the caller rather than yielding a session with no recorded pid.
             await self._manager._write_state_off_loop(
-                info, "PID record", pid=runtime.pid, pid_recorded_at=time.time()
+                info,
+                "PID record",
+                pid=runtime.pid,
+                pid_recorded_at=time.time(),
+                pid_start_id="",
+                process_owned=False,
             )
         logger.info(
             "Subagent %s using session sharing on runtime PID %s (session %s, key %s)",

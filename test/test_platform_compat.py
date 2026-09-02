@@ -1426,6 +1426,27 @@ class TestProcessStartTime:
         assert pc.process_start_time(os.getpid())
 
 
+class TestProcessIdentityToken:
+    def test_linux_token_includes_boot_identity(self, monkeypatch):
+        monkeypatch.setattr(pc.sys, "platform", "linux")
+        monkeypatch.setattr(pc, "process_start_time", lambda _pid: "12345")
+        monkeypatch.setattr(pc, "_linux_boot_id", lambda: "boot-aaaa")
+
+        assert pc.process_identity_token(4321) == "v1:linux:12345:boot-aaaa"
+
+    def test_darwin_token_uses_locale_independent_microtime(self, monkeypatch):
+        monkeypatch.setattr(pc.sys, "platform", "darwin")
+        monkeypatch.setattr(pc, "_darwin_process_start_microtime", lambda _pid: "1724500000.000042")
+
+        assert pc.process_identity_token(4321) == "v1:darwin:1724500000.000042"
+
+    def test_alias_prone_platform_has_no_durable_token(self, monkeypatch):
+        monkeypatch.setattr(pc.sys, "platform", "freebsd14")
+        monkeypatch.setattr(pc, "IS_WINDOWS", False)
+
+        assert pc.process_identity_token(4321) is None
+
+
 class TestOwnProcessStartTime:
     """The module-cached self identity the metrics exporter stamps on shards.
 

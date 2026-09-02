@@ -50,6 +50,31 @@ class OrphanStallMonitor(ManagerComponent):
 
     __slots__ = ()
 
+    def _coordinator_active_run_ids_impl(self) -> frozenset[str]:
+        """Fence live manager tasks and locally queued runs from recovery."""
+
+        active = frozenset(
+            run_id
+            for run_id, task in self._manager._tasks.items()
+            if run_id in self._manager._agents and not task.done()
+        )
+        return active | self._manager._scheduler.queued_run_ids()
+
+    async def _reconcile_startup_impl(self) -> None:
+        """Import legacy-only state, recover expired runs, and drain delivery."""
+
+        try:
+            await self._manager._reconcile_orphans()
+        except Exception:
+            logger.exception("Legacy subagent recovery failed")
+        try:
+            await self._manager._run_recovery.reconcile(
+                importer=self._manager._legacy_run_importer,
+                exclude_run_ids=self._manager._coordinator_active_run_ids(),
+            )
+        except Exception:
+            logger.exception("Coordinator-first subagent recovery failed")
+
     def _reap_orphan_process_impl(self, state: dict[str, Any]) -> bool:
         """Kill a surviving child only when its recorded process identity still matches."""
 
@@ -92,8 +117,9 @@ class OrphanStallMonitor(ManagerComponent):
         """Start the periodic reaper loop.  Call once after the event loop is running."""
         if self._manager._reaper_task is None:
             self._manager._reaper_task = asyncio.create_task(self._manager._reaper_loop())
-            # One-shot orphan reconciliation on startup
-            self._manager._reconcile_task = asyncio.create_task(self._manager._reconcile_orphans())
+            # Coordinator state is authoritative on restart. Legacy folders are
+            # imported read-only before the same fenced recovery policy runs.
+            self._manager._reconcile_task = asyncio.create_task(self._manager._reconcile_startup())
 
     async def _reconcile_orphans_impl(self) -> None:
         """Scan for orphaned agent folders from a prior gateway run.
@@ -452,6 +478,13 @@ class OrphanStallMonitor(ManagerComponent):
             logger.debug("Reaper: startup cost-log compaction failed", exc_info=True)
         while True:
             await asyncio.sleep(_REAPER_INTERVAL)
+            try:
+                await self._manager._run_recovery.reconcile(
+                    importer=self._manager._legacy_run_importer,
+                    exclude_run_ids=self._manager._coordinator_active_run_ids(),
+                )
+            except Exception:
+                logger.warning("Reaper: coordinator recovery failed", exc_info=True)
             await self._manager._drain_pending_outbox()
             if not self._manager._conv_registry_rebuilt:
                 # First pass after (re)start: re-seed the conversation TTL

@@ -32,9 +32,12 @@ from .models import (
     DeliveryFence,
     DeliveryState,
     DesiredState,
+    LegacyImportReceipt,
+    LegacyRunImport,
     ObservedState,
     OutboxEvent,
     OwnerLease,
+    RecoveryClaim,
     RunCommand,
     RunCompletion,
     RunFence,
@@ -47,7 +50,7 @@ from .models import (
     TerminalRun,
 )
 
-_SCHEMA_VERSION = 3
+_SCHEMA_VERSION = 5
 _BUSY_TIMEOUT_MS = 5000
 _JOURNAL_MODE_LOCK = threading.Lock()
 _DATABASE_NAME = "coordinator.db"
@@ -162,6 +165,18 @@ _MIGRATIONS: tuple[tuple[int, tuple[str, ...]], ...] = (
             "DROP TABLE commands_v2",
             "CREATE INDEX commands_status_created ON commands(status, created_at)",
             "CREATE INDEX commands_run_created ON commands(run_id, created_at)",
+        ),
+    ),
+    (
+        4,
+        ("ALTER TABLE runs ADD COLUMN source_version TEXT NOT NULL DEFAULT ''",),
+    ),
+    (
+        5,
+        (
+            "ALTER TABLE runs ADD COLUMN process_id INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE runs ADD COLUMN process_start_id TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE runs ADD COLUMN process_owned INTEGER NOT NULL DEFAULT 0",
         ),
     ),
 )
@@ -361,6 +376,10 @@ class SQLiteRunCoordinator:
                 created_at=row["created_at"],
                 updated_at=row["updated_at"],
                 terminal_at=row["terminal_at"],
+                source_version=row["source_version"],
+                process_id=row["process_id"],
+                process_start_id=row["process_start_id"],
+                process_owned=bool(row["process_owned"]),
             )
             memory._runs[record.run_id] = record
         for row in connection.execute("SELECT * FROM commands"):
@@ -412,9 +431,13 @@ class SQLiteRunCoordinator:
         connection.execute("DELETE FROM runs")
         connection.executemany(
             """
-            INSERT INTO runs VALUES (
-                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
-            )
+            INSERT INTO runs (
+                run_id, parent_session, agent, task, conversation_key,
+                desired_state, observed_state, outcome, result_path, error,
+                attempt, version, owner_id, lease_expires_at, lease_epoch,
+                created_at, updated_at, terminal_at, source_version,
+                process_id, process_start_id, process_owned
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             [
                 (
@@ -436,6 +459,10 @@ class SQLiteRunCoordinator:
                     run.created_at,
                     run.updated_at,
                     run.terminal_at,
+                    run.source_version,
+                    run.process_id,
+                    run.process_start_id,
+                    int(run.process_owned),
                 )
                 for run in memory._runs.values()
             ],
@@ -534,6 +561,16 @@ class SQLiteRunCoordinator:
     async def record_terminal(self, request: TerminalRun) -> CoordinatorResult[TerminalReceipt]:
         return await self._offload("record_terminal", request)
 
+    async def import_legacy(
+        self, request: LegacyRunImport
+    ) -> CoordinatorResult[LegacyImportReceipt]:
+        return await self._offload("import_legacy", request)
+
+    async def import_legacy_batch(
+        self, requests: tuple[LegacyRunImport, ...]
+    ) -> list[CoordinatorResult[LegacyImportReceipt]]:
+        return await self._offload("import_legacy_batch", requests)
+
     async def get_command_by_key(self, idempotency_key: str) -> CommandReceipt | None:
         return await self._offload("get_command_by_key", idempotency_key, persist=False)
 
@@ -547,6 +584,14 @@ class SQLiteRunCoordinator:
 
     async def claim_command(self, command_id: str, owner: OwnerLease) -> CommandClaim | None:
         return await self._offload("claim_command", command_id, owner)
+
+    async def claim_recovery(
+        self,
+        owner: OwnerLease,
+        limit: int,
+        exclude_run_ids: frozenset[str] = frozenset(),
+    ) -> list[RecoveryClaim]:
+        return await self._offload("claim_recovery", owner, limit, exclude_run_ids)
 
     async def finish_command(
         self,
@@ -587,6 +632,38 @@ class SQLiteRunCoordinator:
         self, run_id: str, fence: RunFence, expected_version: int
     ) -> CoordinatorResult[RunRecord]:
         return await self._offload("mark_running", run_id, fence, expected_version)
+
+    async def record_process(
+        self,
+        run_id: str,
+        fence: RunFence,
+        expected_version: int,
+        process_id: int,
+        process_start_id: str,
+        process_owned: bool,
+    ) -> CoordinatorResult[RunRecord]:
+        return await self._offload(
+            "record_process",
+            run_id,
+            fence,
+            expected_version,
+            process_id,
+            process_start_id,
+            process_owned,
+        )
+
+    async def clear_recovered_process(
+        self,
+        run_id: str,
+        fence: RunFence,
+        expected_version: int,
+    ) -> CoordinatorResult[RunRecord]:
+        return await self._offload(
+            "clear_recovered_process",
+            run_id,
+            fence,
+            expected_version,
+        )
 
     async def complete(
         self, completion: RunCompletion, fence: RunFence, expected_version: int

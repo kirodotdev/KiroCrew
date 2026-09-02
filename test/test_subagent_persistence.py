@@ -2,13 +2,17 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import time
 
 import pytest
 
+from kiro_crew.pinned_fs import supports_pinned_walk
+from kiro_crew.run_coordinator import MemoryRunCoordinator
 from kiro_crew.subagent_persistence import (
+    clear_tombstone_for_recovery,
     create_agent_folder,
     delete_agent_folder,
     list_orphans,
@@ -24,6 +28,10 @@ from kiro_crew.subagent_persistence import (
 # ``SubagentManager.spawn`` refuses -- registering no task -- while the host
 # looks short of memory, which is the runner's state, not this test's input.
 pytestmark = pytest.mark.usefixtures("healthy_host_memory")
+requires_pinned_walk = pytest.mark.skipif(
+    not supports_pinned_walk(),
+    reason="spawn transcript reads require descriptor-pinned traversal",
+)
 
 
 @pytest.fixture()
@@ -38,7 +46,13 @@ def agent_root(tmp_path, monkeypatch):
 
 class TestCreateAgentFolder:
     def test_creates_state_json(self, agent_root):
-        path = create_agent_folder("abc123", task="do stuff", agent="kirocrew", parent_session="dashboard:default", max_turns=100)
+        path = create_agent_folder(
+            "abc123",
+            task="do stuff",
+            agent="kirocrew",
+            parent_session="dashboard:default",
+            max_turns=100,
+        )
         state = json.loads((path / "state.json").read_text(encoding="utf-8"))
         assert state["id"] == "abc123"
         assert state["task"] == "do stuff"
@@ -239,6 +253,68 @@ class TestMarkDelivered:
         create_agent_folder("mv2", task="t")
         mark_delivered("mv2")
         assert "mv2" not in [o["id"] for o in list_orphans()]
+
+
+class TestClearTombstoneForRecovery:
+    def test_confirms_agent_is_visible_to_recovery(self, agent_root):
+        create_agent_folder("recover1", task="t")
+        write_tombstone("recover1", cause="timeout", recovery_action="pending")
+
+        assert clear_tombstone_for_recovery("recover1") is True
+        assert "recover1" in [orphan["id"] for orphan in list_orphans()]
+
+    def test_fails_closed_when_tombstone_remains(self, agent_root, monkeypatch):
+        create_agent_folder("recover2", task="t")
+        tombstone = agent_root / "recover2" / "tombstone.json"
+        write_tombstone("recover2", cause="timeout", recovery_action="pending")
+        real_unlink = os.unlink
+
+        def refuse_tombstone_unlink(path, *args, dir_fd=None, **kwargs):
+            if path == tombstone or path == "tombstone.json":
+                raise PermissionError("read-only filesystem")
+            if dir_fd is None:
+                return real_unlink(path, *args, **kwargs)
+            return real_unlink(path, *args, dir_fd=dir_fd, **kwargs)
+
+        monkeypatch.setattr(os, "unlink", refuse_tombstone_unlink)
+
+        assert clear_tombstone_for_recovery("recover2") is False
+        assert tombstone.exists()
+
+    @pytest.mark.skipif(
+        not supports_pinned_walk() or os.unlink not in os.supports_dir_fd,
+        reason="descriptor-relative unlink is unavailable",
+    )
+    def test_directory_swap_cannot_redirect_unlink_and_verification(
+        self,
+        agent_root,
+        monkeypatch,
+    ):
+        create_agent_folder("recover3", task="original")
+        write_tombstone("recover3", cause="timeout", recovery_action="pending")
+        original = agent_root / "recover3"
+        displaced = agent_root / "displaced-original"
+        replacement = agent_root / "replacement"
+        replacement.mkdir()
+        (replacement / "tombstone.json").write_text("replacement", encoding="utf-8")
+        real_unlink = os.unlink
+        swapped = False
+
+        def swap_directory_then_unlink(path, *args, dir_fd=None, **kwargs):
+            nonlocal swapped
+            if not swapped:
+                swapped = True
+                original.rename(displaced)
+                replacement.rename(original)
+            if dir_fd is None:
+                return real_unlink(path, *args, **kwargs)
+            return real_unlink(path, *args, dir_fd=dir_fd, **kwargs)
+
+        monkeypatch.setattr(os, "unlink", swap_directory_then_unlink)
+
+        assert clear_tombstone_for_recovery("recover3") is True
+        assert not (displaced / "tombstone.json").exists()
+        assert (original / "tombstone.json").exists()
 
 
 # ── Slice 2: spawn() creates agent folder ────────────────────────────
@@ -460,10 +536,22 @@ class TestPerTurnStateUpdates:
 
         manager = SubagentManager(sessions=sessions, ctx_builder=ctx)
 
-        with patch("kiro_crew.subagent.Stats"), patch("kiro_crew.subagent.sel"):
+        with (
+            patch("kiro_crew.subagent.Stats"),
+            patch("kiro_crew.subagent.sel"),
+            patch(
+                "kiro_crew.subagent.platform_compat.process_start_time",
+                return_value="42.0",
+            ),
+        ):
             info = manager.spawn("pid test", parent_session_key="dashboard:default")
-            await manager._tasks[info.id]
+            await asyncio.wait_for(manager._tasks[info.id], timeout=1)
 
+        run = await manager._coordinator.get_run(info.id)
+        assert run is not None
+        assert run.process_id == 0
+        assert run.process_start_id == ""
+        assert run.process_owned is False
         state = json.loads((agent_root / info.id / "state.json").read_text(encoding="utf-8"))
         assert state["pid"] == 42
         assert "pid_recorded_at" in state
@@ -491,7 +579,9 @@ class TestPerTurnStateUpdates:
         provider.approve_tool = AsyncMock()
 
         async def _stream(*_a, **_kw):
-            yield LLMEvent(kind=EVENT_PERMISSION_REQUEST, title="shell", request_id=1, tool_kind="mcp")
+            yield LLMEvent(
+                kind=EVENT_PERMISSION_REQUEST, title="shell", request_id=1, tool_kind="mcp"
+            )
             yield LLMEvent(kind=EVENT_TEXT_CHUNK, text="result")
             yield LLMEvent(kind=EVENT_COMPLETE)
 
@@ -575,16 +665,20 @@ class TestTombstoneOnAbnormalExit:
         async def _hang(*a, **kw):
             await asyncio.sleep(999)
 
-        with patch.object(manager, "_run_inner", _hang), \
-             patch.object(manager, "_default_timeout", 0.01), \
-             patch("kiro_crew.subagent.Stats"), \
-             patch("kiro_crew.subagent.sel"), \
-             patch.object(manager, "_fire_event", new_callable=AsyncMock), \
-             patch.object(manager, "_on_done", new_callable=AsyncMock):
+        with (
+            patch.object(manager, "_run_inner", _hang),
+            patch.object(manager, "_default_timeout", 0.01),
+            patch("kiro_crew.subagent.Stats"),
+            patch("kiro_crew.subagent.sel"),
+            patch.object(manager, "_fire_event", new_callable=AsyncMock),
+            patch.object(manager, "_on_done", new_callable=AsyncMock),
+        ):
             await manager._run(info)
 
         # Tombstone should still say "reaped", not "timeout"
-        ts = json.loads((agent_root / "reaped_timeout" / "tombstone.json").read_text(encoding="utf-8"))
+        ts = json.loads(
+            (agent_root / "reaped_timeout" / "tombstone.json").read_text(encoding="utf-8")
+        )
         assert ts["cause"] == "reaped"
         # Error should not be overwritten
         assert info.error == "reaped by reaper"
@@ -607,7 +701,9 @@ class TestTombstoneOnAbnormalExit:
 
         async def _many_tools(*_a, **_kw):
             for i in range(5):
-                yield LLMEvent(kind=EVENT_PERMISSION_REQUEST, title=f"tool{i}", request_id=i, tool_kind="mcp")
+                yield LLMEvent(
+                    kind=EVENT_PERMISSION_REQUEST, title=f"tool{i}", request_id=i, tool_kind="mcp"
+                )
 
         provider.stream = MagicMock(side_effect=lambda *a, **kw: _many_tools())
         sessions.get_or_create = AsyncMock(return_value=(provider, True, False))
@@ -653,8 +749,8 @@ class TestTombstoneOnAbnormalExit:
         assert ts["cause"] == "error"
 
     @pytest.mark.asyncio
-    async def test_no_tombstone_on_success(self, agent_root):
-        """Successful completion should NOT write a tombstone."""
+    async def test_no_abnormal_tombstone_on_success(self, agent_root):
+        """Successful completion records only the delivered tombstone."""
         from unittest.mock import AsyncMock, MagicMock, patch
 
         from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_TEXT_CHUNK, LLMEvent
@@ -684,14 +780,20 @@ class TestTombstoneOnAbnormalExit:
         ctx.hooks.on_tool_call = MagicMock()
         ctx.hooks.auto_approve_subagent_spawn = True
 
-        manager = SubagentManager(sessions=sessions, ctx_builder=ctx)
+        manager = SubagentManager(
+            sessions=sessions,
+            ctx_builder=ctx,
+            coordinator=MemoryRunCoordinator(),
+        )
 
         with patch("kiro_crew.subagent.Stats"), patch("kiro_crew.subagent.sel"):
             info = manager.spawn("success test", parent_session_key="dashboard:default")
             await manager._tasks[info.id]
+            await asyncio.gather(*manager._report_tasks)
 
         ts_path = agent_root / info.id / "tombstone.json"
-        assert not ts_path.exists()
+        tombstone = json.loads(ts_path.read_text(encoding="utf-8"))
+        assert tombstone["cause"] == "delivered"
 
 
 # ── Slice 6: Folder cleanup on normal completion ─────────────────────
@@ -786,9 +888,11 @@ class TestFolderCleanupOnSuccess:
 
         manager = SubagentManager(sessions=sessions, ctx_builder=ctx, on_done=_slow_on_done)
 
-        with patch("kiro_crew.subagent._ON_DONE_TIMEOUT", 0.01), \
-             patch("kiro_crew.subagent.Stats"), \
-             patch("kiro_crew.subagent.sel"):
+        with (
+            patch("kiro_crew.subagent._ON_DONE_TIMEOUT", 0.01),
+            patch("kiro_crew.subagent.Stats"),
+            patch("kiro_crew.subagent.sel"),
+        ):
             info = manager.spawn("delivery failure test", parent_session_key="dashboard:default")
             await manager._tasks[info.id]
 
@@ -816,6 +920,7 @@ class TestOrphanReconciliation:
         create_agent_folder("orphan1", task="old task", parent_session="dashboard:default")
         write_result_chunk("orphan1", "some result")
         from kiro_crew.subagent_persistence import update_state
+
         update_state("orphan1", pid=99999)  # dead PID
 
         with patch.object(manager, "_is_pid_alive", return_value=False):
@@ -858,9 +963,11 @@ class TestOrphanReconciliation:
         create_agent_folder("orphan3", task="stuck task")
         update_state("orphan3", pid=99999)
 
-        with patch.object(manager, "_is_pid_alive", return_value=True), \
-             patch.object(manager, "_is_orphan_process", return_value=True), \
-             patch.object(manager, "_kill_orphan_pid") as mock_kill:
+        with (
+            patch.object(manager, "_is_pid_alive", return_value=True),
+            patch.object(manager, "_is_orphan_process", return_value=True),
+            patch.object(manager, "_kill_orphan_pid") as mock_kill,
+        ):
             await manager._reconcile_orphans()
 
         mock_kill.assert_called_once_with(99999)
@@ -881,9 +988,11 @@ class TestOrphanReconciliation:
         create_agent_folder("recycled1", task="old task")
         update_state("recycled1", pid=99999)
 
-        with patch.object(manager, "_is_pid_alive", return_value=True), \
-             patch.object(manager, "_is_orphan_process", return_value=False), \
-             patch.object(manager, "_kill_orphan_pid") as mock_kill:
+        with (
+            patch.object(manager, "_is_pid_alive", return_value=True),
+            patch.object(manager, "_is_orphan_process", return_value=False),
+            patch.object(manager, "_kill_orphan_pid") as mock_kill,
+        ):
             await manager._reconcile_orphans()
 
         mock_kill.assert_not_called()
@@ -904,9 +1013,11 @@ class TestOrphanReconciliation:
         create_agent_folder("orphan_ts", task="ts task")
         update_state("orphan_ts", pid=88888, pid_recorded_at=1234567890.5)
 
-        with patch.object(manager, "_is_pid_alive", return_value=True), \
-             patch.object(manager, "_is_orphan_process", return_value=True) as mock_check, \
-             patch.object(manager, "_kill_orphan_pid"):
+        with (
+            patch.object(manager, "_is_pid_alive", return_value=True),
+            patch.object(manager, "_is_orphan_process", return_value=True) as mock_check,
+            patch.object(manager, "_kill_orphan_pid"),
+        ):
             await manager._reconcile_orphans()
 
         mock_check.assert_called_once_with(88888, 1234567890.5)
@@ -925,7 +1036,9 @@ class TestOrphanReconciliation:
 
         # Should not re-tombstone
         await manager._reconcile_orphans()
-        ts = json.loads((agent_root / "already_dead" / "tombstone.json").read_text(encoding="utf-8"))
+        ts = json.loads(
+            (agent_root / "already_dead" / "tombstone.json").read_text(encoding="utf-8")
+        )
         assert ts["cause"] == "timeout"  # unchanged
 
     @pytest.mark.asyncio
@@ -969,8 +1082,10 @@ class TestOrphanNotification:
         write_result_chunk("notif1", "the answer is 42")
         update_state("notif1", pid=99999)
 
-        with patch.object(manager, "_is_pid_alive", return_value=False), \
-             patch.object(manager, "_notify_orphan", new_callable=AsyncMock) as mock_notify:
+        with (
+            patch.object(manager, "_is_pid_alive", return_value=False),
+            patch.object(manager, "_notify_orphan", new_callable=AsyncMock) as mock_notify,
+        ):
             await manager._reconcile_orphans()
 
         mock_notify.assert_awaited_once()
@@ -991,8 +1106,10 @@ class TestOrphanNotification:
         create_agent_folder("notif2", task="lost task")
         update_state("notif2", pid=99999)
 
-        with patch.object(manager, "_is_pid_alive", return_value=False), \
-             patch.object(manager, "_notify_orphan", new_callable=AsyncMock) as mock_notify:
+        with (
+            patch.object(manager, "_is_pid_alive", return_value=False),
+            patch.object(manager, "_notify_orphan", new_callable=AsyncMock) as mock_notify,
+        ):
             await manager._reconcile_orphans()
 
         mock_notify.assert_awaited_once()
@@ -1020,8 +1137,15 @@ class TestOrphanNotification:
 
         state = {"id": "notif3", "task": "fallback task", "parent_session": "dashboard:default"}
 
-        with patch.object(manager, "_try_inject_orphan_notification", new_callable=AsyncMock, return_value=False), \
-             patch.object(manager, "_send_orphan_slack_dm", new_callable=AsyncMock) as mock_dm:
+        with (
+            patch.object(
+                manager,
+                "_try_inject_orphan_notification",
+                new_callable=AsyncMock,
+                return_value=False,
+            ),
+            patch.object(manager, "_send_orphan_slack_dm", new_callable=AsyncMock) as mock_dm,
+        ):
             msg = await manager._notify_orphan("notif3", state, "delivered", True)
 
         mock_dm.assert_not_awaited()  # DM happens once, at digest time
@@ -1052,8 +1176,12 @@ class TestOrphanNotification:
             injected_meta = meta
             return True
 
-        with patch.object(manager, "_try_inject_orphan_notification", side_effect=_capture_inject), \
-             patch("kiro_crew.subagent._redact", side_effect=lambda m: f"[REDACTED]{m}") as mock_redact:
+        with (
+            patch.object(manager, "_try_inject_orphan_notification", side_effect=_capture_inject),
+            patch(
+                "kiro_crew.subagent._redact", side_effect=lambda m: f"[REDACTED]{m}"
+            ) as mock_redact,
+        ):
             await manager._notify_orphan("notif_redact", state, "delivered", True)
 
         # _redact must have been called before injection
@@ -1088,8 +1216,10 @@ class TestOrphanNotification:
             if call_count == 1:
                 raise RuntimeError("notification failed")
 
-        with patch.object(manager, "_is_pid_alive", return_value=False), \
-             patch.object(manager, "_notify_orphan", side_effect=_failing_notify):
+        with (
+            patch.object(manager, "_is_pid_alive", return_value=False),
+            patch.object(manager, "_notify_orphan", side_effect=_failing_notify),
+        ):
             await manager._reconcile_orphans()
 
         # Both orphans should be tombstoned despite notification failure
@@ -1156,7 +1286,9 @@ class TestSpawnStatusReadsFromAgentFolder:
         """read_state returns data for orphaned agents (not in memory)."""
         from kiro_crew.subagent_persistence import create_agent_folder, read_state, write_tombstone
 
-        create_agent_folder("orphan_status", task="orphaned task", parent_session="dashboard:default")
+        create_agent_folder(
+            "orphan_status", task="orphaned task", parent_session="dashboard:default"
+        )
         write_tombstone("orphan_status", cause="gateway_restart", recovery_action="delivered")
 
         state = read_state("orphan_status")
@@ -1164,6 +1296,7 @@ class TestSpawnStatusReadsFromAgentFolder:
         assert state["task"] == "orphaned task"
 
     @pytest.mark.asyncio
+    @requires_pinned_walk
     async def test_api_spawn_status_fallback_to_disk(self, agent_root):
         """api_spawn_status returns disk data when agent not in memory."""
         from unittest.mock import MagicMock
@@ -1255,7 +1388,9 @@ class TestRecordSlowCommand:
     def test_appends_multiple_lines(self, agent_root):
         record_slow_command("ag1", idle_secs=200)
         record_slow_command("ag2", idle_secs=300)
-        lines = (agent_root / "slow_commands.jsonl").read_text(encoding="utf-8").strip().splitlines()
+        lines = (
+            (agent_root / "slow_commands.jsonl").read_text(encoding="utf-8").strip().splitlines()
+        )
         assert len(lines) == 2
         assert {json.loads(lines[0])["id"], json.loads(lines[1])["id"]} == {"ag1", "ag2"}
 
@@ -1267,9 +1402,7 @@ def _slow_log_records(path):
     if not path.exists():
         return []
     return [
-        json.loads(line)
-        for line in path.read_text(encoding="utf-8").strip().splitlines()
-        if line
+        json.loads(line) for line in path.read_text(encoding="utf-8").strip().splitlines() if line
     ]
 
 
@@ -1285,9 +1418,7 @@ class TestRecordSlowCommandRotation:
 
     @pytest.fixture(autouse=True)
     def small_cap(self, monkeypatch):
-        monkeypatch.setattr(
-            "kiro_crew.subagent_persistence._SLOW_LOG_MAX_BYTES", self.CAP
-        )
+        monkeypatch.setattr("kiro_crew.subagent_persistence._SLOW_LOG_MAX_BYTES", self.CAP)
 
     def test_rotation_keeps_every_record(self, agent_root):
         """One rotation: older records land in ``.jsonl.1``, none are lost."""
@@ -1369,9 +1500,7 @@ class TestRecordSlowCommandRotation:
 
         live = agent_root / "slow_commands.jsonl"
         live.write_text("x" * (self.CAP + 10), encoding="utf-8")
-        lock_fd = os.open(
-            agent_root / "slow_commands.jsonl.lock", os.O_CREAT | os.O_RDWR, 0o600
-        )
+        lock_fd = os.open(agent_root / "slow_commands.jsonl.lock", os.O_CREAT | os.O_RDWR, 0o600)
         try:
             assert platform_compat.try_acquire_lock(lock_fd, exclusive=True)
             done = threading.Event()

@@ -17,6 +17,7 @@ from kiro_crew.run_coordinator import (
     CoordinatorReason,
     CoordinatorResult,
     DeliveryState,
+    LegacyImportReport,
     MemoryRunCoordinator,
     OwnerLease,
     RunCompletion,
@@ -27,6 +28,7 @@ from kiro_crew.run_coordinator import (
 from kiro_crew.run_coordinator.delivery import DeliveryAttempt, OutboxDeliveryAdapter
 from kiro_crew.subagent import SubagentInfo, SubagentManager, _OutboxDeliveryRetry
 from kiro_crew.subagent_command_authority import AdmittedExecution
+from kiro_crew.subagent_persistence import create_agent_folder, write_result_chunk
 
 
 class _Clock:
@@ -85,7 +87,10 @@ async def test_terminal_report_stops_after_permanent_fence_rejection(
 ) -> None:
     manager, info, _event = terminal_retry_manager
     cleared: list[str] = []
-    monkeypatch.setattr("kiro_crew.subagent.clear_tombstone", cleared.append)
+    monkeypatch.setattr(
+        "kiro_crew.subagent.clear_tombstone_for_recovery",
+        lambda agent_id: (cleared.append(agent_id), True)[1],
+    )
     manager._coordinator.complete = AsyncMock(
         return_value=CoordinatorResult(
             CoordinatorDecision.REJECTED,
@@ -901,6 +906,9 @@ async def test_reaper_retries_pending_completion_delivery(monkeypatch) -> None:
         coordinator=coordinator,
     )
     manager._conv_registry_rebuilt = True
+    manager._legacy_run_importer.import_all = AsyncMock(  # type: ignore[method-assign]
+        return_value=LegacyImportReport()
+    )
     monkeypatch.setattr("kiro_crew.subagent.compact_cost_log", MagicMock())
     monkeypatch.setattr(manager, "_sweep_stuck_waves", MagicMock())
     monkeypatch.setattr(manager, "_sweep_digest_holds", MagicMock())
@@ -1415,6 +1423,26 @@ async def test_digest_held_failed_event_acks_without_legacy_delivered_tombstone(
 
     assert coordinator._outbox[event.event_id].status is DeliveryState.DELIVERED
     assert marked == []
+
+
+@pytest.mark.asyncio
+async def test_digest_held_shadow_fallback_keeps_error_tombstone(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr("kiro_crew.subagent_persistence._SUBAGENTS_DIR", tmp_path)
+    info = SubagentInfo(id="legacy-fallback", task="task", done=True)
+    info.error = "coordinator submission failed"
+    create_agent_folder(info.id, task=info.task, parent_session="dashboard:parent")
+    write_result_chunk(info.id, "partial result")
+    manager = SubagentManager(sessions=MagicMock(), ctx_builder=MagicMock())
+    manager._agents[info.id] = info
+
+    flusher = SubagentInfo(id="flush", task="flush", done=True)
+    flusher._digest_settle_ids = [info.id]
+    flusher._digest_error_tombstone_ids = [info.id]
+    await manager._settle_digest_holds(flusher)
+
+    tombstone = json.loads((tmp_path / info.id / "tombstone.json").read_text(encoding="utf-8"))
+    assert tombstone["cause"] == "error"
+    assert tombstone["outcome"] == "failed"
 
 
 @pytest.mark.asyncio

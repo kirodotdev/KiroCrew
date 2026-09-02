@@ -369,7 +369,6 @@ src/kiro_crew/slack/events.py
 src/kiro_crew/slack/handler.py
 src/kiro_crew/slack/interactions.py
 src/kiro_crew/slack/sessions_view.py
-src/kiro_crew/subagent_persistence.py
 src/kiro_crew/subagent_scale.py
 src/kiro_crew/suggestions.py
 src/kiro_crew/testing/channel_fixtures.py
@@ -380,7 +379,6 @@ src/kiro_crew/webhooks.py
 src/kiro_crew/weixin/client.py
 src/kiro_crew/workflows/agent_exec.py
 src/kiro_crew/workflows/context.py
-test/conftest.py
 test/fake_mcp_app_server.py
 test/metrics/test_context_occupancy.py
 test/metrics/test_cost_breakdown.py
@@ -1070,7 +1068,6 @@ test/test_skill_versioning.py
 test/test_skills.py
 test/test_slack_agent_passthrough.py
 test/test_slack_dashboard_live_sync.py
-test/test_slack_gateway.py
 test/test_slack_gateway_coverage.py
 test/test_slack_handler_coverage_branches.py
 test/test_slack_home_tab.py
@@ -1114,8 +1111,6 @@ test/test_subagent.py
 test/test_subagent_context_groups.py
 test/test_subagent_continuable.py
 test/test_subagent_cost.py
-test/test_subagent_persistence.py
-test/test_subagent_reap_race.py
 test/test_subagent_scale.py
 test/test_subagent_sizing.py
 test/test_subagent_stall.py

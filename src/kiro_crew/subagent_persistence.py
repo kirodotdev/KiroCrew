@@ -22,6 +22,7 @@ from pathlib import Path
 from kiro_crew.acp.types import PROVIDER_LABEL_DEFAULT
 from kiro_crew.config.paths import data_home, kiro_sessions_dir
 from kiro_crew.jsonl_util import rotate_jsonl_at
+from kiro_crew.pinned_fs import PinnedPathRefusal, open_dir_pinned, stat_at, supports_pinned_walk
 from kiro_crew.providers.cleanup import _is_safe_path
 
 logger = logging.getLogger(__name__)
@@ -33,13 +34,17 @@ logger = logging.getLogger(__name__)
 # dashboard/handlers/usage.py is the reference implementation.
 _SUBAGENTS_DIR: Path | None = None
 
+_TOMBSTONE_DIR_FD_SUPPORTED = (
+    supports_pinned_walk() and os.unlink in os.supports_dir_fd and os.stat in os.supports_dir_fd
+)
+
 
 def _subagents_dir() -> Path:
     """Subagents registry directory, resolved against the live data home."""
     return _SUBAGENTS_DIR if _SUBAGENTS_DIR is not None else data_home() / "subagents"
 
 
-def _agent_dir(agent_id: str) -> Path:
+def _validate_agent_id(agent_id: str) -> None:
     if (
         not agent_id
         or agent_id == "."
@@ -49,6 +54,10 @@ def _agent_dir(agent_id: str) -> Path:
         or "\0" in agent_id
     ):
         raise ValueError(f"Invalid agent_id: {agent_id!r}")
+
+
+def _agent_dir(agent_id: str) -> Path:
+    _validate_agent_id(agent_id)
     base = _subagents_dir()
     resolved = (base / agent_id).resolve()
     parent = base.resolve()
@@ -79,10 +88,11 @@ def agent_dir_for_display(agent_id: str) -> Path:
     human or an agent will read and then act on.
 
     Raises the same ``ValueError`` as :func:`_agent_dir` for a rejected
-    ``agent_id`` -- the validation is not duplicated here, it is delegated, so
-    the two cannot drift apart.
+    ``agent_id``. It deliberately validates only the identifier spelling: an
+    I/O caller can pin and reject the directory itself without resolving an
+    attacker-swappable child first.
     """
-    _agent_dir(agent_id)  # validation only; the return value is deliberately unused
+    _validate_agent_id(agent_id)
     return _subagents_dir() / agent_id
 
 
@@ -393,6 +403,72 @@ def clear_tombstone(agent_id: str) -> bool:
         return False
 
 
+def clear_tombstone_for_recovery(agent_id: str) -> bool:
+    """Clear a tombstone and verify orphan recovery can see the agent.
+
+    ``clear_tombstone`` retains its best-effort compatibility contract, whose
+    false result cannot distinguish an already-absent marker from a failed
+    unlink. Recovery handoffs need the stronger postcondition: the marker must
+    be absent after the attempt. Filesystem inspection fails closed because an
+    unreadable marker is not evidence that restart reconciliation can admit it.
+    """
+
+    agent_dir = _agent_dir(agent_id)
+    if _TOMBSTONE_DIR_FD_SUPPORTED:
+        try:
+            dir_fd = open_dir_pinned(agent_dir, what="subagent recovery directory")
+        except (OSError, PinnedPathRefusal):
+            logger.error(
+                "Cannot pin subagent directory for %s; recovery remains blocked",
+                agent_id,
+                exc_info=True,
+            )
+            return False
+        try:
+            try:
+                os.unlink("tombstone.json", dir_fd=dir_fd)
+            except FileNotFoundError:
+                pass
+            if stat_at(dir_fd, "tombstone.json") is None:
+                return True
+        except OSError:
+            logger.error(
+                "Cannot clear tombstone for %s; recovery remains blocked",
+                agent_id,
+                exc_info=True,
+            )
+            return False
+        finally:
+            os.close(dir_fd)
+        logger.error(
+            "Tombstone remains for %s after clearance; recovery remains blocked",
+            agent_id,
+        )
+        return False
+
+    # Windows has no descriptor-relative unlink. Resolve the agent directory
+    # once so deletion and verification at least share one spelling; the
+    # platform cannot provide the stronger POSIX inode pin.
+    tombstone = agent_dir / "tombstone.json"
+    try:
+        tombstone.unlink(missing_ok=True)
+        tombstone.stat()
+    except FileNotFoundError:
+        return True
+    except OSError:
+        logger.error(
+            "Cannot verify tombstone clearance for %s; recovery remains blocked",
+            agent_id,
+            exc_info=True,
+        )
+        return False
+    logger.error(
+        "Tombstone remains for %s after clearance; recovery remains blocked",
+        agent_id,
+    )
+    return False
+
+
 # ── slow-command record (stalled but STILL RUNNING) ──────────────────
 
 
@@ -505,8 +581,12 @@ def prune_stale_tombstones(max_age_days: int = 7, delivered_ttl_secs: int = 3600
                 # Best-effort session cleanup — must not block folder removal
                 try:
                     state = read_state(d.name)
-                    session_id = ts.get("session_id") or (state.get("session_id", "") if state else "")
-                    provider = ts.get("provider") or (state.get("provider", "acp") if state else "acp")
+                    session_id = ts.get("session_id") or (
+                        state.get("session_id", "") if state else ""
+                    )
+                    provider = ts.get("provider") or (
+                        state.get("provider", "acp") if state else "acp"
+                    )
                     cwd = ts.get("cwd") or (state.get("cwd", "") if state else "")
                     # keep=True conversations retain their session files as
                     # resume material for spawn_continue; the conversation

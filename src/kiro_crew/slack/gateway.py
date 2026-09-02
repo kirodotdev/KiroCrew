@@ -286,6 +286,7 @@ from kiro_crew.subagent import (
 )
 from kiro_crew.subagent_completion_meta import (
     OUTCOME_FAILED,
+    OUTCOME_INTERRUPTED,
     OUTCOME_OK,
     OUTCOME_STOPPED,
     single_completion_meta,
@@ -6040,16 +6041,29 @@ class GatewayOrchestrator:
         # A flush-only record is synthetic (no run or event of its own). Every
         # durable event owes an outbox acknowledgement, while only a COMPLETED
         # member also owes the legacy delivered tombstone; failed/stopped runs
-        # keep their longer post-mortem retention window.
+        # keep their longer post-mortem retention window. A failed shadow
+        # admission fallback is the exception: it has no durable outbox event,
+        # so its explicitly carried legacy debt settles only after consumption.
         durable_event = bool(info._delivery_event_id)
+        legacy_tombstone = info._legacy_delivery_tombstone
         owed: list[str] = (
-            [] if flush_only or (info.outcome != "completed" and not durable_event) else [info.id]
+            []
+            if flush_only
+            or (info.outcome != "completed" and not durable_event and not legacy_tombstone)
+            else [info.id]
         )
         held = getattr(info, "_digest_settle_ids", None)
+        error_ids = {info.id} if legacy_tombstone and not flush_only else set()
+        held_error_ids = getattr(info, "_digest_error_tombstone_ids", None)
         if isinstance(held, list):
             owed.extend(str(h) for h in held)
+        if isinstance(held_error_ids, list):
+            error_ids.update(str(h) for h in held_error_ids)
         try:
-            slot.note_pending_subagent_delivery(announce, owed)
+            if error_ids:
+                slot.note_pending_subagent_delivery(announce, owed, error_tombstone_ids=error_ids)
+            else:
+                slot.note_pending_subagent_delivery(announce, owed)
         except Exception:
             logger.debug(
                 "Subagent %s: could not defer queued delivery marks", info.id, exc_info=True
@@ -6058,6 +6072,8 @@ class GatewayOrchestrator:
         info._delivery_queued = True
         if isinstance(held, list):
             info._digest_settle_ids = []
+        if isinstance(held_error_ids, list):
+            info._digest_error_tombstone_ids = []
 
     @staticmethod
     def _notif_meta(parent_key: str | None) -> dict[str, str] | None:
@@ -6553,7 +6569,13 @@ class GatewayOrchestrator:
             # a failure. The record contract keeps ``error`` unset for stops, so
             # every consumer below must branch on ``user_stopped`` explicitly
             # rather than inferring success from an empty error.
-            if info.user_stopped:
+            if info.outcome == OUTCOME_INTERRUPTED:
+                status, emoji, single_outcome = (
+                    "interrupted by gateway restart",
+                    "⚠",
+                    OUTCOME_INTERRUPTED,
+                )
+            elif info.user_stopped:
                 status, emoji, single_outcome = "stopped by user", "⏹", OUTCOME_STOPPED
             elif info.error:
                 status, emoji, single_outcome = "failed", "❌", OUTCOME_FAILED
@@ -6624,6 +6646,8 @@ class GatewayOrchestrator:
                         # skew success stats; recording it as failure would
                         # trigger retry-guidance guards for a deliberate act.
                         pass
+                    elif info.outcome == OUTCOME_INTERRUPTED:
+                        pass
                     elif info.error:
                         if tracker.record_failure(task_key):
                             guard_msg = (
@@ -6665,7 +6689,14 @@ class GatewayOrchestrator:
             # transcript on demand (read / grep / spawn_status) instead of re-running
             # the subagent.
             result_path = info.result_path or ""
-            if info.user_stopped:
+            if info.outcome == OUTCOME_INTERRUPTED:
+                detail = info.error or "Interrupted by gateway restart."
+                if result_path:
+                    detail += (
+                        f"\n\nPartial result saved at: `{result_path}`\n"
+                        "Use the read tool to retrieve it."
+                    )
+            elif info.user_stopped:
                 _partial = info.result or ""
                 detail = (
                     "Stopped by the user before completing. Do NOT treat this as "
@@ -6779,6 +6810,7 @@ class GatewayOrchestrator:
                                 "ok_lines": [],
                                 "guard_msgs": [],
                                 "held_delivery_ids": [],
+                                "held_error_tombstone_ids": [],
                                 "delivery_event_ids": [],
                                 # Members whose delivery is held, so the
                                 # deadline sweep can clear their timestamps
@@ -6802,9 +6834,12 @@ class GatewayOrchestrator:
                 _oc = info.outcome
                 if _oc == "stopped":
                     bp["stopped"] += 1
-                elif _oc == "failed":
+                elif _oc in ("failed", OUTCOME_INTERRUPTED):
+                    # The aggregate contract has three buckets. Preserve the
+                    # exact interrupted outcome on the member, but count it as
+                    # a non-success so the final tallies still equal ``done``.
                     bp["err"] += 1
-                else:
+                elif _oc == "completed":
                     bp["ok"] += 1
                 # Per-member model provenance in the PARENT-READ digest text
                 # (issue #5337): the announce body the parent LLM consumes is
@@ -6925,8 +6960,14 @@ class GatewayOrchestrator:
                         # contract; cleared when this member's chunk fires.
                         info._digest_held_at = time.time()
                         bp.setdefault("held_infos", []).append(info)
-                        if _oc == "completed" or info._delivery_event_id:
+                        if (
+                            _oc == "completed"
+                            or info._delivery_event_id
+                            or info._legacy_delivery_tombstone
+                        ):
                             bp["held_delivery_ids"].append(info.id)
+                        if info._legacy_delivery_tombstone:
+                            bp["held_error_tombstone_ids"].append(info.id)
                         logger.info(
                             "Subagent %s: completion held for digest chunk (%d/%d done)",
                             info.id,
@@ -6942,6 +6983,7 @@ class GatewayOrchestrator:
                     # settles them only after _on_done (which includes the
                     # routing below) returns without raising.
                     info._digest_settle_ids = list(bp.get("held_delivery_ids", []))
+                    info._digest_error_tombstone_ids = list(bp.get("held_error_tombstone_ids", []))
                     # A callback without a stable outbox event has no exact
                     # replay source. Retain the live pre-composition state so
                     # a failed route can put its chunk back into the wave for
@@ -7083,6 +7125,7 @@ class GatewayOrchestrator:
                         bp["ok_lines"] = []
                         bp["guard_msgs"] = []
                         bp["held_delivery_ids"] = []
+                        bp["held_error_tombstone_ids"] = []
                         bp["delivery_event_ids"] = []
 
                     if delivery_event_id:
@@ -7325,7 +7368,11 @@ class GatewayOrchestrator:
                         # settles through its failure tombstone instead.
                         _owes_delivery = bool(info._digest_settle_ids) or (
                             not _flush_only
-                            and (info.outcome == "completed" or bool(info._delivery_event_id))
+                            and (
+                                info.outcome == "completed"
+                                or bool(info._delivery_event_id)
+                                or info._legacy_delivery_tombstone
+                            )
                         )
                         self._defer_queued_delivery(
                             _injection_slot, announce, info, flush_only=_flush_only
@@ -7827,6 +7874,7 @@ class GatewayOrchestrator:
                         for held in live_progress.get("held_infos", []):
                             held._digest_held_at = held_at
                         info._digest_settle_ids = []
+                        info._digest_error_tombstone_ids = []
                         info._delivery_batch_progress = None
                         info._delivery_batch_final = False
                         return

@@ -73,9 +73,18 @@ executor's run lease.
 Rejected legacy admission is durably reflected as a rejected command and failed
 terminal run. A claimed execution with an uncertain crash is not automatically
 replayed. Accepted keyed runs carry `_coordinator_admitted`, preventing `_run`
-from creating a second shadow command. Legacy synchronous spawns still submit at
-async `_run` entry and await the coordinator's own bounded operation instead of
-imposing a shorter caller deadline. Failures remain contained during migration.
+from creating a second shadow command. Legacy synchronous spawns submit and
+claim their stable shadow command at async `_run` entry. Submission diagnostics
+remain failure-contained, and the async pre-execution submit and claim await the
+coordinator's own bounded SQLite operation instead of imposing a shorter caller
+deadline. Execution fails closed before entering the child session when no run
+fence was acquired. If a coordinator reports an uncertain claim timeout, the
+manager resolves the stable command key once. An owned, unexpired committed
+claim continues with its reconstructed run fence; an ambiguous result emits no
+local terminal callback, keeps the live record nonterminal and cancellable, and
+is left to fenced durable recovery. This prevents a late commit from producing
+both an immediate unfenced failure and a later recovered interruption while
+still allowing an operator Stop to settle the retained claim as STOPPED.
 Queued and approval-waiting keyed runs retain a bounded pre-execution lease.
 Their commands remain `CLAIMED` until the manager task actually starts, so a
 gateway restart cannot turn volatile queued work into a durable applied result.
@@ -189,7 +198,7 @@ the coordinator port. The winning terminal reporter commits the outcome and
 outbox row before any WebSocket or parent callback. It keeps its execution
 lease and shielded report alive across transient commit failures, then retries
 the exact outbox event until delivery succeeds or the destination durably
-defers it to its queue/digest.
+defers it to its queue/digest or releases it for the periodic outbox drainer.
 
 Private manager views for the old counter, queue, report-task, and teardown-gate
 fields remain as compatibility adapters. They delegate to these boundaries and
@@ -199,17 +208,20 @@ must not regain independent state.
 
 `SQLiteRunCoordinator` implements the shared contract with fresh short-lived
 connections and offloads every filesystem/database operation from the event
-loop onto a dedicated two-worker coordinator pool. Every accepted-run shadow
-submission has a one-second total manager deadline; timeout is diagnostic and
-legacy execution begins while an already-running SQLite worker may finish in
-the coordinator pool. Lock waits therefore queue among coordinator calls and
-cannot starve asyncio's shared executor after the deadline. Mutations run under
-`BEGIN IMMEDIATE`; schema v3 uses `runs`, `commands`,
-`outbox`, and `metadata`, with WAL, `synchronous=FULL`, foreign keys, a bounded
+loop onto a dedicated two-worker coordinator pool. The coordinator-first
+recovery layer strongly retains and awaits every accepted-run submission until
+it reaches a definite durable or failed outcome; task cancellation cannot
+cancel a queued executor future. Lock waits therefore queue among coordinator
+calls and cannot starve asyncio's shared executor. Mutations run under
+`BEGIN IMMEDIATE`; schema v4 uses
+`runs`, `commands`, `outbox`, and `metadata`, with WAL, `synchronous=FULL`,
+foreign keys, a bounded
 busy timeout, and a quick integrity check. Ordered, contiguous migrations are
 applied in that transaction; v2 adds the durable command payload to the v1 base
 schema and v3 adds independent command claims/results while permitting
-pre-cutover control targets. Failed upgrades roll back cleanly for idempotent
+pre-cutover control targets. Schema v4 records the source version for imported
+legacy runs. Schema v5 records fenced child-process identity and ownership in
+the protected coordinator store. Failed upgrades roll back cleanly for idempotent
 retry. The physical shipped columns recover a missing schema-version metadata
 row instead of replaying already-applied `ALTER TABLE` statements. The implementation
 hydrates the typed in-memory state machine from those rows and rewrites the
@@ -248,9 +260,31 @@ failed operation after its state became durable.
 It always returns the primary result. It calls the shadow
 only after primary completion, swallows shadow failures, compares normalized
 stable field classes without logging payload values, and never repairs the
-primary. Keyed execution lifecycle and terminal delivery now use the durable
-coordinator directly; legacy unkeyed runs retain their file-backed report path
-until the restart importer lands.
+primary. Keyed execution lifecycle, terminal delivery, and restart recovery use
+the durable coordinator directly. Legacy unkeyed folders are imported read-only
+and keep their file-backed result path as a compatibility mirror. Recovery
+excludes runs with a live manager task and preassigned runs still in the local
+spawn queue; retained terminal manager records remain eligible to repair a
+failed terminal commit or delivery. A pending keyed authority submission stays
+reserved for safe command replay, while an unkeyed manager shadow row carries
+an explicit legacy-shadow source marker and becomes eligible for recovery after
+a one-sweep grace period. The grace prevents a recovery snapshot from claiming
+a shadow row created concurrently by a newly started manager task while still
+converging stale pre-restart rows. The live gateway owner claims new unkeyed
+shadow rows and transitions them through the same starting/running fence as
+keyed runs, so protected process identity is available before any prompt. For a
+platform that cannot produce a process-start identity, the PID is recorded for
+attribution as explicitly non-owned; execution continues, but recovery can
+never use that row to authorize a signal.
+For a
+process write that committed after its await was cancelled, the same execution
+fence may resynchronize exactly one stale lifecycle version only when the
+stored and requested process identities are identical. A replacement must
+first observe the committed version; other version conflicts remain rejected.
+For a coordinator-persisted
+child process, recovery verifies the recorded durable identity
+and uses the pinned process-tree kill; a lost identity or failed termination
+leaves the run non-terminal for a later safe retry.
 
 ### Transactional completion outbox
 
@@ -340,19 +374,106 @@ so recovered events route independently instead of synthesizing misleading
 one-member wave completions.
 
 After the dashboard or headless API destination registry is initialized,
-startup reconciliation first reaps any matching live process from the legacy
-folder snapshot, then drains every currently eligible bounded batch of
-coordinator completions, and finally reconciles the legacy folders that remain.
-Both legacy-folder snapshots are offloaded so filesystem traversal cannot block
-the gateway event loop during startup.
-The pre-drain reap closes the crash window where outbox delivery could write a
-delivered tombstone and hide a surviving child from the later folder scan. The
-drain still runs when no legacy orphan exists. Starting the reaper earlier could
-misroute and acknowledge a dashboard completion before its slot exists. The
-periodic reaper retries the same sequence so transient startup delivery failures
-remain recoverable without another process restart.
-Manager shutdown cancels and gathers the one-shot reconciliation task before
-tearing down live agents.
+startup coordinator reconciliation imports legacy folders, recovers expired
+runs, terminates every verified surviving child before completing its recovered
+terminal record, and drains every currently eligible bounded batch of pending
+completions, even when no legacy orphan exists. If the protected coordinator
+store cannot be
+opened or migrated, startup recovery logs the failure and fails closed; it does
+not signal a process selected from mutable legacy folder metadata. Malformed,
+non-finite, oversized, or excessively nested legacy JSON is quarantined per
+folder so one agent-written record cannot prevent healthy siblings from import.
+The legacy root and every child are opened component-by-component with
+descriptor-relative no-follow operations, and all enumeration, metadata, and
+file reads stay relative to those pinned descriptors. Reads have a 1 MiB
+ceiling; links, reparse points, devices, hardlinks, and swapped ancestors fail
+closed. A platform without descriptor-relative no-follow traversal skips the
+compatibility import rather than weakening it; native coordinator recovery
+still proceeds.
+Legacy compatibility reconciliation offloads its pre- and post-delivery folder
+snapshots so filesystem traversal cannot block the gateway event loop during
+startup.
+Within one live gateway, a run whose coordinator submission, command claim,
+starting transition, or start settlement becomes uncertain delegates terminal
+ownership to durable recovery because the bounded await can expire after SQLite
+has accepted the work. An uncertain batch member remains outstanding for wave
+accounting until recovery supplies its terminal event. The recovered event
+inherits the live batch identity before it replaces that member, so a sibling
+cannot close a partial digest and strand the recovered result outside the wave.
+The timed submit stays shielded and strongly referenced until its
+bounded-executor operation settles, ensuring a queued write can still create
+the durable recovery record instead of being cancelled with no owner. If that
+settlement proves the write failed or produced no durable run, the uncertainty
+guard is cleared and the existing one-shot legacy terminal reporter resumes;
+its tombstone write runs off the event loop. Orderly shutdown drains both the
+retained submit and any fallback reporter it schedules before snapshotting
+outstanding terminal reports. If the gateway's outer shutdown bound cancels
+any shutdown phase before that chain settles, it removes and verifies the
+legacy cancellation tombstone off the event loop for every retained submit,
+fallback, and unreported terminal task so the next start can reconcile the
+accepted run.
+The fallback clears and verifies the absence of the old cancellation tombstone
+off the event loop before reporting. On platforms with descriptor-relative
+filesystem operations, it pins the no-follow run directory once and performs
+both unlink and verification through that descriptor, so a concurrent directory
+swap cannot redirect the operation to a different tombstone. A failed or
+unverifiable clearance keeps the retained settlement and its terminal claim
+retryable until the blocker is absent; shutdown cancellation retains its owner
+for the synchronous recovery handoff. Because tombstone clearance yields, the
+fallback then revalidates that
+no durable fence or newer cancel-recovery attempt appeared. Each retained
+submission carries a monotonic attempt generation: a respawn clears only its
+predecessor's uncertainty, while callbacks from the predecessor cannot mutate or
+terminalize it. A pending cancel recovery rechecks the user-stop marker after
+the original task exits and while waiting for capacity, so Stop cannot race a
+new admission generation into existence behind its retained-submit drain. If
+the predecessor committed an execution claim before its
+response stalled, the current generation adopts the stable, unexpired same-owner
+fence rather than competing with durable recovery. The fallback checks that
+ownership before every destructive
+tombstone attempt and again after the worker returns; if a user Stop wins during
+the unlink, its abnormal marker is restored before the stale fallback exits. A
+current fallback atomically supersedes a still-pending cancel recovery through
+the terminal report claim before marking the run done. It writes its error tombstone
+only after the parent accepts the completion. A queued or digest-held fallback carries explicit legacy tombstone
+debt through the existing consumption ledger instead, including its error kind,
+so acceptance without consumption cannot suppress restart recovery and later
+consumption restores the seven-day failure retention rather than a short
+`delivered` retention window. If the synchronous route exhausts its retries,
+the fallback remains unreported and tombstone-free for restart reconciliation;
+an evicted live record still writes the fixed submission-failure detail when
+later consumption settles its error debt. Coordinator import remains idempotent
+if the durable submission committed at the cancellation boundary.
+Durable recovery remains the sole terminal owner only after a committed write.
+Once a durable submit receipt exists, every later command-claim exception is
+treated as an uncertain claim rather than a failed submission. A stable
+same-owner fence may be adopted; otherwise recovery remains the only terminal
+owner, so an operational claim failure cannot produce both a local failure and
+a later recovered interruption.
+A user Stop waits for that retained admission chain to settle before reap
+claims terminal reporting. Once admission has acquired a fence, the neutral
+STOPPED result is committed through that fence; a definite admission failure
+keeps the legacy reporter authoritative. The run body rechecks the stop marker
+after admission, so it cannot begin execution while Stop is waiting. This
+ordering leaves exactly one terminal owner and prevents lease-expiry recovery
+from emitting a second interruption for the same accepted run. If admission
+settles with an uncertain command claim, Stop retries or adopts the stable
+same-owner claim until it has a fence; it never falls through to unfenced local
+reporting while the durable row can still be recovered. If stable lookup shows
+that recovery already terminalized the run or a live newer owner took its lease,
+Stop yields local reporting to that durable owner instead of retrying forever.
+It keeps the live record's uncertainty marker until the durable outbox replaces
+that record, so running and batch-pending views converge with recovered delivery.
+The retained submit records its current-generation boolean outcome before its
+done callback replaces or removes the task, so a failed submission clears the
+earlier cancellation uncertainty and uses the legacy reporter instead of
+retrying a command that was never written. The drain yields through completion
+callbacks between retained links, so an already-finished submit cannot starve
+the callback that installs or removes its fallback reporter.
+Starting the reaper earlier could misroute and acknowledge a dashboard
+completion before its slot exists. The periodic reaper repeats the full fenced
+legacy import, recovery, and delivery sweep, while manager shutdown cancels and
+gathers the one-shot reconciliation task before tearing down live agents.
 
 Coordinator-backed injected envelopes include `Event: <event_id>` and
 `meta.subagentCompletion.eventId`. Wave digests carry one `Event:` line for each
@@ -367,7 +488,6 @@ behavior.
 |----------|-------|---------|
 | `_MAX_CONCURRENT` | 3 | Legacy fallback / auto-size floor. `agent.max_subagents` now defaults to `0` = auto-size the cap at startup (floor 3, ceiling `agent.subagent_auto_max`, default 32); a positive value pins a fixed cap. Session-shared subagents are cost-sampled as the runtime's measured RSS/CPU divided by the live shared-session count on that PID (`_live_shared_count`), so the memory term no longer binds and the cap rises to the provider-concurrency ceiling. |
 | `_TIMEOUT_SECS` | 1800 | Hard timeout per subagent (30 minutes) |
-| `_SHADOW_SUBMIT_TIMEOUT_SECS` | 1 | Total manager deadline for best-effort accepted-run shadow submission |
 | `_ON_DONE_TIMEOUT` | 1200 | Outer cap: max total seconds for semaphore wait + injection (20 minutes) |
 | `INJECTION_TIMEOUT` | 900 | Inner cap: max seconds for a single `stream_and_collect` call (15 minutes); default `_DEFAULT_INJECTION_TIMEOUT = 900.0`, tunable via `KIROCREW_INJECTION_TIMEOUT` (float seconds, clamped to `_ON_DONE_TIMEOUT`) |
 | `_RESET_TIMEOUT` | 30 | Max seconds for session reset in finally block |
@@ -589,7 +709,7 @@ An unmarked `CancelledError` (see intentional-cancel rule) triggers `_schedule_c
   3. **`_release_slot(info)` — SLOT accounting.** A one-shot token per `SubagentInfo`; the winner decrements `_running_count` once and drains the queue. Deliberately independent of both flags above: inferring slot ownership from `done` or `reaped` produced a double decrement in one interleaving and none at all in another. A leaked slot permanently starves the spawn queue, which matters far more at the 60-100 concurrent agents the scale work targets. The cancel-recovery respawn **re-arms** this token when it re-admits a slot (`_running_count += 1`), because the respawned run occupies a fresh slot and needs its own release.
   4. **`_claim_finalize(info)` — REPORT ownership** (`subagent_done` + the `_on_done` injection, plus wave-digest settling and the result.txt TTL bookkeeping). Granted to exactly one caller; contains no `await` so the check-and-set is atomic on the loop. It does **not** consult `info.done` — that was the last defect. It returns False while `_recovering` *without consuming itself*, so a pending respawn is not reported done and its respawned run can claim later.
 - **A claimed report is atomic, not merely exclusive.** The claim alone still lost outcomes when the claimer was cancelled mid-report. `_report_terminal` therefore runs on a strongly-referenced task under `asyncio.shield`, spawned by `_run` **before** its teardown awaits so the task is already live wherever a cancellation lands; the caller still receives `CancelledError` while the report completes. Synthetic batch terminals are lifecycle-owned at the synchronous scheduling site and always attempt their coordinator commit even after shutdown begins; only post-commit delivery retries stop at shutdown. Keyed rejection reports use the same shielded ownership, so shutdown cannot cancel their coordinator commit before durable state exists. `cancel_all()` drains outstanding reports with a bounded timeout and then **cancels and gathers** any straggler, so none is left invoking `_on_done` against tearing-down state or killed by a closing loop. Because the awaiter is shielded, shutdown is bounded by that drain rather than the `_ON_DONE_TIMEOUT` injection cap. Enforced by `test_subagent_reap_race.py` and the coordinator delivery regressions.
-- **An undelivered report abandoned at shutdown is made RECOVERABLE, not silently dropped.** The terminal record — including the tombstone — is written before delivery is attempted, and a tombstone is exactly what `list_orphans()` uses to EXCLUDE a folder from the next start's reconciliation. So cancelling a still-pending report at the drain deadline would leave an outcome that was never injected *and* invisible to the only path that could still inject it. `cancel_all()` therefore calls `clear_tombstone(id)` for each report it cancels, re-admitting that agent to the next start's orphan reconciliation (which finds `result.txt` and re-delivers). Extending the drain to `_ON_DONE_TIMEOUT` instead was rejected: it would hold gateway shutdown for up to 20 minutes on one wedged injection, which is the exact failure the bounded drain exists to prevent. Only reports cancelled **before** `_on_done` returned are re-admitted — `info._reported_to_parent` is set the moment the injection returns, so a cancellation in the later teardown/tombstone waits cannot cause a duplicate delivery on restart.
+- **An undelivered report abandoned at shutdown is made RECOVERABLE, not silently dropped.** The terminal record — including the tombstone — is written before delivery is attempted, and a tombstone is exactly what `list_orphans()` uses to EXCLUDE a folder from the next start's reconciliation. So cancelling a still-pending report at the drain deadline would leave an outcome that was never injected *and* invisible to the only path that could still inject it. `cancel_all()` therefore clears each cancelled report's tombstone and verifies the marker is absent before claiming the agent was re-admitted to the next start's orphan reconciliation (which finds `result.txt` and re-delivers). A failed or unverifiable deletion remains a loud recovery error, never a successful handoff. Extending the drain to `_ON_DONE_TIMEOUT` instead was rejected: it would hold gateway shutdown for up to 20 minutes on one wedged injection, which is the exact failure the bounded drain exists to prevent. Only reports cancelled **before** `_on_done` returned are re-admitted — `info._reported_to_parent` is set the moment the injection returns, so a cancellation in the later teardown/tombstone waits cannot cause a duplicate delivery on restart.
 - **Every reporter goes through the claim — including cancel-recovery failure.** There are more terminal paths than the two obvious ones: when a cancel-recovery respawn cannot happen, its `except` arm also finalizes the agent. That site previously fired `subagent_done` and `_on_done` directly, gated only on `done`/`reaped`, so a reaper racing a failed respawn delivered the outcome twice. It now takes `_claim_finalize` like every other reporter and reports through the shielded helper (which matters because `_force_reap` cancels that very task). `_resume_guarded`'s CancelledError arm writes only the RECORD and deliberately never reports — during shutdown the drain owns delivery.
 - **The reaped marker and the recovery cancel precede every `await` in `_force_reap`.** Both used to sit after the session teardown, which yields for up to `_RESET_TIMEOUT` (longer on the SIGKILL path). A recovery task whose bounded handshake expired inside that window observed `reaped == False` and respawned the run being killed — tools executing after a user Stop, strictly worse than a duplicate report.
 - **Delivery bookkeeping trails teardown.** Spawning the report ahead of teardown opens a window the older ordering did not have: writing the "delivered" tombstone before the session is torn down would hide a surviving child from orphan reconciliation if the process died in between. The report therefore waits on a `teardown_done` event (set in `_run`'s `finally`, so it fires even under cancellation, and bounded so the report can never wedge) before marking delivery. A reaped or recovery-failed member still settles its **siblings'** digest holds, since those siblings' results did reach the parent even though this member's did not. On the dashboard routes the report's own settle and `mark_delivered` are no-ops by design: `_subagent_done` defers the delivery bookkeeping — the completed member's own tombstone AND any held wave siblings — to the parent's CONSUMPTION of the announce via `_defer_queued_delivery` (the #4839 content-keyed slot ledger + `_delivery_queued`), on the queue branch settled by the drain and on the direct-injection branch by `_arm_queued_delivery_settlement` armed on the injection task (#2233). A bare `_on_done` return is a local routing success, not evidence the parent received anything; an unconfirmed hand-off leaves the debt parked and orphan-recoverable rather than tombstoned.
@@ -766,7 +886,7 @@ session key flows through the `/api/spawn` endpoint as `parent_session`.
 
 ## Scale Plumbing (60-100 concurrent agents)
 
-Large waves must not flood the WS socket, the parent LLM's context, or the UI. Five mechanisms — WS coalescing/replay-batching and UI caps are inert below their thresholds; digest chunking applies uniformly to every multi-task wave (single-task spawns behave byte-identical to legacy):
+Large waves must not flood the WS socket, the parent LLM's context, or the UI. Six mechanisms — WS coalescing/replay-batching and UI caps are inert below their thresholds; digest chunking applies uniformly to every multi-task wave (single-task spawns behave byte-identical to legacy):
 
 Delivery FIFO survives a route failure: a failed non-final chunk owns the
 wave's next delivery position until its retained snapshot is accepted. Same-wave
@@ -776,6 +896,7 @@ ahead of an in-flight route. A failed one-shot deadline flush restores the live
 wave snapshot and held clocks; a later forced flush or the real wave close then
 owns every result that was not accepted.
 
+- **Recovered interruption accounting**: an `interrupted` member advances wave completion and appears in the digest detail. Its per-member outcome remains neutral, but the three-bucket wave aggregate counts it in `err` so `ok + err + stopped == total` at wave close.
 - **Batch identity**: `spawn(batch_id=..., batch_total=...)` (threaded from `spawn_run tasks=[...]` — one 12-hex id per multi-task call — via `POST /api/spawn` transport params; survives the stagger queue). `spawn_batch_started {batch_id, count}` fires once per batch on its first started member; the id rides every WS frame (`base["batch_id"]`).
 - **Event coalescing** (`subagent_scale.SubagentEventCoalescer`, wired in the gateway's `_subagent_event`): above 8 active agents, `subagent_tool`/`subagent_stalled`/`subagent_retrying` buffer per-agent (latest state wins, merged) and flush every ~1s as ONE `subagent_batch_update {updates:[...]}` frame to all clients; `subagent_chunk` text buffers append-concatenated (16KB/agent cap) and flushes as `subagent_batch_chunks {chunks:[...]}` to subagent subscribers only. Lifecycle events (`spawn`/`done`/`recovering`/`injection_failed`/`batch_*`) are NEVER coalesced, and a `done`/`spawn` flushes buffered state first so ordering is preserved. Non-int active-count fails open to pass-through.
 - **Chunked wave-digest completion injection** (gateway `_subagent_done`): every batch member is accounted per `batch_id` (this is the single completion consumer for all terminal paths). Every multi-task wave (`batch_total > 1`) delivers results to the parent queue-style: completed members are HELD, and every `SUBAGENT_DIGEST_CHUNK_SIZE` completions (default 10, env `KIROCREW_SUBAGENT_DIGEST_CHUNK_SIZE`, clamped 1..1000) flush ONE `[Subagent batch completion event]` chunk digest — failures first with detail, successes as one-line `result_path` pointers (60KB cap per chunk); the final member flushes the remaining partial chunk. A 60-agent wave = 6 digest turns spread across the wave's runtime — bounded chunk size, incremental signal, and no straggler-gated mega-digest. Chunk buffers (`fail_lines`/`ok_lines`/`guard_msgs`/`held_delivery_ids`) reset per flush; cumulative `ok`/`err`/`stopped` counts ride the final chunk's summary. **Spawn discipline**: non-final chunks instruct the parent NOT to spawn new sub-agents while batches are still arriving; the final chunk releases the gate ("finish processing all results before spawning follow-ups") — mirrored by a line in the `spawn_run` tool description. **Chunk order is FIFO**: the injection busy-check (`_injection_slot_busy`) treats a live `slot.task` — the claim assigned synchronously at dispatch — as busy in addition to `slot.running`, so a later chunk waits behind an injection that is dispatched but still inside `bounded_chat_turn`'s off-loop timeout resolution, instead of racing ahead of it or assigning `slot.task` over the earlier chunk's still-pending task. A failed non-final chunk owns the next FIFO position only when it carries a stable coordinator outbox event that can replay it exactly. Batch rejections and lost-submission records have no worker lifecycle to create that event, so `_safe_announce` first persists each as a synthetic coordinator terminal and routes its outbox event; a failed final chunk can then be reclaimed exactly instead of losing already-held siblings when the live wave closes. Any remaining callback without a stable event restores its composed buffers to the live wave rather than becoming an unreplayable retry owner. Single-task spawns have no batch identity and keep the plain per-agent injection. A batch member rejected at spawn (empty task, low memory, cwd, governance, bad agent) is counted as submitted AND announced through the done callback with its batch identity (`_announce_rejection`) — so a rejection that closes the wave still reaches the consumer and releases held sibling results (non-batch rejections do not announce; the caller gets the error synchronously). `batch_finished {batch_id, total, ok, err, stopped}` broadcasts for every batch regardless of size. **Wave liveness (lost-submission backstop)**: a member rejected before reaching `spawn()` or lost during transport is counted in every sibling's `batch_total` but never in `submitted` — un-reconciled, the count-driven `batch_members_pending()` wedges the wave forever. Three layers close it: (1) `api_spawn` marks only rejections/capacity reached after manager admission with `counted: true` (preserved through the MCP client's error flattening); coordinator identity conflicts occur before manager admission and remain uncounted; (2) `spawn_run` best-effort POSTs `/api/spawn/lost` for each explicit UNcounted rejection, which calls `record_lost_submission` — counts the member as submitted and announces a synthetic terminal failure through the completion consumer so the wave closes; uncertain transport failures are not immediately reconciled because the gateway may have accepted them; (3) the reaper's `_sweep_stuck_waves` (every sweep) force-reconciles uncertain or lost submissions when `submitted < expected`, all registered members are terminal, nothing is queued, and no submission progress occurred for `_WAVE_STUCK_SECS` (1800s / 30 minutes — deliberately generous, symmetric with the per-agent hard ceiling) — one lost member per sweep, converging across sweeps; this also bounds the `_batch_submitted`/`_batch_progress_ts` leak. Straggler-held partial chunks are bounded by the **hold deadline** (below), not by the member's 30-minute hard ceiling.
@@ -921,13 +1042,102 @@ Folder-per-agent persistence at `~/.kiro/crew/subagents/{id}/`:
 
 ### Gateway Restart Reconciliation
 
-On startup, `SubagentManager` scans `~/.kiro/crew/subagents/` and reconciles:
+Startup converges both compatibility and coordinator state:
 
-1. **PID alive** → kill process group, deliver result if available, tombstone if not
-2. **PID dead + result.txt exists** → deliver result to parent session
-3. **PID dead + no result** → write tombstone with "orphaned" error
+1. The identity-checked legacy orphan scan runs first so a surviving child can
+   be reaped before any completion delivery writes a tombstone that removes the
+   folder from the compatibility scan. Its routing metadata never authorizes
+   delivery. `LegacyRunImporter` then reads known fields from legacy folders and creates only
+   missing coordinator rows. For an existing nonterminal row it may retain a
+   previously empty `result.txt` path, but agent-writable state and tombstone
+   files never overwrite an existing coordinator row's lifecycle state,
+   outcome, error, ownership, or version; fenced recovery is the only terminal
+   authority for native rows. Legacy `pid`, `pid_start_id`, and
+   `process_owned` fields are never imported and never authorize a signal. The
+   importer never rewrites or deletes `state.json`, `result.txt`, or
+   `tombstone.json`. Each scan submits its parsed records as one coordinator
+   batch, so the SQLite adapter loads and persists one snapshot rather than one
+   full snapshot per folder. Corrupt/mismatched folders and records with non-finite or
+   out-of-range timestamps are diagnosed and skipped without blocking sibling
+   imports. A legacy run ID that changes under credential or exfiltration-URL
+   redaction is also rejected and redacted from import diagnostics, preventing
+   sensitive folder names from reaching recovery payload IDs, result paths, or
+   gateway logs.
+   Legacy parent/destination fields are also agent-writable, so tombstones
+   import as terminal history without creating outbox work; only
+   coordinator-authenticated destinations can authorize a pending injection.
+   New imported rows record `source_version="legacy-state-v1"`.
+2. `RunRecovery` claims nonterminal runs whose execution lease is absent or
+   expired and whose execution command is no longer pending, except for a stale
+   legacy-shadow row after its grace period. It also claims an expired terminal
+   row while that row retains an owned child identity, covering a crash after
+   the terminal commit but before session teardown. A durable keyed submission
+   that has not yet been claimed remains eligible for normal execution after
+   restart. A recovery claim increments the run epoch, so a pre-restart owner
+   cannot commit after takeover. Runs with a live manager task and locally queued
+   run IDs are excluded from periodic reconciliation; a retained completed
+   record without a live task is not.
+3. A recorded child is killed only when the active fenced executor persisted
+   its identity in the owner-only coordinator database, the child is live, and
+   its `process_start_id` exactly matches
+   `platform_compat.process_identity_token(process_id)`. The token includes the
+   Linux boot ID, uses locale-independent microsecond start time on macOS, and
+   uses the process creation FILETIME on Windows. Dedicated executions
+   persist this opaque identity beside the PID before the child receives a
+   prompt; a protected coordinator write failure aborts execution, while the
+   legacy `state.json` mirror remains best-effort. Shared
+   sessions persist the runtime PID for attribution but mark it non-owned and
+   never persist a kill-authorizing start identity, because that process also
+   hosts the parent and other sessions. On Windows the compatibility layer
+   keeps the verified process handle pinned across tree termination so PID
+   reuse cannot retarget the signal. The default recovery path uses
+   `kill_process_tree_pinned` on every platform, which revalidates the recorded
+   process identity at the termination boundary. A live PID with a different
+   versioned durable identity is a reused PID: recovery never signals the
+   replacement and treats the original child as exited so its retained output
+   converges to `interrupted`. A mismatched legacy Linux or macOS/other POSIX
+   identity remains unverified because the old token can alias across a boot or
+   change with locale or timezone formatting. An unverified, unreadable, or missing identity is never signalled and leaves
+   the coordinator run and protected process identity intact for a later fenced
+   recovery attempt. A termination error does the same.
+   Recovery writes an `orphan_reconcile_kill` SEL authorization synchronously
+   and off the event loop before signalling the process; the critical write
+   must be durable before termination, and an audit failure leaves the child
+   and run untouched
+   for a later retry.
+4. A claimed nonterminal run becomes `interrupted`; any partial `result.txt`
+   path is retained. Outbox rehydration preserves that explicit fourth outcome
+   even though the explanatory error is non-empty, and the parent announcement
+   points at the retained partial result instead of rendering an ordinary
+   failure. Recovery never claims or replays its execution command. A terminal
+   cleanup claim never replaces the committed outcome or outbox payload; after
+   the child is absent or verified termination succeeds, it only clears the
+   protected process identity under the recovery fence.
+5. Coordinator-authenticated terminal pending outbox events drain through the
+   same fenced delivery adapter after protected terminal-child cleanup. If a
+   terminal child identity is unreadable, unverified, or cannot be terminated,
+   recovery leaves the identity intact. The coordinator atomically excludes that
+   run's event from every outbox claim while the terminal row retains its owned
+   process identity, including during a still-valid recovery lease, so a later
+   reaper pass or another delivery caller cannot publish completion prematurely.
+   That exclusion is per run: an unreapable terminal child does not prevent the
+   same drain pass from delivering unrelated eligible completion events.
+   Normal execution follows the same boundary: its terminal reporter waits for
+   dedicated-session teardown, clears the protected process identity with the
+   current execution fence only after reset succeeds, and then claims the event.
+   A failed teardown or rejected clear leaves the event pending for fenced
+   recovery instead of blocking the run task or delivering early.
+   Legacy tombstones create no outbox event and therefore cannot route a
+   completion from their untrusted metadata.
 
-**Orphan delivery is wired** (not a stub): the gateway registers `on_orphan_notify` (session injection — rides the parent slot's batched pending-failures drain) and `on_orphan_dm` (fallback). The DM fallback collects every undelivered orphan across the reconciliation scan and sends ONE digest message (`"N subagent(s)…"`) — never N pings; a lone orphan keeps the plain per-agent message.
+The periodic reaper repeats idempotent legacy import, expired-lease
+reconciliation, and delivery drain, so a transient import failure or a lease that
+is still valid at process startup converges without another restart. Each pass
+excludes locally active and queued run IDs from both legacy-folder import and
+recovery claims, so an accepted local run cannot lose its coordinator identity to
+an older folder with the same ID. A
+coordinator-open or migration failure is fail-closed: folder-based PID metadata
+does not authorize orphan termination or completion delivery.
 
 Legacy folder orphan scans and their identity-checked process reaping run off
 the event loop; process-tree termination may invoke bounded platform tools on
@@ -943,7 +1153,13 @@ Windows and must not stall gateway traffic.
   (default 1h); all other tombstones after 7 days. `prune_stale_tombstones` takes
   a per-cause cutoff for this.
 - `spawn_status` falls back to persistence layer for completed/tombstoned agents,
-  reading the retained `result.txt` (and honoring offset/limit/grep).
+  reading the retained `result.txt` from the trusted subagents root through a
+  bounded component-by-component descriptor-pinned no-link walk (and honoring
+  offset/limit/grep). A linked,
+  hardlinked, special, oversized, or escaped transcript falls back to the
+  already bounded in-memory result. A platform without descriptor-relative
+  no-follow traversal also uses that fail-closed fallback; a disk-only orphan
+  remains visible but has no readable transcript on that platform.
 
 ### MCP Tool: `spawn_status`
 
@@ -1074,7 +1290,9 @@ Decision + lifecycle:
   `_get_parent_runtime()` (falling back to `SessionManager.get_subagent_runtime()`
   — a companion runtime), calls `runtime.create_session()`, and wraps the handle
   in `AcpSessionProvider`. `SubagentInfo._session_sharing` / `_shared_provider`
-  record the shared path.
+  record the shared path. Its PID may be persisted for attribution, but it is
+  explicitly non-owned and carries no process-start identity, so restart
+  recovery can never signal the parent runtime on behalf of a subagent run.
 - On any failure the code falls back transparently to the legacy
   per-process path (`get_or_create`).
 - Cleanup (`_run` finally + `_force_reap`) calls `_shared_provider.shutdown()` to

@@ -103,16 +103,16 @@ exceptions.
 - Consumes: the approved RFC at revision v1.
 - Produces: exact branch, file, test, and verification boundaries for PRs 2–7.
 
-- [ ] **Step 1: Add this plan and link it from the RFC.**
+- [x] **Step 1: Add this plan and link it from the RFC.**
 
   Add a `Detailed implementation plan` link next to the RFC's related docs.
 
-- [ ] **Step 2: Verify documentation.**
+- [x] **Step 2: Verify documentation.**
 
   Run `bash scripts/docs-lint.sh` and `git diff --check`.
   Expected: both exit zero.
 
-- [ ] **Step 3: Amend PR 1's local commit.**
+- [x] **Step 3: Amend PR 1's local commit.**
 
   Run `git commit --amend --no-edit` so PR 1 remains one logical commit.
 
@@ -135,7 +135,7 @@ exceptions.
 - Produces: `RunCoordinator`, all typed records/enums, `MemoryRunCoordinator`,
   and optional `coordinator=` injection on `SubagentManager`.
 
-- [ ] **Step 1: Write failing model and submission tests.**
+- [x] **Step 1: Write failing model and submission tests.**
 
   Parameterize a coordinator factory initially with `MemoryRunCoordinator` and
   assert: first submit returns `created=True`; same key/hash returns the same run
@@ -143,18 +143,18 @@ exceptions.
   conflict without mutation; a
   rejected request creates a queryable terminal failed run and rejected command.
 
-- [ ] **Step 2: Run the contract test and verify RED.**
+- [x] **Step 2: Run the contract test and verify RED.**
 
   Run `python -m pytest test/test_run_coordinator_contract.py -n0 -q`.
   Expected: collection fails because `kiro_crew.run_coordinator` does not exist.
 
-- [ ] **Step 3: Implement typed models and in-memory submission.**
+- [x] **Step 3: Implement typed models and in-memory submission.**
 
   Use `str, Enum` values from the RFC and frozen dataclasses. Store records in
   private dictionaries protected by one `asyncio.Lock`; copy records with
   `dataclasses.replace` instead of mutating returned objects.
 
-- [ ] **Step 4: Write failing claim, fence, completion, and outbox tests.**
+- [x] **Step 4: Write failing claim, fence, completion, and outbox tests.**
 
   Assert command claim assigns owner and epoch; matching fences advance
   `starting -> running -> terminal`; stale fences raise; completion returns one
@@ -163,23 +163,23 @@ exceptions.
   `claim_epoch`, its prior delivery fence is rejected, and delivered events no
   longer claim.
 
-- [ ] **Step 5: Run the new tests and verify RED.**
+- [x] **Step 5: Run the new tests and verify RED.**
 
   Expected: failures name unimplemented transition methods, not fixture errors.
 
-- [ ] **Step 6: Implement the minimal in-memory state machine.**
+- [x] **Step 6: Implement the minimal in-memory state machine.**
 
   Centralize legal transitions in one map and validate terminal/outcome
   coherence before replacing a record. Use a caller-injected clock and ID
   factory so tests assert exact values without sleeping.
 
-- [ ] **Step 7: Add facade injection without changing authority.**
+- [x] **Step 7: Add facade injection without changing authority.**
 
   Add `coordinator: RunCoordinator | None = None` to `SubagentManager.__init__`
   and store `self._coordinator = coordinator or MemoryRunCoordinator()`. Do not
   route production transitions through it yet.
 
-- [ ] **Step 8: Verify and commit PR 2.**
+- [x] **Step 8: Verify and commit PR 2.**
 
   Run focused tests, format only new/touched files, run flake8/mypy on those
   files, update RFC audit metadata, and commit:
@@ -208,41 +208,41 @@ exceptions.
 - Produces: `RunFinalizer.claim_report()`, `claim_slot()`, `rearm_slot()` and
   `SubagentScheduler` capacity/queue operations.
 
-- [ ] **Step 1: Write failing finalizer tests.**
+- [x] **Step 1: Write failing finalizer tests.**
 
   Move the pure claim cases out of the manager fixture: exactly one report
   claim, recovery withholding without consumption, superseding recovery,
   exactly one slot claim, and rearming only for an admitted recovery attempt.
 
-- [ ] **Step 2: Verify RED, then implement `RunFinalizer`.**
+- [x] **Step 2: Verify RED, then implement `RunFinalizer`.**
 
   Run `python -m pytest test/test_subagent_lifecycle.py -n0 -q`; verify missing
   module failure; implement the three synchronous no-await methods; rerun green.
 
-- [ ] **Step 3: Write failing scheduler tests.**
+- [x] **Step 3: Write failing scheduler tests.**
 
   Assert FIFO queue order, maximum-capacity admission, one-time release, parent
   depth, batch presence, removal by preassigned ID, and queue payload identity.
 
-- [ ] **Step 4: Verify RED, then implement `SubagentScheduler`.**
+- [x] **Step 4: Verify RED, then implement `SubagentScheduler`.**
 
   Keep stagger timing and actual `spawn()` calls in the facade; the scheduler
   owns only queue and capacity policy. Expose read-only `running_count` and
   `queued` views plus explicit `admit`, `release`, `enqueue`, `pop_next`,
   `remove`, `count_parent`, and `has_batch` operations.
 
-- [ ] **Step 5: Delegate manager behavior through the boundaries.**
+- [x] **Step 5: Delegate manager behavior through the boundaries.**
 
   Keep `_claim_finalize`, `_release_slot`, `_running_count`, and `_queue` as
   compatibility shims for existing callers/tests, but make each forward to the
   extracted object. Replace production mutations with scheduler operations.
 
-- [ ] **Step 6: Run race and scale regressions.**
+- [x] **Step 6: Run race and scale regressions.**
 
   Run the new tests plus `test/test_subagent_reap_race.py` and the queue/lost-
   submission classes in `test/test_subagent_scale.py`, all with `-n0`.
 
-- [ ] **Step 7: Update the subagent spec and commit PR 3.**
+- [x] **Step 7: Update the subagent spec and commit PR 3.**
 
   Document the new ownership boundary without changing behavior. Commit:
   `refactor: extract subagent lifecycle boundaries`.
@@ -269,39 +269,39 @@ exceptions.
 - Produces: `SQLiteRunCoordinator`, `ShadowRunCoordinator`, schema version 1,
   and owner-only/sensitive coordinator storage.
 
-- [ ] **Step 1: Add SQLite to the contract factory and verify RED.**
+- [x] **Step 1: Add SQLite to the contract factory and verify RED.**
 
   Construct `SQLiteRunCoordinator(tmp_path / "coordinator" / "runs.sqlite3",
   clock=fake_clock, id_factory=fake_ids)`. Expected: import failure.
 
-- [ ] **Step 2: Write failing schema and security tests.**
+- [x] **Step 2: Write failing schema and security tests.**
 
   Assert four tables and schema version, WAL and busy timeout, transactional
   re-open, newer-schema refusal, corrupt-file refusal, owner-only directory/file
   helpers, and sensitive matching for the coordinator directory plus sidecars
   under current and legacy data-home prefixes.
 
-- [ ] **Step 3: Implement schema and synchronous transaction core.**
+- [x] **Step 3: Implement schema and synchronous transaction core.**
 
   Use one stdlib `sqlite3` connection per worker call, bound SQL parameters,
   explicit `BEGIN IMMEDIATE`, foreign keys, Python enum validation, and
   transactional migration metadata. Never keep a connection on the event-loop
   object and never use `executescript()` inside a migration transaction.
 
-- [ ] **Step 4: Add async wrappers and verify off-loop behavior.**
+- [x] **Step 4: Add async wrappers and verify off-loop behavior.**
 
   Every protocol method calls its synchronous counterpart through
   `asyncio.to_thread`. A test monkeypatches the sync worker to record thread ID
   and asserts it differs from the event-loop thread; it does not use durations.
 
-- [ ] **Step 5: Implement and test shadow parity.**
+- [x] **Step 5: Implement and test shadow parity.**
 
   `ShadowRunCoordinator` calls the legacy-authoritative coordinator first,
   mirrors successful transitions to SQLite, compares normalized records at
   stable boundaries, and reports a bounded `ParityMismatch` callback without
   repairing or failing legacy behavior.
 
-- [ ] **Step 6: Update security/subagent specs and commit PR 4.**
+- [x] **Step 6: Update security/subagent specs and commit PR 4.**
 
   Run coordinator/security tests, docs lint, formatting, flake8, and mypy.
   Commit: `feat: add sqlite run coordinator shadow store`.
@@ -435,43 +435,43 @@ exceptions.
   readers.
 - Produces: `RunRecovery.reconcile()` and idempotent `LegacyRunImporter`.
 
-- [ ] **Step 1: Write importer and lease-takeover tests.**
+- [x] **Step 1: Write importer and lease-takeover tests.**
 
   Cover running, completed, delivered, tombstoned, continuable, corrupt, and
   missing-result folders; repeated import; expired lease takeover; stale owner
   mutation rejection; and legacy files left byte-identical.
 
-- [ ] **Step 2: Verify RED, then implement the importer.**
+- [x] **Step 2: Verify RED, then implement the importer.**
 
   Validate IDs with the existing containment rule, parse known fields only,
   record source version, and create coordinator records idempotently. Corruption
   emits a diagnostic and leaves the folder untouched.
 
-- [ ] **Step 3: Write and implement the recovery decision matrix.**
+- [x] **Step 3: Write and implement the recovery decision matrix.**
 
   Coordinator terminal + pending event drains delivery. Running + verified live
   child follows current kill-and-report policy. Starting/running + no verified
   child becomes `interrupted` with partial result retained. No state permits
   automatic replay except the existing zero-tool cancel-recovery rule.
 
-- [ ] **Step 4: Add deterministic crash-window tests.**
+- [x] **Step 4: Add deterministic crash-window tests.**
 
   Assert convergence after every boundary listed in RFC section 7.3 using
   injected failure points and clocks, never sleeps.
 
-- [ ] **Step 5: Add one hermetic subprocess restart test.**
+- [x] **Step 5: Add one hermetic subprocess restart test.**
 
   Spawn only a Python sleeper with `cwd` under `tmp_path`; capture and terminate
   it through `platform_compat`; guarantee cleanup in `finally`; verify takeover
   fences the old owner and preserves partial output.
 
-- [ ] **Step 6: Make startup coordinator-first with legacy fallback.**
+- [x] **Step 6: Make startup coordinator-first with legacy fallback.**
 
   Import legacy-only folders once, acquire expired leases, reconcile runs, then
   drain pending delivery. Keep old orphan recovery available when coordinator
   mode is disabled.
 
-- [ ] **Step 7: Verify, document, and commit PR 7.**
+- [x] **Step 7: Verify, document, and commit PR 7.**
 
   Run recovery/persistence/subagent tests, docs lint, formatting, flake8, mypy,
   and the full repository gate if the environment supports it. Commit:
@@ -481,13 +481,27 @@ exceptions.
 
 ## Final stacked verification
 
-- [ ] Confirm every branch contains exactly one commit relative to its parent.
-- [ ] Confirm every worktree is clean and no branch was pushed.
-- [ ] Run `python3 scripts/check_black_formatting.py`.
-- [ ] Run `isort --check-only` on all changed Python files.
-- [ ] Run `flake8` and `mypy` on all changed Python files.
-- [ ] Run all coordinator and subagent-focused tests with `-n0`.
-- [ ] Run `bash scripts/docs-lint.sh`.
-- [ ] Run `git diff --check` for every adjacent branch pair.
-- [ ] Record any unavailable full-suite gate explicitly; never describe an
+- [x] Confirm every branch contains exactly one commit relative to its parent.
+- [x] Confirm every worktree is clean and no branch was pushed.
+- [x] Run `python3 scripts/check_black_formatting.py`.
+- [x] Run `isort --check-only` on all changed Python files.
+- [x] Run `flake8` and `mypy` on all changed Python files.
+- [x] Run all coordinator and subagent-focused tests with `-n0`.
+- [x] Run `bash scripts/docs-lint.sh`.
+- [x] Run `git diff --check` for every adjacent branch pair.
+- [x] Record any unavailable full-suite gate explicitly; never describe an
   unrun gate as passing.
+
+### Local verification record
+
+- The coordinator/subagent slice passed 647 tests serially. The handler, MCP,
+  command-authority, and API-contract slice passed another 423 tests serially.
+- Formatting, import order, changed-file flake8 and mypy, documentation lint,
+  and adjacent-branch whitespace checks passed from the repository virtual
+  environment.
+- The full repository run was attempted on macOS with Python 3.14: 60,964
+  passed, 385 skipped, 6 xfailed, 2 errored, and 95 failed. The failures mixed
+  platform/test-harness issues (including BSD `date`, Unix-socket path length,
+  and unrelated adversarial parser/timeouts) with stack contract failures. The
+  stack-related failures were isolated, corrected, and covered by the two green
+  serial slices above; the full-repository attempt is not reported as passing.

@@ -358,6 +358,16 @@ NATIVE_SUBAGENT_TERMINAL_TTL_SECS = 3600.0
 _MAX_PENDING_SUBAGENT_DELIVERIES = 128
 
 
+class _PendingSubagentDeliveries(list[str]):
+    """Claimed run ids plus the subset that owe an error tombstone."""
+
+    __slots__ = ("error_tombstone_ids",)
+
+    def __init__(self, agent_ids: list[str], error_tombstone_ids: set[str]) -> None:
+        super().__init__(agent_ids)
+        self.error_tombstone_ids = frozenset(error_tombstone_ids)
+
+
 def _delivery_key(content: str) -> str:
     """Identity of a queued completion for delivery bookkeeping.
 
@@ -3060,6 +3070,7 @@ class _ChatSlot:
         "_subagent_deliveries_inflight",
         "_subagents_inline_collected",
         "_subagent_delivery_pending",
+        "_subagent_error_tombstone_pending",
         "_recovery_retrigger_count",
         "_prompt_busy_retries",
         "_acp_pipe_death_retries",
@@ -3173,6 +3184,9 @@ class _ChatSlot:
             timestamp_provider=lambda: datetime.now(timezone.utc).isoformat(),
             delivery_key=lambda content: _delivery_key(content),
             max_pending_deliveries=lambda: _MAX_PENDING_SUBAGENT_DELIVERIES,
+            delivery_claim_factory=lambda agent_ids, error_ids: _PendingSubagentDeliveries(
+                agent_ids, error_ids
+            ),
         )
         # (content revision, links) cache for the sidebar PR chips scan.
         self._source_links_revision = 0
@@ -3418,6 +3432,10 @@ class _ChatSlot:
         # retention TTL is measured from consumption rather than from run
         # completion (issue #4839). See ``take_pending_subagent_deliveries``.
         self._subagent_delivery_pending: dict[str, list[str]] = {}
+        # Subset of the delivery ledger whose legacy fallback outcome is an
+        # error. Keeping the kind beside the ids prevents consumption from
+        # shortening a failed run's retention as though it had completed.
+        self._subagent_error_tombstone_pending: dict[str, set[str]] = {}
         self._recovery_retrigger_count: int = 0
         self._prompt_busy_retries: int = 0
         self._acp_pipe_death_retries: int = 0
@@ -4237,8 +4255,19 @@ class _ChatSlot:
     def queue_pop(self, index: int = 0) -> dict[str, Any]:
         return self._queue_repository.queue_pop(self, index)
 
-    def note_pending_subagent_delivery(self, content: str, agent_ids: list[str]) -> None:
-        self._queue_repository.note_pending_subagent_delivery(self, content, agent_ids)
+    def note_pending_subagent_delivery(
+        self,
+        content: str,
+        agent_ids: list[str],
+        *,
+        error_tombstone_ids: set[str] | None = None,
+    ) -> None:
+        self._queue_repository.note_pending_subagent_delivery(
+            self,
+            content,
+            agent_ids,
+            error_tombstone_ids=error_tombstone_ids,
+        )
 
     def owes_subagent_delivery(self, contents: list[str]) -> bool:
         return self._queue_repository.owes_subagent_delivery(self, contents)

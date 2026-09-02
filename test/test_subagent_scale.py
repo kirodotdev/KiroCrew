@@ -25,6 +25,7 @@ import pytest
 from kiro_crew.constants import SUBAGENT_COMPLETION_META_KEY
 from kiro_crew.run_coordinator import MemoryRunCoordinator
 from kiro_crew.subagent import SubagentInfo, SubagentManager
+from kiro_crew.subagent_completion_meta import OUTCOME_INTERRUPTED
 from kiro_crew.subagent_scale import SubagentEventCoalescer
 
 # ``SubagentManager.spawn`` refuses -- registering no task -- while the host
@@ -982,6 +983,53 @@ class TestWaveDigest:
         payload = finished[0].args[1]
         assert payload["total"] == 12 and payload["ok"] == 10
         assert payload["err"] == 2 and payload["stopped"] == 0
+
+    @pytest.mark.asyncio
+    async def test_batch_finished_counts_recovered_interruption_as_non_success(self):
+        orch = _make_orchestrator()
+        orch.sessions = _mock_sessions()
+        orch.ctx_builder = MagicMock()
+        orch.ctx_builder.hooks = MagicMock()
+        orch.dashboard_state = _mock_dashboard_state()
+        slot = MagicMock()
+        slot.mode = "chat"
+        slot.running = False
+        slot.task = None
+        slot._orch_tracker = None
+        slot._subagent_deliveries_inflight = 0
+        orch.dashboard_state.get_slot = MagicMock(return_value=slot)
+        mgr, on_done = self._capture_on_done(orch)
+        total = 2
+
+        async def _fake_run_chat(
+            _state, _slot, _text, *, _directive_user_origin, _on_consumed
+        ):
+            assert _directive_user_origin is False
+            _on_consumed()
+
+        completed = self._member(0, total)
+        interrupted = self._member(1, total)
+        interrupted._recovered_outcome = OUTCOME_INTERRUPTED
+
+        with patch("kiro_crew.slack.gateway._run_chat", _fake_run_chat):
+            mgr.batch_members_pending = MagicMock(return_value=True)
+            await on_done(completed)
+            mgr.batch_members_pending = MagicMock(return_value=False)
+            await on_done(interrupted)
+            await _settle(lambda: slot.task is None)
+
+        finished = [
+            call
+            for call in orch.dashboard_state.broadcast_ws.call_args_list
+            if call.args and call.args[0] == "batch_finished"
+        ]
+        assert len(finished) == 1
+        payload = finished[0].args[1]
+        assert payload["total"] == 2
+        assert payload["ok"] == 1
+        assert payload["err"] == 1
+        assert payload["stopped"] == 0
+        assert payload["total"] == payload["ok"] + payload["err"] + payload["stopped"]
 
     @pytest.mark.asyncio
     async def test_held_members_marked_delivered_only_at_digest(self):

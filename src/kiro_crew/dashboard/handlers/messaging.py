@@ -11,6 +11,7 @@ import json
 import logging
 import os
 import re
+import stat
 import time
 from pathlib import Path
 from typing import Any, Callable, cast
@@ -64,6 +65,7 @@ from kiro_crew.dashboard.state import (
     DashboardState,
 )
 from kiro_crew.dashboard.token_auth import caller_names_a_missing_slot
+from kiro_crew.hooks import MAX_FILE_BYTES
 from kiro_crew.messaging.display_safety import redact_for_display
 from kiro_crew.messaging.link import CHANNEL_SESSION_NAMESPACES, SLACK_NAMESPACE, ChannelLink
 from kiro_crew.messaging.renderer import (
@@ -77,6 +79,7 @@ from kiro_crew.notifications.bus import (
     NotificationPayload,
     NotificationValidationError,
 )
+from kiro_crew.pinned_fs import PinnedPathRefusal, open_dir_chain_nofollow
 from kiro_crew.platform.governance_profiles import HOST_SESSION_KEY
 from kiro_crew.platform_compat import IS_MACOS
 from kiro_crew.security import is_sensitive_path, redact_credentials, redact_exfiltration_urls
@@ -90,7 +93,7 @@ from kiro_crew.subagent_command_authority import (
     AuthorityUnavailable,
     CommandIdentity,
 )
-from kiro_crew.subagent_persistence import _agent_dir, read_state
+from kiro_crew.subagent_persistence import _agent_dir, agent_dir_for_display, read_state
 from kiro_crew.validation import (
     _EMOJI_NAME_RE,
     CHANNEL_ID_RE,
@@ -759,6 +762,51 @@ def _redact(text: str) -> str:
 
 _SPAWN_STATUS_MAX_LINES = 2000  # cap lines returned per spawn_status page
 _SPAWN_STATUS_MAX_GREP_LEN = 500
+_SPAWN_RESULT_OPEN_FLAGS = (
+    os.O_RDONLY
+    | getattr(os, "O_NOFOLLOW", 0)
+    | getattr(os, "O_CLOEXEC", 0)
+    | getattr(os, "O_NONBLOCK", 0)
+)
+
+
+def _read_spawn_result(agent_id: str, path: Path) -> str | None:
+    """Read the canonical transcript through a strictly pinned directory chain."""
+    declared_dir = agent_dir_for_display(agent_id)
+    declared_expected = Path(os.path.abspath(declared_dir / "result.txt"))
+    candidate = Path(os.path.abspath(path))
+    if os.path.normcase(str(candidate)) != os.path.normcase(str(declared_expected)):
+        return None
+    trusted_root = declared_dir.parent.resolve()
+    expected = Path(os.path.abspath(trusted_root / declared_dir.name / "result.txt"))
+    try:
+        root_fd = open_dir_chain_nofollow(expected.parent, what="subagent result root")
+    except (OSError, PinnedPathRefusal):
+        return None
+    try:
+        try:
+            fd = os.open(expected.name, _SPAWN_RESULT_OPEN_FLAGS, dir_fd=root_fd)
+        except OSError:
+            return None
+        try:
+            opened = os.fstat(fd)
+            if (
+                opened.st_nlink > 1
+                or not stat.S_ISREG(opened.st_mode)
+                or getattr(opened, "st_reparse_tag", False)
+            ):
+                return None
+            with os.fdopen(fd, "rb") as stream:
+                raw = stream.read(MAX_FILE_BYTES + 1)
+            fd = -1
+        finally:
+            if fd >= 0:
+                os.close(fd)
+    finally:
+        os.close(root_fd)
+    if len(raw) > MAX_FILE_BYTES:
+        return None
+    return raw.decode("utf-8", errors="replace")
 
 
 def _spawn_result_view(text: str, offset: int, limit: int, grep: str) -> tuple[str, dict]:
@@ -831,15 +879,11 @@ async def api_spawn_status(request: web.Request) -> web.Response:
                     "done": True,
                     "started": disk_state.get("started"),
                 }
-                result_path = _agent_dir(agent_id) / "result.txt"
+                result_path = agent_dir_for_display(agent_id) / "result.txt"
                 result = ""
-                if result_path.exists() and not is_sensitive_path(str(result_path)):
-                    try:
-                        result = await asyncio.to_thread(
-                            result_path.read_text, encoding="utf-8", errors="replace"
-                        )
-                    except OSError:
-                        pass
+                loaded = await asyncio.to_thread(_read_spawn_result, agent_id, result_path)
+                if loaded is not None:
+                    result = loaded
                 # _redact() defined at line 82 of this file; calls both
                 # redact_exfiltration_urls() and redact_credentials() per security guidelines.
                 view, view_meta = await _apply_result_view(request, result)
@@ -866,15 +910,14 @@ async def api_spawn_status(request: web.Request) -> web.Response:
     if info.done:
         # Read full result from disk (info.result is truncated to 3000 chars)
         result = info.result
-        if info.result_path and not is_sensitive_path(info.result_path):
-            try:
-                result = await asyncio.to_thread(
-                    Path(info.result_path).read_text,
-                    encoding="utf-8",
-                    errors="replace",
-                )
-            except OSError:
-                pass
+        if info.result_path:
+            loaded = await asyncio.to_thread(
+                _read_spawn_result,
+                agent_id,
+                Path(info.result_path),
+            )
+            if loaded is not None:
+                result = loaded
         view, view_meta = await _apply_result_view(request, result)
         data["result"] = _redact(view)
         if view_meta:

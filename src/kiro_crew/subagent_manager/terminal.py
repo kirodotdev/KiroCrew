@@ -13,10 +13,11 @@ if TYPE_CHECKING:
         _RESET_TIMEOUT,
         _TERMINAL_RETRY_SECONDS,
         EXECUTION_LEASE_SECONDS,
+        OUTCOME_INTERRUPTED,
         SUBAGENT_COMPLETION_PREFIX,
         AuthorityOutcomeUncertain,
         CoordinatorDecision,
-        DeliveryState,
+        OwnerLease,
         OutboxEvent,
         RunCompletion,
         RunOutcome,
@@ -32,7 +33,7 @@ if TYPE_CHECKING:
         _timeout_context,
         _ws_result_path,
         asyncio,
-        clear_tombstone,
+        clear_tombstone_for_recovery,
         dashboard_slot_key,
         json,
         logger,
@@ -51,6 +52,93 @@ class TerminalCoordinator(ManagerComponent):
     """Own terminal transitions while state remains facade-owned."""
 
     __slots__ = ()
+
+    async def _coordinator_record_process_impl(
+        self,
+        info: SubagentInfo,
+        process_id: int,
+        process_start_id: str,
+        process_owned: bool,
+    ) -> None:
+        """Persist fenced process identity before it can authorize recovery cleanup."""
+
+        fence = info._coordinator_fence
+        if fence is None:
+            raise RuntimeError("coordinator execution fence is missing")
+        result = await self._manager._coordinator.record_process(
+            info.id,
+            fence,
+            info._coordinator_version,
+            process_id,
+            process_start_id,
+            process_owned,
+        )
+        if result.value is None or result.decision is CoordinatorDecision.REJECTED:
+            raise RuntimeError(f"coordinator process record refused: {result.reason.value}")
+        info._coordinator_version = result.value.version
+        info._coordinator_process_protected = bool(process_owned and process_start_id)
+
+    async def _clear_terminal_process_impl(self, info: SubagentInfo) -> bool:
+        """Release a terminal row's child guard after local teardown succeeds."""
+
+        fence = info._coordinator_fence
+        if fence is None:
+            return False
+        try:
+            result = await self._manager._coordinator.clear_recovered_process(
+                info.id,
+                fence,
+                info._coordinator_version,
+            )
+        except Exception:
+            logger.warning(
+                "Subagent %s terminal process cleanup could not be recorded",
+                info.id,
+                exc_info=True,
+            )
+            return False
+        if result.value is None or result.decision is CoordinatorDecision.REJECTED:
+            logger.warning(
+                "Subagent %s terminal process cleanup refused: %s",
+                info.id,
+                result.reason.value,
+            )
+            return False
+        info._coordinator_version = result.value.version
+        info._coordinator_process_protected = False
+        return True
+
+    async def _record_process_identity_impl(self, info: SubagentInfo, session_key: str) -> None:
+        """Persist protected process identity before any child prompt can run."""
+
+        pid = self._manager._sessions.get_pid(session_key)
+        if not pid:
+            return
+        info._pid = pid
+        pid_start_id = await asyncio.to_thread(platform_compat.process_identity_token, pid)
+        process_owned = bool(pid_start_id)
+        try:
+            await self._manager._write_state_off_loop(
+                info,
+                "PID record",
+                pid=pid,
+                pid_recorded_at=time.time(),
+                pid_start_id=pid_start_id or "",
+                process_owned=process_owned,
+            )
+        except Exception:
+            logger.debug("Failed to mirror PID for %s", info.id, exc_info=True)
+        # `_run_inner` is also a focused unit seam. Only the admitted `_run`
+        # path owns a coordinator fence; that path rejects a missing fence
+        # before reaching this method.
+        if info._coordinator_fence is None:
+            return
+        await self._manager._coordinator_record_process(
+            info,
+            pid,
+            pid_start_id or "",
+            process_owned,
+        )
 
     async def _coordinator_mark_starting_impl(self, info: SubagentInfo) -> None:
         """Acquire the first durable lifecycle transition before child startup."""
@@ -106,6 +194,7 @@ class TerminalCoordinator(ManagerComponent):
         renew_fence = fence
 
         async def _renew() -> None:
+            nonlocal renew_fence
             cadence = EXECUTION_LEASE_SECONDS / 3
             while True:
                 await asyncio.sleep(cadence)
@@ -123,8 +212,31 @@ class TerminalCoordinator(ManagerComponent):
                     )
                     continue
                 if not renewed:
-                    logger.error("Subagent %s lost its coordinator execution lease", info.id)
-                    return
+                    command = info._coordinator_command
+                    replacement = None
+                    if command is not None:
+                        try:
+                            replacement = await self._manager._coordinator.claim_command(
+                                command.command_id,
+                                OwnerLease(
+                                    renew_fence.owner_id,
+                                    time.time() + EXECUTION_LEASE_SECONDS,
+                                ),
+                            )
+                        except Exception:
+                            logger.warning(
+                                "Subagent %s coordinator lease reacquisition failed",
+                                info.id,
+                                exc_info=True,
+                            )
+                    if replacement is None or replacement.fence is None:
+                        logger.error("Subagent %s lost its coordinator execution lease", info.id)
+                        return
+                    info._coordinator_command = replacement.command
+                    info._coordinator_fence = replacement.fence
+                    if replacement.run is not None:
+                        info._coordinator_version = replacement.run.version
+                    renew_fence = replacement.fence
 
         task = asyncio.create_task(_renew())
         self._manager._lease_tasks[info.id] = task
@@ -239,6 +351,8 @@ class TerminalCoordinator(ManagerComponent):
             resolved_model=str(payload.get("resolved_model") or ""),
             requested_model=str(payload.get("requested_model") or ""),
         )
+        if payload.get("outcome") == RunOutcome.INTERRUPTED.value:
+            info._recovered_outcome = OUTCOME_INTERRUPTED
         # Batch progress lives in the gateway's volatile digest state. After a
         # restart, replay each stable event independently instead of inventing
         # a fresh one-member wave from persisted batch labels.
@@ -253,6 +367,12 @@ class TerminalCoordinator(ManagerComponent):
             context = self._manager._outbox_live_contexts.pop(event.run_id, None)
             if context is None:
                 info = self._manager._info_from_outbox(event)
+                live_batch = self._manager._outbox_live_run_batches.pop(event.run_id, None)
+                if live_batch is not None:
+                    info.batch_id, info.batch_total = live_batch
+                uncertain = self._manager._agents.get(event.run_id)
+                if uncertain is not None and uncertain._coordinator_claim_uncertain:
+                    self._manager._agents[event.run_id] = info
                 context = _OutboxDeliveryContext(
                     info=info,
                     source="Subagent outbox",
@@ -419,6 +539,8 @@ class TerminalCoordinator(ManagerComponent):
         mark_delivered_on_success: bool,
         settle_digest: bool = False,
         teardown_done: "asyncio.Event | None" = None,
+        process_stopped: "asyncio.Event | None" = None,
+        tombstone_error_on_success: bool = False,
     ) -> None:
         """Deliver ``info``'s one-shot terminal report as a single unit.
 
@@ -463,7 +585,7 @@ class TerminalCoordinator(ManagerComponent):
                     await self._manager._stop_coordinator_heartbeat(info.id)
                     await self._manager.command_authority.stop_execution_heartbeat(info.id)
                     try:
-                        await asyncio.to_thread(clear_tombstone, info.id)
+                        await asyncio.to_thread(clear_tombstone_for_recovery, info.id)
                     except Exception:
                         logger.debug(
                             "Failed to re-admit stale-fence result %s to recovery",
@@ -483,6 +605,20 @@ class TerminalCoordinator(ManagerComponent):
                 await self._manager.command_authority.stop_execution_heartbeat(info.id)
             if info._reported_to_parent:
                 return
+            if process_stopped is not None:
+                if teardown_done is not None and not teardown_done.is_set():
+                    try:
+                        await asyncio.wait_for(teardown_done.wait(), timeout=_RESET_TIMEOUT + 30)
+                    except asyncio.TimeoutError:
+                        logger.warning(
+                            "Subagent %s teardown did not settle its protected process",
+                            info.id,
+                        )
+                        return
+                if not process_stopped.is_set():
+                    return
+                if not await self._clear_terminal_process_impl(info):
+                    return
             while True:
                 try:
                     attempts = await self._manager._outbox_delivery.drain_once(
@@ -497,7 +633,11 @@ class TerminalCoordinator(ManagerComponent):
                         exc_info=True,
                     )
                 else:
-                    if any(attempt.status is DeliveryState.DELIVERED for attempt in attempts):
+                    # A returned attempt means the fence was durably settled:
+                    # either delivered or released for the periodic outbox
+                    # drainer. The terminal reporter owns only this immediate
+                    # attempt and must not wait through the released lease.
+                    if attempts:
                         return
                     if info._reported_to_parent or info._digest_held or info._delivery_queued:
                         return
@@ -525,7 +665,8 @@ class TerminalCoordinator(ManagerComponent):
                 # Carry the requested pin on the terminal report too, redacted
                 # like the spawn frame: after a reconnect the completed card is
                 # rebuilt from this event alone, so without it the live-downgrade
-                # amber chip would silently vanish from a downgraded finished run.
+                # amber chip would silently vanish from a downgraded finished run
+                # (Opus/Design/First-Principles review on #5326).
                 "requested_model": _redact(info.requested_model),
                 "result": _done_result(info.result),
             },
@@ -534,11 +675,31 @@ class TerminalCoordinator(ManagerComponent):
             return
         try:
             await asyncio.wait_for(self._manager._on_done(info), timeout=_ON_DONE_TIMEOUT)
+            if tombstone_error_on_success and info._delivery_failed:
+                # A synchronous router can exhaust its own retries and return
+                # normally after flagging failure. The shadow fallback has no
+                # durable outbox event, so a tombstone here would suppress the
+                # only remaining delivery owner: restart reconciliation.
+                return
             # The outcome has REACHED the parent. Recorded before any further
             # await so a shutdown cancellation landing in the teardown wait or
             # the tombstone write below is not mistaken for a lost delivery by
             # `cancel_all()` (which would re-deliver it on the next start).
             info._reported_to_parent = True
+            if (
+                tombstone_error_on_success
+                and info.error
+                and not info._delivery_queued
+                and not info._digest_held
+            ):
+                try:
+                    await asyncio.to_thread(self._manager._write_tombstone, info, "error")
+                except Exception:
+                    logger.debug(
+                        "Failed to tombstone reported shadow fallback %s",
+                        info.id,
+                        exc_info=True,
+                    )
             if settle_digest:
                 # _on_done returned without raising, so the wave digest (if this
                 # was the final member) has been handed off. Only NOW settle the
@@ -633,6 +794,8 @@ class TerminalCoordinator(ManagerComponent):
         mark_delivered_on_success: bool,
         settle_digest: bool = False,
         teardown_done: "asyncio.Event | None" = None,
+        process_stopped: "asyncio.Event | None" = None,
+        tombstone_error_on_success: bool = False,
     ) -> None:
         """Spawn the shielded terminal report and block until it completes.
 
@@ -653,6 +816,8 @@ class TerminalCoordinator(ManagerComponent):
                 mark_delivered_on_success=mark_delivered_on_success,
                 settle_digest=settle_digest,
                 teardown_done=teardown_done,
+                process_stopped=process_stopped,
+                tombstone_error_on_success=tombstone_error_on_success,
             )
         )
 
@@ -665,13 +830,15 @@ class TerminalCoordinator(ManagerComponent):
         mark_delivered_on_success: bool,
         settle_digest: bool = False,
         teardown_done: "asyncio.Event | None" = None,
+        process_stopped: "asyncio.Event | None" = None,
+        tombstone_error_on_success: bool = False,
     ) -> "asyncio.Task":  # type: ignore[type-arg]
         """Launch :meth:`_report_terminal` on a strongly-referenced task.
 
         Returns immediately (no ``await``) so the caller can start the report
         BEFORE its own teardown awaits, guaranteeing the report exists and is
         held alive independently of the caller's fate. The task is retained in
-        ``self._report_tasks`` (so it cannot be garbage-collected while its
+        ``self._manager._report_tasks`` (so it cannot be garbage-collected while its
         awaiter is cancelled, and so ``cancel_all()`` can drain it) and
         self-removes on completion.
         """
@@ -684,6 +851,8 @@ class TerminalCoordinator(ManagerComponent):
                 mark_delivered_on_success=mark_delivered_on_success,
                 settle_digest=settle_digest,
                 teardown_done=teardown_done,
+                process_stopped=process_stopped,
+                tombstone_error_on_success=tombstone_error_on_success,
             ),
         )
 

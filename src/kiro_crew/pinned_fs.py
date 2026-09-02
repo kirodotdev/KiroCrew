@@ -70,6 +70,7 @@ __all__ = [
     "is_reparse_point",
     "is_regular_at",
     "stat_at",
+    "open_dir_chain_nofollow",
     "open_dir_pinned",
     "open_in_pinned_parent",
     "open_verified_chain",
@@ -181,6 +182,41 @@ def dir_flags() -> int:
     platform no longer has.
     """
     return os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+
+
+def open_dir_chain_nofollow(
+    path: str | Path,
+    *,
+    what: str,
+    refusal: type[Exception] = PinnedPathRefusal,
+) -> int:
+    """Open an absolute directory path one lexical component at a time.
+
+    Unlike :func:`open_dir_pinned`, this strict form never resolves a linked
+    ancestor before pinning it. It is for roots that must contain no links at
+    all, including compatibility trees writable by a surviving child process.
+    """
+    if not supports_pinned_walk():
+        raise refusal(
+            f"refusing to use the {what}: this platform cannot pin a no-follow " "directory walk"
+        )
+    parts = Path(os.path.abspath(path)).parts
+    try:
+        fd = os.open(parts[0], dir_flags())
+    except OSError as exc:
+        raise refusal(f"refusing to use the {what}: its root cannot be pinned") from exc
+    try:
+        for component in parts[1:]:
+            next_fd = os.open(component, dir_flags(), dir_fd=fd)
+            previous_fd = fd
+            fd = next_fd
+            os.close(previous_fd)
+    except OSError as exc:
+        os.close(fd)
+        raise refusal(
+            f"refusing to use the {what}: a directory component cannot be pinned"
+        ) from exc
+    return fd
 
 
 def pin_parent(

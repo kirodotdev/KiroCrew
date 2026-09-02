@@ -10,6 +10,7 @@ from collections.abc import Callable
 from dataclasses import replace
 
 from .models import (
+    LEGACY_SHADOW_SOURCE_VERSION,
     CommandClaim,
     CommandFence,
     CommandOperation,
@@ -21,9 +22,12 @@ from .models import (
     DeliveryFence,
     DeliveryState,
     DesiredState,
+    LegacyImportReceipt,
+    LegacyRunImport,
     ObservedState,
     OutboxEvent,
     OwnerLease,
+    RecoveryClaim,
     RunCommand,
     RunCompletion,
     RunFence,
@@ -40,6 +44,7 @@ _EXECUTION_COMMANDS = frozenset({CommandOperation.SPAWN, CommandOperation.CONTIN
 _CONTROL_COMMANDS = frozenset(
     {CommandOperation.STEER, CommandOperation.CANCEL, CommandOperation.RELEASE}
 )
+_LEGACY_SHADOW_RECOVERY_GRACE_SECONDS = 60.0
 _STARTABLE_STATES = frozenset({ObservedState.ACCEPTED, ObservedState.QUEUED})
 _COMPLETABLE_STATES = frozenset(
     {
@@ -130,6 +135,7 @@ class MemoryRunCoordinator:
                 created_at=now,
                 updated_at=now,
                 terminal_at=None if accepted else now,
+                source_version=request.source_version,
             )
             command = RunCommand(
                 command_id=request.command_id,
@@ -358,6 +364,109 @@ class MemoryRunCoordinator:
                 TerminalReceipt(run, event, created=True),
             )
 
+    async def import_legacy(
+        self, request: LegacyRunImport
+    ) -> CoordinatorResult[LegacyImportReceipt]:
+        """Create a legacy-only run without manufacturing an execution command."""
+
+        async with self._lock:
+            existing = self._runs.get(request.run_id)
+            if existing is not None:
+                event_id = self._outbox_by_run_type.get((request.run_id, request.event_type))
+                existing_event = self._outbox.get(event_id) if event_id else None
+                # Legacy files are evidence, not lifecycle authority. A crash
+                # can leave a durable coordinator row before result.txt is
+                # written, so retain that path for the fenced recovery which
+                # follows. Never copy terminal state, outcome, error, owner, or
+                # version from an agent-writable tombstone into an existing row.
+                if (
+                    existing.observed_state is not ObservedState.TERMINAL
+                    and not existing.result_path
+                    and request.result_path
+                ):
+                    existing = replace(existing, result_path=request.result_path)
+                    self._runs[request.run_id] = existing
+                    return self._result(
+                        CoordinatorDecision.APPLIED,
+                        CoordinatorReason.TRANSITIONED,
+                        LegacyImportReceipt(existing, existing_event, created=False),
+                    )
+                return self._result(
+                    CoordinatorDecision.UNCHANGED,
+                    CoordinatorReason.IDEMPOTENT_REPLAY,
+                    LegacyImportReceipt(existing, existing_event, created=False),
+                )
+            terminal = request.observed_state is ObservedState.TERMINAL
+            if terminal != (request.outcome is not None):
+                return self._result(
+                    CoordinatorDecision.REJECTED,
+                    CoordinatorReason.INVALID_TRANSITION,
+                )
+            if bool(request.event_type) != bool(request.delivery_state):
+                return self._result(
+                    CoordinatorDecision.REJECTED,
+                    CoordinatorReason.INVALID_TRANSITION,
+                )
+            run = RunRecord(
+                run_id=request.run_id,
+                parent_session=request.parent_session,
+                agent=request.agent,
+                task=request.task,
+                conversation_key=request.conversation_key,
+                desired_state=DesiredState.RUN,
+                observed_state=request.observed_state,
+                outcome=request.outcome,
+                result_path=request.result_path,
+                error=request.error,
+                attempt=1,
+                version=1,
+                owner_id="",
+                lease_expires_at=0.0,
+                lease_epoch=0,
+                created_at=request.created_at,
+                updated_at=request.updated_at,
+                terminal_at=request.terminal_at,
+                source_version=request.source_version,
+            )
+            self._runs[run.run_id] = run
+            event: OutboxEvent | None = None
+            if request.event_type and request.delivery_state is not None:
+                delivered = request.delivery_state is DeliveryState.DELIVERED
+                event = OutboxEvent(
+                    event_id=self._id_factory(),
+                    run_id=run.run_id,
+                    run_version=run.version,
+                    destination=request.destination,
+                    event_type=request.event_type,
+                    payload_json=request.payload_json,
+                    status=request.delivery_state,
+                    attempts=1 if delivered else 0,
+                    available_at=request.updated_at,
+                    claim_owner="",
+                    claim_expires_at=0.0,
+                    claim_epoch=0,
+                    created_at=request.updated_at,
+                    delivered_at=request.terminal_at if delivered else None,
+                )
+                self._outbox[event.event_id] = event
+                self._outbox_by_run_type[(run.run_id, event.event_type)] = event.event_id
+            return self._result(
+                CoordinatorDecision.APPLIED,
+                CoordinatorReason.CREATED,
+                LegacyImportReceipt(run, event, created=True),
+            )
+
+    async def import_legacy_batch(
+        self, requests: tuple[LegacyRunImport, ...]
+    ) -> list[CoordinatorResult[LegacyImportReceipt]]:
+        """Import a scan as one coordinator operation.
+
+        The SQLite adapter loads and persists the in-memory model once around
+        this call, avoiding a full database snapshot for every legacy folder.
+        """
+
+        return [await self.import_legacy(request) for request in requests]
+
     async def get_command_by_key(self, idempotency_key: str) -> CommandReceipt | None:
         async with self._lock:
             command_id = self._command_by_key.get(idempotency_key)
@@ -399,6 +508,66 @@ class MemoryRunCoordinator:
         )
         return claims[0] if claims else None
 
+    async def claim_recovery(
+        self,
+        owner: OwnerLease,
+        limit: int,
+        exclude_run_ids: frozenset[str] = frozenset(),
+    ) -> list[RecoveryClaim]:
+        """Fence expired executions, including terminal rows needing child cleanup."""
+
+        if limit <= 0:
+            return []
+        async with self._lock:
+            now = self._clock()
+            if owner.lease_expires_at <= now:
+                return []
+            pending_execution_run_ids = {
+                command.run_id
+                for command in self._commands.values()
+                if command.operation in _EXECUTION_COMMANDS
+                and command.status is CommandStatus.PENDING
+                and (
+                    self._runs[command.run_id].source_version != LEGACY_SHADOW_SOURCE_VERSION
+                    or self._runs[command.run_id].created_at
+                    > now - _LEGACY_SHADOW_RECOVERY_GRACE_SECONDS
+                )
+            }
+            claims: list[RecoveryClaim] = []
+            for current in sorted(
+                self._runs.values(), key=lambda item: (item.created_at, item.run_id)
+            ):
+                if len(claims) >= limit:
+                    break
+                terminal_cleanup = (
+                    current.observed_state is ObservedState.TERMINAL
+                    and current.process_owned
+                    and current.process_id > 1
+                    and bool(current.process_start_id)
+                )
+                if (
+                    current.run_id in exclude_run_ids
+                    or current.run_id in pending_execution_run_ids
+                    or (current.observed_state is ObservedState.TERMINAL and not terminal_cleanup)
+                    or current.lease_expires_at > now
+                ):
+                    continue
+                run = replace(
+                    current,
+                    owner_id=owner.owner_id,
+                    lease_expires_at=owner.lease_expires_at,
+                    lease_epoch=current.lease_epoch + 1,
+                    updated_at=now,
+                )
+                self._runs[run.run_id] = run
+                claims.append(
+                    RecoveryClaim(
+                        run=run,
+                        fence=RunFence(run.run_id, owner.owner_id, run.lease_epoch),
+                    )
+                )
+            return claims
+
     async def _claim_commands(
         self,
         owner: OwnerLease,
@@ -436,7 +605,11 @@ class MemoryRunCoordinator:
                 fence: RunFence | None = None
                 legacy_lease_epoch = 0
                 if acquire_run_lease:
-                    if run is None:
+                    if (
+                        run is None
+                        or run.observed_state is ObservedState.TERMINAL
+                        or run.lease_expires_at > now
+                    ):
                         continue
                     legacy_lease_epoch = run.lease_epoch + 1
                     run = replace(
@@ -648,6 +821,125 @@ class MemoryRunCoordinator:
                 CoordinatorDecision.APPLIED, CoordinatorReason.TRANSITIONED, updated
             )
 
+    async def record_process(
+        self,
+        run_id: str,
+        fence: RunFence,
+        expected_version: int,
+        process_id: int,
+        process_start_id: str,
+        process_owned: bool,
+    ) -> CoordinatorResult[RunRecord]:
+        async with self._lock:
+            now = self._clock()
+            validated = self._validate_transition(run_id, fence, expected_version, now=now)
+            if isinstance(validated, CoordinatorResult):
+                current = self._runs.get(run_id)
+                if not (
+                    validated.reason is CoordinatorReason.VERSION_CONFLICT
+                    and current is not None
+                    and current.version == expected_version + 1
+                    and current.observed_state is ObservedState.RUNNING
+                    and current.process_id == process_id
+                    and current.process_start_id == process_start_id
+                    and current.process_owned is process_owned
+                ):
+                    return validated
+                # A process record is the only lifecycle write that can advance
+                # a RUNNING row by one version. The SQLite worker may commit that
+                # write after its cancelled await returns no value. Only the
+                # identical process identity may replay that stale request; a
+                # replacement child must first observe the committed version.
+                validated = current
+            if (
+                type(process_id) is not int
+                or process_id <= 1
+                or not isinstance(process_start_id, str)
+                or (process_owned and not process_start_id)
+            ):
+                return self._result(
+                    CoordinatorDecision.REJECTED, CoordinatorReason.INVALID_TRANSITION
+                )
+            if validated.observed_state is not ObservedState.RUNNING:
+                return self._result(
+                    CoordinatorDecision.REJECTED, CoordinatorReason.INVALID_TRANSITION
+                )
+            if (
+                validated.process_id == process_id
+                and validated.process_start_id == process_start_id
+                and validated.process_owned is process_owned
+            ):
+                return self._result(
+                    CoordinatorDecision.UNCHANGED, CoordinatorReason.TRANSITIONED, validated
+                )
+            updated = replace(
+                validated,
+                process_id=process_id,
+                process_start_id=process_start_id,
+                process_owned=process_owned,
+                version=validated.version + 1,
+                updated_at=now,
+            )
+            self._runs[updated.run_id] = updated
+            return self._result(
+                CoordinatorDecision.APPLIED, CoordinatorReason.TRANSITIONED, updated
+            )
+
+    async def clear_recovered_process(
+        self,
+        run_id: str,
+        fence: RunFence,
+        expected_version: int,
+    ) -> CoordinatorResult[RunRecord]:
+        """Clear a terminal row's protected child identity after reconciliation."""
+
+        async with self._lock:
+            now = self._clock()
+            validated = self._validate_transition(run_id, fence, expected_version, now=now)
+            if isinstance(validated, CoordinatorResult):
+                current = self._runs.get(run_id)
+                if not (
+                    validated.reason is CoordinatorReason.VERSION_CONFLICT
+                    and current is not None
+                    and current.version == expected_version + 1
+                    and current.observed_state is ObservedState.TERMINAL
+                    and current.process_id == 0
+                    and not current.process_start_id
+                    and not current.process_owned
+                ):
+                    return validated
+                return self._result(
+                    CoordinatorDecision.UNCHANGED,
+                    CoordinatorReason.TRANSITIONED,
+                    current,
+                )
+            if validated.observed_state is not ObservedState.TERMINAL:
+                return self._result(
+                    CoordinatorDecision.REJECTED, CoordinatorReason.INVALID_TRANSITION
+                )
+            if (
+                validated.process_id == 0
+                and not validated.process_start_id
+                and not validated.process_owned
+            ):
+                return self._result(
+                    CoordinatorDecision.UNCHANGED,
+                    CoordinatorReason.TRANSITIONED,
+                    validated,
+                )
+            updated = replace(
+                validated,
+                process_id=0,
+                process_start_id="",
+                process_owned=False,
+                version=validated.version + 1,
+                updated_at=now,
+            )
+            self._runs[updated.run_id] = updated
+            return self._result(
+                CoordinatorDecision.APPLIED, CoordinatorReason.TRANSITIONED, updated
+            )
+
     async def complete(
         self, completion: RunCompletion, fence: RunFence, expected_version: int
     ) -> CoordinatorResult[OutboxEvent]:
@@ -796,6 +1088,18 @@ class MemoryRunCoordinator:
                 if len(claimed) >= limit:
                     break
                 if event_id and current.event_id != event_id:
+                    continue
+                run = self._runs.get(current.run_id)
+                if (
+                    run is not None
+                    and run.observed_state is ObservedState.TERMINAL
+                    and run.process_owned
+                    and run.process_id > 1
+                    and bool(run.process_start_id)
+                ):
+                    # Delivery cannot race a terminal cleanup lease. The process
+                    # identity remains protected until fenced recovery proves the
+                    # child absent or terminates it successfully.
                     continue
                 pending = current.status is DeliveryState.PENDING and (
                     (acknowledgement and bool(event_id)) or current.available_at <= now

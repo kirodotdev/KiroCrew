@@ -2656,6 +2656,46 @@ def _linux_boot_id() -> str | None:
         return None
 
 
+_DURABLE_PROCESS_IDENTITY_VERSION = "v1"
+
+
+def process_identity_token(pid: int) -> str | None:
+    """Return a reboot-unique, locale-independent identity for *pid*.
+
+    Unlike :func:`process_start_time`, this helper returns no token on a
+    platform whose available identity can alias another process lifetime.
+    Callers may persist a non-empty result across gateway restarts and use an
+    exact match as authorization for identity-pinned process termination.
+    """
+
+    value: str | None
+    platform_name: str
+    if sys.platform == "linux":
+        ticks = process_start_time(pid)
+        boot = _linux_boot_id()
+        if not ticks or not boot:
+            return None
+        value = f"{ticks}:{boot}"
+        platform_name = "linux"
+    elif sys.platform == "darwin":
+        value = _darwin_process_start_microtime(pid)
+        platform_name = "darwin"
+    elif IS_WINDOWS:
+        value = process_start_time(pid)
+        platform_name = "windows"
+    else:
+        return None
+    if not value:
+        return None
+    return f"{_DURABLE_PROCESS_IDENTITY_VERSION}:{platform_name}:{value}"
+
+
+def is_durable_process_identity_token(value: str) -> bool:
+    """Return whether *value* carries the versioned durable identity format."""
+
+    return value.startswith(f"{_DURABLE_PROCESS_IDENTITY_VERSION}:")
+
+
 def _own_identity_token(pid: int) -> str | None:
     """Reboot-unique start-time token for THIS process, or ``None``.
 
