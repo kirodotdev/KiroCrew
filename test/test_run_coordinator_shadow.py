@@ -10,6 +10,7 @@ import pytest
 
 from kiro_crew.run_coordinator import (
     CommandOperation,
+    CommandStatus,
     CoordinatorDecision,
     CoordinatorResult,
     DeliveryState,
@@ -19,6 +20,7 @@ from kiro_crew.run_coordinator import (
     RunFence,
     RunOutcome,
     ShadowRunCoordinator,
+    SubmitControl,
     SubmitRun,
 )
 
@@ -232,3 +234,38 @@ async def test_mismatch_observer_failure_cannot_change_primary_result() -> None:
     result = await coordinator.submit(_request())
 
     assert result.decision is CoordinatorDecision.APPLIED
+
+
+@pytest.mark.asyncio
+async def test_shadow_mirrors_control_claim_finish_and_current_lookup() -> None:
+    primary = MemoryRunCoordinator(clock=lambda: 10.0)
+    shadow = MemoryRunCoordinator(clock=lambda: 10.0)
+    coordinator = ShadowRunCoordinator(primary, shadow)
+    request = SubmitControl(
+        command_id="control-1",
+        idempotency_key="control-key-1",
+        run_id="legacy-run",
+        operation=CommandOperation.STEER,
+        payload_hash="control-hash-1",
+        payload_json='{"message":"focus"}',
+    )
+
+    submitted = await coordinator.submit_control(request)
+    claim = await coordinator.claim_command(
+        "control-1", OwnerLease("controller", lease_expires_at=20.0)
+    )
+    assert claim is not None
+    finished = await coordinator.finish_command(
+        claim.command_fence,
+        CommandStatus.APPLIED,
+        "",
+        '{"ok":true}',
+    )
+    queried = await coordinator.get_command_by_key("control-key-1")
+
+    assert submitted.value is not None
+    assert submitted.value.run is None
+    assert finished.value is not None
+    assert finished.value.result_json == '{"ok":true}'
+    assert queried is not None
+    assert queried.command == finished.value

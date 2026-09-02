@@ -1356,6 +1356,7 @@ def _register_mcp_routes(app: web.Application) -> None:
     app.router.add_post("/api/spawn", handlers.api_spawn)
     app.router.add_post("/api/spawn/lost", handlers.api_spawn_lost)
     app.router.add_post("/api/spawn/mark-collected", handlers.api_spawn_mark_collected)
+    app.router.add_get("/api/spawn/commands/{idempotency_key}", handlers.api_spawn_command_lookup)
     # MCP Apps (SEP-1865): embedded app iframe -> gateway tool callback.
     app.router.add_post("/api/mcp-apps/call", handlers.api_mcp_apps_call)
     app.router.add_get("/api/spawn", handlers.api_spawn_list)

@@ -840,7 +840,6 @@ test/test_mcp_core_audit_e.py
 test/test_mcp_core_more_coverage.py
 test/test_mcp_core_set_project.py
 test/test_mcp_core_spawn_sub_agents.py
-test/test_mcp_core_wait.py
 test/test_mcp_cron_list_compact.py
 test/test_mcp_cron_orphan_validation.py
 test/test_mcp_cron_persistent_session.py

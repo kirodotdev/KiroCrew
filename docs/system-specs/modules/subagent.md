@@ -8,37 +8,149 @@ Supports `on_tool_approval` callback for interactive tool approval (routed throu
 
 ### Run coordinator seam
 
-`SubagentManager` accepts an optional typed `RunCoordinator` and leaves the seam
-disabled when none is injected. Construction performs no filesystem I/O and
-does not retain raw task payloads. The in-memory, SQLite, and primary-preserving
-shadow adapters remain explicitly injectable
-for parity tests. This is a pre-authority dependency seam: the synchronous spawn
-path and all terminal effects still use the existing manager fields and
-run-folder persistence. The manager does not schedule an async coordinator
-mutation from `spawn()` because doing so would weaken the current
-durable-before-visible ordering. Coordinator authority moves only in a later
-migration phase.
+`SubagentManager` accepts an optional typed `RunCoordinator` and defaults to the
+durable SQLite implementation. Construction performs no filesystem I/O. It owns
+one process-lifetime `SubagentCommandAuthority`, which durably admits keyed
+HTTP/MCP commands before invoking the existing synchronous manager facade. Old
+internal callers that send no identity retain the compatibility path.
 
-After legacy admission and approval, the async `_run` entry submits the accepted
-run to the coordinator seam before execution. The submission contains a stable
-command/idempotency identity and a canonical execution payload; continuations
-are distinguished from new spawns. Submission awaits the coordinator's own
-bounded operation rather than adding a shorter caller deadline. Failures remain
-diagnostic, so an unhealthy shadow cannot fail an accepted legacy run. Exact
-retries are idempotent. The returned coordinator view is also compared with the
-accepted `SubagentInfo` at bounded field classes, without logging task or payload
-values. Queue, transition, terminal, and delivery authority still belongs
-exclusively to the legacy path in this phase.
+`spawn_run`, `spawn_continue`, `spawn_steer`, and `spawn_release` generate a
+command ID and idempotency key before HTTP; spawn/continue also preassign the
+visible run ID. The gateway validates all-or-none identity fields by key presence,
+so an empty reserved field cannot select the identity-free compatibility path. It
+recomputes the canonical semantic SHA-256 hash and fails closed on key/payload
+conflicts. An
+exact replay returns the stored run/control response without repeating the
+manager effect. Before a stored execution response exists, an exact retry may
+claim and execute a command that is still `PENDING`, because no owner has
+crossed the manager boundary. A `CLAIMED` command remains a typed
+pending/unavailable response rather than risking a repeated side effect. A
+claimed control with no durable result remains explicitly outcome-uncertain
+even after its claim expires; expiry never authorizes steer, follow-up, cancel,
+or release replay because the legacy effect may already have happened. Keyed
+release performs its busy check and registry mutation atomically on the gateway
+event loop, then offloads only persisted-state and session-file cleanup. The
+identity-free compatibility endpoint uses the same async manager boundary, so
+its persisted-state update and session-file cleanup are also off the gateway
+event loop. The release endpoint accepts an absent body for legacy callers, but
+rejects malformed JSON and non-object JSON before either release path can run.
+Cancellation has the same body contract, so malformed input cannot discard a
+command identity and widen into an identity-free stop. The conversation remains
+busy until that cleanup finishes, even if the awaiting request is cancelled, so
+a continuation cannot reseed the registry while the off-loop worker is deleting
+the same session files. A
+transport-uncertain caller queries the durable command by key. Machine-coded
+coordinator-unavailable and outcome-uncertain HTTP responses take the same
+lookup path even when HTTP error flattening omits the transport marker; the
+uncertainty marker remains set when that lookup fails or finds no record, so a
+caller cannot misclassify possibly accepted work as rejected. The lookup redacts
+task text before returning it; execution rejection text and provider-owned
+control results are redacted before both durable persistence and synchronous
+return. Every pending execution or control response carries an explicit error
+so callers cannot mistake uncertain acceptance for success. Lifecycle MCP tools
+render transport-uncertain results as unknown outcomes with an explicit
+do-not-retry instruction instead of an ordinary retryable error. The legacy lost-wave
+endpoint remains for unkeyed compatibility callers. The authenticated DELETE
+endpoint accepts the same additive identity for idempotent cancellation, with
+its optional fixed-shape JSON body bounded by the shared request limit.
+Coordinator submission, lookup, or claim failures before the manager boundary
+surface as typed authority unavailability, because the durable write may have
+committed even when its response was lost.
+After the manager boundary, a control exception is rethrown only when its
+rejected command outcome commits. An execution exception is rejected only when
+the manager confirms that the run never registered; after that rejection commits,
+the authority returns a typed counted failure whose durable result is reused by
+exact retries and lookup. A registered run, or a registration lookup that itself
+fails, retains its claim and surfaces typed outcome uncertainty because the child
+may still be executing. Any failed or rejected settlement is likewise uncertain;
+an exact retry is not safe after a legacy side effect may have occurred.
+
+The command fence has its own expiry and monotonic claim epoch. Expiry makes a
+command eligible for takeover; it does not discard a completed side effect's
+matching result unless a newer claimant has actually advanced the epoch.
+Control commands therefore never acquire, renew, or invalidate the live
+executor's run lease.
+Rejected legacy admission is durably reflected as a rejected command and failed
+terminal run. A claimed execution with an uncertain crash is not automatically
+replayed. Accepted keyed runs carry `_coordinator_admitted`, preventing `_run`
+from creating a second shadow command. Legacy synchronous spawns still submit at
+async `_run` entry and await the coordinator's own bounded operation instead of
+imposing a shorter caller deadline. Failures remain contained during migration.
+Queued and approval-waiting keyed runs retain a bounded pre-execution lease.
+Their commands remain `CLAIMED` until the manager task actually starts, so a
+gateway restart cannot turn volatile queued work into a durable applied result.
+If durable cancellation fails, the queued entry remains explicitly
+non-runnable and the uncertainty propagates; a later cancellation retry must
+settle the retained claim before removing the entry.
+An approval denial follows the same order: if durable rejection fails, its live
+record remains nonterminal with its slot and lease intact so cancellation can
+retry settlement instead of losing the only local recovery path.
+Cancelling an approval waiter marks it stopped and cancels its approval task
+before awaiting durable rejection, so an approval that resolves during that
+write cannot begin execution. The approval task returns without settlement even
+when its callback translates cancellation into denial, leaving cancellation as
+the sole durable settlement owner. A failed settlement retains the stopped,
+non-runnable record and its claim for an exact cancellation retry.
+The same non-runnable retention applies when queue-drain revalidation rejects a
+run but durable rejection settlement fails; no completion is announced until
+that command outcome commits.
+Immediate keyed batch rejections also suppress the legacy pre-announcement;
+their authority announces the batch member only after the rejected command
+outcome commits. This includes a platform-composition failure raised before the
+manager can register the run: the authority preserves the member's batch metadata
+in its durable rejection and then announces that terminal member. Cancelling a
+keyed queued batch member follows the same
+settle-then-announce ordering, so its terminal event can close a wave and release
+already-held sibling results. If the manager has already returned a known batch
+rejection but its settlement outcome is uncertain, the authority still announces
+that terminal member before surfacing uncertainty; the claimed command remains
+the durable recovery record and cannot replay the manager side effect.
+At task start the authority durably applies the command before stopping the
+heartbeat and evicting its facade cache. A queued cancellation, approval
+rejection, or orderly shutdown durably rejects the waiting command before
+stopping the heartbeat; a queue-drain revalidation rejection does the same even
+though the original HTTP caller has already returned. Later lifecycle work owns
+any execution-time renewal. Orderly shutdown removes the manager's queued entry
+before committing that rejection, so an already-scheduled drain cannot start work
+whose durable command is terminal. If orderly-shutdown settlement fails, authority
+shutdown stays pending and retries while retaining the command fence, facade,
+and lease heartbeat instead of abandoning accepted work in a claimed state. A
+durable lookup releases that local shutdown debt when the command is already
+terminal or a newer claim owns it, so a legitimate takeover cannot wedge the
+retiring gateway.
+An active or queued legacy manager record with the requested run id rejects the
+keyed request before coordinator submission, so the rejected request cannot
+reserve the older run's durable identity. A synchronous manager reservation
+then fences the run id across coordinator submission and claim, including an
+exact retry of a matching pending command, preventing a younger legacy
+admission from appearing in either await window. The direct
+pre-submission rejection remains uncounted so batch reconciliation can supply
+its terminal member; no lookup record exists because the coordinator namespace
+remains owned by the older legacy run.
+If start settlement itself is uncertain, the live
+manager retries the exact idempotent settlement once to reconcile a commit whose
+response was lost. The authority also looks up the exact command fence after a
+failed settlement response and continues execution when that lookup proves the
+matching `APPLIED` result committed. Only a second uncertain result that cannot
+be confirmed leaves the record waiting and nonterminal so cancellation can retry
+the retained claim instead of announcing a false failure.
+Exact retries of durably rejected execution commands
+decode and return the stored rejection response before considering conflict
+fallbacks.
+If the local executor accepts a keyed run but storing its command result fails,
+the HTTP response is explicitly transport-uncertain and counted. The MCP caller
+resolves the stable idempotency key. A lookup distinguishes an unclaimed
+`PENDING` command from a `CLAIMED` command: the caller replays the exact keyed
+request once only for `PENDING`, while `CLAIMED` remains outcome-uncertain and is
+never recorded as a lost submission.
 
 The port defines typed desired/observed state, terminal outcomes, idempotent
 commands, execution leases with fencing epochs, optimistic lifecycle versions,
 and delivery claims with an independent fencing epoch. The in-memory adapter is
-the executable contract oracle for later durable implementations; it is not a
-restart store. During this pre-authority phase it accepts executable `spawn` and
-`continue` submissions; control operations fail closed until their target and
-fencing semantics land. Command records persist both the canonical payload and
-its hash so a claimed command can be reconstructed after restart while
-idempotency conflicts stay cheap to detect.
+the executable contract oracle; it is not a restart store. Command records
+persist the canonical payload, hash, independent claim fence, and bounded
+response JSON. Controls may target runs created before the coordinator, so their
+command row does not require a matching canonical run row.
 The stored task and model fields are credential-redacted, UTF-8-safe, and
 bounded before hashing; the unredacted prompt remains only in the live executor.
 
@@ -61,7 +173,7 @@ Private manager views for the old counter, queue, report-task, and teardown-gate
 fields remain as compatibility adapters. They delegate to these boundaries and
 must not regain independent state.
 
-### SQLite shadow store
+### SQLite coordinator store
 
 `SQLiteRunCoordinator` implements the shared contract with fresh short-lived
 connections and offloads every filesystem/database operation from the event
@@ -70,15 +182,14 @@ submission has a one-second total manager deadline; timeout is diagnostic and
 legacy execution begins while an already-running SQLite worker may finish in
 the coordinator pool. Lock waits therefore queue among coordinator calls and
 cannot starve asyncio's shared executor after the deadline. Mutations run under
-`BEGIN IMMEDIATE`; schema v2
-uses `runs`, `commands`,
+`BEGIN IMMEDIATE`; schema v3 uses `runs`, `commands`,
 `outbox`, and `metadata`, with WAL, `synchronous=FULL`, foreign keys, a bounded
 busy timeout, and a quick integrity check. Ordered, contiguous migrations are
 applied in that transaction; v2 adds the durable command payload to the v1 base
-schema, and failed upgrades roll back cleanly for idempotent retry. The
-physical shipped columns recover a missing schema-version metadata row instead
-of replaying already-applied `ALTER TABLE` statements. The
-shadow-phase implementation
+schema and v3 adds independent command claims/results while permitting
+pre-cutover control targets. Failed upgrades roll back cleanly for idempotent
+retry. The physical shipped columns recover a missing schema-version metadata
+row instead of replaying already-applied `ALTER TABLE` statements. The implementation
 hydrates the typed in-memory state machine from those rows and rewrites the
 typed rows in the same transaction. This deliberately favors one behavioral
 oracle during parity checking; targeted SQL updates replace the full-row rewrite
@@ -111,12 +222,12 @@ The final ACL validation runs inside the mutation transaction before commit, so
 a fail-loud permission error rolls back the transition instead of reporting a
 failed operation after its state became durable.
 
-`ShadowRunCoordinator` always returns the primary result. It calls the shadow
+`ShadowRunCoordinator` remains available for parity tests and additive rollout.
+It always returns the primary result. It calls the shadow
 only after primary completion, swallows shadow failures, compares normalized
 stable field classes without logging payload values, and never repairs the
-primary. The manager invokes only accepted-run submission in this phase; later
-state transitions and terminal delivery do not call the coordinator until their
-authority migrations land.
+primary. Terminal state and delivery move to coordinator authority in the next
+migration phases.
 
 ## Constants
 
@@ -185,7 +296,9 @@ Spawn flow:
 3. **Non-YOLO, non-trusted**: enters `_spawn_with_approval`, which re-checks
    YOLO (defense-in-depth against toggle race), then requests interactive
    approval with a 2-minute timeout. Timeout or rejection frees the
-   concurrency slot.
+   concurrency slot. For coordinator-admitted work, approval rejection and
+   cancellation while queued finish the durable command as rejected before
+   dropping its lease, so lookup and exact replay cannot remain pending.
 
 ### Tool Approval Cascade
 
@@ -241,7 +354,9 @@ The `is_yolo()` read happens once, when `parent_policy` is resolved at
 subagent run, not on the current run's remaining tools.
 
 ### `cancel_all() -> None`
-Cancels all running subagents, stops the reaper loop, and awaits their cleanup. Handles `CancelledError` gracefully — sessions released, count decremented.
+Cancels all running subagents, stops the reaper loop and command-authority lease
+tasks, and awaits their cleanup. Handles `CancelledError` gracefully — sessions
+released, count decremented.
 
 ### `steer_run(agent_id, message) -> (ok, detail)` / `follow_up_run(agent_id, message) -> (ok, detail)`
 Two delivery modes for `spawn_steer` (REST `POST /api/spawn/{id}/steer`, body `mode`: `"interrupt"` default / `"follow_up"`). `steer_run` injects into the RUNNING turn via the provider's `steer`, with a bounded startup-grace poll for a live run whose session has not registered yet (#1113). `follow_up_run` never interrupts: it queues the message on `SubagentInfo.pending_followups` and arms a one-per-run watcher (`_deliver_followups`, registered in the manager-owned `_followup_watchers` dict — NOT the global `_safe_fire` set — because a watcher can spawn a brand-new run and must therefore be reachable by `cancel_all()`, per the same containment contract as `_schedule_cancel_recovery`; `cancel_all` cancels watchers BEFORE the run tasks so none can dispatch into a shutting-down gateway, and the watcher re-checks `_shutting_down` before dispatch). The watcher waits for the run to complete (`info.done` AND its task popped from `_tasks`, so teardown is finished), then dispatches the whole queue as ONE `continue_conversation` on the run's own conversation (messages joined in arrival order — three corrections cost one continuation, not three). The continuation is a normal new run on the same parent session, so its result arrives as a separate completion event. OUTCOME-AWARE: a run the user explicitly STOPPED (`user_stopped`) suppresses dispatch (`followup_suppressed` audit) — resurrecting killed work is the opposite of "the correction can wait"; error/timeout terminals still dispatch (the continuation carries the conversation's context, so "fix what broke" is legitimate). NEVER SILENT: every undeliverable path (suppressed, watcher expiry, dispatch failure) announces a SYNTHETIC failure completion event through the normal `_on_done` path, because the spawn_steer reply promised the parent an event — `followup_expired`/`followup_failed`/`followup_suppressed` SEL audits alone would leave the parent blocked on an event that never comes. Deliberately a per-run poller, NOT a hook in `_run`'s 3-guard finalization: completion is reached from many terminal paths (normal/error/timeout/cancel-recovery/reaper) and a watcher observes the outcome without adding an obligation to any of them. Bounded everywhere: poll cadence 2s, hard deadline `default_timeout + 300s`, and residual `conversation_busy` after done gets a bounded retry. Typed refusals mirror steer: `not_found`, and `not_running` (use `spawn_continue` directly on a finished run).
@@ -509,7 +624,7 @@ Large waves must not flood the WS socket, the parent LLM's context, or the UI. F
 
 - **Batch identity**: `spawn(batch_id=..., batch_total=...)` (threaded from `spawn_run tasks=[...]` — one 12-hex id per multi-task call — via `POST /api/spawn` transport params; survives the stagger queue). `spawn_batch_started {batch_id, count}` fires once per batch on its first started member; the id rides every WS frame (`base["batch_id"]`).
 - **Event coalescing** (`subagent_scale.SubagentEventCoalescer`, wired in the gateway's `_subagent_event`): above 8 active agents, `subagent_tool`/`subagent_stalled`/`subagent_retrying` buffer per-agent (latest state wins, merged) and flush every ~1s as ONE `subagent_batch_update {updates:[...]}` frame to all clients; `subagent_chunk` text buffers append-concatenated (16KB/agent cap) and flushes as `subagent_batch_chunks {chunks:[...]}` to subagent subscribers only. Lifecycle events (`spawn`/`done`/`recovering`/`injection_failed`/`batch_*`) are NEVER coalesced, and a `done`/`spawn` flushes buffered state first so ordering is preserved. Non-int active-count fails open to pass-through.
-- **Chunked wave-digest completion injection** (gateway `_subagent_done`): every batch member is accounted per `batch_id` (this is the single completion consumer for all terminal paths). Every multi-task wave (`batch_total > 1`) delivers results to the parent queue-style: completed members are HELD, and every `SUBAGENT_DIGEST_CHUNK_SIZE` completions (default 10, env `KIROCREW_SUBAGENT_DIGEST_CHUNK_SIZE`, clamped 1..1000) flush ONE `[Subagent batch completion event]` chunk digest — failures first with detail, successes as one-line `result_path` pointers (60KB cap per chunk); the final member flushes the remaining partial chunk. A 60-agent wave = 6 digest turns spread across the wave's runtime — bounded chunk size, incremental signal, and no straggler-gated mega-digest. Chunk buffers (`fail_lines`/`ok_lines`/`guard_msgs`/`held_ok_ids`) reset per flush; cumulative `ok`/`err`/`stopped` counts ride the final chunk's summary. **Spawn discipline**: non-final chunks instruct the parent NOT to spawn new sub-agents while batches are still arriving; the final chunk releases the gate ("finish processing all results before spawning follow-ups") — mirrored by a line in the `spawn_run` tool description. **Chunk order is FIFO**: the injection busy-check (`_injection_slot_busy`) treats a live `slot.task` — the claim assigned synchronously at dispatch — as busy in addition to `slot.running`, so a later chunk waits behind an injection that is dispatched but still inside `bounded_chat_turn`'s off-loop timeout resolution, instead of racing ahead of it or assigning `slot.task` over the earlier chunk's still-pending task. Single-task spawns have no batch identity and keep the plain per-agent injection. A batch member rejected at spawn (empty task, low memory, cwd, governance, bad agent) is counted as submitted AND announced through the done callback with its batch identity (`_announce_rejection`) — so a rejection that closes the wave still reaches the consumer and releases held sibling results (non-batch rejections do not announce; the caller gets the error synchronously). `batch_finished {batch_id, total, ok, err, stopped}` broadcasts for every batch regardless of size. **Wave liveness (lost-submission backstop)**: a member rejected before reaching `spawn()` or lost during transport is counted in every sibling's `batch_total` but never in `submitted` — un-reconciled, the count-driven `batch_members_pending()` wedges the wave forever. Three layers close it: (1) `api_spawn` marks in-process rejections/capacity with `counted: true` (preserved through the MCP client's error flattening); (2) `spawn_run` best-effort POSTs `/api/spawn/lost` for each explicit UNcounted rejection, which calls `record_lost_submission` — counts the member as submitted and announces a synthetic terminal failure through the completion consumer so the wave closes; uncertain transport failures are not immediately reconciled because the gateway may have accepted them; (3) the reaper's `_sweep_stuck_waves` (every sweep) force-reconciles uncertain or lost submissions when `submitted < expected`, all registered members are terminal, nothing is queued, and no submission progress occurred for `_WAVE_STUCK_SECS` (1800s / 30 minutes — deliberately generous, symmetric with the per-agent hard ceiling) — one lost member per sweep, converging across sweeps; this also bounds the `_batch_submitted`/`_batch_progress_ts` leak. Straggler-held partial chunks are bounded by the **hold deadline** (below), not by the member's 30-minute hard ceiling.
+- **Chunked wave-digest completion injection** (gateway `_subagent_done`): every batch member is accounted per `batch_id` (this is the single completion consumer for all terminal paths). Every multi-task wave (`batch_total > 1`) delivers results to the parent queue-style: completed members are HELD, and every `SUBAGENT_DIGEST_CHUNK_SIZE` completions (default 10, env `KIROCREW_SUBAGENT_DIGEST_CHUNK_SIZE`, clamped 1..1000) flush ONE `[Subagent batch completion event]` chunk digest — failures first with detail, successes as one-line `result_path` pointers (60KB cap per chunk); the final member flushes the remaining partial chunk. A 60-agent wave = 6 digest turns spread across the wave's runtime — bounded chunk size, incremental signal, and no straggler-gated mega-digest. Chunk buffers (`fail_lines`/`ok_lines`/`guard_msgs`/`held_ok_ids`) reset per flush; cumulative `ok`/`err`/`stopped` counts ride the final chunk's summary. **Spawn discipline**: non-final chunks instruct the parent NOT to spawn new sub-agents while batches are still arriving; the final chunk releases the gate ("finish processing all results before spawning follow-ups") — mirrored by a line in the `spawn_run` tool description. **Chunk order is FIFO**: the injection busy-check (`_injection_slot_busy`) treats a live `slot.task` — the claim assigned synchronously at dispatch — as busy in addition to `slot.running`, so a later chunk waits behind an injection that is dispatched but still inside `bounded_chat_turn`'s off-loop timeout resolution, instead of racing ahead of it or assigning `slot.task` over the earlier chunk's still-pending task. Single-task spawns have no batch identity and keep the plain per-agent injection. A batch member rejected at spawn (empty task, low memory, cwd, governance, bad agent) is counted as submitted AND announced through the done callback with its batch identity (`_announce_rejection`) — so a rejection that closes the wave still reaches the consumer and releases held sibling results (non-batch rejections do not announce; the caller gets the error synchronously). `batch_finished {batch_id, total, ok, err, stopped}` broadcasts for every batch regardless of size. **Wave liveness (lost-submission backstop)**: a member rejected before reaching `spawn()` or lost during transport is counted in every sibling's `batch_total` but never in `submitted` — un-reconciled, the count-driven `batch_members_pending()` wedges the wave forever. Three layers close it: (1) `api_spawn` marks only rejections/capacity reached after manager admission with `counted: true` (preserved through the MCP client's error flattening); coordinator identity conflicts occur before manager admission and remain uncounted; (2) `spawn_run` best-effort POSTs `/api/spawn/lost` for each explicit UNcounted rejection, which calls `record_lost_submission` — counts the member as submitted and announces a synthetic terminal failure through the completion consumer so the wave closes; uncertain transport failures are not immediately reconciled because the gateway may have accepted them; (3) the reaper's `_sweep_stuck_waves` (every sweep) force-reconciles uncertain or lost submissions when `submitted < expected`, all registered members are terminal, nothing is queued, and no submission progress occurred for `_WAVE_STUCK_SECS` (1800s / 30 minutes — deliberately generous, symmetric with the per-agent hard ceiling) — one lost member per sweep, converging across sweeps; this also bounds the `_batch_submitted`/`_batch_progress_ts` leak. Straggler-held partial chunks are bounded by the **hold deadline** (below), not by the member's 30-minute hard ceiling.
 
 - **Digest hold deadline (straggler escape hatch)**: both chunk triggers are event-driven — a COUNT trigger (`SUBAGENT_DIGEST_CHUNK_SIZE` pending completions) and wave close — so neither can fire while a straggler is simply *not finishing*. With the default count (10) above any wave size the concurrency cap realistically produces (2–5), the count trigger is unreachable and wave close becomes the ONLY flush: every sibling's finished result is withheld for the slowest member's entire remaining runtime, and a member that HANGS rather than fails withholds them for the full `_TIMEOUT_SECS` reap — up to 30 minutes of total silence, indistinguishable from a dead session (issue #2215). The reaper's `_sweep_digest_holds` supplies the LATENCY trigger the count lacks: when the OLDEST outstanding hold in a live wave ages past `DIGEST_HOLD_SECS` (default 120s, env `KIROCREW_SUBAGENT_DIGEST_HOLD_SECS`, clamped to `_TIMEOUT_SECS`; `0` opts back out to count-trigger-only), `force_digest_flush` announces a synthetic **flush-only** record through the single completion consumer — the same re-entry mechanism `record_lost_submission` uses, so digest composition, routing, and the held-tombstone settle contract stay in one place. The record carries the wave's `batch_id` but is NOT a member: `_digest_flush_only` makes the gateway skip every per-member side effect (terminal WS event, orchestration tracker accounting, `done`/`ok`/`err` counters, digest lines) and only force the pending chunk out. **One knob, two jobs, now split**: the count keeps bounding digest SIZE for large waves; the deadline caps worst-case delivery LATENCY at every wave size. A wave whose members all finish within the deadline of each other still delivers ONE consolidated digest, so the deliberate small-wave behavior is unchanged. The forced chunk is labelled honestly as a PARTIAL release (`k/k+1`, "N of M delivered, R still running") and tells the parent to synthesize what it has rather than keep waiting. Hold bookkeeping: the gateway stamps `_digest_held_at` when it holds a member and clears it when that member's chunk fires — deliberately separate from `_digest_held`, which is the restart-safety flag the run loop reads and which the sweep must never mutate. The sweep is skipped entirely when `batch_members_pending()` is False, so it can never race the real wave-close digest into a duplicate delivery.
 - **Reconnect replay batching** (`ws.py`): more than `SUBAGENT_REPLAY_BATCH_THRESHOLD` (8) replay frames collapse into ONE `subagent_snapshot_batch {items:[{type, data}]}` frame; the client fans items into the per-frame reducers.

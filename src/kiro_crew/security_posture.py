@@ -601,6 +601,13 @@ _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
         "the dashboard.",
     ),
     (
+        "Subagent command responses",
+        "subagent_command_authority.py",
+        "Executor and coordinator failures before they are persisted as durable "
+        "command results, returned by keyed HTTP/MCP responses, or reconstructed "
+        "through command-status lookup.",
+    ),
+    (
         "Voice reply (TTS)",
         "voice_reply.py",
         "Spoken text is redacted before synthesis so a credential is never read " "aloud.",
@@ -1253,6 +1260,7 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # adds no new transport or audience and therefore no additional posture
         # row.
         "subagent_manager/admission.py",
+        "subagent_manager/cancellation.py",
         "subagent_manager/continuation.py",
         "subagent_manager/monitoring.py",
         "subagent_manager/run.py",

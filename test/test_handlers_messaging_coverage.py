@@ -56,6 +56,10 @@ class _Req:
             raise self._body
         return self._body
 
+    @property
+    def can_read_body(self) -> bool:
+        return self._body is not None
+
     def get(self, key: str, default: Any = None) -> Any:
         return self._extra.get(key, default)
 
@@ -124,6 +128,30 @@ def _info(**kw: Any) -> Any:
     }
     base.update(kw)
     return SimpleNamespace(**base)
+
+
+def test_post_effect_authority_failure_preserves_transport_uncertainty() -> None:
+    response = mod._authority_failure_response(
+        mod.AuthorityOutcomeUncertain("execution result was not durably finished")
+    )
+
+    assert response.status == 503
+    assert _payload(response) == {
+        "error": "execution result was not durably finished",
+        "code": "coordinator_outcome_uncertain",
+        "transport_error": True,
+        "counted": True,
+    }
+
+
+def test_pre_effect_authority_conflict_is_not_counted() -> None:
+    response = mod._authority_failure_response(mod.AuthorityConflict("idempotency_conflict"))
+
+    assert response.status == 409
+    assert _payload(response) == {
+        "error": "idempotency_conflict",
+        "code": "idempotency_conflict",
+    }
 
 
 def _mgr(**kw: Any) -> Any:
@@ -212,6 +240,21 @@ class TestApiSpawn:
         # Prose still travels for the model to read and self-correct from.
         assert "available: scout" in body["error"]
 
+    def test_pre_manager_run_id_conflict_is_not_counted(self) -> None:
+        mgr = _mgr()
+        mgr.spawn.return_value = _info(
+            done=True,
+            error="run_id_conflict: an active legacy run already owns this id",
+            counted=False,
+        )
+        resp = _run(mod.api_spawn, _Req(_state(subagents=mgr), {"task": "x"}))
+
+        assert resp.status == 400
+        assert _payload(resp) == {
+            "error": "run_id_conflict: an active legacy run already owns this id",
+            "code": "spawn_rejected",
+        }
+
     def test_success_coerces_string_flags_and_bounds_batch_total(self) -> None:
         mgr = _mgr()
         mgr.spawn.return_value = _info(id="a9")
@@ -289,6 +332,29 @@ class TestApiSpawnContinue:
         assert resp.status == status
         assert _payload(resp)["code"] == code
 
+    def test_coordinator_rejection_without_error_code_uses_generic_code(self, monkeypatch) -> None:
+        mgr = _mgr()
+        mgr.command_authority.continue_conversation = AsyncMock(
+            return_value=SimpleNamespace(
+                id="run2",
+                done=True,
+                error="platform policy unavailable",
+            )
+        )
+        monkeypatch.setattr(
+            mod,
+            "_validated_command_identity",
+            lambda *_args, **_kwargs: ("a" * 32, "b" * 32, "c" * 64, "{}"),
+        )
+
+        resp = _run(
+            mod.api_spawn_continue,
+            self._req(mgr, {"run_id": "deadbeef", "task": "x"}),
+        )
+
+        assert resp.status == 400
+        assert _payload(resp)["code"] == "spawn_rejected"
+
     def test_success_clamps_max_turns_and_echoes_conversation(self) -> None:
         mgr = _mgr()
         mgr.continue_conversation.return_value = _info(id="run2")
@@ -364,30 +430,44 @@ class TestApiSpawnSteer:
 
 
 class TestApiSpawnRelease:
-    def _req(self, mgr: Any) -> _Req:
-        return _Req(_state(subagents=mgr), None, match_info={"agent_id": "conv1"})
+    def _req(self, mgr: Any, body: Any = None) -> _Req:
+        return _Req(_state(subagents=mgr), body, match_info={"agent_id": "conv1"})
 
     def test_503_without_manager(self) -> None:
         req = _Req(_state(), None, match_info={"agent_id": "conv1"})
         assert _run(mod.api_spawn_release, req).status == 503
 
+    @pytest.mark.parametrize("body", [_BAD_JSON, []])
+    def test_400_on_invalid_body_without_releasing(self, body: Any) -> None:
+        mgr = _mgr(release_conversation_async=AsyncMock(return_value=(True, "")))
+
+        resp = _run(mod.api_spawn_release, self._req(mgr, body))
+
+        assert resp.status == 400
+        assert _payload(resp)["code"] == "invalid_json"
+        mgr.release_conversation_async.assert_not_awaited()
+
     def test_409_while_busy(self) -> None:
-        mgr = _mgr()
-        mgr.release_conversation.return_value = (False, "conversation_busy: in flight")
+        mgr = _mgr(
+            release_conversation_async=AsyncMock(
+                return_value=(False, "conversation_busy: in flight")
+            )
+        )
         resp = _run(mod.api_spawn_release, self._req(mgr))
         assert resp.status == 409
         assert _payload(resp)["code"] == "conversation_busy"
+        mgr.release_conversation_async.assert_awaited_once_with("conv1")
 
     def test_404_when_gone(self) -> None:
-        mgr = _mgr()
-        mgr.release_conversation.return_value = (False, "conversation_gone")
+        mgr = _mgr(release_conversation_async=AsyncMock(return_value=(False, "conversation_gone")))
         assert _run(mod.api_spawn_release, self._req(mgr)).status == 404
+        mgr.release_conversation_async.assert_awaited_once_with("conv1")
 
     def test_success(self) -> None:
-        mgr = _mgr()
-        mgr.release_conversation.return_value = (True, "")
+        mgr = _mgr(release_conversation_async=AsyncMock(return_value=(True, "")))
         resp = _run(mod.api_spawn_release, self._req(mgr))
         assert _payload(resp) == {"conversation": "conv1", "status": "released"}
+        mgr.release_conversation_async.assert_awaited_once_with("conv1")
 
 
 # ── api_spawn_lost / mark-collected ──

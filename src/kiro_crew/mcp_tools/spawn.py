@@ -17,6 +17,7 @@ every existing patch site.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import os
 import uuid
@@ -51,6 +52,86 @@ from kiro_crew.validation import (
 # a tool description is always-on context in every session, so this buys
 # self-correction for a few dozen characters, not a full agent listing.
 _MAX_ROSTER_NAMES = 8
+_COORDINATOR_UNCERTAIN_CODES = frozenset(
+    {"coordinator_outcome_uncertain", "coordinator_unavailable"}
+)
+
+
+def _with_command_identity(
+    operation: str,
+    body: dict[str, Any],
+    *,
+    run_id: str = "",
+) -> dict[str, Any]:
+    """Attach one stable command identity and canonical payload hash to *body*.
+
+    These values are generated before the HTTP call so a transport-layer retry
+    carries the exact admission identity the coordinator already recorded.
+    """
+    identified = dict(body)
+    if run_id:
+        identified["run_id"] = run_id
+    payload = {"operation": operation, **identified}
+    canonical = json.dumps(payload, separators=(",", ":"), sort_keys=True)
+    identified["command_id"] = uuid.uuid4().hex
+    identified["idempotency_key"] = uuid.uuid4().hex
+    identified["payload_hash"] = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+    return identified
+
+
+def _resolve_uncertain_submission(
+    response: dict[str, Any],
+    idempotency_key: str,
+    replay: Callable[[], dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Resolve a lost response by lookup and, when safe, one exact replay.
+
+    A recorded decision is returned without replaying.  An explicitly pending,
+    never-claimed command may be re-posted once with the same stable identity.
+    A missing command or lookup failure leaves the original transport uncertainty
+    intact.
+    """
+    uncertain = bool(
+        response.get("transport_error") or response.get("code") in _COORDINATOR_UNCERTAIN_CODES
+    )
+    if not uncertain:
+        return response
+    unresolved = {**response, "transport_error": True}
+    try:
+        recorded = mcp_core._get(f"/api/spawn/commands/{idempotency_key}")
+    except Exception:
+        return unresolved
+    if recorded.get("found") is not True:
+        return unresolved
+    if recorded.get("code") == "command_pending":
+        if recorded.get("command_status") == "pending" and replay is not None:
+            try:
+                retried = replay()
+            except Exception:
+                return unresolved
+            if retried.get("error"):
+                # The first lookup proved durable admission. A replay that
+                # cannot produce a success must not downgrade that fact into a
+                # definite rejection; query the ledger once more and preserve
+                # uncertainty if no terminal result is available.
+                retried = {**retried, "transport_error": True}
+            return _resolve_uncertain_submission(retried, idempotency_key, replay=None)
+        # The durable row proves admission, not whether the local manager
+        # effect has happened. Only an explicitly PENDING command is safe to
+        # replay: CLAIMED may already have crossed the manager boundary.
+        # Preserve transport uncertainty so batch wave accounting cannot
+        # reconcile this still-live member as rejected.
+        return {**recorded, "transport_error": True}
+    return recorded
+
+
+def _unknown_command_outcome(response: dict[str, Any]) -> str:
+    detail = str(response.get("error") or "the gateway response was lost")
+    return (
+        f"Error: {detail}. The command outcome is unknown because the gateway may "
+        "have applied it before the response failed. Do not retry automatically; "
+        "wait and inspect the target state first."
+    )
 
 
 def _agent_roster_hint() -> str:
@@ -635,7 +716,12 @@ def spawn_run(name: str, args: dict[str, Any]) -> str:
             body["include_project"] = False
         if approval_mode:
             body["approval_mode"] = approval_mode
-        d = mcp_core._post("/api/spawn", body)
+        body = _with_command_identity("spawn", body, run_id=uuid.uuid4().hex[:8])
+        d = _resolve_uncertain_submission(
+            mcp_core._post("/api/spawn", body),
+            body["idempotency_key"],
+            lambda: mcp_core._post("/api/spawn", body),
+        )
         if d.get("error"):
             error_line = f"{t[:60]}: {d['error']}"
             if d.get("transport_error"):
@@ -788,7 +874,15 @@ def spawn_continue(name: str, args: dict[str, Any]) -> str:
         body["model"] = args["model"]
     if args.get("max_turns"):
         body["max_turns"] = args["max_turns"]
-    d = mcp_core._post(f"/api/spawn/{conv}/continue", body)
+    body = _with_command_identity("continue", body, run_id=uuid.uuid4().hex[:8])
+    path = f"/api/spawn/{conv}/continue"
+    d = _resolve_uncertain_submission(
+        mcp_core._post(path, body),
+        body["idempotency_key"],
+        lambda: mcp_core._post(path, body),
+    )
+    if d.get("transport_error"):
+        return _unknown_command_outcome(d)
     if d.get("error"):
         return f"Error: {d['error']}"
     return (
@@ -805,7 +899,15 @@ def spawn_steer(name: str, args: dict[str, Any]) -> str:
     mode = (args.get("mode") or "interrupt").strip()
     if not agent_id or not message:
         return "Error: agent_id and message are required"
-    d = mcp_core._post(f"/api/spawn/{agent_id}/steer", {"message": message, "mode": mode})
+    body = _with_command_identity("steer", {"message": message, "mode": mode})
+    path = f"/api/spawn/{agent_id}/steer"
+    d = _resolve_uncertain_submission(
+        mcp_core._post(path, body),
+        body["idempotency_key"],
+        lambda: mcp_core._post(path, body),
+    )
+    if d.get("transport_error"):
+        return _unknown_command_outcome(d)
     if d.get("error"):
         return f"Error: {d['error']}"
     if mode == "follow_up":
@@ -826,7 +928,15 @@ def spawn_release(name: str, args: dict[str, Any]) -> str:
     conv = (args.get("conversation") or "").strip()
     if not conv:
         return "Error: conversation is required"
-    d = mcp_core._post(f"/api/spawn/{conv}/release", {})
+    body = _with_command_identity("release", {})
+    path = f"/api/spawn/{conv}/release"
+    d = _resolve_uncertain_submission(
+        mcp_core._post(path, body),
+        body["idempotency_key"],
+        lambda: mcp_core._post(path, body),
+    )
+    if d.get("transport_error"):
+        return _unknown_command_outcome(d)
     if d.get("error"):
         return f"Error: {d['error']}"
     return f"Released conversation {conv} — it can no longer be continued."

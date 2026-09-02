@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import functools
+import hashlib
+import hmac
 import importlib.util
 import json
 import logging
@@ -82,6 +84,12 @@ from kiro_crew.slack.format import build_options_blocks, extract_options
 from kiro_crew.slack.outbound import OPTIONS_FALLBACK_TEXT, PostedOptions
 from kiro_crew.spawn_warm import warm_project_agents_for_spawn
 from kiro_crew.subagent import effort_applied_note, effort_drop_reason
+from kiro_crew.subagent_command_authority import (
+    AuthorityConflict,
+    AuthorityOutcomeUncertain,
+    AuthorityUnavailable,
+    CommandIdentity,
+)
 from kiro_crew.subagent_persistence import _agent_dir, read_state
 from kiro_crew.validation import (
     _EMOJI_NAME_RE,
@@ -141,6 +149,70 @@ _SEND_MESSAGE_CHANNEL_TYPES: frozenset[str] = frozenset(CHANNEL_SESSION_NAMESPAC
 }
 logger = logging.getLogger(__name__)
 
+_COMMAND_IDENTITY_FIELDS = frozenset({"command_id", "idempotency_key", "payload_hash"})
+_HEX_ID_RE = re.compile(r"^[0-9a-f]+$")
+
+
+def _validated_command_identity(
+    body: dict[str, Any], operation: str, *, require_run_id: bool
+) -> tuple[str, str, str, str] | None:
+    """Validate an additive command identity and recompute its semantic hash.
+
+    Old authenticated callers send none of these fields and remain on the
+    compatibility path. A partially identified request fails closed because it
+    cannot be made safe to replay after an uncertain response.
+    """
+    present = _COMMAND_IDENTITY_FIELDS.intersection(body)
+    run_id_present = "run_id" in body
+    run_id = str(body.get("run_id", "") or "")
+    if not present and not run_id_present:
+        return None
+    if present != _COMMAND_IDENTITY_FIELDS or (require_run_id and not run_id):
+        raise ValueError("incomplete_command_identity")
+    command_id = str(body.get("command_id", "") or "")
+    idempotency_key = str(body.get("idempotency_key", "") or "")
+    payload_hash = str(body.get("payload_hash", "") or "")
+    identities = ((command_id, 32), (idempotency_key, 32), (payload_hash, 64))
+    if any(len(value) != size or _HEX_ID_RE.fullmatch(value) is None for value, size in identities):
+        raise ValueError("invalid_command_identity")
+    if run_id and (len(run_id) != 8 or _HEX_ID_RE.fullmatch(run_id) is None):
+        raise ValueError("invalid_run_id")
+    semantic = {key: value for key, value in body.items() if key not in _COMMAND_IDENTITY_FIELDS}
+    payload_json = json.dumps(
+        {"operation": operation, **semantic}, separators=(",", ":"), sort_keys=True
+    )
+    computed = hashlib.sha256(payload_json.encode("utf-8")).hexdigest()
+    if not hmac.compare_digest(computed, payload_hash):
+        raise ValueError("payload_hash_mismatch")
+    return command_id, idempotency_key, payload_hash, payload_json
+
+
+def _command_identity_response(exc: Exception) -> web.Response:
+    code = str(exc) or "invalid_command_identity"
+    if code in {"idempotency_conflict", "identity_conflict"}:
+        return web.json_response({"error": code, "code": code}, status=409)
+    return web.json_response({"error": code, "code": code}, status=400)
+
+
+def _authority_failure_response(exc: Exception) -> web.Response:
+    if isinstance(exc, AuthorityConflict):
+        code = str(exc) or "idempotency_conflict"
+        return web.json_response({"error": code, "code": code}, status=409)
+    if isinstance(exc, AuthorityOutcomeUncertain):
+        return web.json_response(
+            {
+                "error": str(exc) or "execution outcome is uncertain",
+                "code": "coordinator_outcome_uncertain",
+                "transport_error": True,
+                "counted": True,
+            },
+            status=503,
+        )
+    return web.json_response(
+        {"error": str(exc) or "run coordinator unavailable", "code": "coordinator_unavailable"},
+        status=503,
+    )
+
 
 def _read_text_or_none(path: Path) -> str | None:
     """Read ``path`` as UTF-8, or return None if it does not exist.
@@ -185,6 +257,10 @@ async def api_spawn(request: web.Request) -> web.Response:
         body = await request.json()
     except Exception:
         return web.json_response({"error": "invalid JSON"}, status=400)
+    try:
+        command_identity = _validated_command_identity(body, "spawn", require_run_id=True)
+    except ValueError as exc:
+        return _command_identity_response(exc)
     try:
         cleaned = validate_tool_args(
             {
@@ -245,23 +321,35 @@ async def api_spawn(request: web.Request) -> web.Response:
     # on-loop, cache-only agent validation inside spawn() is a hit.
     if agent:
         await warm_project_agents_for_spawn(state, cwd)
-    info = state.subagents.spawn(
-        task,
-        parent_session_key=parent_session,
-        agent=agent,
-        max_turns=max_turns,
-        cwd=cwd,
-        model=model or None,
-        reasoning_effort=reasoning_effort,
-        approval_mode=approval_mode or None,
-        silent=silent,
-        batch_id=batch_id,
-        batch_total=batch_total,
-        keep=keep,
-        include_memory=cleaned.get("include_memory", True) is not False,
-        include_lessons=cleaned.get("include_lessons", True) is not False,
-        include_project=cleaned.get("include_project", True) is not False,
-    )
+    spawn_kwargs = {
+        "parent_session_key": parent_session,
+        "agent": agent,
+        "max_turns": max_turns,
+        "cwd": cwd,
+        "model": model or None,
+        "reasoning_effort": reasoning_effort,
+        "approval_mode": approval_mode or None,
+        "silent": silent,
+        "batch_id": batch_id,
+        "batch_total": batch_total,
+        "keep": keep,
+        "include_memory": cleaned.get("include_memory", True) is not False,
+        "include_lessons": cleaned.get("include_lessons", True) is not False,
+        "include_project": cleaned.get("include_project", True) is not False,
+    }
+    if command_identity is None:
+        info = state.subagents.spawn(task, **spawn_kwargs)
+    else:
+        command_id, idempotency_key, _payload_hash, _payload_json = command_identity
+        identity = CommandIdentity(
+            run_id=str(body["run_id"]),
+            command_id=command_id,
+            idempotency_key=idempotency_key,
+        )
+        try:
+            info = await state.subagents.command_authority.spawn(identity, task, **spawn_kwargs)
+        except (AuthorityConflict, AuthorityUnavailable) as exc:
+            return _authority_failure_response(exc)
     if not info:
         # Reached mgr.spawn (submission COUNTED at the top of spawn()) but
         # refused for capacity — tell the client so it does NOT reconcile
@@ -283,11 +371,20 @@ async def api_spawn(request: web.Request) -> web.Response:
         # differently — spawn_run stops re-posting a name already refused. Every
         # other rejection reports the generic code, matching the sibling
         # /continue handler below.
+        error_code = str(getattr(info, "error_code", "") or _SPAWN_REJECTED_CODE)
+        if bool(getattr(info, "counted", True)):
+            return web.json_response(
+                {
+                    "error": _redact(info.error),
+                    "code": error_code,
+                    "counted": True,
+                },
+                status=400,
+            )
         return web.json_response(
             {
-                "error": info.error,
-                "code": info.error_code or _SPAWN_REJECTED_CODE,
-                "counted": True,
+                "error": _redact(info.error),
+                "code": error_code,
             },
             status=400,
         )
@@ -321,6 +418,9 @@ async def api_spawn(request: web.Request) -> web.Response:
     if keep:
         # The conversation id is the FIRST run's id: spawn_continue targets it.
         resp["conversation"] = info.id
+    if command_identity is not None:
+        resp["command_id"] = command_identity[0]
+        resp["idempotency_key"] = command_identity[1]
     return web.json_response(resp)
 
 
@@ -342,6 +442,10 @@ async def api_spawn_continue(request: web.Request) -> web.Response:
         body = await request.json()
     except Exception:
         return web.json_response({"error": "invalid JSON", "code": "invalid_json"}, status=400)
+    try:
+        command_identity = _validated_command_identity(body, "continue", require_run_id=True)
+    except ValueError as exc:
+        return _command_identity_response(exc)
     task = str(body.get("task", "") or "").strip()
     if not task:
         return web.json_response({"error": "task is required", "code": "task_required"}, status=400)
@@ -358,15 +462,36 @@ async def api_spawn_continue(request: web.Request) -> web.Response:
     # `continue_conversation` is synchronous. Doing it here keeps the gateway
     # responsive even when the recorded path lives on a stalled mount.
     resumed_cwd = await asyncio.to_thread(state.subagents.recorded_cwd, conv_id)
-    info = state.subagents.continue_conversation(
-        conv_id,
-        task,
-        parent_session_key=parent_session,
-        agent=agent,
-        model=model or None,
-        max_turns=max_turns,
-        cwd=resumed_cwd,
-    )
+    if command_identity is None:
+        info = state.subagents.continue_conversation(
+            conv_id,
+            task,
+            parent_session_key=parent_session,
+            agent=agent,
+            model=model or None,
+            max_turns=max_turns,
+            cwd=resumed_cwd,
+        )
+    else:
+        command_id, idempotency_key, _payload_hash, _payload_json = command_identity
+        identity = CommandIdentity(
+            run_id=str(body["run_id"]),
+            command_id=command_id,
+            idempotency_key=idempotency_key,
+        )
+        try:
+            info = await state.subagents.command_authority.continue_conversation(
+                identity,
+                conv_id,
+                task,
+                parent_session_key=parent_session,
+                agent=agent,
+                model=model or None,
+                max_turns=max_turns,
+                cwd=resumed_cwd,
+            )
+        except (AuthorityConflict, AuthorityUnavailable) as exc:
+            return _authority_failure_response(exc)
     if not info:
         return web.json_response(
             {
@@ -380,8 +505,22 @@ async def api_spawn_continue(request: web.Request) -> web.Response:
             return web.json_response({"error": info.error, "code": "conversation_busy"}, status=409)
         if info.error.startswith("conversation_gone"):
             return web.json_response({"error": info.error, "code": "conversation_gone"}, status=404)
-        return web.json_response({"error": info.error, "code": _SPAWN_REJECTED_CODE}, status=400)
-    return web.json_response({"id": info.id, "conversation": conv_id, "status": "spawned"})
+        return web.json_response(
+            {
+                "error": _redact(info.error),
+                "code": getattr(info, "error_code", "") or _SPAWN_REJECTED_CODE,
+            },
+            status=400,
+        )
+    response: dict[str, object] = {
+        "id": info.id,
+        "conversation": conv_id,
+        "status": "spawned",
+    }
+    if command_identity is not None:
+        response["command_id"] = command_identity[0]
+        response["idempotency_key"] = command_identity[1]
+    return web.json_response(response)
 
 
 async def api_spawn_steer(request: web.Request) -> web.Response:
@@ -402,6 +541,10 @@ async def api_spawn_steer(request: web.Request) -> web.Response:
         body = await request.json()
     except Exception:
         return web.json_response({"error": "invalid JSON", "code": "invalid_json"}, status=400)
+    try:
+        command_identity = _validated_command_identity(body, "steer", require_run_id=False)
+    except ValueError as exc:
+        return _command_identity_response(exc)
     message = str(body.get("message", "") or "").strip()
     if not message:
         return web.json_response(
@@ -413,10 +556,28 @@ async def api_spawn_steer(request: web.Request) -> web.Response:
             {"error": "mode must be 'interrupt' or 'follow_up'", "code": "invalid_mode"},
             status=400,
         )
-    if mode == "follow_up":
-        ok, detail = await state.subagents.follow_up_run(agent_id, message)
+    if command_identity is None:
+        if mode == "follow_up":
+            ok, detail = await state.subagents.follow_up_run(agent_id, message)
+        else:
+            ok, detail = await state.subagents.steer_run(agent_id, message)
     else:
-        ok, detail = await state.subagents.steer_run(agent_id, message)
+        identity = CommandIdentity(
+            run_id="",
+            command_id=command_identity[0],
+            idempotency_key=command_identity[1],
+        )
+        try:
+            if mode == "follow_up":
+                ok, detail = await state.subagents.command_authority.follow_up(
+                    identity, agent_id, message
+                )
+            else:
+                ok, detail = await state.subagents.command_authority.steer(
+                    identity, agent_id, message
+                )
+        except (AuthorityConflict, AuthorityUnavailable) as exc:
+            return _authority_failure_response(exc)
     if not ok:
         if detail == "not_found":
             return web.json_response({"error": detail, "code": "not_found"}, status=404)
@@ -432,9 +593,14 @@ async def api_spawn_steer(request: web.Request) -> web.Response:
                 headers={"Retry-After": "5"},
             )
         return web.json_response({"error": detail, "code": "steer_failed"}, status=502)
-    return web.json_response(
-        {"id": agent_id, "status": "follow_up_queued" if mode == "follow_up" else "steered"}
-    )
+    response: dict[str, object] = {
+        "id": agent_id,
+        "status": "follow_up_queued" if mode == "follow_up" else "steered",
+    }
+    if command_identity is not None:
+        response["command_id"] = command_identity[0]
+        response["idempotency_key"] = command_identity[1]
+    return web.json_response(response)
 
 
 async def api_spawn_release(request: web.Request) -> web.Response:
@@ -450,12 +616,67 @@ async def api_spawn_release(request: web.Request) -> web.Response:
             status=503,
         )
     conv_id = request.match_info["agent_id"]
-    ok, detail = state.subagents.release_conversation(conv_id)
+    if request.can_read_body:
+        try:
+            body = await request.json()
+        except Exception:
+            return web.json_response({"error": "invalid JSON", "code": "invalid_json"}, status=400)
+    else:
+        body = {}
+    if not isinstance(body, dict):
+        return web.json_response({"error": "invalid JSON", "code": "invalid_json"}, status=400)
+    try:
+        command_identity = _validated_command_identity(body, "release", require_run_id=False)
+    except ValueError as exc:
+        return _command_identity_response(exc)
+    if command_identity is None:
+        ok, detail = await state.subagents.release_conversation_async(conv_id)
+    else:
+        identity = CommandIdentity(
+            run_id="",
+            command_id=command_identity[0],
+            idempotency_key=command_identity[1],
+        )
+        try:
+            ok, detail = await state.subagents.command_authority.release(identity, conv_id)
+        except (AuthorityConflict, AuthorityUnavailable) as exc:
+            return _authority_failure_response(exc)
     if not ok:
         if detail.startswith("conversation_busy"):
             return web.json_response({"error": detail, "code": "conversation_busy"}, status=409)
         return web.json_response({"error": detail, "code": "conversation_gone"}, status=404)
-    return web.json_response({"conversation": conv_id, "status": "released"})
+    response: dict[str, object] = {"conversation": conv_id, "status": "released"}
+    if command_identity is not None:
+        response["command_id"] = command_identity[0]
+        response["idempotency_key"] = command_identity[1]
+    return web.json_response(response)
+
+
+async def api_spawn_command_lookup(request: web.Request) -> web.Response:
+    """Resolve a keyed command after an uncertain mutation response."""
+
+    state: DashboardState = request.app["state"]
+    if not state.subagents:
+        return web.json_response(
+            {"found": False, "error": "subagents not available", "code": "subagents_unavailable"},
+            status=503,
+        )
+    idempotency_key = request.match_info["idempotency_key"]
+    if len(idempotency_key) != 32 or _HEX_ID_RE.fullmatch(idempotency_key) is None:
+        return web.json_response(
+            {"found": False, "error": "invalid idempotency key", "code": "invalid_idempotency_key"},
+            status=400,
+        )
+    try:
+        response = await state.subagents.command_authority.lookup_response(idempotency_key)
+    except AuthorityUnavailable as exc:
+        return _authority_failure_response(exc)
+    if response is None:
+        return web.json_response(
+            {"found": False, "error": "command not found", "code": "command_not_found"},
+            status=404,
+        )
+    return web.json_response(response)
 
 
 async def api_spawn_lost(request: web.Request) -> web.Response:
@@ -878,14 +1099,41 @@ async def api_spawn_delete(request: web.Request) -> web.Response:
             )
             return web.json_response({"ok": True, "cancelled": True})
         return web.json_response({"error": "not found"}, status=404)
-    if not state.subagents or agent_id not in state.subagents._agents:
-        return web.json_response({"error": "not found"}, status=404)
-    cancelled = await state.subagents.cancel(agent_id)
+    if not state.subagents:
+        return web.json_response(
+            {"error": "subagents not available", "code": "subagents_unavailable"}, status=503
+        )
+    body, body_error = await read_bounded_json(request, allow_absent=True)
+    if body_error is not None:
+        return body_error
+    assert body is not None
+    try:
+        command_identity = _validated_command_identity(body, "cancel", require_run_id=False)
+    except ValueError as exc:
+        return _command_identity_response(exc)
+    if command_identity is None:
+        if agent_id not in state.subagents._agents:
+            return web.json_response({"error": "not found"}, status=404)
+        cancelled = await state.subagents.cancel(agent_id)
+    else:
+        identity = CommandIdentity(
+            run_id="",
+            command_id=command_identity[0],
+            idempotency_key=command_identity[1],
+        )
+        try:
+            cancelled = await state.subagents.command_authority.cancel(identity, agent_id)
+        except (AuthorityConflict, AuthorityUnavailable) as exc:
+            return _authority_failure_response(exc)
     if not cancelled:
         # Already done — just remove from list
         state.subagents._agents.pop(agent_id, None)
         state.subagents._tasks.pop(agent_id, None)
-    return web.json_response({"ok": True, "cancelled": cancelled})
+    response: dict[str, object] = {"ok": True, "cancelled": cancelled}
+    if command_identity is not None:
+        response["command_id"] = command_identity[0]
+        response["idempotency_key"] = command_identity[1]
+    return web.json_response(response)
 
 
 async def api_spawn_clear(request: web.Request) -> web.Response:

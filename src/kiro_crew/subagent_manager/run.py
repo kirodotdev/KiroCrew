@@ -316,7 +316,24 @@ class RunEventCoordinator(ManagerComponent):
         """Execute a subagent task in its own session."""
         session_key = info.conversation_key or f"subagent:{info.id}"
         try:
-            await self._manager._shadow_submit_accepted_run(info)
+            if info._coordinator_admitted:
+                try:
+                    await self._manager.command_authority.execution_started(info.id)
+                except Exception:
+                    try:
+                        await self._manager.command_authority.execution_started(info.id)
+                    except Exception:
+                        info._coordinator_claim_uncertain = True
+                        await self._manager.command_authority.stop_execution_heartbeat(info.id)
+                        logger.warning(
+                            "Subagent %s start settlement is uncertain",
+                            info.id,
+                            exc_info=True,
+                        )
+                        return
+                info._coordinator_waiting = False
+            else:
+                await self._manager._shadow_submit_accepted_run(info)
             await asyncio.wait_for(
                 self._manager._run_inner(info, session_key), timeout=self._manager._default_timeout
             )
@@ -428,7 +445,7 @@ class RunEventCoordinator(ManagerComponent):
             # #4839) can come due after a dashboard clear/cancel has removed the run
             # from _agents AND _tasks, and it still must not tombstone a child that
             # is being killed.
-            if self._manager._claim_finalize(info):
+            if not info._coordinator_claim_uncertain and self._manager._claim_finalize(info):
                 info.elapsed = time.time() - info.started
                 self._manager._record_cost(info)
                 report_task = self._manager._spawn_terminal_report(

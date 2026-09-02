@@ -16,6 +16,7 @@ Covers the hibernate-first lifecycle slice:
 from __future__ import annotations
 
 import asyncio
+import threading
 import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -188,8 +189,11 @@ class TestContinueConversation:
         live = SubagentInfo(id="orig1234", task="t")
         manager._agents["orig1234"] = live  # not done → busy
         with patch("kiro_crew.subagent.sel"):
-            info = manager.continue_conversation("orig1234", "more work")
+            info = manager.continue_conversation(
+                "orig1234", "more work", _preassigned_id="admitted1"
+            )
         assert info is not None and info.done
+        assert info.id == "admitted1"
         assert info.error.startswith("conversation_busy")
 
     def test_gone_conversation_refused(self) -> None:
@@ -198,8 +202,11 @@ class TestContinueConversation:
         manager = _manager(sessions)
         with patch("kiro_crew.subagent.sel"), \
                 patch("kiro_crew.subagent.read_state", return_value=None):
-            info = manager.continue_conversation("deadbeef", "more work")
+            info = manager.continue_conversation(
+                "deadbeef", "more work", _preassigned_id="admitted2"
+            )
         assert info is not None and info.done
+        assert info.id == "admitted2"
         assert info.error.startswith("conversation_gone")
 
     @pytest.mark.asyncio
@@ -380,6 +387,106 @@ class TestReleaseAndSweep:
         cleanup.assert_called_once_with("sid-123", "acp")
         assert "subagent:c1" not in manager._conversations
         sessions.forget_conversation.assert_called_once_with("subagent:c1")
+
+    @pytest.mark.asyncio
+    async def test_async_release_mutates_registry_on_loop_and_cleans_files_off_loop(
+        self,
+    ) -> None:
+        loop_thread = threading.get_ident()
+        registry_threads: list[int] = []
+        cleanup_threads: list[int] = []
+        sessions = _mock_sessions()
+        sessions.conversation_provider.side_effect = lambda _key: (
+            registry_threads.append(threading.get_ident()) or "acp"
+        )
+        sessions.forget_conversation.side_effect = lambda _key: (
+            registry_threads.append(threading.get_ident()) or "sid-123"
+        )
+        manager = _manager(sessions)
+        manager._conversations["subagent:c1"] = time.time()
+
+        def record_cleanup(_sid: str, _provider: str) -> None:
+            cleanup_threads.append(threading.get_ident())
+
+        with (
+            patch("kiro_crew.subagent.update_state") as update,
+            patch(
+                "kiro_crew.subagent._cleanup_session_files_sync",
+                side_effect=record_cleanup,
+            ),
+        ):
+            ok, detail = await manager.release_conversation_async("c1")
+
+        assert ok and detail == "released"
+        assert registry_threads == [loop_thread, loop_thread]
+        assert cleanup_threads and cleanup_threads[0] != loop_thread
+        assert update.call_count == 1
+        assert "subagent:c1" not in manager._conversations
+
+    @pytest.mark.asyncio
+    async def test_async_release_blocks_continue_until_cleanup_finishes(self) -> None:
+        started = threading.Event()
+        finish = threading.Event()
+        sessions = _mock_sessions()
+        manager = _manager(sessions)
+        manager._conversations["subagent:c1"] = time.time()
+
+        def blocked_cleanup(_conv_id: str, _sid: str, _provider: str) -> None:
+            started.set()
+            finish.wait()
+
+        with patch.object(manager, "_finish_conversation_release", side_effect=blocked_cleanup):
+            release = asyncio.create_task(manager.release_conversation_async("c1"))
+            await asyncio.wait_for(asyncio.to_thread(started.wait), timeout=1.0)
+            try:
+                info = manager.continue_conversation("c1", "follow up")
+                assert info is not None and info.done
+                assert info.error.startswith("conversation_busy")
+                sessions.seed_conversation.assert_not_called()
+            finally:
+                finish.set()
+                await release
+
+        assert "subagent:c1" not in manager._releasing_conversations
+
+    @pytest.mark.asyncio
+    async def test_cancelled_async_release_keeps_fence_until_cleanup_finishes(self) -> None:
+        started = threading.Event()
+        finish = threading.Event()
+        sessions = _mock_sessions()
+        manager = _manager(sessions)
+        manager._conversations["subagent:c1"] = time.time()
+
+        def blocked_cleanup(_conv_id: str, _sid: str, _provider: str) -> None:
+            started.set()
+            finish.wait()
+
+        with patch.object(manager, "_finish_conversation_release", side_effect=blocked_cleanup):
+            release = asyncio.create_task(manager.release_conversation_async("c1"))
+            await asyncio.wait_for(asyncio.to_thread(started.wait), timeout=1.0)
+            release.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await release
+
+            assert "subagent:c1" in manager._releasing_conversations
+            held = manager._conversation_busy("subagent:c1")
+            assert held is not None
+            assert held.id == "c1"
+            assert held._conversation_releasing is True
+            info = manager.continue_conversation("c1", "follow up")
+            assert info is not None and info.done
+            assert info.error == (
+                "conversation_busy: this conversation is being released — retry shortly"
+            )
+            sessions.seed_conversation.assert_not_called()
+
+            finish.set()
+
+            async def fence_is_removed() -> None:
+                while "subagent:c1" in manager._releasing_conversations:
+                    await asyncio.sleep(0)
+
+            await asyncio.wait_for(fence_is_removed(), timeout=1.0)
 
     def test_release_gone_when_no_sid(self) -> None:
         sessions = _mock_sessions()

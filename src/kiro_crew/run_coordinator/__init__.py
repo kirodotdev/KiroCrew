@@ -3,7 +3,9 @@
 from .memory import MemoryRunCoordinator
 from .models import (
     CommandClaim,
+    CommandFence,
     CommandOperation,
+    CommandReceipt,
     CommandStatus,
     CoordinatorDecision,
     CoordinatorReason,
@@ -20,6 +22,7 @@ from .models import (
     RunFence,
     RunOutcome,
     RunRecord,
+    SubmitControl,
     SubmitReceipt,
     SubmitRun,
 )
@@ -28,7 +31,9 @@ from .sqlite import SQLiteRunCoordinator
 
 __all__ = [
     "CommandClaim",
+    "CommandFence",
     "CommandOperation",
+    "CommandReceipt",
     "CommandStatus",
     "CoordinatorDecision",
     "CoordinatorReason",
@@ -47,6 +52,7 @@ __all__ = [
     "RunOutcome",
     "RunRecord",
     "SubmitReceipt",
+    "SubmitControl",
     "SubmitRun",
     "SQLiteRunCoordinator",
     "ShadowRunCoordinator",

@@ -510,6 +510,95 @@ class TestSpawnRunArgumentHandling:
         # A transport failure must NOT be reconciled as a lost wave member.
         assert all("/api/spawn/lost" not in c[0][0] for c in m.call_args_list)
 
+    def test_unclaimed_durable_spawn_replays_the_exact_request(self):
+        responses = [
+            {"error": "read timeout", "transport_error": True},
+            {"id": "ag1", "status": "spawned"},
+        ]
+        with (
+            patch.object(mcp_core, "_post", side_effect=responses) as post,
+            patch.object(
+                mcp_core,
+                "_get",
+                return_value={
+                    "found": True,
+                    "id": "ag1",
+                    "error": "command outcome is still pending",
+                    "status": "pending",
+                    "code": "command_pending",
+                    "command_status": "pending",
+                },
+            ),
+        ):
+            out = _call_tool("spawn_run", {"task": "one"})
+
+        assert "ag1" in out
+        assert post.call_count == 2
+        assert post.call_args_list[0] == post.call_args_list[1]
+
+    def test_unclaimed_durable_spawn_replays_at_most_once(self):
+        uncertain = {
+            "error": "coordinator result unavailable",
+            "code": "coordinator_outcome_uncertain",
+        }
+        pending = {
+            "found": True,
+            "error": "command outcome is still pending",
+            "status": "pending",
+            "code": "command_pending",
+            "command_status": "pending",
+        }
+        with (
+            patch.object(mcp_core, "_post", return_value=uncertain) as post,
+            patch.object(mcp_core, "_get", return_value=pending) as get,
+        ):
+            out = _call_tool("spawn_run", {"task": "one"})
+
+        assert "acceptance status is unknown" in out
+        assert post.call_count == 2
+        assert get.call_count == 2
+
+    def test_unclaimed_durable_spawn_preserves_admission_if_replay_cannot_connect(self):
+        uncertain = {"error": "read timeout", "transport_error": True}
+        refused = {"error": "<urlopen error [Errno 61] Connection refused>"}
+        pending = {
+            "found": True,
+            "error": "command outcome is still pending",
+            "status": "pending",
+            "code": "command_pending",
+            "command_status": "pending",
+        }
+        with (
+            patch.object(
+                mcp_core,
+                "_post",
+                side_effect=[uncertain, refused, {"ok": True}],
+            ) as post,
+            patch.object(mcp_core, "_get", return_value=pending) as get,
+        ):
+            out = _call_tool("spawn_run", {"task": "one"})
+
+        assert "acceptance status is unknown" in out
+        assert "Do not retry automatically" in out
+        assert post.call_count == 2
+        assert get.call_count == 2
+        assert all(call.args[0] != "/api/spawn/lost" for call in post.call_args_list)
+
+    def test_coordinator_uncertainty_survives_failed_lookup(self):
+        uncertain = {
+            "error": "coordinator result unavailable",
+            "code": "coordinator_outcome_uncertain",
+        }
+        with (
+            patch.object(mcp_core, "_post", return_value=uncertain) as post,
+            patch.object(mcp_core, "_get", side_effect=OSError("gateway unavailable")),
+        ):
+            out = _call_tool("spawn_run", {"task": "one"})
+
+        assert "acceptance status is unknown" in out
+        assert "Do not retry automatically" in out
+        assert all("/api/spawn/lost" not in call.args[0] for call in post.call_args_list)
+
     def test_explicit_rejection_in_a_batch_is_reconciled_as_lost(self):
         with patch.object(mcp_core, "_post", return_value={"error": "at capacity"}) as m:
             out = _call_tool("spawn_run", {"tasks": ["one", "two"]})
@@ -592,6 +681,10 @@ class TestSpawnLifecycleTools:
         assert body["agent"] == "kirocrew"
         assert body["model"] == "claude-opus-5"
         assert body["max_turns"] == 3
+        assert len(body["run_id"]) == 8
+        assert len(body["command_id"]) == 32
+        assert len(body["idempotency_key"]) == 32
+        assert len(body["payload_hash"]) == 64
         assert "run9" in out and "END YOUR TURN" in out
 
     def test_continue_propagates_backend_error(self):
@@ -599,13 +692,50 @@ class TestSpawnLifecycleTools:
             out = _call_tool("spawn_continue", {"conversation": "c", "task": "t"})
         assert out == "Error: conversation_gone"
 
+    @pytest.mark.parametrize(
+        ("tool", "args"),
+        [
+            ("spawn_continue", {"conversation": "c", "task": "t"}),
+            ("spawn_steer", {"agent_id": "a1", "message": "adjust"}),
+            ("spawn_release", {"conversation": "c"}),
+        ],
+    )
+    def test_lifecycle_transport_uncertainty_warns_against_retry(self, tool, args):
+        with (
+            patch.object(
+                mcp_core,
+                "_post",
+                return_value={"error": "timed out", "transport_error": True},
+            ) as post,
+            patch.object(
+                mcp_core,
+                "_get",
+                return_value={
+                    "found": True,
+                    "error": "command outcome is still pending",
+                    "code": "command_pending",
+                    "command_status": "claimed",
+                },
+            ),
+        ):
+            out = _call_tool(tool, args)
+
+        assert "outcome is unknown" in out
+        assert "Do not retry automatically" in out
+        assert post.call_count == 1
+
     def test_steer_posts_the_message_and_confirms(self):
         with patch.object(mcp_core, "_post", return_value={"ok": True}) as m:
             out = _call_tool("spawn_steer", {"agent_id": "a1", "message": "stop that"})
         assert m.call_args[0][0] == "/api/spawn/a1/steer"
         # mode defaults to "interrupt" (spawn_steer's original semantics);
         # "follow_up" queues for delivery after the run's turn completes.
-        assert m.call_args[0][1] == {"message": "stop that", "mode": "interrupt"}
+        body = m.call_args[0][1]
+        assert body["message"] == "stop that"
+        assert body["mode"] == "interrupt"
+        assert len(body["command_id"]) == 32
+        assert len(body["idempotency_key"]) == 32
+        assert len(body["payload_hash"]) == 64
         assert "Steered run a1" in out
 
     def test_steer_propagates_backend_error(self):
@@ -617,6 +747,10 @@ class TestSpawnLifecycleTools:
         with patch.object(mcp_core, "_post", return_value={"ok": True}) as m:
             out = _call_tool("spawn_release", {"conversation": "conv1"})
         assert m.call_args[0][0] == "/api/spawn/conv1/release"
+        body = m.call_args[0][1]
+        assert len(body["command_id"]) == 32
+        assert len(body["idempotency_key"]) == 32
+        assert len(body["payload_hash"]) == 64
         assert "no longer be continued" in out
 
         with patch.object(mcp_core, "_post", return_value={"error": "not_found"}):

@@ -55,6 +55,14 @@ class ContinuationCoordinator(ManagerComponent):
         eviction must not release the hold; the worker's own done-callback
         discards the id, so the hold lasts exactly as long as the danger.
         """
+        if conv_key in self._manager._releasing_conversations:
+            conv_id = conv_key[len("subagent:") :] if conv_key.startswith("subagent:") else conv_key
+            return SubagentInfo(
+                id=conv_id,
+                task="",
+                queued=True,
+                _conversation_releasing=True,
+            )
         for a in self._manager._agents.values():
             if not a.done and (a.conversation_key or f"subagent:{a.id}") == conv_key:
                 return a
@@ -212,6 +220,7 @@ class ContinuationCoordinator(ManagerComponent):
         max_turns: int = 0,
         cwd: str = "",
         _preassigned_id: str = "",
+        _coordinator_admitted: bool = False,
     ) -> SubagentInfo | None:
         """Dispatch a follow-up *task* into conversation *conv_id*.
 
@@ -240,18 +249,22 @@ class ContinuationCoordinator(ManagerComponent):
         busy = self._manager._conversation_busy(conv_key)
         if busy is not None:
             info = SubagentInfo(
-                id=uuid.uuid4().hex[:8],
+                id=_preassigned_id or uuid.uuid4().hex[:8],
                 task=_redact(task),
                 done=True,
                 parent_session_key=parent_session_key,
                 error=(
-                    f"conversation_busy: run {busy.id} is still settling a state "
-                    "write on this conversation — retry shortly"
-                    if busy._state_writer_abandoned
+                    "conversation_busy: this conversation is being released — retry shortly"
+                    if busy._conversation_releasing
                     else (
-                        f"conversation_busy: run {busy.id} is in flight on this "
-                        "conversation — use spawn_steer to inject into it, or wait "
-                        "for its completion event"
+                        f"conversation_busy: run {busy.id} is still settling a state "
+                        "write on this conversation — retry shortly"
+                        if busy._state_writer_abandoned
+                        else (
+                            f"conversation_busy: run {busy.id} is in flight on this "
+                            "conversation — use spawn_steer to inject into it, or wait "
+                            "for its completion event"
+                        )
                     )
                 ),
             )
@@ -282,7 +295,7 @@ class ContinuationCoordinator(ManagerComponent):
             except Exception:
                 pass
             info = SubagentInfo(
-                id=uuid.uuid4().hex[:8],
+                id=_preassigned_id or uuid.uuid4().hex[:8],
                 task=_redact(task),
                 done=True,
                 parent_session_key=parent_session_key,
@@ -316,6 +329,7 @@ class ContinuationCoordinator(ManagerComponent):
         return self._manager.spawn(
             task,
             _preassigned_id=_preassigned_id,
+            _coordinator_admitted=_coordinator_admitted,
             parent_session_key=parent_session_key,
             agent=agent,
             model=model,
@@ -687,41 +701,80 @@ class ContinuationCoordinator(ManagerComponent):
         except Exception:
             logger.debug("follow_up audit failed", exc_info=True)
 
-    def release_conversation_impl(self, conv_id: str) -> tuple[bool, str]:
-        """Release conversation *conv_id*: forget the sid and delete files.
-
-        Refuses (``conversation_busy``) while a run is in flight. Returns
-        ``(ok, detail)``.
-        """
+    def _prepare_conversation_release_impl(
+        self, conv_id: str
+    ) -> tuple[tuple[bool, str], tuple[str, str, str] | None]:
+        """Mutate loop-affine release state before filesystem cleanup."""
         conv_key = f"subagent:{conv_id}"
         busy = self._manager._conversation_busy(conv_key)
         if busy is not None:
+            if busy._conversation_releasing:
+                return (False, "conversation_busy: this conversation is being released"), None
             if busy._state_writer_abandoned:
                 return (
-                    False,
-                    f"conversation_busy: run {busy.id} is still settling a state write",
+                    (
+                        False,
+                        f"conversation_busy: run {busy.id} is still settling a state write",
+                    ),
+                    None,
                 )
-            return False, f"conversation_busy: run {busy.id} is in flight"
+            return (False, f"conversation_busy: run {busy.id} is in flight"), None
         provider_label = (
             self._manager._sessions.conversation_provider(conv_key) or PROVIDER_LABEL_DEFAULT
         )
         sid = self._manager._sessions.forget_conversation(conv_key)
         self._manager._conversations.pop(conv_key, None)
-        # Demote the persisted source of truth too (#1115): with the disk
-        # fallback in place, a stale keep=True would re-warm the continuable
-        # cache after release and resurrect the conversation on the next
-        # restart's registry rebuild.
+        self._manager._releasing_conversations.add(conv_key)
+        result = (True, "released") if sid else (False, "conversation_gone: nothing to release")
+        return result, (conv_id, sid or "", provider_label)
+
+    def _finish_conversation_release_impl(
+        self, conv_id: str, sid: str, provider_label: str
+    ) -> None:
+        """Persist release state and remove files after registry ownership changes."""
         try:
             update_state(conv_id, keep=False)
         except Exception:
             logger.debug("release: failed to demote state for %s", conv_id, exc_info=True)
         if not sid:
-            return False, "conversation_gone: nothing to release"
+            return
         try:
             _cleanup_session_files_sync(sid, provider_label)
         except Exception:
             logger.debug("release_conversation: file cleanup failed", exc_info=True)
-        return True, "released"
+
+    def release_conversation_impl(self, conv_id: str) -> tuple[bool, str]:
+        """Release a conversation for synchronous compatibility callers."""
+        result, cleanup = self._manager._prepare_conversation_release(conv_id)
+        if cleanup is not None:
+            try:
+                self._manager._finish_conversation_release(*cleanup)
+            finally:
+                self._manager._releasing_conversations.discard(f"subagent:{conv_id}")
+        return result
+
+    async def release_conversation_async_impl(self, conv_id: str) -> tuple[bool, str]:
+        """Release loop-affine state, then clean up files off-loop."""
+        result, cleanup = self._manager._prepare_conversation_release(conv_id)
+        if cleanup is not None:
+            conv_key = f"subagent:{conv_id}"
+            cleanup_task = asyncio.create_task(
+                asyncio.to_thread(self._manager._finish_conversation_release, *cleanup)
+            )
+
+            def _release_fence(_task: asyncio.Task[None]) -> None:
+                self._manager._releasing_conversations.discard(conv_key)
+
+            # Cancelling the HTTP/request task cannot stop a worker thread. Keep
+            # the fence owned by the cleanup task so a continuation cannot seed
+            # the conversation while that thread is still deleting its files.
+            cleanup_task.add_done_callback(_release_fence)
+            try:
+                await asyncio.shield(cleanup_task)
+            finally:
+                if cleanup_task.done():
+                    self._manager._releasing_conversations.discard(conv_key)
+        return result
 
     def _sweep_conversations_impl(self, now: float) -> None:
         """Reaper hook: expire continuable conversations idle past TTL."""

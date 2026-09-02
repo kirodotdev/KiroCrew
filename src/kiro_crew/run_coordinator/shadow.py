@@ -10,6 +10,9 @@ from typing import Any, cast
 
 from .models import (
     CommandClaim,
+    CommandFence,
+    CommandReceipt,
+    CommandStatus,
     CoordinatorDecision,
     CoordinatorResult,
     DeliveryFence,
@@ -20,6 +23,7 @@ from .models import (
     RunCoordinator,
     RunFence,
     RunRecord,
+    SubmitControl,
     SubmitReceipt,
     SubmitRun,
 )
@@ -108,6 +112,7 @@ class ShadowRunCoordinator:
         if (
             isinstance(primary, CoordinatorResult)
             and primary.decision is CoordinatorDecision.REJECTED
+            and primary.value is None
         ):
             return primary
         if primary is False:
@@ -134,8 +139,70 @@ class ShadowRunCoordinator:
     async def submit(self, request: SubmitRun) -> CoordinatorResult[SubmitReceipt]:
         return cast(CoordinatorResult[SubmitReceipt], await self._mirror("submit", request))
 
+    async def submit_control(self, request: SubmitControl) -> CoordinatorResult[CommandReceipt]:
+        return cast(
+            CoordinatorResult[CommandReceipt],
+            await self._mirror("submit_control", request),
+        )
+
+    async def get_command_by_key(self, idempotency_key: str) -> CommandReceipt | None:
+        return cast(
+            CommandReceipt | None,
+            await self._mirror("get_command_by_key", idempotency_key),
+        )
+
     async def claim_commands(self, owner: OwnerLease, limit: int) -> list[CommandClaim]:
         return cast(list[CommandClaim], await self._mirror("claim_commands", owner, limit))
+
+    async def claim_controls(
+        self, owner: OwnerLease, limit: int, command_id: str = ""
+    ) -> list[CommandClaim]:
+        return cast(
+            list[CommandClaim],
+            await self._mirror("claim_controls", owner, limit, command_id),
+        )
+
+    async def claim_command(self, command_id: str, owner: OwnerLease) -> CommandClaim | None:
+        return cast(
+            CommandClaim | None,
+            await self._mirror("claim_command", command_id, owner),
+        )
+
+    async def finish_command(
+        self,
+        fence: CommandFence,
+        status: CommandStatus,
+        rejection_reason: str = "",
+        result_json: str = "",
+    ) -> CoordinatorResult[RunCommand]:
+        return cast(
+            CoordinatorResult[RunCommand],
+            await self._mirror(
+                "finish_command",
+                fence,
+                status,
+                rejection_reason,
+                result_json,
+            ),
+        )
+
+    async def finish_control(
+        self,
+        fence: CommandFence,
+        status: CommandStatus,
+        rejection_reason: str = "",
+        result_json: str = "",
+    ) -> CoordinatorResult[RunCommand]:
+        return cast(
+            CoordinatorResult[RunCommand],
+            await self._mirror(
+                "finish_control",
+                fence,
+                status,
+                rejection_reason,
+                result_json,
+            ),
+        )
 
     async def mark_starting(
         self, command: RunCommand, fence: RunFence, expected_version: int

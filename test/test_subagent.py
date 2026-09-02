@@ -13,7 +13,12 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from kiro_crew.run_coordinator import MemoryRunCoordinator
 from kiro_crew.subagent import _TURN_LIMIT, SubagentManager
+from kiro_crew.subagent_command_authority import (
+    AuthorityOutcomeUncertain,
+    CommandIdentity,
+)
 
 # ``SubagentManager.spawn`` refuses -- registering no task -- while the host
 # looks short of memory, which is the runner's state, not this test's input.
@@ -209,6 +214,161 @@ class TestSpawnWithoutApprovalCallback:
         assert first.queued is False
 
     @pytest.mark.asyncio
+    async def test_coordinator_run_id_reservation_fences_legacy_admission(self) -> None:
+        manager = SubagentManager(
+            sessions=_mock_sessions(),
+            ctx_builder=_mock_ctx_builder(),
+            is_yolo=lambda: True,
+        )
+
+        assert manager.reserve_coordinator_run_id("reserved1") is True
+        assert manager.reserve_coordinator_run_id("reserved1") is False
+        manager._announce_rejection = lambda info, **_kwargs: info  # type: ignore[method-assign]
+        with patch("kiro_crew.subagent.Stats"), patch("kiro_crew.subagent.sel"):
+            rejected = manager.spawn("legacy work", _preassigned_id="reserved1")
+
+        assert rejected is not None
+        assert rejected.done is True
+        assert "run_id_conflict" in rejected.error
+        assert "reserved1" not in manager._agents
+        assert manager._queue == []
+        manager.release_coordinator_run_id("reserved1")
+        assert manager.reserve_coordinator_run_id("reserved1") is True
+
+    def test_coordinator_run_id_reservation_refuses_older_queue_owner(self) -> None:
+        manager = SubagentManager(
+            sessions=_mock_sessions(),
+            ctx_builder=_mock_ctx_builder(),
+        )
+        manager._scheduler.enqueue({"task": "older legacy work", "_preassigned_id": "queued-owner"})
+
+        assert manager.reserve_coordinator_run_id("queued-owner") is False
+        assert manager._queue[0]["task"] == "older legacy work"
+
+    @pytest.mark.asyncio
+    async def test_queue_drain_rejection_finishes_durable_command(self) -> None:
+        manager = SubagentManager(
+            sessions=_mock_sessions(),
+            ctx_builder=_mock_ctx_builder(),
+            max_concurrent=1,
+        )
+        manager.command_authority.reject_waiting_execution = AsyncMock()
+        manager._scheduler.enqueue(
+            {
+                "task": "",
+                "_preassigned_id": "queued1",
+                "_coordinator_admitted": True,
+            }
+        )
+
+        manager._drain_queue()
+        await asyncio.sleep(0)
+
+        manager.command_authority.reject_waiting_execution.assert_awaited_once_with(
+            "queued1",
+            "spawn refused: task must be a non-empty string",
+        )
+
+    @pytest.mark.asyncio
+    async def test_queue_drain_batch_rejection_announces_after_durable_settlement(self) -> None:
+        settlement_allowed = asyncio.Event()
+
+        async def reject_waiting(*_args: object, **_kwargs: object) -> None:
+            await settlement_allowed.wait()
+
+        on_done = AsyncMock()
+        manager = SubagentManager(
+            sessions=_mock_sessions(),
+            ctx_builder=_mock_ctx_builder(),
+            max_concurrent=1,
+            on_done=on_done,
+        )
+        manager.command_authority.reject_waiting_execution = AsyncMock(
+            side_effect=reject_waiting
+        )
+        manager._scheduler.enqueue(
+            {
+                "task": "",
+                "_preassigned_id": "queued-batch",
+                "_coordinator_admitted": True,
+                "batch_id": "wave1",
+                "batch_total": 2,
+            }
+        )
+
+        manager._drain_queue()
+        await asyncio.sleep(0)
+
+        on_done.assert_not_awaited()
+        settlement_allowed.set()
+        await manager._tasks["command-reject-queued-batch"]
+        on_done.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_queue_drain_rejection_failure_retains_non_runnable_entry(self) -> None:
+        on_done = AsyncMock()
+        manager = SubagentManager(
+            sessions=_mock_sessions(),
+            ctx_builder=_mock_ctx_builder(),
+            max_concurrent=1,
+            on_done=on_done,
+        )
+        manager.command_authority.reject_waiting_execution = AsyncMock(
+            side_effect=AuthorityOutcomeUncertain("coordinator unavailable")
+        )
+        manager._scheduler.enqueue(
+            {
+                "task": "",
+                "_preassigned_id": "queued-retry",
+                "_coordinator_admitted": True,
+                "batch_id": "wave2",
+                "batch_total": 2,
+            }
+        )
+
+        manager._drain_queue()
+        await asyncio.sleep(0)
+
+        assert manager._queue[0]["_preassigned_id"] == "queued-retry"
+        assert manager._queue[0]["_coordinator_cancel_pending"] is True
+        on_done.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_drained_keyed_spawn_keeps_durable_waiting_state_until_start(self) -> None:
+        from kiro_crew.subagent import SubagentInfo
+
+        manager = SubagentManager(
+            sessions=_mock_sessions(),
+            ctx_builder=_mock_ctx_builder(),
+            is_yolo=lambda: True,
+        )
+        manager._force_reap = AsyncMock()
+        manager.command_authority.reject_waiting_execution = AsyncMock()
+
+        async def lose_start_settlement(info: SubagentInfo) -> None:
+            info._coordinator_claim_uncertain = True
+
+        manager._run = AsyncMock(side_effect=lose_start_settlement)
+
+        with patch("kiro_crew.subagent.Stats"), patch("kiro_crew.subagent.sel"):
+            info = manager.spawn(
+                "drained keyed task",
+                _preassigned_id="drained-keyed",
+                _from_queue=True,
+                _coordinator_admitted=True,
+            )
+            assert info is not None
+            run_task = manager._tasks[info.id]
+            await run_task
+            assert info._coordinator_claim_uncertain is True
+            await manager.cancel(info.id)
+
+        assert info._coordinator_claim_uncertain is False
+        manager.command_authority.reject_waiting_execution.assert_awaited_once_with(
+            info.id, "spawn cancelled before start"
+        )
+
+    @pytest.mark.asyncio
     async def test_queued_spawn_counts_as_pending_work(self) -> None:
         """A spawn waiting behind the concurrency cap is in `_queue`, not
         `running` — the reset-deferral predicates must see it anyway, or a
@@ -287,6 +447,176 @@ class TestSpawnWithApprovalCallback:
         assert info.error == "spawn rejected"
         assert info.result == ""
         on_done_callback.assert_awaited_once_with(info)
+
+    @pytest.mark.asyncio
+    async def test_keyed_approval_rejection_finishes_durable_command(self) -> None:
+        coordinator = MemoryRunCoordinator()
+        manager = SubagentManager(
+            sessions=_mock_sessions(),
+            ctx_builder=_mock_ctx_builder(),
+            on_spawn_approval=AsyncMock(return_value=False),
+            coordinator=coordinator,
+        )
+        identity = CommandIdentity(
+            run_id="approval-rejected",
+            command_id="command-approval-rejected",
+            idempotency_key="key-approval-rejected",
+        )
+
+        with patch("kiro_crew.subagent.Stats"), patch("kiro_crew.subagent.sel"):
+            info = await manager.command_authority.spawn(identity, "rejected task")
+            await manager._tasks[info.id]
+
+        assert await manager.command_authority.lookup_response(identity.idempotency_key) == {
+            "found": True,
+            "id": identity.run_id,
+            "error": "spawn rejected",
+            "code": "spawn_rejected",
+            "counted": True,
+        }
+
+    @pytest.mark.asyncio
+    async def test_approval_denial_keeps_retry_state_when_settlement_fails(self) -> None:
+        from kiro_crew.subagent import SubagentInfo
+
+        attempted = asyncio.Event()
+
+        async def reject(*_args: object, **_kwargs: object) -> None:
+            attempted.set()
+            raise AuthorityOutcomeUncertain("coordinator unavailable")
+
+        manager = SubagentManager(
+            sessions=_mock_sessions(),
+            ctx_builder=_mock_ctx_builder(),
+            on_spawn_approval=AsyncMock(return_value=False),
+        )
+        info = SubagentInfo(id="approval-retry", task="rejected task")
+        info._coordinator_waiting = True
+        manager._agents[info.id] = info
+        manager.command_authority.reject_waiting_execution = AsyncMock(side_effect=reject)
+        manager._scheduler.release = MagicMock(return_value=False)
+        task = asyncio.create_task(manager._spawn_with_approval(info))
+        manager._tasks[info.id] = task
+        try:
+            await attempted.wait()
+            await asyncio.sleep(0)
+
+            assert info.done is False
+            assert manager.get(info.id) is info
+            assert manager._tasks[info.id] is task
+            manager._scheduler.release.assert_not_called()
+        finally:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+    @pytest.mark.asyncio
+    async def test_keyed_queued_cancel_finishes_durable_command(self) -> None:
+        approval_gate = asyncio.Event()
+
+        async def deny_after_gate(*_args: object) -> bool:
+            await approval_gate.wait()
+            return False
+
+        coordinator = MemoryRunCoordinator()
+        manager = SubagentManager(
+            sessions=_mock_sessions(),
+            ctx_builder=_mock_ctx_builder(),
+            max_concurrent=1,
+            on_spawn_approval=deny_after_gate,
+            coordinator=coordinator,
+        )
+        first_identity = CommandIdentity(
+            run_id="approval-blocker",
+            command_id="command-approval-blocker",
+            idempotency_key="key-approval-blocker",
+        )
+        queued_identity = CommandIdentity(
+            run_id="queued-cancelled",
+            command_id="command-queued-cancelled",
+            idempotency_key="key-queued-cancelled",
+        )
+
+        with patch("kiro_crew.subagent.Stats"), patch("kiro_crew.subagent.sel"):
+            first = await manager.command_authority.spawn(first_identity, "hold the slot")
+            queued = await manager.command_authority.spawn(queued_identity, "cancel me")
+            assert queued.queued is True
+            assert await manager.cancel(queued.id) is True
+            approval_gate.set()
+            await manager._tasks[first.id]
+
+        assert await manager.command_authority.lookup_response(
+            queued_identity.idempotency_key
+        ) == {
+            "found": True,
+            "id": queued_identity.run_id,
+            "error": "spawn cancelled before start",
+            "code": "spawn_rejected",
+            "counted": True,
+        }
+
+    @pytest.mark.asyncio
+    async def test_queued_cancel_failure_retains_non_runnable_entry_for_retry(self) -> None:
+        manager = SubagentManager(
+            sessions=_mock_sessions(),
+            ctx_builder=_mock_ctx_builder(),
+        )
+        manager._scheduler.enqueue(
+            {
+                "task": "cancel safely",
+                "_preassigned_id": "queued-retry",
+                "_coordinator_admitted": True,
+            }
+        )
+        finalize = AsyncMock(side_effect=AuthorityOutcomeUncertain("coordinator unavailable"))
+        manager._finalize_queued_cancel = finalize
+
+        with pytest.raises(AuthorityOutcomeUncertain, match="coordinator unavailable"):
+            await manager.cancel("queued-retry")
+
+        assert manager._queue[0]["_preassigned_id"] == "queued-retry"
+        assert manager._queue[0]["_coordinator_cancel_pending"] is True
+        manager.spawn = MagicMock()
+        manager._drain_queue()
+        manager.spawn.assert_not_called()
+        assert manager._queue[0]["_preassigned_id"] == "queued-retry"
+
+        finalize.side_effect = None
+        assert await manager.cancel("queued-retry") is True
+        assert manager._queue == []
+
+    @pytest.mark.asyncio
+    async def test_keyed_queued_batch_cancel_announces_after_settlement(self) -> None:
+        on_done = AsyncMock()
+        manager = SubagentManager(
+            sessions=_mock_sessions(),
+            ctx_builder=_mock_ctx_builder(),
+            on_done=on_done,
+        )
+        manager.command_authority.reject_waiting_execution = AsyncMock()
+        manager._scheduler.enqueue(
+            {
+                "task": "cancel safely",
+                "parent_session_key": "parent-session",
+                "_preassigned_id": "queued-batch-cancel",
+                "_coordinator_admitted": True,
+                "batch_id": "wave-cancel",
+                "batch_total": 2,
+            }
+        )
+
+        assert await manager.cancel("queued-batch-cancel") is True
+
+        manager.command_authority.reject_waiting_execution.assert_awaited_once_with(
+            "queued-batch-cancel",
+            "spawn cancelled before start",
+        )
+        on_done.assert_awaited_once()
+        announced = on_done.await_args.args[0]
+        assert announced.id == "queued-batch-cancel"
+        assert announced.batch_id == "wave-cancel"
+        assert announced.batch_total == 2
+        assert announced.done is True
+        assert announced.error == "spawn cancelled before start"
 
     @pytest.mark.asyncio
     async def test_rejected_spawn_decrements_running_count(self) -> None:
@@ -1015,6 +1345,104 @@ class TestCancelSubagent:
         assert result is True
         assert info.done is True
         assert manager._running_count == 0
+
+    @pytest.mark.asyncio
+    async def test_cancel_approval_waiter_rejects_durable_command_first(self) -> None:
+        """An admitted approval waiter is settled before its local record is reaped."""
+        from kiro_crew.subagent import SubagentInfo
+
+        manager = SubagentManager(
+            sessions=_mock_sessions(),
+            ctx_builder=_mock_ctx_builder(),
+        )
+        info = SubagentInfo(id="waiting1", task="wait for approval")
+        info._coordinator_waiting = True
+        manager._agents[info.id] = info
+        manager.command_authority.reject_waiting_execution = AsyncMock()
+        manager._force_reap = AsyncMock()
+
+        assert await manager.cancel(info.id) is True
+
+        manager.command_authority.reject_waiting_execution.assert_awaited_once_with(
+            info.id,
+            "spawn cancelled before start",
+        )
+        manager._force_reap.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_cancel_approval_waiter_stops_task_before_durable_settlement(self) -> None:
+        """Approval cannot start work while cancellation settlement is in flight."""
+        from kiro_crew.subagent import SubagentInfo
+
+        approval_resolved = asyncio.Event()
+        settlement_started = asyncio.Event()
+        finish_settlement = asyncio.Event()
+
+        async def approve(*_args: object) -> bool:
+            try:
+                await approval_resolved.wait()
+                return True
+            except asyncio.CancelledError:
+                # Dashboard approval translates task cancellation into denial.
+                return False
+
+        async def reject(*_args: object, **_kwargs: object) -> None:
+            settlement_started.set()
+            await finish_settlement.wait()
+
+        manager = SubagentManager(
+            sessions=_mock_sessions(),
+            ctx_builder=_mock_ctx_builder(),
+            on_spawn_approval=approve,
+        )
+        info = SubagentInfo(id="waiting-race", task="wait for approval")
+        info._coordinator_waiting = True
+        info._coordinator_fence = MagicMock()
+        manager._agents[info.id] = info
+        manager.command_authority.reject_waiting_execution = AsyncMock(side_effect=reject)
+        manager._run = AsyncMock()
+        manager._force_reap = AsyncMock()
+        approval_task = asyncio.create_task(manager._spawn_with_approval(info))
+        manager._tasks[info.id] = approval_task
+        cancel_task = asyncio.create_task(manager.cancel(info.id))
+        try:
+            await settlement_started.wait()
+            approval_resolved.set()
+            await asyncio.sleep(0)
+
+            manager._run.assert_not_awaited()
+            assert manager.command_authority.reject_waiting_execution.await_count == 1
+        finally:
+            finish_settlement.set()
+            await cancel_task
+            if not approval_task.done():
+                approval_task.cancel()
+            await asyncio.gather(approval_task, return_exceptions=True)
+
+    @pytest.mark.asyncio
+    async def test_cancel_approval_waiter_preserves_local_state_when_settlement_fails(
+        self,
+    ) -> None:
+        """A failed durable rejection keeps the waiter available for a safe retry."""
+        from kiro_crew.subagent import SubagentInfo
+
+        manager = SubagentManager(
+            sessions=_mock_sessions(),
+            ctx_builder=_mock_ctx_builder(),
+        )
+        info = SubagentInfo(id="waiting2", task="wait for approval")
+        info._coordinator_waiting = True
+        manager._agents[info.id] = info
+        manager.command_authority.reject_waiting_execution = AsyncMock(
+            side_effect=AuthorityOutcomeUncertain("coordinator unavailable")
+        )
+        manager._force_reap = AsyncMock()
+
+        with pytest.raises(AuthorityOutcomeUncertain, match="coordinator unavailable"):
+            await manager.cancel(info.id)
+
+        assert info.user_stopped is True
+        manager._force_reap.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_cancel_nonexistent_returns_false(self) -> None:

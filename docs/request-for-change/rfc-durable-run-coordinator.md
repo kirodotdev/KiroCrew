@@ -14,15 +14,15 @@ superseded-by: []
 ---
 # RFC: Durable Run Coordinator — typed lifecycle, idempotent commands, and recoverable delivery
 
-- Status: in-progress — PRs 1–4 are implemented locally; PR 4 lives on
-  `codex/run-coordinator-shadow`: the typed port and lifecycle boundaries now
-  have a contract-tested SQLite store, security floor, and primary-preserving
-  shadow adapter that records accepted legacy runs. Legacy run files remain
-  authoritative; PRs 5–7 are unimplemented.
+- Status: in-progress — PRs 1–5 are implemented locally; PR 5 lives on
+  `codex/run-coordinator-commands`. Keyed spawn/continue admission and control
+  commands are coordinator-authoritative, exact retries reuse durable responses,
+  and transport uncertainty resolves by command lookup. Legacy run files still
+  mirror lifecycle/terminal state; PRs 6–7 are unimplemented.
 - Author: Kyle Seaman, with Codex
 - Created: 2026-08-22
 - Audited against: PR 1 commit `c8eda3c6f`, PR 2 commit `53f365a17`, PR 3 commit
-  `4aa0cba4d`, and the PR 4 working tree
+  `4aa0cba4d`, PR 4 commit `3ed006642`, and the PR 5 working tree
 - Related: `docs/system-specs/modules/subagent.md`,
   `docs/system-specs/modules/session.md`, and
   `docs/request-for-change/rfc-orchestrator-chat-sessions.md`
@@ -275,13 +275,19 @@ to logs or metrics.
 | `status TEXT NOT NULL` | `pending`, `claimed`, `applied`, or `rejected` |
 | `attempt INTEGER NOT NULL` | Dispatch attempt count |
 | `owner_id TEXT` | Current command claimant |
-| `lease_epoch INTEGER` | Fences execution against stale ownership |
+| `claim_expires_at REAL` | Independent command-claim expiry |
+| `claim_epoch INTEGER` | Fences stale command effects without changing the run lease |
+| `result_json TEXT NOT NULL` | Bounded transport response used for exact replay/lookup |
 | `created_at REAL NOT NULL` | Acceptance time |
 | `updated_at REAL NOT NULL` | Last transition time |
 
 Reusing an idempotency key with the same payload returns the original command
 decision and run ID. Reusing it with a different payload is a typed conflict and
 never mutates the run.
+
+Control commands may target runs created before coordinator cutover, so the
+command target is not constrained by a foreign key to `runs`. Execution
+submissions still create their run and command atomically.
 
 #### `outbox`
 
@@ -320,6 +326,13 @@ The first public port is intentionally small:
 ```python
 class RunCoordinator(Protocol):
     async def submit(self, request: SubmitRun) -> SubmitResult: ...
+    async def submit_control(self, request: SubmitControl) -> CoordinatorResult[CommandReceipt]: ...
+    async def get_command_by_key(self, key: str) -> CommandReceipt | None: ...
+    async def claim_command(self, command_id: str, owner: OwnerLease) -> CommandClaim | None: ...
+    async def finish_command(
+        self, fence: CommandFence, status: CommandStatus,
+        rejection_reason: str = "", result_json: str = ""
+    ) -> CoordinatorResult[RunCommand]: ...
     async def claim_commands(self, owner: OwnerLease, limit: int) -> list[CommandClaim]: ...
     async def mark_starting(
         self, command: RunCommand, fence: RunFence, expected_version: int
@@ -344,7 +357,8 @@ typed commands and records. Synchronous SQLite work is wrapped in bounded
 `asyncio.to_thread()` calls; a connection is not shared concurrently across
 event-loop tasks.
 
-`CommandClaim` contains both the claimed command and the acquired `RunFence`.
+`CommandClaim` contains the claimed command and an independent `CommandFence`;
+execution-dispatch claims may also carry an acquired `RunFence`.
 `DeliveryFence` contains `event_id`, `owner_id`, and `claim_epoch`; reclaiming an
 expired event increments the epoch, so an older delivery task owned by the same
 gateway incarnation cannot acknowledge the newer claim. Lifecycle mutations
@@ -561,6 +575,18 @@ Branch: `run-coordinator-commands`
 **Exit criteria:** repeating the same submission returns the same run ID and
 does not start a second child; key/payload conflicts fail closed; queue capacity
 and approval outcomes match legacy behavior; old callers still work.
+
+**Local status:** implemented. Execution and control commands use independent
+durable claim fences; controls do not mutate a live executor lease. SQLite
+schema v3 stores claim/result state and supports commands targeting pre-cutover
+runs. The MCP/gateway boundary validates stable identity and resolves uncertain
+responses through durable lookup. A claimed control without a stored result is
+never replayed after expiry: the authority returns an outcome-uncertain response
+because the legacy side effect may already have happened. Queued and
+approval-waiting executions remain `CLAIMED` until their manager task actually
+starts; that boundary durably applies the command before releasing its
+pre-execution lease. Exact retries of rejected executions replay the stored
+response instead of falling through to a generic legacy conflict.
 
 ### PR 6 — transactional completion and delivery outbox
 

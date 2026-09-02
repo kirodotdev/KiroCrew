@@ -654,6 +654,24 @@ answers `tools/list` from):
   (method, path) allowlist of Ops Mission Control routes; the agent never
   sees a credential (same shape as `issue_radar_record_investigation`)
 
+### Subagent command identity
+
+Mutating subagent tools generate a stable command ID and idempotency key before
+crossing the MCP-to-gateway HTTP boundary. Spawn and continuation also preassign
+the visible run ID. The payload hash covers compact, sorted canonical JSON for
+the semantic request and is recomputed by the gateway; identity fields are
+additive authenticated transport fields and are not part of the LLM tool schema.
+
+If a POST response is transport-uncertain, the MCP server reads
+`/api/spawn/commands/{idempotency_key}`. A durable decision is returned without
+posting the mutation again. A missing or unavailable lookup remains explicitly
+uncertain and is never converted into an automatic execution retry. When an
+explicitly pending command permits one exact replay, a replay that cannot return
+a successful response triggers one final ledger lookup; proven durable admission
+remains uncertain unless that lookup supplies a terminal result. Unkeyed internal
+callers remain supported during the migration, including the legacy lost-wave
+reconciliation used for their batch accounting.
+
 ### A `kirocrew-core` tool has two halves
 
 Each tool is declared twice in the same per-domain module under

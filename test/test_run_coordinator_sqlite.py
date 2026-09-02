@@ -92,7 +92,7 @@ async def test_sqlite_schema_enables_durability_pragmas(tmp_path: Path) -> None:
         inspect_owned_connection
     )
 
-    assert version == ("2",)
+    assert version == ("3",)
     assert journal_mode == "wal"
     assert synchronous == 2
     assert foreign_keys == 1
@@ -179,7 +179,7 @@ async def test_corrupt_database_is_refused_without_deletion(tmp_path: Path) -> N
 
 
 @pytest.mark.asyncio
-async def test_v1_database_migrates_to_v2_once(tmp_path: Path) -> None:
+async def test_v1_database_migrates_to_v3_once(tmp_path: Path) -> None:
     path = tmp_path / "coordinator.db"
     coordinator = SQLiteRunCoordinator(path)
     await coordinator.submit(_request())
@@ -216,6 +216,7 @@ async def test_v1_database_migrates_to_v2_once(tmp_path: Path) -> None:
         connection.execute("ALTER TABLE commands_v1 RENAME TO commands")
         connection.execute("UPDATE metadata SET value = '1' WHERE key = 'schema_version'")
         connection.execute("DELETE FROM metadata WHERE key = 'migration.2.applied_at'")
+        connection.execute("DELETE FROM metadata WHERE key = 'migration.3.applied_at'")
 
     migrated = await SQLiteRunCoordinator(path).submit(_request())
     reopened = await SQLiteRunCoordinator(path).submit(_request())
@@ -227,10 +228,16 @@ async def test_v1_database_migrates_to_v2_once(tmp_path: Path) -> None:
     with sqlite3.connect(path) as connection:
         assert connection.execute(
             "SELECT value FROM metadata WHERE key = 'schema_version'"
-        ).fetchone() == ("2",)
+        ).fetchone() == ("3",)
         assert connection.execute(
             "SELECT COUNT(*) FROM metadata WHERE key = 'migration.2.applied_at'"
         ).fetchone() == (1,)
+        assert connection.execute(
+            "SELECT COUNT(*) FROM metadata WHERE key = 'migration.3.applied_at'"
+        ).fetchone() == (1,)
+        command_columns = {row[1] for row in connection.execute("PRAGMA table_info(commands)")}
+        assert {"claim_expires_at", "claim_epoch", "result_json"} <= command_columns
+        assert connection.execute("PRAGMA foreign_key_list(commands)").fetchall() == []
 
 
 @pytest.mark.asyncio
@@ -260,14 +267,14 @@ async def test_failed_migration_rolls_back_and_can_retry(
     path = tmp_path / "coordinator.db"
     await SQLiteRunCoordinator(path).get_run("missing")
     migrations = sqlite_module._MIGRATIONS
-    monkeypatch.setattr(sqlite_module, "_SCHEMA_VERSION", 3)
+    monkeypatch.setattr(sqlite_module, "_SCHEMA_VERSION", 4)
     monkeypatch.setattr(
         sqlite_module,
         "_MIGRATIONS",
         migrations
         + (
             (
-                3,
+                4,
                 (
                     "CREATE TABLE migration_probe (value TEXT NOT NULL)",
                     "THIS IS NOT SQL",
@@ -282,7 +289,7 @@ async def test_failed_migration_rolls_back_and_can_retry(
     with sqlite3.connect(path) as connection:
         assert connection.execute(
             "SELECT value FROM metadata WHERE key = 'schema_version'"
-        ).fetchone() == ("2",)
+        ).fetchone() == ("3",)
         assert (
             connection.execute(
                 "SELECT name FROM sqlite_master "  # wokeignore:rule=master
@@ -294,13 +301,13 @@ async def test_failed_migration_rolls_back_and_can_retry(
     monkeypatch.setattr(
         sqlite_module,
         "_MIGRATIONS",
-        migrations + ((3, ("CREATE TABLE migration_probe (value TEXT NOT NULL)",)),),
+        migrations + ((4, ("CREATE TABLE migration_probe (value TEXT NOT NULL)",)),),
     )
     await SQLiteRunCoordinator(path).get_run("missing")
     with sqlite3.connect(path) as connection:
         assert connection.execute(
             "SELECT value FROM metadata WHERE key = 'schema_version'"
-        ).fetchone() == ("3",)
+        ).fetchone() == ("4",)
         assert connection.execute(
             "SELECT name FROM sqlite_master "  # wokeignore:rule=master
             "WHERE name = 'migration_probe'"

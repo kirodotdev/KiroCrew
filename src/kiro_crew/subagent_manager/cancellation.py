@@ -12,8 +12,10 @@ if TYPE_CHECKING:
         _RECOVERY_SLOT_WAIT_SECS,
         _REPORT_DRAIN_TIMEOUT,
         _RESET_TIMEOUT,
+        Any,
         Stats,
         SubagentInfo,
+        _redact,
         asyncio,
         clear_tombstone,
         logger,
@@ -197,8 +199,8 @@ class CancellationCoordinator(ManagerComponent):
         self._manager._tasks[recovery_key] = _t
         _t.add_done_callback(lambda t: t.exception() if not t.cancelled() else None)
 
-    def _unqueue_impl(self, agent_id: str) -> bool:
-        """Drop a not-yet-started spawn from the stagger queue. True if removed.
+    def _unqueue_impl(self, agent_id: str) -> list[dict[str, Any]]:
+        """Drop and return not-yet-started entries from the stagger queue.
 
         The queue is the only record of a waiting run — `spawn` returns its queued
         SubagentInfo without registering it in ``_agents`` — so removing the entry
@@ -208,7 +210,7 @@ class CancellationCoordinator(ManagerComponent):
         """
         dropped = self._manager._scheduler.remove(agent_id)
         if not dropped:
-            return False
+            return []
         for p in dropped:
             try:
                 self._manager._emit_queue_depth(
@@ -216,7 +218,27 @@ class CancellationCoordinator(ManagerComponent):
                 )
             except Exception:
                 logger.debug("queue-depth re-emit failed after unqueue", exc_info=True)
-        return True
+        return dropped
+
+    async def _finalize_queued_cancel_impl(self, params: dict[str, Any]) -> None:
+        """Durably reject one coordinator-backed queue entry."""
+        rejection_error = "spawn cancelled before start"
+        await self._manager.command_authority.reject_waiting_execution(
+            str(params.get("_preassigned_id") or ""), rejection_error
+        )
+        await self._manager.announce_durable_rejection(
+            SubagentInfo(
+                id=str(params.get("_preassigned_id") or ""),
+                task=_redact(str(params.get("task") or "")),
+                parent_session_key=str(params.get("parent_session_key") or ""),
+                agent=str(params.get("agent") or ""),
+                silent=bool(params.get("silent")),
+                done=True,
+                error=rejection_error,
+                batch_id=str(params.get("batch_id") or ""),
+                batch_total=int(params.get("batch_total") or 0),
+            )
+        )
 
     async def cancel_impl(self, agent_id: str) -> bool:
         """Cancel a single running subagent. Returns True if found and cancelled.
@@ -234,10 +256,46 @@ class CancellationCoordinator(ManagerComponent):
             # queue, which the drain later started — the stop was reported as
             # ineffective while the work ran anyway, and a purge on a deleted
             # session could not reach it. Unqueueing IS the cancel for that state.
-            if self._manager._unqueue(agent_id):
+            dropped = self._manager._unqueue(agent_id)
+            if dropped:
+                remaining = list(dropped)
+                try:
+                    while remaining:
+                        await self._manager._finalize_queued_cancel(remaining[0])
+                        remaining.pop(0)
+                except Exception:
+                    for entry in remaining:
+                        entry["_coordinator_cancel_pending"] = True
+                        self._manager._scheduler.enqueue(entry)
+                        self._manager._emit_queue_depth(
+                            str(entry.get("parent_session_key", "")),
+                            str(entry.get("batch_id", "")),
+                        )
+                    logger.warning(
+                        "Queued subagent %s cancellation was not durably recorded",
+                        agent_id,
+                        exc_info=True,
+                    )
+                    raise
                 logger.info("Cancelled queued subagent %s before it started", agent_id)
                 return True
             return False
+        if info._coordinator_waiting:
+            info.user_stopped = True
+            approval_task = self._manager._tasks.get(agent_id)
+            if (
+                approval_task is not None
+                and approval_task is not asyncio.current_task()
+                and not approval_task.done()
+            ):
+                self._manager._cancel_task_intentionally(
+                    approval_task, info, reason="approval_wait_cancel"
+                )
+            await self._manager.command_authority.reject_waiting_execution(
+                agent_id, "spawn cancelled before start"
+            )
+            info._coordinator_waiting = False
+            info._coordinator_claim_uncertain = False
         info.user_stopped = True
         # Neutral semantics live in the RECORD, not just the live event: a user
         # stop leaves ``error`` unset so every consumer (reconnect snapshots,
@@ -382,3 +440,4 @@ class CancellationCoordinator(ManagerComponent):
                             owner.id,
                             exc_info=True,
                         )
+        await self._manager.command_authority.close()

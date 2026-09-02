@@ -113,6 +113,9 @@ class RunCommand:
     updated_at: float
     rejection_reason: str
     payload_json: str = ""
+    claim_expires_at: float = 0.0
+    claim_epoch: int = 0
+    result_json: str = ""
 
 
 @dataclass(frozen=True)
@@ -120,6 +123,13 @@ class RunFence:
     run_id: str
     owner_id: str
     lease_epoch: int
+
+
+@dataclass(frozen=True)
+class CommandFence:
+    command_id: str
+    owner_id: str
+    claim_epoch: int
 
 
 @dataclass(frozen=True)
@@ -138,8 +148,9 @@ class OwnerLease:
 @dataclass(frozen=True)
 class CommandClaim:
     command: RunCommand
-    run: RunRecord
-    fence: RunFence
+    run: RunRecord | None
+    fence: RunFence | None
+    command_fence: CommandFence
 
 
 @dataclass(frozen=True)
@@ -189,8 +200,27 @@ class SubmitRun:
 
 
 @dataclass(frozen=True)
+class SubmitControl:
+    command_id: str
+    idempotency_key: str
+    run_id: str
+    operation: CommandOperation
+    payload_hash: str
+    payload_json: str = ""
+    accepted: bool = True
+    rejection_reason: str = ""
+
+
+@dataclass(frozen=True)
 class SubmitReceipt:
     run: RunRecord
+    command: RunCommand
+    created: bool
+
+
+@dataclass(frozen=True)
+class CommandReceipt:
+    run: RunRecord | None
     command: RunCommand
     created: bool
 
@@ -208,7 +238,33 @@ class CoordinatorResult(Generic[T]):
 class RunCoordinator(Protocol):
     async def submit(self, request: SubmitRun) -> CoordinatorResult[SubmitReceipt]: ...
 
+    async def submit_control(self, request: SubmitControl) -> CoordinatorResult[CommandReceipt]: ...
+
+    async def get_command_by_key(self, idempotency_key: str) -> CommandReceipt | None: ...
+
     async def claim_commands(self, owner: OwnerLease, limit: int) -> list[CommandClaim]: ...
+
+    async def claim_controls(
+        self, owner: OwnerLease, limit: int, command_id: str = ""
+    ) -> list[CommandClaim]: ...
+
+    async def claim_command(self, command_id: str, owner: OwnerLease) -> CommandClaim | None: ...
+
+    async def finish_command(
+        self,
+        fence: CommandFence,
+        status: CommandStatus,
+        rejection_reason: str = "",
+        result_json: str = "",
+    ) -> CoordinatorResult[RunCommand]: ...
+
+    async def finish_control(
+        self,
+        fence: CommandFence,
+        status: CommandStatus,
+        rejection_reason: str = "",
+        result_json: str = "",
+    ) -> CoordinatorResult[RunCommand]: ...
 
     async def mark_starting(
         self, command: RunCommand, fence: RunFence, expected_version: int

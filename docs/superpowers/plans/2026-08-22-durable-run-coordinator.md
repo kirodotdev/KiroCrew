@@ -327,34 +327,34 @@ exceptions.
 - Produces: additive `command_id`, `idempotency_key`, and `payload_hash` fields on
   authenticated internal spawn requests; durable command lookup on uncertainty.
 
-- [ ] **Step 1: Write failing boundary tests.**
+- [x] **Step 1: Write failing boundary tests.**
 
   Assert an MCP retry sends identical IDs/hash, same-key retries return the same
   run, different payload fails with a machine-readable conflict code, and an old
   internal caller without IDs retains legacy behavior.
 
-- [ ] **Step 2: Verify RED, then add caller-generated IDs.**
+- [x] **Step 2: Verify RED, then add caller-generated IDs.**
 
   Derive a deterministic payload hash from canonical JSON and generate IDs once
   per wave member before the HTTP loop. Never regenerate inside retry handling.
 
-- [ ] **Step 3: Make gateway admission coordinator-authoritative.**
+- [x] **Step 3: Make gateway admission coordinator-authoritative.**
 
   Parse and validate the additive fields, call `submit()` before manager
   execution, and pass the returned run ID as `_preassigned_id`. A duplicate
   applied/claimed command returns its durable response without a second spawn.
 
-- [ ] **Step 4: Replace new-caller lost-submission inference.**
+- [x] **Step 4: Replace new-caller lost-submission inference.**
 
   On uncertain HTTP response, query by idempotency key and use the recorded
   decision. Keep the current stuck-wave reconciliation only for legacy callers.
 
-- [ ] **Step 5: Route continue, steer, cancel, and release through typed commands.**
+- [x] **Step 5: Route continue, steer, cancel, and release through typed commands.**
 
   Reuse the same key/hash conflict rules. Do not change tool text or response
   shape except for additive machine-readable identifiers.
 
-- [ ] **Step 6: Verify, document, and commit PR 5.**
+- [x] **Step 6: Verify, document, and commit PR 5.**
 
   Run MCP messaging, admission, scale, and subagent suites. Commit:
   `feat: make subagent commands idempotent`.

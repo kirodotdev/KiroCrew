@@ -291,6 +291,7 @@ from kiro_crew.dashboard.handlers.messaging import (  # noqa: E402, F401
     api_slack_reactions,
     api_spawn,
     api_spawn_clear,
+    api_spawn_command_lookup,
     api_spawn_continue,
     api_spawn_delete,
     api_spawn_list,
