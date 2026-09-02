@@ -678,6 +678,15 @@ def test_clean_stale_malformed_json_untouched(tmp_path, monkeypatch):
     assert p.read_text(encoding="utf-8") == "{ not valid json "  # left untouched
 
 
+def test_clean_stale_non_object_json_untouched(tmp_path, monkeypatch):
+    p = tmp_path / "mcp.json"
+    p.write_text("[]", encoding="utf-8")
+    monkeypatch.setattr(mcp_cleanup, "_KIRO_MCP_JSON", p)
+
+    assert mcp_cleanup.clean_stale_managed_mcp() == []
+    assert p.read_text(encoding="utf-8") == "[]"
+
+
 def test_clean_stale_no_stale_leaves_file_untouched(tmp_path, monkeypatch):
     p = tmp_path / "mcp.json"
     content = json.dumps(

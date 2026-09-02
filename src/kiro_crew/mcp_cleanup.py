@@ -187,6 +187,8 @@ def clean_stale_managed_mcp() -> list[str]:
         data = json.loads(_kiro_mcp_json().read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError):
         return []
+    if not isinstance(data, dict):
+        return []
     servers = data.get("mcpServers", {})
     if not isinstance(servers, dict):
         return []
