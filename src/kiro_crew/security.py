@@ -7439,18 +7439,26 @@ def _build_sensitive_regex() -> re.Pattern[str]:
         # colon lists, comma/semicolon-joined args) — without the latter a
         # ``FOO=bar:~/.aws/credentials`` or ``PATH=/x:~/.ssh/id_rsa`` token slips
         # past the backstop while no verb branch fires either.
+        #
+        # The anchor is written ``(?:^|[\s'\"=:,;])`` with NO leading ``.*``: this
+        # pattern is only ever used via ``.search`` (see ``_get_sensitive_re``
+        # callers), which already retries at every offset, so a leading ``.*``
+        # matched nothing extra while making the scan quadratic in the longest
+        # line. Note ``\n`` is in the class, so a path at the start of a later
+        # line still matches even though ``.`` never crossed a newline anyway.
+        # Do NOT reintroduce ``.*`` here.
         # (3) write-protected leaf: matched verb-INDEPENDENTLY too (same token
         # anchor), so a quoted redirect (``> "$HOME/.../marker"``), ``cp``,
         # ``python -c "open(...,'w')"`` or any novel write verb is still caught.
         rf"(?:(?:{_READ_CMDS}.*|{_WRITE_CMDS}.*|{_SCRIPT_OPEN}.*|.*[<>|]\s*)"
         rf"{sensitive_path}"
-        rf"|(?:^|.*[\s'\"=:,;]){sensitive_path}"
-        rf"|(?:^|.*[\s'\"=:,;]){write_protected_path}"
+        rf"|(?:^|[\s'\"=:,;]){sensitive_path}"
+        rf"|(?:^|[\s'\"=:,;]){write_protected_path}"
         # (3b) publish artifacts of a keystone leaf -- the atomic-write temp and the lock
         # sibling -- in both the POSIX and the Windows-native spelling. Verb-independent
         # like (2)/(3): naming the artifact is the signal, so a redirect, a ``cp``, or an
         # embedded ``open(...,'w')`` is caught without enumerating write verbs.
-        rf"|(?:^|.*[\s'\"=:,;]){artifact_path}"
+        rf"|(?:^|[\s'\"=:,;]){artifact_path}"
         # (4) Windows-native spelling, verb-independent (same token anchor):
         # covers quoted backslash paths AND embedded-script literals that the
         # tokenizing passes cannot see. (5) the %APPDATA% / %LOCALAPPDATA%
@@ -7459,12 +7467,12 @@ def _build_sensitive_regex() -> re.Pattern[str]:
         # (7) the distinctive leaves as a bare path SEGMENT, with no anchor at
         # all, because branches (3) and (6) both fall to a ``cd`` plus a
         # relative name.
-        rf"|(?:^|.*[\s'\"=:,;]){win_sensitive_path}"
-        rf"|(?:^|.*[\s'\"=:,;]){win_artifact_path}"
-        rf"|(?:^|.*[\s'\"=:,;]){appdata_sensitive_path}"
-        rf"|(?:^|.*[\s'\"=:,;]){localappdata_sensitive_path}"
-        rf"|(?:^|.*[\s'\"=:,;]){win_write_protected_path}"
-        rf"|(?:^|.*[\s'\"=:,;]){win_crew_var_leaf_path}"
+        rf"|(?:^|[\s'\"=:,;]){win_sensitive_path}"
+        rf"|(?:^|[\s'\"=:,;]){win_artifact_path}"
+        rf"|(?:^|[\s'\"=:,;]){appdata_sensitive_path}"
+        rf"|(?:^|[\s'\"=:,;]){localappdata_sensitive_path}"
+        rf"|(?:^|[\s'\"=:,;]){win_write_protected_path}"
+        rf"|(?:^|[\s'\"=:,;]){win_crew_var_leaf_path}"
         # (8) ~/.kiro/agents (POSIX and Windows-native spelling, plus the
         # ``$KIRO_HOME`` override), matched verb-INDEPENDENTLY with the same token
         # anchor as (2)/(3): naming the dir is the signal, so ``curl -o``/``wget
@@ -7472,8 +7480,8 @@ def _build_sensitive_regex() -> re.Pattern[str]:
         # write verb are caught, not just an enumerated allowlist. Bash reads of
         # the dir are blocked incidentally (harmless — no secret, Python readers
         # only); tool-path reads stay allowed.
-        rf"|(?:^|.*[\s'\"=:,;]){agents_write_path}"
-        rf"|(?:^|.*[\s'\"=:,;]){win_agents_write_path}"
+        rf"|(?:^|[\s'\"=:,;]){agents_write_path}"
+        rf"|(?:^|[\s'\"=:,;]){win_agents_write_path}"
         # (10) whisper weight FILENAMES, also with no anchor, because the digest the
         # model store checks only binds the bytes if the name it then loads cannot be
         # rewritten by a ``cd``-relative command.
@@ -12562,19 +12570,29 @@ def redact_credentials(text: str) -> tuple[str, list[str]]:
     # This is the hot path — the alternation is 23 branches retried at nearly
     # every position, and real text almost never contains a credential.
     if _might_contain_credential(result):
-        for m in _CREDENTIAL_PATTERNS.finditer(result):
-            matched = m.group()
-            tag = _REDACTED_CREDENTIAL_TAG
-            result = result.replace(matched, tag, 1)
+
+        def _redact_one(m: re.Match[str]) -> str:
             # Emit ONLY non-sensitive metadata (length). Do NOT slice any part of
-            # `matched` into the warning: `_CREDENTIAL_PATTERNS` matches the raw
+            # the match into the warning: `_CREDENTIAL_PATTERNS` matches the raw
             # secret value itself (e.g. `ghp_…`, `sk-ant-…`), so even a short prefix
             # is genuine plaintext key material — a fixed-length token prefix leaves
             # ~12-16 secret chars in a 20-char slice. The warnings list is a
             # redaction-subsystem output expected to be safe to log/surface, so it
             # must carry no secret bytes. Mirrors the base64 / bare-secret branches
             # below, which already log length only.
-            warnings.append(f"Redacted credential pattern ({len(matched)} chars)")
+            warnings.append(f"Redacted credential pattern ({len(m.group())} chars)")
+            return _REDACTED_CREDENTIAL_TAG
+
+        # ONE pass. `sub` walks the matches left-to-right exactly as `finditer`
+        # did and calls the replacer in that same order, so `warnings` is
+        # appended in an identical order with identical contents. The previous
+        # shape rebuilt the entire string per match via
+        # `result.replace(matched, tag, 1)` — O(n) per match, O(n²) overall on
+        # credential-dense text — and replaced the FIRST occurrence of the
+        # matched text rather than the span that actually matched. `sub` splices
+        # each matched span in place, which is both linear and positionally
+        # exact.
+        result = _CREDENTIAL_PATTERNS.sub(_redact_one, result)
 
     # Passes 2 and 3 both scan the ORIGINAL `text` for runs of the base64
     # alphabet, and they select the SAME spans: `[A-Za-z0-9+/]{40,}` is greedy and

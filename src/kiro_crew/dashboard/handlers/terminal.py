@@ -24,6 +24,7 @@ from kiro_crew.dashboard import terminal_commands
 from kiro_crew.dashboard.origin import check_origin, mark_audit_claimed
 from kiro_crew.executors import discovery_executor, subprocess_executor
 from kiro_crew.hooks import validate_file_path
+from kiro_crew.sandbox import _PYTHON_ENV_PREFIXES
 from kiro_crew.security import (
     is_sensitive_path,
     redact_credentials,
@@ -468,6 +469,28 @@ _READY_HOOK_VAR = "KIROCREW_TERMINAL_READY_HOOK"
 _READY_PREV_VAR = "KIROCREW_TERMINAL_READY_PREV"
 
 
+def _pty_child_env(extra: dict[str, str]) -> dict[str, str]:
+    """Build the interactive shell's environment: the gateway environment plus
+    *extra*, minus Kiro Crew's own Python startup variables.
+
+    ``PYTHONPATH``/``PYTHONHOME``/``PYTHONPYCACHEPREFIX`` are searched BEFORE a
+    venv's own site-packages, so leaking the gateway's copies makes a user's
+    Python 3.13 venv import Kiro Crew's 3.12 site-packages and its C extensions
+    fail to load. The agent surface strips them via
+    ``sandbox.scrub_agent_subprocess_env``; this brings the terminal into line.
+
+    Only the Python prefixes are dropped. Unlike the agent spawn, this is the
+    user's own unsandboxed shell (see the spawn comment below), so
+    ``SSH_AUTH_SOCK``, the AWS vars and the rest of the credential-bearing
+    environment must survive or git-over-SSH and the AWS CLI break in it.
+    """
+    env = {**os.environ, **extra}
+    for key in list(env):
+        if any(key.startswith(prefix) for prefix in _PYTHON_ENV_PREFIXES):
+            del env[key]
+    return env
+
+
 def _bash_ready_env(token: str) -> dict[str, str]:
     """Environment that makes a real login Bash report readiness at its prompt.
 
@@ -860,7 +883,7 @@ async def api_terminal_ws(request: web.Request) -> web.WebSocketResponse | web.R
         cwd = _resolve_cwd(cfg, request.query.get("cwd"))
         if not os.path.isdir(cwd):
             cwd = os.path.expanduser("~")
-        env = {**os.environ, "KIROCREW_TERMINAL": "1"}
+        env = _pty_child_env({"KIROCREW_TERMINAL": "1"})
         argv = [shell, "-NoLogo"] if "powershell" in shell.lower() else [shell]
         try:
             wp = WindowsPty(argv, cwd=cwd, env=env, cols=80, rows=24)
@@ -907,8 +930,7 @@ async def api_terminal_ws(request: web.Request) -> web.WebSocketResponse | web.R
                 struct.pack("HHHH", 24, 80, 0, 0),
             )
             cwd = _resolve_cwd(cfg, request.query.get("cwd"))
-            env = {
-                **os.environ,
+            env = _pty_child_env({
                 "TERM": "xterm-256color",
                 "KIROCREW_TERMINAL": "1",
                 # Export the shell actually being spawned (already resolved to
@@ -918,7 +940,7 @@ async def api_terminal_ws(request: web.Request) -> web.WebSocketResponse | web.R
                 # (vim's :sh, tmux default-shell) open the wrong one. POSIX
                 # branch only: PowerShell does not consult $SHELL.
                 "SHELL": shell,
-            }
+            })
             # Security: intentionally unsandboxed — this is the user's own
             # interactive terminal (like SSH), not agent-executed code.
             # Auth is enforced at WS handshake via token_auth_middleware.

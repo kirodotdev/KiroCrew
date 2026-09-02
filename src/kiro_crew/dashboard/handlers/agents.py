@@ -2033,7 +2033,11 @@ async def api_models(request: web.Request) -> web.Response:
         try:
             env = {**os.environ}
             env["PATH"] = augmented_path(env.get("PATH", ""))
-            _resolve_ssh_auth_sock(env)
+            # OFF the loop: the resolver globs /tmp/ssh-*/agent.* and stats
+            # every hit, so its latency scales with the /tmp entry count. Its
+            # sibling wrapper's contract states it must never run on the event
+            # loop, and this endpoint is polled every 8s while degraded.
+            await asyncio.to_thread(_resolve_ssh_auth_sock, env)
             # The Docker entrypoint removes credentials from the long-lived
             # gateway environment.  This fixed-argv child is the official
             # kiro-cli and KIRO_API_KEY is its own model credential, so settle

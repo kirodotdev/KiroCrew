@@ -4325,3 +4325,144 @@ class TestWriteSerialization:
 
         names = {f.name for f in dataclasses.fields(terminal._TerminalSession)}
         assert "write_lock" in names
+
+
+class TestPtyChildEnvStripsPythonStartupVars:
+    """``PYTHONPATH``/``PYTHONHOME``/``PYTHONPYCACHEPREFIX`` are searched BEFORE a
+    venv's own site-packages, so leaking the gateway's copies into an interactive
+    shell makes a user's Python 3.13 venv import Kiro Crew's 3.12 site-packages
+    and its C extensions fail to load. The agent surface already strips them
+    (``sandbox.scrub_agent_subprocess_env``); these pin the terminal surface,
+    which was never brought into line.
+    """
+
+    def test_python_startup_vars_are_dropped(self, monkeypatch):
+        monkeypatch.setenv("PYTHONPATH", "/gateway/site-packages")
+        monkeypatch.setenv("PYTHONHOME", "/gateway/python3.12")
+        monkeypatch.setenv("PYTHONPYCACHEPREFIX", "/gateway/pycache")
+        monkeypatch.setenv("KIROCREW_UNRELATED_KEEPME", "keep-this-value")
+
+        env = terminal._pty_child_env(
+            {"TERM": "xterm-256color", "KIROCREW_TERMINAL": "1"}
+        )
+
+        assert "PYTHONPATH" not in env
+        assert "PYTHONHOME" not in env
+        assert "PYTHONPYCACHEPREFIX" not in env
+        assert env["KIROCREW_TERMINAL"] == "1"
+        assert env["TERM"] == "xterm-256color"
+        assert env["KIROCREW_UNRELATED_KEEPME"] == "keep-this-value"
+
+    def test_credential_bearing_vars_survive(self, monkeypatch):
+        """Only the Python prefixes are dropped. This is the user's own
+        unsandboxed shell, so borrowing the AGENT spawn's credential scrub would
+        break git-over-SSH and the AWS CLI inside the panel."""
+        monkeypatch.setenv("SSH_AUTH_SOCK", "/tmp/ssh-abc/agent.1")
+        monkeypatch.setenv("AWS_SESSION_TOKEN", "FAKE-token")
+        monkeypatch.setenv("PYTHONPATH", "/gateway/site-packages")
+
+        env = terminal._pty_child_env({"KIROCREW_TERMINAL": "1"})
+
+        assert env["SSH_AUTH_SOCK"] == "/tmp/ssh-abc/agent.1"
+        assert env["AWS_SESSION_TOKEN"] == "FAKE-token"
+        assert "PYTHONPATH" not in env
+
+    @pytest.mark.asyncio
+    async def test_posix_pty_spawn_env_has_no_python_vars(self, monkeypatch):
+        """End-to-end through the POSIX branch: assert on the env actually handed
+        to the spawn, so rebuilding the dict in place is caught. The spawn is
+        made to fail AFTER the call is recorded so no read loop starts."""
+        monkeypatch.setenv("PYTHONPATH", "/gateway/site-packages")
+        monkeypatch.setenv("PYTHONHOME", "/gateway/python3.12")
+        monkeypatch.setenv("SHELL", "/bin/bash")
+        monkeypatch.setattr(
+            terminal.shutil, "which", lambda c: c if c == "/bin/zsh" else None
+        )
+
+        registry: dict = {}
+        req = _make_request(registry=registry, session_id="posix-pyenv")
+        req.query = MagicMock()
+        req.query.get = lambda *a, **k: None
+
+        ws = AsyncMock()
+        ws.closed = False
+
+        fds = os.pipe()  # real fds so the cleanup os.close() calls succeed
+        spawn = AsyncMock(side_effect=RuntimeError("stop before read loop"))
+        cfg = {"enabled": True, "shell": "/bin/zsh"}
+        with patch.object(terminal.platform_compat, "IS_POSIX", True), \
+             patch.object(terminal.platform_compat, "IS_WINDOWS", False), \
+             patch.object(terminal._pty, "openpty", return_value=fds), \
+             patch.object(terminal.fcntl, "ioctl", lambda *a: None), \
+             patch.object(terminal.asyncio, "create_subprocess_exec", spawn), \
+             patch.object(terminal, "_get_config", return_value=cfg), \
+             patch.object(terminal.web, "WebSocketResponse", return_value=ws), \
+             patch.object(terminal, "_sel") as mock_sel:
+            mock_sel.return_value.log_api_access = MagicMock()
+            await terminal.api_terminal_ws(req)
+
+        spawn.assert_awaited_once()
+        env = spawn.call_args.kwargs["env"]
+        assert "PYTHONPATH" not in env
+        assert "PYTHONHOME" not in env
+        assert env["KIROCREW_TERMINAL"] == "1"
+        assert env["TERM"] == "xterm-256color"
+        assert env["SHELL"] == "/bin/zsh"
+
+    @pytest.mark.asyncio
+    async def test_conpty_spawn_env_has_no_python_vars(self, monkeypatch, tmp_path):
+        """The Windows ConPTY branch IS reachable on Linux: ``IS_WINDOWS`` is a
+        module attribute and ``WindowsPty`` is a thin pywinpty wrapper the suite
+        already fakes, so the same code path runs here."""
+        monkeypatch.setenv("PYTHONPATH", "/gateway/site-packages")
+        monkeypatch.setenv("PYTHONHOME", "/gateway/python3.12")
+
+        cfg_file = tmp_path / "config.json"
+        cfg_file.write_text(json.dumps({"dashboard": {"terminal": {"enabled": True}}}))
+        monkeypatch.setattr(terminal, "config_path", lambda: cfg_file)
+        monkeypatch.setattr(terminal, "_sel", lambda: MagicMock())
+        monkeypatch.setattr(terminal.platform_compat, "IS_POSIX", False)
+        monkeypatch.setattr(terminal.platform_compat, "IS_WINDOWS", True)
+
+        captured: dict = {}
+
+        class _FakeWinPty:
+            def __init__(self, argv, cwd=None, env=None, cols=80, rows=24):
+                captured["env"] = env
+                self.pid = 4321
+                self._reads = iter((b"PS> ", b""))
+
+            def read(self, size=4096):
+                return next(self._reads)
+
+            def write(self, data):
+                return len(data)
+
+            def resize(self, cols, rows):
+                pass
+
+            def isalive(self):
+                return True
+
+            def terminate(self, force=True):
+                pass
+
+        monkeypatch.setattr("kiro_crew.conpty.WindowsPty", _FakeWinPty)
+
+        registry: dict = {}
+        app = _make_app(registry=registry)
+
+        from aiohttp.test_utils import TestClient, TestServer
+
+        async with TestClient(TestServer(app)) as client:
+            async with client.ws_connect("/api/ws/terminal/win-pyenv") as ws:
+                await ws.receive(timeout=3)
+                await ws.close()
+
+        if "win-pyenv" in registry:
+            await terminal._kill_session(registry["win-pyenv"])
+
+        env = captured["env"]
+        assert "PYTHONPATH" not in env
+        assert "PYTHONHOME" not in env
+        assert env["KIROCREW_TERMINAL"] == "1"
