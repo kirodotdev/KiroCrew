@@ -54,6 +54,7 @@ in the **same commit** when you change what it documents.
 | user-facing strings, dates, numbers, sort order | [i18n-catalog](website/docs/i18n-catalog.md) (authoring) + [i18n-gates](docs/ci/i18n-gates.md) (CI) |
 | tests: flakes, speed, fixtures, sharding, side effects, conftest isolation | [testing-conventions](docs/system-specs/common/testing-conventions.md) + the [writing-tests](src/kiro_crew/builtin_skills/kirocrew-dev/writing-tests/SKILL.md) skill |
 | browser E2E | [e2e-gate](docs/ci/e2e-gate.md) |
+| verifying a change against a live isolated instance (pods, e2e, seeded states) | [verification-recipes](docs/guides/verification-recipes.md) + [feature-map](docs/feature-map/README.md) |
 | CI, PR flow, review gates | [ci-and-reviews](docs/ci/ci-and-reviews.md) + [CONTRIBUTING.md](CONTRIBUTING.md) |
 | constants, magic numbers, where a limit lives | [code-style](docs/system-specs/common/code-style.md) |
 | injected `[Cron notification]` / `[Subagent completion event]` | [injected-messages](docs/system-specs/common/injected-messages.md) |

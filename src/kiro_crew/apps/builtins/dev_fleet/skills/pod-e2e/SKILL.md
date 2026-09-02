@@ -56,7 +56,53 @@ kirocrew pod down <wt>
 ```
 
 Other verbs: `ls` (list running pods) · `status <wt>` · `token <wt>` · `url <wt>`
-· `logs <wt>` · `provision <wt>`. Run `kirocrew pod --help` for the full list.
+· `logs <wt>` · `provision <wt>` · `scenarios` · `api <wt> <METHOD> <path>`.
+Run `kirocrew pod --help` for the full list.
+
+### Boot the pod with state already in it (`--seed <scenario>`)
+
+A blank pod is the right target for "does this route exist". It is the *wrong*
+target for anything that needs content — a panel that renders a list, a
+migration, a filter, a retention path — because an empty dashboard and a broken
+feature look identical. Seed a named scenario instead of clicking state in by
+hand:
+
+```bash
+kirocrew pod scenarios                        # the library, with one-line descriptions
+kirocrew pod scenarios --json                 # [{"name": …, "description": …}]
+kirocrew pod up <wt> --seed crons-active      # boot with that state already on disk
+```
+
+A **scenario** is a fixture shipped inside the package
+(`kiro_crew/tests_fixtures/<name>/`), so the same name works in
+`kirocrew gateway --seed <name>` and in a test via
+`kiro_crew.testing.fixtures.seeded_home` — the state you reproduced in the pod is
+the state a regression test can assert against. **Always run
+`kirocrew pod scenarios` first** rather than guessing a name: the list is read
+from the package at runtime, and an unknown name is refused (with the list) so a
+typo can never quietly boot a blank pod you then mis-triage.
+
+`--seed` still accepts a **directory** (`--seed ~/.kiro/crew`), which copies only
+a sanitized `config.json`. Names and paths are told apart syntactically: a bare
+token is a scenario, anything with a separator or a leading `~`/`.` is a path.
+A pod whose HOME already holds state is never re-seeded, so a crash and its
+`Restart=on-failure` re-exec keep the evidence.
+
+### Call the pod's API without handling a token (`pod api`)
+
+```bash
+kirocrew pod api <wt> GET sessions
+kirocrew pod api <wt> POST config --data '{"key":"agent.model"}'
+```
+
+Prefer this over `curl "$base_url/api/...?token=$token"` in agent work. It mints
+the credential internally through the same ownership-proof path `pod token` uses
+— so you never read `.local_secret`, and a foreign process holding the derived
+port cannot be authenticated against — and it prints **one JSON document with
+fixed keys** (`{name, method, path, status, ok, body}`) on every outcome, so
+there is no second output shape to branch on. A non-2xx prints the gateway's own
+error body and exits 1. `curl` is still the right tool inside the bundled suite,
+which already has the handle in a shell variable.
 
 **Isolation guarantees** (enforced by the pod runtime):
 own `KIROCREW_HOME`, own port, **no tunnel** (can't grab the real Slack identity),
@@ -99,12 +145,14 @@ green). Flags:
 | `--api-only` | skip the Playwright phase |
 | `--fe-only` | skip the API-test phase |
 | `--video` | record the session at 1080p → `.webm` + `.mp4` (finalization is time-capped) |
+| `--seed=<scenario>` | boot the pod with a named state already in its HOME (`kirocrew pod scenarios` lists them). Ignored, with a logged note, when the pod is already up — a running pod's HOME is never re-seeded. |
 
 ## What each phase does
 
-1. **up** — `kirocrew pod up <wt> --json`. If already active, reuses it (and
-   won't stop it on exit). Boots the worktree's own gateway with `--no-crons`,
-   blank-seed DB, isolated HOME.
+1. **up** — `kirocrew pod up <wt> --json` (plus `--seed <scenario>` when
+   `--seed=` was passed). If already active, reuses it (and won't stop it on
+   exit, and won't re-seed it). Boots the worktree's own gateway with
+   `--no-crons` and an isolated HOME — blank unless a scenario was seeded.
 2. **health** — polls `kirocrew pod status <wt> --json` until its `health` is
    200/401/403 (≤60s). Deliberately not a bare `curl base_url/api/health`: a
    derived port is routinely held by another pod or by the live gateway, every

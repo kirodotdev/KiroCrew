@@ -1,0 +1,12 @@
+schema-version: 2026-04-28
+fixture-name: connections-two
+description: |
+  Two MCP servers declared in the data home's own ``mcp.json`` scope: one
+  plain stdio server that should start, and one deliberately broken -- disabled,
+  pointing at a command that does not exist, and carrying an obviously-fake
+  placeholder token where a real credential would sit. Exercises the connections
+  panel's healthy / needs-attention split and the mcp.json discovery scope
+  without any real credential reaching the wheel.
+
+  Only the KIROCREW_HOME mcp.json scope is seeded. The kiro-global scope
+  (~/.kiro/settings/mcp.json) is outside a fixture's tree by definition.

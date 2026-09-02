@@ -1,8 +1,12 @@
 """systemd ``--user`` template unit for pods — generated, not shipped.
 
-The unit's ``ExecStart`` re-enters the installed ``kirocrew`` binary as
-``kirocrew pod _run %i``, so the boot logic lives in Python (see
-:func:`kiro_crew.pod.runtime.boot`) and nothing is shipped outside the package.
+The unit's ``ExecStart`` re-enters a ``kirocrew`` binary as ``kirocrew pod _run
+%i``, so the boot logic lives in Python (see :func:`kiro_crew.pod.runtime.boot`)
+and nothing is shipped outside the package. The template can only name ONE
+binary for every instance, so each pod additionally gets a per-instance drop-in
+(:func:`install_dropin`) pinning ``ExecStart`` to its OWN checkout's ``kirocrew``
+— without it a pod runs whichever build ``pod install`` resolved rather than the
+worktree it exists to test.
 
 The unit deliberately has **no ``ExecStopPost`` teardown hook**. systemd runs
 ``ExecStopPost`` before the final kill of the unit's cgroup, so a hook that
@@ -23,6 +27,7 @@ import shutil
 import sys
 from pathlib import Path
 
+from kiro_crew.pod import provision as prov
 from kiro_crew.pod.config import PodConfig, environment_vars
 from kiro_crew.service.common import systemd_quote
 
@@ -106,6 +111,89 @@ def render_unit(cfg: PodConfig) -> str:
 def unit_path(cfg: PodConfig) -> Path:
     """Where the template unit is installed for the current user."""
     return Path.home() / ".config" / "systemd" / "user" / f"{cfg.unit_prefix}@.service"
+
+
+# --------------------------------------------------------------------------- #
+# Per-instance drop-in — what makes a pod run ITS OWN worktree's code.
+#
+# The unit above is a TEMPLATE shared by every pod, so its ``ExecStart`` can only
+# bake ONE kirocrew binary: whichever one ``pod install`` happened to resolve,
+# normally the globally installed ``~/.local/bin/kirocrew``. Every pod therefore
+# booted through that build regardless of which checkout it was pinned to, and a
+# pod exists precisely to run a worktree's own code. The visible cost was silent:
+# a global build predating a feature simply ignored the env-file key carrying it
+# (``SEED=`` being the sharp one), so the pod came up healthy and unseeded while
+# the worktree's own ``boot`` — which does honour it — never ran.
+#
+# systemd resolves ``<unit>.d/*.conf`` per INSTANCE, so one drop-in per pod pins
+# that pod to its checkout without touching the shared template. The empty
+# ``ExecStart=`` is required: for a ``Type=simple`` unit the directive is a list,
+# and a second value would append a command rather than replace the template's.
+# --------------------------------------------------------------------------- #
+
+_DROPIN_TEMPLATE = """\
+# Written by `kirocrew pod up` — removed by `kirocrew pod down`. Do not edit.
+[Service]
+# Reset the template's ExecStart (a list directive, so an unreset second value
+# would APPEND) and boot this pod through its own checkout's kirocrew. The pod
+# then runs the worktree's code, which is the whole point of a pod: the template
+# alone bakes one global binary for every instance.
+ExecStart=
+ExecStart={kirocrew_bin} pod _run %i
+"""
+
+
+def dropin_dir(cfg: PodConfig, name: str) -> Path:
+    """Drop-in directory systemd reads for pod *name* alone."""
+    return unit_path(cfg).with_name(f"{cfg.unit_prefix}@{name}.service.d")
+
+
+def dropin_path(cfg: PodConfig, name: str) -> Path:
+    """The single drop-in file ``pod up`` writes for pod *name*."""
+    return dropin_dir(cfg, name) / "override.conf"
+
+
+def render_dropin(checkout: Path) -> str:
+    """The drop-in pinning a pod's boot to *checkout*'s own ``kirocrew``."""
+    return _DROPIN_TEMPLATE.format(kirocrew_bin=systemd_quote(str(prov.venv_bin(checkout))))
+
+
+def install_dropin(cfg: PodConfig, name: str, checkout: Path) -> Path:
+    """Write pod *name*'s drop-in and return its path. Caller runs daemon-reload.
+
+    Rewritten on every start rather than created once, so a pod re-``up``ped from
+    a different checkout — or one whose venv was rebuilt elsewhere — cannot keep
+    booting a path that no longer exists (the failure mode ``unit_exec_ok``
+    exists to self-heal for the template).
+    """
+    dst = dropin_path(cfg, name)
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    dst.write_text(render_dropin(checkout))
+    return dst
+
+
+def remove_dropin(cfg: PodConfig, name: str) -> bool:
+    """Delete pod *name*'s drop-in (and its directory). True when nothing is left.
+
+    Zero residue is a pod invariant, and the drop-in is per-pod state that
+    outlives the service, so teardown owns it exactly as it owns the HOME. The
+    directory goes too — an empty ``<unit>@<name>.service.d`` is still a
+    directory named after a pod that no longer exists. Reports what IS, so a
+    caller can refuse to claim zero residue on a removal that did not finish.
+    """
+    path = dropin_path(cfg, name)
+    directory = dropin_dir(cfg, name)
+    try:
+        path.unlink(missing_ok=True)
+    except OSError:
+        return False
+    try:
+        # Only when empty: another drop-in in there is not ours to delete.
+        if directory.is_dir() and not any(directory.iterdir()):
+            directory.rmdir()
+    except OSError:
+        pass
+    return not path.exists()
 
 
 def install_unit(cfg: PodConfig) -> Path:

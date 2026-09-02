@@ -1233,6 +1233,15 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # hygiene so a response echoing a credential or exfiltration URL cannot
         # leak into the log ring / /api/logs stream; not an egress boundary.
         "task_planner.py",
+        # Defensive scrub of ONE locally-held value in a locally-raised error.
+        # ``pod api`` authenticates with a ``?token=`` query parameter, so the
+        # pod's own dashboard credential is part of the request URL — and urllib
+        # puts that URL into some transport-error strings. The scrub keeps the
+        # token out of the PodError text before it can reach a message, a log or
+        # a terminal. It adds no transport and no audience: the pod verbs' output
+        # is already what it is, and this only guarantees a secret the caller
+        # never supplied is absent from it.
+        "pod/runtime.py",
         # Audit-side log hygiene: log_decline scrubs the model-authored tool
         # title before writing the shared auto_approve_declined SEL row. The
         # audit log is a gate-side record, not an output bound for a human or

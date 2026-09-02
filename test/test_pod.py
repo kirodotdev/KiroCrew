@@ -3250,6 +3250,42 @@ class TestUpVerb:
         # _up must pin the resolved checkout for the systemd boot.
         assert rt.read_env_file(c, "demo").get("CHECKOUT", "").endswith("wts/demo")
 
+    def test_up_with_a_seed_runs_the_landing_verification(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+    ) -> None:
+        """`_up` must CALL `_verify_seed_landed` once the gateway is healthy.
+
+        The verification's own refusals are pinned by direct-call tests, but a
+        direct call proves nothing about the wiring: the defect this closes was
+        `pod up --seed` reporting success without ever looking at the home, so
+        the call site itself is the mechanism under test. Verified by recording
+        the call rather than asserting on output, so a future refactor cannot
+        keep this green by printing the right words.
+        """
+        c = self._prep(tmp_path, monkeypatch)
+        monkeypatch.setattr(rt, "derive_port", lambda cfg, n: 7811)
+        monkeypatch.setattr(rt, "is_active", lambda cfg, n: False)
+        monkeypatch.setattr(rt, "systemctl", lambda *a, **k: _cp(returncode=0))
+        monkeypatch.setattr(pod_cli, "_wait_healthy", lambda cfg, n, p: 403)
+        monkeypatch.setattr(rt, "mint_token", lambda cfg, n, ttl: "tok-9")
+        monkeypatch.setattr(pod_cli, "_audit", lambda *a, **k: None)
+        monkeypatch.setattr(rt, "seed_home_from_scenario", lambda cfg, n, s: True)
+        calls: list[tuple[str, str, bool]] = []
+        monkeypatch.setattr(
+            pod_cli,
+            "_verify_seed_landed",
+            lambda cfg, name, scenario, home_was_populated: calls.append(
+                (name, scenario, home_was_populated)
+            ),
+        )
+        pod_cli._up(
+            c,
+            argparse.Namespace(
+                name="demo", json=True, seed="crons-active", ttl="2h", provision=False
+            ),
+        )
+        assert calls == [("demo", "crons-active", False)]
+
     def test_up_still_succeeds_when_ownership_cannot_be_proven(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
     ) -> None:
@@ -3993,6 +4029,15 @@ class TestUnitExecSelfHeal:
         steps: list[str] = []
         monkeypatch.setattr(rt.unit_mod, "unit_is_current", lambda c: False)
         monkeypatch.setattr(rt.unit_mod, "install_unit", lambda c: steps.append("reinstall"))
+        # The pod also needs a pinned checkout, because `start_pod` writes the
+        # per-instance override that routes the boot to that checkout's own
+        # kirocrew. Its own daemon-reload is the LAST one before the start: the
+        # template refresh above reloads too, and a template reload landing after
+        # the override write would leave systemd on the definition without it.
+        monkeypatch.setattr(
+            rt.unit_mod, "install_dropin", lambda c, n, co: steps.append("pin-checkout")
+        )
+        monkeypatch.setattr(rt, "read_env_file", lambda c, n: {"CHECKOUT": "/checkouts/demo"})
 
         def _systemctl(*args, **kwargs):
             steps.append(args[0])
@@ -4000,7 +4045,13 @@ class TestUnitExecSelfHeal:
 
         monkeypatch.setattr(rt, "systemctl", _systemctl)
         assert rt.start_pod(cfg, "demo").returncode == 0
-        assert steps == ["reinstall", "daemon-reload", "start"]
+        assert steps == [
+            "reinstall",
+            "daemon-reload",
+            "pin-checkout",
+            "daemon-reload",
+            "start",
+        ]
 
     def test_module_invocation_form_passes(self, tmp_path, monkeypatch):
         from kiro_crew.pod import unit as unit_mod

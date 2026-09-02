@@ -2584,6 +2584,103 @@ class TestFindListeningPidsErrors:
             pc.PortListener(222, "192.168.1.5", "4"),
         ]
 
+    def test_posix_falls_back_to_ss_when_lsof_sees_nothing(self, monkeypatch):
+        # lsof answers by walking /proc/<pid>/fd, so on a host that restricts
+        # those it reports NO listener for a socket the kernel plainly has —
+        # indistinguishable from a free port, which withheld pod credentials
+        # forever. ss reads the kernel socket table instead, so it is tried
+        # whenever lsof comes back empty.
+        if not pc.IS_POSIX:
+            pytest.skip("POSIX branch")
+        blob = (
+            'LISTEN 0 128 127.0.0.1:7777 0.0.0.0:* users:(("kirocrew",pid=111,fd=9))\n'
+            'LISTEN 0 128 [::]:7777 [::]:* users:(("other",pid=222,fd=3),("other",pid=223,fd=3))\n'
+            'LISTEN 0 128 127.0.0.1:7778 0.0.0.0:* users:(("elsewhere",pid=999,fd=4))\n'
+        )
+        calls: list[list[str]] = []
+
+        def _dispatch(argv, **_kw):
+            calls.append(list(argv))
+            return "" if argv[0].endswith("lsof") else blob
+
+        monkeypatch.setattr(pc, "trusted_system_bin", lambda name: f"/usr/bin/{name}")
+        monkeypatch.setattr(pc.subprocess, "check_output", _dispatch)
+        assert pc.find_port_listeners(7777) == [
+            pc.PortListener(111, "127.0.0.1", "4"),
+            pc.PortListener(222, "::", "6"),
+            pc.PortListener(223, "::", "6"),
+        ]
+        # lsof stays PRIMARY: the fallback is reached only after it answered.
+        assert [Path(c[0]).name for c in calls] == ["lsof", "ss"]
+
+    def test_posix_skips_ss_when_lsof_answered(self, monkeypatch):
+        # The fallback exists for lsof's blind spot, not as a second opinion: a
+        # host where lsof works must not pay for an extra spawn, and ss must not
+        # be able to contradict a listener lsof positively attributed.
+        if not pc.IS_POSIX:
+            pytest.skip("POSIX branch")
+        calls: list[str] = []
+
+        def _dispatch(argv, **_kw):
+            calls.append(Path(argv[0]).name)
+            return "p111\ntIPv4\nn127.0.0.1:7777\n"
+
+        monkeypatch.setattr(pc, "trusted_system_bin", lambda name: f"/usr/bin/{name}")
+        monkeypatch.setattr(pc.subprocess, "check_output", _dispatch)
+        assert pc.find_port_listeners(7777) == [pc.PortListener(111, "127.0.0.1", "4")]
+        assert calls == ["lsof"]
+
+    def test_ss_rows_without_process_attribution_are_dropped(self, monkeypatch):
+        # ss needs the same /proc walk to NAME the owning process and prints an
+        # empty process column when it cannot. Every caller reads a returned pid
+        # as proof of identity, so an unattributed row must yield nothing rather
+        # than a guess: this widens what can be proven, never the proof itself.
+        if not pc.IS_POSIX:
+            pytest.skip("POSIX branch")
+        blob = (
+            "LISTEN 0 128 127.0.0.1:7777 0.0.0.0:*\n"
+            'LISTEN 0 128 127.0.0.1:7777 0.0.0.0:* users:(("mine",pid=42,fd=5))\n'
+        )
+        monkeypatch.setattr(pc, "trusted_system_bin", lambda name: f"/usr/bin/{name}")
+        monkeypatch.setattr(
+            pc.subprocess,
+            "check_output",
+            lambda argv, **_kw: "" if argv[0].endswith("lsof") else blob,
+        )
+        assert pc.find_port_listeners(7777) == [pc.PortListener(42, "127.0.0.1", "4")]
+
+    def test_ss_header_and_non_listen_rows_are_ignored(self, monkeypatch):
+        # -H (no header) is only in iproute2 4.x and later, so a header row can
+        # still arrive; and a non-LISTEN row must never be read as a bind.
+        if not pc.IS_POSIX:
+            pytest.skip("POSIX branch")
+        blob = (
+            "State Recv-Q Send-Q Local Address:Port Peer Address:Port Process\n"
+            'ESTAB 0 0 127.0.0.1:7777 127.0.0.1:5555 users:(("client",pid=7,fd=1))\n'
+            'LISTEN 0 128 127.0.0.1:7777 0.0.0.0:* users:(("mine",pid=8,fd=2))\n'
+        )
+        monkeypatch.setattr(pc, "trusted_system_bin", lambda name: f"/usr/bin/{name}")
+        monkeypatch.setattr(
+            pc.subprocess,
+            "check_output",
+            lambda argv, **_kw: "" if argv[0].endswith("lsof") else blob,
+        )
+        assert pc.find_port_listeners(7777) == [pc.PortListener(8, "127.0.0.1", "4")]
+
+    def test_availability_follows_either_tool(self, monkeypatch):
+        # The probe describes the lookup, and the lookup can answer from ss, so
+        # answering False while ss is installed would gate off a proof that can
+        # in fact succeed — callers read False as "ownership is unprovable" and
+        # withhold credentials on it.
+        if pc.IS_WINDOWS:
+            pytest.skip("POSIX tool pair")
+        monkeypatch.setattr(
+            pc, "trusted_system_bin", lambda name: "/usr/sbin/ss" if name == "ss" else None
+        )
+        assert pc.listening_pid_tool_available() is True
+        monkeypatch.setattr(pc, "trusted_system_bin", lambda name: None)
+        assert pc.listening_pid_tool_available() is False
+
     def test_posix_lookup_is_bounded_by_a_timeout(self, monkeypatch):
         # A wedged lsof (stale mount, jammed process table) must degrade to
         # "no listener found" instead of hanging every port->PID caller: the

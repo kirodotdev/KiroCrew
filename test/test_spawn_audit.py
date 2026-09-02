@@ -1073,6 +1073,16 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         "platform_compat.py::open_with_default_app",
         "platform_compat.py::_posix_process_parent_map",
         "platform_compat.py::find_port_listeners",
+        # The two POSIX halves of the port->PID lookup, split out of
+        # ``find_port_listeners`` when ``ss`` joined ``lsof`` as a fallback (lsof
+        # answers from ``/proc/<pid>/fd`` and so reports nothing on a host that
+        # restricts those). Same class as the parent key, which still carries the
+        # Windows ``netstat`` branch: both commands are resolved absolutely
+        # through ``trusted_system_bin`` rather than by bare argv name, and the
+        # only caller-supplied value is an integer PORT interpolated into a
+        # filter argument — never the command, and never a path.
+        "platform_compat.py::_lsof_port_listeners",
+        "platform_compat.py::_ss_port_listeners",
         "platform_compat.py::find_python_interpreter",
         "platform_compat.py::kill_pid",
         "platform_compat.py::kill_process_tree",

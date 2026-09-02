@@ -102,7 +102,7 @@
 1 test/test_perf_boot_path.py
 3 test/test_playwright_cli_installer.py
 1 test/test_playwright_e2e.py
-3 test/test_pod_e2e_harness_paths.py
+2 test/test_pod_e2e_harness_paths.py
 1 test/test_pptx_maker_preview_tools.py
 1 test/test_pr_quality_gates.py
 1 test/test_pr_readiness_evaluate.py

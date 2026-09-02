@@ -1,0 +1,59 @@
+{
+  "version": 2,
+  "jobs": [
+    {
+      "id": "fixture-cron-morning",
+      "name": "morning standup nudge",
+      "message": "summarize overnight CI",
+      "schedule": {
+        "kind": "cron",
+        "every_secs": null,
+        "at_ts": null,
+        "cron_expr": "0 9 * * 1-5"
+      },
+      "channel": null,
+      "thread_ts": null,
+      "enabled": true,
+      "last_run_ts": null,
+      "last_status": null,
+      "last_error": null,
+      "created_ts": 1737000000.0
+    },
+    {
+      "id": "fixture-cron-hourly",
+      "name": "hourly inbox sweep",
+      "message": "check for new review comments",
+      "schedule": {
+        "kind": "cron",
+        "every_secs": null,
+        "at_ts": null,
+        "cron_expr": "0 * * * *"
+      },
+      "channel": null,
+      "thread_ts": null,
+      "enabled": true,
+      "last_run_ts": null,
+      "last_status": null,
+      "last_error": null,
+      "created_ts": 1737000000.0
+    },
+    {
+      "id": "fixture-cron-paused",
+      "name": "weekly recap (paused)",
+      "message": "weekly recap",
+      "schedule": {
+        "kind": "cron",
+        "every_secs": null,
+        "at_ts": null,
+        "cron_expr": "0 17 * * 5"
+      },
+      "channel": null,
+      "thread_ts": null,
+      "enabled": false,
+      "last_run_ts": null,
+      "last_status": null,
+      "last_error": null,
+      "created_ts": 1737000000.0
+    }
+  ]
+}

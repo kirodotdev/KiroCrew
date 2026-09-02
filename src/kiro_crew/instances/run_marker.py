@@ -64,6 +64,23 @@ _MARKER_SUFFIX = ".bin"
 _PID_SUFFIX = ".pid"
 _SECRET_SUFFIX = ".secret"
 
+#: Directory the sidecars live in, relative to a data home. Public because a
+#: reader outside its own home has to compose the path itself (see
+#: :func:`pid_file_name`).
+RUN_DIR_NAME = "run"
+
+
+def pid_file_name(port: int) -> str:
+    """File name of the pid sidecar a gateway serving *port* writes.
+
+    Split out from :func:`pid_path` for readers that must look inside a
+    DIFFERENT data home than their own — the pod control plane asks about a pod's
+    isolated ``KIROCREW_HOME``, so it cannot go through :func:`_run_dir` (which
+    resolves, and materialises, the CALLER's ``run/``). Naming the convention in
+    one place is what keeps the two readers from drifting apart.
+    """
+    return f"{_MARKER_PREFIX}{int(port)}{_PID_SUFFIX}"
+
 
 def _run_dir() -> Path:
     """Return ``<config_dir>/run`` (created ``0700``); mirrors sandbox._ensure_run_dir."""
@@ -114,7 +131,7 @@ def pid_path(port: int) -> Path:
     one path and nothing else. The pid therefore lives beside it in
     ``gateway-<port>.pid``.
     """
-    return _run_dir() / f"{_MARKER_PREFIX}{int(port)}{_PID_SUFFIX}"
+    return _run_dir() / pid_file_name(port)
 
 
 def secret_path(port: int) -> Path:

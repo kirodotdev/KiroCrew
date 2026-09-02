@@ -100,9 +100,83 @@ def _resolve_or_die(cfg: PodConfig, name: str) -> Path:
 # --------------------------------------------------------------------------- #
 # verbs
 # --------------------------------------------------------------------------- #
+def _home_holds_state(cfg: PodConfig, name: str) -> bool:
+    """Whether pod *name*'s isolated home already holds anything.
+
+    The same emptiness question ``seed_home_from_scenario`` asks before deciding
+    to seed, so ``pod up`` judges the seed against the state the boot judged it
+    against. An unreadable or non-directory home counts as holding state: the boot
+    will not seed over either, so treating them as empty would make the
+    verification demand a fixture that was never going to be written.
+    """
+    home = cfg.home_dir(name)
+    try:
+        return home.exists() and (not home.is_dir() or any(home.iterdir()))
+    except OSError:
+        return True
+
+
+def _verify_seed_landed(cfg: PodConfig, name: str, scenario: str, home_was_populated: bool) -> None:
+    """Refuse to report a seeded pod up when the scenario never landed.
+
+    The boot itself is what seeds, so ``pod up`` learns nothing about the seed
+    from a successful start — and reported success anyway. When the executing
+    boot path did not honour ``SEED=`` (the case that motivated this: a pod booted
+    through a global build predating the scenario registry, which read the value
+    as a directory path and skipped it) the pod came up healthy, blank, and
+    announced as ready. An agent then reads that empty dashboard as the feature
+    under test being broken.
+
+    Checked against the fixture manifest in the pod's home rather than against
+    the env file, because the env file only records what was asked for.
+
+    A home that ALREADY held state is a different case and not a failure: ``boot``
+    deliberately does not re-seed one (a crash-restart must not wipe the evidence
+    an operator is podding the worktree to see). That is reported, not refused,
+    and it names what the home actually holds so the operator is not left
+    believing the request applied.
+    """
+    landed = rt.seeded_scenario_in_home(cfg, name)
+    if landed == scenario:
+        return
+    if home_was_populated:
+        held = f"scenario {landed!r}" if landed else "state from an earlier boot"
+        print(
+            f"pod: note: {name!r} already held {held}, so --seed {scenario} was NOT "
+            f"applied — a populated home is never re-seeded. To boot it fresh: "
+            f"kirocrew pod down {name} && kirocrew pod up {name} --seed {scenario}",
+            file=sys.stderr,
+        )
+        return
+    _audit("pod.up", "failure", f"name={name} seed={scenario}", error="seed did not land")
+    found = f"it holds scenario {landed!r} instead" if landed else "its home holds no fixture"
+    _die(
+        f"{name}: the pod is up, but --seed {scenario} did NOT land — {found}.\n"
+        f"  The boot did not honour it, which happens when the pod is booted by a "
+        f"kirocrew that predates this scenario (the per-pod boot override pins the "
+        f"checkout's own binary: {rt.unit_mod.dropin_path(cfg, name)}).\n"
+        f"  Its boot log: kirocrew pod logs {name}\n"
+        f"  Then retry:   kirocrew pod down {name} && kirocrew pod up {name} "
+        f"--seed {scenario}"
+    )
+
+
 def _up(cfg: PodConfig, args: argparse.Namespace) -> None:
     name = rt.validate_name(args.name)
     checkout = _resolve_or_die(cfg, name)
+
+    # Resolve a NAMED seed here, in the control plane, before anything is pinned
+    # or started. `boot` would reach the same verdict, but there it costs a failed
+    # unit start and a journal read to see it; refusing at the CLI puts the
+    # available-scenario list in front of the operator who typed the name.
+    scenario = ""
+    if args.seed and rt.is_scenario_ref(args.seed):
+        try:
+            rt.resolve_seed_scenario(args.seed)
+        except rt.PodError as exc:
+            _audit("pod.up", "denied", f"name={name}", error="unknown seed scenario")
+            _die(str(exc))
+        scenario = args.seed
 
     # Graduated, teaching errors + auto-provisioning. The venv is cheap and
     # idempotent so we build it on demand; the dist is the slow SPA build, so we
@@ -159,6 +233,10 @@ def _up(cfg: PodConfig, args: argparse.Namespace) -> None:
         # probing would find it taken and move a running pod out from under every
         # reader. Only a pod that is not running is choosing a port at all.
         was_active = rt.is_active(cfg, name)
+        # Sampled here for the same reason and at the same moment: whether the
+        # seed was allowed to land can only be judged against the home as it was
+        # BEFORE this boot, since `boot` never re-seeds a populated one.
+        home_was_populated = _home_holds_state(cfg, name)
         if not was_active:
             # Asked BEFORE allocating, because allocation records a claim that would
             # then look like ours. An operator's deliberate `PORT=` must not acquire
@@ -299,6 +377,11 @@ def _up(cfg: PodConfig, args: argparse.Namespace) -> None:
                 f"{name}: gateway never became healthy on :{port} within timeout "
                 f"(see journal above; check the worktree's gateway start path)."
             )
+
+        # Healthy — so now the seed can be judged. Inside the mutex hold, against
+        # the pre-boot emptiness sampled above.
+        if scenario:
+            _verify_seed_landed(cfg, name, scenario, home_was_populated)
 
     # The pod is already booted and healthy by here, so the credential is the
     # LAST step, not the point of the command. That asymmetry decides how the two
@@ -572,7 +655,9 @@ def _prune(cfg: PodConfig, args: argparse.Namespace) -> None:
             threshold = time.time() - _parse_older_than(args.older_than)
         orphans = rt.orphan_homes(cfg)
     except rt.PodError as exc:
-        _audit("pod.prune", "denied", f"older_than={args.older_than or 'all'}", error=str(exc)[:120])
+        _audit(
+            "pod.prune", "denied", f"older_than={args.older_than or 'all'}", error=str(exc)[:120]
+        )
         raise
     dry_run = bool(getattr(args, "dry_run", False))
     results: list[dict[str, str]] = []
@@ -782,6 +867,79 @@ def _exec(cfg: PodConfig, args: argparse.Namespace) -> None:
     sys.exit(rt.exec_in_pod(cfg, name, argv))
 
 
+def _api(cfg: PodConfig, args: argparse.Namespace) -> None:
+    """One authenticated HTTP call against a running pod, printed as JSON.
+
+    The output is always ONE JSON document with the same keys, on every status
+    and for every body shape, so a caller can pipe it without first testing which
+    of several shapes it got. ``body`` is the parsed response when it is JSON and
+    the raw text otherwise, which keeps a plain-text 500 readable instead of
+    turning it into a parse error at the caller.
+    """
+    name = rt.validate_name(args.name)
+    method = str(args.method).upper()
+    # getattr: hand-built Namespaces in tests (and older callers) predate the flag,
+    # and the safe reading of its absence is the restricted one.
+    allow_write = bool(getattr(args, "allow_write", False))
+    try:
+        status, raw = rt.pod_api(
+            cfg, name, method, args.path, data=args.data or "", allow_write=allow_write
+        )
+    except rt.PodError as exc:
+        _audit("pod.api", "failure", f"name={name} method={method}", error=str(exc)[:120])
+        _die(str(exc))
+    try:
+        body: object = json.loads(raw) if raw else None
+    except ValueError:
+        body = raw
+    ok = 200 <= status < 300
+    # Audited like `pod exec`: this is an authenticated, possibly mutating call
+    # into a gateway, so the trail records the verb and target. The PATH is
+    # recorded and the body is not -- a request body can carry a secret. A call
+    # that needed --allow-write is marked, so the trail distinguishes a read of a
+    # pod from a change made to one.
+    resources = f"name={name} method={method} path={rt.api_path(args.path)} status={status}"
+    if method not in rt.API_READ_METHODS:
+        resources += " write=1"
+    _audit(
+        "pod.api",
+        "allowed" if ok else "failure",
+        resources,
+        error="" if ok else f"status={status}",
+    )
+    print(
+        json.dumps(
+            {
+                "name": name,
+                "method": method,
+                "path": rt.api_path(args.path),
+                "status": status,
+                "ok": ok,
+                "body": body,
+            },
+            indent=2,
+        )
+    )
+    if not ok:
+        sys.exit(1)
+
+
+def _scenarios(cfg: PodConfig, args: argparse.Namespace) -> None:
+    """List the seed scenarios ``pod up --seed <scenario>`` accepts."""
+    rows = rt.seed_scenarios()
+    if args.json:
+        print(json.dumps([{"name": n, "description": d} for n, d in rows]))
+        return
+    if not rows:
+        print("no seed scenarios found (the packaged fixtures tree is missing)")
+        return
+    width = max(len(n) for n, _ in rows)
+    print(f"{'SCENARIO':<{width}}  DESCRIPTION")
+    for scenario, desc in rows:
+        print(f"{scenario:<{width}}  {desc or '(no description)'}")
+    print(f"\nseed one with: kirocrew pod up <worktree> --seed {rows[0][0]}")
+
+
 def _logs(cfg: PodConfig, args: argparse.Namespace) -> None:
     name = rt.validate_name(args.name)
     # Gate before exec'ing the log mechanism — on an unsupported host this would
@@ -867,6 +1025,8 @@ _VERBS: dict[str, PodHandler] = {
     "status": _status,
     "token": _token,
     "url": _url,
+    "api": _api,
+    "scenarios": _scenarios,
     "logs": _logs,
     "install": _install,
     "provision": _provision,
@@ -881,7 +1041,7 @@ def dispatch(args: argparse.Namespace) -> None:
     if not action:
         print(
             "Usage: kirocrew pod "
-            "{up|down|ls|prune|status|token|url|logs|exec|install|provision} …"
+            "{up|down|ls|prune|status|token|url|api|scenarios|logs|exec|install|provision} …"
         )
         sys.exit(2)
     cfg = PodConfig.load()

@@ -1,0 +1,8 @@
+schema-version: 2026-04-28
+fixture-name: multi-workspace
+description: |
+  Three workspaces -- default, review and research -- each with its own
+  memory content, plus one session per workspace pinned to a different agent so
+  the workspace switcher and the per-workspace memory read differ visibly. Agent
+  identity is a per-session field rather than a workspace config key, so
+  "distinct agents" is expressed on the seeded sessions.

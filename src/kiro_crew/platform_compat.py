@@ -19,6 +19,7 @@ import ntpath
 import os
 import pathlib
 import platform
+import re
 import shutil
 import signal
 import stat
@@ -2128,11 +2129,29 @@ def listening_pid_tool() -> str:
     return "netstat" if IS_WINDOWS else "lsof"
 
 
+def listening_pid_tools() -> tuple[str, ...]:
+    """Every tool the port->PID lookup can answer from, in the order it tries them.
+
+    POSIX has two, because ``lsof`` alone is not enough on a host that restricts
+    ``/proc``: lsof answers by walking ``/proc/<pid>/fd``, so wherever those are
+    unreadable it reports NO listener at all — indistinguishable from a free
+    port — while ``ss`` reads the kernel socket table and still sees the socket.
+    :func:`find_port_listeners` therefore falls back to ``ss`` whenever ``lsof``
+    finds nothing, and this tuple is what the availability probe judges.
+    """
+    return (listening_pid_tool(),) if IS_WINDOWS else ("lsof", "ss")
+
+
 def listening_pid_tool_available() -> bool:
     """Whether the port->PID lookup tool (lsof on POSIX / netstat on Windows) is
     resolvable. Lets callers distinguish "tool absent" from "no listener found",
     which find_listening_pids() alone collapses into an empty list — without that
     a genuinely-running gateway reads as stopped when lsof is missing.
+
+    True when ANY tool in :func:`listening_pid_tools` resolves, because the
+    lookup tries them all: answering False while ``ss`` is installed would gate
+    off a lookup that can in fact succeed, and callers read False as "ownership
+    is unprovable here" and withhold credentials on it.
 
     Resolves through :func:`trusted_system_bin`, the same lookup
     :func:`find_listening_pids` performs. Probing ``PATH`` here instead would
@@ -2142,7 +2161,7 @@ def listening_pid_tool_available() -> bool:
     installed but outside those directories therefore reads as absent, which
     :func:`trusted_system_bin` logs so the answer can be explained.
     """
-    return trusted_system_bin(listening_pid_tool()) is not None
+    return any(trusted_system_bin(tool) is not None for tool in listening_pid_tools())
 
 
 class PortListener(NamedTuple):
@@ -2173,6 +2192,11 @@ _LOOPBACK_COVERING_ADDRESSES = frozenset({"127.0.0.1", "0.0.0.0", "*", "::"})
 # listener found" instead of hanging every caller of the port->PID lookup; the
 # Windows netstat branch carries its own inline bound.
 _LSOF_TIMEOUT_SECS = 5
+
+# ``users:(("name",pid=1234,fd=7),("name",pid=1235,fd=7))`` — ss's process
+# column. Every pid in it holds the same listening socket (pre-fork workers
+# legitimately share one), so all of them are extracted.
+_SS_PID_RE = re.compile(r"\bpid=(\d+)")
 
 
 def _normalize_local_address(address: str) -> str:
@@ -2224,59 +2248,124 @@ def loopback_owner_pids(listeners: list[PortListener]) -> list[int]:
     return list(dict.fromkeys(e.pid for e in covering))
 
 
+def _lsof_port_listeners(port: int) -> list[PortListener]:
+    """POSIX listener lookup via ``lsof``. ``[]`` on absence or any failure.
+
+    Answers by walking ``/proc/<pid>/fd``, which is also its blind spot: a host
+    that restricts those directories yields nothing here even for a socket the
+    kernel plainly has. :func:`find_port_listeners` covers that with ``ss``.
+    """
+    lsof_bin = trusted_system_bin("lsof")
+    if lsof_bin is None:
+        return []
+    try:
+        out = subprocess.check_output(
+            # -n/-P keep addresses and ports numeric so the field parse
+            # below never sees a resolved host or service name; the t
+            # (type) field carries the family, without which the two
+            # wildcard binds are indistinguishable (both print ``*``).
+            [lsof_bin, "-nP", f"-iTCP:{port}", "-sTCP:LISTEN", "-Fptn"],
+            text=True,
+            stderr=subprocess.DEVNULL,
+            timeout=_LSOF_TIMEOUT_SECS,
+        )
+    except (FileNotFoundError, subprocess.SubprocessError, OSError):
+        # CalledProcessError included: lsof exits non-zero when nothing
+        # matches the filter, which is the ordinary "port is free" answer.
+        return []
+    suffix = f":{port}"
+    listeners: list[PortListener] = []
+    seen: set[PortListener] = set()
+    cur_pid: int | None = None
+    cur_family = ""
+    for line in out.splitlines():
+        if not line:
+            continue
+        tag, value = line[0], line[1:]
+        if tag == "p":
+            cur_pid = int(value) if value.isdigit() else None
+            cur_family = ""
+        elif tag == "t":
+            cur_family = {"IPv4": "4", "IPv6": "6"}.get(value, "")
+        elif tag == "n" and cur_pid is not None and value.endswith(suffix):
+            # ``n127.0.0.1:8080`` / ``n*:8080`` / ``n[::1]:8080`` — strip
+            # the port suffix and the v6 brackets to the bare host part.
+            entry = PortListener(cur_pid, value[: -len(suffix)].strip("[]"), cur_family)
+            if entry not in seen:
+                seen.add(entry)
+                listeners.append(entry)
+    return listeners
+
+
+def _ss_port_listeners(port: int) -> list[PortListener]:
+    """POSIX listener lookup via ``ss``. ``[]`` on absence or any failure.
+
+    The fallback for a host where ``lsof`` is blind: ``ss`` reads the kernel's
+    socket table, so it sees a LISTEN socket whose ``/proc/<pid>/fd`` entry is
+    unreadable — which is the difference between a pod whose port ownership can
+    be proven and one whose credential is withheld forever.
+
+    Fail-closed on ATTRIBUTION, not just on failure: ``ss`` needs the same
+    ``/proc`` walk to name the owning process, and prints an EMPTY process
+    column when it cannot. Such a row is dropped rather than reported with a
+    guessed pid, because every caller reads a returned pid as proof of identity.
+    So this widens what can be proven and never weakens the proof itself.
+    """
+    ss_bin = trusted_system_bin("ss")
+    if ss_bin is None:
+        return []
+    try:
+        out = subprocess.check_output(
+            # -l listening, -t TCP, -n numeric, -p owning process, -H no header.
+            [ss_bin, "-lptnH"],
+            text=True,
+            stderr=subprocess.DEVNULL,
+            timeout=_LSOF_TIMEOUT_SECS,
+        )
+    except (FileNotFoundError, subprocess.SubprocessError, OSError):
+        return []
+    suffix = f":{port}"
+    listeners: list[PortListener] = []
+    seen: set[PortListener] = set()
+    for line in out.splitlines():
+        fields = line.split()
+        # State Recv-Q Send-Q Local Peer [Process]. ``-H`` is only in iproute2
+        # 4.x and later, so a header row can still arrive — it is skipped by the
+        # same shape check that rejects any other unexpected row.
+        if len(fields) < 5 or fields[0] != "LISTEN":
+            continue
+        local = fields[3]
+        if not local.endswith(suffix):
+            continue
+        host = local[: -len(suffix)]
+        # A bracketed or colon-bearing host is v6; ss spells the v6 wildcard
+        # ``[::]`` and the v4 one ``0.0.0.0``, so unlike lsof the two families
+        # are already distinguishable from the address alone.
+        family = "6" if ("[" in host or ":" in host) else "4"
+        for match in _SS_PID_RE.finditer(line):
+            entry = PortListener(int(match.group(1)), host.strip("[]"), family)
+            if entry not in seen:
+                seen.add(entry)
+                listeners.append(entry)
+    return listeners
+
+
 def find_port_listeners(port: int) -> list[PortListener]:
     """Return (pid, local address) for each LISTEN socket on TCP *port*.
 
     Best-effort, deduped on (pid, address, family), never raises. POSIX asks
     ``lsof -nP -iTCP:<port> -sTCP:LISTEN -Fptn`` (field output per socket:
-    ``p<pid>``, ``t<IPv4|IPv6>``, ``n<addr>:<port>``); Windows parses
-    ``netstat -ano`` (no lsof; netstat ships in-box), matching rows whose
-    local address ends in ``:<port>`` and whose state is LISTENING. Returns
-    ``[]`` on any failure (callers treat "no listener found" as "nothing to
-    stop"; use listening_pid_tool_available() to tell a genuine empty result
-    apart from the tool being absent).
+    ``p<pid>``, ``t<IPv4|IPv6>``, ``n<addr>:<port>``) and falls back to
+    ``ss -lptnH`` when that finds nothing, because lsof answers from
+    ``/proc/<pid>/fd`` and reports an empty result on a host that restricts
+    those; Windows parses ``netstat -ano`` (no lsof; netstat ships in-box),
+    matching rows whose local address ends in ``:<port>`` and whose state is
+    LISTENING. Returns ``[]`` on any failure (callers treat "no listener found"
+    as "nothing to stop"; use listening_pid_tool_available() to tell a genuine
+    empty result apart from the tools being absent).
     """
     if IS_POSIX:
-        lsof_bin = trusted_system_bin("lsof")
-        if lsof_bin is None:
-            return []
-        try:
-            out = subprocess.check_output(
-                # -n/-P keep addresses and ports numeric so the field parse
-                # below never sees a resolved host or service name; the t
-                # (type) field carries the family, without which the two
-                # wildcard binds are indistinguishable (both print ``*``).
-                [lsof_bin, "-nP", f"-iTCP:{port}", "-sTCP:LISTEN", "-Fptn"],
-                text=True,
-                stderr=subprocess.DEVNULL,
-                timeout=_LSOF_TIMEOUT_SECS,
-            )
-        except (FileNotFoundError, subprocess.SubprocessError, OSError):
-            # CalledProcessError included: lsof exits non-zero when nothing
-            # matches the filter, which is the ordinary "port is free" answer.
-            return []
-        suffix = f":{port}"
-        listeners: list[PortListener] = []
-        seen: set[PortListener] = set()
-        cur_pid: int | None = None
-        cur_family = ""
-        for line in out.splitlines():
-            if not line:
-                continue
-            tag, value = line[0], line[1:]
-            if tag == "p":
-                cur_pid = int(value) if value.isdigit() else None
-                cur_family = ""
-            elif tag == "t":
-                cur_family = {"IPv4": "4", "IPv6": "6"}.get(value, "")
-            elif tag == "n" and cur_pid is not None and value.endswith(suffix):
-                # ``n127.0.0.1:8080`` / ``n*:8080`` / ``n[::1]:8080`` — strip
-                # the port suffix and the v6 brackets to the bare host part.
-                entry = PortListener(cur_pid, value[: -len(suffix)].strip("[]"), cur_family)
-                if entry not in seen:
-                    seen.add(entry)
-                    listeners.append(entry)
-        return listeners
+        return _lsof_port_listeners(port) or _ss_port_listeners(port)
     # Windows: netstat -ano. Lines look like:
     #   TCP    127.0.0.1:7777         0.0.0.0:0    LISTENING    17152   (IPv4)
     #   TCP    [::1]:7777             [::]:0       LISTENING    17152   (IPv6)
