@@ -31,7 +31,7 @@ from typing import Any
 # no native library is loaded on any platform. Aliased so the schema block below
 # reads as "the computer-use vocabulary" rather than bare names.
 from kiro_crew.computer_use import types as _cu_types
-from kiro_crew.constants import AWS_PROFILE_NAME_RE, WINDOWS_DEVICE_STEMS
+from kiro_crew.constants import AWS_PROFILE_NAME_RE, MAX_BANNER_CHARS, WINDOWS_DEVICE_STEMS
 
 # Reasoning-effort vocabulary: ``effort.py`` is the single source of truth for
 # the valid levels; EFFORT_VALUES additionally admits ``""`` ("unset — defer to
@@ -1184,6 +1184,11 @@ MONITOR_START_SCHEMA = ToolSchema(
         # default, so a caller written before this field existed keeps the
         # default behaviour rather than silently escaping it.
         FieldSpec("gate", bool),
+        # The short row shown in the transcript instead of the full message. An
+        # ENTRY bound only: the authorised add path re-checks the cap AFTER
+        # redaction, which is the one that governs what gets stored, because
+        # redaction can grow the string.
+        FieldSpec("banner", str, max_len=MAX_BANNER_CHARS),
     ],
 )
 
@@ -1204,6 +1209,9 @@ MONITOR_UPDATE_SCHEMA = ToolSchema(
         FieldSpec("max_tokens", int, min_val=1, max_val=MAX_MONITOR_TOKENS),
         FieldSpec("max_provider_errors", int, min_val=1, max_val=MAX_MONITOR_PROVIDER_ERRORS),
         FieldSpec("wake_instructions", str, max_len=MAX_MONITOR_WAKE_INSTRUCTIONS_CHARS),
+        # Same bound as the arm side, for the reason the comment above gives: a
+        # loop must not be updatable into a state monitor_start would refuse.
+        FieldSpec("banner", str, max_len=MAX_BANNER_CHARS),
     ],
 )
 

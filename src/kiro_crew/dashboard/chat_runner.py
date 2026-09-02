@@ -42,6 +42,7 @@ from kiro_crew.acp_backends import ACP_BACKENDS_COMPACT
 from kiro_crew.agent_discovery import warm_project_agent_names
 from kiro_crew.agent_sdk.provider_identity import is_claude_code
 from kiro_crew.autonudge import get_instance
+from kiro_crew.autonudge_authz import normalize_banner
 from kiro_crew.config.loader import (
     KiroCrewConfig,
     data_home,
@@ -4240,6 +4241,15 @@ async def _handle_goal_command(state: "DashboardState", slot: "_ChatSlot", messa
                 idle_secs=15,
                 max_cycles=_max_cycles,
                 stop_sentinel_path=_sentinel,
+                # The objective is the reader-facing row; the full instruction
+                # above is served by GET /api/autonudge. Routed through the
+                # authorizer's ``normalize_banner`` so this producer gets the
+                # SAME redaction + cap policy as the REST/MCP paths. ``truncate``
+                # (not a pre-slice) because the objective is arbitrarily long:
+                # the FULL text is redacted first and only then cut to the cap,
+                # so a credential straddling the cap boundary is masked whole
+                # rather than sliced into a raw prefix.
+                banner=normalize_banner(_objective, absent_ok=True, truncate=True)[0],
                 admission_check=lambda: state.get_slot(slot.key) is slot,
             )
             body = (

@@ -39,6 +39,9 @@ class _FakeSvc:
     def get_by_slot(self, slot_key: str) -> NudgeLoop | None:
         return next((lp for lp in self.loops if lp.slot_key == slot_key), None)
 
+    def get_by_id(self, loop_id: str) -> NudgeLoop | None:
+        return next((lp for lp in self.loops if lp.id == loop_id), None)
+
     async def remove(self, loop_id: str) -> None:
         self.removed.append(loop_id)
 

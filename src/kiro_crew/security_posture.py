@@ -1306,6 +1306,17 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # no output of its own -- the registered sinks are the modules that call
         # it (slack/format.py, messaging/renderer.py).
         "messaging/display_safety.py",
+        # ``autonudge.py``'s ``_load`` credential-scrubs a persisted ``banner`` in
+        # memory and attempts to persist the masked value back, so a banner
+        # written to the store out-of-band (a hand-edited file, or a direct
+        # ``AutoNudgeService.add`` that skips the authorizer) is masked on the next
+        # load rather than served raw — best-effort, since a failed re-persist
+        # leaves the raw value on disk until the following load. It owns no output
+        # of its own — the egress that serves the banner is the registered
+        # ``dashboard/handlers/autonudge.py`` serializer and the gateway broadcast;
+        # this is at-rest sanitisation at the trust boundary where the store is
+        # read, not an egress pass.
+        "autonudge.py",
         "autonudge_authz.py",
         # Gate-side log hygiene for a channel whose user identity IS a phone
         # number or an Apple Account email. ``redact_handle`` shortens a handle

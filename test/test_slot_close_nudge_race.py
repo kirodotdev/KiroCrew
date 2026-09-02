@@ -622,3 +622,81 @@ async def test_failed_persist_does_not_revive_a_paused_loop(tmp_path, monkeypatc
     assert resp.status == 500
     assert svc.get_by_slot(NAME) is None, "a paused loop was resumed by a failed close"
     svc.stop()
+
+
+@pytest.mark.asyncio
+async def test_failed_persist_gives_the_session_its_banner_back(tmp_path, monkeypatch) -> None:
+    """The replacement must carry the configured banner, not a blank one.
+
+    ``add()`` defaults ``banner`` to ``""``, so omitting it here fails SILENTLY:
+    the restored loop keeps running, and only its transcript rows change —
+    reverting to the full multi-KB message on every cycle, which is the exact
+    harm the banner exists to remove. Nothing raises, nothing logs, and the
+    empty value is then PERSISTED, so a single failed close discards the setting
+    permanently.
+
+    The budget assertions are deliberately in this same test rather than only in
+    the sibling above. Threading one more field through this call must not
+    disturb the remaining-budget arithmetic that is the whole reason this
+    function reconstructs the loop by hand — so an over-broad "just replay the
+    loop object" fix, which would hand back a FRESH 24 cycles and 3600s, fails
+    here instead of passing.
+    """
+    state = _state_with_slot(tmp_path)
+    svc = await _service(tmp_path, monkeypatch)
+    loop = await svc.add(
+        NAME,
+        "check the PR",
+        idle_secs=300,
+        max_cycles=24,
+        max_runtime_secs=3600,
+        banner="watching CI",
+    )
+    loop.cycle_count = 3
+    loop.created_ts = time.time() - 600
+
+    async def _persist(*_a, **_kw) -> None:
+        raise RuntimeError("disk wedged")
+
+    monkeypatch.setattr(handlers, "save_slot_off_loop", _persist)
+
+    resp = await handlers.api_chat_slot_delete(_Req(state, NAME))
+
+    assert resp.status == 500
+    replacement = svc.get_by_slot(NAME)
+    assert replacement is not None, "the restored session was left with no clock"
+    assert replacement.banner == "watching CI", "the restore discarded the configured banner"
+    # NEGATIVE CONTROL: the remaining budget is still subtracted, exactly as the
+    # sibling test pins. 3 cycles and 600s are already spent.
+    assert replacement.max_cycles == 21, "threading the banner regressed the cycle budget"
+    assert 2900 < replacement.max_runtime_secs <= 3000, "the runtime budget was reset"
+    svc.stop()
+
+
+@pytest.mark.asyncio
+async def test_a_banner_loop_whose_cycles_are_spent_is_still_not_restored(
+    tmp_path, monkeypatch
+) -> None:
+    """NEGATIVE CONTROL: a banner must not buy a terminal loop another life.
+
+    The early returns for a spent cycle cap and a spent wall-clock budget are
+    what stop a failed close from granting unattended cycles the user never
+    authorized. Carrying one more field must not move that gate, so this asserts
+    the terminal loop is STILL dropped — a fix that restored unconditionally in
+    order to preserve the banner fails here.
+    """
+    state = _state_with_slot(tmp_path)
+    svc = await _service(tmp_path, monkeypatch)
+    loop = await svc.add(NAME, "check the PR", idle_secs=300, max_cycles=4, banner="watching CI")
+    loop.cycle_count = 4
+
+    async def _persist(*_a, **_kw) -> None:
+        raise RuntimeError("disk wedged")
+
+    monkeypatch.setattr(handlers, "save_slot_off_loop", _persist)
+
+    resp = await handlers.api_chat_slot_delete(_Req(state, NAME))
+
+    assert resp.status == 500
+    assert svc.get_by_slot(NAME) is None, "a spent loop was revived to preserve its banner"
+    svc.stop()

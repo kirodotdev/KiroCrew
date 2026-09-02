@@ -432,6 +432,24 @@ def schemas() -> list[dict[str, Any]]:
                             "loop deactivates and the user is notified"
                         ),
                     },
+                    "banner": {
+                        "type": "string",
+                        "description": (
+                            "Optional SHORT line shown in the transcript row "
+                            "instead of the full message (max 500 chars). The "
+                            "model still receives `message` whole every cycle — "
+                            "this changes only what is stored and displayed. Set "
+                            "it whenever `message` is long: a multi-KB "
+                            "instruction is otherwise re-stored and re-broadcast "
+                            "as a transcript row on every single cycle, which "
+                            "measured 51.8% of one long-running session's file. "
+                            'Something like "watching PR #123 for CI" is '
+                            "enough. Omit it for a short message, and omit it on "
+                            "a channel-bound loop (`slack:`/`discord:`/`webex:`) "
+                            "— a banner there is refused with a 400, since only "
+                            "the dashboard transcript renders it"
+                        ),
+                    },
                 },
                 "required": ["message"],
             },
@@ -506,6 +524,17 @@ def schemas() -> list[dict[str, Any]]:
                         "type": "string",
                         "maxLength": MAX_MONITOR_WAKE_INSTRUCTIONS_CHARS,
                         "description": "Replacement actionable-wake instructions",
+                    },
+                    "banner": {
+                        "type": "string",
+                        "description": (
+                            "Replacement SHORT transcript row for future cycles "
+                            "(max 500 chars); the model still receives `message` "
+                            'whole. Pass "" to CLEAR it and go back to showing '
+                            "the full message. Omit to leave it unchanged. A "
+                            "non-blank banner on a channel-bound loop "
+                            "(`slack:`/`discord:`/`webex:`) is refused with a 400"
+                        ),
                     },
                 },
             },
@@ -1052,6 +1081,20 @@ def monitor_start(name: str, args: dict[str, Any]) -> str:
     stored_message, _ = redact_exfiltration_urls(message)
     stored_message, _ = redact_credentials(stored_message)
     gated = autonudge.infer_monitor(stored_message, time.time()) if gate else None
+    # ``banner`` is CONDITIONAL, unlike the fields above: a caller that sets no
+    # banner must see the payload shape it saw before, because the tool's
+    # contract test asserts this dict by EXACT equality. The applier reads it
+    # with ``.get``, so absent and empty mean the same thing there.
+    banner = str(args.get("banner") or "").strip()
+    payload: dict[str, Any] = {
+        "message": message,
+        "idle_secs": interval_secs,
+        "max_cycles": max_cycles,
+        "max_runtime_secs": max_runtime_secs,
+        "gate": gate,
+    }
+    if banner:
+        payload["banner"] = banner
     # Say whether this loop will be GATED, in the ack, at the surface that armed
     # it. This calls the SCHEDULER'S OWN decision function rather than
     # re-deriving the answer from the target: a subject can infer cleanly and
@@ -1062,13 +1105,7 @@ def monitor_start(name: str, args: dict[str, Any]) -> str:
     # exists because a cadence change nobody could see had no effect.
     return _emit_directive(
         "monitor_start",
-        {
-            "message": message,
-            "idle_secs": interval_secs,
-            "max_cycles": max_cycles,
-            "max_runtime_secs": max_runtime_secs,
-            "gate": gate,
-        },
+        payload,
         (
             "Monitor loop requested on this session: "
             + (
@@ -1307,6 +1344,13 @@ def monitor_update(name: str, args: dict[str, Any]) -> str:
             patch[field] = int(args[field])
     if args.get("wake_instructions") is not None:
         patch["wake_instructions"] = str(args["wake_instructions"]).strip()
+    # Blank is KEPT here, unlike ``message`` above which rejects it: a loop with
+    # no instruction cannot fire, but a loop with no banner is the default state,
+    # so "" has to round-trip as a request to CLEAR. Dropping it as "unchanged"
+    # would make a banner set once impossible to remove without tearing the loop
+    # down and losing its cycle count.
+    if args.get("banner") is not None:
+        patch["banner"] = str(args["banner"]).strip()
     if not patch:
         mcp_core.sel().log_tool_invocation(
             session_key=sk, source="mcp", tool_name="monitor_update", outcome="noop"

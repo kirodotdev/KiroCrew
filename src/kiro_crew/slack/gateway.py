@@ -117,7 +117,11 @@ from kiro_crew.dashboard.cron_inject import (
     prefetch_cron_history,
 )
 from kiro_crew.dashboard.handlers import MAX_PROMPT_BYTES
-from kiro_crew.dashboard.handlers.autonudge import _redact_monitor_value, compose_nudge_body
+from kiro_crew.dashboard.handlers.autonudge import (
+    _redact_monitor_value,
+    compose_nudge_body,
+    render_nudge_message,
+)
 from kiro_crew.dashboard.handlers.updates import remediation_command as _remediation_command
 from kiro_crew.dashboard.handlers.usage import (
     persist_token_record_async,
@@ -5951,6 +5955,42 @@ class GatewayOrchestrator:
             tagged = f"[auto-nudge cycle {loop.cycle_count + 1}]\n{msg}"
         else:
             tagged = wake_message
+        # ONE STRING, TWO CONSUMERS, and only an opt-in ``banner`` splits them.
+        # ``tagged`` is the PROMPT and is never shortened — re-delivering the
+        # whole instruction every cycle is the guarantee the nudge exists to
+        # provide. ``visible`` is the transcript row, which a reader consults
+        # only to learn that a cycle happened. Without a banner it IS ``tagged``,
+        # so an existing loop's row is byte-identical to today's.
+        #
+        # A banner deliberately skips ``compose_nudge_body``: that composer
+        # prefixes the work-ledger snapshot, which the model wants and a display
+        # line does not. ``render_nudge_message`` still applies, so
+        # ``{{STOP_FILE}}`` resolves in a banner as it does in a message.
+        #
+        # A banner is a MESSAGE-loop concept: a monitor wake (``wake_message``)
+        # shows its own actionable-wake row, so the banner only splits the row
+        # on the ``wake_message is None`` arm.
+        #
+        # ``isinstance`` rather than a bare falsiness test: ``banner: str`` is a
+        # plain dataclass annotation, unenforced at runtime, and ``_load`` builds
+        # a loop straight from parsed JSON — so a store carrying ``"banner": 5``
+        # yields ``loop.banner == 5`` and ``.strip()`` on it would raise
+        # ``AttributeError``, killing the fire and (since the service re-arms an
+        # undelivered cycle) rearming the loop forever. A whitespace-only banner
+        # is truthy too and its blank row is worse than the verbose one, so both
+        # fall through to ``tagged``.
+        banner = loop.banner.strip() if isinstance(loop.banner, str) else ""
+        if banner and wake_message is None:
+            # Credential redaction lives at the banner's single owner — the
+            # authorized write paths (incl. /goal via ``normalize_banner``) and
+            # ``_load`` for a hand-edited store — so ``loop.banner`` is already
+            # scrubbed here and every egress (this row, ``GET /api/autonudge``,
+            # the WS broadcast) serves the same scrubbed value. No per-fire,
+            # per-field scrub at this sink.
+            shown = render_nudge_message(banner, loop.stop_sentinel_path)
+            visible = f"[auto-nudge cycle {loop.cycle_count + 1}]\n{shown}"
+        else:
+            visible = tagged
         from kiro_crew.dashboard.chat import (
             _run_chat,  # circular import: gateway -> dashboard.chat -> gateway (chat dispatch references GatewayOrchestrator)
         )
@@ -5976,7 +6016,10 @@ class GatewayOrchestrator:
         # The tag stays in ``content`` because that is what the model reads,
         # and the body is deliberately NOT duplicated into meta — the client
         # derives it from content, so a multi-KB payload is stored and
-        # broadcast once rather than twice.
+        # broadcast once rather than twice. ``visible`` rather than ``tagged``
+        # in the appended row: identical unless the loop opted into a ``banner``,
+        # in which case this transcript row is the only thing shortened while the
+        # full ``tagged`` prompt still reaches ``_run_chat``.
         nudge_meta: dict[str, Any] = {
             "nudge": {
                 "cycle": loop.cycle_count + 1,
@@ -6003,7 +6046,7 @@ class GatewayOrchestrator:
         def _append_nudge() -> None:
             turn_slot.append(
                 "nudge",
-                tagged,
+                visible,
                 "msg msg-nudge",
                 meta=nudge_meta,
             )

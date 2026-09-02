@@ -502,3 +502,42 @@ async def test_identity_update_conflict_is_a_controlled_authorizer_denial(tmp_pa
     assert loop.monitor.target == "https://github.com/acme/widgets/pull/7"
     assert loop.monitor.wake_in_flight
     service.stop()
+
+
+@pytest.mark.asyncio
+async def test_banner_cannot_silently_patch_a_structured_monitor(tmp_path):
+    # ``banner`` is a message-loop-only field: a structured monitor shows its
+    # objective as the transcript row, so it has no banner to set. monitor_update
+    # must REFUSE a banner on the structured path -- the mirror of the legacy
+    # path refusing structured-only fields -- rather than accept it into the
+    # patch, silently drop it, and still report success.
+    service = AutoNudgeService(base_dir=tmp_path)
+    await service.add_monitor(
+        slot_key="chat-1",
+        kind="github_pull_request",
+        target="https://github.com/acme/widgets/pull/7",
+        objective="review_ready",
+        cadence_secs=60,
+        budgets=MonitorBudgets(),
+    )
+    state = SimpleNamespace(
+        _slots={"chat-1": SimpleNamespace(workspace="default", mode="", memory_mode="persistent")},
+        sessions=None,
+        channel_transports={},
+    )
+    slot = SimpleNamespace(key="chat-1", _app="")
+    with (
+        patch("kiro_crew.autonudge.get_instance", return_value=service),
+        patch("kiro_crew.autonudge_authz.sel", return_value=MagicMock()),
+    ):
+        result = await apply_session_directive(
+            state,
+            slot,
+            "dashboard:chat-1",
+            "monitor_update",
+            {"patch": {"banner": "short transcript row"}},
+        )
+
+    assert result.startswith("monitor_update cannot apply")
+    assert "banner" in result
+    service.stop()

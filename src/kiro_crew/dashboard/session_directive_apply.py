@@ -247,6 +247,11 @@ async def _monitor_start(state: Any, session_key: str, args: dict[str, Any]) -> 
         max_cycles=max_cycles,
         stop_sentinel_path="",
         max_runtime_secs=max_runtime_secs,
+        # Every kwarg here is named explicitly -- there is no ``**args`` splat --
+        # so a field the tool accepts but this call omits is silently dropped
+        # rather than erroring. The authorizer owns the cap and both redaction
+        # passes, so nothing is validated twice by routing through it.
+        banner=str(args.get("banner") or ""),
         source="mcp-directive",
         caller="session-directive",
         gate=gate,
@@ -490,6 +495,10 @@ async def _monitor_update(state: Any, session_key: str, args: dict[str, Any]) ->
         max_cycles=patch.get("max_cycles"),
         active=patch.get("active"),
         max_runtime_secs=patch.get("max_runtime_secs"),
+        # ``.get`` returns None when the key is absent, which the authorizer reads
+        # as "leave unchanged", while an explicit "" reaches it as a clear -- the
+        # distinction the handler preserved by keeping a blank banner in the patch.
+        banner=patch.get("banner"),
         source="mcp-directive",
         caller="session-directive",
     )
@@ -546,7 +555,11 @@ def _no_loop_message(svc: Any, binding: str) -> str:
 async def _structured_monitor_update(state: Any, svc: Any, loop: Any, patch: dict[str, Any]) -> str:
     from kiro_crew.autonudge_authz import authorize_and_update_monitor
 
-    legacy_only = sorted(set(patch) & {"message", "max_cycles", "active"})
+    # ``banner`` is a message-loop-only field (a structured monitor shows its
+    # objective as the transcript row), so it belongs with the legacy fields the
+    # structured path refuses. Without it here, ``monitor_update`` accepted a
+    # banner into the patch, dropped it, and reported success -- a silent no-op.
+    legacy_only = sorted(set(patch) & {"message", "max_cycles", "active", "banner"})
     if legacy_only:
         raise _DirectiveDenied(
             "monitor_update cannot apply legacy fields to a structured monitor: "

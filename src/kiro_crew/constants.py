@@ -267,3 +267,15 @@ BANNER = r"""
 
   👻 Your personal AI agent
 """
+
+# Max length of an auto-nudge loop's ``banner`` -- the SHORT transcript row shown
+# in place of a long recurring instruction. Unrelated to ``BANNER`` above, which
+# is the product wordmark; this is a per-loop user string.
+#
+# It lives here, in a leaf that imports only ``os`` and ``re``, because three
+# modules need the same bound and one of them is ``validation.py``: importing it
+# from ``autonudge`` pulled a service module into a validation leaf and made the
+# bound's home depend on import order. Every enforcement site -- the two REST
+# authorizers, the MCP tool schemas, and the store loader -- reads THIS name, so
+# there is one definition and no path can drift to a different cap.
+MAX_BANNER_CHARS = 500

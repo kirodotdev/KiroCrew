@@ -45,6 +45,7 @@ from kiro_crew import irq, platform_compat, probes, shutdown_event
 from kiro_crew.atomic_write import replace_with_retry
 from kiro_crew.config.loader import config_dir, data_home
 from kiro_crew.config.paths import legacy_home
+from kiro_crew.constants import MAX_BANNER_CHARS
 from kiro_crew.monitoring.decision import decide_monitor, monitor_budget_reason
 from kiro_crew.monitoring.models import (
     MONITOR_BUSY_RETRY_SECS,
@@ -69,7 +70,7 @@ from kiro_crew.monitoring.models import (
     quarantine_monitor_state,
 )
 from kiro_crew.probes import targets
-from kiro_crew.security import is_sensitive_path
+from kiro_crew.security import is_sensitive_path, redact_credentials, redact_exfiltration_urls
 
 if TYPE_CHECKING:
     from kiro_crew.monitoring.github_pull_request import GitHubPullRequestProbeResult
@@ -511,6 +512,29 @@ class NudgeLoop:
     # Optional observation/controller state. ``gate=True`` records belong to the
     # prompt path; controller-owned records carry state with ``gate=False``.
     monitor: MonitorState | None = None
+    # Optional SHORT stand-in for ``message`` in the VISIBLE dashboard
+    # transcript row. Empty (the default) means the row is byte-identical to
+    # what it has always been, so no existing loop changes behaviour.
+    #
+    # ``message`` serves two consumers with opposite needs. The model needs the
+    # whole instruction re-delivered every cycle — that is the guarantee the
+    # nudge exists to provide. A person reading the transcript needs only "a
+    # nudge happened", yet gets the same multi-KB payload appended per cycle:
+    # measured on one long-running loop, 44 nudge rows of ~7.9KB were 51.8% of
+    # the entire 671,900-char session file.
+    #
+    # The PROMPT is never affected by this field (see
+    # ``GatewayOrchestrator._fire_dashboard_nudge``): shortening the model's
+    # copy would delete real instruction, which is the opposite of the point.
+    # Scoped to the dashboard transcript row — channel-bound loops
+    # (``slack:``/``discord:``/``webex:``) deliver the nudge as the turn's own
+    # input and have no separate display surface to shorten.
+    #
+    # Appended LAST rather than placed beside ``message`` so a persisted store
+    # written by this version still loads on a build that predates the field:
+    # ``_load`` filters unknown keys, so a downgrade degrades to the verbose
+    # display instead of raising.
+    banner: str = ""
 
 
 def is_structured_monitor_loop(loop: NudgeLoop) -> bool:
@@ -875,6 +899,66 @@ class AutoNudgeService:
                     self._store_dirty = True
                 if due_repaired or idle_repaired:
                     self._store_dirty = True
+                # ``banner`` is display-only, but it is ``.strip()``ed on the
+                # fire path, so a non-string value there raises AttributeError
+                # and the loop rearms forever without ever delivering. Normalize
+                # it here for the same reason ``repair_sentinel_path`` opens with
+                # an isinstance check: both are persisted STRING fields read
+                # straight out of parsed JSON, where the dataclass annotation is
+                # not enforced. Repaired-and-persisted rather than merely
+                # tolerated, so a hand-edited store is corrected once instead of
+                # silently suppressing the banner on every boot.
+                if not isinstance(loop.banner, str):
+                    logger.warning(
+                        "AutoNudge: loop %s had a non-string banner (type %s) — treating it "
+                        "as absent; the transcript row falls back to the full message",
+                        loop.id,
+                        type(loop.banner).__name__,
+                    )
+                    loop.banner = ""
+                    self._store_dirty = True
+                elif loop.banner:
+                    # SCRUB a persisted string banner, redacting the FULL value
+                    # BEFORE any cap slice. A banner reaches the store through
+                    # producers that skip the authorized write paths — a
+                    # hand-edited ``autonudge.json``, a direct agent ``svc.add``,
+                    # or a banner persisted before this scrub existed — and the
+                    # loop is served RAW by ``GET /api/autonudge`` (``_serialize``
+                    # is ``asdict``), broadcast to every dashboard client, and
+                    # replayed by the fire path, so an unscrubbed credential here
+                    # reaches the browser after a restart. Same two passes the
+                    # write path uses, redaction FIRST so a secret straddling the
+                    # cap is masked WHOLE — slicing first would leave a raw prefix
+                    # the scanner cannot match. An over-cap banner — measured
+                    # BEFORE redaction OR after (redaction can shrink an
+                    # exfiltration URL below the cap, or grow a credential above
+                    # it) — is then BLANKED (absent), matching the promise the cap
+                    # makes elsewhere: a value the authorized write path would have
+                    # rejected is not invented back by keeping a shrunk remnant,
+                    # and the row falls back to the full message.
+                    scrubbed, _ = redact_exfiltration_urls(loop.banner)
+                    scrubbed, _ = redact_credentials(scrubbed)
+                    if len(loop.banner) > MAX_BANNER_CHARS or len(scrubbed) > MAX_BANNER_CHARS:
+                        scrubbed = ""
+                    if scrubbed != loop.banner:
+                        loop.banner = scrubbed
+                        self._store_dirty = True
+                # SCRUB the persisted ``message`` on load — same rationale as the
+                # banner above and the same two redaction passes. The store is
+                # writable out-of-band (a hand-edited ``autonudge.json`` or a
+                # direct ``svc.add``) and served RAW by ``GET /api/autonudge``,
+                # so a credential that reached the store bypassing the authorized
+                # write path — which already scrubs ``message`` — would otherwise
+                # be broadcast to every dashboard client after a restart. Unlike
+                # the banner this is redaction ONLY, never blank-on-length:
+                # ``message`` is the payload the model receives and has no
+                # fallback row, and its 8000-char limit is a write-path concern.
+                if isinstance(loop.message, str) and loop.message:
+                    scrubbed_msg, _ = redact_exfiltration_urls(loop.message)
+                    scrubbed_msg, _ = redact_credentials(scrubbed_msg)
+                    if scrubbed_msg != loop.message:
+                        loop.message = scrubbed_msg
+                        self._store_dirty = True
             except Exception:
                 logger.warning("AutoNudge: skipping malformed loop entry: %r", raw, exc_info=True)
                 continue
@@ -1090,6 +1174,7 @@ class AutoNudgeService:
         max_cycles: int = 0,
         stop_sentinel_path: str = "",
         max_runtime_secs: int = 0,
+        banner: str = "",
         admission_check: Callable[[], bool] | None = None,
         # UNGATED by default, and the default lives at the ARMING SURFACES instead.
         # The evidence for gating is about monitor_start -- a babysit loop whose work
@@ -1120,6 +1205,7 @@ class AutoNudgeService:
                 max_cycles=max_cycles,
                 stop_sentinel_path=stop_sentinel_path,
                 max_runtime_secs=max_runtime_secs,
+                banner=banner,
                 admission_check=admission_check,
                 gate=gate,
                 replace_existing=replace_existing,
@@ -1265,6 +1351,7 @@ class AutoNudgeService:
         max_cycles: int,
         stop_sentinel_path: str,
         max_runtime_secs: int = 0,
+        banner: str = "",
         admission_check: Callable[[], bool] | None = None,
         gate: bool = False,
         replace_existing: bool = True,
@@ -1277,6 +1364,7 @@ class AutoNudgeService:
                 max_cycles=max_cycles,
                 stop_sentinel_path=stop_sentinel_path,
                 max_runtime_secs=max_runtime_secs,
+                banner=banner,
                 admission_check=admission_check,
                 gate=gate,
                 replace_existing=replace_existing,
@@ -1291,6 +1379,7 @@ class AutoNudgeService:
         max_cycles: int,
         stop_sentinel_path: str,
         max_runtime_secs: int = 0,
+        banner: str = "",
         admission_check: Callable[[], bool] | None = None,
         gate: bool = False,
         replace_existing: bool = True,
@@ -1355,6 +1444,7 @@ class AutoNudgeService:
                 # cadence contract depend on prose.
                 monitor=infer_monitor(message, now) if gate else None,
                 gate=gate,
+                banner=banner,
             )
             self._loops[loop.id] = loop
             # Persist WITHOUT blocking the event loop (no-blocking-call rule:
@@ -1408,6 +1498,7 @@ class AutoNudgeService:
         active: bool | None = None,
         max_runtime_secs: int | None = None,
         stopped_reason: str | None = None,
+        banner: str | None = None,
     ) -> NudgeLoop | None:
         # CANCELLATION SAFETY: same contract as add(). The mutate+persist runs
         # as a SHIELDED, supervised task so a caller cancelled mid-write cannot
@@ -1423,6 +1514,7 @@ class AutoNudgeService:
                 active=active,
                 max_runtime_secs=max_runtime_secs,
                 stopped_reason=stopped_reason,
+                banner=banner,
             )
         )
         self._inflight_adds.add(inner)
@@ -1497,6 +1589,7 @@ class AutoNudgeService:
         active: bool | None = None,
         max_runtime_secs: int | None = None,
         stopped_reason: str | None = None,
+        banner: str | None = None,
     ) -> NudgeLoop | None:
         lock = await self._acquire_mutation_lock(loop_id)
         if lock is None:
@@ -1510,6 +1603,7 @@ class AutoNudgeService:
                 active=active,
                 max_runtime_secs=max_runtime_secs,
                 stopped_reason=stopped_reason,
+                banner=banner,
             )
         finally:
             lock.release()
@@ -1524,6 +1618,7 @@ class AutoNudgeService:
         active: bool | None = None,
         max_runtime_secs: int | None = None,
         stopped_reason: str | None = None,
+        banner: str | None = None,
     ) -> NudgeLoop | None:
         async with self._lock:
             loop = self._loops.get(loop_id)
@@ -1622,6 +1717,11 @@ class AutoNudgeService:
                             floor_discarded_for_retarget = loop.id in self._pending_floor_tick
                             self._pending_floor_tick.discard(loop.id)
                             loop.monitor = inferred
+            if banner is not None:
+                # Display-only, so no deadline or timer consequence — unlike
+                # ``idle_secs`` below, quieting a running loop must not restart
+                # its countdown. "" clears it back to the verbose default.
+                loop.banner = banner
             interval_changed = False
             if idle_secs is not None:
                 new_idle = max(_MIN_IDLE_SECS, min(_MAX_IDLE_SECS, int(idle_secs)))
@@ -1893,6 +1993,17 @@ class AutoNudgeService:
                 self._pending_removals.discard(loop_id)
                 if removed_loop is not None:
                     self._emit("removed", removed_loop)
+
+    def get_by_id(self, loop_id: str) -> NudgeLoop | None:
+        """The loop with this id, or ``None``.
+
+        Public because the update authorizer holds only an opaque ``loop_id`` and
+        must resolve it to a slot key to decide whether a banner is supported
+        there. An accessor rather than reaching into ``_loops`` from another
+        module, matching ``get_by_slot``/``list_all``. Returns the LIVE object,
+        not a copy; callers here only read from it.
+        """
+        return self._loops.get(loop_id)
 
     def get_by_slot(self, slot_key: str) -> NudgeLoop | None:
         return self._find_by_slot(slot_key)

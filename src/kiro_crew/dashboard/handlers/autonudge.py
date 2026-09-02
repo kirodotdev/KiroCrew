@@ -388,14 +388,7 @@ async def api_monitor_update(request: web.Request) -> web.Response:
     if denied is not None:
         return denied
     svc = _autonudge_get()
-    loop = (
-        next(
-            (lp for lp in svc.list_all() if lp.id == request.match_info["monitor_id"]),
-            None,
-        )
-        if svc is not None
-        else None
-    )
+    loop = svc.get_by_id(request.match_info["monitor_id"]) if svc is not None else None
     if loop is None or not is_structured_monitor_loop(loop):
         return _monitor_error("structured monitor not found", "monitor_not_found", status=404)
     try:
@@ -458,10 +451,7 @@ async def api_monitor_stop(request: web.Request) -> web.Response:
     svc = _autonudge_get()
     if svc is None:
         return _monitor_error("monitoring disabled", "monitoring_disabled", status=503)
-    loop = next(
-        (lp for lp in svc.list_all() if lp.id == request.match_info["monitor_id"]),
-        None,
-    )
+    loop = svc.get_by_id(request.match_info["monitor_id"])
     if loop is None or not is_structured_monitor_loop(loop):
         return _monitor_error("structured monitor not found", "monitor_not_found", status=404)
     stopped, error, status = await authorize_and_stop_monitor(
@@ -482,14 +472,7 @@ async def api_monitor_restart(request: web.Request) -> web.Response:
     if denied is not None:
         return denied
     svc = _autonudge_get()
-    loop = (
-        next(
-            (lp for lp in svc.list_all() if lp.id == request.match_info["monitor_id"]),
-            None,
-        )
-        if svc is not None
-        else None
-    )
+    loop = svc.get_by_id(request.match_info["monitor_id"]) if svc is not None else None
     if loop is None or not is_structured_monitor_loop(loop):
         return _monitor_error("structured monitor not found", "monitor_not_found", status=404)
     monitor = loop.monitor
@@ -526,11 +509,15 @@ async def api_autonudge_start(request: web.Request) -> web.Response:
     """POST /api/autonudge — start or replace a loop on a slot.
 
     Body: { slot_key, message, idle_secs?, max_cycles?, max_runtime_secs?,
-            stop_sentinel_path?, gate? }
+            stop_sentinel_path?, gate?, banner? }
 
     ``gate`` defaults to FALSE here: this route arms whatever the goal popover was
     given, and only ``monitor_start`` has the evidence to gate by default. Pass
     ``gate: true`` to probe-gate a loop armed through this route.
+
+    ``banner`` is the optional short stand-in shown in the transcript row
+    instead of ``message``; the model still receives ``message`` in full every
+    cycle. Omitting it keeps the row exactly as it has always been.
     """
     svc = _autonudge_get()
     if svc is None:
@@ -596,6 +583,10 @@ async def api_autonudge_start(request: web.Request) -> web.Response:
         max_cycles=max_cycles,
         stop_sentinel_path=(body.get("stop_sentinel_path") or ""),
         max_runtime_secs=max_runtime_secs,
+        # Passed through UNCOERCED: the chokepoint owns the type check, the cap
+        # and the channel refusal, so a non-string is a 400 from there rather
+        # than a silent str() here that would persist "None" as a banner.
+        banner=body.get("banner"),
         source="dashboard",
         caller=request.remote or "",
         gate=gate,
@@ -607,7 +598,12 @@ async def api_autonudge_start(request: web.Request) -> web.Response:
 
 
 async def api_autonudge_update(request: web.Request) -> web.Response:
-    """PATCH /api/autonudge/{loop_id} — update message / idle_secs / active.
+    """PATCH /api/autonudge/{loop_id} — update message / idle_secs / active / banner.
+
+    Accepting ``banner`` here is what lets a RUNNING loop be quieted without
+    re-registering it: re-arming would reset ``cycle_count`` and the wall-clock
+    budget anchor, so a loop discovered to be noisy mid-run could not be fixed
+    without discarding its accounting.
 
     Thin HTTP mapping over ``authorize_and_update_nudge``, which owns the
     message redaction, the integer coercion, and the audit-or-deny policy — see
@@ -624,7 +620,7 @@ async def api_autonudge_update(request: web.Request) -> web.Response:
             status=503,
         )
     loop_id = request.match_info["loop_id"]
-    existing = next((lp for lp in svc.list_all() if lp.id == loop_id), None)
+    existing = svc.get_by_id(loop_id)
     if existing is not None and is_structured_monitor_loop(existing):
         return _monitor_error(
             "structured monitors must use the monitor update API",
@@ -643,6 +639,7 @@ async def api_autonudge_update(request: web.Request) -> web.Response:
         max_cycles=body.get("max_cycles"),
         active=body.get("active"),
         max_runtime_secs=body.get("max_runtime_secs"),
+        banner=body.get("banner"),
         source="dashboard",
         caller=request.remote or "",
     )
@@ -664,7 +661,9 @@ async def api_autonudge_delete(request: web.Request) -> web.Response:
         )
     loop_id = request.match_info["loop_id"]
     # Capture slot_key for audit before removal (loop is gone after remove()).
-    existing = next((lp for lp in svc.list_all() if lp.id == loop_id), None)
+    # Resolved through the shared ``svc.get_by_id`` -- the same accessor the
+    # update-path channel refusal uses -- rather than a second inline id-scan.
+    existing = svc.get_by_id(loop_id)
     if existing is not None and is_structured_monitor_loop(existing):
         denied = await _require_monitor_owner(request, "monitor_stop")
         if denied is not None:

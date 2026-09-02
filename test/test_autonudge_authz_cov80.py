@@ -25,7 +25,9 @@ from kiro_crew.autonudge_authz import (
     MAX_RUNTIME_SECS_CEILING,
     authorize_and_add_nudge,
     authorize_and_update_nudge,
+    normalize_banner,
 )
+from kiro_crew.constants import MAX_BANNER_CHARS
 from kiro_crew.monitoring.models import MAX_MONITOR_WAKE_INSTRUCTIONS_CHARS, MonitorState
 
 pytestmark = pytest.mark.asyncio
@@ -931,3 +933,36 @@ class TestResolveStopSentinel:
 
         assert out.parent == tmp_path
         assert out.name == ".stop-slack_C1_x"
+
+
+# ── normalize_banner(truncate=True): the /goal path must redact BEFORE it cuts ──
+
+
+class TestNormalizeBannerTruncate:
+    """``truncate=True`` exists for ``/goal``, whose banner is derived from an
+    arbitrarily long objective it does not control. The cut must land AFTER
+    redaction so a credential straddling the cap boundary is masked whole, never
+    sliced into a raw prefix that defeats full-token detection."""
+
+    def test_a_credential_straddling_the_cap_is_masked_not_sliced(self) -> None:
+        # 20-char key starts 10 chars before the cap and runs past it: a
+        # slice-before-redact (the old ``objective[:cap]``) would keep the raw
+        # 10-char prefix ``AKIAIOSFOD`` because the truncated token no longer
+        # matches the scanner.
+        straddling = "x" * (MAX_BANNER_CHARS - 10) + "AKIAIOSFODNN7EXAMPLE" + " tail"
+        value, error = normalize_banner(straddling, absent_ok=True, truncate=True)
+        assert error is None
+        assert len(value) <= MAX_BANNER_CHARS
+        assert "AKIA" not in value, "a raw credential prefix survived the cap cut"
+
+    def test_a_long_credential_free_objective_truncates_instead_of_dropping(self) -> None:
+        value, error = normalize_banner(
+            "a" * (MAX_BANNER_CHARS + 100), absent_ok=True, truncate=True
+        )
+        assert error is None and len(value) == MAX_BANNER_CHARS
+
+    def test_without_truncate_an_over_cap_banner_is_still_rejected(self) -> None:
+        """The API/MCP callers keep the rejecting behaviour — a user typed it and
+        can shorten it, so silently truncating would hide their input."""
+        value, error = normalize_banner("a" * (MAX_BANNER_CHARS + 1), absent_ok=True)
+        assert value == "" and error and "too long" in error
