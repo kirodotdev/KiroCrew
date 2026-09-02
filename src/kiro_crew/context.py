@@ -26,6 +26,7 @@ from kiro_crew.config import live
 from kiro_crew.config.loader import KiroCrewConfig, workspace_dir_for
 from kiro_crew.config.paths import kiro_agents_dir
 from kiro_crew.cron import get_local_tz
+from kiro_crew.dashboard.chat_tag_grants import is_grantable_tag_id
 from kiro_crew.hooks import (
     HOOK_INJECT_CONTEXT,
     HOOK_MODIFY,
@@ -880,7 +881,7 @@ def _map_offset_through_spans(off: int, spans: list[tuple[int, int]]) -> int:
     so an offset shifts by the sum of the deltas of every span that ends before
     it. An offset that falls INSIDE a rewritten span (the user's text opening
     with a forged marker, say) clamps to that span's start in output coords —
-    the original bytes there no longer exist.
+    the original bytes there do not exist anymore.
     """
     delta = 0
     placeholder = len(_STRUCTURAL_MARKER_NEUTRALIZED)
@@ -919,6 +920,31 @@ def _neutralize_reply_format_markers(text: str) -> str:
     """
     spans = _marker_spans(text, (_REPLY_FORMAT_RULES_RE,))
     return _apply_marker_spans(text, spans)
+
+
+def _board_safe_tag_name(raw: object) -> str:
+    """Admit one board tag handle onto the trusted [BOARD] context line.
+
+    ALLOWLIST, not sanitize-then-screen — the terminal form of this guard.
+    The board line carries tag IDS (machine handles, the same strings
+    ``chat_tag`` consumes); prose was never legitimate here. The admitted
+    grammar is the CLOSED set of ids a grant can exist for at all
+    (``is_grantable_tag_id``): a 12-hex id the dashboard minted, or one of the
+    code-level default workflow states. That grammar has no room for words —
+    an instruction cannot be spelled in twelve hex digits, and the defaults
+    are five known constants — so an agent-authored id planted in
+    agent-writable ``tags.json`` can neither acquire a grant (the PATCH mint
+    refuses it) nor be rendered here even if a row for it somehow existed.
+    Nothing is rewritten, so no strip can reconstruct a payload. The
+    injection heuristic below is kept as a redundant second screen, not as
+    the defense. Rejected handles are dropped by the caller.
+    """
+    value = raw if isinstance(raw, str) else ""
+    if not is_grantable_tag_id(value):
+        return ""
+    if contains_injection(re.sub(r"[-_./]", " ", value)):
+        return ""
+    return value
 
 
 # kiro-cli task_executor slices strings at fixed byte offsets (e.g. 4096).
@@ -3816,6 +3842,7 @@ class ContextBuilder:
         exclude_last_n: int = 0,
         folder_path: str | None = None,
         model_window: int | None = None,
+        board_tags: list[tuple[str, str]] | None = None,
         user_text_range: tuple[int, int] | None = None,
         user_span_out: list[int] | None = None,
         needs_reinjection: bool = False,
@@ -4282,6 +4309,40 @@ class ContextBuilder:
                 "this directory. Prefer files and patterns from this project "
                 "when answering questions.\n\n"
             )
+
+        # Board state — the session's dashboard board tags, so the agent knows
+        # its own workflow lane and which tags it is allowed to change with
+        # chat_tag. One line, omitted entirely when the slot carries no tags.
+        # ``board_tags`` is a pre-resolved [(tag_id, policy)] list from the
+        # caller (chat_runner), which owns the live vocabulary. Canonical IDs,
+        # never the free-form ``name`` field: names are agent-writable prose,
+        # and an instruction-shaped name must never land on the trusted rail;
+        # ids are also the handles chat_tag consumes.
+        # agent-writable = policy is not "none".
+        if board_tags:
+            # Even ids are read from agent-writable tags.json, and this line
+            # lands on the model's TRUSTED context rail — the same channel as
+            # [PROJECT] and [RUNTIME]. ``_board_safe_tag_name`` stays as
+            # defense in depth: it neutralizes structural markers, control
+            # characters and newlines, and caps length, so a hostile id
+            # hand-written into tags.json cannot smuggle instructions or fake
+            # a context header. Ids that sanitize to empty are dropped.
+            _safe_names = [
+                n for n in (_board_safe_tag_name(name) for name, _policy in board_tags) if n
+            ]
+            _safe_writable = [
+                n
+                for n in (
+                    _board_safe_tag_name(name) for name, policy in board_tags if policy != "none"
+                )
+                if n
+            ]
+            if _safe_names:
+                _tag_names = ", ".join(_safe_names)
+                _writable = ", ".join(_safe_writable)
+                parts.append(
+                    f"[BOARD] tags: {_tag_names} · agent-writable: " f"{_writable or '(none)'}\n\n"
+                )
 
         # Resource pressure — inject a compact advisory ONLY when host memory is
         # tight/critical, so the model can choose the lighter path for heavy work

@@ -774,7 +774,7 @@ answers `tools/list` from):
 - **Session-bound directives** (`session_directive.DIRECTIVE_TOOLS`):
   `ask_question`, `suggest_followup`, `monitor_start`, `monitor_watch`,
   `monitor_update`, `monitor_stop`, `autonudge_stop`, `set_project`,
-  `reset_conversation`
+  `reset_conversation`, `chat_tag`
 - **Memory recall (V1 and V2):** `memory_recall` resolves authenticated session identity
   once through `require_strict_session_key` and passes that same identity to the gateway.
   Missing identity returns the shared gate's refusal and installation diagnosis.
@@ -1193,7 +1193,7 @@ and let a sub-agent's card land in its parent's slot.
 **Return a session directive and let the session-aware consumer apply it.** This
 is what the `ask_question` MCP tool itself now does, along with `monitor_start`,
 `monitor_watch`, `monitor_update`, `monitor_stop`, `autonudge_stop`, `set_project`
-and `suggest_followup`, and `reset_conversation`
+and `suggest_followup`, `reset_conversation` and `chat_tag`
 (`session_directive.DIRECTIVE_TOOLS`). The tool validates its arguments and
 returns a human-readable confirmation plus a marker line carrying the validated
 payload and **no session key**. `dashboard/chat_runner`'s tool-result handler

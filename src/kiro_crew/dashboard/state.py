@@ -39,6 +39,7 @@ from kiro_crew.constants import (
     SUBAGENT_COMPLETION_PREFIX,
 )
 from kiro_crew.dashboard.chat_compaction_notice import deliver_channel_compaction_notice
+from kiro_crew.dashboard.chat_tag_grants import seed_default_grants, seed_status_identity_rows
 from kiro_crew.dashboard.dashboard_persistence import DashboardPersistenceCoordinator
 from kiro_crew.dashboard.folder_repository import FOLDERS_FILE, FolderRepository
 from kiro_crew.dashboard.interaction_coordinator import (
@@ -7463,12 +7464,45 @@ class DashboardState:
             if "status" not in t:
                 t["status"] = t.get("id") in seed_ids
                 mutated = True
+        seeded_default_vocab = False
         if not file_existed and not self._tags:
             # Fresh install (no tags.json on disk) — seed the default vocabulary.
             self._tags = [dict(t) for t in self._DEFAULT_TAGS]
             mutated = True
+            seeded_default_vocab = True
         if mutated:
             self.save_tags()
+
+        # One-time seed of the agent tag-write grants store, from TRUSTED CODE
+        # CONSTANTS only: the default workflow-state tag ids. Never derived
+        # from tags.json (agent-writable — promoting its fields into the
+        # protected store would launder a forged grant through the upgrade;
+        # a forgery hazard). Custom grants are minted by the dashboard CRUD.
+        # Default grants are minted ONLY on the boot that also seeded the
+        # default vocabulary: an UPGRADED install may have deleted those tags,
+        # and granting their ids anyway would let an agent restore the id in
+        # agent-writable tags.json and inherit the authority after restart
+        # (a forgery hazard). Everyone else gets an EMPTY store.
+        try:
+            seed_default_grants(
+                [t["id"] for t in self._DEFAULT_TAGS if t.get("status")]
+                if seeded_default_vocab
+                else []
+            )
+        except Exception:
+            logger.warning("agent-tag grant seed failed", exc_info=True)
+
+        # Upgraded installs (store present or vocabulary pre-existing) still
+        # need STATUS IDENTITY for the default workflow-state ids: without a
+        # row, set_state reads a default status tag as non-status and skips
+        # exclusive-peer stripping, so two workflow states persist. Identity
+        # rows are policy "none" — they constrain and grant nothing, so a
+        # restored id in agent-writable tags.json inherits no authority.
+        # Ids from code constants only; existing rows are never touched.
+        try:
+            seed_status_identity_rows([t["id"] for t in self._DEFAULT_TAGS if t.get("status")])
+        except Exception:
+            logger.warning("status-identity row seed failed", exc_info=True)
 
         # Column layout: flat list of {id, name, tag_ids, mode, order}.
         # Empty list = single implicit "all sessions" column (legacy UX).
