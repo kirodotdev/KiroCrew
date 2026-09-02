@@ -568,7 +568,6 @@ test/test_context_marker_neutralization.py
 test/test_context_ui_language.py
 test/test_continuable_followups.py
 test/test_conversation.py
-test/test_coverage_omit_contract.py
 test/test_crash_dump_store.py
 test/test_crash_guard.py
 test/test_credential_scrub_sync.py
