@@ -9717,6 +9717,8 @@
         "changes": "Изменения",
         "clear": "Очистить",
         "complete": "Завершено",
+        "credits_not_reported": "Использование кредитов не указано",
+        "credits_used": "Использовано кредитов: {{credits}}",
         "dismiss_done_count": "Скрыть завершённые ({{count}})",
         "error": "Ошибка",
         "input": "Ввод",

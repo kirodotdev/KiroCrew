@@ -105,6 +105,7 @@ if TYPE_CHECKING:
     from kiro_crew.messaging.transport import MessagingTransport  # noqa: F401
     from kiro_crew.power import SleepInhibitor  # noqa: F401
     from kiro_crew.slack.outbound import PostedOptions  # noqa: F401
+    from kiro_crew.subagent import SubagentDelivery
 
 logger = logging.getLogger(__name__)
 
@@ -2556,7 +2557,7 @@ class _ChatSlot:
         # its own ``mark_delivered`` and the drain settles these instead, so the
         # retention TTL is measured from consumption rather than from run
         # completion. See ``take_pending_subagent_deliveries``.
-        self._subagent_delivery_pending: dict[str, list[str]] = {}
+        self._subagent_delivery_pending: dict[str, list[SubagentDelivery]] = {}
         self._recovery_retrigger_count: int = 0
         self._prompt_busy_retries: int = 0
         self._acp_pipe_death_retries: int = 0
@@ -3530,13 +3531,15 @@ class _ChatSlot:
     def queue_pop(self, index: int = 0) -> dict[str, Any]:
         return self._queue_repository.queue_pop(self, index)
 
-    def note_pending_subagent_delivery(self, content: str, agent_ids: list[str]) -> None:
-        self._queue_repository.note_pending_subagent_delivery(self, content, agent_ids)
+    def note_pending_subagent_delivery(
+        self, content: str, deliveries: list[SubagentDelivery]
+    ) -> None:
+        self._queue_repository.note_pending_subagent_delivery(self, content, deliveries)
 
     def owes_subagent_delivery(self, contents: list[str]) -> bool:
         return self._queue_repository.owes_subagent_delivery(self, contents)
 
-    def take_pending_subagent_deliveries(self, contents: list[str]) -> list[str]:
+    def take_pending_subagent_deliveries(self, contents: list[str]) -> list[SubagentDelivery]:
         return self._queue_repository.take_pending_subagent_deliveries(self, contents)
 
     def queue_remove_by_id(self, queue_id: str) -> str | None:

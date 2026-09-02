@@ -9585,6 +9585,8 @@
         "changes": "Modifications",
         "clear": "Effacer",
         "complete": "Terminé",
+        "credits_not_reported": "Utilisation des crédits non signalée",
+        "credits_used": "{{credits}} crédits utilisés",
         "dismiss_done_count": "Effacer les terminés ({{count}})",
         "error": "Erreur",
         "input": "Entrée",

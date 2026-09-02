@@ -53,6 +53,7 @@ if TYPE_CHECKING:
         _describe_exception,
         _redact,
         _resolved_model_of,
+        _RunCreditAccounting,
         _subagent_default_effort,
         _subagent_default_model,
         _timeout_context,
@@ -701,6 +702,7 @@ class RunEventCoordinator(ManagerComponent):
         self,
         info: SubagentInfo,
         session_key: str,
+        usage: _RunCreditAccounting,
     ) -> None:
         """Inner execution — called within timeout wrapper."""
         setattr(info, "_session_id", "")
@@ -1264,6 +1266,7 @@ class RunEventCoordinator(ManagerComponent):
             _fb_state = FallbackState(configured_fallback_chain())
             msg = full_message
             while True:
+                usage.begin(client)
                 try:
                     if not use_session_sharing:
                         # Publish the live dedicated PID before every prompt,
@@ -1321,6 +1324,9 @@ class RunEventCoordinator(ManagerComponent):
                         yield _ev
                     if _withheld is None:
                         return
+                    # Preserve this turn's billing before recovery can cancel
+                    # or begin another attempt with a fresh usage baseline.
+                    usage.settle(_withheld)
                     if _infra is not None:
                         _nudge = await self._manager._yield_for_infra_retry(info, _infra)
                     else:
@@ -1338,6 +1344,7 @@ class RunEventCoordinator(ManagerComponent):
                 except asyncio.CancelledError:
                     raise
                 except Exception as exc:
+                    usage.settle()
                     if not acp_error_is_transient(exc):
                         raise
                     # Post-activity: continue instead of re-running. "Activity"
@@ -1588,6 +1595,7 @@ class RunEventCoordinator(ManagerComponent):
                             info.id,
                             child_escalation_limit,
                         )
+                        usage.settle()
                         self._manager._write_tombstone(info, "child_escalation_limit")
                         return
                 # Diagnostic pointer is written for BOTH origins — orphan
@@ -1631,6 +1639,7 @@ class RunEventCoordinator(ManagerComponent):
                     info.done = True
                     Stats().inc_subagent_failed()
                     logger.warning("Subagent %s hit turn limit (%d)", info.id, turn_limit)
+                    usage.settle()
                     self._manager._write_tombstone(info, "turn_limit")
                     return
                 tool_result = self._manager._ctx_builder.hooks.on_tool_call(
@@ -1945,7 +1954,12 @@ class RunEventCoordinator(ManagerComponent):
                         )
             elif event.kind == EVENT_COMPLETE:
                 _complete_event = event
+                usage.settle(event)
                 break
+
+        # A provider may finish without an explicit completion event. Its
+        # current prompt stats are still the authoritative billing record.
+        usage.settle()
 
         # Strip [OPTIONS: ...] tags and redact sensitive content
         cleaned, _ = extract_options(result_text) if result_text else (result_text, [])

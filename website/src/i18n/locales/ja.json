@@ -9321,6 +9321,8 @@
         "changes": "変更",
         "clear": "クリア",
         "complete": "完了",
+        "credits_not_reported": "クレジット使用量は報告されていません",
+        "credits_used": "{{credits}} クレジットを使用",
         "dismiss_done_count": "完了を閉じる({{count}})",
         "error": "エラー",
         "input": "入力",

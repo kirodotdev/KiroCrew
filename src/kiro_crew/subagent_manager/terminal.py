@@ -19,6 +19,7 @@ if TYPE_CHECKING:
         _timeout_context,
         _ws_result_path,
         asyncio,
+        format_subagent_usage,
         logger,
         mark_delivered,
         os,
@@ -119,11 +120,14 @@ class TerminalCoordinator(ManagerComponent):
         # exclusive report task owns the terminal transition; flipping here
         # means only the last sibling can observe the batch as fully settled.
         info.done = True
+        if info._credit_accounting is not None:
+            info._credit_accounting.settle()
         await self._manager._fire_event(
             "subagent_done",
             info,
             {
                 "elapsed": info.elapsed,
+                "credits": info.credits,
                 "error": _redact(info.error) if info.error else None,
                 "stopped": info.user_stopped,
                 "outcome": info.outcome,
@@ -206,7 +210,7 @@ class TerminalCoordinator(ManagerComponent):
                 # "delivered" tombstone excludes it from orphan reconciliation;
                 # the reaper prunes it after agent.subagent_result_ttl_secs.
                 try:
-                    mark_delivered(info.id)
+                    mark_delivered(info.id, elapsed=info.elapsed, credits=info.credits)
                 except Exception:
                     logger.debug("Failed to mark subagent %s delivered", info.id, exc_info=True)
                 # Clean up workspace result file (agent-{id}.md in parent dir).
@@ -443,6 +447,11 @@ class TerminalCoordinator(ManagerComponent):
         # No live task to cancel above (already exited) — the reap still owns
         # teardown bookkeeping from here, so mark it now.
         info.reaped = True
+        # Cancellation can be draining a state writer rather than unwinding the
+        # consumer. Settle synchronously before either tombstone or WS snapshot;
+        # the consumer's eventual finally shares this once-only accounting.
+        if info._credit_accounting is not None:
+            info._credit_accounting.settle()
         # Guard 1 of 3 — the terminal RECORD (done/error/stat/tombstone/cost) is
         # first-arrival-wins on `info.done`, so it is never written twice.
         if not info.done:
@@ -659,6 +668,7 @@ class TerminalCoordinator(ManagerComponent):
                 f"{SUBAGENT_COMPLETION_PREFIX}\n"
                 f"Agent `{info.id}` ❌ {reason}\n"
                 f"Task: {task_preview}\n"
+                f"Usage: {format_subagent_usage(info.credits, info.elapsed)}\n"
                 f"{_injection_notice_outcome(info)}{result_hint}"
             )
 
