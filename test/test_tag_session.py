@@ -99,6 +99,7 @@ class TestAutoTagDerivation:
         written = json.loads(tags_file.read_text())
         assert len(written) == 1
         assert written[0]["name"] == "MyRepo"
+        assert patch_save_slot.await_args.kwargs["expected_history_key"] == "dashboard:test-slot"
 
     async def test_no_project_is_noop(self, patch_save_slot):
         state = _make_state()

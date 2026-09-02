@@ -3405,6 +3405,7 @@ async def save_slot_off_loop(
             expected_history_key=expected_history_key,
         )
 
+    guarded_metadata = expected_history_key is not None
     try:
         loop = asyncio.get_running_loop()
     except RuntimeError:
@@ -3427,6 +3428,8 @@ async def save_slot_off_loop(
                 return True
         return _do()
     if best_effort:
+        if guarded_metadata:
+            slot._metadata_persist_inflight += 1
         try:
             return await loop.run_in_executor(None, _do)
         except Exception:  # noqa: BLE001 - best-effort durable copy
@@ -3437,9 +3440,18 @@ async def save_slot_off_loop(
                 "save_slot_off_loop: offloaded save failed slot=%s", slot.key, exc_info=True
             )
             return True
+        finally:
+            if guarded_metadata:
+                slot._metadata_persist_inflight -= 1
     # Non-best-effort: propagate so the caller can roll back (do NOT remove the
     # session until the durable write is confirmed).
-    return await loop.run_in_executor(None, _do)
+    if guarded_metadata:
+        slot._metadata_persist_inflight += 1
+    try:
+        return await loop.run_in_executor(None, _do)
+    finally:
+        if guarded_metadata:
+            slot._metadata_persist_inflight -= 1
 
 
 def _build_history_prefix(slot: _ChatSlot) -> str:

@@ -3036,6 +3036,7 @@ class _ChatSlot:
         "_prefetch_ttl_task",
         "_dirty_flag",
         "_dirty_gen",
+        "_metadata_persist_inflight",
         "_orch_tracker",
         "_plan_cancelled",
         "_auto_run",
@@ -3347,6 +3348,10 @@ class _ChatSlot:
         # Bumped by the _dirty setter on every True. Lets the periodic flush tell
         # "the True I started this save under" from "a NEW True set during it".
         self._dirty_gen: int = 0
+        # A guarded metadata write has changed this live slot but has not yet
+        # committed.  The periodic writer must not serialize that provisional
+        # state to an unpinned transcript while the guarded write waits.
+        self._metadata_persist_inflight: int = 0
         self._orch_tracker: Any = None  # OrchestrationTracker, set by gateway
         # Plan-cancel latch closing the cancel/Go race (#6046): the Cancel
         # handler can only stop a tracker that exists, but _stage_loop creates
