@@ -115,6 +115,15 @@ class FeishuRenderer(Renderer):
         if started:
             self._card = session
         else:
+            if session.anchor_gone:
+                # The card reply failed because the inbound message is gone. The
+                # verdict lives on the session, so dropping it here would lose
+                # it: ``on_done`` would then send a buffered reply to a recalled
+                # anchor, which fails and is raised as a delivery error for
+                # something the user did on purpose. Keep the session -- it is
+                # not live, so it takes no frames and finishes as undelivered;
+                # all it still carries is that verdict.
+                self._card = session
             logger.info("Feishu: no streaming card for this turn; falling back to a buffered reply")
 
     async def _push_live(self, *, force: bool = False) -> None:
@@ -132,6 +141,13 @@ class FeishuRenderer(Renderer):
             frame = f"{frame}\n\n{footer}" if frame else footer
         if not frame:
             return
+        # Redact here as well as in :meth:`text`. A live frame reaches the screen
+        # BEFORE the send-boundary scrub in ``text()`` runs, and the
+        # channel-neutral stream pass upstream is a literal byte scan, so a
+        # credential split by markdown (``AKIA**REST**``) or hidden in a link is
+        # reassembled by the card's own markdown rendering and shown. The final
+        # frame replaces this one, but "until then" is still an exposure.
+        frame = self.redact_for_target(frame)
         try:
             await card.push(frame, force=force)
         except Exception:  # pragma: no cover - the session classifies its own errors

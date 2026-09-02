@@ -763,6 +763,79 @@ class TestDelivered:
         assert client.of("final") == []
 
     @pytest.mark.asyncio
+    async def test_a_failed_final_push_does_not_claim_an_earlier_partial(
+        self, clock: FakeClock
+    ) -> None:
+        """The worst case has to stay "the user gets the buffered reply".
+
+        An earlier frame landed, so ``_shown`` is non-empty -- but it holds a
+        PREFIX of the answer. The final push then fails and retires the session,
+        which skips the step-5 repair. Reporting delivered here would suppress
+        the caller's text fallback and lose the answer tail with no error
+        anywhere.
+        """
+        client = FakeClient()
+        session = await _started(client)
+        await session.push("half", force=True)
+        client.raises["push"] = RuntimeError("connection reset")
+
+        assert await session.finish("half and the rest") is False
+        assert session.delivered is False
+        assert session.live is False
+        # Retired before step 5, so nothing repaired the partial. The final
+        # content call was attempted (the fake records it) but raised, so what
+        # is on screen is still only the earlier frame.
+        assert client.of("final") == []
+        assert session._shown == "half"
+
+    @pytest.mark.asyncio
+    async def test_a_demoted_final_frame_is_delivered_by_the_full_replace(
+        self, clock: FakeClock
+    ) -> None:
+        """A demote mid-finish changes the body, so the push never lands the
+        exact final text -- but step 5 does, and that is what delivered means."""
+        client = FakeClient()
+        session = await _started(client)
+        await session.push("head", force=True)
+        client.codes["push"] = [sc.ERR_CARD_CONSTRAINT]
+
+        assert await session.finish("head and the rest") is True
+        assert session.delivered is True
+        card = json.loads(client.of("final")[0].body["card"]["data"])
+        assert card["body"]["elements"][0]["content"] == "head and the rest"
+
+    @pytest.mark.asyncio
+    async def test_nothing_on_screen_and_a_failed_replace_is_not_delivered(
+        self, clock: FakeClock
+    ) -> None:
+        """Both the push and the replace failed, so the card is empty."""
+        client = FakeClient()
+        client.raises["push"] = RuntimeError("connection reset")
+        session = await _started(client)
+
+        assert await session.finish("the answer") is False
+        assert session.delivered is False
+
+    @pytest.mark.asyncio
+    async def test_an_answer_that_normalises_to_nothing_is_not_delivered(
+        self, clock: FakeClock
+    ) -> None:
+        """An empty card is not a delivered answer.
+
+        The card cannot render a bare image, so an image-only reply normalizes to
+        nothing. The final replace of an empty card still succeeds, so success
+        there is not evidence the user can read the answer -- only the caller's
+        buffered text reply carries it.
+        """
+        client = FakeClient()
+        session = await _started(client)
+        text = "![diagram](https://example.com/d.png)"
+        assert sc.prepare_card_text(text) == "", "fixture must normalize to empty"
+
+        assert await session.finish(text) is False
+        assert session.delivered is False
+
+    @pytest.mark.asyncio
     async def test_finish_is_safe_to_call_again(self, clock: FakeClock) -> None:
         client = FakeClient()
         session = await _started(client)

@@ -491,12 +491,18 @@ class StreamingCardSession:
             return self._delivered
         self._pending = text
         await self._flush(force=True)
-        if self._shown:
+        # A non-empty ``_shown`` only proves SOME frame landed. When the final
+        # push fails, ``_flush`` retires the session and leaves ``_shown`` at an
+        # earlier partial, so treating it as delivered would suppress the text
+        # fallback and silently drop the answer tail. Compare against the body
+        # the final flush was meant to land instead. Computed after the flush so
+        # a table demote applied during it is reflected.
+        body = prepare_card_text(text, demote_tables=self._demote_tables)
+        if body and self._shown == body:
             self._delivered = True
         if not self.live:
             return self._delivered
 
-        body = prepare_card_text(text, demote_tables=self._demote_tables)
         try:
             await self._client.card_api(
                 "PATCH",
@@ -523,4 +529,17 @@ class StreamingCardSession:
             )
         except Exception as exc:
             logger.debug("Feishu card: final replace failed (%s)", exc)
+        else:
+            # The full replace puts the whole body on screen, so it counts as
+            # delivered even when the incremental push above never landed it
+            # (a table demote during the final flush changes the body).
+            #
+            # Only for a body there is: an answer that normalizes to nothing (an
+            # image-only reply, whose markup the card cannot render) replaces the
+            # card with an empty one, and the PUT for that succeeds. Claiming it
+            # would suppress the caller's buffered reply, which is the only copy
+            # of that answer the user can still be given.
+            if body:
+                self._shown = body
+                self._delivered = True
         return self._delivered
