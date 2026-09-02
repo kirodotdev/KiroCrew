@@ -60,10 +60,21 @@ existing contract exactly: the POST reserves a row and returns
 `{ok, slug, state, token}`, the GET is the card's authoritative feed for a
 card-initiated mint (`idle|minting|waiting|granted|failed|expired`, with
 `oauth_url` only while `waiting`), and the frontend keeps polling it at its own
-cadence. The status endpoint is **additive** and never mints: it observes the
-mint table to distinguish `awaiting_consent` from `not_connected`, and that is
-the whole of its relationship to minting. Approval-URL ownership stays with the
-mint engine.
+cadence. Approval-URL ownership stays with the mint engine.
+
+A cold mint whose URL is rejected by `oauth_url_contains_credential` disposes
+that dedicated process, protected PID, and ephemeral spec, then creates one
+fresh dedicated attempt with a new provider OAuth state. The retry keeps the
+caller's row token, so the initiating tab continues to own the result. A second
+rejection is terminal and surfaces the existing `failed` / `mint_url_rejected`
+state; no other failure class retries. Warm URLs pass the same credential gate
+before they become adoptable. A rejected warm claim is released, so a later
+Connect follows the cold path and reaches this single retry owner rather than
+carrying a second policy in the warm engine or dashboard handler.
+
+The status endpoint is **additive** and never mints: it observes the mint table
+to distinguish `awaiting_consent` from `not_connected`, and that is the whole of
+its relationship to minting.
 
 ## connectedSince is source-backed
 

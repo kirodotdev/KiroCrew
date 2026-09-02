@@ -489,7 +489,7 @@ async def test_a_late_failure_does_not_clobber_the_live_row(monkeypatch: pytest.
 
 
 @pytest.mark.asyncio
-async def test_a_credential_bearing_url_is_refused_and_never_recorded(
+async def test_a_credential_bearing_url_is_disposed_and_retried_once(
     monkeypatch: pytest.MonkeyPatch, protected_pids: set[int], caplog
 ):
     tainted = "https://auth.example.com/authorize?client_id=abc&access_token=AKIAIOSFODNN7EXAMPLE"
@@ -499,26 +499,93 @@ async def test_a_credential_bearing_url_is_refused_and_never_recorded(
             super().__init__(**kwargs)
             self.requests = [{"serverName": "notion", "oauthUrl": tainted}]
 
-    monkeypatch.setattr(mint, "_acp_client_factory", lambda: _Tainted)
+    attempts = iter([_Tainted, _FakeClient])
+    monkeypatch.setattr(mint, "_acp_client_factory", lambda: next(attempts))
     logged: list[str] = []
     monkeypatch.setattr(
         mint,
         "_log_mint_outcome",
         lambda slug, outcome, detail: logged.append(f"{outcome} {detail}"),
     )
+    token, prior = await mint.reserve_mint_row("notion")
 
     with caplog.at_level("WARNING"):
-        await mint.start_oauth_mint("notion", _URL)
+        await mint.start_oauth_mint("notion", _URL, token, prior)
 
-    # Same predicate the chat consent path applies. The card gets a coarse
-    # failure, and the value appears in no log line and no audit event.
     view = mint.pending_mint_for("notion")
+    assert view is not None
+    assert view["token"] == token
+    assert _state_only(view) == {"state": "waiting", "oauth_url": _AUTHORIZE}
+    assert len(_FakeClient.instances) == 2
+    rejected, fresh = _FakeClient.instances
+    assert rejected.shutdowns == 1
+    assert fresh.shutdowns == 0
+    assert protected_pids == {fresh._pid}
+    assert logged == ["ok url_minted=True"]
+    assert "AKIAIOSFODNN7EXAMPLE" not in caplog.text
+    assert "AKIAIOSFODNN7EXAMPLE" not in json.dumps(logged)
+
+    await mint._dispose_mint(mint._mints["notion"])
+    assert fresh.shutdowns == 1
+    assert protected_pids == set()
+
+
+@pytest.mark.asyncio
+async def test_a_rejected_url_and_its_retry_are_screened_off_the_event_loop(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    seen: list[int] = []
+    verdicts = iter([True, False])
+
+    def _screen(_url: str) -> bool:
+        seen.append(threading.get_ident())
+        return next(verdicts)
+
+    monkeypatch.setattr(mint, "oauth_url_contains_credential", _screen)
+
+    await mint.start_oauth_mint("notion", _URL)
+    clients = list(_FakeClient.instances)
+    await mint._dispose_mint(mint._mints["notion"])
+
+    assert len(seen) == 2
+    assert threading.get_ident() not in seen
+    assert len(clients) == 2
+
+
+@pytest.mark.asyncio
+async def test_a_second_credential_bearing_url_surfaces_failure_without_a_third_attempt(
+    monkeypatch: pytest.MonkeyPatch, protected_pids: set[int], caplog
+):
+    tainted = "https://auth.example.com/authorize?client_id=abc&access_token=AKIAIOSFODNN7EXAMPLE"
+
+    class _Tainted(_FakeClient):
+        def __init__(self, **kwargs: Any) -> None:
+            super().__init__(**kwargs)
+            self.requests = [{"serverName": "notion", "oauthUrl": tainted}]
+
+    attempts = iter([_Tainted, _Tainted])
+    monkeypatch.setattr(mint, "_acp_client_factory", lambda: next(attempts))
+    logged: list[str] = []
+    monkeypatch.setattr(
+        mint,
+        "_log_mint_outcome",
+        lambda slug, outcome, detail: logged.append(f"{outcome} {detail}"),
+    )
+    token, prior = await mint.reserve_mint_row("notion")
+
+    with caplog.at_level("WARNING"):
+        await mint.start_oauth_mint("notion", _URL, token, prior)
+
+    view = mint.pending_mint_for("notion")
+    assert view is not None
+    assert view["token"] == token
     assert _state_only(view) == {"state": "failed", "reason": "mint_url_rejected"}
+    assert len(_FakeClient.instances) == 2
+    assert [client.shutdowns for client in _FakeClient.instances] == [1, 1]
+    assert protected_pids == set()
     assert logged == ["error reason=mint_url_rejected"]
     assert "AKIAIOSFODNN7EXAMPLE" not in caplog.text
     assert "AKIAIOSFODNN7EXAMPLE" not in json.dumps(logged)
-    assert protected_pids == set()
-    assert _FakeClient.instances[-1].shutdowns == 1
 
 
 @pytest.mark.asyncio
