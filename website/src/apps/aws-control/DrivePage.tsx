@@ -179,6 +179,7 @@ function ViewModeToggle({ section, mode, onChange }: {
       onChange={onChange}
       layoutId={`aws-drive-view-${section}`}
       collapse={false}
+      iconOnly
     />
   )
 }
@@ -1581,7 +1582,11 @@ export function DriveSectionView({ account, bucket }: { account: string; bucket:
       )}
 
       {mode === 'list' && (folders.length > 0 || files.length > 0) && (
-        <div ref={attachScroller} className="overflow-x-auto rounded-md border border-border bg-card" data-testid="drive-listing">
+        /* Borderless, the stock shadcn table posture: row dividers only, no
+           frame and no card fill — the heavy outer border read as chrome on a
+           page that is mostly this one table. The div stays: it is the
+           horizontal scroll container the pinned Actions seam measures. */
+        <div ref={attachScroller} className="overflow-x-auto" data-testid="drive-listing">
           <table className="w-full border-collapse text-[13px]">
             {/* Shared head, drive columns. No column is sortable and `sort` is
                 null on purpose: the listing is paged server-side and S3 returns
