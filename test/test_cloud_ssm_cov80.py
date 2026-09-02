@@ -384,6 +384,11 @@ class _FakeProc:
         return 0
 
 
+#: A resolved absolute path standing in for what ``trusted_system_bin`` returns
+#: on Windows. The value is never reached: every spawn here is stubbed.
+_TASKKILL_BIN = r"C:\Windows\System32\taskkill.exe"
+
+
 class TestKillPortForward:
     def test_none_and_already_exited_are_noops(self) -> None:
         assert ssm.kill_port_forward(None) is None
@@ -404,10 +409,71 @@ class TestKillPortForward:
 
         monkeypatch.setattr(ssm.os, "name", "nt")
         monkeypatch.setattr(ssm.subprocess, "run", _run)
+        # Stubbed so the branch runs on a POSIX CI host, where a real lookup for
+        # a Windows-only tool answers None.
+        monkeypatch.setattr(ssm.platform_compat, "trusted_system_bin", lambda name: _TASKKILL_BIN)
         proc = _FakeProc()
         ssm.kill_port_forward(proc)
-        assert calls == [["taskkill", "/T", "/F", "/PID", "4242"]]
+        assert calls == [[_TASKKILL_BIN, "/T", "/F", "/PID", "4242"]]
         assert proc.terminated is False
+
+    def test_taskkill_is_resolved_from_the_trusted_system_dirs(self, monkeypatch) -> None:
+        """A bare argv name is a PATH-hijack seam on exactly this teardown path.
+
+        `CreateProcess` searches the calling image's directory and the CWD before
+        `PATH`, and a gateway `PATH` can legitimately lead with agent-writable
+        directories, so `["taskkill", ...]` lets a planted `taskkill.exe` run with
+        this process's privileges. `AGENTS.md` names `trusted_system_bin` as the
+        required spelling for `taskkill`, and `platform_compat` already resolves the
+        same binary that way at both of its own sites.
+        """
+        calls: list[list[str]] = []
+
+        def _run(argv, **_kwargs):
+            calls.append(argv)
+
+            class _R:
+                returncode = 0
+
+            return _R()
+
+        monkeypatch.setattr(ssm.os, "name", "nt")
+        monkeypatch.setattr(ssm.subprocess, "run", _run)
+        monkeypatch.setattr(
+            ssm.platform_compat,
+            "trusted_system_bin",
+            lambda name: _TASKKILL_BIN if name == "taskkill" else None,
+        )
+
+        ssm.kill_port_forward(_FakeProc())
+
+        assert calls == [[_TASKKILL_BIN, "/T", "/F", "/PID", "4242"]]
+        assert calls[0][0] != "taskkill"
+
+    def test_an_unresolvable_taskkill_spawns_nothing_and_falls_back(self, monkeypatch) -> None:
+        """``None`` means unavailable, and the fallback must not spawn a bare name.
+
+        Degrading to `["taskkill", ...]` when the trusted lookup misses would put
+        the hijack back on exactly the host where the vetted copy is absent.
+        """
+        monkeypatch.setattr(ssm.os, "name", "nt")
+        monkeypatch.setattr(
+            ssm.subprocess, "run", lambda argv, **k: pytest.fail(f"spawned {argv!r}")
+        )
+        monkeypatch.setattr(ssm.platform_compat, "trusted_system_bin", lambda name: None)
+        monkeypatch.setattr(
+            ssm.os,
+            "getpgid",
+            lambda pid: (_ for _ in ()).throw(ProcessLookupError()),
+            # Windows has no os.getpgid; these tests SIMULATE the nt branch and must
+            # still run there. Same convention as test_cloud_ssm.py.
+            raising=False,
+        )
+        proc = _FakeProc()
+
+        ssm.kill_port_forward(proc)
+
+        assert proc.terminated is True
 
     def test_windows_taskkill_failure_falls_back_to_terminate(self, monkeypatch) -> None:
         monkeypatch.setattr(ssm.os, "name", "nt")
