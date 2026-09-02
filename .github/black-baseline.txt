@@ -410,7 +410,6 @@ test/test_appearance_packs_store.py
 test/test_appearance_packs_transfer.py
 test/test_approval_and_update_task.py
 test/test_approval_threading.py
-test/test_apps_backend_coverage.py
 test/test_apps_instances_loop_offload.py
 test/test_apps_registry.py
 test/test_apps_registry_coverage.py

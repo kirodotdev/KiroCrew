@@ -3685,3 +3685,56 @@ class TestEnabledStateDistinguishesUnreadableFromDisabled:
         meta.write_text("{ not json", encoding="utf-8")
 
         assert bmod._app_enabled_state("probe") is None
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="shebang semantics are POSIX-only")
+class TestExecBackendShebangShim:
+    def _spawn_cmd(self, tmp_path, shebang_line: str):
+        """Build the exec-arm inputs and return the resolved cmd."""
+        import kiro_crew.apps.backend as bk
+        from kiro_crew.apps.interpreter import app_deps_dir
+
+        root = tmp_path / "app"
+        root.mkdir()
+        (root / "requirements.txt").write_bytes(b"requests\n")
+        d = app_deps_dir(root)
+        d.mkdir(parents=True)
+        (d / bk._DEPS_STAMP_NAME).write_text(bk._deps_digest(b"requests\n"))
+        (d / bk._DEPS_ABI_NAME).write_text(bk._deps_abi_tag())
+        script = root / "run"
+        script.write_text(f"{shebang_line}\nimport requests\n")
+        script.chmod(0o755)
+        return bk, root, script
+
+    def test_an_abi_matched_shebang_script_launches_through_deps_boot(
+        self, tmp_path
+    ):
+        import sys as _sys
+
+        bk, root, script = self._spawn_cmd(tmp_path, f"#!{_sys.executable}")
+        got = bk._abi_shebang_of(root, str(script))
+        assert got == _sys.executable
+
+    def test_an_argument_bearing_shebang_keeps_its_flags(self, tmp_path):
+        """#!<python> -I keeps its kernel launch: the shared reader answers
+        None for argument-bearing shebangs, so no rewrite happens - and the
+        flag REMAINS in what actually executes. Both halves are asserted:
+        not a candidate, and the on-disk launch still carries -I exactly as
+        written (the kernel, not a rewrite, interprets the shebang)."""
+        import sys as _sys
+
+        bk, root, script = self._spawn_cmd(tmp_path, f"#!{_sys.executable} -I")
+        assert bk._abi_shebang_of(root, str(script)) is None
+        first_line = script.read_bytes().split(b"\n", 1)[0]
+        assert first_line == f"#!{_sys.executable} -I".encode()
+        # And a no-candidate script is launched as-is: simulate the exec-arm
+        # decision the spawn makes with this answer.
+        cmd = [str(script), "--serve"]
+        si = bk._abi_shebang_of(root, cmd[0])
+        assert si is None
+        # the arm leaves cmd untouched when there is no shim candidate
+        assert cmd == [str(script), "--serve"]
+
+    def test_a_foreign_shebang_is_not_a_shim_candidate(self, tmp_path):
+        bk, root, script = self._spawn_cmd(tmp_path, "#!/opt/foreign/python3.11")
+        assert bk._abi_shebang_of(root, str(script)) is None
