@@ -222,7 +222,8 @@ describe("hideToTray", () => {
     assert.equal(hideToTray(win, mac()).hidden, false);
   });
 
-  // The default must follow the real platform, since main.js passes no options.
+  // The default must follow the real platform, since window-lifecycle.js passes
+  // no options.
   it("defaults isMac to the host platform", () => {
     const timers = makeTimers();
     const win = makeWin({ fullScreen: true });
@@ -319,23 +320,32 @@ describe("cancelPendingTrayHide", () => {
   });
 });
 
-// The helper above is only a fix if main.js actually routes the tray close
-// through it. A correct helper with the old `mainWindow.hide()` still at the
-// call site passes every test above while the bug is fully intact, so pin the
-// wiring too. Read as TEXT because main.js requires `electron` at load and so
-// cannot be required from this suite — the same idiom windows-titlebar-contract
-// and shell-contract use.
-describe("main.js tray-close wiring", () => {
+// The helper above is only a fix if the owning window boundary routes close and
+// show paths through it. A correct helper with the old `mainWindow.hide()` still
+// at the call site passes every test above while the bug is fully intact. Main
+// remains responsible for routing app-level user intent into that façade, so
+// both composition and owner sources are pinned below.
+describe("window lifecycle tray-close wiring", () => {
   const MAIN_JS = fs.readFileSync(path.join(__dirname, "..", "main.js"), "utf8");
+  const WINDOW_LIFECYCLE_JS = fs.readFileSync(
+    path.join(__dirname, "..", "window-lifecycle.js"),
+    "utf8",
+  );
+  const IPC_REGISTRAR_JS = fs.readFileSync(
+    path.join(__dirname, "..", "ipc-registrar.js"),
+    "utf8",
+  );
 
-  it("requires the helper", () => {
-    assert.match(MAIN_JS, /require\("\.\/hide-to-tray"\)/);
+  it("the owning window boundary requires the helper and main composes that owner", () => {
+    assert.match(WINDOW_LIFECYCLE_JS, /require\("\.\/hide-to-tray"\)/);
+    assert.match(MAIN_JS, /const \{ createWindowLifecycle \} = require\("\.\/window-lifecycle"\)/);
+    assert.match(MAIN_JS, /windows = createWindowLifecycle\(\{/);
   });
 
   it("routes the non-quit close through hideToTray, not a bare hide", () => {
     // The close handler's non-quit branch, up to its `return`.
-    const branch = MAIN_JS.match(
-      /mainWindow\.on\("close"[\s\S]*?if \(!isQuitting\) \{([\s\S]*?)return;/,
+    const branch = WINDOW_LIFECYCLE_JS.match(
+      /mainWindow\.on\("close"[\s\S]*?if \(!isQuitting\(\)\) \{([\s\S]*?)return;/,
     );
     assert.ok(branch, "could not locate the close handler's non-quit branch");
     const body = branch[1];
@@ -352,9 +362,19 @@ describe("main.js tray-close wiring", () => {
   // tray gesture during the deferred hide would still lose to it. Pin each
   // user-initiated show path to the cancel.
   it("cancels the pending hide before the activate show", () => {
-    const branch = MAIN_JS.match(/app\.on\("activate", \(\) => \{([\s\S]*?)\}\);/);
-    assert.ok(branch, "could not locate the activate handler");
-    const body = branch[1];
+    const composition = MAIN_JS.match(/app\.on\("activate", \(\) => \{([\s\S]*?)\}\);/);
+    assert.ok(composition, "could not locate the activate handler");
+    assert.match(
+      composition[1],
+      /windows\.activateMainWindow\(\)/,
+      "main must preserve the activate user-intent route through the window owner",
+    );
+
+    const start = WINDOW_LIFECYCLE_JS.indexOf("function activateMainWindow()");
+    const end = WINDOW_LIFECYCLE_JS.indexOf("function createTray()", start);
+    assert.notEqual(start, -1, "could not locate activateMainWindow");
+    assert.notEqual(end, -1, "could not bound activateMainWindow");
+    const body = WINDOW_LIFECYCLE_JS.slice(start, end);
     assert.match(body, /cancelPendingTrayHide\(mainWindow\)/);
     assert.ok(
       body.indexOf("cancelPendingTrayHide") < body.indexOf(".show()"),
@@ -365,11 +385,16 @@ describe("main.js tray-close wiring", () => {
   it("routes both tray show gestures through the cancelling helper", () => {
     // The menu item and the icon click are the same user intent; both must
     // disarm the pending hide, so both go through the one helper that does.
-    const helper = MAIN_JS.match(/const showFromTray = \(\) => \{([\s\S]*?)\};/);
+    const helper = WINDOW_LIFECYCLE_JS.match(
+      /const showFromTray = \(\) => \{([\s\S]*?)\};/,
+    );
     assert.ok(helper, "could not locate showFromTray");
     assert.match(helper[1], /cancelPendingTrayHide\(mainWindow\)/);
-    assert.match(MAIN_JS, /\{ label: `Show \$\{app\.name\}`, click: showFromTray \}/);
-    assert.match(MAIN_JS, /tray\.on\("click", showFromTray\)/);
+    assert.match(
+      WINDOW_LIFECYCLE_JS,
+      /\{ label: `Show \$\{app\.name\}`, click: showFromTray \}/,
+    );
+    assert.match(WINDOW_LIFECYCLE_JS, /tray\.on\("click", showFromTray\)/);
   });
 
   // The remaining user-intent shows of a possibly-deferred window: relaunching
@@ -377,19 +402,41 @@ describe("main.js tray-close wiring", () => {
   // settings, and clicking the update notification. Each must disarm before it
   // shows, or the window it surfaces vanishes when the deferral settles.
   it("cancels the pending hide on every other user-intent show path", () => {
-    const sites = [
-      ["second-instance", /app\.on\("second-instance", \(\) => \{([\s\S]*?)\}\);/],
-      ["openNewConnectionWindow", /async function openNewConnectionWindow\(\) \{([\s\S]*?)const css/],
-      ["openSettingsPage", /const openSettingsPage = \(tab\) => \{([\s\S]*?)\};/],
-      ["update-notification click", /n\.on\("click", \(\) => \{([\s\S]*?)\}\);/],
+    const composedUserIntents = [
+      [
+        "second-instance",
+        MAIN_JS,
+        /app\.on\("second-instance"[\s\S]*?windows\?\.showMainWindow\(\{ focus: true \}\)/,
+      ],
+      [
+        "update-notification click",
+        IPC_REGISTRAR_JS,
+        /notification\.on\("click"[\s\S]*?windows\.showMainWindow\(\{ focus: true \}\)/,
+      ],
     ];
-    for (const [name, re] of sites) {
-      const m = MAIN_JS.match(re);
-      assert.ok(m, `could not locate the ${name} show path`);
-      assert.match(m[1], /cancelPendingTrayHide\(/, `${name} must disarm the pending hide`);
+    for (const [name, source, route] of composedUserIntents) {
+      assert.match(source, route, name + " must route through the cancelling window façade");
+    }
+
+    const ownerSites = [
+      ["showMainWindow", "function showMainWindow", "function activateMainWindow"],
+      [
+        "openNewConnectionWindow",
+        "async function openNewConnectionWindow",
+        "function renameCurrentWindow",
+      ],
+      ["openSettingsPage", "function openSettingsPage", "function toggleAlwaysOnTop"],
+    ];
+    for (const [name, startMarker, endMarker] of ownerSites) {
+      const start = WINDOW_LIFECYCLE_JS.indexOf(startMarker);
+      const end = WINDOW_LIFECYCLE_JS.indexOf(endMarker, start);
+      assert.notEqual(start, -1, "could not locate the " + name + " show path");
+      assert.notEqual(end, -1, "could not bound the " + name + " show path");
+      const body = WINDOW_LIFECYCLE_JS.slice(start, end);
+      assert.match(body, /cancelPendingTrayHide\(/, name + " must disarm the pending hide");
       assert.ok(
-        m[1].indexOf("cancelPendingTrayHide") < m[1].indexOf(".show()"),
-        `${name}: the cancel must run before the show`,
+        body.indexOf("cancelPendingTrayHide") < body.indexOf(".show()"),
+        name + ": the cancel must run before the show",
       );
     }
   });

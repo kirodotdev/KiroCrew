@@ -48,6 +48,18 @@ class TestStorage:
         mod.clear_token()
         assert mod.has_token() is False
 
+    def test_a_failed_clear_is_reported_instead_of_claiming_success(
+        self, home: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        mod.set_token("abc123")
+
+        def refuse_unlink(*args, **kwargs):
+            raise PermissionError("token is still in use")
+
+        monkeypatch.setattr(Path, "unlink", refuse_unlink)
+        with pytest.raises(PermissionError, match="still in use"):
+            mod.clear_token()
+
     def test_unreadable_file_reads_as_absent(self, home: Path):
         mod.token_path().mkdir()  # a directory where a file belongs
         assert mod.read_token() is None

@@ -94,6 +94,162 @@ def _post(path: str, body: dict | None = None) -> tuple[server.Handler, _Recorde
 
 
 # ---------------------------------------------------------------------------
+# HTTP composition root -- routing, authorization, and error framing
+# ---------------------------------------------------------------------------
+
+_POST_DISPATCH_CASES = (
+    ("/submit", "_h_submit", False),
+    ("/clear", "_h_clear", True),
+    ("/delete", "_h_delete", True),
+    ("/source", "_h_set_source", False),
+    ("/target", "_h_set_source", False),
+    ("/projects", "_h_projects_add", False),
+    ("/projects/select", "_h_projects_select", False),
+    ("/projects/remove", "_h_projects_remove", False),
+    ("/projects/preview-url", "_h_projects_preview_url", False),
+    ("/dev-server/start", "_h_dev_server_start", True),
+    ("/dev-server/stop", "_h_dev_server_stop", True),
+    ("/pick-folder", "_h_pick_folder", False),
+    ("/send", "_h_send", True),
+    ("/delivered", "_h_delivered", True),
+    ("/delete-comment", "_h_delete_comment", True),
+    ("/thread", "_h_thread", True),
+)
+
+
+class TestHttpCompositionContract:
+    """Pin the thin HTTP adapter before its responsibilities are extracted."""
+
+    @pytest.mark.parametrize(
+        ("path", "expected_route", "expected_query"),
+        [
+            ("/api", "/", {}),
+            ("/api/", "/", {}),
+            (
+                "/api/projects/?id=request%201&tag=first&tag=second",
+                "/projects",
+                {"id": ["request 1"], "tag": ["first", "second"]},
+            ),
+            (
+                "/projects/?id=request%201&tag=first&tag=second",
+                "/projects",
+                {"id": ["request 1"], "tag": ["first", "second"]},
+            ),
+        ],
+    )
+    def test_route_normalizes_api_prefix_trailing_slash_and_query(
+        self, path, expected_route, expected_query
+    ):
+        handler, _response = _get(path)
+
+        assert handler._route() == (expected_route, expected_query)
+
+    @pytest.mark.parametrize(
+        ("route", "expected_handler", "takes_query"),
+        _POST_DISPATCH_CASES,
+    )
+    def test_every_post_route_dispatches_to_its_owned_handler(
+        self, route, expected_handler, takes_query, monkeypatch
+    ):
+        path = f"/api{route}/?id=request%201&cid=comment-1"
+        handler, response = _post(path)
+        calls = []
+
+        # Stub every dispatch target so a wrong branch is observable without
+        # letting the real handler touch queue state, processes, or native UI.
+        for handler_name, handler_takes_query in {
+            name: has_query for _route, name, has_query in _POST_DISPATCH_CASES
+        }.items():
+            if handler_takes_query:
+
+                def _record_query(query, *, name=handler_name):
+                    calls.append((name, query))
+
+                monkeypatch.setattr(handler, handler_name, _record_query)
+            else:
+
+                def _record_no_query(*, name=handler_name):
+                    calls.append((name, None))
+
+                monkeypatch.setattr(handler, handler_name, _record_no_query)
+
+        server.Handler.do_POST(handler)
+
+        expected_query = {
+            "id": ["request 1"],
+            "cid": ["comment-1"],
+        }
+        assert response.code is None
+        assert calls == [(expected_handler, expected_query if takes_query else None)]
+
+    def test_post_body_is_read_once_then_authorized_before_dispatch(self, monkeypatch):
+        body = {"type": "visual_edit_request", "comment": "one read"}
+        raw = json.dumps(body).encode()
+        handler, response = _post("/api/submit/", body)
+        events = []
+
+        class _ReadProbe(io.BytesIO):
+            def read(self, size=-1):
+                value = super().read(size)
+                events.append(("read", value))
+                return value
+
+        handler.rfile = _ReadProbe(raw)
+
+        def _authorize(method, authorized_body):
+            events.append(("authorize", method, authorized_body))
+            return True
+
+        monkeypatch.setattr(handler, "_authorized", _authorize)
+        monkeypatch.setattr(
+            handler,
+            "_h_submit",
+            lambda: events.append(("dispatch", handler._cached_body)),
+        )
+
+        server.Handler.do_POST(handler)
+
+        assert response.code is None
+        assert events == [
+            ("read", raw),
+            ("authorize", "POST", raw),
+            ("dispatch", raw),
+        ]
+
+    @pytest.mark.parametrize(
+        ("method", "path", "expected_payload"),
+        [
+            ("GET", "/api/missing/", {"error": "GET /missing not found"}),
+            ("POST", "/api/missing/", {"error": "POST /missing not found"}),
+        ],
+    )
+    def test_unknown_route_keeps_the_existing_404_json(
+        self, method, path, expected_payload
+    ):
+        handler, response = _make_handler(method, path)
+
+        getattr(server.Handler, f"do_{method}")(handler)
+
+        assert response.code == 404
+        assert response.payload == expected_payload
+
+    def test_unexpected_post_handler_error_keeps_the_existing_500_json(
+        self, monkeypatch
+    ):
+        handler, response = _post("/api/submit/")
+
+        def _explode():
+            raise RuntimeError("handler exploded")
+
+        monkeypatch.setattr(handler, "_h_submit", _explode)
+
+        server.Handler.do_POST(handler)
+
+        assert response.code == 500
+        assert response.payload == {"error": "handler exploded"}
+
+
+# ---------------------------------------------------------------------------
 # /projects (GET) — project listing
 # ---------------------------------------------------------------------------
 

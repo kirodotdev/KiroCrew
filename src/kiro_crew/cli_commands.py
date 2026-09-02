@@ -222,8 +222,16 @@ def _spawn(args: argparse.Namespace) -> None:
             print("No subagents.")
             return
         for a in agents:
-            status = "✅" if a.get("done") else "⏳"
-            print(f"  {status} {a['id']}  {a.get('task', '')[:60]}")
+            if a.get("done"):
+                status, note = "✅", ""
+            elif a.get("awaiting_approval"):
+                # A run parked on its spawn-approval prompt used to render the
+                # same bare hourglass as one that is executing, so `spawn list`
+                # could not answer "is this working or waiting for me?" (#6484).
+                status, note = "🔐", "  — waiting for spawn approval"
+            else:
+                status, note = "⏳", ""
+            print(f"  {status} {a['id']}  {a.get('task', '')[:60]}{note}")
         return
 
     if action == "run":
@@ -269,6 +277,7 @@ def _spawn_run(args: argparse.Namespace, base: str) -> None:
     print(f"Spawned subagent {agent_id}, waiting for result...", file=sys.stderr)
     poll_url = f"{base}/api/spawn/{agent_id}"
     secret = _internal_secret(args.port)
+    told_awaiting = False
     while True:
         _time.sleep(2)
         poll_req = urllib.request.Request(poll_url, headers={"X-Internal-Secret": secret})
@@ -278,6 +287,18 @@ def _spawn_run(args: argparse.Namespace, base: str) -> None:
         except Exception:
             print("Error: lost connection to gateway", file=sys.stderr)
             sys.exit(1)
+        # Say WHY the wait is not progressing. A spawn with no parent session
+        # raises its approval prompt unowned, so it appears only on the global
+        # approvals surface -- not in any chat tab -- and this loop would
+        # otherwise sit on "waiting for result..." indefinitely with nothing to
+        # act on (#6484). Announced once, not every 2s poll.
+        if status.get("awaiting_approval") and not told_awaiting:
+            told_awaiting = True
+            print(
+                "Waiting for spawn approval: approve it in the dashboard "
+                "(Approvals) to start this run.",
+                file=sys.stderr,
+            )
         if status.get("done"):
             if status.get("error"):
                 print(f"Error: {status['error']}", file=sys.stderr)
@@ -1476,7 +1497,7 @@ def _print_denied_command_summary(*, ids: bool) -> None:
     """Print the built-in denied-command catalog as grouped counts (or, with
     ``--ids``, each category's rule ids).
 
-    The 139 built-in rules are visible and configurable to the USER (Settings
+    The built-in rules are visible and configurable to the USER (Settings
     → Security renders them in category accordions, backed by
     ``GET /api/security/denied-commands``) but were invisible to the AGENT --
     ``policy show`` reported everything except them, so an agent planning a

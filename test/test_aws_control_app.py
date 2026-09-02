@@ -746,6 +746,77 @@ class TestShares:
         assert record["id"] in raw
         assert shares.list_shares(ACCOUNT)[0]["key"] == "a.txt"
 
+    def test_a_read_that_failed_never_truncates_the_share_ledger(self, tmp_path, monkeypatch):
+        # `_load` collapses every failure to []. As the base of `record_share`'s
+        # whole-file rewrite that empty list means "forget every share already
+        # recorded" -- and this ledger is the only local record of live presigned
+        # URLs, which are unrevokable bearer grants. Under-reporting them is the
+        # security-visible half of the loss.
+        import contextlib
+        from pathlib import Path
+
+        from kiro_crew.apps.builtins.aws_control.backend import shares
+
+        kept = shares.record_share(
+            account=ACCOUNT, section="drive", key="live.txt", expires_secs=3600
+        )
+        store = tmp_path / "shares.json"
+        real_read_text = Path.read_text
+        broken = {"on": True}
+
+        def guarded(path_self, *args, **kwargs):
+            if broken["on"] and Path(path_self) == store:
+                raise PermissionError(13, "Permission denied")
+            return real_read_text(path_self, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "read_text", guarded)
+        with contextlib.suppress(OSError):
+            shares.record_share(
+                account=ACCOUNT, section="drive", key="second.txt", expires_secs=3600
+            )
+        with contextlib.suppress(OSError):
+            shares.forget_share(kept["id"])
+
+        # The durable harm, asserted directly: the live bearer grant recorded
+        # before the failure must still be in the ledger.
+        broken["on"] = False
+        assert [e["key"] for e in shares.list_shares(ACCOUNT)] == ["live.txt"]
+
+    def test_an_unreadable_share_store_refuses_the_mutation(self, tmp_path, monkeypatch):
+        # A mint that cannot be recorded must not answer as though it were.
+        from pathlib import Path
+
+        from kiro_crew.apps.builtins.aws_control.backend import shares
+
+        shares.record_share(account=ACCOUNT, section="drive", key="live.txt", expires_secs=3600)
+        store = tmp_path / "shares.json"
+        real_read_text = Path.read_text
+
+        def guarded(path_self, *args, **kwargs):
+            if Path(path_self) == store:
+                raise PermissionError(13, "Permission denied")
+            return real_read_text(path_self, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "read_text", guarded)
+        with pytest.raises(OSError):
+            shares.record_share(account=ACCOUNT, section="drive", key="x.txt", expires_secs=3600)
+
+    def test_a_missing_share_store_is_still_a_first_write(self, tmp_path):
+        # Absent is the one failure where [] is the truth.
+        from kiro_crew.apps.builtins.aws_control.backend import shares
+
+        assert not (tmp_path / "shares.json").exists()
+        shares.record_share(account=ACCOUNT, section="drive", key="first.txt", expires_secs=3600)
+        assert [e["key"] for e in shares.list_shares(ACCOUNT)] == ["first.txt"]
+
+    def test_a_corrupt_share_store_still_repairs_on_write(self, tmp_path):
+        # Existing tolerance, pinned alongside the new guard.
+        from kiro_crew.apps.builtins.aws_control.backend import shares
+
+        (tmp_path / "shares.json").write_text("[not json", encoding="utf-8")
+        shares.record_share(account=ACCOUNT, section="drive", key="after.txt", expires_secs=3600)
+        assert [e["key"] for e in shares.list_shares(ACCOUNT)] == ["after.txt"]
+
     def test_expired_shares_are_pruned_and_forget_removes(self):
         from kiro_crew.apps.builtins.aws_control.backend import shares
 

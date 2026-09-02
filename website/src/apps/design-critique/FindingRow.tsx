@@ -32,6 +32,12 @@ export default function FindingRow({
   return (
     <div
       ref={rowRef}
+      // Styling and hover-highlight only: the row's activation lives on the
+      // <Clickable> below, which is where focus and Enter/Space already land.
+      // `presentation` says so rather than inventing a button role on a wrapper
+      // that contains other controls; a div's implicit role is generic, so this
+      // removes nothing from the accessibility tree.
+      role="presentation"
       style={{
         ...S.finding,
         borderBottom: isActive ? '1px solid transparent' : '1px solid var(--border)',

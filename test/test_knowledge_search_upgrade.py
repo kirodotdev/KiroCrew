@@ -1,6 +1,8 @@
 """Tests for knowledge search upgrade: embedding endpoints + search-for-context."""
+
 import pytest
 
+from kiro_crew.embeddings import PRIORITY_BULK, PRIORITY_NORMAL
 from kiro_crew.knowledge.embedder import (
     InProcessEmbedder,
     OllamaEmbedder,
@@ -41,10 +43,12 @@ class TestCreateEmbedderFromConfig:
         """The Ollama-era embedding_model key must NOT pin the identity —
         honoring it would mislabel vectors produced by the bundled model and
         defeat swap-triggered re-embeds (model id derives from the backend)."""
-        cfg = {"memory": {
-            "embedding_provider": "llama_cpp",
-            "embedding_model": "custom:latest",
-        }}
+        cfg = {
+            "memory": {
+                "embedding_provider": "llama_cpp",
+                "embedding_model": "custom:latest",
+            }
+        }
         emb = create_embedder_from_config(cfg)
         assert emb is not None
         assert emb.model != "custom:latest"
@@ -75,21 +79,41 @@ class TestInProcessEmbedder:
         class _FakeShared:
             def __init__(self):
                 self.texts = []
+                self.priorities = []
 
             def is_ready(self):
                 return True
 
-            def embed(self, text):
+            def embed(self, text, *, priority=PRIORITY_NORMAL):
                 self.texts.append(text)
+                self.priorities.append(priority)
                 return [0.1, 0.2]
 
         fake = _FakeShared()
-        monkeypatch.setattr(
-            "kiro_crew.embeddings.get_shared_embedder", lambda: fake
-        )
+        monkeypatch.setattr("kiro_crew.embeddings.get_shared_embedder", lambda: fake)
         emb = InProcessEmbedder()
         assert emb.embed("hello world") == [0.1, 0.2]
         assert fake.texts == ["hello world"]
+        # The scheduling class reaches the backend: default and explicit both.
+        assert emb.embed("bulk row", priority=PRIORITY_BULK) == [0.1, 0.2]
+        assert fake.priorities == [PRIORITY_NORMAL, PRIORITY_BULK]
+
+    def test_embed_for_item_forwards_priority_to_embed(self, monkeypatch):
+        """A corpus sweep's scheduling class must survive the embed_for_item hop —
+        silently dropping it puts the unattended sweep back on the full
+        interactive pool (the original flat-out symptom)."""
+        emb = InProcessEmbedder()
+        seen = {}
+
+        def _capture(text, *, priority=PRIORITY_NORMAL):
+            seen["priority"] = priority
+            return [0.1]
+
+        monkeypatch.setattr(emb, "embed", _capture)
+        emb.embed_for_item("T", "S", "content", priority=PRIORITY_BULK)
+        assert seen["priority"] == PRIORITY_BULK
+        emb.embed_for_item("T", "S", "content")
+        assert seen["priority"] == PRIORITY_NORMAL
 
     def test_is_available_negative_cached_when_not_ready(self, monkeypatch):
         """Model not loaded and probe fails → unavailable, negatively cached."""
@@ -106,9 +130,7 @@ class TestInProcessEmbedder:
                 return None  # model still downloading
 
         fake = _FakeShared()
-        monkeypatch.setattr(
-            "kiro_crew.embeddings.get_shared_embedder", lambda: fake
-        )
+        monkeypatch.setattr("kiro_crew.embeddings.get_shared_embedder", lambda: fake)
         emb = InProcessEmbedder()
         assert emb.is_available() is False
         assert emb.is_available() is False  # served from negative cache
@@ -128,7 +150,7 @@ class TestInProcessEmbedder:
         """
         emb = InProcessEmbedder()
         captured = {}
-        monkeypatch.setattr(emb, "embed", lambda text: captured.setdefault("text", text))
+        monkeypatch.setattr(emb, "embed", lambda text, **kw: captured.setdefault("text", text))
         emb.embed_for_item(
             "Short Title",
             "Brief summary",
@@ -150,7 +172,7 @@ class TestInProcessEmbedder:
 
         emb = InProcessEmbedder()
         captured = {}
-        monkeypatch.setattr(emb, "embed", lambda text: captured.setdefault("text", text))
+        monkeypatch.setattr(emb, "embed", lambda text, **kw: captured.setdefault("text", text))
         # ~6 chars/token over the full chunk budget — at the high end of observed
         # corpus chunks (max ~6227 chars) and well past the old 2000-char cap.
         big_chunk = "word " * int((CHUNK_TOKEN_SIZE + CHUNK_OVERLAP) * 6 / 5)
@@ -165,7 +187,7 @@ class TestInProcessEmbedder:
 
         emb = InProcessEmbedder()
         captured = {}
-        monkeypatch.setattr(emb, "embed", lambda text: captured.setdefault("text", text))
+        monkeypatch.setattr(emb, "embed", lambda text, **kw: captured.setdefault("text", text))
         big = "x" * (_EMBED_CONTENT_BUDGET * 3)
         with self._capture_warnings() as warned:
             emb.embed_for_item("T", "S", big)
@@ -201,7 +223,7 @@ class TestInProcessEmbedder:
         """Back-compat: omitting content still embeds title + summary only."""
         emb = InProcessEmbedder()
         captured = {}
-        monkeypatch.setattr(emb, "embed", lambda text: captured.setdefault("text", text))
+        monkeypatch.setattr(emb, "embed", lambda text, **kw: captured.setdefault("text", text))
         emb.embed_for_item("My Title", "A summary")
         assert captured["text"] == "My Title A summary"
 

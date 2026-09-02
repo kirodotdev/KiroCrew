@@ -115,3 +115,14 @@ test/test_steering_api.py::TestUpdateDeleteEndpoints::test_delete_through_symlin
 test/test_steering_api.py::TestUpdateDeleteEndpoints::test_update_through_symlink_is_refused
 test/test_vendor_manifest.py::TestDivergenceDetection::test_a_symlink_is_refused_not_skipped
 test/test_vendor_manifest.py::TestDivergenceDetection::test_write_refuses_a_symlinked_tree_too
+
+# Create a real symlink in the test body (a linked home, staging dir, or vault
+# subdir the code under test must refuse). Without symlink privilege the setup
+# itself raises WinError 1314 before the refusal is ever exercised.
+test/test_aws_control_app.py::TestRound17Hardening::test_restore_refuses_a_symlinked_destination
+test/test_aws_control_app.py::TestRound18Hardening::test_restore_refuses_a_symlinked_staging_directory
+test/test_governance_distribution.py::TestTheCacheIsHiddenFromAgentSubprocesses::test_a_symlinked_home_costs_a_redundant_rule_never_a_missing_one
+test/test_kas_auth_store.py::test_linked_kas_dir_is_refused
+test/test_kas_auth_store.py::test_linked_vault_subdir_is_refused
+test/test_sel.py::TestCrossProcessSafety::test_symlinked_sidecar_is_refused
+test/test_snapshot_manifest_and_links.py::TestSymlinkedTreeRootsAreRefused::test_replace_restore_refuses_a_linked_destination_root

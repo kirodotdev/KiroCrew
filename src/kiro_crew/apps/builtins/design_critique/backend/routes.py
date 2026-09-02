@@ -43,7 +43,11 @@ import kiro_crew
 from kiro_crew import link_unfurl, platform_compat, sandbox
 from kiro_crew.apps.manager import is_app_enabled
 from kiro_crew.config.paths import config_dir
-from kiro_crew.security import is_sensitive_path, path_contains_sensitive
+from kiro_crew.security import (
+    DENIED_ROOT_PARTS,
+    is_sensitive_path,
+    path_contains_sensitive,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -61,10 +65,11 @@ _SCRIPTS_DIR = _SKILL_DIR / "scripts"
 # A route path or discovery id can be anything; collapse to a safe filename stem.
 _UNSAFE = re.compile(r"[^A-Za-z0-9._-]+")
 
-# Credential dot-dirs a local target may never be, mirroring design_tweak's
-# local-path guard. The is_sensitive_path floor covers the crew home + governance
-# trust root; these are the plain dot-dirs it does not enumerate.
-_DENIED_ROOT_PARTS = frozenset({".ssh", ".aws", ".gnupg", ".kube", ".docker"})
+# Credential dot-dirs a local target may never be, shared with design_tweak's
+# local-path guard via kiro_crew.security. The is_sensitive_path floor covers the
+# crew home + governance trust root; these are the plain dot-dirs it does not
+# enumerate.
+_DENIED_ROOT_PARTS = DENIED_ROOT_PARTS
 
 # Discover/capture scripts emit a small JSON manifest; this per-pipe cap guards a
 # runaway child (a pathological repo / huge render) from buffering into an OOM.

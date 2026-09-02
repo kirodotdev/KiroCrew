@@ -52,6 +52,7 @@ from kiro_crew.sandbox import _AGENT_DENIED_ENV_KEYS
 from kiro_crew.security import (
     _SENSITIVE_HOME_DIRS,
     audit_bash_exfiltration,
+    enabled_rule_ids,
     is_sensitive_bash_command,
     is_sensitive_path,
     scan_exfiltration_urls,
@@ -657,14 +658,22 @@ def _vet_shell_command(command: str) -> str | None:
     # force-re-added, so an enterprise-pinned rule stays enforced). Without the
     # effective set, is_denied would fail closed to ALL built-ins — a rule the
     # user disabled would still block on cron, contradicting the global opt-out.
+    #
+    # The same argument binds the two sibling gates below, which are ALSO keyed by
+    # rule id now: resolve the effective set ONCE and thread it into all three.
+    # Passing it to ``is_denied`` alone would leave one expression where the
+    # opt-out is honoured on the first line and ignored on the next two — the user
+    # disables an exfil rule, cron keeps refusing, and the toggle is a lie on
+    # exactly the surface this comment exists to protect.
     from kiro_crew.hooks import effective_denied_regexes_from_config
 
+    effective = effective_denied_regexes_from_config()
+    enabled_ids = enabled_rule_ids(effective)
+
     reason = (
-        current_context().security.is_denied(
-            command, denied_regexes=effective_denied_regexes_from_config()
-        )
-        or is_sensitive_bash_command(command)
-        or audit_bash_exfiltration(command)
+        current_context().security.is_denied(command, denied_regexes=effective)
+        or is_sensitive_bash_command(command, enabled_ids=enabled_ids)
+        or audit_bash_exfiltration(command, enabled_ids=enabled_ids)
     )
     if reason:
         # Scrub the echoed reason through the SAME context the deny check used,

@@ -47,6 +47,7 @@ _TO_DICT_KEYS = (
     "source_links",
     "source_links_total",
     "todo",
+    "mcp_report",
     "has_options",
     "options",
     "prompt_preview",

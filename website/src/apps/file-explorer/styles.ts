@@ -6,7 +6,7 @@ export const FE_CSS = `
 .mc-fe-fade-right { right:0; background:linear-gradient(to left, var(--bg), transparent); }
 .mc-fe-tabs { display:flex; align-items:stretch; gap:2px; padding:6px 8px 0; overflow-x:auto; scrollbar-width:thin; }
 .mc-fe-tabs::-webkit-scrollbar { height:3px; }
-.mc-fe-tabs::-webkit-scrollbar-thumb { background:var(--border); border-radius:2px; }
+.mc-fe-tabs::-webkit-scrollbar-thumb { background:var(--muted); border-radius:2px; }
 .mc-fe-tab { display:inline-flex; align-items:center; gap:4px; padding:6px 8px 6px 10px; border:1px solid var(--border); border-bottom:none; border-radius:6px 6px 0 0; background:var(--card); color:var(--muted); cursor:pointer; user-select:none; transition:background .12s, color .12s; flex-shrink:0; }
 .mc-fe-tab.is-active { background:var(--bg); color:var(--text); border-color:var(--border); }
 .mc-fe-tab.is-current-folder { border-bottom-color:var(--bg); }

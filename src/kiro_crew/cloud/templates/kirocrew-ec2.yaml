@@ -283,6 +283,17 @@ Resources:
       # EXPANDED size is guarded by test_cloud_ec2.py's UserData size test;
       # when it trips, trim the script or move knowledge here, never delete it.
       #
+      # "Reboot resume": State Manager runs wildcard associations when a new
+      #   managed node first comes online. An account-level
+      #   AWS-RunPatchBaseline association can therefore patch and reboot the
+      #   instance while npm/vite is still running, killing cloud-init itself
+      #   so an in-script retry never executes. UserData immediately persists
+      #   its already-rendered script as an enabled systemd oneshot and exits;
+      #   systemd starts it again after a reboot. Separate install-complete and
+      #   signal-complete markers make the install idempotent while still
+      #   retrying the WaitCondition handshake if the reboot lands between
+      #   those phases. A partially written gateway install is stopped before
+      #   its checkout is replaced, avoiding a resume race with its own unit.
       # "Logging": log via a plain file redirect (NOT `tee` via process
       #   substitution) and do NOT set `pipefail` -- install.sh's progress
       #   spinner writes many \r updates through a pipe, and a tee+pipefail
@@ -375,10 +386,12 @@ Resources:
       #   which is what lets the retry actually re-run it. install.sh is
       #   retried once on a cold first boot: observed on the light tier, the
       #   very first run can be signal-killed mid-build (no clean error, no
-      #   kernel OOM) under first-boot contention (cloud-init + SSM
+      #   kernel OOM) under same-boot contention (cloud-init + SSM
       #   registration + dnf + kiro-cli install + a fresh `npm ci` all
       #   compressed together); a retry on the now-warm box (primed caches,
       #   node_modules present) reliably reaches "installed successfully".
+      #   That retry cannot survive a host reboot because its parent shell is
+      #   killed too; the persistent bootstrap oneshot above owns that case.
       #   `set -e` is relaxed only for the first attempt (the `if` guard); a
       #   failed retry still exits nonzero so the outer `|| fail` signals the
       #   WaitCondition.
@@ -417,6 +430,37 @@ Resources:
           # above UserData, keyed by the section names quoted below.
           # No pipefail + plain-file logging: see "Logging" above.
           set -u
+
+          # cloud-init runs UserData once. Persist the already-rendered script and
+          # hand off immediately so a managed patch reboot can resume it on boot.
+          BOOTSTRAP_SCRIPT=/usr/local/sbin/kirocrew-bootstrap
+          BOOTSTRAP_STATE=/var/lib/kirocrew-bootstrap
+          INSTALL_DONE=$BOOTSTRAP_STATE/install-complete
+          SIGNAL_DONE=$BOOTSTRAP_STATE/signal-complete
+          if [ "$#" -eq 0 ]; then
+            install -m 0700 "$0" "$BOOTSTRAP_SCRIPT"
+            cat > /etc/systemd/system/kirocrew-bootstrap.service <<'UNIT'
+          [Unit]
+          Description=Kiro Crew resumable bootstrap
+          After=network-online.target
+          Wants=network-online.target
+
+          [Service]
+          Type=oneshot
+          ExecStart=/usr/local/sbin/kirocrew-bootstrap --resume
+          RemainAfterExit=yes
+
+          [Install]
+          WantedBy=multi-user.target
+          UNIT
+            systemctl daemon-reload
+            systemctl enable kirocrew-bootstrap.service
+            systemctl start --no-block kirocrew-bootstrap.service
+            exit 0
+          fi
+
+          mkdir -p "$BOOTSTRAP_STATE"
+          [ -f "$SIGNAL_DONE" ] && exit 0
           exec >>/var/log/kirocrew-setup.log 2>&1
           echo "=== KiroCrew bootstrap starting $(date -u) ==="
 
@@ -436,8 +480,13 @@ Resources:
             exit 1
           }
 
-          # The stock AL2023 reboot would SIGTERM the build mid-install: see
-          # "SELinux reboot" above. Best-effort, never fails the bootstrap.
+          if [ ! -f "$INSTALL_DONE" ]; then
+            # A reboot after the gateway unit was enabled but before checkpointing
+            # can queue both units. Stop it before replacing the checkout.
+            systemctl stop kirocrew.service 2>/dev/null || true
+
+            # The stock AL2023 reboot would SIGTERM the build mid-install: see
+            # "SELinux reboot" above. Best-effort, never fails the bootstrap.
           echo "--- suppressing AL2023 first-boot SELinux reboot ---"
           rm -f /run/cloud-init-selinux-reboot 2>/dev/null || true
           rm -f /etc/cloud/cloud.cfg.d/40_selinux-reboot.cfg 2>/dev/null || true
@@ -602,7 +651,13 @@ Resources:
           WantedBy=multi-user.target
           UNIT
           systemctl daemon-reload
-          systemctl enable --now kirocrew.service || fail "could not start kirocrew.service"
+          touch "$INSTALL_DONE"
+          fi
+
+          # This phase is safe to repeat after install completed but before the
+          # WaitCondition acknowledgement was durably recorded.
+          systemctl enable kirocrew.service || fail "could not enable kirocrew.service"
+          systemctl start kirocrew.service || fail "could not start kirocrew.service"
 
           echo "--- waiting for the gateway to answer on 127.0.0.1:${DashboardPort} ---"
           ok=0
@@ -613,9 +668,22 @@ Resources:
           [ "$ok" = "1" ] || fail "gateway did not become healthy within 5 minutes"
 
           echo "=== KiroCrew bootstrap complete $(date -u) ==="
-          /opt/aws/bin/cfn-signal -e 0 -r "kirocrew healthy" "$HANDLE" || \
-            curl -s -X PUT -H 'Content-Type:' --data-binary \
-              "{\"Status\":\"SUCCESS\",\"Reason\":\"kirocrew healthy\",\"UniqueId\":\"kirocrew\",\"Data\":\"ok\"}" "$HANDLE" || true
+          signal_ok=0
+          for attempt in 1 2 3; do
+            if /opt/aws/bin/cfn-signal -e 0 -r "kirocrew healthy" "$HANDLE"; then
+              signal_ok=1
+              break
+            fi
+            if curl -fsS -X PUT -H 'Content-Type:' --data-binary \
+              "{\"Status\":\"SUCCESS\",\"Reason\":\"kirocrew healthy\",\"UniqueId\":\"kirocrew\",\"Data\":\"ok\"}" "$HANDLE"; then
+              signal_ok=1
+              break
+            fi
+            echo "WaitCondition success signal attempt $attempt failed; retrying"
+            sleep 5
+          done
+          [ "$signal_ok" = "1" ] || { echo "could not deliver WaitCondition success"; exit 1; }
+          touch "$SIGNAL_DONE"
 
   # --- WaitCondition: `aws cloudformation deploy` blocks until the box is
   #     actually serving. cfn-signal in UserData reports success/failure.

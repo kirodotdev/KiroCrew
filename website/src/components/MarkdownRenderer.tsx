@@ -2,7 +2,7 @@ import React, { createContext, useContext, memo, useEffect, useMemo, useRef, use
 import Clickable from './Clickable'
 import { HOVER_NONE_ACTION_BTN_CLS } from '../utils/touchActions'
 import { getImageDims, rememberImageDims } from '../utils/imageDims'
-import { Paperclip, X, Download, Plus, Minus, Search, Folder, Maximize2, Check, Image as ImageIcon, GitPullRequest, MessageSquare } from 'lucide-react'
+import { X, Download, Plus, Minus, Search, Folder, Maximize2, Check, Copy, Image as ImageIcon, ImageOff, GitPullRequest, MessageSquare } from 'lucide-react'
 import { copyToClipboard } from '../utils/clipboard'
 import { canonicalChatHref, sessionKeyFrom, sessionKeyFromChatHref } from '../utils/sessionKeys'
 import ReactMarkdown from 'react-markdown'
@@ -1055,6 +1055,7 @@ function InlineCode({ children, ...props }: { children?: React.ReactNode } & Rec
     <FilePathMenu filePath={path} kind={kind}>
       <code
         className={`${CHIP_BASE} cursor-pointer hover:underline`}
+        // eslint-disable-next-line jsx-a11y/no-noninteractive-element-to-interactive-role -- <code> is intentionally interactive (click-to-open path chip), same pattern as CopyableCode
         role="button"
         tabIndex={0}
         onClick={act}
@@ -1284,10 +1285,76 @@ const MD_COMPONENTS: Components = {
   img: ImgWithFallback,
 }
 
-/** Markdown image with a React-rendered Paperclip fallback when the URL is
- *  broken. The fallback is React-rendered rather than a hand-built SVG swapped
- *  in via .replaceWith(), so it never mutates DOM React owns — which could
- *  otherwise trigger "removeChild on Node" reconciliation crashes. */
+/** Markdown image with a React-rendered fallback chip when the URL is broken
+ *  (see `BrokenImage`). The fallback is React-rendered rather than a hand-built
+ *  SVG swapped in via .replaceWith(), so it never mutates DOM React owns —
+ *  which could otherwise trigger "removeChild on Node" reconciliation crashes. */
+/** Fallback chip for an image whose bytes failed to load.
+ *
+ * Chat images are read from disk at VIEW time (`/api/file-raw`), not stored in
+ * the message — so the dominant failure is a local file that no longer exists
+ * (a screenshot written to a temp directory that has since been cleaned), long
+ * after the message rendered fine for its author. The chip names that
+ * condition, and the whole chip is click-to-copy for the on-disk path:
+ * recovery starts from knowing WHICH file is gone, and the path is the one
+ * thing the transcript still holds.
+ *
+ * The `<img>` error event carries no status, so "file no longer exists" is
+ * NOT asserted from the error alone — a backend hiccup, a sensitive-path
+ * denial (403), or a file still being written all fire the same event. A
+ * cheap HEAD probe re-asks the endpoint, and only a confirmed 404 (the
+ * backend's not-found refusal) earns the missing-file wording; every other
+ * outcome — including a failed probe — keeps the generic load-failure line,
+ * so the chip never states a cause it did not verify. Remote URLs are never
+ * probed: a cross-origin HEAD says nothing reliable and the generic wording
+ * is already honest there.
+ */
+function BrokenImage({ path, alt, probeUrl }: { path: string; alt?: string; probeUrl?: string }) {
+  const { copied, flash } = useCopiedFlash()
+  const [confirmedGone, setConfirmedGone] = useState(false)
+  useEffect(() => {
+    if (!probeUrl) return
+    let cancelled = false
+    fetch(probeUrl, { method: 'HEAD' })
+      .then(r => { if (!cancelled && r.status === 404) setConfirmedGone(true) })
+      .catch(() => { /* unknown stays unknown — generic wording */ })
+    return () => { cancelled = true }
+  }, [probeUrl])
+  const handleCopy = (e: React.MouseEvent | React.KeyboardEvent) => {
+    e.preventDefault()
+    e.stopPropagation()
+    copyToClipboard(path)
+    flash()
+  }
+  // The path leads the tooltip (same rule as the file-path chip) so a
+  // truncated chip still discloses the real target — except when alt is
+  // empty: the visible label already IS the path, and repeating it in the
+  // tooltip adds nothing.
+  const idle = alt
+    ? `${path}\n${i18nT('components.markdownRenderer.click_to_copy')}`
+    : i18nT('components.markdownRenderer.click_to_copy')
+  return (
+    <span
+      className="inline-flex max-w-full items-center gap-1.5 rounded-md border border-border bg-bg-elevated px-2 py-1 text-sm text-muted cursor-pointer hover:text-text"
+      role="button"
+      tabIndex={0}
+      onClick={handleCopy}
+      onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') handleCopy(e) }}
+      title={copied ? i18nT('components.markdownRenderer.copied') : idle}
+    >
+      <ImageOff size={14} aria-hidden="true" className="shrink-0" />
+      <span className="truncate">{alt || path}</span>
+      <span className="shrink-0 opacity-75">
+        {confirmedGone
+          ? i18nT('components.markdownRenderer.image_file_no_longer_exists')
+          : i18nT('components.markdownRenderer.image_failed_to_load')}
+      </span>
+      {copied
+        ? <Check size={12} aria-hidden="true" className="shrink-0 text-ok" />
+        : <Copy size={12} aria-hidden="true" className="shrink-0 opacity-70" />}
+    </span>
+  )
+}
 /** Style reserving a not-yet-loaded transcript image's EXACT display box.
  *
  * The loaded layout follows the replaced-element min/max rules, which
@@ -1347,6 +1414,9 @@ function ImgWithFallback({
   const isLocal = src.startsWith('/') || src.startsWith('~') || src.startsWith('.') || isWinAbs
     || (basePath && !src.startsWith('http'))
   let url: string
+  // The on-disk path the backend is asked to read — what the broken-image
+  // fallback discloses and copies. Stays `src` verbatim for remote URLs.
+  let diskPath = src
   if (isLocal) {
     // micromark percent-encodes destinations in BOTH forms, so wrap-ness is
     // recovered from the source text at this node's position: only a
@@ -1363,8 +1433,10 @@ function ImgWithFallback({
     const localPath = wrapped ? decodeLocalPath(src) : src
     if (basePath && !src.startsWith('/') && !src.startsWith('~') && !isWinAbs) {
       const resolved = basePath.replace(/\/[^/]*$/, '') + '/' + localPath
+      diskPath = resolved
       url = `/api/file-raw?path=${encodeURIComponent(resolved)}`
     } else {
+      diskPath = localPath
       url = `/api/file-raw?path=${encodeURIComponent(localPath)}`
     }
     // See ImageVersionCtx: without this every impression of a rewritten file
@@ -1375,12 +1447,7 @@ function ImgWithFallback({
     url = src
   }
   if (errored) {
-    return (
-      <span className="text-sm text-muted inline-flex items-center gap-1">
-        <Paperclip size={14} aria-hidden="true" />
-        {' ' + (alt || src)}
-      </span>
-    )
+    return <BrokenImage path={diskPath} alt={alt} probeUrl={isLocal ? url : undefined} />
   }
   // SVGs authored with only a `viewBox` (no width/height) carry no intrinsic
   // size. Under the max-w/max-h-only CSS below they collapse to ~0px and look

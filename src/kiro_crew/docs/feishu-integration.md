@@ -10,8 +10,9 @@ hostname, or open port to manage.
 
 > **Optional dependency.** The Feishu long connection is the one channel that is
 > only specified through a vendor SDK (handshake, tenant-token refresh, and
-> frame envelope), so it needs `lark-oapi`. It is **not** part of core:
-> `pip install "kirocrew[feishu]"`. Without it the gateway logs a line and skips
+> frame envelope), so it needs `lark-oapi`. It is **not** part of core, so install
+> it directly into the environment that runs the gateway:
+> `pip install 'lark-oapi>=1.4,<2'`. Without it the gateway logs a line and skips
 > the channel — nothing else is affected.
 
 ## Quick start

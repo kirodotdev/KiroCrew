@@ -260,6 +260,55 @@ class TestTemplate:
         text = ec2.load_template()
         assert "KIROCREW_REQUIRE_FRONTEND=1" in text
 
+    def test_bootstrap_hands_off_to_persistent_oneshot_before_heavy_work(self):
+        # State Manager applies wildcard associations when a managed node first comes
+        # online. AWS-RunPatchBaseline can therefore reboot a brand-new instance while
+        # cloud-init is still building the frontend. UserData must persist itself and
+        # start an enabled oneshot before any package/build work, so systemd starts the
+        # same rendered script again after that reboot.
+        text = ec2.load_template()
+        handoff = text.index("BOOTSTRAP_SCRIPT=/usr/local/sbin/kirocrew-bootstrap")
+        heavy_work = text.index('echo "--- installing system packages ---"')
+        assert handoff < heavy_work
+        assert 'if [ "$#" -eq 0 ]; then' in text
+        assert 'install -m 0700 "$0" "$BOOTSTRAP_SCRIPT"' in text
+        assert "Type=oneshot" in text
+        assert "ExecStart=/usr/local/sbin/kirocrew-bootstrap --resume" in text
+        assert "RemainAfterExit=yes" in text
+        assert "WantedBy=multi-user.target" in text
+        assert "systemctl enable kirocrew-bootstrap.service" in text
+        assert "systemctl start --no-block kirocrew-bootstrap.service" in text
+
+    def test_bootstrap_checkpoints_install_and_waitcondition_signal_separately(self):
+        # A reboot can land after the gateway is installed but before CloudFormation
+        # receives SUCCESS. Keep separate markers so resume skips destructive install
+        # work but retries the still-missing WaitCondition handshake.
+        text = ec2.load_template()
+        signal_guard = text.index('[ -f "$SIGNAL_DONE" ] && exit 0')
+        install_guard = text.index('if [ ! -f "$INSTALL_DONE" ]; then')
+        install_done = text.index('touch "$INSTALL_DONE"')
+        signal = text.index("/opt/aws/bin/cfn-signal -e 0")
+        signal_done = text.index('touch "$SIGNAL_DONE"')
+        assert signal_guard < install_guard < install_done < signal < signal_done
+        assert "INSTALL_DONE=$BOOTSTRAP_STATE/install-complete" in text
+        assert "SIGNAL_DONE=$BOOTSTRAP_STATE/signal-complete" in text
+
+    def test_bootstrap_resume_cannot_clobber_a_running_gateway(self):
+        # If a reboot lands after the gateway unit was written but before the install
+        # marker, systemd may queue both services on the next boot. Stop the gateway
+        # before replacing its checkout, then mark install complete before starting it
+        # and performing the health/signal phase outside the install guard.
+        text = ec2.load_template()
+        install_guard = text.index('if [ ! -f "$INSTALL_DONE" ]; then')
+        stop_gateway = text.index("systemctl stop kirocrew.service")
+        replace_checkout = text.index("rm -rf kirocrew && mkdir kirocrew")
+        install_done = text.index('touch "$INSTALL_DONE"')
+        start_gateway = text.index("systemctl start kirocrew.service")
+        signal = text.index("/opt/aws/bin/cfn-signal -e 0")
+        assert (
+            install_guard < stop_gateway < replace_checkout < install_done < start_gateway < signal
+        )
+
     def test_bootstrap_installs_voice_extra_before_gateway_boot(self):
         # Remote instances need the Transcribe SDK in their venv before the
         # gateway imports boto3. Keep both the first attempt and retry aligned.

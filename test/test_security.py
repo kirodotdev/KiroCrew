@@ -1793,12 +1793,17 @@ class TestBuiltinDenyPatterns:
             captured.append((tool_name, deny_pattern, segment))
 
         monkeypatch.setattr(security_module, "_emit_deny_event", fake_emit)
-        # Git-publish deny (verb-anchored regex, recorded under "git push").
+        # Git-publish deny. The audited pattern is now the RULE's own pattern, not
+        # the human "git push" label — a floor denial has to map back to a rule id
+        # in the SEL trail, the way every other deny does.
         result = security_module.is_denied("git push origin main --force")
         assert result is not None
         assert len(captured) == 1
         assert captured[0][0] == "git push origin main --force"
-        assert captured[0][1] == security_module._GIT_PUBLISH_DENY_LABEL
+        assert (
+            captured[0][1]
+            == security_module._GIT_PUBLISH_FLOOR_BY_ID["git-publish-push-protected-branch-name"]
+        )
         # Chained bypass attempt is caught on the whole string (the separator
         # is part of the git-publish anchor), and still audited.
         captured.clear()

@@ -2,31 +2,27 @@
 //
 // WHY THIS IS A TEST: preload.js exposes window.updateAPI unconditionally, so
 // Settings > About renders a live "Check for updates" button as soon as the
-// renderer loads. main.js used to register ipcMain.handle("update:*") only AFTER
-// `await startGateway()` and `await showLoadingThenConnect(win)`. Any slow or
-// failed gateway boot therefore left the buttons present with no handler behind
-// them, and the renderer's invoke rejected with a raw
-// "No handler registered for 'update:check'".
+// renderer loads. If composition awaits the gateway before registering these
+// handlers, a slow or failed boot leaves that button with no handler and invoke
+// rejects with "No handler registered for 'update:check'".
 //
-// That is not a hypothetical: it is exactly how the nightly OTA lane
-// (.github/workflows/ota-test.yml) failed -- its CDP driver called
-// window.updateAPI.check() and got that error, so the job died at "Drive the
-// update" and never reached "Assert the bundle actually swapped". The one gate
-// that would have caught the macOS install-handoff bug could not run.
-//
-// This asserts on SOURCE ORDER rather than behaviour because main.js is a
-// top-level Electron entrypoint: importing it requires a real Electron runtime
-// (app, BrowserWindow, session, systemPreferences), which node:test has no way
-// to provide. Order is the reachable invariant.
+// That is not hypothetical: it is how the nightly OTA lane once failed before
+// it could assert a bundle swap. Extraction split the invariant across owners:
+// ipc-registrar.js owns every update:* handler, while main.js must compose that
+// owner before either awaited gateway boot step. Both halves stay pinned here.
+"use strict";
+
 const { test } = require("node:test");
 const assert = require("node:assert");
 const { readFileSync } = require("node:fs");
 const path = require("node:path");
 
-const SRC = readFileSync(path.join(__dirname, "..", "main.js"), "utf8");
+const ROOT = path.join(__dirname, "..");
+const MAIN_SOURCE = readFileSync(path.join(ROOT, "main.js"), "utf8");
+const REGISTRAR_SOURCE = readFileSync(path.join(ROOT, "ipc-registrar.js"), "utf8");
+const GATEWAY_SOURCE = readFileSync(path.join(ROOT, "gateway-supervisor.js"), "utf8");
 
-// The awaited boot steps that must NOT gate handler registration.
-const BOOT_AWAITS = ["await startGateway();", "await showLoadingThenConnect(win);"];
+const BOOT_AWAITS = ["await gateway.start();", "await gateway.connect(mainWindow);"];
 const UPDATE_HANDLERS = [
   'ipcMain.handle("update:get-info"',
   'ipcMain.handle("update:check"',
@@ -37,118 +33,147 @@ const UPDATE_HANDLERS = [
 ];
 
 test("every update:* IPC handler registers before the awaited gateway boot", () => {
-  // Anchor on the ready-handler's boot sequence, which is the only place these
-  // two awaits appear together.
-  const bootIndex = Math.min(...BOOT_AWAITS.map((needle) => {
-    const at = SRC.lastIndexOf(needle);
-    assert.notStrictEqual(at, -1, `boot step vanished from main.js: ${needle} — re-derive this test`);
-    return at;
-  }));
-
+  // Non-vacuity and ownership: every preload-exposed bridge must be registered
+  // synchronously inside registerUpdater, before that method marks itself done.
+  // A stray registration elsewhere in the file must not satisfy this guard.
+  const ownerStart = REGISTRAR_SOURCE.indexOf("function registerUpdater() {");
+  const ownerDone = REGISTRAR_SOURCE.indexOf("updaterRegistered = true;", ownerStart);
+  assert.notStrictEqual(ownerStart, -1, "registerUpdater owner vanished");
+  assert.notStrictEqual(ownerDone, -1, "registerUpdater no longer completes registration");
   for (const handler of UPDATE_HANDLERS) {
-    const at = SRC.indexOf(handler);
-    assert.notStrictEqual(at, -1, `missing handler registration: ${handler}`);
+    const handlerIndex = REGISTRAR_SOURCE.indexOf(handler, ownerStart);
     assert.ok(
-      at < bootIndex,
-      `${handler} is registered AFTER the awaited gateway boot. preload exposes the button regardless, so a stalled boot leaves it with no handler and the renderer throws "No handler registered". Move the updater block above startGateway().`,
+      handlerIndex > ownerStart && handlerIndex < ownerDone,
+      `missing synchronous registration from registerUpdater: ${handler}`,
+    );
+  }
+
+  // Ownership alone is insufficient: main must invoke it before both awaits.
+  // Anchor all three calls inside the ready callback rather than allowing an
+  // unrelated mention elsewhere in the file to satisfy the order assertion.
+  const readyIndex = MAIN_SOURCE.indexOf("app.whenReady().then(async () => {");
+  assert.notStrictEqual(readyIndex, -1, "app ready composition vanished — re-derive this test");
+  const registerIndex = MAIN_SOURCE.indexOf("ipcRegistrar.registerUpdater();", readyIndex);
+  assert.notStrictEqual(registerIndex, -1, "main.js no longer registers updater IPC");
+  for (const awaitedBoot of BOOT_AWAITS) {
+    const bootIndex = MAIN_SOURCE.indexOf(awaitedBoot, readyIndex);
+    assert.notStrictEqual(
+      bootIndex,
+      -1,
+      `boot step vanished from main.js: ${awaitedBoot} — re-derive this test`,
+    );
+    assert.ok(
+      registerIndex < bootIndex,
+      `ipcRegistrar.registerUpdater() is AFTER ${awaitedBoot}. preload exposes `
+        + "the button regardless, so a stalled boot leaves it with no handler.",
     );
   }
 });
 
-// The product default for auto-download lives in main.js (the module's own dep
-// default is false, deliberately, so an unwired host falls back to the consent
-// path). That split means a silent regression is possible in exactly one way:
-// main.js stops passing the preference, the module keeps working, and every
-// desktop install quietly reverts to notify-only with nothing red. These two
-// assertions are what make that loud.
-test("main.js wires the auto-download preference into initAutoUpdate", () => {
+// The product default remains in main.js while updater wiring belongs to the
+// registrar. Losing either silently reverts installs to notify-only because
+// auto-update's own unwired default is deliberately false.
+test("ipc-registrar wires the auto-download preference into initAutoUpdate", () => {
   assert.match(
-    SRC,
-    /getAutoDownloadPreference:\s*\(\)\s*=>\s*store\.get\("autoDownloadUpdates",\s*true\)\s*!==\s*false/,
-    "main.js no longer hands initAutoUpdate the auto-download preference. The module defaults it to FALSE, so without this line every desktop install silently drops to notify-only.",
+    REGISTRAR_SOURCE,
+    /getAutoDownloadPreference:\s*\(\)\s*=>\s*\n?\s*store\.get\("autoDownloadUpdates",\s*true\)\s*!==\s*false/,
+    "ipc-registrar.js no longer hands initAutoUpdate the auto-download preference. The module defaults it to FALSE, so without this line every desktop install silently drops to notify-only.",
   );
 });
 
 test("auto-download is ON by default in the store defaults", () => {
   assert.match(
-    SRC,
+    MAIN_SOURCE,
     /autoDownloadUpdates:\s*true/,
     "autoDownloadUpdates is no longer defaulted true in the electron-store defaults — desktop auto-update is off by default again.",
   );
 });
 
-test("initAutoUpdate is wired before the awaited gateway boot", () => {
-  const init = SRC.indexOf("updater = initAutoUpdate({");
-  const boot = SRC.lastIndexOf("await startGateway();");
-  assert.notStrictEqual(init, -1);
-  assert.notStrictEqual(boot, -1);
-  assert.ok(init < boot, "initAutoUpdate moved back below the gateway boot");
+test("initAutoUpdate is owned by the registrar composed before gateway boot", () => {
+  assert.notStrictEqual(
+    REGISTRAR_SOURCE.indexOf("updater = initAutoUpdate({"),
+    -1,
+    "ipc-registrar.js no longer initializes auto-update",
+  );
+  const registerIndex = MAIN_SOURCE.indexOf("ipcRegistrar.registerUpdater();");
+  assert.notStrictEqual(registerIndex, -1);
+  for (const awaitedBoot of BOOT_AWAITS) {
+    const bootIndex = MAIN_SOURCE.indexOf(awaitedBoot);
+    assert.notStrictEqual(bootIndex, -1);
+    assert.ok(registerIndex < bootIndex, `registerUpdater moved below ${awaitedBoot}`);
+  }
 });
 
 test("the updater block does not depend on gateway boot completing", () => {
-  // stopGateway must stay a LAZY callback. Passing an already-resolved handle or
-  // calling stopGatewayGracefully() eagerly here would reintroduce the ordering
-  // dependency this test exists to prevent.
+  // The stop must remain a LAZY callback. Eagerly stopping here would make
+  // updater registration depend on gateway state and violate boot ordering.
   assert.match(
-    SRC,
-    /stopGateway:\s*\(\)\s*=>\s*stopGatewayGracefully\(\)/,
-    "stopGateway is no longer passed as a lazy callback — the updater block may now depend on gateway state at wiring time",
+    REGISTRAR_SOURCE,
+    /stopGateway:\s*\(\)\s*=>\s*gateway\.stopGracefully\(\)/,
+    "stopGateway is no longer passed as a lazy callback — updater registration may now depend on gateway state",
   );
 });
 
 test("liveness recovery stands down during an update install", () => {
-  // Field incident (gateway-launch.log 2026-07-29T22:18): the updater stopped
-  // the gateway intentionally; the watchdog counted 3 failed probes and
-  // respawned it MID-SWAP, which reloaded the page and re-armed the install
-  // button. The guard must treat an in-flight install exactly like a quit.
+  // The gateway supervisor now owns both the watchdog and install flag. The
+  // guard must treat an in-flight install exactly like quit, or it can respawn
+  // the gateway in the middle of a bundle swap.
   assert.match(
-    SRC,
-    /if \(isQuitting \|\| installingUpdate\) return;/,
+    GATEWAY_SOURCE,
+    /if \(quitting\(\) \|\| installingUpdate\) return;/,
     "the liveness onUnresponsive guard no longer checks installingUpdate -- recovery can resurrect the gateway during a bundle swap",
   );
-  // And the flag must actually be set by the updater's dispatch hook.
   assert.match(
-    SRC,
-    /onInstallDispatched:[\s\S]{0,200}?installingUpdate = true/,
+    GATEWAY_SOURCE,
+    /function onInstallDispatched\(\)[\s\S]{0,200}?installingUpdate = true/,
     "onInstallDispatched no longer sets installingUpdate",
+  );
+  assert.match(
+    REGISTRAR_SOURCE,
+    /onInstallDispatched:\s*\(\)\s*=>\s*gateway\.onInstallDispatched\(\)/,
+    "ipc-registrar.js no longer connects updater dispatch to the gateway liveness owner",
   );
 });
 
 test("a failed install re-arms gateway recovery", () => {
-  // GPT round-3 finding: onInstallDispatched disarms the watchdog, so without
-  // this an install failure leaves the app alive with a permanently dead
-  // dashboard (gateway stopped, monitor stopped, nothing restarts either).
+  // Dispatch disarms the watchdog, so a failed install must clear the flag and
+  // actively recover; a failed swap does not quit and nothing else will do it.
   assert.match(
-    SRC,
-    /onInstallFailed:[\s\S]{0,400}?installingUpdate = false/,
+    GATEWAY_SOURCE,
+    /function onInstallFailed\([^)]*\)[\s\S]{0,400}?installingUpdate = false/,
     "onInstallFailed no longer clears installingUpdate",
   );
   assert.match(
-    SRC,
-    /onInstallFailed:[\s\S]{0,600}?recoverWedgedGateway\(/,
+    GATEWAY_SOURCE,
+    /function onInstallFailed\([^)]*\)[\s\S]{0,600}?recoverWedgedGateway\(/,
     "onInstallFailed no longer actively restores the gateway -- nothing else will after dispatch",
+  );
+  assert.match(
+    REGISTRAR_SOURCE,
+    /onInstallFailed:\s*\(\)\s*=>\s*gateway\.onInstallFailed\(\)/,
+    "ipc-registrar.js no longer connects install failure to gateway recovery",
   );
 });
 
 test("updater init failure cannot gate gateway startup (fail-open)", () => {
-  // GPT round-4 finding: the registration reorder put initAutoUpdate BEFORE the
-  // awaited gateway boot, so an init-time throw (e.g. malformed
-  // KIROCREW_UPDATE_FEED reaching a URL parse) would abort the ready handler
-  // and leave the app unusable -- strictly worse than a broken updater.
+  // Registration precedes boot, so require/feed/init failures must become a
+  // disabled updater rather than rejecting the entire ready callback.
   assert.match(
-    SRC,
-    /let updater;\s*\n\s*try \{\s*\n\s*updater = initAutoUpdate\(/,
+    REGISTRAR_SOURCE,
+    /function registerUpdater\(\)[\s\S]{0,400}?try \{\s*\n\s*updater = initAutoUpdate\(/,
     "initAutoUpdate is no longer wrapped in try/catch -- an init throw now aborts app boot",
   );
   assert.match(
-    SRC,
+    REGISTRAR_SOURCE,
     /disabled: "init-failed"/,
     "the fail-open stub no longer reports a disabled reason -- About would render a live Check button that does nothing",
   );
-  // The stub must still register handlers: the catch must appear BEFORE the
-  // first ipcMain.handle("update:*") registration, not after.
-  const catchAt = SRC.indexOf('disabled: "init-failed"');
-  const firstHandler = SRC.indexOf('ipcMain.handle("update:get-info"');
-  assert.ok(catchAt !== -1 && firstHandler !== -1 && catchAt < firstHandler,
-    "handlers must register against the stub when init fails");
+  // The catch/stub must precede handler registration so handlers still bind
+  // against the disabled handle after initialization fails.
+  const stubIndex = REGISTRAR_SOURCE.indexOf('disabled: "init-failed"');
+  const firstHandlerIndex = REGISTRAR_SOURCE.indexOf('ipcMain.handle("update:get-info"');
+  assert.ok(
+    stubIndex !== -1 && firstHandlerIndex !== -1 && stubIndex < firstHandlerIndex,
+    "handlers must register against the stub when init fails",
+  );
 });

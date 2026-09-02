@@ -244,6 +244,12 @@ class SlotProjection:
             ),
             "source_links_total": len(source_links),
             "todo": slot.todo_payload(),
+            # The session's OWN MCP report, deliberately alongside "todo" rather
+            # than merged into any host-level MCP payload: /api/mcp/active and
+            # /api/mcp/probe answer questions about the host, this answers one
+            # about this session, and conflating them is what let a dashboard
+            # look like it had confirmed a server the session never mounted.
+            "mcp_report": slot.mcp_report_payload(),
             "has_options": has_options,
             "options": [redact(option) for option in options],
             "prompt_preview": prompt_preview,

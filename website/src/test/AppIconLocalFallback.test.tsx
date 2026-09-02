@@ -12,7 +12,7 @@
  * proves nothing. The suite also locks the default-inert contract: consumers
  * that do not pass a fallback (every pre-existing call site) are unchanged.
  */
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { MemoryRouter, Routes, Route } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
@@ -103,8 +103,13 @@ describe('AppIcon — local-art fallback on load failure', () => {
     // new primary renders, and on failure the fallback gets retried too.
     rerender(<AppIcon iconUrl={NEXT} iconUrlFallback={LOCAL} />)
     await waitFor(() => expect(imgBySrc(NEXT)).not.toBeNull())
+    // Settle before firing: the changed URL re-runs the per-URL reset effect,
+    // and an error dispatched before it flushes is wiped by it (#7437).
+    await act(async () => {})
     fireEvent.error(imgBySrc(NEXT)!)
-    expect(imgBySrc(LOCAL)).not.toBeNull()
+    // Await the swap: on a loaded runner the error-driven re-render can land
+    // after this line executes, so a synchronous read sees the old frame (#7437).
+    await waitFor(() => expect(imgBySrc(LOCAL)).not.toBeNull())
   })
 })
 
@@ -160,23 +165,37 @@ describe('AppDetailPage — installed app icon falls back to local art (#6804)',
     renderDetail()
 
     // The registry asset stays the PRIMARY src — no precedence flip.
-    const primary = await waitFor(() => {
-      const el = imgBySrc(REGISTRY)
-      expect(el).not.toBeNull()
-      return el!
-    })
+    await waitFor(() => expect(imgBySrc(REGISTRY)).not.toBeNull())
+
+    // Settle the frame before firing: waitFor polls on real timers, so it can
+    // observe the img from an intermediate commit while load()'s remaining
+    // state updates and AppIcon's per-URL reset effect are still pending. An
+    // error fired against that frame is wiped by the reset and the swap never
+    // happens — the swap-lost mode of #7437. Drain them, then fire on a fresh
+    // query of the settled DOM rather than a captured element.
+    await act(async () => {})
 
     // Registry CDN unreachable: the src must actually CHANGE to the local route.
-    fireEvent.error(primary)
-    await waitFor(() => expect(imgBySrc(LOCAL)).not.toBeNull())
-    expect(imgBySrc(REGISTRY)).toBeNull()
+    // Both halves of the transition are asserted inside one awaited condition:
+    // on a loaded runner the swap can complete in two frames, and a synchronous
+    // sibling check would read the intermediate one (#7437).
+    fireEvent.error(imgBySrc(REGISTRY)!)
+    await waitFor(() => {
+      expect(imgBySrc(LOCAL)).not.toBeNull()
+      expect(imgBySrc(REGISTRY)).toBeNull()
+    })
 
     // Local bytes gone too (uninstalled mid-render): terminal state is the
-    // glyph, with no broken-image frame left in the icon box.
+    // glyph, with no broken-image frame left in the icon box. The settle here
+    // is symmetry with the one above — fallbackUrl has not changed since
+    // mount, so no pending reset effect is expected at this point.
+    await act(async () => {})
     fireEvent.error(imgBySrc(LOCAL)!)
     const box = document.querySelector('.w-24.h-24')!
-    await waitFor(() => expect(box.querySelector('img')).toBeNull())
-    expect(box.querySelector('svg')).not.toBeNull()
+    await waitFor(() => {
+      expect(box.querySelector('img')).toBeNull()
+      expect(box.querySelector('svg')).not.toBeNull()
+    })
   })
 })
 

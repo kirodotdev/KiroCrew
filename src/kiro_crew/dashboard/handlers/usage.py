@@ -21,6 +21,7 @@ from kiro_crew.acp.types import TurnUsage
 from kiro_crew.config.paths import data_home, kiro_sessions_dir
 from kiro_crew.context_blocks import USER_LABEL
 from kiro_crew.hooks import validate_file_path
+from kiro_crew.jsonl_util import bounded_records
 from kiro_crew.loop_lock import LoopBoundLock
 from kiro_crew.messaging.link import telemetry_channel_of
 from kiro_crew.metrics.turns import (
@@ -199,8 +200,8 @@ def slot_spend(days: int = SPEND_WINDOW_DAYS) -> dict[str, dict[str, float]]:
 
     for path in paths:
         try:
-            with path.open() as fh:
-                for line in fh:
+            with path.open("rb") as fh:
+                for line in bounded_records(fh, path, label="usage"):
                     try:
                         obj = json.loads(line)
                     except ValueError:
@@ -406,8 +407,8 @@ def context_occupancy(days: int = 14) -> dict[str, Any]:
 
     for shard_path in shard_paths:
         try:
-            with shard_path.open() as fh:
-                for line in fh:
+            with shard_path.open("rb") as fh:
+                for line in bounded_records(fh, shard_path, label="usage"):
                     try:
                         obj = json.loads(line)
                     except ValueError:
@@ -624,8 +625,8 @@ def slot_turn_usage(
     cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).timestamp()
     for shard_path in _shards_in_window(days):
         try:
-            with shard_path.open() as fh:
-                for line in fh:
+            with shard_path.open("rb") as fh:
+                for line in bounded_records(fh, shard_path, label="usage"):
                     try:
                         obj = json.loads(line)
                     except ValueError:
@@ -686,8 +687,8 @@ def context_trace(slot: str, days: int = 14) -> dict[str, Any]:
     totals: dict[str, int] = {}
     for shard_path in _shards_in_window(days):
         try:
-            with shard_path.open() as fh:
-                for line in fh:
+            with shard_path.open("rb") as fh:
+                for line in bounded_records(fh, shard_path, label="usage"):
                     try:
                         obj = json.loads(line)
                     except ValueError:
@@ -807,8 +808,8 @@ def cost_breakdown(days: int = SPEND_WINDOW_DAYS) -> dict[str, Any]:
 
     for shard_path in shard_paths:
         try:
-            with shard_path.open() as fh:
-                for line in fh:
+            with shard_path.open("rb") as fh:
+                for line in bounded_records(fh, shard_path, label="usage"):
                     try:
                         obj = json.loads(line)
                     except ValueError:
@@ -1631,8 +1632,8 @@ def _parse_token_history() -> dict[str, Any]:
 
     for shard_path in shard_paths:
         try:
-            with shard_path.open() as fh:
-                for line in fh:
+            with shard_path.open("rb") as fh:
+                for line in bounded_records(fh, shard_path, label="usage"):
                     try:
                         obj = json.loads(line)
                     except ValueError:
@@ -1827,8 +1828,8 @@ def _parse_sessions() -> dict:
         msgs = 0
         tools = 0
         try:
-            with resolved.open() as fh:
-                for line in fh:
+            with resolved.open("rb") as fh:
+                for line in bounded_records(fh, resolved, label="usage.sessions"):
                     try:
                         obj = json.loads(line)
                     except ValueError:

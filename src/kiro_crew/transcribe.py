@@ -72,6 +72,8 @@ except ImportError:  # pragma: no cover — covered by cli_doctor tests
 if TYPE_CHECKING:  # annotations only; see the deferred-import note below
     import numpy as np
 
+from kiro_crew.extras import install_hint
+
 logger = logging.getLogger(__name__)
 
 
@@ -963,7 +965,7 @@ CODE_APPLE_NEEDS_TOOLCHAIN = "stt_apple_needs_toolchain"
 #: What to do about a missing AWS Transcribe client. Named once because doctor,
 #: the settings panel and the failure log all report it, and a divergent copy
 #: sends a user to install the wrong thing.
-_VOICE_EXTRA_HINT = "AWS Transcribe needs the voice extra: pip install 'kirocrew[voice]'"
+_VOICE_EXTRA_HINT = f"AWS Transcribe needs its cloud dependencies: {install_hint('voice-aws')}"
 
 
 def _aws_availability() -> stt.Availability:
@@ -1111,7 +1113,7 @@ class _ProfileCredentialResolver(CredentialResolver):
         if boto3 is None:  # pragma: no cover (the optional 'voice' extra is absent)
             raise RuntimeError(
                 "AWS Transcribe support is not available: install the optional "
-                "dependencies (pip install 'kirocrew[voice]')."
+                f"dependencies ({install_hint('voice-aws')})."
             )
         self._session = boto3.Session(profile_name=profile)
 
@@ -1200,14 +1202,14 @@ async def _transcribe_aws(audio_path: str, stt_config) -> str | None:  # type: i
     # amazon-transcribe + boto3 are the optional 'voice' extra. Absent on a
     # vanilla install → report not available rather than raising ImportError.
     if boto3 is None:
-        logger.error("AWS Transcribe not available: install 'kirocrew[voice]'")
+        logger.error("AWS Transcribe not available: %s", install_hint("voice-aws"))
         return None
     try:
         TranscribeStreamingClient, TranscriptCollector = await asyncio.to_thread(
             _load_aws_transcribe_components
         )
     except ImportError:
-        logger.error("AWS Transcribe not available: install 'kirocrew[voice]'")
+        logger.error("AWS Transcribe not available: %s", install_hint("voice-aws"))
         return None
 
     region = stt_config.transcribe_region

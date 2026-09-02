@@ -781,8 +781,12 @@
       },
       "lib": {
         "format": {
+          "cause_no_agent_cli": "Reviewer never started — no kiro-cli executable was found on this host. Install it, or add it to PATH.",
           "cause_no_record": "Reviewer finished but recorded no findings.",
+          "cause_record_incomplete": "Reviewer wrote a findings record but stopped before completing the review.",
           "cause_runtime_died": "Reviewer process stopped mid-review — usually the gateway restarting. Nothing was wrong with the pull request.",
+          "cause_runtime_not_importable": "Reviewer never started — this install cannot load the agent runtime it needs. Repair the install to restore it.",
+          "cause_runtime_unavailable": "Reviewer never started — its agent runtime is unavailable on this host.",
           "cause_timeout": "Review ran past its time limit.",
           "cause_turn_failed": "Review turn failed before recording anything.",
           "cause_unknown": "Review did not complete.",
@@ -3564,7 +3568,6 @@
         "configuration_1": "Add an account from the profiles already on this machine, then confirm each paid service once per account before it is first used."
       },
       "console": {
-        "crumb_accounts": "Accounts",
         "copy": "Copy",
         "copied": "Copied",
         "close": "Close",
@@ -3665,16 +3668,9 @@
         "key_healthy": "Healthy",
         "key_failed": "Failed",
         "parent_folders": "Parent folders",
-        "connection_connected": "Connected",
-        "connection_degraded": "Degraded",
-        "connection_unknown": "Unknown",
-        "copy_id": "Copy account ID",
         "folder_actions": "Folder actions",
         "file_actions": "File actions",
         "root_storage_used": "What's using storage",
-        "root_section_desc_drive": "Files you upload from your computer.",
-        "root_section_desc_library": "Things Kiro made for you, copied to the cloud.",
-        "root_section_desc_backup": "Workspace snapshots and session archives.",
         "root_section_objects_one": "{{objects}} item",
         "root_section_objects_other": "{{objects}} items",
         "view_grid": "Grid view",
@@ -3683,8 +3679,7 @@
         "library_add_one": "Add to Library",
         "folder_open": "Open folder {{name}}",
         "library_adding": "Adding…",
-        "library_remove_hint": "Removing a copy from the cloud is not available here yet. “Where this lives” below shows where these copies are kept.",
-        "library_add_oneway": "Copies here fill cloud storage, and removing one is not available in the app yet.",
+        "library_add_oneway": "Copies here fill cloud storage.",
         "library_add_again": "Add again",
         "library_add_count": "Add from Artifacts ({{count}} ready)",
         "library_add_nothing": "Nothing left to add — everything that can be is already here.",
@@ -3705,10 +3700,12 @@
         "library_added": "Added {{when}}",
         "library_open": "Open {{name}} in Artifacts",
         "files_empty_title": "Files is empty",
-        "files_empty_body": "This folder holds files you upload from your computer. It is separate from Library, which holds things Kiro made for you."
+        "files_empty_body": "This folder holds files you upload from your computer. It is separate from Library, which holds things Kiro made for you.",
+        "library_remove": "Remove",
+        "library_remove_confirm": "Remove “{{name}}” from the cloud library?"
       },
       "page": {
-        "title": "AWS Control",
+        "totals_summary": "{{accounts}} accounts · {{keys}} keys · {{healthy}} healthy",
         "refresh": "Refresh",
         "health_ok": "Healthy",
         "health_degraded": "Needs attention",
@@ -3718,7 +3715,6 @@
         "kind_other": "Other",
         "default_profile": "Default profile",
         "not_connected_yet": "Not connected yet",
-        "open_console": "Open this account's console",
         "reconnect": "Reconnect",
         "reconnect_loading": "Loading reconnect guidance…",
         "reconnect_error": "Could not load reconnect guidance.",
@@ -3757,6 +3753,13 @@
         "search_none": "No accounts match “{{query}}”.",
         "paid_services_title": "Paid services",
         "orphan_consent": "Confirmed for an AWS account that is not registered here. Withdraw it below, or register that account again to manage it from its own page."
+      },
+      "rail": {
+        "accounts": "Accounts & credentials",
+        "nav": "AWS Control sections",
+        "switch_account": "Switch account",
+        "usage": "Usage & costs",
+        "use_account": "Use this account"
       }
     }
   },
@@ -4432,7 +4435,9 @@
       "ctrl_click_to_copy": "Ctrl+click to copy",
       "download_d": "Download (d)",
       "download_image": "Download image",
-      "generating_diagram": "generating diagram…"
+      "generating_diagram": "generating diagram…",
+      "image_failed_to_load": "Image failed to load",
+      "image_file_no_longer_exists": "Image file no longer exists"
     },
     "markdownToc": {
       "contents": "Contents",
@@ -7009,7 +7014,9 @@
         "form_description": "Description (optional)",
         "form_description_placeholder": "One line shown in the prompt list",
         "form_name": "Name",
-        "form_name_hint": "Lowercase letters, digits, and hyphens. Saved as <name>.md.",
+        "form_name_preview": "Lowercase letters, digits, and hyphens. Saved as {{filename}}.",
+        "name_too_long_hint": "The filename may be at most {{max}} bytes and this name makes a longer one. Shorten the name.",
+        "invalid_name_hint": "A prompt filename can only use lowercase letters, digits, and hyphens, and this name has none of them. Add at least one letter from a to z, or a digit.",
         "form_name_placeholder": "my-prompt-name",
         "form_scope": "Scope",
         "invoke_in_chat": "Invoke in chat:",
@@ -8046,7 +8053,7 @@
         "the_bundled_audio_decoder_is_missing_or_damaged": "The bundled audio decoder is missing or damaged. Reinstall the {{productName}} desktop app; do not install FFmpeg separately.",
         "then_restart_the_gateway_so_it_can_import_the_ne": "Then restart the gateway (Settings → About → Restart gateway) so it can import the new packages.",
         "the_desktop_app_can_t_add_transcribe_support_ins": "The desktop app can't add Transcribe support — its bundled Python can't install extra packages. Install {{productName}} with pip and run the gateway from that environment instead.",
-        "this_gateway_s_python_can_t_install_extra_packag": "This gateway's Python can't install extra packages, so Transcribe can't be enabled here. Run the gateway from a Python environment where pip can install kirocrew[voice].",
+        "this_gateway_s_python_can_t_install_extra_packag": "This gateway's Python can't install extra packages, so Transcribe can't be enabled here. Run the gateway from a Python environment where pip can install boto3 + amazon-transcribe.",
         "transcribe_voice_into_the_message_box_when_you_c": "Transcribe voice into the message box when you click the mic",
         "us_east_1": "us-east-1",
         "ptt_altgr_note": "On most Windows and Linux keyboards the right Alt key is AltGr, which helps type accented characters — so a lone Option cannot be the default here.",

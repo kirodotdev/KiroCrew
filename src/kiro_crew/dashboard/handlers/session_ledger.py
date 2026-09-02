@@ -126,9 +126,13 @@ async def api_session_ledger_record(request: web.Request) -> web.Response:
         )
     try:
         # record() takes the per-ledger file lock (bounded acquire + disk
-        # I/O); off-loop so a wedged cross-process peer cannot freeze
-        # chat/WS/heartbeat — the bounded lock then costs at most one refused
-        # write, never a parked worker thread.
+        # I/O); off-loop so a merely-contended cross-process peer cannot
+        # freeze chat/WS/heartbeat — against a live lock HOLDER the bounded
+        # acquire costs at most one refused write. This does NOT bound a
+        # wedged filesystem/mount: the pre-lock mkdir/os.open can still stall
+        # this worker thread at the syscall (a mount-health failure mode the
+        # lock deadline cannot reach), so off-loading it keeps that stall off
+        # the event loop rather than promising it can't happen.
         state_record = await asyncio.to_thread(
             session_ledger.record,
             key,

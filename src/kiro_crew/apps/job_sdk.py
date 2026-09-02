@@ -66,11 +66,27 @@ atomic for a reader, so the reads go through ``atomic_write``'s
 
 Staleness is decided by ``_ORIGIN``, a token minted once per gateway process —
 not by pid, which can be reused by the very process doing the reconciling.
+
+That token is the GATEWAY process, which also bounds what this SDK describes, and
+the bound is per RUNNER rather than per app. A registration only exists where the
+callable lives: ``register`` binds a kind to a callable held here in the gateway,
+so only runners registered from gateway-side code -- an app's hooks, its routes --
+are ones this SDK can execute or reconcile. An app declaring ``backend.entryPoint``
+is additionally spawned as its own OS process (``apps/backend.py``,
+``start_app_backend``), and that does NOT remove its SDK: the context builder gates
+``ctx.job`` on ``permissions.jobs`` alone, so such an app still receives a
+``JobSDK`` and the gateway hooks still publish it behind the shared routes. What it
+cannot do is register a runner from that separate process, so work executing there
+is invisible here. The consequence is not merely that such work is unsupported: on
+a restart that ``_reap_stale_app_backends`` leaves the backend alive through,
+``reconcile`` marks any record it left behind ``INTERRUPTED``, a terminal state no
+later pass revisits.
 """
 
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import logging
 import os
@@ -112,6 +128,70 @@ INTERRUPTED = "interrupted"
 
 #: A run in a terminal state is never resumed and never reconciled.
 TERMINAL_STATES = frozenset({DONE, FAILED, CANCELLED, INTERRUPTED})
+
+#: Why a run was reconciled, on the record. A closed SET rather than a bool
+#: because the not-registered case already covers two different events -- the app
+#: was disabled, or the kind was removed -- so a boolean would freeze that
+#: conflation on the day the field is introduced. Adding the third value later
+#: costs one constant and one table entry.
+CAUSE_PROCESS_GONE = "process_gone"
+CAUSE_RUNNER_UNREGISTERED = "runner_unregistered"
+#: The record was minted by THIS process and its worker is gone from the live
+#: table without a terminal write -- ``_write_terminal`` spent both attempts and
+#: said so. Distinct from the two above because ``origin == _ORIGIN`` is positive
+#: evidence that no restart happened, so neither restart cause can be true.
+#:
+#: What this cause leaves open depends on the OTHER axis, so the message takes its
+#: consequence clause from ``interrupted_from`` rather than asserting one: a
+#: ``running`` record genuinely leaves the outcome unknown, while a ``starting`` one
+#: does not (see ``_WRITE_LOST_BODY_NEVER_RAN``).
+CAUSE_TERMINAL_WRITE_LOST = "terminal_write_lost"
+
+#: How far a run had got, in words -- and deliberately COARSER than
+#: ``interrupted_from`` itself. A consumer needs ``queued`` apart from
+#: ``starting`` (only one of them owns a dedupe key), but a person reading a
+#: message does not: both mean no line of the runner's body ran. Keeping the
+#: field's granularity and the sentence's granularity separate is the reason the
+#: message is derived here rather than being the only record of what happened.
+_PROGRESS_PHRASE = {
+    QUEUED: "had not started yet",
+    STARTING: "had not started yet",
+    RUNNING: "was running",
+}
+
+#: The ONE place an interruption's message is composed. A table keyed on cause,
+#: not a nested conditional: with two axes the conditional form needs four arms
+#: and grows multiplicatively, while this grows by one line per cause. The
+#: ``process_gone`` + ``running`` cell reproduces the message this SDK shipped
+#: with, byte for byte, because that cell was the only one that was ever true.
+_INTERRUPT_MESSAGE = {
+    CAUSE_PROCESS_GONE: "the gateway restarted while this {progress}",
+    CAUSE_RUNNER_UNREGISTERED: (
+        "the gateway restarted while this {progress}, and no runner is registered for {kind!r}"
+    ),
+    CAUSE_TERMINAL_WRITE_LOST: (
+        "this run's final state could not be written while this {progress}, so {consequence}"
+    ),
+}
+
+#: Statuses a ``terminal_write_lost`` record can carry that prove the body NEVER RAN,
+#: rather than leaving the outcome unknown. Completing the ``starting`` -> ``running``
+#: transition is a PRECONDITION for calling the runner: if that write fails the run is
+#: marked failed and the runner is never invoked. So a record still at ``starting``
+#: (or ``queued``) whose terminal write was also lost proves execution never began --
+#: there is nothing unknown about it, and saying otherwise would be this module's own
+#: defect, a record declining to state what it knows.
+_WRITE_LOST_BODY_NEVER_RAN = frozenset({QUEUED, STARTING})
+_WRITE_LOST_NEVER_RAN = (
+    "its body never ran: the transition to running is a precondition for calling the "
+    "runner, and this record never reached it"
+)
+_WRITE_LOST_OUTCOME_UNKNOWN = "whether its work finished is not known"
+
+#: Used when a record carries a status this build does not know -- a file written
+#: by a newer gateway, or hand-edited. The pass must still resolve it, and the
+#: message must not claim a progress it cannot support.
+_UNKNOWN_PROGRESS_PHRASE = "had not finished"
 
 #: Length of an SDK-minted run id (``uuid.uuid4().hex``). Validated, not just
 #: assumed: a caller reaches ``{run_id}`` on the HTTP surface directly, and a
@@ -158,6 +238,252 @@ def _redact(text: str) -> str:
         return text
 
 
+def _interrupt_error(cause: str, interrupted_from: str, kind: str) -> str:
+    """Compose an interruption's human-readable message. The ONLY site that does.
+
+    Two facts go in, and they are independent because they describe different
+    TIMES: ``interrupted_from`` is how far the run got before it stopped being
+    accounted for, ``cause`` is why nobody can account for it now. NOT "before its
+    process died" -- ``CAUSE_TERMINAL_WRITE_LOST`` exists precisely for a run whose
+    process is still alive and only lost the write. Neither fact implies the other,
+    so both are on the record; the sentence is derived from them here rather than
+    being the place they are stored.
+
+    An unrecognised ``cause`` falls back to the process-gone template instead of
+    raising: this runs inside the pass that clears stuck ``running`` records, and
+    a record with a cause this build does not know must still be resolved.
+    """
+    template = _INTERRUPT_MESSAGE.get(cause) or _INTERRUPT_MESSAGE[CAUSE_PROCESS_GONE]
+    progress = _PROGRESS_PHRASE.get(interrupted_from, _UNKNOWN_PROGRESS_PHRASE)
+    # Derived from the SECOND axis, not asserted: only `terminal_write_lost` has a
+    # `{consequence}` slot, and the other templates ignore the extra keyword. An
+    # unknown status is treated as outcome-unknown, which is the honest default when
+    # the progress axis itself cannot be read.
+    consequence = (
+        _WRITE_LOST_NEVER_RAN
+        if interrupted_from in _WRITE_LOST_BODY_NEVER_RAN
+        else _WRITE_LOST_OUTCOME_UNKNOWN
+    )
+    return template.format(progress=progress, kind=kind, consequence=consequence)
+
+
+#: The ONE verdict every returned suspendable gets, worded as the contract violation
+#: it is. It deliberately does NOT say the body never ran: for a drained generator it
+#: did, and this SDK cannot tell that case from a suspendable closed before it began.
+#: Saying "never ran" would replace a false success with a false explanation, which is
+#: the same defect one layer down.
+_SUSPENDABLE_RETURNED = (
+    "{name}, which a runner must not return: this SDK never drives what a runner "
+    "hands back, and the object itself cannot say what it did -- one that ran to "
+    "completion and one closed before it began are identical from here"
+)
+
+#: The suspendable carriers, matched by kind ALONE. There is deliberately no state
+#: table: the state cannot answer the question the record needs answered.
+#: ``CLOSED``/``frame is None`` covers BOTH a suspendable drained to completion and one
+#: closed before it ever began, and those two are indistinguishable from the object --
+#: verified, not assumed (see :func:`_undriven_result` for what was measured and
+#: rejected). So the classifier stops inferring history and states a rule instead.
+#:
+#: Two rejected alternatives, both of which look more precise and are traps:
+#:
+#: * the ``cr_frame``/``gi_frame``/``ag_frame`` attribute with an ``f_lasti``
+#:   comparison. ``f_lasti`` is ``-1`` for an unstarted frame up to 3.10 and an
+#:   instruction offset (``0``) from 3.11, so a ``< 0`` test silently matches NOTHING
+#:   on 3.12 -- every ``async def`` runner would be recorded ``done`` again, the very
+#:   defect this module exists to remove.
+#: * ``gc.get_referents``, which DOES separate the two closed histories on 3.12:
+#:   ``('str', 'str')`` for a drained generator against ``('code', 'function', 'str',
+#:   'str')`` for one closed unstarted, stable across trials, creation order and an
+#:   explicit ``gc.collect()``. It is still refused, because it is an undocumented
+#:   interpreter internal, generators were restructured in 3.11 with lazily-created
+#:   frames, and CI runs 3.10 AND 3.12. A classifier that is right on one interpreter
+#:   and wrong on another writes false records confidently, which is worse than
+#:   declining to classify.
+_SUSPENDABLE_KINDS: tuple[tuple[str, Any], ...] = (
+    ("a coroutine", inspect.iscoroutine),
+    ("a generator", inspect.isgenerator),
+    ("an async generator", inspect.isasyncgen),
+)
+
+
+def _undriven_result(result: Any) -> str:
+    """Name why a runner's return value is not a completed unit of work, else ``""``.
+
+    The counterpart to :func:`_lazy_call_shape`, and the load-bearing half. That one
+    inspects the callable's SHAPE at registration, which is a proxy: it can only
+    refuse the spellings somebody thought of. This one reads the FACT, at the one
+    moment it exists -- whatever the runner handed back, once.
+
+    ONE PROTOCOL QUESTION WITH TWO CARRIERS, then allow. The question is "is this
+    thing finished?", and two kinds of object answer it:
+
+    * a SUSPENDABLE cannot answer it, so it is refused outright;
+    * a FUTURE answers it by ``done()``, and then by how it settled.
+
+    **Suspendables, ONE verdict, and this reverses an earlier decision in this same
+    change set.** Earlier rounds read the frame state and allowed ``CLOSED`` on the
+    reasoning that a closed frame ran to completion. That was wrong, and the reason is
+    worth stating because it is the module's own thesis turned on itself: ``CLOSED``
+    covers a suspendable drained to completion AND one closed before it ever began, so
+    allowing it recorded a completion nobody observed -- exactly the class of claim
+    this module exists to remove. The two cases were then MEASURED rather than assumed
+    to differ: no public attribute, ``dir()`` entry, code object, ``gi_frame``,
+    ``gi_running`` or ``gi_yieldfrom`` separates them.
+
+    ``gc.get_referents`` does separate them on 3.12, reliably, and is refused anyway --
+    see :data:`_SUSPENDABLE_KINDS` for the measurement and why depending on it would be
+    a defect rather than a fix.
+
+    So the rule replaced the inference: a returned suspendable is a CONTRACT VIOLATION
+    whatever its state. The reason string says only what this SDK knows -- that it will
+    not accept the object and cannot tell what it did. It deliberately does NOT say the
+    body never ran, because for a drained generator it did; that wording would swap a
+    false success for a false explanation. Nothing legitimate is refused: the SDK
+    discards return values by design, so returning a suspendable cannot serve a runner
+    even in principle.
+
+    An async generator needs no separate case now. It used to have one because its
+    state was not portably readable (``inspect.getasyncgenstate`` is 3.12+ while this
+    module supports 3.10) -- and no state is read any more, so the special case that
+    existed to avoid a version-dependent record dissolves into the general rule.
+
+    **Futures, four verdicts, and deliberately NOT flattened.** Unlike a suspendable, a
+    future does answer the question, so the distinctions it draws are kept. ``done()``
+    False is pending, so unfinished. ``done()`` True splits, because ``done()`` answers
+    "is it settled", not "did it succeed" -- and ``cancelled()`` MUST be asked before
+    ``exception()``, since on a cancelled future ``exception()`` RAISES
+    ``CancelledError`` rather than returning it. That is a ``BaseException``, so it
+    would sail through ``_execute``'s ``except Exception`` and crash the function whose
+    job is classifying failures.
+
+    **An unsettled future is FAILED, and that verdict is true rather than
+    convenient.** The runner's contract is to do its work before returning, so
+    handing back something unfinished violates it -- ``failed`` is what this SDK
+    observed about the RUN, not a guess about the work.
+
+    What this SDK cannot do is STOP that work. An unsettled
+    ``concurrent.futures.Future`` stands for a thread it does not own, and
+    terminalizing the run releases the dedupe key -- so an owner who retries gets a
+    second run overlapping work that never stopped. Relabelling the status would not
+    change that: the overlap is a consequence of the contract violation, not
+    something the record misstates. So the reason string SAYS the work may still be
+    running, because the owner reading that record is the only party who can judge
+    whether a retry is safe. The missing capability -- no way to stop work a runner
+    spawned outside this thread -- is filed rather than pretended away.
+
+    **Why this is complete, which after nine review rounds is a fair thing to ask.**
+    Not because cases stopped being found, but because the two carriers are now
+    answered on different grounds. Suspendables need no enumeration at all: every
+    state, known or added by a future Python, reaches the same verdict, so there is no
+    fourth state to discover and no state table to go stale. The future protocol offers
+    pending, cancelled, exception and result, and this maps every one of those.
+
+    **Default: allow.** Safe now in a way the old default was not. The old code asked
+    ``isawaitable`` first, so a non-awaitable future reached the default and was
+    called fine; the future carrier now catches it by ``done()``, so what still
+    reaches the default is genuinely a plain return value.
+    """
+    # Carrier 1: a suspendable, refused by KIND -- its state is not consulted,
+    # because no state it can report answers "did the work happen".
+    for name, is_kind in _SUSPENDABLE_KINDS:
+        if is_kind(result):
+            return _SUSPENDABLE_RETURNED.format(name=name)
+
+    # Carrier 2: a future, which answers by `done()` and then by how it settled.
+    done = getattr(result, "done", None)
+    if callable(done):
+        if not done():
+            return (
+                "a future that is not settled, so the runner returned before its work "
+                "finished; that work may still be running somewhere this SDK does not "
+                "own and cannot stop, so a retry of this run can overlap it"
+            )
+        cancelled = getattr(result, "cancelled", None)
+        if callable(cancelled) and cancelled():
+            return "a cancelled future, so the work it stood for never completed"
+        exception = getattr(result, "exception", None)
+        if callable(exception):
+            # Safe without a timeout because ``done()`` is established, so it cannot
+            # block. Retrieving it also MARKS it retrieved, which suppresses the
+            # "never retrieved" warning :func:`_close_quietly` handles for the
+            # unsettled case -- classification and quiet retirement meet here.
+            exc = exception()
+            if exc is not None:
+                return (
+                    f"a future that failed with {type(exc).__name__}, "
+                    "so the work it stood for ran and raised"
+                )
+        return ""
+
+    # Carries neither answer and still needs driving: nothing here will do it.
+    if inspect.isawaitable(result):
+        return _SUSPENDABLE_RETURNED.format(name="a bare awaitable")
+
+    return ""
+
+
+def _close_quietly(result: Any) -> None:
+    """Close an undriven result so it does not warn from the garbage collector.
+
+    A coroutine that is never awaited emits ``RuntimeWarning: coroutine ... was
+    never awaited`` when collected, at a point far from the run that caused it.
+    The record already says what happened, so the warning is noise pointing at
+    the wrong place.
+
+    Two shapes, because they do not share a method. Coroutines and generators
+    expose a synchronous ``close``. A future does NOT -- neither ``asyncio.Future``
+    nor ``concurrent.futures.Future`` has ``close``, so an earlier version of this
+    docstring named futures among the closable and was wrong about the one object
+    the sentence was about. A pending future is retired with ``cancel`` instead,
+    which is what stops it warning that its exception was never retrieved. An
+    async generator's ``aclose`` is itself a coroutine needing a loop, so it is
+    left to the interpreter rather than driven from this thread.
+    """
+    for method in ("close", "cancel"):
+        handler = getattr(result, method, None)
+        if not callable(handler):
+            continue
+        try:
+            handler()
+        except Exception:  # noqa: BLE001 - closing is hygiene, never the outcome
+            logger.debug("could not retire an undriven job result", exc_info=True)
+        return
+
+
+def _lazy_call_shape(fn: Any) -> str:
+    """Name the shape of a callable whose CALL does not run its body, else ``""``.
+
+    Three shapes return a lazy object instead of doing the work: a coroutine
+    function, an async generator function, and a plain generator function. The
+    SDK calls its runner on a worker thread and discards the return value, so for
+    all three the body never executes. Before the execution-side check existed
+    such a run was then recorded ``done``; today :func:`_undriven_result` reads the
+    returned object and records ``failed``, so this guard is a fast, friendly error
+    at registration rather than the safety property.
+    One defect with three spellings, so the check names the class rather than the
+    one spelling that was reported.
+
+    A callable OBJECT is examined through its ``__call__``, because that is what
+    invocation actually reaches -- ``inspect`` reports the instance itself as an
+    ordinary object, so a check written against bare functions passes it through.
+    That was the gap two reviewers found in the first version of this guard.
+
+    No legitimate runner is refused by this: a callable whose invocation returns a
+    lazy object cannot do the work the SDK is calling it to do, whatever it is.
+    """
+    for target in (fn, getattr(fn, "__call__", None)):
+        if target is None:
+            continue
+        if inspect.iscoroutinefunction(target):
+            return "a coroutine function"
+        if inspect.isasyncgenfunction(target):
+            return "an async generator function"
+        if inspect.isgeneratorfunction(target):
+            return "a generator function"
+    return ""
+
+
 @dataclass
 class JobRun:
     """One run's durable record. Serialized whole; never partially updated.
@@ -179,6 +505,21 @@ class JobRun:
     updated_at: str = ""
     finished_at: str = ""
     error: str = ""
+    #: Set only by ``reconcile``: the status this run held when a process that no
+    #: longer exists was executing it. Structured because a CONSUMER acts on it --
+    #: a run interrupted from ``running`` may have side effects already committed,
+    #: while one interrupted from ``queued`` or ``starting`` provably has none, and
+    #: those need different recovery. Before this field the pass overwrote
+    #: ``status`` in place and chose ``error`` from whether a runner was
+    #: registered, so all three collapsed into one record that read "while this was
+    #: running" even for a run whose worker thread was never started.
+    interrupted_from: str = ""
+    #: Set only by ``reconcile``: why the run could not be resumed, from the
+    #: ``CAUSE_*`` set. Orthogonal to ``interrupted_from`` -- that says how far the
+    #: run got, this says whether the kind can be serviced now -- so a consumer
+    #: deciding "offer a retry" reads this one and a consumer deciding "warn about
+    #: partial work" reads the other.
+    interrupt_cause: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -351,6 +692,28 @@ class JobStore:
             # string. Reached only off the loop (the routes offload every call),
             # which is what lets the helper's sleep apply at all.
             raw = read_bytes_with_retry(self._path(run_id)).decode("utf-8")
+        # Only the damage that genuinely means "no such record": the file is not
+        # there, its parent is not a directory, or its bytes are not the UTF-8
+        # JSON this store writes (``ValueError`` covers the ``UnicodeDecodeError``
+        # from the decode above and the malformed id ``_path`` rejects).
+        #
+        # ``PermissionError`` is deliberately NOT here, even though the comment
+        # above is about it. On Windows a concurrent ``os.replace`` makes a reader
+        # fail with a sharing violation that is TRANSIENT -- ``read_bytes_with_retry``
+        # exists to outlast it, and re-raises only once its budget is spent or when
+        # it is called on the event loop, where the budget cannot be spent at all.
+        # Returning ``None`` there would answer "this run does not exist" about a
+        # record that is present and intact, so a polling client reading 404 as
+        # "gone" would drop live work. The same argument covers the rest of
+        # ``OSError`` -- ``EIO``, ``EMFILE``, ``EBUSY`` are facts about the host,
+        # not about whether this run was ever started. They belong to the caller,
+        # which is why ``get`` lets them out and the route answers 500: an honest
+        # "ask again" instead of a confident wrong answer.
+        #
+        # This is narrower than the sibling ``iter_runs`` scan below on purpose.
+        # That scan is a partial result -- skipping one damaged file still returns
+        # the others -- while this is a targeted lookup whose ``None`` asserts
+        # absence, and absence is not something an unreadable file establishes.
         except (FileNotFoundError, NotADirectoryError, ValueError):
             return None
         try:
@@ -438,7 +801,13 @@ class JobSDK:
 
     # ── The one writer ──
 
-    def _persist(self, run: JobRun, handle: JobHandle | None = None) -> bool:
+    def _persist(
+        self,
+        run: JobRun,
+        handle: JobHandle | None = None,
+        *,
+        only_if_not_terminal: bool = False,
+    ) -> bool:
         """Write a run's record. The ONLY path that writes one.
 
         Three callers used to write directly -- start, the worker's terminal
@@ -457,7 +826,21 @@ class JobSDK:
         * the record is JSON-safe by construction: every field except ``error``
           is minted by the SDK from a str, an int or a bool.
 
-        Returns True when the record is on disk.
+        ``only_if_not_terminal`` ENFORCES THE MODULE'S OWN INVARIANT that a record
+        in :data:`TERMINAL_STATES` is never revisited. It is not a new rule and not
+        a heuristic: :meth:`reconcile` decides from a snapshot and writes later, so
+        a worker that finished in between had its true terminal record overwritten
+        by a false one. That is why the re-read is HERE rather than next to the
+        decision -- ``self._lock`` is not reentrant, so this is the only place the
+        re-read and the write are one atomic step. A check near the decision would
+        narrow the window; it would not close it.
+
+        The re-read costs one file read per non-terminal record, on the boot pass
+        only, inside a lock this method already holds across a file write.
+
+        Returns True when the record is on disk. A refusal -- discarded, already
+        terminal, or a failed write -- returns False, and every caller treats that
+        the same way: do not count it, do not audit it as done.
         """
         # INVARIANT: nothing a runner supplied reaches disk unsanitized. This is
         # ONE line because ``error`` is the only field a runner supplies, and
@@ -468,6 +851,14 @@ class JobSDK:
         with self._lock:
             if handle is not None and handle.discarded.is_set():
                 return False
+            if only_if_not_terminal:
+                # Re-read INSIDE the write's lock: the caller's snapshot is stale by
+                # construction, and the worker's own terminal write goes through
+                # this same lock, so a record that reads terminal here is finished
+                # and must not be revisited.
+                latest = self._store.read(run.run_id)
+                if latest is not None and latest.is_terminal:
+                    return False
             try:
                 self._store.write(run)
                 return True
@@ -484,9 +875,39 @@ class JobSDK:
         app's assertion that ``fn`` polls ``handle.cancelled`` at checkpoints;
         the SDK cannot verify it, so the consumer's migration checklist has to
         name those checkpoints.
+
+        A CALLABLE WHOSE INVOCATION DOES NOT RUN ITS BODY IS REFUSED HERE, at
+        registration, rather than failing at run time. ``_execute`` calls
+        ``fn(handle)`` on a worker thread and discards the return value by design,
+        and three shapes return a lazy object instead of doing the work: a
+        coroutine function, an async generator function, and a plain generator
+        function. For each, the object is dropped and no line of the runner's body
+        ever runs. Such a run USED to be recorded ``done`` -- a run reporting
+        success having executed nothing, and silent, since an un-awaited coroutine
+        warning goes to the gateway log at most. That is now caught at execution by
+        ``_undriven_result`` and recorded ``failed``, so refusing here is the early
+        friendly error and not the thing that makes the record honest. The check
+        goes through ``__call__`` as well as the object itself, so a callable
+        instance with an ``async def __call__`` is caught too.
+
+        Refusing is deliberately not the same as supporting: driving a coroutine
+        correctly means deciding which loop owns it, how cancellation crosses
+        the thread boundary, and what a blocking runner does to that loop, and
+        those are design questions this refusal does not answer. It answers only
+        the question a caller cannot currently ask -- "did my runner run" -- at
+        the one point where the answer is still cheap.
         """
         if not kind:
             raise ValueError("job kind must be a non-empty string")
+        lazy = _lazy_call_shape(fn)
+        if lazy:
+            raise ValueError(
+                f"job kind {kind!r} was registered with {lazy}; the runner is called on "
+                "a worker thread and its return value is discarded, so its body would "
+                "never execute and the run would still be recorded as done. Register a "
+                "callable that does the work when called (it may drive its own loop "
+                "with asyncio.run)."
+            )
         with self._lock:
             self._runners[kind] = _Runner(fn=fn, cancellable=cancellable)
         logger.info("App %s registered job kind: %s", self._app_name, kind)
@@ -658,20 +1079,89 @@ class JobSDK:
     def _execute(self, run: JobRun, runner: _Runner, handle: JobHandle) -> None:
         """The worker body. Sole writer of this run's record from here on.
 
-        The runner's return value is DISCARDED. P1 records that a run finished,
-        not what it produced: a return value is arbitrary nested data, and
-        holding it is what required a recursive sanitizer over channels no P1
-        consumer reads. It returns in P2 on a type that is safe by construction.
+        The runner's return value is DISCARDED, but it is INSPECTED first. P1
+        records that a run finished, not what it produced: a return value is
+        arbitrary nested data, and holding it is what required a recursive
+        sanitizer over channels no P1 consumer reads. It returns in P2 on a type
+        that is safe by construction.
+
+        One thing is read off it before it is dropped, and it is the fact this
+        method could not otherwise state honestly: whether the runner actually did
+        the work. If the call handed back something that still needs to be driven
+        -- an awaitable, or an async generator -- then the body did not run to
+        completion and ``done`` would be a false record. ``register`` refuses the
+        callable SHAPES that produce this, but a shape check is an adjacent-state
+        proxy and cannot see every route to it: a plain ``def run(h): return
+        _do_it(h)`` over an ``async def _do_it`` passes every registration check
+        and still returns an unperformed coroutine. Observing the result is the
+        only place the fact itself is available, which makes this the safety
+        property and the registration guard a fast, friendly error.
+
+        A returned suspendable is refused BY KIND, not by what its state seems to
+        say. Generator FUNCTIONS are still refused at registration; a returned
+        generator, coroutine or async generator is failed whatever it has done,
+        because the object cannot say what it did -- a drained generator and one
+        closed before it ever began are identical from here. So the SDK refuses the
+        shape rather than guessing the history. This does NOT assert the body never
+        ran: for a drained generator it did, and that run is still failed because
+        the rule is stated rather than inferred. Earlier forms of this docstring
+        read the frame state and allowed the closed one; see
+        :func:`_undriven_result` for the reversal and what was measured.
         """
         # Completing the STARTING -> RUNNING transition is the worker's first act,
         # because the worker is the only party that knows it is actually running.
         # Through the guarded writer, so a disable that landed between the launch
         # and this line refuses it rather than recreating a deleted record.
         run.status = RUNNING
-        self._persist(run, handle)
         try:
-            runner.fn(handle)
-            run.status = CANCELLED if handle.cancelled.is_set() else DONE
+            # The transition is a PRECONDITION for running the body, not a
+            # notification alongside it. This return used to be discarded, so a
+            # failed write left the record at `starting` while the runner went on
+            # to commit real work -- and if the process then died before the
+            # terminal write, `reconcile` read that record and stated the run had
+            # never begun. There is no way to correct that claim after the fact,
+            # because the knowledge that the write failed dies with the process.
+            # So the run does not begin unless the record can say it began.
+            #
+            # The cost is deliberate: a transient store error now fails a run that
+            # might have succeeded. For an SDK whose product is a durable record,
+            # a run that is not recorded is worse than a run not attempted.
+            if not self._persist(run, handle):
+                run.status = FAILED
+                run.error = (
+                    f"the store could not record run {run.run_id} as running, so its "
+                    f"body was never started; a run this SDK cannot say began is one "
+                    f"it does not begin"
+                )
+                logger.warning(
+                    "App %s job %s (%s) not started: the running transition did not persist",
+                    self._app_name,
+                    run.run_id,
+                    run.kind,
+                )
+            else:
+                result = runner.fn(handle)
+                undriven = _undriven_result(result)
+                if undriven:
+                    # Inside the SAME try, so the terminal write below is still the
+                    # one write site. A second write path here is what leaked a
+                    # dedupe claim before, and `_write_terminal` already owns the
+                    # discard check.
+                    run.status = FAILED
+                    run.error = (
+                        f"the runner for {run.kind!r} returned {undriven}, so this "
+                        "run is recorded as failed rather than done"
+                    )
+                    _close_quietly(result)
+                    logger.warning(
+                        "App %s job %s (%s) returned %s and did no work",
+                        self._app_name,
+                        run.run_id,
+                        run.kind,
+                        undriven,
+                    )
+                else:
+                    run.status = CANCELLED if handle.cancelled.is_set() else DONE
         except Exception as exc:  # noqa: BLE001 - a runner's failure is data, not a crash
             run.status = FAILED
             run.error = _redact(str(exc))[:2000]
@@ -804,10 +1294,18 @@ class JobSDK:
         """Resolve records left non-terminal by a process that is gone.
 
         A run must never be left ``running`` forever and must never silently
-        vanish — the two directions the hand-rolled predecessors got wrong. The
-        reason distinguishes a lost process from a kind whose runner is no
-        longer registered (the app was disabled, or the kind was removed), which
-        is why this runs only after every app has registered.
+        vanish — the two directions the hand-rolled predecessors got wrong. Each
+        resolved record carries TWO facts rather than a sentence: how far the run
+        had got (``interrupted_from``) and why it cannot be resumed
+        (``interrupt_cause``). They are independent because they describe
+        different times -- past progress, present capability -- and a consumer
+        acts on them separately: a run interrupted from ``running`` may have
+        committed side effects, one interrupted from ``queued`` or ``starting``
+        provably has not, and only the cause says whether offering a retry makes
+        sense. ``error`` is composed from both by :func:`_interrupt_error`, which
+        is why the pass no longer has to choose one of two strings from the runner
+        table alone. This runs only after every app has registered, so a missing
+        runner means the kind is gone rather than not yet loaded.
 
         This is the ONE path that consumes records it did not write -- a file
         left by an older build, or hand-edited during an incident -- so a single
@@ -815,6 +1313,16 @@ class JobSDK:
         ``ValueError`` on a run id it will not turn into a path, and letting that
         escape would abandon every remaining run of this app, leaving exactly the
         stuck-``running`` state the pass exists to clear.
+
+        **This pass decides from a snapshot, so it must not trust it at write
+        time.** ``iter_runs`` yields a record decoded from disk; by the time this
+        loop writes, a worker may have completed and left ``_live``. The write
+        therefore goes through ``_persist(only_if_not_terminal=True)``, which
+        re-reads under the same lock it writes with. That enforces the invariant
+        this module already states -- a record in :data:`TERMINAL_STATES` is never
+        revisited -- rather than adding a new rule: without it this pass overwrote
+        a true terminal record with a false one, which is a worse failure than any
+        unverified claim, because the truth was on disk and this pass deleted it.
         """
         flipped = 0
         for run in self._store.iter_runs():
@@ -829,14 +1337,44 @@ class JobSDK:
             # state the pass exists to clear.
             if run.origin == _ORIGIN and live:
                 continue
+            # BOTH axes are recorded, and the message is DERIVED from them. The
+            # previous form assigned `status` over the top of the only evidence of
+            # how far the run got, then picked one of two strings from `known`
+            # alone -- so a run whose worker thread was never started was written
+            # a record claiming it "was running", and a consumer could not tell a
+            # run that committed side effects from one that provably had not.
+            run.interrupted_from = run.status
+            # Own origin is tested FIRST because it is the one VERIFIED fact here:
+            # this record was minted by this process, so the process cannot have
+            # restarted -- and both restart causes would say it did. `known` is a
+            # proxy (is a runner registered) and a proxy must not outrank the fact
+            # sitting next to it. Reaching this line with a matching origin means
+            # the guard above found no live worker, which is `_write_terminal`
+            # having spent both of its attempts.
+            #
+            # Composed into a local and assigned ONCE, so the field keeps its
+            # single assignment site from a constant -- the ratchet that turns
+            # "SDK-minted" from a claim into something checkable.
+            if run.origin == _ORIGIN:
+                cause = CAUSE_TERMINAL_WRITE_LOST
+            elif known:
+                cause = CAUSE_PROCESS_GONE
+            else:
+                cause = CAUSE_RUNNER_UNREGISTERED
+            run.interrupt_cause = cause
             run.status = INTERRUPTED
             run.finished_at = _now()
-            run.error = (
-                "the gateway restarted while this was running"
-                if known
-                else f"the gateway restarted and no runner is registered for {run.kind!r}"
-            )
-            if not self._persist(run):
+            run.error = _interrupt_error(run.interrupt_cause, run.interrupted_from, run.kind)
+            # `only_if_not_terminal` re-reads under the write's lock. The
+            # `is_terminal` check at the top of this loop reads a SNAPSHOT: a
+            # worker can finish between that read and this write, and the earlier
+            # `live` check does not close the window because a worker leaves
+            # `_live` only AFTER its terminal write has landed. Without the
+            # re-read this pass overwrote a true `done` with `interrupted`, and
+            # the cause it wrote was `terminal_write_lost` -- claiming the
+            # terminal write was lost when it had in fact succeeded and this pass
+            # destroyed it.
+            if not self._persist(run, only_if_not_terminal=True):
                 continue
             flipped += 1
             self._audit("job_interrupted", run.run_id, "ok")

@@ -132,8 +132,9 @@ describe("attachHtmlFullScreen — DOM fullscreen drives the window", () => {
   });
 
   it("is a no-op on a destroyed window", () => {
-    // Chromium can dispatch after teardown; every other main.js listener guards
-    // the same way, and setFullScreen on a destroyed window throws in Electron.
+    // Chromium can dispatch after teardown; every other window-lifecycle.js
+    // listener guards the same way, and setFullScreen on a destroyed window
+    // throws in Electron.
     const win = winStub({ destroyed: true });
     const wc = wcStub();
     attachHtmlFullScreen({ win, webContents: wc });
@@ -143,16 +144,20 @@ describe("attachHtmlFullScreen — DOM fullscreen drives the window", () => {
   });
 });
 
-describe("main.js actually attaches the bridge", () => {
+describe("window lifecycle actually attaches the bridge", () => {
   // The defect was absent WIRING, so the unit tests above would all pass while
-  // the app stayed broken if main.js never called it. This pins the call site.
-  const MAIN_JS = fs.readFileSync(path.join(__dirname, "..", "main.js"), "utf8");
+  // the app stayed broken if the window owner never called it. This pins the
+  // call site at the boundary that creates and persists dashboard windows.
+  const WINDOW_LIFECYCLE_JS = fs.readFileSync(
+    path.join(__dirname, "..", "window-lifecycle.js"),
+    "utf8",
+  );
 
   it("requires and calls attachHtmlFullScreen for the dashboard view", () => {
-    assert.match(MAIN_JS, /require\("\.\/html-fullscreen"\)/);
+    assert.match(WINDOW_LIFECYCLE_JS, /require\("\.\/html-fullscreen"\)/);
     assert.match(
-      MAIN_JS,
-      /_mcHtmlFullScreen = attachHtmlFullScreen\(\{\s*win,\s*webContents:\s*view\.webContents\s*\}\)/,
+      WINDOW_LIFECYCLE_JS,
+      /_mcHtmlFullScreen = attachHtmlFullScreen\(\{\s*win,\s*webContents:\s*view\.webContents,?\s*\}\)/,
     );
   });
 
@@ -163,7 +168,7 @@ describe("main.js actually attaches the bridge", () => {
     // contract because the two halves live in different files and only their
     // COMPOSITION is the fix.
     assert.match(
-      MAIN_JS,
+      WINDOW_LIFECYCLE_JS,
       /captureWindowState\(mainWindow,\s*\{[\s\S]*?transientFullScreen:\s*mainWindow\?\._mcHtmlFullScreen\?\.raisedWindow\(\)\s*===\s*true,?[\s\S]*?\}\)/,
     );
   });

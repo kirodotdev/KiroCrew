@@ -53,6 +53,7 @@ from kiro_crew.dashboard.slot_queue_repository import SlotQueueRepository
 from kiro_crew.dashboard.slot_registry import SlotRegistry
 from kiro_crew.dashboard.system_notices import is_system_notice
 from kiro_crew.dashboard.websocket_hub import WebSocketHub
+from kiro_crew.deny_guidance import remediation_for
 from kiro_crew.history import latest_transcript_ts, mint_row_mid, monotonic_transcript_ts
 from kiro_crew.knowledge.store import KnowledgeStore
 from kiro_crew.loop_lock import LoopBoundLock
@@ -2575,7 +2576,9 @@ def parse_hook_continuations(stdouts: list[str]) -> list[str]:
     return reasons
 
 
-def build_refusal_recovery_prompt(refusals: list[tuple[str, str]]) -> str:
+def build_refusal_recovery_prompt(
+    refusals: list[tuple[str, str]], *, credential_tool_hint: str = ""
+) -> str:
     """Build the body of an automatic continuation after a recoverable tool refusal.
 
     When a tool call is refused for a recoverable, system-side reason — a
@@ -2622,6 +2625,25 @@ def build_refusal_recovery_prompt(refusals: list[tuple[str, str]]) -> str:
         "you genuinely cannot proceed — say so and stop. Otherwise continue the "
         "task where you left off.",
     ]
+    # Per-class remediation, de-duplicated across the turn's refusals: several
+    # blocked calls in one turn are usually the same wall hit from different
+    # angles, and repeating identical prose per bullet buries the one instruction
+    # that differs. Ordered by first appearance so the earliest refusal's
+    # guidance leads.
+    guidance: list[str] = []
+    for title, reason in refusals:
+        text = remediation_for(reason, title, credential_tool_hint=credential_tool_hint)
+        if text and text not in guidance:
+            guidance.append(text)
+    if guidance:
+        # NOT rendered as `  - ` bullets: RecoveryCard counts every bullet-shaped
+        # line in this body as one blocked tool call (`BULLET_RE`), so guidance in
+        # that shape would inflate the card's "N blocked" count with prose. The
+        # bullet list above is the wire form of the blocked-item count; this
+        # section is prose about it, and the two must stay distinguishable.
+        lines += ["", "How to do this properly:"]
+        for text in guidance:
+            lines += [f"    {text}"]
     return "\n".join(lines)
 
 
@@ -2659,7 +2681,13 @@ _DENY_CAUSE_TEXT: dict[str, tuple[str, str]] = {
 }
 
 
-def build_refusal_steer_notice(title: str, reason: str, *, cause: str = DENY_CAUSE_POLICY) -> str:
+def build_refusal_steer_notice(
+    title: str,
+    reason: str,
+    *,
+    cause: str = DENY_CAUSE_POLICY,
+    credential_tool_hint: str = "",
+) -> str:
     """Body of the in-band deny notice steered into the RUNNING turn.
 
     Sent BEFORE the permission rejection goes back on the wire, which is what
@@ -2694,6 +2722,17 @@ def build_refusal_steer_notice(title: str, reason: str, *, cause: str = DENY_CAU
         return ""
     clause, guidance = _DENY_CAUSE_TEXT.get(cause, _DENY_CAUSE_TEXT[DENY_CAUSE_POLICY])
     what = f"{title}: {reason}" if reason else title
+    # Class-specific remediation, for the policy cause only. The other two causes
+    # judged nothing about the action — an invalid tool name is the model's own
+    # malformed output and a hook fault is a host fault — so naming a sanctioned
+    # alternative there would answer a question nobody asked and imply the action
+    # itself had been refused.
+    remediation = (
+        remediation_for(reason, title, credential_tool_hint=credential_tool_hint)
+        if cause == DENY_CAUSE_POLICY
+        else ""
+    )
+    tail = f"\n\nHow to do this properly: {remediation}" if remediation else ""
     # "host notice", not "policy notice": the tag has to be true for all three
     # causes, and only one of them IS a policy. Naming the ACTOR is also what the
     # notice exists to do — the model has just been told the user denied this, and
@@ -2706,7 +2745,7 @@ def build_refusal_steer_notice(title: str, reason: str, *, cause: str = DENY_CAU
         '"User denied tool execution".\n\n'
         f"Blocked: {what}\n\n"
         "Do not apologise for a cancellation and do not ask the user whether to "
-        f"retry. Decide and continue in this same turn: {guidance}"
+        f"retry. Decide and continue in this same turn: {guidance}{tail}"
     )
 
 
@@ -2968,6 +3007,8 @@ class _ChatSlot:
         "_resumed_count",
         "_hook_continuation_depth",
         "_todo",
+        "_mcp_report",
+        "_mcp_report_session_id",
         "_on_message",
         "_on_question_retired",
         "_has_reader_flag",
@@ -3233,6 +3274,15 @@ class _ChatSlot:
         # None = the agent has never used its todo tool in this slot, which the
         # UI renders as "no pill" rather than "an empty list".
         self._todo: dict[str, Any] | None = None
+        # What THIS slot's agent session reported about its MCP servers, as
+        # published by the ACP layer at session init and updated by later
+        # registration frames. None = this slot has no live session that
+        # reported, which the UI must render as absence of knowledge — NOT as
+        # "no servers". Cleared on session reset: the report is evidence, and a
+        # report describing a torn-down session is worse than none.
+        self._mcp_report: dict[str, Any] | None = None
+        # The session the cached report describes — see set_mcp_report.
+        self._mcp_report_session_id: str = ""
         # Callback for broadcasting messages via global SSE
         self._on_message: object | None = None  # Callable[[str, dict], None] | None
         # Announce stateless question cards this slot retires, so every client
@@ -3795,6 +3845,39 @@ class _ChatSlot:
             "total": len(tasks),
             "current": current,
         }
+
+    def set_mcp_report(self, report: dict[str, Any] | None, session_id: str = "") -> bool:
+        """Replace this slot's MCP session report. True when it changed.
+
+        The payload is built and sanitized by
+        :class:`kiro_crew.acp.mcp_session_report.McpSessionReport`, which owns
+        redaction and the per-bucket caps; this only stores what it produced, so
+        a caller cannot widen those bounds by writing here.
+
+        ``session_id`` is the session the report DESCRIBES. It is stored beside
+        the payload because this copy outlives its owner: the report itself lives
+        on the transport and is inherently the session's, but a cached
+        projection is only as valid as the identity it was taken under.
+        """
+        normalised = report if isinstance(report, dict) else None
+        if normalised == self._mcp_report and session_id == self._mcp_report_session_id:
+            return False
+        self._mcp_report = normalised
+        self._mcp_report_session_id = session_id if normalised is not None else ""
+        return True
+
+    def clear_mcp_report(self) -> bool:
+        """Drop the report because this slot's session is gone. True if it had one.
+
+        Distinct from ``set_mcp_report(None)`` only in intent: it is called from
+        the session-reset funnel so a report can never outlive the session it
+        describes and be read as the next one's.
+        """
+        return self.set_mcp_report(None)
+
+    def mcp_report_payload(self) -> dict[str, Any] | None:
+        """The stored MCP session report, or None when this slot has none."""
+        return self._mcp_report
 
     def note_disk_tail(self, *candidates: str | None) -> None:
         """Record the newest ``ts`` known to be ON DISK for this session.
@@ -7077,6 +7160,7 @@ class DashboardState:
         out = []
         subs = getattr(self, "subagents", None)
         for s in self._slots.values():
+            self._drop_orphaned_mcp_report(s)
             d = self.serialize_slot(
                 s,
                 include_check_status=include_check_status,
@@ -7085,6 +7169,51 @@ class DashboardState:
             d["subagents_running"] = bool(subs and subs.running_agents_for(f"dashboard:{s.key}"))
             out.append(d)
         return out
+
+    def _drop_orphaned_mcp_report(self, slot: "_ChatSlot") -> None:
+        """Drop a slot's MCP report unless it describes the slot's CURRENT session.
+
+        A report describes exactly ONE session. Clearing it at each teardown was
+        the wrong shape — review found path after path that skipped it (the reset
+        funnel, the reload and reset-conversation routes, the queued discard, a
+        channel handler, the cron reaper, the task runner, a project change) — and
+        a LIVENESS check ("does a session exist?") still missed the last of them,
+        because a reset RECREATES a session under the same key: the slot looked
+        alive while the report described the session that had gone.
+
+        So the question asked here is identity, not liveness — is the live session
+        the one this payload was taken under? A mismatch is dropped by
+        construction, which closes every one of those paths at once, including any
+        future one, and demotes the remaining ``clear_mcp_report()`` calls to a
+        courtesy that pushes the delta early rather than the thing correctness
+        rests on.
+
+        Validating HERE cannot be bypassed: this is the single projector both
+        ``/api/chat/slots`` and the WebSocket snapshot go through.
+
+        The key derivation mirrors ``chat_utils.effective_session_key`` — a
+        channel-born slot's turns run on the channel's own session — and is
+        inlined because ``chat_utils`` imports this module. One refinement over
+        that mirror: an in-flight turn's OWN key wins over the slot's routing.
+        The two diverge when the routing is reassigned on a live slot — a cron
+        injection binds ``linked_session_key`` to ``cron:<id>`` with no
+        ``running`` gate — and the report describes the session the turn is
+        actually running on, not the one a FUTURE turn would route to.
+        Resolving the routing there reads a different (or absent) provider,
+        mismatches, and clears a live session's report mid-turn. Same rule as
+        turn cancellation: address the turn, not the routing.
+        """
+        if slot.mcp_report_payload() is None:
+            return
+        session_key = (
+            getattr(slot, "_active_turn_session_key", "")
+            or getattr(slot, "linked_session_key", "")
+            or f"dashboard:{slot.key}"
+        )
+        provider = self.sessions.get_provider(session_key)
+        live_id = getattr(provider, "session_id", "") if provider is not None else ""
+        if live_id != slot._mcp_report_session_id:
+            slot.clear_mcp_report()
 
     @contextlib.contextmanager
     def suspend_slots_push(self) -> "Iterator[None]":

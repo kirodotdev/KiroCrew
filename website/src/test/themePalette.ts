@@ -13,15 +13,30 @@
  * those themes against the `:root` dark palette). Two divergent copies of the
  * parser would re-open those traps the next time a selector shape changes,
  * with only one test noticing.
+ *
+ * A third trap of the same family, and the reason comments are stripped before
+ * the rule scan: a rule regex anchored with `^` starts its match at the SECTION
+ * BANNER COMMENT on the line above a palette block, because `[^{}]*` crosses
+ * newlines and `/` is not `{`, `}` or a newline. The captured selector list is
+ * then the banner text plus a newline plus `[data-theme="monokai-dark"]`, which
+ * no exact comparison can match, so that theme resolves to `:root` while the
+ * block is sitting right there parsed. It hit 14 of the 36 themes -- every dark
+ * palette whose block follows a banner -- and left them measured against the
+ * `:root` dark defaults. Blocks preceded by a blank line (kiro-dark) were
+ * unaffected, which is what made it survive spot checks.
+ * scrollbarThumbContrast.test.ts anchors the fix with a banner-prefixed theme,
+ * alongside the compound-list case.
  */
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 
 export const CSS = readFileSync(resolve(__dirname, '../index.css'), 'utf8')
 
-/** Top-level rules, in document order: `[selector list] { decls }`. */
+/** Top-level rules, in document order: `[selector list] { decls }`. Comments are
+ *  stripped first so a section banner on the line above a block cannot be swept
+ *  into that block's selector list (see the header). */
 const RULES: { selectors: string[]; decls: Map<string, string> }[] = []
-for (const m of CSS.matchAll(/^([^{}\n][^{}]*)\{([^{}]*)\}/gm)) {
+for (const m of CSS.replace(/\/\*[\s\S]*?\*\//g, '').matchAll(/^([^{}\n][^{}]*)\{([^{}]*)\}/gm)) {
   const decls = new Map<string, string>()
   for (const d of m[2].matchAll(/(--[\w-]+)\s*:\s*([^;]+);/g)) decls.set(d[1], d[2].trim())
   RULES.push({ selectors: m[1].split(',').map((s) => s.trim()), decls })

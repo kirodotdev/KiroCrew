@@ -8,11 +8,18 @@ directly. This keeps the dispatch logic in one place and makes the
 
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
 from kiro_crew.service import linux, macos
-from kiro_crew.service.common import Platform, current_platform, headless_auth_warning
+from kiro_crew.service.common import (
+    LAUNCHD_LABEL,
+    Platform,
+    current_platform,
+    headless_auth_warning,
+    restart_command_hint,
+)
 
 
 def _print_headless_auth_warning() -> None:
@@ -280,3 +287,34 @@ def restart_service() -> bool:
             return macos.restart()
         return False
     return False
+
+
+def manual_restart_hint() -> str:
+    """Command an operator can run BY HAND to restart the installed service.
+
+    Printed when :func:`restart_service` was refused by the service manager —
+    a system-scope unit needs root/polkit privileges the calling process may
+    not have. Unlike :func:`kiro_crew.service.common.restart_command_hint`,
+    this must never answer ``kirocrew restart``: that is the command that just
+    failed, so a circular hint would send the operator straight back into the
+    same refusal.
+    """
+    plat = current_platform()
+    if plat == Platform.SYSTEMD:
+        # "sudo systemctl restart kirocrew" — shared with the update path and
+        # the Slack restart-failure hint so the string cannot drift.
+        return restart_command_hint()
+    if plat == Platform.LAUNCHD:
+        # NOT `launchctl kickstart` — that is the exact call macos.restart()
+        # just ran and got refused. Tearing the job down and bootstrapping it
+        # from the installed plist is the outside-process recovery; `;` rather
+        # than `&&` so a bootout refused because the job is not loaded still
+        # proceeds to the bootstrap.
+        uid = getattr(os, "getuid", lambda: -1)()
+        return (
+            f"launchctl bootout gui/{uid}/{LAUNCHD_LABEL}; "
+            f'launchctl bootstrap gui/{uid} "{macos.PLIST_PATH}"'
+        )
+    # No platform service manager exists here, so there is no service to have
+    # refused the restart; kept total for safety rather than reachability.
+    return "kirocrew gateway"

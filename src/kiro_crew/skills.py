@@ -1671,7 +1671,7 @@ class SkillsLoader:
                     "description": description,
                     "path": str(skill_file),
                     "dir": str(skill_file.parent),
-                    "always": meta.get("always", "").lower() == "true",
+                    "always": meta.get("always", "").strip().lower() == "true",
                     "repo_scope": repo_scope,
                     # Project paths cannot safely offer a live pointer to the
                     # agent, so report the effective forced-body behavior.
@@ -1923,12 +1923,15 @@ class SkillsLoader:
                     "description": meta.get("description", name),
                     "path": str(skill_file),
                     "dir": str(skill_file.parent),
-                    "always": meta.get("always", "").lower() == "true",
+                    "always": meta.get("always", "").strip().lower() == "true",
                     # Carried so a caller assembling context can drop a
                     # repo-scoped skill from the INDEX, not just from the
                     # injected body: a summary line the agent is told to read
-                    # advertises the skill just as effectively.
-                    "repo_scope": meta.get("repo_scope", ""),
+                    # advertises the skill just as effectively. Stripped because
+                    # the consumer guards on this value's truthiness before
+                    # calling the gate, so it has to agree with the other two
+                    # gate call sites about what counts as "no scope at all".
+                    "repo_scope": meta.get("repo_scope", "").strip(),
                     # Mirrors split_triggered: confined project rows always use
                     # the body; only an explicit `false` on an unconfined skill
                     # opts out. A malformed value therefore reads as injecting.
@@ -2825,7 +2828,7 @@ class SkillsLoader:
             # recorded rather than reading it unconfined for a ranking signal.
             meta = self._cached_frontmatter(Path(s["path"]), within=s.get("confine_root"))
             hits, anchor = self._auto_activity(key, s["path"], meta)
-            pinned = str(meta.get("pinned", "")).lower() == "true"
+            pinned = str(meta.get("pinned", "")).strip().lower() == "true"
             slug = key.split("/")[-1]
             exempt_row = (
                 pinned
@@ -3989,8 +3992,16 @@ class SkillsLoader:
         result: list[str] = []
         for name, skill_file, _within in self._iter_visible(project_dir):
             meta = self._cached_frontmatter(skill_file, within=_within)
-            if meta.get("always", "").lower() == "true":
-                scope = meta.get("repo_scope", "")
+            if meta.get("always", "").strip().lower() == "true":
+                # Stripped so a whitespace-only value means "no scope" here exactly as it
+                # does at the other two gate call sites. The guard below tests this
+                # value's TRUTHINESS, and `repo_scope: |` over a blank line now resolves
+                # to a break rather than to "" -- truthy, so the gate would be handed
+                # whitespace and refuse it, suppressing a skill its author never scoped.
+                # A trailing break on a real path is NOT the concern:
+                # `project_scope_satisfied` strips its own fragment, so `src/x\n` was
+                # always gated as `src/x`.
+                scope = meta.get("repo_scope", "").strip()
                 if scope and not self._repo_scope_satisfied(scope, project_dir):
                     continue
                 result.append(name)
@@ -4028,15 +4039,17 @@ class SkillsLoader:
         negated_skills: list[str] = []
         for name, skill_file, _within in self._iter_visible(project_dir):
             meta = self._cached_frontmatter(skill_file, within=_within)
-            if meta.get("always", "").lower() == "true":
+            if meta.get("always", "").strip().lower() == "true":
                 continue
             triggers = meta.get("triggers", "")
             if not triggers:
                 continue
             # Repo-scoped skills are mechanically suppressed outside their
             # repo — word-overlap can fire on ordinary user phrasing, and a
-            # prose scope guard alone is probabilistic.
-            scope = meta.get("repo_scope", "")
+            # prose scope guard alone is probabilistic. Stripped so a
+            # whitespace-only value reads as "no scope" at every gate call site
+            # (see the always-on lister for why the truthiness test needs it).
+            scope = meta.get("repo_scope", "").strip()
             if scope and not self._repo_scope_satisfied(scope, project_dir):
                 continue
 

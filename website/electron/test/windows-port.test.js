@@ -407,11 +407,12 @@ test("the SIGKILL launch hint is not offered as macOS-only advice on Windows", (
   // gateway dialog tells the user to read, so a mac remedy printed on a Windows
   // box sends bug reports down the wrong path.
   //
-  // Asserted on the source because main.js requires electron at load time and so
-  // cannot be imported here -- the same idiom windows-titlebar-contract.test.js
-  // uses. The requirement is only that the hint be PLATFORM-GATED; the wording is
-  // free to change.
-  const src = fs.readFileSync(path.join(__dirname, "..", "main.js"), "utf8");
+  // Asserted at the supervisor ownership boundary. The requirement is only that
+  // the hint be PLATFORM-GATED; the wording is free to change.
+  const src = fs.readFileSync(
+    path.join(__dirname, "..", "gateway-supervisor.js"),
+    "utf8",
+  );
   const hint = src.split("\n").findIndex((line) => line.includes("xattr -cr"));
   assert.notStrictEqual(hint, -1, "the Gatekeeper hint should still exist for macOS");
   const guarded = src

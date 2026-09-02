@@ -400,4 +400,38 @@ describe('HeightIndex announces geometry changes (store contract)', () => {
     // The announcement still happened -- only delivery to this listener stopped.
     expect(idx.getVersion()).toBe(2)
   })
+
+  // A retired measurement is one whose row left the list. A key resolving from a
+  // LIVE row index is proof the row is back -- the shape a refused
+  // regenerate/edit-resend produces when it restores its snapshot -- so the owner
+  // revives it in a pass BEFORE the tree walk rather than inside the height read.
+  // Reviving mid-walk would leave every row priced EARLIER in that same walk
+  // holding the pre-revive mean, with no later sync guaranteed to correct them.
+  it('revives a retired row before the tree walk, so one mean prices every row', () => {
+    // The unmeasured rows sit BEFORE the retired one, which is what makes the
+    // ordering observable: a mid-walk revive reaches them too late.
+    const rows = [{ id: 'p0' }, { id: 'p1' }, { id: 'a' }, { id: 'b' }, { id: 'tall' }]
+    const idx = new HeightIndex('revive-before-walk', {
+      rowCount: rows.length,
+      estimate: 80,
+      keyAt: (i) => rows[i]?.id ?? null,
+    })
+    idx.setMeasured(2, 300)
+    idx.setMeasured(3, 300)
+    idx.setMeasured(4, 900)
+
+    // The tall row leaves the list, so its height stops pricing what remains.
+    rows.pop()
+    idx.retire(['tall'])
+    idx.sync(rows.length)
+    expect(idx.totalHeight()).toBeCloseTo(300 + 300 + 300 + 300, 1)
+
+    // It comes back. Every unmeasured row must be priced by the mean that
+    // INCLUDES it (500), including the two the walk reaches first.
+    rows.push({ id: 'tall' })
+    idx.sync(rows.length)
+    expect(idx.totalHeight()).toBeCloseTo(500 + 500 + 300 + 300 + 900, 1)
+    // Its own measurement is exact again too.
+    expect(idx.getHeight(4)).toBe(900)
+  })
 })

@@ -27,7 +27,7 @@ from kiro_crew.acp.client import (
     _make_unified_diff,
     _resolve_vendored_claude_acp,
     _substitute_model_from_advisory,
-    _vendored_claude_acp_roots,
+    _vendored_acp_roots,
     format_command_result,
     parse_slash_command,
 )
@@ -146,7 +146,7 @@ class TestVendoredClaudeAcp:
 
     def test_roots_include_pkg_vendor_dir(self):
         # The toolbox-bundle vendor location must always be the first candidate.
-        roots = _vendored_claude_acp_roots()
+        roots = _vendored_acp_roots()
         assert roots[0].name == "node_modules" and roots[0].parent.name == "_vendor"
 
 

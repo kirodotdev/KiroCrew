@@ -25,6 +25,7 @@ from kiro_crew.acp.runtime import AcpRuntime
 from kiro_crew.acp.session_provider import AcpSessionProvider
 from kiro_crew.acp.types import (
     ACP_BACKEND_CLAUDE,
+    ACP_BACKEND_CODEX,
     ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
     ACP_BACKENDS_KNOWN,
@@ -78,16 +79,37 @@ class TestBackendPredicates:
             provider.is_kiro_backend,
             provider.is_claude_backend,
             provider.is_kas_backend,
+            provider.is_codex_backend,
         ]
         assert sum(held) == 1
 
-    @pytest.mark.parametrize("backend", sorted(ACP_BACKENDS_KNOWN))
+    @pytest.mark.parametrize(
+        "backend", sorted({ACP_BACKEND_KIRO, ACP_BACKEND_CLAUDE, ACP_BACKEND_KAS})
+    )
     def test_acp_runtime_backend_is_the_positive_form_of_not_claude(self, backend):
         # The four provider sites that used to read ``not is_claude_backend``
-        # now read ``is_acp_runtime_backend``; the two must stay equivalent for
-        # every known backend so the conversion is behavior-preserving.
+        # now read ``is_acp_runtime_backend``; the two must stay equivalent for the
+        # backends that conversion covered, so it is behavior-preserving.
+        #
+        # Scoped to those three deliberately, NOT to ACP_BACKENDS_KNOWN. The
+        # equivalence is an artifact of a world with one non-runtime harness: any
+        # further harness that is also off AcpRuntime (codex is the first) makes
+        # "not claude" and "not on the runtime" different questions. Widening the
+        # parametrisation would demand that every new harness be claude-shaped,
+        # which is the negation-based reasoning H5/H6 exist to retire; membership in
+        # ACP_BACKENDS_ACP_RUNTIME is the durable form and is pinned separately.
         provider = _build_provider(backend)
         assert provider.is_acp_runtime_backend is (not provider.is_claude_backend)
+
+    def test_codex_is_not_on_the_acp_runtime(self):
+        """The membership the narrowing above defers to, pinned so the claim holds.
+
+        codex-acp is one process per session, so it belongs on AcpClient. Adding it
+        to ACP_BACKENDS_ACP_RUNTIME would route an activated codex session onto
+        AcpRuntime + AcpSessionHandle — the wrong transport for a per-session Node
+        adapter — and without this assertion that edit would land green.
+        """
+        assert _build_provider(ACP_BACKEND_CODEX).is_acp_runtime_backend is False
 
 
 class TestUnknownBackendRejected:
@@ -214,9 +236,7 @@ class TestConfigRoundTrip:
         Asserted through a selectable value, since an unselectable one degrades
         and so cannot distinguish 'consumed' from 'dropped'.
         """
-        cfg = _load_agent_config(
-            {"acp_backend": ACP_BACKEND_KIRO, "streaming": False}, tmp_path
-        )
+        cfg = _load_agent_config({"acp_backend": ACP_BACKEND_KIRO, "streaming": False}, tmp_path)
         assert cfg.agent.acp_backend == ACP_BACKEND_KIRO
         assert cfg.agent.streaming is False
 

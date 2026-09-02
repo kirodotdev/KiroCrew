@@ -20,6 +20,13 @@ from collections.abc import AsyncIterator, Callable, Mapping, MutableMapping, Se
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol
 
+from kiro_crew.metrics.sessions import (
+    END_REASON_RECYCLED,
+    discard_session_start,
+    record_session_ended,
+    record_session_started,
+)
+
 if TYPE_CHECKING:
     from kiro_crew.acp.types import AcpEvent
     from kiro_crew.providers.base import LLMProvider
@@ -256,6 +263,17 @@ class BackgroundSessionRuntime:
                     agent=background_agent,
                 )
                 self._owner._sessions[background_key] = sess
+                try:
+                    await record_session_started(background_key)
+                except BaseException:
+                    # Cancelled between registering and recording: roll the entry
+                    # back so no claimant sees a session the caller is tearing
+                    # down, and consume the crumb so it cannot become a false
+                    # crash at the next boot.
+                    if self._owner._sessions.get(background_key) is sess:
+                        del self._owner._sessions[background_key]
+                    await discard_session_start(background_key)
+                    raise
                 logger.info("Background session created")
                 return
         # Racing registration lost, or shutdown began while we were starting:
@@ -619,6 +637,12 @@ class BackgroundSessionRuntime:
         # deliberately cycle-scoped, never per concurrently gathered task.
         async with self._owner._lock:
             old = self._owner._sessions.pop(heartbeat_key, None)
+            if old:
+                # Same tick as the pop, before the shutdown await. An unrecorded
+                # removal here does not merely lose a sample: the start crumb
+                # survives and the next boot reports this cleanly recycled
+                # session as crashed.
+                await record_session_ended(heartbeat_key, end_reason=END_REASON_RECYCLED)
         if old:
             await old.provider.shutdown()
 

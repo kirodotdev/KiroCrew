@@ -166,7 +166,10 @@ class TestAvailabilityDetail:
         detail = self._detail(SttConfig(enabled=True, provider="local"))
         assert detail.ok is False
         assert detail.code == stt.CODE_EXTRA_MISSING
-        assert "voice" in detail.detail
+        # The recogniser distribution, not the extra name: `kirocrew[voice]` is
+        # not installable from any index.
+        assert "pywhispercpp" in detail.detail
+        assert "kirocrew[" not in detail.detail
 
     def test_local_no_wheel_for_platform(self, monkeypatch):
         """A platform with no published wheel means "install a C++ toolchain",
@@ -220,7 +223,9 @@ class TestAvailabilityDetail:
         detail = self._detail(SttConfig(enabled=True, provider="transcribe"))
         assert detail.ok is False
         assert detail.code == stt.CODE_EXTRA_MISSING
-        assert "kirocrew[voice]" in detail.detail
+        # The cloud half by name, and never the unresolvable extras form.
+        assert "amazon-transcribe" in detail.detail
+        assert "kirocrew[" not in detail.detail
 
     def test_transcribe_without_the_streaming_client(self, monkeypatch):
         """boto3 alone is not enough: the streaming client is a separate package

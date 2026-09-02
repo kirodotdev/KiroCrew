@@ -139,45 +139,18 @@ class HistoryRewriteCoordinator:
         _history_facade()._restore_mtime(path, prev_mtime)
         self._log._invalidate_cache(key)
 
-    def _maybe_rotate(self, path: Path, key: str, *, max_drop: int | None = None) -> int:
+    def _maybe_rotate(self, path: Path, key: str) -> None:
         """Rotate an oversized transcript while its facade lock is held.
 
         ``key`` is the logical spelling used by cache readers.  The path stem is
         lossy, so invalidation must use ``key`` even though archive filenames
         continue to use ``path.stem`` for byte-compatible behavior.
-
-        Returns the number of leading MESSAGE lines dropped, and ``0`` when
-        nothing was rotated. The count is what a whole-file writer needs to stay
-        consistent with the file afterwards: such a writer tracks how many
-        leading on-disk messages form a prefix it never rewrites, and rotation
-        moves that boundary underneath it. Returning ``None`` — which was
-        adequate while ``append`` was the only caller — would force any second
-        caller to re-read the whole file just to learn how far the floor moved.
-
-        *max_drop* caps how many leading message lines rotation may drop
-        (``None`` = uncapped, the ``append`` behaviour). It exists for a caller
-        that does not merely APPEND to the file but REWRITES it from an
-        in-memory copy of the tail. For such a caller a dropped line its copy
-        still holds is not actually gone: the next rewrite re-emits it, rotation
-        drops it again, and the two churn forever — an O(window) steady state
-        turned into O(file) work with unbounded archive growth. Capping the drop
-        at the leading lines the caller does NOT hold keeps the file and that
-        caller's model in agreement. When the retained tail still exceeds the
-        budget at the cap, rotation drops what it may and leaves the file
-        oversized, exactly as it already does for a single unsplittable message
-        larger than the whole budget — an oversized file is recoverable, a line
-        dropped out from under the writer that still holds it is not.
-
-        Archiving the dropped lines is a PRECONDITION of the rewrite, not a
-        best-effort side effect: this file is their only copy until the archive
-        write lands, so a failed archive returns ``0`` with the transcript
-        untouched rather than committing a rewrite that deletes them.
         """
         try:
             if path.stat().st_size <= _facade_session_max_bytes():
-                return 0
+                return
         except OSError:
-            return 0
+            return
 
         # Rotation follows a genuine append.  Keep that append's mtime instead
         # of restamping the session when the retained tail is rewritten.
@@ -186,7 +159,7 @@ class HistoryRewriteCoordinator:
         metadata_line = lines[0] if lines and '"_type"' in lines[0] else ""
         message_lines = lines[1:] if metadata_line else lines[:]
         if not message_lines:
-            return 0
+            return
         metadata_bytes = len(metadata_line.encode("utf-8"))
 
         def kept_bytes(count: int) -> int:
@@ -194,23 +167,15 @@ class HistoryRewriteCoordinator:
                 len(line.encode("utf-8")) for line in message_lines[-count:]
             )
 
-        # The fewest messages rotation is ALLOWED to retain. Uncapped that is 1
-        # (keep at least the newest turn); ``max_drop`` raises the floor so the
-        # lines above it are untouchable. Both the starting point and the shrink
-        # loop respect it, so a cap of 0 makes this a no-op rather than a rewrite
-        # that keeps every line.
-        keep_floor = 1 if max_drop is None else max(1, len(message_lines) - max_drop)
         # First apply the line cap, then shrink the tail until it also fits the
         # byte budget.  This handles sessions made of a few very large rows.
-        keep_count = max(min(_facade_session_keep_lines(), len(message_lines)), keep_floor)
-        while keep_count > keep_floor and kept_bytes(keep_count) > _facade_session_max_bytes():
+        keep_count = min(_facade_session_keep_lines(), len(message_lines))
+        while keep_count > 1 and kept_bytes(keep_count) > _facade_session_max_bytes():
             keep_count -= 1
         if keep_count >= len(message_lines):
-            # Keeping every message would drop nothing — either a single
-            # unsplittable message exceeds the complete budget, or ``max_drop``
-            # left nothing droppable. Rewriting would drop nothing, so leave the
-            # transcript intact.
-            return 0
+            # A single unsplittable message may exceed the complete budget.
+            # Rewriting would drop nothing, so leave the transcript intact.
+            return
 
         kept = message_lines[-keep_count:]
         dropped = message_lines[:-keep_count]
@@ -222,24 +187,24 @@ class HistoryRewriteCoordinator:
                 base=self._log._dir,
             )
         except Exception:
-            # Fail CLOSED. The rewrite below is what removes these lines, and
-            # until the archive write lands this transcript is their only copy,
-            # so archiving best-effort and rewriting anyway turns a recoverable
-            # unwritable archive directory into permanent transcript loss. Same
-            # trade as ``max_drop`` above, for the same reason: an oversized file
-            # is recoverable, a dropped row is not.
+            # Fail CLOSED: archiving is a PRECONDITION of the rewrite below, not
+            # a best-effort side effect. The rewrite is what removes these lines,
+            # and until the archive write lands this transcript is their only
+            # copy, so archiving best-effort and rewriting anyway turns a
+            # recoverable unwritable archive directory into permanent transcript
+            # loss. An oversized file is recoverable; a dropped row is not.
             #
-            # Reported as 0 dropped rather than raised, because rotation is
-            # housekeeping that runs after somebody else's write and a full
-            # archive directory must not become a failed append. The file is
-            # untouched here, so a caller's prefix bookkeeping and the read cache
-            # both stay accurate with no invalidation.
+            # Reported by returning rather than raising, because rotation is
+            # housekeeping that runs after somebody else's append and a full
+            # archive directory must not turn that append into a failure. The
+            # transcript is untouched here, so the read cache stays accurate with
+            # no invalidation.
             _HISTORY_LOGGER.warning(
-                "Declining to rotate %s: archiving the dropped lines failed",
+                "Declining to rotate %s: archiving the rotated lines failed",
                 path.stem,
                 exc_info=True,
             )
-            return 0
+            return
 
         # Retained row offsets have changed.  Reset consolidation progress and
         # advance the content identity so any in-flight consolidation or derived
@@ -265,7 +230,6 @@ class HistoryRewriteCoordinator:
             len(lines),
             len(kept) + (1 if metadata_line else 0),
         )
-        return len(dropped)
 
 
 __all__ = ["HistoryRewriteCoordinator"]

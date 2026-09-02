@@ -1,3 +1,6 @@
+import { existsSync, readdirSync, readFileSync } from 'node:fs'
+import { join, resolve } from 'node:path'
+
 import { describe, it, expect } from 'vitest'
 
 import { keepInLibrary, libraryView } from '../pages/apps/useAppsData'
@@ -149,5 +152,77 @@ describe('libraryView holds a row in place across a toggle', () => {
     libraryView([named('alpha', true)], view)
     libraryView([], view)
     expect(view.size).toBe(0)
+  })
+})
+
+/**
+ * The same predicate, fed the manifests we actually SHIP rather than fixtures.
+ *
+ * The cases above pin `keepInLibrary` itself, so they fail if someone rewrites the
+ * predicate. They cannot fail for the other half of the same bug: a builtin that
+ * becomes unreachable because its OWN manifest changed. `hidden` is the only field
+ * that withholds a disabled builtin from Library, and Discover suppresses the same
+ * name by design, so adding it to a manifest is what puts an app in neither tab --
+ * the state AWS Control was reported to be in. Read from disk, in the same shape
+ * the gateway serves (a builtin registers `origin: 'builtin'`, and default-off means
+ * `enabled: false`), so either half of the invariant breaking fails a test.
+ */
+describe('every builtin we ship stays reachable while disabled', () => {
+  /** Concealment is a product decision; this list is the record of it. */
+  const SANCTIONED_HIDDEN = ['channels', 'workflows']
+
+  const BUILTINS = resolve(__dirname, '../../../src/kiro_crew/apps/builtins')
+
+  type Manifest = { name: string; hidden?: boolean }
+
+  const shipped: Manifest[] = readdirSync(BUILTINS, { withFileTypes: true })
+    .filter(e => e.isDirectory() && !e.name.startsWith('.') && !e.name.startsWith('_'))
+    .map(e => join(BUILTINS, e.name, 'app.json'))
+    .filter(existsSync)
+    .map(f => JSON.parse(readFileSync(f, 'utf8')) as Manifest)
+
+  /** A disabled builtin exactly as `GET /api/apps` reports one. */
+  const asDisabled = (manifest: Manifest) =>
+    ({ origin: 'builtin', enabled: false, manifest } as unknown as Parameters<typeof keepInLibrary>[0])
+
+  it('reads the real manifests', () => {
+    // Guards the walk itself: a bad path yields an empty list, and every
+    // assertion below would then pass over nothing.
+    expect(shipped.length).toBeGreaterThan(10)
+  })
+
+  it('lists every builtin that does not conceal itself, while disabled', () => {
+    for (const manifest of shipped.filter(m => !m.hidden)) {
+      expect(keepInLibrary(asDisabled(manifest)), `'${manifest.name}' is unreachable while disabled`)
+        .toBe(true)
+    }
+  })
+
+  it('lists aws-control, the app this invariant was written for', () => {
+    // Named rather than left to the sweep: it ships default-off with no published
+    // catalog row, which is the exact combination that had no surface at all.
+    const awsControl = shipped.find(m => m.name === 'aws-control')
+    expect(awsControl, 'aws-control no longer ships as a builtin').toBeDefined()
+    expect(awsControl!.hidden, 'aws-control must not conceal itself').toBeFalsy()
+    expect(keepInLibrary(asDisabled(awsControl!))).toBe(true)
+  })
+
+  it('holds the set of self-concealing builtins to the sanctioned two', () => {
+    // Not a style rule. A new name here is an app reachable from no tab, so it
+    // has to be chosen deliberately and land in this list with it.
+    expect(shipped.filter(m => m.hidden).map(m => m.name).sort()).toEqual(SANCTIONED_HIDDEN)
+  })
+
+  it('withholds those two while they are disabled, from their real manifests', () => {
+    // The contrast case, asserted over shipped bytes rather than a fixture: if
+    // `hidden` stopped being honoured, the assertions above would still pass
+    // (the flag is present either way) while concealment silently stopped
+    // working. This is the half that reads the OUTPUT for those manifests.
+    const concealing = shipped.filter(m => m.hidden)
+    expect(concealing.map(m => m.name).sort()).toEqual(SANCTIONED_HIDDEN)
+    for (const manifest of concealing) {
+      expect(keepInLibrary(asDisabled(manifest)), `'${manifest.name}' should stay concealed while disabled`)
+        .toBe(false)
+    }
   })
 })

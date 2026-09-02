@@ -114,6 +114,13 @@ def _public_view(run: JobRun, cancelling: frozenset[str]) -> dict[str, Any]:
     otherwise report ``status: cancelled`` and ``cancelling: true`` together --
     the cancel both finished and still pending. Once the status carries the
     answer there is nothing left to be pending.
+
+    ``interrupted_from`` and ``interrupt_cause`` are served for the reason they
+    exist. They are not host facts -- they are the two facts a client needs to
+    recover from an interruption, and a client is the only party that can act on
+    them: whether the run may have committed side effects, and whether retrying
+    it is even possible now. Withholding them would leave the record honest and
+    the API not.
     """
     return {
         "run_id": run.run_id,
@@ -125,6 +132,8 @@ def _public_view(run: JobRun, cancelling: frozenset[str]) -> dict[str, Any]:
         "updated_at": run.updated_at,
         "finished_at": run.finished_at,
         "error": run.error,
+        "interrupted_from": run.interrupted_from,
+        "interrupt_cause": run.interrupt_cause,
     }
 
 

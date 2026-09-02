@@ -15,8 +15,8 @@
 //     reveal at the point it is reached, on any path — an invisible prompt
 //     would park recovery forever.
 // revealWindowForConnect (gateway-recovery.js) carries the silent-vs-raise
-// decision; source-level pins verify main.js wires every liveness path through
-// it and keeps the escalation reveals reconnect-guarded.
+// decision; source-level pins verify the gateway supervisor wires every
+// liveness path through it and keeps the escalation reveals reconnect-guarded.
 
 const { describe, it } = require("node:test");
 const assert = require("node:assert/strict");
@@ -62,14 +62,24 @@ describe("revealWindowForConnect", () => {
   });
 });
 
-describe("main.js wiring (source pins)", () => {
+describe("gateway supervisor wiring (source pins)", () => {
   const MAIN_JS = fs.readFileSync(path.join(__dirname, "..", "main.js"), "utf8");
+  const IPC_REGISTRAR_JS = fs.readFileSync(
+    path.join(__dirname, "..", "ipc-registrar.js"),
+    "utf8",
+  );
+  const SUPERVISOR_JS = fs.readFileSync(
+    path.join(__dirname, "..", "gateway-supervisor.js"),
+    "utf8",
+  );
 
-  // Extract a top-level function body: from its declaration to the first
-  // closing brace at column 0 (same technique as hide-to-tray.test.js).
+  // Supervisor-owned functions are nested one level inside the factory. Their
+  // closing brace is therefore the first one at two-space indentation.
   const fnBody = (name) => {
-    const m = MAIN_JS.match(new RegExp(`async function ${name}\\([\\s\\S]*?\\n\\}`));
-    assert.ok(m, `main.js must define async function ${name}`);
+    const m = SUPERVISOR_JS.match(
+      new RegExp(`(?:async )?function ${name}\\([\\s\\S]*?\\n  \\}`),
+    );
+    assert.ok(m, `gateway-supervisor.js must define function ${name}`);
     return m[0];
   };
 
@@ -78,11 +88,13 @@ describe("main.js wiring (source pins)", () => {
   // liveness path must stay fully silent; escalation belongs to the
   // needs-user states inside showLoadingThenConnect / the terminal dialog).
   const assertNoReveal = (body, name) => {
-    for (const call of ["show()", "showInactive()", "focus()", "restore()"]) {
-      assert.ok(
-        !body.includes(`win.${call}`),
-        `${name} must not call win.${call} on a liveness path`,
-      );
+    for (const receiver of ["win", "window"]) {
+      for (const call of ["show()", "showInactive()", "focus()", "restore()"]) {
+        assert.ok(
+          !body.includes(`${receiver}.${call}`),
+          `${name} must not call ${receiver}.${call} on a liveness path`,
+        );
+      }
     }
     assert.ok(
       !body.includes("revealForUserDecision("),
@@ -91,7 +103,10 @@ describe("main.js wiring (source pins)", () => {
   };
 
   it("imports revealWindowForConnect from gateway-recovery", () => {
-    assert.match(MAIN_JS, /revealWindowForConnect,[\s\S]*?\} = require\("\.\/gateway-recovery"\)/);
+    assert.match(
+      SUPERVISOR_JS,
+      /revealWindowForConnect,[\s\S]*?\} = require\("\.\/gateway-recovery"\)/,
+    );
   });
 
   it("reconnectExternalGateway performs no reveal at all", () => {
@@ -108,7 +123,7 @@ describe("main.js wiring (source pins)", () => {
       body,
       /async function showLoadingThenConnect\([\s\S]*?\{ reconnect = false, initialPath = "" \} = \{\},[\s\S]*?\)/,
     );
-    assert.match(body, /revealWindowForConnect\(win, \{ reconnect \}\)/);
+    assert.match(body, /revealWindowForConnect\(window, \{ reconnect \}\)/);
   });
 
   // ESCALATION: inside showLoadingThenConnect the needs-user states (token
@@ -126,16 +141,24 @@ describe("main.js wiring (source pins)", () => {
   // fires a deferred tray-hide's listener, so the cancel has to come first.
   it("showLoadingThenConnect escalates needs-user states via the full reveal", () => {
     const body = fnBody("showLoadingThenConnect");
-    assert.ok(!body.includes("win.show()"), "no bare win.show() inside showLoadingThenConnect");
-    const REVEAL = "revealForUserDecision(win);";
+    assert.ok(
+      !body.includes("window.show()"),
+      "no bare window.show() inside showLoadingThenConnect",
+    );
+    const REVEAL = "revealForUserDecision(window);";
     // One reveal in the token-prompt branch, BEFORE exitImmersiveModes.
-    const immersive = body.indexOf("exitImmersiveModes(win);");
+    const immersive = body.indexOf("leaveImmersiveModes(window);");
     const tokenReveal = body.indexOf(REVEAL);
     assert.ok(tokenReveal !== -1 && immersive !== -1 && tokenReveal < immersive,
       "token-prompt reveal must exist and run before exitImmersiveModes");
+    assert.match(
+      SUPERVISOR_JS,
+      /const leaveImmersiveModes = typeof exitImmersiveModes === "function"[\s\S]*?\? exitImmersiveModes/,
+      "the immersive-mode alias must remain backed by the injected helper",
+    );
     // And one in the failure-dialog branch: inside the catch, before the modal
     // actually opens (match the awaited call, not comment mentions of it).
-    const catchStart = body.indexOf("} catch (err) {");
+    const catchStart = body.indexOf("} catch (error) {");
     const dialog = body.indexOf("await showGatewayErrorDialog(", catchStart);
     const dialogReveal = body.indexOf(REVEAL, catchStart);
     assert.ok(catchStart !== -1 && dialogReveal !== -1 && dialog !== -1 && dialogReveal < dialog,
@@ -147,19 +170,31 @@ describe("main.js wiring (source pins)", () => {
   // focus, and steal macOS app activation (a background app's window rises
   // without keyboard focus otherwise — same as the global-hotkey summon).
   it("revealForUserDecision performs the full reveal idiom", () => {
-    const m = MAIN_JS.match(/function revealForUserDecision\(win\) \{[\s\S]*?\n\}/);
-    assert.ok(m, "main.js must define revealForUserDecision");
-    const body = m[0];
+    const body = fnBody("revealForUserDecision");
     const order = [
-      "cancelPendingTrayHide(win)",
-      "if (win.isMinimized()) win.restore()",
-      "win.show()",
-      "win.focus()",
+      "cancelTrayHide(window)",
+      "if (window.isMinimized()) window.restore()",
+      "window.show()",
+      "window.focus()",
       "if (IS_MAC) app.focus({ steal: true })",
     ].map((s) => body.indexOf(s));
     assert.ok(order.every((i) => i !== -1), `full reveal idiom missing a step: ${body}`);
     assert.deepEqual([...order].sort((a, b) => a - b), order, "reveal steps out of order");
-    assert.match(body, /isQuitting\) return;/, "reveal must bail during app quit");
+    assert.match(body, /quitting\(\)\) return;/, "reveal must bail during app quit");
+    assert.match(
+      SUPERVISOR_JS,
+      /const cancelTrayHide = typeof cancelPendingTrayHide === "function"[\s\S]*?\? cancelPendingTrayHide/,
+      "the reveal alias must remain backed by the injected tray-hide canceler",
+    );
+    const composition = MAIN_JS.match(
+      /const gateway = createGatewaySupervisor\(\{[\s\S]*?\n\}\);/,
+    );
+    assert.ok(composition, "main.js must construct the gateway supervisor");
+    assert.match(
+      composition[0],
+      /isQuitting: \(\) => isQuitting,[\s\S]*?cancelPendingTrayHide,[\s\S]*?exitImmersiveModes,/,
+      "main.js must inject quit state and both full-reveal helpers",
+    );
   });
 
   // Terminal escalation: showUnrecoverableGatewayError is called DIRECTLY from
@@ -169,7 +204,7 @@ describe("main.js wiring (source pins)", () => {
   // invisibly, and every button on that dialog quits the app.
   it("showUnrecoverableGatewayError reveals its parent before the modal", () => {
     const body = fnBody("showUnrecoverableGatewayError");
-    const reveal = body.indexOf("revealForUserDecision(win)");
+    const reveal = body.indexOf("revealForUserDecision(window)");
     const dialog = body.indexOf("showGatewayErrorDialog");
     assert.ok(reveal !== -1, "terminal error dialog must reveal its parent window");
     assert.ok(dialog !== -1 && reveal < dialog, "reveal must happen before the modal opens");
@@ -180,9 +215,13 @@ describe("main.js wiring (source pins)", () => {
   // background reconnect. All liveness paths call with the BACKEND_URL
   // literal, so any such call missing the flag fails here.
   it("every liveness recovery path re-enters the boot flow with reconnect: true", () => {
-    const unflagged = MAIN_JS.match(/showLoadingThenConnect\(win, BACKEND_URL\)/g) || [];
+    const unflagged = SUPERVISOR_JS.match(
+      /showLoadingThenConnect\(window, BACKEND_URL\)/g,
+    ) || [];
     assert.deepEqual(unflagged, [], "own-port showLoadingThenConnect call sites must pass a reconnect flag");
-    const flagged = MAIN_JS.match(/showLoadingThenConnect\(win, BACKEND_URL, \{ reconnect: true \}\)/g) || [];
+    const flagged = SUPERVISOR_JS.match(
+      /showLoadingThenConnect\(window, BACKEND_URL, \{ reconnect: true \}\)/g,
+    ) || [];
     assert.ok(flagged.length >= 4, `expected the liveness call sites to stay flagged, saw ${flagged.length}`);
   });
 
@@ -192,13 +231,29 @@ describe("main.js wiring (source pins)", () => {
   // the boot-flow re-entry, and the install path must actually pass it.
   it("recoverWedgedGateway raises for user-initiated recovery, stays silent for liveness", () => {
     const body = fnBody("recoverWedgedGateway");
-    assert.match(body, /async function recoverWedgedGateway\(win, \{ userInitiated = false \} = \{\}\)/);
-    assert.match(body, /showLoadingThenConnect\(win, BACKEND_URL, \{ reconnect: !userInitiated \}\)/);
-    assert.match(MAIN_JS, /recoverWedgedGateway\(mainWindow, \{ userInitiated: true \}\)/);
+    assert.match(body, /async function recoverWedgedGateway\(window, \{ userInitiated = false \} = \{\}\)/);
+    assert.match(
+      body,
+      /showLoadingThenConnect\(window, BACKEND_URL, \{\s*reconnect: !userInitiated,\s*\}\)/,
+    );
+    assert.match(
+      SUPERVISOR_JS,
+      /recoverWedgedGateway\(window, \{ userInitiated: true \}\)/,
+    );
+    assert.match(
+      IPC_REGISTRAR_JS,
+      /onInstallFailed: \(\) => gateway\.onInstallFailed\(\)/,
+      "the updater failure hook must still reach supervisor recovery",
+    );
   });
 
   // The cold-boot path must NOT be flagged — initial launch keeps its raise.
   it("cold launch still raises (boot call carries no reconnect flag)", () => {
-    assert.match(MAIN_JS, /await showLoadingThenConnect\(win\);/);
+    assert.match(MAIN_JS, /await gateway\.connect\(mainWindow\);/);
+    assert.match(
+      SUPERVISOR_JS,
+      /connect: showLoadingThenConnect/,
+      "the composition root must call the boot flow whose reconnect default is false",
+    );
   });
 });

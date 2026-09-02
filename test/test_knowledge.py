@@ -14,6 +14,7 @@ from uuid import uuid4
 
 import pytest
 
+from kiro_crew.embeddings import PRIORITY_NORMAL
 from kiro_crew.knowledge import readers
 from kiro_crew.knowledge.chunker import HeadingAwareChunker
 from kiro_crew.knowledge.extractor import EntityExtractor
@@ -2089,7 +2090,7 @@ class _FakeEmbedder:
     async def is_available_async(self) -> bool:
         return self.is_available()
 
-    def embed_for_item(self, title, summary, content=None):
+    def embed_for_item(self, title, summary, content=None, *, priority=PRIORITY_NORMAL):
         self.embedded_titles.append(title)
         return [0.1, 0.2, 0.3, 0.4]
 
@@ -2185,7 +2186,7 @@ class TestRebuildEmbeddingsJob:
 
     async def test_rebuild_marks_job_failed_on_error(self, store):
         class _BoomEmbedder(_FakeEmbedder):
-            def embed_for_item(self, title, summary, content=None):
+            def embed_for_item(self, title, summary, content=None, *, priority=PRIORITY_NORMAL):
                 raise RuntimeError("ollama down mid-rebuild")
 
         job_id = await self._run(store, _BoomEmbedder(), 3)
@@ -2206,7 +2207,7 @@ class TestRebuildEmbeddingsJob:
         seen_updated_at: list[str] = []
 
         class _RecordingEmbedder(_FakeEmbedder):
-            def embed_for_item(self, title, summary, content=None):
+            def embed_for_item(self, title, summary, content=None, *, priority=PRIORITY_NORMAL):
                 row = store.db.execute(
                     "SELECT updated_at FROM ingestion_jobs WHERE id = 'hbjob0000001'"
                 ).fetchone()
@@ -2387,7 +2388,7 @@ class _FlakyEmbedder(_FakeEmbedder):
         super().__init__()
         self.fail_titles = set(fail_titles)
 
-    def embed_for_item(self, title, summary, content=None):
+    def embed_for_item(self, title, summary, content=None, *, priority=PRIORITY_NORMAL):
         self.embedded_titles.append(title)
         if title in self.fail_titles:
             return None
@@ -2486,7 +2487,7 @@ class TestRebuildLostUpdateRace:
                 self._path = path
                 self._iid = iid
 
-            def embed_for_item(self, title, summary, content=None):
+            def embed_for_item(self, title, summary, content=None, *, priority=PRIORITY_NORMAL):
                 # Simulate a concurrent ingestion write landing mid-embed: bump
                 # updated_at into the future relative to the rebuild's snapshot.
                 conn = sqlite3.connect(self._path, timeout=30, isolation_level=None)

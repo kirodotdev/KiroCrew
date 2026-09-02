@@ -32,6 +32,21 @@ async def test_read_message(self, tmp_path):
     ...
 ```
 
+Never poll a synchronous store read from an async test. A plain `sdk.get(...)` /
+`store.read(...)` inside an `async def` test runs ON the event loop, where
+`read_bytes_with_retry` deliberately re-raises the Windows sharing-violation
+`PermissionError` instead of sleeping the loop for its retry budget — so a poll
+that races a concurrent `atomic_write` `os.replace` is a Windows-only flake that
+POSIX shards can never reproduce (#7703). Offload every such read the way the
+production routes do (`job_routes.py`):
+
+```python
+# WRONG: reads on the loop; retry budget is one attempt, and time.sleep stalls the loop
+run = sdk.get(run_id); time.sleep(0.02)
+# RIGHT: the retry applies off-loop, and the loop keeps running
+run = await asyncio.to_thread(sdk.get, run_id); await asyncio.sleep(0.02)
+```
+
 ### Mocking kiro-cli
 Never spawn real `kiro-cli` in tests. Mock the subprocess:
 ```python

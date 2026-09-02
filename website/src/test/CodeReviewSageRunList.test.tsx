@@ -400,6 +400,73 @@ describe('why a review failed', () => {
       .toMatch(/recorded no findings/i)
   })
 
+  // ── The discriminated causes from #7233 ──
+  // Every fixture below is the string the backend really emits, copied from its
+  // source so a reader can check it: the driver's per-change wording
+  // (sage_lib/review_driver.py), the preflight's two answers
+  // (sage_lib/review_pool.py::runtime_preflight) and the run-level sentences
+  // routes.py::_first_change_error maps each reason to.
+  it('tells a record that stopped short apart from one that was never written', () => {
+    // The driver's per-change wording, and the run-level sentence for the same
+    // reason. Both must reach the incomplete-record explanation, and NEITHER may
+    // fall into the "no result record" branch — telling these apart is the whole
+    // point of the backend change.
+    for (const raw of [
+      'review wrote a result record but never completed the review',
+      'the reviewer wrote a findings record but never completed the review',
+      'review_record_incomplete',
+    ]) {
+      const reason = failureReason(failed(raw))
+      expect(reason?.text, raw).toMatch(/stopped before completing the review/i)
+      expect(reason?.text, raw).not.toMatch(/recorded no findings/i)
+      expect(reason?.raw, raw).toBe(raw)
+    }
+  })
+
+  it('explains a host with no kiro-cli, naming what to install', () => {
+    const reason = failureReason(failed(
+      'the reviewer cannot run: no kiro-cli executable was found on this host '
+      + '(the reviewer session is driven by kiro-cli — install it or add it to PATH)'))
+    expect(reason?.text).toMatch(/never started/i)
+    expect(reason?.text).toMatch(/PATH/)
+    expect(reason?.raw).toMatch(/no kiro-cli executable/)
+  })
+
+  it('explains an install whose agent runtime will not load', () => {
+    // A different remedy from the missing executable — the CLI may well be
+    // installed — so it must not share that sentence.
+    const reason = failureReason(failed(
+      'the reviewer cannot run: the ACP runtime (kiro_crew.acp.runtime) is not '
+      + 'importable in this install'))
+    expect(reason?.text).toMatch(/cannot load the agent runtime/i)
+    expect(reason?.text).not.toMatch(/PATH/)
+  })
+
+  it('explains the run-level card for a preflight-failed run', () => {
+    // `_first_change_error` renders this when the per-change record kept only the
+    // reason. It says "runtime is unavailable", never the enum, so a translator
+    // keyed on `runtime_unavailable` alone would show it verbatim.
+    for (const raw of [
+      'the reviewer never ran: its agent runtime is unavailable on this host',
+      'runtime_unavailable',
+    ]) {
+      expect(failureReason(failed(raw))?.text, raw)
+        .toMatch(/agent runtime is unavailable on this host/i)
+    }
+  })
+
+  it('leaves a missing agent spec with its own repair command', () => {
+    // This message names kiro-cli too, and it already tells the reader exactly
+    // what to run. A branch keyed on the bare word `kiro-cli` would replace it
+    // with "install kiro-cli", so it is the regression guard for the narrower
+    // pattern rather than an incidental pass-through case.
+    const raw = "Agent spec 'code-review-sage-reviewer' is not installed: kiro-cli "
+      + "found no 'code-review-sage-reviewer.json' in /home/u/.kiro/agents. Every "
+      + 'turn fails until it is restored — repair with `kirocrew setup '
+      + '--agent-only --clean`, then restart the gateway.'
+    expect(failureReason(failed(raw))?.text).toBe(raw)
+  })
+
   it('explains a timeout', () => {
     expect(failureReason(failed('review turn timed out'))?.text)
       .toMatch(/past its time limit/i)

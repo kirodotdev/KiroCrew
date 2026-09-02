@@ -477,7 +477,7 @@ class TestEndpointPayloadShape:
         assert response.status == 200
 
         rows = json.loads(response.text or "{}")["backends"]
-        assert [r["policy_id"] for r in rows] == ["claude", "kas", "kiro"]
+        assert [r["policy_id"] for r in rows] == ["claude", "codex", "kas", "kiro"]
         for row in rows:
             assert set(row) == {
                 "id",
@@ -507,6 +507,15 @@ class TestEndpointPayloadShape:
             probe.COMPONENT_CLAUDE_ACP_ADAPTER,
             probe.COMPONENT_CLAUDE_CODE_CLI,
         ]
+        # codex is in ACP_BACKENDS_KNOWN with no entry in ``_PROBES``, so it gets a
+        # row -- the endpoint lists every id the switch can show -- but the row can
+        # only say ``unknown`` and must name nothing to install. That gap is why
+        # codex is absent from BASELINE_SELECTABLE_BACKENDS: offering the switch
+        # would offer a verdict this payload cannot supply.
+        assert by_policy["codex"]["installed"] == "unknown"
+        assert by_policy["codex"]["missing_components"] == []
+        assert by_policy["codex"]["install_command"] == ""
+        assert by_policy["codex"]["selectable"] is False
 
     def test_an_unknown_row_names_no_components(self, monkeypatch):
         """The three-state rule, enforced at the payload boundary too.

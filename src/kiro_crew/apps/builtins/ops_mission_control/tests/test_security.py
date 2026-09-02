@@ -11,11 +11,13 @@ than a mock. A rename of ``SECRETS_FILENAME`` that forgot to update
 so this is the test that catches it.
 """
 
+import contextlib
 import os
 import shutil
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from kiro_crew import security
 from kiro_crew.apps.builtins.ops_mission_control.backend import secrets
@@ -391,6 +393,103 @@ class TestSecretStoreLockdownOrdering(unittest.TestCase):
             self.backend.get("pagerduty", "api_token"), "u+secretvalue",
             "a transient write failure destroyed the previously stored token",
         )
+
+
+class TestSecretStoreNeverPublishesOverAFailedRead(unittest.TestCase):
+    """The BASE read of a read-modify-write may not fail open.
+
+    ``_read`` collapses every failure to ``{}``, which is right for ``get`` and
+    ``configured_fields`` — a lookup that cannot load answers "not configured",
+    the Settings page still renders, and the fail-closed ``has_secrets`` check
+    refuses the provider. It is wrong as the base of ``put``/``delete``, which
+    rewrite the WHOLE file: there ``{}`` means "delete every provider token
+    already stored", and one transient EACCES/EIO published it.
+
+    This is the store's LAST unguarded loss path. The class above proved a failed
+    WRITE cannot reach the previous store; a failed READ went around it, because
+    the write that followed was perfectly successful — it just wrote nothing.
+    """
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self.store = self.tmp / "secrets.json"
+        self.backend = secrets.KeystoneFileBackend(self.store)
+
+    def _unreadable_store(self):
+        """Fail ONLY the secret file's read, as a transient EACCES would.
+
+        Scoped by path: a blanket ``read_text`` failure would also break the home
+        resolution and lock paths, and the test would pass for the wrong reason.
+        """
+        real_read_text = Path.read_text
+
+        def _guarded(path_self, *args, **kwargs):
+            if Path(path_self) == self.store:
+                raise PermissionError(13, "Permission denied")
+            return real_read_text(path_self, *args, **kwargs)
+
+        return mock.patch.object(Path, "read_text", _guarded)
+
+    def test_a_read_that_failed_never_truncates_the_store(self):
+        """The durable harm, asserted directly: the stored token must survive.
+
+        A provider token is not derivable from anything else on the box, so this
+        file is the only copy — truncating it means the operator has to mint new
+        credentials at PagerDuty and Datadog, and every poll fails closed until
+        they do.
+        """
+        self.backend.put("pagerduty", "api_token", "u+thisisthestoredtoken")
+        before = self.store.read_bytes()
+
+        with self._unreadable_store():
+            with contextlib.suppress(OSError):
+                self.backend.put("datadog", "api_key", "a" * 32)
+            with contextlib.suppress(OSError):
+                self.backend.delete("pagerduty")
+
+        self.assertEqual(
+            self.store.read_bytes(), before,
+            "a failed read was published back over the store",
+        )
+        self.assertEqual(
+            self.backend.get("pagerduty", "api_token"), "u+thisisthestoredtoken",
+            "a failed read destroyed a token that was still on disk",
+        )
+
+    def test_an_unreadable_store_refuses_the_save(self):
+        """A save that was not recorded must not answer as though it were."""
+        with self._unreadable_store():
+            with self.assertRaises(OSError):
+                self.backend.put("datadog", "api_key", "a" * 32)
+
+    def test_an_unreadable_store_refuses_the_revocation(self):
+        """The revocation half, which loses no data and still lies.
+
+        On an unreadable store the lenient read reported the provider absent, so
+        ``delete`` returned False and ``delete_secret`` audited ``not_found`` —
+        telling the operator there was nothing to revoke while the live token was
+        still on disk and still working.
+        """
+        self.backend.put("pagerduty", "api_token", "u+thisisthestoredtoken")
+        with self._unreadable_store():
+            with self.assertRaises(OSError):
+                self.backend.delete("pagerduty")
+
+    def test_a_missing_store_is_still_a_first_write(self):
+        """Absent is the one failure where ``{}`` is the truth. The guard must
+        not turn the very first credential save into an error."""
+        self.assertFalse(self.store.exists())
+        self.backend.put("pagerduty", "api_token", "u+thefirsttoken")
+        self.assertEqual(self.backend.get("pagerduty", "api_token"), "u+thefirsttoken")
+
+    def test_a_corrupt_store_still_repairs_on_write(self):
+        """Existing tolerance, pinned so the unreadable-file guard is not
+        mistaken for a licence to start failing on corruption too. A document
+        that parsed to nothing usable has no stored token left to lose."""
+        self.store.write_text("{ not json", encoding="utf-8")
+        self.backend.put("pagerduty", "api_token", "u+afterthecorruption")
+        self.assertEqual(self.backend.get("pagerduty", "api_token"), "u+afterthecorruption")
 
 
 class TestDescribeSecrets(unittest.TestCase):

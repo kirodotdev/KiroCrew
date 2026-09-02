@@ -238,6 +238,20 @@ function BuiltinDenyRow({ rule, dimmed, onToggle }: { rule: DeniedCommandRule; d
           <Chevron size={14} />
         </button>
         <span className="flex-1 min-w-0 text-[13px] text-text">{rule.description}</span>
+        {rule.source === 'edition' && (
+          /* The seam's whole point is that a contributed rule is DISCOVERABLE
+             rather than an invisible refusal, so the row has to say where it came
+             from — otherwise an operator cannot tell it from a shipped rule and
+             cannot tell whom to ask about it.
+             The badge is a plain LABEL, not a control: the row already spends its
+             two-action budget (`max-two-buttons-per-row`) on the expand chevron
+             and the toggle, and an InfoTip trigger here would be a third button.
+             The explanation lives in the expand panel below instead, which makes
+             it readable rather than hover-only. */
+          <span className="shrink-0 rounded bg-bg-elevated border border-border px-1.5 py-0.5 text-[11px] font-mono text-muted">
+            {i18nT('pages.settings.securityPanel.edition_rule_badge')}
+          </span>
+        )}
         {isRuleLocked(rule) ? (
           <span className="flex items-center gap-1.5 shrink-0">
             <Lock size={13} className="text-muted" />
@@ -253,7 +267,14 @@ function BuiltinDenyRow({ rule, dimmed, onToggle }: { rule: DeniedCommandRule; d
         )}
       </div>
       {open && (
-        <pre className="mt-1.5 ml-6 overflow-x-auto rounded-md bg-bg-elevated border border-border px-2.5 py-1.5 text-[12px] font-mono text-muted whitespace-pre-wrap break-all">{rule.pattern}</pre>
+        <>
+          {rule.source === 'edition' && (
+            <p className="mt-1.5 ml-6 text-[12px] text-muted">
+              {i18nT('pages.settings.securityPanel.edition_rule_tooltip')}
+            </p>
+          )}
+          <pre className="mt-1.5 ml-6 overflow-x-auto rounded-md bg-bg-elevated border border-border px-2.5 py-1.5 text-[12px] font-mono text-muted whitespace-pre-wrap break-all">{rule.pattern}</pre>
+        </>
       )}
     </div>
   )

@@ -224,6 +224,70 @@ export function assemblePromptContent(data: PromptFormData): string {
   return ['---', kept, data.closer ?? '---'].join(eol) + eol + sep + data.body
 }
 
+/** The filename stem the server will actually save a new prompt under.
+ *
+ *  Mirrors the create handler's own sanitizer in
+ *  `src/kiro_crew/dashboard/handlers/prompts.py`:
+ *
+ *      safe_name = re.sub(r"[^a-z0-9\-]", "-", raw_name.lower()).strip("-")
+ *
+ *  It is a PREVIEW, not the authority. The two implementations read their own
+ *  Unicode tables for `lower()`, so a rare codepoint could fold differently in
+ *  the browser than on the server, and nothing stops a non-dashboard client
+ *  from posting a name this never saw. That residue is why the 400
+ *  `invalid_name` still needs a translated message of its own — see
+ *  `writeError` in `PromptsTab.tsx` — rather than the client-side check being
+ *  treated as sufficient.
+ *
+ *  Two details that look like omissions and are not:
+ *
+ *  - The `u` flag is load-bearing. Without it the class matches UTF-16 CODE
+ *    UNITS, so one astral character — an emoji, a rare CJK ideograph — becomes
+ *    TWO hyphens where the server writes one, and the preview would disagree
+ *    with the saved name for every name containing one.
+ *  - The handler trims the raw name before sanitizing; that has no mirror here
+ *    because it cannot change the result. Edge whitespace becomes an edge
+ *    hyphen, which the hyphen strip removes anyway, so a `trim()` would only
+ *    add a second place for the two to disagree. */
+export function sanitizePromptName(raw: string): string {
+  return raw
+    .toLowerCase()
+    .replace(/[^a-z0-9-]/gu, '-')
+    .replace(/^-+/, '')
+    .replace(/-+$/, '')
+}
+
+/** The handler's `MAX_PROMPT_NAME_BYTES`, mirrored.
+ *
+ *  Pinned by the same drift guard as the expression above, because a client
+ *  that disagrees with the server about the cap is the defect this preview
+ *  exists to remove, not a rounding error. */
+export const PROMPT_FILENAME_MAX_BYTES = 200
+
+/** Why the server would refuse to save under this name, or null when it would.
+ *
+ *  The two answers are the two coded 400s `_api_prompts_create` can return for
+ *  a name -- `invalid_name` when nothing survives sanitizing, `name_too_long`
+ *  when the filename exceeds the byte cap -- so this function is where the
+ *  rule lives once and both consumers read it: the hint that explains it and
+ *  the Create button that refuses to send a request it can predict will fail.
+ *
+ *  The cap is counted in BYTES of the assembled filename because that is how
+ *  the handler counts it (`len(f"{safe_name}.md".encode("utf-8"))`), not
+ *  because the two ever differ here: sanitizing has already flattened every
+ *  character to `[a-z0-9-]`, so the stem is ASCII and its byte length equals
+ *  its character length. Encoding anyway keeps this agreeing with the server by
+ *  construction rather than by an assumption about the sanitizer's output --
+ *  the day that character class admits a non-ASCII character, a length check
+ *  would silently start predicting the wrong answer and this will not. */
+export function promptNameProblem(raw: string): 'no-stem' | 'too-long' | null {
+  if (!raw.trim()) return null
+  const stem = sanitizePromptName(raw)
+  if (!stem) return 'no-stem'
+  if (new TextEncoder().encode(`${stem}.md`).length > PROMPT_FILENAME_MAX_BYTES) return 'too-long'
+  return null
+}
+
 interface PromptFormProps {
   data: PromptFormData
   onChange: (data: PromptFormData) => void
@@ -238,8 +302,28 @@ export default function PromptForm({ data, onChange, hideIdentity }: PromptFormP
   // mounted at once (create modal + an open inline editor).
   const uid = useId()
   const nameId = `${uid}-name`
+  const nameHintId = `${uid}-name-hint`
   const descId = `${uid}-description`
   const bodyId = `${uid}-body`
+  // What the server will name the file, computed from what is typed so far,
+  // plus the reason it would refuse. `typed` is separate because an empty field
+  // is not a problem to report -- it is the state that still needs the generic
+  // rule.
+  const typed = data.name.trim() !== ''
+  const stem = sanitizePromptName(data.name)
+  const problem = promptNameProblem(data.name)
+  // ONE sentence, four fillings. The empty state passes the literal `<name>.md`
+  // the copy used before this field could compute a real filename, which is why
+  // there is no second catalog string for it: a `form_name_hint` twin would be
+  // word-identical in every locale and would rot the moment a translator
+  // improved one of the pair.
+  const hint = !typed
+    ? i18nT('pages.overview.promptsTab.form_name_preview', { filename: '<name>.md' })
+    : problem === 'no-stem'
+      ? i18nT('pages.overview.promptsTab.invalid_name_hint')
+      : problem === 'too-long'
+        ? i18nT('pages.overview.promptsTab.name_too_long_hint', { max: PROMPT_FILENAME_MAX_BYTES })
+        : i18nT('pages.overview.promptsTab.form_name_preview', { filename: `${stem}.md` })
   return (
     <div className="flex flex-col gap-3">
       {!hideIdentity && (
@@ -248,8 +332,23 @@ export default function PromptForm({ data, onChange, hideIdentity }: PromptFormP
             {/* label-has-for can't resolve the control through the custom <Input>
                 component; the runtime association via htmlFor + id + aria-label is correct. */}
             <label htmlFor={nameId} className="block text-[12px] text-muted mb-1">{i18nT('pages.overview.promptsTab.form_name')}</label>
-            <Input id={nameId} aria-label={i18nT('pages.overview.promptsTab.form_name')} value={data.name} onChange={e => set({ name: e.target.value })} placeholder={i18nT('pages.overview.promptsTab.form_name_placeholder')} />
-            <p className="text-[11px] text-muted mt-1">{i18nT('pages.overview.promptsTab.form_name_hint')}</p>
+            <Input id={nameId} aria-label={i18nT('pages.overview.promptsTab.form_name')} aria-describedby={nameHintId} value={data.name} onChange={e => set({ name: e.target.value })} placeholder={i18nT('pages.overview.promptsTab.form_name_placeholder')} />
+            {/* The hint is the field's DESCRIPTION, and it now carries the one
+                fact only the server used to know: the name the file gets. So it
+                is associated (aria-describedby) rather than merely adjacent, and
+                announced on change (aria-live) — a sighted user watches the stem
+                update as they type, and without this a screen-reader user would
+                hear the generic rule once on focus and never learn that the name
+                was rewritten, or that Create is disabled because the server
+                would refuse it. `polite` waits for a pause, so it does not speak
+                on every keystroke. */}
+            <p
+              id={nameHintId}
+              aria-live="polite"
+              className={`text-[11px] mt-1 ${problem ? 'text-danger' : 'text-muted'}`}
+            >
+              {hint}
+            </p>
           </div>
           <div>
             <span className="block text-[12px] text-muted mb-1">{i18nT('pages.overview.promptsTab.form_scope')}</span>
