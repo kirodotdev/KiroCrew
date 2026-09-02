@@ -220,6 +220,9 @@ def _build_stream_chunk(msg: dict) -> str:
             tcid = msg_meta.get("tool_call_id")
             if isinstance(tcid, str) and tcid:
                 payload["tool_call_id"] = tcid
+            tool_name = msg_meta.get("tool_name")
+            if isinstance(tool_name, str) and tool_name:
+                payload["tool_name"] = tool_name
     return json.dumps(payload)
 
 

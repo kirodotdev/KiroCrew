@@ -34,10 +34,11 @@ from kiro_crew.acp_server.server import AcpAgentServer, PromptRequest, SessionSi
 from kiro_crew.dashboard.server import _MIXED_INTERNAL_API_PATHS
 
 
-class TestSelectorEndpointAuthorization:
-    def test_selector_discovery_allows_internal_secret(self) -> None:
+class TestAcpDiscoveryEndpointAuthorization:
+    def test_discovery_allows_internal_secret(self) -> None:
         assert "/api/models" in _MIXED_INTERNAL_API_PATHS
         assert "/api/effort-levels" in _MIXED_INTERNAL_API_PATHS
+        assert "/api/slash-commands" in _MIXED_INTERNAL_API_PATHS
 
 
 # ── prompt block conversion (R5) ──
@@ -257,6 +258,8 @@ def _make_stub_app() -> web.Application:
     app["slots"] = {}  # name -> dict
     app["projects"] = {}  # slot -> project
     app["approvals"] = []  # (slot, request_id, action)
+    app["chat_posts"] = []  # request bodies received by the live chat stream
+    app["question_answers"] = []  # (slot, card, answer body)
     app["stops"] = []
     app["approve_events"] = {}
     app["title_events"] = asyncio.Queue()
@@ -325,6 +328,7 @@ def _make_stub_app() -> web.Application:
     async def chat(request: web.Request) -> web.StreamResponse:
         body = await request.json()
         assert "agent" not in body
+        app["chat_posts"].append(body)
         slot = body["slot"]
         resp = web.StreamResponse()
         resp.content_type = "text/event-stream"
@@ -332,6 +336,11 @@ def _make_stub_app() -> web.Application:
 
         async def frame(obj: dict) -> None:
             await resp.write(f"data: {json.dumps(obj)}\n\n".encode())
+
+        if body["message"] != "hi":
+            await frame({"type": "chunk", "content": "Follow-up received", "cls": ""})
+            await resp.write(b"data: [DONE]\n\n")
+            return resp
 
         await frame({"type": "chunk", "content": "Hello ", "cls": ""})
         await frame({"type": "chunk", "content": "thinking…", "cls": "thinking"})
@@ -357,6 +366,20 @@ def _make_stub_app() -> web.Application:
         app["slots"][slot]["has_options"] = True
         app["slots"][slot]["options"] = ["Yes", "No"]
         await frame({"type": "chunk", "content": "\n[OPTIONS: Yes | No]", "cls": ""})
+        await resp.write(b"data: [DONE]\n\n")
+        return resp
+
+    async def question_answer(request: web.Request) -> web.StreamResponse:
+        body = await request.json()
+        app["question_answers"].append(
+            (request.match_info["slot"], request.match_info["card"], body)
+        )
+        resp = web.StreamResponse()
+        resp.content_type = "text/event-stream"
+        await resp.prepare(request)
+        await resp.write(
+            b'data: {"type":"chunk","content":"Canonical follow-up received","cls":""}\n\n'
+        )
         await resp.write(b"data: [DONE]\n\n")
         return resp
 
@@ -392,6 +415,7 @@ def _make_stub_app() -> web.Application:
     app.router.add_get("/api/chat/slots/{slot}", slot_detail)
     app.router.add_post("/api/chat/slots/{slot}/stop", slot_stop)
     app.router.add_post("/api/chat/slots/{slot}/approve", slot_approve)
+    app.router.add_post("/api/chat/slots/{slot}/questions/{card}/answer", question_answer)
     app.router.add_post("/api/chat", chat)
     return app
 
@@ -455,7 +479,117 @@ class TestHttpGatewayBackend:
             await backend.close()
             await runner.cleanup()
 
-    async def test_title_handler_ignores_malformed_or_unrelated_events(self) -> None:
+    async def test_dashboard_message_event_forwards_once_and_ignores_own_origin(self) -> None:
+        runner, base, app = await _start_stub()
+        backend = HttpGatewayBackend(base, agent="")
+        received: list[tuple[str, str, str, str]] = []
+        delivered = asyncio.Event()
+
+        async def on_message(session_id: str, role: str, content: str, message_id: str) -> None:
+            received.append((session_id, role, content, message_id))
+            delivered.set()
+
+        try:
+            await backend.open()
+            backend.set_session_message_handler(on_message)
+            backend.register_session_info("acp-slot-1")
+            await asyncio.wait_for(app["title_ws_connected"].wait(), timeout=2)
+            await app["title_events"].put(
+                {
+                    "type": "acp_message",
+                    "data": {
+                        "slot": "acp-slot-1",
+                        "role": "user",
+                        "content": "From dashboard",
+                        "messageId": "m-dashboard",
+                    },
+                }
+            )
+            await asyncio.wait_for(delivered.wait(), timeout=2)
+            await app["title_events"].put(
+                {
+                    "type": "acp_message",
+                    "data": {
+                        "slot": "acp-slot-1",
+                        "role": "user",
+                        "content": "From dashboard",
+                        "messageId": "m-dashboard",
+                    },
+                }
+            )
+            await app["title_events"].put(
+                {
+                    "type": "acp_message",
+                    "data": {
+                        "slot": "acp-slot-1",
+                        "role": "assistant",
+                        "content": "From Zed",
+                        "messageId": "m-zed",
+                        "origin": "acp-slot-1",
+                    },
+                }
+            )
+            await asyncio.sleep(0)
+            assert received == [("acp-slot-1", "user", "From dashboard", "m-dashboard")]
+        finally:
+            await backend.close()
+            await runner.cleanup()
+
+    async def test_dashboard_plan_event_maps_todo_snapshot_to_acp_plan(self) -> None:
+        runner, base, app = await _start_stub()
+        backend = HttpGatewayBackend(base, agent="")
+        received: list[tuple[str, dict[str, Any]]] = []
+        delivered = asyncio.Event()
+
+        async def on_plan(session_id: str, plan: dict[str, Any]) -> None:
+            received.append((session_id, plan))
+            delivered.set()
+
+        try:
+            await backend.open()
+            backend.set_session_plan_handler(on_plan)
+            backend.register_session_info("acp-slot-1")
+            await asyncio.wait_for(app["title_ws_connected"].wait(), timeout=2)
+            await app["title_events"].put(
+                {
+                    "type": "acp_plan",
+                    "data": {
+                        "slot": "acp-slot-1",
+                        "description": "Validate the change",
+                        "tasks": [
+                            {"id": "1", "text": "inspect code", "completed": True},
+                            {"id": "2", "text": "run tests", "completed": False},
+                            {"id": "3", "text": "write docs", "completed": False},
+                        ],
+                    },
+                }
+            )
+            await asyncio.wait_for(delivered.wait(), timeout=2)
+            assert received == [
+                (
+                    "acp-slot-1",
+                    {
+                        "entries": [
+                            {
+                                "content": "inspect code",
+                                "priority": "medium",
+                                "status": "completed",
+                            },
+                            {
+                                "content": "run tests",
+                                "priority": "medium",
+                                "status": "in_progress",
+                            },
+                            {"content": "write docs", "priority": "medium", "status": "pending"},
+                        ],
+                        "_meta": {"kirocrew": {"description": "Validate the change"}},
+                    },
+                )
+            ]
+        finally:
+            await backend.close()
+            await runner.cleanup()
+
         backend = HttpGatewayBackend("http://127.0.0.1:1")
         received: list[tuple[str, str]] = []
 
@@ -552,6 +686,26 @@ class TestHttpGatewayBackend:
             and params["update"].get("sessionUpdate") == "tool_call"
         ]
         assert [update["toolCallId"] for update in updates] == ["gw-1", "gw-2"]
+
+    async def test_todo_tool_frame_is_not_projected_to_acp(self) -> None:
+        backend = HttpGatewayBackend("http://127.0.0.1:1")
+        sink = _RecordingSink()
+        await backend._translate(
+            {
+                "type": "tool",
+                "content": "Completing #1",
+                "tool_call_id": "todo-1",
+                "tool_name": "todo_list",
+            },
+            "s",
+            sink,
+        )
+        updates = [
+            params["update"]
+            for method, params in sink.transport.notifications
+            if method == METHOD_SESSION_UPDATE
+        ]
+        assert updates == []
 
     async def test_tool_frame_forwards_locations_from_sse(self) -> None:
         # Zed follow-along: a well-formed ``locations`` array on the SSE tool
@@ -811,6 +965,40 @@ class TestHttpGatewayBackend:
 
             assert [session["sessionId"] for session in result["sessions"]] == [matching]
             assert result["sessions"][0]["cwd"] == str(real_project)
+        finally:
+            await backend.close()
+            await runner.cleanup()
+
+    async def test_list_sessions_offers_moved_acp_slot_for_relocation(self) -> None:
+        runner, base, app = await _start_stub()
+        backend = HttpGatewayBackend(base, agent="")
+        old_project = "/workspace/old-project"
+        new_project = "/workspace/new-project"
+        try:
+            await backend.open()
+            session_id = await backend.create_session("")
+            app["slots"][session_id]["project"] = old_project
+            app["slots"]["dashboard-old"] = {
+                "key": "dashboard-old",
+                "name": "dashboard-old",
+                "project": old_project,
+            }
+
+            result = await backend.list_sessions(cwd=new_project)
+
+            assert result["sessions"] == [
+                {
+                    "sessionId": session_id,
+                    "cwd": new_project,
+                    "title": None,
+                    "updatedAt": "2026-08-21T22:00:00+00:00",
+                }
+            ]
+            assert app["slots"][session_id]["project"] == old_project
+
+            await backend.load_session(session_id, new_project)
+
+            assert app["projects"][session_id] == new_project
         finally:
             await backend.close()
             await runner.cleanup()
@@ -1220,3 +1408,131 @@ class TestSelectorHooks:
                 "acp-1", CONFIG_OPTION_MODEL, "opus-4.8"
             )
         assert stub.posts == []
+
+
+class TestElicitationBridge:
+    @pytest.mark.asyncio
+    async def test_pending_question_streams_accepted_follow_up(self) -> None:
+        class ElicitationTransport(_FakeTransport):
+            async def send_request(
+                self, method: str, params: dict, *, timeout: float = 120.0
+            ) -> Any:
+                self.requests.append((method, params))
+                return {"action": "accept", "content": {"answer": "Yes"}}
+
+        runner, base, app = await _start_stub()
+        backend = HttpGatewayBackend(base, agent="")
+        transport = ElicitationTransport()
+        try:
+            await backend.open()
+            sid = await backend.create_session("")
+            sink = SessionSink(transport, _Session(session_id=sid, elicitation_supported=True))
+            original_get_json = backend._get_json
+
+            async def get_json(path: str, *, allow_fail: bool = False) -> Any:
+                if path == f"/api/chat/slots/{sid}/questions":
+                    return {
+                        "questions": [
+                            {
+                                "question_id": "card-1",
+                                "state": "pending",
+                                "answers": {},
+                                "questions": [
+                                    {
+                                        "question": "Ship it?",
+                                        "header": "Release",
+                                        "options": [
+                                            {"label": "Yes", "description": "Ship"},
+                                            {"label": "No", "description": "Hold"},
+                                        ],
+                                        "multiSelect": False,
+                                    }
+                                ],
+                            }
+                        ]
+                    }
+                return await original_get_json(path, allow_fail=allow_fail)
+
+            backend._get_json = get_json  # type: ignore[assignment]
+            assert await backend._dispatch_pending_elicitations(sid, sink) is True
+            await asyncio.gather(*backend._elicitation_tasks.values())
+
+            form = transport.requests[0][1]
+            assert form["requestedSchema"]["properties"]["answer"]["oneOf"] == [
+                {"const": "Yes", "title": "Yes", "description": "Ship"},
+                {"const": "No", "title": "No", "description": "Hold"},
+            ]
+            assert app["question_answers"] == [(sid, "card-1", {"answers": {"Ship it?": "Yes"}})]
+            updates = [
+                params["update"]
+                for method, params in transport.notifications
+                if method == METHOD_SESSION_UPDATE
+            ]
+            assert any(
+                update.get("content", {}).get("text") == "Canonical follow-up received"
+                for update in updates
+            )
+        finally:
+            await backend.close()
+            await runner.cleanup()
+
+    def test_question_form_projects_multi_select_as_string_array(self) -> None:
+        form = HttpGatewayBackend._question_form(
+            {
+                "question": "Choose features",
+                "header": "Settings",
+                "multiSelect": True,
+                "options": [
+                    {"label": "One", "description": "First"},
+                    {"label": "Two", "description": "Second"},
+                ],
+            }
+        )
+        assert form is not None
+        answer = form["requestedSchema"]["properties"]["answer"]
+        assert answer == {
+            "type": "array",
+            "title": "Choose features",
+            "items": {"type": "string", "enum": ["One", "Two"]},
+            "minItems": 1,
+        }
+
+    @pytest.mark.asyncio
+    async def test_options_fallback_projects_and_streams_multi_select(self) -> None:
+        class ElicitationTransport(_FakeTransport):
+            async def send_request(
+                self, method: str, params: dict, *, timeout: float = 120.0
+            ) -> Any:
+                self.requests.append((method, params))
+                return {"action": "accept", "content": {"answer": ["One", "Two", "One"]}}
+
+        runner, base, app = await _start_stub()
+        backend = HttpGatewayBackend(base, agent="")
+        transport = ElicitationTransport()
+        try:
+            await backend.open()
+            sid = await backend.create_session("")
+            sink = SessionSink(transport, _Session(session_id=sid, elicitation_supported=True))
+
+            await backend._dispatch_options_elicitation(sid, ["One", "Two"], sink)
+            await asyncio.gather(*backend._elicitation_tasks.values())
+
+            form = transport.requests[0][1]
+            assert form["message"] == "Choose one or more options"
+            assert form["requestedSchema"]["properties"]["answer"] == {
+                "type": "array",
+                "items": {"type": "string", "enum": ["One", "Two"]},
+                "minItems": 1,
+            }
+            assert app["chat_posts"] == [{"message": "One, Two", "slot": sid}]
+            updates = [
+                params["update"]
+                for method, params in transport.notifications
+                if method == METHOD_SESSION_UPDATE
+            ]
+            assert any(
+                update.get("content", {}).get("text") == "Follow-up received" for update in updates
+            )
+        finally:
+            await backend.close()
+            await runner.cleanup()

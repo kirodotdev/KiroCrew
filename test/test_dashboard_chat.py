@@ -3511,6 +3511,26 @@ class TestHasReaderFlag:
         slot.append("user", "hello")
         assert len(received) == 0
 
+    def test_user_reaches_acp_only_callback(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("s1")
+        browser: list[dict] = []
+        acp: list[tuple[str, str, str, dict]] = []
+        slot._on_message = lambda key, msg: browser.append(msg)
+        slot._on_acp_message = lambda key, role, content, msg: acp.append(
+            (key, role, content, msg)
+        )
+
+        slot._has_reader = False
+        slot.append("user", "dashboard prompt")
+
+        assert browser == []
+        assert len(acp) == 1
+        key, role, content, row = acp[0]
+        assert (key, role, content) == ("s1", "user", "dashboard prompt")
+        assert row["meta"]["mid"]
+
     def test_tool_and_permission_broadcast(self, tmp_path, monkeypatch):
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = _make_state(tmp_path)

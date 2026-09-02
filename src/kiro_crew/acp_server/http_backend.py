@@ -8,6 +8,7 @@ import json
 import logging
 import os
 import uuid
+from collections import deque
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Awaitable, Callable
 from urllib.parse import quote, urlparse
@@ -18,6 +19,7 @@ from kiro_crew.acp.types import (
     CONFIG_CATEGORY_MODEL,
     CONFIG_OPTION_MODEL,
     CONFIG_OPTION_TYPE_SELECT,
+    KIRO_TOOL_TODO_LIST,
     SESSION_MODE_DEFAULT_ID,
     SESSION_MODE_DEFAULT_NAME,
     STOP_REASON_CANCELLED,
@@ -34,6 +36,7 @@ from kiro_crew.acp_server.server import (
 )
 from kiro_crew.config import config_dir
 from kiro_crew.dashboard.urls import is_loopback
+from kiro_crew.messaging.renderer import split_options_trailer
 
 if TYPE_CHECKING:
     from kiro_crew.acp_server.mcp_config import StdioMcpServer
@@ -54,11 +57,58 @@ _STREAM_TIMEOUT = aiohttp.ClientTimeout(total=None, sock_connect=_PROBE_TIMEOUT)
 # interrupting the independent prompt SSE stream.
 _TITLE_WS_RECONNECT_DELAY_SECS = 1.0
 _TITLE_WS_CLOSE_TIMEOUT_SECS = 1.0
+_ACP_MESSAGE_ID_CACHE_MAX = 4096
 
 # Aggregate wall-clock ceiling for hosting/validating one session's whole MCP
 # set. Bounds session/new setup even if a server hangs its handshake; the
 # per-server initialize has its own shorter timeout inside the supervisor.
 _MCP_SETUP_DEADLINE = 60.0
+
+# A single dashboard card has at most six validated labels, each capped at 200
+# characters. Keep only that possible trailer plus the marker overhead.
+_OPTIONS_TRAILER_BUFFER_MAX = 1400
+_OPTIONS_MARKER = "[OPTIONS:"
+
+
+class _OptionsTrailerFilter:
+    """Stream ordinary text while retaining only a possible trailing marker."""
+
+    def __init__(self) -> None:
+        self._tail = ""
+
+    def feed(self, text: str) -> str:
+        self._tail += text
+        marker = self._tail.rfind(_OPTIONS_MARKER)
+        if marker < 0:
+            keep = max(
+                (
+                    size
+                    for size in range(1, len(_OPTIONS_MARKER))
+                    if self._tail.endswith(_OPTIONS_MARKER[:size])
+                ),
+                default=0,
+            )
+            if not keep:
+                out, self._tail = self._tail, ""
+                return out
+            out, self._tail = self._tail[:-keep], self._tail[-keep:]
+            return out
+        if marker:
+            out, self._tail = self._tail[:marker], self._tail[marker:]
+            return out
+        if len(self._tail) > _OPTIONS_TRAILER_BUFFER_MAX:
+            out, self._tail = (
+                self._tail[: -len(_OPTIONS_MARKER)],
+                self._tail[-len(_OPTIONS_MARKER) :],
+            )
+            return out
+        return ""
+
+    def finish(self) -> tuple[str, bool]:
+        body, choices = split_options_trailer(self._tail)
+        complete = self._tail.startswith(_OPTIONS_MARKER) and self._tail.rstrip().endswith("]")
+        self._tail = ""
+        return body if complete else body, complete and bool(choices)
 
 
 def build_mode_state(current_effort: str, effort_levels: list[str]) -> dict[str, Any] | None:
@@ -231,7 +281,12 @@ class HttpGatewayBackend:
         # tools (e.g. fs_read: empty initial rawInput + populated refinement),
         # so the follow-along locations only arrive on the second event.
         self._tool_id_map: dict[str, str] = {}
+        self._elicitation_tasks: dict[tuple[str, str, int], asyncio.Task[None]] = {}
         self._session_info_handler: Callable[[str, str], Awaitable[None]] | None = None
+        self._session_message_handler: Callable[[str, str, str, str], Awaitable[None]] | None = None
+        self._session_plan_handler: Callable[[str, dict[str, Any]], Awaitable[None]] | None = None
+        self._seen_message_ids: set[str] = set()
+        self._seen_message_order: deque[str] = deque()
         self._title_events_task: asyncio.Task[None] | None = None
         self._title_ws: aiohttp.ClientWebSocketResponse | None = None
         self._title_session_ids: set[str] = set()
@@ -276,6 +331,12 @@ class HttpGatewayBackend:
 
     async def close(self) -> None:
         self._closing = True
+        pending_elicitations = list(self._elicitation_tasks.values())
+        for task in pending_elicitations:
+            task.cancel()
+        if pending_elicitations:
+            await asyncio.gather(*pending_elicitations, return_exceptions=True)
+        self._elicitation_tasks.clear()
         if self._title_events_task is not None:
             self._title_events_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
@@ -303,6 +364,13 @@ class HttpGatewayBackend:
         self._session_info_handler = handler
         self._start_title_events()
 
+    def set_session_message_handler(
+        self, handler: Callable[[str, str, str, str], Awaitable[None]]
+    ) -> None:
+        """Forward finalized dashboard messages to the owning ACP server."""
+        self._session_message_handler = handler
+        self._start_title_events()
+
     def register_session_info(self, session_id: str) -> None:
         """Allow title events only for a session registered by this ACP server."""
         if not session_id:
@@ -314,10 +382,21 @@ class HttpGatewayBackend:
             # subscription to the keys sent during the WebSocket handshake.
             asyncio.create_task(self._title_ws.close())
 
+    def set_session_plan_handler(
+        self, handler: Callable[[str, dict[str, Any]], Awaitable[None]]
+    ) -> None:
+        """Forward live dashboard task plans to the owning ACP server."""
+        self._session_plan_handler = handler
+        self._start_title_events()
+
     def _start_title_events(self) -> None:
         if (
             self._session is not None
-            and self._session_info_handler is not None
+            and (
+                self._session_info_handler is not None
+                or self._session_message_handler is not None
+                or self._session_plan_handler is not None
+            )
             and self._title_session_ids
             and self._title_events_task is None
             and not self._closing
@@ -375,26 +454,104 @@ class HttpGatewayBackend:
             if not self._closing:
                 await asyncio.sleep(_TITLE_WS_RECONNECT_DELAY_SECS)
 
+    @staticmethod
+    def _todo_to_plan(data: dict[str, Any]) -> dict[str, Any] | None:
+        """Map a complete dashboard TODO snapshot to the ACP plan shape."""
+        tasks = data.get("tasks")
+        if not isinstance(tasks, list):
+            return None
+        entries: list[dict[str, Any]] = []
+        found_current = False
+        for task in tasks:
+            if not isinstance(task, dict):
+                continue
+            text = task.get("text")
+            if not isinstance(text, str) or not text:
+                continue
+            completed = task.get("completed") is True
+            if completed:
+                status = "completed"
+            elif not found_current:
+                status = "in_progress"
+                found_current = True
+            else:
+                status = "pending"
+            entries.append({"content": text, "priority": "medium", "status": status})
+        description = data.get("description")
+        metadata = (
+            {"kirocrew": {"description": description}} if isinstance(description, str) else None
+        )
+        plan: dict[str, Any] = {"entries": entries}
+        if metadata:
+            plan["_meta"] = metadata
+        return plan
+
     async def _handle_title_event(self, raw: str) -> None:
-        """Translate one dashboard slot_title WebSocket frame into ACP metadata."""
+        """Translate scoped dashboard title and finalized-message events to ACP."""
         try:
             frame = json.loads(raw)
         except (TypeError, ValueError):
             return
-        if not isinstance(frame, dict) or frame.get("type") != "slot_title":
+        if not isinstance(frame, dict):
             return
         data = frame.get("data")
         if not isinstance(data, dict):
             return
-        session_id = data.get("key")
-        title = data.get("title")
+        if frame.get("type") == "slot_title":
+            session_id = data.get("key")
+            title = data.get("title")
+            if (
+                isinstance(session_id, str)
+                and session_id
+                and isinstance(title, str)
+                and self._session_info_handler is not None
+            ):
+                await self._session_info_handler(session_id, title)
+            return
+        if frame.get("type") == "acp_plan":
+            session_id = data.get("slot")
+            if (
+                isinstance(session_id, str)
+                and session_id in self._title_session_ids
+                and self._session_plan_handler is not None
+            ):
+                plan = self._todo_to_plan(data)
+                if plan is not None:
+                    await self._session_plan_handler(session_id, plan)
+            return
+        if frame.get("type") != "acp_message":
+            return
+        session_id = data.get("slot")
+        role = data.get("role")
+        content = data.get("content")
+        message_id = data.get("messageId")
+        origin = data.get("origin")
         if (
-            isinstance(session_id, str)
-            and session_id
-            and isinstance(title, str)
-            and self._session_info_handler is not None
+            not isinstance(session_id, str)
+            or session_id not in self._title_session_ids
+            or role not in ("user", "assistant")
+            or not isinstance(content, str)
+            or not isinstance(message_id, str)
+            or not message_id
+            or self._session_message_handler is None
         ):
-            await self._session_info_handler(session_id, title)
+            return
+        if not self._remember_message_id(message_id):
+            return
+        if origin == session_id:
+            return
+        await self._session_message_handler(session_id, role, content, message_id)
+
+    def _remember_message_id(self, message_id: str) -> bool:
+        """Remember one durable row id and return whether it was newly observed."""
+        if message_id in self._seen_message_ids:
+            return False
+        if len(self._seen_message_order) >= _ACP_MESSAGE_ID_CACHE_MAX:
+            evicted = self._seen_message_order.popleft()
+            self._seen_message_ids.discard(evicted)
+        self._seen_message_order.append(message_id)
+        self._seen_message_ids.add(message_id)
+        return True
 
     # ── SessionBackend ──
 
@@ -609,26 +766,42 @@ class HttpGatewayBackend:
         del cursor  # All matching slots are returned in one page.
         slots = await self._get_slots()
         out: list[dict[str, Any]] = []
+        relocation_candidates: list[dict[str, Any]] = []
         for s in slots:
             key = s.get("key") or s.get("name")
             if not key:
                 continue
+            session_id = str(key)
             raw_project = s.get("project")
             project = raw_project if isinstance(raw_project, str) else ""
-            if cwd and not _project_paths_match(project, cwd):
+            project_matches = not cwd or _project_paths_match(project, cwd)
+            relocation_candidate = bool(
+                cwd
+                and project
+                and session_id.startswith(f"{self._prefix}-")
+                and not project_matches
+            )
+            if not project_matches and not relocation_candidate:
                 continue
             title = s.get("title")
             item: dict[str, Any] = {
-                "sessionId": str(key),
-                "cwd": project,
+                "sessionId": session_id,
+                "cwd": cwd if relocation_candidate else project,
                 "title": title if isinstance(title, str) else None,
             }
             updated_at = s.get("last_activity_ts") or s.get("last_ts") or s.get("created")
             if isinstance(updated_at, str) and updated_at:
                 item["updatedAt"] = updated_at
-            out.append(item)
-        out.sort(key=lambda item: item.get("updatedAt", ""), reverse=True)
-        return {"sessions": out}
+            if project_matches:
+                out.append(item)
+            else:
+                relocation_candidates.append(item)
+        # A moved editor workspace has no normal project match. In that case,
+        # offer ACP-owned history as an explicit fallback without surfacing it
+        # alongside sessions already scoped to the requested project.
+        result = out or relocation_candidates
+        result.sort(key=lambda item: item.get("updatedAt", ""), reverse=True)
+        return {"sessions": result}
 
     # ── PromptHandler ──
 
@@ -639,13 +812,29 @@ class HttpGatewayBackend:
         return handle_prompt
 
     async def _run_prompt(self, request: PromptRequest, sink: SessionSink) -> str:
-        slot = request.session_id
         # The slot owns its agent; loaded dashboard sessions may use a different one.
-        body = {"message": request.text, "slot": slot}
+        return await self._stream_follow_up(
+            "/api/chat",
+            {"message": request.text, "slot": request.session_id},
+            request.session_id,
+            sink,
+        )
+
+    async def _stream_follow_up(
+        self, pathname: str, body: dict[str, Any], slot: str, sink: SessionSink
+    ) -> str:
+        """Start one gateway-owned turn and relay its SSE response to the editor.
+
+        Elicitation answers are ordinary next turns after their initial ACP prompt
+        has completed, so this helper remains usable from the background
+        elicitation task as well as from ``session/prompt``.
+        """
         try:
             resp = await self._session.post(
-                self._url("/api/chat"),
-                headers=self._headers({"Content-Type": "application/json"}),
+                self._url(pathname),
+                headers=self._headers(
+                    {"Content-Type": "application/json", "X-ACP-Session-Id": slot}
+                ),
                 json=body,
                 timeout=_STREAM_TIMEOUT,
             )
@@ -654,40 +843,70 @@ class HttpGatewayBackend:
                     detail = (await resp.text())[:400]
                     await sink.send_text(f"\n\n**Error:** gateway {resp.status}: {detail}\n")
                     return "error"
-                stop = await self._consume_sse(resp, slot, sink)
+                stop, saw_options_trailer = await self._consume_sse(resp, slot, sink)
         except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
             logger.warning("gateway stream failed for slot %s: %s", slot, exc)
             await sink.send_text(f"\n\n**Error:** gateway stream failed: {exc}\n")
             return "error"
-        # Attach reply options (if the turn ended with a [OPTIONS: …] prompt) as a
-        # namespaced ACP extension; the marker itself already streamed in the text.
         if stop != STOP_REASON_CANCELLED:
+            canonical_pending = await self._dispatch_pending_elicitations(slot, sink)
             try:
-                await sink.send_options(await self._options_for(slot))
+                if saw_options_trailer and not canonical_pending:
+                    options = await self._options_for(slot)
+                    if sink.supports_elicitation:
+                        await self._dispatch_options_elicitation(slot, options, sink)
+                    else:
+                        await sink.send_options(options)
+                elif not sink.supports_elicitation:
+                    # Keep the namespaced extension during the compatibility period.
+                    await sink.send_options(await self._options_for(slot))
             except Exception:
                 logger.debug("options lookup failed for slot %s", slot, exc_info=True)
         return stop or STOP_REASON_END_TURN
 
-    async def _consume_sse(self, resp: Any, slot: str, sink: SessionSink) -> str:
+    async def _consume_sse(self, resp: Any, slot: str, sink: SessionSink) -> tuple[str, bool]:
         """Translate the /api/chat SSE stream onto the editor's session."""
+        trailer = _OptionsTrailerFilter() if sink.supports_elicitation else None
         async for raw in resp.content:
             if sink.cancelled:
                 await self.cancel(slot)
-                return STOP_REASON_CANCELLED
+                return STOP_REASON_CANCELLED, False
             line = raw.decode("utf-8", errors="replace").strip()
             if not line.startswith("data: "):
-                continue  # `: keepalive` comments and blank padding
+                continue
             payload = line[6:]
             if payload == "[DONE]":
-                return STOP_REASON_END_TURN
+                if trailer is not None:
+                    text, matched = trailer.finish()
+                    if text:
+                        await sink.send_text(text)
+                    return STOP_REASON_END_TURN, matched
+                return STOP_REASON_END_TURN, False
             try:
                 chunk = json.loads(payload)
             except (ValueError, TypeError):
                 logger.debug("unparsable SSE payload: %s", payload[:120])
                 continue
-            if isinstance(chunk, dict):
-                await self._translate(chunk, slot, sink)
-        return STOP_REASON_END_TURN
+            if not isinstance(chunk, dict):
+                continue
+            if (
+                trailer is not None
+                and chunk.get("type") == "chunk"
+                and "thinking" not in str(chunk.get("cls", ""))
+            ):
+                raw_text = chunk.get("content")
+                if isinstance(raw_text, str):
+                    visible = trailer.feed(raw_text)
+                    if visible:
+                        await sink.send_text(visible)
+                    continue
+            await self._translate(chunk, slot, sink)
+        if trailer is not None:
+            text, matched = trailer.finish()
+            if text:
+                await sink.send_text(text)
+            return STOP_REASON_END_TURN, matched
+        return STOP_REASON_END_TURN, False
 
     async def _translate(self, chunk: dict[str, Any], slot: str, sink: SessionSink) -> None:
         ctype = chunk.get("type", "")
@@ -706,6 +925,8 @@ class HttpGatewayBackend:
             # rendering both doubles the reply.
             return
         elif ctype == "tool":
+            if chunk.get("tool_name") == KIRO_TOOL_TODO_LIST:
+                return
             title = (text.split("\n", 1)[0] or "Tool")[:120]
             self._tool_seq += 1
             gw_id = f"gw-{self._tool_seq}"
@@ -790,6 +1011,154 @@ class HttpGatewayBackend:
                     return [str(o) for o in opts]
                 return []
         return []
+
+    @staticmethod
+    def _question_form(question: dict[str, Any]) -> dict[str, Any] | None:
+        text = question.get("question")
+        options = question.get("options")
+        if not isinstance(text, str) or not text or not isinstance(options, list):
+            return None
+        choices = [
+            {
+                "const": option["label"],
+                "title": option["label"],
+                "description": option["description"],
+            }
+            for option in options
+            if isinstance(option, dict)
+            and isinstance(option.get("label"), str)
+            and option.get("label")
+            and isinstance(option.get("description"), str)
+        ]
+        if not choices:
+            return None
+        if question.get("multiSelect"):
+            answer: dict[str, Any] = {
+                "type": "array",
+                "title": text,
+                "items": {"type": "string", "enum": [choice["const"] for choice in choices]},
+                "minItems": 1,
+            }
+        else:
+            answer = {"type": "string", "title": text, "oneOf": choices}
+        schema: dict[str, Any] = {
+            "type": "object",
+            "properties": {"answer": answer},
+            "required": ["answer"],
+        }
+        header = question.get("header")
+        if isinstance(header, str) and header:
+            schema["title"] = header
+        return {"mode": "form", "message": text, "requestedSchema": schema}
+
+    async def _dispatch_pending_elicitations(self, slot: str, sink: SessionSink) -> bool:
+        """Schedule every unanswered canonical question for an elicitation-capable editor."""
+        try:
+            data = await self._get_json(
+                f"/api/chat/slots/{quote(slot, safe='')}/questions", allow_fail=True
+            )
+        except Exception:
+            logger.debug("pending question discovery failed for slot %s", slot, exc_info=True)
+            return False
+        records = data.get("questions") if isinstance(data, dict) else None
+        if not isinstance(records, list):
+            return False
+        pending = False
+        for record in records:
+            if not isinstance(record, dict) or record.get("state") != "pending":
+                continue
+            card_id = record.get("question_id")
+            questions = record.get("questions")
+            answered = record.get("answers")
+            if not isinstance(card_id, str) or not isinstance(questions, list):
+                continue
+            pending = True
+            answered = answered if isinstance(answered, dict) else {}
+            for index, question in enumerate(questions):
+                if not isinstance(question, dict) or question.get("question") in answered:
+                    continue
+                form = self._question_form(question)
+                if form is None or not sink.supports_elicitation:
+                    continue
+                key = (slot, card_id, index)
+                if key in self._elicitation_tasks:
+                    continue
+                task = asyncio.create_task(
+                    self._run_question_elicitation(key, question, form, sink),
+                    name=f"acp-elicitation-{card_id}-{index}",
+                )
+                self._elicitation_tasks[key] = task
+                task.add_done_callback(lambda _task: self._elicitation_tasks.pop(key, None))
+        return pending
+
+    async def _run_question_elicitation(
+        self,
+        key: tuple[str, str, int],
+        question: dict[str, Any],
+        form: dict[str, Any],
+        sink: SessionSink,
+    ) -> None:
+        result = await sink.create_elicitation(form)
+        if not result.accepted:
+            return
+        answer = result.content.get("answer") if result.content else None
+        question_text = question.get("question")
+        if not isinstance(question_text, str):
+            return
+        await self._stream_follow_up(
+            (
+                f"/api/chat/slots/{quote(key[0], safe='')}/questions/"
+                f"{quote(key[1], safe='')}/answer?stream=1"
+            ),
+            {"answers": {question_text: answer}},
+            key[0],
+            sink,
+        )
+
+    async def _dispatch_options_elicitation(
+        self, slot: str, options: list[str], sink: SessionSink
+    ) -> None:
+        if not sink.supports_elicitation or not options:
+            return
+        key = (slot, "options", 0)
+        if key in self._elicitation_tasks:
+            return
+        form = {
+            "mode": "form",
+            "message": "Choose one or more options",
+            "requestedSchema": {
+                "type": "object",
+                "properties": {
+                    "answer": {
+                        "type": "array",
+                        "items": {"type": "string", "enum": options},
+                        "minItems": 1,
+                    }
+                },
+                "required": ["answer"],
+            },
+        }
+
+        async def _answer_options() -> None:
+            result = await sink.create_elicitation(form)
+            content = result.content
+            answer = content.get("answer") if isinstance(content, dict) else None
+            if (
+                result.accepted
+                and isinstance(answer, list)
+                and answer
+                and all(isinstance(option, str) and option in options for option in answer)
+            ):
+                await self._stream_follow_up(
+                    "/api/chat",
+                    {"message": ", ".join(dict.fromkeys(answer)), "slot": slot},
+                    slot,
+                    sink,
+                )
+
+        task = asyncio.create_task(_answer_options(), name=f"acp-options-{slot}")
+        self._elicitation_tasks[key] = task
+        task.add_done_callback(lambda _task: self._elicitation_tasks.pop(key, None))
 
     # ── HTTP helpers ──
 

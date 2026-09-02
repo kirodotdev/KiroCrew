@@ -373,6 +373,47 @@ class TestSessionInfoWireFormat:
         await h.stop()
 
 
+class TestPlanWireFormat:
+    """Editors receive complete task snapshots as standard ACP plans."""
+
+    @pytest.mark.asyncio
+    async def test_send_plan_forwards_entries_and_metadata(self) -> None:
+        async def handler(_req: PromptRequest, sink: SessionSink) -> str:
+            await sink.send_plan(
+                [
+                    {"content": "inspect code", "priority": "medium", "status": "completed"},
+                    {"content": "run tests", "priority": "medium", "status": "in_progress"},
+                ],
+                metadata={"kirocrew": {"description": "Validate the change"}},
+            )
+            return STOP_REASON_END_TURN
+
+        h = _Harness(handler)
+        await h.start()
+        sid = await _new_session(h)
+        h.send(
+            {
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "session/prompt",
+                "params": {"sessionId": sid, "prompt": []},
+            }
+        )
+        update = await h.wait_for(
+            lambda f: f.get("method") == METHOD_SESSION_UPDATE
+            and f.get("params", {}).get("update", {}).get("sessionUpdate") == "plan"
+        )
+        assert update["params"]["update"] == {
+            "sessionUpdate": "plan",
+            "entries": [
+                {"content": "inspect code", "priority": "medium", "status": "completed"},
+                {"content": "run tests", "priority": "medium", "status": "in_progress"},
+            ],
+            "_meta": {"kirocrew": {"description": "Validate the change"}},
+        }
+        await h.stop()
+
+
 class TestToolCallLocationsWireFormat:
     """Zed follows the agent by watching the ``locations`` key on tool_call frames."""
 
@@ -2134,4 +2175,86 @@ class TestSelectors:
             h.send({"jsonrpc": "2.0", "id": rid, "method": method, "params": params})
             frame = await h.wait_for(lambda f, r=rid: f.get("id") == r and "error" in f)
             assert frame["error"]["code"] == JSONRPC_METHOD_NOT_FOUND
+        await h.stop()
+
+
+class TestElicitation:
+    @pytest.mark.asyncio
+    async def test_form_elicitation_returns_accepted_content(self) -> None:
+        seen: dict[str, Any] = {}
+
+        async def handler(_req: PromptRequest, sink: SessionSink) -> str:
+            result = await sink.create_elicitation(
+                {
+                    "mode": "form",
+                    "message": "Choose one",
+                    "requestedSchema": {
+                        "type": "object",
+                        "properties": {"answer": {"type": "string", "enum": ["A", "B"]}},
+                        "required": ["answer"],
+                    },
+                }
+            )
+            seen["result"] = result
+            return STOP_REASON_END_TURN
+
+        h = _Harness(handler)
+        h.server._form_elicitation_supported = True
+        await h.start()
+        sid = await _new_session(h)
+        h.send(
+            {
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "session/prompt",
+                "params": {"sessionId": sid, "prompt": []},
+            }
+        )
+        request = await h.wait_for(lambda frame: frame.get("method") == "elicitation/create")
+        assert request["params"]["sessionId"] == sid
+        assert "toolCallId" not in request["params"]
+        h.send(
+            {
+                "jsonrpc": "2.0",
+                "id": request["id"],
+                "result": {"action": "accept", "content": {"answer": "A"}},
+            }
+        )
+        await h.wait_for(lambda frame: frame.get("id") == 2 and "result" in frame)
+        assert seen["result"].accepted is True
+        assert seen["result"].content == {"answer": "A"}
+        await h.stop()
+
+    @pytest.mark.asyncio
+    async def test_cancelled_elicitation_injects_no_answer(self) -> None:
+        seen: dict[str, Any] = {}
+
+        async def handler(_req: PromptRequest, sink: SessionSink) -> str:
+            seen["result"] = await sink.create_elicitation(
+                {
+                    "mode": "form",
+                    "message": "Choose one",
+                    "requestedSchema": {"type": "object", "properties": {}},
+                }
+            )
+            return STOP_REASON_END_TURN
+
+        h = _Harness(handler)
+        h.server._form_elicitation_supported = True
+        await h.start()
+        sid = await _new_session(h)
+        h.send(
+            {
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "session/prompt",
+                "params": {"sessionId": sid, "prompt": []},
+            }
+        )
+        await h.wait_for(lambda frame: frame.get("method") == "elicitation/create")
+        h.send({"jsonrpc": "2.0", "method": "session/cancel", "params": {"sessionId": sid}})
+        done = await h.wait_for(lambda frame: frame.get("id") == 2 and "result" in frame)
+        assert done["result"]["stopReason"] == STOP_REASON_CANCELLED
+        assert seen["result"].accepted is False
+        assert seen["result"].action == "cancel"
         await h.stop()

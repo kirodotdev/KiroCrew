@@ -258,6 +258,17 @@ class TestBuildStreamChunkLocations:
         payload = json.loads(chat_utils._build_stream_chunk(msg))
         assert "locations" not in payload
 
+    def test_stream_tool_frame_carries_trusted_tool_name(self) -> None:
+        msg = {
+            "role": "tool",
+            "content": "🔧 Completing #1",
+            "cls": "msg msg-tool",
+            "ts": "",
+            "meta": {"tool_call_id": "tc-todo", "tool_name": "todo_list"},
+        }
+        payload = json.loads(chat_utils._build_stream_chunk(msg))
+        assert payload["tool_name"] == "todo_list"
+
     def test_non_tool_role_never_emits_locations(self) -> None:
         # Even if a permission carries locations in cls-encoded meta, we never
         # forward them on a role that isn't `tool`.

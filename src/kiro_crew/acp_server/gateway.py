@@ -27,6 +27,7 @@ from kiro_crew.acp.types import (
     EVENT_TOOL_CALL,
     EVENT_TOOL_CALL_UPDATE,
     EVENT_TOOL_RESULT,
+    KIRO_TOOL_TODO_LIST,
     STOP_REASON_CANCELLED,
     STOP_REASON_END_TURN,
 )
@@ -185,6 +186,7 @@ async def _stream_turn(
     agent: str,
 ) -> str:
     """Map one provider event stream onto the editor's session."""
+    hidden_tool_ids: set[str] = set()
     async for event in provider.stream(message):
         if sink.cancelled:
             return STOP_REASON_CANCELLED
@@ -195,6 +197,10 @@ async def _stream_turn(
         elif kind == EVENT_THINKING_CHUNK:
             await sink.send_thought(redact(event.text))
         elif kind == EVENT_TOOL_CALL:
+            if event.tool_name == KIRO_TOOL_TODO_LIST:
+                if event.tool_call_id:
+                    hidden_tool_ids.add(event.tool_call_id)
+                continue
             await sink.send_tool_call(
                 event.tool_call_id,
                 redact(event.title),
@@ -204,6 +210,8 @@ async def _stream_turn(
                 locations=extract_tool_locations(event.tool_name, event.raw_tool_params),
             )
         elif kind in (EVENT_TOOL_CALL_UPDATE, EVENT_TOOL_RESULT):
+            if event.tool_call_id in hidden_tool_ids:
+                continue
             await sink.send_tool_call_update(
                 event.tool_call_id,
                 status=STATUS_COMPLETED if event.tool_final else STATUS_PENDING,

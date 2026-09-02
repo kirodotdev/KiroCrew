@@ -2968,6 +2968,8 @@ class _ChatSlot:
         "_todo",
         "_on_message",
         "_on_question_retired",
+        "_on_acp_message",
+        "_acp_origin_session_id",
         "_has_reader_flag",
         "_stop_state_raw",
         "_stop_generation",
@@ -3234,6 +3236,8 @@ class _ChatSlot:
         # is invisible to a second window, and to a /pending response already in
         # flight — either would re-render a card whose answer has been sent.
         self._on_question_retired: object | None = None
+        self._on_acp_message: object | None = None
+        self._acp_origin_session_id: str = ""
         self._has_reader_flag: bool = False  # True when HTTP SSE stream is draining
         self._stop_state_raw: str = "idle"  # 'idle' | 'soft_pending' | 'killing'
         # Monotonic count of stop INITIATIONS (idle → active edges of
@@ -3886,6 +3890,12 @@ class _ChatSlot:
         }
         if meta:
             msg["meta"] = meta
+        if self._acp_origin_session_id:
+            existing_meta = msg.get("meta")
+            msg["meta"] = {
+                **(existing_meta if isinstance(existing_meta, dict) else {}),
+                "_acp_session": self._acp_origin_session_id,
+            }
         # Stamp a per-row delivery identity. A client sees the SAME row through
         # two doors — the slot-detail HTTP rebuild and the live `chat_message`
         # broadcast — and must be able to tell "this row again" from "another row
@@ -3942,6 +3952,8 @@ class _ChatSlot:
             and not self._has_reader
         ):
             self._on_message(self.key, msg)  # type: ignore[operator]
+        elif broadcast and self._on_acp_message and role == "user" and not self._has_reader:
+            self._on_acp_message(self.key, role, content, msg)  # type: ignore[operator]
         # Trim old messages to bound memory usage
         if len(self.messages) > _MAX_SLOT_MESSAGES:
             excess = len(self.messages) - _MAX_SLOT_MESSAGES
@@ -5540,6 +5552,16 @@ class DashboardState:
             card_id=card_id,
         )
 
+    def pending_question_cards(self, slot_key: str) -> list[dict]:
+        """Return active stateless question cards for one slot."""
+        return _questions_for(self).pending_for_slot(self, slot_key)
+
+    def answer_question_card(
+        self, slot_key: str, card_id: str, answers: dict[str, Any]
+    ) -> str | None:
+        """Record validated card answers and return a prompt when all are complete."""
+        return _questions_for(self).answer_card(self, slot_key, card_id, answers)
+
     def _broadcast_question_retired(self, slot_key: str, card_ids: list[str]) -> None:
         """Tell owner clients that question cards are no longer actionable."""
         _questions_for(self).broadcast_retired(self, slot_key, card_ids)
@@ -5871,6 +5893,7 @@ class DashboardState:
         slot._tab_id = uuid.uuid4().hex[:12]
         slot._on_message = self._broadcast_chat_message
         slot._on_question_retired = self._broadcast_question_retired
+        slot._on_acp_message = self._broadcast_acp_message
         slot._app = app
         # ``origin`` must be declared by the layer that actually knows it, and
         # an undeclared non-app slot stays UNTAGGED ("") rather than being
@@ -6095,6 +6118,37 @@ class DashboardState:
         if direct_meta and isinstance(direct_meta, dict):
             payload["meta"] = {**(payload.get("meta") or {}), **direct_meta}
         self._broadcast(payload)
+        self._broadcast_acp_message(slot_key, role, content, msg)
+
+    def _broadcast_acp_message(
+        self, slot_key: str, role: str, content: Any, msg: dict[str, Any]
+    ) -> None:
+        """Send one finalized, minimally shaped row to subscribed ACP adapters."""
+        message_id = row_mid(msg)
+        if role not in ("user", "assistant") or not message_id or not isinstance(content, str):
+            return
+        meta = msg.get("meta")
+        origin = meta.get("_acp_session") if isinstance(meta, dict) else ""
+        data: dict[str, str] = {
+            "slot": slot_key,
+            "role": role,
+            "content": content,
+            "messageId": message_id,
+        }
+        if isinstance(origin, str) and origin:
+            data["origin"] = origin
+        self._send_ws_all("acp_message", data, json.dumps({"type": "acp_message", "data": data}))
+
+    def _broadcast_acp_plan(self, slot_key: str, todo: dict[str, Any] | None) -> None:
+        """Send a complete sanitized task snapshot only to the owning ACP editor."""
+        if not isinstance(todo, dict) or not isinstance(todo.get("tasks"), list):
+            return
+        data = {
+            "slot": slot_key,
+            "description": str(todo.get("description") or ""),
+            "tasks": todo["tasks"],
+        }
+        self._send_ws_all("acp_plan", data, json.dumps({"type": "acp_plan", "data": data}))
 
     # ── Folder persistence ──
 

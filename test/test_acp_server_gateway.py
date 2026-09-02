@@ -264,6 +264,38 @@ class TestHookReply:
         assert sess.released == ["acp:s5"]
 
 
+class TestTodoToolSuppression:
+    @pytest.mark.asyncio
+    async def test_todo_tool_events_are_not_sent_to_editor(self) -> None:
+        prov = _Provider(
+            [
+                AcpEvent(
+                    kind=EVENT_TOOL_CALL,
+                    tool_call_id="todo-1",
+                    title="Completing #1",
+                    tool_name="todo_list",
+                ),
+                AcpEvent(
+                    kind=EVENT_TOOL_CALL_UPDATE,
+                    tool_call_id="todo-1",
+                    tool_name="todo_list",
+                ),
+                AcpEvent(
+                    kind=EVENT_TOOL_RESULT,
+                    tool_call_id="todo-1",
+                    tool_final=True,
+                ),
+                AcpEvent(kind=EVENT_COMPLETE),
+            ]
+        )
+        sink = _Sink()
+        await make_prompt_handler(_Svc(_Sessions(prov), _Ctx()))(
+            PromptRequest(session_id="s-todo", text="x"), sink
+        )
+        assert sink.tools == []
+        assert sink.updates == []
+
+
 class TestToolCallDiff:
     @pytest.mark.asyncio
     async def test_tool_call_carries_diff_content(self) -> None:

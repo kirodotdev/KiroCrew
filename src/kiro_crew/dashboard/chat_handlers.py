@@ -200,6 +200,9 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
     user_meta = body.get("meta")  # knowledge/files/pastes metadata from frontend
     if not isinstance(user_meta, dict):
         user_meta = None
+    requested_acp_session = request.headers.get("X-ACP-Session-Id", "")
+    if not request.get("internal_auth") or not isinstance(requested_acp_session, str):
+        requested_acp_session = ""
     theme_consent = body.get("theme_consent") is True
     # Content-bound persona consent: the sha256 hex the user
     # granted in the consent modal. Injection is gated on this matching the
@@ -652,6 +655,9 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
     # `chat_done` refresh rebuilds the transcript from disk. Without it, the
     # message-pin control (keyed on `meta.mid`) stays withheld for the whole
     # turn.
+    acp_turn_origin = requested_acp_session if requested_acp_session == slot.key else ""
+    if acp_turn_origin:
+        slot._acp_origin_session_id = acp_turn_origin
     _user_row = slot.append(
         "user", message, "msg msg-u", meta=_redact_meta(user_meta) if user_meta else None
     )
@@ -831,19 +837,22 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
     # FIX 2: an unattended app-owned turn runs under the background concurrency
     # cap; run_background_turn passes an attended slot straight through, so the
     # interactive path is unchanged (no semaphore is even created).
-    task = spawn_guarded_turn(
-        state,
-        slot,
-        state.run_background_turn(
-            slot,
-            _run_chat(
-                state,
+    async def _run_slot_turn() -> None:
+        try:
+            await state.run_background_turn(
                 slot,
-                message,
-                _directive_user_origin=not bool(request_app),
-            ),
-        ),
-    )
+                _run_chat(
+                    state,
+                    slot,
+                    message,
+                    _directive_user_origin=not bool(request_app),
+                ),
+            )
+        finally:
+            if acp_turn_origin and slot._acp_origin_session_id == acp_turn_origin:
+                slot._acp_origin_session_id = ""
+
+    task = spawn_guarded_turn(state, slot, _run_slot_turn())
     slot.task = task
     slot._recovery_retrigger_count = 0
     state.push_slots_update()
@@ -859,6 +868,11 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
             _receipt["mid"] = _user_mid
         return web.json_response(_receipt)
 
+    return await stream_slot_response(request, slot)
+
+
+async def stream_slot_response(request: web.Request, slot: _ChatSlot) -> web.StreamResponse:
+    """Stream one already-started slot turn through the dashboard SSE contract."""
     resp = web.StreamResponse()
     resp.content_type = "text/event-stream"
     resp.headers["Cache-Control"] = "no-cache"

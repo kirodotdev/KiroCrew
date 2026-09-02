@@ -743,6 +743,42 @@ class TestEmptyAppDeniedClosed:
             assert any("empty_app_denied" in o for o in outcomes)
 
 
+class TestAcpMessageScope:
+    """The ACP relay is never a browser or app event."""
+
+    @staticmethod
+    def _ws(store: dict[str, Any]) -> MagicMock:
+        ws = MagicMock()
+        ws.get.side_effect = lambda key, default=None: store.get(key, default)
+        return ws
+
+    def test_only_registered_acp_slot_receives_message(self) -> None:
+        from kiro_crew.dashboard.websocket_hub import WebSocketHub
+
+        hub = object.__new__(WebSocketHub)
+        payload = {"slot": "acp-1", "role": "user", "content": "hello", "messageId": "m-1"}
+        acp_ws = self._ws({"_acp_title_subscription": True, "_acp_title_sessions": {"acp-1"}})
+        other_acp_ws = self._ws({"_acp_title_subscription": True, "_acp_title_sessions": {"acp-2"}})
+        dashboard_ws = self._ws({"_is_dashboard_user": True})
+
+        assert hub._ws_client_allowed(acp_ws, "acp_message", payload) is True
+        assert hub._ws_client_allowed(other_acp_ws, "acp_message", payload) is False
+        assert hub._ws_client_allowed(dashboard_ws, "acp_message", payload) is False
+
+    def test_only_registered_acp_slot_receives_plan(self) -> None:
+        from kiro_crew.dashboard.websocket_hub import WebSocketHub
+
+        hub = object.__new__(WebSocketHub)
+        payload = {"slot": "acp-1", "tasks": [], "description": ""}
+        acp_ws = self._ws({"_acp_title_subscription": True, "_acp_title_sessions": {"acp-1"}})
+        other_acp_ws = self._ws({"_acp_title_subscription": True, "_acp_title_sessions": {"acp-2"}})
+        dashboard_ws = self._ws({"_is_dashboard_user": True})
+
+        assert hub._ws_client_allowed(acp_ws, "acp_plan", payload) is True
+        assert hub._ws_client_allowed(other_acp_ws, "acp_plan", payload) is False
+        assert hub._ws_client_allowed(dashboard_ws, "acp_plan", payload) is False
+
+
 # ---------------------------------------------------------------------------
 # ``slot_title`` uses ``key`` (not ``slot``) for the slot identifier
 # ---------------------------------------------------------------------------

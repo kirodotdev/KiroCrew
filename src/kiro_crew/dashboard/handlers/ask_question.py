@@ -168,9 +168,7 @@ async def api_ask_question(request: web.Request) -> web.Response:
     try:
         body = await request.json()
     except Exception:
-        return web.json_response(
-            {"error": "invalid JSON", "code": "invalid_json"}, status=400
-        )
+        return web.json_response({"error": "invalid JSON", "code": "invalid_json"}, status=400)
     if not isinstance(body, dict):
         # Valid JSON is not necessarily an object: `[]`, `null` and bare scalars
         # all parse, then blow up on `.get()` as a 500 instead of a 400.
@@ -200,9 +198,7 @@ async def api_ask_question(request: web.Request) -> web.Response:
     try:
         questions = validate_ask_user_question(body)
     except ValidationError as exc:
-        return web.json_response(
-            {"error": str(exc), "code": "invalid_questions"}, status=400
-        )
+        return web.json_response({"error": str(exc), "code": "invalid_questions"}, status=400)
 
     try:
         timeout_secs = int(body.get("timeout_secs") or state._QUESTION_TIMEOUT_DEFAULT)
@@ -235,9 +231,7 @@ async def api_ask_question(request: web.Request) -> web.Response:
         # Raised when redaction collapses two questions into the same key, which
         # is only detectable after the redaction pass — so it surfaces here as a
         # 400 rather than from validate_ask_user_question.
-        return web.json_response(
-            {"error": str(exc), "code": "duplicate_question_key"}, status=400
-        )
+        return web.json_response({"error": str(exc), "code": "duplicate_question_key"}, status=400)
     if answers is None:
         return web.json_response({"status": "timeout", "ask_id": ask_id})
     return web.json_response({"status": "answered", "ask_id": ask_id, "answers": answers})
@@ -298,6 +292,81 @@ async def api_ask_question_pending(request: web.Request) -> web.Response:
                 }
             )
     return web.json_response(out)
+
+
+async def api_ask_question_slot_pending(request: web.Request) -> web.Response:
+    """GET a mapped slot's active stateless question cards for the ACP adapter."""
+    state: DashboardState = request.app["state"]
+    if request.get("internal_auth") is not True:
+        deny = _deny_app_token(request, "ask_question_slot_pending")
+        if deny is not None:
+            return deny
+        deny = _deny_non_owner(request, "ask_question_slot_pending")
+        if deny is not None:
+            return deny
+    slot_key = request.match_info["slot_key"]
+    if slot_key not in state._slots:
+        return web.json_response({"error": "slot not found", "code": "slot_not_found"}, status=404)
+    return web.json_response({"questions": state.pending_question_cards(slot_key)})
+
+
+async def api_ask_question_slot_answer(request: web.Request) -> web.StreamResponse:
+    """POST a validated card answer and submit its completed response as a user turn."""
+    state: DashboardState = request.app["state"]
+    if request.get("internal_auth") is not True:
+        deny = _deny_app_token(request, "ask_question_slot_answer")
+        if deny is not None:
+            return deny
+        deny = _deny_non_owner(request, "ask_question_slot_answer")
+        if deny is not None:
+            return deny
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"error": "invalid JSON", "code": "invalid_json"}, status=400)
+    if not isinstance(body, dict) or not isinstance(body.get("answers"), dict):
+        return web.json_response(
+            {"error": "answers must be an object", "code": "invalid_answers"}, status=400
+        )
+    slot_key = request.match_info["slot_key"]
+    card_id = request.match_info["card_id"]
+    try:
+        prompt = state.answer_question_card(slot_key, card_id, body["answers"])
+    except ValueError as exc:
+        return web.json_response({"error": str(exc), "code": "question_not_found"}, status=404)
+    if prompt is None:
+        return web.json_response({"ok": True, "completed": False})
+    slot = state._slots[slot_key]
+    stream = request.query.get("stream") == "1"
+    if stream and request.get("internal_auth") is not True:
+        return web.json_response({"error": "not found", "code": "slot_not_found"}, status=404)
+    if slot.running:
+        if stream:
+            return web.json_response(
+                {"error": "slot prompt is in progress", "code": "slot_busy"}, status=409
+            )
+        from kiro_crew.dashboard.chat_delivery import queue_for_next_turn
+
+        queue_for_next_turn(state, slot, prompt, directive_user_origin=True)
+    else:
+        from kiro_crew.dashboard.chat_handlers import stream_slot_response
+        from kiro_crew.dashboard.chat_runner import _run_chat
+        from kiro_crew.dashboard.turn_dispatch import spawn_guarded_turn
+
+        slot._has_reader = stream
+        slot.append("user", prompt, "msg msg-u")
+        task = spawn_guarded_turn(
+            state,
+            slot,
+            state.run_background_turn(
+                slot, _run_chat(state, slot, prompt, _directive_user_origin=True)
+            ),
+        )
+        slot.task = task
+        state.push_slots_update()
+        if stream:
+            return await stream_slot_response(request, slot)
+    return web.json_response({"ok": True, "completed": True})
 
 
 async def api_ask_question_dismiss(request: web.Request) -> web.Response:
@@ -378,9 +447,7 @@ async def api_ask_question_answer(request: web.Request) -> web.Response:
     try:
         body = await request.json()
     except Exception:
-        return web.json_response(
-            {"error": "invalid JSON", "code": "invalid_json"}, status=400
-        )
+        return web.json_response({"error": "invalid JSON", "code": "invalid_json"}, status=400)
     if not isinstance(body, dict):
         return web.json_response(
             {"error": "body must be a JSON object", "code": "invalid_body"}, status=400

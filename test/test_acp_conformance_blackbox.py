@@ -33,13 +33,26 @@ Run this gate:
 
 from __future__ import annotations
 
-import importlib.util
+import asyncio
+import contextlib
+import os
 import shutil
+import sys
 import tempfile
 import time
+from pathlib import Path
 from typing import Any, Callable
 
 import pytest
+from acp import Client, connect_to_agent
+from acp.schema import (
+    AcceptElicitationResponse,
+    ClientCapabilities,
+    ElicitationCapabilities,
+    ElicitationFormCapabilities,
+    Implementation,
+    TextContentBlock,
+)
 from acp_bb_editor import AcpEditor, agent_message_text, echo_mcp_server
 from acp_bb_gateway import FakeGateway
 
@@ -519,25 +532,128 @@ class TestReplyOptions:
 # ───────────── official SDK smoke tests (ready, skipped until vendored) ──────
 
 
-def _python_acp_sdk_present() -> bool:
-    return any(
-        importlib.util.find_spec(name) is not None
-        for name in ("acp", "agent_client_protocol", "agentclientprotocol")
+class _OfficialSdkClient(Client):
+    """Small official-SDK client that accepts one deterministic form answer."""
+
+    def __init__(self) -> None:
+        self.elicitations: asyncio.Queue[tuple[str, Any]] = asyncio.Queue()
+
+    async def request_permission(self, *_args: Any, **_kwargs: Any) -> Any:
+        raise AssertionError("unexpected permission request")
+
+    async def session_update(self, *_args: Any, **_kwargs: Any) -> None:
+        return None
+
+    async def write_text_file(self, *_args: Any, **_kwargs: Any) -> Any:
+        raise AssertionError("unexpected file write")
+
+    async def read_text_file(self, *_args: Any, **_kwargs: Any) -> Any:
+        raise AssertionError("unexpected file read")
+
+    async def create_terminal(self, *_args: Any, **_kwargs: Any) -> Any:
+        raise AssertionError("unexpected terminal creation")
+
+    async def terminal_output(self, *_args: Any, **_kwargs: Any) -> Any:
+        raise AssertionError("unexpected terminal output request")
+
+    async def release_terminal(self, *_args: Any, **_kwargs: Any) -> Any:
+        raise AssertionError("unexpected terminal release")
+
+    async def wait_for_terminal_exit(self, *_args: Any, **_kwargs: Any) -> Any:
+        raise AssertionError("unexpected terminal wait")
+
+    async def kill_terminal(self, *_args: Any, **_kwargs: Any) -> Any:
+        raise AssertionError("unexpected terminal kill")
+
+    async def complete_elicitation(self, *_args: Any, **_kwargs: Any) -> None:
+        return None
+
+    async def ext_method(self, *_args: Any, **_kwargs: Any) -> Any:
+        raise AssertionError("unexpected extension request")
+
+    async def ext_notification(self, *_args: Any, **_kwargs: Any) -> None:
+        return None
+
+    def on_connect(self, _connection: Any) -> None:
+        return None
+
+    async def create_elicitation(self, message: str, mode: Any, **_kwargs: Any) -> Any:
+        await self.elicitations.put((message, mode))
+        return AcceptElicitationResponse(action="accept", content={"answer": ["Yes"]})
+
+
+@pytest.mark.asyncio
+async def test_official_python_sdk_smoke(gateway, tmp_path) -> None:
+    """Drive the real adapter through the independently maintained ACP SDK."""
+    home = tempfile.mkdtemp(dir=str(tmp_path))
+    source_root = Path(__file__).resolve().parent.parent / "src"
+    env = {
+        **os.environ,
+        "PYTHONPATH": str(source_root) + os.pathsep + os.environ.get("PYTHONPATH", ""),
+        "KIROCREW_HOME": home,
+        "KIROCREW_SKIP_MODEL_DOWNLOAD": "1",
+        "PYTHONUNBUFFERED": "1",
+    }
+    process = await asyncio.create_subprocess_exec(
+        sys.executable,
+        "-m",
+        "kiro_crew",
+        "acp",
+        "--gateway-url",
+        gateway.url,
+        "--agent",
+        "kirocrew",
+        env=env,
+        stdin=asyncio.subprocess.PIPE,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
     )
+    assert process.stdin is not None and process.stdout is not None
+    client = _OfficialSdkClient()
+    # The SDK still labels elicitation as unstable even though this project pins
+    # the ACP v1 form contract, so opt in to decode the request it receives.
+    connection = connect_to_agent(client, process.stdin, process.stdout, use_unstable_protocol=True)
+    try:
+        initialized = await connection.initialize(
+            protocol_version=1,
+            client_capabilities=ClientCapabilities(
+                elicitation=ElicitationCapabilities(form=ElicitationFormCapabilities())
+            ),
+            client_info=Implementation(name="kirocrew-sdk-smoke", version="0"),
+        )
+        assert initialized.protocol_version == 1
+        session = await connection.new_session(cwd="/tmp", mcp_servers=[])
+        result = await connection.prompt(
+            session.session_id,
+            [TextContentBlock(type="text", text="[[OPTIONS]] [OPTIONS: Yes | No | Maybe]")],
+        )
+        assert result.stop_reason == "end_turn"
 
+        message, mode = await asyncio.wait_for(client.elicitations.get(), timeout=10)
+        assert message == "Choose one or more options"
+        schema = mode.model_dump(by_alias=True)["requestedSchema"]
+        answer = schema["properties"]["answer"]
+        assert answer["type"] == "array"
+        assert answer["items"]["enum"] == ["Yes", "No", "Maybe"]
+        assert answer["minItems"] == 1
 
-@pytest.mark.skipif(
-    not _python_acp_sdk_present(),
-    reason=(
-        "No official ACP v1 Python SDK is installable in this offline test "
-        "workspace; the raw-framing black-box gate above is authoritative. This "
-        "test is ready to drive normal flows through the SDK once it is vendored."
-    ),
-)
-def test_official_python_sdk_smoke(gateway, make_editor):  # pragma: no cover - skipped
-    # When the official SDK is present, drive initialize/new/prompt through it and
-    # validate the SDK's own decoded frames against acp_bb_schema for cross-check.
-    raise AssertionError("SDK present but SDK-driven smoke not yet implemented")
+        deadline = asyncio.get_running_loop().time() + 10
+        while not any(post["message"] == "Yes" for post in gateway.state.chat_posts):
+            if asyncio.get_running_loop().time() >= deadline:
+                raise AssertionError(
+                    f"accepted SDK answer was not forwarded: {gateway.state.chat_posts}"
+                )
+            await asyncio.sleep(0.02)
+    finally:
+        await connection.close()
+        process.stdin.close()
+        with contextlib.suppress(Exception):
+            await process.stdin.wait_closed()
+        try:
+            await asyncio.wait_for(process.wait(), timeout=10)
+        except asyncio.TimeoutError:
+            process.kill()
+            await process.wait()
 
 
 def _typescript_acp_sdk_present() -> bool:

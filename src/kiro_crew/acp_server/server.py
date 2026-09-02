@@ -32,6 +32,7 @@ from kiro_crew.acp.types import (
     JSONRPC_INVALID_PARAMS,
     JSONRPC_METHOD_NOT_FOUND,
     METHOD_CANCEL,
+    METHOD_ELICITATION_CREATE,
     METHOD_INITIALIZE,
     METHOD_PROMPT,
     METHOD_REQUEST_PERMISSION,
@@ -52,6 +53,7 @@ from kiro_crew.acp.types import (
     UPDATE_AVAILABLE_COMMANDS,
     UPDATE_CONFIG_OPTION,
     UPDATE_CURRENT_MODE,
+    UPDATE_PLAN,
     UPDATE_SESSION_INFO,
     UPDATE_TOOL_CALL,
     UPDATE_TOOL_CALL_UPDATE,
@@ -118,6 +120,31 @@ class SelectorState:
 
 class SelectorBusyError(RuntimeError):
     """The backing slot is running a prompt outside this ACP connection."""
+
+
+@dataclass(frozen=True)
+class ElicitationResult:
+    """A client response to one standard ``elicitation/create`` request."""
+
+    action: str
+    content: dict[str, Any] | None = None
+
+    @property
+    def accepted(self) -> bool:
+        return self.action == "accept" and self.content is not None
+
+
+def _elicitation_result(raw: Any) -> ElicitationResult:
+    """Decode one elicitation response without treating malformed data as input."""
+    if not isinstance(raw, dict):
+        return ElicitationResult("cancel")
+    action = raw.get("action")
+    if action in ("decline", "cancel"):
+        return ElicitationResult(action)
+    content = raw.get("content")
+    if action == "accept" and isinstance(content, dict):
+        return ElicitationResult("accept", content)
+    return ElicitationResult("cancel")
 
 
 def _merge_selector_state(
@@ -236,6 +263,9 @@ class _Session:
     # Validated, session-scoped stdio MCP servers the client asked for. Parsed
     # at session/new|load|resume; process supervision is owned by the gateway.
     mcp_servers: list[StdioMcpServer] = field(default_factory=list)
+    # Form elicitations are sent only when the ACP client explicitly advertised
+    # support during initialize; editor identity is never used as a proxy.
+    elicitation_supported: bool = False
     # True while a session/set_mode or session/set_config_option mutation is in
     # flight. Selector mutations and prompt turns are mutually exclusive per
     # session: each rejects while the other holds (see _handle_set_mode /
@@ -261,6 +291,11 @@ class SessionSink:
     def __init__(self, transport: AgentTransport, session: _Session) -> None:
         self._transport = transport
         self._session = session
+
+    @property
+    def supports_elicitation(self) -> bool:
+        """Whether this session's ACP client explicitly supports form elicitation."""
+        return self._session.elicitation_supported
 
     @property
     def cancelled(self) -> bool:
@@ -314,6 +349,15 @@ class SessionSink:
                 "_meta": {"kirocrew": {"options": list(options)}},
             }
         )
+
+    async def send_plan(
+        self, entries: list[dict[str, Any]], *, metadata: dict[str, Any] | None = None
+    ) -> None:
+        """Publish the complete execution plan through the standard ACP update."""
+        update: dict[str, Any] = {"sessionUpdate": UPDATE_PLAN, "entries": entries}
+        if metadata:
+            update["_meta"] = metadata
+        await self._update(update)
 
     async def send_tool_call(
         self,
@@ -418,6 +462,38 @@ class SessionSink:
             with contextlib.suppress(BaseException):
                 await cancel_task
 
+    async def create_elicitation(self, params: dict[str, Any]) -> ElicitationResult:
+        """Request structured user input through standard ``elicitation/create``.
+
+        Unlike a permission request, an accepted form is ordinary user input;
+        cancellation, malformed responses, and transport failure produce no answer.
+        """
+        if not self._session.elicitation_supported:
+            return ElicitationResult("unsupported")
+        request = dict(params)
+        request["sessionId"] = self._session.session_id
+        request.pop("toolCallId", None)
+        send_task = asyncio.ensure_future(
+            self._transport.send_request(METHOD_ELICITATION_CREATE, request)
+        )
+        cancel_task = asyncio.ensure_future(self._session.cancelled.wait())
+        try:
+            await asyncio.wait({send_task, cancel_task}, return_when=asyncio.FIRST_COMPLETED)
+            if cancel_task.done() and not send_task.done():
+                send_task.cancel()
+                with contextlib.suppress(BaseException):
+                    await send_task
+                return ElicitationResult("cancel")
+            try:
+                return _elicitation_result(send_task.result())
+            except Exception:
+                logger.warning("elicitation request failed", exc_info=True)
+                return ElicitationResult("cancel")
+        finally:
+            cancel_task.cancel()
+            with contextlib.suppress(BaseException):
+                await cancel_task
+
 
 def _permission_granted(result: Any) -> bool:
     """Interpret a ``session/request_permission`` response. Fail-closed."""
@@ -461,6 +537,9 @@ class SessionBackend(Protocol):
       ``(session_id, title)`` callback for live backing-session metadata updates.
       The HTTP backend uses it to forward dashboard ``slot_title`` WebSocket
       events through standard ACP ``session_info_update`` notifications.
+    * ``set_session_message_handler(handler)`` — register an async
+      ``(session_id, role, content, message_id)`` callback for finalized
+      dashboard messages on a session the ACP process owns.
     * ``register_session_info(session_id)`` — authorize title notifications for
       one session owned by this ACP process.
     """
@@ -518,12 +597,19 @@ class AcpAgentServer:
         self._backend = session_backend
         self._sessions: dict[str, _Session] = {}
         self._protocol_version: Any = DEFAULT_PROTOCOL_VERSION
+        self._form_elicitation_supported = False
         # Retain refs to fire-and-forget backend-cancel tasks so they are not
         # garbage-collected mid-flight (asyncio only weakly references them).
         self._cancel_tasks: set[asyncio.Task[None]] = set()
         subscribe = getattr(self._backend, "set_session_info_handler", None)
         if callable(subscribe):
             subscribe(self._handle_session_info)
+        subscribe_messages = getattr(self._backend, "set_session_message_handler", None)
+        if callable(subscribe_messages):
+            subscribe_messages(self._handle_session_message)
+        subscribe_plans = getattr(self._backend, "set_session_plan_handler", None)
+        if callable(subscribe_plans):
+            subscribe_plans(self._handle_session_plan)
 
     async def serve(self) -> None:
         """Run until the editor closes the pipe."""
@@ -534,6 +620,19 @@ class AcpAgentServer:
         session = self._sessions.get(session_id)
         if session is not None:
             await SessionSink(self._transport, session).send_session_info(title)
+
+    async def _handle_session_message(
+        self, session_id: str, role: str, content: str, message_id: str
+    ) -> None:
+        """Forward a finalized dashboard row only to its owning editor session."""
+        session = self._sessions.get(session_id)
+        if session is None:
+            return
+        sink = SessionSink(self._transport, session)
+        if role == "user":
+            await sink.send_user_text(content, message_id=message_id)
+        elif role == "assistant":
+            await sink.send_text(content, message_id=message_id)
 
     def _register_session_info(self, session_id: str) -> None:
         register = getattr(self._backend, "register_session_info", None)
@@ -571,6 +670,15 @@ class AcpAgentServer:
             await self._transport.send_error(
                 req_id, JSONRPC_METHOD_NOT_FOUND, f"Method not found: {method}"
             )
+
+    async def _handle_session_plan(self, session_id: str, plan: dict[str, Any]) -> None:
+        """Forward a complete dashboard task plan to its owning editor session."""
+        session = self._sessions.get(session_id)
+        entries = plan.get("entries") if isinstance(plan, dict) else None
+        if session is None or not isinstance(entries, list):
+            return
+        metadata = plan.get("_meta") if isinstance(plan.get("_meta"), dict) else None
+        await SessionSink(self._transport, session).send_plan(entries, metadata=metadata)
 
     def _command_backend(self) -> "Any | None":
         if self._backend is not None and callable(
@@ -706,6 +814,15 @@ class AcpAgentServer:
                 SUPPORTED_PROTOCOL_VERSION,
             )
         self._protocol_version = SUPPORTED_PROTOCOL_VERSION
+        client_capabilities = params.get("clientCapabilities")
+        elicitation = (
+            client_capabilities.get("elicitation")
+            if isinstance(client_capabilities, dict)
+            else None
+        )
+        self._form_elicitation_supported = bool(
+            isinstance(elicitation, dict) and isinstance(elicitation.get("form"), dict)
+        )
         supports_load = self._supports("supports_load")
         session_capabilities: dict[str, dict[str, Any]] = {}
         if self._supports("supports_list"):
@@ -742,7 +859,12 @@ class AcpAgentServer:
                 return
         else:
             session_id = f"{AGENT_NAME}-{uuid.uuid4().hex[:12]}"
-        self._sessions[session_id] = _Session(session_id=session_id, cwd=cwd, mcp_servers=servers)
+        self._sessions[session_id] = _Session(
+            session_id=session_id,
+            cwd=cwd,
+            mcp_servers=servers,
+            elicitation_supported=self._form_elicitation_supported,
+        )
         self._register_session_info(session_id)
         if not await self._host_session_mcp(session_id, servers, req_id):
             # session/new created the backing slot above; a failed MCP setup must
@@ -785,7 +907,12 @@ class AcpAgentServer:
                 req_id, JSONRPC_INTERNAL_ERROR, "Failed to load session"
             )
             return
-        session = _Session(session_id=session_id, cwd=cwd, mcp_servers=servers)
+        session = _Session(
+            session_id=session_id,
+            cwd=cwd,
+            mcp_servers=servers,
+            elicitation_supported=self._form_elicitation_supported,
+        )
         self._sessions[session_id] = session
         self._register_session_info(session_id)
         if not await self._host_session_mcp(session_id, servers, req_id):
@@ -852,7 +979,12 @@ class AcpAgentServer:
                 req_id, JSONRPC_INTERNAL_ERROR, "Failed to resume session"
             )
             return
-        self._sessions[session_id] = _Session(session_id=session_id, cwd=cwd, mcp_servers=servers)
+        self._sessions[session_id] = _Session(
+            session_id=session_id,
+            cwd=cwd,
+            mcp_servers=servers,
+            elicitation_supported=self._form_elicitation_supported,
+        )
         self._register_session_info(session_id)
         if not await self._host_session_mcp(session_id, servers, req_id):
             return

@@ -239,6 +239,89 @@ class QuestionCoordinator:
         return True
 
     @staticmethod
+    def pending_for_slot(state: Any, slot_key: str) -> list[dict]:
+        """Return only renderable stateless questions for one owned slot."""
+        slot = state._slots.get(slot_key)
+        if slot is None:
+            return []
+        out: list[dict] = []
+        for card_id, record in slot._question_pending.items():
+            questions = record.get("questions")
+            if record.get("blocking") or not isinstance(questions, list):
+                continue
+            answers = record.get("answers")
+            out.append(
+                {
+                    "question_id": card_id,
+                    "state": "pending",
+                    "questions": questions,
+                    "answers": dict(answers) if isinstance(answers, dict) else {},
+                }
+            )
+        return out
+
+    @staticmethod
+    def answer_card(state: Any, slot_key: str, card_id: str, answers: dict[str, Any]) -> str | None:
+        """Validate and retain an answer; return a user prompt once the card is complete."""
+        slot = state._slots.get(slot_key)
+        if slot is None:
+            raise ValueError("unknown slot")
+        record = slot._question_pending.get(card_id)
+        if not isinstance(record, dict) or record.get("blocking"):
+            raise ValueError("question card not found")
+        questions = record.get("questions")
+        if not isinstance(questions, list) or not questions:
+            raise ValueError("question card has no questions")
+        stored = record.setdefault("answers", {})
+        if not isinstance(stored, dict):
+            raise ValueError("question card has invalid answer state")
+        by_text = {
+            question.get("question"): question
+            for question in questions
+            if isinstance(question, dict)
+        }
+        for question_text, answer in answers.items():
+            question = by_text.get(question_text)
+            if question is None:
+                raise ValueError("answer targets an unknown question")
+            labels = {
+                option.get("label")
+                for option in question.get("options", [])
+                if isinstance(option, dict) and isinstance(option.get("label"), str)
+            }
+            if question.get("multiSelect"):
+                if (
+                    not isinstance(answer, list)
+                    or not answer
+                    or any(not isinstance(value, str) or value not in labels for value in answer)
+                ):
+                    raise ValueError("answer must select one or more offered options")
+                stored[question_text] = list(dict.fromkeys(answer))
+            else:
+                if not isinstance(answer, str) or answer not in labels:
+                    raise ValueError("answer must be one offered option")
+                stored[question_text] = answer
+        if any(
+            question.get("question") not in stored
+            for question in questions
+            if isinstance(question, dict)
+        ):
+            return None
+        prompt_lines = []
+        for question in questions:
+            if not isinstance(question, dict):
+                continue
+            text = question.get("question")
+            answer = stored.get(text)
+            if isinstance(answer, list):
+                answer = ", ".join(answer)
+            prompt_lines.append(f"{text}: {answer}")
+        slot._question_pending.pop(card_id, None)
+        state._broadcast_question_retired(slot_key, [card_id])
+        state._push_slots()
+        return "\n".join(prompt_lines)
+
+    @staticmethod
     def broadcast_retired(state: Any, slot_key: str, card_ids: list[str]) -> None:
         for card_id in card_ids:
             if not card_id:

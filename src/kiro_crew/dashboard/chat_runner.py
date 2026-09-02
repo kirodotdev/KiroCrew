@@ -1774,6 +1774,8 @@ def _tool_meta(event: "LLMEvent") -> dict[str, str] | None:
         # historical rows gate-able identically to live ones.
         "kind": _redact_tool_field(event.tool_kind, limit=64),
     }
+    if event.tool_name:
+        meta["tool_name"] = _redact_tool_field(event.tool_name, limit=128)
     # Editor follow-along ("Zed follows the agent"): the ACP-server adapter
     # reads these locations off the SSE tool frame (_build_stream_chunk) and
     # forwards them on the session/update wire. Absent when the tool has no
@@ -8003,6 +8005,7 @@ async def _run_chat(
                         "todo_update",
                         {"slot": slot.key, "todo": slot.todo_payload()},
                     )
+                    state._broadcast_acp_plan(slot.key, slot.todo_payload())
             elif event.kind == EVENT_SUBAGENT_LIST:
                 # kiro-cli per-subagent state (native use_subagent crews).
                 # Reconcile one Activity card per sub-agent (spawn/done).

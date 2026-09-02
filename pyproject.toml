@@ -60,6 +60,9 @@ dev = [
     # so those tests actually run; the runtime dependency stays optional, because
     # a user who does not enable Teams should not carry a crypto library.
     "PyJWT[crypto]==2.13.0",
+    # Independent ACP client runtime used by the black-box interoperability
+    # smoke test; pin its protocol model to keep CI wire coverage reproducible.
+    "agent-client-protocol==0.12.1",
 ]
 
 [tool.black]

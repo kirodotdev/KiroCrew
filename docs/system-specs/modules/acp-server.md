@@ -56,8 +56,17 @@ reconnects without interrupting active prompt SSE streams.
 
 `--standalone` is an offline diagnostic fallback that runs turns through an
 in-process `SessionManager` (`gateway.make_prompt_handler`); those turns are not
-visible in the dashboard. The ACP-specific code never reads or mutates session
-history files directly — session state is owned by the backend.
+visible in the dashboard. Kiro Crew also projects its dashboard task snapshots
+into the standard ACP `session/update` `plan` notification. Each complete
+`todo_update` snapshot is sent only to the ACP adapter registered for that slot;
+completed tasks map to `completed`, the first unfinished task to `in_progress`,
+and later unfinished tasks to `pending`. The adapter sends the full entry list on
+every change, as required by ACP plan replacement semantics. The underlying
+`todo_list` bookkeeping call is internal and is not projected as an ordinary ACP
+tool card, so editors show the useful plan entry without a duplicate tool-activity
+row. Browser and app WebSocket clients never receive this ACP-only event. The
+ACP-specific code never reads or mutates session history files directly — session
+state is owned by the backend.
 
 ## Method Surface
 
@@ -69,7 +78,7 @@ Client→agent requests answered:
 | `session/new` | Validates `cwd` (absolute) + `mcpServers`; mints/creates a session; replies `{sessionId}` |
 | `session/prompt` | Validates `sessionId` + `prompt` blocks; delegates to the `PromptHandler`; replies `{stopReason}` |
 | `session/load` | **Backend-gated.** Activates a session and replays its history as `session/update`s |
-| `session/list` | **Backend-gated.** Lists sessions, project-scoped by `cwd` |
+| `session/list` | **Backend-gated.** Lists project-scoped sessions by `cwd`, plus ACP-created relocation candidates |
 | `session/resume` | **Backend-gated.** Resumes a session without replaying history |
 | `session/set_mode` / `set_model` / `set_config_option` | `-32601 Method not found` — not implemented, never no-oped |
 | anything else | `-32601 Method not found` |
@@ -115,11 +124,38 @@ Without a backend, only the self-contained surface is advertised
 After `session/new`, `session/load`, or `session/resume` succeeds, a backend with
 `get_available_commands` emits the standard `available_commands_update` session
 notification. The default HTTP backend reads the gateway's provider-aware
-`GET /api/slash-commands` catalog, removes the display-only leading `/`, filters
-malformed or duplicate entries, and advertises only commands the dashboard can
-execute. Discovery is best-effort: an unavailable catalog never fails session
-creation or recovery, and standalone mode advertises nothing until it has an
-equivalent command-discovery backend.
+`GET /api/slash-commands` catalog through the loopback internal-auth route, removes the
+display-only leading `/`, filters malformed or duplicate entries, and advertises only commands
+the dashboard can execute. Discovery is best-effort: an unavailable catalog never fails session
+creation or recovery, and standalone mode advertises nothing until it has an equivalent
+command-discovery backend.
+
+### Editor elicitation
+
+A client that explicitly advertises `clientCapabilities.elicitation.form` can
+receive standard `elicitation/create` form requests. `SessionSink.create_elicitation`
+uses a session-scoped request without a tool-call id, races it against
+`session/cancel`, and treats malformed, declined, cancelled, EOF, and transport
+errors as no answer. It is separate from `session/request_permission`: elicitation
+never grants a tool or changes trust state.
+
+The daemon-backed HTTP bridge reads only the mapped slot's pending, validated
+question-card state. It projects each unanswered question to one object form
+with an `answer` field (single-select strings, or multi-select string arrays),
+and tracks the request by slot, card id, and question index. An accepted value
+uses the gateway's idempotent answer operation; the gateway validates it,
+records the answer before submission, and streams the resulting ordinary user
+turn through the same ACP session. The trailing `[OPTIONS:]` fallback likewise
+submits and streams its selected labels as an ordinary user turn. Adapter close
+or session cancellation leaves a card pending for recovery after reconnect.
+
+The existing `_meta.kirocrew.options` extension remains for clients without the
+form capability. For elicitation-capable clients, a bounded streaming filter
+removes only a complete trailing `[OPTIONS:]` marker before it reaches the
+editor; the active slot's structured options are then a multi-select array
+fallback only when no canonical question is pending. `[OPTION:]` remains the
+explicit single-select form. Dashboard and messaging renderers remain
+unchanged.
 
 ## JSON-RPC framing strictness (`transport.py`)
 
@@ -351,6 +387,23 @@ through a logical or symlinked path (e.g. `/home/user/project`) matches a slot
 persisted with its physical path (e.g. `/local/home/user/project`).
 Canonicalization is comparison-only: the slot's original `project` spelling is
 returned as the `cwd`.
+
+For an ACP session that is open in an editor, the authenticated dashboard
+WebSocket subscription also carries a sanitized `acp_message` event for finalized
+user and assistant rows in that registered slot. The event contains only slot,
+role, redacted content, and durable `meta.mid`; the adapter maps it to standard
+user/agent message updates and keeps a bounded message-id cache across reconnects.
+An internal ACP turn stamps its own slot id onto its durable rows, so the adapter
+records but does not echo that request or its streamed reply back to the editor.
+The browser-facing `chat_message` payload is never reused because it can carry
+metadata that is not safe for the editor subscription.
+
+An ACP-created slot (`acp-*`) whose persisted project no longer matches the
+requested CWD is a relocation fallback only when no normally project-scoped
+session matches. Its list descriptor is projected onto the requested CWD,
+allowing the editor to select it; `session/load` then persists that CWD before
+replaying history. Ordinary dashboard slots remain strictly project-scoped, so
+moving one editor workspace does not expose unrelated dashboard conversations.
 
 ## CLI Entrypoint (`cli_acp.py`)
 
