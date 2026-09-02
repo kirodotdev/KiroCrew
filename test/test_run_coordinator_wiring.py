@@ -11,6 +11,7 @@ import pytest
 
 from kiro_crew.run_coordinator import (
     CommandOperation,
+    CoordinatorDecision,
     MemoryRunCoordinator,
     OwnerLease,
     SQLiteRunCoordinator,
@@ -184,6 +185,53 @@ async def test_shadow_request_construction_failure_is_contained() -> None:
 
 
 @pytest.mark.asyncio
+async def test_starting_transition_retries_a_lost_commit_response() -> None:
+    coordinator = AsyncMock()
+    committed = MagicMock()
+    committed.decision = CoordinatorDecision.UNCHANGED
+    committed.value.version = 4
+    coordinator.mark_starting.side_effect = [OSError("response lost"), committed]
+    manager = SubagentManager(
+        sessions=MagicMock(),
+        ctx_builder=MagicMock(),
+        coordinator=coordinator,
+    )
+    info = SubagentInfo(id="starting-response-lost", task="task")
+    info._coordinator_command = MagicMock()
+    info._coordinator_fence = MagicMock()
+    info._coordinator_version = 3
+
+    await manager._coordinator_mark_starting(info)
+
+    assert coordinator.mark_starting.await_count == 2
+    assert info._coordinator_version == 4
+    assert info._coordinator_started is True
+
+
+@pytest.mark.asyncio
+async def test_running_transition_retries_a_lost_commit_response() -> None:
+    coordinator = AsyncMock()
+    committed = MagicMock()
+    committed.decision = CoordinatorDecision.UNCHANGED
+    committed.value.version = 5
+    coordinator.mark_running.side_effect = [OSError("response lost"), committed]
+    manager = SubagentManager(
+        sessions=MagicMock(),
+        ctx_builder=MagicMock(),
+        coordinator=coordinator,
+    )
+    info = SubagentInfo(id="running-response-lost", task="task")
+    info._coordinator_fence = MagicMock()
+    info._coordinator_version = 4
+
+    await manager._coordinator_mark_running(info)
+
+    assert coordinator.mark_running.await_count == 2
+    assert info._coordinator_version == 5
+    assert info._coordinator_running is True
+
+
+@pytest.mark.asyncio
 async def test_run_records_shadow_submission_before_execution() -> None:
     order: list[str] = []
     coordinator = AsyncMock()
@@ -289,6 +337,33 @@ async def test_failed_start_settlement_keeps_waiting_run_retryable() -> None:
 
 
 @pytest.mark.asyncio
+async def test_failed_lifecycle_start_transition_never_applies_command() -> None:
+    manager = SubagentManager(sessions=MagicMock(), ctx_builder=MagicMock())
+    manager._run_inner = AsyncMock()
+    manager._teardown_run_session = AsyncMock()
+    manager._claim_finalize = MagicMock(return_value=True)
+    manager._coordinator_mark_starting = AsyncMock(side_effect=OSError("write failed"))
+    manager._start_coordinator_heartbeat = MagicMock()
+    manager.command_authority.execution_started = AsyncMock()
+    info = SubagentInfo(
+        id="uncommitted-start",
+        task="task",
+        _coordinator_admitted=True,
+        _coordinator_waiting=True,
+    )
+    info._coordinator_fence = MagicMock()
+
+    await manager._run(info)
+
+    assert info._coordinator_waiting is True
+    assert info._coordinator_claim_uncertain is True
+    assert info.done is False
+    manager.command_authority.execution_started.assert_not_awaited()
+    manager._run_inner.assert_not_awaited()
+    manager._claim_finalize.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_lost_start_settlement_response_reconciles_before_execution() -> None:
     manager = SubagentManager(sessions=MagicMock(), ctx_builder=MagicMock())
     manager._run_inner = AsyncMock()
@@ -313,14 +388,39 @@ async def test_lost_start_settlement_response_reconciles_before_execution() -> N
 
 
 @pytest.mark.asyncio
-async def test_queued_cancel_stops_the_authority_lease() -> None:
+async def test_queued_cancel_keeps_authority_lease_until_terminal_commit() -> None:
     manager = SubagentManager(sessions=MagicMock(), ctx_builder=MagicMock())
-    manager._unqueue = MagicMock(return_value=[{"_preassigned_id": "queued-run"}])
+    queued = {"_preassigned_id": "queued-run"}
+    manager._unqueue = MagicMock(return_value=[queued])
+    manager._finalize_queued_cancel = AsyncMock()
     manager.command_authority.stop_execution_heartbeat = AsyncMock()
 
     assert await manager.cancel("queued-run") is True
 
-    manager.command_authority.stop_execution_heartbeat.assert_awaited_once_with("queued-run")
+    manager.command_authority.stop_execution_heartbeat.assert_not_awaited()
+    manager._finalize_queued_cancel.assert_awaited_once_with(queued)
+
+
+@pytest.mark.asyncio
+async def test_queued_cancel_preserves_silent_delivery_setting() -> None:
+    manager = SubagentManager(sessions=MagicMock(), ctx_builder=MagicMock(), on_done=AsyncMock())
+    manager._safe_announce = AsyncMock()
+
+    await manager._finalize_queued_cancel(
+        {
+            "_preassigned_id": "silent-queued-run",
+            "task": "task",
+            "conversation_key": "subagent:continued-run",
+            "batch_id": "silent-wave",
+            "batch_total": 1,
+            "silent": True,
+        }
+    )
+
+    manager._safe_announce.assert_awaited_once()
+    announced = manager._safe_announce.await_args.args[0]
+    assert announced.silent is True
+    assert announced.conversation_key == "subagent:continued-run"
 
 
 @pytest.mark.asyncio

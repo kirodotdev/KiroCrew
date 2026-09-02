@@ -880,6 +880,7 @@ class TestReaperOffloadsTheSweep:
             patch.object(asyncio.get_running_loop(), "run_in_executor", side_effect=_capture),
             patch.object(mgr, "_sample_live_costs") as sample,
             patch.object(mgr, "_rebuild_conversation_registry", new=AsyncMock()),
+            patch.object(mgr, "_drain_pending_outbox", new=AsyncMock()),
         ):
             task = asyncio.ensure_future(mgr._reaper_loop())
             await asyncio.sleep(0.05)
@@ -1818,12 +1819,13 @@ class TestAnnounceDigestFlush:
         mark.assert_not_called()
         assert info._digest_settle_ids == ["m1"]
 
-    def test_settle_swallows_tombstone_failure(self) -> None:
+    @pytest.mark.asyncio
+    async def test_settle_swallows_tombstone_failure(self) -> None:
         mgr = _manager()
         info = _info()
         info._digest_settle_ids = ["m1"]
         with patch.object(sa, "mark_delivered", side_effect=OSError):
-            mgr._settle_digest_holds(info)
+            await mgr._settle_digest_holds(info)
         assert info._digest_settle_ids == []
 
 

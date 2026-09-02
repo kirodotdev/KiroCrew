@@ -316,13 +316,34 @@ class RunEventCoordinator(ManagerComponent):
         """Execute a subagent task in its own session."""
         session_key = info.conversation_key or f"subagent:{info.id}"
         try:
-            if info._coordinator_admitted:
+            if not info._coordinator_admitted:
+                await self._manager._shadow_submit_accepted_run(info)
+            else:
+                try:
+                    await self._manager._coordinator_mark_starting(info)
+                except Exception:
+                    # A lost lifecycle response is retried inside the transition.
+                    # If both attempts fail, command settlement must not run: it
+                    # would apply a command whose STARTING state is still unknown.
+                    info._coordinator_claim_uncertain = True
+                    logger.warning(
+                        "Subagent %s starting transition is uncertain",
+                        info.id,
+                        exc_info=True,
+                    )
+                    return
                 try:
                     await self._manager.command_authority.execution_started(info.id)
                 except Exception:
                     try:
+                        # The command fence makes the same result idempotent.
+                        # Reconcile a commit whose response was lost before
+                        # deciding that recovery must own the accepted run.
                         await self._manager.command_authority.execution_started(info.id)
                     except Exception:
+                        # The claimed command remains the only safe retry path.
+                        # Keep the live record cancellable and suppress terminal
+                        # delivery until cancellation or recovery settles it.
                         info._coordinator_claim_uncertain = True
                         await self._manager.command_authority.stop_execution_heartbeat(info.id)
                         logger.warning(
@@ -332,8 +353,7 @@ class RunEventCoordinator(ManagerComponent):
                         )
                         return
                 info._coordinator_waiting = False
-            else:
-                await self._manager._shadow_submit_accepted_run(info)
+                self._manager._start_coordinator_heartbeat(info)
             await asyncio.wait_for(
                 self._manager._run_inner(info, session_key), timeout=self._manager._default_timeout
             )
@@ -487,7 +507,7 @@ class RunEventCoordinator(ManagerComponent):
         # re-raise, so by the time we reach this await the cancellation has been
         # consumed and `shield` would simply wait out the full _ON_DONE_TIMEOUT
         # injection cap — holding `cancel_all()`'s gather for up to 20 minutes.
-        # The report is registered in `self._report_tasks`, so `cancel_all()`'s
+        # The report is registered in `self._manager._report_tasks`, so `cancel_all()`'s
         # bounded drain owns it from here.
         if report_task is not None and not self._manager._shutting_down:
             await self._manager._await_report(report_task)
@@ -760,6 +780,7 @@ class RunEventCoordinator(ManagerComponent):
                 )
             # Detect CC provider to skip permission event loop
             is_cc = self._manager._is_cc_provider(client)
+        await self._manager._coordinator_mark_running(info)
         # Intentionally check info.agent (not resolved `agent`) so only
         # explicitly requested agents skip _SYSTEM_PREFIX (defense-in-depth).
         named_agent = bool(info.agent and _AGENT_NAME_RE.fullmatch(info.agent))

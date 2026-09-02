@@ -57,6 +57,7 @@ from kiro_crew.context_management import (
     cap_result_file,
     evict_completed_agents,
 )
+from kiro_crew.dashboard.chat_utils import dashboard_slot_key
 from kiro_crew.effort import effort_settings_key, model_supports_effort
 from kiro_crew.executors import maintenance_executor, subprocess_executor
 from kiro_crew.hooks import (
@@ -94,10 +95,18 @@ from kiro_crew.resource_status import cached_admission_check
 from kiro_crew.run_coordinator import (
     CommandOperation,
     CoordinatorDecision,
+    DeliveryState,
+    OutboxEvent,
+    RunCommand,
+    RunCompletion,
     RunCoordinator,
+    RunFence,
+    RunOutcome,
     SQLiteRunCoordinator,
     SubmitRun,
+    TerminalRun,
 )
+from kiro_crew.run_coordinator.delivery import OutboxDeliveryAdapter
 from kiro_crew.security import (
     redact_and_truncate,
     redact_credentials,
@@ -109,7 +118,12 @@ from kiro_crew.session_surface import has_dashboard_surface
 from kiro_crew.session_workspace import result_path as _ws_result_path
 from kiro_crew.slack.format import extract_options
 from kiro_crew.stats import Stats
-from kiro_crew.subagent_command_authority import AdmittedExecution, SubagentCommandAuthority
+from kiro_crew.subagent_command_authority import (
+    EXECUTION_LEASE_SECONDS,
+    AdmittedExecution,
+    AuthorityOutcomeUncertain,
+    SubagentCommandAuthority,
+)
 from kiro_crew.subagent_completion_meta import (
     OUTCOME_FAILED,
     OUTCOME_INTERRUPTED,
@@ -443,6 +457,7 @@ def _describe_exception(exc: BaseException) -> str:
 
 
 _MAX_DONE_RESULT_LEN = 50_000  # cap subagent_done payload to avoid bloating WS frames
+_OUTBOX_RESULT_SUMMARY_LEN = 4_000
 
 
 def _done_result(text: str) -> str:
@@ -484,6 +499,8 @@ _RECOVERY_SLOT_WAIT_SECS = 60.0
 _REPORT_DRAIN_TIMEOUT = (
     30.0  # max seconds cancel_all() waits for shielded terminal reports to drain
 )
+_TERMINAL_RETRY_SECONDS = 1.0
+_OUTBOX_DRAIN_BATCH_SIZE = 16
 # Max seconds a cancelled run holds cancellation open for an in-flight off-loop
 # state.json write worker (#6306 review; widened to every off-loop writer by
 # #6308): long enough for any healthy fsync, short enough that a wedged FS
@@ -1300,10 +1317,24 @@ class SubagentInfo:
     # compatibility executor, so run start must settle that durable command.
     _coordinator_admitted: bool = False
     # True while a keyed run is queued or awaiting approval.
+    _coordinator_command: RunCommand | None = None
+    _coordinator_fence: RunFence | None = None
+    _coordinator_version: int = 0
     _coordinator_waiting: bool = False
     # Durable start settlement is unknown, so terminal delivery must wait for
     # cancellation retry or fenced recovery.
     _coordinator_claim_uncertain: bool = False
+    _coordinator_started: bool = False
+    _coordinator_running: bool = False
+    _delivery_event_id: str = ""
+    _delivery_failed: bool = False
+    _delivery_retry: bool = False
+    # Stable owner for in-process durable retries. The dashboard slot may arm a
+    # new plan between attempts and replace its tracker; retaining the original
+    # tracker preserves a cancellation that belongs to this completion.
+    _delivery_orchestration_tracker: Any = None
+    _delivery_batch_progress: dict[str, Any] | None = None
+    _delivery_batch_final: bool = False
     # True when the gateway QUEUED this completion's injection because the
     # parent's slot was busy. Delivery is not consumption: the announce sits in
     # the slot queue until a turn drains it, and that wait is bounded only by the
@@ -1472,6 +1503,26 @@ class SubagentInfo:
         return "completed"
 
 
+@dataclass
+class _OutboxDeliveryContext:
+    info: SubagentInfo
+    source: str
+    injection_timeout_reason: str
+    mark_delivered_on_success: bool
+    settle_digest: bool
+    teardown_done: asyncio.Event | None
+    effects_fired: bool = False
+    callback_started: bool = False
+
+
+class _TerminalCommitRejected(Exception):
+    """The coordinator permanently rejected this executor's terminal fence."""
+
+
+class _OutboxDeliveryRetry(Exception):
+    """The destination did not accept an outbox event and should retry soon."""
+
+
 # Callback: (subagent_info) -> None
 AnnounceCallback = Callable[[SubagentInfo], Awaitable[None]]
 
@@ -1632,6 +1683,13 @@ class SubagentManager:
         # at async run entry during migration.
         self._coordinator = coordinator or SQLiteRunCoordinator()
         self.command_authority = SubagentCommandAuthority(self._coordinator, self)
+        self._outbox_contexts: dict[str, _OutboxDeliveryContext] = {}
+        self._outbox_live_contexts: dict[str, _OutboxDeliveryContext] = {}
+        self._lease_tasks: dict[str, asyncio.Task[None]] = {}
+        self._outbox_delivery = OutboxDeliveryAdapter(
+            self._coordinator,
+            self._deliver_outbox_event,
+        )
         self._lifecycle: SubagentLifecycle[SubagentInfo] = SubagentLifecycle()
         # follow_up watchers (spawn_steer mode="follow_up"), keyed by run id.
         # Manager-OWNED on purpose: these tasks can spawn a brand-new run
@@ -1687,6 +1745,7 @@ class SubagentManager:
         # finalize_batch alongside _batch_submitted.
         self._batch_progress_ts: dict[str, float] = {}
         self._reaper_task: asyncio.Task | None = None  # type: ignore[type-arg]
+        self._reconcile_task: asyncio.Task | None = None  # type: ignore[type-arg]
         # Cache global approval_mode at init to avoid disk I/O on every
         # parentless spawn (cron, webhooks).
         try:
@@ -1881,6 +1940,12 @@ class SubagentManager:
     async def _reconcile_orphans(self) -> None:
         return await self._monitor._reconcile_orphans_impl()
 
+    def _reap_orphan_process(self, state: dict[str, Any]) -> bool:
+        return self._monitor._reap_orphan_process_impl(state)
+
+    async def _drain_pending_outbox(self) -> None:
+        return await self._monitor._drain_pending_outbox_impl()
+
     @staticmethod
     def _is_pid_alive(pid: int) -> bool:
         """Check if a PID is still running."""
@@ -2028,6 +2093,33 @@ class SubagentManager:
     def _claim_finalize(self, info: SubagentInfo, *, supersede_recovery: bool = False) -> bool:
         return self._terminal._claim_finalize_impl(info, supersede_recovery=supersede_recovery)
 
+    async def _coordinator_mark_starting(self, info: SubagentInfo) -> None:
+        return await self._terminal._coordinator_mark_starting_impl(info)
+
+    async def _coordinator_mark_running(self, info: SubagentInfo) -> None:
+        return await self._terminal._coordinator_mark_running_impl(info)
+
+    def _start_coordinator_heartbeat(self, info: SubagentInfo) -> None:
+        return self._terminal._start_coordinator_heartbeat_impl(info)
+
+    async def _stop_coordinator_heartbeat(self, run_id: str) -> None:
+        return await self._terminal._stop_coordinator_heartbeat_impl(run_id)
+
+    def _coordinator_outcome(self, info: SubagentInfo) -> RunOutcome:
+        return self._terminal._coordinator_outcome_impl(info)
+
+    def _completion_payload(self, info: SubagentInfo) -> str:
+        return self._terminal._completion_payload_impl(info)
+
+    async def _commit_terminal_event(self, info: SubagentInfo) -> OutboxEvent | None:
+        return await self._terminal._commit_terminal_event_impl(info)
+
+    def _info_from_outbox(self, event: OutboxEvent) -> SubagentInfo:
+        return self._terminal._info_from_outbox_impl(event)
+
+    async def _deliver_outbox_event(self, event: OutboxEvent) -> bool:
+        return await self._terminal._deliver_outbox_event_impl(event)
+
     async def _report_terminal(
         self,
         info: SubagentInfo,
@@ -2065,6 +2157,9 @@ class SubagentManager:
             settle_digest=settle_digest,
             teardown_done=teardown_done,
         )
+
+    async def _reject_waiting_before_terminal(self, info: SubagentInfo, error: str) -> None:
+        return await self._terminal._reject_waiting_before_terminal_impl(info, error)
 
     def _spawn_terminal_report(
         self,
@@ -2152,6 +2247,9 @@ class SubagentManager:
         _from_queue: bool = False,
         _preassigned_id: str = "",
         _coordinator_admitted: bool = False,
+        _coordinator_command: RunCommand | None = None,
+        _coordinator_fence: RunFence | None = None,
+        _coordinator_version: int = 0,
     ) -> SubagentInfo | None:
         return self._admission.spawn_impl(
             task,
@@ -2177,46 +2275,55 @@ class SubagentManager:
             _from_queue,
             _preassigned_id,
             _coordinator_admitted,
+            _coordinator_command,
+            _coordinator_fence,
+            _coordinator_version,
         )
 
     async def _safe_announce(self, info: SubagentInfo) -> None:
         return await self._admission._safe_announce_impl(info)
 
     def _announce_rejection(
-        self, info: SubagentInfo, *, coordinator_admitted: bool = False
+        self,
+        info: SubagentInfo,
+        *,
+        coordinator_admitted: bool = False,
+        coordinator_command: RunCommand | None = None,
+        coordinator_fence: RunFence | None = None,
+        coordinator_version: int = 0,
     ) -> SubagentInfo:
         return self._admission._announce_rejection_impl(
-            info, coordinator_admitted=coordinator_admitted
+            info,
+            coordinator_admitted=coordinator_admitted,
+            coordinator_command=coordinator_command,
+            coordinator_fence=coordinator_fence,
+            coordinator_version=coordinator_version,
         )
 
     async def announce_durable_rejection(self, info: SubagentInfo | AdmittedExecution) -> None:
-        """Announce a keyed batch rejection, including after uncertain settlement."""
-        if isinstance(info, AdmittedExecution):
-            try:
-                run = await self._coordinator.get_run(info.id)
-            except Exception:
-                logger.warning(
-                    "Failed to hydrate rejected run %s before terminal delivery",
-                    info.id,
-                    exc_info=True,
-                )
-                run = None
-            info = SubagentInfo(
-                id=info.id,
-                task=info.task,
-                started=run.created_at if run is not None else time.time(),
-                done=info.done,
-                queued=info.queued,
-                error=info.error,
-                parent_session_key=run.parent_session if run is not None else "",
-                agent=run.agent if run is not None else "",
-                silent=info.silent,
-                batch_id=info.batch_id,
-                batch_total=info.batch_total,
-                conversation_key=run.conversation_key if run is not None else "",
-            )
-        if info.batch_id and self._on_done:
-            await self._safe_announce(info)
+        return await self._admission.announce_durable_rejection_impl(info)
+
+    def _rollback_unstarted_registration(
+        self,
+        info: SubagentInfo,
+        prior_start: float,
+        occupied_at: float,
+    ) -> None:
+        return self._admission._rollback_unstarted_registration_impl(info, prior_start, occupied_at)
+
+    def _spawn_announcement(self, info: SubagentInfo) -> "asyncio.Task":  # type: ignore[type-arg]
+        return self._admission._spawn_announcement_impl(info)
+
+    async def _report_synthetic_batch_terminal(self, info: SubagentInfo) -> None:
+        return await self._admission._report_synthetic_batch_terminal_impl(info)
+
+    def _spawn_synthetic_batch_terminal_report(
+        self, info: SubagentInfo
+    ) -> "asyncio.Task":  # type: ignore[type-arg]
+        return self._admission._spawn_synthetic_batch_terminal_report_impl(info)
+
+    async def _finalize_queued_rejection(self, info: SubagentInfo) -> None:
+        return await self._admission._finalize_queued_rejection_impl(info)
 
     def _should_stagger_queue(self, now: float) -> tuple[bool, bool]:
         return self._admission._should_stagger_queue_impl(now)
@@ -2251,6 +2358,9 @@ class SubagentManager:
         cwd: str = "",
         _preassigned_id: str = "",
         _coordinator_admitted: bool = False,
+        _coordinator_command: RunCommand | None = None,
+        _coordinator_fence: RunFence | None = None,
+        _coordinator_version: int = 0,
     ) -> SubagentInfo | None:
         return self._continuation.continue_conversation_impl(
             conv_id,
@@ -2262,6 +2372,9 @@ class SubagentManager:
             cwd,
             _preassigned_id,
             _coordinator_admitted,
+            _coordinator_command,
+            _coordinator_fence,
+            _coordinator_version,
         )
 
     def recorded_cwd(self, conv_id: str) -> str:
@@ -2379,8 +2492,17 @@ class SubagentManager:
     async def settle_queued_delivery(self, agent_ids: list[str]) -> None:
         return await self._waves.settle_queued_delivery_impl(agent_ids)
 
-    def _settle_digest_holds(self, info: SubagentInfo) -> None:
-        return self._waves._settle_digest_holds_impl(info)
+    def _delivery_event_for_run(self, run_id: str) -> str:
+        return self._waves._delivery_event_for_run_impl(run_id)
+
+    def _delivery_context_for_run(self, run_id: str) -> _OutboxDeliveryContext | None:
+        return self._waves._delivery_context_for_run_impl(run_id)
+
+    async def _ack_delivery_for_run(self, run_id: str) -> None:
+        return await self._waves._ack_delivery_for_run_impl(run_id)
+
+    async def _settle_digest_holds(self, info: SubagentInfo) -> None:
+        return await self._waves._settle_digest_holds_impl(info)
 
     def get(self, agent_id: str) -> SubagentInfo | None:
         return self._run_events.get_impl(agent_id)
@@ -2668,6 +2790,8 @@ _COMPONENT_GLOBAL_BINDINGS = (
     CONTEXT_GROUP_LESSONS,
     CONTEXT_GROUP_MEMORY,
     CONTEXT_GROUP_PROJECT,
+    CoordinatorDecision,
+    DeliveryState,
     EVENT_COMPLETE,
     EVENT_PERMISSION_REQUEST,
     EVENT_TEXT_CHUNK,
@@ -2682,24 +2806,38 @@ _COMPONENT_GLOBAL_BINDINGS = (
     LivenessOracle,
     OUTCOME_FAILED,
     OUTCOME_INTERRUPTED,
+    OutboxEvent,
     PROVIDER_LABEL_DEFAULT,
     Path,
+    RunCommand,
+    RunCompletion,
+    RunFence,
+    RunOutcome,
     SUBAGENT_COMPLETION_PREFIX,
     Stats,
     TOOL_AUTO_APPROVE,
     TOOL_DENY,
     TRANSIENT_RETRIES,
+    TerminalRun,
     VERDICT_DEAD,
     VERDICT_STUCK_INPUT,
     VERDICT_UNKNOWN,
     VERDICT_WORKING,
     _AGENT_NAME_RE,
+    _OUTBOX_DRAIN_BATCH_SIZE,
+    _OUTBOX_RESULT_SUMMARY_LEN,
+    _TERMINAL_RETRY_SECONDS,
+    _OutboxDeliveryContext,
+    _OutboxDeliveryRetry,
+    _TerminalCommitRejected,
     _agent_dir,
     _cleanup_session_files_sync,
     _load_child_process_helpers,
     _redact,
     _subagents_dir,
     _ws_result_path,
+    AuthorityOutcomeUncertain,
+    EXECUTION_LEASE_SECONDS,
     acp_error_is_transient,
     advance_fallback_candidate,
     agent_dir_for_display,
@@ -2715,6 +2853,7 @@ _COMPONENT_GLOBAL_BINDINGS = (
     configured_fallback_chain,
     consult_offloaded,
     create_agent_folder,
+    dashboard_slot_key,
     evict_completed_agents,
     extract_options,
     fire_tool_hooks,

@@ -52,6 +52,7 @@ single completion path that serves every terminal outcome:
 
 ```
 [Subagent completion event]
+Event: `<stable delivery event id>`
 Agent `<id>` (<agent name>) <status> <emoji>
 Task: <first 100 chars of the task>
 
@@ -59,6 +60,13 @@ Task: <first 100 chars of the task>
 ```
 
 - Prefix `SUBAGENT_COMPLETION_PREFIX = '[Subagent completion event]'`.
+- Coordinator-backed completions include an additive `Event:` line and the same
+  identifier in `meta.subagentCompletion.eventId`. A wave digest includes one
+  line per member and every identifier in the additive
+  `meta.subagentCompletion.eventIds` list; `eventId` retains the flushing
+  member's identifier for compatibility. A delivery retry may repeat stable
+  IDs, but it never repeats execution. Legacy envelopes omit the lines and
+  remain valid.
 - `<status> <emoji>` is one of `completed ✅`, `failed ❌`, or `stopped by user ⏹`.
   The agent-name parenthetical is present only when the sub-agent ran under a named
   agent.

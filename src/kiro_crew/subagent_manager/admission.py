@@ -8,10 +8,17 @@ from ._component import ManagerComponent
 
 if TYPE_CHECKING:
     from ..subagent import (
+        _TERMINAL_RETRY_SECONDS,
+        CoordinatorDecision,
+        DeliveryState,
         KiroCrewConfig,
+        RunCommand,
+        RunFence,
         Stats,
         SubagentInfo,
+        TerminalRun,
         _context_groups_field,
+        _OutboxDeliveryContext,
         _redact,
         _validate_agent,
         _vet_spawn_governance,
@@ -27,12 +34,225 @@ if TYPE_CHECKING:
         uuid,
         validate_cwd,
     )
+    from ..subagent_command_authority import AdmittedExecution
 
 
 class SpawnAdmissionCoordinator(ManagerComponent):
     """Own admission transitions while state remains facade-owned."""
 
     __slots__ = ()
+
+    async def announce_durable_rejection_impl(self, info: SubagentInfo | AdmittedExecution) -> None:
+        """Announce a keyed batch rejection, including after uncertain settlement."""
+
+        if isinstance(info, AdmittedExecution):
+            try:
+                run = await self._manager._coordinator.get_run(info.id)
+            except Exception:
+                logger.warning(
+                    "Failed to hydrate rejected run %s before terminal delivery",
+                    info.id,
+                    exc_info=True,
+                )
+                run = None
+            info = SubagentInfo(
+                id=info.id,
+                task=info.task,
+                started=run.created_at if run is not None else time.time(),
+                done=info.done,
+                queued=info.queued,
+                error=info.error,
+                parent_session_key=run.parent_session if run is not None else "",
+                agent=run.agent if run is not None else "",
+                silent=info.silent,
+                batch_id=info.batch_id,
+                batch_total=info.batch_total,
+                conversation_key=run.conversation_key if run is not None else "",
+            )
+        if info.batch_id and self._manager._on_done:
+            if info._coordinator_fence is not None:
+                await self._manager._run_terminal_report(
+                    info,
+                    source="Subagent keyed batch rejection",
+                    injection_timeout_reason="keyed batch rejection delivery timed out",
+                    mark_delivered_on_success=False,
+                    settle_digest=True,
+                )
+                return
+            await self._manager._safe_announce(info)
+
+    def _rollback_unstarted_registration_impl(
+        self,
+        info: SubagentInfo,
+        prior_start: float,
+        occupied_at: float,
+    ) -> None:
+        """Release provisional manager state when policy fails before task ownership."""
+
+        if info.id in self._manager._tasks:
+            return
+        self._manager._agents.pop(info.id, None)
+        released = self._manager._scheduler.release(info)
+        if self._manager._scheduler.last_start == occupied_at:
+            self._manager._scheduler.last_start = prior_start
+        if info.batch_id and not any(
+            agent.batch_id == info.batch_id for agent in self._manager._agents.values()
+        ):
+            self._manager._seen_batches.discard(info.batch_id)
+        if released:
+            try:
+                self._manager._drain_queue()
+            except Exception:
+                logger.warning("Failed to drain queue after spawn rollback", exc_info=True)
+
+    def _spawn_announcement_impl(self, info: SubagentInfo) -> "asyncio.Task":  # type: ignore[type-arg]
+        """Schedule an announce with durable batch ownership from creation."""
+
+        if info.batch_id and not info._coordinator_admitted:
+            return self._manager._spawn_synthetic_batch_terminal_report(info)
+        return asyncio.create_task(self._manager._safe_announce(info))
+
+    async def _report_synthetic_batch_terminal_impl(self, info: SubagentInfo) -> None:
+        """Give a one-shot batch failure a durable completion event."""
+
+        payload_json = self._manager._completion_payload(info)
+        terminal_at = time.time()
+        request = TerminalRun(
+            run_id=info.id,
+            parent_session=info.parent_session_key,
+            agent=info.agent,
+            task=info.task,
+            conversation_key=info.conversation_key,
+            outcome=self._manager._coordinator_outcome(info),
+            result_path=info.result_path,
+            error=_redact(info.error),
+            created_at=info.started,
+            terminal_at=terminal_at,
+            event_type="subagent_completion",
+            destination=info.parent_session_key,
+            payload_json=payload_json,
+        )
+        context = _OutboxDeliveryContext(
+            info=info,
+            source="Subagent synthetic batch",
+            injection_timeout_reason="synthetic batch delivery timed out",
+            mark_delivered_on_success=False,
+            settle_digest=True,
+            teardown_done=None,
+        )
+        # A periodic drainer may observe the new event before record_terminal()
+        # returns. Publish the live routing context first so that drainer keeps
+        # the batch identity and held-sibling settlement debt.
+        self._manager._outbox_live_contexts[info.id] = context
+
+        async def wait_for_retry() -> None:
+            try:
+                await asyncio.sleep(_TERMINAL_RETRY_SECONDS)
+            except asyncio.CancelledError:
+                if not self._manager._shutting_down:
+                    raise
+                logger.warning(
+                    "Synthetic batch terminal retry delay cancelled for %s during shutdown; "
+                    "retrying",
+                    info.id,
+                )
+
+        while True:
+            try:
+                recorded = await self._manager._coordinator.record_terminal(request)
+                if recorded.decision is CoordinatorDecision.REJECTED:
+                    logger.error(
+                        "Synthetic batch terminal commit rejected for %s: %s",
+                        info.id,
+                        recorded.reason.value,
+                    )
+                    break
+            except asyncio.CancelledError:
+                if not self._manager._shutting_down:
+                    raise
+                logger.warning(
+                    "Synthetic batch terminal commit cancelled for %s during shutdown; retrying",
+                    info.id,
+                )
+                continue
+            except Exception:
+                logger.warning(
+                    "Synthetic batch terminal commit failed for %s; retrying",
+                    info.id,
+                    exc_info=True,
+                )
+                await wait_for_retry()
+                continue
+            if recorded.value is None:
+                logger.warning(
+                    "Synthetic batch terminal commit returned no value for %s; retrying",
+                    info.id,
+                )
+                await wait_for_retry()
+                continue
+            info._coordinator_admitted = True
+            info._coordinator_version = recorded.value.run.version
+            event = recorded.value.event
+            info._delivery_event_id = event.event_id
+            if self._manager._outbox_live_contexts.get(info.id) is context:
+                self._manager._outbox_live_contexts.pop(info.id, None)
+            if not info._reported_to_parent:
+                self._manager._outbox_contexts.setdefault(event.event_id, context)
+            while not self._manager._shutting_down:
+                try:
+                    attempts = await self._manager._outbox_delivery.drain_once(
+                        event_id=event.event_id
+                    )
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    logger.warning(
+                        "Synthetic batch terminal delivery failed for %s",
+                        info.id,
+                        exc_info=True,
+                    )
+                else:
+                    if any(attempt.status is DeliveryState.DELIVERED for attempt in attempts):
+                        return
+                    if info._reported_to_parent or info._digest_held or info._delivery_queued:
+                        return
+                    # A destination callback that fails leaves the event pending
+                    # behind the adapter's durable retry schedule.  Let that
+                    # owner retry it instead of spinning this lifecycle task.
+                    if context.callback_started:
+                        return
+                await asyncio.sleep(_TERMINAL_RETRY_SECONDS)
+            return
+        if self._manager._outbox_live_contexts.get(info.id) is context:
+            self._manager._outbox_live_contexts.pop(info.id, None)
+
+        assert self._manager._on_done is not None
+        try:
+            await self._manager._on_done(info)
+        except Exception:
+            logger.exception("Subagent announce failed for %s", info.id)
+
+    def _spawn_synthetic_batch_terminal_report_impl(
+        self, info: SubagentInfo
+    ) -> "asyncio.Task":  # type: ignore[type-arg]
+        """Launch a synthetic terminal commit under lifecycle ownership."""
+
+        return self._manager._lifecycle.spawn_report(
+            info,
+            lambda: self._manager._report_synthetic_batch_terminal(info),
+        )
+
+    async def _finalize_queued_rejection_impl(self, info: SubagentInfo) -> None:
+        """Reject and deliver a queue entry that cannot start under its durable claim."""
+
+        await self._manager._reject_waiting_before_terminal(info, info.error)
+        await self._manager._run_terminal_report(
+            info,
+            source="Subagent queue",
+            injection_timeout_reason="queued rejection delivery timed out",
+            mark_delivered_on_success=True,
+            settle_digest=True,
+        )
 
     def spawn_impl(
         self,
@@ -59,6 +279,9 @@ class SpawnAdmissionCoordinator(ManagerComponent):
         _from_queue: bool = False,
         _preassigned_id: str = "",
         _coordinator_admitted: bool = False,
+        _coordinator_command: RunCommand | None = None,
+        _coordinator_fence: RunFence | None = None,
+        _coordinator_version: int = 0,
     ) -> SubagentInfo | None:
         """Spawn a subagent for *task*.
 
@@ -114,6 +337,16 @@ class SpawnAdmissionCoordinator(ManagerComponent):
         # concurrency gate keeps its identity across the round-trip instead of
         # being announced under one id and starting under another.
         agent_id: str = _preassigned_id or uuid.uuid4().hex[:8]
+
+        def announce_rejection(info: SubagentInfo) -> SubagentInfo:
+            return self._manager._announce_rejection(
+                info,
+                coordinator_admitted=_coordinator_admitted,
+                coordinator_command=_coordinator_command,
+                coordinator_fence=_coordinator_fence,
+                coordinator_version=_coordinator_version,
+            )
+
         # Submission accounting: count this member as
         # submitted BEFORE any rejection or queue/registration branching. A
         # member refused below (empty task, low memory, bad cwd, governance)
@@ -131,7 +364,7 @@ class SpawnAdmissionCoordinator(ManagerComponent):
                 while agent_id in self._manager._coordinator_run_id_reservations:
                     agent_id = uuid.uuid4().hex[:8]
             else:
-                return self._manager._announce_rejection(
+                return announce_rejection(
                     SubagentInfo(
                         id=agent_id,
                         task=_redact(str(task or "")),
@@ -141,8 +374,7 @@ class SpawnAdmissionCoordinator(ManagerComponent):
                         error="run_id_conflict: a keyed admission already owns this id",
                         batch_id=batch_id,
                         batch_total=max(0, int(batch_total)),
-                    ),
-                    coordinator_admitted=False,
+                    )
                 )
         # --- Task guard: refuse empty/whitespace-only tasks (defense in depth).
         # The HTTP handler (api_spawn) and MCP tool schemas validate too, but
@@ -164,7 +396,7 @@ class SpawnAdmissionCoordinator(ManagerComponent):
                 )
             except Exception:
                 logger.debug("SEL audit failed for empty-task rejection", exc_info=True)
-            return self._manager._announce_rejection(
+            return announce_rejection(
                 SubagentInfo(
                     id=agent_id,
                     task="",
@@ -174,8 +406,7 @@ class SpawnAdmissionCoordinator(ManagerComponent):
                     error="spawn refused: task must be a non-empty string",
                     batch_id=batch_id,
                     batch_total=max(0, int(batch_total)),
-                ),
-                coordinator_admitted=_coordinator_admitted,
+                )
             )
 
         # --- Redact task once for all SubagentInfo storage (raw task kept for kiro-cli prompt) ---
@@ -214,9 +445,7 @@ class SpawnAdmissionCoordinator(ManagerComponent):
                 batch_id=batch_id,
                 batch_total=max(0, int(batch_total)),
             )
-            return self._manager._announce_rejection(
-                info, coordinator_admitted=_coordinator_admitted
-            )
+            return announce_rejection(info)
 
         # --- Admission gate: refuse NEW spawns while host memory posture is
         # critical. Complements the absolute spawn_min_memory_gb floor above
@@ -251,9 +480,7 @@ class SpawnAdmissionCoordinator(ManagerComponent):
                 batch_id=batch_id,
                 batch_total=max(0, int(batch_total)),
             )
-            return self._manager._announce_rejection(
-                info, coordinator_admitted=_coordinator_admitted
-            )
+            return announce_rejection(info)
 
         # --- CWD validation: reject bad paths before consuming a slot ---
         resolved_cwd = ""
@@ -286,9 +513,7 @@ class SpawnAdmissionCoordinator(ManagerComponent):
                     batch_id=batch_id,
                     batch_total=max(0, int(batch_total)),
                 )
-                return self._manager._announce_rejection(
-                    info, coordinator_admitted=_coordinator_admitted
-                )
+                return announce_rejection(info)
 
         # --- Governance: spawn capability gate (blast-radius containment) ---
         # A policy/profile may disable sub-agent spawning entirely, or bound it
@@ -306,7 +531,7 @@ class SpawnAdmissionCoordinator(ManagerComponent):
                 error=gov_spawn_err,
                 metadata={"agent": agent, "task": _redacted_task[:120]},
             )
-            return self._manager._announce_rejection(
+            return announce_rejection(
                 SubagentInfo(
                     id=agent_id,
                     task=_redacted_task,
@@ -316,8 +541,7 @@ class SpawnAdmissionCoordinator(ManagerComponent):
                     error=f"spawn refused by governance: {gov_spawn_err}",
                     batch_id=batch_id,
                     batch_total=max(0, int(batch_total)),
-                ),
-                coordinator_admitted=_coordinator_admitted,
+                )
             )
 
         now = time.monotonic()
@@ -339,7 +563,7 @@ class SpawnAdmissionCoordinator(ManagerComponent):
                     agent,
                     app,
                 )
-                return self._manager._announce_rejection(
+                return announce_rejection(
                     SubagentInfo(
                         id=agent_id,
                         task=_redacted_task,
@@ -353,8 +577,7 @@ class SpawnAdmissionCoordinator(ManagerComponent):
                         ),
                         batch_id=batch_id,
                         batch_total=max(0, int(batch_total)),
-                    ),
-                    coordinator_admitted=_coordinator_admitted,
+                    )
                 )
             # Carry this spawn's id (assigned at the top) in the queue entry so
             # the drained spawn runs under it. The identity must survive the
@@ -391,6 +614,9 @@ class SpawnAdmissionCoordinator(ManagerComponent):
                     "_agent_prevalidated": _agent_prevalidated,
                     "_preassigned_id": agent_id,
                     "_coordinator_admitted": _coordinator_admitted,
+                    "_coordinator_command": _coordinator_command,
+                    "_coordinator_fence": _coordinator_fence,
+                    "_coordinator_version": _coordinator_version,
                 }
             )
             logger.info(
@@ -426,6 +652,9 @@ class SpawnAdmissionCoordinator(ManagerComponent):
                 _coordinator_admitted=_coordinator_admitted,
                 _coordinator_waiting=_coordinator_admitted,
             )
+            info._coordinator_command = _coordinator_command
+            info._coordinator_fence = _coordinator_fence
+            info._coordinator_version = _coordinator_version
             return info
 
         # `_agent_prevalidated` skips the on-loop agent-directory scan: a caller
@@ -456,9 +685,7 @@ class SpawnAdmissionCoordinator(ManagerComponent):
                     batch_id=batch_id,
                     batch_total=max(0, int(batch_total)),
                 )
-                return self._manager._announce_rejection(
-                    info, coordinator_admitted=_coordinator_admitted
-                )
+                return announce_rejection(info)
 
         info = SubagentInfo(
             id=agent_id,
@@ -485,8 +712,13 @@ class SpawnAdmissionCoordinator(ManagerComponent):
         info._raw_task = task  # unredacted prompt for kiro-cli execution
         info._coordinator_admitted = _coordinator_admitted
         info._coordinator_waiting = bool(_from_queue and _coordinator_admitted)
+        info._coordinator_command = _coordinator_command
+        info._coordinator_fence = _coordinator_fence
+        info._coordinator_version = _coordinator_version
         self._manager._agents[agent_id] = info
-        self._manager._scheduler.occupy(info, time.monotonic())
+        prior_start = self._manager._scheduler.last_start
+        occupied_at = time.monotonic()
+        self._manager._scheduler.occupy(info, occupied_at)
         # Batch lifecycle: announce the wave ONCE, on its first member to
         # actually start (queued members haven't started yet — the event marks
         # execution begin, and the UI uses it to key batch progress).
@@ -504,13 +736,17 @@ class SpawnAdmissionCoordinator(ManagerComponent):
             except RuntimeError:
                 pass  # no running loop (sync/test context)
 
-        # Check parent session trust (approval_policy="auto") set by dashboard trust toggle.
-        parent_trusted = (
-            parent_session_key
-            and self._manager._sessions.get_approval_policy(parent_session_key) == "auto"
-        )
+        try:
+            parent_trusted = (
+                parent_session_key
+                and self._manager._sessions.get_approval_policy(parent_session_key) == "auto"
+            )
+            yolo_enabled = bool(self._manager._is_yolo and self._manager._is_yolo())
+        except BaseException:
+            self._manager._rollback_unstarted_registration(info, prior_start, occupied_at)
+            raise
 
-        if self._manager._is_yolo and self._manager._is_yolo():
+        if yolo_enabled:
             self._manager._tasks[agent_id] = asyncio.create_task(self._manager._run(info))
             self._manager._log_spawned(info)
         elif approval_mode == "auto":
@@ -570,9 +806,7 @@ class SpawnAdmissionCoordinator(ManagerComponent):
                 # counts it as complete — without an announce, a wave whose
                 # final member lands here closes with no event and every held
                 # sibling digest strands forever.
-                return self._manager._announce_rejection(
-                    info, coordinator_admitted=_coordinator_admitted
-                )
+                return announce_rejection(info)
         elif self._manager._on_spawn_approval:
             info._coordinator_waiting = info._coordinator_admitted
             self._manager._tasks[agent_id] = asyncio.create_task(
@@ -595,9 +829,7 @@ class SpawnAdmissionCoordinator(ManagerComponent):
             )
             logger.warning("Subagent %s rejected: no approval callback", agent_id)
             if self._manager._on_done:
-                self._manager._tasks[agent_id] = asyncio.ensure_future(
-                    self._manager._safe_announce(info)
-                )
+                self._manager._tasks[agent_id] = self._manager._spawn_announcement(info)
 
         return info
 
@@ -608,13 +840,24 @@ class SpawnAdmissionCoordinator(ManagerComponent):
             info (SubagentInfo): The subagent metadata.
         """
         assert self._manager._on_done is not None
+        if info.batch_id and not info._coordinator_admitted:
+            await self._manager._await_report(
+                self._manager._spawn_synthetic_batch_terminal_report(info)
+            )
+            return
         try:
             await self._manager._on_done(info)
         except Exception:
             logger.exception("Subagent announce failed for %s", info.id)
 
     def _announce_rejection_impl(
-        self, info: SubagentInfo, *, coordinator_admitted: bool = False
+        self,
+        info: SubagentInfo,
+        *,
+        coordinator_admitted: bool = False,
+        coordinator_command: RunCommand | None = None,
+        coordinator_fence: RunFence | None = None,
+        coordinator_version: int = 0,
     ) -> SubagentInfo:
         """Route a terminal spawn rejection through the done callback.
 
@@ -634,11 +877,16 @@ class SpawnAdmissionCoordinator(ManagerComponent):
         those itself off the returned info, so announcing here as well would
         inject the completion twice.
         """
+        info._coordinator_admitted = coordinator_admitted
+        info._coordinator_command = coordinator_command
+        info._coordinator_fence = coordinator_fence
+        info._coordinator_version = coordinator_version
+        # A keyed command must finish its durable rejection before its batch
+        # consumer can count it. Its authority or queue-drain settlement owns
+        # that later announcement.
         if info.batch_id and self._manager._on_done and not coordinator_admitted:
             try:
-                self._manager._tasks[f"reject-{info.id}"] = asyncio.ensure_future(
-                    self._manager._safe_announce(info)
-                )
+                self._manager._tasks[f"reject-{info.id}"] = self._manager._spawn_announcement(info)
             except RuntimeError:
                 pass  # no running loop (sync/test context)
         return info
@@ -678,8 +926,9 @@ class SpawnAdmissionCoordinator(ManagerComponent):
             return
         params = decision.entry
         if bool(params.get("_coordinator_cancel_pending")):
-            # A failed durable cancellation must not become a later local
-            # start. Retain it behind runnable work for an explicit retry.
+            # A failed durable cancellation must not turn into a later local
+            # start. Move the retained entry behind runnable work; only an
+            # explicit cancellation retry may remove it.
             self._manager._scheduler.enqueue(params)
             if any(
                 not bool(entry.get("_coordinator_cancel_pending")) for entry in self._manager._queue
@@ -719,20 +968,62 @@ class SpawnAdmissionCoordinator(ManagerComponent):
         # the queue round-trip — including `_preassigned_id`, which makes the agent
         # start under the id its caller was already told (and, if the gate re-queues
         # it, keeps that id across the second round-trip too).
-        drained = self._manager.spawn(**params, _from_queue=True)
+        spawn_raised = False
+        try:
+            drained = self._manager.spawn(**params, _from_queue=True)
+        except BaseException as exc:
+            spawn_raised = True
+            drained = SubagentInfo(
+                id=queued_id,
+                task=_redact(str(params.get("task") or "")),
+                parent_session_key=str(params.get("parent_session_key") or ""),
+                agent=str(params.get("agent") or ""),
+                conversation_key=str(params.get("conversation_key") or ""),
+                done=True,
+                error=_redact(str(exc) or type(exc).__name__),
+                silent=bool(params.get("silent")),
+                batch_id=str(params.get("batch_id") or ""),
+                batch_total=int(params.get("batch_total") or 0),
+            )
         coordinator_rejection = bool(
             drained is not None
             and drained.done
             and drained.error
-            and bool(params.get("_coordinator_admitted"))
+            and params.get("_coordinator_fence") is not None
         )
         if coordinator_rejection and drained is not None:
-            rejected = drained
+            report_task = self._manager._tasks.pop(f"reject-{drained.id}", None)
+            if report_task is not None:
+                report_task.cancel()
+            drained._coordinator_admitted = True
+            drained._coordinator_command = params.get("_coordinator_command")
+            drained._coordinator_fence = params.get("_coordinator_fence")
+            drained._coordinator_version = int(params.get("_coordinator_version") or 0)
+            try:
+                self._manager._tasks[f"reject-{drained.id}"] = asyncio.ensure_future(
+                    self._manager._finalize_queued_rejection(drained)
+                )
+            except RuntimeError:
+                pass
+        legacy_coordinator_rejection = bool(
+            drained is not None
+            and drained.done
+            and drained.error
+            and bool(params.get("_coordinator_admitted"))
+            and not coordinator_rejection
+        )
+        if legacy_coordinator_rejection and drained is not None:
+            legacy_drained = drained
 
-            async def _finish_rejected_command() -> None:
+            # The original HTTP caller returned when this entry was queued.
+            # If revalidation now rejects it, no authority call remains on the
+            # stack to finish the durable command, so lookup would report an
+            # outcome-uncertain claim forever.
+            async def _finish_legacy_command_rejection() -> None:
                 try:
                     await self._manager.command_authority.reject_waiting_execution(
-                        rejected.id, rejected.error
+                        legacy_drained.id,
+                        legacy_drained.error,
                     )
                 except Exception:
                     params["_coordinator_cancel_pending"] = True
@@ -743,23 +1034,23 @@ class SpawnAdmissionCoordinator(ManagerComponent):
                     )
                     logger.warning(
                         "Queued subagent %s rejection was not durably recorded",
-                        rejected.id,
+                        legacy_drained.id,
                         exc_info=True,
                     )
                     raise
                 if self._manager._on_done:
-                    await self._manager._safe_announce(rejected)
+                    await self._manager._safe_announce(legacy_drained)
 
             try:
-                task = asyncio.ensure_future(_finish_rejected_command())
-                self._manager._tasks[f"command-reject-{rejected.id}"] = task
+                task = asyncio.ensure_future(_finish_legacy_command_rejection())
+                self._manager._tasks[f"command-reject-{legacy_drained.id}"] = task
 
-                def _forget_rejection(done: asyncio.Task[None]) -> None:
-                    self._manager._tasks.pop(f"command-reject-{rejected.id}", None)
+                def _forget_legacy_rejection(done: asyncio.Task[None]) -> None:
+                    self._manager._tasks.pop(f"command-reject-{legacy_drained.id}", None)
                     if not done.cancelled():
                         done.exception()
 
-                task.add_done_callback(_forget_rejection)
+                task.add_done_callback(_forget_legacy_rejection)
             except RuntimeError:
                 pass
         # A drained spawn has NO synchronous reader: this call site is a timer
@@ -777,13 +1068,14 @@ class SpawnAdmissionCoordinator(ManagerComponent):
             drained is not None
             and drained.done
             and drained.error
-            and not drained.batch_id
-            and not coordinator_rejection
             and self._manager._on_done
+            and not coordinator_rejection
+            and not legacy_coordinator_rejection
+            and (spawn_raised or not drained.batch_id)
         ):
             try:
-                self._manager._tasks[f"reject-{drained.id}"] = asyncio.ensure_future(
-                    self._manager._safe_announce(drained)
+                self._manager._tasks[f"reject-{drained.id}"] = self._manager._spawn_announcement(
+                    drained
                 )
             except RuntimeError:
                 pass  # no running loop (sync/test context)
@@ -847,23 +1139,29 @@ class SpawnAdmissionCoordinator(ManagerComponent):
             logger.exception("Spawn approval failed for %s", info.id)
             approved = False
 
+        # Dashboard approval translates task cancellation into a denial result.
+        # A user-stop marker means cancel() already owns durable settlement;
+        # returning here prevents the approval task from racing it with a
+        # conflicting generic rejection.
+        if info.user_stopped:
+            return
+
         if not approved:
-            # A user stop already owns durable settlement and intentionally
-            # cancelled this approval task.
-            if info.user_stopped:
-                return
             rejection_error = "spawn rejected"
-            try:
-                await self._manager.command_authority.reject_waiting_execution(
-                    info.id, rejection_error
-                )
-            except Exception:
-                logger.warning(
-                    "Subagent %s approval rejection was not durably recorded",
-                    info.id,
-                    exc_info=True,
-                )
-                return
+            if info._coordinator_fence is not None:
+                try:
+                    await self._manager.command_authority.reject_waiting_execution(
+                        info.id,
+                        rejection_error,
+                        stop_heartbeat=False,
+                    )
+                except Exception:
+                    logger.warning(
+                        "Subagent %s approval rejection was not durably recorded",
+                        info.id,
+                        exc_info=True,
+                    )
+                    return
             info.done = True
             info.error = rejection_error
             # Slot accounting through the one-shot token, NOT a bare decrement.
@@ -888,8 +1186,17 @@ class SpawnAdmissionCoordinator(ManagerComponent):
             logger.info("Subagent %s spawn rejected", info.id)
             # Report ownership through the same claim every other terminal path
             # uses, so a concurrent reap/stop cannot also announce.
-            if self._manager._on_done and self._manager._claim_finalize(info):
-                await self._manager._safe_announce(info)
+            if self._manager._claim_finalize(info):
+                if info._coordinator_fence is not None:
+                    await self._manager._run_terminal_report(
+                        info,
+                        source="Subagent approval",
+                        injection_timeout_reason="approval rejection delivery timed out",
+                        mark_delivered_on_success=True,
+                        settle_digest=True,
+                    )
+                elif self._manager._on_done:
+                    await self._manager._safe_announce(info)
             return
 
         self._manager._log_spawned(info)

@@ -9,6 +9,7 @@ from ._component import ManagerComponent
 if TYPE_CHECKING:
     from ..subagent import (
         _CLK_TCK,
+        _OUTBOX_DRAIN_BATCH_SIZE,
         _REAPER_INTERVAL,
         _SUPPRESS_CEILING,
         OUTCOME_FAILED,
@@ -18,6 +19,7 @@ if TYPE_CHECKING:
         VERDICT_STUCK_INPUT,
         VERDICT_UNKNOWN,
         VERDICT_WORKING,
+        Any,
         LivenessOracle,
         SubagentInfo,
         _agent_dir,
@@ -48,6 +50,44 @@ class OrphanStallMonitor(ManagerComponent):
 
     __slots__ = ()
 
+    def _reap_orphan_process_impl(self, state: dict[str, Any]) -> bool:
+        """Kill a surviving child only when its recorded process identity still matches."""
+
+        agent_id = state.get("id", "")
+        pid = state.get("pid")
+        if not agent_id or not pid or not self._manager._is_pid_alive(pid):
+            return False
+        # ``pid_recorded_at`` names the process write, while ``started`` names
+        # folder creation and can be too old to distinguish PID reuse under load.
+        pid_recorded_at = state.get("pid_recorded_at", state.get("started", 0))
+        if not self._manager._is_orphan_process(pid, pid_recorded_at):
+            return False
+        self._manager._kill_orphan_pid(pid)
+        try:
+            sel().log_tool_invocation(
+                session_key=f"subagent:{agent_id}",
+                source="subagent",
+                tool_name="orphan_reconcile_kill",
+                outcome="killed",
+                metadata={"subagent_id": agent_id, "pid": pid},
+            )
+        except Exception:
+            logger.debug("SEL audit failed for orphan %s", agent_id)
+        return True
+
+    async def _drain_pending_outbox_impl(self) -> None:
+        """Retry durable completions without coupling them to legacy folders."""
+
+        try:
+            while True:
+                attempts = await self._manager._outbox_delivery.drain_once(
+                    limit=_OUTBOX_DRAIN_BATCH_SIZE
+                )
+                if len(attempts) < _OUTBOX_DRAIN_BATCH_SIZE:
+                    return
+        except Exception:
+            logger.warning("Coordinator outbox delivery failed", exc_info=True)
+
     def start_reaper_impl(self) -> None:
         """Start the periodic reaper loop.  Call once after the event loop is running."""
         if self._manager._reaper_task is None:
@@ -64,9 +104,27 @@ class OrphanStallMonitor(ManagerComponent):
         - PID dead + result → tombstone (gateway_restart, delivered)
         - PID dead + no result → tombstone (gateway_restart, notification_pending)
         """
+        # A terminal coordinator event may still have a live child when the
+        # gateway crashed between the durable commit and process teardown.
+        # Reap from the legacy folder snapshot before outbox delivery can
+        # write a tombstone that removes that folder from ``list_orphans``.
+        reaped_orphan_ids: set[str] = set()
         try:
+            orphan_snapshot = await asyncio.to_thread(list_orphans)
+            for state in orphan_snapshot:
+                agent_id = state.get("id", "")
+                if (
+                    agent_id
+                    and agent_id not in self._manager._agents
+                    and await asyncio.to_thread(self._manager._reap_orphan_process, state)
+                ):
+                    reaped_orphan_ids.add(agent_id)
+        except Exception:
+            logger.warning("Pre-delivery orphan process reconciliation failed", exc_info=True)
 
-            orphans = list_orphans()
+        await self._manager._drain_pending_outbox()
+        try:
+            orphans = await asyncio.to_thread(list_orphans)
             if not orphans:
                 return
             logger.info("Reconciling %d orphaned subagent(s)", len(orphans))
@@ -79,7 +137,15 @@ class OrphanStallMonitor(ManagerComponent):
             dm_pending: list[str] = []
             for state in orphans:
                 agent_id = state.get("id", "")
-                if not agent_id or agent_id in self._manager._agents:
+                durable_delivery_run_ids = {
+                    context.info.id for context in self._manager._outbox_contexts.values()
+                }
+                durable_delivery_run_ids.update(self._manager._outbox_live_contexts)
+                if (
+                    not agent_id
+                    or agent_id in self._manager._agents
+                    or agent_id in durable_delivery_run_ids
+                ):
                     continue  # tracked in current run, skip
                 try:
                     pid = state.get("pid")
@@ -93,21 +159,8 @@ class OrphanStallMonitor(ManagerComponent):
 
                     recovery = "undeliverable"
                     if pid and self._manager._is_pid_alive(pid):
-                        # Use pid_recorded_at (when PID was actually written) instead of
-                        # started (folder creation time) to avoid false negatives under load
-                        pid_recorded_at = state.get("pid_recorded_at", state.get("started", 0))
-                        if self._manager._is_orphan_process(pid, pid_recorded_at):
-                            self._manager._kill_orphan_pid(pid)
-                            try:
-                                sel().log_tool_invocation(
-                                    session_key=f"subagent:{agent_id}",
-                                    source="subagent",
-                                    tool_name="orphan_reconcile_kill",
-                                    outcome="killed",
-                                    metadata={"subagent_id": agent_id, "pid": pid},
-                                )
-                            except Exception:
-                                logger.debug("SEL audit failed for orphan %s", agent_id)
+                        if agent_id not in reaped_orphan_ids:
+                            await asyncio.to_thread(self._manager._reap_orphan_process, state)
                         recovery = "result_available" if has_result else "notification_pending"
                     elif has_result:
                         recovery = "result_available"
@@ -399,7 +452,7 @@ class OrphanStallMonitor(ManagerComponent):
             logger.debug("Reaper: startup cost-log compaction failed", exc_info=True)
         while True:
             await asyncio.sleep(_REAPER_INTERVAL)
-            now = time.time()
+            await self._manager._drain_pending_outbox()
             if not self._manager._conv_registry_rebuilt:
                 # First pass after (re)start: re-seed the conversation TTL
                 # registry from state.json so promoted conversations survive
@@ -423,6 +476,7 @@ class OrphanStallMonitor(ManagerComponent):
                 )
             except Exception:
                 logger.debug("Reaper: live-cost sample failed", exc_info=True)
+            now = time.time()
             # Wave liveness backstop: reconcile waves wedged by submissions
             # lost before the process boundary (see _sweep_stuck_waves).
             try:

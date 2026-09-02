@@ -221,23 +221,38 @@ class CancellationCoordinator(ManagerComponent):
         return dropped
 
     async def _finalize_queued_cancel_impl(self, params: dict[str, Any]) -> None:
-        """Durably reject one coordinator-backed queue entry."""
-        rejection_error = "spawn cancelled before start"
-        await self._manager.command_authority.reject_waiting_execution(
-            str(params.get("_preassigned_id") or ""), rejection_error
+        """Deliver a neutral stop for a queued batch or coordinator command."""
+
+        fence = params.get("_coordinator_fence")
+        raw_task = str(params.get("task") or "")
+        info = SubagentInfo(
+            id=str(params.get("_preassigned_id") or ""),
+            task=_redact(raw_task),
+            parent_session_key=str(params.get("parent_session_key") or ""),
+            agent=str(params.get("agent") or ""),
+            conversation_key=str(params.get("conversation_key") or ""),
+            done=True,
+            user_stopped=True,
+            silent=bool(params.get("silent")),
+            batch_id=str(params.get("batch_id") or ""),
+            batch_total=int(params.get("batch_total") or 0),
         )
-        await self._manager.announce_durable_rejection(
-            SubagentInfo(
-                id=str(params.get("_preassigned_id") or ""),
-                task=_redact(str(params.get("task") or "")),
-                parent_session_key=str(params.get("parent_session_key") or ""),
-                agent=str(params.get("agent") or ""),
-                silent=bool(params.get("silent")),
-                done=True,
-                error=rejection_error,
-                batch_id=str(params.get("batch_id") or ""),
-                batch_total=int(params.get("batch_total") or 0),
-            )
+        info._raw_task = raw_task
+        if fence is None:
+            if info.batch_id and self._manager._on_done:
+                await self._manager._safe_announce(info)
+            return
+        info._coordinator_admitted = True
+        info._coordinator_command = params.get("_coordinator_command")
+        info._coordinator_fence = fence
+        info._coordinator_version = int(params.get("_coordinator_version") or 0)
+        await self._manager._reject_waiting_before_terminal(info, "run stopped before execution")
+        await self._manager._run_terminal_report(
+            info,
+            source="Subagent queue",
+            injection_timeout_reason="queued cancellation delivery timed out",
+            mark_delivered_on_success=True,
+            settle_digest=True,
         )
 
     async def cancel_impl(self, agent_id: str) -> bool:
@@ -321,8 +336,13 @@ class CancellationCoordinator(ManagerComponent):
         if self._manager._reaper_task and not self._manager._reaper_task.done():
             self._manager._reaper_task.cancel()
             self._manager._reaper_task = None
-        # Follow-up watchers are cancelled and gathered before announcing.
-        # The announce awaits — _on_done injection can be slow — and
+        reconcile_task = self._manager._reconcile_task
+        self._manager._reconcile_task = None
+        if reconcile_task is not None and not reconcile_task.done():
+            reconcile_task.cancel()
+            await asyncio.gather(reconcile_task, return_exceptions=True)
+        # follow_up watchers: CANCEL AND GATHER FIRST, announce after (GPT
+        # review). The announce awaits — _on_done injection can be slow — and
         # a busy-retry watcher waking during that await could dispatch a
         # continuation into the shutting-down gateway, so every watcher task
         # must be DEAD before anything here yields. Announcing afterwards is
@@ -363,6 +383,8 @@ class CancellationCoordinator(ManagerComponent):
         tasks_to_await: list[asyncio.Task] = []  # type: ignore[type-arg]
         for agent_id, task in list(self._manager._tasks.items()):
             if not task.done():
+                if task in self._manager._lifecycle.report_tasks:
+                    continue
                 # _shutting_down (set above) is the terminal marker for this
                 # site; the chokepoint enforces the contract mechanically.
                 self._manager._cancel_task_intentionally(
@@ -440,4 +462,10 @@ class CancellationCoordinator(ManagerComponent):
                             owner.id,
                             exc_info=True,
                         )
+        lease_tasks = list(self._manager._lease_tasks.values())
+        self._manager._lease_tasks.clear()
+        for lease_task in lease_tasks:
+            lease_task.cancel()
+        if lease_tasks:
+            await asyncio.gather(*lease_tasks, return_exceptions=True)
         await self._manager.command_authority.close()

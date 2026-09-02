@@ -1335,6 +1335,13 @@ answer is not permission: a raised evaluation and a `Decision` without
 
 ## Invariants
 
+- **Sub-agent completion acceptance is coordinator-backed**: keyed sub-agent
+  runs commit terminal state and one stable outbox event before the gateway
+  invokes dashboard/channel routing. Direct acceptance is acknowledged through
+  a delivery fence. A completion parked in a busy dashboard slot remains
+  pending until its turn consumes it; batch-held sibling events remain pending
+  until their digest is accepted. Retries reuse `event_id` and never resubmit
+  execution.
 - **One-way dependency**: `kiro_crew.messaging` never imports `kiro_crew.slack` / `kiro_crew.dashboard`; violations reintroduce the cycle the abstraction removed. This holds at **any nesting depth** — a deferred in-function import is still an edge, so a shared helper that needs something from a surface takes it as a parameter (`parse_dashboard_ttl`'s `parse_duration`). `test_messaging_commands.py::TestLayering` scans the package's ASTs for it. There is exactly ONE recorded exception, and it is recorded as a `(file, module)` pair with a reason rather than as a hole in the scan: `dispatch.py`'s `build_directive_consumer` reaches `dashboard.session_directive_apply`, the SHARED applier the dashboard's own consumer uses, so the dashboard-only denial and the monitor-trio authorization chokepoint live in one place. Injecting that applier as a parameter — the pattern the TTL helper uses — would put a security boundary behind a caller-supplied callable, which is the worse trade. A companion test deletes the entry the moment the edge goes away, so the list cannot rot into a standing pre-authorization.
 - **A hoisted command carries its AUDIT with it.** `cron_command_reply` emits the
   `cron.remove` and `cron.batch_delete` SEL events that used to live in Slack's own

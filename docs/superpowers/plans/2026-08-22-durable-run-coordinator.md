@@ -382,36 +382,36 @@ exceptions.
 - Produces: `OutboxDeliveryAdapter.drain_once()` and additive `event_id` in the
   subagent completion envelope.
 
-- [ ] **Step 1: Write the completion crash-window tests.**
+- [x] **Step 1: Write the completion crash-window tests.**
 
   Inject failures before transaction, after transaction, after destination
   acceptance, and after acknowledgement. Assert every committed terminal has
   one pending/delivered event, repeated drains reuse `event_id`, and no path
   submits a second execution command.
 
-- [ ] **Step 2: Verify RED, then implement the delivery adapter.**
+- [x] **Step 2: Verify RED, then implement the delivery adapter.**
 
   Claim bounded batches, call an injected async destination callback, mark only
   accepted events delivered, release failed claims through their delivery fence
   with persisted retry timing, and never include full `result.txt` in the outbox
   payload.
 
-- [ ] **Step 3: Commit terminal outcome and outbox before callbacks.**
+- [x] **Step 3: Commit terminal outcome and outbox before callbacks.**
 
   Route the existing final report claim through `coordinator.complete()` before
   gateway delivery. Keep terminal file mirrors and teardown gates; remove only
   in-memory ordering that the durable transaction replaces.
 
-- [ ] **Step 4: Add stable event IDs to injected envelopes.**
+- [x] **Step 4: Add stable event IDs to injected envelopes.**
 
   Consumers must ignore unknown fields. Queue/digest settlement acknowledges the
   outbox event only when current code would write a delivered tombstone.
 
-- [ ] **Step 5: Verify delivery, batch, TTL, and restart tests.**
+- [x] **Step 5: Verify delivery, batch, TTL, and restart tests.**
 
   Run all named test files with `-n0`, then the broader subagent slice.
 
-- [ ] **Step 6: Update message/subagent specs and commit PR 6.**
+- [x] **Step 6: Update message/subagent specs and commit PR 6.**
 
   Commit: `feat: persist subagent completion delivery`.
 

@@ -26,6 +26,8 @@ from .models import (
     SubmitControl,
     SubmitReceipt,
     SubmitRun,
+    TerminalReceipt,
+    TerminalRun,
 )
 
 logger = logging.getLogger(__name__)
@@ -145,6 +147,12 @@ class ShadowRunCoordinator:
             await self._mirror("submit_control", request),
         )
 
+    async def record_terminal(self, request: TerminalRun) -> CoordinatorResult[TerminalReceipt]:
+        return cast(
+            CoordinatorResult[TerminalReceipt],
+            await self._mirror("record_terminal", request),
+        )
+
     async def get_command_by_key(self, idempotency_key: str) -> CommandReceipt | None:
         return cast(
             CommandReceipt | None,
@@ -231,8 +239,17 @@ class ShadowRunCoordinator:
     async def renew(self, run_id: str, fence: RunFence, until: float) -> bool:
         return cast(bool, await self._mirror("renew", run_id, fence, until))
 
-    async def claim_outbox(self, owner: OwnerLease, limit: int) -> list[OutboxEvent]:
-        return cast(list[OutboxEvent], await self._mirror("claim_outbox", owner, limit))
+    async def claim_outbox(
+        self,
+        owner: OwnerLease,
+        limit: int,
+        event_id: str = "",
+        acknowledgement: bool = False,
+    ) -> list[OutboxEvent]:
+        return cast(
+            list[OutboxEvent],
+            await self._mirror("claim_outbox", owner, limit, event_id, acknowledgement),
+        )
 
     async def release_outbox(
         self, fence: DeliveryFence, available_at: float

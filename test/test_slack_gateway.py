@@ -1711,6 +1711,7 @@ class TestInitSubagents:
                 mock_sm.return_value = mock_sm_inst
                 orch._init_subagents()
         assert orch.subagent_mgr is not None
+        mock_sm_inst.start_reaper.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_init_subagents_respects_max_concurrent(self):
@@ -6463,6 +6464,7 @@ class TestSlackSubagentCompletionPersistence:
         info.silent = False
         info.elapsed = 5.0
         info.started = time.time() - 5.0
+        info._delivery_event_id = "event-persist"
         return info
 
     @pytest.mark.asyncio
@@ -6491,6 +6493,7 @@ class TestSlackSubagentCompletionPersistence:
         assert user_call[0][0] == info.parent_session_key
         assert user_call[0][1] == "user"
         assert "[Subagent completion event]" in user_call[0][2]
+        assert "Event: `event-persist`" in user_call[0][2]
         # Second call: assistant role (the LLM response)
         assert assistant_call[0][0] == info.parent_session_key
         assert assistant_call[0][1] == "assistant"

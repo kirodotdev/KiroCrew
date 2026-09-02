@@ -225,6 +225,30 @@ class CommandReceipt:
     created: bool
 
 
+@dataclass(frozen=True)
+class TerminalRun:
+    run_id: str
+    parent_session: str
+    agent: str
+    task: str
+    conversation_key: str
+    outcome: RunOutcome
+    result_path: str
+    error: str
+    created_at: float
+    terminal_at: float
+    event_type: str
+    destination: str
+    payload_json: str
+
+
+@dataclass(frozen=True)
+class TerminalReceipt:
+    run: RunRecord
+    event: OutboxEvent
+    created: bool
+
+
 T = TypeVar("T")
 
 
@@ -239,6 +263,8 @@ class RunCoordinator(Protocol):
     async def submit(self, request: SubmitRun) -> CoordinatorResult[SubmitReceipt]: ...
 
     async def submit_control(self, request: SubmitControl) -> CoordinatorResult[CommandReceipt]: ...
+
+    async def record_terminal(self, request: TerminalRun) -> CoordinatorResult[TerminalReceipt]: ...
 
     async def get_command_by_key(self, idempotency_key: str) -> CommandReceipt | None: ...
 
@@ -280,7 +306,13 @@ class RunCoordinator(Protocol):
 
     async def renew(self, run_id: str, fence: RunFence, until: float) -> bool: ...
 
-    async def claim_outbox(self, owner: OwnerLease, limit: int) -> list[OutboxEvent]: ...
+    async def claim_outbox(
+        self,
+        owner: OwnerLease,
+        limit: int,
+        event_id: str = "",
+        acknowledgement: bool = False,
+    ) -> list[OutboxEvent]: ...
 
     async def release_outbox(
         self, fence: DeliveryFence, available_at: float

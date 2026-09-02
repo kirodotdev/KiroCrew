@@ -43,6 +43,8 @@ from .models import (
     SubmitControl,
     SubmitReceipt,
     SubmitRun,
+    TerminalReceipt,
+    TerminalRun,
 )
 
 _SCHEMA_VERSION = 3
@@ -529,6 +531,9 @@ class SQLiteRunCoordinator:
     async def submit_control(self, request: SubmitControl) -> CoordinatorResult[CommandReceipt]:
         return await self._offload("submit_control", request)
 
+    async def record_terminal(self, request: TerminalRun) -> CoordinatorResult[TerminalReceipt]:
+        return await self._offload("record_terminal", request)
+
     async def get_command_by_key(self, idempotency_key: str) -> CommandReceipt | None:
         return await self._offload("get_command_by_key", idempotency_key, persist=False)
 
@@ -591,8 +596,14 @@ class SQLiteRunCoordinator:
     async def renew(self, run_id: str, fence: RunFence, until: float) -> bool:
         return await self._offload("renew", run_id, fence, until)
 
-    async def claim_outbox(self, owner: OwnerLease, limit: int) -> list[OutboxEvent]:
-        return await self._offload("claim_outbox", owner, limit)
+    async def claim_outbox(
+        self,
+        owner: OwnerLease,
+        limit: int,
+        event_id: str = "",
+        acknowledgement: bool = False,
+    ) -> list[OutboxEvent]:
+        return await self._offload("claim_outbox", owner, limit, event_id, acknowledgement)
 
     async def release_outbox(
         self, fence: DeliveryFence, available_at: float

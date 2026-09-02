@@ -22,6 +22,7 @@ from kiro_crew.run_coordinator import (
     ShadowRunCoordinator,
     SubmitControl,
     SubmitRun,
+    TerminalRun,
 )
 
 
@@ -218,6 +219,34 @@ async def test_generated_event_id_does_not_create_shadow_parity_mismatch() -> No
     assert completed.value is not None
     assert completed.value.status is DeliveryState.PENDING
     assert mismatches == []
+
+
+@pytest.mark.asyncio
+async def test_shadow_mirrors_atomic_terminal_record() -> None:
+    primary = MemoryRunCoordinator(clock=lambda: 10.0, id_factory=lambda: "primary-event")
+    shadow = MemoryRunCoordinator(clock=lambda: 10.0, id_factory=lambda: "shadow-event")
+    coordinator = ShadowRunCoordinator(primary, shadow)
+    request = TerminalRun(
+        run_id="synthetic-run",
+        parent_session="dashboard:parent",
+        agent="kirocrew",
+        task="record a rejected batch member",
+        conversation_key="",
+        outcome=RunOutcome.FAILED,
+        result_path="",
+        error="spawn submission lost",
+        created_at=10.0,
+        terminal_at=10.0,
+        event_type="subagent_completion",
+        destination="dashboard:parent",
+        payload_json='{"id":"synthetic-run"}',
+    )
+
+    recorded = await coordinator.record_terminal(request)
+
+    assert recorded.decision is CoordinatorDecision.APPLIED
+    assert await primary.get_run(request.run_id) is not None
+    assert await shadow.get_run(request.run_id) is not None
 
 
 @pytest.mark.asyncio

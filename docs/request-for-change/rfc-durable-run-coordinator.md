@@ -14,15 +14,16 @@ superseded-by: []
 ---
 # RFC: Durable Run Coordinator — typed lifecycle, idempotent commands, and recoverable delivery
 
-- Status: in-progress — PRs 1–5 are implemented locally; PR 5 lives on
-  `codex/run-coordinator-commands`. Keyed spawn/continue admission and control
-  commands are coordinator-authoritative, exact retries reuse durable responses,
-  and transport uncertainty resolves by command lookup. Legacy run files still
-  mirror lifecycle/terminal state; PRs 6–7 are unimplemented.
+- Status: in-progress — PRs 1–6 are implemented locally; PR 6 lives on
+  `codex/run-coordinator-outbox`. Keyed execution carries a renewable run fence
+  through `starting`, `running`, and atomic terminal/outbox commit; fenced
+  delivery retries reuse one stable event identity. Legacy run files still
+  mirror lifecycle/terminal state; PR 7 is unimplemented.
 - Author: Kyle Seaman, with Codex
 - Created: 2026-08-22
 - Audited against: PR 1 commit `c8eda3c6f`, PR 2 commit `53f365a17`, PR 3 commit
-  `4aa0cba4d`, PR 4 commit `3ed006642`, and the PR 5 working tree
+  `4aa0cba4d`, PR 4 commit `3ed006642`, PR 5 commit `f9b73887a`, and the PR 6
+  working tree
 - Related: `docs/system-specs/modules/subagent.md`,
   `docs/system-specs/modules/session.md`, and
   `docs/request-for-change/rfc-orchestrator-chat-sessions.md`
@@ -344,7 +345,13 @@ class RunCoordinator(Protocol):
         self, completion: RunCompletion, fence: RunFence, expected_version: int
     ) -> CoordinatorResult[OutboxEvent]: ...
     async def renew(self, run_id: str, fence: RunFence, until: float) -> bool: ...
-    async def claim_outbox(self, owner: OwnerLease, limit: int) -> list[OutboxEvent]: ...
+    async def claim_outbox(
+        self,
+        owner: OwnerLease,
+        limit: int,
+        event_id: str = "",
+        acknowledgement: bool = False,
+    ) -> list[OutboxEvent]: ...
     async def release_outbox(
         self, fence: DeliveryFence, available_at: float
     ) -> CoordinatorResult[OutboxEvent]: ...
@@ -602,6 +609,14 @@ Branch: `run-coordinator-outbox`
 lost terminal event; redelivery never repeats execution; existing completion
 envelope consumers ignore or use the additive `event_id`; delivery retry and
 fallback remain bounded.
+
+**Local status:** implemented. Exact execution claims acquire a renewable run
+lease while controls retain independent command-only fences. The manager commits
+`starting` before child startup, `running` before prompting, and terminal state
+plus one outbox row before callbacks. Direct acceptance is fenced and
+acknowledged; dashboard-queued and digest-held events stay pending until their
+existing consumption hooks settle the same event. Payloads contain bounded
+summary/routing data and the full-result path.
 
 ### PR 7 — coordinator-first restart recovery and legacy import
 

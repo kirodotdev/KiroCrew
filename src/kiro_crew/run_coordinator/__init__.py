@@ -1,5 +1,6 @@
 """Typed run coordination boundary for subagent lifecycle state."""
 
+from .delivery import DeliveryAttempt, OutboxDeliveryAdapter
 from .memory import MemoryRunCoordinator
 from .models import (
     CommandClaim,
@@ -25,6 +26,8 @@ from .models import (
     SubmitControl,
     SubmitReceipt,
     SubmitRun,
+    TerminalReceipt,
+    TerminalRun,
 )
 from .shadow import ShadowRunCoordinator
 from .sqlite import SQLiteRunCoordinator
@@ -38,11 +41,13 @@ __all__ = [
     "CoordinatorDecision",
     "CoordinatorReason",
     "CoordinatorResult",
+    "DeliveryAttempt",
     "DeliveryFence",
     "DeliveryState",
     "DesiredState",
     "MemoryRunCoordinator",
     "ObservedState",
+    "OutboxDeliveryAdapter",
     "OutboxEvent",
     "OwnerLease",
     "RunCommand",
@@ -54,6 +59,8 @@ __all__ = [
     "SubmitReceipt",
     "SubmitControl",
     "SubmitRun",
+    "TerminalReceipt",
+    "TerminalRun",
     "SQLiteRunCoordinator",
     "ShadowRunCoordinator",
 ]

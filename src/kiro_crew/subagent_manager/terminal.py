@@ -9,23 +9,41 @@ from ._component import ManagerComponent
 if TYPE_CHECKING:
     from ..subagent import (
         _ON_DONE_TIMEOUT,
+        _OUTBOX_RESULT_SUMMARY_LEN,
         _RESET_TIMEOUT,
+        _TERMINAL_RETRY_SECONDS,
+        EXECUTION_LEASE_SECONDS,
         SUBAGENT_COMPLETION_PREFIX,
+        AuthorityOutcomeUncertain,
+        CoordinatorDecision,
+        DeliveryState,
+        OutboxEvent,
+        RunCompletion,
+        RunOutcome,
         Stats,
         SubagentInfo,
         _done_result,
         _injection_notice_outcome,
         _load_child_process_helpers,
+        _OutboxDeliveryContext,
+        _OutboxDeliveryRetry,
         _redact,
+        _TerminalCommitRejected,
         _timeout_context,
         _ws_result_path,
         asyncio,
+        clear_tombstone,
+        dashboard_slot_key,
+        json,
         logger,
         mark_delivered,
         os,
         platform_compat,
+        redact_credentials,
+        redact_exfiltration_urls,
         sel,
         subprocess_executor,
+        time,
     )
 
 
@@ -33,6 +51,326 @@ class TerminalCoordinator(ManagerComponent):
     """Own terminal transitions while state remains facade-owned."""
 
     __slots__ = ()
+
+    async def _coordinator_mark_starting_impl(self, info: SubagentInfo) -> None:
+        """Acquire the first durable lifecycle transition before child startup."""
+
+        if info._coordinator_started or info._coordinator_fence is None:
+            return
+        command = info._coordinator_command
+        if command is None:
+            raise RuntimeError("coordinator execution command is missing")
+        try:
+            result = await self._manager._coordinator.mark_starting(
+                command,
+                info._coordinator_fence,
+                info._coordinator_version,
+            )
+        except Exception:
+            result = await self._manager._coordinator.mark_starting(
+                command,
+                info._coordinator_fence,
+                info._coordinator_version,
+            )
+        if result.value is None or result.decision is CoordinatorDecision.REJECTED:
+            raise RuntimeError(f"coordinator start refused: {result.reason.value}")
+        info._coordinator_version = result.value.version
+        info._coordinator_started = True
+
+    async def _coordinator_mark_running_impl(self, info: SubagentInfo) -> None:
+        """Commit that a child session exists before prompting it."""
+
+        if info._coordinator_running or info._coordinator_fence is None:
+            return
+        try:
+            result = await self._manager._coordinator.mark_running(
+                info.id,
+                info._coordinator_fence,
+                info._coordinator_version,
+            )
+        except Exception:
+            result = await self._manager._coordinator.mark_running(
+                info.id,
+                info._coordinator_fence,
+                info._coordinator_version,
+            )
+        if result.value is None or result.decision is CoordinatorDecision.REJECTED:
+            raise RuntimeError(f"coordinator running transition refused: {result.reason.value}")
+        info._coordinator_version = result.value.version
+        info._coordinator_running = True
+
+    def _start_coordinator_heartbeat_impl(self, info: SubagentInfo) -> None:
+        fence = info._coordinator_fence
+        if fence is None or info.id in self._manager._lease_tasks:
+            return
+        renew_fence = fence
+
+        async def _renew() -> None:
+            cadence = EXECUTION_LEASE_SECONDS / 3
+            while True:
+                await asyncio.sleep(cadence)
+                try:
+                    renewed = await self._manager._coordinator.renew(
+                        info.id,
+                        renew_fence,
+                        time.time() + EXECUTION_LEASE_SECONDS,
+                    )
+                except Exception:
+                    logger.warning(
+                        "Subagent %s coordinator lease renewal failed",
+                        info.id,
+                        exc_info=True,
+                    )
+                    continue
+                if not renewed:
+                    logger.error("Subagent %s lost its coordinator execution lease", info.id)
+                    return
+
+        task = asyncio.create_task(_renew())
+        self._manager._lease_tasks[info.id] = task
+
+        def _forget(done: asyncio.Task[None]) -> None:
+            if self._manager._lease_tasks.get(info.id) is done:
+                self._manager._lease_tasks.pop(info.id, None)
+
+        task.add_done_callback(_forget)
+
+    async def _stop_coordinator_heartbeat_impl(self, run_id: str) -> None:
+        lease_task = self._manager._lease_tasks.pop(run_id, None)
+        if lease_task is None:
+            return
+        lease_task.cancel()
+        await asyncio.gather(lease_task, return_exceptions=True)
+
+    def _coordinator_outcome_impl(self, info: SubagentInfo) -> RunOutcome:
+        if info.user_stopped:
+            return RunOutcome.STOPPED
+        if info.error:
+            return RunOutcome.FAILED
+        return RunOutcome.COMPLETED
+
+    def _completion_payload_impl(self, info: SubagentInfo) -> str:
+        task, _ = redact_exfiltration_urls(info.task)
+        task, _ = redact_credentials(task)
+        error, _ = redact_exfiltration_urls(info.error)
+        error, _ = redact_credentials(error)
+        summary, _ = redact_exfiltration_urls(_done_result(info.result))
+        summary, _ = redact_credentials(summary)
+        summary = summary[:_OUTBOX_RESULT_SUMMARY_LEN]
+        return json.dumps(
+            {
+                "id": info.id,
+                "parent_session_key": info.parent_session_key,
+                "agent": info.agent,
+                "task": task[:1000],
+                "outcome": info.outcome,
+                "error": error[:2000],
+                "result_path": info.result_path,
+                "result_summary": summary,
+                "result_truncated": bool(
+                    info.result_truncated or len(info.result) > _OUTBOX_RESULT_SUMMARY_LEN
+                ),
+                "user_stopped": info.user_stopped,
+                "silent": info.silent,
+                "batch_id": info.batch_id,
+                "batch_total": info.batch_total,
+                "elapsed": info.elapsed,
+                "conversation_key": info.conversation_key,
+                "resolved_model": info.resolved_model,
+                "requested_model": _redact(info.requested_model),
+            },
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+
+    async def _commit_terminal_event_impl(self, info: SubagentInfo) -> OutboxEvent | None:
+        fence = info._coordinator_fence
+        if fence is None:
+            return None
+        try:
+            result = await self._manager._coordinator.complete(
+                RunCompletion(
+                    run_id=info.id,
+                    outcome=self._manager._coordinator_outcome(info),
+                    result_path=info.result_path,
+                    error=_redact(info.error),
+                    event_type="subagent_completion",
+                    destination=info.parent_session_key,
+                    payload_json=self._manager._completion_payload(info),
+                    terminal_at=time.time(),
+                ),
+                fence,
+                info._coordinator_version,
+            )
+        except Exception:
+            logger.exception("Subagent %s terminal coordinator commit failed", info.id)
+            return None
+        if result.decision is CoordinatorDecision.REJECTED:
+            logger.error(
+                "Subagent %s terminal coordinator commit refused: %s",
+                info.id,
+                result.reason.value,
+            )
+            raise _TerminalCommitRejected(result.reason.value)
+        if result.value is None:
+            return None
+        info._coordinator_version = result.value.run_version
+        info._delivery_event_id = result.value.event_id
+        return result.value
+
+    def _info_from_outbox_impl(self, event: OutboxEvent) -> SubagentInfo:
+        payload = json.loads(event.payload_json)
+        if not isinstance(payload, dict):
+            raise ValueError("subagent completion payload must be an object")
+        info = SubagentInfo(
+            id=str(payload.get("id") or event.run_id),
+            task=str(payload.get("task") or ""),
+            parent_session_key=str(payload.get("parent_session_key") or event.destination),
+            agent=str(payload.get("agent") or ""),
+            done=True,
+            result=str(payload.get("result_summary") or ""),
+            result_path=str(payload.get("result_path") or ""),
+            result_truncated=bool(payload.get("result_truncated")),
+            error=str(payload.get("error") or ""),
+            user_stopped=bool(payload.get("user_stopped")),
+            silent=bool(payload.get("silent")),
+            elapsed=float(payload.get("elapsed") or 0.0),
+            conversation_key=str(payload.get("conversation_key") or ""),
+            resolved_model=str(payload.get("resolved_model") or ""),
+            requested_model=str(payload.get("requested_model") or ""),
+        )
+        # Batch progress lives in the gateway's volatile digest state. After a
+        # restart, replay each stable event independently instead of inventing
+        # a fresh one-member wave from persisted batch labels.
+        info._delivery_event_id = event.event_id
+        return info
+
+    async def _deliver_outbox_event_impl(self, event: OutboxEvent) -> bool:
+        """Hand one claimed event to existing routing, returning acceptance."""
+
+        context = self._manager._outbox_contexts.get(event.event_id)
+        if context is None:
+            context = self._manager._outbox_live_contexts.pop(event.run_id, None)
+            if context is None:
+                info = self._manager._info_from_outbox(event)
+                context = _OutboxDeliveryContext(
+                    info=info,
+                    source="Subagent outbox",
+                    injection_timeout_reason="durable completion delivery timed out",
+                    mark_delivered_on_success=True,
+                    settle_digest=True,
+                    teardown_done=None,
+                )
+            self._manager._outbox_contexts[event.event_id] = context
+        info = context.info
+        info._delivery_event_id = event.event_id
+        # A deferred destination already accepted this stable event into its
+        # own queue or digest. Background retries keep its durable identity
+        # pending for acknowledgement without repeating routing or accounting.
+        if info._digest_held or info._delivery_queued:
+            return False
+        info._delivery_failed = False
+        if not context.effects_fired:
+            await self._manager._fire_event(
+                "subagent_done",
+                info,
+                {
+                    "elapsed": info.elapsed,
+                    "error": _redact(info.error) if info.error else None,
+                    "stopped": info.user_stopped,
+                    "outcome": info.outcome,
+                    "task": _redact(info.task),
+                    "agent": _redact(info.agent),
+                    "child_session": info.conversation_key or f"subagent:{info.id}",
+                    "model": info.resolved_model,
+                    "requested_model": _redact(info.requested_model),
+                    "result": _done_result(info.result),
+                    "event_id": event.event_id,
+                },
+            )
+            context.effects_fired = True
+        if self._manager._on_done:
+            info._delivery_retry = context.callback_started
+            context.callback_started = True
+            try:
+                await asyncio.wait_for(self._manager._on_done(info), timeout=_ON_DONE_TIMEOUT)
+            except asyncio.TimeoutError:
+                logger.error(
+                    "%s: completion injection timed out for %s after %.0fs",
+                    context.source,
+                    info.id,
+                    _ON_DONE_TIMEOUT,
+                )
+                try:
+                    await self._manager._sessions.reset(info.parent_session_key)
+                except Exception:
+                    logger.debug(
+                        "Failed to reset parent session %s after injection timeout",
+                        info.parent_session_key,
+                        exc_info=True,
+                    )
+                self._manager.notify_injection_failed(
+                    info,
+                    reason=context.injection_timeout_reason,
+                )
+                raise _OutboxDeliveryRetry(context.injection_timeout_reason)
+            except Exception:
+                logger.exception("%s: announce failed for %s", context.source, info.id)
+                raise
+        if info._delivery_failed:
+            raise _OutboxDeliveryRetry("completion destination reported a routing failure")
+        info._delivery_retry = False
+        info._delivery_batch_progress = None
+        info._delivery_batch_final = False
+        info._reported_to_parent = True
+        if info._digest_held or info._delivery_queued:
+            return False
+        if context.settle_digest:
+            await self._manager._settle_digest_holds(info)
+        if context.mark_delivered_on_success and info.outcome == "completed":
+            teardown_done = context.teardown_done
+            if teardown_done is not None and not teardown_done.is_set():
+                try:
+                    await asyncio.wait_for(teardown_done.wait(), timeout=_RESET_TIMEOUT + 30)
+                except asyncio.TimeoutError:
+                    logger.warning(
+                        "Subagent %s: teardown did not complete before the "
+                        "delivered tombstone; writing it anyway",
+                        info.id,
+                    )
+            try:
+                await asyncio.to_thread(mark_delivered, info.id)
+            except Exception:
+                logger.debug("Failed to mark subagent %s delivered", info.id, exc_info=True)
+            try:
+                slot_key = dashboard_slot_key(info.parent_session_key)
+                if slot_key:
+                    _ws_result_path(slot_key, info.id).unlink(missing_ok=True)
+            except Exception:
+                logger.debug("Failed to clean workspace result for %s", info.id, exc_info=True)
+        self._manager._outbox_contexts.pop(event.event_id, None)
+        return True
+
+    async def _reject_waiting_before_terminal_impl(self, info: SubagentInfo, error: str) -> None:
+        """Persist a pre-start rejection while its run lease protects terminal delivery."""
+
+        while True:
+            try:
+                await self._manager.command_authority.reject_waiting_execution(
+                    info.id,
+                    error,
+                    stop_heartbeat=False,
+                )
+                return
+            except asyncio.CancelledError:
+                raise
+            except AuthorityOutcomeUncertain:
+                logger.warning(
+                    "Subagent %s waiting rejection commit failed; retrying",
+                    info.id,
+                    exc_info=True,
+                )
+                await asyncio.sleep(_TERMINAL_RETRY_SECONDS)
 
     def _claim_finalize_impl(self, info: SubagentInfo, *, supersede_recovery: bool = False) -> bool:
         """Claim the exclusive right to report ``info``'s terminal outcome.
@@ -105,6 +443,66 @@ class TerminalCoordinator(ManagerComponent):
         arguments rather than unified away. The WS payload is identical (both
         set ``info.elapsed`` before calling), so it is built from ``info`` here.
         """
+        if info._coordinator_fence is not None:
+            context = _OutboxDeliveryContext(
+                info=info,
+                source=source,
+                injection_timeout_reason=injection_timeout_reason,
+                mark_delivered_on_success=mark_delivered_on_success,
+                settle_digest=settle_digest,
+                teardown_done=teardown_done,
+            )
+            self._manager._outbox_live_contexts[info.id] = context
+            event = None
+            while event is None:
+                try:
+                    event = await self._manager._commit_terminal_event(info)
+                except _TerminalCommitRejected:
+                    if self._manager._outbox_live_contexts.get(info.id) is context:
+                        self._manager._outbox_live_contexts.pop(info.id, None)
+                    await self._manager._stop_coordinator_heartbeat(info.id)
+                    await self._manager.command_authority.stop_execution_heartbeat(info.id)
+                    try:
+                        await asyncio.to_thread(clear_tombstone, info.id)
+                    except Exception:
+                        logger.debug(
+                            "Failed to re-admit stale-fence result %s to recovery",
+                            info.id,
+                            exc_info=True,
+                        )
+                    return
+                if event is None:
+                    await asyncio.sleep(_TERMINAL_RETRY_SECONDS)
+            if self._manager._outbox_live_contexts.get(info.id) is context:
+                self._manager._outbox_live_contexts.pop(info.id, None)
+            if not info._reported_to_parent:
+                self._manager._outbox_contexts.setdefault(event.event_id, context)
+            try:
+                await self._manager._stop_coordinator_heartbeat(info.id)
+            finally:
+                await self._manager.command_authority.stop_execution_heartbeat(info.id)
+            if info._reported_to_parent:
+                return
+            while True:
+                try:
+                    attempts = await self._manager._outbox_delivery.drain_once(
+                        event_id=event.event_id
+                    )
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    logger.warning(
+                        "Subagent %s durable completion routing failed",
+                        info.id,
+                        exc_info=True,
+                    )
+                else:
+                    if any(attempt.status is DeliveryState.DELIVERED for attempt in attempts):
+                        return
+                    if info._reported_to_parent or info._digest_held or info._delivery_queued:
+                        return
+                await asyncio.sleep(_TERMINAL_RETRY_SECONDS)
+
         await self._manager._fire_event(
             "subagent_done",
             info,
@@ -145,7 +543,7 @@ class TerminalCoordinator(ManagerComponent):
                 # _on_done returned without raising, so the wave digest (if this
                 # was the final member) has been handed off. Only NOW settle the
                 # held members' delivery tombstones.
-                self._manager._settle_digest_holds(info)
+                await self._manager._settle_digest_holds(info)
             # Digest-held wave members are NOT marked delivered here: their
             # result has not reached the parent yet (the gateway marks them when
             # the digest fires), so a restart mid-wave leaves them visible to
@@ -187,7 +585,7 @@ class TerminalCoordinator(ManagerComponent):
                 # "delivered" tombstone excludes it from orphan reconciliation;
                 # the reaper prunes it after agent.subagent_result_ttl_secs.
                 try:
-                    mark_delivered(info.id)
+                    await asyncio.to_thread(mark_delivered, info.id)
                 except Exception:
                     logger.debug("Failed to mark subagent %s delivered", info.id, exc_info=True)
                 # Clean up workspace result file (agent-{id}.md in parent dir).
@@ -593,6 +991,7 @@ class TerminalCoordinator(ManagerComponent):
         report could not be injected, including runs cancelled or rejected
         before they ever executed.
         """
+        info._delivery_failed = True
         try:
             # Lazy: the dashboard layer must not be imported by a core module at
             # import time.

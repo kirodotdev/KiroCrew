@@ -16,6 +16,8 @@ if TYPE_CHECKING:
         CONTEXT_GROUP_PROJECT,
         PROVIDER_LABEL_DEFAULT,
         Any,
+        RunCommand,
+        RunFence,
         SubagentInfo,
         _cleanup_session_files_sync,
         _redact,
@@ -221,6 +223,9 @@ class ContinuationCoordinator(ManagerComponent):
         cwd: str = "",
         _preassigned_id: str = "",
         _coordinator_admitted: bool = False,
+        _coordinator_command: RunCommand | None = None,
+        _coordinator_fence: RunFence | None = None,
+        _coordinator_version: int = 0,
     ) -> SubagentInfo | None:
         """Dispatch a follow-up *task* into conversation *conv_id*.
 
@@ -330,6 +335,9 @@ class ContinuationCoordinator(ManagerComponent):
             task,
             _preassigned_id=_preassigned_id,
             _coordinator_admitted=_coordinator_admitted,
+            _coordinator_command=_coordinator_command,
+            _coordinator_fence=_coordinator_fence,
+            _coordinator_version=_coordinator_version,
             parent_session_key=parent_session_key,
             agent=agent,
             model=model,

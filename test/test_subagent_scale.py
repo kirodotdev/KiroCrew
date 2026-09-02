@@ -22,6 +22,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from kiro_crew.constants import SUBAGENT_COMPLETION_META_KEY
+from kiro_crew.run_coordinator import MemoryRunCoordinator
 from kiro_crew.subagent import SubagentInfo, SubagentManager
 from kiro_crew.subagent_scale import SubagentEventCoalescer
 
@@ -376,7 +378,7 @@ class TestBatchIdentity:
         with patch("kiro_crew.subagent.Stats"), patch("kiro_crew.subagent.sel"):
             rejected = mgr.spawn("   ", batch_id="wv9", batch_total=2)
             plain = mgr.spawn("   ")  # non-batch rejection: no announce
-        await asyncio.sleep(0)  # let the scheduled announce run
+        await asyncio.gather(*mgr._tasks.values())
         assert rejected is not None and rejected.error
         assert plain is not None and plain.error
         assert len(announced) == 1
@@ -384,6 +386,7 @@ class TestBatchIdentity:
         assert got.batch_id == "wv9" and got.batch_total == 2
         assert got.done and got.error
         assert got.outcome == "failed"
+        assert got._delivery_event_id
 
     @pytest.mark.asyncio
     async def test_no_approval_rejection_announces_batch_member(self):
@@ -410,13 +413,14 @@ class TestBatchIdentity:
         mgr._spawn_stagger_secs = 0.0
         with patch("kiro_crew.subagent.Stats"), patch("kiro_crew.subagent.sel"):
             rejected = mgr.spawn("do work", batch_id="wvA", batch_total=2)
-        await asyncio.sleep(0)
+        await asyncio.gather(*mgr._tasks.values())
         assert rejected is not None and rejected.done
         assert "no approval mechanism" in (rejected.error or "")
         assert len(announced) == 1
         got = announced[0]
         assert got.batch_id == "wvA" and got.batch_total == 2
         assert got.outcome == "failed"
+        assert got._delivery_event_id
 
     @pytest.mark.asyncio
     async def test_record_lost_submission_reconciles_and_announces(self):
@@ -442,7 +446,7 @@ class TestBatchIdentity:
             mgr.record_lost_submission(
                 "wvL", 3, "connection refused", parent_session_key="dashboard:main"
             )
-        await asyncio.sleep(0)
+        await asyncio.gather(*mgr._tasks.values())
         assert mgr._batch_submitted["wvL"] == [3, 3]
         assert mgr.batch_members_pending("wvL") is False  # wave can close
         assert len(announced) == 1
@@ -450,6 +454,7 @@ class TestBatchIdentity:
         assert got.batch_id == "wvL" and got.done and got.error
         assert "submission lost" in got.error
         assert got.outcome == "failed"
+        assert got._delivery_event_id
 
     @pytest.mark.asyncio
     async def test_reaper_stuck_wave_sweep_reconciles(self):
@@ -703,8 +708,11 @@ class TestWaveDigest:
         total = 12  # chunk size 10 -> chunks of 10 + 2
         injected: list[str] = []
 
-        async def _fake_run_chat(_state, _slot, text, *, _directive_user_origin, **_kw):
+        async def _fake_run_chat(
+            _state, _slot, text, *, _directive_user_origin, _on_consumed
+        ):
             assert _directive_user_origin is False
+            _on_consumed()
             injected.append(text)
 
         with patch("kiro_crew.slack.gateway._run_chat", side_effect=_fake_run_chat), \
@@ -895,8 +903,11 @@ class TestWaveDigest:
         total = 12  # chunk size 10 -> chunk 1/2 at member 10, final 2/2 on close
         injected: list[str] = []
 
-        async def _fake_run_chat(_state, _slot, text, *, _directive_user_origin, **_kw):
+        async def _fake_run_chat(
+            _state, _slot, text, *, _directive_user_origin, _on_consumed
+        ):
             assert _directive_user_origin is False
+            _on_consumed()
             injected.append(text)
 
         hop_calls: list[int] = []
@@ -948,13 +959,21 @@ class TestWaveDigest:
         orch.dashboard_state.get_slot = MagicMock(return_value=slot)
         mgr, on_done = self._capture_on_done(orch)
         total = 12
-        with patch("kiro_crew.slack.gateway._run_chat", new_callable=AsyncMock):
+
+        async def _fake_run_chat(
+            _state, _slot, _text, *, _directive_user_origin, _on_consumed
+        ):
+            assert _directive_user_origin is False
+            _on_consumed()
+
+        with patch("kiro_crew.slack.gateway._run_chat", _fake_run_chat):
             for i in range(total):
                 mgr.batch_members_pending = MagicMock(
                     return_value=i != total - 1
                 )
                 await on_done(self._member(i, total, error="boom" if i < 2 else ""))
                 await asyncio.sleep(0)
+            await _settle(lambda: slot.task is None)
         finished = [
             c for c in orch.dashboard_state.broadcast_ws.call_args_list
             if c.args and c.args[0] == "batch_finished"
@@ -1060,7 +1079,7 @@ class TestWaveDigest:
         info = SubagentInfo(id="last", task="t")
         info._digest_settle_ids = ["h1", "h2"]
         with patch("kiro_crew.subagent.mark_delivered", side_effect=marked.append):
-            mgr._settle_digest_holds(info)
+            await mgr._settle_digest_holds(info)
         assert marked == ["h1", "h2"]
         assert info._digest_settle_ids == []  # idempotent re-entry safe
         # Structural guarantee: the settle call sits AFTER the awaited
@@ -1426,8 +1445,11 @@ class TestWaveDigest:
         total = 12
         injected: list[str] = []
 
-        async def _fake_run_chat(_state, _slot, text, *, _directive_user_origin, **_kw):
+        async def _fake_run_chat(
+            _state, _slot, text, *, _directive_user_origin, _on_consumed
+        ):
             assert _directive_user_origin is False
+            _on_consumed()
             injected.append(text)
 
         with patch("kiro_crew.slack.gateway._run_chat", side_effect=_fake_run_chat), \
@@ -1447,6 +1469,148 @@ class TestWaveDigest:
         # …exactly once across the whole wave (deduped within the chunk, and
         # chunk buffers reset between flushes — no bleed into later chunks).
         assert combined.count("You MUST ask the user for guidance") == 1
+
+    @pytest.mark.asyncio
+    async def test_delivery_retry_does_not_resume_stopped_orchestration(self):
+        orch = _make_orchestrator()
+        orch.sessions = _mock_sessions()
+        orch.ctx_builder = MagicMock()
+        orch.ctx_builder.hooks = MagicMock()
+        orch.dashboard_state = _mock_dashboard_state()
+        tracker = MagicMock()
+        tracker.stopped = True
+        slot = MagicMock()
+        slot.mode = "orchestrator"
+        slot.running = False
+        slot.task = None
+        slot._orch_tracker = tracker
+        slot._subagent_deliveries_inflight = 0
+        orch.dashboard_state.get_slot = MagicMock(return_value=slot)
+        _mgr, on_done = self._capture_on_done(orch)
+        info = SubagentInfo(
+            id="retry-after-stop",
+            task="late durable delivery",
+            parent_session_key="dashboard:main",
+            done=True,
+            result="done",
+        )
+        info._delivery_retry = True
+        run_chat = AsyncMock()
+
+        with patch("kiro_crew.slack.gateway._run_chat", run_chat):
+            await on_done(info)
+            await asyncio.sleep(0)
+
+        scheduled_task = slot.task
+        if isinstance(scheduled_task, asyncio.Task):
+            scheduled_task.cancel()
+            await asyncio.gather(scheduled_task, return_exceptions=True)
+
+        assert scheduled_task is None
+        run_chat.assert_not_awaited()
+        tracker.record_success.assert_not_called()
+        tracker.record_failure.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_delivery_retry_keeps_original_stopped_orchestration_owner(self):
+        orch = _make_orchestrator()
+        orch.sessions = _mock_sessions()
+        orch.ctx_builder = MagicMock()
+        orch.ctx_builder.hooks = MagicMock()
+        orch.dashboard_state = _mock_dashboard_state()
+        stopped_tracker = MagicMock()
+        stopped_tracker.stopped = True
+        current_tracker = MagicMock()
+        current_tracker.stopped = False
+        slot = MagicMock()
+        slot.mode = "orchestrator"
+        slot.running = False
+        slot.task = None
+        slot._orch_tracker = current_tracker
+        slot._subagent_deliveries_inflight = 0
+        orch.dashboard_state.get_slot = MagicMock(return_value=slot)
+        _mgr, on_done = self._capture_on_done(orch)
+        info = SubagentInfo(
+            id="retry-after-new-plan",
+            task="late durable delivery",
+            parent_session_key="dashboard:main",
+            done=True,
+            result="done",
+        )
+        info._delivery_retry = True
+        info._delivery_orchestration_tracker = stopped_tracker
+        run_chat = AsyncMock()
+
+        with patch("kiro_crew.slack.gateway._run_chat", run_chat):
+            await on_done(info)
+            await asyncio.sleep(0)
+
+        scheduled_task = slot.task
+        if isinstance(scheduled_task, asyncio.Task):
+            scheduled_task.cancel()
+            await asyncio.gather(scheduled_task, return_exceptions=True)
+
+        assert scheduled_task is None
+        run_chat.assert_not_awaited()
+        current_tracker.record_success.assert_not_called()
+        current_tracker.record_failure.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_delivery_retry_rechecks_stop_after_busy_slot_wait(self):
+        orch = _make_orchestrator()
+        orch.sessions = _mock_sessions()
+        orch.ctx_builder = MagicMock()
+        orch.ctx_builder.hooks = MagicMock()
+        orch.dashboard_state = _mock_dashboard_state()
+        tracker = MagicMock()
+        tracker.stopped = False
+        slot = MagicMock()
+        slot.mode = "orchestrator"
+        slot.running = False
+        slot._orch_tracker = tracker
+        slot._subagent_deliveries_inflight = 0
+        busy_started = asyncio.Event()
+        release_busy = asyncio.Event()
+
+        async def _busy_turn():
+            busy_started.set()
+            await release_busy.wait()
+
+        current_task = asyncio.create_task(_busy_turn())
+        slot.task = current_task
+        orch.dashboard_state.get_slot = MagicMock(return_value=slot)
+        _mgr, on_done = self._capture_on_done(orch)
+        info = SubagentInfo(
+            id="retry-cancelled-during-wait",
+            task="late durable delivery",
+            parent_session_key="dashboard:main",
+            done=True,
+            result="done",
+        )
+        info._delivery_retry = True
+        info._delivery_orchestration_tracker = tracker
+        run_chat_release = asyncio.Event()
+
+        async def _run_chat(*_args, **_kwargs):
+            await run_chat_release.wait()
+
+        with patch("kiro_crew.slack.gateway._run_chat", side_effect=_run_chat):
+            delivery_task = asyncio.create_task(on_done(info))
+            await busy_started.wait()
+            await asyncio.sleep(0)
+            tracker.stopped = True
+            release_busy.set()
+            await delivery_task
+            await asyncio.sleep(0)
+
+        scheduled_task = slot.task
+        if scheduled_task is not current_task and isinstance(scheduled_task, asyncio.Task):
+            scheduled_task.cancel()
+            await asyncio.gather(scheduled_task, return_exceptions=True)
+
+        assert scheduled_task is current_task
+        tracker.record_success.assert_not_called()
+        tracker.record_failure.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_small_wave_delivers_single_chunk_digest(self):
@@ -1472,8 +1636,11 @@ class TestWaveDigest:
         total = 3
         injected: list[str] = []
 
-        async def _fake_run_chat(_state, _slot, text, *, _directive_user_origin, **_kw):
+        async def _fake_run_chat(
+            _state, _slot, text, *, _directive_user_origin, _on_consumed
+        ):
             assert _directive_user_origin is False
+            _on_consumed()
             injected.append(text)
 
         with patch("kiro_crew.slack.gateway._run_chat", side_effect=_fake_run_chat), \
@@ -1491,6 +1658,423 @@ class TestWaveDigest:
         assert "Batch results 1/1" in digest
         assert "3 ✅" in digest and "of 3 agents" in digest
         assert "before spawning any follow-up" in digest
+
+    @pytest.mark.asyncio
+    async def test_digest_envelope_and_metadata_include_every_event_id(self):
+        orch = _make_orchestrator()
+        orch.sessions = _mock_sessions()
+        orch.ctx_builder = MagicMock()
+        orch.ctx_builder.hooks = MagicMock()
+        orch.dashboard_state = _mock_dashboard_state()
+        slot = MagicMock()
+        slot.mode = "chat"
+        slot.running = True
+        slot.task = MagicMock()
+        slot._orch_tracker = None
+        slot._subagent_deliveries_inflight = 0
+        slot._subagents_inline_collected = set()
+        orch.dashboard_state.get_slot = MagicMock(return_value=slot)
+        mgr, on_done = self._capture_on_done(orch)
+        members = [self._member(index, 3) for index in range(3)]
+        for index, member in enumerate(members):
+            member._delivery_event_id = f"event-{index}"
+            mgr.batch_members_pending = MagicMock(return_value=index != 2)
+            await on_done(member)
+
+        queued = slot.queue_append.call_args
+        announce = queued.args[0]
+        meta = queued.kwargs["meta"][SUBAGENT_COMPLETION_META_KEY]
+
+        # A failed parent route retries the same final member. Composition and
+        # batch accounting are one-shot even though routing is at-least-once.
+        final_member = members[-1]
+        final_member._delivery_queued = False
+        final_member._delivery_retry = True
+        await on_done(final_member)
+        replayed = slot.queue_append.call_args
+
+        for index in range(3):
+            assert f"Event: `event-{index}`" in announce
+        assert meta["eventIds"] == ["event-0", "event-1", "event-2"]
+        assert replayed.args[0] == announce
+        batch_finished = [
+            call for call in orch.dashboard_state.broadcast_ws.call_args_list
+            if call.args and call.args[0] == "batch_finished"
+        ]
+        assert len(batch_finished) == 1
+
+    @pytest.mark.asyncio
+    async def test_failed_nonfinal_chunk_retry_does_not_recount_member(self):
+        orch = _make_orchestrator()
+        orch.sessions = _mock_sessions()
+        orch.ctx_builder = MagicMock()
+        orch.ctx_builder.hooks = MagicMock()
+        orch.dashboard_state = _mock_dashboard_state()
+        orch.dashboard_state.get_slot = MagicMock(return_value=None)
+        mgr, on_done = self._capture_on_done(orch)
+        members = [self._member(index, 12) for index in range(12)]
+        for index, member in enumerate(members):
+            member._delivery_event_id = f"event-{index}"
+
+        for member in members[:9]:
+            mgr.batch_members_pending = MagicMock(return_value=True)
+            await on_done(member)
+
+        orch.dashboard_state.notify = MagicMock(
+            side_effect=RuntimeError("route unavailable")
+        )
+        mgr.batch_members_pending = MagicMock(return_value=True)
+        with pytest.raises(RuntimeError, match="route unavailable"):
+            await on_done(members[9])
+
+        assert members[9]._delivery_batch_progress is not None
+        assert orch._batch_progress["bigwave"]["done"] == 10
+
+        members[9]._delivery_retry = True
+        with pytest.raises(RuntimeError, match="route unavailable"):
+            await on_done(members[9])
+
+        retry_progress = members[9]._delivery_batch_progress
+        assert retry_progress is not None
+        assert len(retry_progress["ok_lines"]) == 10
+
+        orch.dashboard_state.notify = MagicMock()
+        await on_done(members[9])
+
+        orch.dashboard_state.notify.assert_called_once()
+        assert members[9]._digest_held is False
+        assert orch._batch_progress["bigwave"]["done"] == 10
+        assert orch._batch_progress["bigwave"]["flushed"] == 10
+
+        mgr.batch_members_pending = MagicMock(return_value=True)
+        await on_done(members[10])
+        assert orch._batch_progress["bigwave"]["done"] == 11
+        assert not any(
+            call.args and call.args[0] == "batch_finished"
+            for call in orch.dashboard_state.broadcast_ws.call_args_list
+        )
+
+        mgr.batch_members_pending = MagicMock(return_value=False)
+        await on_done(members[11])
+        finished = [
+            call
+            for call in orch.dashboard_state.broadcast_ws.call_args_list
+            if call.args and call.args[0] == "batch_finished"
+        ]
+        assert len(finished) == 1
+        assert finished[0].args[1]["ok"] == 12
+
+    @pytest.mark.asyncio
+    async def test_failed_nonfinal_chunk_blocks_later_chunks_until_retry(self):
+        orch = _make_orchestrator()
+        orch.sessions = _mock_sessions()
+        orch.ctx_builder = MagicMock()
+        orch.ctx_builder.hooks = MagicMock()
+        orch.dashboard_state = _mock_dashboard_state()
+        orch.dashboard_state.get_slot = MagicMock(return_value=None)
+        mgr, on_done = self._capture_on_done(orch)
+        members = [self._member(index, 12) for index in range(12)]
+        for index, member in enumerate(members):
+            member._delivery_event_id = f"event-{index}"
+
+        for member in members[:9]:
+            mgr.batch_members_pending = MagicMock(return_value=True)
+            await on_done(member)
+
+        orch.dashboard_state.notify = MagicMock(
+            side_effect=RuntimeError("route unavailable")
+        )
+        mgr.batch_members_pending = MagicMock(return_value=True)
+        with pytest.raises(RuntimeError, match="route unavailable"):
+            await on_done(members[9])
+
+        orch.dashboard_state.notify = MagicMock()
+        mgr.batch_members_pending = MagicMock(return_value=True)
+        await on_done(members[10])
+        mgr.batch_members_pending = MagicMock(return_value=False)
+        await on_done(members[11])
+
+        assert orch.dashboard_state.notify.call_count == 0
+        assert orch._batch_progress["bigwave"]["done"] == 10
+        assert members[10]._delivery_failed is True
+        assert members[11]._delivery_failed is True
+
+        members[9]._delivery_retry = True
+        await on_done(members[9])
+        members[10]._delivery_failed = False
+        mgr.batch_members_pending = MagicMock(return_value=True)
+        await on_done(members[10])
+        members[11]._delivery_failed = False
+        mgr.batch_members_pending = MagicMock(return_value=False)
+        await on_done(members[11])
+
+        notifications = orch.dashboard_state.notify.call_args_list
+        assert len(notifications) == 2
+        assert members[9]._delivery_batch_final is False
+        assert members[11]._delivery_batch_final is True
+
+    @pytest.mark.asyncio
+    async def test_failed_transient_chunk_returns_to_wave_for_durable_member(self):
+        orch = _make_orchestrator()
+        orch.sessions = _mock_sessions()
+        orch.ctx_builder = MagicMock()
+        orch.ctx_builder.hooks = MagicMock()
+        orch.dashboard_state = _mock_dashboard_state()
+        orch.dashboard_state.get_slot = MagicMock(return_value=None)
+        mgr, on_done = self._capture_on_done(orch)
+        lost = self._member(0, 2, error="spawn submission lost")
+        lost._delivery_event_id = ""
+        sibling = self._member(1, 2)
+
+        orch.dashboard_state.notify = MagicMock(
+            side_effect=RuntimeError("route unavailable")
+        )
+        mgr.batch_members_pending = MagicMock(return_value=True)
+        with patch("kiro_crew.slack.gateway.SUBAGENT_DIGEST_CHUNK_SIZE", 1):
+            with pytest.raises(RuntimeError, match="route unavailable"):
+                await on_done(lost)
+
+            orch.dashboard_state.notify = MagicMock()
+            mgr.batch_members_pending = MagicMock(return_value=False)
+            await on_done(sibling)
+
+        orch.dashboard_state.notify.assert_called_once()
+        progress = sibling._delivery_batch_progress
+        assert progress is not None
+        assert progress["done"] == 2
+        assert progress["err"] == 1
+        assert progress["ok"] == 1
+        assert any("spawn submission lost" in line for line in progress["fail_lines"])
+
+    @pytest.mark.asyncio
+    async def test_final_lost_submission_retries_its_durable_digest(self):
+        now = [1_000.0]
+        orch = _make_orchestrator()
+        orch.sessions = _mock_sessions()
+        orch.ctx_builder = MagicMock()
+        orch.ctx_builder.hooks = MagicMock()
+        orch.dashboard_state = _mock_dashboard_state()
+        orch.dashboard_state.get_slot = MagicMock(return_value=None)
+        _mock_mgr, gateway_on_done = self._capture_on_done(orch)
+        announced: list[SubagentInfo] = []
+
+        async def _on_done(info: SubagentInfo) -> None:
+            announced.append(info)
+            await gateway_on_done(info)
+
+        mgr = SubagentManager(
+            sessions=_mock_sessions(),
+            ctx_builder=_mock_ctx(),
+            on_done=_on_done,
+            coordinator=MemoryRunCoordinator(clock=lambda: now[0]),
+        )
+        mgr._outbox_delivery._clock = lambda: now[0]
+        orch.subagent_mgr = mgr
+        sibling = self._member(0, 2)
+        sibling._delivery_event_id = "event-sibling"
+        mgr.batch_members_pending = MagicMock(return_value=True)
+        await gateway_on_done(sibling)
+        assert sibling._digest_held is True
+
+        orch.dashboard_state.notify = MagicMock(
+            side_effect=RuntimeError("route unavailable")
+        )
+        mgr.batch_members_pending = MagicMock(return_value=False)
+        mgr._outbox_delivery._lease_seconds = 1.0
+        mgr._outbox_delivery._retry_base_seconds = 0.0
+        mgr._outbox_delivery._retry_max_seconds = 0.0
+        with patch("kiro_crew.subagent_persistence.mark_delivered"):
+            mgr.record_lost_submission(
+                "bigwave",
+                2,
+                "connection refused",
+                parent_session_key="dashboard:main",
+            )
+            await asyncio.gather(*list(mgr._tasks.values()))
+
+            lost = announced[-1]
+            assert lost._delivery_event_id
+            assert lost._delivery_batch_final is True
+            assert lost._delivery_batch_progress is not None
+
+            orch.dashboard_state.notify = MagicMock()
+            now[0] += 2.0
+            attempts = await mgr._outbox_delivery.drain_once(
+                event_id=lost._delivery_event_id
+            )
+
+        assert attempts
+        orch.dashboard_state.notify.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_inflight_nonfinal_route_blocks_concurrent_later_chunks(self):
+        orch = _make_orchestrator()
+        orch.sessions = _mock_sessions()
+        orch.sessions.cancel_current = AsyncMock()
+        orch.ctx_builder = MagicMock()
+        orch.ctx_builder.hooks = MagicMock()
+        orch.dashboard_state = _mock_dashboard_state()
+        orch.dashboard_state.get_slot = MagicMock(return_value=None)
+        mgr, on_done = self._capture_on_done(orch)
+        mgr.running = []
+        mgr.queued_count_for = MagicMock(return_value=0)
+        members = [self._member(index, 12) for index in range(12)]
+        for index, member in enumerate(members):
+            member.parent_session_key = "cron:job-1"
+            member._delivery_event_id = f"event-{index}"
+
+        for member in members[:9]:
+            mgr.batch_members_pending = MagicMock(return_value=True)
+            await on_done(member)
+
+        route_started = asyncio.Event()
+        release_route = asyncio.Event()
+        get_calls = 0
+
+        async def _get_or_create(_key):
+            nonlocal get_calls
+            get_calls += 1
+            if get_calls == 1:
+                route_started.set()
+                await release_route.wait()
+                raise RuntimeError("route unavailable")
+            return MagicMock(), False, False
+
+        def _mark_failed(info, reason=""):
+            info._delivery_failed = True
+
+        orch.sessions.get_or_create = AsyncMock(side_effect=_get_or_create)
+        mgr.notify_injection_failed = MagicMock(side_effect=_mark_failed)
+        mgr.batch_members_pending = MagicMock(return_value=True)
+        first_chunk = asyncio.create_task(on_done(members[9]))
+        await route_started.wait()
+
+        later_member = asyncio.create_task(on_done(members[10]))
+        mgr.batch_members_pending = MagicMock(return_value=False)
+        final_member = asyncio.create_task(on_done(members[11]))
+        await asyncio.sleep(0)
+
+        assert get_calls == 1
+        release_route.set()
+        await asyncio.gather(first_chunk, later_member, final_member)
+        assert members[10]._delivery_failed is True
+        assert members[11]._delivery_failed is True
+        assert orch._batch_progress["bigwave"]["done"] == 10
+
+    @pytest.mark.asyncio
+    async def test_completed_callback_waiting_on_wave_lock_prevents_early_final_digest(self):
+        orch = _make_orchestrator()
+        orch.sessions = _mock_sessions()
+        orch.ctx_builder = MagicMock()
+        orch.ctx_builder.hooks = MagicMock()
+        orch.dashboard_state = _mock_dashboard_state()
+        orch.dashboard_state.get_slot = MagicMock(return_value=None)
+        mgr, on_done = self._capture_on_done(orch)
+        mgr.running = []
+        mgr.queued_count_for = MagicMock(return_value=0)
+        mgr.batch_members_pending = MagicMock(return_value=False)
+        members = [self._member(index, 2) for index in range(2)]
+        for index, member in enumerate(members):
+            member.parent_session_key = "cron:job-1"
+            member._delivery_event_id = f"event-{index}"
+
+        route_started = asyncio.Event()
+        release_route = asyncio.Event()
+        get_calls = 0
+
+        async def _get_or_create(_key):
+            nonlocal get_calls
+            get_calls += 1
+            route_started.set()
+            if get_calls == 1:
+                await release_route.wait()
+            return MagicMock(), False, False
+
+        orch.sessions.get_or_create = AsyncMock(side_effect=_get_or_create)
+        first = asyncio.create_task(on_done(members[0]))
+        await asyncio.sleep(0)
+        second = asyncio.create_task(on_done(members[1]))
+        await asyncio.sleep(0)
+        await route_started.wait()
+
+        try:
+            assert members[0]._delivery_batch_progress is None
+            assert members[1]._delivery_batch_progress is not None
+            assert members[1]._delivery_batch_progress["done"] == 2
+        finally:
+            release_route.set()
+            await asyncio.gather(first, second)
+        assert get_calls == 1
+
+    @pytest.mark.asyncio
+    async def test_failed_flush_only_chunk_rolls_back_for_wave_close(self):
+        orch = _make_orchestrator()
+        orch.sessions = _mock_sessions()
+        orch.ctx_builder = MagicMock()
+        orch.ctx_builder.hooks = MagicMock()
+        orch.dashboard_state = _mock_dashboard_state()
+        orch.dashboard_state.get_slot = MagicMock(return_value=None)
+        mgr, on_done = self._capture_on_done(orch)
+        members = [self._member(index, 3) for index in range(3)]
+
+        for member in members[:2]:
+            mgr.batch_members_pending = MagicMock(return_value=True)
+            await on_done(member)
+
+        flush = SubagentInfo(
+            id="flush",
+            task="held wave results",
+            parent_session_key="dashboard:main",
+            batch_id="bigwave",
+            batch_total=3,
+            done=True,
+        )
+        flush._digest_flush_only = True
+        orch.dashboard_state.notify = MagicMock(
+            side_effect=RuntimeError("route unavailable")
+        )
+        with pytest.raises(RuntimeError, match="route unavailable"):
+            await on_done(flush)
+
+        orch.dashboard_state.notify = MagicMock()
+        mgr.batch_members_pending = MagicMock(return_value=False)
+        await on_done(members[2])
+
+        orch.dashboard_state.notify.assert_called_once()
+        final_progress = members[2]._delivery_batch_progress
+        assert final_progress is not None
+        assert len(final_progress["ok_lines"]) == 3
+        assert set(members[2]._digest_settle_ids) == {"w0", "w1"}
+
+    @pytest.mark.asyncio
+    async def test_generic_cron_injection_failure_marks_delivery_failed(self):
+        orch = _make_orchestrator()
+        orch.sessions = _mock_sessions()
+        orch.sessions.get_or_create = AsyncMock(
+            side_effect=RuntimeError("provider unavailable")
+        )
+        orch.ctx_builder = MagicMock()
+        orch.ctx_builder.hooks = MagicMock()
+        orch.dashboard_state = _mock_dashboard_state()
+        mgr, on_done = self._capture_on_done(orch)
+        mgr.running = []
+        mgr.queued_count_for = MagicMock(return_value=0)
+        member = self._member(0, 1)
+        member.batch_id = ""
+        member.batch_total = 0
+        member.parent_session_key = "cron:job-1"
+
+        def mark_failed(info, reason=""):
+            info._delivery_failed = True
+
+        mgr.notify_injection_failed = MagicMock(side_effect=mark_failed)
+        await on_done(member)
+
+        mgr.notify_injection_failed.assert_called_once_with(
+            member,
+            reason="cron injection failed",
+        )
+        assert member._delivery_failed is True
 
     @pytest.mark.asyncio
     async def test_single_spawn_keeps_per_agent_injection(self):
@@ -1512,8 +2096,11 @@ class TestWaveDigest:
         mgr.running_agents_for = MagicMock(return_value=[])
         injected: list[str] = []
 
-        async def _fake_run_chat(_state, _slot, text, *, _directive_user_origin, **_kw):
+        async def _fake_run_chat(
+            _state, _slot, text, *, _directive_user_origin, _on_consumed
+        ):
             assert _directive_user_origin is False
+            _on_consumed()
             injected.append(text)
 
         solo = SubagentInfo(
@@ -1528,6 +2115,53 @@ class TestWaveDigest:
         assert len(injected) == 1
         assert injected[0].startswith("[Subagent completion event]")
         assert "Batch results" not in injected[0]
+
+    @pytest.mark.asyncio
+    async def test_failed_durable_single_spawn_acks_after_idle_turn_consumes(self):
+        orch = _make_orchestrator()
+        orch.sessions = _mock_sessions()
+        orch.ctx_builder = MagicMock()
+        orch.ctx_builder.hooks = MagicMock()
+        orch.dashboard_state = _mock_dashboard_state()
+        slot = MagicMock()
+        slot.mode = "chat"
+        slot.running = False
+        slot.task = None
+        slot._orch_tracker = None
+        slot._subagent_deliveries_inflight = 0
+        orch.dashboard_state.get_slot = MagicMock(return_value=slot)
+        mgr, on_done = self._capture_on_done(orch)
+        mgr.running_agents_for = MagicMock(return_value=[])
+        ledger, settled = _wire_hold_settlement(orch, slot, mgr)
+
+        async def _consuming_run_chat(
+            _state,
+            _slot,
+            _text,
+            *,
+            _directive_user_origin,
+            _on_consumed,
+        ):
+            assert _directive_user_origin is False
+            _on_consumed()
+
+        failed = SubagentInfo(
+            id="failed-durable-solo",
+            task="one-off task",
+            parent_session_key="dashboard:main",
+        )
+        failed.done = True
+        failed.error = "boom"
+        failed._delivery_event_id = "event-failed-durable-solo"
+
+        with patch("kiro_crew.slack.gateway._run_chat", _consuming_run_chat):
+            await on_done(failed)
+            await _settle(lambda: slot.task is None)
+            await _settle(lambda: bool(settled))
+
+        assert ledger == {}
+        assert settled == [[failed.id]]
+        assert failed._delivery_queued is True
 
 
 # ── 4b. Hold deadline (straggler escape hatch, issue #2215) ──────────
@@ -1675,6 +2309,16 @@ class TestDigestHoldDeadline:
         assert marked == []  # failure → nothing tombstoned
         assert info._digest_settle_ids == ["h0", "h1"]
 
+        async def _defer_delivery(record):
+            record._delivery_failed = True
+
+        mgr._on_done = AsyncMock(side_effect=_defer_delivery)
+        with patch("kiro_crew.subagent.mark_delivered", side_effect=marked.append):
+            await mgr._announce_digest_flush(info)
+        assert marked == []  # deferred routing → nothing tombstoned
+        assert info._digest_settle_ids == ["h0", "h1"]
+
+        info._delivery_failed = False
         mgr._on_done = AsyncMock()
         with patch("kiro_crew.subagent.mark_delivered", side_effect=marked.append):
             await mgr._announce_digest_flush(info)
@@ -1707,8 +2351,11 @@ class TestDigestHoldDeadline:
         gw_mgr.batch_members_pending = MagicMock(return_value=True)  # straggler alive
         injected: list[str] = []
 
-        async def _fake_run_chat(_state, _slot, text, *, _directive_user_origin, **_kw):
+        async def _fake_run_chat(
+            _state, _slot, text, *, _directive_user_origin, _on_consumed
+        ):
             assert _directive_user_origin is False
+            _on_consumed()
             injected.append(text)
 
         # Real manager for the sweep, wired to the gateway's own consumer.
@@ -1778,13 +2425,12 @@ class TestDigestHoldDeadline:
         ledger, settled = _wire_hold_settlement(orch, slot, mgr)
         injected: list[str] = []
 
-        async def _fake_run_chat(_state, _slot, text, *, _directive_user_origin, _on_consumed=None, **_kw):
+        async def _fake_run_chat(
+            _state, _slot, text, *, _directive_user_origin, _on_consumed
+        ):
             assert _directive_user_origin is False
+            _on_consumed()
             injected.append(text)
-            # The model consumed the flushed digest — the condition that
-            # settles the held siblings on this route (#2233).
-            if _on_consumed is not None:
-                _on_consumed()
 
         members = [
             SubagentInfo(

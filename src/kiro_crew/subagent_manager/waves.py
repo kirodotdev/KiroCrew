@@ -9,9 +9,11 @@ from ._component import ManagerComponent
 if TYPE_CHECKING:
     from ..subagent import (
         _RESET_TIMEOUT,
+        _TERMINAL_RETRY_SECONDS,
         _WAVE_STUCK_SECS,
         DIGEST_HOLD_SECS,
         SubagentInfo,
+        _OutboxDeliveryContext,
         asyncio,
         logger,
         mark_delivered,
@@ -25,6 +27,40 @@ class WaveDigestCoordinator(ManagerComponent):
     """Own waves transitions while state remains facade-owned."""
 
     __slots__ = ()
+
+    def _delivery_event_for_run_impl(self, run_id: str) -> str:
+        for event_id, context in self._manager._outbox_contexts.items():
+            if context.info.id == run_id:
+                return event_id
+        return ""
+
+    def _delivery_context_for_run_impl(self, run_id: str) -> _OutboxDeliveryContext | None:
+        for context in self._manager._outbox_contexts.values():
+            if context.info.id == run_id:
+                return context
+        return None
+
+    async def _ack_delivery_for_run_impl(self, run_id: str) -> None:
+        event_id = self._manager._delivery_event_for_run(run_id)
+        if not event_id:
+            return
+        while True:
+            try:
+                delivered = await self._manager._outbox_delivery.acknowledge(event_id)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.warning(
+                    "Subagent %s: durable delivery acknowledgement failed; retrying",
+                    run_id,
+                    exc_info=True,
+                )
+                await asyncio.sleep(_TERMINAL_RETRY_SECONDS)
+                continue
+            if delivered is not None:
+                self._manager._outbox_contexts.pop(event_id, None)
+                return
+            await asyncio.sleep(_TERMINAL_RETRY_SECONDS)
 
     def batch_members_pending_impl(self, batch_id: str) -> bool:
         """True while ANY member of *batch_id* is still outstanding — running
@@ -105,9 +141,7 @@ class WaveDigestCoordinator(ManagerComponent):
         )
         if self._manager._on_done:
             try:
-                self._manager._tasks[f"lost-{info.id}"] = asyncio.ensure_future(
-                    self._manager._safe_announce(info)
-                )
+                self._manager._tasks[f"lost-{info.id}"] = self._manager._spawn_announcement(info)
             except RuntimeError:
                 pass  # no running loop (sync/test context)
 
@@ -273,7 +307,10 @@ class WaveDigestCoordinator(ManagerComponent):
                 "Digest hold flush announce failed for wave %s", info.batch_id, exc_info=True
             )
             return
-        self._manager._settle_digest_holds(info)
+        if info._delivery_failed:
+            logger.warning("Digest hold flush delivery deferred for wave %s", info.batch_id)
+            return
+        await self._manager._settle_digest_holds(info)
 
     async def settle_queued_delivery_impl(self, agent_ids: list[str]) -> None:
         """Write the ``delivered`` tombstones for completions consumed from a queue.
@@ -310,14 +347,19 @@ class WaveDigestCoordinator(ManagerComponent):
                         "delivered tombstone; writing it anyway",
                         agent_id,
                     )
-            try:
-                await asyncio.to_thread(mark_delivered, agent_id)
-            except Exception:
-                logger.debug(
-                    "Failed to mark drained subagent %s delivered", agent_id, exc_info=True
-                )
+            context = self._manager._delivery_context_for_run(agent_id)
+            if context is None or context.info.outcome == "completed":
+                try:
+                    await asyncio.to_thread(mark_delivered, agent_id)
+                except Exception:
+                    logger.debug(
+                        "Failed to mark drained subagent %s delivered",
+                        agent_id,
+                        exc_info=True,
+                    )
+            await self._manager._ack_delivery_for_run(agent_id)
 
-    def _settle_digest_holds_impl(self, info: SubagentInfo) -> None:
+    async def _settle_digest_holds_impl(self, info: SubagentInfo) -> None:
         """Settle delivery tombstones for wave members whose injection was
         held for this member's digest. Called ONLY after ``_on_done`` returned
         without raising — and it is a real settle only for the routes where
@@ -338,7 +380,10 @@ class WaveDigestCoordinator(ManagerComponent):
         """
         ids, info._digest_settle_ids = info._digest_settle_ids, []
         for _hid in ids:
-            try:
-                mark_delivered(_hid)
-            except Exception:
-                logger.debug("Failed to settle held subagent %s", _hid, exc_info=True)
+            context = self._manager._delivery_context_for_run(_hid)
+            if context is None or context.info.outcome == "completed":
+                try:
+                    await asyncio.to_thread(mark_delivered, _hid)
+                except Exception:
+                    logger.debug("Failed to settle held subagent %s", _hid, exc_info=True)
+            await self._manager._ack_delivery_for_run(_hid)
