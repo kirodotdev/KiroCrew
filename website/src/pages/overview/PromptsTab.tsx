@@ -329,24 +329,30 @@ export default function PromptsTab() {
   // OPENING the modal resets it) and every later tab switch would ask about a
   // draft the user already threw away. If the modal ever stops covering the
   // rail, the create form needs this same guard.
-  useSidePanelLeaveGuard(() =>
-    !editDirty() || confirm(i18nT('pages.overview.promptsTab.discard_unsaved_changes')))
+  //
+  // The second argument is the same dirtiness as a value, which is what arms the
+  // browser Back guard: that gesture reaches no component, so it has to be armed
+  // before the press rather than asked at it. Same predicate as the guard above,
+  // so the two cannot disagree about whether there is a draft.
+  useSidePanelLeaveGuard(
+    () => !editDirty() || confirm(i18nT('pages.overview.promptsTab.discard_unsaved_changes')),
+    editDirty(),
+  )
 
   // The guard above is consulted by every exit that has been wired to ask: this
-  // layout's own rail and mobile back bar, the global sidebar, and the command
-  // palette. A reload, a tab close, or navigating the browser off the dashboard
-  // entirely destroys the same draft, and `beforeunload` is the only thing the
-  // platform offers there — the same idiom, for the same reason, as
-  // ArtifactDetailPage, PapyrusPage, MdNotebook and ChatPage.
+  // layout's own rail and mobile back bar, the global sidebar, the command
+  // palette, the notification panel's jumps, and — through the stake published
+  // alongside it — the browser's own Back/Forward button. A reload, a tab close,
+  // or navigating the browser off the dashboard entirely destroys the same
+  // draft, and `beforeunload` is the only thing the platform offers there — the
+  // same idiom, for the same reason, as ArtifactDetailPage, PapyrusPage,
+  // MdNotebook and ChatPage.
   //
-  // NOT covered, and deliberately named rather than implied: the browser's own
-  // Back/Forward button, and in-app `navigate()` callers that have not been
-  // wired (notification jumps, and any future one). `beforeunload` does not fire
-  // for Back (the document never unloads) and react-router's `useBlocker` needs
-  // a data router the dashboard does not mount, so vetoing Back means pushing
-  // sentinel history entries under a router that owns the stack. The structural
-  // retirement of this per-caller wiring is tracked in #8010; until then a new
-  // navigation surface has to opt in, and forgetting fails silently.
+  // Still NOT covered, and deliberately named rather than implied: an in-app
+  // `navigate()` caller that neither asks nor runs inside `useGuardedLeave`.
+  // Coverage remains opt-in per surface, and forgetting fails silently; the
+  // structural retirement of that model (a data router so `useBlocker` becomes
+  // available, or lifting the draft so no exit destroys it) is tracked in #8010.
   useEffect(() => {
     if (!editDirty()) return
     const warn = (e: BeforeUnloadEvent) => { e.preventDefault(); e.returnValue = '' }

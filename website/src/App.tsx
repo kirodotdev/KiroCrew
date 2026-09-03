@@ -54,7 +54,7 @@ import PrivacyChapter from './components/PrivacyChapter'
 import { OnboardingShellHost } from './components/OnboardingChapterShell'
 import { PREVIEW_EXPAND_EVENT } from './components/WebPreviewPanel'
 import { canRenderMobileConnectKind } from './components/mobileConnectRenderers'
-import { useMayLeaveForNavigation, useIsCurrentUrl } from './components/NavigationLeaveGuard'
+import { useMayLeaveForNavigation, useIsCurrentUrl, useGuardedLeave } from './components/NavigationLeaveGuard'
 import { motion, AnimatePresence, useMotionValue, useTransform } from 'framer-motion'
 import { useDrawerSwipe, animateDrawer, registerDrawerTargets, takeOverDrawer, safeAreaLeft } from './hooks/useDrawerSwipe'
 
@@ -837,6 +837,11 @@ const NC_CLOSE_BACKSTOP_MS = 1000
  */
 function NotificationsBellButton() {
   const navigate = useNavigate()
+  // Both jumps out of this popover run inside the gate: the bell is reachable
+  // from every page, including one holding an unsaved draft, and each handler
+  // also CLOSES the popover — so asking around the `navigate` alone would leave
+  // the user's "keep my draft" answer with the panel shut behind it.
+  const leave = useGuardedLeave()
   const location = useLocation()
   const dispatch = useAppDispatch()
   const items = useAppSelector(s => s.notifications.items)
@@ -1049,7 +1054,7 @@ function NotificationsBellButton() {
               <div {...leavingProps} className={`absolute top-0 right-0 ${closing ? 'pointer-events-none' : 'pointer-events-auto'} ${isMobile ? 'w-full' : 'w-[400px]'} glass-surface glass-static rounded-xl shadow-xl flex flex-col items-center justify-center gap-2 p-6 text-center`} style={{ maxHeight: 240 }}>
                 <AlertTriangle size={20} className="text-warn" />
                 <div className="text-[13px] font-semibold text-text-strong">{i18nT('app.notifications_failed_to_load')}</div>
-                <button className="text-[12px] text-accent hover:text-accent-hover bg-transparent border-none cursor-pointer" onClick={() => { closePanel(); navigate('/notifications') }}>{i18nT('app.open_the_full_inbox')}</button>
+                <button className="text-[12px] text-accent hover:text-accent-hover bg-transparent border-none cursor-pointer" onClick={() => leave(() => { closePanel(); navigate('/notifications') }, '/notifications')}>{i18nT('app.open_the_full_inbox')}</button>
               </div>
             }
           >
@@ -1094,7 +1099,7 @@ function NotificationsBellButton() {
                   <div className="flex justify-end px-1 pb-1">
                     <button
                       className="text-[12px] text-accent hover:text-accent-hover bg-transparent border-none cursor-pointer"
-                      onClick={() => { closePanel(); navigate('/notifications') }}
+                      onClick={() => leave(() => { closePanel(); navigate('/notifications') }, '/notifications')}
                     >
                       {i18nT('app.open_inbox')}
                     </button>

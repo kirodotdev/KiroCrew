@@ -1,6 +1,7 @@
 import { useMemo } from 'react'
 import { X, MailOpen, Check, MessageSquare, CheckCircle, Ban, Clock, ClipboardList, ArrowUpRight } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
+import { useGuardedLeave } from '../NavigationLeaveGuard'
 import { useAppSelector, useAppDispatch } from '../../store'
 import { deleteNotification, ackNotification, unackNotification } from '../../store/notificationsSlice'
 import { switchSlot, resumeFromHistory } from '../../store/chatSlice'
@@ -27,6 +28,12 @@ function logError(msg: string, err: unknown): void {
 export default function NotificationDetailPanel({ n, onClose }: { n: Notification; onClose: () => void }) {
   const dispatch = useAppDispatch()
   const navigate = useNavigate()
+  // Every jump below runs inside this gate, and the gate asks BEFORE the
+  // handler: the panel is opened over whatever page the user was on — including
+  // one holding an unsaved draft — and most of these handlers switch a slot,
+  // resume a session, or close this panel on their way out. Vetoing only the
+  // final `navigate` would leave all of that applied.
+  const leave = useGuardedLeave()
   const km = KIND_META[n.kind] || DEFAULT_META
   const slots = useAppSelector(s => s.dashboard.slots)
 
@@ -78,16 +85,16 @@ export default function NotificationDetailPanel({ n, onClose }: { n: Notificatio
         <span className="flex-1" />
         {/* Jump-to buttons */}
         {n.kind === 'cron' && (
-          <button className="px-3 py-1.5 rounded-md border border-border text-[13px] font-medium cursor-pointer bg-transparent text-muted hover:text-text hover:border-border-strong transition-all font-body" onClick={() => navigate('/schedule')}><Clock className="lucide-inline" /> {i18nT('components.notifications.notificationDetailPanel.view_cron_jobs')}</button>
+          <button className="px-3 py-1.5 rounded-md border border-border text-[13px] font-medium cursor-pointer bg-transparent text-muted hover:text-text hover:border-border-strong transition-all font-body" onClick={() => leave(() => navigate('/schedule'))}><Clock className="lucide-inline" /> {i18nT('components.notifications.notificationDetailPanel.view_cron_jobs')}</button>
         )}
         {n.kind === 'cron' && n.job_id && n.slot && (
-          <button className="px-3 py-1.5 rounded-md bg-accent text-accent-fg text-[13px] font-medium cursor-pointer border-none hover:brightness-110 transition-all" onClick={() => { dispatch(switchSlot(n.slot!)); navigate('/chat') }}><MessageSquare className="lucide-inline" /> {i18nT('components.notifications.notificationDetailPanel.continue_session')}</button>
+          <button className="px-3 py-1.5 rounded-md bg-accent text-accent-fg text-[13px] font-medium cursor-pointer border-none hover:brightness-110 transition-all" onClick={() => leave(() => { dispatch(switchSlot(n.slot!)); navigate('/chat') })}><MessageSquare className="lucide-inline" /> {i18nT('components.notifications.notificationDetailPanel.continue_session')}</button>
         )}
         {n.kind === 'cron' && n.job_id && !n.slot && (
-          <button className="px-3 py-1.5 rounded-md bg-accent text-accent-fg text-[13px] font-medium cursor-pointer border-none hover:brightness-110 transition-all" onClick={async () => { try { const res = await api.cronToChat(n.job_id!); if (res.error) { logError('cronToChat error', res.error); return }; if (res.slot) { dispatch(switchSlot(res.slot)); navigate('/chat') } } catch (e) { logError('cronToChat failed', e) } }}><MessageSquare className="lucide-inline" /> {i18nT('components.notifications.notificationDetailPanel.view_last_result')}</button>
+          <button className="px-3 py-1.5 rounded-md bg-accent text-accent-fg text-[13px] font-medium cursor-pointer border-none hover:brightness-110 transition-all" onClick={() => leave(async () => { try { const res = await api.cronToChat(n.job_id!); if (res.error) { logError('cronToChat error', res.error); return }; if (res.slot) { dispatch(switchSlot(res.slot)); navigate('/chat') } } catch (e) { logError('cronToChat failed', e) } })}><MessageSquare className="lucide-inline" /> {i18nT('components.notifications.notificationDetailPanel.view_last_result')}</button>
         )}
         {directSlot && !(n.kind === 'cron' && n.job_id && n.slot) && (
-          <button className="px-3 py-1.5 rounded-md bg-accent text-accent-fg text-[13px] font-medium cursor-pointer border-none hover:brightness-110 transition-all" onClick={() => { dispatch(switchSlot(directSlot.key)); navigate('/chat') }}><MessageSquare className="lucide-inline" /> {i18nT('components.notifications.notificationDetailPanel.go_to_chat')}</button>
+          <button className="px-3 py-1.5 rounded-md bg-accent text-accent-fg text-[13px] font-medium cursor-pointer border-none hover:brightness-110 transition-all" onClick={() => leave(() => { dispatch(switchSlot(directSlot.key)); navigate('/chat') })}><MessageSquare className="lucide-inline" /> {i18nT('components.notifications.notificationDetailPanel.go_to_chat')}</button>
         )}
         {!directSlot && n.slot && !(n.kind === 'cron' && n.job_id && n.slot) && (
           /* `.unwrap()` is load-bearing for the diagnostic: a thunk dispatch
@@ -97,17 +104,17 @@ export default function NotificationDetailPanel({ n, onClose }: { n: Notificatio
              renders, so a resume that failed OR landed on a surface the chat
              page cannot display is EXPLAINED there. Staying put would leave the
              button looking dead, which is the defect this touches (#5925). */
-          <button className="px-3 py-1.5 rounded-md bg-accent text-accent-fg text-[13px] font-medium cursor-pointer border-none hover:brightness-110 transition-all" onClick={async () => { try { await dispatch(resumeFromHistory({ key: n.slot!, title: n.title })).unwrap() } catch (e) { logError('Resume failed', e) } navigate('/chat') }}><MessageSquare className="lucide-inline" /> {i18nT('components.notifications.notificationDetailPanel.resume_chat')}</button>
+          <button className="px-3 py-1.5 rounded-md bg-accent text-accent-fg text-[13px] font-medium cursor-pointer border-none hover:brightness-110 transition-all" onClick={() => leave(async () => { try { await dispatch(resumeFromHistory({ key: n.slot!, title: n.title })).unwrap() } catch (e) { logError('Resume failed', e) } navigate('/chat') })}><MessageSquare className="lucide-inline" /> {i18nT('components.notifications.notificationDetailPanel.resume_chat')}</button>
         )}
         {!directSlot && !n.slot && relatedSlot && (
-          <button className="px-3 py-1.5 rounded-md bg-accent text-accent-fg text-[13px] font-medium cursor-pointer border-none hover:brightness-110 transition-all" onClick={() => { dispatch(switchSlot(relatedSlot.key)); navigate('/chat') }}><MessageSquare className="lucide-inline" /> {i18nT('components.notifications.notificationDetailPanel.go_to_chat')}</button>
+          <button className="px-3 py-1.5 rounded-md bg-accent text-accent-fg text-[13px] font-medium cursor-pointer border-none hover:brightness-110 transition-all" onClick={() => leave(() => { dispatch(switchSlot(relatedSlot.key)); navigate('/chat') })}><MessageSquare className="lucide-inline" /> {i18nT('components.notifications.notificationDetailPanel.go_to_chat')}</button>
         )}
         {safeHttpUrl(n.slack_link ?? '') && (
           <a href={safeHttpUrl(n.slack_link ?? '')!} target="_blank" rel="noopener noreferrer" className="px-3 py-1.5 rounded-md border border-border text-[13px] font-medium cursor-pointer bg-transparent text-muted hover:text-text hover:border-border-strong transition-all font-body no-underline inline-flex items-center gap-1"><MessageSquare className="lucide-inline" /> {i18nT('components.notifications.notificationDetailPanel.open_in_slack')}</a>
         )}
         {/* RFC Phase 4: dashboard-internal deep link (validated path-only). */}
         {safeInternalUrl(n.url) && (
-          <button className="px-3 py-1.5 rounded-md bg-accent text-accent-fg text-[13px] font-medium cursor-pointer border-none hover:brightness-110 transition-all" onClick={() => navigate(safeInternalUrl(n.url)!)}><ArrowUpRight className="lucide-inline" /> {i18nT('components.notifications.notificationDetailPanel.open')}</button>
+          <button className="px-3 py-1.5 rounded-md bg-accent text-accent-fg text-[13px] font-medium cursor-pointer border-none hover:brightness-110 transition-all" onClick={() => leave(() => navigate(safeInternalUrl(n.url)!), safeInternalUrl(n.url)!)}><ArrowUpRight className="lucide-inline" /> {i18nT('components.notifications.notificationDetailPanel.open')}</button>
         )}
       </div>
 
@@ -134,7 +141,7 @@ export default function NotificationDetailPanel({ n, onClose }: { n: Notificatio
           return urlActions.length > 0 && (
             <div className="flex gap-3 mt-4 flex-wrap">
               {urlActions.map(a => (
-                <button key={a.id} className="px-4 py-2 rounded-lg border border-accent/40 bg-transparent text-accent text-[13px] font-medium cursor-pointer hover:bg-accent-subtle transition-all font-body" onClick={() => { navigate(safeInternalUrl(a.url)!); onClose() }}>{a.label}</button>
+                <button key={a.id} className="px-4 py-2 rounded-lg border border-accent/40 bg-transparent text-accent text-[13px] font-medium cursor-pointer hover:bg-accent-subtle transition-all font-body" onClick={() => leave(() => { navigate(safeInternalUrl(a.url)!); onClose() }, safeInternalUrl(a.url)!)}>{a.label}</button>
               ))}
             </div>
           )
@@ -144,10 +151,10 @@ export default function NotificationDetailPanel({ n, onClose }: { n: Notificatio
         )}
         {n.kind === 'taskrunner' && n.task_id && (
           <div className="flex gap-3 mt-4">
-            <button className="px-4 py-2 rounded-lg bg-accent text-accent-fg text-[13px] font-semibold cursor-pointer border-none hover:brightness-110 transition-all" onClick={async () => {
+            <button className="px-4 py-2 rounded-lg bg-accent text-accent-fg text-[13px] font-semibold cursor-pointer border-none hover:brightness-110 transition-all" onClick={() => leave(async () => {
               try { const res = await api.taskRunToChat(n.task_id!); if (res.slot) { dispatch(switchSlot(res.slot)); navigate('/chat') } } catch (e) { logError('Task nav failed', e) }
-            }}><MessageSquare className="lucide-inline" /> {i18nT('components.notifications.notificationDetailPanel.continue_in_chat')}</button>
-            <button className="px-3 py-1.5 rounded-md border border-border text-[13px] font-medium cursor-pointer bg-transparent text-muted hover:text-text hover:border-border-strong transition-all font-body" onClick={() => navigate('/projects')}><ClipboardList className="lucide-inline" /> {i18nT('components.notifications.notificationDetailPanel.view_project')}</button>
+            })}><MessageSquare className="lucide-inline" /> {i18nT('components.notifications.notificationDetailPanel.continue_in_chat')}</button>
+            <button className="px-3 py-1.5 rounded-md border border-border text-[13px] font-medium cursor-pointer bg-transparent text-muted hover:text-text hover:border-border-strong transition-all font-body" onClick={() => leave(() => navigate('/projects'))}><ClipboardList className="lucide-inline" /> {i18nT('components.notifications.notificationDetailPanel.view_project')}</button>
           </div>
         )}
       </div>
