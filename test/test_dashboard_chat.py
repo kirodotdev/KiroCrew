@@ -9919,6 +9919,8 @@ class TestOrchestratorPlanGateArming:
 
         async def _rec(s, sl, msg, **kw):
             seen.append(sl._in_stage_execution)
+            sl._last_stop_reason = "end_turn"
+            sl.append("assistant", "stage completed", "msg msg-a")
 
         monkeypatch.setattr("kiro_crew.dashboard.chat_orchestrator._run_chat", _rec)
 
@@ -9950,6 +9952,8 @@ class TestOrchestratorPlanGateArming:
         async def _shrink(s, sl, msg, **kw):
             nonlocal calls
             calls += 1
+            sl._last_stop_reason = "end_turn"
+            sl.append("assistant", "stage completed", "msg msg-a")
             sl._stage_titles = ["A"]  # plan shrinks to 1 stage mid-run
 
         monkeypatch.setattr("kiro_crew.dashboard.chat_orchestrator._run_chat", _shrink)
@@ -10282,6 +10286,11 @@ class TestPythonStageLoop:
         slot._orch_tracker = None
         return slot
 
+    @staticmethod
+    async def _complete_stage(_state, slot, _message, **_kwargs):
+        slot._last_stop_reason = "end_turn"
+        slot.append("assistant", "stage completed", "msg msg-a")
+
     @pytest.mark.asyncio
     async def test_go_single_stage_then_stops(self, tmp_path, monkeypatch):
         """Go (single stage) executes one stage, emits approval message, returns."""
@@ -10296,7 +10305,7 @@ class TestPythonStageLoop:
         state.subagents.running_agents_for = MagicMock(return_value=[])
         slot = self._make_slot(max_stages=3)
 
-        run_chat_mock = AsyncMock()
+        run_chat_mock = AsyncMock(side_effect=self._complete_stage)
         monkeypatch.setattr("kiro_crew.dashboard.chat_orchestrator._run_chat", run_chat_mock)
 
         await _stage_loop(state, slot, auto_run=False)
@@ -10327,7 +10336,7 @@ class TestPythonStageLoop:
         state.subagents.running_agents_for = MagicMock(return_value=[])
         slot = self._make_slot(max_stages=3)
 
-        run_chat_mock = AsyncMock()
+        run_chat_mock = AsyncMock(side_effect=self._complete_stage)
         monkeypatch.setattr("kiro_crew.dashboard.chat_orchestrator._run_chat", run_chat_mock)
 
         await _stage_loop(state, slot, auto_run=True)
@@ -10362,6 +10371,8 @@ class TestPythonStageLoop:
         async def _mock_run_chat(s, sl, msg, **kw):
             nonlocal call_count
             call_count += 1
+            sl._last_stop_reason = "end_turn"
+            sl.append("assistant", "stage completed", "msg msg-a")
             if call_count >= 2:
                 # Simulate user clicking Stop after stage 2
                 slot._stop_state = "soft_pending"
@@ -10398,7 +10409,7 @@ class TestPythonStageLoop:
         # Force timeout on first check
         tracker.is_stage_timed_out = lambda: True
 
-        run_chat_mock = AsyncMock()
+        run_chat_mock = AsyncMock(side_effect=self._complete_stage)
         monkeypatch.setattr("kiro_crew.dashboard.chat_orchestrator._run_chat", run_chat_mock)
 
         await _stage_loop(state, slot, auto_run=True)
@@ -10452,6 +10463,8 @@ class TestPythonStageLoop:
 
         async def _mock_run_chat(s, sl, msg, **kw):
             seen.append(sl._in_stage_execution)
+            sl._last_stop_reason = "end_turn"
+            sl.append("assistant", "stage completed", "msg msg-a")
 
         monkeypatch.setattr("kiro_crew.dashboard.chat_orchestrator._run_chat", _mock_run_chat)
         start_next = AsyncMock(return_value=True)
@@ -10482,7 +10495,7 @@ class TestPythonStageLoop:
         state._slots = {}  # slot deleted while the plan ran
         slot.queue_append("queued during plan")
 
-        run_chat_mock = AsyncMock()
+        run_chat_mock = AsyncMock(side_effect=self._complete_stage)
         monkeypatch.setattr("kiro_crew.dashboard.chat_orchestrator._run_chat", run_chat_mock)
         start_next = AsyncMock(return_value=False)
         monkeypatch.setattr(
@@ -10620,6 +10633,7 @@ class TestPythonStageLoop:
         slot = self._make_slot(max_stages=2)
 
         async def _mock_run_chat(s, sl, msg, **kw):
+            sl._last_stop_reason = "end_turn"
             sl.append("assistant", "Result for stage", "msg msg-a")
 
         monkeypatch.setattr("kiro_crew.dashboard.chat_orchestrator._run_chat", _mock_run_chat)
@@ -10743,7 +10757,7 @@ class TestPythonStageLoop:
         state.subagents = MagicMock()
         state.subagents.running_agents_for = _running_agents
 
-        run_chat_mock = AsyncMock()
+        run_chat_mock = AsyncMock(side_effect=self._complete_stage)
         monkeypatch.setattr("kiro_crew.dashboard.chat_orchestrator._run_chat", run_chat_mock)
         monkeypatch.setattr("kiro_crew.dashboard.chat_orchestrator.asyncio.sleep", AsyncMock())
 
@@ -10767,7 +10781,7 @@ class TestPythonStageLoop:
         state.subagents.running_agents_for.return_value = None  # error case
         slot = self._make_slot(max_stages=3)
 
-        run_chat_mock = AsyncMock()
+        run_chat_mock = AsyncMock(side_effect=self._complete_stage)
         monkeypatch.setattr("kiro_crew.dashboard.chat_orchestrator._run_chat", run_chat_mock)
 
         await _stage_loop(state, slot, auto_run=True)
@@ -10789,7 +10803,7 @@ class TestPythonStageLoop:
         state.subagents = None  # manager missing
         slot = self._make_slot(max_stages=3)
 
-        run_chat_mock = AsyncMock()
+        run_chat_mock = AsyncMock(side_effect=self._complete_stage)
         monkeypatch.setattr("kiro_crew.dashboard.chat_orchestrator._run_chat", run_chat_mock)
 
         await _stage_loop(state, slot, auto_run=True)
@@ -10812,7 +10826,7 @@ class TestPythonStageLoop:
         state.subagents.running_agents_for = MagicMock(return_value=[])
         slot = self._make_slot(max_stages=3)
 
-        run_chat_mock = AsyncMock()
+        run_chat_mock = AsyncMock(side_effect=self._complete_stage)
         monkeypatch.setattr("kiro_crew.dashboard.chat_orchestrator._run_chat", run_chat_mock)
 
         # First Go: runs stage 1 only
