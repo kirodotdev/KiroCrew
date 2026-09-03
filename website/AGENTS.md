@@ -75,6 +75,12 @@ ones (e.g. `typeof Notification !== 'undefined'`).
 - **Icons: `lucide-react` only, with `className="lucide-inline"`.** Never an emoji,
   never a hand-rolled SVG, never `size={N}`. Enforced by `AUTOSDE.yaml`
   (`use-lucide-icons`, `no-emoji-as-icons`).
+- **Errors shown to the user render through `ErrorNotice`, with `askAgent` on
+  wherever the hand-off cannot lose anything.** Never a hand-written
+  `<div className="text-danger">{err}</div>`. The hand-off navigates away and
+  destroys unsaved local state, so next to an unsaved draft leave `askAgent` off
+  and say why in a `{/* No hand-off: … */}` comment — a silent omission reads as
+  "forgot". Enforced by `AUTOSDE.yaml` (`errors-use-error-notice`).
 - **Security: every `dangerouslySetInnerHTML` goes through DOMPurify** via
   `md()` / `sanitize()` / `esc()` in `src/api/helpers.ts`. A bypass is an XSS bug,
   so there is no acceptable pointer for this one.
