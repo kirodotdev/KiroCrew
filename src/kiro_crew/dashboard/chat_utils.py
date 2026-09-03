@@ -2423,6 +2423,69 @@ def _collapse_wire_rows(messages: list[dict]) -> list[dict]:
     return out
 
 
+# One opaque id for THIS gateway process, minted at import and never written to
+# disk. That is the entire mechanism behind the gate below: an `mcp_oauth` banner
+# records the generation that minted it, and a generation that is not this one is
+# provably gone. Every ACP child is a subprocess of the gateway, so the loopback
+# listener and the PKCE verifier that made the banner's URL redeemable died with it.
+#
+# In-memory ON PURPOSE, and random rather than sequential. `connections.warm`
+# documents where a counter leads: its generation restarts at 0 every boot, so a
+# stored `generation=1` compares equal to a different boot's `generation=1` and the
+# row is judged live when it is dead -- that bug already withdrew a URL whose
+# process and session were both alive. A fresh random id cannot collide with a
+# previous boot's, so the comparison stays correct with no bookkeeping and no
+# persisted state to migrate.
+_GATEWAY_GENERATION = uuid.uuid4().hex[:16]
+
+
+def gateway_generation() -> str:
+    """The generation id of the running gateway process."""
+    return _GATEWAY_GENERATION
+
+
+def _expire_stale_generation_oauth_meta(role: str, meta: dict) -> dict:
+    """Present an `mcp_oauth` banner minted by a dead generation as terminal.
+
+    A read-time gate, and it has to be read-time. The case it exists for is a hard
+    gateway restart: no code of ours runs at the moment the flow dies, so nothing
+    can write the terminal state when it becomes true. Revalidating on every read
+    is the same discipline `connections.mint.expire_dead_holder` already applies to
+    the mint feed, instead of trying to catch every way a flow can end.
+
+    Withdraws the link only when ALL of these hold:
+
+    * the row still carries an `oauth_url` -- there is a live-looking button to take
+      away. A row without one has nothing to withdraw and is left untouched, which
+      is what keeps the two rejected-URL banners and an already-retired row alone.
+    * the row is not already terminal. `completed` / `failed` / `superseded` are
+      authoritative outcomes recorded by the process that observed them, and a
+      later read must not reinterpret them.
+    * the row's `gen` is not this process's.
+
+    A row carrying NO `gen` is treated as stale, and that is a deduction rather than
+    a guess: the stamp is written by the same build that reads it, so an unstamped
+    row was persisted by an older build -- and running this build means this process
+    replaced the one that wrote that row. Its child cannot still be alive. The
+    effect is that the fix also retires banners that went stale before it shipped.
+
+    Returns the input dict unchanged when nothing applies, so the caller can use the
+    result unconditionally; only the withdrawing path copies.
+    """
+    if role != "mcp_oauth":
+        return meta
+    if not meta.get("oauth_url"):
+        return meta
+    if meta.get("completed") or meta.get("failed") or meta.get("superseded"):
+        return meta
+    if meta.get("gen") == gateway_generation():
+        return meta
+    out = dict(meta)
+    out.pop("oauth_url", None)
+    out["expired"] = True
+    return out
+
+
 def _prepare_messages(messages: list[dict], running: bool) -> list[dict]:
     """Prepare messages for API response."""
     out: list[dict] = []
@@ -2466,13 +2529,17 @@ def _prepare_messages(messages: list[dict], running: bool) -> list[dict]:
             ]
         meta = parse_cls_meta(m.get("cls", ""))
         if meta is not None:
-            msg_out["meta"] = _redact_meta_for_role(role, meta)
+            msg_out["meta"] = _expire_stale_generation_oauth_meta(
+                role, _redact_meta_for_role(role, meta)
+            )
         elif isinstance(msg_out.get("meta"), dict):
             # Redact the STORED meta too. Without this branch the stored dict
             # passes through by reference (dict(m) is shallow), so it would
             # reach the client exactly as loaded. This is the only guard on
             # meta for the slot-detail response (the load path does not
             # redact meta).
-            msg_out["meta"] = _redact_meta_for_role(role, msg_out["meta"])
+            msg_out["meta"] = _expire_stale_generation_oauth_meta(
+                role, _redact_meta_for_role(role, msg_out["meta"])
+            )
         out.append(msg_out)
     return out

@@ -8889,7 +8889,8 @@
         "relaying": "Finalisation…",
         "remote_gateway_hint": "Sur une passerelle distante, le rappel localhost du navigateur échouera — c'est normal. Copiez l'adresse complète sur laquelle le navigateur a abouti et collez-la ici pour terminer l'autorisation.",
         "requires_authentication": "nécessite une authentification.",
-        "superseded": "n'a plus de connexion active : une nouvelle demande l'a remplacée. Utilisez le bouton « Autoriser » le plus récent pour vous connecter."
+        "superseded": "n'a plus de connexion active : une nouvelle demande l'a remplacée. Utilisez le bouton « Autoriser » le plus récent pour vous connecter.",
+        "expired": "n'a plus de connexion active : la session qui l'a lancée a pris fin. Envoyez un message pour obtenir un nouveau lien « Autoriser »."
       },
       "notificationItem": {
         "acknowledged": "Accusé de réception",

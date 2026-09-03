@@ -8889,7 +8889,8 @@
         "relaying": "Concluindo…",
         "remote_gateway_hint": "Em um gateway remoto, o callback localhost do navegador falhará — isso é esperado. Copie o endereço completo em que o navegador parou e cole-o aqui para concluir a autorização.",
         "requires_authentication": "requer autenticação.",
-        "superseded": "não tem mais um início de sessão ativo: uma solicitação mais recente o substituiu. Use o botão \"Autorizar\" mais recente para entrar."
+        "superseded": "não tem mais um início de sessão ativo: uma solicitação mais recente o substituiu. Use o botão \"Autorizar\" mais recente para entrar.",
+        "expired": "não tem mais um início de sessão ativo: a sessão que o iniciou foi encerrada. Envie uma mensagem para obter um novo link \"Autorizar\"."
       },
       "notificationItem": {
         "acknowledged": "Confirmado",

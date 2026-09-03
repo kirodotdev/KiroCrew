@@ -8765,7 +8765,8 @@
         "relaying": "Wird abgeschlossen…",
         "remote_gateway_hint": "Auf einem entfernten Gateway schlägt der localhost-Callback des Browsers fehl — das ist zu erwarten. Kopiere die vollständige Adresse, auf der der Browser gelandet ist, und füge sie hier ein, um die Autorisierung abzuschließen.",
         "requires_authentication": "erfordert Authentifizierung.",
-        "superseded": "Anmeldung ist nicht mehr aktiv – eine neuere Anfrage hat sie ersetzt. Verwende die neueste Schaltfläche „Autorisieren“, um dich anzumelden."
+        "superseded": "Anmeldung ist nicht mehr aktiv – eine neuere Anfrage hat sie ersetzt. Verwende die neueste Schaltfläche „Autorisieren“, um dich anzumelden.",
+        "expired": "Anmeldung ist nicht mehr aktiv – die Sitzung, die sie gestartet hat, wurde beendet. Sende eine Nachricht, um einen neuen „Autorisieren“-Link zu erhalten."
       },
       "notificationItem": {
         "acknowledged": "Bestätigt",

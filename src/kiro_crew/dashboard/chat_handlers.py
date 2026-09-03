@@ -62,6 +62,8 @@ from kiro_crew.dashboard.chat_persistence import (
 )
 from kiro_crew.dashboard.chat_runner import (
     _context_usage_payload,
+    _expire_mcp_oauth_banners,
+    _open_mcp_oauth_banner_mids,
     _run_chat,
     _start_next_queued_turn,
     context_entry_expired,
@@ -2429,6 +2431,10 @@ async def _reset_slot_session(
     stale-evidence failure that report exists to remove.
     """
     _unblock_pending_waits(state, slot)
+    # Snapshot the open OAuth banners BEFORE the teardown: a successor session can
+    # start and emit its own request while this one is shutting down, and a sweep
+    # taken afterwards would withdraw that live URL too.
+    doomed_oauth_banners = _open_mcp_oauth_banner_mids(slot)
     try:
         reloaded = await state.sessions.reset(session_key, skip_if_busy=skip_if_busy)
     except BaseException:
@@ -2461,6 +2467,19 @@ async def _reset_slot_session(
         # serialize_slots -- so it only fires when something was recorded.
         if slot.clear_mcp_report():
             state.broadcast_ws("mcp_report_update", {"slot": slot.key, "mcp_report": None})
+        # An open MCP OAuth banner rides the same gate for the same reason, and it
+        # is the widest of the three: every caller of this funnel destroys the child
+        # that owns the loopback listener and the PKCE verifier an open banner's
+        # Authorize link is redeemable against, so the link is dead the moment the
+        # teardown completes. The gateway generation does NOT change here, so the
+        # read-time gate in `_prepare_messages` cannot infer it (issue #7654).
+        #
+        # Gating on `reloaded` is load-bearing in the OTHER direction from the two
+        # above: a `skip_if_busy` decline leaves the session, its child, and its
+        # listener alive, so retiring here would take away a button that still
+        # works -- the one outcome worse than the dead link this fixes. Limited to
+        # the pre-teardown snapshot so a successor's banner is never swept.
+        _expire_mcp_oauth_banners(state, slot, doomed_oauth_banners)
     return reloaded
 
 

@@ -8641,7 +8641,8 @@
         "relaying": "正在完成…",
         "remote_gateway_hint": "在远程网关上，浏览器的 localhost 回调会失败——这是预期行为。请复制浏览器最终到达的完整地址并粘贴到此处，以完成授权。",
         "requires_authentication": "需要认证。",
-        "superseded": "的登录已失效——新的请求已将其替换。请使用最新的“授权”按钮登录。"
+        "superseded": "的登录已失效——新的请求已将其替换。请使用最新的“授权”按钮登录。",
+        "expired": "的登录已失效——启动它的会话已结束。发送一条消息即可获取新的“授权”链接。"
       },
       "notificationItem": {
         "acknowledged": "已确认",

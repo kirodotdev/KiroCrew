@@ -44,11 +44,14 @@ export function renderMcpOAuthMessage(m: ChatMessage, hideCardOwned = false): Re
   const completed = !!m.meta?.completed
   const failed = !!m.meta?.failed
   const superseded = !!m.meta?.superseded
+  const expired = !!m.meta?.expired
   const error = (m.meta?.error as string) || ''
-  // `superseded` carries no `oauth_url` (the backend pops it), so it has to be
-  // named here or the banner would silently vanish instead of telling the user
-  // the flow is over and what to do next — the whole point of the state.
-  if (!oauthUrl && !completed && !failed && !superseded) return null
+  // `superseded` and `expired` carry no `oauth_url` (the backend pops it), so both
+  // have to be named here or the banner would silently vanish instead of telling
+  // the user the flow is over and what to do next — the whole point of the states.
+  // A vanished banner is the worse failure: it is indistinguishable from the
+  // sign-in having succeeded.
+  if (!oauthUrl && !completed && !failed && !superseded && !expired) return null
   return (
     <McpOAuthBanner
       serverName={serverName}
@@ -56,6 +59,7 @@ export function renderMcpOAuthMessage(m: ChatMessage, hideCardOwned = false): Re
       completed={completed}
       failed={failed}
       superseded={superseded}
+      expired={expired}
       error={error}
     />
   )
@@ -67,6 +71,7 @@ export default function McpOAuthBanner({
   completed,
   failed,
   superseded,
+  expired,
   error,
 }: {
   serverName: string
@@ -74,6 +79,7 @@ export default function McpOAuthBanner({
   completed: boolean
   failed?: boolean
   superseded?: boolean
+  expired?: boolean
   error?: string
 }) {
   const label = serverName || i18nT('pages.chat.mcpOAuthBanner.mcp_server')
@@ -114,6 +120,24 @@ export default function McpOAuthBanner({
         <History className="shrink-0 text-text/50 lucide-inline" />
         <span className="flex-1 text-text">
           <span className="font-mono font-semibold">{label}</span> {i18nT('pages.chat.mcpOAuthBanner.superseded')}
+        </span>
+      </div>
+    )
+  }
+
+  // Same shape as `superseded`, different cause and so different advice. Nothing
+  // replaced this flow — the child process hosting it is simply gone (a gateway
+  // restart or a session reset), so there is no "latest Authorize button" to send
+  // the user to. What is true is that a still-pending request is re-announced on
+  // the next session init, so the honest instruction is to send a message and take
+  // the fresh link that appears. Rendered rather than hidden for the reason given
+  // in renderMcpOAuthMessage: a banner that vanishes reads as success.
+  if (expired) {
+    return (
+      <div className="flex items-center gap-2 px-4 py-3 rounded-lg ring-1 ring-inset forced-colors:border ring-border bg-muted/10 text-sm leading-5">
+        <History className="shrink-0 text-text/50 lucide-inline" />
+        <span className="flex-1 text-text">
+          <span className="font-mono font-semibold">{label}</span> {i18nT('pages.chat.mcpOAuthBanner.expired')}
         </span>
       </div>
     )

@@ -5919,7 +5919,8 @@
         "relaying": "Completing…",
         "remote_gateway_hint": "On a remote gateway the browser's localhost callback will fail — that is expected. Copy the full address the browser landed on and paste it here to finish authorizing.",
         "requires_authentication": "requires authentication.",
-        "superseded": "sign-in is no longer active — a newer request replaced it. Use the latest Authorize button to sign in."
+        "superseded": "sign-in is no longer active — a newer request replaced it. Use the latest Authorize button to sign in.",
+        "expired": "sign-in is no longer active — the session that started it ended. Send a message to get a fresh Authorize link."
       },
       "notificationItem": {
         "delete": "Delete"

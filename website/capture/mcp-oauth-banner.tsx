@@ -56,5 +56,14 @@ createRoot(document.getElementById('root')!).render(
     <div data-state="superseded">
       <McpOAuthBanner serverName="github-mcp" oauthUrl={URL} completed={false} superseded />
     </div>
+    {/* The flow's process is gone -- a gateway restart or a session reset -- with
+        nothing announced in its place, so unlike `superseded` there is no newer
+        Authorize button to send the user to. Same negative as above (the valid URL
+        is handed in on purpose so the frame proves refusal), plus a positive: the
+        copy must NOT claim a newer request replaced it, because none did, and it
+        must name a recovery the user can actually reach (issue #7654). */}
+    <div data-state="expired">
+      <McpOAuthBanner serverName="github-mcp" oauthUrl={URL} completed={false} expired />
+    </div>
   </div>,
 )
