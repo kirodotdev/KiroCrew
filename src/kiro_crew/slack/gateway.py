@@ -5981,7 +5981,27 @@ class GatewayOrchestrator:
             # outranks all of them -- expressed ONCE here rather than as a guard added to
             # each branch after a reviewer finds it, which is how the cap and then the
             # wall-clock budget each came to preempt it in turn.
-            terminal = loop.stopped_reason == MONITOR_TERMINAL_REASON
+            #
+            # An OWED terminal turn is terminal news too, and it is the third way this
+            # same precedence has been lost. A CHANNEL-bound loop deliberately does not
+            # settle on observation -- it learns its watch finished from a delivered turn,
+            # so the probe records the owed turn in ``terminal_pending`` and leaves the
+            # loop active with no ``outcome`` and no ``MONITOR_TERMINAL_REASON``. If that
+            # final turn is refused (a busy thread, the ordinary case) and the retry finds
+            # a bound spent, ``_timer`` deactivates on the bound before the settlement
+            # that would have promoted the debt ever runs. Reading ``stopped_reason``
+            # alone then contradicts a fact already durably on disk, and announces a watch
+            # that SUCCEEDED with the same signal as one that ran out of cycles.
+            #
+            # Scope: the debt is consulted for the WORDING only. The bound that actually
+            # stopped the loop keeps its own ``stopped_reason`` untouched -- so the spent
+            # cap stays observable, and every consumer of that literal (notably the
+            # monitor_update revival affordance, which revives a ``cycle_cap`` loop when
+            # the cap is raised) behaves exactly as before.
+            owed = ""
+            if loop.monitor:
+                owed = str(getattr(loop.monitor, "terminal_pending", "") or "")
+            terminal = loop.stopped_reason == MONITOR_TERMINAL_REASON or bool(owed)
             if not terminal and not capped_out and runtime_budget_exceeded(loop):
                 title = "Monitoring loop spent its time budget"
                 body = (
@@ -6029,7 +6049,15 @@ class GatewayOrchestrator:
                 # BLOCKED), so the wording follows it rather than lumping both under a
                 # finish.
                 settled = getattr(loop.monitor, "outcome", None) if loop.monitor else None
-                if getattr(settled, "value", settled) == "success":
+                # A settled outcome wins. An UNSETTLED one falls back to the owed turn,
+                # which draws the same distinction from the same vocabulary -- the probe
+                # records ``"success" if merged else "blocked"``, matching
+                # ``MonitorOutcome.SUCCESS``/``BLOCKED``. Without this fallback a merged
+                # subject reaching here on the debt alone would take the else branch and
+                # be announced as closed-unmerged: the misleading-ending defect moved
+                # rather than fixed.
+                decided = getattr(settled, "value", settled) or owed
+                if decided == "success":
                     title = "Monitoring loop finished — what it was watching is done"
                     body = (
                         f"The loop stopped after {loop.cycle_count} cycles because "

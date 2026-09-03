@@ -819,6 +819,122 @@ class TestNotifyNudgeExpired:
         assert "cycle cap" not in title, "a finished subject is terminal, cap or no cap"
         assert "finished" in title, "and a merged one is reported as done"
 
+    def test_an_owed_terminal_turn_outranks_the_cycle_cap(self):
+        """A channel loop's UNSETTLED terminal subject must not read as a spent cap.
+
+        The third instance of the class the two tests above closed, and the one they
+        cannot cover: both of those settle first, so ``stopped_reason`` already carries
+        ``MONITOR_TERMINAL_REASON``. A CHANNEL-bound loop deliberately does NOT settle
+        on observation -- it learns its watch finished from a delivered turn, so the
+        probe records the OWED turn in ``monitor.terminal_pending`` and leaves the loop
+        active with no outcome. If that final turn is refused (a busy thread, the
+        ordinary case) and the retry finds the cap spent, ``_timer`` deactivates with
+        ``stopped_reason="cycle_cap"`` before the settlement that would have promoted
+        the debt ever runs.
+
+        So the truth is already durably persisted on disk and the notice contradicts
+        it: a watch whose subject MERGED reports the same signal as one that ran out of
+        cycles with its goal unmet. ``terminal`` therefore cannot be read from
+        ``stopped_reason`` alone -- an owed terminal turn is terminal news too.
+        """
+        from kiro_crew.monitoring.models import MonitorState
+
+        orch = _make_orchestrator()
+        ds = _mock_dashboard_state()
+        orch.dashboard_state = ds
+        loop = NudgeLoop(
+            id="loop-owed-terminal-at-cap",
+            slot_key="slack:C123:456.789",
+            message="watch https://github.com/acme/widgets/pull/42 until green",
+            max_cycles=4,
+            cycle_count=4,
+            stopped_reason="cycle_cap",
+            monitor=MonitorState(
+                kind="gh-pr",
+                target="acme/widgets#42",
+                objective="watch until green",
+                created_ts=0.0,
+                # The settlement never ran, so there is no ``outcome`` and no
+                # ``MONITOR_TERMINAL_REASON`` -- only the owed turn, on disk.
+                terminal_pending="success",
+            ),
+        )
+        orch._notify_nudge_expired(loop)
+        title = ds.notify.call_args.args[1]
+        body = ds.notify.call_args.args[2]
+        assert "cycle cap" not in title, (
+            "the subject merged and the debt says so on disk -- reporting a spent cap "
+            "is a false status report"
+        )
+        assert "finished" in title
+        assert "merged" in body
+
+    def test_an_owed_blocked_turn_is_not_reported_as_a_merge(self):
+        """The debt carries SUCCESS vs BLOCKED, and the wording must follow it.
+
+        ``terminal_pending`` is set to ``"success" if merged else "blocked"``, the same
+        vocabulary as ``MonitorOutcome``. Treating any owed turn as a finish would tell
+        the operator "no action needed" about a pull request that was closed UNMERGED --
+        which stopped on a question only they can answer.
+        """
+        from kiro_crew.monitoring.models import MonitorState
+
+        orch = _make_orchestrator()
+        ds = _mock_dashboard_state()
+        orch.dashboard_state = ds
+        loop = NudgeLoop(
+            id="loop-owed-blocked-at-cap",
+            slot_key="slack:C123:456.790",
+            message="watch https://github.com/acme/widgets/pull/43 until green",
+            max_cycles=4,
+            cycle_count=4,
+            stopped_reason="cycle_cap",
+            monitor=MonitorState(
+                kind="gh-pr",
+                target="acme/widgets#43",
+                objective="watch until green",
+                created_ts=0.0,
+                terminal_pending="blocked",
+            ),
+        )
+        orch._notify_nudge_expired(loop)
+        title = ds.notify.call_args.args[1]
+        body = ds.notify.call_args.args[2]
+        assert "cycle cap" not in title
+        assert "closed unmerged" in title
+        assert "WITHOUT being" in body
+
+    def test_a_spent_cap_with_no_owed_turn_still_reports_the_cap(self):
+        """The control: the carve-out must not swallow a genuine cap.
+
+        A loop that really did run out of cycles has an empty ``terminal_pending``, and
+        must keep the cap wording -- otherwise the fix for a misleading finish would
+        manufacture a finish that never happened, which is the same defect pointing the
+        other way.
+        """
+        from kiro_crew.monitoring.models import MonitorState
+
+        orch = _make_orchestrator()
+        ds = _mock_dashboard_state()
+        orch.dashboard_state = ds
+        loop = NudgeLoop(
+            id="loop-genuine-cap",
+            slot_key="slack:C123:456.791",
+            message="watch https://github.com/acme/widgets/pull/44 until green",
+            max_cycles=4,
+            cycle_count=4,
+            stopped_reason="cycle_cap",
+            monitor=MonitorState(
+                kind="gh-pr",
+                target="acme/widgets#44",
+                objective="watch until green",
+                created_ts=0.0,
+                terminal_pending="",
+            ),
+        )
+        orch._notify_nudge_expired(loop)
+        assert ds.notify.call_args.args[1] == "Monitoring loop hit its cycle cap"
+
     def test_approval_stall_names_its_own_remedy(self):
         """A stalled loop must not be reported as a cap it never reached.
 
