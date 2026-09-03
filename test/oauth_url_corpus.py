@@ -152,6 +152,33 @@ LEGIT_OAUTH_URLS: list[tuple[str, str]] = [
         "&code_challenge_method=S256"
         "&state=" + ("a1B2c3D4" * 16),  # 128-char opaque state
     ),
+    # Figma MCP consent page (issuer api.figma.com, consent on www.figma.com;
+    # RFC 8414 metadata via RFC 9728 discovery on mcp.figma.com/mcp).
+    # developers.figma.com/docs/figma-mcp-server/
+    (
+        "figma-mcp",
+        "https://www.figma.com/oauth/mcp"
+        "?client_id=fig_abcDEF1234567890"
+        "&redirect_uri=http%3A%2F%2F127.0.0.1%3A55089%2Fcallback"
+        "&response_type=code"
+        "&scope=mcp%3Aconnect"
+        "&state=af0ifjsldkjZx9yW8vU"
+        "&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"
+        "&code_challenge_method=S256",
+    ),
+    # Miro MCP consent page — Miro's MCP server is its own authorization server.
+    # developers.miro.com/docs/miro-mcp
+    (
+        "miro-mcp",
+        "https://mcp.miro.com/authorize"
+        "?client_id=miro_client_0123456789"
+        "&redirect_uri=http%3A%2F%2F127.0.0.1%3A55089%2F"
+        "&response_type=code"
+        "&scope=boards%3Aread%20boards%3Awrite%20openid%20email"
+        "&state=mI3kHysPLfQ-E1WGIf-EIA"
+        "&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"
+        "&code_challenge_method=S256",
+    ),
 ]
 
 # Consent URLs that the ACP banner-safety gate

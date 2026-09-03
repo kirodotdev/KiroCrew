@@ -10687,6 +10687,13 @@ _OAUTH_AUTHORIZATION_ENDPOINTS: frozenset[tuple[str, str]] = frozenset(
         ("mcp.linear.app", "/authorize"),
         ("mcp.notion.com", "/authorize"),
         ("vercel.com", "/oauth/authorize"),
+        # Figma's MCP authorization server (issuer https://api.figma.com) hosts
+        # its consent page on www.figma.com — from its RFC 8414 metadata reached
+        # via RFC 9728 protected-resource discovery on https://mcp.figma.com/mcp.
+        ("www.figma.com", "/oauth/mcp"),
+        # Miro's MCP server is its own authorization server; authorize path from
+        # its RFC 8414 metadata (issuer https://mcp.miro.com/).
+        ("mcp.miro.com", "/authorize"),
     }
 )
 
