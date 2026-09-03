@@ -351,7 +351,6 @@ src/kiro_crew/service/apparmor.py
 src/kiro_crew/service/common.py
 src/kiro_crew/service/linux.py
 src/kiro_crew/service/macos.py
-src/kiro_crew/session_directive.py
 src/kiro_crew/session_pid_sig.py
 src/kiro_crew/session_workspace.py
 src/kiro_crew/skill_providers/skillsh.py

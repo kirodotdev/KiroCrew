@@ -218,6 +218,40 @@ distinguishable, and a remedy named only where this repository actually
 establishes one — the `claude` CLI reports an empty install command rather than an
 invented one.
 
+## 9. Tool-result text fidelity (control markers)
+
+| | kiro-cli | KAS | CC |
+|---|---|---|---|
+| How a tool result arrives | `content[].content.text` blocks, or `rawOutput.items[].Text` / `.Json.stdout` | same shapes, but an MCP result can arrive as an **already-serialised** JSON envelope under a key this repository does not recognise | `content[]` text blocks |
+| Marker survives untouched | yes | **no** — the envelope reaches the consumer through `json.dumps`, which escapes every quote in it | yes |
+| Recovery | not needed | `acp/_dispatch._repair_escaped_marker`, run over the joined output before redaction and the head cut | not needed |
+
+Two consumers read a control marker out of the tool-result TEXT rather than out
+of a structured field: a session directive (`session_directive.peek` — how
+`monitor_start` / `monitor_update` / `autonudge_stop` reach the session that owns
+the loop) and an MCP App render marker (`mcp_apps_render.find_marker`). Both
+sentinels are quote-free, so JSON escaping leaves them perfectly intact while
+mangling the payload behind them. The failure that produces is silent and
+expensive: the frame still looks like it carries a directive, the consumer can no
+longer name the record the MCP stub parked, the tool answers "requested", and no
+loop arms. It cost several gateway restarts to find on KAS precisely because
+every layer looked healthy.
+
+The recovery is keyed on the sentinel, not on any envelope field name, because
+the field differs per backend; and acceptance is the test — a candidate is used
+only when `peek` actually reads a selector from it, so a wrong guess degrades to
+the original text instead of substituting something worse. A frame carrying two
+DIFFERENT markers is refused rather than resolved to the first, since applying
+the wrong directive is worse than applying none.
+
+**A provider must declare:** whether its tool-result text arrives verbatim or
+pre-serialised, and — if any builder it adds can emit an `EVENT_TOOL_RESULT` —
+that the builder runs the repair. This is the one bucket in this document with a
+ratchet instead of a checklist line: `test_session_directive_transport.py` walks
+every `AcpEvent(kind=EVENT_TOOL_RESULT)` construction under `acp/` and fails when
+one of them does not call `_repair_escaped_marker`, because a provider author is
+exactly the person who will not know this constraint exists.
+
 ## Seam status today
 
 | Bucket | Seam |
@@ -231,6 +265,7 @@ invented one.
 | 5 MCP injection | **none** — an overridable method returning `[]` is the whole extension point, and now that CC is selectable that neutral default is what a public build actually runs |
 | 7 Regex-engine parity | **none** — the deny catalog is authored against one engine |
 | 8 Auxiliary runtimes | partial — `agent_sdk/backend_install.py` is a real preflight that names each absent component before a session, but the *requirement* is still declared nowhere a type checker can see: the probe knows CC needs two binaries because it was written to, not because CC declared it |
+| 9 Tool-result marker fidelity | real — one recovery function, and the only bucket whose requirement a test enforces rather than a comment asserting it |
 
 ## New-provider checklist
 
@@ -243,6 +278,10 @@ from 1M to 200K — both documented as comments rather than enforced by an
 interface. Neither is hypothetical any more. CC is selectable on a public build,
 so a public build reaches both, and a comment is not a thing an operator can
 read.
+
+Bucket 9 is the exception worth copying: its requirement is enforced by a
+ratchet, so a new builder that drops the marker recovery fails a test instead of
+shipping a monitor loop that never arms.
 
 ## What supporting one foreign host costs today
 

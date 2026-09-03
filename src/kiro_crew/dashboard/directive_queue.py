@@ -66,7 +66,7 @@ import time
 import uuid
 from typing import Any
 
-from kiro_crew.session_directive import DIRECTIVE_TOOLS
+from kiro_crew.session_directive import DIRECTIVE_TOOLS, content_free_digest
 
 logger = logging.getLogger(__name__)
 
@@ -217,6 +217,13 @@ def claim(
     the same session cannot both apply it. Returns ``None`` when nothing matches.
     """
     if not session_key or kind not in DIRECTIVE_TOOLS:
+        logger.warning(
+            "session-directive CLAIM REFUSED before lookup: session_key=%r kind=%r "
+            "(empty session key, or kind is not a known directive tool). Nothing "
+            "was claimed.",
+            session_key,
+            kind,
+        )
         return None
     now = time.monotonic()
     want = _canonical(args)
@@ -226,10 +233,14 @@ def claim(
             return None
         hit: dict[str, Any] | None = None
         keep: list[dict[str, Any]] = []
+        misses: list[str] = []
         for record in queue:
             at = float(record.get("at", 0.0))
             age = now - at
             if age > MAX_AGE_SECS:
+                misses.append(
+                    "stale(kind=%r age=%.1fs > %.1fs)" % (record.get("kind"), age, MAX_AGE_SECS)
+                )
                 logger.info(
                     "session-directive dropped as stale for %s: %s (age %.0fs > %.0fs)",
                     session_key,
@@ -243,16 +254,58 @@ def claim(
             # equal records, and each frame must consume its OWN. The queue is
             # oldest-first, so taking the first match pairs frame N with record N
             # while `keep` retains the rest for the sibling frames.
+            _rec_kind = record.get("kind")
+            _rec_args = _canonical(record.get("args"))
             if (
                 hit is None
-                and record.get("kind") == kind
-                and _canonical(record.get("args")) == want
+                and _rec_kind == kind
+                and _rec_args == want
                 and (not_before is None or at >= not_before)
             ):
                 hit = record
                 continue
+            if hit is None:
+                # Name the ONE reason this candidate was passed over. Ordered so
+                # the first true predicate is the decisive one, because a record
+                # failing on kind is a different bug from one failing only on the
+                # turn bound -- and the old silent None could not tell them apart.
+                if _rec_kind != kind:
+                    misses.append("kind-differs(parked=%r wanted=%r)" % (_rec_kind, kind))
+                elif _rec_args != want:
+                    # Digests, not the args themselves: the parked record carries
+                    # the payload the tool validated and `want` came off
+                    # model-visible marker text, so printing either publishes
+                    # directive content to the dashboard log. A digest still
+                    # answers the question this line exists for -- are these two
+                    # the same payload -- and pairs with the other side's log.
+                    misses.append(
+                        "args-differ(parked_sha=%s/%dB wanted_sha=%s/%dB)"
+                        % (
+                            content_free_digest(_rec_args),
+                            len(_rec_args),
+                            content_free_digest(want),
+                            len(want),
+                        )
+                    )
+                elif not_before is not None and at < not_before:
+                    misses.append(
+                        "parked-before-this-turn(at=%.1f < turn_start=%.1f, %.1fs earlier)"
+                        % (at, not_before, not_before - at)
+                    )
+                else:
+                    misses.append("already-matched-a-sibling-frame(kind=%r)" % (_rec_kind,))
             keep.append(record)
         if hit is None:
+            if misses:
+                logger.warning(
+                    "session-directive CLAIM MISS for session_key=%r kind=%r: %d "
+                    "parked record(s) were examined and none matched -> %s. The "
+                    "record stays parked; the directive is NOT applied.",
+                    session_key,
+                    kind,
+                    len(misses),
+                    "; ".join(misses),
+                )
             # Nothing matched. Keep what survived the staleness sweep so a
             # sibling frame in this same turn can still find its own record.
             if keep:

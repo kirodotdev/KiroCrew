@@ -471,6 +471,19 @@ class AcpEvent:
     #: the original bytes never ride this display event.  Approval surfaces use
     #: it to refuse a durable command grant for a value the user could not see.
     tool_input_redacted: bool = False
+    #: The tool's result text, VERBATIM enough that a control marker embedded in
+    #: it still parses. Two consumers read markers out of this string rather than
+    #: out of a structured field: a session directive (``session_directive.peek``,
+    #: which arms/stops a monitor loop) and an MCP App render marker
+    #: (``mcp_apps_render.find_marker``). A builder that serialises an
+    #: unrecognised result envelope with ``json.dumps`` escapes every quote in it,
+    #: which leaves both sentinels intact while destroying the payload behind
+    #: them -- so the frame still looks like it carries a directive and names
+    #: nothing. EVERY builder must therefore run
+    #: ``acp/_dispatch._repair_escaped_marker`` over its joined output before
+    #: redaction and the head cut; a new provider's builder is pinned to that by
+    #: ``test_session_directive_transport.py``. See
+    #: docs/system-specs/features/agent-host-contract.md §9.
     tool_output: str = ""
     tool_final: bool = False  # True when this tool_result is the final (status=completed) update
     usage: TurnUsage = field(default_factory=TurnUsage)

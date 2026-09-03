@@ -179,6 +179,12 @@ async def apply_session_directive(
             return f"Error: unknown session directive {kind!r}."
     except _DirectiveDenied as exc:
         _audit(session_key, kind, "denied")
+        logger.warning(
+            "session-directive DENIED at apply for session_key=%r kind=%r: %s",
+            session_key,
+            kind,
+            exc,
+        )
         return str(exc)
     except Exception as exc:  # never propagate into the turn loop
         logger.warning("apply_session_directive(%s) failed", kind, exc_info=True)

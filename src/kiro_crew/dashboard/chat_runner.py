@@ -7460,12 +7460,30 @@ async def _run_chat(
                             "(tool_call_id=%s, mcp_server_name=%r, tool_name=%r, "
                             "expected mcp_server_name=%r). Either a forged marker, "
                             "or this ACP backend emits no _meta.kiro identity AND "
-                            "could not reach the gateway to park the payload.",
+                            "could not reach the gateway to park the payload. "
+                            "CLAIM was attempted for session_key=%r selector=%r; "
+                            "that session's queue currently holds %d parked "
+                            "record(s) — a non-zero depth here means a record WAS "
+                            "parked but did not match this frame's (kind, args) or "
+                            "fell outside this turn, while zero means nothing ever "
+                            "reached /api/session-directive for this key.",
                             event.tool_call_id,
                             _seen_tool_identity.get(event.tool_call_id, ("", ""))[0],
                             _seen_tool_identity.get(event.tool_call_id, ("", ""))[1],
                             session_directive.CORE_MCP_SERVER,
+                            session_key,
+                            (_sel_pair[0] if _sel_pair else None),
+                            directive_queue.depth(session_key),
                         )
+                        if _sel_pair is None:
+                            logger.warning(
+                                "session-directive SELECTOR UNREADABLE for %s: the "
+                                "frame carries the marker sentinel but peek() could "
+                                "not turn it into a (kind, args) selector, so no "
+                                "parked record can be named. Reason: %s",
+                                session_key,
+                                session_directive.peek_failure_reason(event.tool_output),
+                            )
                 if not _dir_tool and event.tool_call_id in _dir_consumed_out:
                     # A LATER frame for a directive we already consumed: replay
                     # the output we produced instead of letting the raw marker

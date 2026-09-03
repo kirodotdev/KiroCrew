@@ -43,6 +43,7 @@ directive tool and is ignored.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from typing import Any
@@ -87,6 +88,10 @@ CORE_MCP_SERVER = "kirocrew-core"
 # A machine-facing framing token must not depend on characters that sanitisers,
 # Unicode normalisers and transports all legitimately rewrite.
 _SENTINEL = "[[KIROCREW_SESSION_DIRECTIVE]]"
+# Public alias. The transport layer (acp/_dispatch) has to locate the marker in a
+# raw frame to repair a payload that arrived JSON-escaped, and reaching for the
+# private name from another module would make that dependency invisible here.
+SENTINEL = _SENTINEL
 
 # The ACP tool-result parser truncates each output part at 4000 chars
 # (``acp/_dispatch.py`` ``str(text)[:4000]``). The marker is the TAIL of the
@@ -175,7 +180,7 @@ def decode(text: str, expected_tool: str) -> dict[str, Any] | None:
     idx = text.find(_SENTINEL)
     if idx < 0:
         return None
-    line = text[idx + len(_SENTINEL):].split("\n", 1)[0]
+    line = text[idx + len(_SENTINEL) :].split("\n", 1)[0]
     try:
         block = json.loads(line)
     except (ValueError, TypeError):
@@ -207,7 +212,7 @@ def peek(text: str) -> tuple[str, dict[str, Any]] | None:
     idx = text.find(_SENTINEL)
     if idx < 0:
         return None
-    line = text[idx + len(_SENTINEL):].split("\n", 1)[0]
+    line = text[idx + len(_SENTINEL) :].split("\n", 1)[0]
     try:
         block = json.loads(line)
     except (ValueError, TypeError):
@@ -272,6 +277,72 @@ def directive_tool_for(mcp_server_name: str, tool_name: str) -> str:
     if mcp_server_name != CORE_MCP_SERVER:
         return ""
     return match_tool(tool_name or "")
+
+
+def content_free_digest(payload: str, _len: int = 12) -> str:
+    """Short stable digest of *payload* that reveals none of its content.
+
+    Directive diagnostics are logged on the failure path, where the payload is
+    either malformed or came from model-visible text -- so the log line must not
+    carry the bytes themselves. A digest keeps the one question those lines exist
+    to answer: two logs naming the same digest saw the same payload, and two
+    naming different digests did not. It is deliberately truncated: this is a
+    correlation handle, not a signature, and a full hash only makes the line
+    harder to read.
+
+    Returns a marker instead of a digest for empty input, so a caller can print
+    the result unconditionally without a special case.
+    """
+    if not payload:
+        return "empty"
+    return hashlib.sha256(payload.encode("utf-8", "replace")).hexdigest()[:_len]
+
+
+def peek_failure_reason(text: str | None) -> str:
+    """Name WHY :func:`peek` returned ``None`` for *text* -- diagnostics only.
+
+    ``has_marker`` true with ``peek`` returning ``None`` is a real observed state
+    and, until this existed, an undiagnosable one: the consumer could report that
+    no record matched without being able to say whether the sentinel arrived
+    without its payload, the payload was truncated mid-JSON, or the payload named
+    a kind this build does not know. Mirrors :func:`peek`'s branches exactly, so a
+    reason here is the branch peek actually took. Returns ``"ok"`` when peek
+    succeeds, so a caller can log it unconditionally.
+
+    The reason names the failure SHAPE only -- never the payload. The payload is
+    model-visible text that reaches the dashboard log before anything has
+    redacted it, and a malformed frame is exactly the case where the bytes are
+    least trustworthy, so an excerpt here would publish unvalidated content to
+    diagnose a parse error. Shape plus length is what actually distinguishes the
+    failures; ``payload_sha`` correlates two log lines without revealing either.
+    """
+    if not text:
+        return "empty-output"
+    idx = text.find(_SENTINEL)
+    if idx < 0:
+        return "no-sentinel"
+    line = text[idx + len(_SENTINEL) :].split("\n", 1)[0]
+    if not line:
+        return "sentinel-present-but-payload-empty (marker is the last thing in the frame)"
+    try:
+        block = json.loads(line)
+    except (ValueError, TypeError) as exc:
+        return "json-unparseable (%s); payload_len=%d payload_sha=%s" % (
+            exc.__class__.__name__,
+            len(line),
+            content_free_digest(line),
+        )
+    if not isinstance(block, dict):
+        return "json-not-an-object (%s)" % type(block).__name__
+    kind = block.get("kind")
+    if not isinstance(kind, str):
+        return "kind-missing-or-not-a-string"
+    if kind not in DIRECTIVE_TOOLS:
+        # Shape, not the value: `kind` is read straight out of model-visible
+        # marker text, so echoing it here would publish unvalidated content on
+        # the same pre-redaction path as the excerpt above.
+        return "unknown-kind (len=%d sha=%s)" % (len(kind), content_free_digest(kind))
+    return "ok"
 
 
 def strip_marker(text: str) -> str:
