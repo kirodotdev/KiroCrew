@@ -77,6 +77,28 @@ const isSynthesisInjection = (msg: ChatMessage): boolean =>
   (msg.meta as Record<string, unknown> | undefined)?.injectKind === 'synthesis'
 
 /**
+ * The last assistant row of a COMPLETED turn, identified by the per-turn stats
+ * the runner stamps on exactly that row (`_attach_turn_stats`, chat_runner.py).
+ *
+ * This is how the region walk finds where a synthesis turn ENDED. A synthesis
+ * row opens a turn whose answer is real, user-facing content no later synthesis
+ * restates, so that answer must stay outside every later fold — but the rows
+ * after it, which belong to the NEXT wave, are interim work that should fold.
+ * Nothing else in the display layer marks a turn boundary: the runner's
+ * `chat_segment` finalize is a live wire event, not a property of a persisted
+ * row, so a reload has only this meta to go on.
+ *
+ * A turn that produced no assistant message carries no stats, and neither does
+ * an answer still streaming. Both are handled by the caller degrading to the
+ * previous behaviour (leave the region unfolded) rather than guessing a
+ * boundary, because a wrong guess hides an answer behind a toggle that promises
+ * a repeat below.
+ */
+const isTurnEnd = (msg: ChatMessage): boolean =>
+  msg.role === 'assistant' &&
+  !!(msg.meta as Record<string, unknown> | undefined)?.turn_stats
+
+/**
  * An injected row that is NOT part of the fan-out, and whose presence therefore
  * disqualifies the region from being folded.
  *
@@ -188,6 +210,10 @@ export function groupDisplayItems(messages: ChatMessage[]): GroupedTurns {
   // UNFOLDED — degrading to the pre-fold rendering is always safe, whereas
   // folding it would hide unrelated content behind the fan-out's toggle.
   let regionHasForeign = false
+  // Set while the batch being accumulated still holds an un-flushed synthesis
+  // ANSWER, which `settlePendingSynthesisAnswer` below splits off before any
+  // later fold can reach it.
+  let pendingSynthesisAnswer = false
   const hasWorkingSteps = (items: TurnItem[]) =>
     items.some(t =>
       (t.kind === 'single' && (t.msg.role === 'tool' || t.msg.role === 'assistant' || t.msg.role === 'streaming')) ||
@@ -220,6 +246,46 @@ export function groupDisplayItems(messages: ChatMessage[]): GroupedTurns {
       turns.push(...items)
     }
   }
+  /**
+   * Settle an un-flushed synthesis ANSWER sitting at the head of the open batch.
+   *
+   * A synthesis row opens a turn whose answer is real, user-facing content that
+   * no later synthesis restates, so it must never end up inside a later wave's
+   * fold. Splitting it off at its turn boundary and re-anchoring the region
+   * behind it is what lets the rows AFTER it — the next wave's interim work —
+   * fold normally.
+   *
+   * Called at EVERY flush site that can be holding such an answer: the synthesis
+   * branch, and the `subagent` turn-opener a queue-drained completion arrives
+   * as. Missing the second one let the next synthesis mistake that wave's own
+   * per-completion reply for the answer boundary and leave the wave unfolded.
+   *
+   * With no locatable turn end the answer cannot be separated, so the region is
+   * marked foreign and degrades to UNFOLDED — the pre-fix rendering. Showing
+   * interim prose is a cosmetic cost; hiding an answer behind a toggle that
+   * promises a repeat below is a correctness one.
+   */
+  const settlePendingSynthesisAnswer = () => {
+    if (!pendingSynthesisAnswer) return
+    const end = turnItems.findIndex(t => t.kind === 'single' && isTurnEnd(t.msg))
+    if (end >= 0) {
+      flushTurn(turnItems.slice(0, end + 1), true)
+      turnItems = turnItems.slice(end + 1)
+      regionStart = turns.length
+      // A fresh region starts after the answer, so a foreign row that
+      // disqualified the PREVIOUS one must not disqualify this one too —
+      // otherwise one cron reply in wave 1 suppresses every later wave's fold.
+      // RE-DERIVED, never simply cleared: the retained batch can itself hold the
+      // foreign row the old flag was set for (a cron drained AFTER the answer),
+      // and clearing on that would fold an unrelated prompt's reply behind the
+      // fan-out toggle — the exact outcome the foreign guard exists to prevent.
+      // A foreign row arriving later still raises the flag on its own.
+      regionHasForeign = turnItems.some(t => t.kind === 'single' && isForeignInjection(t.msg))
+    } else {
+      regionHasForeign = true
+    }
+    pendingSynthesisAnswer = false
+  }
   for (const item of raw) {
     // The synthesis injection closes a fan-out: flush what is open, then fold
     // everything since the user's prompt into ONE interim turn. Checked BEFORE
@@ -227,6 +293,9 @@ export function groupDisplayItems(messages: ChatMessage[]): GroupedTurns {
     // would be swallowed into the region it is supposed to terminate, and the
     // synthesis answer would fold away with the summaries it replaces.
     if (item.kind === 'single' && isSynthesisInjection(item.msg)) {
+      // A previous synthesis in this same user turn left its answer inside the
+      // open batch; get it out before the fold below runs.
+      settlePendingSynthesisAnswer()
       if (turnItems.length > 0) { flushTurn(turnItems, true); turnItems = [] }
       if (!regionHasForeign) foldInterimRegion(turns, regionStart)
       // The synthesis row leads the turn that carries the answer, so it opens
@@ -237,12 +306,13 @@ export function groupDisplayItems(messages: ChatMessage[]): GroupedTurns {
       // answer no LATER synthesis restates. A synthesis turn can itself spawn a
       // wave (the gateway re-arms `_pending_synthesis` whenever a wave's last
       // agent finishes, whichever turn spawned it), putting a second synthesis
-      // row in the same user turn — and the batch opened here does not reach
-      // `turns` until that second row flushes it, so an unguarded fold would
-      // collapse round one's answer behind round two's toggle. Marking the new
-      // region foreign keeps it unfolded: a nested wave's interim work then
-      // renders as it did before this change, which is the safe direction.
-      regionHasForeign = true
+      // row in the same user turn. That answer must stay outside round two's
+      // fold — but the rows AFTER it are round two's interim work and must fold,
+      // which is why this no longer disqualifies the whole region: doing so left
+      // every wave after the first rendering its per-completion prose in full,
+      // beside a synthesis that restates it — the duplication the fold exists
+      // to remove.
+      pendingSynthesisAnswer = true
       continue
     }
     if (item.kind === 'single' && isForeignInjection(item.msg)) regionHasForeign = true
@@ -252,11 +322,23 @@ export function groupDisplayItems(messages: ChatMessage[]): GroupedTurns {
     // completion is the same case: the gateway injects it as the next turn's
     // input, so the agent's reply belongs BELOW the card, not beside it.
     if (item.kind === 'single' && TURN_OPENER_ROLES.has(item.msg.role)) {
+      // A `subagent` completion opener flushes the open batch WITHOUT resetting
+      // the region (the completions are part of the interim work), so an answer
+      // still sitting in that batch has to be settled here too -- otherwise it
+      // is flushed into the region a later synthesis folds, and that synthesis
+      // then reads the next wave's own reply as the answer boundary.
+      settlePendingSynthesisAnswer()
       if (turnItems.length > 0) { flushTurn(turnItems, true); turnItems = [] }
       turns.push(item)
       // A user/nudge prompt begins a fresh interim region; a sub-agent
       // completion belongs to the one already open.
-      if (item.msg.role !== 'subagent') { regionStart = turns.length; regionHasForeign = false }
+      if (item.msg.role !== 'subagent') {
+        regionStart = turns.length
+        regionHasForeign = false
+        // The prompt ends the previous fan-out outright: any synthesis answer it
+        // left behind is now in a region no later fold can reach.
+        pendingSynthesisAnswer = false
+      }
       continue
     }
     turnItems.push(item)

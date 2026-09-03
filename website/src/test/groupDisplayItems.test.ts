@@ -190,6 +190,144 @@ describe('groupDisplayItems', () => {
       .toContain('resumed and summarised agent 1')
   })
 
+  it('folds a SECOND wave in the same user turn, keeping round one\'s answer out', () => {
+    // The reported bug: every wave after the first rendered its per-completion
+    // prose in full, right beside a synthesis that restated it. The region a
+    // synthesis row opens used to be disqualified wholesale to protect that
+    // row's answer; now the answer is split off at its turn boundary (the
+    // `turn_stats` meta the runner stamps) and only it stays outside the fold.
+    const answer = (content: string): ChatMessage =>
+      ({ role: 'assistant', content, cls: '',
+         meta: { turn_stats: { elapsed_ms: 1200 } } } as unknown as ChatMessage)
+    const { turns } = groupDisplayItems([
+      msg('user', 'judge both stacks'),
+      msg('assistant', 'spawning wave 1'),
+      synthesisRow(),
+      answer('ANSWER ONE'),
+      msg('assistant', 'spawning wave 2'),
+      msg('tool', '🔧 @kirocrew-core/spawn_run'),
+      msg('assistant', 'wave 2 per-completion prose'),
+      synthesisRow(),
+      answer('ANSWER TWO'),
+    ])
+    const interim = turns.filter(t => isTurn(t) && t.interim) as { items: { msg: ChatMessage }[] }[]
+    // One fold per wave.
+    expect(interim).toHaveLength(2)
+    const folded = interim.flatMap(t => t.items.map(i => i.msg.content))
+    expect(folded).toContain('spawning wave 1')
+    expect(folded).toContain('wave 2 per-completion prose')
+    // Neither synthesis answer is behind a toggle.
+    expect(folded).not.toContain('ANSWER ONE')
+    expect(folded).not.toContain('ANSWER TWO')
+  })
+
+  it('folds a second wave reached through a queue-drained completion opener', () => {
+    // A completion delivered while the slot is busy drains from the queue as a
+    // `subagent` row, which opens a turn and flushes the open batch WITHOUT
+    // resetting the region. Round one's answer is in that batch, so it has to be
+    // settled at this site too: without it the next synthesis reads wave two's
+    // own per-completion reply as the answer boundary and re-anchors past the
+    // whole wave, leaving it unfolded.
+    const answer = (content: string): ChatMessage =>
+      ({ role: 'assistant', content, cls: '',
+         meta: { turn_stats: { elapsed_ms: 900 } } } as unknown as ChatMessage)
+    const completion = ({ ...msg('subagent', COMPLETION), meta: { subagentCompletion: {} } } as ChatMessage)
+    const { turns } = groupDisplayItems([
+      msg('user', 'u'),
+      msg('assistant', 'spawning wave 1'),
+      synthesisRow(),
+      answer('ANSWER ONE'),
+      msg('assistant', 'spawning wave 2'),
+      completion,
+      answer('wave 2 per-completion prose'),
+      synthesisRow(),
+      answer('ANSWER TWO'),
+    ])
+    const interim = turns.filter(t => isTurn(t) && t.interim) as { items: { msg: ChatMessage }[] }[]
+    const folded = interim.flatMap(t => t.items.map(i => i.msg.content))
+    expect(folded).toContain('wave 2 per-completion prose')
+    expect(folded).not.toContain('ANSWER ONE')
+    expect(folded).not.toContain('ANSWER TWO')
+  })
+
+  it('lets a later wave fold even though a cron reply disqualified an earlier one', () => {
+    // `regionHasForeign` is scoped to ONE region. A cron notification that
+    // drained during wave 1 must not suppress wave 2's fold as well, or a single
+    // unrelated inject silently disables the feature for the rest of the turn.
+    const answer = (content: string): ChatMessage =>
+      ({ role: 'assistant', content, cls: '',
+         meta: { turn_stats: { elapsed_ms: 700 } } } as unknown as ChatMessage)
+    const cron = ({ role: 'inject', content: '[cron]', cls: '',
+                    meta: { injectKind: 'cron' } } as unknown as ChatMessage)
+    const { turns } = groupDisplayItems([
+      msg('user', 'u'),
+      msg('assistant', 'spawning wave 1'),
+      cron,
+      msg('assistant', 'cron answer'),
+      synthesisRow(),
+      answer('ANSWER ONE'),
+      msg('assistant', 'wave 2 per-completion prose'),
+      synthesisRow(),
+      answer('ANSWER TWO'),
+    ])
+    const folded = turns
+      .filter(t => isTurn(t) && t.interim)
+      .flatMap(t => (t as unknown as { items: { msg: ChatMessage }[] }).items.map(i => i.msg.content))
+    // Wave 1 stays unfolded (the cron reply is in it), wave 2 folds.
+    expect(folded).toContain('wave 2 per-completion prose')
+    expect(folded).not.toContain('cron answer')
+    expect(folded).not.toContain('ANSWER ONE')
+  })
+
+  it('keeps a cron reply that landed AFTER a synthesis answer out of the next fold', () => {
+    // The foreign flag must be RE-DERIVED when the region is re-anchored, not
+    // cleared: the retained batch can still hold the very row the flag was set
+    // for. Clearing it here would fold an unrelated prompt's reply behind the
+    // fan-out toggle, which promises a repeat below that never comes.
+    const answer = (content: string): ChatMessage =>
+      ({ role: 'assistant', content, cls: '',
+         meta: { turn_stats: { elapsed_ms: 800 } } } as unknown as ChatMessage)
+    const cron = ({ role: 'inject', content: '[cron]', cls: '',
+                    meta: { injectKind: 'cron' } } as unknown as ChatMessage)
+    const { turns } = groupDisplayItems([
+      msg('user', 'u'),
+      msg('assistant', 'spawning wave 1'),
+      synthesisRow(),
+      answer('ANSWER ONE'),
+      cron,
+      msg('assistant', 'cron answer'),
+      msg('assistant', 'wave 2 per-completion prose'),
+      synthesisRow(),
+      answer('ANSWER TWO'),
+    ])
+    const folded = turns
+      .filter(t => isTurn(t) && t.interim)
+      .flatMap(t => (t as unknown as { items: { msg: ChatMessage }[] }).items.map(i => i.msg.content))
+    expect(folded).not.toContain('cron answer')
+    expect(folded).not.toContain('ANSWER ONE')
+    expect(folded).not.toContain('ANSWER TWO')
+  })
+
+  it('leaves a second wave unfolded when round one\'s answer has no turn boundary', () => {
+    // No `turn_stats` anywhere (a turn that errored, an older transcript, or an
+    // answer still streaming): the answer cannot be separated, so the region
+    // degrades to the pre-fix rendering instead of risking swallowing it.
+    const { turns } = groupDisplayItems([
+      msg('user', 'u'),
+      msg('assistant', 'spawning wave 1'),
+      synthesisRow(),
+      msg('assistant', 'ANSWER ONE'),
+      msg('assistant', 'spawning wave 2'),
+      synthesisRow(),
+      msg('assistant', 'ANSWER TWO'),
+    ])
+    const folded = turns
+      .filter(t => isTurn(t) && t.interim)
+      .flatMap(t => (t as unknown as { items: { msg: ChatMessage }[] }).items.map(i => i.msg.content))
+    expect(folded).not.toContain('ANSWER ONE')
+    expect(folded).not.toContain('ANSWER TWO')
+  })
+
   it('never folds an emitted synthesis answer behind a later wave toggle', () => {
     // A synthesis turn can itself spawn a wave, so two synthesis rows can land
     // in ONE user turn. Round one's answer is a real answer that round two's
