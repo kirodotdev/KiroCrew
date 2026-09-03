@@ -6003,7 +6003,16 @@
       "sso_helper": "会社から提供された AWS アクセスポータルの URL を貼り付けてください。",
       "sso_region_label": "AWS リージョン（任意）",
       "sso_continue": "続行",
-      "sso_cancel": "キャンセル"
+      "sso_cancel": "キャンセル",
+      "loopback_aside_headline": "ブラウザーで完了してください",
+      "loopback_aside_body": "新しいタブで Kiro のサインインを開きました。そこで承認すると、このページは自動的に続行します。",
+      "loopback_aside_footnote": "入力は不要です。サインインの結果はこのコンピューターに直接戻ります。",
+      "loopback_waiting_title": "ブラウザーを待っています",
+      "loopback_waiting_body": "開いたタブでサインインを完了してください。タブが表示されない場合は、下から再度開いてください。",
+      "loopback_open_again": "サインインページをもう一度開く",
+      "loopback_use_code": "代わりにコードを使う",
+      "loopback_slow_hint": "時間がかかっていますか？サインインページがこのコンピューターに到達できない場合は、コードに切り替えてください。どの端末からでも使えます。",
+      "loopback_fell_back": "サインインの結果がこのコンピューターに直接戻れなかったため、代わりにコードを表示しています。"
     },
     "kiroPrerequisiteGate": {
       "agent_specs_missing": "エージェント仕様が見つかりません",

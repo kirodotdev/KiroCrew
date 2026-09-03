@@ -47,6 +47,14 @@ class PortalAuthError(Exception):
     """Loopback portal login failed."""
 
 
+class PortalTimeoutError(PortalAuthError):
+    """No callback arrived before the listener deadline.
+
+    Distinct so the caller can degrade to the device-code flow (the browser is
+    probably not on this machine) rather than report a generic failure.
+    """
+
+
 def generate_code_verifier() -> str:
     return base64.urlsafe_b64encode(secrets.token_bytes(32)).rstrip(b"=").decode("ascii")
 
@@ -69,6 +77,10 @@ def bind_allowed_port() -> tuple[socket.socket, int]:
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         try:
             sock.bind(("127.0.0.1", port))
+            # Listen immediately: the browser can be redirected back before the
+            # serving task has started, and a bound-but-not-listening socket
+            # refuses that connection instead of queueing it in the backlog.
+            sock.listen(8)
             return sock, port
         except OSError as err:
             last_err = err
@@ -111,14 +123,25 @@ async def exchange_code(
         if resp.status != 200:
             body = await resp.text()
             raise PortalAuthError(f"token exchange failed: HTTP {resp.status} {body}")
-        data = await resp.json()
+        try:
+            data = await resp.json(content_type=None)
+        except (aiohttp.ClientError, ValueError) as err:
+            raise PortalAuthError("token exchange returned an undecodable body") from err
+    if not isinstance(data, dict):
+        raise PortalAuthError("token exchange returned a non-object body")
 
+    access_token = data.get("accessToken")
+    if not isinstance(access_token, str) or not access_token:
+        raise PortalAuthError("token exchange returned no access token")
     profile_arn = data.get("profileArn")
     if not profile_arn:
         raise PortalAuthError("token exchange returned no profile ARN")
-    expires_in = int(data.get("expiresIn") or 3600)
+    try:
+        expires_in = int(data.get("expiresIn") or 3600)
+    except (TypeError, ValueError) as err:
+        raise PortalAuthError("token exchange returned a non-numeric expiry") from err
     return KasToken(
-        access_token=data["accessToken"],
+        access_token=access_token,
         expires_at=datetime.now(timezone.utc) + timedelta(seconds=expires_in),
         provider=provider.value,
         identity="social",
@@ -183,7 +206,7 @@ async def wait_for_callback(
     try:
         return await asyncio.wait_for(asyncio.shield(result), timeout=timeout_secs)
     except asyncio.TimeoutError:
-        raise PortalAuthError(
+        raise PortalTimeoutError(
             f"timed out after {timeout_secs:.0f}s waiting for the portal callback"
         ) from None
     finally:

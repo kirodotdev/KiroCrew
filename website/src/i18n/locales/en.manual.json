@@ -1841,7 +1841,16 @@
       "sso_helper": "Paste the AWS access portal URL your company gave you.",
       "sso_region_label": "AWS Region (optional)",
       "sso_continue": "Continue",
-      "sso_cancel": "Cancel"
+      "sso_cancel": "Cancel",
+      "loopback_aside_headline": "Finish in your browser",
+      "loopback_aside_body": "We opened Kiro sign-in in a new tab. Approve there and this page carries on by itself.",
+      "loopback_aside_footnote": "Nothing to type — the sign-in comes straight back to this computer.",
+      "loopback_waiting_title": "Waiting for your browser",
+      "loopback_waiting_body": "Complete the sign-in in the tab that just opened. If no tab appeared, open it again below.",
+      "loopback_open_again": "Open the sign-in page again",
+      "loopback_use_code": "Use a code instead",
+      "loopback_slow_hint": "Taking a while? If the sign-in page can't reach this computer, switch to a code — it works from any device.",
+      "loopback_fell_back": "The sign-in couldn't come back to this computer directly, so here's a code instead."
     },
     "kiroPrerequisiteGate": {
       "agent_specs_missing": "Agent specs missing",

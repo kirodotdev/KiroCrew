@@ -6199,7 +6199,16 @@
       "sso_helper": "Incolla l'URL del portale di accesso AWS fornito dalla tua azienda.",
       "sso_region_label": "Regione AWS (facoltativa)",
       "sso_continue": "Continua",
-      "sso_cancel": "Annulla"
+      "sso_cancel": "Annulla",
+      "loopback_aside_headline": "Completa nel browser",
+      "loopback_aside_body": "Abbiamo aperto l'accesso a Kiro in una nuova scheda. Approva lì e questa pagina prosegue da sola.",
+      "loopback_aside_footnote": "Niente da digitare: l'accesso torna direttamente su questo computer.",
+      "loopback_waiting_title": "In attesa del tuo browser",
+      "loopback_waiting_body": "Completa l'accesso nella scheda appena aperta. Se non è comparsa nessuna scheda, riaprila qui sotto.",
+      "loopback_open_again": "Riapri la pagina di accesso",
+      "loopback_use_code": "Usa invece un codice",
+      "loopback_slow_hint": "Ci vuole molto? Se la pagina di accesso non riesce a raggiungere questo computer, passa a un codice: funziona da qualsiasi dispositivo.",
+      "loopback_fell_back": "L'accesso non è riuscito a tornare direttamente su questo computer, quindi ecco un codice."
     },
     "kiroPrerequisiteGate": {
       "agent_specs_missing": "Specifiche degli agenti mancanti",

@@ -93,7 +93,9 @@ def register(app: web.Application) -> None:
 
     app.router.add_get("/api/kas-login", _lazy_kas("api_kas_login_status"))
     app.router.add_post("/api/kas-login/device", _lazy_kas("api_kas_login_begin_device"))
+    app.router.add_post("/api/kas-login/loopback", _lazy_kas("api_kas_login_begin_loopback"))
     app.router.add_post("/api/kas-login/poll", _lazy_kas("api_kas_login_poll"))
+    app.router.add_post("/api/kas-login/cancel", _lazy_kas("api_kas_login_cancel"))
     app.router.add_post("/api/kas-login/logout", _lazy_kas("api_kas_login_logout"))
     app.router.add_get("/api/governance/channels", handlers.api_governance_channels)
 

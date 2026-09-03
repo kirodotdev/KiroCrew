@@ -6003,7 +6003,16 @@
       "sso_helper": "회사에서 제공한 AWS 액세스 포털 URL을 붙여넣으세요.",
       "sso_region_label": "AWS 리전(선택 사항)",
       "sso_continue": "계속",
-      "sso_cancel": "취소"
+      "sso_cancel": "취소",
+      "loopback_aside_headline": "브라우저에서 완료하세요",
+      "loopback_aside_body": "새 탭에서 Kiro 로그인을 열었습니다. 그곳에서 승인하면 이 페이지가 자동으로 이어집니다.",
+      "loopback_aside_footnote": "입력할 것은 없습니다. 로그인 결과가 이 컴퓨터로 바로 돌아옵니다.",
+      "loopback_waiting_title": "브라우저를 기다리는 중",
+      "loopback_waiting_body": "방금 열린 탭에서 로그인을 완료하세요. 탭이 열리지 않았다면 아래에서 다시 여세요.",
+      "loopback_open_again": "로그인 페이지 다시 열기",
+      "loopback_use_code": "대신 코드 사용",
+      "loopback_slow_hint": "오래 걸리나요? 로그인 페이지가 이 컴퓨터에 연결되지 않으면 코드로 전환하세요. 어떤 기기에서도 사용할 수 있습니다.",
+      "loopback_fell_back": "로그인 결과가 이 컴퓨터로 직접 돌아오지 못해 대신 코드를 표시합니다."
     },
     "kiroPrerequisiteGate": {
       "agent_specs_missing": "에이전트 사양 없음",

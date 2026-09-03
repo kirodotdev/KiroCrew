@@ -6101,7 +6101,16 @@
       "sso_helper": "Füge die AWS-Zugangsportal-URL ein, die deine Firma dir gegeben hat.",
       "sso_region_label": "AWS-Region (optional)",
       "sso_continue": "Weiter",
-      "sso_cancel": "Abbrechen"
+      "sso_cancel": "Abbrechen",
+      "loopback_aside_headline": "Im Browser abschließen",
+      "loopback_aside_body": "Wir haben die Kiro-Anmeldung in einem neuen Tab geöffnet. Bestätige dort, und diese Seite macht von selbst weiter.",
+      "loopback_aside_footnote": "Nichts eintippen — die Anmeldung kommt direkt auf diesen Computer zurück.",
+      "loopback_waiting_title": "Warten auf deinen Browser",
+      "loopback_waiting_body": "Schließe die Anmeldung im gerade geöffneten Tab ab. Falls kein Tab erschienen ist, öffne ihn unten erneut.",
+      "loopback_open_again": "Anmeldeseite erneut öffnen",
+      "loopback_use_code": "Stattdessen einen Code verwenden",
+      "loopback_slow_hint": "Dauert es lange? Wenn die Anmeldeseite diesen Computer nicht erreicht, wechsle zu einem Code — der funktioniert von jedem Gerät.",
+      "loopback_fell_back": "Die Anmeldung konnte nicht direkt auf diesen Computer zurückkommen, deshalb gibt es stattdessen einen Code."
     },
     "kiroPrerequisiteGate": {
       "agent_specs_missing": "Agent-Spezifikationen fehlen",

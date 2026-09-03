@@ -6199,7 +6199,16 @@
       "sso_helper": "Cole a URL do portal de acesso da AWS que sua empresa forneceu.",
       "sso_region_label": "Região da AWS (opcional)",
       "sso_continue": "Continuar",
-      "sso_cancel": "Cancelar"
+      "sso_cancel": "Cancelar",
+      "loopback_aside_headline": "Conclua no seu navegador",
+      "loopback_aside_body": "Abrimos o login do Kiro em uma nova aba. Aprove lá e esta página continua sozinha.",
+      "loopback_aside_footnote": "Nada para digitar: o login volta direto para este computador.",
+      "loopback_waiting_title": "Aguardando seu navegador",
+      "loopback_waiting_body": "Conclua o login na aba que acabou de abrir. Se nenhuma aba apareceu, abra de novo abaixo.",
+      "loopback_open_again": "Abrir a página de login novamente",
+      "loopback_use_code": "Usar um código em vez disso",
+      "loopback_slow_hint": "Está demorando? Se a página de login não conseguir alcançar este computador, mude para um código: funciona de qualquer dispositivo.",
+      "loopback_fell_back": "O login não conseguiu voltar direto para este computador, então aqui está um código."
     },
     "kiroPrerequisiteGate": {
       "agent_specs_missing": "Especificações de agente ausentes",

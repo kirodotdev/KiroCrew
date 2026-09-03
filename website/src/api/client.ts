@@ -1938,6 +1938,17 @@ export interface KasLoginPollResult {
   error?: string
 }
 
+/**
+ * A loopback (PKCE) sign-in the gateway is listening for on a local port. The
+ * dashboard opens `auth_url` in the user's browser; the portal redirects back
+ * to `http://localhost:<port>` on this machine, and the gateway finishes the
+ * exchange itself — the user confirms nothing. Polled with the same login_id.
+ */
+export interface KasLoginLoopbackSession extends KasLoginDeviceSession {
+  auth_url: string
+  port: number
+}
+
 export interface AgentImportCategory {
   id: string
   label: string
@@ -2234,6 +2245,14 @@ export const api = {
     ) as Promise<KasLoginDeviceSession>,
   kasLoginPoll: (login_id: string) =>
     post('/api/kas-login/poll', { login_id }).then(j) as Promise<KasLoginPollResult>,
+  // Loopback begin answers 409 `loopback_unavailable` when this install shape
+  // cannot receive the callback (or every allowlisted port is busy); the gate
+  // treats that as "start the device flow instead", not as a failure.
+  kasLoginBeginLoopback: (provider: string) =>
+    post('/api/kas-login/loopback', { provider }).then(j) as Promise<KasLoginLoopbackSession>,
+  // Idempotent: releases a loopback listener's port early on every start-over path.
+  kasLoginCancel: (login_id: string) =>
+    post('/api/kas-login/cancel', { login_id }).then(j) as Promise<{ ok: boolean }>,
   kasLoginLogout: (identity: string) =>
     post('/api/kas-login/logout', { identity }).then(j) as Promise<KasLoginStatus>,
   onboardingImportScan: () =>

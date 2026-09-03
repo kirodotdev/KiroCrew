@@ -6199,7 +6199,16 @@
       "sso_helper": "Pega la URL del portal de acceso de AWS que te dio tu empresa.",
       "sso_region_label": "Región de AWS (opcional)",
       "sso_continue": "Continuar",
-      "sso_cancel": "Cancelar"
+      "sso_cancel": "Cancelar",
+      "loopback_aside_headline": "Termina en tu navegador",
+      "loopback_aside_body": "Abrimos el inicio de sesión de Kiro en una pestaña nueva. Apruébalo allí y esta página continúa sola.",
+      "loopback_aside_footnote": "No hay nada que escribir: el inicio de sesión vuelve directamente a este equipo.",
+      "loopback_waiting_title": "Esperando a tu navegador",
+      "loopback_waiting_body": "Completa el inicio de sesión en la pestaña que se acaba de abrir. Si no apareció ninguna, ábrela de nuevo abajo.",
+      "loopback_open_again": "Abrir de nuevo la página de inicio de sesión",
+      "loopback_use_code": "Usar un código en su lugar",
+      "loopback_slow_hint": "¿Tarda demasiado? Si la página de inicio de sesión no puede llegar a este equipo, cambia a un código: funciona desde cualquier dispositivo.",
+      "loopback_fell_back": "El inicio de sesión no pudo volver directamente a este equipo, así que aquí tienes un código."
     },
     "kiroPrerequisiteGate": {
       "agent_specs_missing": "Faltan las especificaciones del agente",

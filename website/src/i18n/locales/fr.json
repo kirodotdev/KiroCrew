@@ -6199,7 +6199,16 @@
       "sso_helper": "Colle l'URL du portail d'accès AWS fournie par ton entreprise.",
       "sso_region_label": "Région AWS (facultatif)",
       "sso_continue": "Continuer",
-      "sso_cancel": "Annuler"
+      "sso_cancel": "Annuler",
+      "loopback_aside_headline": "Termine dans ton navigateur",
+      "loopback_aside_body": "Nous avons ouvert la connexion Kiro dans un nouvel onglet. Approuve là-bas et cette page continue toute seule.",
+      "loopback_aside_footnote": "Rien à saisir : la connexion revient directement sur cet ordinateur.",
+      "loopback_waiting_title": "En attente de ton navigateur",
+      "loopback_waiting_body": "Termine la connexion dans l'onglet qui vient de s'ouvrir. Si aucun onglet n'est apparu, rouvre-le ci-dessous.",
+      "loopback_open_again": "Rouvrir la page de connexion",
+      "loopback_use_code": "Utiliser un code à la place",
+      "loopback_slow_hint": "C'est long ? Si la page de connexion n'arrive pas à joindre cet ordinateur, passe à un code : ça marche depuis n'importe quel appareil.",
+      "loopback_fell_back": "La connexion n'a pas pu revenir directement sur cet ordinateur, voici donc un code à la place."
     },
     "kiroPrerequisiteGate": {
       "agent_specs_missing": "Spécifications d'agent manquantes",
