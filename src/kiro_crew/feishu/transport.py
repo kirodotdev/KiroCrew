@@ -20,6 +20,7 @@ from __future__ import annotations
 
 from collections import OrderedDict
 from collections.abc import Awaitable, Callable, Iterable
+from dataclasses import replace
 from typing import Any
 
 from kiro_crew.feishu.client import CHAT_GROUP, CHAT_P2P, LarkClient, LarkInbound
@@ -59,6 +60,33 @@ FEISHU_CAPABILITIES = TransportCapabilities(
     # failure raises (see ``send_message``). Same contract as WeCom's.
     returns_message_id=False,
 )
+
+#: The declaration for a turn served by the streaming CARD renderer.
+#:
+#: Kept as a SEPARATE constant rather than flipping the flags above, because the
+#: two are both true -- of different turns. Streaming is opt-in per turn
+#: (``feishu.streaming``, DM only), so a gateway with it off really is a
+#: non-streaming, non-editing, text-only channel and must keep saying so. The
+#: honesty contract is per declaration, not per package.
+#:
+#: Built with ``dataclasses.replace`` rather than a second
+#: ``TransportCapabilities(...)`` literal so there stays exactly ONE such call in
+#: this module: the outbound-authz contract test walks this file's AST for those
+#: calls and reads the FIRST one carrying ``returns_message_id`` as the channel's
+#: declaration, so a second literal would shadow the real one.
+#:
+#: Only ``streaming`` and ``edit`` flip. ``rich_blocks`` deliberately stays False:
+#: it gates whether a renderer may attach an Adaptive Card of interactive
+#: elements, and a CardKit card here renders MARKDOWN, not tappable choices --
+#: claiming it would promise widgets this channel cannot draw. ``max_buttons``
+#: stays 0 for the same reason, so the zero-widget options path still applies.
+#:
+#: ``returns_message_id`` deliberately does NOT change either. The card id a live
+#: turn needs lives inside the renderer, exactly as Telegram keeps its message id
+#: in the renderer; ``returns_message_id`` describes only the ``send_message``
+#: transport verb, whose contract (empty return = success, failure raises) is
+#: untouched.
+FEISHU_STREAMING_CAPABILITIES = replace(FEISHU_CAPABILITIES, streaming=True, edit=True)
 
 
 class FeishuTransport(MessagingTransport):

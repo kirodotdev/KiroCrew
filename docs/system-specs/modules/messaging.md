@@ -3882,10 +3882,26 @@ marker the driver leaves inert while still reporting success to the model;
 dashboard-only directives stay refused for a channel turn (`slot=None`,
 fail-closed). The dispatcher runs decider-less (no interactive buttons); an
 `[OPTIONS:]` trailer degrades to a numbered text list through the shared
-`render_options_as_text`. The renderer buffers the complete turn and sends it as
-one reply on `on_done` — no streaming, no edit-in-place. Because nothing is shown
-before `on_done`, an UNFINISHED `[OPTIONS` tail is kept rather than cut: there is
-no partial frame for it to flash in, so it can only be the assistant's own prose.
+`render_options_as_text`. The renderer has two modes, chosen per turn by the
+dispatcher. **Buffered is the default**: it accumulates the complete turn and
+sends it as one reply on `on_done`, and remains the fallback for everything.
+**Streaming card** is opt-in (`feishu.streaming`) and DIRECT MESSAGES ONLY — a
+group turn always buffers, because a card animating in a busy room is noise for
+everyone who did not ask. It opens a CardKit card on `on_turn_start`, pushes the
+cumulative answer into it on a throttle, and seals it on `on_done`; any failure
+at any point falls back to the buffered reply, so the worst case is the buffered
+behaviour rather than a lost answer. The capability declaration follows the mode
+(`FEISHU_STREAMING_CAPABILITIES`, `streaming` + `edit` only), so a gateway with
+streaming off never claims to stream.
+
+The UNFINISHED-`[OPTIONS`-tail rule is scoped to the BUFFERED mode: because
+nothing is shown before `on_done` there, such a tail is kept rather than cut —
+there is no partial frame for it to flash in, so it can only be the assistant's
+own prose. Under a streaming card that premise no longer holds, so live frames
+split with `split_options_trailer(text, hide_partial=True)` and withhold a
+half-arrived marker, which is safe precisely because the next frame re-renders
+from the full buffer; only the FINAL frame uses the default
+`hide_partial=False`, where the tail really is prose.
 
 **Session identity.** A p2p turn keys on `open_id` under the `DIRECT` chat
 type; a group turn keys on the group's `chat_id` under the non-direct

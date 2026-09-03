@@ -204,3 +204,198 @@ class TestNoOpHandlers:
         r = _renderer(c)
         await r.on_compaction(75.0)
         assert c.replies == []
+
+
+# ---------------------------------------------------------------------------
+# Streaming card mode (opt-in; the buffered path above stays the default)
+# ---------------------------------------------------------------------------
+
+
+class FakeCard:
+    """Stands in for StreamingCardSession, recording the frames pushed."""
+
+    def __init__(self, client: object, message_id: str) -> None:
+        self.client = client
+        self.message_id = message_id
+        self.frames: list[str] = []
+        self.final: str | None = None
+        # Knobs the tests flip to drive each branch.
+        self.start_ok = True
+        self.live = True
+        self.delivered_final = True
+        self.anchor_gone = False
+        self.push_raises = False
+
+    async def start(self) -> bool:
+        return self.start_ok
+
+    async def push(self, text: str, *, force: bool = False) -> None:
+        if self.push_raises:
+            raise RuntimeError("push exploded")
+        self.frames.append(text)
+
+    async def finish(self, text: str) -> bool:
+        self.final = text
+        return self.delivered_final
+
+
+def _streaming_renderer(
+    client: FakeClient, monkeypatch: object, card: FakeCard | None = None
+) -> tuple[FeishuRenderer, list[FakeCard]]:
+    """Build a streaming renderer whose card session is a FakeCard."""
+    import kiro_crew.feishu.renderer as mod
+
+    made: list[FakeCard] = []
+
+    def factory(cl: object, mid: str) -> FakeCard:
+        made.append(card if card is not None else FakeCard(cl, mid))
+        return made[-1]
+
+    monkeypatch.setattr(mod, "StreamingCardSession", factory)  # type: ignore[attr-defined]
+    return FeishuRenderer(client, "msg1", _CAPS, streaming=True), made
+
+
+class TestStreamingTurnStart:
+    @pytest.mark.asyncio
+    async def test_a_card_is_opened_and_no_text_is_sent(self, monkeypatch) -> None:
+        c = FakeClient()
+        r, made = _streaming_renderer(c, monkeypatch)
+
+        await r.on_turn_start()
+
+        assert len(made) == 1
+        assert c.replies == []
+
+    @pytest.mark.asyncio
+    async def test_a_second_turn_start_does_not_open_a_second_card(self, monkeypatch) -> None:
+        """on_turn_start is called twice per turn, so it has to be idempotent."""
+        c = FakeClient()
+        r, made = _streaming_renderer(c, monkeypatch)
+
+        await r.on_turn_start()
+        await r.on_turn_start()
+
+        assert len(made) == 1
+
+    @pytest.mark.asyncio
+    async def test_a_failed_start_leaves_the_buffered_path_intact(self, monkeypatch) -> None:
+        c = FakeClient()
+        card = FakeCard(c, "msg1")
+        card.start_ok = False
+        r, _made = _streaming_renderer(c, monkeypatch, card)
+
+        await r.on_turn_start()
+        await r.on_text_chunk("hello")
+        await r.on_done()
+
+        assert card.frames == []
+        assert c.replies == [("msg1", "hello")]
+
+
+class TestStreamingPushes:
+    @pytest.mark.asyncio
+    async def test_frames_carry_the_cumulative_text(self, monkeypatch) -> None:
+        c = FakeClient()
+        r, made = _streaming_renderer(c, monkeypatch)
+
+        await r.on_turn_start()
+        await r.on_text_chunk("Hel")
+        await r.on_text_chunk("lo")
+
+        assert made[0].frames[-1] == "Hello"
+
+    @pytest.mark.asyncio
+    async def test_a_tool_call_is_shown_then_cleared(self, monkeypatch) -> None:
+        c = FakeClient()
+        r, made = _streaming_renderer(c, monkeypatch)
+
+        await r.on_turn_start()
+        await r.on_text_chunk("working")
+        await r.on_tool_call("call-1", "grep")
+
+        assert any("grep" in f for f in made[0].frames)
+
+    @pytest.mark.asyncio
+    async def test_a_dead_card_stops_receiving_frames(self, monkeypatch) -> None:
+        c = FakeClient()
+        card = FakeCard(c, "msg1")
+        r, _made = _streaming_renderer(c, monkeypatch, card)
+
+        await r.on_turn_start()
+        card.live = False
+        await r.on_text_chunk("ignored")
+
+        assert card.frames == []
+
+    @pytest.mark.asyncio
+    async def test_a_raising_push_never_breaks_the_turn(self, monkeypatch) -> None:
+        """A rendering nicety must not cost the user the reply."""
+        c = FakeClient()
+        card = FakeCard(c, "msg1")
+        card.push_raises = True
+        r, _made = _streaming_renderer(c, monkeypatch, card)
+
+        await r.on_turn_start()
+        await r.on_text_chunk("still fine")
+        card.delivered_final = False
+        await r.on_done()
+
+        assert c.replies == [("msg1", "still fine")]
+
+
+class TestStreamingDone:
+    @pytest.mark.asyncio
+    async def test_a_delivered_card_suppresses_the_text_reply(self, monkeypatch) -> None:
+        """The user already has the answer; a text reply would duplicate it."""
+        c = FakeClient()
+        card = FakeCard(c, "msg1")
+        r, _made = _streaming_renderer(c, monkeypatch, card)
+
+        await r.on_turn_start()
+        await r.on_text_chunk("done")
+        await r.on_done()
+
+        assert card.final == "done"
+        assert c.replies == []
+
+    @pytest.mark.asyncio
+    async def test_an_undelivered_card_falls_back_to_text(self, monkeypatch) -> None:
+        c = FakeClient()
+        card = FakeCard(c, "msg1")
+        card.delivered_final = False
+        r, _made = _streaming_renderer(c, monkeypatch, card)
+
+        await r.on_turn_start()
+        await r.on_text_chunk("payload")
+        await r.on_done()
+
+        assert c.replies == [("msg1", "payload")]
+
+    @pytest.mark.asyncio
+    async def test_a_recalled_anchor_suppresses_the_fallback_too(self, monkeypatch) -> None:
+        """Replying to a recalled anchor fails as well, so do not try."""
+        c = FakeClient()
+        card = FakeCard(c, "msg1")
+        card.delivered_final = False
+        card.anchor_gone = True
+        r, _made = _streaming_renderer(c, monkeypatch, card)
+
+        await r.on_turn_start()
+        await r.on_text_chunk("lost")
+        await r.on_done()
+
+        assert c.replies == []
+
+    @pytest.mark.asyncio
+    async def test_an_options_trailer_is_withheld_from_live_frames(self, monkeypatch) -> None:
+        """A half-arrived marker must not flash; the final text still carries it."""
+        c = FakeClient()
+        card = FakeCard(c, "msg1")
+        r, _made = _streaming_renderer(c, monkeypatch, card)
+
+        await r.on_turn_start()
+        await r.on_text_chunk("pick one\n[OPTIONS: a | b]")
+        await r.on_done()
+
+        assert all("[OPTIONS:" not in f for f in card.frames)
+        assert card.final is not None and "a" in card.final

@@ -24,6 +24,9 @@ import json
 import logging
 import re
 import threading
+import time
+import urllib.error
+import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable
@@ -37,6 +40,30 @@ logger = logging.getLogger(__name__)
 # generous for mixed CJK + ASCII content). A longer answer is SPLIT across
 # replies, never truncated — see send_reply.
 FEISHU_MAX_TEXT = 4000
+
+#: Default Open Platform origin for the CardKit calls. A Lark (international)
+#: tenant lives on open.larksuite.com; the SDK's own constant is preferred when
+#: the installed build exposes it (see ``LarkClient.__init__``).
+FEISHU_OPEN_BASE = "https://open.feishu.cn"
+
+#: Card calls are short; a hung one must not pin an executor thread for long.
+_CARD_HTTP_TIMEOUT_S = 15.0
+
+
+class CardApiError(RuntimeError):
+    """A Feishu Open Platform call answered with a non-zero business code.
+
+    Carries ``code`` because the streaming-card failure policy is entirely
+    code-driven: 230020 means drop this frame, 230011/231003 mean the anchor is
+    gone, and anything unrecognised means fall back to a plain-text reply.
+    """
+
+    def __init__(self, code: int, msg: str, path: str = "") -> None:
+        super().__init__(f"Feishu API error: code={code} msg={msg} path={path}")
+        self.code = code
+        self.msg = msg
+        self.path = path
+
 
 # The only two chat types this channel serves. The transport gate names them
 # explicitly so an absent or future value is denied rather than falling
@@ -181,6 +208,19 @@ class LarkClient:
         # ``run_in_executor`` caller in the gateway, so a burst of Feishu
         # replies would steal its threads.
         self._executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="feishu-rest")
+
+        # -- CardKit (streaming card) plumbing -----------------------------
+        # The card APIs go over plain HTTP rather than the SDK: they are absent
+        # from older lark-oapi builds, and the text path must keep working on a
+        # build that lacks them. Domain follows the SDK's own constant when the
+        # build exposes it, so a Lark tenant is not sent to feishu.cn.
+        domain = str(getattr(self._lark_mod, "FEISHU_DOMAIN", "") or "").strip()
+        self._open_base = (domain or FEISHU_OPEN_BASE).rstrip("/")
+        #: ``(token, monotonic_expiry)``; refreshed 60s early so a token never
+        #: lapses mid-stream. Guarded by a plain lock because it is only ever
+        #: touched from executor threads.
+        self._token: tuple[str, float] | None = None
+        self._token_lock = threading.Lock()
         # Forward ref to the WS client so ``close()`` can stop it.
         self._ws_client: Any = None
 
@@ -238,6 +278,105 @@ class LarkClient:
         resp = self._lark.im.v1.message.reply(req)
         if not resp.success():
             raise RuntimeError(f"Feishu reply error: code={resp.code} msg={resp.msg}")
+
+    # -- Card (CardKit) verbs ----------------------------------------------
+
+    def _sync_tenant_token(self) -> str:
+        """Return a valid tenant_access_token. Worker thread only."""
+        with self._token_lock:
+            now = time.monotonic()
+            if self._token is not None and now < self._token[1]:
+                return self._token[0]
+            payload = self._sync_http(
+                "POST",
+                "/open-apis/auth/v3/tenant_access_token/internal",
+                {"app_id": self._app_id, "app_secret": self._app_secret},
+                token=None,
+            )
+            token = str(payload.get("tenant_access_token") or "")
+            if not token:
+                raise CardApiError(-1, "empty tenant_access_token", "tenant_access_token")
+            expire = int(payload.get("expire") or 7200)
+            self._token = (token, now + max(expire - 60, 30))
+            return token
+
+    def _sync_http(
+        self,
+        method: str,
+        path: str,
+        body: dict[str, Any] | None,
+        *,
+        token: str | None,
+    ) -> dict[str, Any]:
+        """One Open Platform call. Returns the FULL decoded envelope.
+
+        Feishu answers **HTTP 200 with a non-zero ``code`` in the body** on a
+        business error, so an exception-only reading reports success for a call
+        that did nothing. Both reference implementations check the body code
+        explicitly; this is the single most important thing to get right here.
+        """
+        headers = {"Content-Type": "application/json; charset=utf-8"}
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+        data = json.dumps(body or {}, ensure_ascii=False).encode("utf-8")
+        url = f"{self._open_base}{path}"
+        # The origin is configurable (it follows the SDK's own domain constant so a
+        # Lark tenant is not sent to feishu.cn), and urllib honours ``file://`` and
+        # ``ftp://``. A non-https origin arriving from config would therefore turn
+        # this into an arbitrary-file read. Refuse anything else BEFORE the request
+        # exists, which is what makes the suppression below sound rather than a way
+        # of silencing the scanner. Every Open Platform host is https.
+        if not url.startswith("https://"):
+            raise CardApiError(-1, "refusing a non-https Open Platform origin", path)
+        req = urllib.request.Request(url, data=data, headers=headers, method=method)
+        try:
+            # The rule's concern is a dynamic URL reaching urllib, because urllib
+            # would honour a non-http scheme. Unreachable here: the https scheme is
+            # asserted immediately above and anything else raises before this line.
+            with urllib.request.urlopen(  # nosemgrep: dynamic-urllib-use-detected
+                req, timeout=_CARD_HTTP_TIMEOUT_S
+            ) as resp:  # noqa: S310
+                raw = resp.read().decode("utf-8", "replace")
+        except urllib.error.HTTPError as exc:
+            raw = exc.read().decode("utf-8", "replace")
+            try:
+                envelope = json.loads(raw or "{}")
+            except ValueError:
+                raise CardApiError(exc.code, raw[:200], path) from exc
+            raise CardApiError(
+                int(envelope.get("code", exc.code) or exc.code),
+                str(envelope.get("msg", "")),
+                path,
+            ) from exc
+        envelope = json.loads(raw or "{}")
+        code = int(envelope.get("code", 0) or 0)
+        if code != 0:
+            raise CardApiError(code, str(envelope.get("msg", "")), path)
+        return envelope
+
+    def _sync_card_api(self, method: str, path: str, body: dict[str, Any] | None) -> dict[str, Any]:
+        envelope = self._sync_http(method, path, body, token=self._sync_tenant_token())
+        return envelope.get("data") or {}
+
+    async def card_api(
+        self, method: str, path: str, body: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        """Await a CardKit call on the REST executor. Raises ``CardApiError``."""
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(self._executor, self._sync_card_api, method, path, body)
+
+    async def send_card_reply(self, message_id: str, card_id: str) -> None:
+        """Reply to *message_id* with a message that references *card_id*.
+
+        The message body carries no content of its own -- the card entity holds
+        the text, which is what makes subsequent updates possible.
+        """
+        content = json.dumps({"type": "card", "data": {"card_id": card_id}}, ensure_ascii=False)
+        await self.card_api(
+            "POST",
+            f"/open-apis/im/v1/messages/{message_id}/reply",
+            {"content": content, "msg_type": "interactive"},
+        )
 
     # -- Inbound WS handler (called from daemon thread) --------------------
 

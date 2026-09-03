@@ -26,3 +26,22 @@ recipe are derived from prior MIT-licensed open-source projects that
 reverse-engineered that path. No third-party code is copied; the
 implementation is independent, and the module is isolated so the
 dependency is auditable in one place.
+
+The Feishu streaming-card renderer
+(src/kiro_crew/feishu/streaming_card.py) is a port of two MIT-licensed
+OpenClaw Feishu plugins: the official Lark plugin
+(https://github.com/larksuite/openclaw-lark), from which the five-step
+card lifecycle, the sequence protocol, the throttle constants and the
+error taxonomy are taken, and a community plugin
+(https://github.com/m1heng/clawdbot-feishu), from which the
+streaming_config pacing parameters, the schema-2.0 markdown card shape
+and the link/fence normalisation workarounds are taken. Unlike the
+module above, this one does copy code, so the original notices are
+carried:
+
+    Copyright (c) 2026 Lark Technologies Pte. Ltd.
+    Copyright (c) 2026 ByteDance Ltd. and/or its affiliates
+    Copyright (c) 2026 m1heng
+
+Both projects are licensed under the MIT License; the full license text
+is reproduced under "Feishu Streaming Card" in THIRD-PARTY-NOTICES.
