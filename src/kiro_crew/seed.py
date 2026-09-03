@@ -16,7 +16,6 @@ import shutil
 import stat
 import sys
 from pathlib import Path
-from typing import Callable
 
 try:  # py3.9+ stdlib; kept in a try so older runtimes raise cleanly.
     from importlib.resources import files as _resource_files
@@ -172,20 +171,15 @@ def _resolve_fixture(name: str) -> Path:
     return candidate
 
 
-def copy_fixture_into_dir_fd(
-    fixture_name: str,
-    dst_fd: int,
-    *,
-    before_manifest: Callable[[int], None],
-) -> None:
+def copy_fixture_into_dir_fd(fixture_name: str, dst_fd: int) -> None:
     """Copy one shipped fixture into an already-pinned empty directory.
 
     Both source and destination are traversed through directory descriptors;
-    no destination component is reopened by name. The manifest is copied LAST:
-    callers use it as the completion marker, so a failed partial copy cannot be
-    mistaken for a finished seed on the next boot. *before_manifest* lets the
-    caller finish descriptor-relative setup under the same held root before that
-    completion marker becomes visible.
+    no destination component is reopened by name. The completion manifest is
+    deliberately NOT copied: callers use it as the completion marker, so they
+    finish descriptor-relative setup under the same held root and then publish
+    the marker last via :func:`publish_fixture_manifest`. A failed partial copy
+    therefore cannot be mistaken for a finished seed on the next boot.
 
     This cannot delegate to ``stage_tree_pinned``: that helper accepts a
     destination PATH and opens/closes its root internally, while this boundary
@@ -213,14 +207,10 @@ def copy_fixture_into_dir_fd(
 
     def _walk(src_fd: int, target_fd: int, display: Path) -> None:
         nonlocal manifest_seen
-        names = sorted(
-            os.listdir(src_fd),
-            key=lambda value: (value == FIXTURE_MANIFEST, value),
-        )
-        for name in names:
+        for name in sorted(os.listdir(src_fd)):
             if display == src and name == FIXTURE_MANIFEST:
-                before_manifest(target_fd)
                 manifest_seen = True
+                continue
             shown = display / name
             st = os.stat(name, dir_fd=src_fd, follow_symlinks=False)
             if stat.S_ISLNK(st.st_mode):
@@ -278,6 +268,56 @@ def copy_fixture_into_dir_fd(
             )
     finally:
         os.close(src_fd)
+
+
+def publish_fixture_manifest(fixture_name: str, dst_fd: int) -> None:
+    """Publish the fixture's completion manifest into an already-seeded home.
+
+    This is the commit step of the seeding transaction: it runs only after
+    :func:`copy_fixture_into_dir_fd` and the caller's descriptor-relative setup
+    both succeeded, writing the marker through the same held destination
+    descriptor so the completion signal can never appear over a partial tree.
+    """
+    src = _resolve_fixture(fixture_name)
+
+    def _refuse_skip(reason: str, path: str) -> None:
+        raise SeedError(
+            f"fixture {fixture_name!r} contains an unsupported {reason}: {path}",
+            guardrail=SeedError.GUARDRAIL_ROOT_ESCAPE,
+        )
+
+    src_fd = pinned_fs.open_dir_pinned(
+        src,
+        what=f"fixture {fixture_name!r}",
+        refusal=SeedError,
+    )
+    try:
+        copied = pinned_fs.copy_file_pinned(
+            str(src / FIXTURE_MANIFEST),
+            dir_fd=src_fd,
+            name=FIXTURE_MANIFEST,
+            dst_dir_fd=dst_fd,
+            dst_name=FIXTURE_MANIFEST,
+            force_mode=0o600,
+            on_skip=_refuse_skip,
+        )
+    except FileNotFoundError as exc:
+        raise SeedError(
+            f"fixture {fixture_name!r} has no {FIXTURE_MANIFEST} completion marker",
+            guardrail=SeedError.GUARDRAIL_RESOLVE_FAILED,
+        ) from exc
+    except FileExistsError as exc:
+        raise SeedError(
+            f"seed destination already holds {FIXTURE_MANIFEST}; refusing to re-publish",
+            guardrail=SeedError.GUARDRAIL_RESOLVE_FAILED,
+        ) from exc
+    finally:
+        os.close(src_fd)
+    if not copied:  # pragma: no cover - the reporter above always raises
+        raise SeedError(
+            f"fixture completion marker could not be published: {FIXTURE_MANIFEST}",
+            guardrail=SeedError.GUARDRAIL_RESOLVE_FAILED,
+        )
 
 
 def _protected_homes() -> set[Path]:

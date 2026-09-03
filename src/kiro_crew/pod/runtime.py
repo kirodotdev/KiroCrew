@@ -1980,11 +1980,9 @@ def seed_home_from_scenario(cfg: PodConfig, name: str, scenario: str) -> bool:
                     )
                 _prepare_seeded_home_fd(home_fd)
                 return False
-            seed_mod.copy_fixture_into_dir_fd(
-                scenario,
-                home_fd,
-                before_manifest=_prepare_seeded_home_fd,
-            )
+            seed_mod.copy_fixture_into_dir_fd(scenario, home_fd)
+            _prepare_seeded_home_fd(home_fd)
+            seed_mod.publish_fixture_manifest(scenario, home_fd)
             held = os.fstat(home_fd)
             named = os.stat(home_dir.name, dir_fd=root_fd, follow_symlinks=False)
             if (held.st_dev, held.st_ino) != (named.st_dev, named.st_ino):

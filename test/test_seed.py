@@ -58,11 +58,11 @@ def test_pinned_fixture_copy_publishes_completion_manifest_last(
     monkeypatch.setattr(seed_mod.pinned_fs, "copy_file_pinned", _record)
     dst_fd = os.open(destination, seed_mod.pinned_fs.dir_flags())
     try:
-        seed_mod.copy_fixture_into_dir_fd(
-            "minimal",
-            dst_fd,
-            before_manifest=lambda _fd: copied.append("<setup>"),
-        )
+        seed_mod.copy_fixture_into_dir_fd("minimal", dst_fd)
+        assert seed_mod.FIXTURE_MANIFEST not in copied
+        assert not (destination / seed_mod.FIXTURE_MANIFEST).exists()
+        copied.append("<setup>")
+        seed_mod.publish_fixture_manifest("minimal", dst_fd)
     finally:
         os.close(dst_fd)
 

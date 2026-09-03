@@ -199,7 +199,7 @@ class TestSeedHomeFromScenario:
         outside = tmp_path / "outside"
         outside.mkdir()
 
-        def _swap_then_write(scenario: str, dst_fd: int, *, before_manifest=None) -> None:
+        def _swap_then_write(scenario: str, dst_fd: int) -> None:
             home.rename(held)
             home.symlink_to(outside, target_is_directory=True)
             fd = os.open("proof.txt", os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600, dir_fd=dst_fd)
@@ -431,7 +431,7 @@ class TestBootAppliesTheScenario:
         a completed scenario and start the gateway.
         """
 
-        def _copy_then_die(scenario: str, dst_fd: int, *, before_manifest=None) -> None:
+        def _copy_then_die(scenario: str, dst_fd: int) -> None:
             fd = os.open("partial.txt", os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600, dir_fd=dst_fd)
             try:
                 os.write(fd, b"partial")
