@@ -115,6 +115,26 @@ class TestTriggerCronJob:
         assert ok is False
         assert "HTTP 403" in msg
 
+    def test_secret_file_disappears_before_read(self, mock_dashboard, monkeypatch):
+        """A concurrent secret cleanup behaves like an already-missing fallback."""
+        port, cfg_dir = mock_dashboard
+        secret_path = cfg_dir / ".local_secret"
+        path_type = type(secret_path)
+        original_read_text = path_type.read_text
+
+        def remove_before_read(path, *args, **kwargs):
+            if path == secret_path:
+                path.unlink()
+                raise FileNotFoundError(path)
+            return original_read_text(path, *args, **kwargs)
+
+        monkeypatch.setattr(path_type, "read_text", remove_before_read)
+        with patch("kiro_crew.cron_trigger.run_marker.read_secret", return_value=None):
+            ok, msg = trigger_cron_job("abc12345", port, secret_path)
+
+        assert ok is False
+        assert "HTTP 403" in msg
+
     def test_invalid_job_id_rejected(self, mock_dashboard):
         """Malformed job IDs are rejected before making HTTP request."""
         port, cfg_dir = mock_dashboard
