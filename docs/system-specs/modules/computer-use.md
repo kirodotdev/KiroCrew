@@ -176,12 +176,16 @@ call, because there is no per-surface ceiling left for it to select.
 
 That is enforced in the SHIM as well as the gateway, and it has to be: neither
 accepted source exists for a GUI-launched kiro-cli on **macOS**, the only platform
-with a driver. `KIROCREW_SESSION_KEY` is injected only by the ACP spawn path
-(`acp/client.py`), and `KIROCREW_HOST_PID` only by the Linux sandbox launcher
-(`sandbox.py:666`). An earlier revision refused in the shim on the reasoning that an
-unproven key is indistinguishable from an unattended surface — with the unattended
-rule gone, that left the feature returning *"the calling session could not be
-identified"* for every ordinary dashboard chat on macOS. Found by using it.
+with a driver. `KIROCREW_SESSION_KEY` reaches a child only from a launcher that
+already knows which session it is spawning for — the ACP spawn path
+(`acp/client.py`) and the script-cron launcher (`cron_script.py`, which spawns one
+process per job under `cron:<job id>`) — and `KIROCREW_HOST_PID` only from the Linux
+sandbox launcher (`sandbox.py:666`). A GUI-launched kiro-cli has no such launcher
+above it, so it carries neither. An earlier revision refused in the shim on the
+reasoning that an unproven key is indistinguishable from an unattended surface —
+with the unattended rule gone, that left the feature returning *"the calling
+session could not be identified"* for every ordinary dashboard chat on macOS.
+Found by using it.
 
 The STRICT resolver is still the one called: the lenient variant walks a file
 `mcp_core` documents as "agent-writable and therefore forgeable", and an empty audit

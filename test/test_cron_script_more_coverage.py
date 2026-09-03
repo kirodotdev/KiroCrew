@@ -545,7 +545,7 @@ class TestScriptContextCallTool:
         ctx = _ctx()
         client = MagicMock()
         client.call_tool.return_value = "tool output"
-        monkeypatch.setattr(cron_script, "McpToolClient", lambda server: client)
+        monkeypatch.setattr(cron_script, "McpToolClient", lambda server, **kw: client)
         audits: list[tuple] = []
         monkeypatch.setattr(
             ctx, "_audit_tool_call", lambda *a, **k: audits.append((a, k))
@@ -561,7 +561,7 @@ class TestScriptContextCallTool:
         ctx = _ctx()
         client = MagicMock()
         client.call_tool.side_effect = RuntimeError("tool exploded")
-        monkeypatch.setattr(cron_script, "McpToolClient", lambda server: client)
+        monkeypatch.setattr(cron_script, "McpToolClient", lambda server, **kw: client)
         audits: list[tuple] = []
         monkeypatch.setattr(ctx, "_audit_tool_call", lambda *a: audits.append(a))
 
@@ -574,7 +574,7 @@ class TestScriptContextCallTool:
     def test_construction_failure_needs_no_close(self, monkeypatch):
         ctx = _ctx()
 
-        def _boom(server):
+        def _boom(server, **kw):
             raise RuntimeError("not found in agent config")
 
         monkeypatch.setattr(cron_script, "McpToolClient", _boom)

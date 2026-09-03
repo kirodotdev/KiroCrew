@@ -434,10 +434,11 @@ def test_an_unresolved_session_key_PROCEEDS_with_an_empty_identity(
 
     * the unattended-surface rule was removed by product decision, so there is no
       longer a surface class to protect;
-    * neither accepted identity source EXISTS for a GUI-launched kiro-cli on macOS.
-      ``KIROCREW_SESSION_KEY`` is injected only by the ACP spawn path and
-      ``KIROCREW_HOST_PID`` only by the Linux sandbox launcher — so the refusal made
-      the feature unusable on its only supported platform, which is how it was found.
+    * neither accepted identity source EXISTS for a GUI-launched kiro-cli on macOS —
+      both come from a launcher above the process, and a GUI launch has none (the
+      ``mcp_computer`` module docstring names which launcher supplies each) — so the
+      refusal made the feature unusable on its only supported platform, which is how
+      it was found.
 
     The call reaches the gateway. What is lost is audit ATTRIBUTION, not a control —
     and the key it carries is a per-PROCESS placeholder rather than the empty string,
