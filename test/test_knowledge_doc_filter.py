@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import os
+from fnmatch import fnmatch, fnmatchcase
 from pathlib import Path
 
+import pytest
 from test_folder_watcher import LOCK_FILES
 
 from kiro_crew.knowledge.doc_filter import (
@@ -218,3 +221,76 @@ class TestWalkEquivalence:
         predicted = {rel for rel, size in files.items() if should_ingest_doc(rel, size)}
         assert walked == predicted
         assert walked == {"README.md", "docs/design.md", "docs/modules/security.md"}
+
+
+class TestHostIndependentPatternMatching:
+    """A persisted ``ignore_patterns`` must select the same files on every host.
+
+    ``fnmatch.fnmatch`` runs both operands through ``os.path.normcase``, which
+    folds case on Windows and is the identity on POSIX. The patterns are source
+    *configuration* that outlives the machine that wrote it, so that made one
+    stored property mean two different things: root-anchored ``SECURITY.md``
+    also swallowed a root ``security.md``, but only on a Windows scan.
+
+    These tests substitute ``ntpath``'s ``normcase`` on any host, so the trap is
+    reproducible on the POSIX shards too -- a ``skipif(os.name != "nt")`` guard
+    would hide the regression from every reviewer not on Windows.
+    """
+
+    @staticmethod
+    def _windows_normcase(value: str) -> str:
+        """What ``ntpath.normcase`` does: lowercase, and "/" folded to "\\"."""
+        return value.replace("/", "\\").lower()
+
+    @pytest.fixture
+    def windows_host(self, monkeypatch):
+        monkeypatch.setattr(os.path, "normcase", self._windows_normcase)
+
+    def test_the_trap_is_actually_armed(self, windows_host) -> None:
+        """Guard the guard: if this stops folding, the two tests below are vacuous."""
+        assert fnmatch("security.md", "SECURITY.md") is True
+        assert fnmatchcase("security.md", "SECURITY.md") is False
+
+    def test_predicate_does_not_fold_case_on_a_windows_style_host(self, windows_host) -> None:
+        # `SECURITY.md` is root-anchored boilerplate; a root `security.md` is a
+        # different document and is taken, on Windows exactly as on POSIX.
+        assert should_ingest_doc("security.md", BIG) is True
+        assert should_ingest_doc("SECURITY.md", BIG) is False
+        # Separator patterns are unaffected: the `os.sep` normalisation above the
+        # match is what carries them now that normcase no longer folds "/".
+        assert should_ingest_doc("x.egg-info/PKG-INFO.md", BIG) is False
+
+    def test_walk_matches_the_predicate_on_a_windows_style_host(
+        self, tmp_path, windows_host
+    ) -> None:
+        """The scan and the predicate must agree, and both must take the file.
+
+        Only one casing of the name is created: a same-directory `security.md`
+        AND `SECURITY.md` cannot coexist on a case-insensitive filesystem, so a
+        two-file fixture would not survive the Windows or macOS shards.
+        """
+        files = {
+            "security.md": BIG,  # NOT the root-anchored `SECURITY.md` pattern
+            "CHANGELOG.md": BIG,  # exact-case root boilerplate, dropped
+            "docs/design.md": BIG,  # ordinary document
+        }
+        for rel, size in files.items():
+            p = tmp_path / rel
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text("x" * size)
+
+        props = project_doc_properties()
+        fw = FolderWatcher(store=None, pipeline=None)
+        walked = {
+            Path(fp).relative_to(tmp_path).as_posix()
+            for fp, _ in fw._walk(
+                str(tmp_path),
+                props["ignore_patterns"],
+                set(props["extra_skip_dirs"]),
+                set(props["include_extensions"]),
+                props["min_file_bytes"],
+            )
+        }
+        predicted = {rel for rel, size in files.items() if should_ingest_doc(rel, size)}
+        assert walked == predicted
+        assert walked == {"security.md", "docs/design.md"}

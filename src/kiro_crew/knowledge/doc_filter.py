@@ -31,7 +31,7 @@ because a handful of large documents dominate the chunk count.
 from __future__ import annotations
 
 import os
-from fnmatch import fnmatch
+from fnmatch import fnmatch, fnmatchcase
 from pathlib import Path
 
 from .folder_watcher import DEFAULT_IGNORE_GLOBS, HARD_SKIP_DIRS
@@ -141,6 +141,10 @@ def should_ingest_doc(rel_path: str, size: int) -> bool:
         return False
     if Path(name).suffix.lower() not in DOC_EXTENSIONS:
         return False
-    if any(fnmatch(norm, pat) for pat in IGNORE_PATTERNS):
+    # `fnmatchcase`, so the verdict cannot depend on the host: `fnmatch`
+    # normcases both operands, which folds case on Windows only, and
+    # `IGNORE_PATTERNS` is the same list handed to the scan by
+    # `project_doc_properties()` -- the two must agree on every platform.
+    if any(fnmatchcase(norm, pat) for pat in IGNORE_PATTERNS):
         return False
     return size >= MIN_DOC_BYTES
