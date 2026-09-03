@@ -95,6 +95,10 @@ def test_engine_same_issue_intersecting_files_is_flagged() -> None:
     assert res["overlaps"][0]["files"] == ["a.py"]
     assert res["overlaps"][0]["file_count"] == 1
     assert res["overlaps"][0]["exact"] is False
+    # Subject touches {a.py, b.py}; shares a.py -> coverage 0.5 -> strong.
+    assert res["overlaps"][0]["coverage"] == 0.5
+    assert res["overlaps"][0]["strong"] is True
+    assert res["has_strong_overlap"] is True
 
 
 def test_engine_disjoint_files_not_flagged() -> None:
@@ -150,6 +154,34 @@ def test_engine_exact_set_match_is_a_stronger_signal() -> None:
             "closingIssues": [1]}
     res = eng.analyze({"subject": subject, "candidates": [cand]})
     assert res["overlaps"][0]["exact"] is True
+    assert res["overlaps"][0]["strong"] is True
+
+
+def test_engine_weak_overlap_is_flagged_but_not_strong() -> None:
+    # A single shared file out of many is a real overlap (advisory) but below
+    # the strong-close threshold, so has_overlap is True and has_strong_overlap
+    # is False -- the on-merge lane must not close on this.
+    eng = _load_engine()
+    subject = {"number": 10, "body": "Fixes #1", "state": "OPEN",
+               "files": ["a.py", "b.py", "c.py", "d.py"], "closingIssues": [1]}
+    cand = {"number": 5, "body": "Fixes #1", "state": "OPEN", "files": ["a.py", "e.py"],
+            "closingIssues": [1]}
+    res = eng.analyze({"subject": subject, "candidates": [cand]})
+    assert res["has_overlap"] is True
+    assert res["overlaps"][0]["strong"] is False
+    assert res["has_strong_overlap"] is False
+
+
+def test_engine_carries_candidate_labels_for_opt_out() -> None:
+    # Candidate labels are passed through so the on-merge lane can honour a
+    # label-gated opt-out without a per-PR call.
+    eng = _load_engine()
+    subject = {"number": 10, "body": "Fixes #1", "state": "OPEN", "files": ["a.py"],
+               "closingIssues": [1]}
+    cand = {"number": 5, "body": "Fixes #1", "state": "OPEN", "files": ["a.py"],
+            "closingIssues": [1], "labels": ["no-auto-close-duplicate"]}
+    res = eng.analyze({"subject": subject, "candidates": [cand]})
+    assert res["overlaps"][0]["labels"] == ["no-auto-close-duplicate"]
 
 
 # --------------------------------------------------------------------------------
@@ -300,7 +332,7 @@ def on_open_step() -> str:
 
 
 def on_merge_step() -> str:
-    return _step("on-merge", "Close each overlapping open PR with a pointer")
+    return _step("on-merge", "Only a STRONG overlap")
 
 
 class Harness:
@@ -320,8 +352,23 @@ class Harness:
 
     def _write_prs(self, subject: dict, candidates: list[dict]) -> None:
         all_prs = [subject, *candidates]
+        # The engine's --fetch path issues ONE `gh pr list` that returns every
+        # open PR's number/body/state/files/closingIssuesReferences/labels, so
+        # the list fixture carries the FULL records (not just numbers). The
+        # per-PR `pr view` + graphql fixtures are the on-merge fallback for the
+        # subject, which is no longer OPEN and so not in the list.
+        def _list_entry(p: dict) -> dict:
+            return {
+                "number": p["number"],
+                "body": p.get("body", ""),
+                "state": p.get("state", "OPEN"),
+                "files": [{"path": f} for f in p.get("files", [])],
+                "closingIssuesReferences": [{"number": n} for n in p.get("closingIssues", [])],
+                "labels": [{"name": lbl} for lbl in p.get("labels", [])],
+            }
+
         (self.fixtures / "open_prs.json").write_text(
-            json.dumps([{"number": p["number"]} for p in all_prs
+            json.dumps([_list_entry(p) for p in all_prs
                         if (p.get("state") or "OPEN").upper() == "OPEN"])
         )
         for p in all_prs:
@@ -331,6 +378,7 @@ class Harness:
                     "body": p.get("body", ""),
                     "state": p.get("state", "OPEN"),
                     "files": [{"path": f} for f in p.get("files", [])],
+                    "labels": [{"name": lbl} for lbl in p.get("labels", [])],
                 })
             )
             (self.fixtures / f"graphql_{p['number']}.json").write_text(
@@ -376,7 +424,8 @@ class Harness:
         for f in ("comment_write.txt", "pr_comment.txt", "pr_close.txt"):
             (self.fixtures / f).unlink(missing_ok=True)
         env = {**self._env(), "PR_NUMBER": str(subject["number"]),
-               "COAUTHOR_MARKER": "<!-- pr-duplicate-coauthor -->"}
+               "COAUTHOR_MARKER": "<!-- pr-duplicate-coauthor -->",
+               "OPT_OUT_LABEL": "no-auto-close-duplicate"}
         self._ensure_python3_shim()
         return subprocess.run(  # noqa: S603 - fixed argv, test-local stub
             ["bash", "-c", script], cwd=self.work, env=env, text=True, capture_output=True)
@@ -463,6 +512,37 @@ def test_on_merge_closes_overlapping_open_pr(tmp_path: Path) -> None:
     assert any(w.startswith("POST") for w in h.reads("comment_write.txt"))
 
 
+def test_on_merge_leaves_weakly_overlapping_pr_open(tmp_path: Path) -> None:
+    # Merge touches four files; the open PR shares only one -> below the strong
+    # threshold, so the on-merge lane must NOT close it (it got the advisory on
+    # open). This is the finding-#2 guard: a single shared file is not enough to
+    # auto-close legitimately-distinct companion work.
+    h = Harness(tmp_path)
+    merged = {"number": 10, "body": "Fixes #1", "state": "MERGED",
+              "files": ["a.py", "b.py", "c.py", "d.py"], "closingIssues": [1]}
+    earlier = {"number": 5, "body": "Fixes #1", "state": "OPEN",
+               "files": ["a.py", "e.py"], "closingIssues": [1]}
+    proc = h.run_on_merge(on_merge_step(), merged, [earlier])
+    assert proc.returncode == 0, proc.stderr
+    assert h.reads("pr_close.txt") == []
+    assert h.reads("pr_comment.txt") == []
+
+
+def test_on_merge_opt_out_label_points_but_does_not_close(tmp_path: Path) -> None:
+    # A STRONG overlap that carries the opt-out label is pointed at but NOT
+    # closed -- the human keeps control of the close (finding #3).
+    h = Harness(tmp_path)
+    merged = {"number": 10, "body": "Fixes #1", "state": "MERGED",
+              "files": ["a.py", "b.py"], "closingIssues": [1]}
+    earlier = {"number": 5, "body": "Fixes #1", "state": "OPEN",
+               "files": ["a.py", "b.py"], "closingIssues": [1],
+               "labels": ["no-auto-close-duplicate"]}
+    proc = h.run_on_merge(on_merge_step(), merged, [earlier])
+    assert proc.returncode == 0, proc.stderr
+    assert h.reads("pr_comment.txt") == ["comment 5"]  # still pointed at
+    assert h.reads("pr_close.txt") == []               # but not closed
+
+
 def test_on_merge_leaves_non_overlapping_prs_untouched(tmp_path: Path) -> None:
     h = Harness(tmp_path)
     merged = {"number": 10, "body": "Fixes #1", "state": "MERGED",
@@ -530,6 +610,18 @@ if __name__ == "__main__":
     check("engine_diff_issue_excluded", 7 not in nums)
     check("engine_closed_excluded", 8 not in nums)
     check("engine_self_excluded", eng.analyze({"subject": subj, "candidates": [subj]})["overlaps"] == [])
+    # #5 shares a.py of the subject's {a.py, b.py} -> coverage 0.5 -> strong.
+    strong_only = next((o for o in r["overlaps"] if o["number"] == 5), None)
+    check("engine_half_coverage_strong",
+          strong_only is not None and strong_only["strong"] is True and r["has_strong_overlap"] is True)
+    wide = {"number": 30, "body": "Fixes #9", "state": "MERGED",
+            "files": ["a.py", "b.py", "c.py", "d.py"], "closingIssues": [9]}
+    onef = {"number": 31, "body": "Fixes #9", "state": "OPEN", "files": ["a.py", "e.py"],
+            "closingIssues": [9]}
+    rw = eng.analyze({"subject": wide, "candidates": [onef]})
+    check("engine_weak_flagged_not_strong",
+          rw["has_overlap"] is True and rw["overlaps"][0]["strong"] is False
+          and rw["has_strong_overlap"] is False)
 
     on_open = on_open_step()
     on_merge = on_merge_step()
@@ -581,6 +673,28 @@ if __name__ == "__main__":
                              "files": ["z.py"], "closingIssues": [1]}])
         check("on_merge_leaves_disjoint",
               p.returncode == 0 and h.reads("pr_close.txt") == [])
+
+        # Weak overlap (one shared file of four) -> not strong -> not closed.
+        h = Harness(Path(td) / "g")
+        p = h.run_on_merge(on_merge, {"number": 10, "body": "Fixes #1", "state": "MERGED",
+                                      "files": ["a.py", "b.py", "c.py", "d.py"],
+                                      "closingIssues": [1]},
+                           [{"number": 5, "body": "Fixes #1", "state": "OPEN",
+                             "files": ["a.py", "e.py"], "closingIssues": [1]}])
+        check("on_merge_leaves_weak_overlap_open",
+              p.returncode == 0 and h.reads("pr_close.txt") == []
+              and h.reads("pr_comment.txt") == [])
+
+        # Strong overlap but opt-out label -> pointed, not closed.
+        h = Harness(Path(td) / "h")
+        p = h.run_on_merge(on_merge, {"number": 10, "body": "Fixes #1", "state": "MERGED",
+                                      "files": ["a.py", "b.py"], "closingIssues": [1]},
+                           [{"number": 5, "body": "Fixes #1", "state": "OPEN",
+                             "files": ["a.py", "b.py"], "closingIssues": [1],
+                             "labels": ["no-auto-close-duplicate"]}])
+        check("on_merge_opt_out_points_only",
+              p.returncode == 0 and h.reads("pr_close.txt") == []
+              and h.reads("pr_comment.txt") == ["comment 5"])
 
     if failures:
         print(f"\n{len(failures)} check(s) FAILED: {failures}")

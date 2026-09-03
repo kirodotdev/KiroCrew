@@ -13,8 +13,14 @@ name: PR Duplicate Detect
 #   merge -- it is a heads-up, not a gate, and phrased as one (a single issue may
 #   legitimately host stacked/companion PRs).
 #
-#   ON MERGE (proposal 1): when a PR merges, each OPEN same-issue PR whose files
-#   intersect the merged PR is pointed at the merge and closed as superseded.
+#   ON MERGE (proposal 1): when a PR merges, each OPEN same-issue PR whose
+#   overlap with the merged PR is STRONG -- an exact changed-file match, or the
+#   shared files cover at least half the merged PR's files -- is pointed at the
+#   merge and closed as superseded. A weaker single-file overlap is left open
+#   (it already got the on-open advisory), so a merge does not close
+#   legitimately-distinct companion work. A PR labelled `no-auto-close-duplicate`
+#   is never auto-closed: it still gets the pointer comment, but a human keeps
+#   control of the close. The pointer comment is always posted BEFORE any close.
 #
 # Trust + credit boundaries:
 #   * Runs from the trusted base context via pull_request_target, so it has the
@@ -153,28 +159,49 @@ jobs:
           # Marker for the co-authorship-recording comment left on the MERGED PR
           # (see the Co-authored-by boundary in this file's header).
           COAUTHOR_MARKER: "<!-- pr-duplicate-coauthor -->"
+          # A superseded PR carrying this label is NEVER auto-closed: the lane
+          # still posts the pointer comment (so the overlap is visible), but the
+          # author or a maintainer keeps control of the close. An opt-out, not a
+          # requirement -- the default stays "close a strongly-superseded PR".
+          OPT_OUT_LABEL: "no-auto-close-duplicate"
         run: |
           set -euo pipefail
 
           result="$(python3 scripts/detect_pr_overlap.py --fetch --repo "$REPO" --pr "$PR_NUMBER")"
           echo "$result"
 
-          if [ "$(jq -r '.has_overlap' <<<"$result")" != "true" ]; then
-            echo "PR #$PR_NUMBER merged with no overlapping open PR -> nothing to close"
+          # Only a STRONG overlap (exact changed-file match, or the shared files
+          # cover at least half of the merged PR's files -- see the engine's
+          # STRONG_OVERLAP_FRACTION) is auto-closed. A weaker single-file overlap
+          # already got the advisory on-open comment and is left open here, so a
+          # merge does not close legitimately-distinct companion work.
+          if [ "$(jq -r '.has_strong_overlap' <<<"$result")" != "true" ]; then
+            echo "PR #$PR_NUMBER merged with no strongly-overlapping open PR -> nothing to close"
             exit 0
           fi
 
-          # Close each overlapping open PR with a pointer to the merge, and
-          # collect its number for the co-authorship record.
+          # For each STRONG overlap: post the pointer comment FIRST (so the
+          # overlap is recorded before any close), then close as superseded --
+          # unless the PR carries the opt-out label, in which case leave it open
+          # and let a human close it. Collect the number for the co-authorship
+          # record regardless, so the shared work is still attributed.
           superseded=""
           while read -r overlap; do
             [ -n "$overlap" ] || continue
+            [ "$(jq -r '.strong' <<<"$overlap")" = "true" ] || continue
             num="$(jq -r '.number' <<<"$overlap")"
             files="$(jq -r '.files | map("`" + . + "`") | join(", ")' <<<"$overlap")"
-            pointer="This PR overlaps #$PR_NUMBER, which has now merged and covers the same file(s) for the same issue: $files. Closing it as superseded so review effort is not spent twice. If your change is not fully covered by the merged PR, please reopen or open a follow-up -- this is an automated heads-up, not a judgement on the work."
-            gh pr comment "$num" --repo "$REPO" --body "$pointer" >/dev/null
-            gh pr close "$num" --repo "$REPO" >/dev/null || true
-            echo "PR #$num: overlaps merged #$PR_NUMBER -> pointed and closed"
+            opted_out="$(jq -r --arg L "$OPT_OUT_LABEL" '(.labels // []) | index($L) | if . == null then "no" else "yes" end' <<<"$overlap")"
+            if [ "$opted_out" = "yes" ]; then
+              pointer="This PR overlaps #$PR_NUMBER, which has now merged and covers the same file(s) for the same issue: $files. It carries the \`$OPT_OUT_LABEL\` label, so it is being left open rather than auto-closed -- please close it yourself if the merged PR fully supersedes it, or carry on if not. This is an automated heads-up, not a judgement on the work."
+              gh pr comment "$num" --repo "$REPO" --body "$pointer" >/dev/null
+              echo "PR #$num: strongly overlaps merged #$PR_NUMBER but opted out of auto-close -> pointed only"
+            else
+              pointer="This PR overlaps #$PR_NUMBER, which has now merged and covers the same file(s) for the same issue: $files. Closing it as superseded so review effort is not spent twice. If your change is not fully covered by the merged PR, please reopen or open a follow-up -- this is an automated heads-up, not a judgement on the work. To keep a future overlapping PR open, add the \`$OPT_OUT_LABEL\` label."
+              gh pr comment "$num" --repo "$REPO" --body "$pointer" >/dev/null
+              gh pr close "$num" --repo "$REPO" >/dev/null || true
+              echo "PR #$num: strongly overlaps merged #$PR_NUMBER -> pointed and closed"
+            fi
             superseded="$superseded #$num"
           done < <(jq -c '.overlaps[]' <<<"$result")
 

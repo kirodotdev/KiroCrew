@@ -9,8 +9,11 @@ workflows (`.github/workflows/pr-duplicate-detect.yml`):
     gets a single heads-up comment naming the earlier PR(s), so duplicated
     effort is caught before a reviewer reads two solutions to the same problem.
   * ON MERGE (proposal 1): when a PR is merged, any OPEN PR against the same
-    issue whose changed-file set intersects the merged PR's is pointed at the
-    merge and closed as superseded.
+    issue whose overlap with the merged PR is STRONG (an exact changed-file
+    match, or the shared files cover at least STRONG_OVERLAP_FRACTION of the
+    merged PR's files) is pointed at the merge and closed as superseded. A
+    weaker single-file overlap is left to the advisory comment rather than
+    auto-closed, so distinct companion work is not closed.
 
 Both triggers ask the same question about one PR: *which OTHER open PRs target
 the same issue AND touch at least one of the same files?* That question is this
@@ -37,6 +40,12 @@ match would miss the common real case where two PRs edit the same file plus
 different neighbours, which is still duplicated effort on that file. An exact
 set match is reported as a stronger `exact` signal on each overlap so a caller
 MAY phrase its message more firmly, but it is NOT required to flag.
+
+Each overlap also carries a `coverage` (the fraction of the subject PR's files
+the overlap shares) and a `strong` flag (exact match, or coverage >=
+STRONG_OVERLAP_FRACTION). The on-open advisory flags on ANY overlap; the
+on-merge auto-close acts ONLY on a `strong` overlap, so a merge does not close
+an open PR that merely shares one file for the same issue.
 
 Both conditions are required. Same issue alone is too noisy -- a single issue
 legitimately hosts stacked or companion PRs that touch different files.
@@ -81,7 +90,10 @@ Usage:
     python3 scripts/detect_pr_overlap.py < bundle.json
 
     # Fetch mode: materialize the subject PR and the open-PR candidate set from
-    # GitHub via `gh`, then run the same analysis. Used by the workflows.
+    # GitHub via `gh`, then run the same analysis. Used by the workflows. The
+    # open-PR candidate set is materialized in a SINGLE `gh pr list` call (number
+    # + body + state + files + closing-issue linkage), not one call per PR, so
+    # the API cost stays bounded on a busy repo.
     python3 scripts/detect_pr_overlap.py --fetch --repo owner/name --pr 123
 
     # Self-test (no repository or network needed):
@@ -113,6 +125,17 @@ _CLOSES_RE = re.compile(
     r"\b(?:" + "|".join(_CLOSING_KEYWORDS) + r")\b\s*:?\s+#(\d+)\b",
     re.IGNORECASE,
 )
+
+# The on-merge lane auto-closes an overlapping open PR only on a STRONG signal,
+# not on a single shared file. An overlap is strong when it is an exact
+# changed-file match OR the shared files cover at least this fraction of the
+# subject PR's files (on the on-merge path the subject is the merged PR, so this
+# is the fraction of the merged PR's change the open PR duplicates). Weaker
+# overlaps still surface in the advisory on-open comment but do NOT trigger an
+# auto-close, so genuinely-distinct companion work sharing one file is not
+# closed. Every overlap still carries its `coverage`, so a caller may apply its
+# own bar; this constant is only the on-merge close threshold.
+STRONG_OVERLAP_FRACTION = 0.5
 
 
 def referenced_issues(pr: dict[str, Any]) -> set[int]:
@@ -166,15 +189,33 @@ def find_overlaps(subject: dict[str, Any], candidates: list[dict[str, Any]]) -> 
         if not shared_files:
             continue
         cand_files = changed_files(cand)
+        exact = cand_files == subject_files and bool(cand_files)
+        # Fraction of the SUBJECT's files that this candidate also touches. On
+        # the on-merge path the subject is the merged PR, so this is "how much of
+        # the merged PR's change this open PR covers" -- the signal the on-merge
+        # close gate uses (see STRONG_OVERLAP_FRACTION).
+        coverage = len(shared_files) / len(subject_files) if subject_files else 0.0
         overlaps.append(
             {
                 "number": cand.get("number"),
                 "issues": sorted(shared_issues),
                 "files": sorted(shared_files),
                 "file_count": len(shared_files),
+                # Candidate PR's labels, passed through so a caller (the on-merge
+                # lane) can honour a label-gated opt-out without a per-PR call.
+                "labels": [str(lbl) for lbl in (cand.get("labels") or []) if lbl],
                 # Exact set match is a stronger signal a caller MAY phrase more
                 # firmly; it is not required to flag (intersection is the rule).
-                "exact": cand_files == subject_files and bool(cand_files),
+                "exact": exact,
+                # Fraction of the subject's files covered by this overlap.
+                "coverage": round(coverage, 4),
+                # A "strong" overlap is one where the merge plausibly supersedes
+                # the open PR's work: an exact changed-file match, or the shared
+                # files cover at least STRONG_OVERLAP_FRACTION of the subject's
+                # files. The on-merge lane closes ONLY on a strong overlap and
+                # leaves weaker (single-file) overlaps to the advisory comment,
+                # so it does not auto-close legitimately-distinct companion work.
+                "strong": exact or coverage >= STRONG_OVERLAP_FRACTION,
             }
         )
     overlaps.sort(key=lambda o: (o["number"] is None, o["number"]))
@@ -192,6 +233,10 @@ def analyze(bundle: dict[str, Any]) -> dict[str, Any]:
         "files": sorted(changed_files(subject)),
         "overlaps": overlaps,
         "has_overlap": bool(overlaps),
+        # True when at least one overlap is strong enough for the on-merge lane
+        # to close it (see STRONG_OVERLAP_FRACTION). The on-open advisory uses
+        # has_overlap; the on-merge close uses this.
+        "has_strong_overlap": any(o["strong"] for o in overlaps),
     }
 
 
@@ -217,9 +262,10 @@ def _gh_json(args: list[str]) -> Any:
 def _fetch_pr_record(repo: str, number: int) -> dict[str, Any]:
     """Materialize one PR into an engine record via `gh`."""
     view = _gh_json(
-        ["pr", "view", str(number), "--repo", repo, "--json", "number,body,state,files"]
+        ["pr", "view", str(number), "--repo", repo, "--json", "number,body,state,files,labels"]
     )
     files = [f.get("path") for f in (view.get("files") or []) if f.get("path")]
+    labels = [lbl.get("name") for lbl in (view.get("labels") or []) if lbl.get("name")]
     owner, name = repo.split("/", 1)
     graph = _gh_json(
         [
@@ -251,26 +297,65 @@ def _fetch_pr_record(repo: str, number: int) -> dict[str, Any]:
         "state": view.get("state") or "OPEN",
         "files": files,
         "closingIssues": closing,
+        "labels": labels,
+    }
+
+
+def _record_from_list_entry(entry: dict[str, Any]) -> dict[str, Any]:
+    """Normalize one `gh pr list --json ...` entry into an engine record.
+
+    `gh pr list` returns `files` as objects with a `path`,
+    `closingIssuesReferences` as objects with a `number`, and `labels` as
+    objects with a `name`, the same shapes `_fetch_pr_record` normalizes from
+    the per-PR calls.
+    """
+    files = [f.get("path") for f in (entry.get("files") or []) if f.get("path")]
+    closing = [
+        n.get("number")
+        for n in (entry.get("closingIssuesReferences") or [])
+        if n.get("number") is not None
+    ]
+    labels = [lbl.get("name") for lbl in (entry.get("labels") or []) if lbl.get("name")]
+    return {
+        "number": entry.get("number"),
+        "body": entry.get("body") or "",
+        "state": entry.get("state") or "OPEN",
+        "files": files,
+        "closingIssues": closing,
+        "labels": labels,
     }
 
 
 def _fetch_bundle(repo: str, number: int, list_limit: int) -> dict[str, Any]:
     """Build the {"subject", "candidates"} bundle from GitHub.
 
-    Candidates are every OTHER open PR, each materialized to a full record. This
-    is the read-only I/O the workflow needs; the analysis stays pure.
+    Candidates are the OTHER open PRs. To keep the API cost bounded on a busy
+    repo, this issues ONE `gh pr list` that materializes every open PR's number,
+    body, state, changed files and closing-issue linkage in a single call,
+    rather than a `pr view` + a GraphQL call per open PR (which scaled as
+    ~2x the open-PR count on every open/reopen/synchronize event). The subject
+    PR is taken from that same list when it is open; on the on-merge path it is
+    no longer open, so it alone is materialized with the per-PR reader.
     """
-    subject = _fetch_pr_record(repo, number)
     open_prs = _gh_json(
         ["pr", "list", "--repo", repo, "--state", "open", "--limit", str(list_limit),
-         "--json", "number"]
+         "--json", "number,body,state,files,closingIssuesReferences,labels"]
     ) or []
+
+    subject: dict[str, Any] | None = None
     candidates: list[dict[str, Any]] = []
     for entry in open_prs:
-        cand_num = entry.get("number")
-        if cand_num is None or cand_num == number:
+        record = _record_from_list_entry(entry)
+        if record["number"] == number:
+            subject = record  # the subject is open -> reuse the list record
             continue
-        candidates.append(_fetch_pr_record(repo, cand_num))
+        candidates.append(record)
+
+    if subject is None:
+        # On-merge (or a subject not returned by the open list): materialize the
+        # single subject PR directly. This is one PR, not the whole open set.
+        subject = _fetch_pr_record(repo, number)
+
     return {"subject": subject, "candidates": candidates}
 
 
@@ -313,6 +398,9 @@ def _run_self_test() -> int:
     check("overlap_names_shared_file", only is not None and only["files"] == ["a.py"])
     check("overlap_reports_file_count", only is not None and only["file_count"] == 1)
     check("intersect_not_exact", only is not None and only["exact"] is False)
+    # #5 shares a.py out of the subject's {a.py, b.py} -> coverage 0.5 -> strong.
+    check("overlap_reports_coverage", only is not None and only["coverage"] == 0.5)
+    check("half_coverage_is_strong", only is not None and only["strong"] is True)
 
     # Body-keyword fallback finds the issue when closingIssues is empty.
     check("body_fallback_issue_parsed", referenced_issues(same_issue_intersect) == {1})
@@ -322,6 +410,21 @@ def _run_self_test() -> int:
     exact = next((o for o in res2["overlaps"] if o["number"] == 4), None)
     check("exact_set_match_flagged", exact is not None)
     check("exact_flag_set", exact is not None and exact["exact"] is True)
+    check("exact_is_strong", exact is not None and exact["strong"] is True)
+
+    # A weak overlap: the merged subject touches many files, the candidate
+    # shares only one -> below STRONG_OVERLAP_FRACTION -> flagged (advisory) but
+    # NOT strong, so the on-merge lane would not auto-close it.
+    wide_subject = {"number": 30, "body": "Fixes #9", "state": "MERGED",
+                    "files": ["a.py", "b.py", "c.py", "d.py"], "closingIssues": [9]}
+    one_file = {"number": 31, "body": "Fixes #9", "state": "OPEN", "files": ["a.py", "e.py"],
+                "closingIssues": [9]}
+    res5 = analyze({"subject": wide_subject, "candidates": [one_file]})
+    weak = next((o for o in res5["overlaps"] if o["number"] == 31), None)
+    check("weak_overlap_flagged", weak is not None)
+    check("weak_overlap_not_strong", weak is not None and weak["strong"] is False)
+    check("weak_overlap_no_strong_overlap", res5["has_strong_overlap"] is False)
+    check("weak_overlap_has_overlap", res5["has_overlap"] is True)
 
     # Self never matches self even if present in the candidate list.
     res3 = analyze({"subject": subject, "candidates": [subject]})
@@ -347,8 +450,9 @@ def main(argv: list[str]) -> int:
                         help="materialize the bundle from GitHub via gh")
     parser.add_argument("--repo", help="owner/name (required with --fetch)")
     parser.add_argument("--pr", type=int, help="subject PR number (required with --fetch)")
-    parser.add_argument("--limit", type=int, default=900,
-                        help="max open PRs to consider as candidates in --fetch mode")
+    parser.add_argument("--limit", type=int, default=200,
+                        help="max open PRs to materialize as candidates in --fetch mode "
+                             "(one `gh pr list` call, not one call per PR)")
     args = parser.parse_args(argv[1:])
 
     if args.test:

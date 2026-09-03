@@ -789,13 +789,18 @@ or companion PRs that touch different files, and a shared file alone is too nois
 unrelated PRs routinely edit a common file. The rule is intersection, not exact-set
 equality, so two PRs that edit the same file plus different neighbours still match; an
 exact set match is carried through as a stronger signal that the comment phrases more
-firmly, but it is not required to flag. A PR's referenced issues are the union of
+firmly, but it is not required to flag. Each overlap also carries a coverage fraction
+(how much of the subject PR's changed files the overlap shares) and a strong flag, which
+the on-merge lane uses to decide whether to close. A PR's referenced issues are the union of
 GitHub's `closingIssuesReferences` linkage and a closing-keyword parse of the PR body
 (`Fixes`/`Closes`/`Resolves #N`), because the linkage may not be populated on an
 unmerged PR. The triggering PR is never matched against itself, and only OPEN PRs are
 considered as candidates. The engine is pure and network-free -- it takes materialized
 PR records and returns overlaps -- so its `--fetch` mode does all `gh` I/O and the core
-is unit-tested against canned JSON.
+is unit-tested against canned JSON. To keep the API cost bounded on a busy repo, the
+`--fetch` path materializes every open PR's number, body, state, changed files and
+closing-issue linkage in a single `gh pr list` call, rather than a per-PR view plus a
+GraphQL call for each open PR.
 
 **On open (visibility, the higher-value lane).** On `opened`, `reopened` and
 `synchronize`, the workflow runs the engine for the triggering PR and, when it overlaps
@@ -808,9 +813,16 @@ CONTRIBUTING.md and acknowledging that companion PRs are legitimate; it is advis
 and never blocks merge.
 
 **On merge (close the superseded PR).** On a `closed` event where the PR merged, the
-same engine finds the open same-issue PRs whose files the merge intersects, points each
-at the merge with a comment, and closes it as superseded, leaving non-overlapping open
-PRs untouched. Attribution has a hard boundary: this repository squash-merges using the
+same engine finds the open same-issue PRs whose overlap with the merge is strong -- an
+exact changed-file match, or the shared files cover at least half of the merged PR's
+files -- points each at the merge with a comment, and closes it as superseded, leaving
+non-overlapping and weakly-overlapping open PRs untouched. Requiring a strong overlap,
+not a single shared file, keeps the close from ending legitimately-distinct companion
+work that happens to touch one common file for the same issue; a weaker overlap still
+surfaces in the on-open advisory. The pointer comment is always posted before the close.
+An open PR that carries the `no-auto-close-duplicate` label is never auto-closed: it
+still receives the pointer comment, but the author or a maintainer keeps control of the
+close. Attribution has a hard boundary: this repository squash-merges using the
 PR title as the commit message, and GitHub composes that commit at merge time, so a
 workflow -- which runs after the merge -- cannot rewrite it to add a `Co-authored-by:`
 trailer. The trailer would have to be present in the message GitHub builds, which only
