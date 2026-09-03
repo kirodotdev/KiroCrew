@@ -6049,3 +6049,27 @@ class TeamsConfig:
         self.soft_threshold_pct, self.hard_threshold_pct = _normalize_threshold_pair(
             self.soft_threshold_pct, self.hard_threshold_pct
         )
+
+
+@dataclass
+class WakaTimeConfig:
+    enabled: bool = field(
+        default=False,
+        metadata=_meta(
+            "Enabled",
+            "Enable the WakaTime integration (send coding-activity heartbeats "
+            "and read back stats). Requires the WAKATIME_API_KEY credential "
+            "stored in the dashboard secrets vault.",
+            tags=["wakatime"],
+        ),
+    )
+    api_base_url: str = field(
+        default="",
+        metadata=_meta(
+            "API Base URL",
+            "Override the WakaTime API base URL for a self-hosted, "
+            "API-compatible backend (Wakapi, Hackatime). Empty uses the public "
+            "WakaTime API at https://wakatime.com/api/v1.",
+            tags=["wakatime"],
+        ),
+    )

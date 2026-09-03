@@ -5494,6 +5494,57 @@
       "defaultValue": ""
     },
     {
+      "path": "wakatime",
+      "kind": "core",
+      "type": "object",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [
+        "wakatime"
+      ],
+      "label": "WakaTime",
+      "help": "WakaTime dev-time tracking integration settings.",
+      "hasChildren": true,
+      "enumValues": null,
+      "defaultValue": {
+        "enabled": false,
+        "api_base_url": ""
+      }
+    },
+    {
+      "path": "wakatime.enabled",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [
+        "wakatime"
+      ],
+      "label": "Enabled",
+      "help": "Enable the WakaTime integration (send coding-activity heartbeats and read back stats). Requires the WAKATIME_API_KEY credential stored in the dashboard secrets vault.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
+    },
+    {
+      "path": "wakatime.api_base_url",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [
+        "wakatime"
+      ],
+      "label": "API Base URL",
+      "help": "Override the WakaTime API base URL for a self-hosted, API-compatible backend (Wakapi, Hackatime). Empty uses the public WakaTime API at https://wakatime.com/api/v1.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": ""
+    },
+    {
       "path": "teams",
       "kind": "core",
       "type": "object",

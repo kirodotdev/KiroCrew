@@ -116,6 +116,7 @@ TelegramAccountConfig
 TelegramConfig
 TelemetryConfig
 TunnelConfig
+WakaTimeConfig
 WatchdogConfig
 WeComConfig
 WebexConfig

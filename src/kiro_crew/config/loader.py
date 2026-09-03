@@ -230,6 +230,7 @@ from kiro_crew.config.sections import (  # noqa: F401
     TelegramConfig,
     TelemetryConfig,
     TunnelConfig,
+    WakaTimeConfig,
     WatchdogConfig,
     WebexConfig,
     WeComConfig,
@@ -1954,6 +1955,12 @@ class KiroCrewConfig:
         default_factory=WebexConfig,
         metadata=_meta("Webex", "Webex Messaging integration settings.", tags=["webex"]),
     )
+    wakatime: WakaTimeConfig = field(
+        default_factory=WakaTimeConfig,
+        metadata=_meta(
+            "WakaTime", "WakaTime dev-time tracking integration settings.", tags=["wakatime"]
+        ),
+    )
     teams: TeamsConfig = field(
         default_factory=TeamsConfig,
         metadata=_meta("Teams", "Microsoft Teams integration settings.", tags=["teams"]),
@@ -2368,6 +2375,7 @@ class KiroCrewConfig:
         feishu_data = _coerced_section(data, "feishu", _degraded)
         discord_data = _coerced_section(data, "discord", _degraded)
         webex_data = _coerced_section(data, "webex", _degraded)
+        wakatime_data = _coerced_section(data, "wakatime", _degraded)
         teams_data = _coerced_section(data, "teams", _degraded)
         imessage_data = _coerced_section(data, "imessage", _degraded)
         slack_data = _coerced_section(data, "slack", _degraded)
@@ -2958,6 +2966,10 @@ class KiroCrewConfig:
                 wdm_base=str(webex_data.get("wdm_base", "") or ""),
                 soft_threshold_pct=_threshold_pct(webex_data.get("soft_threshold_pct"), 80),
                 hard_threshold_pct=_threshold_pct(webex_data.get("hard_threshold_pct"), 95),
+            ),
+            wakatime=WakaTimeConfig(
+                enabled=bool(wakatime_data.get("enabled", False)),
+                api_base_url=str(wakatime_data.get("api_base_url", "") or ""),
             ),
             imessage=IMessageConfig(
                 session_folder=_coerce_session_folder(imessage_data.get("session_folder")),
@@ -3601,6 +3613,7 @@ class KiroCrewConfig:
             "telegram": asdict(self.telegram),
             "discord": asdict(self.discord),
             "webex": asdict(self.webex),
+            "wakatime": asdict(self.wakatime),
             "wecom": asdict(self.wecom),
             "weixin": asdict(self.weixin),
             "whatsapp": asdict(self.whatsapp),
