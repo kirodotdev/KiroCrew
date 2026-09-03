@@ -87,6 +87,7 @@ from kiro_crew.messaging.commands import (
 )
 from kiro_crew.messaging.identity import channel_inbound_permitted, publish_turn_identity
 from kiro_crew.messaging.link import canonical_key
+from kiro_crew.messaging.renderer import credential_redaction_notice
 from kiro_crew.messaging.session_trust import _trusted_sessions as _shared_trusted_sessions
 from kiro_crew.messaging.session_trust import add_trusted_session as _add_trusted_session
 from kiro_crew.messaging.session_trust import clear_trusted_sessions, is_session_trusted
@@ -109,6 +110,7 @@ from kiro_crew.safety_override import (
     safety_override,
 )
 from kiro_crew.security import (
+    CREDENTIAL_REDACTION_TAGS,
     StreamRedactor,
     is_sensitive_path,
     redact,
@@ -3870,6 +3872,23 @@ async def handle_message(
                 "Redacted %d credential pattern(s) introduced by reply decorator", len(_cred_after)
             )
 
+    # Per-turn tally of redaction placeholders in the text actually SENT, so the
+    # user learns their pasteable text was rewritten. Read from the TAG in
+    # `clean_text` rather than from `cred_warnings`, which only reaches the log:
+    # on the streaming path that list is empty here because each chunk was already
+    # redacted upstream, so re-redacting `clean_text` reports nothing. Counting the
+    # artifact answers the question the user has -- "is what I am about to copy
+    # still what the assistant wrote?" -- and stays correct wherever the
+    # substitution happened (per-chunk, the StreamRedactor wire pass, the final
+    # render, or the post-decorator scan). Sum every tag the redactor can emit
+    # (`CREDENTIAL_REDACTION_TAGS`) so an encoded-credential-only reply is not
+    # missed.
+    #
+    # The thinking block (redacted separately below) adds to this SAME tally so a
+    # single warning covers the turn if either the answer or the thinking was
+    # rewritten -- one turn, one notice, never two identical warnings.
+    _cred_redactions = sum(clean_text.count(tag) for tag in CREDENTIAL_REDACTION_TAGS)
+
     # ── Review mode: ephemeral draft instead of public post ──
     if channel_activation == ACTIVATION_REVIEW:
         from kiro_crew.slack.blocks import review_draft_blocks
@@ -3965,6 +3984,12 @@ async def handle_message(
         thinking_mrkdwn, cred_warnings = redact_credentials(thinking_mrkdwn)
         for w in cred_warnings:
             logger.warning("Credential redacted in thinking: %s", w)
+        # Fold thinking redactions into the SAME per-turn tally as the answer so
+        # a single warning covers the turn (see the tally comment above the
+        # review-mode branch). Count the fully redacted text before it is
+        # condensed -- condensing can truncate, which would drop a placeholder
+        # from the count even though the credential was still rewritten.
+        _cred_redactions += sum(thinking_mrkdwn.count(tag) for tag in CREDENTIAL_REDACTION_TAGS)
         thinking_block = _condense_thinking(thinking_mrkdwn)
         if thinking_ts:
             try:
@@ -3984,6 +4009,20 @@ async def handle_message(
             await slack.delete_message(channel, thinking_ts)
         except Exception:
             logger.debug("Failed to delete empty thinking placeholder", exc_info=True)
+
+    # One notice per turn, AFTER the answer (and thinking) have been posted, so it
+    # reads below the text it describes. Posted as a SEPARATE threaded message
+    # rather than folded into the answer: Slack has already committed the rich
+    # answer via stop_stream/chat_update above and the answer text must stay
+    # exactly as redacted (never relaxed, never annotated inline). Best-effort --
+    # a failed notice must not turn a delivered answer into a failed turn.
+    if _cred_redactions > 0:
+        try:
+            await slack.post_message(
+                channel, credential_redaction_notice(_cred_redactions), reply_ts
+            )
+        except Exception:
+            logger.warning("Failed to post credential redaction notice", exc_info=True)
 
     # Persist the turn BEFORE posting anything that invites an answer to it.
     # The control below carries a staleness token derived from this session's last

@@ -38,7 +38,13 @@ from kiro_crew.dashboard.chat_utils import (
 )
 from kiro_crew.loop_lock import LoopBoundLock
 from kiro_crew.messaging.identity import channel_inbound_permitted
-from kiro_crew.security import redact_and_truncate, redact_credentials, redact_exfiltration_urls
+from kiro_crew.messaging.renderer import credential_redaction_notice
+from kiro_crew.security import (
+    CREDENTIAL_REDACTION_TAGS,
+    redact_and_truncate,
+    redact_credentials,
+    redact_exfiltration_urls,
+)
 from kiro_crew.sel import sel
 from kiro_crew.slack.allowlist import (
     ACTION_ALLOWLIST_APPROVE,
@@ -3252,6 +3258,23 @@ async def _handle_review_approve(payload: dict, action: dict) -> None:
     draft, _ = redact_exfiltration_urls(draft)
     draft, _ = redact_credentials(draft)
     await _orch.slack.post_message(channel, draft, thread_ts)
+    # Approving a draft posts it publicly to the channel, so this egress carries
+    # the same silent-corruption hazard as the streaming reply path: the two lines
+    # above replaced a credential in the draft with a placeholder, and a channel
+    # member who copies the command hits an opaque downstream failure with no hint
+    # the text was rewritten. Count the tags in the redacted draft that actually
+    # shipped and post one best-effort follow-up notice. The notice carries only a
+    # count, never secret bytes, and its failure must not undo the posted draft --
+    # the draft is already public, so raising here would lose the warning and the
+    # approve's remaining teardown too.
+    _cred_redactions = sum(draft.count(tag) for tag in CREDENTIAL_REDACTION_TAGS)
+    if _cred_redactions > 0:
+        try:
+            await _orch.slack.post_message(
+                channel, credential_redaction_notice(_cred_redactions), thread_ts
+            )
+        except Exception:
+            logger.debug("Failed to post review-approve redaction notice", exc_info=True)
     await _delete_review_placeholder(channel, thread_ts)
     # Delete the ephemeral draft message
     response_url = payload.get("response_url", "")

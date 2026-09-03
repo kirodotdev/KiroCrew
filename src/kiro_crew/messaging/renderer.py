@@ -253,6 +253,44 @@ def display_safe(text: str) -> str:
     return safe.replace("@", "@\u200b").replace("<!", "<\u200b!")
 
 
+def credential_redaction_notice(count: int) -> str:
+    """The notice a channel sends after delivering text redaction rewrote.
+
+    Lives beside :func:`display_safe` because it is the other half of the same
+    outbound contract: that function guarantees the credential does not reach the
+    channel, and this one tells the reader it happened. Shared across channels so
+    one sentence cannot drift into per-channel spellings that each have to be
+    reviewed for leaked bytes.
+
+    ``count`` is the number of redaction placeholders standing in the text that
+    actually shipped, so the wording matches what the reader can see above the
+    notice. It carries NO secret bytes: by the time it is built a tag has already
+    replaced them, and only the count is used.
+
+    Says "a redaction placeholder" rather than naming a specific tag, because the
+    redactor emits more than one (``security.CREDENTIAL_REDACTION_TAGS``) and
+    naming one would print a marker the reader cannot find whenever the
+    substitution came from a different pass.
+
+    Plain text with no markup and no emoji, so one string is correct on every
+    channel: Slack renders mrkdwn, iMessage renders nothing. "The message above"
+    holds for both, because every caller sends this as its own message BELOW the
+    answer rather than appending to it.
+
+    The second sentence is deliberately blunt: a redacted command is not a working
+    command. Saying only "a credential was removed" still leaves the reader
+    pasting text that cannot run, which is the reported failure -- an opaque
+    downstream error far from the real cause.
+    """
+    subject = "A credential" if count == 1 else f"{count} credentials"
+    verb = "was" if count == 1 else "were"
+    return (
+        f"Security notice: {subject} in the message above {verb} replaced with a "
+        "redaction placeholder. Any command shown will not work if you paste it "
+        "as-is; supply the secret yourself on the machine where you run it."
+    )
+
+
 def _choice_display_safe(text: str, capabilities: TransportCapabilities | None) -> str:
     """The choice-label display sink, target-aware when the target is known.
 

@@ -279,6 +279,7 @@ Slack `file_share` messages are processed in `_route_message()` after dedup + au
 - Tool calls shown inline as 🔧 _tool name_
 - **Thinking/reasoning content** filtered from the main response — accumulated separately and posted as a 💭 thread reply after the main message. Inline `<thinking>` / `</thinking>` tags are also stripped as a safety net. The thread reply is suppressed when `slack.show_thinking` is `false` (default `true`).
 - Final message split into multiple posts if over 3900 chars (via `split_message()`)
+- **Credential-redaction notice** — when the delivered text (answer or thinking) still carries a `security.CREDENTIAL_REDACTION_TAGS` placeholder, one `messaging.renderer.credential_redaction_notice` message is posted in the thread after the answer is committed, so the reader knows a command they copy will not run as pasted. Redaction is NOT relaxed — Slack is an egress path. Counted from the tag in the sent text rather than the redactor's warnings list, which is empty on the streaming path because each chunk was already redacted upstream. **One notice per turn**: answer and thinking share a single tally. Approving a review-mode draft (`interactions.py`) posts the same notice for the same reason, since that publishes to the whole channel. Both posts are best-effort — a failed notice must never turn a delivered answer into a failed turn
 
 ## Message Queue (`session.py` + `events.py`)
 
