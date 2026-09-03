@@ -11,10 +11,13 @@ strictly worse than the boot cost the cache removes.
 from __future__ import annotations
 
 import ast
+import contextlib
+import errno
 import inspect
 import json
 import os
 import sys
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
@@ -370,6 +373,45 @@ def rewrite_counter(monkeypatch: pytest.MonkeyPatch) -> dict[str, int]:
 def _bump_mtime(path: Path) -> None:
     st = path.stat()
     os.utime(path, ns=(st.st_atime_ns, st.st_mtime_ns + 1_000_000))
+
+
+@contextlib.contextmanager
+def _settings_unreadable() -> "Iterator[None]":
+    """Make ``settings/mcp.json`` unreadable for the duration, as a real
+    transient I/O fault does.
+
+    Both read paths must fail together, and which ones they are is the point.
+    ``_rewrite_inputs_fingerprint`` signs the file with ``_stat_sig``, which
+    uses ``read_bytes``; the pass itself uses ``read_text``. Faulting only
+    ``read_text`` leaves the signature intact, so on otherwise-unchanged inputs
+    the cached early return fires and the rewrite loop is never entered -- the
+    degraded path under test would not run at all. Faulting both makes the
+    signature ``None``, which is what forces the full rewrite on a real fault,
+    while leaving every agent source signature comparable.
+    """
+    real_read_text = Path.read_text
+    real_read_bytes = Path.read_bytes
+
+    def _is_settings(p: Path) -> bool:
+        return p.name == "mcp.json" and "settings" in p.parts
+
+    def flaky_text(self: Path, *args: Any, **kwargs: Any) -> str:
+        if _is_settings(self):
+            raise OSError("transient I/O error")
+        return real_read_text(self, *args, **kwargs)
+
+    def flaky_bytes(self: Path, *args: Any, **kwargs: Any) -> bytes:
+        if _is_settings(self):
+            raise OSError("transient I/O error")
+        return real_read_bytes(self, *args, **kwargs)
+
+    Path.read_text = flaky_text  # type: ignore[method-assign]
+    Path.read_bytes = flaky_bytes  # type: ignore[method-assign]
+    try:
+        yield
+    finally:
+        Path.read_text = real_read_text  # type: ignore[method-assign]
+        Path.read_bytes = real_read_bytes  # type: ignore[method-assign]
 
 
 def test_unchanged_inputs_skip_the_rewrite_and_return_identical_result(
@@ -1175,6 +1217,459 @@ def test_transient_settings_read_failure_is_not_cached(
     assert fp.is_file()
     # The settings overlay is (still) present after the healthy retry.
     assert (tmp_path / "mcp-gateway" / "settings" / "mcp.json").is_file()
+
+
+def test_transient_settings_read_failure_does_not_rewrite_agent_overlays(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A settings read that FAILED is not a settings file that declared
+    nothing: the injection set is unknown, not empty, so no agent overlay may
+    be written from it (#5344).
+
+    A healthy pass relocates each poolable settings server OUT of the settings
+    overlay and INTO every agent overlay. #5328 made the degraded pass keep the
+    previous settings overlay -- but the agent loop still ran with an empty
+    injection set, so a rewritten agent overlay dropped those servers while the
+    kept settings overlay no longer listed them either. They existed in NEITHER
+    location for the rest of the gateway's lifetime. The pass must refuse to
+    rewrite instead, exactly as the per-agent transient read failure does."""
+    _mk_tree(tmp_path)
+    _rewrite(tmp_path)  # healthy pass: global-x relocated into every agent
+    overlay_dir = tmp_path / "mcp-gateway" / "agents"
+    settings_overlay = tmp_path / "mcp-gateway" / "settings" / "mcp.json"
+    for i in range(2):
+        healthy = json.loads((overlay_dir / f"agent-{i}.json").read_text())
+        assert "global-x" in healthy["mcpServers"]
+    # The relocation is what makes the loss total: settings no longer lists it.
+    assert "global-x" not in json.loads(settings_overlay.read_text())["mcpServers"]
+    before = {p.name: p.read_bytes() for p in overlay_dir.glob("*.json")}
+    assert before
+
+    # Fault the settings file itself, which is what forces the rewrite: the
+    # fingerprint signs it with _stat_sig (read_bytes), so an unreadable file
+    # makes that signature None and the cached early return cannot fire. No
+    # agent source is touched -- their signatures must stay comparable, which is
+    # what licenses the keep.
+    with _settings_unreadable():
+        _, target_env = _rewrite(tmp_path)
+
+    # No agent overlay was rewritten at all: byte-identical to the healthy pass.
+    for i in range(2):
+        kept = json.loads((overlay_dir / f"agent-{i}.json").read_text())
+        assert "global-x" in kept["mcpServers"], (
+            "the injected global server must survive a settings read failure"
+        )
+    assert {p.name: p.read_bytes() for p in overlay_dir.glob("*.json")} == before
+    # A kept overlay's stub still needs its target mapping published, or it
+    # resolves through the bare-name fallback.
+    assert any("GLOBAL_X" in key for key in target_env)
+    # Degraded pass stays uncacheable: the next boot retries the read.
+    assert not (overlay_dir / _FINGERPRINT_NAME).exists()
+
+    # The fault clears: the next pass rewrites normally and re-caches.
+    _rewrite(tmp_path)
+    assert (overlay_dir / _FINGERPRINT_NAME).is_file()
+    for i in range(2):
+        healed = json.loads((overlay_dir / f"agent-{i}.json").read_text())
+        assert "global-x" in healed["mcpServers"]
+
+
+def test_a_changed_agent_spec_is_not_deferred_by_a_settings_read_failure(
+    tmp_path: Path,
+) -> None:
+    """A keep defers everything the overlay encodes, not just the injection
+    set, so it is only honest while nothing else has changed. An agent whose own
+    spec changed -- an ``autoApprove`` entry removed, a server disabled, a
+    server dropped -- must be REWRITTEN even though that costs the injected
+    globals for that agent this pass: a revocation is a deliberate instruction
+    and cannot wait for the next boot, while the lost injection self-heals."""
+    src = _mk_tree(tmp_path, n_agents=1)
+    _rewrite(tmp_path)
+    overlay = tmp_path / "mcp-gateway" / "agents" / "agent-0.json"
+    assert "global-x" in json.loads(overlay.read_text())["mcpServers"]
+
+    # The operator revokes an approval on the agent's own server.
+    (src / "agent-0.json").write_text(
+        json.dumps({
+            "name": "agent-0",
+            "mcpServers": {"srv": {"command": _CMD, "args": ["a0"],
+                                   "env": {"K": "v"}, "disabled": True}},
+        })
+    )
+    with _settings_unreadable():
+        _rewrite(tmp_path)
+
+    spec = json.loads(overlay.read_text())
+    assert spec["mcpServers"]["srv"].get("disabled") is True, (
+        "a revoked/disabled server must not be deferred to the next boot"
+    )
+    # The cost is declared: the injection could not be established this pass.
+    assert "global-x" not in spec["mcpServers"]
+    assert not (
+        tmp_path / "mcp-gateway" / "agents" / _FINGERPRINT_NAME
+    ).exists()
+
+
+def test_a_deleted_overlay_is_rebuilt_even_on_a_settings_read_failure(
+    tmp_path: Path,
+) -> None:
+    """"Inputs unchanged" does not imply "there is an overlay to keep".
+
+    A missing output is itself a reason the cached early return did not fire, so
+    this pass can reach the loop with every input signature still matching while
+    the overlay file is gone. Adding that agent to the keep set would leave it
+    with NO overlay -- unpooling its own servers -- when a rewrite was available.
+    The existence check is what separates the two."""
+    _mk_tree(tmp_path, n_agents=1)
+    _rewrite(tmp_path)  # healthy pass: fingerprint stored, overlay written
+    overlay = tmp_path / "mcp-gateway" / "agents" / "agent-0.json"
+    assert overlay.is_file()
+
+    overlay.unlink()  # the output vanishes; every input signature still matches
+    with _settings_unreadable():
+        _rewrite(tmp_path)
+
+    assert overlay.is_file(), "a vanished overlay must be rebuilt, not withheld"
+    servers = json.loads(overlay.read_text())["mcpServers"]
+    assert servers["srv"].get("_kirocrew_mcp_gateway_wrapped") is True
+
+
+def test_settings_read_failure_with_nothing_stubbed_still_rewrites(
+    tmp_path: Path,
+) -> None:
+    """With nothing opted in, a settings read failure changes nothing.
+
+    This pins the OUTCOME rather than a predicate: an empty stub set is not a
+    special case in the keep decision, because nothing is wrapped and
+    ``_injectable_settings_servers`` returns nothing whatever the file says, so a
+    keep and a rewrite would produce identical bytes. What must still hold is
+    that an edit to the agent's own spec lands on such a pass."""
+    src = _mk_tree(tmp_path)
+    _rewrite(tmp_path, stub_servers=frozenset())
+    overlay = tmp_path / "mcp-gateway" / "agents" / "agent-0.json"
+    assert "late" not in json.loads(overlay.read_text())["mcpServers"]
+
+    # A real source change, so a refusal would be visible as a stale overlay.
+    (src / "agent-0.json").write_text(
+        json.dumps({
+            "name": "agent-0",
+            "mcpServers": {"late": {"command": _CMD, "args": ["l"]}},
+        })
+    )
+    with _settings_unreadable():
+        _rewrite(tmp_path, stub_servers=frozenset())
+
+    assert "late" in json.loads(overlay.read_text())["mcpServers"]
+
+
+def test_settings_read_failure_still_writes_an_agent_with_no_overlay(
+    tmp_path: Path,
+) -> None:
+    """The #5344 refusal only withholds a rewrite where withholding PRESERVES
+    something. An agent with no previous overlay has no injected copy to drop,
+    so refusing would leave it with no overlay at all -- unpooling its own
+    servers too, which is worse than the fault warrants and worse than what
+    this pass does without the fix. It must still be written."""
+    _mk_tree(tmp_path, n_agents=1)
+    overlay_dir = tmp_path / "mcp-gateway" / "agents"
+    with _settings_unreadable():
+        _rewrite(tmp_path)  # first pass ever: nothing to keep
+
+    written = overlay_dir / "agent-0.json"
+    assert written.is_file(), "a cold pass must not be withheld"
+    servers = json.loads(written.read_text())["mcpServers"]
+    # The agent's OWN server is still wrapped and pooled.
+    assert servers["srv"].get("_kirocrew_mcp_gateway_wrapped") is True
+    # The injected global is absent -- unknowable this pass -- but its raw entry
+    # still merges from the real settings file, so no server is lost.
+    assert "global-x" not in servers
+    # Still uncacheable: the next boot injects it.
+    assert not (overlay_dir / _FINGERPRINT_NAME).exists()
+
+
+def test_disabling_sharing_is_not_deferred_by_a_settings_read_failure(
+    tmp_path: Path,
+) -> None:
+    """Preserving an injection set must never defer a POLICY change.
+    ``_build_stub_entry`` bakes ``--poolable`` into every wrapped entry iff
+    sharing was on, so an operator who sets ``mcp_gateway.enabled = false`` and
+    hits a transient settings read failure in the same pass would otherwise keep
+    shared backends for the whole gateway lifetime. ``pooling_enabled`` is a
+    fingerprinted input, so the keep is refused and the overlay rewritten."""
+    _mk_tree(tmp_path, n_agents=1)
+    _rewrite(tmp_path)  # healthy pass with sharing ON
+    overlay = tmp_path / "mcp-gateway" / "agents" / "agent-0.json"
+    assert "--poolable" in json.loads(overlay.read_text())["mcpServers"]["srv"]["args"]
+
+    with _settings_unreadable():
+        _rewrite(tmp_path, pooling_enabled=False)  # operator turns sharing OFF
+
+    args = json.loads(overlay.read_text())["mcpServers"]["srv"]["args"]
+    assert "--poolable" not in args, "an explicit policy change must not be deferred"
+
+
+@contextlib.contextmanager
+def _settings_text_unreadable() -> "Iterator[None]":
+    """Fault ONLY ``read_text`` on settings/mcp.json, leaving ``read_bytes`` live.
+
+    The narrow fault the wide one deliberately avoids, and it is reachable: the
+    two are separate syscalls, so a fault can hit one and not the other. The
+    fingerprint still SIGNS the file (``_stat_sig`` uses ``read_bytes``) while the
+    pass cannot parse it, which is the only state where a settings change is both
+    real and known during a settings fault.
+    """
+    real_read_text = Path.read_text
+
+    def flaky_text(self: Path, *args: Any, **kwargs: Any) -> str:
+        if self.name == "mcp.json" and "settings" in self.parts:
+            raise OSError("transient I/O error")
+        return real_read_text(self, *args, **kwargs)
+
+    Path.read_text = flaky_text  # type: ignore[method-assign]
+    try:
+        yield
+    finally:
+        Path.read_text = real_read_text  # type: ignore[method-assign]
+
+
+def test_a_known_settings_change_refuses_the_keep(tmp_path: Path) -> None:
+    """The settings input is skipped only when it cannot be SIGNED, never when it
+    is signable and differs.
+
+    ``read_text`` and ``read_bytes`` are separate calls, so the fingerprint can
+    sign a NEW settings file on the same pass whose parse failed. Skipping the
+    comparison unconditionally would then keep overlays built from the old
+    settings -- so a server revoked in settings/mcp.json would stay live, wrapped,
+    in every agent overlay for the gateway's lifetime. That is an absorbed
+    instruction, not a deferred edit."""
+    src = _mk_tree(tmp_path, n_agents=1)
+    _rewrite(tmp_path)
+    overlay = tmp_path / "mcp-gateway" / "agents" / "agent-0.json"
+    assert "global-x" in json.loads(overlay.read_text())["mcpServers"]
+
+    # The operator revokes the global server, and the parse (not the stat) faults.
+    (src.parent / "settings" / "mcp.json").write_text(
+        json.dumps({
+            "mcpServers": {
+                "global-x": {"command": _CMD, "args": ["g"], "disabled": True}
+            }
+        })
+    )
+    with _settings_text_unreadable():
+        _rewrite(tmp_path)
+
+    assert "global-x" not in json.loads(overlay.read_text())["mcpServers"], (
+        "a signable, changed settings file must refuse the keep"
+    )
+
+
+def test_a_tampered_overlay_is_not_served_by_a_keep(tmp_path: Path) -> None:
+    """A keep serves an artifact this pass did not write, so it must validate the
+    recorded signature exactly as ``_cached_rewrite_result`` does. Otherwise one
+    induced transient fault is enough to have an edited overlay served -- its
+    stub argv would diverge from the ``target_env`` gatewayd spawns from."""
+    _mk_tree(tmp_path, n_agents=1)
+    _rewrite(tmp_path)
+    overlay = tmp_path / "mcp-gateway" / "agents" / "agent-0.json"
+
+    spec = json.loads(overlay.read_text())
+    spec["mcpServers"]["srv"]["args"] = ["--tampered"]
+    overlay.write_text(json.dumps(spec, indent=2) + "\n")
+
+    with _settings_unreadable():
+        _rewrite(tmp_path)
+
+    args = json.loads(overlay.read_text())["mcpServers"]["srv"]["args"]
+    assert "--tampered" not in args, "an edited overlay must be rewritten, not kept"
+
+
+def test_an_unvouched_sidecar_blocks_every_keep(tmp_path: Path) -> None:
+    """The sidecar set is vouched for once per pass, and a failure withdraws the
+    keep for EVERY agent.
+
+    A kept overlay still points ``--env-file`` at those sidecars and the sidecar
+    prune is skipped on this pass, so serving a kept overlay beside a sidecar set
+    that cannot be validated and re-protected would leave a credential file
+    unrepaired. Mirrors the cached path, which refuses wholesale."""
+    _mk_tree(tmp_path, n_agents=2)
+    _rewrite(tmp_path)
+    env_dir = tmp_path / "mcp-gateway" / "stubs" / "env"
+    sidecars = sorted(env_dir.glob("*.json"))
+    assert sidecars
+
+    sidecars[0].write_text(json.dumps({"K": "tampered"}))
+
+    with _settings_unreadable():
+        _rewrite(tmp_path)
+
+    # No keep happened, so every overlay was rewritten -- without the injection.
+    for i in range(2):
+        servers = json.loads(
+            (tmp_path / "mcp-gateway" / "agents" / f"agent-{i}.json").read_text()
+        )["mcpServers"]
+        assert "global-x" not in servers, (
+            "an unvouched sidecar set must withdraw the keep for every agent"
+        )
+
+
+def test_a_vanished_target_binary_refuses_the_keep(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A kept overlay's stub argv embeds the ABSOLUTE path a previous pass
+    resolved, and directory contents are which() input no signature can see. So
+    the keep re-runs the recorded probes exactly as the cached path does: a target
+    binary removed, moved between PATH prefixes, or newly shadowed must refuse the
+    keep, or the kept overlay launches a dead path for the gateway's lifetime."""
+    bin_dir = tmp_path / "extra-bin"
+    bin_dir.mkdir()
+    monkeypatch.setenv("PATH", str(bin_dir) + os.pathsep + os.environ.get("PATH", ""))
+    exe_name = "kirocrew-test-vanishing-cmd" + (".bat" if os.name == "nt" else "")
+    exe = bin_dir / exe_name
+    exe.write_text("#!/bin/sh\nexit 0\n")
+    exe.chmod(0o755)
+
+    src = _mk_tree(tmp_path, n_agents=1, with_env=False)
+    spec = json.loads((src / "agent-0.json").read_text())
+    spec["mcpServers"]["srv"]["command"] = "kirocrew-test-vanishing-cmd"
+    (src / "agent-0.json").write_text(json.dumps(spec))
+    _rewrite(tmp_path)
+
+    overlay = tmp_path / "mcp-gateway" / "agents" / "agent-0.json"
+    args = json.loads(overlay.read_text())["mcpServers"]["srv"]["args"]
+    assert os.path.normcase(args[args.index("--target-command") + 1]) == (
+        os.path.normcase(str(exe))
+    )
+    assert "global-x" in json.loads(overlay.read_text())["mcpServers"]
+
+    exe.unlink()  # the binary goes away; no PATH change, no spec change
+    with _settings_unreadable():
+        _rewrite(tmp_path)
+
+    # The keep was refused, so the overlay was rewritten -- and the now-dead
+    # bare command is left unwrapped rather than pointed at a stale path.
+    servers = json.loads(overlay.read_text())["mcpServers"]
+    assert "global-x" not in servers, (
+        "a vanished target binary must refuse the keep"
+    )
+    assert "--target-command" not in json.dumps(servers.get("srv", {}))
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX permission bits")
+def test_a_keep_retightens_every_artifact_it_serves(tmp_path: Path) -> None:
+    """A chmod changes no signature, so a keep must re-assert owner-only
+    protection on everything it serves -- the kept overlay, the env sidecars and
+    their directory, and the settings overlay (file and dir) that #5328 keeps on
+    this pass. Mirrors the cache-hit path's guarantee, for the same reason: on
+    Windows the file DACL rather than the directory is what carries access, and
+    these files hold the passed-through env of non-poolable servers.
+
+    The fingerprint file is deliberately NOT in the set: this pass unlinks it
+    (uncacheable), so re-protecting a file about to be deleted is a no-op."""
+    import stat as _stat
+
+    _mk_tree(tmp_path, n_agents=1)
+    _rewrite(tmp_path)
+    overlay_dir = tmp_path / "mcp-gateway" / "agents"
+    settings_overlay = tmp_path / "mcp-gateway" / "settings" / "mcp.json"
+    env_dir = tmp_path / "mcp-gateway" / "stubs" / "env"
+    artifacts = [overlay_dir / "agent-0.json", settings_overlay,
+                 *env_dir.glob("*.json")]
+    assert len(artifacts) >= 3  # incl. at least one sidecar
+    for a in artifacts:
+        a.chmod(0o644)
+    settings_overlay.parent.chmod(0o755)
+    env_dir.chmod(0o755)
+
+    with _settings_unreadable():
+        _rewrite(tmp_path)
+
+    # The keep happened (the injected global survived) AND everything it serves
+    # was retightened.
+    assert "global-x" in json.loads(
+        (overlay_dir / "agent-0.json").read_text()
+    )["mcpServers"]
+    for a in artifacts:
+        assert _stat.S_IMODE(a.stat().st_mode) == 0o600, a
+    assert _stat.S_IMODE(settings_overlay.parent.stat().st_mode) == 0o700
+    assert _stat.S_IMODE(env_dir.stat().st_mode) == 0o700
+
+
+def test_a_swallowed_stat_fault_is_unknown_not_absent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``is_file()`` answers False for a missing file AND for some stat faults,
+    and only the errnos in ``pathlib._IGNORED_ERRNOS`` are swallowed that way.
+
+    Measured on CPython 3.12: EACCES, EIO and EPERM RAISE out of the pass (the
+    caller logs "rewriter failed -- falling back" and touches nothing), but
+    ENOENT, EBADF, ENOTDIR and ELOOP return False. ENOTDIR is reachable without
+    the file being gone -- a directory component momentarily replaced, an atomic
+    directory swap, a symlink being re-pointed -- and reading it as "absent"
+    rewrites every overlay with an empty injection set, which is #5344 through
+    the stat path instead of the read path. Only ``FileNotFoundError`` may mean
+    absent; every other OSError means unknown."""
+    src = _mk_tree(tmp_path, n_agents=1)
+    _rewrite(tmp_path)
+    overlay = tmp_path / "mcp-gateway" / "agents" / "agent-0.json"
+    settings_overlay = tmp_path / "mcp-gateway" / "settings" / "mcp.json"
+    assert "global-x" in json.loads(overlay.read_text())["mcpServers"]
+    assert settings_overlay.is_file()
+
+    real_stat = Path.stat
+    fail = {"on": True}
+
+    def flaky_stat(self: Path, *args: Any, **kwargs: Any) -> Any:
+        if fail["on"] and self.name == "mcp.json" and "settings" in self.parts:
+            raise OSError(errno.ENOTDIR, os.strerror(errno.ENOTDIR))
+        return real_stat(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", flaky_stat)
+    # Confirm first: this errno really is swallowed, so the pass sees "absent".
+    assert (src.parent / "settings" / "mcp.json").is_file() is False
+    _rewrite(tmp_path)
+    fail["on"] = False
+
+    assert "global-x" in json.loads(overlay.read_text())["mcpServers"], (
+        "a swallowed stat fault must read as unknown, not as an absent file"
+    )
+    # The previous settings overlay survives too, and the pass is not cached.
+    assert settings_overlay.is_file()
+    assert not (
+        tmp_path / "mcp-gateway" / "agents" / _FINGERPRINT_NAME
+    ).exists()
+
+
+@pytest.mark.parametrize(
+    "payload, why",
+    [
+        ("{not json", "bad content"),
+        ('["not", "a", "mapping"]', "valid JSON of the wrong shape"),
+    ],
+    ids=["bad_json", "non_dict"],
+)
+def test_deterministic_settings_content_prunes_its_overlay(
+    tmp_path: Path, payload: str, why: str
+) -> None:
+    """A settings source that is present but unusable prunes the previous
+    settings overlay, exactly as a deleted source does -- unlike a transient
+    fault, which keeps it (#5328).
+
+    Both branches were reachable and uncovered: a mutation removing either
+    prune reddened nothing until these existed, and an earlier attempt at the
+    #5344 classification silently stopped pruning on both. The distinction that
+    matters is deterministic-vs-transient, not spec-vs-no-spec: fixing bad
+    content changes the file's stat signature, so this pass is safe to cache."""
+    src = _mk_tree(tmp_path, n_agents=1)
+    _rewrite(tmp_path)
+    settings_overlay = tmp_path / "mcp-gateway" / "settings" / "mcp.json"
+    assert settings_overlay.is_file(), "healthy pass writes the settings overlay"
+
+    (src.parent / "settings" / "mcp.json").write_text(payload)
+    _rewrite(tmp_path)
+
+    assert not settings_overlay.exists(), f"{why} must prune the stale overlay"
+    # Deterministic, so the pass is cacheable -- the transient arm is not.
+    assert (tmp_path / "mcp-gateway" / "agents" / _FINGERPRINT_NAME).is_file()
 
 
 def test_malformed_json_source_is_still_cacheable(
