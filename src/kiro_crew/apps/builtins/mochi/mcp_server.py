@@ -40,7 +40,11 @@ from typing import Any
 
 from kiro_crew.apps.builtins.mochi import queue_file as qf
 from kiro_crew.apps.builtins.mochi import watchlist_file as wf
-from kiro_crew.apps.builtins.mochi.pinned_files_service import pins_mutation
+from kiro_crew.apps.builtins.mochi.pinned_files_service import (
+    PinsCorruptError,
+    pins_mutation,
+    read_pins_for_update,
+)
 from kiro_crew.mcp_shared import call_tool_with_logging, run_mcp_stdio_loop
 from kiro_crew.validation import ValidationError, validate_mcp_tool_arguments
 
@@ -603,16 +607,23 @@ def _tool_pin_file(args: dict[str, Any]) -> str:
     # next mutation. The service reloads from disk inside the same lock, which is
     # what makes the two writers agree.
     with pins_mutation(str(pins_path)):
-        data = _read_json(pins_path, {"version": 1, "pins": []})
-        pins = data.get("pins", [])
-        if any(p.get("path") == path for p in pins):
+        # read_pins_for_update, not the lenient _read_json with an empty default:
+        # the write below replaces the WHOLE file, so a corrupt store read as
+        # `{"pins": []}` would be ZEROED here (#8088). That is strictly worse than
+        # the gateway service's version of the same bug, which at least wrote its
+        # live in-memory list back. Both writers share the one reader so refusing
+        # in the service cannot be undone by the next pin_file from this process.
+        try:
+            pins = read_pins_for_update(str(pins_path)) or []
+        except PinsCorruptError:
+            return "Error: pin_file failed: the pin list is corrupt and must be repaired"
+        if any(_pin_path(p) == path for p in pins):
             return _ok({"ok": True, "alreadyPinned": True})
         entry = {"path": path, "pinnedAt": _now_ms()}
         if args.get("label"):
             entry["label"] = args["label"]
         pins.append(entry)
-        data["pins"] = pins
-        _write_json(pins_path, data)
+        _write_json(pins_path, {"version": 1, "pins": pins})
     return _ok({"ok": True, "pins": len(pins)})
 
 
@@ -622,11 +633,13 @@ def _tool_unpin_file(args: dict[str, Any]) -> str:
         return "Error: unpin_file failed: path is required"
     pins_path = _data_dir() / _PINNED_FILE
     with pins_mutation(str(pins_path)):
-        data = _read_json(pins_path, {"version": 1, "pins": []})
-        before = data.get("pins", [])
-        after = [p for p in before if p.get("path") != path]
-        data["pins"] = after
-        _write_json(pins_path, data)
+        # Same strict read as pin_file above -- see there.
+        try:
+            before = read_pins_for_update(str(pins_path)) or []
+        except PinsCorruptError:
+            return "Error: unpin_file failed: the pin list is corrupt and must be repaired"
+        after = [p for p in before if _pin_path(p) != path]
+        _write_json(pins_path, {"version": 1, "pins": after})
     return _ok({"ok": True, "removed": len(before) - len(after)})
 
 
@@ -641,6 +654,13 @@ def _tool_read_mochi_file(args: dict[str, Any]) -> str:
     if not target.is_file():
         return _ok({"exists": False, "which": which})
     return target.read_text(encoding="utf-8")
+
+
+def _pin_path(entry: Any) -> Any:
+    """A stored pin entry may be a stray scalar (the service round-trips garbage
+    entries unvalidated), and ``(1).get`` raises. Mirror the service's
+    ``_entry_path`` so a malformed row is simply never a match."""
+    return entry.get("path") if isinstance(entry, dict) else None
 
 
 def _read_json(path: Path, default: Any) -> Any:

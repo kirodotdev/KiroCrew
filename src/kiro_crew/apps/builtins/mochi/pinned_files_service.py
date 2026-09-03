@@ -83,6 +83,96 @@ REWATCH_RETRY_MS = 1_000
 DATA_FILE_NAME = "pinned-files.json"
 DATA_VERSION = 1
 
+
+class PinsCorruptError(Exception):
+    """The stored pin list could not be read into something a mutation can merge into.
+
+    Raised only on the UPDATE path (:func:`read_pins_for_update`) so a mutation
+    abandons itself instead of rewriting the whole file from a list it was never
+    able to reconcile against what is on disk. Named and public because TWO
+    PROCESSES mutate this file -- the gateway service below and the MCP server's
+    ``pin_file`` / ``unpin_file`` -- and both have to recognise the refusal, so
+    a module-private name would leave the second writer destroying what the
+    first one just refused to touch.
+
+    Modelled on ops-mission-control's ``CorruptDocumentError`` rather than the
+    bare ``json.JSONDecodeError`` the aws-control readers raise (#7805): that
+    app reached for the plain type only because the named one lived in another
+    app, which does not apply to a type declared in the module both writers
+    already import.
+
+    The startup :meth:`PinnedFilesService.load` path deliberately does NOT raise
+    this. There a corrupt file is replaced on purpose and preserved as a
+    ``.bak.<now_ms>`` sidecar first (:meth:`_backup_corrupted`), which is a
+    decision with a recovery copy, not a silent loss under someone else's write.
+    """
+
+
+def read_pins_for_update(file_path: str) -> list[Any] | None:
+    """Read the stored pin list for a read-modify-write, REFUSING on corruption.
+
+    Returns the stored list, or ``None`` when the file does not exist yet -- the
+    one case where "nothing to carry forward" is true, so a first pin on a fresh
+    install proceeds against an empty list.
+
+    Every caller rewrites the WHOLE file from what this returns, so a read that
+    failed must not degrade to a usable-looking answer: doing that writes the
+    caller's own list over rows another process wrote and this one never loaded,
+    and the unparseable file was their only remaining copy. Three shapes refuse,
+    because each one reaches that same whole-file rewrite:
+
+    * a parse failure -- the truncated bytes still hold most of the records
+      verbatim, and only a person can recover them;
+    * a read error the filesystem raised (a transient EACCES/EIO, a scanner
+      holding the handle on Windows) -- the store is still there, this process
+      just could not see it this instant;
+    * valid JSON whose root is not an object, or whose ``pins`` is not a list --
+      no parse failure at all, so left uncaught it would be the quietest loss of
+      the three.
+
+    Decoding is STRICT here, unlike :meth:`PinnedFilesService.load` and the Node
+    original, which use ``errors="replace"``. That leniency only surfaces as a
+    parse failure when the bad byte falls OUTSIDE a JSON string; inside a quoted
+    value -- a pin label, or a path on a filesystem that does not enforce UTF-8 --
+    it becomes U+FFFD, ``json.loads`` SUCCEEDS, and the whole-file rewrite then
+    persists the mangled text. That is the same irreversible loss as the three
+    refusals above, reached without any parse failure to catch it, so an
+    undecodable byte is a fourth refusal rather than a repair. Found in review
+    (GPT 5.6).
+
+    ``load`` keeps the lenient decode: it does not write, and a corrupt file it
+    accepts is preserved as a ``.bak.<now_ms>`` sidecar first. A mangled label
+    read at startup can therefore reach memory, but it can no longer reach DISK,
+    because every write path first re-reads through this reader and refuses.
+    """
+    try:
+        raw = Path(file_path).read_bytes().decode("utf-8")
+    except FileNotFoundError:
+        return None
+    except UnicodeDecodeError as err:
+        # Deliberately BEFORE the OSError arm: UnicodeDecodeError is a ValueError,
+        # not an OSError, so it would otherwise escape this function unwrapped and
+        # slip past every caller's PinsCorruptError clause.
+        logger.warning(
+            "[PinnedFilesService] Non-UTF-8 bytes in %s; refusing to overwrite it", file_path
+        )
+        raise PinsCorruptError(f"pin list is not valid UTF-8: {err.reason}") from err
+    except OSError as err:
+        logger.warning("[PinnedFilesService] Unreadable %s; refusing to overwrite it", file_path)
+        raise PinsCorruptError(f"pin list is unreadable: {err}") from err
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError as err:
+        logger.warning("[PinnedFilesService] Corrupt %s; refusing to overwrite it", file_path)
+        raise PinsCorruptError("pin list is not valid JSON") from err
+    if not isinstance(parsed, dict) or not isinstance(parsed.get("pins"), list):
+        logger.warning(
+            "[PinnedFilesService] Wrong shape in %s; refusing to overwrite it", file_path
+        )
+        raise PinsCorruptError("pin list root is not an object with a pins array")
+    return parsed["pins"]
+
+
 # Timer actions stored in the shared per-file slot.
 _ACTION_DEBOUNCE = "debounce"
 
@@ -200,29 +290,32 @@ class PinnedFilesService:
         self._watched.clear()
         self._timers.clear()
 
-    def _reload_pins_from_disk(self) -> None:
-        """Refresh ``_pins`` from the file without touching watchers or timers.
+    def _reload_pins_for_update(self) -> None:
+        """Refresh ``_pins`` from disk before a mutation, REFUSING on corruption.
 
         Cheaper and narrower than ``load``: it exists so a mutation can pick up
         another process's write before applying its own, without tearing down the
         watcher state ``load`` rebuilds.
+
+        Raises :class:`PinsCorruptError` -- see :func:`read_pins_for_update`, the
+        chokepoint this and the MCP server's two pin tools share so that
+        refusing here cannot be undone by the other process's next write. An
+        absent file leaves ``_pins`` as it is, which is what lets a fresh
+        install add its first pin.
         """
-        try:
-            raw = Path(self._file_path).read_text(encoding="utf-8", errors="replace")
-            parsed = json.loads(raw)
-        except (FileNotFoundError, json.JSONDecodeError):
-            return
-        except OSError as err:
-            logger.warning("[PinnedFilesService] reload read error: %s", err)
-            return
-        if isinstance(parsed, dict) and isinstance(parsed.get("pins"), list):
-            self._pins = parsed["pins"]
+        pins = read_pins_for_update(self._file_path)
+        if pins is not None:
+            self._pins = pins
 
     # ── Public API ─────────────────────────────────────────────────────────
 
     def add_pin(self, file_path: str, label: str | None = None, *, now_ms: int) -> bool:
         """Add a pin. False if the path is relative, sensitive, duplicate, or the
-        list is full."""
+        list is full.
+
+        Raises :class:`PinsCorruptError` when the stored list could not be read;
+        that is not a rejected pin, it is a store that needs repair.
+        """
         if not os.path.isabs(file_path):
             return False
 
@@ -239,8 +332,9 @@ class PinnedFilesService:
         with pins_mutation(self._file_path):
             # Pick up the other process's writes BEFORE deciding, or a duplicate
             # check against stale state re-adds a pin the agent just removed and
-            # the persist below drops the one it just added.
-            self._reload_pins_from_disk()
+            # the persist below drops the one it just added. A corrupt store
+            # raises here, before the whole-file persist below could overwrite it.
+            self._reload_pins_for_update()
 
             if len(self._pins) >= MAX_PINS:
                 return False
@@ -269,9 +363,13 @@ class PinnedFilesService:
         return True
 
     def remove_pin(self, file_path: str) -> bool:
-        """Remove a pin. False if not found."""
+        """Remove a pin. False if not found.
+
+        Raises :class:`PinsCorruptError` when the stored list could not be read
+        -- distinct from the ``False`` above, which means the pin was not there.
+        """
         with pins_mutation(self._file_path):
-            self._reload_pins_from_disk()
+            self._reload_pins_for_update()
             idx = next((i for i, p in enumerate(self._pins) if _entry_path(p) == file_path), -1)
             if idx == -1:
                 return False
@@ -294,9 +392,15 @@ class PinnedFilesService:
 
     def mark_seen(self, file_path: str) -> None:
         """Clear a file's ``updatedAt``. Persists and broadcasts even when it was
-        already unset — the original assigned ``undefined`` unconditionally."""
+        already unset — the original assigned ``undefined`` unconditionally.
+
+        Raises :class:`PinsCorruptError` when the stored list could not be read.
+        Returning quietly would report success for a mutation that did not
+        happen, which for this method is indistinguishable from the normal
+        already-unset case.
+        """
         with pins_mutation(self._file_path):
-            self._reload_pins_from_disk()
+            self._reload_pins_for_update()
             entry = next((p for p in self._pins if _entry_path(p) == file_path), None)
             if entry is None:
                 return
@@ -413,7 +517,21 @@ class PinnedFilesService:
             return
 
         with pins_mutation(self._file_path):
-            self._reload_pins_from_disk()
+            try:
+                self._reload_pins_for_update()
+            except PinsCorruptError:
+                # The ONE swallow: this runs on the owner's tick loop, where the
+                # only caller is a timer firing, so an escaping exception would
+                # take down every other tick (stats, watchlist, presence) over a
+                # file this path merely wanted to stamp. Dropping the stamp is
+                # the same degradation a failed ``_persist`` already takes below.
+                # The mutation paths a user drove RAISE instead, so the operator
+                # still learns the store needs repair.
+                logger.warning(
+                    "[PinnedFilesService] Skipping updatedAt for %s: pin store corrupt",
+                    file_path,
+                )
+                return
             entry = next((p for p in self._pins if _entry_path(p) == file_path), None)
             if entry is None:
                 return
