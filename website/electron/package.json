@@ -170,6 +170,7 @@
       "gateway-liveness.js",
       "gateway-recovery.js",
       "renderer-recovery.js",
+      "hang-recovery.js",
       "native-logging.js",
       "disable-gpu.js",
       "memory-watch-log.js",

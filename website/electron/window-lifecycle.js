@@ -5,6 +5,7 @@ const path = require("path");
 
 const { createTokenRetryHandler, dashboardRetryPath } = require("./token-retry");
 const { createRendererRecovery } = require("./renderer-recovery");
+const { createHangRecovery } = require("./hang-recovery");
 const { armSplashHistoryClear } = require("./splash-history");
 const { hideToTray, cancelPendingTrayHide } = require("./hide-to-tray");
 const { attachHtmlFullScreen } = require("./html-fullscreen");
@@ -990,12 +991,31 @@ function createWindowLifecycle(options) {
       },
     });
 
+    // A renderer that HANGS never reaches the `render-process-gone` handler
+    // below: it emits `unresponsive` instead, and with no listener the window
+    // stayed frozen until the user rebooted (#8264). Convert a sustained hang
+    // into the crash the bounded recovery already heals; `responsive` within
+    // the grace window cancels the kill so a transient stall keeps its state.
+    const hangRecovery = createHangRecovery({
+      isQuitting,
+      log: glog,
+      forceCrash: () => {
+        if (mainWindow.isDestroyed() || mainWindow.webContents.isDestroyed()) return;
+        mainWindow.webContents.forcefullyCrashRenderer();
+      },
+    });
+    mainWindow.webContents.on("unresponsive", () => hangRecovery.handleUnresponsive());
+    mainWindow.webContents.on("responsive", () => hangRecovery.handleResponsive());
+
     mainWindow.webContents.on("render-process-gone", (_event, details) => {
       // Flush the trajectory before the terminal event so the log stays causal.
       // An in-flight content trace is write-or-lose: stopRecording is the only
       // operation that lands it, and a renderer death is its most useful end.
       for (const line of memoryWatchLog.flush()) glog(line);
       void cageTrace.stopForCrash();
+      // A hung renderer can die on its own inside the grace window; the armed
+      // force-crash must not survive into the reloaded replacement renderer.
+      hangRecovery.handleGone();
       rendererRecovery.handleGone(details || {});
     });
 
