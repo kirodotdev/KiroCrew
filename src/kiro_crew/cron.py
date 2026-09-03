@@ -222,7 +222,8 @@ def _read_job_records(path: Path) -> tuple[list[dict[str, Any]], bool]:
     * :func:`~kiro_crew.portability._sanitize_imported_crons` rewrites an
       unreadable import to an empty store and reports it to the caller.
     * :func:`~kiro_crew.snapshot._merge_crons` prints which path it could not
-      read and skips the merge.
+      read, skips the merge, and answers ``False`` so its caller can report
+      the refusal instead of a success.
 
     The latter two still guard on ``(OSError, ValueError)`` only, so a deeply
     nested store aborts an import or a snapshot merge there. That is a real

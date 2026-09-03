@@ -129,13 +129,20 @@ async def api_portability_import(request: web.Request) -> web.Response:
         # whether an import was pinned, mixed or unpinned is a security property of the
         # operation, so the audit trail is where it belongs more than a UI badge does. The
         # response still carries it for whatever renders it later.
+        #
+        # A refused component merge (issue #8217: the cron merge can refuse and
+        # import nothing) is logged as `partial`, not `ok` -- a flat ok here made
+        # the audit trail agree with a summary that claimed a merge that never
+        # happened.
+        refused = summary.get("refused_merges") or []
         _sel().log_api_access(
             caller=caller,
             operation="portability.import",
-            outcome="ok",
+            outcome="partial" if refused else "ok",
             resources=(
                 f"mode={mode},items={len(summary.get('items', []))},"
                 f"staging={summary.get('staging', 'unknown')}"
+                + (f",refused={';'.join(refused)}" if refused else "")
             ),
         )
 
