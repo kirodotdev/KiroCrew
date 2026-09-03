@@ -45,6 +45,7 @@ from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
 
+from kiro_crew import platform_compat
 from kiro_crew.config.paths import config_dir
 from kiro_crew.platform_compat import pid_exists
 
@@ -261,23 +262,35 @@ def _pid_start_id(pid: int) -> str | None:
 
     A PID probing alive is necessary but not sufficient for ownership: the
     recorded gateway may have exited and the kernel may have handed its PID to
-    an unrelated process. The starttime field (22nd in ``/proc/<pid>/stat``,
-    clock ticks since boot) is fixed for a process's lifetime, so a recorded
-    start ID that no longer matches means the owner is GONE even though the
-    PID is live. Returns ``None`` where the probe is unavailable (no procfs:
-    macOS, Windows) or unreadable — callers must then fall back to plain PID
-    liveness (conservative: protects a possibly-reused PID's file rather than
+    an unrelated process. A start identity is fixed for a process's lifetime,
+    so a recorded value that no longer matches means the owner is GONE even
+    though the PID is live.
+
+    A thin delegate to :func:`platform_compat.get_process_start_id`, the
+    routine this repository already uses wherever a start identity is WRITTEN
+    DOWN and compared back later (``mcp_gateway.claim``, ``session_pid``,
+    ``metrics.sessions``). It answers in-process on every platform — procfs
+    field 22 on Linux, ``libproc`` microsecond start on macOS, ``None`` on
+    Windows — so it is safe on the startup path, and it never emits whitespace
+    or ``:``, so the recorded value stays one ``# PID:`` header token with no
+    sanitising here.
+
+    Not :func:`platform_compat.process_start_time`, whose non-Linux POSIX leg
+    is ``ps -o lstart=``: 1-second, locale- and TZ-rendered, and documented as
+    safe precisely because "a format or resolution drift can only make the
+    guard decline to act". That is a KILL-guard contract, where a mismatch
+    means do nothing. Here a mismatch means the owner is dead and
+    :func:`sweep_stale_dumps` UNLINKS the file, so drift deletes a live
+    gateway's dump while faulthandler still holds the fd — and 1-second
+    granularity cannot separate two processes that started in the same second.
+
+    Returns ``None`` where the identity is unknown — on Windows, and for any
+    process this one may not introspect. Per that routine's own contract a
+    ``None`` must NOT be read as a mismatch: callers fall back to plain PID
+    liveness (conservative — protects a possibly-reused PID's file rather than
     risking deletion of a live owner's fd target).
     """
-    try:
-        with open(f"/proc/{pid}/stat", "rb") as f:
-            stat = f.read(4096)
-        # Field 2 (comm) may contain spaces/parens; fields after the LAST ')'
-        # are unambiguous. starttime is field 22 overall -> index 19 after it.
-        tail = stat.rsplit(b")", 1)[1].split()
-        return tail[19].decode("ascii")
-    except (OSError, IndexError, UnicodeDecodeError):
-        return None
+    return platform_compat.get_process_start_id(pid)
 
 
 def _dump_owner(dump_path: Path) -> tuple[int, str | None, str | None] | None:
