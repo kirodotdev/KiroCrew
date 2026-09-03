@@ -8805,7 +8805,8 @@
         "needs_active_chat": "Disponible dès que cette conversation a fini de s’ouvrir",
         "needs_earlier_history_count_one": "Sélectionnez pour charger l’historique antérieur – {{count}} message antérieur restant",
         "needs_earlier_history_count_many": "Sélectionnez pour charger l’historique antérieur – {{count}} messages antérieurs restants",
-        "needs_earlier_history_count_other": "Sélectionnez pour charger l’historique antérieur – {{count}} messages antérieurs restants"
+        "needs_earlier_history_count_other": "Sélectionnez pour charger l’historique antérieur – {{count}} messages antérieurs restants",
+        "share_message": "Partager en image"
       },
       "chatFooter": {
         "compacting": "Compactage…",
@@ -9271,6 +9272,32 @@
       },
       "deepLink": {
         "message_unavailable": "Ce message n’est plus dans cette conversation."
+      },
+      "share": {
+        "title": "Partager sur les réseaux sociaux",
+        "description": "Transforme cette réponse en carte à partager où vous voulez.",
+        "preview_label": "Aperçu de la carte",
+        "edit_hint": "Cliquez sur le texte de la carte pour le modifier",
+        "card_footer": "Créé avec {{productName}}",
+        "include_question": "Inclure ma question",
+        "caption_label": "Texte de la publication",
+        "caption_template": "{{productName}} vient de faire ça pour moi {{link}} #AIAgent",
+        "char_count": "{{count}} / {{limit}} · limite X",
+        "download_png": "Télécharger le PNG",
+        "copy_image_text": "Copier l'image et le texte",
+        "share_on_x": "Partager sur X",
+        "share_on_linkedin": "Partager sur LinkedIn",
+        "copied": "Copié — collez l'image dans la fenêtre de publication",
+        "copy_unavailable": "Presse-papiers indisponible — l'image a été téléchargée à la place",
+        "intent_hint": "La fenêtre de publication s'ouvre avec le texte prérempli ; collez l'image copiée pour joindre la carte.",
+        "kind_aws_key": "une clé d'accès AWS",
+        "kind_token": "un jeton d'API",
+        "kind_private_key": "une clé privée",
+        "kind_local_path": "un chemin de fichier local",
+        "kind_internal_url": "une URL interne",
+        "card_wordmark": "{{productName}}",
+        "sensitive_in_card": "Avant de partager — la carte contient : {{kinds}}",
+        "sensitive_in_caption": "Avant de partager — le texte de la publication contient : {{kinds}}"
       }
     },
     "chatPage": {

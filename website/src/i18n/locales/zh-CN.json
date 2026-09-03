@@ -8559,7 +8559,8 @@
         "needs_earlier_history": "选择以加载下一页更早的历史记录",
         "more_actions": "更多操作",
         "needs_active_chat": "此对话完成打开后可用",
-        "needs_earlier_history_count_other": "选择以加载更早的历史记录 — 还剩 {{count}} 条更早的消息"
+        "needs_earlier_history_count_other": "选择以加载更早的历史记录 — 还剩 {{count}} 条更早的消息",
+        "share_message": "分享为图片"
       },
       "chatFooter": {
         "compacting": "压缩中…",
@@ -9005,6 +9006,32 @@
       },
       "deepLink": {
         "message_unavailable": "此消息已不在此对话中。"
+      },
+      "share": {
+        "title": "分享到社交媒体",
+        "description": "把这条回复生成一张可随处发布的分享卡片。",
+        "preview_label": "卡片预览",
+        "edit_hint": "点击卡片文字即可编辑",
+        "card_footer": "由 {{productName}} 生成",
+        "include_question": "带上我的提问",
+        "caption_label": "帖子文案",
+        "caption_template": "{{productName}} 又帮我干了件漂亮事 {{link}} #AIAgent",
+        "char_count": "{{count}} / {{limit}}（X 上限）",
+        "download_png": "下载 PNG",
+        "copy_image_text": "复制图片和文案",
+        "share_on_x": "分享到 X",
+        "share_on_linkedin": "分享到 LinkedIn",
+        "copied": "已复制——在发帖框里直接粘贴图片",
+        "copy_unavailable": "当前环境无法写入剪贴板，已改为下载图片",
+        "intent_hint": "发帖框会带着文案打开；粘贴刚复制的图片即可附上卡片。",
+        "kind_aws_key": "AWS 访问密钥",
+        "kind_token": "API 令牌",
+        "kind_private_key": "私钥",
+        "kind_local_path": "本地文件路径",
+        "kind_internal_url": "内部链接",
+        "card_wordmark": "{{productName}}",
+        "sensitive_in_card": "分享前请注意——卡片中检测到：{{kinds}}",
+        "sensitive_in_caption": "分享前请注意——帖子文案中检测到：{{kinds}}"
       }
     },
     "chatPage": {

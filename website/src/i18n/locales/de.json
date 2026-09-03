@@ -8682,7 +8682,8 @@
         "more_actions": "Weitere Aktionen",
         "needs_active_chat": "Verfügbar, sobald diese Unterhaltung vollständig geöffnet ist",
         "needs_earlier_history_count_one": "Auswählen, um früheren Verlauf zu laden – noch {{count}} frühere Nachricht",
-        "needs_earlier_history_count_other": "Auswählen, um früheren Verlauf zu laden – noch {{count}} frühere Nachrichten"
+        "needs_earlier_history_count_other": "Auswählen, um früheren Verlauf zu laden – noch {{count}} frühere Nachrichten",
+        "share_message": "Als Bild teilen"
       },
       "chatFooter": {
         "compacting": "Wird verdichtet…",
@@ -9138,6 +9139,32 @@
       },
       "deepLink": {
         "message_unavailable": "Diese Nachricht ist nicht mehr in dieser Unterhaltung."
+      },
+      "share": {
+        "title": "In sozialen Medien teilen",
+        "description": "Verwandelt diese Antwort in eine Share-Card, die du überall posten kannst.",
+        "preview_label": "Kartenvorschau",
+        "edit_hint": "Zum Bearbeiten auf den Kartentext klicken",
+        "card_footer": "Erstellt mit {{productName}}",
+        "include_question": "Meine Frage einbeziehen",
+        "caption_label": "Beitragstext",
+        "caption_template": "{{productName}} hat das gerade für mich erledigt {{link}} #AIAgent",
+        "char_count": "{{count}} / {{limit}} · X-Limit",
+        "download_png": "PNG herunterladen",
+        "copy_image_text": "Bild + Text kopieren",
+        "share_on_x": "Auf X teilen",
+        "share_on_linkedin": "Auf LinkedIn teilen",
+        "copied": "Kopiert — füge das Bild im Beitragsfenster ein",
+        "copy_unavailable": "Zwischenablage nicht verfügbar — das Bild wurde stattdessen heruntergeladen",
+        "intent_hint": "Das Beitragsfenster öffnet sich mit vorausgefülltem Text; füge das kopierte Bild ein, um die Karte anzuhängen.",
+        "kind_aws_key": "einen AWS-Zugriffsschlüssel",
+        "kind_token": "ein API-Token",
+        "kind_private_key": "einen privaten Schlüssel",
+        "kind_local_path": "einen lokalen Dateipfad",
+        "kind_internal_url": "eine interne URL",
+        "card_wordmark": "{{productName}}",
+        "sensitive_in_card": "Vor dem Teilen — die Karte enthält: {{kinds}}",
+        "sensitive_in_caption": "Vor dem Teilen — der Beitragstext enthält: {{kinds}}"
       }
     },
     "chatPage": {

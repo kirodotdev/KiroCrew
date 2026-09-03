@@ -3071,7 +3071,8 @@
         "more_actions": "More actions",
         "needs_active_chat": "Available once this chat finishes opening",
         "needs_earlier_history_count_one": "Select to load earlier history — {{count}} earlier message remains",
-        "needs_earlier_history_count_other": "Select to load earlier history — {{count}} earlier messages remain"
+        "needs_earlier_history_count_other": "Select to load earlier history — {{count}} earlier messages remain",
+        "share_message": "Share as image"
       },
       "chatNavPanel": {
         "link": "Link"
@@ -3303,6 +3304,32 @@
         "minimize_pinned_prompt": "Minimize pinned turn",
         "pinned_turn": "Pinned turn",
         "restore_pinned_prompt": "Restore pinned turn"
+      },
+      "share": {
+        "title": "Share to social media",
+        "description": "Turn this reply into a share card you can post anywhere.",
+        "preview_label": "Card preview",
+        "edit_hint": "Click the card text to edit it",
+        "card_footer": "Made with {{productName}}",
+        "include_question": "Include my question",
+        "caption_label": "Post text",
+        "caption_template": "{{productName}} just did this for me {{link}} #AIAgent",
+        "char_count": "{{count}} / {{limit}} · X limit",
+        "download_png": "Download PNG",
+        "copy_image_text": "Copy image + text",
+        "share_on_x": "Share on X",
+        "share_on_linkedin": "Share on LinkedIn",
+        "copied": "Copied — paste the image into the post box",
+        "copy_unavailable": "Clipboard unavailable here — the image was downloaded instead",
+        "intent_hint": "The post box opens with your text prefilled; paste the copied image to attach the card.",
+        "kind_aws_key": "an AWS access key",
+        "kind_token": "an API token",
+        "kind_private_key": "a private key",
+        "kind_local_path": "a local file path",
+        "kind_internal_url": "an internal URL",
+        "card_wordmark": "{{productName}}",
+        "sensitive_in_card": "Before you share — the card contains: {{kinds}}",
+        "sensitive_in_caption": "Before you share — the post text contains: {{kinds}}"
       }
     },
     "chatPage": {

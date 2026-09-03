@@ -8805,7 +8805,8 @@
         "needs_active_chat": "Disponibile quando questa conversazione ha finito di aprirsi",
         "needs_earlier_history_count_one": "Seleziona per caricare la cronologia precedente: resta {{count}} messaggio precedente",
         "needs_earlier_history_count_many": "Seleziona per caricare la cronologia precedente: restano {{count}} messaggi precedenti",
-        "needs_earlier_history_count_other": "Seleziona per caricare la cronologia precedente: restano {{count}} messaggi precedenti"
+        "needs_earlier_history_count_other": "Seleziona per caricare la cronologia precedente: restano {{count}} messaggi precedenti",
+        "share_message": "Condividi come immagine"
       },
       "chatFooter": {
         "compacting": "Compattazione in corso…",
@@ -9271,6 +9272,32 @@
       },
       "deepLink": {
         "message_unavailable": "Questo messaggio non è più in questa conversazione."
+      },
+      "share": {
+        "title": "Condividi sui social",
+        "description": "Trasforma questa risposta in una card da pubblicare ovunque.",
+        "preview_label": "Anteprima della card",
+        "edit_hint": "Fai clic sul testo della card per modificarlo",
+        "card_footer": "Creato con {{productName}}",
+        "include_question": "Includi la mia domanda",
+        "caption_label": "Testo del post",
+        "caption_template": "{{productName}} ha appena fatto questo per me {{link}} #AIAgent",
+        "char_count": "{{count}} / {{limit}} · limite X",
+        "download_png": "Scarica PNG",
+        "copy_image_text": "Copia immagine e testo",
+        "share_on_x": "Condividi su X",
+        "share_on_linkedin": "Condividi su LinkedIn",
+        "copied": "Copiato: incolla l'immagine nella finestra del post",
+        "copy_unavailable": "Appunti non disponibili: l'immagine è stata scaricata",
+        "intent_hint": "La finestra del post si apre con il testo precompilato; incolla l'immagine copiata per allegare la card.",
+        "kind_aws_key": "una chiave di accesso AWS",
+        "kind_token": "un token API",
+        "kind_private_key": "una chiave privata",
+        "kind_local_path": "un percorso di file locale",
+        "kind_internal_url": "un URL interno",
+        "card_wordmark": "{{productName}}",
+        "sensitive_in_card": "Prima di condividere — la card contiene: {{kinds}}",
+        "sensitive_in_caption": "Prima di condividere — il testo del post contiene: {{kinds}}"
       }
     },
     "chatPage": {

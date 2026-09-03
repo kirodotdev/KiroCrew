@@ -8682,7 +8682,8 @@
         "more_actions": "अधिक क्रियाएँ",
         "needs_active_chat": "यह चैट पूरी तरह खुल जाने पर उपलब्ध होगा",
         "needs_earlier_history_count_one": "पुराना इतिहास लोड करने के लिए चुनें — {{count}} पुराना संदेश शेष है",
-        "needs_earlier_history_count_other": "पुराना इतिहास लोड करने के लिए चुनें — {{count}} पुराने संदेश शेष हैं"
+        "needs_earlier_history_count_other": "पुराना इतिहास लोड करने के लिए चुनें — {{count}} पुराने संदेश शेष हैं",
+        "share_message": "छवि के रूप में साझा करें"
       },
       "chatFooter": {
         "compacting": "संक्षिप्त किया जा रहा है…",
@@ -9138,6 +9139,32 @@
       },
       "deepLink": {
         "message_unavailable": "यह संदेश अब इस बातचीत में नहीं है।"
+      },
+      "share": {
+        "title": "सोशल मीडिया पर साझा करें",
+        "description": "इस जवाब को एक शेयर कार्ड में बदलें जिसे कहीं भी पोस्ट किया जा सकता है।",
+        "preview_label": "कार्ड पूर्वावलोकन",
+        "edit_hint": "संपादित करने के लिए कार्ड के टेक्स्ट पर क्लिक करें",
+        "card_footer": "{{productName}} से बनाया गया",
+        "include_question": "मेरा प्रश्न शामिल करें",
+        "caption_label": "पोस्ट का टेक्स्ट",
+        "caption_template": "{{productName}} ने अभी मेरे लिए यह किया {{link}} #AIAgent",
+        "char_count": "{{count}} / {{limit}} · X सीमा",
+        "download_png": "PNG डाउनलोड करें",
+        "copy_image_text": "छवि और टेक्स्ट कॉपी करें",
+        "share_on_x": "X पर साझा करें",
+        "share_on_linkedin": "LinkedIn पर साझा करें",
+        "copied": "कॉपी हो गया — पोस्ट बॉक्स में छवि पेस्ट करें",
+        "copy_unavailable": "क्लिपबोर्ड उपलब्ध नहीं — छवि डाउनलोड कर दी गई",
+        "intent_hint": "पोस्ट बॉक्स टेक्स्ट भरा हुआ खुलेगा; कार्ड जोड़ने के लिए कॉपी की गई छवि पेस्ट करें।",
+        "kind_aws_key": "AWS एक्सेस कुंजी",
+        "kind_token": "API टोकन",
+        "kind_private_key": "निजी कुंजी",
+        "kind_local_path": "स्थानीय फ़ाइल पथ",
+        "kind_internal_url": "आंतरिक URL",
+        "card_wordmark": "{{productName}}",
+        "sensitive_in_card": "साझा करने से पहले — कार्ड में है: {{kinds}}",
+        "sensitive_in_caption": "साझा करने से पहले — पोस्ट के टेक्स्ट में है: {{kinds}}"
       }
     },
     "chatPage": {

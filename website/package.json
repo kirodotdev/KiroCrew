@@ -90,6 +90,7 @@
     "graphology-communities-louvain": "2.0.2",
     "graphology-layout-forceatlas2": "0.10.1",
     "highlight.js": "^11.11.1",
+    "html-to-image": "1.11.13",
     "i18next": "^26.3.6",
     "katex": "0.16.44",
     "lottie-web": "5.13.0",

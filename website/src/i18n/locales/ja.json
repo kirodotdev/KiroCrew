@@ -8559,7 +8559,8 @@
         "needs_earlier_history": "選択すると以前の履歴を次の1ページ分読み込みます",
         "more_actions": "その他の操作",
         "needs_active_chat": "このチャットを開き終えると利用できます",
-        "needs_earlier_history_count_other": "選択すると以前の履歴を読み込みます（残り{{count}}件）"
+        "needs_earlier_history_count_other": "選択すると以前の履歴を読み込みます（残り{{count}}件）",
+        "share_message": "画像として共有"
       },
       "chatFooter": {
         "compacting": "コンパクト中…",
@@ -9005,6 +9006,32 @@
       },
       "deepLink": {
         "message_unavailable": "このメッセージはこの会話にはもうありません。"
+      },
+      "share": {
+        "title": "SNS に共有",
+        "description": "この返信をどこにでも投稿できるシェアカードにします。",
+        "preview_label": "カードプレビュー",
+        "edit_hint": "カードの文字をクリックすると編集できます",
+        "card_footer": "{{productName}} で作成",
+        "include_question": "自分の質問も含める",
+        "caption_label": "投稿テキスト",
+        "caption_template": "{{productName}} がまたすごいことをやってくれた {{link}} #AIAgent",
+        "char_count": "{{count}} / {{limit}}（X の上限）",
+        "download_png": "PNG をダウンロード",
+        "copy_image_text": "画像とテキストをコピー",
+        "share_on_x": "X で共有",
+        "share_on_linkedin": "LinkedIn で共有",
+        "copied": "コピーしました — 投稿欄に画像を貼り付けてください",
+        "copy_unavailable": "クリップボードを利用できないため、画像をダウンロードしました",
+        "intent_hint": "投稿欄はテキスト入力済みで開きます。コピーした画像を貼り付けるとカードが添付されます。",
+        "kind_aws_key": "AWS アクセスキー",
+        "kind_token": "API トークン",
+        "kind_private_key": "秘密鍵",
+        "kind_local_path": "ローカルファイルパス",
+        "kind_internal_url": "内部 URL",
+        "card_wordmark": "{{productName}}",
+        "sensitive_in_card": "共有前にご確認ください — カードに次が含まれています：{{kinds}}",
+        "sensitive_in_caption": "共有前にご確認ください — 投稿テキストに次が含まれています：{{kinds}}"
       }
     },
     "chatPage": {

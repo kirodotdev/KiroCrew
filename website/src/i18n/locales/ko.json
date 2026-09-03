@@ -8559,7 +8559,8 @@
         "needs_earlier_history": "선택하면 이전 기록을 다음 페이지만큼 불러옵니다",
         "more_actions": "추가 작업",
         "needs_active_chat": "이 채팅이 완전히 열리면 사용할 수 있습니다",
-        "needs_earlier_history_count_other": "선택하면 이전 기록을 불러옵니다 — 이전 메시지 {{count}}개가 남아 있습니다"
+        "needs_earlier_history_count_other": "선택하면 이전 기록을 불러옵니다 — 이전 메시지 {{count}}개가 남아 있습니다",
+        "share_message": "이미지로 공유"
       },
       "chatFooter": {
         "compacting": "압축 중…",
@@ -9005,6 +9006,32 @@
       },
       "deepLink": {
         "message_unavailable": "이 메시지는 이 대화에 더 이상 없습니다."
+      },
+      "share": {
+        "title": "소셜 미디어에 공유",
+        "description": "이 답변을 어디든 게시할 수 있는 공유 카드로 만듭니다.",
+        "preview_label": "카드 미리보기",
+        "edit_hint": "카드 텍스트를 클릭하면 편집할 수 있습니다",
+        "card_footer": "{{productName}}(으)로 제작",
+        "include_question": "내 질문 포함",
+        "caption_label": "게시물 텍스트",
+        "caption_template": "{{productName}}이(가) 또 멋진 일을 해냈어요 {{link}} #AIAgent",
+        "char_count": "{{count}} / {{limit}} (X 제한)",
+        "download_png": "PNG 다운로드",
+        "copy_image_text": "이미지+텍스트 복사",
+        "share_on_x": "X에 공유",
+        "share_on_linkedin": "LinkedIn에 공유",
+        "copied": "복사됨 — 게시창에 이미지를 붙여넣으세요",
+        "copy_unavailable": "클립보드를 사용할 수 없어 이미지를 다운로드했습니다",
+        "intent_hint": "게시창이 텍스트가 입력된 채 열립니다. 복사한 이미지를 붙여넣으면 카드가 첨부됩니다.",
+        "kind_aws_key": "AWS 액세스 키",
+        "kind_token": "API 토큰",
+        "kind_private_key": "개인 키",
+        "kind_local_path": "로컬 파일 경로",
+        "kind_internal_url": "내부 URL",
+        "card_wordmark": "{{productName}}",
+        "sensitive_in_card": "공유 전 확인하세요 — 카드에 다음이 포함되어 있습니다: {{kinds}}",
+        "sensitive_in_caption": "공유 전 확인하세요 — 게시물 텍스트에 다음이 포함되어 있습니다: {{kinds}}"
       }
     },
     "chatPage": {

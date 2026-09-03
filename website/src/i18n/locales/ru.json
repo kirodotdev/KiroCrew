@@ -8928,7 +8928,8 @@
         "needs_earlier_history_count_one": "Выберите, чтобы загрузить более раннюю историю — осталось {{count}} сообщение",
         "needs_earlier_history_count_few": "Выберите, чтобы загрузить более раннюю историю — осталось {{count}} сообщения",
         "needs_earlier_history_count_many": "Выберите, чтобы загрузить более раннюю историю — осталось {{count}} сообщений",
-        "needs_earlier_history_count_other": "Выберите, чтобы загрузить более раннюю историю — осталось {{count}} сообщений"
+        "needs_earlier_history_count_other": "Выберите, чтобы загрузить более раннюю историю — осталось {{count}} сообщений",
+        "share_message": "Поделиться картинкой"
       },
       "chatFooter": {
         "compacting": "Сжатие контекста…",
@@ -9404,6 +9405,32 @@
       },
       "deepLink": {
         "message_unavailable": "Этого сообщения больше нет в этом разговоре."
+      },
+      "share": {
+        "title": "Поделиться в соцсетях",
+        "description": "Превратите этот ответ в карточку, которую можно опубликовать где угодно.",
+        "preview_label": "Предпросмотр карточки",
+        "edit_hint": "Нажмите на текст карточки, чтобы отредактировать",
+        "card_footer": "Сделано в {{productName}}",
+        "include_question": "Добавить мой вопрос",
+        "caption_label": "Текст поста",
+        "caption_template": "{{productName}} только что сделал это для меня {{link}} #AIAgent",
+        "char_count": "{{count}} / {{limit}} · лимит X",
+        "download_png": "Скачать PNG",
+        "copy_image_text": "Копировать картинку и текст",
+        "share_on_x": "Поделиться в X",
+        "share_on_linkedin": "Поделиться в LinkedIn",
+        "copied": "Скопировано — вставьте картинку в окно поста",
+        "copy_unavailable": "Буфер обмена недоступен — картинка скачана",
+        "intent_hint": "Окно поста откроется с заполненным текстом; вставьте скопированную картинку, чтобы прикрепить карточку.",
+        "kind_aws_key": "ключ доступа AWS",
+        "kind_token": "API-токен",
+        "kind_private_key": "приватный ключ",
+        "kind_local_path": "путь к локальному файлу",
+        "kind_internal_url": "внутренний URL",
+        "card_wordmark": "{{productName}}",
+        "sensitive_in_card": "Перед публикацией — карточка содержит: {{kinds}}",
+        "sensitive_in_caption": "Перед публикацией — текст поста содержит: {{kinds}}"
       }
     },
     "chatPage": {

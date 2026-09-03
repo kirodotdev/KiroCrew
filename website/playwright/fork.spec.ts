@@ -52,6 +52,9 @@ test.describe('Fork Session E2E', { tag: '@needs-agent' }, () => {
     await expect(forkButton).toBeVisible()
     await expect(forkButton).toBeEnabled()
     await expect(page.getByTestId('fork-unavailable-reason')).toHaveCount(0)
+    // The overflow trigger is Share's permanent home, so it renders even when
+    // fork is a ROW button; fork itself must not have moved inside it.
+    await expect(page.getByTestId('assistant-more-actions')).toHaveCount(1)
 
     // GIF-only pauses: skip in normal CI to keep tests fast.
     if (process.env.PLAYWRIGHT_VIDEO === '1') await page.waitForTimeout(1500)

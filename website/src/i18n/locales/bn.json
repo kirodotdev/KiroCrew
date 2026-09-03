@@ -8682,7 +8682,8 @@
         "more_actions": "আরও অ্যাকশন",
         "needs_active_chat": "এই চ্যাট সম্পূর্ণ খোলা হলে উপলব্ধ হবে",
         "needs_earlier_history_count_one": "আগের ইতিহাস লোড করতে নির্বাচন করুন — আরও {{count}}টি পুরোনো বার্তা বাকি আছে",
-        "needs_earlier_history_count_other": "আগের ইতিহাস লোড করতে নির্বাচন করুন — আরও {{count}}টি পুরোনো বার্তা বাকি আছে"
+        "needs_earlier_history_count_other": "আগের ইতিহাস লোড করতে নির্বাচন করুন — আরও {{count}}টি পুরোনো বার্তা বাকি আছে",
+        "share_message": "ছবি হিসেবে শেয়ার করুন"
       },
       "chatFooter": {
         "compacting": "কম্প্যাক্ট করা হচ্ছে…",
@@ -9138,6 +9139,32 @@
       },
       "deepLink": {
         "message_unavailable": "এই বার্তাটি আর এই কথোপকথনে নেই।"
+      },
+      "share": {
+        "title": "সোশ্যাল মিডিয়ায় শেয়ার করুন",
+        "description": "এই উত্তরটিকে একটি শেয়ার কার্ডে পরিণত করুন যা আপনি যেকোনো জায়গায় পোস্ট করতে পারেন।",
+        "preview_label": "কার্ড প্রিভিউ",
+        "edit_hint": "সম্পাদনা করতে কার্ডের লেখায় ক্লিক করুন",
+        "card_footer": "{{productName}} দিয়ে তৈরি",
+        "include_question": "আমার প্রশ্ন যুক্ত করুন",
+        "caption_label": "পোস্টের লেখা",
+        "caption_template": "{{productName}} এইমাত্র আমার জন্য এটা করে দিল {{link}} #AIAgent",
+        "char_count": "{{count}} / {{limit}} · X সীমা",
+        "download_png": "PNG ডাউনলোড করুন",
+        "copy_image_text": "ছবি ও লেখা কপি করুন",
+        "share_on_x": "X-এ শেয়ার করুন",
+        "share_on_linkedin": "LinkedIn-এ শেয়ার করুন",
+        "copied": "কপি হয়েছে — পোস্ট বক্সে ছবিটি পেস্ট করুন",
+        "copy_unavailable": "ক্লিপবোর্ড ব্যবহারযোগ্য নয় — ছবিটি ডাউনলোড করা হয়েছে",
+        "intent_hint": "পোস্ট বক্সটি লেখা পূরণ করা অবস্থায় খুলবে; কার্ড যুক্ত করতে কপি করা ছবিটি পেস্ট করুন।",
+        "kind_aws_key": "AWS অ্যাক্সেস কী",
+        "kind_token": "API টোকেন",
+        "kind_private_key": "প্রাইভেট কী",
+        "kind_local_path": "লোকাল ফাইল পাথ",
+        "kind_internal_url": "অভ্যন্তরীণ URL",
+        "card_wordmark": "{{productName}}",
+        "sensitive_in_card": "শেয়ার করার আগে — কার্ডে রয়েছে: {{kinds}}",
+        "sensitive_in_caption": "শেয়ার করার আগে — পোস্টের লেখায় রয়েছে: {{kinds}}"
       }
     },
     "chatPage": {
