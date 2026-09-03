@@ -3382,6 +3382,62 @@ class TestAStoreThatRefusesToWriteIsReportedNotCrashed(unittest.IsolatedAsyncioT
         self.assertEqual(body["code"], "secret_store_unwritable")
         self.assertNotIn("removed", body, "the refusal must not claim a removal verdict")
 
+    async def test_a_corrupt_secret_store_is_a_coded_500_on_save(self):
+        """Corruption is not retryable, so it must not be advertised as a 503.
+
+        The store's update reader now refuses a corrupt document rather than
+        replacing it (#7805), and this handler caught only ``OSError`` -- so the
+        refusal protecting the operator's only copy of every provider token
+        would have surfaced as aiohttp's bare uncoded 500.
+        """
+        token = "u+ThisIsTheActualTokenValue"
+        corrupt = json.JSONDecodeError("Expecting value", "{ not json", 2)
+
+        def _corrupt(*_a, **_kw):
+            raise corrupt
+
+        app = web.Application()
+        routes.register_routes(app)
+        with mock.patch.object(routes, "is_app_enabled", return_value=True):
+            with mock.patch.object(routes, "put_secret", _corrupt):
+                client = await self._client(app)
+                resp = await client.put(
+                    "/api/apps/ops-mission-control/providers/pagerduty/secret",
+                    json={"field": "api_token", "value": token},
+                )
+                self.assertEqual(resp.status, 500)
+                body = await resp.json()
+
+        self.assertEqual(body["code"], "secret_store_corrupt")
+        self.assertIs(body["ok"], False)
+        # A refusal must not echo the credential it failed to store, nor the
+        # document bytes the decode error may carry.
+        self.assertNotIn(token, json.dumps(body))
+        self.assertNotIn("{ not json", json.dumps(body))
+
+    async def test_a_corrupt_secret_store_is_a_coded_500_on_revocation(self):
+        """The revocation half: the old lenient read answered "nothing to
+        revoke" over a store whose token was still on disk; the corrupt refusal
+        must leave the operator correctly believing the token is still live."""
+        corrupt = json.JSONDecodeError("Expecting value", "{ not json", 2)
+
+        def _corrupt(*_a, **_kw):
+            raise corrupt
+
+        app = web.Application()
+        routes.register_routes(app)
+        with mock.patch.object(routes, "is_app_enabled", return_value=True):
+            with mock.patch.object(routes, "delete_secret", _corrupt):
+                client = await self._client(app)
+                resp = await client.delete(
+                    "/api/apps/ops-mission-control/providers/pagerduty/secret"
+                )
+                self.assertEqual(resp.status, 500)
+                body = await resp.json()
+
+        self.assertEqual(body["code"], "secret_store_corrupt")
+        self.assertNotIn("removed", body, "the refusal must not claim a removal verdict")
+
     async def test_a_refused_ceiling_write_is_a_coded_503(self):
         """The ceiling is the one value where a silent partial apply is a security state."""
         from kiro_crew.apps.builtins.ops_mission_control.backend import policy_store

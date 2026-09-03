@@ -3301,12 +3301,13 @@ class TestTheIndexIsNeverPublishedOverAFailedRead(_HomeIsolated):
         """Inverted deliberately: this used to assert repair-on-write.
 
         The four merged siblings of this idiom (`library.py`, `shares.py`,
-        `secrets.py`, `policy_store.py`) still read an unparseable document as empty,
-        and their reasoning is real -- nothing parsed, so there is nothing to merge
-        into. But "cannot merge into" is not "safe to destroy": a truncated index
-        still holds most of its records verbatim, and the mutation would replace the
-        file and take them with it. Refusing costs one skipped mutation and a visible
-        error; the old behaviour cost the records, silently. Found in review (GPT 5.6).
+        `secrets.py`, `policy_store.py`) used to read an unparseable document as
+        empty (their reasoning was real -- nothing parsed, so there is nothing to
+        merge into), until #7805 gave them this same refusal. "Cannot merge into"
+        is not "safe to destroy": a truncated index still holds most of its records
+        verbatim, and the mutation would replace the file and take them with it.
+        Refusing costs one skipped mutation and a visible error; the old behaviour
+        cost the records, silently. Found in review (GPT 5.6).
 
         The fixture writes malformed JSON to the real index path, so the corruption
         is reached by the update reader itself rather than simulated -- and `claim`

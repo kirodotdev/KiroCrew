@@ -128,11 +128,9 @@ src/kiro_crew/apps/builtins/ops_mission_control/backend/routes.py
 src/kiro_crew/apps/builtins/ops_mission_control/tests/test_ledger_index.py
 src/kiro_crew/apps/builtins/ops_mission_control/tests/test_ledger_sync_git.py
 src/kiro_crew/apps/builtins/ops_mission_control/tests/test_notify_out.py
-src/kiro_crew/apps/builtins/ops_mission_control/tests/test_policy_store.py
 src/kiro_crew/apps/builtins/ops_mission_control/tests/test_providers_datadog_cov80.py
 src/kiro_crew/apps/builtins/ops_mission_control/tests/test_routes.py
 src/kiro_crew/apps/builtins/ops_mission_control/tests/test_schedule_file.py
-src/kiro_crew/apps/builtins/ops_mission_control/tests/test_security.py
 src/kiro_crew/apps/builtins/ops_mission_control/tests/test_slack_out.py
 src/kiro_crew/apps/builtins/ops_mission_control/tests/test_webhook.py
 src/kiro_crew/apps/builtins/papyrus/backend/gitops.py

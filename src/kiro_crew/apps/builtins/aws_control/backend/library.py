@@ -84,12 +84,32 @@ def read_ledger() -> dict[str, Any]:
     A DISPLAY read: the Library list must keep rendering local artifacts on a
     ledger it could not load. See :func:`_read_ledger_for_update` for why the
     single writer may not stand on the same answer.
+
+    An absent file is silent -- no push has happened yet, not a fault. Anything
+    else is logged, because the state this degrades into looks exactly like
+    health: every artifact renders as never pushed, which is also what a
+    healthy fresh install shows.
     """
     try:
         data = json.loads(_ledger_path().read_text(encoding="utf-8"))
-        return data if isinstance(data, dict) else {}
-    except (FileNotFoundError, OSError, json.JSONDecodeError):
+    except FileNotFoundError:
         return {}
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+        logger.warning(
+            "aws-control library: push ledger unreadable; every artifact will "
+            "render as never pushed",
+            exc_info=True,
+        )
+        return {}
+    if not isinstance(data, dict):
+        # The same degradation reached without a parse failure -- and the same
+        # silence problem, so it gets the same log line.
+        logger.warning(
+            "aws-control library: push ledger root is not an object; every "
+            "artifact will render as never pushed"
+        )
+        return {}
+    return data
 
 
 def _read_ledger_for_update() -> dict[str, Any]:
@@ -104,14 +124,37 @@ def _read_ledger_for_update() -> dict[str, Any]:
     offers a re-push (a duplicate billable upload) and leaves the real cloud
     copies with no record to remove them by.
 
-    Corruption keeps reading as empty, matching the display read and the
-    per-account tolerance :func:`_update_ledger` already applies.
+    Corruption propagates too (#7805, mirroring #7794): "cannot merge into" is
+    not "safe to destroy". A truncated ledger still holds most of its records
+    verbatim, and replacing it discards the operator's only chance to recover
+    them by hand. Two shapes that never reach ``json.loads``'s own raise are
+    folded into the same refusal: a byte stream that is not UTF-8 (a
+    ``ValueError`` but NOT a ``JSONDecodeError``, so unwrapped it would slip
+    past every corruption clause at the callers) and valid JSON whose root is
+    not an object (which parses without raising, so coercing it to ``{}``
+    would destroy a document nobody could read). Plain ``json.JSONDecodeError``
+    rather than another app's named type -- see :func:`shares._load_for_update`
+    in this app for the reasoning.
+
+    The per-ACCOUNT tolerance in :func:`_update_ledger` (a corrupted scalar
+    entry for the account being written is reset) is deliberately untouched:
+    it replaces one account's unusable entry while carrying every other row
+    forward verbatim, not the whole document. The sidecar-preserve alternative
+    for even that case is tracked in #7789.
     """
     try:
         data = json.loads(_ledger_path().read_text(encoding="utf-8"))
-    except (FileNotFoundError, json.JSONDecodeError):
+    except FileNotFoundError:
         return {}
-    return data if isinstance(data, dict) else {}
+    except UnicodeDecodeError as exc:
+        raise json.JSONDecodeError(
+            f"push ledger is not valid UTF-8: {exc.reason}",
+            exc.object.decode("utf-8", "replace")[:120],
+            0,
+        ) from exc
+    if not isinstance(data, dict):
+        raise json.JSONDecodeError("push ledger root is not a JSON object", str(data)[:120], 0)
+    return data
 
 
 def _write_ledger(ledger: dict[str, Any]) -> None:
@@ -136,8 +179,9 @@ def _update_ledger(account: str, mutate: Callable[[dict[str, Any]], bool]) -> bo
     did, so a reconcile that finds nothing stale costs no disk write on a
     surface that renders on every page load.
 
-    Raises ``OSError`` when the existing ledger could not be read; see
-    :func:`_read_ledger_for_update` for why that is not collapsed to an empty
+    Raises ``OSError`` when the existing ledger could not be read and
+    ``json.JSONDecodeError`` when it could not be parsed; see
+    :func:`_read_ledger_for_update` for why neither is collapsed to an empty
     document here.
 
     The lock is held for a read plus an atomic rename and nothing else. Callers

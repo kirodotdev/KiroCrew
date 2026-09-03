@@ -70,6 +70,15 @@ class TestReadLedger:
         path.write_text('["not", "a", "dict"]', encoding="utf-8")
         assert library.read_ledger() == {}
 
+    def test_a_non_utf8_ledger_reads_as_empty(self, tmp_path, monkeypatch):
+        # New with #7805: UnicodeDecodeError previously escaped the display
+        # read (it is a ValueError, not a JSONDecodeError). The lenient read
+        # must treat a corrupt byte stream as one condition regardless of
+        # which decoder noticed it.
+        path = _ledger_at(monkeypatch, tmp_path)
+        path.write_bytes(b"\xff\xfe not utf8")
+        assert library.read_ledger() == {}
+
     def test_valid_dict_round_trips(self, tmp_path, monkeypatch):
         path = _ledger_at(monkeypatch, tmp_path)
         path.write_text(json.dumps({ACCOUNT: {"s": {"version": 2}}}), encoding="utf-8")
@@ -457,13 +466,39 @@ class TestUpdateLedger:
         assert library._update_ledger(ACCOUNT, _adds_a_record) is True
         assert library.read_ledger()[ACCOUNT] == {"new": {"version": 1}}
 
-    def test_a_corrupt_ledger_still_repairs_on_write(self, tmp_path, monkeypatch):
-        # Existing tolerance, pinned so the unreadable-file guard is not mistaken
-        # for a licence to start failing on corruption too.
+    def test_a_corrupt_ledger_refuses_the_write_and_is_left_intact(self, tmp_path, monkeypatch):
+        # #7805: a corrupt ledger is refused, never rewritten. The old tolerance
+        # read it as empty and let the whole-file rewrite drop every other
+        # account's push state -- records a truncated JSON still held verbatim.
         path = _ledger_at(monkeypatch, tmp_path)
-        path.write_text("{not json", encoding="utf-8")
-        assert library._update_ledger(ACCOUNT, _adds_a_record) is True
-        assert library.read_ledger()[ACCOUNT] == {"new": {"version": 1}}
+        corrupt = '{"acct": {"slug": {"version": 1}}'  # truncated
+        path.write_text(corrupt, encoding="utf-8")
+        with pytest.raises(json.JSONDecodeError):
+            library._update_ledger(ACCOUNT, _adds_a_record)
+        assert (
+            path.read_text(encoding="utf-8") == corrupt
+        ), "the writer rewrote a corrupt ledger instead of refusing"
+        # The display read stays lenient: the Library list renders on a ledger
+        # it could not load rather than failing the route.
+        assert library.read_ledger() == {}
+
+    def test_a_ledger_that_is_not_utf8_takes_the_corruption_path(self, tmp_path, monkeypatch):
+        # UnicodeDecodeError is a ValueError but NOT a JSONDecodeError; unwrapped
+        # it would slip past every corruption clause at the callers.
+        path = _ledger_at(monkeypatch, tmp_path)
+        path.write_bytes(b"\xff\xfe not utf8")
+        with pytest.raises(json.JSONDecodeError):
+            library._update_ledger(ACCOUNT, _adds_a_record)
+        assert path.read_bytes() == b"\xff\xfe not utf8"
+
+    def test_a_ledger_that_parses_to_a_non_object_refuses_the_write(self, tmp_path, monkeypatch):
+        # Valid JSON with the wrong root parses without raising, so coercing it
+        # to {} would let the rewrite destroy a document nobody could read.
+        path = _ledger_at(monkeypatch, tmp_path)
+        path.write_text('["not", "a", "dict"]', encoding="utf-8")
+        with pytest.raises(json.JSONDecodeError):
+            library._update_ledger(ACCOUNT, _adds_a_record)
+        assert path.read_text(encoding="utf-8") == '["not", "a", "dict"]'
 
 
 # --------------------------------------------------------------------------

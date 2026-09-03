@@ -658,7 +658,35 @@ def is_primary() -> bool:
         # False: a missed nightly hygiene pass is recoverable on the next run, whereas
         # every instance pruning the shared ledger is not.
         return bool(me) and me.lower() == leader.lower()
-    return bool(policy_store.get(policy_store.PRIMARY_KEY, True))
+    # The STRICT read, not `get`: this flag defaults to True, so the lenient read
+    # turns an unreadable or corrupt policy file into granted prune authority --
+    # the corrupt file becoming the key that unlocks destroying shared knowledge
+    # (#7805). Refuse for the same reason the no-login case above answers False:
+    # a skipped hygiene pass is recoverable, a wrong prune is not.
+    try:
+        flag = policy_store.read_authority(policy_store.PRIMARY_KEY, True)
+    except (OSError, ValueError):
+        # ValueError covers the strict reader's corruption doors (JSONDecodeError
+        # and the non-UTF-8 wrap are both ValueError subclasses).
+        logger.warning(
+            "ops-mission-control: policy file unreadable; refusing primary-tier "
+            "authority until it is repaired",
+            exc_info=True,
+        )
+        return False
+    if not isinstance(flag, bool):
+        # Type-exact, not truthiness: `bool("false")` is True, so a hand-repaired
+        # file holding the STRING "false" would grant the authority its author
+        # meant to withhold -- and hand-repair is exactly what the corruption
+        # refusals above send the operator to do. The settings route only writes
+        # real booleans, so any other type is an unknown state, and an authority
+        # check that cannot type its input refuses. Found in review (GPT 5.6).
+        logger.warning(
+            "ops-mission-control: primary_instance is not a boolean; refusing "
+            "primary-tier authority until it is repaired"
+        )
+        return False
+    return flag
 
 
 def primary_owner() -> str:

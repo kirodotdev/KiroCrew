@@ -2174,6 +2174,15 @@ async def _handle_put_secret(request: web.Request) -> web.StreamResponse:
 
     try:
         await asyncio.to_thread(put_secret, provider_id, field_name, value)
+    except json.JSONDecodeError as exc:
+        # The store's update reader now refuses a corrupt document rather than
+        # replacing it (#7805), so this handler can see a failure that previously
+        # could not happen. Same shared mapper as the settings writes, for the same
+        # reason: translating it at some handlers and not others is worse than not
+        # translating it anywhere. 500-with-code rather than the OSError arm's 503:
+        # corruption does not clear on retry, it needs a person to repair the file.
+        logger.warning("ops-mission-control: secret save refused, store corrupt")
+        return _store_read_refusal(exc, code="secret_store")
     except OSError as exc:
         # Reported, not raised — the same shape ``_handle_rotation_arm`` uses for a
         # refusing cron store, and for the same reason its comment gives: escaping
@@ -2197,6 +2206,15 @@ async def _handle_delete_secret(request: web.Request) -> web.StreamResponse:
         )
     try:
         removed = await asyncio.to_thread(delete_secret, provider_id)
+    except json.JSONDecodeError as exc:
+        # The revocation route needs the corruption refusal MORE than the save
+        # route: on the old lenient read a corrupt store reported the provider
+        # absent, so the operator was told the token was already gone while it sat
+        # readable in the corrupt bytes -- and a rewrite here would then destroy
+        # the only copy. A coded refusal leaves them correctly believing the token
+        # is still live and the file worth repairing.
+        logger.warning("ops-mission-control: secret revocation refused, store corrupt")
+        return _store_read_refusal(exc, code="secret_store")
     except OSError as exc:
         # The revocation route needs this MORE than the save route. Its whole purpose
         # is to let an operator stop trusting a credential, and the failure this
