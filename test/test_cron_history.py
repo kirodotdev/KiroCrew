@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
+import errno
 import json
+import os
 import time
 from pathlib import Path
 from unittest.mock import patch
@@ -553,3 +557,250 @@ class TestRunResultFreshness:
         assert row2["trace"] == ""
         # Context-carry for the next prompt still holds run 1's value.
         assert job.last_result == "run one output"
+
+
+# ── Unusable history directory degrades instead of killing cron ───────────
+#
+# The reported failure is a denial scoped to the ``cron-history`` leaf alone:
+# its sibling job store stays writable in the same process. `_deny_leaf`
+# reproduces that shape by refusing only calls whose path names that leaf.
+#
+# The denial is PERSISTENT, not construction-time: a sandbox profile refuses
+# for the process's whole life. Tests that lift the denial after construction
+# prove nothing about the paths that run later — `rotate_all()` in particular,
+# which `CronService.start()` awaits unguarded.
+#
+# Branch table for `_prepare_dir` / `_probe_usable` (every row is covered
+# below), where "stat" stands for the stat + directory-scan pair that
+# `Path.exists()` and `Path.glob()` need:
+#
+#   mkdir ok                          -> enabled
+#   mkdir denied, stat ok,  open ok   -> enabled  (existing but un-mkdir-able)
+#   mkdir denied, stat DENIED, open ok-> disabled (lock file alone is not proof)
+#   mkdir denied, all denied          -> disabled
+#   constructed enabled, later OSError-> degrades to disabled, never raises
+
+
+def _leaf_denier(func, leaf: str):
+    def _wrapped(path, *a, **kw):
+        if isinstance(path, (str, os.PathLike)) and leaf in os.fspath(path):
+            raise PermissionError(errno.EPERM, "Operation not permitted")
+        return func(path, *a, **kw)
+
+    return _wrapped
+
+
+@contextlib.contextmanager
+def _deny_leaf(*names: str, leaf: str = "cron-history"):
+    """Refuse EPERM for each ``os.<name>`` call that targets *leaf*."""
+    with contextlib.ExitStack() as stack:
+        for name in names:
+            stack.enter_context(patch(f"os.{name}", _leaf_denier(getattr(os, name), leaf)))
+        yield
+
+
+def test_mkdir_denied_but_dir_usable_keeps_history_enabled(tmp_path: Path) -> None:
+    """An existing directory whose mkdir is refused is still usable.
+
+    ``mkdir(parents=True, exist_ok=True)`` raises anyway because pathlib
+    consults ``Path.is_dir()`` to decide whether ``exist_ok`` applies. Without
+    the tolerant construction this raises PermissionError out of
+    ``CronHistoryStore.__init__``.
+    """
+    (tmp_path / "cron-history").mkdir()
+    with _deny_leaf("mkdir"):
+        store = CronHistoryStore(base_dir=tmp_path)
+        assert store.enabled is True
+
+
+@pytest.mark.asyncio
+async def test_mkdir_denied_but_dir_usable_still_persists(tmp_path: Path) -> None:
+    """That tolerated store is a real store, with the denial still in force."""
+    (tmp_path / "cron-history").mkdir()
+    with _deny_leaf("mkdir"):
+        store = CronHistoryStore(base_dir=tmp_path)
+        await store.append(_record(job_id="j1", run_id="r1"))
+        rows, total = await store.get_job_history("j1")
+        assert store.enabled is True
+        assert total == 1
+        assert rows[0]["run_id"] == "r1"
+
+
+def test_stat_denied_disables_history_even_when_lock_opens(tmp_path: Path) -> None:
+    """A stat-denied directory is NOT usable, however well the lock file opens.
+
+    ``Path.exists()`` and ``Path.glob()`` re-raise EPERM (pathlib's
+    ``_ignore_error`` covers ENOENT/ENOTDIR/EBADF/ELOOP, not EPERM), so a
+    probe that only opened the lock file reported this store as enabled and the
+    read/rotate paths then raised.
+    """
+    (tmp_path / "cron-history").mkdir()
+    with _deny_leaf("mkdir", "stat", "scandir", "listdir"):
+        store = CronHistoryStore(base_dir=tmp_path)
+        assert store.enabled is False
+
+
+def test_unwritable_dir_disables_history_without_raising(tmp_path: Path) -> None:
+    """A wholly denied directory disables history instead of raising."""
+    with _deny_leaf("mkdir", "stat", "scandir", "listdir", "open"):
+        store = CronHistoryStore(base_dir=tmp_path)
+        assert store.enabled is False
+
+
+@pytest.mark.asyncio
+async def test_disabled_store_operations_are_inert(tmp_path: Path) -> None:
+    """Every entry point no-ops on a disabled store; none of them raise."""
+    with _deny_leaf("mkdir", "stat", "scandir", "listdir", "open"):
+        store = CronHistoryStore(base_dir=tmp_path)
+        assert store.enabled is False
+        await store.append(_record(job_id="j1", run_id="r1"))
+        assert await store.get_job_history("j1") == ([], 0)
+        assert await store.get_all_history() == ([], 0)
+        assert await store.get_run_detail("j1", "r1") is None
+        assert await store.delete_job_history("j1") is False
+        await store.rotate("j1")
+        await store.rotate_all()
+
+
+@pytest.mark.asyncio
+async def test_runtime_oserror_degrades_instead_of_propagating(tmp_path: Path) -> None:
+    """A store that constructed healthy still degrades on a later failure.
+
+    The invariant is enforced at the store, so it does not depend on each of
+    the service's call sites wrapping history in try/except.
+    """
+    store = CronHistoryStore(base_dir=tmp_path)
+    assert store.enabled is True
+    with patch.object(
+        store, "_rotate_all_sync", side_effect=PermissionError(errno.EPERM, "nope")
+    ):
+        await store.rotate_all()
+    assert store.enabled is False
+    # Subsequent operations are inert rather than raising.
+    await store.append(_record(job_id="j1", run_id="r1"))
+    assert await store.get_all_history() == ([], 0)
+
+
+@pytest.mark.asyncio
+async def test_transient_oserror_costs_one_record_and_stays_enabled(tmp_path: Path) -> None:
+    """A full disk must not disable history for the process's lifetime.
+
+    Only a denial is a standing condition. Disabling on any OSError would lose
+    every subsequent run's record over a momentary ENOSPC — strictly worse than
+    the pre-existing behaviour, where each call site caught its own failure and
+    the next run wrote normally.
+    """
+    store = CronHistoryStore(base_dir=tmp_path)
+    with patch.object(
+        store, "_append_sync", side_effect=OSError(errno.ENOSPC, "No space left on device")
+    ):
+        await store.append(_record(job_id="j1", run_id="lost"))
+    assert store.enabled is True, "a transient failure must not disable history"
+    # The next write lands normally.
+    await store.append(_record(job_id="j1", run_id="kept"))
+    rows, total = await store.get_job_history("j1")
+    assert total == 1
+    assert rows[0]["run_id"] == "kept"
+
+
+@pytest.mark.asyncio
+async def test_denial_errnos_disable_but_transient_ones_do_not(tmp_path: Path) -> None:
+    """Pin the exact errno split `_degrade` keys on."""
+    for code in (errno.EPERM, errno.EACCES, errno.EROFS):
+        store = CronHistoryStore(base_dir=tmp_path)
+        with patch.object(store, "_append_sync", side_effect=OSError(code, "denied")):
+            await store.append(_record(job_id="j", run_id="r"))
+        assert store.enabled is False, f"errno {code} is a denial and must disable"
+    for code in (errno.ENOSPC, errno.EMFILE, errno.EIO):
+        store = CronHistoryStore(base_dir=tmp_path)
+        with patch.object(store, "_append_sync", side_effect=OSError(code, "transient")):
+            await store.append(_record(job_id="j", run_id="r"))
+        assert store.enabled is True, f"errno {code} is transient and must NOT disable"
+
+
+def test_cron_service_survives_unusable_history_dir(tmp_path: Path) -> None:
+    """CronService still constructs and schedules when history is unusable.
+
+    This is the reported blast radius: the store is built in
+    ``CronService.__init__``, so a throw there takes the whole cron subsystem
+    down — gateway scheduler, MCP ``cron_add``/``cron_list``/``cron_trigger``
+    and ``kirocrew cron list`` alike, none of which need history to work.
+    """
+    from kiro_crew.cron import CronService
+
+    with _deny_leaf("mkdir", "stat", "scandir", "listdir", "open"):
+        svc = CronService(base_dir=tmp_path)
+        assert svc.get_history().enabled is False
+        assert svc.list_jobs() == []
+
+
+def test_cron_service_start_survives_stat_denied_history(tmp_path: Path) -> None:
+    """``start()`` must not raise when the history leaf is stat-denied.
+
+    ``start()`` awaits ``rotate_all()`` WITHOUT a try/except, so a store that
+    wrongly reports itself enabled turns this into a fatal gateway-startup
+    error even though the constructor survived.
+    """
+    from kiro_crew.cron import CronService
+
+    async def _boot() -> None:
+        with _deny_leaf("mkdir", "stat", "scandir", "listdir"):
+            svc = await CronService.create(base_dir=tmp_path)
+            assert svc.get_history().enabled is False
+            try:
+                await svc.start()
+            finally:
+                await svc.stop()
+
+    (tmp_path / "cron-history").mkdir(exist_ok=True)
+    asyncio.run(_boot())
+
+
+def test_create_factory_prepares_history_off_the_event_loop(tmp_path: Path) -> None:
+    """``CronService.create()`` must resolve history usability off the loop.
+
+    Directory setup is synchronous filesystem I/O (an ``os.stat`` and, on the
+    denied path, a lock-file ``os.open``). Running it in the constructor put it
+    on the gateway's sole event loop, which is the
+    no-blocking-call-on-event-loop violation ``_defer_initial_load`` already
+    exists to prevent for ``_load()``. Mechanical proof: ``prepare()`` runs, and
+    never on the loop thread.
+    """
+    import threading
+
+    from kiro_crew.cron import CronService
+
+    async def _boot() -> None:
+        loop_thread = threading.get_ident()
+        prepare_threads: list[int] = []
+        orig = CronHistoryStore.prepare
+
+        def _track(self: CronHistoryStore) -> None:
+            prepare_threads.append(threading.get_ident())
+            return orig(self)
+
+        with patch.object(CronHistoryStore, "prepare", _track):
+            svc = await CronService.create(base_dir=tmp_path)
+
+        assert prepare_threads, "the factory must still prepare the history store"
+        assert all(t != loop_thread for t in prepare_threads), (
+            "history prepare() must run in a worker thread, never on the event loop"
+        )
+        assert svc.get_history().enabled is True
+
+    asyncio.run(_boot())
+
+
+def test_deferred_store_reads_as_disabled_until_prepared(tmp_path: Path) -> None:
+    """A deferred store is disabled until prepare() runs.
+
+    Fail-safe direction: a read racing the prepare degrades to empty history
+    rather than touching a directory whose usability is still unknown.
+    """
+    store = CronHistoryStore(base_dir=tmp_path, _defer_prepare=True)
+    assert store.enabled is False
+    store.prepare()
+    assert store.enabled is True
+    # Idempotent: a second prepare neither re-probes nor flips the verdict.
+    store.prepare()
+    assert store.enabled is True

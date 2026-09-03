@@ -1300,12 +1300,31 @@ class CronService:
         self._reaper_task: asyncio.Task[None] | None = None
         self._push_refresh: Callable[[str], None] | None = None  # set externally
         _cfg = KiroCrewConfig.load().cron_history
+        _history_dir = base_dir if base_dir is not None else _default_dir()
+        # Execution history is BEST-EFFORT and must never be load-bearing for
+        # scheduling: a throw HERE would propagate out of CronService.__init__
+        # and take the WHOLE cron subsystem with it — the gateway scheduler, MCP
+        # cron_add/cron_list/cron_trigger and `kirocrew cron list` alike, none of
+        # which need history to work. That guarantee lives in the store itself:
+        # _prepare_dir resolves usability without raising and _degrade absorbs a
+        # later failure, so there is deliberately NO try/except here. One would
+        # guard a raise that cannot occur, and a reader would have to prove that
+        # for themselves before trusting either layer.
+        #
+        # The store's directory setup is synchronous filesystem I/O, so it is
+        # deferred on exactly the same condition as _load() below: a loop
+        # context constructs via create(), which then runs both off the loop in
+        # a worker thread. Without that, preparing the history directory would
+        # stat/open on the gateway's sole event loop — the same
+        # no-blocking-call-on-event-loop violation _defer_initial_load exists
+        # to prevent.
         self._history = CronHistoryStore(
-            base_dir=base_dir if base_dir is not None else _default_dir(),
+            base_dir=_history_dir,
             cron_summary_cap=_cfg.cron_summary_cap,
             cron_trace_cap_kb=_cfg.cron_trace_cap_kb,
             cron_max_records_per_job=_cfg.cron_max_records_per_job,
             cron_max_index_records=_cfg.cron_max_index_records,
+            _defer_prepare=_defer_initial_load,
         )
         # Populate the in-memory snapshot from disk once at construction.
         # The read paths (list_jobs / get_job) are CACHE-ONLY — they perform no
@@ -1362,6 +1381,8 @@ class CronService:
         # re-arm the timer thread-safely — see _arm_timer / __init__ _loop.
         self._loop = asyncio.get_running_loop()
         await asyncio.to_thread(self._load)
+        # Resolve history usability off the loop too (deferred in __init__).
+        await asyncio.to_thread(self._history.prepare)
         return self
 
     async def start(self) -> None:

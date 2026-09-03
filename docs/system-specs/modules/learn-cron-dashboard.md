@@ -232,7 +232,7 @@ configuration before it is useful). The contract, end to end:
 
 ### Hide in Chat (`hide_in_chat`)
 
-By default a persistent-session agent cron auto-creates a linked dashboard chat slot (`cron-{job_id}`) on first delivery (see Auto-inject), so its runs appear in the active session list. Set `hide_in_chat: true` to suppress that slot creation — the run's result still reaches Slack/dashboard notifications, and the run stays visible in the History tab via the **cron execution-history store** (`CronHistoryStore`, written unconditionally by the executor and surfaced at `GET /api/crons/{id}/history`), but no entry clutters the Chats sidebar. Useful for fire-and-forget jobs (daily digests, log cleanups, polling). Default `false` (preserves prior behavior; absent field reads as `false`). Orthogonal to `silent`: `silent` suppresses the push notification, `hide_in_chat` suppresses the chat slot. The flag is a no-op for `script`/`command` crons, which never create a slot. The executor gates all three `inject_cron_result_to_dashboard` call sites on `not job.hide_in_chat`; the dashboard notification's CTA falls into the pre-existing no-slot branch ("View last result", which lazily rebuilds a slot from history on click) instead of "Continue session". Note: the `cron:{job_id}` *dashboard conversation_log* is written ONLY by `inject_cron_result_to_dashboard`, so it is intentionally empty for a hidden cron — it exists solely to give a dashboard follow-up turn context, which a no-slot cron never has. Hidden-cron result persistence is the execution-history store, not `cron:{job_id}`.
+By default a persistent-session agent cron auto-creates a linked dashboard chat slot (`cron-{job_id}`) on first delivery (see Auto-inject), so its runs appear in the active session list. Set `hide_in_chat: true` to suppress that slot creation — the run's result still reaches Slack/dashboard notifications, and the run stays visible in the History tab via the **cron execution-history store** (`CronHistoryStore`, written by the executor whenever the store is usable — see **History is best-effort** below — and surfaced at `GET /api/crons/{id}/history`), but no entry clutters the Chats sidebar. Useful for fire-and-forget jobs (daily digests, log cleanups, polling). Default `false` (preserves prior behavior; absent field reads as `false`). Orthogonal to `silent`: `silent` suppresses the push notification, `hide_in_chat` suppresses the chat slot. The flag is a no-op for `script`/`command` crons, which never create a slot. The executor gates all three `inject_cron_result_to_dashboard` call sites on `not job.hide_in_chat`; the dashboard notification's CTA falls into the pre-existing no-slot branch ("View last result", which lazily rebuilds a slot from history on click) instead of "Continue session". Note: the `cron:{job_id}` *dashboard conversation_log* is written ONLY by `inject_cron_result_to_dashboard`, so it is intentionally empty for a hidden cron — it exists solely to give a dashboard follow-up turn context, which a no-slot cron never has. Hidden-cron result persistence is the execution-history store, not `cron:{job_id}`.
 
 ### Cron Folders (`folder_id`)
 
@@ -289,6 +289,28 @@ attempted and every one was **security-blocked** with none approved, the run
 sets `last_status = "error"` with a redacted reason and calls `record_failure()`,
 so the same 5-failure `_AUTO_PAUSE_THRESHOLD` applies. Any other outcome records
 a success.
+
+**History is best-effort.** `CronHistoryStore` never lets a history failure reach
+the scheduler. Its directory is resolved once by `prepare()`: usable means history
+is fully on, unusable means the store constructs with `enabled` False, where every
+read returns empty and every write is dropped. Usability is decided by the syscalls
+the store's own paths issue — an `os.stat` of the directory plus the lock-file
+`os.open` — because a refused `mkdir` does not imply an unusable directory
+(`Path.mkdir(exist_ok=True)` consults `Path.is_dir()`, and pathlib re-raises
+`EPERM` out of that stat rather than reporting False, so the flag cannot absorb a
+directory that is denied for reading as well as writing). Deciding it is blocking
+I/O, so a loop-bound caller MUST defer it: `CronService.__init__` passes
+`_defer_prepare=_defer_initial_load` and `CronService.create()` runs `prepare()`
+through `asyncio.to_thread`, the same hop it already uses for `_load()`; a deferred
+store reads `enabled` False until that completes, so a read racing the prepare
+degrades rather than touching a directory of unknown state. At runtime `_degrade`
+disables the store only on a DENIAL (`EPERM`/`EACCES`/`EROFS`), which is a standing
+condition; every other `OSError` (a full disk, fd exhaustion) costs one record and
+leaves history on. Callers do not branch on any of this: the store answers
+every read with an empty result, so a denied install and a job that has never run
+are deliberately indistinguishable over the API today, and the `logger.warning`
+above is the operator's signal. Surfacing the state belongs in the change that
+renders it.
 
 Only an unconditional security block counts. A governance `TOOL_DENY` and an
 unattended-approval timeout also arrive unapproved, but they describe the policy
