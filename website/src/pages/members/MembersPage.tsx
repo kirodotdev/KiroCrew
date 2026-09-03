@@ -325,7 +325,12 @@ export default function MembersPage() {
   )
 
   return (
-    <div className="flex h-full min-h-0 gap-2 p-2" data-testid="members-page">
+    // pr-2/pb-2 only: the top and left insets are NOT this page's to add. The
+    // nav rail (App.tsx) sits flush under the 42px topbar (mt-0) and carries
+    // its own mr-2, and the Sessions page's card family aligns to those same
+    // edges — a p-2 here pushed this page's cards 8px down and 8px right of
+    // every sibling surface (visible as mismatched card tops beside the rail).
+    <div className="flex h-full min-h-0 gap-2 pr-2 pb-2" data-testid="members-page">
       {/* Member list. Below md the page is single-pane: the roster IS the
           page until a member is picked, then the thread takes over and the
           header's back button returns here. Two fixed rails (264+300px)
