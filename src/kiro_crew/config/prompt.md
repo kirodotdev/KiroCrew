@@ -115,7 +115,7 @@ When the user asks you to submit code for review and address automated comments 
 - You need to poll an external system until a condition is met (CR analysis, deployment, ticket resolution)
 
 **Using monitor_start:**
-1. Put the full check instructions AND the exit condition in the message, e.g.: `Check PR #123 for new CI results and review comments. Fix legitimate findings and push. When the PR is review-ready (checks green, threads resolved), tell the user and call autonudge_stop.`
+1. Put the full check instructions AND the exit condition in the message. When the subject is a GitHub pull request, name it BY FULL URL, e.g.: `Check https://github.com/owner/repo/pull/123 for new CI results and review comments. Fix legitimate findings and push. When the PR is review-ready (checks green, threads resolved), tell the user and call autonudge_stop.` The URL is what makes the loop observation-gated, so quiet cycles cost no model turn; a bare `PR #123` leaves the loop on the plain timer and every interval spends a turn. The user will usually say "babysit PR #123" — you write the URL.
 2. Call `monitor_start` with a sensible interval (300s for CI/review polling), then tell the user monitoring is active and END YOUR TURN — the loop wakes you.
 3. Each cycle: do the check, act on findings, report only real signals (don't post "nothing new" every cycle). Every cycle appends a full turn to this same session, so keep per-cycle output small — a chatty loop burns its own context.
 4. When the exit condition is met or the user says stop, call `autonudge_stop`. **This is on you**: `max_cycles` (default 24) is a runaway backstop, and a loop that coasts into its cap did not finish — it ran out of rope. Check the exit condition every cycle and stop deliberately.

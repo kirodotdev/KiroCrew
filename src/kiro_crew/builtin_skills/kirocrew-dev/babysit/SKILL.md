@@ -185,7 +185,12 @@ not write it off as flakiness.
   you ACT most cycles (fixing findings, pushing revisions) → `monitor_start`.
 - **Pure-watch phase of a PR babysit** — waiting on CI or reviewers, nothing to
   do until a signal → still `monitor_start`, and name the pull request in the
-  instruction. A loop naming one public GitHub pull request is gated by default:
+  instruction **by full URL** — `https://github.com/<owner>/<repo>/pull/<N>`.
+  That form is the only one that selects a subject: a bare `PR #123`, or the
+  `owner/name#123` shorthand, deliberately refuses inference, so the loop stays
+  on the plain timer and every interval spends a turn. The user will usually say
+  "babysit PR #123"; you write the URL. A loop naming one public GitHub pull
+  request that way is gated by default:
   quiet cycles cost no agent turn, and it wakes only on a real change. The
   `pr_watch` script cron (below) is now only for what that cannot reach --
   an enterprise host, or detection with no owning loop.
@@ -625,9 +630,13 @@ Two limits worth knowing before you trust it on an arbitrary PR:
 
 User: "babysit PR #247 until it's review-ready"
 
+Note what the message does with that: the user said `PR #247`, and the armed
+instruction names the pull request by FULL URL. That is what makes the loop
+observation-gated -- copy the user's bare number into the message and it is not.
+
 ```
 monitor_start(
-  message="Check PR #247. FIRST read
+  message="Check https://github.com/owner/repo/pull/247. FIRST read
            gh pr view 247 --json mergeable,mergeStateStatus,reviewDecision —
            rules 6 and 7 of the babysit skill govern what each value means.
            Then run
