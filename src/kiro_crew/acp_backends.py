@@ -409,6 +409,51 @@ ACP_BACKENDS_MODEL_VIA_CONFIG_OPTION = frozenset({ACP_BACKEND_CLAUDE, ACP_BACKEN
 # never advertised.
 ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION = frozenset({ACP_BACKEND_CLAUDE, ACP_BACKEND_CODEX})
 
+# Backends that resolve the WIRE model id from the provider's OWN advertised list
+# (captured from ``session/new`` and cached across sessions) rather than trusting
+# the stored id verbatim. Needed where the spelling a backend SERVES differs from
+# the one Crew stored: claude-agent-acp advertises versioned ``…[1m]`` ids whose
+# bare form collapses to the base (200K) context window. A member both FEEDS the
+# advertised-model cache on capture and FOLDS the id onto it — at spawn and on a
+# warm-pool ``set_model`` — so a switched model lands on the served spelling.
+# Opt-in (harness-parity H6): a future adapter with the same spelling gap joins
+# here; one whose wire ids are already exact (kiro-cli serves its ids verbatim and
+# gets windows from the ``--list-models`` cache) never needs to.
+ACP_BACKENDS_ADVERTISED_MODEL_SELECTION = frozenset({ACP_BACKEND_CLAUDE})
+
+# Backends that seed a per-session settings file — claude-agent-acp's
+# ``settings.local.json`` — to lock the model + permission surface. The file is
+# written once at spawn, but a warm-pool claim switches model on a process that
+# has ALREADY read it, so a member must RE-SEED it on ``set_model``: the
+# spawn-time write alone leaves a stale allowlist/model behind, which is what let
+# a switched model collapse to its base window on a claimed pool runtime. Opt-in
+# for the same reason as every set here — a harness with no such file is not a
+# member and takes no re-seed.
+ACP_BACKENDS_SEED_LOCAL_SETTINGS = frozenset({ACP_BACKEND_CLAUDE})
+
+# Which model-registry NAMESPACE a backend's ids live in. This is a registry index
+# key, NOT a provider-identity check (see agent_sdk.provider_identity, note 3): a
+# context window is a property of the MODEL, so the same model reached via two
+# backends shares one namespace. Consulted only for
+# ``ACP_BACKENDS_ADVERTISED_MODEL_SELECTION`` members — to pick the registry index
+# the wire id folds against — but mapped for every known backend so a future
+# member already has an entry. Defaults to the ``acp`` (kiro) namespace, where
+# every non-claude id the registry carries lives today. The literals are the
+# model_registry's own provider keys, spelled here rather than imported to keep
+# this load-path leaf free of a ``kiro_crew.model_registry`` dependency.
+_MODEL_REGISTRY_NAMESPACE_BY_BACKEND: dict = {
+    ACP_BACKEND_CLAUDE: "claude_code",
+    ACP_BACKEND_KIRO: "acp",
+    ACP_BACKEND_KAS: "acp",
+    ACP_BACKEND_CODEX: "acp",
+}
+
+
+def model_registry_namespace(backend: str) -> str:
+    """The model-registry namespace key for *backend* (default ``acp``)."""
+    return _MODEL_REGISTRY_NAMESPACE_BY_BACKEND.get(backend, "acp")
+
+
 # Backends implementing ``_kiro.dev/commands/execute`` — the kiro extension that
 # runs a slash command as an RPC. Non-members have no equivalent verb, so their
 # slash commands go through ``session/prompt`` and are interpreted by the adapter

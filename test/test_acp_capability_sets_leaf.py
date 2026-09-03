@@ -24,14 +24,18 @@ import pytest
 
 from kiro_crew.acp_backends import (
     ACP_BACKEND_CLAUDE,
+    ACP_BACKEND_CODEX,
     ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
     ACP_BACKENDS_ACP_RUNTIME,
+    ACP_BACKENDS_ADVERTISED_MODEL_SELECTION,
     ACP_BACKENDS_COMPACT,
     ACP_BACKENDS_INTERNAL_SANDBOX,
     ACP_BACKENDS_KIRO_IDENTITY_STORE,
+    ACP_BACKENDS_SEED_LOCAL_SETTINGS,
     ACP_BACKENDS_SESSION_SHARING,
     ACP_BACKENDS_STEER,
+    model_registry_namespace,
 )
 from kiro_crew.subprocess_utf8 import UTF8_TEXT
 
@@ -39,9 +43,11 @@ SRC = Path(__file__).resolve().parent.parent / "src" / "kiro_crew"
 
 CAPABILITY_SETS = (
     "ACP_BACKENDS_ACP_RUNTIME",
+    "ACP_BACKENDS_ADVERTISED_MODEL_SELECTION",
     "ACP_BACKENDS_COMPACT",
     "ACP_BACKENDS_INTERNAL_SANDBOX",
     "ACP_BACKENDS_KIRO_IDENTITY_STORE",
+    "ACP_BACKENDS_SEED_LOCAL_SETTINGS",
     "ACP_BACKENDS_SESSION_SHARING",
     "ACP_BACKENDS_STEER",
 )
@@ -127,6 +133,23 @@ def test_membership_is_unchanged_by_the_move() -> None:
     assert ACP_BACKENDS_STEER == frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_KAS})
     assert ACP_BACKENDS_ACP_RUNTIME == frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_KAS})
     assert ACP_BACKENDS_KIRO_IDENTITY_STORE == frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_KAS})
+    # The provider-advertised-model seams: claude only today. A future adapter
+    # with the same served-vs-stored spelling gap (or its own settings seed) opts
+    # in here — a deliberate edit this pin forces to be seen.
+    assert ACP_BACKENDS_ADVERTISED_MODEL_SELECTION == frozenset({ACP_BACKEND_CLAUDE})
+    assert ACP_BACKENDS_SEED_LOCAL_SETTINGS == frozenset({ACP_BACKEND_CLAUDE})
+
+
+def test_model_registry_namespace_maps_every_known_backend() -> None:
+    """The namespace is a registry index selector, mapped for every backend so a
+    future ADVERTISED_MODEL_SELECTION member already has an entry. Non-claude ids
+    live in the ``acp`` namespace; only claude uses ``claude_code``."""
+    assert model_registry_namespace(ACP_BACKEND_CLAUDE) == "claude_code"
+    assert model_registry_namespace(ACP_BACKEND_KIRO) == "acp"
+    assert model_registry_namespace(ACP_BACKEND_KAS) == "acp"
+    assert model_registry_namespace(ACP_BACKEND_CODEX) == "acp"
+    # An unknown/unregistered backend defaults to the kiro namespace, never crashes.
+    assert model_registry_namespace("something-new") == "acp"
 
 
 def test_acp_runtime_is_a_superset_of_session_sharing() -> None:

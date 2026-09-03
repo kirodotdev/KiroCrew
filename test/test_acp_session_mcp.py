@@ -647,8 +647,11 @@ class TestLocalSettingsSeed:
         client._write_claude_local_settings()
         data = json.loads((tmp_path / ".claude" / "settings.local.json").read_text())
         # Without the allowlist the adapter can collapse a versioned [1m] id back
-        # to the 200K window.
-        assert data["availableModels"] == model_registry.available_models("claude_code")
+        # to the 200K window. The seed writes the window-deduped list (a 200K base
+        # id is dropped when its 1M sibling is present), so it can differ from the
+        # raw registry list — compare against seed_available_models, the deduped
+        # source the seed actually uses.
+        assert data["availableModels"] == model_registry.seed_available_models("claude_code")
 
     def test_no_permission_mode_leaves_the_adapter_default(self, tmp_path):
         client = self._client(tmp_path)

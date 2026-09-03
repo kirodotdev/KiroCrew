@@ -440,3 +440,145 @@ class TestCorruptRegistryFallback:
             mr.to_provider_id("opus-4.8-1m", "claude_code")
             == "global.anthropic.claude-opus-4-8[1m]"
         )
+
+
+class TestAdvertisedModelCache:
+    """The provider-advertised model cache: seed source + wire-id folding.
+
+    Uses monkeypatch to isolate the module-global ``_ADVERTISED_MODELS`` per
+    test (it is process-wide runtime state, like ``_KIRO_WINDOWS``).
+    """
+
+    def test_seed_falls_back_to_registry_on_cold_cache(self, monkeypatch):
+        monkeypatch.setattr(mr, "_ADVERTISED_MODELS", {})
+        # The registry allowlist, deduped so a base-window id never rides next to
+        # its 1M sibling (the pre-dedup list still shipped both).
+        assert mr.seed_available_models("claude_code") == mr._dedup_window_siblings(
+            mr.available_models("claude_code")
+        )
+
+    def test_seed_drops_base_window_sibling_of_a_1m_id(self, monkeypatch):
+        # The 4.8 fix: the registry emits both the [1m] and the 200K spelling of
+        # Opus 4.8; the seed must carry only the 1M one so the adapter cannot
+        # collapse a 4.8 pick to the base window.
+        monkeypatch.setattr(mr, "_ADVERTISED_MODELS", {})
+        seed = mr.seed_available_models("claude_code")
+        assert "global.anthropic.claude-opus-4-8[1m]" in seed
+        assert "global.anthropic.claude-opus-4-8" not in seed
+
+    def test_seed_dedups_advertised_siblings_too(self, monkeypatch):
+        # A backend that advertises BOTH spellings is deduped the same way.
+        monkeypatch.setattr(
+            mr,
+            "_ADVERTISED_MODELS",
+            {
+                "claude_code": [
+                    "global.anthropic.claude-opus-4-8[1m]",
+                    "global.anthropic.claude-opus-4-8",
+                    "global.anthropic.claude-sonnet-5",
+                ]
+            },
+        )
+        assert mr.seed_available_models("claude_code") == [
+            "global.anthropic.claude-opus-4-8[1m]",
+            "global.anthropic.claude-sonnet-5",
+        ]
+
+    def test_dedup_keeps_order_and_drops_exact_dupes(self):
+        # No 1M sibling to collapse against → only exact duplicates removed,
+        # order preserved.
+        assert mr._dedup_window_siblings(["a", "b", "a", "c"]) == ["a", "b", "c"]
+
+    def test_dedup_keeps_distinct_base_models(self):
+        # Two different 1M models are both kept — dedup is per normalized base.
+        ids = ["global.anthropic.claude-opus-5[1m]", "global.anthropic.claude-opus-4-8[1m]"]
+        assert mr._dedup_window_siblings(ids) == ids
+
+    def test_seed_prefers_advertised_when_warm(self, monkeypatch):
+        served = [
+            "global.anthropic.claude-opus-5[1m]",
+            "global.anthropic.claude-opus-4-8[1m]",
+        ]
+        monkeypatch.setattr(mr, "_ADVERTISED_MODELS", {"claude_code": served})
+        assert mr.seed_available_models("claude_code") == served
+
+    def test_refresh_reports_change_and_dedupes(self, monkeypatch):
+        monkeypatch.setattr(mr, "_ADVERTISED_MODELS", {})
+        assert mr.refresh_advertised_models("claude_code", ["a", "b", "a"]) is True
+        assert mr.advertised_models("claude_code") == ["a", "b"]
+        # Same set again → no change.
+        assert mr.refresh_advertised_models("claude_code", ["a", "b"]) is False
+
+    def test_refresh_empty_never_wipes_a_good_cache(self, monkeypatch):
+        monkeypatch.setattr(mr, "_ADVERTISED_MODELS", {"claude_code": ["a"]})
+        assert mr.refresh_advertised_models("claude_code", []) is False
+        assert mr.advertised_models("claude_code") == ["a"]
+
+    def test_persist_round_trips(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(mr, "_ADVERTISED_MODELS", {})
+        monkeypatch.setattr(mr, "_advertised_models_cache_path", lambda: tmp_path / "pm.json")
+        mr.refresh_advertised_models("claude_code", ["global.anthropic.claude-opus-5[1m]"])
+        mr.persist_advertised_models()
+        # Reload into a fresh dict and confirm the sidecar was written.
+        monkeypatch.setattr(mr, "_ADVERTISED_MODELS", {})
+        mr._load_advertised_models()
+        assert mr.advertised_models("claude_code") == ["global.anthropic.claude-opus-5[1m]"]
+
+    def test_wire_id_folds_bare_onto_advertised_versioned(self, monkeypatch):
+        # The core fix: a bare id the registry does not carry folds onto the
+        # versioned [1m] id the backend advertised, so it stops collapsing to
+        # the base window.
+        monkeypatch.setattr(
+            mr, "_ADVERTISED_MODELS", {"claude_code": ["global.anthropic.claude-opus-5[1m]"]}
+        )
+        assert (
+            mr.resolve_wire_model_id("claude-opus-5", "claude_code")
+            == "global.anthropic.claude-opus-5[1m]"
+        )
+
+    def test_wire_id_prefers_1m_when_both_spellings_advertised(self, monkeypatch):
+        monkeypatch.setattr(
+            mr,
+            "_ADVERTISED_MODELS",
+            {
+                "claude_code": [
+                    "global.anthropic.claude-opus-5",
+                    "global.anthropic.claude-opus-5[1m]",
+                ]
+            },
+        )
+        assert (
+            mr.resolve_wire_model_id("claude-opus-5", "claude_code")
+            == "global.anthropic.claude-opus-5[1m]"
+        )
+
+    def test_wire_id_passthrough_when_cold_or_unmatched(self, monkeypatch):
+        monkeypatch.setattr(mr, "_ADVERTISED_MODELS", {})
+        # Cold cache → unchanged.
+        assert mr.resolve_wire_model_id("claude-opus-5", "claude_code") == "claude-opus-5"
+        # Warm but no normalized match → unchanged (never rewrites to a model
+        # the provider does not serve).
+        monkeypatch.setattr(
+            mr, "_ADVERTISED_MODELS", {"claude_code": ["global.anthropic.claude-sonnet-4-6[1m]"]}
+        )
+        assert mr.resolve_wire_model_id("claude-opus-5", "claude_code") == "claude-opus-5"
+
+    def test_wire_id_leaves_auto_and_empty_alone(self, monkeypatch):
+        monkeypatch.setattr(
+            mr, "_ADVERTISED_MODELS", {"claude_code": ["global.anthropic.claude-opus-5[1m]"]}
+        )
+        assert mr.resolve_wire_model_id("auto", "claude_code") == "auto"
+        assert mr.resolve_wire_model_id("", "claude_code") == ""
+
+    def test_wire_id_keeps_an_already_advertised_id(self, monkeypatch):
+        served = "global.anthropic.claude-opus-4-8[1m]"
+        monkeypatch.setattr(mr, "_ADVERTISED_MODELS", {"claude_code": [served]})
+        assert mr.resolve_wire_model_id(served, "claude_code") == served
+
+    def test_to_provider_id_unknown_still_passes_through(self, monkeypatch):
+        # Guard: the pure translation is unchanged — folding lives in
+        # resolve_wire_model_id, not to_provider_id.
+        monkeypatch.setattr(
+            mr, "_ADVERTISED_MODELS", {"claude_code": ["global.anthropic.claude-opus-5[1m]"]}
+        )
+        assert mr.to_provider_id("claude-opus-5", "claude_code") == "claude-opus-5"

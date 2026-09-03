@@ -72,9 +72,11 @@ from kiro_crew.acp.types import (
     ACP_BACKEND_CLAUDE,
     ACP_BACKEND_CODEX,
     ACP_BACKEND_KIRO,
+    ACP_BACKENDS_ADVERTISED_MODEL_SELECTION,
     ACP_BACKENDS_INTERNAL_SANDBOX,
     ACP_BACKENDS_MEMBER_DISPATCH,
     ACP_BACKENDS_MODEL_VIA_CONFIG_OPTION,
+    ACP_BACKENDS_SEED_LOCAL_SETTINGS,
     ACP_BACKENDS_SESSION_MCP_ARRAY,
     ACP_BACKENDS_STEER,
     ACP_CLIENT_CAPABILITIES,
@@ -128,6 +130,7 @@ from kiro_crew.acp.types import (
     AcpPromptStats,
     JsonRpcMessage,
     JsonRpcRequest,
+    model_registry_namespace,
 )
 from kiro_crew.agent import ensure_agent_materialized
 from kiro_crew.browser_cli.launch import browser_session_env, browser_socket_env
@@ -2521,6 +2524,10 @@ class AcpClient:
         # offers rather than a hardcoded guess. Each entry: {modelId, name,
         # description}.
         self._available_models: list[dict[str, str]] = []
+        # Set by _capture_available_models (claude only) when the discovered ids
+        # changed the cross-session provider-model cache, signalling the async
+        # init path to offload a disk persist. Reset to False after each persist.
+        self._advertised_models_changed: bool = False
         # Mode ids the backend advertised at session init (session/new|load
         # `modes.availableModes`). Empty when the backend omits `modes` (older
         # kiro-cli / offline fake) — the set_mode guard treats empty as "attempt"
@@ -2662,6 +2669,27 @@ class AcpClient:
     @property
     def _is_codex(self) -> bool:
         return self.backend == ACP_BACKEND_CODEX
+
+    @property
+    def _model_registry_namespace(self) -> str:
+        """The model_registry namespace key for this backend (``claude_code`` /
+        ``acp``). A registry index selector, NOT a provider-identity check — see
+        agent_sdk.provider_identity note 3. Used to fold the wire model id and
+        seed the allowlist against the right index for whichever backend is a
+        member of ``ACP_BACKENDS_ADVERTISED_MODEL_SELECTION``."""
+        return model_registry_namespace(self.backend)
+
+    @property
+    def _uses_advertised_model_selection(self) -> bool:
+        """True when this backend sources its wire model id / seed from the
+        provider's advertised list (see ``ACP_BACKENDS_ADVERTISED_MODEL_SELECTION``)."""
+        return self.backend in ACP_BACKENDS_ADVERTISED_MODEL_SELECTION
+
+    @property
+    def _seeds_local_settings(self) -> bool:
+        """True when this backend seeds (and must re-seed) a per-session settings
+        file (see ``ACP_BACKENDS_SEED_LOCAL_SETTINGS``)."""
+        return self.backend in ACP_BACKENDS_SEED_LOCAL_SETTINGS
 
     @property
     def _is_kiro(self) -> bool:
@@ -3014,19 +3042,24 @@ class AcpClient:
             perms["deny"] = list(deny_rules)
         if perms:
             data["permissions"] = perms
-        # "claude_code" is the registry's provider key for this backend (the same
-        # literal model_registry itself indexes by).
-        allowlist = model_registry.available_models("claude_code")
+        # Namespace-keyed (claude_code here), the registry index this backend's ids
+        # live in — see _model_registry_namespace. Provider-first: the ids the
+        # backend actually advertised (cached from a prior session/new) when the
+        # cache is warm, so the seed reflects what the account is served and a
+        # served-but-unregistered model gets its real window; the static registry
+        # allowlist is the cold-cache fallback (first-ever session), which is the
+        # exact list shipped before this cache existed.
+        allowlist = model_registry.seed_available_models(self._model_registry_namespace)
         if allowlist:
             data["availableModels"] = allowlist
         else:
             # Only reachable with a corrupt/missing model registry (which the
-            # registry already warns about at import). Without the allowlist the
-            # adapter can collapse the [1m] id to 200K, so say so here rather
-            # than degrade silently.
+            # registry already warns about at import) AND a cold advertised-model
+            # cache. Without the allowlist the adapter can collapse the [1m] id to
+            # 200K, so say so here rather than degrade silently.
             logger.warning(
-                "model registry availableModels empty (corrupt or missing registry?); "
-                "settings.local.json written without an allowlist — the 1M-token "
+                "availableModels empty (corrupt/missing registry and cold advertised-model "
+                "cache?); settings.local.json written without an allowlist — the 1M-token "
                 "window may not resolve",
             )
         # self._model is a resolved provider id; DEFAULT_MODEL ("auto") is not one,
@@ -3153,6 +3186,17 @@ class AcpClient:
             _rejected_log, _ = redact_exfiltration_urls(str(model_id))
             _rejected_log, _ = redact_credentials(_rejected_log)
             raise AcpModelUnavailable(_rejected_log, self._advertised_model_ids())
+        if self._uses_advertised_model_selection:
+            # Mirror the spawn path (_spawn): fold the requested id onto the exact
+            # spelling the backend advertised, so a warm-pool claim that switches
+            # model sends the versioned [1m] id claude-agent-acp serves at 1M — not
+            # a bare/base spelling that resolves to the 200K window. Without this
+            # the fold happened only at spawn, so a pooled runtime claimed for a
+            # 4.8 chat could send the base id and silently serve 200K. Capability-
+            # gated + namespace-keyed so any future member gets the same fold.
+            model_id = model_registry.resolve_wire_model_id(
+                model_id, self._model_registry_namespace
+            )
         if self.backend in ACP_BACKENDS_MODEL_VIA_CONFIG_OPTION:
             await self.set_config_option("model", model_id)
         else:
@@ -3162,6 +3206,19 @@ class AcpClient:
             )
         self._model = model_id
         self._resolved_model_id = model_id
+        if self._seeds_local_settings:
+            # Re-seed the per-session settings file: a pooled runtime seeded it at
+            # spawn with the POOL DEFAULT model + its allowlist, and the spawn-only
+            # seed left that stale file in place across the claim — so the allowlist
+            # and model key could still describe the pool default (and collapse a
+            # 4.8 pick to 200K). Overwrites only the file Crew authored (ownership
+            # guards inside), refreshing both to the just-claimed selection.
+            # Capability-gated (not ``_is_claude``) so a future settings-seeding
+            # adapter re-seeds on a warm claim by joining the set.
+            try:
+                await asyncio.to_thread(self._write_claude_local_settings)
+            except (OSError, ValueError, TypeError):
+                logger.warning("re-seed of settings.local.json on set_model failed", exc_info=True)
         # The previous model's window (and its authoritative usage_update, if
         # any) no longer describe this session — rebase the meter stats to the
         # new model so the context meter updates without waiting for the next
@@ -3212,6 +3269,36 @@ class AcpClient:
         captured = parse_advertised_models({"models": models})
         if captured:
             self._available_models = captured
+            # Feed the discovered ids into the cross-session provider-model cache
+            # so the next session's settings seed can source availableModels (and
+            # the wire model id) from what this backend actually serves rather
+            # than the static registry. In-memory + synchronous here (cheap, and
+            # this method is sync); the disk persist is offloaded by the async
+            # caller when this reports a change. Gated on capability, not on
+            # ``_is_claude`` (harness-parity H6): kiro-cli reaches its models via
+            # --agent and its windows via the --list-models cache, so it is not a
+            # member and feeds nothing; a future adapter with the same served-vs-
+            # stored spelling gap opts into the set and is fed here automatically,
+            # keyed by its own registry namespace.
+            if self._uses_advertised_model_selection:
+                self._advertised_models_changed = model_registry.refresh_advertised_models(
+                    self._model_registry_namespace, self._advertised_model_ids()
+                )
+
+    async def _persist_advertised_models_if_changed(self) -> None:
+        """Offload a disk persist of the provider-model cache when it changed.
+
+        Mirrors the kiro-window cache's split: :func:`refresh_advertised_models`
+        did the cheap in-memory update synchronously in
+        ``_capture_available_models`` and set ``_advertised_models_changed``;
+        this offloads only the blocking write so the init path never persists on
+        the event loop, and never for an unchanged cache. Best-effort — a write
+        failure is swallowed by ``persist_advertised_models`` itself.
+        """
+        if not self._advertised_models_changed:
+            return
+        self._advertised_models_changed = False
+        await asyncio.to_thread(model_registry.persist_advertised_models)
 
     def available_models(self) -> list[dict[str, str]]:
         """Models advertised by the backend at session init (may be empty)."""
@@ -3492,6 +3579,18 @@ class AcpClient:
             await asyncio.to_thread(assert_voice_runtime_outside_agent_workspace, self._work_dir)
 
         if self._is_claude:
+            # Fold the requested model onto the exact spelling claude-agent-acp
+            # advertised (from the persisted provider-model cache warmed by a
+            # prior session's _capture_available_models), so a model the static
+            # registry does not carry still resolves to the versioned [1m] id the
+            # backend serves rather than a bare form that collapses to the base
+            # window. Done here so BOTH the seed below and _apply_startup_model's
+            # set_model read the same id. No-op on a cold cache (first-ever
+            # session): the registry fallback in the seed still applies and this
+            # session's own capture warms the cache for the next one.
+            self._model = model_registry.resolve_wire_model_id(
+                self._model, self._model_registry_namespace
+            )
             # Per-session settings seed (permissions.defaultMode + the
             # availableModels allowlist that unlocks the 1M-token window). It MUST
             # run on the PRIMARY spawn path — not only the rare model-substitution
@@ -4358,6 +4457,8 @@ class AcpClient:
                         self._session_id = resume_sid
                         self._resumed = True
                         self._capture_available_models(load_resp)
+                        if self._uses_advertised_model_selection:
+                            await self._persist_advertised_models_if_changed()
                         self._store_session_config(load_resp)
                         logger.info("ACP session resumed: %s", resume_sid)
                 except (AcpError, AcpTimeoutError):
@@ -4380,6 +4481,8 @@ class AcpClient:
             session_resp = await self._new_session_following_substitution()
             self._session_id = session_resp.get("sessionId")
             self._capture_available_models(session_resp)
+            if self._uses_advertised_model_selection:
+                await self._persist_advertised_models_if_changed()
             self._store_session_config(session_resp)
             if not self._session_id:
                 # Both the initial attempt and the substitution retry failed to

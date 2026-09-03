@@ -21,6 +21,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 import kiro_crew.acp.client as acp_client
+from kiro_crew import model_registry as mr
 from kiro_crew.acp.client import (
     AcpAuthRequired,
     AcpClient,
@@ -44,6 +45,7 @@ from kiro_crew.acp.client import (
 )
 from kiro_crew.acp.types import (
     ACP_BACKEND_CLAUDE,
+    ACP_BACKEND_CODEX,
     EVENT_AGENT_SWITCHED,
     EVENT_COMPLETE,
     EVENT_MCP_OAUTH_REQUEST,
@@ -1584,3 +1586,103 @@ class TestToolInterruptedAudit:
 
         messages = " ".join(r.getMessage() for r in caplog.records)
         assert "SEL audit failed for tool_interrupted" in messages
+
+
+# ── Provider-advertised model cache wiring (client side) ──
+
+
+class TestAdvertisedModelCacheWiring:
+    """The client half of sourcing model selection from the provider's own
+    advertised list: the seed reads the cache, and a capture feeds it.
+
+    The module-global ``mr._ADVERTISED_MODELS`` is isolated per test.
+    """
+
+    def _read_seed(self, tmp_path: Path) -> dict:
+        return json.loads((tmp_path / ".claude" / "settings.local.json").read_text())
+
+    def test_seed_availableModels_from_advertised_cache(self, tmp_path, monkeypatch):
+        served = [
+            "global.anthropic.claude-opus-5[1m]",
+            "global.anthropic.claude-opus-4-8[1m]",
+        ]
+        monkeypatch.setattr(mr, "_ADVERTISED_MODELS", {"claude_code": served})
+        client = _client(tmp_path, acp_backend=ACP_BACKEND_CLAUDE)
+        client._write_claude_local_settings()
+        assert self._read_seed(tmp_path)["availableModels"] == served
+
+    def test_seed_falls_back_to_registry_on_cold_cache(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(mr, "_ADVERTISED_MODELS", {})
+        client = _client(tmp_path, acp_backend=ACP_BACKEND_CLAUDE)
+        client._write_claude_local_settings()
+        assert self._read_seed(tmp_path)["availableModels"] == mr.seed_available_models(
+            "claude_code"
+        )
+
+    def test_claude_capture_feeds_and_flags_the_cache(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(mr, "_ADVERTISED_MODELS", {})
+        client = _client(tmp_path, acp_backend=ACP_BACKEND_CLAUDE)
+        client._capture_available_models(
+            {"models": {"availableModels": [{"modelId": "global.anthropic.claude-opus-5[1m]"}]}}
+        )
+        assert mr.advertised_models("claude_code") == ["global.anthropic.claude-opus-5[1m]"]
+        assert client._advertised_models_changed is True
+
+    def test_non_claude_capture_does_not_feed_the_cache(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(mr, "_ADVERTISED_MODELS", {})
+        client = _client(tmp_path)  # default backend is kiro-cli
+        client._capture_available_models(
+            {"models": {"availableModels": [{"modelId": "claude-opus-4.8"}]}}
+        )
+        assert mr.advertised_models("claude_code") == []
+        assert client._advertised_models_changed is False
+
+    @pytest.mark.asyncio
+    async def test_set_model_folds_bare_id_onto_advertised_spelling(self, tmp_path, monkeypatch):
+        # The warm-pool 4.8 fix: a claim that switches model must send the
+        # versioned [1m] id the backend serves at 1M, not the bare spelling.
+        monkeypatch.setattr(
+            mr, "_ADVERTISED_MODELS", {"claude_code": ["global.anthropic.claude-opus-4-8[1m]"]}
+        )
+        client = _client(tmp_path, acp_backend=ACP_BACKEND_CLAUDE)
+        client._session_id = "sid"
+        client._send_request = AsyncMock(return_value=1)
+        client.set_config_option = AsyncMock(return_value=None)
+        await client.set_model("claude-opus-4-8")
+        assert client._model == "global.anthropic.claude-opus-4-8[1m]"
+        assert client._resolved_model_id == "global.anthropic.claude-opus-4-8[1m]"
+
+    @pytest.mark.asyncio
+    async def test_set_model_reseeds_settings_on_claude(self, tmp_path, monkeypatch):
+        # The re-seed half: set_model refreshes settings.local.json so a pooled
+        # runtime's stale spawn-time seed is overwritten with the claimed model.
+        monkeypatch.setattr(
+            mr, "_ADVERTISED_MODELS", {"claude_code": ["global.anthropic.claude-opus-4-8[1m]"]}
+        )
+        client = _client(tmp_path, acp_backend=ACP_BACKEND_CLAUDE)
+        client._session_id = "sid"
+        client._send_request = AsyncMock(return_value=1)
+        client.set_config_option = AsyncMock(return_value=None)
+        await client.set_model("claude-opus-4-8")
+        seed = json.loads((tmp_path / ".claude" / "settings.local.json").read_text())
+        assert seed["model"] == "global.anthropic.claude-opus-4-8[1m]"
+        assert "global.anthropic.claude-opus-4-8[1m]" in seed["availableModels"]
+
+    @pytest.mark.asyncio
+    async def test_set_model_on_non_member_backend_neither_folds_nor_reseeds(
+        self, tmp_path, monkeypatch
+    ):
+        # codex is a MODEL_VIA_CONFIG_OPTION backend but NOT a member of
+        # ADVERTISED_MODEL_SELECTION / SEED_LOCAL_SETTINGS, so a warm claim must
+        # switch the model verbatim: no fold onto a cached [1m] spelling, no
+        # settings.local.json. Guards the capability gating against a regression to
+        # "any config-option backend".
+        monkeypatch.setattr(
+            mr, "_ADVERTISED_MODELS", {"claude_code": ["global.anthropic.claude-opus-4-8[1m]"]}
+        )
+        client = _client(tmp_path, acp_backend=ACP_BACKEND_CODEX)
+        client._session_id = "sid"
+        client.set_config_option = AsyncMock(return_value=None)
+        await client.set_model("gpt-5-codex")
+        assert client._model == "gpt-5-codex"  # sent verbatim, no fold
+        assert not (tmp_path / ".claude" / "settings.local.json").exists()
