@@ -923,7 +923,6 @@ test/test_perf_sampler.py
 test/test_persist_off_loop.py
 test/test_persistence_probe.py
 test/test_personal_shopper_no_purchase_capability.py
-test/test_pid_lifecycle.py
 test/test_platform_admission.py
 test/test_platform_compat_coverage.py
 test/test_playwright_e2e.py
