@@ -898,8 +898,10 @@ segments are trusted module constants.
 
 `instances/run_marker.py` writes and reads
 `<data-home>/run/gateway-<port>.bin` (the running gateway's own `kirocrew`
-launcher path) and `<data-home>/run/gateway-<port>.pid` (its pid). It has two
-unrelated consumers, and separating them is the point of the module.
+launcher path), `<data-home>/run/gateway-<port>.pid` (its pid) and
+`<data-home>/run/gateway-<port>.start` (that pid's start-time identity, section
+12.2). It has two unrelated consumers, and separating them is the point of the
+module.
 
 ### Consumer 1: remote token mint targets the running gateway's install
 
@@ -1049,11 +1051,58 @@ reachable sandbox escape, which the owner and `-x` checks do not stop because
 agent writes run as the same user. `run/` is therefore classified read+write
 sensitive in `security._SENSITIVE_HOME_DIRS`, under every known data-home prefix.
 The dir is created `0700` (re-applied on an existing dir, since `exist_ok` does
-not re-apply mode) and both files are written `0600` through the shared
+not re-apply mode) and every file is written `0600` through the shared
 `atomic_write` helper, whose unique `mkstemp` + `os.replace` closes the
 same-user symlink TOCTOU a predictable `<name>.tmp` would leave open. Every
 legitimate writer opens these paths directly and does not route through the file
 gate, so gateway startup and spawn are unaffected.
+
+### 12.2 The pid's start identity is a separate sidecar
+
+`<data-home>/run/gateway-<port>.start` holds the start-time identity of the
+process named by `gateway-<port>.pid`. `run_marker.pid_start_token()` is its single
+producer and it CHAINS two platform helpers, because neither covers every host and
+using either alone costs a platform:
+
+- `platform_compat.get_process_start_id()` is preferred — the same producer session
+  PIDs use, in-process (no subprocess), and microsecond resolution on macOS, where
+  `process_start_time`'s `ps -o lstart=` spelling is only 1-second granular, so a
+  PID recycled inside the same second would reproduce an identical value.
+- `platform_compat.process_start_time()` is the fallback, and it is what keeps
+  **Windows** working: it reads the process creation `FILETIME` (100-ns units)
+  through a query-only handle, while `get_process_start_id()` implements Linux and
+  macOS only and answers `None` everywhere else. Without this leg the token is
+  empty on every Windows host, so a pod there could never prove ownership — an
+  unsatisfiable requirement rather than a strict one. `metrics.md` records the same
+  trap reached from the other direction: `get_process_start_id` used alone as a
+  liveness test "judged every owner dead on that entire platform".
+
+The fallback's value is whitespace-collapsed, because the macOS `ps` spelling is
+space-padded and the reader requires a single token; Windows returns a bare
+integer, so the collapse is a no-op there.
+
+It is a **separate file, not a second line in the pid sidecar**. The reader
+shipped in every released client takes the WHOLE pid file, strips it and requires
+`isdigit()`, so a two-line record reads as `None` — and an older client venv
+sharing this data home would then have `_gateway_owns_port()` deny a gateway that
+genuinely is ours. `_pid_record()` therefore stays byte-identical to the
+historical `<pid>\n`, and `read_pid_record_path()` returns `(pid, start_token)` by
+reading the pid from the path it was given and the token from the `.start` sibling
+beside it. `write_marker()` writes `.start` first (both orders fail closed; this
+one narrows the window in which a published pid has no identity), writes it even
+when empty so a predecessor's token can never be left in place, and both
+`prune_markers()` and `clear_marker()` remove it with the pid it attests.
+
+An absent, oversized, non-ASCII or whitespace-bearing `.start` file all read as
+`""` = **unproven**, never as a wildcard match: `pod.runtime._pod_recorded_pid()`
+re-probes the live identity and refuses unless it agrees verbatim, which is what
+lets a PID-record/`MainPID` agreement attest with no listener evidence at all. A
+record with no identity is refused for a *different reason* than a stale one, and
+the two need opposite remedies — a crash leftover is fixed by a restart, while a
+missing identity means the pod's checkout predates this sidecar, so its worktree
+must be rebuilt and re-provisioned. `pod.runtime._unproven_remedy()` splits them,
+because a refusal that prescribes a restart which cannot work sends an agent
+round a loop that never terminates.
 
 ---
 
