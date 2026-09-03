@@ -4101,6 +4101,19 @@ def _requeue_unconsumed_steers(state: "DashboardState", slot: "_ChatSlot") -> No
         _did = getattr(slot, "_steer_delivery_ids", {}).pop(steer_msg, "")
         if _did:
             _meta["steer_delivery_id"] = _did
+        # Carry the client's `sendId` the same way, for the same reason one step
+        # further on (#6751). The drain unions this meta onto the row it writes, so
+        # this is what gives a REQUEUED steer's row the `meta.sendId` an ACCEPTED
+        # steer's row already gets from `steer_into_running_turn` -- without it the
+        # row is id-less, `mergePreservedThinking` has no id to resolve the
+        # optimistic bubble against, and the pre-steer thinking chip strands at the
+        # tail until a reload. Popped in lockstep with the delivery id above so the
+        # two maps never disagree about what is still in flight. Additive: a steer
+        # whose POST carried no id stores nothing here and its entry meta keeps the
+        # exact prior shape.
+        _sid = getattr(slot, "_steer_send_ids", {}).pop(steer_msg, "")
+        if _sid:
+            _meta["sendId"] = _sid
         # Provenance is derivable, not guessed: `steer_into_running_turn` has
         # exactly one caller (the api_chat composer branch), and app isolation
         # confines app-surface requests to app-scoped slots — so every steer

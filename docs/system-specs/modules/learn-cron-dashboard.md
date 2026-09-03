@@ -822,9 +822,31 @@ decline-to-guess default. `sendId` is additive optional meta everywhere it
 travels — no schema bump, and a send without one keeps the exact prior row,
 payload, and scan behavior. Pinned by the sendId tests in
 `test_chat_steer.py`, `chatThinkingSteerBoundary.test.ts`, and
-`ChatSliceCoverageSecondPass.test.tsx`. Known residual: the `STEER_REQUEUED`
-paths do not thread the id into the requeued queue entry, so a steer that
-requeues keeps today's behavior (over-keep — the bubble reconciles on reload).
+`ChatSliceCoverageSecondPass.test.tsx`.
+
+**Send identity through the REQUEUE path (#6751).** A steer whose turn dies
+before kiro-cli confirms it does not persist its own row: the teardown degrades
+it into a queue card and the DRAIN writes the row. That path is covered by the
+same id, threaded one step further. `steer_into_running_turn` records the
+normalized value in `slot._steer_send_ids` (keyed by the message text, like
+`slot._steer_delivery_ids`, and removed in LOCKSTEP with it at every site --
+the unwind, the terminal persisting tail, the hard-kill discard, and the requeue
+itself -- so an entry in one always implies an entry in the other),
+`_requeue_unconsumed_steers` moves it onto the queue entry's meta beside
+`steer_delivery_id`, and the drain's union over every consumed entry's meta
+carries it onto the row it appends. The three `STEER_REQUEUED` returns are
+deliberately NOT the write site: two of them cannot be, because one returns
+before the teardown has requeued anything and the other after the drain has
+already written the row, so the requeue is the only writer common to all three.
+The resulting row is a non-steer user row carrying `meta.sendId` -- the same
+shape `api_chat`'s new-turn path already persists -- so `mergePreservedThinking`
+reads it as a new-turn boundary for that id and the finished turn's chip drops
+with coverage instead of stranding at the tail until a reload. No client change.
+Known residual: `_drained_meta` accumulates only `steer_delivery_id` (into
+`steer_delivery_ids`) and is last-writer-wins for every other key, so a row that
+MERGES two requeued steers keeps one `sendId` and the other send keeps the
+over-keep default. Pinned by the requeue sendId tests in
+`test_steer_requeue.py`.
 
 ### Wait countdown and early end (`/api/session-keepalive` as a control channel)
 

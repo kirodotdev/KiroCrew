@@ -2761,6 +2761,10 @@ async def stop_slot_turn(
         # of having a row persisted for a message that never ran.
         for _discarded in slot._pending_steers:
             slot._steer_delivery_ids.pop(_discarded, None)
+            # Lockstep with the line above (see `_ChatSlot._steer_send_ids`): a hard
+            # kill discards the text, so there is no requeued entry left to carry
+            # the client's send id onto.
+            slot._steer_send_ids.pop(_discarded, None)
         slot._pending_steers.clear()
         state.push_slots_update()
         logger.info("Stop (force): hard-killing session for slot %s", name)
