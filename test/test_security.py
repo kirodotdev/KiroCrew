@@ -309,6 +309,53 @@ class TestRedactCredentials:
         # host after @ may remain — only the credential prefix is redacted
         assert "[REDACTED: credential]" in result
 
+    def test_every_redaction_tag_constant_is_registered(self) -> None:
+        """A new credential tag must be added to ``CREDENTIAL_REDACTION_TAGS``.
+
+        Consumers ask that tuple "did the redactor replace something here" -- the
+        dashboard chat notice (issue #6189) counts it to tell the user their text
+        was rewritten. A tag that exists but is not registered is invisible to
+        every such consumer, which is exactly how the encoded-credential tag came
+        to be missed. This ratchet makes that omission fail here instead of
+        silently degrading a user-facing warning.
+        """
+        from kiro_crew import security
+
+        declared = {
+            name: value
+            for name, value in vars(security).items()
+            if name.startswith("_REDACTED_") and name.endswith("_TAG")
+            if isinstance(value, str)
+        }
+        assert declared, "tag-constant naming changed; this ratchet no longer sees them"
+
+        unregistered = {
+            name: value
+            for name, value in declared.items()
+            if value not in security.CREDENTIAL_REDACTION_TAGS
+        }
+        assert not unregistered, (
+            "redaction tag(s) not in CREDENTIAL_REDACTION_TAGS: "
+            f"{sorted(unregistered)} -- add them there so consumers that ask "
+            "'was anything redacted' (e.g. the dashboard chat notice) can see them"
+        )
+
+    def test_pass_two_emits_a_registered_tag(self) -> None:
+        """The base64 pass must substitute a tag consumers actually look for."""
+        import base64
+
+        from kiro_crew.security import (
+            _REDACTED_ENCODED_CREDENTIAL_TAG,
+            CREDENTIAL_REDACTION_TAGS,
+        )
+
+        blob = base64.b64encode(b"postgresql://user:pass@host:5432/db").decode()
+        result, warnings = redact_credentials(f"blob: {blob}")
+
+        assert _REDACTED_ENCODED_CREDENTIAL_TAG in result
+        assert _REDACTED_ENCODED_CREDENTIAL_TAG in CREDENTIAL_REDACTION_TAGS
+        assert any("base64-encoded" in w for w in warnings)
+
     @pytest.mark.parametrize(
         "mongo",
         [

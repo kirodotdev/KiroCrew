@@ -998,7 +998,118 @@ class TestFlushSegment:
 
         chat_runner._flush_segment(state, slot, "secret AKIAIOSFODNN7EXAMPLE here")
 
-        assert "AKIAIOSFODNN7EXAMPLE" not in slot.messages[-1]["content"]
+        # Target the assistant row by role, not `messages[-1]`: a redacted
+        # segment now also appends a notice row after it, and asserting on the
+        # last row would pass even if the assistant text still held the secret.
+        # Selected via a list + assertion rather than `next(...)` so a missing row
+        # fails on an assertion naming what WAS there, instead of a StopIteration
+        # that cannot distinguish "no assistant row" from "the flush threw".
+        assistants = [m for m in slot.messages if m.get("role") == "assistant"]
+        assert len(assistants) == 1, f"expected one assistant row, got {slot.messages}"
+        assert "AKIAIOSFODNN7EXAMPLE" not in assistants[0]["content"]
+
+    def test_a_redacted_connection_string_warns_the_user(self, tmp_path):
+        """issue #6189: the corruption must not be silent.
+
+        Uses the reporter's exact command. The assistant row keeps the mangled
+        text (redaction is not weakened), but a notice row now follows it saying
+        so and warning that the command will not run as pasted.
+        """
+        from kiro_crew.security import REDACTED_CREDENTIAL_TAG
+
+        state, slot = _state(tmp_path), _slot()
+        command = "echo 'DATABASE_URL=postgresql://user:pass@host:5432/db' >> .env"
+
+        chat_runner._flush_segment(state, slot, command)
+
+        roles = [m.get("role") for m in slot.messages]
+        assert roles == ["assistant", "notice"]
+        assistant, notice = slot.messages[0], slot.messages[1]
+        # Redaction still happened -- the credential is gone from what is stored.
+        assert "user:pass" not in assistant["content"]
+        assert REDACTED_CREDENTIAL_TAG in assistant["content"]
+        # ...and the user is now told, including that it will not run as pasted.
+        assert "Security notice" in notice["content"]
+        assert "will not work if you paste it as-is" in notice["content"]
+        assert notice["cls"] == "msg msg-info"
+        # The notice must never carry the secret it is reporting on.
+        assert "user:pass" not in notice["content"]
+
+    def test_the_notice_counts_multiple_credentials(self, tmp_path):
+        state, slot = _state(tmp_path), _slot()
+
+        chat_runner._flush_segment(
+            state,
+            slot,
+            "first postgresql://a:b@h1/db then mysql://c:d@h2/db",
+        )
+
+        # Assert on the collected rows rather than `next(...)`: a bare `next` over a
+        # generator raises StopIteration when the row is missing, and a raise cannot
+        # distinguish "no notice was appended" from "_flush_segment threw before
+        # appending one". An assertion on the list says which.
+        notices = [m for m in slot.messages if m.get("role") == "notice"]
+        assert len(notices) == 1, f"expected exactly one notice row, got {notices}"
+        assert "2 credentials" in notices[0]["content"]
+        assert "were replaced" in notices[0]["content"]
+
+    def test_a_clean_segment_gets_no_notice(self, tmp_path):
+        state, slot = _state(tmp_path), _slot()
+
+        chat_runner._flush_segment(state, slot, "here is a plain answer")
+
+        assert [m.get("role") for m in slot.messages] == ["assistant"]
+
+    def test_an_encoded_credential_also_warns(self, tmp_path):
+        """A base64-encoded credential is redacted by a DIFFERENT pass and tag.
+
+        `redact_credentials` pass 2 substitutes `[REDACTED: encoded credential]`,
+        which is not a substring of the plaintext tag. Counting only the plaintext
+        tag left this segment silently rewritten -- the same #6189 failure, just
+        reached by another pass.
+        """
+        import base64
+
+        from kiro_crew.security import (
+            _REDACTED_ENCODED_CREDENTIAL_TAG,
+            REDACTED_CREDENTIAL_TAG,
+        )
+
+        state, slot = _state(tmp_path), _slot()
+        # The issue's own connection string, base64-encoded.
+        blob = base64.b64encode(b"postgresql://user:pass@host:5432/db").decode()
+
+        chat_runner._flush_segment(state, slot, f"decode this: {blob}")
+
+        # Assert on collected rows, not `next(...)`. The roles list is also the
+        # witness that `_flush_segment` RAN to completion: if it had thrown before
+        # appending, there would be no assistant row either, so a missing notice
+        # beside a present assistant row isolates the count as the cause.
+        roles = [m.get("role") for m in slot.messages]
+        assert roles == ["assistant", "notice"], f"unexpected rows: {roles}"
+        assistant, notice = slot.messages[0], slot.messages[1]
+        # Redacted by pass 2, so ONLY the encoded tag is present.
+        assert _REDACTED_ENCODED_CREDENTIAL_TAG in assistant["content"]
+        assert REDACTED_CREDENTIAL_TAG not in assistant["content"]
+        assert "A credential" in notice["content"]
+        assert "will not work if you paste it as-is" in notice["content"]
+
+    def test_the_two_credential_tags_do_not_overlap(self):
+        """Summing per-tag counts must not double-count one substitution.
+
+        `_flush_segment` adds `redacted.count(tag)` across every tag in
+        `CREDENTIAL_REDACTION_TAGS`. That is only safe while no tag contains
+        another; if a tag were ever renamed to a superstring of another, a single
+        redaction would report as two and the notice would overcount.
+        """
+        from kiro_crew.security import CREDENTIAL_REDACTION_TAGS
+
+        for outer in CREDENTIAL_REDACTION_TAGS:
+            for inner in CREDENTIAL_REDACTION_TAGS:
+                if outer is inner:
+                    continue
+                assert inner not in outer, f"{inner!r} is a substring of {outer!r}"
+        assert len(set(CREDENTIAL_REDACTION_TAGS)) == len(CREDENTIAL_REDACTION_TAGS)
 
     def test_trailing_stop_event_is_replaced_below_the_segment(self, tmp_path):
         state, slot = _state(tmp_path), _slot()

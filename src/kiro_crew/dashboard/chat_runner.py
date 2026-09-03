@@ -239,6 +239,7 @@ from kiro_crew.providers.base import (
 from kiro_crew.quick_prompts import QUICK_PROMPTS
 from kiro_crew.safety_override import safety_override
 from kiro_crew.security import (
+    CREDENTIAL_REDACTION_TAGS,
     StreamRedactor,
     is_sensitive_path,
     oauth_url_contains_credential,
@@ -2975,6 +2976,35 @@ def _prepare_mirror_msg(raw_user_message: str) -> str:
     return safe[:500]
 
 
+def _redaction_notice(count: int) -> str:
+    """Build the user-visible notice for a segment that had credentials removed.
+
+    ``count`` is the number of redaction placeholders standing in the persisted
+    text, so the wording always matches what the user can see in the message
+    above it. The notice carries no secret bytes -- by the time it is built, a tag
+    has already replaced them.
+
+    Says "a redaction placeholder" rather than naming a specific tag: the
+    redactor emits more than one (see ``CREDENTIAL_REDACTION_TAGS``), so naming
+    one would print a marker the user cannot find in the text whenever the
+    substitution came from a different pass.
+
+    The second sentence is the part that matters and is deliberately blunt: a
+    redacted command is not a working command. Saying only "a credential was
+    removed" would still leave the user pasting text that cannot run, which is
+    the failure issue #6189 reports (the reporter lost time to an opaque
+    ``getaddrinfo EAI_AGAIN`` far from the real cause).
+    """
+    subject = "A credential" if count == 1 else f"{count} credentials"
+    verb = "was" if count == 1 else "were"
+    return (
+        f"Security notice: {subject} in this message {verb} replaced with a "
+        "redaction placeholder before it reached this page. Any command shown "
+        "above will not work if you paste it as-is; supply the secret yourself "
+        "on the machine where you run it."
+    )
+
+
 def _flush_segment(
     state: DashboardState,
     slot: _ChatSlot,
@@ -3056,6 +3086,41 @@ def _flush_segment(
         last_msg["variants"] = pending_list
         last_msg["variant_idx"] = len(pending_list) - 1
         slot._pending_variants = []
+    # Tell the user the text was altered. Until now this was silent: the
+    # `cred_warnings` above are logged and nothing else, so a user copied a
+    # command whose credential had become a placeholder and only found out when
+    # it failed downstream (issue #6189).
+    #
+    # The count comes from the TAG in the persisted text, not from
+    # `cred_warnings`, because on the streaming path that list is almost always
+    # empty HERE: the run loop redacts every chunk before it enters
+    # `assistant_text` (EVENT_TEXT_CHUNK branch), so this call re-redacts
+    # already-clean text and reports nothing. `cred_warnings` only fires for a
+    # credential split across chunk boundaries, which is the rarer case. Reading
+    # the artifact instead of the event answers the question the user actually
+    # has -- "is what I am about to copy still what the assistant wrote?" -- and
+    # stays correct wherever the substitution happened: per-chunk, the
+    # StreamRedactor wire pass, or this call. All three write the same tag.
+    #
+    # Broadcast unconditionally: `quiet_persist` exists to suppress a DUPLICATE
+    # of the pre-steer assistant text that clients already rendered, and a notice
+    # row has no streamed counterpart to duplicate. Suppressing it there would
+    # drop the warning on exactly the path this fix exists to cover.
+    # The count sums every CREDENTIAL tag the redactor can emit, read from
+    # `CREDENTIAL_REDACTION_TAGS` which `security.py` owns beside the passes that
+    # write them. Enumerating tags by hand here is what previously left an
+    # encoded-credential-only segment silently rewritten and undercounted a mixed
+    # one; asking the redactor's own module means a newly added tag cannot escape.
+    #
+    # SCOPE: credentials only, so this notice does NOT fire for the
+    # `redact_exfiltration_urls` pass a few lines above, which rewrites a URL to
+    # `[REDACTED: suspicious URL to <domain>]` just as silently. Same root cause,
+    # same function, different rewriter -- tracked separately rather than widened
+    # into this fix, because issue #6189 reports the credential case and the notice
+    # wording ("A credential ... was replaced") would have to change to cover both.
+    _cred_redactions = sum(redacted.count(tag) for tag in CREDENTIAL_REDACTION_TAGS)
+    if _cred_redactions:
+        slot.append("notice", _redaction_notice(_cred_redactions), "msg msg-info")
     # Re-append any stop_event that belongs to this segment's trailing run,
     # placed AFTER the finalized assistant message so the UI shows
     # prose → stop card.

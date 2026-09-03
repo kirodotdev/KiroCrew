@@ -12486,6 +12486,37 @@ _REDACTED_CREDENTIAL_TAG = "[REDACTED: credential]"
 # scan matches.
 REDACTED_CREDENTIAL_TAG = _REDACTED_CREDENTIAL_TAG
 
+#: Replacement tag for pass 2 (a base64-encoded credential). DISTINCT from
+#: ``_REDACTED_CREDENTIAL_TAG`` and deliberately not a superstring of it, so a
+#: consumer counting one tag does not accidentally match the other. Kept PRIVATE:
+#: consumers should ask ``CREDENTIAL_REDACTION_TAGS`` below rather than name
+#: individual tags, which is the whole point of that registry.
+_REDACTED_ENCODED_CREDENTIAL_TAG = "[REDACTED: encoded credential]"
+
+#: EVERY tag :func:`redact_credentials` can substitute for a credential, owned
+#: HERE beside the passes that emit them rather than enumerated by each caller.
+#: A consumer that needs to answer "did the CREDENTIAL redactor replace something
+#: in this text" must check all of them: pass 1 (plaintext patterns) and pass 3
+#: (bare secret runs) write ``_REDACTED_CREDENTIAL_TAG``, pass 2 (base64-encoded)
+#: writes ``_REDACTED_ENCODED_CREDENTIAL_TAG``.
+#:
+#: Scope is deliberately CREDENTIALS ONLY, and a consumer must not read it as "was
+#: this text rewritten at all". :func:`redact_exfiltration_urls` is a separate
+#: rewriter that substitutes ``[REDACTED: suspicious URL to <domain>]`` -- a
+#: variable string, so it is prefix-matched rather than compared, which is why it
+#: is not a member here. Text can therefore be rewritten with every tag in this
+#: tuple absent.
+#:
+#: This tuple exists because the enumeration used to live at the call site, where
+#: it silently missed the encoded tag and under-reported redactions on the
+#: dashboard chat notice. Co-locating it means a NEW tag is added next to the list
+#: that must name it; ``test_every_redaction_tag_constant_is_registered`` fails if
+#: one is added without registering it, so the drift cannot recur silently.
+#:
+#: Invariant relied on by callers that SUM per-tag counts: no tag is a substring
+#: of another, so one substitution cannot be counted twice.
+CREDENTIAL_REDACTION_TAGS = (_REDACTED_CREDENTIAL_TAG, _REDACTED_ENCODED_CREDENTIAL_TAG)
+
 
 def redact_credentials(text: str) -> tuple[str, list[str]]:
     """Redact raw credential patterns from text, including base64-encoded.
@@ -12538,7 +12569,7 @@ def redact_credentials(text: str) -> tuple[str, list[str]]:
     for chunk in b64_chunks:
         decoded = _decode_b64_chunk(chunk)
         if decoded:
-            result = result.replace(chunk, "[REDACTED: encoded credential]", 1)
+            result = result.replace(chunk, _REDACTED_ENCODED_CREDENTIAL_TAG, 1)
             warnings.append(f"Redacted base64-encoded credential ({len(chunk)} chars)")
 
     # 3. Detect and redact BARE 40-char AWS secret keys with no label/prefix
