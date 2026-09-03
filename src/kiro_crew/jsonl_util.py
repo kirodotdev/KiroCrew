@@ -45,13 +45,14 @@ stops seeing a prior entry.
 Each has an undecoded twin — :func:`bounded_raw_records` and
 :func:`strict_raw_records` — yielding ``bytes``. The bounded twin has one
 caller, which already iterated a binary handle and prefilters on bytes before
-parsing. The strict twin has no external caller today: it is what
-:func:`strict_records` is built on, and the site that wanted raw strict bytes
-directly — the snapshot notification merge, which copies records into another
-file verbatim — is deliberately NOT converted here. That site needs the reader
-to guarantee something the others do not, namely that what it hands back is
-valid for the DESTINATION file and not merely a faithful copy of the source, so
-it is being done separately rather than inferred from this reader's contract.
+parsing. The strict twin's caller is the snapshot notification merge, which
+copies records into another file verbatim: it needs one guarantee the other
+readers' callers do not, namely that the bytes are valid for the DESTINATION
+file and not merely a faithful copy of the source. That is why it takes the raw
+twin and validates the encoding itself rather than taking
+:func:`strict_records`: a decode whose OUTPUT is what gets written back is the
+non-byte-exact round trip that site is fixing. Its write-side contract is
+stated on :func:`kiro_crew.snapshot._merge_notifications`.
 
 :func:`kiro_crew.session_storage._manifest_records` is a third reader and
 deliberately stays separate: it needs ``str.splitlines`` boundaries, since

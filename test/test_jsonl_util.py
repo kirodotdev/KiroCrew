@@ -607,17 +607,13 @@ _KERNEL_PSEUDO_FILE_READERS = {
 # if it is ever bounded the posture must be abort/count, never skip.
 _FENCED_READERS = {"sel.py"}
 
-# DEFERRED, not excused: this one is a known live bug, tracked separately, and
-# listed here so the scanner records it instead of going quiet about it.
-#
-# `snapshot._merge_notifications` copies records from one file into another
-# verbatim, which makes it the only site in the #6345 audit where reading
-# faithfully is not the whole contract -- the bytes must also be VALID FOR THE
-# DESTINATION. Converting it needs that write-side contract stated up front
-# (record boundary, dedupe-key type, framing, and encoding), and four successive
-# review rounds on PR #7651 each found one more property of it, so it is being
-# done as its own change rather than inferred from the read-side contract here.
-_DEFERRED_READERS = {"snapshot.py"}
+# DEFERRED, not excused: nothing is deferred today. `snapshot._merge_notifications`
+# was the one entry, and it is converted -- it reads both the destination and the
+# source through `strict_raw_records`, validates each record's encoding without
+# transforming it, and appends the original bytes. See #7771 for the write-side
+# contract that conversion needed (record boundary, dedupe-key type, framing,
+# encoding, abort-not-skip posture) and which is stated on the function itself.
+_DEFERRED_READERS: set[str] = set()
 
 _ALLOWED_UNBOUNDED_FILES = (
     {path for path, _ in _KERNEL_PSEUDO_FILE_READERS} | _FENCED_READERS | _DEFERRED_READERS
