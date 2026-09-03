@@ -4818,6 +4818,8 @@
         "drive_upload": "Carica",
         "drive_uploading": "Caricamento…",
         "drive_bad_name": "Questo nome di file contiene caratteri che il drive non può archiviare. Rinominalo e riprova.",
+        "drive_bad_name_named": "Impossibile caricare “{{name}}”: il nome contiene caratteri che il drive non può archiviare. Rinominalo e riprova.",
+        "drive_upload_failed": "Impossibile caricare “{{name}}”. Riprova.",
         "section_files": "File",
         "section_library": "Libreria",
         "section_backup": "Backup",
@@ -4909,7 +4911,10 @@
         "library_actions": "Azioni sull'elemento della libreria",
         "library_remove_action": "Rimuovi la copia",
         "library_removing": "Rimozione in corso…",
-        "library_remove_failed": "Rimozione non riuscita: la copia cloud è invariata. Riprova."
+        "library_remove_failed": "Rimozione non riuscita: la copia cloud è invariata. Riprova.",
+        "move_conflict": "La cartella di destinazione contiene già un file con questo nome.",
+        "move_shared": "Questo file ha un link di condivisione attivo: spostarlo interromperebbe il link. Rimuovi la condivisione (o lascia che scada) e riprova.",
+        "move_failed": "Impossibile spostare il file. Riprova."
       },
       "page": {
         "totals_summary": "{{accounts}} account · {{keys}} chiavi · {{healthy}} integre",
@@ -5528,7 +5533,9 @@
       "auto_compact_threshold": "Soglia di compattazione automatica",
       "auto_compact_load_failed": "Impossibile caricare l'impostazione di compattazione automatica",
       "reset_to_global": "Ripristina il valore globale ({{pct}}%)",
-      "following_global": "Segue il valore globale ({{pct}}%)"
+      "following_global": "Segue il valore globale ({{pct}}%)",
+      "sketch": "Schizzo",
+      "sketch_desc": "Disegna uno schizzo; allega un’immagine e la sua origine modificabile"
     },
     "chatPane": {
       "agent_list": "Elenco degli agenti",
@@ -7772,6 +7779,18 @@
       "path_copied": "Percorso copiato",
       "reveal_blocked": "Questo percorso è protetto e non può essere aperto.",
       "reveal_failed": "Impossibile aprire questo percorso sul computer che esegue {{productName}}."
+    },
+    "sketchDialog": {
+      "title": "Blocco schizzi",
+      "draw_something_first": "Disegna prima qualcosa",
+      "loading": "Caricamento del blocco schizzi…",
+      "export_failed": "Impossibile esportare lo schizzo: riprova",
+      "insert_hint": "Allega l’immagine e un file sorgente modificabile che la tua crew può leggere come dati",
+      "attach_to_message": "Allega al messaggio",
+      "new_sketch": "Nuovo schizzo",
+      "confirm_discard": "Elimina disegno",
+      "already_attached": "Allegato — modifica la tela per disegnare di nuovo",
+      "load_failed": "Impossibile caricare il blocco schizzi: controlla la connessione e riapri"
     }
   },
   "hooks": {

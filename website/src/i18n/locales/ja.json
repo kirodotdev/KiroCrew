@@ -4662,6 +4662,8 @@
         "drive_upload": "アップロード",
         "drive_uploading": "アップロード中…",
         "drive_bad_name": "そのファイル名には、ドライブが保存できない文字が含まれています。名前を変更してもう一度お試しください。",
+        "drive_bad_name_named": "「{{name}}」はアップロードできません——ファイル名にドライブが保存できない文字が含まれています。名前を変更してもう一度お試しください。",
+        "drive_upload_failed": "「{{name}}」のアップロードに失敗しました。もう一度お試しください。",
         "section_files": "ファイル",
         "section_library": "ライブラリー",
         "section_backup": "バックアップ",
@@ -4749,7 +4751,10 @@
         "library_actions": "ライブラリ項目の操作",
         "library_remove_action": "コピーを削除",
         "library_removing": "削除中…",
-        "library_remove_failed": "削除に失敗しました。クラウドのコピーは変更されていません。もう一度お試しください。"
+        "library_remove_failed": "削除に失敗しました。クラウドのコピーは変更されていません。もう一度お試しください。",
+        "move_conflict": "移動先のフォルダーには同じ名前のファイルがすでにあります。",
+        "move_shared": "このファイルには有効な共有リンクがあります——移動するとリンクが無効になります。共有を削除するか期限切れを待ってから、もう一度お試しください。",
+        "move_failed": "ファイルを移動できませんでした。もう一度お試しください。"
       },
       "page": {
         "totals_summary": "アカウント {{accounts}} 件 · キー {{keys}} 個 · 正常 {{healthy}} 個",
@@ -5350,7 +5355,9 @@
       "auto_compact_threshold": "自動圧縮のしきい値",
       "auto_compact_load_failed": "自動圧縮の設定を読み込めませんでした",
       "reset_to_global": "グローバル設定に戻す（{{pct}}%）",
-      "following_global": "グローバル設定に従う（{{pct}}%）"
+      "following_global": "グローバル設定に従う（{{pct}}%）",
+      "sketch": "スケッチ",
+      "sketch_desc": "スケッチを描く。画像と編集可能なソースを添付します"
     },
     "chatPane": {
       "agent_list": "エージェントリスト",
@@ -7560,6 +7567,18 @@
       "path_copied": "パスをコピーしました",
       "reveal_blocked": "このパスは保護されているため開けません。",
       "reveal_failed": "{{productName}} を実行しているマシンでこのパスを開けませんでした。"
+    },
+    "sketchDialog": {
+      "title": "スケッチパッド",
+      "draw_something_first": "まず何か描いてください",
+      "loading": "スケッチパッドを読み込み中…",
+      "export_failed": "スケッチを書き出せませんでした。もう一度お試しください",
+      "insert_hint": "画像と、クルーがデータとして読める編集可能なソースファイルを添付します",
+      "attach_to_message": "メッセージに添付",
+      "new_sketch": "新規スケッチ",
+      "confirm_discard": "描画を破棄",
+      "already_attached": "添付済み — キャンバスを編集すると再度スケッチできます",
+      "load_failed": "スケッチパッドを読み込めませんでした。接続を確認して再度開いてください"
     }
   },
   "hooks": {

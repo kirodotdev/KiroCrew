@@ -2858,10 +2858,24 @@ async def api_artifact_folders(request: web.Request) -> web.Response:
     return _json_response({"folders": out})
 
 
-def _spawn_artifact_folder_icon_task(request: web.Request, folder_id: str, name: str) -> None:
+def _spawn_artifact_folder_icon_task(
+    request: web.Request, folder_id: str, name: str, *, expected_epoch: int
+) -> None:
     """Fire-and-forget: derive a single-emoji icon for an artifact folder via
     the shared LLM helper (same mechanism as chat-sidebar folders) and store
-    it. Best-effort — any failure leaves the folder with the default glyph."""
+    it. Best-effort — any failure leaves the folder with the default glyph.
+
+    The write-back goes through ``set_icon_if_epoch``, which re-finds the
+    folder, checks the epoch and writes inside ONE critical section under the
+    store lock. So a folder deleted while generation was in flight is never
+    resurrected, and a manual icon set, an icon clear, or a rename that lands
+    while generation is pending wins over the stale generated result.
+    ``expected_epoch`` is the epoch this generation is pinned to, and each
+    caller obtains it without ever reading the epoch back: the rename path takes
+    the value :meth:`ArtifactFolderStore.rename` returns from inside its own
+    bump's critical section, and the create path pins 0, which a fresh folder's
+    epoch is by construction. A read-back would be a second lock acquisition and
+    could capture a competing mutation's epoch (issue #7991)."""
     state = request.app.get("state")
     if state is None:
         return
@@ -2872,8 +2886,10 @@ def _spawn_artifact_folder_icon_task(request: web.Request, folder_id: str, name:
             if not icon:
                 return
             fstore = get_default_folder_store()
-            if fstore.exists(folder_id):
-                await _run_off_loop(lambda: fstore.set_icon(folder_id, icon))
+            # No exists() pre-check: it was a TOCTOU gap (the folder could go
+            # away, or its icon change, between the check and the write) and
+            # set_icon_if_epoch subsumes it by re-finding under the lock.
+            await _run_off_loop(lambda: fstore.set_icon_if_epoch(folder_id, icon, expected_epoch))
         except Exception:  # noqa: BLE001 — best-effort background task
             logger.debug("artifact folder icon generation failed for %s", folder_id, exc_info=True)
 
@@ -2927,7 +2943,14 @@ async def api_artifact_folder_create(request: web.Request) -> web.Response:
         _audit(tool="artifact_folder_create", request=request, outcome="error", error=str(exc))
         return _err(str(exc), status=500)
     # Derive an emoji icon from the name in the background (chat-folder parity).
-    _spawn_artifact_folder_icon_task(request, folder["id"], name)
+    # A just-created folder's icon epoch is 0 by construction -- create() never
+    # touches the registry, and delete() pops its entry, so even a reused id
+    # reads 0. Passing the literal is deliberate rather than re-reading it: a
+    # read here would be a second lock acquisition, and any mutation landing in
+    # that window would raise the epoch, so the read would capture the
+    # COMPETING value and the generated icon would then clobber it. With 0
+    # pinned, any such mutation makes the write-back lose, which is correct.
+    _spawn_artifact_folder_icon_task(request, folder["id"], name, expected_epoch=0)
     _audit(
         tool="artifact_folder_create",
         request=request,
@@ -2963,6 +2986,12 @@ async def api_artifact_folder_update(request: web.Request) -> web.Response:
     if folder is None:  # exists() checked above; guards against a concurrent delete
         return _err("folder not found", status=404)
 
+    # Set by _apply_updates when it renames: the icon epoch the rename's own
+    # bump produced, read inside that same critical section. The handler must
+    # arm background generation with THIS value and never re-read the epoch
+    # afterwards -- see ArtifactFolderStore.rename for why a re-read is a race.
+    armed_icon_epoch: dict[str, int] = {}
+
     def _apply_updates() -> dict[str, Any]:
         # Each mutation persists via _save() (fsync/replace) — runs in the
         # executor, off the event loop.
@@ -2970,7 +2999,7 @@ async def api_artifact_folder_update(request: web.Request) -> web.Response:
         if f is None:
             raise ArtifactNotFoundError(f"folder not found: {fid}")
         if "name" in body:
-            f = fstore.rename(fid, str(body["name"]))
+            f, armed_icon_epoch["value"] = fstore.rename(fid, str(body["name"]))
         if "parent_id" in body:
             f = fstore.reparent(fid, str(body.get("parent_id") or ""))
         if "icon" in body:
@@ -3012,7 +3041,15 @@ async def api_artifact_folder_update(request: web.Request) -> web.Response:
     # A rename re-derives the emoji icon from the new name (chat-folder
     # parity) — unless this same request set an explicit icon, which wins.
     if "name" in body and "icon" not in body:
-        _spawn_artifact_folder_icon_task(request, fid, str(body["name"]))
+        # Arm with the epoch the rename itself produced, captured under the
+        # rename's own lock. Re-reading it here instead would pick up a manual
+        # icon set that landed in between and let the generated icon overwrite
+        # it. A missing value means the rename did not run, so nothing to arm.
+        epoch = armed_icon_epoch.get("value")
+        if epoch is not None:
+            _spawn_artifact_folder_icon_task(
+                request, fid, str(body["name"]), expected_epoch=epoch
+            )
     return _json_response(_serialize_folder(updated, path=fstore.breadcrumb(fid)))
 
 

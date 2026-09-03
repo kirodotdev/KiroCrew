@@ -4818,6 +4818,8 @@
         "drive_upload": "Téléverser",
         "drive_uploading": "Téléversement…",
         "drive_bad_name": "Ce nom de fichier contient des caractères que le disque ne peut pas stocker. Renommez-le et réessayez.",
+        "drive_bad_name_named": "Impossible d’importer « {{name}} » : le nom contient des caractères que le disque ne peut pas stocker. Renommez-le et réessayez.",
+        "drive_upload_failed": "« {{name}} » n’a pas pu être importé. Réessayez.",
         "section_files": "Fichiers",
         "section_library": "Bibliothèque",
         "section_backup": "Sauvegarde",
@@ -4909,7 +4911,10 @@
         "library_actions": "Actions sur l'élément de bibliothèque",
         "library_remove_action": "Retirer la copie",
         "library_removing": "Retrait…",
-        "library_remove_failed": "Échec du retrait — la copie cloud est intacte. Réessayez."
+        "library_remove_failed": "Échec du retrait — la copie cloud est intacte. Réessayez.",
+        "move_conflict": "Le dossier de destination contient déjà un fichier portant ce nom.",
+        "move_shared": "Ce fichier a un lien de partage actif : le déplacer casserait le lien. Supprimez le partage (ou laissez-le expirer), puis réessayez.",
+        "move_failed": "Impossible de déplacer le fichier. Réessayez."
       },
       "page": {
         "totals_summary": "{{accounts}} comptes · {{keys}} clés · {{healthy}} en bon état",
@@ -5528,7 +5533,9 @@
       "auto_compact_threshold": "Seuil de compactage automatique",
       "auto_compact_load_failed": "Impossible de charger le réglage de compactage automatique",
       "reset_to_global": "Rétablir la valeur globale ({{pct}} %)",
-      "following_global": "Suit la valeur globale ({{pct}} %)"
+      "following_global": "Suit la valeur globale ({{pct}} %)",
+      "sketch": "Croquis",
+      "sketch_desc": "Dessinez un croquis ; joint une image et sa source modifiable"
     },
     "chatPane": {
       "agent_list": "Liste des agents",
@@ -7772,6 +7779,18 @@
       "path_copied": "Chemin copié",
       "reveal_blocked": "Ce chemin est protégé et ne peut pas être ouvert.",
       "reveal_failed": "Impossible d'ouvrir ce chemin sur la machine qui exécute {{productName}}."
+    },
+    "sketchDialog": {
+      "title": "Bloc de croquis",
+      "draw_something_first": "Dessinez d’abord quelque chose",
+      "loading": "Chargement du bloc de croquis…",
+      "export_failed": "Impossible d’exporter le croquis — réessayez",
+      "insert_hint": "Joint l’image et un fichier source modifiable que votre crew peut lire comme des données",
+      "attach_to_message": "Joindre au message",
+      "new_sketch": "Nouveau croquis",
+      "confirm_discard": "Abandonner le dessin",
+      "already_attached": "Joint — modifiez le canevas pour dessiner à nouveau",
+      "load_failed": "Impossible de charger le bloc de croquis — vérifiez votre connexion et rouvrez-le"
     }
   },
   "hooks": {

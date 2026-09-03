@@ -4662,6 +4662,8 @@
         "drive_upload": "上传",
         "drive_uploading": "上传中…",
         "drive_bad_name": "该文件名包含硬盘无法存储的字符。请重命名后重试。",
+        "drive_bad_name_named": "“{{name}}”无法上传——文件名包含硬盘无法存储的字符。请重命名后重试。",
+        "drive_upload_failed": "“{{name}}”上传失败，请重试。",
         "section_files": "文件",
         "section_library": "产物库",
         "section_backup": "备份",
@@ -4749,7 +4751,10 @@
         "library_actions": "库项目操作",
         "library_remove_action": "移除副本",
         "library_removing": "正在移除…",
-        "library_remove_failed": "移除失败——云端副本未受影响。请重试。"
+        "library_remove_failed": "移除失败——云端副本未受影响。请重试。",
+        "move_conflict": "目标文件夹里已有同名文件。",
+        "move_shared": "该文件有仍在流通的分享链接——移动会使链接失效。请先移除分享（或等它过期）后重试。",
+        "move_failed": "文件移动失败，请重试。"
       },
       "page": {
         "totals_summary": "{{accounts}} 个账户 · {{keys}} 个密钥 · {{healthy}} 个正常",
@@ -5350,7 +5355,9 @@
       "auto_compact_threshold": "自动压缩阈值",
       "auto_compact_load_failed": "无法加载自动压缩设置",
       "reset_to_global": "重置为全局设置（{{pct}}%）",
-      "following_global": "跟随全局设置（{{pct}}%）"
+      "following_global": "跟随全局设置（{{pct}}%）",
+      "sketch": "草图",
+      "sketch_desc": "画个草图；会附上图片和可编辑源文件"
     },
     "chatPane": {
       "agent_list": "代理列表",
@@ -7560,6 +7567,18 @@
       "path_copied": "路径已复制",
       "reveal_blocked": "此路径受保护，无法打开。",
       "reveal_failed": "无法在运行 {{productName}} 的计算机上打开此路径。"
+    },
+    "sketchDialog": {
+      "title": "草图板",
+      "draw_something_first": "先画点什么吧",
+      "loading": "正在加载草图板…",
+      "export_failed": "草图导出失败，请重试",
+      "insert_hint": "同时附上图片和可编辑源文件，crew 可将其作为结构化数据读取",
+      "attach_to_message": "附加到消息",
+      "new_sketch": "新建草图",
+      "confirm_discard": "丢弃画作",
+      "already_attached": "已附加——继续编辑画布可再次草图",
+      "load_failed": "草图板加载失败——请检查网络后重新打开"
     }
   },
   "hooks": {

@@ -3628,6 +3628,8 @@
         "drive_upload": "Upload",
         "drive_uploading": "Uploading…",
         "drive_bad_name": "That file name has characters the drive can't store. Rename it and try again.",
+        "drive_bad_name_named": "“{{name}}” can’t be uploaded — the name has characters the drive can’t store. Rename it and try again.",
+        "drive_upload_failed": "“{{name}}” could not be uploaded. Try again.",
         "section_files": "Files",
         "section_library": "Library",
         "section_backup": "Backup",
@@ -3716,7 +3718,10 @@
         "library_actions": "Library item actions",
         "library_remove_action": "Remove copy",
         "library_removing": "Removing…",
-        "library_remove_failed": "Remove failed — the cloud copy is unchanged. Try again."
+        "library_remove_failed": "Remove failed — the cloud copy is unchanged. Try again.",
+        "move_conflict": "The destination folder already has a file with this name.",
+        "move_shared": "This file has a live share link — moving it would break the link. Remove the share (or let it expire) and try again.",
+        "move_failed": "Could not move the file. Try again."
       },
       "page": {
         "totals_summary": "{{accounts}} accounts · {{keys}} keys · {{healthy}} healthy",
@@ -4059,7 +4064,9 @@
       "turn_interrupted_press_continue": "Last turn was interrupted — press Resume, or just type",
       "upload_file": "Upload file",
       "use_a_skill": "Use a skill",
-      "used": "Used"
+      "used": "Used",
+      "sketch": "Sketch",
+      "sketch_desc": "Draw a sketch; attaches an image plus its editable source"
     },
     "chatPane": {
       "agent_list": "Agent list",
@@ -5268,6 +5275,18 @@
       "path_copied": "Path copied",
       "reveal_blocked": "This path is protected and can’t be opened.",
       "reveal_failed": "Couldn’t open this path on the machine running {{productName}}."
+    },
+    "sketchDialog": {
+      "title": "Sketch pad",
+      "draw_something_first": "Draw something first",
+      "loading": "Loading sketch pad…",
+      "export_failed": "Couldn't export the sketch — try again",
+      "insert_hint": "Attaches the image plus an editable source file your crew can read as data",
+      "attach_to_message": "Attach to message",
+      "new_sketch": "New sketch",
+      "confirm_discard": "Discard drawing",
+      "already_attached": "Attached — edit the canvas to sketch again",
+      "load_failed": "Couldn't load the sketch pad — check your connection and reopen"
     }
   },
   "hooks": {

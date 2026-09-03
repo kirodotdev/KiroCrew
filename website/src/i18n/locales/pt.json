@@ -4818,6 +4818,8 @@
         "drive_upload": "Enviar",
         "drive_uploading": "Enviando…",
         "drive_bad_name": "Esse nome de arquivo tem caracteres que o drive não consegue armazenar. Renomeie-o e tente novamente.",
+        "drive_bad_name_named": "Não é possível enviar “{{name}}” — o nome tem caracteres que o drive não consegue armazenar. Renomeie-o e tente novamente.",
+        "drive_upload_failed": "Não foi possível enviar “{{name}}”. Tente novamente.",
         "section_files": "Arquivos",
         "section_library": "Biblioteca",
         "section_backup": "Backup",
@@ -4909,7 +4911,10 @@
         "library_actions": "Ações do item da biblioteca",
         "library_remove_action": "Remover a cópia",
         "library_removing": "A remover…",
-        "library_remove_failed": "Falha ao remover — a cópia na nuvem está inalterada. Tente novamente."
+        "library_remove_failed": "Falha ao remover — a cópia na nuvem está inalterada. Tente novamente.",
+        "move_conflict": "A pasta de destino já tem um arquivo com este nome.",
+        "move_shared": "Este arquivo tem um link de compartilhamento ativo — movê-lo quebraria o link. Remova o compartilhamento (ou deixe-o expirar) e tente novamente.",
+        "move_failed": "Não foi possível mover o arquivo. Tente novamente."
       },
       "page": {
         "totals_summary": "{{accounts}} contas · {{keys}} chaves · {{healthy}} íntegras",
@@ -5528,7 +5533,9 @@
       "auto_compact_threshold": "Limite de compactação automática",
       "auto_compact_load_failed": "Não foi possível carregar a configuração de compactação automática",
       "reset_to_global": "Redefinir para o global ({{pct}}%)",
-      "following_global": "Seguindo o global ({{pct}}%)"
+      "following_global": "Seguindo o global ({{pct}}%)",
+      "sketch": "Esboço",
+      "sketch_desc": "Desenhe um esboço; anexa uma imagem e sua fonte editável"
     },
     "chatPane": {
       "agent_list": "Lista de agentes",
@@ -7772,6 +7779,18 @@
       "path_copied": "Caminho copiado",
       "reveal_blocked": "Este caminho está protegido e não pode ser aberto.",
       "reveal_failed": "Não foi possível abrir este caminho na máquina que executa o {{productName}}."
+    },
+    "sketchDialog": {
+      "title": "Bloco de esboços",
+      "draw_something_first": "Desenhe algo primeiro",
+      "loading": "Carregando o bloco de esboços…",
+      "export_failed": "Não foi possível exportar o esboço — tente novamente",
+      "insert_hint": "Anexa a imagem e um arquivo-fonte editável que sua crew pode ler como dados",
+      "attach_to_message": "Anexar à mensagem",
+      "new_sketch": "Novo esboço",
+      "confirm_discard": "Descartar desenho",
+      "already_attached": "Anexado — edite a tela para esboçar novamente",
+      "load_failed": "Não foi possível carregar o bloco de esboços — verifique sua conexão e reabra"
     }
   },
   "hooks": {

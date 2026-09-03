@@ -22,6 +22,7 @@ MUTATIONS (also restricted-session refused + SEL-audited)
 ``POST /drive/{account}/bootstrap``            create the bucket (two-call confirm)
 ``POST /drive/{account}/upload``               upload one file (?section&key, raw body)
 ``POST /drive/{account}/delete``               delete one object
+``POST /drive/{account}/move``                 move one object (drive section only)
 ``POST /drive/{account}/folder``               create an empty folder (placeholder)
 ``POST /drive/{account}/folder/delete``        delete a folder and all its objects
 ``POST /drive/{account}/share``                mint a presigned share + ledger entry
@@ -61,9 +62,11 @@ import os
 import shutil
 import tempfile
 import time
+import weakref
+from contextlib import asynccontextmanager
 from functools import wraps
 from pathlib import Path
-from typing import Any, Awaitable, Callable
+from typing import Any, AsyncIterator, Awaitable, Callable
 
 from aiohttp import web
 
@@ -137,6 +140,171 @@ _bootstrap_lock = LoopBoundLock()
 #: reason ``_bootstrap_lock`` uses it: a module global must not bind an
 #: import-time loop (#4800).
 _library_lock = LoopBoundLock()
+
+#: Per-object-key write locks for the drive surface. A move promises "never
+#: silently overwrites", but S3's ``CopyObject`` carries no destination
+#: precondition (``If-None-Match`` covers ``PutObject``, not the copy), so the
+#: destination probe and the copy are separate requests — an upload landing
+#: between them would be overwritten and the source then deleted. This gateway
+#: is the drive's only product-plane writer, so serializing its own writers
+#: per key closes that window for every write the product can make; writers
+#: outside the gateway (the CLI drawer deliberately hands out the bucket name)
+#: were never inside the promise. Per KEY, not one coarse lock like
+#: ``_library_lock``: an upload legally holds its lock for the length of a
+#: 512 MB put (up to 600 s), and a coarse lock would stall every unrelated
+#: move behind it. Boundedness comes from refcounting instead of eviction —
+#: an entry exists only while some request holds or awaits it, so the maps'
+#: size is capped by in-flight requests, never by history.
+_drive_key_locks: dict[str, LoopBoundLock] = {}
+_drive_key_lock_refs: dict[str, int] = {}
+
+
+def _drive_key_lock_unref(name: str) -> None:
+    """Drop one reference; delete the registry entry with the last one."""
+    refs = _drive_key_lock_refs.get(name, 1) - 1
+    if refs <= 0:
+        _drive_key_lock_refs.pop(name, None)
+        _drive_key_locks.pop(name, None)
+    else:
+        _drive_key_lock_refs[name] = refs
+
+
+@asynccontextmanager
+async def _locked_drive_keys(bucket: str, section: str, *keys: str) -> AsyncIterator[None]:
+    """Hold this gateway's write lock for each named object key.
+
+    Locks are taken in sorted order so two requests naming the same keys in
+    opposite order (a move A->B racing a move B->A) cannot deadlock. The
+    refcount is incremented BEFORE awaiting the acquire so a waiter keeps the
+    entry alive, and dropped again on the acquire failing, so a cancelled
+    waiter does not strand a registry entry. ``\\n`` joins the name parts —
+    it cannot appear in a bucket name or a validated key, so distinct
+    (bucket, section, key) triples can never collide into one lock name.
+    """
+    names = sorted({f"{bucket}\n{section}\n{key}" for key in keys})
+    held: list[str] = []
+    try:
+        for name in names:
+            lock = _drive_key_locks.setdefault(name, LoopBoundLock())
+            _drive_key_lock_refs[name] = _drive_key_lock_refs.get(name, 0) + 1
+            try:
+                await lock.acquire()
+            except BaseException:
+                _drive_key_lock_unref(name)
+                raise
+            held.append(name)
+        yield
+    finally:
+        for name in reversed(held):
+            _drive_key_locks[name].release()
+            _drive_key_lock_unref(name)
+
+
+class _SectionRWLock:
+    """Per-event-loop reader/writer lock for one drive section.
+
+    Per-key locks cannot coordinate a PREFIX SWEEP: a folder delete removes
+    every object under a prefix without knowing their keys up front, so it
+    can never enumerate which key locks to take — a sweep landing between a
+    move's copy and its source delete would remove the freshly-copied
+    destination and the move would then delete the source, losing the file
+    at both ends. So key-scoped mutations hold the section SHARED (they
+    coordinate among themselves via the per-key locks) and a sweep holds it
+    EXCLUSIVE.
+
+    Writer-preferent: a waiting sweep blocks NEW shared holders, so a steady
+    stream of uploads cannot starve a folder delete forever. State lives in
+    a per-loop map for the same reason ``LoopBoundLock`` exists (#4800): a
+    module-global asyncio primitive must not bind an import-time loop.
+    """
+
+    def __init__(self) -> None:
+        self._by_loop: "weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, dict[str, Any]]" = (
+            weakref.WeakKeyDictionary()
+        )
+
+    def _state(self) -> dict[str, Any]:
+        loop = asyncio.get_running_loop()
+        state = self._by_loop.get(loop)
+        if state is None:
+            state = {"readers": 0, "writer": False, "writers_waiting": 0}
+            state["cond"] = asyncio.Condition()
+            self._by_loop[loop] = state
+        return state
+
+    @asynccontextmanager
+    async def shared(self) -> AsyncIterator[None]:
+        state = self._state()
+        cond: asyncio.Condition = state["cond"]
+        async with cond:
+            while state["writer"] or state["writers_waiting"]:
+                await cond.wait()
+            state["readers"] += 1
+        try:
+            yield
+        finally:
+            async with cond:
+                state["readers"] -= 1
+                cond.notify_all()
+
+    @asynccontextmanager
+    async def exclusive(self) -> AsyncIterator[None]:
+        state = self._state()
+        cond: asyncio.Condition = state["cond"]
+        async with cond:
+            state["writers_waiting"] += 1
+            try:
+                while state["writer"] or state["readers"]:
+                    await cond.wait()
+            finally:
+                state["writers_waiting"] -= 1
+            state["writer"] = True
+        try:
+            yield
+        finally:
+            async with cond:
+                state["writer"] = False
+                cond.notify_all()
+
+
+#: (bucket, section) -> RW lock. NOT refcounted like the key locks: the domain
+#: is bounded by reality (three fixed sections × the accounts the owner has
+#: connected), so the registry cannot grow with drive history.
+_drive_section_locks: dict[str, _SectionRWLock] = {}
+
+
+def _drive_section_lock(bucket: str, section: str) -> _SectionRWLock:
+    name = f"{bucket}\n{section}"
+    lock = _drive_section_locks.get(name)
+    if lock is None:
+        lock = _drive_section_locks[name] = _SectionRWLock()
+    return lock
+
+
+@asynccontextmanager
+async def _locked_drive_write(bucket: str, section: str, *keys: str) -> AsyncIterator[None]:
+    """The guard EVERY key-scoped drive mutation runs under.
+
+    Section held shared (so a prefix sweep excludes us), then the per-key
+    locks (so same-key writers serialize among themselves). The order —
+    section BEFORE keys, always — is the deadlock discipline; a sweep takes
+    only the section, so no lock is ever taken in the reverse order.
+    """
+    async with _drive_section_lock(bucket, section).shared():
+        async with _locked_drive_keys(bucket, section, *keys):
+            yield
+
+
+@asynccontextmanager
+async def _locked_drive_sweep(bucket: str, section: str) -> AsyncIterator[None]:
+    """The guard a PREFIX SWEEP (folder delete) runs under: section exclusive.
+
+    Exclusive against every key-scoped mutation, because a sweep cannot name
+    the keys it will remove and therefore cannot join the per-key protocol.
+    """
+    async with _drive_section_lock(bucket, section).exclusive():
+        yield
+
 
 #: The provider name this app's egress paths answer to under the shared
 #: publish-governance gate (``capabilities.publish`` ∩ ``destinations:<id>``).
@@ -728,34 +896,44 @@ async def _handle_drive_upload(request: web.Request) -> web.Response:
             await asyncio.to_thread(sink.close)
         if received == 0:
             return _bad_request("empty upload", "empty_upload")
-        # A 512 MB stream can take minutes: the authorization resolved before
-        # the transfer may no longer hold. The spool is the same post-wait gap
-        # the Library operations cross under their lock, so the SAME helper
-        # re-runs the full re-authorization: app gate, live identity re-probe,
-        # consent, and the drive bucket itself -- the piece an identity check
-        # cannot cover, because tag discovery can move the drive to a different
-        # bucket while the identity is unchanged, and a name held across the
-        # spool is exactly the staleness the module's no-cache rule forbids. A
-        # pass means the pre-spool ``bucket`` still names the account's current
-        # drive, so the put below writes to the post-spool resolution; anything
-        # else is refused with nothing written. No publish gate: an upload does
-        # not consult it on the way in, so the re-check does not add it.
-        denied = await _reauthorize_in_lock(
-            request, "drive_upload", account, profile, region, bucket, publish=False
-        )
-        if denied:
-            return denied
+        # A 512 MB stream can take minutes, and the per-key lock below can
+        # queue this request behind another minutes-long put: both waits sit
+        # between the checks _require_drive ran and the AWS call they
+        # authorized. The spool and the lock are the same post-wait gap the
+        # Library operations cross under their lock, so the SAME helper
+        # re-runs the full re-authorization INSIDE the lock: app gate, live
+        # identity re-probe, consent, and the drive bucket itself -- the piece
+        # an identity check cannot cover, because tag discovery can move the
+        # drive to a different bucket while the identity is unchanged, and a
+        # name held across the wait is exactly the staleness the module's
+        # no-cache rule forbids. A pass means the pre-wait ``bucket`` still
+        # names the account's current drive; anything else is refused with
+        # nothing written. No publish gate: an upload does not consult it on
+        # the way in, so the re-check does not add it.
         try:
-            await asyncio.to_thread(
-                storage_mod.put_file,
-                profile,
-                region,
-                bucket,
-                section,
-                key,
-                str(spool),
-                account=account,
-            )
+            # Same per-key lock the move handler holds across its probe+copy:
+            # an upload put inside the lock either finishes before a move's
+            # destination probe (the probe then answers 409) or starts after
+            # the move released — it can no longer land inside the move's
+            # probe-to-copy window and be silently overwritten. Only the
+            # re-authorization and the put are inside the lock; the spool
+            # transfer above must not hold it.
+            async with _locked_drive_write(bucket, section, key):
+                denied = await _reauthorize_in_lock(
+                    request, "drive_upload", account, profile, region, bucket, publish=False
+                )
+                if denied:
+                    return denied
+                await asyncio.to_thread(
+                    storage_mod.put_file,
+                    profile,
+                    region,
+                    bucket,
+                    section,
+                    key,
+                    str(spool),
+                    account=account,
+                )
         except AWSError as exc:
             return _aws_failed(exc)
     finally:
@@ -777,12 +955,134 @@ async def _handle_drive_delete(request: web.Request) -> web.Response:
     if err:
         return _bad_request(err, "invalid_key")
     try:
-        await asyncio.to_thread(
-            storage_mod.delete_key, profile, region, bucket, section, key, account=account
-        )
+        # Same coordination net as move/upload: the key lock serializes this
+        # delete against a same-key writer, the shared section hold excludes
+        # a concurrent folder sweep, and — because the wait can be minutes
+        # behind a large upload — the authorization is re-run inside.
+        async with _locked_drive_write(bucket, section, key):
+            denied = await _reauthorize_in_lock(
+                request, "drive_delete", account, profile, region, bucket, publish=False
+            )
+            if denied:
+                return denied
+            await asyncio.to_thread(
+                storage_mod.delete_key, profile, region, bucket, section, key, account=account
+            )
     except AWSError as exc:
         return _aws_failed(exc)
     return web.json_response({"deleted": True, "key": key})
+
+
+async def _handle_drive_move(request: web.Request) -> web.Response:
+    """Move one object inside the ``drive`` section — server-side copy, then delete.
+
+    The section is restricted to ``drive`` by design: ``library`` and
+    ``backup`` are managed surfaces whose objects carry ledger state (the
+    library ledger, backup sidecars), and moving one from here would orphan
+    that state. A known-but-refused section answers the same 400 an unknown
+    one does.
+
+    Both keys pass the shared :func:`storage_mod.validate_key` BEFORE any AWS
+    call, the source must exist (404), and the destination must NOT (409) —
+    a move never silently overwrites. A source with a LIVE share link is
+    refused (409 ``share_active``): the presigned URL is bound to the old key
+    and would 404 while the Access ledger still reports it live.
+
+    Everything from the re-authorization through the source delete runs under
+    :func:`_locked_drive_write` for both keys — the coordination net every
+    key-scoped drive mutation shares (upload, delete, folder create, the
+    share mint) plus exclusion against folder sweeps — so within this gateway
+    (the drive's only product-plane writer) no sibling mutation can land
+    inside the probe-to-delete window. The :func:`_reauthorize_in_lock`
+    re-check runs first because the lock wait itself is a post-authorization
+    gap. Writers outside the gateway are outside the promise. The source is
+    deleted ONLY after the copy returned success, so a failed copy leaves the
+    drive unchanged and a failed delete leaves a duplicate rather than a
+    loss.
+    """
+    ctx = await _require_drive(request)
+    if isinstance(ctx, web.Response):
+        return ctx
+    account, profile, region, bucket = ctx
+    body = await _body(request)
+    section = str(body.get("section", "drive"))
+    if section != "drive":
+        return _bad_request("move is limited to the drive section", "invalid_section")
+    from_key = str(body.get("fromKey", ""))
+    to_key = str(body.get("toKey", ""))
+    for key in (from_key, to_key):
+        err = storage_mod.validate_key(key)
+        if err:
+            return _bad_request(err, "invalid_key")
+    if from_key == to_key:
+        return _bad_request("source and destination are the same key", "same_key")
+    try:
+        async with _locked_drive_write(bucket, section, from_key, to_key):
+            # The lock wait can be long (a 512 MB upload legally holds a key
+            # for minutes), and it sits between the checks _require_drive ran
+            # and the AWS calls below — the same post-wait gap the upload
+            # spool crosses, so the SAME re-authorization runs here: app gate,
+            # identity re-probe, consent, and the drive bucket itself.
+            denied = await _reauthorize_in_lock(
+                request, "drive_move", account, profile, region, bucket, publish=False
+            )
+            if denied:
+                return denied
+            # A live share is a bearer URL SIGNED FOR THE SOURCE KEY. The
+            # copy+delete below would leave that URL answering 404 while the
+            # Access ledger keeps reporting the link live until expiry — the
+            # ledger cannot be "fixed up" because a presigned URL is bound to
+            # its key and cannot be re-pointed. Refuse instead of silently
+            # breaking a grant the owner handed out: the ledger is local, so
+            # the check costs no AWS call.
+            shared = await asyncio.to_thread(shares_mod.list_shares, account)
+            if any(
+                entry.get("section") == section and entry.get("key") == from_key for entry in shared
+            ):
+                return _conflict(
+                    "this file has a live share link — moving it would break the link",
+                    "share_active",
+                )
+            exists = await asyncio.to_thread(
+                storage_mod.object_exists,
+                profile,
+                region,
+                bucket,
+                section,
+                from_key,
+                account=account,
+            )
+            if not exists:
+                return _not_found("no such file in this drive", "object_missing")
+            taken = await asyncio.to_thread(
+                storage_mod.object_exists,
+                profile,
+                region,
+                bucket,
+                section,
+                to_key,
+                account=account,
+            )
+            if taken:
+                return _conflict(
+                    "an object already exists at the destination", "destination_exists"
+                )
+            await asyncio.to_thread(
+                storage_mod.copy_object,
+                profile,
+                region,
+                bucket,
+                section,
+                from_key,
+                to_key,
+                account=account,
+            )
+            await asyncio.to_thread(
+                storage_mod.delete_key, profile, region, bucket, section, from_key, account=account
+            )
+    except AWSError as exc:
+        return _aws_failed(exc)
+    return web.json_response({"moved": True})
 
 
 async def _handle_drive_folder_create(request: web.Request) -> web.Response:
@@ -809,9 +1109,18 @@ async def _handle_drive_folder_create(request: web.Request) -> web.Response:
     if err:
         return _bad_request(err, "invalid_key")
     try:
-        await asyncio.to_thread(
-            storage_mod.create_folder, profile, region, bucket, section, path, account=account
-        )
+        # The placeholder is one object write, so it joins the key-scoped
+        # protocol like an upload: shared section hold + the placeholder's
+        # own key lock, with the re-authorization inside the wait.
+        async with _locked_drive_write(bucket, section, path):
+            denied = await _reauthorize_in_lock(
+                request, "drive_folder_create", account, profile, region, bucket, publish=False
+            )
+            if denied:
+                return denied
+            await asyncio.to_thread(
+                storage_mod.create_folder, profile, region, bucket, section, path, account=account
+            )
     except AWSError as exc:
         return _aws_failed(exc)
     return web.json_response({"created": True, "path": path})
@@ -846,9 +1155,22 @@ async def _handle_drive_folder_delete(request: web.Request) -> web.Response:
     if err:
         return _bad_request(err, "invalid_key")
     try:
-        removed = await asyncio.to_thread(
-            storage_mod.delete_prefix, profile, region, bucket, section, path, account=account
-        )
+        # A sweep cannot enumerate the keys it will remove, so it cannot join
+        # the per-key protocol — it holds the section EXCLUSIVE instead,
+        # excluding every key-scoped mutation (the race this guards: sweeping
+        # away a move's freshly-copied destination between the move's copy
+        # and its source delete, losing the file at both ends). The wait for
+        # in-flight writers to drain is a post-authorization gap like any
+        # other, so the full re-check runs inside.
+        async with _locked_drive_sweep(bucket, section):
+            denied = await _reauthorize_in_lock(
+                request, "drive_folder_delete", account, profile, region, bucket, publish=False
+            )
+            if denied:
+                return denied
+            removed = await asyncio.to_thread(
+                storage_mod.delete_prefix, profile, region, bucket, section, path, account=account
+            )
     except AWSError as exc:
         return _aws_failed(exc)
     return web.json_response({"deleted": True, "path": path, "objects": removed})
@@ -885,35 +1207,52 @@ async def _handle_drive_share(request: web.Request) -> web.Response:
     expires = max(60, min(expires, storage_mod.PRESIGN_MAX_SECS))
     note = str(body.get("note", ""))
     try:
-        exists = await asyncio.to_thread(
-            storage_mod.object_exists,
-            profile,
-            region,
-            bucket,
-            section,
-            key,
-            account=account,
-        )
+        # The mint joins the coordination net: holding the KEY for the whole
+        # exists-check -> presign -> ledger-record sequence means a share can
+        # no longer land on a file mid-move (the race: move checks the share
+        # ledger, THEN this mints a share for the source, THEN the move
+        # deletes it — a broken URL the ledger reports live until expiry).
+        # With the lock, the mint either completes before the move's ledger
+        # check (the move then refuses with share_active) or starts after the
+        # move finished (the exists check then answers 404, no phantom
+        # entry). The wait can queue behind a large same-key upload, so the
+        # authorization is re-run inside.
+        async with _locked_drive_write(bucket, section, key):
+            # publish=True: the entry gate above ran _publish_gate — a share
+            # is a bytes-leave-the-box decision — so the in-lock re-check must
+            # re-run the SAME set. Policy revoked during the lock wait would
+            # otherwise still mint a bearer URL despite the new denial.
+            denied = await _reauthorize_in_lock(
+                request, "drive_share", account, profile, region, bucket, publish=True
+            )
+            if denied:
+                return denied
+            exists = await asyncio.to_thread(
+                storage_mod.object_exists,
+                profile,
+                region,
+                bucket,
+                section,
+                key,
+                account=account,
+            )
+            if not exists:
+                # Presigning is local — without this check a typo'd key mints
+                # a URL that 404s for the recipient AND a phantom ledger entry.
+                return _not_found("no such file to share", "unknown_object")
+            url = await asyncio.to_thread(
+                storage_mod.presign, profile, region, bucket, section, key, expires
+            )
+            record = await asyncio.to_thread(
+                shares_mod.record_share,
+                account=account,
+                section=section,
+                key=key,
+                expires_secs=expires,
+                note=note,
+            )
     except AWSError as exc:
         return _aws_failed(exc)
-    if not exists:
-        # Presigning is local — without this check a typo'd key mints a URL
-        # that 404s for the recipient AND a phantom ledger entry.
-        return _not_found("no such file to share", "unknown_object")
-    try:
-        url = await asyncio.to_thread(
-            storage_mod.presign, profile, region, bucket, section, key, expires
-        )
-    except AWSError as exc:
-        return _aws_failed(exc)
-    record = await asyncio.to_thread(
-        shares_mod.record_share,
-        account=account,
-        section=section,
-        key=key,
-        expires_secs=expires,
-        note=note,
-    )
     return web.json_response({"url": url, "share": record})
 
 
@@ -1637,6 +1976,10 @@ def register_routes(app: web.Application) -> None:
     r.add_post(
         f"{_BASE}/drive/{{account}}/delete",
         _guarded(_mutating("drive_delete")(_handle_drive_delete)),
+    )
+    r.add_post(
+        f"{_BASE}/drive/{{account}}/move",
+        _guarded(_mutating("drive_move")(_handle_drive_move)),
     )
     r.add_post(
         f"{_BASE}/drive/{{account}}/folder",

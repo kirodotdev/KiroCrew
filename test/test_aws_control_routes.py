@@ -862,6 +862,379 @@ class TestDriveDelete:
 
 
 # ---------------------------------------------------------------------------
+# Drive move — copy-then-delete, no silent overwrite, drive section only
+# ---------------------------------------------------------------------------
+
+
+class TestDriveMove:
+    def _move(self, body: dict, *, exists=(True, False), copy_err=None):
+        """Run the move handler with src/dest existence and copy outcome faked.
+
+        ``exists`` feeds the two ``object_exists`` probes in call order
+        (source first, then destination). Both storage mocks are attached to
+        one parent so a test can assert the copy-before-delete ORDER, not just
+        that both were called.
+        """
+        handlers = _registered()
+        p1, p2, p3 = _enabled_owner_env()
+        req = _request("POST", f"/drive/{ACCOUNT}/move", match_info={"account": ACCOUNT})
+        req.json = AsyncMock(return_value=body)  # type: ignore[method-assign]
+        parent = mock.Mock()
+        with (
+            p1,
+            p2,
+            p3,
+            _consent_ok(),
+            _drive_found(),
+            mock.patch.object(
+                routes_mod.storage_mod, "object_exists", side_effect=list(exists)
+            ) as head,
+            mock.patch.object(routes_mod.storage_mod, "copy_object", side_effect=copy_err) as copy,
+            mock.patch.object(routes_mod.storage_mod, "delete_key") as delete,
+        ):
+            parent.attach_mock(copy, "copy_object")
+            parent.attach_mock(delete, "delete_key")
+            resp = asyncio.run(
+                handlers[("POST", "/drive/{account}/move")](req)  # type: ignore[operator]
+            )
+        return resp, parent, head
+
+    def test_move_copies_before_deleting(self):
+        # The order is the safety property: a delete issued before the copy
+        # succeeded turns a failed move into data loss.
+        resp, parent, _head = self._move(
+            {"section": "drive", "fromKey": "a.txt", "toKey": "b/a.txt"}
+        )
+        assert resp.status == 200
+        assert _payload(resp) == {"moved": True}
+        names = [name for name, _args, _kwargs in parent.mock_calls]
+        assert names == ["copy_object", "delete_key"]
+
+    def test_move_rejects_an_invalid_key(self):
+        # validate_key runs on BOTH keys BEFORE any AWS call reaches storage.
+        resp, parent, head = self._move(
+            {"section": "drive", "fromKey": "../etc/passwd", "toKey": "b.txt"}
+        )
+        assert resp.status == 400
+        assert _payload(resp)["code"] == "invalid_key"
+        assert parent.mock_calls == []
+        head.assert_not_called()
+
+    def test_move_rejects_an_empty_destination(self):
+        resp, parent, head = self._move({"section": "drive", "fromKey": "a.txt", "toKey": ""})
+        assert resp.status == 400
+        assert _payload(resp)["code"] == "invalid_key"
+        assert parent.mock_calls == []
+        head.assert_not_called()
+
+    def test_move_rejects_equal_keys(self):
+        # A same-key move would head the destination (which exists — it is the
+        # source) and answer a confusing 409; refuse it as the no-op it is.
+        resp, parent, head = self._move({"section": "drive", "fromKey": "a.txt", "toKey": "a.txt"})
+        assert resp.status == 400
+        assert _payload(resp)["code"] == "same_key"
+        assert parent.mock_calls == []
+        head.assert_not_called()
+
+    def test_move_rejects_a_non_drive_section(self):
+        # library/backup are managed surfaces whose objects carry ledger state;
+        # a move from here would orphan it. Known-but-refused answers the same
+        # 400 an unknown section does.
+        for section in ("library", "backup", "nope"):
+            resp, parent, head = self._move(
+                {"section": section, "fromKey": "a.txt", "toKey": "b.txt"}
+            )
+            assert resp.status == 400
+            assert _payload(resp)["code"] == "invalid_section"
+            assert parent.mock_calls == []
+            head.assert_not_called()
+
+    def test_move_missing_source_answers_404(self):
+        resp, parent, _head = self._move(
+            {"section": "drive", "fromKey": "gone.txt", "toKey": "b.txt"},
+            exists=(False,),
+        )
+        assert resp.status == 404
+        assert _payload(resp)["code"] == "object_missing"
+        assert parent.mock_calls == []
+
+    def test_move_existing_destination_answers_409_and_deletes_nothing(self):
+        # NEVER silently overwrite: an occupied destination refuses before the
+        # copy, and no delete is issued against either key.
+        resp, parent, _head = self._move(
+            {"section": "drive", "fromKey": "a.txt", "toKey": "b.txt"},
+            exists=(True, True),
+        )
+        assert resp.status == 409
+        assert _payload(resp)["code"] == "destination_exists"
+        assert parent.mock_calls == []
+
+    def test_move_copy_failure_issues_no_delete(self):
+        # A failed copy must leave the source untouched — the delete is what
+        # turns "copy failed" into "file lost".
+        resp, parent, _head = self._move(
+            {"section": "drive", "fromKey": "a.txt", "toKey": "b.txt"},
+            copy_err=AWSError("denied"),
+        )
+        assert resp.status == 502
+        names = [name for name, _args, _kwargs in parent.mock_calls]
+        assert names == ["copy_object"]
+
+    def test_move_of_a_shared_source_is_refused(self):
+        # A presigned share URL is bound to the SOURCE key: copy+delete would
+        # leave it 404ing while the Access ledger reports it live until
+        # expiry. The move must refuse (409 share_active) with zero storage
+        # calls — the URL cannot be re-pointed, so refusal is the only honest
+        # answer.
+        handlers = _registered()
+        p1, p2, p3 = _enabled_owner_env()
+        req = _request("POST", f"/drive/{ACCOUNT}/move", match_info={"account": ACCOUNT})
+        req.json = AsyncMock(  # type: ignore[method-assign]
+            return_value={"section": "drive", "fromKey": "a.txt", "toKey": "b.txt"}
+        )
+        live = [{"account": ACCOUNT, "section": "drive", "key": "a.txt"}]
+        with (
+            p1,
+            p2,
+            p3,
+            _consent_ok(),
+            _drive_found(),
+            mock.patch.object(routes_mod.shares_mod, "list_shares", return_value=live),
+            mock.patch.object(routes_mod.storage_mod, "object_exists") as head,
+            mock.patch.object(routes_mod.storage_mod, "copy_object") as copy,
+            mock.patch.object(routes_mod.storage_mod, "delete_key") as delete,
+        ):
+            resp = asyncio.run(
+                handlers[("POST", "/drive/{account}/move")](req)  # type: ignore[operator]
+            )
+        assert resp.status == 409
+        assert _payload(resp)["code"] == "share_active"
+        assert not head.called and not copy.called and not delete.called
+
+    def test_move_destination_probe_failure_fails_closed(self):
+        # object_exists raises on anything S3 did not answer 404 to. If the
+        # DESTINATION probe fails transiently, the move must answer 502 and
+        # touch nothing — reading the failure as "absent" would copy over the
+        # destination and delete the source.
+        resp, parent, _head = self._move(
+            {"section": "drive", "fromKey": "a.txt", "toKey": "b.txt"},
+            exists=(True, AWSError("head-object failed")),
+        )
+        assert resp.status == 502
+        assert parent.mock_calls == []
+
+    def test_move_reauthorizes_inside_the_lock_before_any_storage_call(self):
+        # The lock wait can queue a move for minutes behind an upload; consent
+        # withdrawn during that wait must refuse the queued mutation. The
+        # re-authorization runs AFTER lock acquisition and BEFORE any probe.
+        handlers = _registered()
+        p1, p2, p3 = _enabled_owner_env()
+        req = _request("POST", f"/drive/{ACCOUNT}/move", match_info={"account": ACCOUNT})
+        req.json = AsyncMock(  # type: ignore[method-assign]
+            return_value={"section": "drive", "fromKey": "a.txt", "toKey": "b.txt"}
+        )
+        deny = web.json_response({"error": "consent withdrawn"}, status=403)
+        with (
+            p1,
+            p2,
+            p3,
+            _consent_ok(),
+            _drive_found(),
+            mock.patch.object(
+                routes_mod, "_reauthorize_in_lock", AsyncMock(return_value=deny)
+            ) as reauth,
+            mock.patch.object(routes_mod.storage_mod, "object_exists") as head,
+            mock.patch.object(routes_mod.storage_mod, "copy_object") as copy,
+            mock.patch.object(routes_mod.storage_mod, "delete_key") as delete,
+        ):
+            resp = asyncio.run(
+                handlers[("POST", "/drive/{account}/move")](req)  # type: ignore[operator]
+            )
+        assert resp.status == 403
+        assert reauth.await_count == 1
+        assert not head.called and not copy.called and not delete.called
+
+
+# ---------------------------------------------------------------------------
+# Drive per-key write locks — the guard that makes "never overwrites" true
+# against this gateway's own concurrent writers (S3 CopyObject has no
+# destination precondition, so ordering is the only enforcement available).
+# ---------------------------------------------------------------------------
+
+
+class TestDriveKeyLocks:
+    def test_same_key_serializes_and_registry_empties(self):
+        # Two holders of one key run strictly one-after-the-other, and the
+        # registry holds no entries once both released — boundedness comes
+        # from refcounting, so a leak here would grow with drive history.
+        async def run() -> list[str]:
+            order: list[str] = []
+
+            async def hold(tag: str, gate: asyncio.Event | None) -> None:
+                async with routes_mod._locked_drive_keys("bkt", "drive", "a.txt"):
+                    order.append(f"{tag}-in")
+                    if gate:
+                        await gate.wait()
+                    order.append(f"{tag}-out")
+
+            gate = asyncio.Event()
+            first = asyncio.create_task(hold("first", gate))
+            await asyncio.sleep(0)  # first acquires
+            second = asyncio.create_task(hold("second", None))
+            await asyncio.sleep(0)  # second must be parked, not interleaved
+            assert order == ["first-in"]
+            gate.set()
+            await asyncio.gather(first, second)
+            return order
+
+        order = asyncio.run(run())
+        assert order == ["first-in", "first-out", "second-in", "second-out"]
+        assert routes_mod._drive_key_locks == {}
+        assert routes_mod._drive_key_lock_refs == {}
+
+    def test_distinct_keys_do_not_contend(self):
+        # The lock is per key by design: a 512 MB upload may hold its key for
+        # minutes, and an unrelated move must not queue behind it.
+        async def run() -> bool:
+            async with routes_mod._locked_drive_keys("bkt", "drive", "a.txt"):
+                entered = False
+                async with routes_mod._locked_drive_keys("bkt", "drive", "b.txt"):
+                    entered = True
+                return entered
+
+        assert asyncio.run(run()) is True
+        assert routes_mod._drive_key_locks == {}
+
+    def test_move_probe_waits_for_a_held_destination_key(self):
+        # The defect this guards: an upload landing between the move's
+        # destination probe and its copy was overwritten and the source then
+        # deleted. With the upload's put holding the destination key, the
+        # move's FIRST storage call must not happen until the hold releases —
+        # probe-after-release then reads the uploaded object and answers 409.
+        handlers = _registered()
+        p1, p2, p3 = _enabled_owner_env()
+        req = _request("POST", f"/drive/{ACCOUNT}/move", match_info={"account": ACCOUNT})
+        req.json = AsyncMock(  # type: ignore[method-assign]
+            return_value={"section": "drive", "fromKey": "a.txt", "toKey": "b.txt"}
+        )
+
+        async def run() -> tuple[int, list[str]]:
+            calls: list[str] = []
+
+            def probe(*_a, **kwargs) -> bool:
+                calls.append("probe")
+                return True  # source exists; destination exists -> 409
+
+            with (
+                p1,
+                p2,
+                p3,
+                _consent_ok(),
+                _drive_found(),
+                mock.patch.object(routes_mod.storage_mod, "object_exists", side_effect=probe),
+                mock.patch.object(routes_mod.storage_mod, "copy_object") as copy,
+            ):
+                bucket = "kirocrew-drive-abc"  # the name _drive_found answers
+                async with routes_mod._locked_drive_keys(bucket, "drive", "b.txt"):
+                    task = asyncio.create_task(
+                        handlers[("POST", "/drive/{account}/move")](req)  # type: ignore[operator]
+                    )
+                    # Give the handler every chance to (wrongly) probe while
+                    # the destination key is held by the "upload". Real sleeps,
+                    # not sleep(0): the probe crosses to_thread, so a zero-tick
+                    # yield could leave the handler short of the lock and make
+                    # the empty-calls assertion vacuous.
+                    for _ in range(10):
+                        await asyncio.sleep(0.01)
+                    assert calls == []
+                resp = await task
+                assert not copy.called
+            return resp.status, calls
+
+        status, calls = asyncio.run(run())
+        assert status == 409
+        assert calls == ["probe", "probe"]
+
+
+class TestDriveSectionSweepLock:
+    def test_shared_holders_run_concurrently_and_sweep_excludes_them(self):
+        # Two key-scoped mutations on DIFFERENT keys overlap (shared holds);
+        # a sweep waits for both, then runs alone; a key op arriving while
+        # the sweep waits queues BEHIND it (writer preference — a stream of
+        # uploads cannot starve a folder delete).
+        async def run() -> list[str]:
+            order: list[str] = []
+            gate = asyncio.Event()
+
+            async def key_op(tag: str, wait: bool) -> None:
+                async with routes_mod._locked_drive_write("bkt", "drive", tag):
+                    order.append(f"{tag}-in")
+                    if wait:
+                        await gate.wait()
+                    order.append(f"{tag}-out")
+
+            async def sweep() -> None:
+                async with routes_mod._locked_drive_sweep("bkt", "drive"):
+                    order.append("sweep")
+
+            first = asyncio.create_task(key_op("a", True))
+            await asyncio.sleep(0)
+            second = asyncio.create_task(key_op("b", True))
+            await asyncio.sleep(0)
+            assert order == ["a-in", "b-in"]  # shared: both inside at once
+            sweeper = asyncio.create_task(sweep())
+            await asyncio.sleep(0)
+            third = asyncio.create_task(key_op("c", False))
+            for _ in range(5):
+                await asyncio.sleep(0)
+            # Sweep is parked behind a+b; c is parked behind the WAITING sweep.
+            assert "sweep" not in order and "c-in" not in order
+            gate.set()
+            await asyncio.gather(first, second, sweeper, third)
+            return order
+
+        order = asyncio.run(run())
+        assert order.index("sweep") > order.index("a-out")
+        assert order.index("sweep") > order.index("b-out")
+        assert order.index("c-in") > order.index("sweep")
+
+    def test_folder_sweep_makes_no_storage_call_while_a_key_op_is_in_flight(self):
+        # The round-5 defect: a sweep landing between a move's copy and its
+        # source delete removes the fresh destination and the move then
+        # deletes the source — the file is lost at both ends. The sweep must
+        # not touch storage until in-flight key-scoped mutations drain.
+        handlers = _registered()
+        p1, p2, p3 = _enabled_owner_env()
+        req = _request("POST", f"/drive/{ACCOUNT}/folder/delete", match_info={"account": ACCOUNT})
+        req.json = AsyncMock(  # type: ignore[method-assign]
+            return_value={"section": "drive", "path": "docs"}
+        )
+
+        async def run() -> int:
+            with (
+                p1,
+                p2,
+                p3,
+                _consent_ok(),
+                _drive_found(),
+                mock.patch.object(routes_mod.storage_mod, "delete_prefix", return_value=3) as sweep,
+            ):
+                bucket = "kirocrew-drive-abc"
+                async with routes_mod._locked_drive_write(bucket, "drive", "docs/x.txt"):
+                    task = asyncio.create_task(
+                        handlers[("POST", "/drive/{account}/folder/delete")](req)  # type: ignore[operator]
+                    )
+                    for _ in range(10):
+                        await asyncio.sleep(0.01)
+                    assert not sweep.called
+                resp = await task
+                assert sweep.called
+            return resp.status
+
+        assert asyncio.run(run()) == 200
+
+
+# ---------------------------------------------------------------------------
 # Drive folder create
 # ---------------------------------------------------------------------------
 
@@ -1012,6 +1385,37 @@ class TestDriveShare:
                 handlers[("POST", "/drive/{account}/share")](req)  # type: ignore[operator]
             )
         return resp, presign, recorder
+
+    def test_share_in_lock_reauthorization_rechecks_the_publish_gate(self):
+        # The entry gate runs _publish_gate (a share is bytes-leave-the-box);
+        # the in-lock re-check must re-run the SAME set — publish=True — or a
+        # policy revoked during the lock wait would still mint a bearer URL.
+        handlers = _registered()
+        p1, p2, p3 = _enabled_owner_env()
+        req = _request("POST", f"/drive/{ACCOUNT}/share", match_info={"account": ACCOUNT})
+        req.json = AsyncMock(  # type: ignore[method-assign]
+            return_value={"section": "drive", "key": "a.txt", "expiresSecs": 3600}
+        )
+        with (
+            p1,
+            p2,
+            p3,
+            _consent_ok(),
+            _drive_found(),
+            mock.patch.object(routes_mod, "publish_denied_reason", return_value=""),
+            mock.patch.object(
+                routes_mod, "_reauthorize_in_lock", AsyncMock(return_value=None)
+            ) as reauth,
+            mock.patch.object(routes_mod.storage_mod, "object_exists", return_value=True),
+            mock.patch.object(routes_mod.storage_mod, "presign", return_value="https://signed"),
+            mock.patch.object(routes_mod.shares_mod, "record_share", return_value={"id": "sh-1"}),
+        ):
+            resp = asyncio.run(
+                handlers[("POST", "/drive/{account}/share")](req)  # type: ignore[operator]
+            )
+        assert resp.status == 200
+        assert reauth.await_count == 1
+        assert reauth.await_args.kwargs["publish"] is True
 
     def test_share_mints_a_url_and_records_the_ledger_entry(self):
         resp, presign, recorder = self._share(

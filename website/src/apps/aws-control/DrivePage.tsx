@@ -50,7 +50,7 @@ import { useNearViewport } from '../../hooks/useNearViewport'
 import { useScrollEdges } from '../../hooks/useScrollEdges'
 import { i18nT } from '../../i18n/t'
 import { fmtBytes, fmtNumber, fmtRelative } from '../../i18n/format'
-import { awsControlApi } from './api'
+import { awsControlApi, AwsControlError } from './api'
 import type {
   DriveSection, DriveStatus, ArtifactKind, LibraryArtifact,
   BackupKind, BackupRun, BackupJobState, Share, DriveUsage,
@@ -1450,9 +1450,20 @@ export function DriveSectionView({ account, bucket }: { account: string; bucket:
   const invalidate = () => qc.invalidateQueries({ queryKey: ['aws-control', 'drive', account] })
 
   const uploadMut = useMutation({
-    mutationFn: (file: File) =>
-      awsControlApi.driveUpload(account, 'drive', path ? `${path}/${file.name}` : file.name, file),
+    // The KEY is the caller's, not derived from the browse path here: the
+    // Upload button targets the open folder, while a drag-drop names the
+    // folder row it landed on — two callers, one mutation.
+    mutationFn: ({ file, key }: { file: File; key: string }) =>
+      awsControlApi.driveUpload(account, 'drive', key, file),
     onSuccess: invalidate,
+    // A dropped file whose put fails on the wire would otherwise vanish
+    // silently — nothing renders it, so the user believes it uploaded. The
+    // name is interpolated because a multi-file drop shares one error line.
+    onError: (_e: unknown, vars: { file: File; key: string }) => {
+      setUploadError(i18nT('apps.awsControl.console.drive_upload_failed', {
+        name: vars.key.split('/').pop() ?? vars.key,
+      }))
+    },
   })
   const deleteMut = useMutation({
     mutationFn: (key: string) => awsControlApi.driveDelete(account, 'drive', key),
@@ -1492,8 +1503,118 @@ export function DriveSectionView({ account, bucket }: { account: string; bucket:
       setUploadError(i18nT('apps.awsControl.console.drive_bad_name'))
       return
     }
-    uploadMut.mutate(file)
+    uploadMut.mutate({ file, key: path ? `${path}/${file.name}` : file.name })
   }
+
+  /** Upload dropped OS files into `folder` ('' = the open folder's own path).
+   *  Invalid names surface through the same strip the picker uses — but NAMED:
+   *  a 10-file drop can fail on one file while the rest upload, and the
+   *  picker's anonymous "that file name" would not say which one. */
+  const uploadDropped = (list: FileList, folder: string) => {
+    setUploadError('')
+    for (const file of Array.from(list)) {
+      if (!KEY_SEGMENT.test(file.name)) {
+        setUploadError(i18nT('apps.awsControl.console.drive_bad_name_named', { name: file.name }))
+        continue
+      }
+      const prefix = folder || path
+      uploadMut.mutate({ file, key: prefix ? `${prefix}/${file.name}` : file.name })
+    }
+  }
+
+  /** Which drop target the pointer is over: '' is the listing itself (the open
+   *  folder), a folder's full path names that folder. Null = no drag in
+   *  flight. Drives the highlight only — the drop handlers re-derive their own
+   *  target so a missed dragleave cannot misroute a drop. */
+  const [dropTarget, setDropTarget] = useState<string | null>(null)
+  const [moveError, setMoveError] = useState('')
+
+  const moveMut = useMutation({
+    mutationFn: ({ fromKey, toKey }: { fromKey: string; toKey: string }) =>
+      awsControlApi.driveMove(account, 'drive', fromKey, toKey),
+    onSuccess: () => {
+      setMoveError('')
+      qc.invalidateQueries({ queryKey: ['aws-control', 'drive-list', account] })
+      qc.invalidateQueries({ queryKey: ['aws-control', 'drive', account] })
+    },
+    onError: (e: unknown) => {
+      // Two refusals worth their own sentences: share_active (the source has
+      // a live share link — moving would 404 it) and destination_exists (the
+      // destination folder already holds this name; never overwritten).
+      const err = e instanceof AwsControlError ? e : null
+      setMoveError(i18nT(
+        err?.message === 'share_active'
+          ? 'apps.awsControl.console.move_shared'
+          : err?.status === 409
+            ? 'apps.awsControl.console.move_conflict'
+            : 'apps.awsControl.console.move_failed'))
+    },
+  })
+
+  /** The wire format an internal file drag travels as. A custom MIME keeps OS
+   *  file drops (types includes 'Files') and internal moves distinguishable. */
+  const DRAG_MIME = 'application/x-drive-object-key'
+
+  /** The key of the drag THIS component started, or null. The drop handler
+   *  trusts this ref, never the DataTransfer payload: drag data is
+   *  attacker-writable (any external page can start a drag carrying our MIME
+   *  with a real key), and a drop on a folder here would then run an
+   *  authenticated move of the owner's file. The payload is still written for
+   *  the OS drag image / other targets, but a drop only moves what our own
+   *  onDragStart recorded — cleared on dragend so a stale key can never
+   *  outlive its gesture. */
+  const dragKeyRef = useRef<string | null>(null)
+
+  /** Move `fromKey` into `folder` (full path, '' = section root). A drop onto
+   *  the folder the file already lives in is a no-op, not an error. */
+  const moveInto = (fromKey: string, folder: string) => {
+    const base = fromKey.split('/').pop() ?? fromKey
+    const fromDir = fromKey.split('/').slice(0, -1).join('/')
+    if (fromDir === folder) return
+    setMoveError('')
+    moveMut.mutate({ fromKey, toKey: folder ? `${folder}/${base}` : base })
+  }
+
+  /** Shared drop-target wiring: accepts OS files (upload into `folder`) and
+   *  internal drags (move into `folder`). */
+  const dropProps = (folder: string) => ({
+    onDragOver: (e: React.DragEvent) => {
+      const t = e.dataTransfer.types
+      if (!t.includes('Files') && !t.includes(DRAG_MIME)) return
+      e.preventDefault()
+      e.stopPropagation()
+      setDropTarget(folder)
+    },
+    onDragLeave: (e: React.DragEvent) => {
+      e.stopPropagation()
+      setDropTarget((cur) => (cur === folder ? null : cur))
+    },
+    onDrop: (e: React.DragEvent) => {
+      e.preventDefault()
+      e.stopPropagation()
+      setDropTarget(null)
+      // Trust boundary: the ref, not the DataTransfer. A cross-page drag
+      // carrying our MIME reaches here with types matching, but no
+      // onDragStart of OURS ran, so the ref is null and the drop is inert.
+      const key = dragKeyRef.current
+      dragKeyRef.current = null
+      if (key && e.dataTransfer.types.includes(DRAG_MIME)) moveInto(key, folder)
+      else if (e.dataTransfer.files.length > 0) uploadDropped(e.dataTransfer.files, folder)
+    },
+  })
+
+  /** Draggable wiring for a file row/tile. */
+  const dragProps = (key: string) => ({
+    draggable: true,
+    onDragStart: (e: React.DragEvent) => {
+      dragKeyRef.current = key
+      e.dataTransfer.setData(DRAG_MIME, key)
+      e.dataTransfer.effectAllowed = 'move'
+    },
+    onDragEnd: () => {
+      dragKeyRef.current = null
+    },
+  })
 
   const download = async (key: string) => {
     // Open the tab SYNCHRONOUSLY, inside the click's user activation, then
@@ -1528,7 +1649,7 @@ export function DriveSectionView({ account, bucket }: { account: string; bucket:
   const crumbs = path.split('/').filter(Boolean)
 
   return (
-    <section data-testid="drive-section">
+    <section data-testid="drive-section" {...dropProps(path)} className={dropTarget === path ? 'rounded-lg ring-1 ring-inset ring-accent' : undefined}>
       <PaneHeader icon={<FolderClosed size={18} />} title={i18nT('apps.awsControl.console.section_files')} actions={
         <div className="flex flex-wrap items-center gap-2">
         <ViewModeToggle section="drive" mode={mode} onChange={setMode} />
@@ -1586,6 +1707,7 @@ export function DriveSectionView({ account, bucket }: { account: string; bucket:
       />
 
       {uploadError && <p className="mb-2 text-[12px] text-danger" data-testid="drive-upload-error">{uploadError}</p>}
+      {moveError && <p className="mb-2 text-[12px] text-danger" role="alert" data-testid="drive-move-error">{moveError}</p>}
       {folderError && <p className="mb-2 text-[12px] text-danger" data-testid="drive-folder-error">{folderError}</p>}
       {folderCreateMut.isError && <p className="mb-2 text-[12px] text-danger" data-testid="drive-folder-create-error">{i18nT('apps.awsControl.console.folder_create_failed')}</p>}
       {deletedCount !== null && (
@@ -1692,7 +1814,8 @@ export function DriveSectionView({ account, bucket }: { account: string; bucket:
                   open()
                 }}
                 aria-label={i18nT('apps.awsControl.console.folder_open', { name: name.split('/').pop() ?? name })}
-                className="mb-3 mr-3 flex cursor-pointer flex-col items-start gap-2 rounded-lg border border-border bg-card p-3 text-left transition-colors hover:border-border-strong hover:bg-bg-hover"
+                {...dropProps(name)}
+                className={`mb-3 mr-3 flex cursor-pointer flex-col items-start gap-2 rounded-lg border border-border bg-card p-3 text-left transition-colors hover:border-border-strong hover:bg-bg-hover ${dropTarget === name ? 'ring-1 ring-inset ring-accent bg-bg-hover' : ''}`}
                 data-testid="drive-grid-folder"
               >
                 <div className="flex w-full items-start justify-between gap-2">
@@ -1742,6 +1865,7 @@ export function DriveSectionView({ account, bucket }: { account: string; bucket:
                    cloud-only Library card follows, which this was contradicting.
                    The folder tile beside it keeps its hover because it IS
                    clickable. */
+                {...dragProps(f.key)}
                 className="mb-3 mr-3 flex flex-col items-start gap-2 rounded-lg border border-border bg-card p-3"
                 data-testid="drive-grid-file"
               >
@@ -1836,7 +1960,8 @@ export function DriveSectionView({ account, bucket }: { account: string; bucket:
                 <Fragment key={`f-${name}`}>
                 <tr
                   onClick={() => { setPath(name); setDeletedCount(null) }}
-                  className="cursor-pointer border-b border-border last:border-0 hover:bg-bg-hover"
+                  {...dropProps(name)}
+                  className={`cursor-pointer border-b border-border last:border-0 hover:bg-bg-hover ${dropTarget === name ? 'bg-bg-hover ring-1 ring-inset ring-accent' : ''}`}
                   data-testid="drive-folder"
                 >
                   <td className="px-2.5 py-2">
@@ -1943,7 +2068,7 @@ export function DriveSectionView({ account, bucket }: { account: string; bucket:
                    key belongs on the fragment - on the inner <tr> React has
                    nothing to reconcile the pair by. */
                 <Fragment key={`o-${f.key}`}>
-                  <tr className="border-b border-border last:border-0 hover:bg-bg-hover" data-testid="drive-file">
+                  <tr {...dragProps(f.key)} className="border-b border-border last:border-0 hover:bg-bg-hover" data-testid="drive-file">
                     <td className="px-2.5 py-2">
                       <div className="flex min-w-0 items-center gap-2">
                         <FileText size={14} className="shrink-0 text-muted" />
