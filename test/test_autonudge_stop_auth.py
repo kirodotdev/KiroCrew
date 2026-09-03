@@ -232,6 +232,16 @@ def test_autonudge_stop_short_circuits_for_non_nudgeable_session(monkeypatch):
 
 
 class _FakeLoop:
+    """Prompt-loop double.
+
+    ``gate`` mirrors ``NudgeLoop.gate``: a prompt loop carries probe state in
+    ``monitor`` only when it is gated, and ``is_structured_monitor_loop`` reads
+    ``monitor is not None and not gate`` to tell a controller-owned structured
+    monitor apart from a prompt loop. A double that sets ``monitor`` without
+    ``gate=True`` is therefore routed to the structured ``monitor_update`` path,
+    which refuses ``message``/``max_cycles``/``active`` as legacy fields.
+    """
+
     def __init__(
         self,
         loop_id,
@@ -244,6 +254,7 @@ class _FakeLoop:
         stopped_reason="",
         slot_key="",
         monitor=None,
+        gate=False,
     ):
         self.id = loop_id
         self.cycle_count = cycle_count
@@ -254,6 +265,7 @@ class _FakeLoop:
         self.stopped_reason = stopped_reason
         self.slot_key = slot_key
         self.monitor = monitor
+        self.gate = gate
 
 
 class _FakeMonitor:
@@ -688,6 +700,7 @@ def test_applier_owed_terminal_turn_is_not_reported_as_a_spent_cap(monkeypatch):
         stopped_reason="cycle_cap",
         slot_key="slack:C123:170.5",
         monitor=_FakeMonitor(terminal_pending="success"),
+        gate=True,
     )
     svc = _FakeSvc(loop)
     _install_svc(monkeypatch, svc)
@@ -722,6 +735,7 @@ def test_applier_owed_blocked_turn_is_not_reported_as_a_merge(monkeypatch):
         stopped_reason="cycle_cap",
         slot_key="slack:C123:170.5",
         monitor=_FakeMonitor(terminal_pending="blocked"),
+        gate=True,
     )
     svc = _FakeSvc(loop)
     _install_svc(monkeypatch, svc)
@@ -753,6 +767,7 @@ def test_applier_settled_terminal_loop_is_not_reported_as_a_manual_pause(monkeyp
         active=False,
         stopped_reason=MONITOR_TERMINAL_REASON,
         monitor=_FakeMonitor(outcome=MonitorOutcome.SUCCESS),
+        gate=True,
     )
     svc = _FakeSvc(loop)
     _install_svc(monkeypatch, svc)
@@ -787,6 +802,7 @@ def test_applier_a_settled_outcome_outranks_a_stale_owed_turn(monkeypatch):
         active=False,
         stopped_reason="cycle_cap",
         monitor=_FakeMonitor(terminal_pending="success", outcome=MonitorOutcome.BLOCKED),
+        gate=True,
     )
     svc = _FakeSvc(loop)
     _install_svc(monkeypatch, svc)
@@ -817,6 +833,7 @@ def test_applier_a_spent_cap_with_no_terminal_news_still_revives(monkeypatch):
         active=False,
         stopped_reason="cycle_cap",
         monitor=_FakeMonitor(),
+        gate=True,
     )
     svc = _FakeSvc(loop)
     _install_svc(monkeypatch, svc)
