@@ -60,7 +60,12 @@ from kiro_crew.mcp_caller import _parent_pid as _ppid_fn
 from kiro_crew.mcp_caller import new_tenant_nonce
 from kiro_crew.mcp_gateway import credwatch, hazards, socketsec, tool_surface, transport
 from kiro_crew.mcp_gateway.apps import sweep_spool as apps_sweep_spool
-from kiro_crew.mcp_gateway.backend import Backend, BackendGone, spawn_backend
+from kiro_crew.mcp_gateway.backend import (
+    INTERNAL_STUB_PREFIXES,
+    Backend,
+    BackendGone,
+    spawn_backend,
+)
 from kiro_crew.mcp_gateway.backend_tmp import sweep_all_backend_tmp
 from kiro_crew.mcp_gateway.breaker import CircuitBreaker
 from kiro_crew.mcp_gateway.hashing import hash_effective_env, non_secret_env
@@ -1842,6 +1847,33 @@ def _audit_peer_identity_denied(reason: str, peer_pid: int | None, stub_uuid: st
         logger.debug("SEL audit emit for peer identity denial failed", exc_info=True)
 
 
+def _audit_reserved_stub_prefix_denied(stub_uuid: str) -> None:
+    """SEL audit: a registrant naming a reserved internal stub prefix was refused.
+
+    The prefix decides whether `Backend` treats a request as the gateway's own
+    and skips the model-visibility filter, so claiming one is an attempt to
+    acquire an exemption rather than a malformed frame -- the same class of
+    access decision as :func:`_audit_peer_identity_denied`, and recorded the
+    same way. The sibling rejects on this path (a malformed Register, an empty
+    stub_uuid) stay WARNING-only because they are schema failures with no
+    control being evaded.
+
+    ``stub_uuid`` is peer-supplied, but the SEL serializes each event with
+    ``json.dumps``, which escapes the control characters a forged log line would
+    need, so it is recorded as received rather than pre-sanitized.
+    """
+    try:
+        SecurityEventLog().log_api_access(
+            caller="unverified-peer",
+            operation="mcp-gateway.reserved-stub-prefix-denied",
+            outcome="denied",
+            source="gateway",
+            resources=f"stub_uuid={stub_uuid}",
+        )
+    except Exception:  # pragma: no cover — audit must never break the handler
+        logger.debug("SEL audit emit for reserved stub prefix denial failed", exc_info=True)
+
+
 async def _apply_claim(
     frame: dict[str, Any], pool: Optional["BackendPool"] = None
 ) -> dict[str, Any]:
@@ -2480,6 +2512,23 @@ async def _handle_connection(
             {"type": "rejected", "reason": "missing stub_uuid"},
         )
         logger.warning("rejected Register: missing stub_uuid")
+        return
+
+    # A reserved prefix is the gateway's OWN marker: `Backend` treats any stub
+    # uuid starting with one as an internal request and skips both the MCP Apps
+    # render path and the model-visibility filter (`INTERNAL_STUB_PREFIXES`).
+    # That check is correct for requests the gateway mints itself, so the gap is
+    # here: a stub that simply NAMES itself with the prefix at registration
+    # inherits the exemption and can list tools the model is meant not to see.
+    # Refused at the door, because the prefix is not a namespace a client may
+    # enter.
+    if stub_uuid.startswith(INTERNAL_STUB_PREFIXES):
+        await _write_json_line(
+            writer,
+            {"type": "rejected", "reason": "reserved stub_uuid prefix"},
+        )
+        logger.warning("rejected Register: reserved stub_uuid prefix %r", stub_uuid)
+        _audit_reserved_stub_prefix_denied(stub_uuid)
         return
 
     caller = _caller_from_register(register)

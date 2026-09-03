@@ -7764,6 +7764,35 @@ class TestAdfToMarkdown:
         adf = self._doc(self._para(self._text(" foo", [{"type": "code"}])))
         assert source._adf_to_markdown(adf) == "` foo`"
 
+    def test_newline_in_a_code_span_cannot_break_out_of_the_fence(self):
+        """A code span is inline, so a newline in its content ends the paragraph
+        and everything after it is parsed as fresh markdown -- outside the fence,
+        and so past the inline escape and the link-target scan."""
+        payload = "safe\n\n# Injected\n[x](javascript:alert(1))"
+        node = self._text(payload, [{"type": "code"}])
+        out = source._adf_to_markdown(self._doc(self._para(node)))
+        assert "\n" not in out
+        assert out == "`safe  # Injected [x](javascript:alert(1))`"
+
+    def test_carriage_return_in_a_code_span_is_collapsed_too(self):
+        """CommonMark ends a line on a bare CR and on CRLF, not only on LF."""
+        for raw in ("a\rb", "a\r\nb"):
+            out = source._adf_to_markdown(
+                self._doc(self._para(self._text(raw, [{"type": "code"}])))
+            )
+            assert out == "`a b`", raw
+
+    def test_folding_a_long_whitespace_run_is_linear(self):
+        """A provider-controlled newline-FREE whitespace run, bounded only by the
+        8MiB fetch cap, used to be folded by a pattern whose whitespace runs and
+        newline anchor competed for the same characters: 200k spaces took ~45s of
+        backtracking, per heading and per table cell. The budget is ~100x the
+        linear cost, so this fails only on a return to quadratic scanning."""
+        payload = " " * 200_000 + "x"
+        start = time.monotonic()
+        assert source._md_one_line(payload) == "x"
+        assert time.monotonic() - start < 2.0
+
     def test_empty_marked_text_emits_nothing(self):
         """A marked empty text node must not leave its bare delimiters behind."""
         for mark in ("strong", "em", "strike", "code"):

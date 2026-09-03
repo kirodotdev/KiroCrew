@@ -677,6 +677,11 @@ _AUDIT_CASES = [
     ("_audit_pool_fallback", ("caller", "demo-mcp", "pool full"), "mcp-gateway.fallback"),
     ("_audit_pool_rejected", ("caller", "demo-mcp", "unknown target"), "mcp-gateway.ensure_backend"),
     ("_audit_prewarm_spawn", ("demo-mcp",), "mcp-gateway.prewarm-spawn"),
+    (
+        "_audit_reserved_stub_prefix_denied",
+        ("__app_call__deadbeef",),
+        "mcp-gateway.reserved-stub-prefix-denied",
+    ),
 ]
 
 

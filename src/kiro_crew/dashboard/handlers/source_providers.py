@@ -3352,7 +3352,16 @@ def _md_inline_code(text: str) -> str:
     content both begins and ends with a space or newline (unless the content is
     nothing but whitespace, which is left alone). One space of padding -- which
     that same rule then removes -- is what keeps such content intact.
+
+    A line break inside the content is collapsed to a space FIRST. A code span is
+    inline, so it cannot span a paragraph: a newline in the content ends the
+    enclosing paragraph and everything after it is parsed as fresh markdown --
+    outside the fence, and so past :func:`_md_escape_inline`,
+    :func:`_md_link_target` and the redaction gate. Collapsed rather than emitted
+    as a fenced block, because a block would change the document structure at
+    every call site while the escape is what actually has to hold.
     """
+    text = re.sub(r"\r\n?|\n", " ", text)
     fence = _md_backtick_fence(text, 1)
     first, last = text[:1], text[-1:]
     edge_stripped = first in (" ", "\n") and last in (" ", "\n") and text.strip() != ""
@@ -3411,8 +3420,18 @@ def _md_one_line(text: str) -> str:
     would be eaten by a blanket whitespace collapse. Only a newline has to go,
     and a code span's own padding sits inside its backticks where no newline can
     reach it.
+
+    Split on the line breaks rather than matched with a regex. The pattern this
+    replaces made the leading whitespace run and the newline anchor compete for
+    the same characters, so on a long newline-FREE whitespace run -- content a
+    provider controls, bounded only by the 8MiB fetch cap -- the engine retried
+    every split of that run at every starting offset before failing. A split,
+    strip and join reads each character a fixed number of times. The collapsed
+    set is unchanged: a maximal whitespace run containing at least one line break
+    becomes one space, and the whitespace class strip uses is the one the pattern
+    matched.
     """
-    return re.sub(r"\s*\n\s*", " ", text).strip()
+    return " ".join(seg for seg in (line.strip() for line in text.split("\n")) if seg)
 
 
 def _md_guard_line_expansion(text: str, per_line: int) -> None:
