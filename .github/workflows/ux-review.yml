@@ -369,6 +369,19 @@ jobs:
                - Theme tokens and existing ui/ primitives over hand-rolled
                  components or hardcoded colors; platform convention over novel
                  widgets for standard jobs.
+               - Flat fills: the brand system is flat, so a NEW decorative
+                 gradient fill (linear-, radial-, or conic-gradient as a
+                 background or surface color) on chrome, a dialog, or an
+                 exported image such as a share card is a finding. A fill is
+                 one solid token (or the brand purple #7c3aed on an
+                 outward-facing artifact). "Looks premium" is not an
+                 exception; a gradient also bands under every social
+                 platform's re-encode. NOT a finding: functional gradients
+                 (mask-image scroll-edge fades, loading shimmer, streaming
+                 glow) and shipped gradient mechanisms (appstore gradient art
+                 in components/appstore/gradient.ts, the session 'gradient'
+                 color mode) — the rule is documented in
+                 website/docs/theming-contract.md.
                - Habituation: flag diffs that MOVE or REORDER existing controls
                  without functional need (breaks muscle memory), and duplicate
                  new paths to an already-reachable action.

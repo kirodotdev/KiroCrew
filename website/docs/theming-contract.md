@@ -32,6 +32,18 @@ with the theme CSS custom properties or Tailwind classes mapped to them,
 
 The 54 CSS variables are the single source of truth for color. They are the
 customization surface a theme (built-in, custom, or installed) can set.
+
+**Fills are flat.** The brand system is flat: a new decorative gradient fill
+(`linear-`, `radial-`, or `conic-gradient` used as a background or surface
+color) on chrome, a dialog, or an exported image such as a share card is a UX
+review finding. A fill is one solid token, or the brand purple `#7c3aed` on an
+outward-facing artifact. "Looks premium" is not an exception; a gradient also
+bands under every social platform's re-encode. Functional gradients are not
+fills and are fine: `mask-image` scroll-edge fades, loading shimmer, and the
+streaming glow. So are the shipped gradient mechanisms — the appstore gradient
+art in `components/appstore/gradient.ts` (which reads as content, not chrome)
+and the session `'gradient'` color mode. The UX review lane
+(`.github/workflows/ux-review.yml` and its fork variant) applies this rule.
 Theme blocks in `index.css` also set a few non-color properties that are
 deliberately NOT on the allowlist: the font tokens (`--font-body`, `--mono`)
 and radii are injected as fixed defaults by `buildCustomThemeCss` (fonts are a
