@@ -23,6 +23,13 @@ def register(app: web.Application) -> None:
     app.router.add_get("/api/slack/config", handlers.api_slack_config_get)
     app.router.add_put("/api/slack/config", handlers.api_slack_config_save)
     app.router.add_get("/api/slack/manifest", handlers.api_slack_manifest)
+    # Brokered channel-routing write for an edition-supplied recipes app: only
+    # the gateway can write config.json under its lock and refresh in-memory
+    # routing. See docs/system-specs/features/recipes.md.
+    app.router.add_put(
+        "/api/slack/channels/{channel_id}/routing",
+        handlers.api_slack_channel_routing_put,
+    )
     app.router.add_get("/api/discord/config", handlers.api_discord_config_get)
     app.router.add_put("/api/discord/config", handlers.api_discord_config_save)
     app.router.add_get("/api/telegram/config", handlers.api_telegram_config_get)
