@@ -1,0 +1,199 @@
+name: PR Duplicate Detect
+
+# Two advisory, visibility-only lanes that share ONE detection engine
+# (scripts/detect_pr_overlap.py): given a PR, find the OTHER OPEN pull requests
+# that reference the SAME issue AND touch at least one of the SAME files. The
+# engine decides overlap; this workflow only chooses what to do with it.
+#
+#   ON OPEN (proposal 2, the higher-value/cheaper item): when a newly opened or
+#   synchronized PR overlaps an earlier open PR, upsert ONE marker-keyed comment
+#   on the new PR naming the earlier PR(s) and the shared files, so duplicated
+#   effort is caught before a reviewer reads two solutions to the same problem.
+#   If nothing overlaps, any stale marker comment is removed. This NEVER blocks
+#   merge -- it is a heads-up, not a gate, and phrased as one (a single issue may
+#   legitimately host stacked/companion PRs).
+#
+#   ON MERGE (proposal 1): when a PR merges, each OPEN same-issue PR whose files
+#   intersect the merged PR is pointed at the merge and closed as superseded.
+#
+# Trust + credit boundaries:
+#   * Runs from the trusted base context via pull_request_target, so it has the
+#     write token even for fork PRs, and it NEVER checks out or executes PR code
+#     -- it only reads PR metadata (numbers, bodies, changed-file lists, issue
+#     links) and writes comments / closes PRs. Mirrors fork-pr-label.yml.
+#   * Co-authored-by: this repo squash-merges using the PR TITLE as the commit
+#     message, and GitHub composes that squash commit at merge time. A workflow
+#     runs AFTER the merge, so it CANNOT rewrite the already-composed commit to
+#     inject a `Co-authored-by:` trailer -- that trailer would have to be present
+#     in the merge message GitHub builds, which only the merging maintainer (or
+#     the PR title/description) controls. What a workflow CAN place, and does
+#     here, is a durable co-authorship-recording comment on the merged PR naming
+#     the superseded author(s), so the shared work is attributed in a place the
+#     daily add-contributor sweep and any human can see. This workflow does NOT
+#     adjudicate credit beyond recording it; the reporter asked for tooling, not
+#     credit adjudication.
+
+on:
+  pull_request_target:
+    # opened/reopened/synchronize drive the on-open advisory; closed drives the
+    # on-merge handling (gated on merged == true in that job). Trusted base
+    # context -> write token even for fork PRs; no fork code is checked out.
+    types: [opened, reopened, synchronize, closed]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  # Per-PR: serialize a PR's own events so the single marker comment is never
+  # double-posted by two overlapping runs. Safe to cancel in-flight -- the work
+  # is idempotent.
+  group: pr-duplicate-detect-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  on-open:
+    name: Flag a duplicate on open (advisory)
+    if: github.event.action != 'closed'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      # Check out the trusted BASE tree only, for scripts/detect_pr_overlap.py.
+      # This is the base repo at the workflow ref, never the PR head, so no fork
+      # code runs. persist-credentials:false -- we only read a tracked script.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - name: Flag duplicate open PRs on the same issue
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          # Fixed hidden marker keys the ONE comment this lane owns, so a re-run
+          # UPDATES it in place instead of posting a second (same dedup idea as
+          # add-contributor's fixed-title issue and the review bots' markers).
+          MARKER: "<!-- pr-duplicate-detect -->"
+        run: |
+          set -euo pipefail
+
+          # The engine does all overlap logic; it reads PR metadata via `gh` and
+          # prints JSON. It never checks out or runs PR code.
+          result="$(python3 scripts/detect_pr_overlap.py --fetch --repo "$REPO" --pr "$PR_NUMBER")"
+          echo "$result"
+
+          # Find any comment this lane previously left, keyed on the marker.
+          existing="$(gh api "repos/$REPO/issues/$PR_NUMBER/comments" --paginate \
+            --jq "map(select(.body | contains(\"$MARKER\"))) | .[0].id // empty")"
+
+          has_overlap="$(jq -r '.has_overlap' <<<"$result")"
+
+          if [ "$has_overlap" != "true" ]; then
+            # No overlap: remove a stale warning so a corrected PR does not keep
+            # carrying it. Nothing to do if there was no prior comment.
+            if [ -n "$existing" ]; then
+              gh api --method DELETE "repos/$REPO/issues/comments/$existing" >/dev/null
+              echo "PR #$PR_NUMBER: no overlap -> removed stale duplicate-detect comment"
+            else
+              echo "PR #$PR_NUMBER: no overlap -> no comment"
+            fi
+            exit 0
+          fi
+
+          # Build a non-accusatory heads-up naming the earlier PR(s) and the
+          # specific shared files/count so it is actionable and falsifiable.
+          lines="$(jq -r '
+            .overlaps[]
+            | "- #\(.number) also touches \(.file_count) of the same file(s) for this issue: "
+              + (.files | map("`" + . + "`") | join(", "))
+              + (if .exact then " (identical changed-file set)" else "" end)
+          ' <<<"$result")"
+
+          body="$MARKER
+          Heads-up: this PR references the same issue as, and touches some of the same files as, one or more other open PRs. That often means the same problem is being solved twice, so it is worth a look before more review time is spent -- it may save either author's work, or these may be intentional companion PRs, in which case carry on.
+
+          Overlapping open PR(s):
+          $lines
+
+          This is an advisory note only; it does not block merge."
+
+          if [ -n "$existing" ]; then
+            gh api --method PATCH "repos/$REPO/issues/comments/$existing" \
+              -f body="$body" >/dev/null
+            echo "PR #$PR_NUMBER: overlap -> updated duplicate-detect comment $existing"
+          else
+            gh api --method POST "repos/$REPO/issues/$PR_NUMBER/comments" \
+              -f body="$body" >/dev/null
+            echo "PR #$PR_NUMBER: overlap -> posted duplicate-detect comment"
+          fi
+
+  on-merge:
+    name: Close superseded open PRs on merge
+    if: github.event.action == 'closed' && github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - name: Close open same-issue PRs whose files the merge superseded
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          # Marker for the co-authorship-recording comment left on the MERGED PR
+          # (see the Co-authored-by boundary in this file's header).
+          COAUTHOR_MARKER: "<!-- pr-duplicate-coauthor -->"
+        run: |
+          set -euo pipefail
+
+          result="$(python3 scripts/detect_pr_overlap.py --fetch --repo "$REPO" --pr "$PR_NUMBER")"
+          echo "$result"
+
+          if [ "$(jq -r '.has_overlap' <<<"$result")" != "true" ]; then
+            echo "PR #$PR_NUMBER merged with no overlapping open PR -> nothing to close"
+            exit 0
+          fi
+
+          # Close each overlapping open PR with a pointer to the merge, and
+          # collect its number for the co-authorship record.
+          superseded=""
+          while read -r overlap; do
+            [ -n "$overlap" ] || continue
+            num="$(jq -r '.number' <<<"$overlap")"
+            files="$(jq -r '.files | map("`" + . + "`") | join(", ")' <<<"$overlap")"
+            pointer="This PR overlaps #$PR_NUMBER, which has now merged and covers the same file(s) for the same issue: $files. Closing it as superseded so review effort is not spent twice. If your change is not fully covered by the merged PR, please reopen or open a follow-up -- this is an automated heads-up, not a judgement on the work."
+            gh pr comment "$num" --repo "$REPO" --body "$pointer" >/dev/null
+            gh pr close "$num" --repo "$REPO" >/dev/null || true
+            echo "PR #$num: overlaps merged #$PR_NUMBER -> pointed and closed"
+            superseded="$superseded #$num"
+          done < <(jq -c '.overlaps[]' <<<"$result")
+
+          # Record co-authorship on the MERGED PR. A workflow cannot rewrite the
+          # squash-merge commit GitHub already composed from the PR title to add
+          # a `Co-authored-by:` trailer, so attribution that a workflow CAN place
+          # -- a durable comment naming the superseded author(s)' PRs -- is left
+          # here instead. Marker-keyed so a re-run updates in place.
+          if [ -n "$superseded" ]; then
+            note="$COAUTHOR_MARKER
+          This PR merged work that also appeared in open PR(s) for the same issue, now closed as superseded:$superseded. Recording the overlap here so the earlier author(s)' effort is attributed. A workflow cannot edit the already-composed squash-merge commit to add a \`Co-authored-by:\` trailer, so this note is the durable record; a maintainer may add the trailer to the merge message by hand if warranted."
+            existing="$(gh api "repos/$REPO/issues/$PR_NUMBER/comments" --paginate \
+              --jq "map(select(.body | contains(\"$COAUTHOR_MARKER\"))) | .[0].id // empty")"
+            if [ -n "$existing" ]; then
+              gh api --method PATCH "repos/$REPO/issues/comments/$existing" \
+                -f body="$note" >/dev/null
+            else
+              gh api --method POST "repos/$REPO/issues/$PR_NUMBER/comments" \
+                -f body="$note" >/dev/null
+            fi
+            echo "PR #$PR_NUMBER: recorded co-authorship for superseded PR(s):$superseded"
+          fi

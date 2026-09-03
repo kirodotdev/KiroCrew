@@ -773,6 +773,57 @@ forge its verdict. A maintainer who has reviewed a legitimate workflow change ap
 the `allow-fork-workflow-change` label and the guard re-evaluates green; the label is
 stripped on a new revision, so the override cannot carry over.
 
+## Duplicate and overlap detection
+
+Two PRs can quietly solve the same issue by editing the same files, which wastes the
+second author's effort and makes a reviewer read two solutions to one problem.
+`pr-duplicate-detect.yml` surfaces that, in two advisory, visibility-only lanes that
+share one detection engine and never gate a PR.
+
+**One engine, two triggers.** `scripts/detect_pr_overlap.py` answers a single question
+about a PR: which OTHER open pull requests reference the same issue AND touch at least
+one of the same files? A candidate PR is reported only when BOTH hold -- same issue
+reference and a non-empty intersection of changed-file sets. Both are required on
+purpose: a shared issue alone is too noisy, since one issue legitimately hosts stacked
+or companion PRs that touch different files, and a shared file alone is too noisy, since
+unrelated PRs routinely edit a common file. The rule is intersection, not exact-set
+equality, so two PRs that edit the same file plus different neighbours still match; an
+exact set match is carried through as a stronger signal that the comment phrases more
+firmly, but it is not required to flag. A PR's referenced issues are the union of
+GitHub's `closingIssuesReferences` linkage and a closing-keyword parse of the PR body
+(`Fixes`/`Closes`/`Resolves #N`), because the linkage may not be populated on an
+unmerged PR. The triggering PR is never matched against itself, and only OPEN PRs are
+considered as candidates. The engine is pure and network-free -- it takes materialized
+PR records and returns overlaps -- so its `--fetch` mode does all `gh` I/O and the core
+is unit-tested against canned JSON.
+
+**On open (visibility, the higher-value lane).** On `opened`, `reopened` and
+`synchronize`, the workflow runs the engine for the triggering PR and, when it overlaps
+one or more earlier open PRs, upserts a single marker-keyed comment naming those PRs and
+the specific shared files and count, so the duplication is caught before review time is
+spent twice. The comment is keyed on a hidden marker, so a re-run updates it in place
+rather than posting a second, and when a corrected revision no longer overlaps, the
+stale comment is removed. The tone is a non-accusatory heads-up, matching
+CONTRIBUTING.md and acknowledging that companion PRs are legitimate; it is advisory only
+and never blocks merge.
+
+**On merge (close the superseded PR).** On a `closed` event where the PR merged, the
+same engine finds the open same-issue PRs whose files the merge intersects, points each
+at the merge with a comment, and closes it as superseded, leaving non-overlapping open
+PRs untouched. Attribution has a hard boundary: this repository squash-merges using the
+PR title as the commit message, and GitHub composes that commit at merge time, so a
+workflow -- which runs after the merge -- cannot rewrite it to add a `Co-authored-by:`
+trailer. The trailer would have to be present in the message GitHub builds, which only
+the merging maintainer or the PR title controls. What the workflow can place, and does,
+is a durable co-authorship-recording comment on the merged PR naming the superseded
+author's PRs, so the shared work is attributed where a human and the daily contributor
+sweep can see it. The workflow records the overlap; it does not adjudicate credit.
+
+Both lanes run from the trusted base context via `pull_request_target`, so they hold the
+write token even for a fork PR, and neither checks out or executes PR head code -- they
+read PR metadata and write comments or close PRs, the same trust posture as
+`fork-pr-label.yml`.
+
 ## Over-engineering resistance
 
 AI-native coding skews toward over-engineering, and a naive AI reviewer compounds it
