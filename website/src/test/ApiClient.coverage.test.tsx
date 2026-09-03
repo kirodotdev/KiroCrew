@@ -770,6 +770,11 @@ describe('query-string builders', () => {
 })
 
 describe('path encoding', () => {
+  it('uses the legacy slot route for one session automation snapshot', async () => {
+    await api.autonudgeForSlot('chat/1')
+    expect(call().url).toBe('/api/autonudge/slot/chat%2F1')
+  })
+
   it('percent-encodes single-segment ids', async () => {
     await api.artifact('a/b')
     expect(call().url).toBe('/api/artifacts/a%2Fb')

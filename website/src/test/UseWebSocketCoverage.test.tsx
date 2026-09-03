@@ -27,10 +27,12 @@ import {
 } from '../hooks/useWebSocket'
 import { api } from '../api/client'
 import { store as globalStore } from '../store'
-import chatReducer, { setActiveSlot, clearMessages, sseChatMessage, sseActivityEvent, setQuestionCard, resolveQuestionCard } from '../store/chatSlice'
+import chatReducer, { setActiveSlot, clearMessages, sseChatMessage, sseActivityEvent, setQuestionCard, resolveQuestionCard, sseAutomation } from '../store/chatSlice'
 import { sseSlots } from '../store/dashboardSlice'
 import { addNotification, removeNotificationByTs } from '../store/notificationsSlice'
 import type { ChatSlot } from '../types'
+import { structuredMonitorLoop } from './monitorFixtures'
+import { normalizeAutomationRecord } from '../monitoring/automation'
 
 vi.mock('../api/client', () => ({
   api: {
@@ -40,6 +42,7 @@ vi.mock('../api/client', () => ({
     notifications: vi.fn().mockResolvedValue({ notifications: [], unread: 0 }),
     chatSlotDetail: vi.fn().mockResolvedValue({ messages: [], running: false, has_more: false, total: 0, queue: [] }),
     autonudgeList: vi.fn().mockResolvedValue({ enabled: false, loops: [] }),
+    monitorsList: vi.fn().mockResolvedValue({ enabled: false, monitors: [] }),
     pendingQuestions: vi.fn().mockResolvedValue([]),
     voiceSynthesize: vi.fn().mockResolvedValue({ ok: true }),
     sessions: vi.fn().mockResolvedValue({ sessions: [], has_more: false }),
@@ -157,6 +160,7 @@ describe('useWebSocket exported reconcile helpers', () => {
 
 describe('useWebSocket frame router', () => {
   let testStore: ReturnType<typeof createTestStore>
+  let testQueryClient: QueryClient
   let rafCbs: FrameRequestCallback[]
   let originalCreateObjectUrl: typeof URL.createObjectURL
   let originalRevokeObjectUrl: typeof URL.revokeObjectURL
@@ -195,6 +199,7 @@ describe('useWebSocket frame router', () => {
 
   function wrapper({ children }: { children: React.ReactNode }) {
     const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    testQueryClient = qc
     return createElement(Provider, { store: testStore },
       createElement(QueryClientProvider, { client: qc }, children))
   }
@@ -804,37 +809,92 @@ describe('useWebSocket frame router', () => {
     }
   })
 
-  it('mirrors an autonudge frame into the sidebar goal-loop map', () => {
+  it('normalizes an autonudge frame into the authoritative automation map', () => {
     const { ws } = mount()
-    const seen: unknown[] = []
-    const listener = (e: Event) => { seen.push((e as CustomEvent).detail) }
-    window.addEventListener('autonudge_state', listener)
-    try {
-      act(() => {
-        ws.simulateMessage({
-          type: 'autonudge_state',
-          data: { event: 'fired', slot: ACTIVE, loop: { active: true, cycle_count: 4, max_cycles: 24 } },
-        })
-      })
-      expect(seen).toHaveLength(1)
-      expect(chat().goalLoops[ACTIVE]).toEqual({ cycle_count: 4, max_cycles: 24 })
-
-      act(() => {
-        ws.simulateMessage({
-          type: 'autonudge_state',
-          data: { event: 'removed', slot: ACTIVE, loop: { active: true, cycle_count: 4, max_cycles: 24 } },
-        })
-      })
-      expect(chat().goalLoops[ACTIVE]).toBeUndefined()
-    } finally {
-      window.removeEventListener('autonudge_state', listener)
+    const loop = {
+      id: 'loop-1', slot_key: ACTIVE, message: 'go', idle_secs: 60,
+      active: true, cycle_count: 4, max_cycles: 24, last_fire_ts: 0,
     }
+    act(() => {
+      ws.simulateMessage({
+        type: 'autonudge_state',
+        data: { event: 'fired', slot: ACTIVE, loop },
+      })
+    })
+    expect(chat().automations[ACTIVE]).toMatchObject({
+      kind: 'legacy_goal_loop', cycleCount: 4, maxCycles: 24,
+    })
+
+    act(() => {
+      ws.simulateMessage({
+        type: 'autonudge_state',
+        data: { event: 'removed', slot: ACTIVE, loop },
+      })
+    })
+    expect(chat().automations[ACTIVE]).toBeUndefined()
+  })
+
+  it('removes a structured monitor when its websocket tombstone arrives', () => {
+    const { ws } = mount()
+    const loop = { ...structuredMonitorLoop(), slot_key: ACTIVE }
+    act(() => {
+      ws.simulateMessage({
+        type: 'autonudge_state',
+        data: { event: 'updated', slot: ACTIVE, loop },
+      })
+    })
+    expect(chat().automations[ACTIVE]).toMatchObject({ kind: 'structured_monitor' })
+    expect(testQueryClient.getQueryData(['session-automation', ACTIVE]))
+      .toMatchObject({ kind: 'structured_monitor' })
+
+    act(() => {
+      ws.simulateMessage({
+        type: 'autonudge_state',
+        data: { event: 'removed', slot: ACTIVE, loop },
+      })
+    })
+    expect(chat().automations[ACTIVE]).toBeUndefined()
+  })
+
+  it('tombstones the cached automation before a removal refetch can fail', () => {
+    const { ws } = mount()
+    const loop = { ...structuredMonitorLoop(), slot_key: ACTIVE }
+    testQueryClient.setQueryData(['session-automation', ACTIVE], loop)
+
+    act(() => {
+      ws.simulateMessage({
+        type: 'autonudge_state',
+        data: { event: 'removed', slot: ACTIVE, loop },
+      })
+    })
+
+    expect(testQueryClient.getQueryData(['session-automation', ACTIVE])).toBeNull()
+    expect(chat().automations[ACTIVE]).toBeUndefined()
+  })
+
+  it('tombstones a cached automation omitted by a complete reconnect seed', async () => {
+    const stale = normalizeAutomationRecord({
+      ...structuredMonitorLoop(),
+      slot_key: ACTIVE,
+    })!
+    testStore.dispatch(sseAutomation(stale))
+    renderHook(() => useWebSocket(), { wrapper })
+    testQueryClient.setQueryData(['session-automation', ACTIVE], stale)
+
+    await act(async () => {
+      WS_INSTANCES[0].simulateOpen()
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    expect(chat().automations[ACTIVE]).toBeUndefined()
+    expect(testQueryClient.getQueryData(['session-automation', ACTIVE])).toBeNull()
   })
 
   it('ignores an autonudge frame with no slot', () => {
     const { ws } = mount()
     act(() => { ws.simulateMessage({ type: 'autonudge_state', data: { event: 'fired' } }) })
-    expect(chat().goalLoops).toEqual({})
+    expect(chat().automations).toEqual({})
   })
 
   it('shows update progress and clears it on the done step', () => {
@@ -1644,6 +1704,11 @@ describe('useWebSocket connection lifecycle', () => {
     ;(api.approvals as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error('gateway down'))
     ;(api.pendingQuestions as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error('gateway down'))
     ;(api.autonudgeList as ReturnType<typeof vi.fn>).mockImplementationOnce(() => { throw new Error('sync boom') })
+    testStore.dispatch(sseAutomation({
+      kind: 'legacy_goal_loop', id: 'legacy-live', slotKey: ACTIVE, message: 'Keep going',
+      idleSecs: 60, maxCycles: 0, cycleCount: 2, active: true, lastFireAt: 0,
+      stoppedReason: '',
+    }))
 
     renderHook(() => useWebSocket(), { wrapper })
     await act(async () => { WS_INSTANCES[0].simulateOpen() })
@@ -1652,6 +1717,9 @@ describe('useWebSocket connection lifecycle', () => {
     // A cosmetic seed throwing synchronously must not strand the subscribe.
     expect(WS_INSTANCES[0].send).toHaveBeenCalledWith(JSON.stringify({ type: 'subscribe_subagents' }))
     expect(testStore.getState().dashboard.connected).toBe(true)
+    // A successful structured snapshot must not turn a failed legacy read into
+    // an authoritative empty legacy snapshot.
+    expect(testStore.getState().chat.automations[ACTIVE]?.kind).toBe('legacy_goal_loop')
   })
 
   it('drops a stale question card the server no longer lists after a reconnect', async () => {
@@ -1784,4 +1852,3 @@ describe('useWebSocket slots reconcile', () => {
     expect(testStore.getState().chat.slotMessages[BACKGROUND]).toBeDefined()
   })
 })
-

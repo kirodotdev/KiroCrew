@@ -184,6 +184,9 @@ def test_monitor_inspect_passes_strict_identity_without_fallback():
                     "wake_instructions": "large prompt omitted from inspect",
                     "last_wake_reason_code": "checks_failed",
                     "user_stop_reason": "operator stopped",
+                    "last_observation_status": "pending",
+                    "last_observation_reason_code": "checks_pending",
+                    "last_observation_summary": "Two checks are pending.",
                     "last_observation": {
                         "head_revision": "abc123",
                         "checks": {"passed": [f"check-{index}" for index in range(20)]},
@@ -201,6 +204,9 @@ def test_monitor_inspect_passes_strict_identity_without_fallback():
     assert payload["monitor"]["wake_count"] == 3
     assert payload["monitor"]["last_wake_reason_code"] == "checks_failed"
     assert payload["monitor"]["user_stop_reason"] == "operator stopped"
+    assert payload["monitor"]["last_observation_status"] == "pending"
+    assert payload["monitor"]["last_observation_reason_code"] == "checks_pending"
+    assert "last_observation_summary" not in payload["monitor"]
     assert payload["monitor"]["observation"]["checks"]["passed_count"] == 20
     assert "wake_instructions" not in payload["monitor"]
     assert "check-0" not in result

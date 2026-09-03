@@ -1592,6 +1592,8 @@ async def test_shadow_probe_persists_observation_decision_and_metrics_without_a_
         "pending": [],
         "unknown": [],
     }
+    assert state.last_observation_status is MonitorObservationStatus.ACTIONABLE
+    assert state.last_observation_reason_code == "checks_failed"
     assert state.last_fingerprint
     assert state.last_wake_fingerprint == ""
     assert state.wake_in_flight is False
@@ -1627,6 +1629,8 @@ async def test_shadow_provider_error_persists_only_fixed_error_metrics() -> None
     assert decision is MonitorDecision.RETRY_PROVIDER
     assert state.last_observation == previous
     assert state.last_fingerprint == "safe-fingerprint"
+    assert state.last_observation_status is MonitorObservationStatus.PROVIDER_ERROR
+    assert state.last_observation_reason_code == "provider_rate_limited"
     assert state.probe_count == 1
     assert state.provider_error_count == 1
     assert state.consecutive_provider_errors == 1

@@ -51,7 +51,7 @@ import chatReducer, {
   setActiveSlot,
   setFolderSuggestion,
   setFollowupCard,
-  setGoalLoops,
+  setAutomations,
   setQuestionCard,
   setQuestionDraft,
   setSlotStatusDetail,
@@ -63,7 +63,7 @@ import chatReducer, {
   sseActivityEvent,
   sseChatMessage,
   sseContextUsage,
-  sseGoalLoop,
+  sseAutomation,
   sseMcpAppRender,
   sseSideQueue,
   sseSubagentBatchChunks,
@@ -78,6 +78,15 @@ import chatReducer, {
   warmSlotCache,
 } from '../store/chatSlice'
 import { isStopEvent } from '../lib/stopEvent'
+import type { LegacyGoalLoop } from '../monitoring/automation'
+
+const goalLoop = (
+  slotKey: string,
+  { active = true, cycleCount = 1, maxCycles = 5 }: Partial<LegacyGoalLoop> = {},
+): LegacyGoalLoop => ({
+  kind: 'legacy_goal_loop', id: `loop-${slotKey}`, slotKey, message: '', idleSecs: 60,
+  maxCycles, cycleCount, active, lastFireAt: 0, stoppedReason: '',
+})
 import dashboardReducer, { sseSlots } from '../store/dashboardSlice'
 import notificationsReducer from '../store/notificationsSlice'
 import instancesReducer from '../store/instancesSlice'
@@ -242,8 +251,10 @@ describe('chatSlice prototype-pollution guards', () => {
       store.dispatch(hydrateSlotMessages({ slot: bad, messages: [{ role: 'user', content: 'x' } as ChatMessage] }))
       store.dispatch(appendSlotMessage({ slot: bad, message: { role: 'user', content: 'x' } as ChatMessage }))
       store.dispatch(sseSubagentQueued({ slot: bad, queued: 3 }))
-      store.dispatch(sseGoalLoop({ slot: bad, active: true, cycle_count: 1, max_cycles: 5 }))
-      store.dispatch(setGoalLoops([{ slot: bad, active: true, cycle_count: 1, max_cycles: 5 }]))
+      store.dispatch(sseAutomation(goalLoop(bad)))
+      store.dispatch(setAutomations({
+        records: [goalLoop(bad)], legacyComplete: true, structuredComplete: true,
+      }))
       store.dispatch(sseToolActivity({ slot: bad, tool: 't', kind: 'tool', purpose: '', input_preview: '' }))
       store.dispatch(sseActivityEvent({ slot: bad, kind: 'note', text: 'n' }))
       store.dispatch(clearTerminalSubagents({ slot: bad }))
@@ -260,7 +271,7 @@ describe('chatSlice prototype-pollution guards', () => {
     expect(Object.keys(s.slotContextPct)).toEqual([])
     expect(Object.keys(s.slotMessages)).toEqual([])
     expect(Object.keys(s.subagentQueued)).toEqual([])
-    expect(Object.keys(s.goalLoops)).toEqual([])
+    expect(Object.keys(s.automations)).toEqual([])
     expect(Object.keys(s.slotSide)).toEqual([])
     expect(s.messages).toEqual([])
     expect(s.toolLog).toEqual([])
@@ -773,20 +784,24 @@ describe('chatSlice workflow runs', () => {
   })
 })
 
-describe('chatSlice goal loops and queued sub-agent counts', () => {
-  it('keeps only active loops and normalises their counters', () => {
+describe('chatSlice automations and queued sub-agent counts', () => {
+  it('keeps only active legacy loops', () => {
     const store = makeStore()
-    store.dispatch(setGoalLoops([
-      { slot: 'a', active: true, cycle_count: 3.7, max_cycles: 24 },
-      { slot: 'b', active: false, cycle_count: 9, max_cycles: 24 },
-    ]))
-    expect(chat(store).goalLoops.a).toEqual({ cycle_count: 3, max_cycles: 24 })
-    expect(chat(store).goalLoops.b).toBeUndefined()
+    store.dispatch(setAutomations({
+      records: [
+      goalLoop('a', { cycleCount: 3, maxCycles: 24 }),
+      goalLoop('b', { active: false, cycleCount: 9, maxCycles: 24 }),
+      ],
+      legacyComplete: true,
+      structuredComplete: true,
+    }))
+    expect(chat(store).automations.a).toEqual(goalLoop('a', { cycleCount: 3, maxCycles: 24 }))
+    expect(chat(store).automations.b).toBeUndefined()
 
-    store.dispatch(sseGoalLoop({ slot: 'a', active: true, cycle_count: 4, max_cycles: 24 }))
-    expect(chat(store).goalLoops.a.cycle_count).toBe(4)
-    store.dispatch(sseGoalLoop({ slot: 'a', active: false, cycle_count: 5, max_cycles: 24 }))
-    expect(chat(store).goalLoops.a).toBeUndefined()
+    store.dispatch(sseAutomation(goalLoop('a', { cycleCount: 4, maxCycles: 24 })))
+    expect((chat(store).automations.a as LegacyGoalLoop).cycleCount).toBe(4)
+    store.dispatch(sseAutomation(goalLoop('a', { active: false, cycleCount: 5, maxCycles: 24 })))
+    expect(chat(store).automations.a).toBeUndefined()
   })
 
   it('drops a zero queued count instead of showing an empty waiting badge', () => {

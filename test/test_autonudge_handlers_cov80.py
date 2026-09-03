@@ -23,7 +23,11 @@ from aiohttp.test_utils import make_mocked_request
 
 from kiro_crew.autonudge import AutoNudgeService, NudgeLoop
 from kiro_crew.dashboard.handlers import autonudge as h
-from kiro_crew.monitoring.models import MonitorOutcome, MonitorState
+from kiro_crew.monitoring.models import (
+    MonitorObservationStatus,
+    MonitorOutcome,
+    MonitorState,
+)
 
 
 class _FakeSvc:
@@ -129,6 +133,8 @@ async def test_session_monitor_read_requires_and_uses_authenticated_binding(
     loop = _monitor_loop(slot_key="chat-1-111")
     assert loop.monitor is not None
     loop.monitor.wake_count = 3
+    loop.monitor.last_observation_status = MonitorObservationStatus.PENDING
+    loop.monitor.last_observation_reason_code = "checks_pending"
     _svc(monkeypatch, _FakeSvc([loop]))
 
     cookie_only = await h.api_session_monitor_get(
@@ -154,6 +160,9 @@ async def test_session_monitor_read_requires_and_uses_authenticated_binding(
     assert payload["monitor_id"] == loop.id
     assert payload["monitor"]["target"] == "https://github.com/acme/widgets/pull/7"
     assert payload["monitor"]["wake_count"] == 3
+    assert payload["monitor"]["last_observation_status"] == "pending"
+    assert payload["monitor"]["last_observation_reason_code"] == "checks_pending"
+    assert "last_observation_summary" not in payload["monitor"]
 
 
 @pytest.mark.asyncio

@@ -46,10 +46,10 @@ export const CHUNK_BUDGETS = {
   // closed-PR prune group and the expanded Disconnect guidance are the largest
   // recent catalog increments included in this measurement; Dev Fleet's
   // per-pod system readout then adds its own strings across the same 12
-  // catalogs on top of that baseline. The Drive gallery's keys across 13
-  // catalogs ride inside the headroom that measurement already left, so this
-  // branch does not move the ceiling.
-  all: 10490 * KB, // measured 9985 KB before the pod-system catalog keys (~5% headroom)
+  // catalogs on top of that baseline. The Drive gallery, structured-monitor
+  // form, and translated session-mode guard are included in the current
+  // analyze-build measurement.
+  all: 10585 * KB, // measured 10080.35 KiB (~5% headroom)
 
   // The i18n RUNTIME — the i18next singleton, `initI18n`, the English catalog —
   // named after `src/i18n/t.ts`. Held separately from `all` above because
