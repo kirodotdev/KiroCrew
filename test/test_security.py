@@ -9309,3 +9309,102 @@ class TestMaskedSubstitutionKeepsAdjacentLiterals:
             "echo $(date)x",
         ):
             assert is_sensitive_bash_command(cmd) is None, cmd
+
+
+class TestIdentityAuthStoreFence:
+    """The identity/auth SQLite store is a keystone leaf under the crew data home.
+
+    ``data.sqlite3`` holds live bearer tokens. The kiro-cli and amazon-q copies are
+    fenced by DIRECTORY, which covers their sidecars for free, but the crew data home
+    cannot be fenced wholesale (``config.json`` and ``sessions.db`` are routine reads),
+    so the store is named as a leaf and its WAL/SHM/journal sidecars are named beside
+    it -- a file leaf matches its exact name only, and a sidecar carries the store's
+    credential bytes.
+
+    The fence is scoped to the crew data-home prefixes, NOT matched by basename:
+    ``data.sqlite3`` is a generic filename, so a basename rule would refuse an
+    unrelated application database anywhere under the home directory.
+    """
+
+    PREFIXES = (".kiro/crew", ".kirocrew")
+
+    def test_leaf_membership_uses_the_canonical_filename_constant(self) -> None:
+        # Drift guard: the leaf is the constant the identity-store readers resolve,
+        # so renaming the store cannot un-fence it while the readers keep working.
+        from kiro_crew.identity_stores import (
+            AUTH_SQLITE_DB,
+            AUTH_SQLITE_SIDECAR_SUFFIXES,
+        )
+        from kiro_crew.security import _CREW_SECRET_LEAVES
+
+        assert AUTH_SQLITE_DB in _CREW_SECRET_LEAVES
+        for suffix in AUTH_SQLITE_SIDECAR_SUFFIXES:
+            assert f"{AUTH_SQLITE_DB}{suffix}" in _CREW_SECRET_LEAVES
+
+    @pytest.mark.parametrize("prefix", PREFIXES)
+    def test_store_and_sidecars_sensitive_under_every_home_prefix(self, prefix: str) -> None:
+        from kiro_crew.security import is_sensitive_write_path
+
+        for leaf in (
+            "data.sqlite3",
+            "data.sqlite3-wal",
+            "data.sqlite3-shm",
+            "data.sqlite3-journal",
+        ):
+            assert is_sensitive_path(f"~/{prefix}/{leaf}") is True, leaf
+            # The write gate is a superset of the read gate; assert it directly so
+            # the file-edit tool path is pinned too.
+            assert is_sensitive_write_path(f"~/{prefix}/{leaf}") is True, leaf
+
+    @pytest.mark.parametrize("prefix", PREFIXES)
+    def test_every_shell_read_form_is_refused(self, prefix: str) -> None:
+        """The four routes to the same bytes: direct read, client, copy, traversal."""
+        for cmd in (
+            f"cat ~/{prefix}/data.sqlite3",
+            f"sqlite3 ~/{prefix}/data.sqlite3 .dump",
+            f"sqlite3 ~/{prefix}/data.sqlite3 'select * from auth_kv'",
+            f"cp ~/{prefix}/data.sqlite3 /tmp/x",
+            f"find ~/{prefix}/data.sqlite3 -type f",
+            f"grep -a token ~/{prefix}/data.sqlite3",
+            f"tar -cf /tmp/x.tar ~/{prefix}/data.sqlite3",
+            f"cat ~/{prefix}/data.sqlite3-wal",
+            f"cp ~/{prefix}/data.sqlite3-journal /tmp/x",
+            # The verb-independent backstop: a scripted open of the same path.
+            f"python3 -c \"print(open('~/{prefix}/data.sqlite3','rb').read())\"",
+            # Writes too -- forged identity rows are the other half of the risk.
+            f"echo x > ~/{prefix}/data.sqlite3",
+        ):
+            assert is_sensitive_bash_command(cmd) is not None, cmd
+
+    def test_absolute_home_spelling_is_refused(self) -> None:
+        home = os.path.expanduser("~")
+        assert is_sensitive_bash_command(f"cat {home}/.kiro/crew/data.sqlite3") is not None
+
+    def test_unrelated_databases_are_not_over_blocked(self) -> None:
+        """The cost of a basename rule, which this fence deliberately does not pay."""
+        from kiro_crew.security import is_sensitive_write_path
+
+        assert is_sensitive_path("~/project/data.sqlite3") is False
+        assert is_sensitive_write_path("~/project/data.sqlite3") is False
+        for cmd in (
+            "cat ~/project/data.sqlite3",
+            "sqlite3 ~/src/app/data.sqlite3 .dump",
+            # Routine crew-home reads the fence must leave alone.
+            "cat ~/.kiro/crew/config.json",
+            "cat ~/.kiro/crew/sessions.db",
+            "cat ~/.kiro/crew/memory.db",
+        ):
+            assert is_sensitive_bash_command(cmd) is None, cmd
+
+    def test_name_only_traversal_is_the_same_class_as_every_other_leaf(self) -> None:
+        """A ``-name`` traversal from an UNFENCED ancestor is a different pass.
+
+        ``find ~ -name <leaf>`` names no path the gate can match -- the directory and
+        the filename arrive as separate arguments -- and that is true of every keystone
+        leaf, not of this one. Asserting the two verdicts AGREE pins the fence's shape
+        without pinning the traversal pass's own verdict, so the work that re-joins a
+        factored-apart path is free to change it for both at once.
+        """
+        store = is_sensitive_bash_command("find ~ -name data.sqlite3 -exec cat {} +")
+        control = is_sensitive_bash_command("find ~ -name token_signing.key -exec cat {} +")
+        assert (store is None) == (control is None)

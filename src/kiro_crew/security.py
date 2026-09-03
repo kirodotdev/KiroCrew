@@ -38,7 +38,11 @@ from kiro_crew.executors import (
     maintenance_executor,
     path_resolve_executor,
 )
-from kiro_crew.identity_stores import fenced_home_dirs
+from kiro_crew.identity_stores import (
+    AUTH_SQLITE_DB,
+    AUTH_SQLITE_SIDECAR_SUFFIXES,
+    fenced_home_dirs,
+)
 from kiro_crew.sel import SecurityEvent, SecurityEventLog
 from kiro_crew.trust_patterns import ENV_ASSIGNMENT_RE
 from kiro_crew.vector_memory_constants import _contains_injection
@@ -6547,6 +6551,35 @@ _CREW_SECRET_LEAVES: list[str] = [
     # ``kas/auth``): fencing only the leaf would let the agent rename ``kas`` and
     # then read the relocated token store from outside the fence.
     "kas",
+    # The identity/auth SQLite store, named by the canonical filename constant
+    # (``identity_stores.AUTH_SQLITE_DB``) rather than a fresh literal, so this fence
+    # cannot drift from the readers that resolve the same store. It holds live bearer
+    # tokens, so an agent that could read it could act as the user against the model
+    # service, and one that could write it could forge the identity rows.
+    #
+    # The kiro-cli and amazon-q stores are fenced by DIRECTORY (``fenced_home_dirs()``
+    # above), which covers each store's sidecars and temporaries for free. The crew
+    # data home cannot be fenced the same way -- reading ``config.json`` and
+    # ``sessions.db`` there is routine and intended -- so the store is named as a leaf
+    # here, and the name is fenced BEFORE a writer for that location exists (the
+    # treatment ``agentcore-inbound`` above gets): a fence that arrives with the
+    # writer arrives one release after the first bytes it should have covered.
+    #
+    # The WAL/SHM/journal sidecars are spelled out for the reason the directory
+    # entries do not have to be: a file leaf matches its exact name only, and a
+    # sidecar carries the store's credential bytes -- ``kiro_cli`` documents the same
+    # fact from the other side, that identity rows read as absent when the ``-wal``
+    # sidecar is missing. (``.tmp``/``.lock`` publish artifacts in the same parent are
+    # already covered by ``_KEYSTONE_ARTIFACT_SUFFIXES`` below.)
+    #
+    # Scoped to the crew data-home prefixes and NOT matched by basename:
+    # ``data.sqlite3`` is a generic filename, so a basename rule would refuse an
+    # unrelated application database anywhere under the home directory. No legitimate
+    # reader is affected -- every identity-store reader (``kiro_usage_api``,
+    # ``kiro_cli``, ``kiro_prerequisite``) resolves its path through
+    # ``identity_stores`` and opens it directly, not through this gate.
+    AUTH_SQLITE_DB,
+    *(f"{AUTH_SQLITE_DB}{suffix}" for suffix in AUTH_SQLITE_SIDECAR_SUFFIXES),
 ]
 _SENSITIVE_HOME_DIRS += [
     f"{prefix}/{leaf}" for prefix in _CREW_HOME_PREFIXES for leaf in _CREW_SECRET_LEAVES

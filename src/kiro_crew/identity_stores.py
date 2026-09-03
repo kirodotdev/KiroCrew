@@ -34,6 +34,15 @@ from typing import Mapping, Optional
 # the six sites that used to spell ``"data.sqlite3"`` inline cannot drift.
 AUTH_SQLITE_DB = "data.sqlite3"
 
+# SQLite records a transaction in a sidecar file beside the database and folds it
+# back into the main file only on a checkpoint, so a sidecar holds the same rows --
+# for an auth store, the same live bearer token -- as the database itself.
+# ``-wal``/``-shm`` are the write-ahead pair a WAL-mode store runs with; ``-journal``
+# is the rollback journal a non-WAL connection writes instead. A consumer that
+# fences the store by NAME needs all four spellings; one that fences the store's
+# whole DIRECTORY covers them without this list.
+AUTH_SQLITE_SIDECAR_SUFFIXES: tuple[str, ...] = ("-wal", "-shm", "-journal")
+
 
 class Platform(enum.Enum):
     """The three platform families the stores are laid out for."""

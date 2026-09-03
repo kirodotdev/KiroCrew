@@ -44,6 +44,7 @@ from typing import TYPE_CHECKING, Literal
 from kiro_crew import platform_compat
 from kiro_crew.config.paths import config_dir
 from kiro_crew.constants import KIROCREW_SPAWNED_ENV, KIROCREW_SPAWNED_VALUE
+from kiro_crew.identity_stores import AUTH_SQLITE_DB, AUTH_SQLITE_SIDECAR_SUFFIXES
 from kiro_crew.platform import current_context
 
 try:
@@ -193,6 +194,16 @@ _CREW_HIDDEN_LEAVES: tuple[str, ...] = (
     # No producer and no consumer left in the tree; masked so a backup restore that
     # resurrects a stale file cannot make it readable either.
     ".kiro_cli_binary_trust.json",
+    # The identity/auth SQLite store and its WAL/SHM/journal sidecars, whose bytes
+    # are a live bearer token. Nothing inside the sandbox opens the crew home's copy:
+    # the in-sandbox CLI reads the STAGED store under ``.kiro/crew-auth-staging``, and
+    # the gateway-side readers resolve the kiro-cli / amazon-q locations, all of which
+    # are fenced elsewhere -- so masking costs no live consumer while closing a
+    # spawned ``sqlite3`` or ``open()``. Named from the canonical filename constant
+    # (a stdlib-only leaf module, so this stays clear of the security module) so the
+    # mask cannot drift from the tool gate that fences the same store.
+    AUTH_SQLITE_DB,
+    *(f"{AUTH_SQLITE_DB}{suffix}" for suffix in AUTH_SQLITE_SIDECAR_SUFFIXES),
 )
 
 #: Crew-home CEILINGS: read by in-sandbox code, never writable by it. Exposed
