@@ -579,8 +579,8 @@ jobs:
               # check-runs, not a PR-bound workflow run (the fork reviewer runs
               # via workflow_run from the default branch, so its workflow-run
               # head ref does not bind back to the fork). The same-repo lane
-              # posts a `skipped` check-run under this same name on a fork, and
-              # the GPT lane posts several passes -- so collapse ALL check-runs
+              # publishes a DIFFERENT name on a fork, but the GPT lane posts
+              # several passes under this one -- so collapse ALL check-runs
               # of this name: any still running -> pending; any failure-class
               # -> fail; else any success/neutral -> pass; only skipped (the
               # real review has not posted yet) -> pending.

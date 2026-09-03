@@ -3004,17 +3004,24 @@ class TestLedgerReadFailureFailsClosed:
 
 
 class TestProtectedCheckNameHasOnePublisherPerPrType:
-    """A required review status must never be satisfied by the OTHER lane's skip.
+    """A required review status must never be satisfied by the OTHER lane's run.
 
     Each AI review is published by two workflows: the same-repo lane and the
     privileged Stage-2 ``fork-*-review.yml``. GitHub resolves a required status
-    check to the NEWEST check-run of that name, and the same-repo lane's fork
-    guard reports ``skipped`` -- which branch protection treats as satisfied.
-    While the two lanes share a name, any ``pull_request`` event firing after
-    the fork lane posted its verdict (a reopen; an ``edited`` title/body on
-    codex-review) makes ``skipped`` the newest run and clears the gate on a
-    review that never ran. The same-repo lane therefore renames itself on a
-    fork PR, leaving exactly one publisher of the protected name per PR type.
+    check to the NEWEST check-run of that name, and on a fork PR the same-repo
+    lane reviews nothing. While the two lanes share a name, any
+    ``pull_request`` event firing after the fork lane posted its verdict (a
+    reopen; an ``edited`` title/body on codex-review) makes the same-repo
+    lane's own run the newest one and clears the gate on a review that never
+    ran. The same-repo lane therefore renames itself on a fork PR, leaving
+    exactly one publisher of the protected name per PR type.
+
+    That rename only renders because the fork guard sits on every STEP rather
+    than on the job: GitHub does not evaluate a skipped job's ``name:``, so a
+    job-level guard published the raw expression source as the fork PR's check
+    name. The per-step gate is therefore load-bearing for the name AND the only
+    thing keeping fork content out of this privileged lane, so it is asserted
+    step by step -- a step added later without it would execute on a fork.
     """
 
     # (same-repo workflow, protected check name, Stage-2 fork workflow)
@@ -3056,9 +3063,28 @@ class TestProtectedCheckNameHasOnePublisherPerPrType:
         assert f"|| '{alias}'" in name, workflow
         assert alias != check
 
-        # The fork guard itself stays -- the rename is defence on top of it,
-        # not a replacement for keeping fork code out of this privileged lane.
-        assert self.GUARD in job["if"], workflow
+        # The guard must NOT be job-level: a skipped job's `name:` is never
+        # evaluated, so that placement publishes the raw expression above as the
+        # fork PR's check name -- the exact rendering bug the rename caused.
+        assert "if" not in job, (
+            f"{workflow}: fork guard is job-level again, which makes GitHub "
+            "publish the raw name expression on fork PRs"
+        )
+
+    @pytest.mark.parametrize("workflow,check,fork", PAIRS)
+    def test_every_step_carries_the_fork_guard(
+        self, workflow: str, check: str, fork: str
+    ) -> None:
+        # With no job-level `if:`, the per-step guard is the ONLY thing keeping
+        # fork content out of a lane holding `pull-requests: write` and
+        # `id-token: write`. One ungated step is a fork-triggered privileged
+        # step, so the invariant is asserted per step rather than per job.
+        job = self._job(workflow)
+        steps = job["steps"]
+        assert steps, workflow
+        for index, step in enumerate(steps):
+            label = step.get("name") or step.get("uses") or f"step {index}"
+            assert self.GUARD in str(step.get("if", "")), f"{workflow}: {label}"
 
     @pytest.mark.parametrize("workflow,check,fork", PAIRS)
     def test_fork_lane_still_publishes_the_protected_name(

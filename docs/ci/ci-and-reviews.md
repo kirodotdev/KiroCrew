@@ -467,17 +467,19 @@ check on that pairing mis-fires whenever the model quotes prior text.
 
 ### Security posture of the reviewer jobs
 
-- Explicit fork guards (`head.repo.full_name == github.repository`), so the job
-  **skips** on a fork rather than failing an unsatisfiable credential step. GitHub
-  treats a skipped required check as satisfied, which is why fork coverage needs
-  the separate `fork-*` pipeline below.
+- Explicit fork guards (`head.repo.full_name == github.repository`) on **every
+  step**, so on a fork the job starts and then does nothing rather than failing an
+  unsatisfiable credential step. The guard is per-step and not job-level because
+  GitHub never evaluates a **skipped** job's `name:` -- while it was job-level,
+  every fork PR published the raw name expression as its check name. Fork coverage
+  still comes from the separate `fork-*` pipeline below.
 - **The job name is conditional on the head repository**, so a fork PR gets
   `<check> (same-repo lane, not applicable to forks)` instead of the protected
   name. Same-repo PRs keep the exact protected name. Without this, both lanes
   publish one name and GitHub resolves a required status check to the **newest**
   check-run of that name: a `pull_request` event firing after the fork lane
   posted its verdict (a reopen, or an `edited` title/body on `codex-review.yml`)
-  would make the same-repo lane's `skipped` run the newest one and satisfy the
+  would make the same-repo lane's own run the newest one and satisfy the
   gate on a review that never ran. `pr-readiness.yml` was never fooled by this
   -- it collapses every check-run of the name and treats "no completed run" as
   pending -- so the rename closes the branch-protection half of the gate.

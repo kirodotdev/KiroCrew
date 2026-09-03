@@ -42,19 +42,27 @@ concurrency:
 jobs:
   codex-review:
     # BRANCH-PROTECTION NAME COLLISION -- keep this conditional. Two workflows
-    # publish the protected check name "GPT 5.6 Review": this same-repo lane
-    # and the privileged Stage-2 fork-gpt-review.yml. GitHub resolves a
-    # required status check to the NEWEST check-run carrying that name, and the
-    # fork guard below reports
-    # `skipped`, which branch protection treats as satisfied. Any `pull_request`
-    # event that fires AFTER the fork lane published its verdict (a reopen, and
-    # for codex-review an `edited` title/body) would therefore make `skipped`
-    # the newest run under the protected name and satisfy the gate on a review
-    # that never ran. Naming this job differently on a fork PR leaves exactly
-    # ONE publisher of the protected name per PR type: this lane for same-repo
-    # PRs, the Stage-2 lane for forks. `pr-readiness.yml` is unaffected -- it
-    # already collapses every check-run of the name for forks and treats a name
-    # with no completed run as pending, never as passed.
+    # publish the protected check name "GPT 5.6 Review": this same-repo lane and the
+    # privileged Stage-2 fork-gpt-review.yml. GitHub resolves a required status
+    # check to the NEWEST check-run carrying that name, so on a fork PR -- where
+    # this lane reviews nothing -- any `pull_request` event firing AFTER the fork
+    # lane published its verdict (a reopen, and for codex-review an `edited`
+    # title/body) would make THIS lane the newest run under the protected name
+    # and satisfy the gate on a review that never ran. Naming this job
+    # differently on a fork PR leaves exactly ONE publisher of the protected
+    # name per PR type: this lane for same-repo PRs, the Stage-2 lane for forks.
+    # `pr-readiness.yml` is unaffected -- it already collapses every check-run of
+    # the name for forks and treats a name with no completed run as pending,
+    # never as passed.
+    #
+    # The fork guard sits on EVERY step rather than on the job, and that
+    # placement is what makes the name above render. GitHub never evaluates a
+    # skipped job's `name:` expression, so while the guard was a job-level `if:`
+    # every fork PR published the raw expression source as its check name.
+    # Letting the job start with all steps gated costs seconds of runner time and
+    # reports the intended name instead. `test_ai_review_workflows.py` asserts
+    # the guard is on every step, so a step added later cannot quietly run
+    # against fork content.
     name: "${{ github.event.pull_request.head.repo.full_name == github.repository && 'GPT 5.6 Review' || 'GPT 5.6 Review (same-repo lane, not applicable to forks)' }}"
     runs-on: ubuntu-latest
     # Runaway/hang backstop only, NOT a per-review budget: each pass carries its
@@ -66,14 +74,12 @@ jobs:
     # 90 min: those drive the model through `claude-code-action`, which cannot be
     # wrapped in `timeout`, so they have no pass walls to contain.
     timeout-minutes: 130
-    # Only run on PRs from the same repo (not forks) to prevent budget abuse,
-    # prompt injection via malicious diffs, and secret exfiltration attempts.
-    if: github.event.pull_request.head.repo.full_name == github.repository
     steps:
       # persist-credentials:false stops actions/checkout from writing the
       # GITHUB_TOKEN into .git/config, where the read-only agentic reviewer
       # could read it from untrusted PR content and leak a PR-write token.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: github.event.pull_request.head.repo.full_name == github.repository
         with:
           fetch-depth: 0
           persist-credentials: false
@@ -81,6 +87,7 @@ jobs:
       # Load AUTOSDE rules from the BASE commit, not the PR HEAD, so a PR
       # cannot weaken the rules that govern it.
       - name: Extract base-ref AUTOSDE rules
+        if: github.event.pull_request.head.repo.full_name == github.repository
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
@@ -92,6 +99,7 @@ jobs:
       # ai-review-human-override.yml. Raw PR comments are untrusted and can
       # never directly turn this gate green.
       - name: Resolve human override
+        if: github.event.pull_request.head.repo.full_name == github.repository
         id: human_override
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -150,7 +158,11 @@ jobs:
       # Install and configure the review CLI BEFORE assuming the AWS role, so the npm
       # install never runs with the Bedrock credentials in its environment.
       - name: Install review CLI
-        if: github.actor != 'dependabot[bot]' && steps.human_override.outputs.active != 'true'
+        if: >-
+          github.event.pull_request.head.repo.full_name == github.repository
+          && (
+          github.actor != 'dependabot[bot]' && steps.human_override.outputs.active != 'true'
+          )
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           CLI_DIR: ${{ runner.temp }}/review-cli
@@ -197,11 +209,19 @@ jobs:
       # which makes the review CLI's bundled bubblewrap sandbox fail at netns setup.
       # Clearing the gate lets the read-only sandbox initialize.
       - name: Enable unprivileged user namespaces for the review sandbox
-        if: github.actor != 'dependabot[bot]' && steps.human_override.outputs.active != 'true'
+        if: >-
+          github.event.pull_request.head.repo.full_name == github.repository
+          && (
+          github.actor != 'dependabot[bot]' && steps.human_override.outputs.active != 'true'
+          )
         run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
 
       - name: Configure the review CLI for Amazon Bedrock
-        if: github.actor != 'dependabot[bot]' && steps.human_override.outputs.active != 'true'
+        if: >-
+          github.event.pull_request.head.repo.full_name == github.repository
+          && (
+          github.actor != 'dependabot[bot]' && steps.human_override.outputs.active != 'true'
+          )
         run: |
           mkdir -p "$HOME/.codex"
           # reasoning_effort is "medium", NOT "high". High effort on a review
@@ -215,7 +235,11 @@ jobs:
           EOF
 
       - name: Write review prompt
-        if: github.actor != 'dependabot[bot]' && steps.human_override.outputs.active != 'true'
+        if: >-
+          github.event.pull_request.head.repo.full_name == github.repository
+          && (
+          github.actor != 'dependabot[bot]' && steps.human_override.outputs.active != 'true'
+          )
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
@@ -416,13 +440,21 @@ jobs:
       # environment. Uses a DEDICATED least-privilege role (GPT/Mantle only,
       # pull_request-scoped) so a leaked token can't reach the Opus 4.8 reviewer's model access.
       - uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6.2.3
-        if: github.actor != 'dependabot[bot]' && steps.human_override.outputs.active != 'true'
+        if: >-
+          github.event.pull_request.head.repo.full_name == github.repository
+          && (
+          github.actor != 'dependabot[bot]' && steps.human_override.outputs.active != 'true'
+          )
         with:
           role-to-assume: ${{ secrets.AWS_CODEX_BEDROCK_ROLE_ARN }}
           aws-region: us-east-1
 
       - name: GPT 5.6 review (discovery pass)
-        if: github.actor != 'dependabot[bot]' && steps.human_override.outputs.active != 'true'
+        if: >-
+          github.event.pull_request.head.repo.full_name == github.repository
+          && (
+          github.actor != 'dependabot[bot]' && steps.human_override.outputs.active != 'true'
+          )
         env:
           AWS_REGION: us-east-1
           # Bounded just under the one-hour Bedrock session so a pass that runs
@@ -478,13 +510,21 @@ jobs:
       # spent session. Each pass now starts on a fresh session, so PASS_WALL --
       # not session expiry, and not the job wall above it -- is what bounds it.
       - uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6.2.3
-        if: github.actor != 'dependabot[bot]' && steps.human_override.outputs.active != 'true'
+        if: >-
+          github.event.pull_request.head.repo.full_name == github.repository
+          && (
+          github.actor != 'dependabot[bot]' && steps.human_override.outputs.active != 'true'
+          )
         with:
           role-to-assume: ${{ secrets.AWS_CODEX_BEDROCK_ROLE_ARN }}
           aws-region: us-east-1
 
       - name: GPT 5.6 review (falsification pass)
-        if: github.actor != 'dependabot[bot]' && steps.human_override.outputs.active != 'true'
+        if: >-
+          github.event.pull_request.head.repo.full_name == github.repository
+          && (
+          github.actor != 'dependabot[bot]' && steps.human_override.outputs.active != 'true'
+          )
         env:
           AWS_REGION: us-east-1
           DISCOVERY_OUTPUT_MAX_BYTES: "50000"
@@ -566,7 +606,11 @@ jobs:
       # repo-visible PR comment. Residual risk is bounded — the creds are
       # short-lived and scoped to Bedrock only.
       - name: Redact credential shapes from review output
-        if: ${{ always() && github.actor != 'dependabot[bot]' }}
+        if: >-
+          github.event.pull_request.head.repo.full_name == github.repository
+          && (
+          always() && github.actor != 'dependabot[bot]'
+          )
         run: |
           if [ -f codex-review-output.md ]; then
             perl -i -pe 's/\b(?:AKIA|ASIA)[A-Z2-7]{16}\b/[REDACTED-AWS-KEY-ID]/g; s/(?i)(aws_secret_access_key|aws_session_token|x-amz-security-token)\s*[:=]\s*\S+/$1=[REDACTED]/g' codex-review-output.md
@@ -576,7 +620,11 @@ jobs:
       # so re-scanning on every push UPDATEs that one comment instead of
       # stacking near-duplicates.
       - name: Post/update review comment
-        if: ${{ always() && github.actor != 'dependabot[bot]' }}
+        if: >-
+          github.event.pull_request.head.repo.full_name == github.repository
+          && (
+          always() && github.actor != 'dependabot[bot]'
+          )
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
@@ -668,6 +716,7 @@ jobs:
       # finding while explaining that it had dropped it. The label/marker
       # mismatch is now surfaced as a WARNING for tuning, never as a failure.
       - name: Gate on findings
+        if: github.event.pull_request.head.repo.full_name == github.repository
         env:
           HEAD: ${{ github.event.pull_request.head.sha }}
           ACTOR: ${{ github.actor }}
