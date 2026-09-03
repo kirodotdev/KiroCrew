@@ -124,15 +124,26 @@ def _ffmpeg_candidate_dirs() -> list[str]:
 _FFMPEG_CANDIDATE_DIRS = _ffmpeg_candidate_dirs()
 
 
-# imageio-ffmpeg==0.6.0 executables, taken from the four wheels that the desktop
-# matrix installs. The filename selects the platform artifact; size makes a
-# truncated payload fail cheaply; SHA-256 is the trust anchor. Desktop build
-# staging is intentionally writable, so path placement or a removable `.git`
-# marker cannot establish provenance. These are the bytes the WHEEL publishes.
+# imageio-ffmpeg==0.6.0 executables, taken from the published wheels that the
+# desktop matrix installs -- one per shipped platform, and which platforms those
+# are is _SHIPPED_FFMPEG_PLATFORMS below rather than a count restated here. The
+# filename selects the platform artifact; size makes a truncated payload fail
+# cheaply; SHA-256 is the trust anchor. Desktop build staging is intentionally
+# writable, so path placement or a removable `.git` marker cannot establish
+# provenance. These are the bytes the WHEEL publishes.
 _PACKAGED_FFMPEG_ARTIFACTS: dict[str, tuple[int, str]] = {
     "ffmpeg-macos-aarch64-v7.1": (
         49_368_728,
         "6d175a4743ca50256e89a8cdd731100f9cee33bd79aeea46894d209410dc6617",
+    ),
+    # The macOS universal DMG's x86_64 (Intel) slice. Digest taken from the
+    # published imageio-ffmpeg==0.6.0 wheel member
+    # imageio_ffmpeg/binaries/ffmpeg-macos-x86_64-v7.1 (macosx_10_9_x86_64),
+    # byte-verified rather than copied from prose. It is a shipped platform, so
+    # the pin-completeness test cannot be green while it is absent.
+    "ffmpeg-macos-x86_64-v7.1": (
+        75_991_688,
+        "4a4a968b98859588e98500ae25973d80a5ca5eed0724222b9f76360dcb72a001",
     ),
     "ffmpeg-linux-aarch64-v7.0.2": (
         51_134_160,
@@ -147,6 +158,35 @@ _PACKAGED_FFMPEG_ARTIFACTS: dict[str, tuple[int, str]] = {
         "2ce797a0f88d7f067180338fb227f7b1928ea727bd9a4d7a1d022f7c52af71a3",
     ),
 }
+
+# The upstream imageio_ffmpeg platform KEYS the desktop matrix actually ships a
+# bundled decoder for. This is the maintainer-owned source of truth for WHICH
+# platforms are covered; the completeness test in test_transcribe.py maps each key
+# through imageio_ffmpeg._definitions.FNAME_PER_PLATFORM to derive the authoritative
+# filename set and asserts _PACKAGED_FFMPEG_ARTIFACTS covers exactly it. Keys, not
+# filenames, so this module imports no imageio_ffmpeg at all (not a core dependency).
+#
+# Each key ties to the build leg that ships it:
+#   macos-aarch64 + macos-x86_64 = the ONE universal DMG from the macos-15 leg of
+#       .github/workflows/build-desktop.yml; the Makefile's `desktop` target builds
+#       that single DMG covering arm64 AND x86_64, so both slices ship together.
+#   linux-x86_64  = ubuntu-22.04 leg of build-desktop.yml.
+#   linux-aarch64 = ubuntu-22.04-arm leg of build-desktop.yml.
+#   windows-x86_64 = .github/workflows/build-windows.yml.
+#
+# windows-i686 (upstream ffmpeg-win32-v4.2.2.exe) is DELIBERATELY excluded: no
+# 32-bit Windows target exists in any build workflow or the Electron config.
+# Adding a win32 lane must add its key here, which then forces a pin via the
+# completeness test.
+_SHIPPED_FFMPEG_PLATFORMS: frozenset[str] = frozenset(
+    {
+        "macos-aarch64",
+        "macos-x86_64",
+        "linux-x86_64",
+        "linux-aarch64",
+        "windows-x86_64",
+    }
+)
 
 # Artifacts the macOS app signer REWRITES on its way into a release, so the
 # upstream digest above cannot be the only anchor. Signing replaces the wheel's
@@ -164,7 +204,20 @@ _PACKAGED_FFMPEG_ARTIFACTS: dict[str, tuple[int, str]] = {
 #   - a valid Developer ID signature from our own team on the exact bytes staged
 #     for execution, which is what a released app carries.
 # Neither anchor is a path or a filesystem-permission claim.
-_SIGNER_REWRITTEN_FFMPEG_ARTIFACTS: frozenset[str] = frozenset({"ffmpeg-macos-aarch64-v7.1"})
+# BOTH macOS slices are here: build-desktop.sh ships the arm64 AND x86_64
+# imageio-ffmpeg executables as plain Mach-O under Contents/Resources, and the app
+# signer signs every nested binary with Developer ID + hardened runtime + secure
+# timestamp (generate-manifest.py enumerates them). So the released Intel-Mac slice
+# authenticates via its signature anchor exactly like the arm64 slice, its bytes
+# having been rewritten by signing away from the pinned upstream digest.
+#
+# The set is therefore exactly the macos-* members of _SHIPPED_FFMPEG_PLATFORMS, and
+# test_transcribe.py asserts that equality rather than a subset: a macOS slice added
+# above but forgotten here has no anchor left once signing has rewritten its bytes,
+# so a SIGNED release would refuse its own decoder.
+_SIGNER_REWRITTEN_FFMPEG_ARTIFACTS: frozenset[str] = frozenset(
+    {"ffmpeg-macos-aarch64-v7.1", "ffmpeg-macos-x86_64-v7.1"}
+)
 
 # Upper bound on a signer-rewritten payload, whose exact size is unknowable in
 # source. Signing appends a code-signature superblob to a ~50 MB executable, so

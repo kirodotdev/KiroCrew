@@ -60,6 +60,14 @@ dev = [
     # so those tests actually run; the runtime dependency stays optional, because
     # a user who does not enable Teams should not carry a crypto library.
     "PyJWT[crypto]==2.13.0",
+    # Test-only, NOT a runtime dependency. test_transcribe.py's pin-completeness
+    # test imports imageio_ffmpeg._definitions.FNAME_PER_PLATFORM to derive the
+    # authoritative bundled-decoder filename set; without the package installed the
+    # test would importorskip and silently pass, which is the "green while checking
+    # nothing" shape that test exists to end. imageio_ffmpeg stays a packaging and
+    # runtime concern for the desktop bundle, NOT a core install_requires. Pinned to
+    # the exact version the desktop matrix ships (packaging/build-desktop.sh).
+    "imageio-ffmpeg==0.6.0",
 ]
 
 [tool.black]

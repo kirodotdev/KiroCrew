@@ -4166,9 +4166,21 @@ class TestDoctorStt:
                 return None
             return f"/usr/local/bin/{binary}"
 
+        # `ffmpeg` has to answer BOTH routes into `transcribe._find_ffmpeg`. The
+        # bundled-interpreter branch never probes PATH: it lists the imageio-ffmpeg
+        # package resource, which is a really-installed dev dependency here, so a
+        # bundled arm left unpinned reports the test environment's decoder instead of
+        # the arrangement it asked for -- and reports it as PRESENT, the permissive
+        # answer. The value is unused: the report prints availability, not a path.
+        packaged_decoder = "/kirocrew-bundle/Resources/ffmpeg" if ffmpeg else None
+
         code = 0
         with (
             patch("kiro_crew.cli_doctor.shutil.which", side_effect=_which),
+            patch(
+                "kiro_crew.transcribe._packaged_ffmpeg_resource",
+                return_value=packaged_decoder,
+            ),
             patch("kiro_crew.cli_doctor.KIRO_AGENTS_DIR", tmp_path),
             patch("kiro_crew.cli_doctor.subprocess.run", return_value=mock_run),
             patch("urllib.request.urlopen", side_effect=urllib.error.URLError("no gateway")),
