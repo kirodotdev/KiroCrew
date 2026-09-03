@@ -1,0 +1,6 @@
+schema-version: 2026-04-28
+fixture-name: apps-installed
+description: |
+  One locally installed app with a manifest, persisted metadata, and app-scoped data.
+  The fixture-notes record is enabled with origin=local, resources=gateway, and
+  lifecycle=gateway so app-manager consumers have a non-builtin subject.
