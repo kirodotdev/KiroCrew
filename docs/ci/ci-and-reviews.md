@@ -55,6 +55,37 @@ Out-of-band lanes that never gate a PR:
   builds two real app bundles and performs an actual update swap, because the
   Electron unit suite stops at the `autoUpdater` handoff and never proves a real
   bundle is replaced on disk and relaunches.
+- **The ratchet verdict `main` otherwise never gets:** `main-ratchet-audit.yml`
+  re-runs only the cheap ratchet, ceiling and baseline gates on every push to
+  `main`. Two things make a push to `main` unable to answer for them in `ci.yml`:
+  GitHub keeps one *pending* run per concurrency group, so on a busy `main` each
+  run is evicted before its slower lanes report and a commit's checks end up
+  `cancelled` rather than `failure` — which is not a red X, so `main` looks green
+  while drift accumulates; and the lint lanes are surface-gated, so a
+  backend-only merge *skips* the eslint ceiling outright. This lane's group is
+  keyed on the SHA so no push can supersede an earlier push's audit, it runs both
+  surfaces unconditionally, and it reconciles one `ratchet-audit`-labeled tracking
+  issue — opened on drift, commented on each further drifting push, closed on the
+  next all-green one. Because per-SHA groups let audits for different commits
+  finish out of order, only a run whose commit is still `main`'s head writes to
+  that shared issue: a slow green audit would otherwise close the live drift
+  record a newer push just opened. An unreadable head resolves toward keeping
+  drift visible in both directions — still recorded on drift, still not closed on
+  green. Every gate step runs on `!cancelled()` rather than the default
+  `success()`, so one drifting ratchet does not skip the rest and reduce the
+  verdict to whichever gate is listed first; and the set of gate scripts is
+  pinned equal to `ci.yml`'s `backend-lint`, because a gate *added* there and not
+  mirrored here would never be measured on `main` at all. Two further details are
+  load-bearing. It sets
+  `RATCHET_SCOPE_WHOLE_TREE`, because the four diff-scoped gates
+  (`scripts/ratchet_scope.py`) would otherwise resolve an EMPTY diff on a push to
+  the branch they measure against and pass by judging nothing; and it *reads* the
+  eslint ceiling out of `ci.yml` rather than transcribing it, because a second
+  copy would keep granting the old budget after a burn-down and report green on a
+  tree the PR gate reds. It deliberately does not touch `ci.yml`'s concurrency or
+  add a second full run: full serialization or a merge queue is a runner-budget
+  call, and `test-durations.yml` already pays for a full suite on `main`.
+  Contributor-facing half: [CONTRIBUTING.md](../../CONTRIBUTING.md).
 - **Maintenance:** `ship-report.yml` (a scheduled Slack summary),
   `cleanup-temp-screenshots.yml` (prunes the ephemeral `temp-screenshots/` dir,
   see [its README](../../temp-screenshots/README.md); safe because PR bodies

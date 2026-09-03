@@ -192,6 +192,98 @@ class TestMergeShapes:
         assert paths == {"feature.py"}
 
 
+class TestWholeTreeOverride:
+    """A push to the base branch has no diff, and that is not a clean tree.
+
+    The Main Ratchet Audit lane runs on a push to ``main``, where the checkout
+    leaves HEAD, ``main`` and ``origin/main`` all at the pushed commit. The
+    three-dot fallback then succeeds with an EMPTY path set -- exit 0, no
+    attempt fails, nothing marks the answer as unusable -- and every consuming
+    ratchet filters its violations against that empty set and reports green
+    whatever the tree holds. The override is how a caller states that the
+    question really is about a whole tree, instead of inheriting an answer that
+    depends on which checkout shape a run happened to get.
+    """
+
+    def test_a_push_to_the_base_branch_resolves_to_an_empty_diff(self, repo: Path) -> None:
+        # The hazard itself, pinned: HEAD *is* origin/main, so the scope is
+        # empty rather than undeterminable, and a gate cannot tell the
+        # difference between this and a change that touched nothing.
+        _set_origin_main(repo)
+
+        paths, label = scope.changed_paths()
+
+        assert label == "origin/main...HEAD"
+        assert paths == set()
+
+    def test_the_override_answers_whole_tree(
+        self, repo: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _set_origin_main(repo)
+        monkeypatch.setenv(scope.WHOLE_TREE_ENV, "1")
+
+        paths, label = scope.changed_paths()
+
+        assert paths is None
+        assert scope.WHOLE_TREE_ENV in label
+
+    def test_the_override_wins_over_a_resolvable_diff(
+        self, repo: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # `feature` has a real diff against main, so without the override this
+        # shape scopes to one file. The answer must not depend on that: a caller
+        # asking for the whole tree gets it in every checkout shape.
+        _git(repo, "checkout", "feature")
+        _set_origin_main(repo)
+        monkeypatch.setenv(scope.WHOLE_TREE_ENV, "1")
+
+        paths, _ = scope.changed_paths()
+
+        assert paths is None
+
+    def test_a_blank_value_is_not_an_opt_in(
+        self, repo: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Actions writes an empty string for an unset expression, so a blank
+        # value must read as absent rather than silently widening every gate.
+        _set_origin_main(repo)
+        monkeypatch.setenv(scope.WHOLE_TREE_ENV, "  ")
+
+        paths, label = scope.changed_paths()
+
+        assert paths == set()
+        assert label == "origin/main...HEAD"
+
+    def test_the_whole_tree_label_is_not_read_as_a_diff_range(
+        self, repo: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # `added_lines` dispatches on the label, so an unrecognised one must
+        # degrade to None (the added-line rule is skipped) rather than being
+        # handed to `git diff` as a revision. The label comes from the resolver
+        # itself: a hardcoded copy would keep passing after the production
+        # label grew a `...`-shaped suffix that IS read as a revision.
+        _set_origin_main(repo)
+        monkeypatch.setenv(scope.WHOLE_TREE_ENV, "1")
+        _, label = scope.changed_paths()
+
+        assert scope.added_lines(label) is None
+
+    def test_the_audit_lane_opts_in(self) -> None:
+        # The wiring, not the mechanism: without this env the Main Ratchet Audit
+        # runs four gates over zero files and reports a green verdict on main
+        # that means nothing -- which is the exact false all-clear the lane
+        # exists to prevent.
+        workflow = ROOT / ".github" / "workflows" / "main-ratchet-audit.yml"
+        body = workflow.read_text(encoding="utf-8")
+
+        assert f"{scope.WHOLE_TREE_ENV}:" in body, (
+            f"{workflow.name} no longer sets {scope.WHOLE_TREE_ENV}, so its black / "
+            "subprocess-encoding / agent-SDK / sync-IO gates scope to the push's "
+            "own diff -- which on main is empty, making all four pass by measuring "
+            "nothing"
+        )
+
+
 class TestExplicitBase:
     """The env-base family's entry points: an EXPLICIT ref in, shared parsing out.
 

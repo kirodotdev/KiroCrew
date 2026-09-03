@@ -15,6 +15,11 @@ that, and neither shows up as a failing check of its own:
   exists; a stale ceiling in a doc is also what makes the next burn-down look
   already done. That is pinned too, but only while the ceiling can drift --
   see `test_the_ceiling_is_not_transcribed_into_prose`.
+* **A second gate.** The number copied into ANOTHER workflow is not prose that
+  goes stale, it is a ceiling of its own that keeps enforcing the old value: on
+  the first burn-down it reports green on a tree the real gate reds. Pinned
+  unconditionally, because unlike a doc there is no value at which a second copy
+  is harmless -- see `test_no_other_workflow_transcribes_the_ceiling`.
 """
 
 from __future__ import annotations
@@ -71,6 +76,38 @@ def test_the_ceiling_is_zero() -> None:
         "inside unseen. Fix the warning, or suppress the one line it names with "
         "`// eslint-disable-next-line <rule> -- <why the code is correct>`, which is "
         "reviewable in the diff where a lifted ceiling is not"
+    )
+
+
+def test_no_other_workflow_transcribes_the_ceiling() -> None:
+    """One workflow declares the ceiling; the rest read it out of that one.
+
+    A copy in a second workflow is a second *enforced* ceiling, so it cannot be
+    excused the way a doc's stale number can: on the first burn-down the copy
+    still admits the old budget, and the job carrying it reports green on a tree
+    `ci.yml` reds. That is a false all-clear on `main`, which is exactly what a
+    lane auditing `main`'s ratchets exists to prevent. Read the value instead --
+    `main-ratchet-audit.yml` greps it out of `ci.yml` at run time, the same way
+    the prepare-pr profile does.
+
+    Checked at every value, including zero: the early return in
+    `test_the_ceiling_is_not_transcribed_into_prose` turns on a doc quoting the
+    gate's real invocation being accurate prose, and a second gate is never that.
+    """
+    offenders: list[str] = []
+    for path in sorted((_REPO_ROOT / ".github" / "workflows").glob("*.yml")):
+        if path == _CI:
+            continue
+        for lineno, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+            if _CEILING.search(line):
+                offenders.append(f"{path.relative_to(_REPO_ROOT)}:{lineno}")
+
+    assert offenders == [], (
+        "these workflow lines declare an eslint ceiling of their own instead of "
+        f"reading ci.yml's: {offenders}. A second copy keeps enforcing the old "
+        "value after a burn-down, so the job holding it goes green on a tree the "
+        "real gate fails. Extract the value at run time instead: "
+        "grep -oE 'npx eslint src/ --max-warnings [0-9]+' .github/workflows/ci.yml"
     )
 
 

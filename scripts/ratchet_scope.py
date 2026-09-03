@@ -32,11 +32,21 @@ worse than no added-line set at all.
 
 from __future__ import annotations
 
+import os
 import re
 import subprocess
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+
+#: Set to a non-empty value to make :func:`changed_paths` answer "whole tree".
+#:
+#: A diff scope is the right question on a pull request and the WRONG one on a
+#: push to a branch that is already the base: there ``origin/main...HEAD`` is
+#: empty, so every consuming ratchet judges zero files and reports green
+#: whatever the tree holds. A caller that means to measure an integrated tree
+#: says so here rather than relying on a diff that happens to be empty.
+WHOLE_TREE_ENV = "RATCHET_SCOPE_WHOLE_TREE"
 
 _HUNK_RE = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@")
 
@@ -127,7 +137,15 @@ def changed_paths() -> tuple[set[str] | None, str]:
     None means undeterminable, and the caller must then judge the whole tree
     rather than nothing: a scope that fails open disables the gate exactly when
     its inputs are unusual.
+
+    ``WHOLE_TREE_ENV`` short-circuits to that same None, for a caller whose
+    question really is about a whole tree. It is checked FIRST so the answer
+    cannot depend on which checkout shape a run happens to have -- an empty
+    diff is indistinguishable from a clean change, and that ambiguity is what
+    the override exists to remove.
     """
+    if os.environ.get(WHOLE_TREE_ENV, "").strip():
+        return None, f"whole tree ({WHOLE_TREE_ENV} set)"
     code, out = _git("rev-list", "--parents", "-n", "1", "HEAD")
     is_merge = code == 0 and len(out.split()) >= 3
     attempts: list[tuple[str, list[str]]] = []

@@ -1,0 +1,404 @@
+name: Main Ratchet Audit
+
+# WHY THIS WORKFLOW EXISTS (issue #7511)
+#
+# main's normal CI run does not reliably render a verdict for the ratchet /
+# ceiling / baseline gates, for two independent reasons:
+#
+#   1. Supersession. ci.yml's concurrency group is keyed on the ref
+#      (`${{ github.workflow }}-${{ github.ref }}`) and, for push, its
+#      `cancel-in-progress` is false -- but GitHub still evicts the single
+#      PENDING run when a newer push queues. On a busy main (a ~1.4min median
+#      merge gap against a ~19min run) each run is superseded before its
+#      slower lanes report, so a commit's check runs end up mostly "cancelled",
+#      never "failure". A cancelled run is not a red X: main looks green-ish
+#      (many successes, zero failures) while drift accumulates unseen.
+#
+#   2. Surface gating. Since PR #7337 the backend and frontend lint lanes are
+#      surface-gated in ci.yml (backend-lint `if: only_frontend != 'true'`,
+#      frontend-lint `if: only_backend != 'true'`). On a single-surface push to
+#      main -- e.g. a backend-only merge -- the eslint ceiling is SKIPPED, not
+#      cancelled, so it is never measured against the integrated tree at all.
+#
+# The consequence is that drift on main surfaces later on an UNRELATED pull
+# request (a PR's CI runs against merge(branch, main), inheriting main's state),
+# and the cheapest way out for that author is to raise the ceiling -- exactly
+# what a ratchet exists to prevent.
+#
+# This workflow separates MEASUREMENT from JUDGMENT. It runs ONLY the cheap
+# ratchet / ceiling / baseline gates, UNCONDITIONALLY (both surfaces, no
+# only_backend/only_frontend guard) and NEVER cancelled, so every push to main
+# gets a ratchet verdict attributed to THAT push. It deliberately does NOT
+# change ci.yml's concurrency or full-run budget (full serialization / a merge
+# queue is a maintainer CI-budget ruling) and does NOT add another full run
+# (test-durations.yml already pays the weekly full-suite runner minutes on
+# main; only the verdict was missing). The added runner minutes here are only
+# the individually-cheap ratchet lanes.
+#
+# The gate commands below are the same commands ci.yml's backend-lint and
+# frontend-lint jobs run, so the audit and the PR gates cannot disagree about
+# what a gate IS. If ci.yml adds or renames a gate script, mirror it here. The
+# eslint ceiling is deliberately NOT transcribed: it is read out of ci.yml at
+# run time, so ci.yml stays the one numeric source
+# (test/test_eslint_warning_ceiling.py pins that) and a burn-down cannot leave a
+# stale copy here that grants slack the PR gate does not.
+#
+# The one thing this lane changes about the gates is their SCOPE, and it has to.
+# Four of the backend gates (black, subprocess-encoding, agent-SDK boundary,
+# sync-IO-in-async) scope their verdict to the files the change in front of them
+# touches, via scripts/ratchet_scope.py. On a push to main that diff is EMPTY --
+# the checkout leaves HEAD, `main` and `origin/main` all at the pushed commit --
+# so an unscoped-by-accident run would judge zero files and report green
+# whatever the tree holds. RATCHET_SCOPE_WHOLE_TREE makes the question explicit:
+# judge the integrated tree, which is the only question a push to main can
+# answer and the reason this lane exists.
+
+on:
+  push:
+    branches: [main]
+  # PRs are deliberately NOT a trigger: a pull request already runs these exact
+  # gates against its own diff in ci.yml. This lane's whole value is evaluating
+  # them on main's INTEGRATED tree, which only a push (or a manual dispatch)
+  # produces.
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  # The report job opens / updates / closes a single tracking issue so drift is
+  # visible on main instead of surfacing later on an unrelated PR.
+  issues: write
+
+concurrency:
+  # Keyed on the SHA, NOT the ref. Each push gets its OWN group, so a later
+  # push can never supersede an earlier push's audit -- the per-SHA-on-push
+  # serialization issue #7511's option 1 describes, scoped to the cheap ratchet
+  # lanes only. cancel-in-progress is false so an in-flight audit always
+  # finishes and always renders its verdict.
+  group: main-ratchet-audit-${{ github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  ratchet-gates:
+    name: Backend ratchet & baseline gates
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      # Judge the integrated tree, not a diff. See the scope note in the header:
+      # a push to main has no diff to scope to, so the diff-scoped gates would
+      # otherwise pass by measuring nothing.
+      RATCHET_SCOPE_WHOLE_TREE: "1"
+    steps:
+      # fetch-depth: 0 for parity with ci.yml backend-lint's checkout: a gate
+      # that falls back to a diff (any run where the override above is not set)
+      # needs parent info a shallow clone truncates.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          enable-cache: true
+          # This repo has no uv.lock (pip/pyproject-managed), so point the cache
+          # key at the files that define the dependency set (matches ci.yml).
+          cache-dependency-glob: |
+            pyproject.toml
+            setup.cfg
+
+      - name: Install dependencies
+        # Same install as ci.yml backend-lint: --system targets the setup-python
+        # interpreter (no venv); --group pulls [dependency-groups].dev.
+        run: uv pip install --system -e ".[voice]" --group dev
+
+      # Each gate is a SEPARATE step so a failure names exactly which ratchet
+      # drifted. Same commands as ci.yml backend-lint, whole-tree scoped, and
+      # the set of gate scripts is pinned equal to backend-lint's by
+      # test/test_main_ratchet_audit.py -- a gate ADDED to ci.yml and not
+      # mirrored here would silently never be measured on main's integrated
+      # tree, which is the whole failure this lane exists to close. (A RENAME
+      # already fails loud, since the missing script errors the step.)
+      #
+      # `!cancelled()` on every gate, rather than the default `success()`: a job
+      # whose first drifting gate skipped the remaining five would report which
+      # ratchet drifted FIRST and leave the others unmeasured for as long as it
+      # stayed unfixed -- a partial verdict masquerading as a full one, exactly
+      # the class this lane exists to close. Every gate reports, and the job
+      # still fails if any of them did.
+      - name: Check formatting (black, baselined)
+        if: ${{ !cancelled() }}
+        run: python3 scripts/check_black_formatting.py
+
+      - name: Check subprocess text-mode encoding (gate, baselined)
+        if: ${{ !cancelled() }}
+        run: |
+          python3 scripts/check_subprocess_encoding.py --test
+          python3 scripts/check_subprocess_encoding.py
+
+      - name: Check agent-SDK import boundary (gate, baselined)
+        if: ${{ !cancelled() }}
+        run: |
+          python3 scripts/check_agent_sdk_boundary.py --test
+          python3 scripts/check_agent_sdk_boundary.py
+
+      - name: Check for blocking IO inside async def (gate, baselined)
+        if: ${{ !cancelled() }}
+        run: |
+          python3 scripts/check_sync_io_in_async.py --test
+          python3 scripts/check_sync_io_in_async.py
+
+      - name: Check lockdown-before-publish (secret writers)
+        if: ${{ !cancelled() }}
+        run: python3 scripts/check_lockdown_before_publish.py
+
+      # The census ratchet (TestGateSideLogRedactorSpelling / _BASELINE_LOG_SITE_CENSUS
+      # in test_security_posture.py) and the config-baseline ratchet
+      # (test_config_baseline.py against config-baseline.json) are the two
+      # pytest-side counters. They are the lanes whose whole value is being
+      # evaluated on the integrated tree.
+      - name: Census & config-baseline ratchet tests
+        if: ${{ !cancelled() }}
+        run: |
+          # Same as ci.yml's / test-durations.yml's pytest jobs (#7296): the
+          # `python` problem matcher actions/setup-python registers annotates any
+          # traceback in the log (including one printed inside a pytest warning)
+          # and never matches a pytest failure. conftest.py emits the real
+          # annotations instead.
+          echo "::remove-matcher owner=python::"
+          pytest -q --no-cov test/test_security_posture.py test/test_config_baseline.py
+
+  frontend-ceiling:
+    name: Frontend eslint ceiling
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: website/package-lock.json
+
+      - name: Install dependencies
+        working-directory: website
+        run: npm ci --no-audit --no-fund
+
+      # The ceiling is READ out of ci.yml rather than transcribed. ci.yml is the
+      # one numeric source (test/test_eslint_warning_ceiling.py pins that), and a
+      # second copy here would grant slack the PR gate does not the first time
+      # the ceiling is burned down -- a false green on main, which is the very
+      # failure this workflow exists to close. Same extraction the prepare-pr
+      # profile uses (prepare-pr/profiles/kirocrew.json), except that an
+      # unreadable ceiling fails CLOSED here: a gate that cannot find its own
+      # ceiling must not pass. The point of the job is that main's ceiling is
+      # measured unconditionally, including on a backend-only push where ci.yml
+      # skips frontend-lint entirely.
+      - name: Lint (eslint ceiling, read from ci.yml)
+        run: |
+          set -euo pipefail
+          MW="$(grep -oE 'npx eslint src/ --max-warnings [0-9]+' .github/workflows/ci.yml \
+            | grep -oE '[0-9]+$' | head -n 1 || true)"
+          if [ -z "$MW" ]; then
+            echo "::error::could not read the eslint ceiling out of .github/workflows/ci.yml;"\
+              "refusing to guess one" >&2
+            exit 1
+          fi
+          echo "eslint ceiling read from ci.yml: $MW"
+          cd website
+          npx eslint src/ --max-warnings "$MW"
+
+  report:
+    name: Render ratchet verdict
+    needs: [ratchet-gates, frontend-ceiling]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # always() so the verdict is rendered even when a gate job failed; the push
+    # guard keeps a manual workflow_dispatch from mutating the tracking issue.
+    if: ${{ always() && github.event_name == 'push' }}
+    steps:
+      - name: Open, update, or close the tracking issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          SERVER_URL: ${{ github.server_url }}
+          RUN_ID: ${{ github.run_id }}
+          COMMIT_SHA: ${{ github.sha }}
+          RATCHET_RESULT: ${{ needs.ratchet-gates.result }}
+          FRONTEND_RESULT: ${{ needs.frontend-ceiling.result }}
+        run: |
+          set -euo pipefail
+
+          RUN_URL="$SERVER_URL/$REPO/actions/runs/$RUN_ID"
+          # A hidden HTML marker in the body is how this job recognises an issue
+          # it wrote itself. The label alone is not proof of authorship -- anyone
+          # can add it to their own issue -- and the reconciliation below both
+          # comments on and CLOSES what it selects, so it must never select a
+          # human's issue.
+          MARKER="<!-- main-ratchet-audit-tracking-issue -->"
+          TITLE="Main ratchet drift detected"
+
+          # Which needed jobs did NOT succeed? (result is
+          # success | failure | cancelled | skipped). Anything other than an
+          # explicit `success` is treated as drift: a `cancelled` result (whole-
+          # workflow cancel, or the timeout-minutes cap firing) is an UNKNOWN
+          # verdict, not a green one, so it must not fall through to the all-
+          # green branch and close an open tracking issue -- that would turn an
+          # unknown into a false all-clear and erase a live drift record. Each
+          # non-success lane is one Markdown bullet, joined with real newlines
+          # via printf so the body is a proper list.
+          FAILED=""
+          if [ "$RATCHET_RESULT" != "success" ]; then
+            FAILED="$(printf '%s\n- `ratchet-gates` (backend black/subprocess/agent-sdk/sync-io/lockdown + census & config-baseline): **%s**' "$FAILED" "$RATCHET_RESULT")"
+          fi
+          if [ "$FRONTEND_RESULT" != "success" ]; then
+            FAILED="$(printf '%s\n- `frontend-ceiling` (eslint warning ceiling): **%s**' "$FAILED" "$FRONTEND_RESULT")"
+          fi
+
+          # The tracking issue is scoped by a dedicated label so the QUERY is
+          # deterministic. Do NOT search for it by the marker: GitHub's issue
+          # SEARCH index is eventually consistent, so two closely-spaced drift
+          # pushes could each miss the other's freshly-created issue.
+          # `gh issue list --label ... --state open` reads the issues API
+          # directly, and the marker then filters that answer locally. The label
+          # must exist first or both this list and the create below error for the
+          # wrong reason; ensure it idempotently. --force makes "already exists" a
+          # no-op so a benign re-create is not fatal.
+          gh label create ratchet-audit --repo "$REPO" --force \
+            --color BFD4F2 \
+            --description "Main Ratchet Audit: tracking issue for ratchet/ceiling/baseline drift on main" \
+            || echo "::notice::Could not ensure the ratchet-audit label (continuing); it may already exist or label writes may be refused."
+
+          # Every open issue this workflow owns, lowest number first. The
+          # concurrency group is per-SHA on purpose, so two drifting pushes CAN
+          # reach this step at once, both see no issue and both create one. A
+          # shared group for the reporters would trade that for a worse failure:
+          # GitHub keeps only ONE pending run per group, so a third push would
+          # evict a queued reporter and lose its verdict entirely. Converge
+          # instead -- the lowest-numbered open issue is canonical and the rest
+          # are closed as duplicates on the next run, so a race costs one
+          # redundant issue for one push rather than a permanently split record.
+          OPEN="$(gh issue list --repo "$REPO" --state open --label ratchet-audit \
+            --json number,body 2>/dev/null \
+            | jq -r --arg marker "$MARKER" \
+              '[.[] | select((.body // "") | contains($marker))] | sort_by(.number) | .[].number' \
+            || true)"
+          EXISTING="$(printf '%s\n' "$OPEN" | head -n 1)"
+          for duplicate in $(printf '%s\n' "$OPEN" | tail -n +2); do
+            gh issue comment "$duplicate" --repo "$REPO" \
+              --body "Duplicate of #$EXISTING, this workflow's single tracking issue. Closing; the drift record lives there." \
+              || true
+            gh issue close "$duplicate" --repo "$REPO" --reason "not planned" || true
+            echo "::notice::Closed duplicate tracking issue #$duplicate (canonical is #$EXISTING)."
+          done
+
+          # Is this run's commit still main's head? The concurrency group is
+          # per-SHA, so audits for DIFFERENT commits run concurrently and can
+          # finish out of order. A superseded run's verdict about its own commit
+          # stays sound -- that is what the per-SHA group buys, and the exit
+          # codes below are deliberately left alone -- but it must not mutate
+          # the SHARED tracking issue in either direction: a slow GREEN run
+          # would close the live drift record a newer push just opened, and a
+          # slow DRIFTING run would open or refresh one against a tree that has
+          # since been fixed. Both make the durable artifact describe a commit
+          # that is no longer main.
+          #
+          # The convergence above is exempt on purpose: closing a redundant
+          # copy while keeping the lowest-numbered one is ordering-independent
+          # and can never remove the last record, so a superseded run may still
+          # self-heal a split record.
+          #
+          # An unreadable head is neither confirmed-superseded nor
+          # confirmed-current, and the two branches below resolve that unknown
+          # in OPPOSITE directions, each failing toward keeping drift visible: a
+          # drifting run still records (worst case a spurious issue, which the
+          # next green push closes), while a green run still declines to close
+          # (worst case the issue stays open one push longer). A single symmetric
+          # default cannot do both.
+          HEAD_SHA="$(gh api "repos/$REPO/commits/main" --jq '.sha' 2>/dev/null || true)"
+          SUPERSEDED=""
+          CONFIRMED_CURRENT=""
+          if [ -n "$HEAD_SHA" ]; then
+            if [ "$HEAD_SHA" = "$COMMIT_SHA" ]; then
+              CONFIRMED_CURRENT="1"
+            else
+              SUPERSEDED="1"
+            fi
+          fi
+
+          if [ -n "$FAILED" ]; then
+            if [ -n "$SUPERSEDED" ]; then
+              echo "::notice::Main ratchet drift at $COMMIT_SHA, but main has moved to $HEAD_SHA; the audit for the current head owns the tracking issue. Failed lanes:$FAILED  Run: $RUN_URL"
+              exit 1
+            fi
+            BODY="$(printf '%s\n\nMain ratchet/ceiling drift was detected on the integrated tree at `%s`.\n\nFailed lanes:%s\n\nRun: %s\n\nWhy this matters: these gates guard against drift that would otherwise surface on an UNRELATED pull request (a PR runs against merge(branch, main) and inherits main'\''s state). Fix the drift on main rather than raising the ceiling in someone else'\''s PR. See CONTRIBUTING.md for the ratchet/ceiling/baseline path.\n\nThis issue is maintained automatically by the Main Ratchet Audit workflow; it will be closed on the next all-green push.' \
+              "$MARKER" "$COMMIT_SHA" "$FAILED" "$RUN_URL")"
+
+            if [ -n "$EXISTING" ]; then
+              COMMENT="$(printf 'Still drifting at `%s`.%s\n\nRun: %s' "$COMMIT_SHA" "$FAILED" "$RUN_URL")"
+              gh issue comment "$EXISTING" --repo "$REPO" --body "$COMMENT"
+              echo "::notice::Updated tracking issue #$EXISTING with fresh drift at $COMMIT_SHA."
+              exit 1
+            fi
+
+            # No open issue yet -- create one. `gh issue create` is refused
+            # outright when a repository disables Actions issue writes for the
+            # GITHUB_TOKEN; treat ONLY that specific refusal as a soft failure,
+            # reported as a ::notice:: carrying the drift, so the reporter does
+            # not go red for a reason no maintainer can act on. Any OTHER failure
+            # is real and must fail loud on its own exit code. Same remedy shape
+            # as test-durations.yml's "Open PR if durations changed".
+            rc=0
+            out="$(gh issue create --repo "$REPO" \
+              --title "$TITLE" \
+              --label ratchet-audit \
+              --body "$BODY" 2>&1)" || rc=$?
+            printf '%s\n' "$out"
+            if [ "$rc" -ne 0 ]; then
+              # The label patterns below cover the guard's OWN failure mode: if
+              # `gh label create` above was genuinely refused (not the benign
+              # "already exists" case), the `|| echo` swallowed it and control
+              # reached here, so `gh issue create --label ratchet-audit` fails
+              # for a missing/unaddable label rather than for issues being
+              # disabled. That is the same class of write refusal, so treat it
+              # the same: emit ::notice:: and exit 1 so drift stays visible on
+              # the commit instead of the job reding on the raw rc.
+              case "$out" in
+                *"not permitted"*|*"Resource not accessible by integration"*|*"issues are disabled"*|*"Issues has been disabled"*|*"could not add label"*|*"label"*"not found"*|*"not found"*"label"*)
+                  echo "::notice::Main ratchet drift detected at $COMMIT_SHA but this workflow may not open issues (or provision the ratchet-audit label) in this repository. Failed lanes:$FAILED  Run: $RUN_URL"
+                  # Still fail the run so the drift verdict is visible on the
+                  # commit even when the durable issue cannot be created.
+                  exit 1
+                  ;;
+                *)
+                  exit "$rc"
+                  ;;
+              esac
+            fi
+            # An issue was created; the gates still drifted, so fail the run.
+            exit 1
+          fi
+
+          # All needed gate jobs are green. Self-heal: if a tracking issue is
+          # open, note the green SHA and close it -- but only while this commit
+          # is still main's head, or a slow green audit closes the drift a newer
+          # push recorded.
+          if [ -z "$CONFIRMED_CURRENT" ]; then
+            echo "::notice::Main ratchet gates green at $COMMIT_SHA, but it is not confirmed to be main's head (head read as '$HEAD_SHA'); leaving the tracking issue alone, since any open drift may belong to a newer commit."
+            exit 0
+          fi
+
+          if [ -n "$EXISTING" ]; then
+            COMMENT="$(printf 'Main is green at `%s` -- all ratchet/ceiling/baseline gates pass. Closing.\n\nRun: %s' "$COMMIT_SHA" "$RUN_URL")"
+            gh issue comment "$EXISTING" --repo "$REPO" --body "$COMMENT"
+            gh issue close "$EXISTING" --repo "$REPO" \
+              --reason completed
+            echo "::notice::Closed tracking issue #$EXISTING; main ratchet gates green at $COMMIT_SHA."
+          else
+            echo "Main ratchet/ceiling/baseline gates all green at $COMMIT_SHA; no tracking issue open."
+          fi

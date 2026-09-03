@@ -521,6 +521,69 @@ depends on *where your branch lives*:
 If your only red checks are the AI reviews on a fork PR, there is nothing for
 you to fix — flag it to a maintainer.
 
+### Ratchet and baseline gates (why a check can fail for something you did not touch)
+
+Some of our checks are not "does this pass or fail" tests but *ratchets*: a gate
+that records the current count of a thing we are burning down and then fails if
+that count grows, so the number is only ever allowed to shrink. The idea is that
+we never make a known problem worse, and every PR either holds the line or pays
+some of it down. A few examples (`.github/workflows/ci.yml` stays canonical for
+the full list, so this is illustration, not an inventory):
+
+- the black formatting **baseline** (`.github/black-baseline.txt`) and the
+  config-baseline snapshot (`config-baseline.json`, checked by
+  `test/test_config_baseline.py`);
+- the gate-side log-site census in `test/test_security_posture.py`, which pins
+  the exact count of sites it expects and fails if the real count drifts;
+- the frontend eslint **ceiling** in the frontend-lint job. This one has already
+  been burned down to a hard zero, which is what a ratchet is aiming at: with
+  nothing recorded there is nothing to drift, and any warning a change
+  introduces fails. `ci.yml` holds the value, and it is the only place that may
+  — see [ci-and-reviews.md](docs/ci/ci-and-reviews.md).
+
+The confusing part is that one of these can go red on a PR whose own diff is
+completely innocent. That happens because your PR's CI does not run against your
+branch in isolation. It runs against `merge(branch, main)`, so it inherits
+main's current state along with your changes. If a ratchet-affecting change
+landed on main (say a cleanup that removed a warning or a log site but left the
+recorded count behind) and main's own CI was superseded or surface-skipped
+before that ratchet lane reported, then your PR is simply the first place the
+verdict actually renders. The gate is red because of drift on main, not because
+of anything in your diff.
+
+The Main Ratchet Audit workflow (`.github/workflows/main-ratchet-audit.yml`)
+runs these gates directly on every push to main, non-cancellable and on both
+surfaces, and opens a tracking issue (labeled `ratchet-audit`, titled "Main
+ratchet drift detected") when it finds drift. It judges the **whole tree**,
+where your PR's copy of the same gate judges only the files your diff touches —
+so the audit can name a file no pull request would ever have flagged, which is
+how the drift got in. That closes most of the gap, but a window still exists
+between a drifting merge and the audit run, so you may still be the first to see
+it.
+
+When a ratchet gate fails, do **not** reach for the fix that looks cheapest:
+raising the ceiling (bumping `--max-warnings`) or widening a baseline so the
+count matches again. That turns someone else's red green by loosening the very
+gate that exists to stop the count from growing, and it hides the real
+regression inside your unrelated change. Instead:
+
+1. Confirm the failure is unrelated to your diff. The gate names the drifted
+   count or file (a warning total, a census site, a baseline entry), so check
+   whether your change could plausibly have moved it.
+2. If it is inherited drift, do not absorb the fix into your PR. Check the Main
+   Ratchet Audit tracking issue (or open a new issue) to see whether the drift
+   is already known, and note it on your PR so a reviewer understands the red is
+   pre-existing.
+3. If you want to fix it, land the one-line ratchet correction as its own small,
+   separate PR that credits the real cause (the merge that introduced the
+   drift). Keep it out of the unrelated change so the history stays honest about
+   what moved the number.
+
+(For maintainers running babysit: its `known_reds`
+(`src/kiro_crew/builtin_skills/kirocrew-dev/babysit/SKILL.md`) only tells one
+operator's local watch loop to treat a known red as expected. It never makes a
+required check pass, so it is not a substitute for any of the above.)
+
 ## Commit Messages
 
 [Conventional Commits](https://www.conventionalcommits.org/):
