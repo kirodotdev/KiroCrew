@@ -6158,3 +6158,242 @@ class TestAcpSubcommandSupportNarrowsReadiness:
         env = seen.get("env") or {}
         assert env.get("HTTPS_PROXY") == "http://proxy.example:8080"
         assert prerequisite_module.CRED_KIRO_API_KEY not in env
+
+
+class TestTerminalAuditErrorLabels:
+    """Pin the three SEL terminal-audit error labels to their exact values.
+
+    ``_terminal_audit_detail`` is the single source for the ``error`` field on
+    the terminal audit event of every finished kiro-cli child run — consumed by
+    ``update_cli``, ``_audited_probe`` (probe_version / probe_acp_support), and
+    ``_audited_identity_probe`` (probe_identity). Before these tests nothing
+    read the label's VALUE off an emitted event, so the mapping could change,
+    or invert "timeout" and "nonzero exit", with the suite staying green.
+    """
+
+    @pytest.mark.parametrize(
+        ("succeeded", "result", "label"),
+        [
+            # The success verdict always maps to the empty label.
+            (True, ProcessResult(ok=True), ""),
+            # *succeeded* is the caller's verdict, not ``result.ok``, so it
+            # wins even over a result that says timed_out: the label can never
+            # contradict the ``outcome`` recorded beside it.
+            (True, ProcessResult(ok=False, timed_out=True), ""),
+            (False, ProcessResult(ok=False, timed_out=True), "timeout"),
+            (
+                False,
+                ProcessResult(ok=False, timed_out=False, returncode=1),
+                "nonzero exit",
+            ),
+            # No caller reaches succeeded=False with result.ok=True today, but
+            # the second parameter permits it: a failed verdict over an ok
+            # result is labeled as an exit failure, never as silence.
+            (False, ProcessResult(ok=True), "nonzero exit"),
+        ],
+    )
+    def test_detail_matrix(
+        self, succeeded: bool, result: ProcessResult, label: str
+    ) -> None:
+        assert prerequisite_module._terminal_audit_detail(result, succeeded) == label
+
+    # -- End-to-end: the label as it lands on the emitted SEL event ----------
+
+    def _service_with_audit(
+        self, tmp_path: Path, run: Any
+    ) -> tuple[KiroPrerequisiteService, list[dict[str, Any]]]:
+        executable = tmp_path / ".local" / "bin" / "kiro-cli"
+        _make_executable(executable)
+        events: list[dict[str, Any]] = []
+
+        async def audit(**kwargs: Any) -> None:
+            events.append(kwargs)
+
+        service = KiroPrerequisiteService(
+            platform_name="linux",
+            environ={"HOME": str(tmp_path), "PATH": str(executable.parent)},
+            home=tmp_path,
+            data_home=tmp_path / "data-home",
+            process_runner=run,
+            audit_writer=audit,
+        )
+        return service, events
+
+    @staticmethod
+    def _terminal_labels(events: list[dict[str, Any]]) -> list[tuple[str, str, str]]:
+        """The (action, outcome) audit inspection, extended with the error label."""
+        return [
+            (item["action"], item["outcome"], item["error"])
+            for item in events
+            if item["outcome"] != "invoked"
+        ]
+
+    @staticmethod
+    def _assert_outcome_and_error_agree(events: list[dict[str, Any]]) -> None:
+        """``completed`` and an empty error label imply each other, both ways."""
+        for item in events:
+            if item["outcome"] == "invoked":
+                continue
+            assert (item["outcome"] == "completed") == (item["error"] == ""), item
+
+    @pytest.mark.asyncio
+    async def test_successful_probes_carry_the_empty_label(
+        self, tmp_path: Path
+    ) -> None:
+        async def run(_command: str, args: list[str], **_kwargs: Any) -> ProcessResult:
+            if args in (["--version"], ["whoami"]):
+                return ProcessResult(ok=True)
+            if args == ["acp", "--help"]:
+                return ProcessResult(ok=True, output="Usage: kiro-cli acp")
+            return ProcessResult(ok=False)
+
+        service, events = self._service_with_audit(tmp_path, run)
+        await service.snapshot(force=True)
+
+        assert self._terminal_labels(events) == [
+            ("probe_version", "completed", ""),
+            ("probe_identity", "completed", ""),
+            ("probe_acp_support", "completed", ""),
+        ]
+        self._assert_outcome_and_error_agree(events)
+
+    @pytest.mark.asyncio
+    async def test_timed_out_version_probe_is_labeled_timeout(
+        self, tmp_path: Path
+    ) -> None:
+        async def run(_command: str, args: list[str], **_kwargs: Any) -> ProcessResult:
+            if args == ["--version"]:
+                return ProcessResult(ok=False, timed_out=True)
+            return ProcessResult(ok=False)
+
+        service, events = self._service_with_audit(tmp_path, run)
+        await service.snapshot(force=True)
+
+        # A failed version probe short-circuits the pipeline: no whoami runs.
+        assert self._terminal_labels(events) == [
+            ("probe_version", "failed", "timeout"),
+        ]
+        self._assert_outcome_and_error_agree(events)
+
+    @pytest.mark.asyncio
+    async def test_nonzero_version_probe_is_labeled_nonzero_exit(
+        self, tmp_path: Path
+    ) -> None:
+        async def run(_command: str, args: list[str], **_kwargs: Any) -> ProcessResult:
+            if args == ["--version"]:
+                return ProcessResult(ok=False, returncode=1)
+            return ProcessResult(ok=False)
+
+        service, events = self._service_with_audit(tmp_path, run)
+        await service.snapshot(force=True)
+
+        assert self._terminal_labels(events) == [
+            ("probe_version", "failed", "nonzero exit"),
+        ]
+        self._assert_outcome_and_error_agree(events)
+
+    @pytest.mark.asyncio
+    async def test_timed_out_identity_probe_is_labeled_timeout(
+        self, tmp_path: Path
+    ) -> None:
+        async def run(_command: str, args: list[str], **_kwargs: Any) -> ProcessResult:
+            if args == ["--version"]:
+                return ProcessResult(ok=True)
+            if args == ["whoami"]:
+                return ProcessResult(ok=False, timed_out=True)
+            return ProcessResult(ok=False)
+
+        service, events = self._service_with_audit(tmp_path, run)
+        await service.snapshot(force=True)
+
+        # The acp probe is gated on a successful whoami, so the failed identity
+        # probe is the terminal event of the run.
+        assert self._terminal_labels(events) == [
+            ("probe_version", "completed", ""),
+            ("probe_identity", "failed", "timeout"),
+        ]
+        self._assert_outcome_and_error_agree(events)
+
+    @pytest.mark.asyncio
+    async def test_signed_out_identity_probe_is_labeled_nonzero_exit(
+        self, tmp_path: Path
+    ) -> None:
+        async def run(_command: str, args: list[str], **_kwargs: Any) -> ProcessResult:
+            if args == ["--version"]:
+                return ProcessResult(ok=True)
+            if args == ["whoami"]:
+                return ProcessResult(ok=False, returncode=1, output="Not logged in")
+            return ProcessResult(ok=False)
+
+        service, events = self._service_with_audit(tmp_path, run)
+        await service.snapshot(force=True)
+
+        assert self._terminal_labels(events) == [
+            ("probe_version", "completed", ""),
+            ("probe_identity", "failed", "nonzero exit"),
+        ]
+        self._assert_outcome_and_error_agree(events)
+
+    @pytest.mark.asyncio
+    async def test_successful_update_carries_the_empty_label(
+        self, tmp_path: Path
+    ) -> None:
+        async def run(_command: str, args: list[str], **_kwargs: Any) -> ProcessResult:
+            if args == ["update"]:
+                return ProcessResult(ok=True, output="updated")
+            if args in (["--version"], ["whoami"]):
+                return ProcessResult(ok=True)
+            if args == ["acp", "--help"]:
+                return ProcessResult(ok=True, output="Usage: kiro-cli acp")
+            return ProcessResult(ok=False)
+
+        service, events = self._service_with_audit(tmp_path, run)
+        await service.update_cli("owner")
+
+        # The post-update re-probe appends its own probe events; the update's
+        # terminal event is pinned by filtering to its action.
+        update_labels = [
+            item for item in self._terminal_labels(events) if item[0] == "update_cli"
+        ]
+        assert update_labels == [("update_cli", "completed", "")]
+        self._assert_outcome_and_error_agree(events)
+
+    @pytest.mark.asyncio
+    async def test_timed_out_update_is_labeled_timeout(self, tmp_path: Path) -> None:
+        async def run(_command: str, args: list[str], **_kwargs: Any) -> ProcessResult:
+            if args == ["update"]:
+                return ProcessResult(ok=False, timed_out=True)
+            if args in (["--version"], ["whoami"]):
+                return ProcessResult(ok=True)
+            return ProcessResult(ok=False)
+
+        service, events = self._service_with_audit(tmp_path, run)
+        result = await service.update_cli("owner")
+
+        assert "did not finish in time" in result["cli_update_error"]
+        update_labels = [
+            item for item in self._terminal_labels(events) if item[0] == "update_cli"
+        ]
+        assert update_labels == [("update_cli", "failed", "timeout")]
+        self._assert_outcome_and_error_agree(events)
+
+    @pytest.mark.asyncio
+    async def test_nonzero_update_is_labeled_nonzero_exit(
+        self, tmp_path: Path
+    ) -> None:
+        async def run(_command: str, args: list[str], **_kwargs: Any) -> ProcessResult:
+            if args == ["update"]:
+                return ProcessResult(ok=False, returncode=1, output="update failed")
+            if args in (["--version"], ["whoami"]):
+                return ProcessResult(ok=True)
+            return ProcessResult(ok=False)
+
+        service, events = self._service_with_audit(tmp_path, run)
+        result = await service.update_cli("owner")
+
+        assert result["cli_update_error"] == "update failed"
+        update_labels = [
+            item for item in self._terminal_labels(events) if item[0] == "update_cli"
+        ]
+        assert update_labels == [("update_cli", "failed", "nonzero exit")]
+        self._assert_outcome_and_error_agree(events)
