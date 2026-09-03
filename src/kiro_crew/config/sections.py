@@ -1265,6 +1265,24 @@ class MessagingConfig:
 
 
 @dataclass
+class MembersConfig:
+    dispatch: bool = field(
+        default=True,
+        metadata=_meta(
+            "Member Dispatch",
+            "On by default: the automatic, zero-configuration grant that lets a "
+            "crew member's DM session dispatch and patrol worker sessions it "
+            "creates WITHOUT the operator having to turn on `agent.session_control`. "
+            "Turning it OFF removes that automatic grant and puts member callers "
+            "back under the ordinary `agent.session_control` switch, so an operator "
+            "can keep a member chat-only without disabling the member entirely. The "
+            "creator-ownership boundary (a member only reaches workers it created "
+            "itself) still binds regardless of this switch.",
+        ),
+    )
+
+
+@dataclass
 class CronHistoryConfig:
     cron_summary_cap: int = field(
         default=200,

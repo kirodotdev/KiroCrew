@@ -21,11 +21,16 @@ tool-level coverage here is registration only.
 
 from __future__ import annotations
 
+import asyncio
+import json
+from dataclasses import fields
 from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
 
+from kiro_crew.config import loader, validation
+from kiro_crew.config.resolution import DEGRADED_MEMBERS, DEGRADED_WHOLE_CONFIG
 from kiro_crew.dashboard import session_control as sc
 from kiro_crew.members import DM_SLOT_KEY_PREFIX
 
@@ -125,6 +130,219 @@ class TestAuthorizeTargetMemberPath:
         assert exc_info.value.code == "session_control_disabled"
 
 
+class TestMemberDispatchSwitch:
+    """The ``members.dispatch`` operator switch over the member bypass.
+
+    The member bypass at both gates is gated by ``member_dispatch_enabled()``
+    (``members.dispatch``, default ON). These tests pin the OFF path — the whole
+    point of the change — which the existing member tests never touch because
+    the config default resolves the switch ON, so a regression dropping the
+    ``member_dispatch_enabled()`` term would leave every other member test green.
+
+    We mirror the existing style: patch ``sc.session_control_enabled`` to the
+    global-OFF posture the switch is meant to override, and patch
+    ``sc.member_dispatch_enabled`` to flip it. With the switch OFF a member
+    caller must be refused with ``session_control_disabled`` at BOTH gates; with
+    it ON the bypass must still stand.
+
+    The resolver's own fail-safe direction gets its own cases below. Its ON
+    default makes a DEGRADED load — one that succeeded but discarded the value —
+    as dangerous as one that raised, which is a case ``agent.session_control``
+    (default off) does not have.
+    """
+
+    def test_authorize_target_refuses_member_when_dispatch_off(self):
+        # Global switch off AND members.dispatch off: the member bypass drops,
+        # so a member caller is refused just like any ordinary caller.
+        member = DM_SLOT_KEY_PREFIX + "radar"
+        worker = _slot("chat-1-w1", created_by=member)
+        state = _State({member: _slot(member), "chat-1-w1": worker})
+        with (
+            patch.object(sc, "caller_slot_key", return_value=member),
+            patch.object(sc, "session_control_enabled", return_value=False),
+            patch.object(sc, "member_dispatch_enabled", return_value=False),
+            patch.object(sc, "_resolve_slot", return_value=worker),
+        ):
+            with pytest.raises(sc.SessionControlError) as exc_info:
+                sc.authorize_target(
+                    state,
+                    caller_session_key="dashboard:whatever",
+                    target="chat-1-w1",
+                    operation="send",
+                )
+        assert exc_info.value.code == "session_control_disabled"
+
+    def test_authorize_target_bypass_stands_when_dispatch_on(self):
+        # Global switch off but members.dispatch ON: the bypass holds, so the
+        # member gets PAST the config gate (and its own ownership check).
+        member = DM_SLOT_KEY_PREFIX + "radar"
+        worker = _slot("chat-1-w1", created_by=member)
+        state = _State({member: _slot(member), "chat-1-w1": worker})
+        with (
+            patch.object(sc, "caller_slot_key", return_value=member),
+            patch.object(sc, "session_control_enabled", return_value=False),
+            patch.object(sc, "member_dispatch_enabled", return_value=True),
+            patch.object(sc, "_resolve_slot", return_value=worker),
+        ):
+            try:
+                sc.authorize_target(
+                    state,
+                    caller_session_key="dashboard:whatever",
+                    target="chat-1-w1",
+                    operation="send",
+                )
+            except sc.SessionControlError as exc:
+                assert exc.code not in ("session_control_disabled", "not_creator"), exc.code
+
+    def test_create_session_refuses_member_when_dispatch_off(self):
+        # The create gate carries the same conjunction. With both switches off a
+        # member caller can no longer create a session — the switch narrows it.
+        member = DM_SLOT_KEY_PREFIX + "radar"
+        state = _State({member: _slot(member)})
+        with (
+            patch.object(sc, "caller_slot_key", return_value=member),
+            patch.object(sc, "session_control_enabled", return_value=False),
+            patch.object(sc, "member_dispatch_enabled", return_value=False),
+        ):
+            with pytest.raises(sc.SessionControlError) as exc_info:
+                asyncio.run(sc.create_session(state, caller_session_key="dashboard:whatever"))
+        assert exc_info.value.code == "session_control_disabled"
+
+    def test_create_session_bypass_stands_when_dispatch_on(self):
+        # members.dispatch ON: the member passes the config gate. It may still
+        # fail later on deployment-specific plumbing, but NOT at the switch.
+        member = DM_SLOT_KEY_PREFIX + "radar"
+        state = _State({member: _slot(member)})
+        with (
+            patch.object(sc, "caller_slot_key", return_value=member),
+            patch.object(sc, "session_control_enabled", return_value=False),
+            patch.object(sc, "member_dispatch_enabled", return_value=True),
+        ):
+            try:
+                asyncio.run(sc.create_session(state, caller_session_key="dashboard:whatever"))
+            except sc.SessionControlError as exc:
+                # A SessionControlError is fine as long as it is NOT the config
+                # gate rejecting the member — the bypass must have carried it
+                # past the switch.
+                assert exc.code != "session_control_disabled", exc.code
+            except Exception:
+                # Any non-SessionControlError means the member already cleared
+                # the config gate and tripped on deployment-specific plumbing
+                # our fixture does not provide — exactly what we want to prove.
+                pass
+
+    def test_member_dispatch_enabled_fails_closed_on_config_read_error(self):
+        # A config read that RAISES resolves to False (fail closed), the same
+        # conservative posture as session_control_enabled: the bypass is dropped
+        # rather than left silently alive on config corruption.
+        with patch.object(sc.KiroCrewConfig, "load", side_effect=RuntimeError("boom")):
+            assert sc.member_dispatch_enabled() is False
+
+    @pytest.mark.parametrize(
+        "degraded",
+        [
+            # An unreadable / non-object config FILE. `_mark_file_degraded` adds
+            # both the bare marker and a per-file entry; the bare one is what a
+            # gate matches on.
+            frozenset({DEGRADED_WHOLE_CONFIG, DEGRADED_WHOLE_CONFIG + "config.json"}),
+            # A present `members` section that is not a JSON object, e.g.
+            # `{"members": []}` — coerced to `{}`, so `dispatch` came back as the
+            # dataclass default, not from the operator.
+            frozenset({DEGRADED_MEMBERS}),
+        ],
+    )
+    def test_degraded_load_drops_the_bypass_despite_the_on_default(self, degraded):
+        # `load()` DEGRADES rather than raising on both shapes: it returns a
+        # config whose `members.dispatch` is the True default. Trusting that
+        # default would re-grant a bypass an operator had set to false, with no
+        # error, and re-reading the file cannot recover the setting because
+        # `load()` has already rewritten config.json in normalized form. So the
+        # unknown must resolve to off.
+        cfg = SimpleNamespace(
+            degraded_sections=degraded,
+            members=SimpleNamespace(dispatch=True),
+        )
+        with patch.object(sc.KiroCrewConfig, "load", return_value=cfg):
+            assert sc.member_dispatch_enabled() is False
+
+    def test_an_unrelated_degraded_section_leaves_the_bypass_alone(self):
+        # Scoped, not blanket: a malformed `slack` section says nothing about
+        # what the operator asked for here, and denying on it would turn every
+        # unrelated config typo into a silent withdrawal of the zero-config
+        # contract this feature exists to provide.
+        cfg = SimpleNamespace(
+            degraded_sections=frozenset({"slack", "dashboard.tailscale"}),
+            members=SimpleNamespace(dispatch=True),
+        )
+        with patch.object(sc.KiroCrewConfig, "load", return_value=cfg):
+            assert sc.member_dispatch_enabled() is True
+
+    def test_a_clean_load_reports_the_operators_value_either_way(self):
+        # The degraded guard must not swallow the ordinary path: a clean load
+        # returns exactly what the operator set.
+        for value, expected in ((True, True), (False, False)):
+            cfg = SimpleNamespace(
+                degraded_sections=frozenset(),
+                members=SimpleNamespace(dispatch=value),
+            )
+            with patch.object(sc.KiroCrewConfig, "load", return_value=cfg):
+                assert sc.member_dispatch_enabled() is expected
+
+    #: Every ``members`` shape an operator can actually write, and the grant each
+    #: must resolve to. Absence is the only one that may resolve ON.
+    _END_TO_END_SHAPES = [
+        # No config at all, and an empty section: the zero-configuration grant.
+        ({}, True),
+        ({"members": {}}, True),
+        ({"members": {"dispatch": True}}, True),
+        # An explicit withdrawal, and the same withdrawal written by an editor
+        # that quoted it. `bool("false")` is True, so the quoted form is the one
+        # that used to hand back the opposite of what the operator read.
+        ({"members": {"dispatch": False}}, False),
+        ({"members": {"dispatch": "false"}}, False),
+        # A `members` section that is not an object: whatever it carried is gone,
+        # so the operator's intent is UNKNOWN and cannot be read as consent.
+        ({"members": []}, False),
+        ({"members": "nope"}, False),
+        # Scoped: an unrelated malformed section says nothing about this grant.
+        ({"slack": [], "members": {"dispatch": True}}, True),
+    ]
+
+    @pytest.mark.parametrize("payload,expected", _END_TO_END_SHAPES)
+    def test_end_to_end_from_a_real_config_file(self, tmp_path, payload, expected):
+        # The mocked cases above hand `member_dispatch_enabled()` a hand-built
+        # `degraded_sections`, which proves the gate reads it but NOT that the
+        # loader ever puts `members` there. Three layers have to cooperate for
+        # that -- validation preserving the malformed value, the loader recording
+        # the coercion, the gate reading it -- and only a real config.json
+        # exercises all three. Without this test the guard passed while being
+        # unreachable in production: the advisory jsonschema pass repaired the
+        # value before `_coerced_section` could witness it.
+        (tmp_path / "config.json").write_text(json.dumps(payload), encoding="utf-8")
+        loader._invalidate_config_cache()
+        with patch.object(loader, "config_dir", return_value=tmp_path):
+            assert sc.member_dispatch_enabled() is expected
+        loader._invalidate_config_cache()
+
+    def test_the_members_paths_are_exempt_from_validation_repair(self):
+        # The registry entry is load-bearing, not decoration: `_apply_field_default`
+        # deletes a schema-violating value, and for a grant whose default is ON
+        # that deletion IS the widening -- it happens before any detector runs.
+        assert "members" in validation._FAIL_CLOSED_PATHS
+        assert "members.dispatch" in validation._FAIL_CLOSED_PATHS
+        data = {"members": {"dispatch": "false"}}
+        assert validation._apply_field_default(data, "members.dispatch") is False
+        assert data == {"members": {"dispatch": "false"}}
+
+    def test_degraded_section_key_matches_the_real_config_field(self):
+        # `DEGRADED_MEMBERS` is the string `degraded_sections` reports for this
+        # section, which is the config dataclass's FIELD name. Renaming the
+        # section without updating the constant would not fail any behavioural
+        # test — the gate would simply stop matching and fall back to reading the
+        # ON default, i.e. it would fail OPEN silently. Pin the two together.
+        assert DEGRADED_MEMBERS in {f.name for f in fields(sc.KiroCrewConfig)}
+
+
 class TestWorkerToolsRegistered:
     def test_worker_tools_advertised_on_kirocrew_core(self):
         from kiro_crew.mcp_tools import build_tool_list
@@ -137,6 +355,102 @@ class TestWorkerToolsRegistered:
 
         advertised = {t["name"] for t in workers.schemas()}
         assert advertised == set(workers.HANDLERS)
+
+
+class TestWorkerSessionSchemaParity:
+    """Each ``WORKER_*_SCHEMA`` must stay within its ``SESSION_*_SCHEMA`` twin.
+
+    The four ``worker_*`` kirocrew-core tools and the four ``session_*``
+    kirocrew-dashboard tools forward to the SAME ``/api/session-control/*``
+    gateway endpoints, so the shape those endpoints accept must not depend on
+    which server the caller happened to reach. Today that parity is held only
+    by the comment above ``WORKER_CREATE_SCHEMA`` in ``validation.py``; this
+    test turns it into an executable invariant.
+
+    Parity here is a *narrowing*, not byte equality: ``worker_create``
+    deliberately omits ``folder`` (a member's workers land unfiled in v1, per
+    that comment). So for each pair we assert the worker property set is a
+    subset of the session set (the worker introduces no field the endpoint
+    would reject), and that the only fields the session set carries beyond the
+    worker set are the explicitly documented ``allowed_missing`` ones. A field
+    added to a ``session_*`` schema but forgotten on ``worker_*`` — or an
+    accidental extra worker narrowing — both trip this test.
+    """
+
+    # worker schema -> (session schema, properties worker may omit)
+    @classmethod
+    def _pairs(cls):
+        from kiro_crew import validation as v
+
+        return [
+            (v.WORKER_CREATE_SCHEMA, v.SESSION_CREATE_SCHEMA, {"folder"}),
+            (v.WORKER_SEND_SCHEMA, v.SESSION_SEND_SCHEMA, set()),
+            (v.WORKER_READ_SCHEMA, v.SESSION_READ_MESSAGE_SCHEMA, set()),
+            (v.WORKER_STOP_SCHEMA, v.SESSION_STOP_SCHEMA, set()),
+        ]
+
+    def test_worker_property_sets_stay_within_session_counterparts(self):
+        for worker_schema, session_schema, allowed_missing in self._pairs():
+            worker_props = {f.name for f in worker_schema.fields}
+            session_props = {f.name for f in session_schema.fields}
+            # (a) The worker surface never introduces a property the shared
+            # endpoint would not accept from the session surface.
+            assert worker_props <= session_props, (
+                f"{worker_schema.tool_name} introduces "
+                f"{worker_props - session_props} absent from "
+                f"{session_schema.tool_name}"
+            )
+            # (b) The ONLY narrowing is the documented one — a new session_*
+            # field forgotten on worker_* (or an accidental worker omission)
+            # fails here.
+            assert session_props - worker_props == allowed_missing, (
+                f"{worker_schema.tool_name} vs {session_schema.tool_name}: "
+                f"expected only {allowed_missing} to be omitted, got "
+                f"{session_props - worker_props}"
+            )
+
+    def test_shared_fields_have_compatible_type_and_required(self):
+        # A shared field must not just carry the same type/required flag: the
+        # value bounds that decide what the shared /api/session-control/*
+        # endpoint ACCEPTS must line up too. A future divergence in max_len,
+        # min_val, max_val, pattern, or the enum allow-list between a worker_*
+        # and its session_* twin would otherwise pass here while making the
+        # accepted payload depend on which server the caller reached — the exact
+        # failure mode this parity test exists to prevent.
+        def _pattern_src(field):
+            # FieldSpec.pattern is a compiled re.Pattern (or None); compare the
+            # source string so two independently-compiled equivalents match and
+            # a genuine divergence is still caught.
+            pat = field.pattern
+            return None if pat is None else pat.pattern
+
+        for worker_schema, session_schema, _allowed_missing in self._pairs():
+            worker_fields = {f.name: f for f in worker_schema.fields}
+            session_fields = {f.name: f for f in session_schema.fields}
+            for name in worker_fields.keys() & session_fields.keys():
+                wf = worker_fields[name]
+                sf = session_fields[name]
+                assert wf.type == sf.type, (
+                    f"{worker_schema.tool_name}.{name} type {wf.type!r} != "
+                    f"{session_schema.tool_name}.{name} type {sf.type!r}"
+                )
+                assert wf.required == sf.required, (
+                    f"{worker_schema.tool_name}.{name} required={wf.required} != "
+                    f"{session_schema.tool_name}.{name} required={sf.required}"
+                )
+                # Value bounds — everything on FieldSpec that constrains the
+                # accepted input for a shared field.
+                for attr in ("default", "max_len", "min_val", "max_val", "allowed"):
+                    assert getattr(wf, attr) == getattr(sf, attr), (
+                        f"{worker_schema.tool_name}.{name} {attr}="
+                        f"{getattr(wf, attr)!r} != {session_schema.tool_name}.{name} "
+                        f"{attr}={getattr(sf, attr)!r}"
+                    )
+                assert _pattern_src(wf) == _pattern_src(sf), (
+                    f"{worker_schema.tool_name}.{name} pattern "
+                    f"{_pattern_src(wf)!r} != {session_schema.tool_name}.{name} "
+                    f"pattern {_pattern_src(sf)!r}"
+                )
 
 
 class TestCreatedByRecentSessionRestore:

@@ -66,6 +66,7 @@ _KNOWN_CONFIG_SECTIONS: frozenset = frozenset(
         "watchdog",
         "resource_limits",
         "messaging",
+        "members",
         "cron_history",
         "knowledge",
         "heartbeat",
@@ -131,6 +132,33 @@ DEGRADED_WHOLE_CONFIG = "*"
 #: so the tailnet gate denies on exactly the narrowing it enforces, and an
 #: unrelated malformed ``dashboard`` value does not.
 DEGRADED_TAILSCALE = "dashboard.tailscale"
+
+
+#: ``degraded_sections`` key for "the operator's ``members`` settings could not
+#: be read this load". It is the config dataclass's own FIELD name, which is what
+#: ``_coerced_section`` records; ``TestMemberDispatchSwitch`` pins the two
+#: together, because a rename that missed this constant would leave the gate
+#: silently matching nothing and reading its ON default instead.
+DEGRADED_MEMBERS = "members"
+
+
+def member_dispatch_unknown(sections: frozenset[str]) -> bool:
+    """Whether *sections* means ``members.dispatch`` could not be read.
+
+    Two shapes lose it: an unreadable config FILE, and a ``members`` section that
+    is not a JSON object. Both leave ``dispatch`` at its dataclass default, which
+    is **on** — so a gate that trusted it would re-grant a bypass the operator had
+    turned off, with no error. Scoped deliberately to this section plus the
+    whole-file marker: an unrelated malformed section says nothing about what the
+    operator asked for here, and denying on it would turn any config typo into a
+    silent withdrawal of the zero-configuration contract.
+
+    Lives here beside :func:`_coerced_section`, the mechanism that records the
+    key, for the same reason :func:`tailnet_identity_unknown` does: the
+    "was this value real?" question gets one answer rather than one shadow parser
+    per gate.
+    """
+    return bool(sections & {DEGRADED_WHOLE_CONFIG, DEGRADED_MEMBERS})
 
 
 def tailnet_identity_unknown(sections: frozenset[str]) -> bool:

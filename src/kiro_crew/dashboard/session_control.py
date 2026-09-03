@@ -42,6 +42,7 @@ from kiro_crew.config.loader import (
     default_project_dir,
     resolve_agent_bindings,
 )
+from kiro_crew.config.resolution import member_dispatch_unknown
 from kiro_crew.dashboard.chat_delivery import sanitize_outbound
 from kiro_crew.dashboard.chat_folders import _unhide_folder
 from kiro_crew.dashboard.chat_persistence import _TRANSIENT_ROLES as _PERSISTENCE_TRANSIENT_ROLES
@@ -144,6 +145,59 @@ def session_control_enabled() -> bool:
     except Exception:
         logger.warning(
             "session_control: config read failed — refusing until config loads", exc_info=True
+        )
+        return False
+
+
+def member_dispatch_enabled() -> bool:
+    """Whether the automatic member session-dispatch grant is switched on.
+
+    ``members.dispatch`` defaults ON — the zero-configuration contract that lets
+    a crew member DM session dispatch and patrol its worker sessions without the
+    operator turning on ``agent.session_control``. When an operator sets it to
+    ``false`` this returns False, which drops the member bypass at the gates and
+    puts member callers back under the ordinary switch (keeping a member
+    chat-only without disabling it entirely).
+
+    Only ABSENCE resolves to the ON default. Three other shapes resolve to False,
+    because in each the operator's setting is UNKNOWN and an ON default would
+    invent a grant they may have withdrawn:
+
+    * a config read that RAISES — the same conservative posture as
+      :func:`session_control_enabled`, so unrelated corruption cannot silently
+      keep the automatic grant alive;
+    * a load that SUCCEEDED but discarded the value —
+      :func:`member_dispatch_unknown` covers both shapes (an unreadable config
+      file, and a ``members`` section that is not an object). ``load()`` keeps
+      going in both cases and hands back the ``dispatch=True`` default, so without
+      this branch a ``config.json`` that could not be parsed would re-grant a
+      bypass the operator had turned off. Re-reading the file cannot recover the
+      setting: ``load()`` rewrites ``config.json`` in normalized form, so by the
+      time this gate looks the malformed text is gone — the parse that discarded it
+      is the only witness, which is why it reports through ``degraded_sections``
+      (the same mechanism ``publish_governance`` reads);
+    * a ``dispatch`` value that is present but not a bool — the loader's
+      ``_safe_bool(..., False)`` resolves it here, and ``members``/
+      ``members.dispatch`` sit in ``validation._FAIL_CLOSED_PATHS`` so the
+      malformed value survives advisory validation for it to see.
+
+    Resolving False only ever WIDENS the requirement — a member falls back to
+    needing ``agent.session_control``, and the ownership boundary binds either way
+    — so failing closed costs a diagnosable refusal, never wider reach.
+    """
+    try:
+        cfg = KiroCrewConfig.load()
+        if member_dispatch_unknown(cfg.degraded_sections):
+            logger.warning(
+                "member_dispatch: config unreadable or 'members' section malformed — "
+                "dropping member bypass; fix the file and restart the gateway to clear"
+            )
+            return False
+        return bool(cfg.members.dispatch)
+    except Exception:
+        logger.warning(
+            "member_dispatch: config read failed — dropping member bypass until config loads",
+            exc_info=True,
         )
         return False
 
@@ -660,7 +714,21 @@ async def create_session(
     # still needs the switch. The member's automatic grant is bounded by
     # ownership in `authorize_target`, not here: creation makes the caller
     # the owner by construction.
-    if not session_control_enabled() and not _member_caller(caller_key):
+    #
+    # The member bypass is itself gated by the operator switch
+    # `members.dispatch` (default ON): when an operator turns it OFF,
+    # `member_dispatch_enabled()` is False, the bypass drops, and a member
+    # caller falls back to needing `agent.session_control` like any other
+    # caller — the lever that keeps a member chat-only without disabling it.
+    # It is an operator PREFERENCE, not a containment ceiling. `config.json` is
+    # write-protected against the agent's FILE-EDIT tools (`is_sensitive_write_path`
+    # at the `hooks.on_tool_call` gate), but it is deliberately absent from
+    # `_WRITE_PROTECTED_BASH_LEAVES`, so a shell redirect an operator auto-approved
+    # still reaches it. The boundary that binds against the member itself is the
+    # ownership check in `authorize_target`, which no config write relaxes.
+    if not session_control_enabled() and not (
+        _member_caller(caller_key) and member_dispatch_enabled()
+    ):
         raise SessionControlError(
             "session control is disabled in config (agent.session_control)",
             code="session_control_disabled",
@@ -1029,13 +1097,15 @@ def authorize_target(
     recorded in the SEL, so an attempt to reach a session that is out of bounds
     is visible after the fact even though nothing happened.
 
-    ``skip_enabled_check`` omits ONLY the ``session_control_enabled()`` config
-    read. It exists for a re-check that must run SYNCHRONOUSLY with no event-loop
-    suspension (``close_target``'s point-of-no-return callback): the feature was
-    already confirmed enabled when the operation was first authorized, whether
-    session control got switched off mid-operation is not a containment boundary,
-    and the config read is the one part of this function that can touch the disk
-    on a cache miss. Every containment and identity refusal still runs.
+    ``skip_enabled_check`` omits ONLY the two config reads that decide whether the
+    surface is switched on for this caller — ``session_control_enabled()`` and, for
+    a member caller, ``member_dispatch_enabled()``. It exists for a re-check that
+    must run SYNCHRONOUSLY with no event-loop suspension (``close_target``'s
+    point-of-no-return callback): the feature was already confirmed enabled when
+    the operation was first authorized, whether a switch got turned off
+    mid-operation is not a containment boundary, and those reads are the only parts
+    of this function that can touch the disk on a cache miss. Every containment and
+    identity refusal still runs.
     """
 
     def deny(reason: str, code: str, status: int = 403) -> SessionControlError:
@@ -1081,7 +1151,18 @@ def authorize_target(
     # WITHOUT `agent.session_control` — dispatching and patrolling workers is
     # its operating model — and is bounded instead by the ownership check
     # below, which restricts it to slots it created itself.
-    if not skip_enabled_check and not session_control_enabled() and not _member_caller(caller_key):
+    #
+    # The member bypass is itself gated by the operator switch
+    # `members.dispatch` (default ON): with it OFF, the bypass drops and a
+    # member caller falls back under `agent.session_control`. The ownership
+    # check below still binds regardless, so dropping the bypass only ever
+    # narrows a member's reach, never widens it — and that check, not this
+    # `config.json` preference, is what binds against the member itself.
+    if (
+        not skip_enabled_check
+        and not session_control_enabled()
+        and not (_member_caller(caller_key) and member_dispatch_enabled())
+    ):
         raise deny(
             "session control is disabled in config (agent.session_control)",
             "session_control_disabled",
@@ -1418,9 +1499,10 @@ async def close_target(
         # a channel mirror or link in that window — archiving a now-channel-backed
         # session the caller was never allowed to reach.
         #
-        # `skip_enabled_check=True` omits the ONE part of authorize_target that
-        # can touch the disk (`session_control_enabled()`'s config read): the
-        # feature was already confirmed enabled above, whether it was switched off
+        # `skip_enabled_check=True` omits the only parts of authorize_target that
+        # can touch the disk (the `session_control_enabled()` and
+        # `member_dispatch_enabled()` config reads): the feature was already
+        # confirmed enabled above, whether it was switched off
         # mid-close is not a containment boundary, and skipping it is what lets
         # this run with no await — an async prewarm-then-check would put an await
         # back before the pop and reopen the very window this closes. Every

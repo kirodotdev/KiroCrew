@@ -211,6 +211,7 @@ from kiro_crew.config.sections import (  # noqa: F401
     KnowledgeConfig,
     McpConfig,
     McpGatewayConfig,
+    MembersConfig,
     MemoryConfig,
     MemoryStoreConfig,
     MessagingConfig,
@@ -1829,6 +1830,10 @@ class KiroCrewConfig:
         default_factory=MessagingConfig,
         metadata=_meta("Messaging", "Channel-neutral messaging transport settings."),
     )
+    members: MembersConfig = field(
+        default_factory=MembersConfig,
+        metadata=_meta("Members", "Crew-member behavior settings."),
+    )
     cron_history: CronHistoryConfig = field(
         default_factory=CronHistoryConfig,
         metadata=_meta("Cron History", "Cron execution history storage limits."),
@@ -2420,6 +2425,7 @@ class KiroCrewConfig:
         skills_data = _coerced_section(data, "skills", _degraded)
         session_summary_data = _coerced_section(data, "session_summary", _degraded)
         messaging_data = _coerced_section(data, "messaging", _degraded)
+        members_data = _coerced_section(data, "members", _degraded)
         telemetry_data = _coerced_section(data, "telemetry", _degraded)
         orchestrator_data = _coerced_section(data, "orchestrator", _degraded)
         watchdog_data = _coerced_section(data, "watchdog", _degraded)
@@ -2699,6 +2705,18 @@ class KiroCrewConfig:
                 eager_spawn=bool(session_data.get("eager_spawn", True)),
                 archive_retention_days=_archive_retention_days(session_data),
                 watchdog_rss_max_mb=_safe_int(session_data.get("watchdog_rss_max_mb", 0), 0),
+            ),
+            members=MembersConfig(
+                # ABSENCE means ON, unlike `agent.session_control`: this is the
+                # zero-configuration grant that lets a crew member dispatch worker
+                # sessions out of the box, so the lookup supplies a real `True`.
+                # A MALFORMED value falls to False instead, the same direction as
+                # `agent.session_control`: `bool("false")` is True, so an operator
+                # who wrote the value in an editor that quotes it would otherwise
+                # get the opposite of what they read -- on a grant they were trying
+                # to withdraw. Only the two shapes are distinguished; nothing here
+                # infers the grant from a value it could not parse.
+                dispatch=_safe_bool(members_data.get("dispatch", True), False),
             ),
             taskrunner=TaskRunnerConfig(
                 max_parallel_steps=taskrunner_data.get(
@@ -3583,6 +3601,7 @@ class KiroCrewConfig:
         d: dict = {
             "agent": asdict(self.agent),
             "session": asdict(self.session),
+            "members": asdict(self.members),
             "memory": asdict(self.memory),
             "slack": asdict(self.slack),
             "publish": asdict(self.publish),

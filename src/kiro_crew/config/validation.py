@@ -170,6 +170,18 @@ def _actual_type_name(value: object) -> str:
 #:   segments it is already past ``_apply_field_default``'s depth cap, so a
 #:   malformed list value is kept today.
 #:
+#: * ``members`` (the section) and ``members.dispatch``: the default is again
+#:   **open** — ``dispatch`` defaults ``true``, the zero-configuration grant
+#:   that lets a crew member drive worker sessions without the operator
+#:   enabling ``agent.session_control``. Repairing a malformed value therefore
+#:   restores the grant the operator was trying to withdraw: removing a quoted
+#:   ``{"dispatch": "false"}`` makes the loader read its ON default, and
+#:   removing a non-object ``members`` also robs ``_coerced_section`` of the
+#:   only evidence that a setting was discarded, so ``degraded_sections``
+#:   stays empty and ``member_dispatch_enabled()``'s fail-closed branch can
+#:   never fire. Preserved, the loader's ``_safe_bool(..., False)`` sees the
+#:   malformed value and the gate refuses.
+#:
 #: Exact-match only: this is a per-path judgment, not a subtree rule. The
 #: registry is only half of a fix — a preserved value changes nothing unless
 #: the loader RECORDS the degradation and a gate reads
@@ -181,6 +193,8 @@ _FAIL_CLOSED_PATHS = frozenset(
         "publish.allowed_destinations",
         "dashboard",
         "dashboard.tailscale",
+        "members",
+        "members.dispatch",
     }
 )
 

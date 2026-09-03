@@ -88,7 +88,7 @@ that is out of bounds is visible after the fact even though nothing happened.
 
 | Refusal | Status | Why |
 |---------|--------|-----|
-| Config switch off (`agent.session_control`) | 403 | Operator opted out. **Exception:** a crew-member DM slot (`member-*` caller key) bypasses this switch — see "Member callers" below |
+| Config switch off (`agent.session_control`) | 403 | Operator opted out. **Exception:** a crew-member DM slot (`member-*` caller key) bypasses this switch **while `members.dispatch` is on (the default)** — see "Member callers" below |
 | Caller session cannot be identified | 403 | An unidentifiable caller makes the self-target guard blind |
 | Caller is an unattended session (`cron-*`, `workflow-*`) | 403 | A scheduled job acting on live conversations is not a handoff |
 | Caller is itself incognito, temporary, or app-scoped | 403 | Caller-side isolation — the direction the target-side checks cannot see |
@@ -114,11 +114,33 @@ A crew member's pinned DM slot (caller key prefixed `member-`, created only by
 work into worker sessions it creates, patrols them, and reports back, with no
 operator configuration. Two rules give it that shape:
 
-- **The `agent.session_control` switch does not gate a member caller.** Members
-  work out of the box — this is the zero-configuration contract, and it is a
-  deliberate trade-off: an operator who turned session control off has NOT
-  thereby disabled member dispatch. There is currently no separate switch for
-  it; disabling a member disables its dispatch.
+- **The `agent.session_control` switch does not gate a member caller while
+  `members.dispatch` is on (the default).** Members work out of the box — this is
+  the zero-configuration contract, and it is a deliberate trade-off: an operator
+  who turned session control off has NOT thereby disabled member dispatch.
+  `members.dispatch` is the operator switch over that automatic grant. Left at
+  its default (`true`) the member bypass stands and members dispatch with zero
+  configuration. Setting `members.dispatch: false` removes the bypass and puts
+  member callers back under the ordinary `agent.session_control` requirement — so
+  a member with the switch off is refused (`session_control_disabled`), letting an
+  operator keep a member chat-only without disabling the member entirely. The
+  switch only narrows a member's reach; the creator-ownership rule below still
+  binds regardless of it.
+  **It is an operator preference, not a containment ceiling.** It lives in
+  `config.json`, which the agent's file-edit tools cannot modify —
+  `is_sensitive_write_path` covers it and `hooks.on_tool_call` refuses the write.
+  What it is not fenced against is a shell: `config.json` is deliberately absent
+  from `_WRITE_PROTECTED_BASH_LEAVES`, so a redirect from an auto-approved bash
+  command still lands, the same softness `agent.session_control` already has.
+  (`config.json` is equally deliberately absent from `_SENSITIVE_HOME_DIRS`, which
+  is the shared read+write gate — reading it is routine, so adding it there to
+  close the shell gap would break the dashboard file viewer and knowledge
+  indexing. The gap belongs to the bash leaf list.)
+  The boundary that binds *against the member* is the creator-ownership rule
+  below, which no config write relaxes. An
+  operator who needs enforcement the agent cannot undo wants a governance profile
+  scope or a keystone file, neither of which this switch is; that seam is not
+  built yet.
 - **A member caller may only act on sessions it created.** Slot creation records
   `created_by` (the creator's caller key) in the slot's birth metadata; it is
   persisted with the session and rehydrated on restart (both restore paths).
@@ -334,6 +356,45 @@ handles the malformed case -- `bool("false")` is `True`, so a user who wrote the
 value in an editor that quotes it would otherwise get the opposite of what they
 read -- and the lookup now supplies `False` for the absent case, so nothing has to
 infer a grant from silence.
+
+`members.dispatch` (bool, default **true**) is the operator switch over the
+automatic member grant described in "Member callers". Its default is the OPPOSITE
+of `agent.session_control`: it defaults **on** so a crew member dispatches and
+patrols its worker sessions with zero configuration. Only ABSENCE resolves to
+`true` — that is the zero-configuration contract. A malformed value resolves to
+`false` (`_safe_bool(..., False)`), the same direction as `agent.session_control`:
+`bool("false")` is `True`, so an operator who wrote the value in an editor that
+quotes it would otherwise get the opposite of what they read, on a grant they were
+trying to withdraw. For that to work the malformed value has to survive advisory
+validation, so `members` and `members.dispatch` are both in
+`validation._FAIL_CLOSED_PATHS` — without those entries `_apply_field_default`
+deletes the value first and the loader reads its ON default. Setting it to a
+real `false` removes the member bypass at both gates, so a member caller with
+`agent.session_control` off is refused (`session_control_disabled`), giving an
+operator a lever to keep a member chat-only without disabling the member. The
+switch only ever narrows a member's reach: the creator-ownership boundary still
+binds regardless, and a member with dispatch off is treated as an ordinary caller
+(needs the switch) but gains no wider reach. Fail-safe direction matches
+`agent.session_control`: a config read that raises resolves the switch to off
+(bypass dropped), so unrelated config corruption cannot silently keep the
+automatic grant alive.
+
+The ON default makes one more case fail-safe-relevant that `agent.session_control`
+(default off) does not have: a load that SUCCEEDS but **discarded** the value.
+`load()` degrades rather than raising on an unreadable config file or a `members`
+section that is not an object, and hands back the `dispatch=True` default — which
+would re-grant a bypass the operator had turned off. `member_dispatch_enabled()`
+therefore also resolves to off when `degraded_sections` contains
+`DEGRADED_WHOLE_CONFIG` (`*`) or `members`, the same signal `publish_governance`
+reads for the same reason. Re-reading the file cannot substitute for it: `load()`
+rewrites `config.json` in normalized form, so the parse that discarded the value is
+the only witness that it existed. The `members` half of that check depends on the
+`_FAIL_CLOSED_PATHS` entry above: validation runs first, and if it repairs a
+non-object `members` away then `_coerced_section` never witnesses the coercion,
+`degraded_sections` stays empty, and this branch cannot fire at all. All three
+layers — validation preserving the evidence, the loader recording it, the gate
+reading it — are pinned end to end from a real `config.json` in
+`test/test_member_session_control.py`.
 
 ## What is deliberately not here
 

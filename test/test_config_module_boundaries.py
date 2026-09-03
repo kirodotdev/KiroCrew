@@ -75,6 +75,7 @@ MCP_PROBE_TIMEOUT_MAX
 MCP_PROBE_TIMEOUT_MIN
 McpConfig
 McpGatewayConfig
+MembersConfig
 MemoryConfig
 MemoryStoreConfig
 MessagingConfig
