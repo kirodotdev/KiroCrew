@@ -24,6 +24,19 @@ const assistant = (idx: number): DisplayItem =>
 const turn = (): DisplayItem =>
   ({ kind: 'turn', items: [], complete: true } as unknown as DisplayItem)
 
+describe('promptPreview around inline markers', () => {
+  it('reads as typed across the serializer\'s hair-space separators (fork Opus review)', () => {
+    expect(promptPreview('check [attached_file 1] /repo/a.txt\u200a, please')).toBe('check a.txt, please')
+    expect(promptPreview('see (\u200a[attached_file 1] /repo/src/main.ts\u200a) here')).toBe('see (main.ts) here')
+  })
+
+  it('keeps a hair space the user pasted between words (fork GPT review)', () => {
+    // Only the serializer's separators beside a marker are dropped; any other
+    // U+200A is ordinary whitespace and collapses to a space like the rest.
+    expect(promptPreview('alpha\u200abeta [attached_file 1] /r/a.txt\u200a, x')).toBe('alpha beta a.txt, x')
+  })
+})
+
 describe('pinHandoffY', () => {
   it('is the fold line itself — the card\'s own resting top', () => {
     expect(pinHandoffY(100)).toBe(100)

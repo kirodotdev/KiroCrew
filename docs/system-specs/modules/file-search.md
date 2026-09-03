@@ -330,6 +330,22 @@ transport is text-only (no meta), so a marker would have no `meta.dirs` index
 to replay against and a spaced path would truncate under the `\S+` fallback —
 the raw `@rel/` token stays correct there.
 
+**Inline file markers.** A picked file mention woven into a sentence is
+rewritten in place to `[attached_file N] /abs/path`. When a marker's neighbour
+is not whitespace (an opening wrapper before it, or `)` or `,` right after the
+path), or is itself a U+200A the user typed, the serializer inserts a hair
+space (U+200A, `MARKER_TRAILER_SEP` in `utils/fileTokens.ts`) on that side.
+A lone U+200A beside a marker is therefore always generated: when the user
+typed one there, theirs is the second, and the single drop never reaches it.
+This keeps the path
+whitespace-terminated for readers that take it as the `\S+` run after the
+marker, and keeps the marker whitespace-preceded for readers that anchor on
+whitespace before `[attached_file`. Every marker reader must treat U+200A as
+whitespace. The renderer and the prompt preview drop exactly the separators
+beside a marker and leave every other U+200A alone. The backend readers are
+pinned by `test/test_attachment_marker_grammar_pin.py`, and a new reader must
+honour the same grammar.
+
 **Render.** `resolveDirSegment` (in `utils/fileTokens.ts`, which owns the
 attachment-marker wire format for files and folders alike) rewrites markers
 back to `@label/` display

@@ -374,7 +374,13 @@ export function promptPreview(content: string): string {
   return content
     .replace(FENCE_RE, ' … ')
     .replace(IMAGE_MD_RE, ' ')
-    .replace(/\[attached_file \d+\]\s*(\S+)/g, (_m, p: string) => p.split('/').pop() || '')
+    // The serializer's hair-space separators around an inline marker exist
+    // for the wire readers; drop only those (one right before a marker, one
+    // right after its path) so `(@a.txt), then` does not read `( a.txt ) , then`.
+    // A hair space anywhere else is the user's and falls to the whitespace
+    // pass below like any other space (fork GPT review).
+    .replace(/\u200a(?=\[attached_file \d+\])/g, '')
+    .replace(/\[attached_file \d+\]\s*(\S+)\u200a?/g, (_m, p: string) => p.split('/').pop() || '')
     .replace(/\s+/g, ' ')
     .trim()
 }

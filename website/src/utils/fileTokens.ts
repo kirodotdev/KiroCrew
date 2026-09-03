@@ -10,27 +10,6 @@ export const IMG_EXT = /\.(png|jpe?g|gif|webp|bmp|svg)$/i
  *  only produces uploads that die at the door. */
 export const VIDEO_EXT = /\.(mp4|m4v|mov|webm)$/i
 
-/** Boundary-aware regex for @token matching. Prevents `@foo.ts` from matching
- *  inside `@foo.tsx` (right boundary) and inside `foo@bar.ts` (left boundary).
- *
- *  The left boundary is a CAPTURE GROUP, not a lookbehind: lookbehind is a
- *  `SyntaxError` at `new RegExp` time on Safari < 16.4, and this is a runtime
- *  `new RegExp` from a string that no bundler down-levels, so it would take
- *  the render/send path down on a supported browser (the same hazard
- *  `ReportView.tsx` documents and avoids). Consumers that REPLACE must
- *  therefore re-emit group 1 -- see replaceTokens and serializeDirTokens,
- *  which already follow this convention; `.test()` callers are unaffected.
- *
- *  The left boundary matters because without it `@README.md` inside unrelated
- *  text like `foo@README.md` reads as a real mention: hasExactRelMention would
- *  report a file "already mentioned" from that substring and skip inserting a
- *  clean token, and prepareSendPayload would splice `[attached_file N] ...`
- *  into the middle of that word at send time. */
-function tokenRegex(token: string, flags = ''): RegExp {
-  const escaped = token.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-  return new RegExp(`(^|\\s)@${escaped}(?=\\s|$)`, flags)
-}
-
 /** Parse file paths from message meta or [attached_file N] patterns in content. */
 export function parseFiles(content: string, meta?: Record<string, unknown>): string[] {
   const metaFiles = (meta?.files || []) as string[]
@@ -76,6 +55,19 @@ export interface ResolvedFileSegment {
   /** Display label per path (basename, disambiguated). */
   labels: Map<string, string>
 }
+
+/** The separator `replaceTokens` puts between an inline marker's path and a
+ *  trailer the mention boundary accepted (a punctuation run or `:line`), so
+ *  the path always ends at whitespace -- and, on the other side, between an
+ *  opening wrapper and the marker (`(` + SEP + `[attached_file 1] …`), so the
+ *  marker always STARTS after whitespace, which the chat-title stripper
+ *  requires before it will replace a marker with its file name (fork Opus
+ *  review). A HAIR SPACE (U+200A), not an ASCII
+ *  one: every marker reader treats it as whitespace (JS `\s`, Python
+ *  `isspace()`), yet it is distinguishable from a space the user typed
+ *  (`check @a.txt , please`), so the renderer can drop exactly the
+ *  separator and never the user's own spacing (fork GPT review). */
+export const MARKER_TRAILER_SEP = String.fromCharCode(0x200a)
 
 /**
  * Normalize a user-message text segment for rendering attachments consistently.
@@ -150,10 +142,18 @@ export function resolveFileSegment(content: string, orderedFiles: string[]): Res
     const label = labels.get(path) || (path.split('/').pop() || path)
     const isImage = IMG_EXT.test(path)
 
-    display += content.slice(lastIdx, m.index)
+    // A separator right before the marker is `replaceTokens`' own (after an
+    // opening wrapper); drop exactly it so `(@a.txt)` reads as typed.
+    const before = content.slice(lastIdx, m.index)
+    display += before.endsWith(MARKER_TRAILER_SEP) ? before.slice(0, -MARKER_TRAILER_SEP.length) : before
     if (embedded && !isImage) {
       mentionMap.set(label, path)
       display += `@${label}`
+      // `replaceTokens` separates a path from a punctuation / `:line` trailer
+      // with MARKER_TRAILER_SEP to keep the marker whitespace-terminated; drop
+      // exactly that character so `@a.txt, please` reads as typed, while a
+      // space the user typed before punctuation stays.
+      if (content.startsWith(MARKER_TRAILER_SEP, pathEnd)) pathEnd += MARKER_TRAILER_SEP.length
     } else if (!embedded && !isImage) {
       cardPaths.push(path)
       // Drop a trailing newline the standalone token owns so it leaves no blank
@@ -194,10 +194,17 @@ export function resolveFileSegment(content: string, orderedFiles: string[]): Res
  */
 export function findUnreferencedAttachments(text: string, orderedFiles: string[]): string[] {
   const referenced = new Set<string>()
+  // ONE rel map over ALL files (fork GPT review): probing each path alone
+  // gives the prefix-sibling rule an empty candidate set, so `report`
+  // matched a staged sibling `report,`'s own mention via the punctuation
+  // boundary, was counted referenced, and its attachment card was hidden.
+  // The single map is the same shape the send path uses, so rendering and
+  // serialization agree about which file a mention binds to.
+  const mentionReferenced = new Set(buildRelMap(orderedFiles, text).values())
   orderedFiles.forEach((p, i) => {
     const n = i + 1
     if (text.includes(`[attached_file ${n}]`)) { referenced.add(p); return }
-    if (buildRelMap([p], text).size) referenced.add(p)
+    if (mentionReferenced.has(p)) referenced.add(p)
   })
   return orderedFiles.filter(p => !IMG_EXT.test(p) && !referenced.has(p))
 }
@@ -232,17 +239,101 @@ export function restoreUnreferencedImages(content: string, meta?: Record<string,
   return [imgMd, content].filter(Boolean).join('\n\n')
 }
 
-/** Walk path segments to find the shortest @suffix present in text. */
+/** Walk path segments to find the shortest @suffix present in text.
+ *  Matching uses `mentionTokenRegex` -- the SAME boundary contract the
+ *  reconciliation uses -- so a mention the reconciliation counts by its
+ *  boundaries is one the send path finds too (fork GPT review: a punctuated
+ *  mention, ordinary prose, was retained by reconciliation but missed by
+ *  `tokenRegex`'s whitespace-only trailing boundary, so `prepareSendPayload`
+ *  classified the file unreferenced and appended a duplicate standalone
+ *  `[attached_file N]` marker while the mention text sat unreplaced).
+ *  Separator spellings are NOT folded here (as on main): a Windows mention
+ *  spelled with `\` stays staged by the reconciliation but is not replaced
+ *  inline, so the file is still attached, as its own marker line. */
 export function buildRelMap(paths: string[], text: string): Map<string, string> {
   const map = new Map<string, string>()
-  for (const p of paths) {
+  const suffixesOf = (p: string) => {
     const segs = p.split('/')
-    for (let i = 1; i < segs.length; i++) {
-      const suffix = segs.slice(i).join('/')
-      if (tokenRegex(suffix).test(text) && !map.has(suffix)) { map.set(suffix, p); break }
+    return segs.slice(1).map((_, i) => segs.slice(i + 1).join('/'))
+  }
+  for (const p of paths) {
+    // Sibling candidate set for the prefix rule: every OTHER path's own
+    // suffixes. A suffix of p that a longer sibling suffix literally extends
+    // then gets the strict boundary and cannot claim the sibling's mention.
+    const others = paths.filter(q => q !== p).flatMap(suffixesOf)
+    for (const suffix of suffixesOf(p)) {
+      if (mentionTokenRegex(suffix, '', others).test(text) && !map.has(suffix)) { map.set(suffix, p); break }
     }
   }
   return map
+}
+
+/** THE prefix-sibling rule, defined once: when another candidate alias
+ *  literally EXTENDS the one under test
+ *  (`report` vs `report,` -- both legal filenames), a trailing punctuation
+ *  character can be the LONGER sibling's own name, so the shorter alias falls
+ *  back to the strict whitespace/end-only boundary and can never bind text
+ *  that belongs to the sibling. Works on bare rels and on `@`-prefixed
+ *  aliases alike -- callers just pass one form consistently per call. Used by
+ *  ChatPage's reconciliation/strip (via its `boundaryFor` delegate) AND the
+ *  send path below, so the composer, the staleness check and the sent payload
+ *  can never disagree about which file a mention binds to. */
+export function mentionBoundaryFor(fullAlias: string, others?: ReadonlySet<string> | readonly string[]): string {
+  // The hazard exists only when the sibling's EXTRA characters could
+  // themselves be read as the shorter alias's trailing boundary (`report`
+  // vs `report,`, `report` vs `report:1`). A sibling that extends with
+  // characters the permissive boundary can never consume (`.env` vs
+  // `.env.local`, `main.ts` vs `main.tsx`) can never donate its mention to
+  // the shorter alias -- forcing strict there protected nothing and cost
+  // the attachment: an ordinary `@.env,` stopped matching and the still-
+  // intended file silently unstaged and dropped from the send (fork Opus
+  // review).
+  // The sibling's extra characters are hazardous exactly when the PERMISSIVE
+  // boundary would consume them as the shorter alias's trailer: a punctuation
+  // run to the end of the name (`report,`), or `:digits` followed by nothing,
+  // or by such a run (`report:42`, `report:42,`). These are `mentionBoundary`'s
+  // two non-whitespace alternatives, anchored -- a `:digits` tail the boundary
+  // cannot finish consuming (`report:42.md`, `report:4x`) protects nothing,
+  // and forcing strict there only cost the shorter file its attachment (fork
+  // GPT review; completes the consumability rule above).
+  const unsafe = others && [...others].some(o => extendsConsumably(fullAlias, o))
+  return unsafe ? strictMentionBoundary : mentionBoundary
+}
+
+/** True when `longer` extends `shorter` with characters the PERMISSIVE
+ *  boundary could consume as `shorter`'s trailer -- a punctuation run to the
+ *  end of the name (`report` -> `report,`), or `:digits` ending the name or
+ *  followed by such a run (`report:42`, `report:42,`). This is the one
+ *  hazard test behind the prefix-sibling rule: `mentionBoundaryFor` uses it
+ *  to force the strict boundary onto the SHORTER staged alias, and the
+ *  revival guard uses it in the opposite direction -- a LONGER unstaged
+ *  candidate whose occurrence is explainable as a staged file's own mention
+ *  plus typed punctuation is not unambiguous evidence and must not revive
+ *  (fork GPT review): without it, typing a comma after a staged `@report`
+ *  silently re-attached the deleted sibling `report,`. */
+export function extendsConsumably(shorter: string, longer: string): boolean {
+  return longer.length > shorter.length && longer.startsWith(shorter) &&
+    /^(?:[,.!?;:)\]}`"']+(?=\s|$)|:\d+(?=\s|$|[,.!?;:)\]}`"']+(?:\s|$)))/.test(longer.slice(shorter.length))
+}
+
+/** Boundary-parity matcher for `@token` mentions: matches under the shared
+ *  `leadingMentionBoundary` / `mentionBoundary` contract (see their
+ *  definitions below), so the reconciliation, the remove-chip strip and
+ *  send serialization can never disagree about
+ *  what is a mention. The left boundary is a CAPTURE GROUP, not a
+ *  lookbehind: lookbehind is a `SyntaxError` at `new RegExp` time on
+ *  Safari < 16.4, and this is a runtime `new RegExp` from a string that no
+ *  bundler down-levels, so it would take the render/send path down on a
+ *  supported browser. Consumers that REPLACE must therefore re-emit group 1
+ *  -- see `replaceTokens`, which follows this convention; `.test()` callers
+ *  are unaffected. `others`
+ *  is the sibling candidate set for the prefix rule (`mentionBoundaryFor`):
+ *  without it a `g`-flag replace of `report` would also rewrite the HEAD of
+ *  a staged sibling `report,`'s own mention, binding that text -- and its
+ *  attachment -- to the wrong file. */
+export function mentionTokenRegex(token: string, flags = '', others?: ReadonlySet<string> | readonly string[]): RegExp {
+  const escaped = token.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  return new RegExp(`(${leadingMentionBoundary})@${escaped}(?=${mentionBoundaryFor(token, others)})`, flags)
 }
 
 /** Replace @rel tokens in text using a replacer function. */
@@ -254,12 +345,64 @@ export function replaceTokens(
   paths.forEach((p, i) => {
     const rel = [...relMap.entries()].find(([, v]) => v === p)?.[0]
     if (!rel) return
-    // Re-emit group 1 (the captured leading boundary): tokenRegex matches the
-    // whitespace/start before `@`, so dropping it would eat the separator.
-    result = result.replace(tokenRegex(rel, 'g'), (_m: string, pre: string) => pre + replacer(p, i))
+    // Re-emit group 1 (the captured leading boundary): mentionTokenRegex
+    // matches the whitespace/start (plus an optional opening wrapper) before
+    // `@`, so dropping it would eat the separator. The sibling rels in
+    // `relMap` ride along as the prefix-rule candidate set -- a `g`-flag
+    // replace of `report` must never rewrite the head of a staged sibling
+    // `report,`'s own mention. Same boundary contract as buildRelMap above,
+    // so a mention found there is always replaced here, and only there.
+    const others = [...relMap.keys()].filter(r => r !== rel)
+    const rep = replacer(p, i)
+    if (rep !== '') {
+      // A marker's path must END at whitespace or end of text: that is the
+      // wire contract every reader of `[attached_file N] <path>` holds -- the
+      // queue-edit pruner's span match, the text-only `parseFiles` fallback
+      // (steer rows), the renderer's no-index fallback. A mention accepted
+      // with a punctuation or `:line` trailer (`@a.txt, please`) would
+      // otherwise glue that trailer to the path (`/repo/a.txt,`), so the
+      // pruner keeps an attachment an edit deleted and a fallback resolves a
+      // file that does not exist (fork Opus review). MARKER_TRAILER_SEP
+      // separates them; `resolveFileSegment` drops exactly one on each side.
+      // That drop is exact because a separator is ALSO emitted when the
+      // neighbouring character is itself a hair space the user typed or
+      // pasted (fork GPT review): the wire then carries theirs plus ours,
+      // the renderer removes only ours, and a lone separator beside a marker
+      // is always a generated one.
+      const needsSep = (ch: string | undefined) => ch !== undefined && (ch === MARKER_TRAILER_SEP || !/\s/.test(ch))
+      result = result.replace(mentionTokenRegex(rel, 'g', others), (m: string, pre: string, ...rest: unknown[]) => {
+        const at = (rest[rest.length - 2] as number) + m.length
+        const whole = rest[rest.length - 1] as string
+        return pre + (needsSep(pre.at(-1)) ? MARKER_TRAILER_SEP : '') + rep + (needsSep(whole[at]) ? MARKER_TRAILER_SEP : '')
+      })
+      return
+    }
+    // Empty replacement = the mention is DROPPED from the text (an image is
+    // inlined as markdown instead of embedded as a marker). Drop it the way
+    // the remove-chip strip does (fork Opus review): a wrapping pair goes
+    // with it -- `(@shot.png)` must not leave a stray `()` as message text --
+    // and so does a `:line` suffix, but the suffix only under the permissive
+    // boundary, since under the strict one a longer sibling alias may own
+    // those digits (same gate as the strip). An unpaired or mismatched
+    // wrapper is re-emitted, same fallback as the strip: left in place like
+    // any other punctuation.
+    const boundary = mentionBoundaryFor(rel, others)
+    // Regex literals' `.source`, not string constants -- the same AST-shape
+    // i18n exemption the shared boundary constants rely on. Both alternatives
+    // carry exactly one capture group so the replacement callback's arity is
+    // stable whichever fires.
+    const lineSuffix = boundary === mentionBoundary ? /(:\d+)?/.source : /()/.source
+    const esc = rel.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    result = result.replace(
+      new RegExp(`(^|\\s)([($[{\`"']?)@${esc}${lineSuffix}([)\\]}\`"']?)(?=${boundary})`, 'g'),
+      (_m, ws: string, open: string, _sfx: string, close: string) =>
+        ws + (open && WRAPPER_CLOSER[open] === close ? '' : open + close),
+    )
   })
   return result
 }
+
+export const WRAPPER_CLOSER: Record<string, string> = { '(': ')', '[': ']', '{': '}', '`': '`', '"': '"', "'": "'" }
 
 /** Build send payload from raw input text and pending files. */
 export interface SendPayload {
@@ -288,6 +431,37 @@ export function normalizeWindowsPath(p: string): string {
   return WIN_PRODUCER_PATH_RE.test(p) ? p.replace(/\\/g, '/') : p
 }
 
+/** Whether `p` carries a drive-letter or UNC prefix, checked directly against
+ *  the path itself rather than via `normalizeWindowsPath(p) !== p` (fork GPT
+ *  review) -- that comparison is false for a Windows-shaped path already
+ *  spelled with forward slashes (`C:/repo` has nothing for the backslash
+ *  rewrite to change), silently misclassifying it as POSIX and disabling
+ *  every separator-fold gated on it. */
+export function isWindowsShapedPath(p: string): boolean {
+  return WIN_PRODUCER_PATH_RE.test(p) || WIN_FWD_UNC_RE.test(p)
+}
+
+/** Separator identity for mention matching (fork GPT review). On a
+ *  Windows-shaped project every separator spelling of a rel names the SAME
+ *  file (`\` cannot appear in a Windows filename), including mixed ones
+ *  (`src\foo/bar.ts`), so matching folds `\` -> `/` on the text, the rel and
+ *  the sibling aliases alike instead of enumerating spellings. The fold is a
+ *  1:1 character substitution: an index in the folded text is the same index
+ *  in the original, so a caller that edits text matches on the folded copy
+ *  and cuts the original at the same positions. On POSIX `\` is a legal
+ *  filename character, so the fold is the identity there. */
+export const foldWinSep = (winShaped: boolean) => (s: string): string =>
+  winShaped ? s.replace(/\\/g, '/') : s
+
+/** Forward-slash spelling of a UNC prefix (`//host/`), recognized by
+ *  `isWindowsShapedPath` only (fork GPT review). Deliberately NOT folded into
+ *  WIN_PRODUCER_PATH_RE: that regex drives normalizeWindowsPath, whose job is
+ *  `\` -> `/` on a PRODUCER path, and a `//`-spelled path is already in that
+ *  form -- admitting it there would only start rewriting backslashes inside a
+ *  POSIX filename (`//a/weird\name.txt`). Same "host plus a separator" shape
+ *  the producer regex requires of `\\host`. */
+const WIN_FWD_UNC_RE = /^\/\/[^\\/]+[\\/]/
+
 /** Append a picked file to the pending-attachment list, deduped by canonical
  *  Windows path identity. The `@`-picker stages a native `C:\…` path while the
  *  tree context menu stages the normalized `C:/…` form of the SAME file; an
@@ -310,21 +484,60 @@ export function addPendingFile(prev: string[], path: string): string[] {
   return next
 }
 
-/** True when `text` already carries an `@` mention of EXACTLY `rel`, in
- *  either separator rendition (`@src/a/b.ts` or the native-Windows
- *  `@src\a\b.ts` the picker inserts) -- never a shorter basename suffix.
- *  Deliberately NOT a suffix walk (unlike buildRelMap): two staged files that
- *  share a basename (\`src/a/util.ts\` vs \`src/b/util.ts\`) can both suffix-
- *  match a single `@util.ts` mention, so a suffix-based guard reports the
- *  SECOND file as "already mentioned" from the FIRST file's token -- and the
- *  fallback chip-remove derivation (buildRelMap again) then strips that same
- *  token when removing the second file's chip, deleting the first file's
- *  mention instead. `rel` is the exact token `handleAddToContext` inserts, so
- *  comparing against exactly that string (both separators) cannot cross-match
- *  a different file. */
-export function hasExactRelMention(text: string, rel: string): boolean {
-  return tokenRegex(rel).test(text) || tokenRegex(rel.replace(/\//g, '\\')).test(text)
-}
+/** Trailing boundary for a recorded `@rel` mention: whitespace, end-of-
+ *  string, a RUN of one-or-more punctuation characters that is ITSELF
+ *  followed by whitespace/end (`?!`, `).`  -- ordinary sentence-ending
+ *  punctuation clusters, fork Opus review), or a colon-number suffix
+ *  followed by whitespace/end (`:42`, a file:line reference, same
+ *  review). A punctuation run is not enough on its own unless the WHOLE
+ *  run is immediately followed by whitespace/end -- `.` is a legal,
+ *  common mid-filename character (`README.md`), so treating it as a
+ *  sufficient boundary by itself would match `@README` as a PREFIX of
+ *  the unrelated, longer `@README.md` mention (fork GPT review). The
+ *  `:line` suffix may itself sit against a closing wrapper --
+ *  `(@src/main.ts:42)` is ordinary prose -- so the digit run also counts
+ *  when a punctuation run (then whitespace/end) follows it (fork GPT
+ *  review); a sibling file literally named with the `:digits` tail is
+ *  protected by the prefix-sibling rule, not by this boundary. Shared
+ *  between the reconciliation staleness check, the remove-chip strip
+ *  and send serialization so they can never disagree about what counts as
+ *  a boundary.
+ *
+ *  A REGEX LITERAL's `.source`, not a string constant: `no-literal-string`
+ *  only inspects `Literal` nodes whose value is a string, and a regex
+ *  literal's value is a RegExp, so this is exempt by AST shape rather than
+ *  needing a content exclusion in the shared `eslint.i18n.config.js` (fork
+ *  GPT review) -- the pattern itself has no natural-language words for a
+ *  content-shape exemption to key on either way. */
+export const mentionBoundary = /(?:\s|$|[,.!?;:)\]}`"']+(?=\s|$)|:\d+(?=\s|$|[,.!?;:)\]}`"']+(?:\s|$)))/.source
+
+/** The strict, punctuation-free fallback boundary (`boundaryFor`, fork GPT
+ *  review round 18) -- same `.source` construction and the same i18n-gate
+ *  reasoning as `mentionBoundary` above. */
+const strictMentionBoundary = /(?:\s|$)/.source
+
+/** Leading boundary for a recorded `@rel` mention: start-of-string,
+ *  whitespace, or either of those immediately followed by ONE opening-
+ *  punctuation character -- `(@src/main.ts)`, a mention wrapped in
+ *  parens, is an entirely ordinary way to reference a file inline, but
+ *  the plain `(^|\s)` boundary this shared with `tokenRegex` never
+ *  recognized it (fork GPT review, round 19), silently unstaging a
+ *  still-intended attachment the moment its wrapping parenthesis made
+ *  the leading boundary fail -- the same "nothing acted on this before
+ *  the reconciliation effect existed" gap round 15 found on the
+ *  trailing side. Quote and backtick wrappers (`` `@src/main.ts` ``,
+ *  `"@src/main.ts"`) are admitted for the same reason as brackets
+ *  (fork GPT review): code-formatting or quoting a still-valid mention
+ *  is ordinary prose, and rejecting it silently unstaged the
+ *  attachment; the trailing halves live in `mentionBoundary`'s
+ *  punctuation class. Same `.source` construction as `mentionBoundary`
+ *  above, for the same i18n-gate reason. */
+export const leadingMentionBoundary = /(?:^|\s)[($[{`"']?/.source
+
+/** Trailing `file:line` suffix the remove-chip strip consumes with a mention,
+ *  so no bare `:42` is left behind. Same lookahead class as
+ *  `mentionBoundary`'s punctuation run, so a wrapped `(@a.ts:42)` counts. */
+export const MENTION_LINE_SUFFIX = /^:\d+(?=\s|$|[,.!?;:)\]}`"'])/
 
 /** Markdown-safe destination for a local image path.
  *
