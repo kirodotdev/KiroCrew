@@ -34,6 +34,7 @@ an afternoon and $50. Every one of these is overridable from config.
 from __future__ import annotations
 
 import logging
+import math
 import threading
 import time
 from collections import deque
@@ -82,6 +83,24 @@ STATUS_STOPPING = "stopping"
 STATUS_DONE = "done"
 STATUS_ERROR = "error"
 
+#: Filename of the last run's terminal record, written beside the archive's own
+#: ``run.meta.json``.
+#:
+#: A SIBLING file rather than a field inside ``run.meta.json`` on purpose. That document is
+#: owned by :mod:`..spine.archive` and written from inside ``driver.run()`` after preflight,
+#: so a run that ends before the archive writes has no metadata document to carry the field
+#: -- and an offline run, the case this record exists to explain, is exactly such a run. A
+#: record that is missing precisely when it is needed is not a record.
+TERMINAL_RECORD_NAME = "run.state.json"
+
+#: Statuses a persisted record is allowed to claim when it is read back at startup.
+#:
+#: The record is written only at a TERMINAL transition, so any other value in the file is
+#: stale or hand-edited. Restoring ``running`` from disk would make a fresh process report a
+#: live run with no thread behind it -- the same "UI spins forever" lie ``status()`` already
+#: guards against for a torn-down thread -- so a non-terminal record is ignored, not restored.
+_PERSISTABLE_STATUSES = frozenset({STATUS_DONE, STATUS_ERROR})
+
 
 class _CalibrationStopped(Exception):
     """Internal signal that a Stop click landed between calibration phases.
@@ -89,6 +108,21 @@ class _CalibrationStopped(Exception):
     Caught in :meth:`RunSupervisor._calibrate_loop` and recorded as a clean stop
     rather than a failure — a stopped calibration has proven no ruler and writes
     none, but it is not an error the operator needs to see reported.
+    """
+
+
+class AgentRunnerOffline(Exception):
+    """A run finished its cycles with no agent runner, so it attempted no work.
+
+    Carried as an exception, and raised nowhere, so the offline outcome can be recorded
+    through :meth:`RunSupervisor._fail` -- the ONE redaction site for anything that reaches
+    ``RunState.error`` and therefore the ``GET /run`` response. A second hand-rolled terminal
+    assignment beside it is exactly the drift
+    ``test_every_terminal_error_site_goes_through_the_helper`` exists to prevent.
+
+    PUBLIC name, unusually for a signal class, because ``_fail`` composes
+    ``f"{type(exc).__name__}: {detail}"`` -- the class name is rendered to the operator, so it
+    is part of the user-visible contract rather than an implementation detail.
     """
 
 
@@ -114,6 +148,24 @@ class RunState:
     quiescence: dict[str, Any] = field(default_factory=dict)
     #: Terminal run counters, copied off the spine's ``Stats`` when the loop returns.
     stats: dict[str, Any] = field(default_factory=dict)
+    #: WHY this run has no agent runner, or ``""`` when one came online.
+    #:
+    #: Carried per-run rather than on the supervisor because it decides this run's TERMINAL
+    #: STATUS: an offline run's discovery early-returns an empty candidate list, so the loop
+    #: quiesces and ``driver.run()`` returns cleanly, and a clean return used to be reported
+    #: as ``done``. Set from :meth:`RunSupervisor._build_runner` via :meth:`RunSupervisor.start`.
+    offline_reason: str = ""
+    #: Where THIS run's terminal record belongs, bound when the run started.
+    #:
+    #: Load-bearing, not a cache. :func:`_terminal_record_path` resolves
+    #: ``store.results_dir()``, which is scoped to the ACTIVE repository+branch workspace, and
+    #: the terminal write happens after the run has gone non-active -- at which point a
+    #: retarget is admitted again (``routes._ACTIVE_RUN_STATUSES`` holds only the in-flight
+    #: statuses). Resolving at write time could therefore file this run's outcome under a
+    #: DIFFERENT repository and leave its own workspace with no record at all. Bound at the
+    #: same instant as the driver's ``archive_root``, so the record and the archive can never
+    #: land in different workspaces. Raised by the GPT review of this branch.
+    record_path: Path | None = None
 
 
 #: Stands in for one activity string the redactor could not scan. A placeholder rather than a
@@ -174,6 +226,40 @@ def _unsandboxed_agent_accepted() -> bool:
     """
     config = store.read_json(store.config_path(), {}) or {}
     return bool(config.get("acceptUnsandboxedAgentRisk") is True)
+
+
+def _terminal_record_path() -> Path:
+    """Where the ACTIVE workspace's last terminal record lives, beside the archive's metadata.
+
+    Resolved per call, never module-cached: ``store.results_dir()`` is scoped to the active
+    repository+branch, so a cached value would point a second target's record at the first
+    one's directory.
+
+    Who calls it matters. :meth:`RunSupervisor._hydrate_terminal_record` calls it live, and
+    should: it answers "what happened in the workspace I am looking at NOW". A RUN must not --
+    it binds the answer once, into ``RunState.record_path``, so a retarget cannot move its
+    outcome to another repository between the terminal transition and the write.
+    """
+    return store.results_dir() / TERMINAL_RECORD_NAME
+
+
+def _as_count(value: Any) -> int:
+    """A non-negative counter read back off disk, or ``0``.
+
+    Not :func:`_pos_int`: that helper substitutes its default for anything ``<= 0`` because
+    its callers are budget caps where zero is meaningless. Here zero is the MOST important
+    value -- ``cycle: 0`` is what an offline run records -- so it must survive the round trip.
+
+    ``OverflowError`` is in the tuple, not only ``TypeError``/``ValueError``: this reads
+    JSON off disk, ``json.loads`` turns ``1e309`` into ``float('inf')``, and ``int(inf)``
+    raises ``OverflowError`` -- which the usual two-name tuple does NOT catch. Measured.
+    Raised by the GPT review of this branch.
+    """
+    try:
+        out = int(value)
+    except (TypeError, ValueError, OverflowError):
+        return 0
+    return out if out > 0 else 0
 
 
 def _redact_activity(value: Any) -> Any:
@@ -238,6 +324,81 @@ class RunSupervisor:
         self._reserved = False
         self._driver: Any = None
         self._stop_requested = False
+        #: WHY the last :meth:`_build_runner` call produced no agent runner, or ``""``.
+        #: Written on EVERY call so it is self-clearing: a previous offline run cannot leak
+        #: its reason into a later run whose runner came online. Read by :meth:`start`, which
+        #: copies it onto that run's :class:`RunState`.
+        self._offline_reason = ""
+        self._hydrate_terminal_record()
+
+    def _hydrate_terminal_record(self) -> None:
+        """Seed ``_state`` from the last run's persisted terminal record.
+
+        Called ONCE, from ``__init__``, which is what keeps :meth:`status` honest about being
+        a cheap in-memory read (this module's header promises exactly that). Without it the
+        record would be written and never shown: a gateway restart after a failed run reports
+        ``idle``, which is the "nothing persisted, no trace after a restart" half of the
+        reported defect -- persisting a record nobody reads back fixes nothing.
+
+        Best-effort by construction. A missing, unreadable, malformed or non-terminal record
+        leaves the supervisor idle, which is the pre-existing behaviour, and this NEVER raises:
+        it runs inside the process-wide singleton every run route resolves through, so a
+        failure here would take out run reporting entirely rather than degrade it -- and
+        because ``get_supervisor()`` caches only on success, one raise would 500 EVERY
+        subsequent request, not just the first. That guarantee is STRUCTURAL: the whole body is
+        inside the ``try``, not just the read, so a coercion that turns out to be non-total
+        (``int(float('inf'))`` raising ``OverflowError`` was exactly that) degrades to idle
+        instead of wedging the app.
+
+        COST, stated plainly: this is the only I/O in the supervisor's construction, and
+        ``get_supervisor()`` builds the singleton lazily -- so the first request to reach it (a
+        ``GET /run`` handler, on the event loop) pays two small reads and the ``store``
+        directory ``mkdir``s. Once per process, on a document of a few hundred bytes. The
+        alternative -- reading on the idle path of :meth:`status` -- pays it on every poll and
+        makes that method's documented "cheap, in-memory" contract false.
+        """
+        try:
+            record = store.read_json(_terminal_record_path(), None)
+            if not isinstance(record, dict):
+                return
+            status = str(record.get("status") or "")
+            if status not in _PERSISTABLE_STATUSES:
+                return
+            numbers = (
+                record.get("cycle"),
+                record.get("kept"),
+                record.get("drafted"),
+                record.get("started_at"),
+                record.get("finished_at"),
+            )
+            if any(isinstance(n, float) and not math.isfinite(n) for n in numbers):
+                # A non-finite number means the document is corrupt, and coercing it is worse
+                # than declining it: `json.loads` turns `1e309` into `inf`, which passes
+                # `_pos_float`'s `> 0` guard untouched and would be re-serialized into the
+                # `GET /run` response as the literal `Infinity` -- not valid JSON, so the
+                # browser's `JSON.parse` rejects the WHOLE payload and the app shows nothing.
+                # Declining the record leaves the supervisor idle, which is what every other
+                # corrupt-record path already does. Raised by the GPT review of this branch.
+                logger.warning(
+                    "%s: ignoring the terminal run record -- it carries a non-finite number",
+                    store.APP_NAME,
+                )
+                return
+            self._state = RunState(
+                status=status,
+                run_id=str(record.get("run_id") or ""),
+                cycle=_as_count(record.get("cycle")),
+                kept=_as_count(record.get("kept")),
+                drafted=_as_count(record.get("drafted")),
+                error=str(record.get("error") or ""),
+                started_at=_pos_float(record.get("started_at"), 0.0),
+                finished_at=_pos_float(record.get("finished_at"), 0.0),
+                offline_reason=str(record.get("offline_reason") or ""),
+            )
+        except Exception:  # noqa: BLE001 -- see docstring: must not break every run route
+            logger.warning(
+                "%s: could not restore the terminal run record", store.APP_NAME, exc_info=True
+            )
 
     # ── progress sink (called from the worker thread) ─────────────────────────
 
@@ -316,6 +477,9 @@ class RunSupervisor:
                     store.APP_NAME,
                     unconfined,
                 )
+                self._offline_reason = (
+                    f"the provider-backed agent runner was refused because {unconfined}"
+                )
                 return None
             runner = SessionAgentRunner(stop_check=stop_check, on_activity=self._on_agent_activity)
             # Register the tool-restricted discovery agent so kiro-cli resolves it by name.
@@ -342,7 +506,13 @@ class RunSupervisor:
                     "is configured and its permission gate must not be bypassed",
                     store.APP_NAME,
                 )
+                self._offline_reason = (
+                    "the tool-restricted discovery agent could not be registered, and falling "
+                    "back to the subprocess agent would bypass the configured provider's "
+                    "permission gate"
+                )
                 return None
+            self._offline_reason = ""
             return runner
         # NO subprocess fallback. Review asked for this removal on every head, and after the
         # two fall-through holes were closed the remaining objection turned out to be right on
@@ -362,6 +532,11 @@ class RunSupervisor:
             "%s: no provider-backed agent runner available — running offline (the subprocess "
             "fallback is deliberately not used: it would bypass the provider permission gate)",
             store.APP_NAME,
+        )
+        self._offline_reason = (
+            "no provider-backed agent runner is available: SessionAgentRunner.available() is "
+            "False, which means the gateway config load or the provider-factory construction "
+            "raised rather than that no provider is configured"
         )
         return None
 
@@ -547,6 +722,12 @@ class RunSupervisor:
 
         driver = self._build_driver(config)
         run_id = f"run-{int(time.time())}"
+        # Bind this run's terminal-record path NOW, immediately after `_build_driver` bound the
+        # driver's `archive_root` to `store.results_dir()`. Both name the active workspace, so
+        # binding them at the same instant is what guarantees the record and the archive cannot
+        # end up in different repositories' subtrees. Resolved outside the lock because
+        # `store.results_dir()` touches the filesystem. See `RunState.record_path`.
+        record_path = _terminal_record_path()
 
         with self._lock:
             # Re-check under the lock: two concurrent POSTs could both pass the probe
@@ -559,8 +740,30 @@ class RunSupervisor:
                 status=STATUS_RUNNING,
                 run_id=run_id,
                 started_at=time.time(),
+                # Captured from the just-built driver's runner selection. Read here rather
+                # than in the worker thread so the run OWNS the reason from the moment it
+                # exists, and a later ``_build_runner`` call cannot change this run's answer.
+                offline_reason=self._offline_reason,
+                record_path=record_path,
             )
             self._state.activity.append({"t": time.time(), "note": f"run {run_id} starting"})
+            if self._offline_reason:
+                # Surfaced at the START, not only at the end. The feed is the operator's live
+                # view, and the ``logger.warning`` that names this reason goes to the
+                # process's stdout/stderr pipe -- which a supervised gateway does not capture
+                # into its log file -- so without this entry the reason exists nowhere the
+                # operator can reach. A run in this state cannot discover anything: the
+                # profile's discovery early-returns an empty candidate list on a ``None``
+                # runner, so every cycle is empty by construction.
+                self._state.activity.append(
+                    {
+                        "t": time.time(),
+                        "error": _redact_activity(
+                            f"agent runner OFFLINE -- this run cannot discover anything: "
+                            f"{self._offline_reason}"
+                        ),
+                    }
+                )
             thread = threading.Thread(
                 target=self._run_loop,
                 args=(driver,),
@@ -878,6 +1081,54 @@ class RunSupervisor:
         with self._lock:
             self._state.activity.append({"t": time.time(), "note": text})
 
+    def _persist_terminal_state(self) -> None:
+        """Write this run's terminal status/error/counters to disk. Call WITHOUT ``_lock``.
+
+        The half of the fix that outlives the process. :class:`RunState` is in-memory only, so
+        before this a run's terminal status and error died with the gateway: a restart reported
+        ``idle`` with no trace on disk that a run had ended at cycle 0, or why. Read back by
+        :meth:`_hydrate_terminal_record` in a later process.
+
+        The SNAPSHOT is taken under the lock and the WRITE happens outside it, because
+        ``store.write_json_atomic`` fsyncs and this module's contract is that ``_lock`` is held
+        for microseconds and never across blocking I/O -- every ``status()`` poll waits on it.
+
+        Deliberately does NOT carry ``activity``: that feed is a bounded in-memory ring of raw
+        model output, scanned by :func:`_redact_activity` on the way in for DISPLAY, and
+        persisting it would turn a display buffer into a durable copy of agent text. What
+        happened to the run is already in ``status`` and ``error``.
+
+        Best-effort. A failed write is logged and swallowed: the outcome is already correct in
+        memory, and losing the durable copy must not turn a reported failure into a second one.
+
+        The destination is the path the RUN bound at ``start()``, not one resolved here. By the
+        time this runs the terminal status is already set, so the run reads as non-active and a
+        repository retarget is admitted again -- resolving now could file this outcome under a
+        different repository and leave its own workspace with no record. See
+        ``RunState.record_path``; the live fallback covers only a state ``start()`` cannot
+        produce.
+        """
+        with self._lock:
+            st = self._state
+            path = st.record_path
+            record = {
+                "run_id": st.run_id,
+                "status": st.status,
+                "error": st.error,
+                "cycle": st.cycle,
+                "kept": st.kept,
+                "drafted": st.drafted,
+                "started_at": st.started_at,
+                "finished_at": st.finished_at,
+                "offline_reason": st.offline_reason,
+            }
+        try:
+            store.write_json_atomic(path or _terminal_record_path(), record)
+        except Exception:  # noqa: BLE001 -- a durability failure must not mask the outcome
+            logger.warning(
+                "%s: could not persist the terminal run record", store.APP_NAME, exc_info=True
+            )
+
     def _run_loop(self, driver: Any) -> None:
         """The worker thread body. Catches EVERYTHING: an escaping exception here would
         kill the thread silently and leave the UI reporting ``running`` forever."""
@@ -891,13 +1142,41 @@ class RunSupervisor:
             with self._lock:
                 self._state.stats = _stats_dict(stats)
                 self._state.kept = int(getattr(stats, "kept", 0) or 0)
-                self._state.status = STATUS_DONE
                 self._state.stage = ""
-                self._state.finished_at = time.time()
-                self._state.activity.append({"t": time.time(), "note": "run finished"})
+                offline = self._state.offline_reason
+                if not offline:
+                    self._state.status = STATUS_DONE
+                    self._state.finished_at = time.time()
+                    self._state.activity.append({"t": time.time(), "note": "run finished"})
+            if offline:
+                # A clean return is NOT success here. With no agent runner the profile's
+                # discovery early-returns an empty candidate list, so every cycle finds
+                # nothing, the budget's quiescence break fires after `quiesce_after` empty
+                # cycles, and `driver.run()` returns its stats normally. Reporting that as
+                # DONE made a run that could not even LOOK indistinguishable from one that
+                # looked and found nothing -- and DONE is what every downstream reader takes
+                # as "this worked".
+                #
+                # STATUS_ERROR (which is what `_fail` records) rather than a new `offline`
+                # status, deliberately. `error` is the ONLY terminal status the UI renders a
+                # message for -- `SetupPanel` falls through to the idle label for anything
+                # else -- so a novel status would still show the operator nothing, reproducing
+                # the very defect this fixes. It is also what the sibling subsystem already
+                # uses for an absent runner (`pr_watchers` records `runner unavailable: ...`
+                # as STATUS_ERROR), and nothing in this app auto-retries on a terminal status
+                # (the only `start()` caller is the POST /run handler, and the app declares no
+                # crons), so a hard failure cannot provoke a retry loop against a runner that
+                # is simply absent.
+                #
+                # Through `_fail` rather than assigning here: that helper is the single
+                # redaction site for anything reaching `RunState.error`, which `status()`
+                # serializes into `GET /run`.
+                self._fail(AgentRunnerOffline(f"the run did no work because {offline}"))
+            self._persist_terminal_state()
         except BaseException as exc:  # noqa: BLE001 — a run failure is state, not a crash
             logger.exception("%s: run failed", store.APP_NAME)
             self._fail(exc)
+            self._persist_terminal_state()
 
     def status(self) -> dict[str, Any]:
         """A JSON-ready snapshot. Cheap, lock-guarded, safe to poll on the event loop.
@@ -909,10 +1188,14 @@ class RunSupervisor:
             st = self._state
             alive = self._thread is not None and self._thread.is_alive()
             # A thread that died without setting a terminal status (only possible if the
-            # interpreter tore it down) must not be reported as still running.
+            # interpreter tore it down) must not be reported as still running. An OFFLINE run
+            # is not `done` on this path either: the thread never reached the terminal
+            # transition, but the run still had no agent runner, and reporting the same lie
+            # here would just move it one branch over.
             status = st.status
             if status in (STATUS_RUNNING, STATUS_STOPPING) and not alive:
-                status = STATUS_DONE if not st.error else STATUS_ERROR
+                clean = not st.error and not st.offline_reason
+                status = STATUS_DONE if clean else STATUS_ERROR
             return {
                 "status": status,
                 "run_id": st.run_id,
