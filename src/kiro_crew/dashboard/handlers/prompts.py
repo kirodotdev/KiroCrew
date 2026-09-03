@@ -1386,6 +1386,20 @@ async def _api_prompt_write(request: web.Request) -> web.Response:
 # ── Skills ──
 
 
+# Open-standard skill-key territories whose READ path (_resolve_skill_root in
+# _shared.py) resolves per-session / per-machine — ``kiro-user/`` against
+# ``~/.kiro/skills`` and ``kiro-workspace/`` against ``<project>/.kiro/skills`` —
+# while the WRITE handlers (skills.create/update/delete_skill) join the key onto
+# a core root. That means the same key names a DIFFERENT file on write than the
+# reader was shown (issue #8244). These prefixes are documented read-only in
+# api_skills, so the write path refuses them rather than silently writing the
+# core-root copy. The literals must match the prefixes _resolve_skill_root and
+# _skill_key_roots use so read and write agree on territory. The ``package/``
+# prefix is intentionally NOT listed here — that territory is handled separately
+# by PR #7105; this guard is its untracked kiro-user/ and kiro-workspace/ sibling.
+READONLY_SKILL_KEY_PREFIXES = ("kiro-user/", "kiro-workspace/")
+
+
 async def api_skills(request: web.Request) -> web.Response:
     """GET /api/skills — list skills from all known sources.
 
@@ -2241,6 +2255,27 @@ async def api_skill_detail(request: web.Request) -> web.Response:
     name = request.match_info["name"]
     skills = _get_skills(state)
 
+    # Refuse mutating verbs on the open-standard read-only territories. Their
+    # READ path resolves per-session / per-machine (project or ~/.kiro/skills),
+    # but update_skill/delete_skill would join the key onto a core root — so the
+    # write lands in a different file than the reader was shown (issue #8244).
+    # Guarding here, before the PUT/DELETE branches and any session-key work,
+    # ensures the mutating verb never reaches skills.*; GET is untouched and keeps
+    # resolving via _resolve_skill_root. Same shape #7105 applies to package/.
+    if request.method in ("PUT", "DELETE") and name.startswith(READONLY_SKILL_KEY_PREFIXES):
+        return web.json_response(
+            {
+                "error": (
+                    f"skill '{name}' is in a read-only territory "
+                    "(kiro-user/ and kiro-workspace/ skills are managed on disk, "
+                    "not through this endpoint)"
+                ),
+                "code": "readonly_skill_prefix",
+            },
+            status=405,
+            headers={"Allow": "GET"},
+        )
+
     if request.method == "DELETE":
         # Off the loop: delete_skill walks a pinned parent chain and then rmtrees
         # the skill directory, and update_skill below stages a temp file, carries
@@ -2338,6 +2373,23 @@ async def api_skills_create(request: web.Request) -> web.Response:
     if not safe_name:
         return web.json_response(
             {"error": "invalid skill name", "code": "invalid_name"}, status=400
+        )
+    # Refuse creating into the open-standard read-only territories. Checked on
+    # the SANITISED name because that is what create_skill would write (e.g.
+    # 'Kiro-Workspace/Foo' sanitises to 'kiro-workspace/foo'). create_skill joins
+    # the key onto a core root, but the reader is served kiro-user/ and
+    # kiro-workspace/ skills from a session/machine-scoped location — so a create
+    # here would write to a different file than the reader is shown (issue #8244).
+    if safe_name.startswith(READONLY_SKILL_KEY_PREFIXES):
+        return web.json_response(
+            {
+                "error": (
+                    f"skill name '{safe_name}' is in a reserved read-only territory "
+                    "(kiro-user/ and kiro-workspace/ skills are managed on disk)"
+                ),
+                "code": "reserved_skill_prefix",
+            },
+            status=400,
         )
     skills = _get_skills(state)
     # Off the loop for the same reason api_skill_detail offloads its two calls:
