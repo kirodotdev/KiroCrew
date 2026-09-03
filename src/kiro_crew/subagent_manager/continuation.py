@@ -659,10 +659,16 @@ class ContinuationCoordinator(ManagerComponent):
         if self._manager._on_done is None:
             return
         label_msgs = messages if messages is not None else info.pending_followups
+        # The label joins the RAW messages and redacts the JOIN before any
+        # bound: bounding first can split a credential at a cut into fragments
+        # no redaction regex matches, and redacting per message would blind the
+        # multi-line PEM pattern to a key whose header and footer sit in
+        # DIFFERENT messages. The budget scales with the message count,
+        # matching the former 120-chars-per-message cap.
+        followup_label = _redact("; ".join(label_msgs))[: 120 * len(label_msgs)]
         synthetic = failure_info or SubagentInfo(
             id=uuid.uuid4().hex[:8],
-            task=f"[follow_up of run {info.id}] "
-            + _redact("; ".join(m[:120] for m in label_msgs) or "queued follow-up"),
+            task=f"[follow_up of run {info.id}] " + (followup_label or "queued follow-up"),
             done=True,
             parent_session_key=info.parent_session_key,
             error=reason,

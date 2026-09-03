@@ -15,6 +15,7 @@ from windows_sim import builtin_open_sharing_violation
 from kiro_crew import history
 from kiro_crew.history import (
     _CONSOLIDATION_THRESHOLD,
+    _METADATA_CACHE_MAX,
     _SESSION_KEEP_LINES,
     _SESSION_MAX_BYTES,
     ConversationLog,
@@ -108,9 +109,13 @@ class TestConversationLog:
 
     def test_rotation(self, tmp_path):
         log = ConversationLog(base_dir=tmp_path)
-        # Need > 200 lines AND > 2MB to trigger rotation
-        content = "x" * 10000
-        for i in range(300):
+        # Rotation needs BOTH gates crossed: more than ``_SESSION_KEEP_LINES``
+        # lines and more than ``_SESSION_MAX_BYTES`` bytes. Derive the row size
+        # from the budget instead of hardcoding a byte total, so raising the cap
+        # cannot leave this test green while no longer reaching rotation at all.
+        rows = _SESSION_KEEP_LINES + 50
+        content = "x" * (_SESSION_MAX_BYTES // rows + 1024)
+        for i in range(rows):
             log.append("t1", "user", f"{content} msg {i}")
         path = tmp_path / "t1.jsonl"
         lines = path.read_text(encoding="utf-8").splitlines()
@@ -125,9 +130,13 @@ class TestConversationLog:
 
     def test_rotation_resets_consolidated(self, tmp_path):
         log = ConversationLog(base_dir=tmp_path)
-        # Need > 200 lines AND > 2MB to trigger rotation
-        content = "x" * 10000
-        for i in range(250):
+        # Row size derived from the budget for the same reason as
+        # ``test_rotation``: the assertion below only means anything if the
+        # second loop actually re-crosses the byte cap after
+        # ``mark_consolidated``, at whatever the cap is set to.
+        rows = _SESSION_KEEP_LINES + 50
+        content = "x" * (_SESSION_MAX_BYTES // rows + 1024)
+        for i in range(rows):
             log.append("t1", "user", f"{content} msg {i}")
         log.mark_consolidated("t1", 200)
         # Add more to trigger rotation again
@@ -3983,12 +3992,35 @@ class TestConversationLogCacheBounded:
         assert len(log._msg_cache) <= 4
 
     def test_meta_cache_evicts_beyond_bound(self, tmp_path):
-        log = ConversationLog(base_dir=tmp_path, cache_max=3)
+        # Bounds the metadata cache by assigning it directly rather than through a
+        # constructor parameter: the production default deliberately does not follow
+        # ``cache_max`` down, and a kwarg only tests pass is production API surface
+        # with no product consumer. The eviction invariant under test is unchanged.
+        from kiro_crew.history import _LRUCache
+
+        log = ConversationLog(base_dir=tmp_path)
+        log._meta_cache = _LRUCache(3)
         for i in range(10):
             key = f"sess{i}"
             log.append(key, "user", f"hi {i}")
             log.get_metadata(key)  # populate meta cache
         assert len(log._meta_cache) <= 3
+
+    def test_a_small_cache_max_cannot_shrink_the_metadata_cache(self, tmp_path):
+        """``cache_max`` must not drag the metadata cache down with it.
+
+        ``list_sessions`` reads ``_meta_cache`` in one cyclic pass over the whole
+        session directory, so a bound below the corpus size is evicted in exactly
+        the order it will next be read and the hit rate collapses to ~0 — every
+        call re-opens and re-parses the first line of most of the store. The
+        transcript cache still honors the knob.
+        """
+        log = ConversationLog(base_dir=tmp_path, cache_max=8)
+        assert log._msg_cache._maxsize == 8, "the transcript cache still honors cache_max"
+        assert log._meta_cache._maxsize == _METADATA_CACHE_MAX, (
+            "the metadata cache followed cache_max down; list_sessions will thrash "
+            "on any store larger than that knob"
+        )
 
     def test_cache_hit_returns_same_object(self, tmp_path):
         log = ConversationLog(base_dir=tmp_path, cache_max=8)

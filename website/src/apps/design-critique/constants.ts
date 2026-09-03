@@ -162,14 +162,12 @@ export const BLOCKED: Record<string, Blocked> = {
     get say() { return i18nT('apps.designCritique.constants.blocked_no_access_say') },
     fix: 'local',
     get hint() { return i18nT('apps.designCritique.constants.blocked_no_access_hint') },
-    auth: {
-      get lead() { return i18nT('apps.designCritique.constants.blocked_no_access_auth_lead') },
-      // Not a getter, and deliberately byte-identical to the base line: every
-      // entry is a shell command or a shell comment inside a copy-paste block,
-      // so nothing here is translatable and the line needs no lookup.
-      cmds: ['gh auth login', '# or, to use the macOS keychain:', 'git config --global credential.helper osxkeychain'],
-      get tail() { return i18nT('apps.designCritique.constants.blocked_no_access_auth_tail') },
-    },
+    // No `auth` block on purpose: the hardened clone neutralises inherited git
+    // credentials (GIT_CONFIG_GLOBAL/SYSTEM=/dev/null, GIT_ASKPASS/SSH_ASKPASS
+    // dropped), so a `gh auth login` walkthrough could never make a private clone
+    // succeed from here. The honest route is a local checkout or screenshots,
+    // which `fix: 'local'` already offers. Re-opening a host-git-login path is a
+    // separate, security-reviewed change — do NOT add credentials back here.
   },
   'not-found': {
     get say() { return i18nT('apps.designCritique.constants.blocked_not_found_say') },
@@ -180,6 +178,15 @@ export const BLOCKED: Record<string, Blocked> = {
     get say() { return i18nT('apps.designCritique.constants.blocked_figma_app_missing_say') },
     fix: 'shots',
     get hint() { return i18nT('apps.designCritique.constants.blocked_figma_app_missing_hint') },
+  },
+  // The backend returns this for kind=figma: it can't drive the Figma desktop
+  // tools from an app panel, so the honest ask is to export the frames as PNGs
+  // and drop them in as screenshots (fix:'shots'). Without this entry the reason
+  // fell through to BLOCKED.other and showed a misleading "I couldn't get in".
+  'figma-export-needed': {
+    get say() { return i18nT('apps.designCritique.constants.blocked_figma_export_needed_say') },
+    fix: 'shots',
+    get hint() { return i18nT('apps.designCritique.constants.blocked_figma_export_needed_hint') },
   },
   'figma-file-closed': {
     get say() { return i18nT('apps.designCritique.constants.blocked_figma_file_closed_say') },

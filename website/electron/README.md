@@ -235,7 +235,7 @@ Open via **Tab menu → Open Config File** or tray menu.
 | Issue | Fix |
 |-------|-----|
 | "SSH token fetch failed" | Check `ssh YOUR_HOST` works from Terminal |
-| "kirocrew binary not found in any of …" | Install kirocrew (`pip install kirocrew`), or set a custom path |
+| "kirocrew binary not found in any of …" | Install Kiro Crew through a [supported install path](../../docs/guides/install.md#install-paths), or set a custom path |
 | "command not found: kiro-cli" | Set Remote PATH to include `~/.toolbox/bin` (default does this) |
 | "command not found: dirname" | Remote PATH missing `/usr/bin` — reset to default or add it |
 | Token fetched but 403 | Gateway may need restart — `ssh host systemctl --user restart kirocrew` |

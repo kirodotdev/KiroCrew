@@ -619,12 +619,14 @@ describe('PrDetail — refresh, copy, and the AI summary', () => {
 
     release(response())
     await waitFor(() => expect(api.pullAi).toHaveBeenCalledTimes(1))
-    expect(api.pullAi.mock.calls[0][2]).toEqual({ refresh: false })
+    // arg 2 is the resolved AI-output language, arg 3 the refresh opts.
+    expect(api.pullAi.mock.calls[0][2]).toBe('')
+    expect(api.pullAi.mock.calls[0][3]).toEqual({ refresh: false })
     await waitFor(() => expect(screen.getByTestId('ai-summary').textContent).toBe('AI says it is fine'))
 
     await userEvent.click(screen.getByRole('button', { name: 'regenerate-ai' }))
     await waitFor(() => expect(api.pullAi).toHaveBeenCalledTimes(2))
-    expect(api.pullAi.mock.calls[1][2]).toEqual({ refresh: true })
+    expect(api.pullAi.mock.calls[1][3]).toEqual({ refresh: true })
   })
 
   it('flags the summary as stale when a CHECK finished after it was written', async () => {

@@ -41,22 +41,44 @@ import tarfile
 import tempfile
 import threading
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, NoReturn, Optional
 
 from kiro_crew import snapshot
+from kiro_crew.apps.builtins.aws_control.backend import accounts as accounts_mod
 from kiro_crew.apps.builtins.aws_control.backend import storage
 from kiro_crew.apps.manager import app_data_dir
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.paths import data_home, kiro_sessions_dir
 from kiro_crew.history import SESSIONS_DIR_NAME
 from kiro_crew.platform_compat import file_lock, is_link_or_junction
+from kiro_crew.sel import sel
 from kiro_crew.snapshot import snapshot_main
 
 logger = logging.getLogger(__name__)
 
 APP_NAME = "aws-control"
+
+#: Who triggered an upload, as the SEL record names them.
+#:
+#: An attribution field only earns its place if it DISTINGUISHES, so neither of
+#: these is a default: ``caller`` is a required keyword all the way down to
+#: ``_authorize_upload``. A new call site has to say which it is rather than
+#: inheriting whichever guess happened to be written first -- and the guess that
+#: was written first here was the interactive one, which attributed unattended
+#: nightly work to a human who was not present.
+CALLER_OWNER = "dashboard-owner"
+CALLER_SCHEDULED = f"app:{APP_NAME}"
 KIND_SNAPSHOT = "snapshot"
 KIND_SESSIONS = "sessions"
+
+#: Wall clock for one backup push to S3, passed by both runners into
+#: :func:`storage.put_file` rather than relying on its 600s default. The
+#: nightly snapshot push runs unattended, and an owner-triggered sessions
+#: archive may legitimately need the full hour -- the size ceiling is
+#: ``storage._MAX_PINNED_TRANSFER_BYTES`` (5 GiB), which at 3600s still
+#: requires a ~12 Mbit/s uplink, so a slower push fails at the bound rather
+#: than holding the owner-billed transfer open indefinitely. Tests assert the
+#: constant reaches the uploader on both paths, so it cannot go unread.
 _PUSH_TIMEOUT_SECS = 3600
 
 
@@ -173,7 +195,56 @@ def clear_stop() -> None:
     _STOP.clear()
 
 
-def _authorize_upload(account: str, profile: str, region: str) -> None:
+def _refuse_upload(account: str, reason: str, *, caller: str, outcome: str = "denied") -> NoReturn:
+    """Record why an upload was refused in the SEL, then refuse.
+
+    A refusal is the outcome an auditor most wants evidence of, and it was the
+    one leaving no trace. Moving the work off the request path moved the
+    authorization decision off the audited path with it: the route's audit has
+    already recorded ``successful`` by the time a worker thread reaches
+    ``put_file``, and the Job SDK only records that the run ``failed``. To a
+    reader scanning SEL events for denials, a real denial looked like nothing at
+    all.
+
+    The event shape is the one this app already uses for a refused mutation
+    (``routes._audit`` -> ``sel().log_api_access``) rather than a second
+    convention for the same kind of decision. It is emitted HERE, at the
+    decision, and not in the Job SDK runner: ``_authorize_upload`` is also
+    reached from the nightly loop in ``hooks.py``, and a runner-level catch would
+    leave that path unaudited.
+
+    ``caller`` is passed in rather than assumed, because covering the nightly path
+    is exactly what makes a hardcoded interactive caller a lie: an unattended run
+    refused at 03:00 must not be recorded against the dashboard owner. Each entry
+    point states its own (``CALLER_OWNER`` / ``CALLER_SCHEDULED``), so attribution
+    stays true on both instead of being flattened to a neutral string that is
+    honest for one path and lossy for the other.
+
+    ``outcome`` is ``denied`` for the access decisions and ``failed`` for
+    teardown. Every refusal leaves a record -- one covered path among several
+    would make the rest look like non-events -- but a routine restart is not an
+    access decision, and filing it as ``denied`` would put it in the same bucket
+    as a withdrawn consent and devalue every real denial in the log. Both values
+    are from the vocabulary ``sel.py`` documents for this field.
+
+    Best-effort, like the route's audit: a failed audit must never convert a
+    refusal into an upload.
+    """
+    try:
+        sel().log_api_access(
+            caller=caller,
+            operation="aws_control.backup_upload",
+            outcome=outcome,
+            source="aws-control",
+            resources=f"account={account}"[:200],
+            error=reason[:200],
+        )
+    except Exception:
+        logger.debug("aws-control SEL audit failed", exc_info=True)
+    raise RuntimeError(reason)
+
+
+def _authorize_upload(account: str, profile: str, region: str, *, caller: str) -> None:
     """Re-check the authorization decisions at the moment of upload.
 
     An archive build can run for minutes inside a worker thread; consent
@@ -204,14 +275,22 @@ def _authorize_upload(account: str, profile: str, region: str) -> None:
     except _json.JSONDecodeError:
         live = ""
     if live != account:
-        raise RuntimeError(
-            "this connection no longer points at the requested account; upload refused"
+        _refuse_upload(
+            account,
+            "this connection no longer points at the requested account; upload refused",
+            caller=caller,
         )
     if not is_app_enabled("aws-control"):
-        raise RuntimeError("aws-control was disabled during the backup build; upload refused")
+        _refuse_upload(
+            account,
+            "aws-control was disabled during the backup build; upload refused",
+            caller=caller,
+        )
     granted, reason = aws_consent.is_granted(aws_consent.SERVICE_S3, profile=profile, region=region)
     if not granted:
-        raise RuntimeError(f"S3 consent no longer holds; upload refused: {reason}")
+        _refuse_upload(
+            account, f"S3 consent no longer holds; upload refused: {reason}", caller=caller
+        )
     # `is_granted` is only the LOCAL half of the gate and its own docstring says
     # so: it matches profile+region and deliberately does not look at the
     # account. Checking the live account (above) against our target is therefore
@@ -225,17 +304,29 @@ def _authorize_upload(account: str, profile: str, region: str) -> None:
     # `authorize` refuses one: it cannot be verified against anything.
     grant = aws_consent.read_grant(aws_consent.SERVICE_S3)
     if grant is None:
-        raise RuntimeError("S3 consent was withdrawn during the backup build; upload refused")
+        _refuse_upload(
+            account,
+            "S3 consent was withdrawn during the backup build; upload refused",
+            caller=caller,
+        )
     if not grant.account or grant.account != account:
-        raise RuntimeError("the recorded S3 consent does not name this account; upload refused")
+        _refuse_upload(
+            account,
+            "the recorded S3 consent does not name this account; upload refused",
+            caller=caller,
+        )
     # Last, and deliberately after every other check: app teardown. A worker
     # thread cannot be killed, so cancelling the loop's await leaves the archive
     # build running; this is what makes that build stop short of uploading.
     if _STOP.is_set():
-        raise RuntimeError("aws-control is shutting down; upload refused")
+        _refuse_upload(
+            account, "aws-control is shutting down; upload refused", caller=caller, outcome="failed"
+        )
 
 
-def run_snapshot_backup(account: str, profile: str, region: str, bucket: str) -> dict[str, Any]:
+def run_snapshot_backup(
+    account: str, profile: str, region: str, bucket: str, *, caller: str
+) -> dict[str, Any]:
     """Build a snapshot archive and push it. Returns the run record."""
     with tempfile.TemporaryDirectory(prefix="kc-backup-") as tmp:
         rc = snapshot_main([tmp, "--keep", "1"])
@@ -263,7 +354,7 @@ def run_snapshot_backup(account: str, profile: str, region: str, bucket: str) ->
         # would collide on the key, so the pushed key carries its own
         # entropy (the _stamp shape) rather than trusting the file name.
         key = f"snapshots/kirocrew-snapshot-{_stamp()}.tar.gz"
-        _authorize_upload(account, profile, region)
+        _authorize_upload(account, profile, region, caller=caller)
         storage.put_file(
             profile,
             region,
@@ -431,7 +522,9 @@ def _add_tree(tar: tarfile.TarFile, root: Path, arc_prefix: str) -> int:
         os.close(root_fd)
 
 
-def run_sessions_backup(account: str, profile: str, region: str, bucket: str) -> dict[str, Any]:
+def run_sessions_backup(
+    account: str, profile: str, region: str, bucket: str, *, caller: str
+) -> dict[str, Any]:
     """Tar both session halves and push. Returns the run record.
 
     Refuses outright on a platform that cannot pin the traversal to descriptors.
@@ -452,7 +545,7 @@ def run_sessions_backup(account: str, profile: str, region: str, bucket: str) ->
         if count == 0:
             raise RuntimeError("no session files to archive")
         key = f"sessions/{archive.name}"
-        _authorize_upload(account, profile, region)
+        _authorize_upload(account, profile, region, caller=caller)
         storage.put_file(
             profile,
             region,
@@ -464,6 +557,102 @@ def run_sessions_backup(account: str, profile: str, region: str, bucket: str) ->
             timeout=_PUSH_TIMEOUT_SECS,
         )
         return _record_run(account, KIND_SESSIONS, key, archive.stat().st_size)
+
+
+#: The two Job SDK kinds this app registers. Same strings as ``KIND_*`` so a run
+#: record read by a human names the backup the owner asked for.
+JOB_KINDS = (KIND_SNAPSHOT, KIND_SESSIONS)
+
+
+def make_job_runner(sdk: Any, kind: str) -> Any:
+    """Build the Job SDK runner for ``kind``. Registered once, at app startup.
+
+    A PLAIN ``def``, and it must stay one. ``JobSDK._execute`` calls the runner
+    and DISCARDS its return value, so an ``async def`` here would hand back a
+    coroutine nobody awaits: the body would never execute, nothing would raise,
+    and the record would settle on ``done`` reporting a backup that never
+    happened. ``register()`` validates the kind and not the callable, so this
+    property is the app's to keep.
+
+    That constraint is what shapes the resolution below. The SDK gives a runner
+    its handle and nothing else -- there is no ``params`` channel in P1 -- so the
+    run's target is read back out of its own record, where ``start`` put it:
+
+    * The ACCOUNT comes from ``dedupe_key``. It is the right carrier on its own
+      merits, because the account is exactly this run's concurrency identity --
+      two snapshot backups of one account must not both do the paid upload, and
+      the SDK's index is ``(kind, dedupe_key)`` so snapshot and sessions for the
+      same account still run independently. It is also the only field a runner
+      can read without a private attribute (``get`` is public; the key is
+      withheld from the HTTP view and never logged by the SDK).
+    * profile/region/bucket are RE-RESOLVED here rather than carried, which is
+      the rule this app already documents for the nightly loop: the drive is
+      tag-discovered per run rather than trusted from memory.
+
+    Every resolution step is therefore sync. ``accounts.resolve_account_profile``
+    and ``aws_consent.authorize`` are coroutines and are NOT reachable from a
+    worker thread -- ``asyncio.run`` would build a second event loop, which is
+    the #4800 failure this package already carries a ``LoopBoundLock`` to avoid
+    -- so this uses the sync cached resolver and lets the sync
+    :func:`_authorize_upload` gate inside each runner make the paid-service
+    decision. That gate is the real one: it re-checks the LIVE account against
+    the target, that the app is still enabled, that S3 consent still holds for
+    this profile+region, and that the recorded grant names THIS account, all
+    immediately before ``put_file``. So a run started through the generic
+    ``_jobs`` surface, which does not pass this app's HTTP pre-flight, is
+    authorized by the same gate as one started through it.
+
+    Refusals raise. ``_execute`` records the exception's text as the run's
+    ``error`` and the status as ``failed``, which is the honest terminal state
+    for a request that named no reachable target. The messages deliberately do
+    NOT quote the dedupe key: it is caller-supplied, and the SDK withholds it
+    from both the log and the HTTP view for that reason.
+    """
+    if kind not in JOB_KINDS:
+        raise ValueError(f"unknown backup job kind: {kind!r}")
+
+    def _run(handle: Any) -> None:
+        run = sdk.get(handle.run_id)
+        account = run.dedupe_key if run is not None else ""
+        # An empty key reaches here from `POST /_jobs/{kind}/start` with no body:
+        # the generic surface defaults `dedupe_key` to "". There is no account to
+        # act on, and picking one would be acting on an account nobody named.
+        if not account:
+            raise RuntimeError("this backup run names no account; nothing was sent to AWS")
+        if not (account.isdigit() and len(account) == 12):
+            raise RuntimeError(
+                "this backup run does not name an account id; nothing was sent to AWS"
+            )
+        resolved = accounts_mod.resolve_account_profile_cached(account)
+        if resolved is None:
+            raise RuntimeError(
+                "no working connection for this account — reconnect it, then run the backup again"
+            )
+        profile, region = resolved
+        # Authorize BEFORE discovery, not just before the upload. `find_drive`
+        # reaches AWS to resolve the bucket by tags, so with consent withdrawn or
+        # the app disabled the old order sent tagging-API requests on the owner's
+        # credentials before any gate had run -- unauthorized calls made in the
+        # course of refusing the work. The gate needs no bucket, so nothing forces
+        # it to wait for discovery.
+        #
+        # This does NOT replace the pre-upload re-check inside `work`: an archive
+        # build takes minutes, and consent can be withdrawn during it. This one
+        # decides whether we may touch AWS at all; that one decides whether the
+        # bytes may leave. Both are needed, and both audit through the same helper.
+        _authorize_upload(account, profile, region, caller=CALLER_OWNER)
+        bucket = storage.find_drive(profile, region, account=account)
+        if not bucket:
+            raise RuntimeError("this account has no drive yet; nothing was sent to AWS")
+        # Resolved by NAME at call time, not captured at registration: the module
+        # attribute stays the single definition of what a snapshot backup is.
+        work = run_snapshot_backup if kind == KIND_SNAPSHOT else run_sessions_backup
+        # A job exists because an owner asked for one through the app's route or
+        # the `_jobs` surface, both owner-gated. The nightly loop does not come
+        # through here and states `CALLER_SCHEDULED` for itself.
+        work(account, profile, region, bucket, caller=CALLER_OWNER)
+
+    return _run
 
 
 def list_remote_backups(profile: str, region: str, bucket: str, *, account: str) -> dict[str, Any]:

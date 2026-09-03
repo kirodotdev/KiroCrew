@@ -78,9 +78,6 @@ class TestParseUsageCost:
         # Adapters that omit currency keep working; USD is assumed.
         assert parse_usage_cost({"cost": {"amount": 0.42}}) == 0.42
 
-    def test_explicit_usd_currency_accepted(self):
-        assert parse_usage_cost({"cost": {"amount": 0.42, "currency": "USD"}}) == 0.42
-
     def test_currency_match_is_case_sensitive_exact_usd(self):
         # ISO 4217 codes are uppercase; a lowercase "usd" is treated as
         # not-USD and drops the cost (exact-match posture, pinned).

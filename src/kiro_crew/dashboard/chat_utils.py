@@ -25,6 +25,7 @@ if TYPE_CHECKING:
 from kiro_crew.context_blocks import attributable_user_chars
 from kiro_crew.dashboard.state import (
     BUSY_RECOVERY_PREFIX,
+    COMPACTION_RECOVERY_PREFIX,
     CONN_RECOVERY_PREFIX,
     CRON_NOTIFY_PREFIX,
     EMPTY_RESPONSE_RECOVERY_PREFIX,
@@ -1542,12 +1543,23 @@ _PROMISE_ONLY_CONTINUE_MSG = (
     "and what you need instead — do NOT just restate the intention. Do NOT re-run "
     "any tool that already completed successfully above."
 )
+_COMPACTION_CONTINUE_MSG = (
+    f"{COMPACTION_RECOVERY_PREFIX}\n"
+    "The conversation above was summarized mid-turn because the context window "
+    "filled up, and your previous turn then ended without finishing the request. "
+    "The summary is authoritative — earlier messages are gone, so work from what "
+    "remains above. Continue the pending request now and respond. Do NOT restart "
+    "from scratch, and do NOT re-run any tool or step that already completed "
+    "successfully — the summary records what was done. If the summary left you "
+    "without something you need, say what is missing instead of guessing."
+)
 _SYNTHETIC_RECOVERY_MSGS = (
     _CONN_RECOVER_MSG,
     _BUSY_RECOVER_MSG,
     _POSTTOKEN_RECOVER_MSG,
     _EMPTY_AUTO_CONTINUE_MSG,
     _PROMISE_ONLY_CONTINUE_MSG,
+    _COMPACTION_CONTINUE_MSG,
 )
 
 # High-confidence "I will do it right now" endings. Kept deliberately NARROW: a
@@ -2019,6 +2031,99 @@ def should_recover_promise_only(
     if prompt_depth != 0 or promise_only_retries >= 1:
         return False
     return is_promise_only_terminal(final_segment_text)
+
+
+def should_continue_after_compaction(
+    *,
+    compaction_started: bool,
+    compaction_settled: bool,
+    user_requested_compaction: bool,
+    final_segment_text: str,
+    stop_reason: str,
+    end_turn_reason: str,
+    prompt_depth: int,
+    compaction_continue_retries: int,
+    is_cancelled: bool,
+    refusal_reasons: list,
+    in_stage_execution: bool = False,
+    stop_in_progress: bool = False,
+    stop_generation_unchanged: bool = True,
+    queue_empty: bool = True,
+    no_pending_steers: bool = True,
+) -> bool:
+    """Decide whether to inject ONE post-compaction continuation.
+
+    The scenario: the backend hit its context ceiling PART WAY THROUGH a turn,
+    summarized the conversation in place, and then ended the turn without
+    finishing the work it was doing. The compaction succeeded, so nothing
+    reports an error and the turn lands as a clean ``end_turn`` with a settled
+    footer — the request is simply abandoned, and the chat appears to stop dead.
+    kiro-cli re-sends the pending request itself after compacting; the Claude
+    backend does not, so the recovery has to live here.
+
+    Unlike :func:`should_recover_promise_only` this needs no text detector and
+    is deliberately NOT gated on ``turn_tool_calls == 0``: a mid-turn compaction
+    is a hard fact reported by the backend, not a guess about what prose meant,
+    and the turns that overflow the window are precisely the long tool-heavy
+    ones. Re-dispatch safety comes from the continuation's own wording, which
+    tells the model the summary records completed work and not to re-run it.
+
+    All must hold:
+      * a compaction STARTED and COMPLETED inside this turn
+        (``compaction_started``/``compaction_settled``) — the turn really was
+        interrupted by one, rather than merely following one. ``compaction_settled``
+        means the COMPLETED terminal specifically, not any terminal: a compaction
+        that FAILED also ends, and continuing after one would assert a summary
+        exists when the context was never summarized;
+      * the user did NOT ask for it (``user_requested_compaction`` is False for
+        anything but an explicit ``/compact``). A deliberate ``/compact`` has
+        done exactly what was asked and must land quietly; auto-continuing it
+        would turn a housekeeping command into an unrequested turn;
+      * the turn produced NO answer of its own after the compaction
+        (``final_segment_text`` is blank). A backend that DID resume and finish
+        leaves text here, so this is also what keeps the fix from double-
+        prompting a backend that self-heals. A compaction NOTICE does not count
+        as such an answer: the Claude adapter ships it as ordinary assistant text
+        and nothing deletes the chunk, so the ACP layer flags it
+        (``AcpEvent.control_notice``) and the caller SUBTRACTS the flagged chunks
+        from the segment text it passes here. Subtracting at this one call rather
+        than suppressing the chunk upstream is deliberate: the notice must still
+        stream and persist, so the text path stays untouched and only this gate —
+        the one reader that asks "did the turn answer?" — discounts it;
+      * the turn ended NORMALLY (``end_turn``), was not cancelled, and carried
+        no tool refusals — those have their own paths;
+      * no Stop is in progress, no Stop was pressed at any point in the turn,
+        no user follow-up is queued, and no mid-turn steer is pending. Same four
+        user-intent gates every sibling recovery path uses, for the same reason:
+        a queued continuation must never jump ahead of, or act against, input
+        the user has already given;
+      * this is NOT a stage-execution turn, it IS top-level
+        (``prompt_depth == 0``), and the one-shot budget is unspent
+        (``compaction_continue_retries < 1``) — one attempt, never a loop. The
+        bound matters more here than elsewhere: if the continuation itself
+        overflows the window again, an unbounded version would compact and
+        continue forever.
+    Model-agnostic and backend-agnostic: nothing here keys on a model id or a
+    backend name — it reads the normalized compaction status every backend's
+    adapter now produces.
+    """
+    if not compaction_started or not compaction_settled:
+        return False
+    if user_requested_compaction:
+        return False
+    if stop_in_progress or not stop_generation_unchanged or not queue_empty:
+        return False
+    if not no_pending_steers:
+        return False
+    if is_cancelled or refusal_reasons:
+        return False
+    if in_stage_execution:
+        return False
+    if stop_reason != end_turn_reason:
+        return False
+    if final_segment_text.strip():
+        return False
+    return prompt_depth == 0 and compaction_continue_retries < 1
 
 
 # Injected when the USER presses Continue on an interrupted turn. Worded to be

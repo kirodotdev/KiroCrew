@@ -324,7 +324,9 @@ class _ConversationLog:
             rows = [row for row in rows if row.get("role") in roles]
         return rows[-max_messages:]
 
-    def append(self, key: str, role: str, content: str, agent: str | None = None) -> None:
+    def append(
+        self, key: str, role: str, content: str, agent: str | None = None, mid: str | None = None
+    ) -> None:
         self.messages.setdefault(key, []).append({"role": role, "content": content})
 
     def set_title(self, key: str, title: str) -> None:
@@ -1495,7 +1497,7 @@ async def test_choice_refusal_for_outbound_mirror_names_unlink() -> None:
     # And the instruction is followable: the sweep frees the location, after
     # which the conflict check no longer refuses.
     sessions.clear_mirror_links_at(ChannelLink(channel_type="discord", channel_id="c1"))
-    conflict = dispatcher._session_resume._binding_conflict(
+    conflict = dispatcher._session_resume._binder.binding_conflict(
         "dashboard:chat-1",
         "chat one",
         ChannelLink(channel_type="discord", channel_id="c1"),

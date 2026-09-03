@@ -150,6 +150,13 @@ cannot approve a later tool even if the agent restarts and reuses the same
 internal request number: pressing an old one reports that it expired.
 Neither weakens the security gate — a denied-by-policy tool is still refused.
 
+Answer-choice buttons are tied to the conversation that created them. If you
+start a new conversation, switch agents, or press an old button after that
+conversation moved, the choice is refused instead of being sent somewhere else.
+A choice such as `/new` is always treated as answer text for the agent, never as
+the command itself; if the target conversation is busy, type the choice after it
+finishes rather than queueing a button press whose origin could go stale.
+
 ## Pictures, and what else comes back
 
 When the agent produces an image — a chart, a screenshot, a rendered diagram —

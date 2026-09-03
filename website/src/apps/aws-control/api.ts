@@ -219,14 +219,33 @@ export const awsControlApi = {
     return postJson<{ pushed: true }>(`/library/${enc(account)}/push`, { slug })
   },
 
+  /** Remove one artifact's cloud copy (objects + ledger entry). */
+  libraryRemove(account: string, slug: string): Promise<{ removed: true }> {
+    return postJson<{ removed: true }>(`/library/${enc(account)}/remove`, { slug })
+  },
+
   /* ── Backup ── */
 
   /** Backup status: last local runs, remote archive, nightly toggle. */
-  backup(account: string): Promise<BackupStatus> {
-    return request<BackupStatus>(`/backup/${enc(account)}`)
+  /**
+   * Backup status for one account.
+   *
+   * `remote` defaults to OFF because this endpoint is polled while a run is in
+   * flight: its remote half tag-discovers the bucket and lists the archive on
+   * every call, so polling it would spend paid AWS round trips to read a fact the
+   * server holds in memory. Ask for it only when the stored-archive list is open.
+   */
+  backup(account: string, opts?: { remote?: boolean }): Promise<BackupStatus> {
+    const q = opts?.remote ? '?remote=1' : ''
+    return request<BackupStatus>(`/backup/${enc(account)}${q}`)
   },
 
-  /** Run a backup now. These can take minutes. */
+  /**
+   * Start a backup. Returns as soon as the run is claimed, NOT when it finishes:
+   * the work is a durable host-owned job, so follow it with the account-scoped
+   * `jobs` block on `GET /backup/{account}` rather
+   * than by awaiting this call.
+   */
   backupRun(account: string, kind: BackupKind): Promise<BackupRunResult> {
     return postJson<BackupRunResult>(`/backup/${enc(account)}/run`, { kind })
   },

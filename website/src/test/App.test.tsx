@@ -938,10 +938,14 @@ describe('App routing', () => {
     // The update pill is a conditional sibling of the ladder: it never shrinks
     // and only exists while an update does, so the rung budget has extra bases
     // while it is mounted — and the pill's own label is viewport-gated
-    // (`hidden sm:inline`, 640px), so the footprint itself has TWO values:
-    // the widest shipped-locale label form at ≥640px, the bare icon below.
-    // A single unconditional shift measured at the labeled width would blank
-    // the whole capsule on phones for nothing. Constants are measured in
+    // (`hidden sm:inline`, 640px), so the shift exists ONLY where the label
+    // does: the widest shipped-locale label form at ≥640px, and NOTHING below.
+    // A phone hands the right group ≤240px routinely, so ANY shifted terminal
+    // rung there blanks the CPU/MEM/DSK and credits readouts for the whole
+    // time an update is pending (#7698); the 200–240px squeeze band with the
+    // icon-only pill degrades to the segments' nowrap leading-edge clip
+    // instead, which is the recoverable harm.
+    // Constants are measured in
     // capture/topbar-search-variants.tsx (?update=on&updatelabel=…); the
     // dev-only en-XA pseudolocale is excluded (nowrap backstop covers it).
     // Re-measure and update BOTH the constants here and the index.css rungs
@@ -986,10 +990,8 @@ describe('App routing', () => {
       return Number(match![1])
     }
     const PILL_WIDEST_LABELED = 201.7 // de downloading_percent "Wird heruntergeladen 100 %"
-    const PILL_ICON_ONLY = 34
     const GROUP_GAP = 6
     const SHIFT_LABELED = Math.ceil(PILL_WIDEST_LABELED + GROUP_GAP)
-    const SHIFT_ICON = Math.ceil(PILL_ICON_ONLY + GROUP_GAP)
     const TERMINAL = '.tb-capsule > *:not(:first-child)'
     // ≥640px (label visible): every rung, terminal included, shifts by the
     // labeled footprint, inside the media gate.
@@ -999,13 +1001,19 @@ describe('App routing', () => {
         `labeled shift for ${sel}`
       ).toBe(SHIFT_LABELED)
     }
-    // <640px (icon-only): only the terminal rung shifts, by the icon footprint,
-    // OUTSIDE the media gate. The named readout rungs render desktop-only
-    // elements, so they need no icon-base form.
+    // <640px: NO `.tb-has-update` rung of any kind outside the media gate.
+    // THE regression guard for #7698: an unscoped shifted terminal rung
+    // (240px) applied on phones, where the right group is routinely ≤240px,
+    // so it blanked the CPU/MEM/DSK and credits readouts the whole time an
+    // update was pending. Below 640px the icon-only pill's footprint is
+    // absorbed by the segments' nowrap leading-edge clip and the base 200px
+    // terminal rung bounds the capsule.
     expect(
-      rung(rest, TERMINAL, true, 'icon-base shifted') - rung(rest, TERMINAL, false, 'base'),
-      'icon-only terminal shift'
-    ).toBe(SHIFT_ICON)
+      rest.match(/@container \([^)]*\)\{\s*\.tb-has-update /),
+      'no tb-has-update rung may exist outside the ≥640px media gate'
+    ).toBeNull()
+    // …and the base terminal rung must still bound the phone form.
+    expect(rung(rest, TERMINAL, false, 'base')).toBeGreaterThan(0)
     // The metric readout's icon stand-in must stay visible through the shifted
     // band, inside the same media gate: the base rule hides it from 531px up,
     // so the counterpart re-shows it between the base metrics rung and the

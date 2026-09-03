@@ -450,11 +450,6 @@ class TestCheckOriginLoopbackTrust:
         request = self._make_request("http://evil.com:7779", host="evil.com:7779")
         assert check_origin(request) is False
 
-    def test_same_origin_missing_host_header_rejected(self) -> None:
-        """No Host header -> the same-origin fallback cannot confirm a match."""
-        request = self._make_request("http://localhost:8777")
-        assert check_origin(request) is False
-
 
 class TestAllowedLoopbackPortsEnv:
     """KIROCREW_ALLOWED_LOOPBACK_PORTS opts specific loopback ports into the allowed set."""

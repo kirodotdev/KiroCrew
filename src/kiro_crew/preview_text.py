@@ -7,13 +7,16 @@ syntax) read as noise there. This helper strips markdown down to readable
 plain text, Slack/Telegram-preview style, WITHOUT rendering it.
 
 Deliberately gentler than ``voice_reply.strip_markdown`` (which optimizes for
-speech): emoji are kept, inline code keeps its literal text, and single
+speech): emoji are kept (though ZWJ-joined sequences decompose into their
+constituent emoji, since Unicode format characters are dropped — see
+``drop_format_chars``), inline code keeps its literal text, and single
 underscores are left alone so ``snake_case`` identifiers survive intact.
 """
 
 from __future__ import annotations
 
 import re
+import unicodedata
 
 from kiro_crew.constants import OPTIONS_RE_LINE
 
@@ -44,15 +47,49 @@ def _fence_placeholder(m: re.Match) -> str:
     return " (diff) " if lang == "diff" else " (code) "
 
 
+def drop_format_chars(text: str) -> str:
+    """Remove Unicode format characters (category Cf) from *text*.
+
+    Cf covers the zero-width space/joiners, the word joiner, BOM, bidi
+    controls and the soft hyphen: characters that render as nothing yet are
+    truthy in string guards, and that ``str.split()`` does NOT treat as
+    whitespace. Quiet monitor-loop cycles post a bare U+200B as their
+    say-nothing assistant reply, so without this step a message of pure
+    format characters survives the whitespace collapse as a truthy-but-
+    invisible preview — defeating every empty-preview fallback downstream
+    (the sidebar subtitle and archived-session previews both skip a row only
+    when its preview is empty). Dropping the whole Cf category rather than an
+    enumerated zero-width set closes the class, not one codepoint; the cost
+    is that ZWJ-joined emoji sequences decompose into their constituent emoji
+    in a one-line preview.
+
+    This is the ONE implementation of the Cf drop:
+    ``messaging.display_safety._strip_format_chars`` delegates here, and its
+    docstring carries the security half of the contract — the drop can
+    REASSEMBLE a credential that format characters had split, so callers must
+    strip BEFORE running pattern-based redaction, never after. The ASCII fast
+    path is sound, not an approximation: the ASCII range holds no Cf code
+    point (the C0 controls are Cc), so ordinary traffic never pays for the
+    per-character walk.
+    """
+    if text.isascii():
+        return text
+    return "".join(ch for ch in text if unicodedata.category(ch) != "Cf")
+
+
 def strip_markdown_preview(text: str) -> str:
     """Best-effort plain text for a one-line preview of *text*.
 
     Strips markdown syntax (fences → ``(code)``/``(diff)`` placeholders,
     emphasis markers, link/image syntax, headers, quote/bullet markers) and
-    collapses all whitespace to single spaces. Truncation is the caller's
-    job — this only cleans.
+    collapses all whitespace to single spaces. Unicode format characters
+    (category Cf — the zero-width space and friends) are dropped first, so a
+    message that renders as nothing yields an empty preview and downstream
+    empty-preview fallbacks fire. Truncation is the caller's job — this only
+    cleans.
     """
-    t = _FENCE_RE.sub(_fence_placeholder, text)
+    t = drop_format_chars(text)
+    t = _FENCE_RE.sub(_fence_placeholder, t)
     t = _MCWIDGET_RE.sub(" (widget) ", t)
     t = _INLINE_CODE_RE.sub(r"\1", t)
     t = _IMAGE_RE.sub(lambda m: m.group(1) or "(image)", t)

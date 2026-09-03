@@ -53,7 +53,8 @@ from kiro_crew.dashboard.slot_queue_repository import SlotQueueRepository
 from kiro_crew.dashboard.slot_registry import SlotRegistry
 from kiro_crew.dashboard.system_notices import is_system_notice
 from kiro_crew.dashboard.websocket_hub import WebSocketHub
-from kiro_crew.history import latest_transcript_ts, monotonic_transcript_ts
+from kiro_crew.deny_guidance import remediation_for
+from kiro_crew.history import latest_transcript_ts, mint_row_mid, monotonic_transcript_ts
 from kiro_crew.knowledge.store import KnowledgeStore
 from kiro_crew.loop_lock import LoopBoundLock
 from kiro_crew.messaging.link import (
@@ -102,6 +103,12 @@ if TYPE_CHECKING:
     from kiro_crew.slack.outbound import PostedOptions  # noqa: F401
 
 logger = logging.getLogger(__name__)
+
+#: Cache for :meth:`DashboardState.served_bundle_id` — the served frontend
+#: entry point's ``(mtime_ns, size)`` -> short content hash. One slot: there is
+#: exactly one served bundle per process, and the snapshot that reads it sits
+#: on the hot status path.
+_BUNDLE_ID_CACHE: dict[str, tuple[tuple[int, int], str]] = {}
 _FOLDER_REPOSITORY = FolderRepository(lambda: logger)
 
 
@@ -2453,6 +2460,14 @@ EMPTY_RESPONSE_RECOVERY_PREFIX = "[Empty response — automatic recovery]"
 # happened and the turn still billed. Body: _PROMISE_ONLY_CONTINUE_MSG in
 # chat_utils. One bounded attempt (slot._promise_only_retries), never a loop.
 PROMISE_ONLY_RECOVERY_PREFIX = "[Unfinished action — automatic recovery]"
+# Prefix on the runner-injected continuation sent when the BACKEND compacted the
+# conversation in the middle of a turn and then ended the turn without finishing
+# the work. The compaction itself succeeded — nothing failed — but the request
+# that was in flight when the context filled was abandoned, and the turn lands
+# looking clean (a settled footer with elapsed time), so without this the chat
+# just stops. Body: _COMPACTION_CONTINUE_MSG in chat_utils. One bounded attempt
+# (slot._compaction_continue_retries), never a loop.
+COMPACTION_RECOVERY_PREFIX = "[Context compacted — automatic recovery]"
 # Prefix on the continuation injected when the USER pressed Continue on an
 # interrupted turn. Body: _MANUAL_RESUME_MSG in chat_utils. Named into the
 # *_RECOVERY_PREFIX family because test_recovery_card_prefixes.py keys the
@@ -2575,7 +2590,9 @@ def parse_hook_continuations(stdouts: list[str]) -> list[str]:
     return reasons
 
 
-def build_refusal_recovery_prompt(refusals: list[tuple[str, str]]) -> str:
+def build_refusal_recovery_prompt(
+    refusals: list[tuple[str, str]], *, credential_tool_hint: str = ""
+) -> str:
     """Build the body of an automatic continuation after a recoverable tool refusal.
 
     When a tool call is refused for a recoverable, system-side reason — a
@@ -2622,6 +2639,25 @@ def build_refusal_recovery_prompt(refusals: list[tuple[str, str]]) -> str:
         "you genuinely cannot proceed — say so and stop. Otherwise continue the "
         "task where you left off.",
     ]
+    # Per-class remediation, de-duplicated across the turn's refusals: several
+    # blocked calls in one turn are usually the same wall hit from different
+    # angles, and repeating identical prose per bullet buries the one instruction
+    # that differs. Ordered by first appearance so the earliest refusal's
+    # guidance leads.
+    guidance: list[str] = []
+    for title, reason in refusals:
+        text = remediation_for(reason, title, credential_tool_hint=credential_tool_hint)
+        if text and text not in guidance:
+            guidance.append(text)
+    if guidance:
+        # NOT rendered as `  - ` bullets: RecoveryCard counts every bullet-shaped
+        # line in this body as one blocked tool call (`BULLET_RE`), so guidance in
+        # that shape would inflate the card's "N blocked" count with prose. The
+        # bullet list above is the wire form of the blocked-item count; this
+        # section is prose about it, and the two must stay distinguishable.
+        lines += ["", "How to do this properly:"]
+        for text in guidance:
+            lines += [f"    {text}"]
     return "\n".join(lines)
 
 
@@ -2659,7 +2695,13 @@ _DENY_CAUSE_TEXT: dict[str, tuple[str, str]] = {
 }
 
 
-def build_refusal_steer_notice(title: str, reason: str, *, cause: str = DENY_CAUSE_POLICY) -> str:
+def build_refusal_steer_notice(
+    title: str,
+    reason: str,
+    *,
+    cause: str = DENY_CAUSE_POLICY,
+    credential_tool_hint: str = "",
+) -> str:
     """Body of the in-band deny notice steered into the RUNNING turn.
 
     Sent BEFORE the permission rejection goes back on the wire, which is what
@@ -2694,6 +2736,17 @@ def build_refusal_steer_notice(title: str, reason: str, *, cause: str = DENY_CAU
         return ""
     clause, guidance = _DENY_CAUSE_TEXT.get(cause, _DENY_CAUSE_TEXT[DENY_CAUSE_POLICY])
     what = f"{title}: {reason}" if reason else title
+    # Class-specific remediation, for the policy cause only. The other two causes
+    # judged nothing about the action — an invalid tool name is the model's own
+    # malformed output and a hook fault is a host fault — so naming a sanctioned
+    # alternative there would answer a question nobody asked and imply the action
+    # itself had been refused.
+    remediation = (
+        remediation_for(reason, title, credential_tool_hint=credential_tool_hint)
+        if cause == DENY_CAUSE_POLICY
+        else ""
+    )
+    tail = f"\n\nHow to do this properly: {remediation}" if remediation else ""
     # "host notice", not "policy notice": the tag has to be true for all three
     # causes, and only one of them IS a policy. Naming the ACTOR is also what the
     # notice exists to do — the model has just been told the user denied this, and
@@ -2706,7 +2759,7 @@ def build_refusal_steer_notice(title: str, reason: str, *, cause: str = DENY_CAU
         '"User denied tool execution".\n\n'
         f"Blocked: {what}\n\n"
         "Do not apologise for a cancellation and do not ask the user whether to "
-        f"retry. Decide and continue in this same turn: {guidance}"
+        f"retry. Decide and continue in this same turn: {guidance}{tail}"
     )
 
 
@@ -2928,7 +2981,10 @@ class _ChatSlot:
         "title",
         "agent",
         "model",
+        "_model_withheld",
+        "_model_withheld_for",
         "reasoning_effort",
+        "autocompact_pct",
         "mode",
         "workspace",
         "project",
@@ -2965,6 +3021,8 @@ class _ChatSlot:
         "_resumed_count",
         "_hook_continuation_depth",
         "_todo",
+        "_mcp_report",
+        "_mcp_report_session_id",
         "_on_message",
         "_on_question_retired",
         "_has_reader_flag",
@@ -3023,6 +3081,7 @@ class _ChatSlot:
         "_empty_response_retries",
         "_promise_only_retries",
         "_promise_only_stop_gen",
+        "_compaction_continue_retries",
         "_batch_rejected",
         "_compaction_fail_streak",
         "_compaction_fail_cooldown_until",
@@ -3049,6 +3108,7 @@ class _ChatSlot:
         "_disk_older_durable_count",
         "_disk_window_len",
         "_disk_meta_created_at",
+        "_disk_meta_observed",
         "_disk_tail_ts",
         "_frozen_prefix_cache",
         "_pending_rewrite",
@@ -3087,9 +3147,19 @@ class _ChatSlot:
         self.title = title or key
         self.agent = agent
         self.model = model
+        # Spawn-time withhold verdict for `model`, and the model id it was
+        # computed for. Read through the `model_withheld` property, never these
+        # two directly: the pairing is what makes the verdict self-invalidating
+        # when any of slot.model's writers re-pins the slot.
+        self._model_withheld: bool = False
+        self._model_withheld_for: str = ""
         # Reasoning effort: "" = provider default, else one of low/medium/high/max.
         # Currently consumed by an alternate ACP backend (--effort flag); ACP wired later.
         self.reasoning_effort: str = ""
+        # Per-session auto-compact threshold override (percent). None = follow
+        # the global session.autocompact_pct. Persisted with the slot and
+        # re-seeded into the SessionManager after restore.
+        self.autocompact_pct: float | None = None
         # "" = default chat, "orchestrator" = orchestrated chat
         self.mode = mode
         self.workspace = workspace
@@ -3219,6 +3289,15 @@ class _ChatSlot:
         # None = the agent has never used its todo tool in this slot, which the
         # UI renders as "no pill" rather than "an empty list".
         self._todo: dict[str, Any] | None = None
+        # What THIS slot's agent session reported about its MCP servers, as
+        # published by the ACP layer at session init and updated by later
+        # registration frames. None = this slot has no live session that
+        # reported, which the UI must render as absence of knowledge — NOT as
+        # "no servers". Cleared on session reset: the report is evidence, and a
+        # report describing a torn-down session is worse than none.
+        self._mcp_report: dict[str, Any] | None = None
+        # The session the cached report describes — see set_mcp_report.
+        self._mcp_report_session_id: str = ""
         # Callback for broadcasting messages via global SSE
         self._on_message: object | None = None  # Callable[[str, dict], None] | None
         # Announce stateless question cards this slot retires, so every client
@@ -3423,6 +3502,13 @@ class _ChatSlot:
         # is enqueued; the dispatch-point purge compares against it to catch a Stop
         # that pressed AND resolved to idle while the continuation waited (#2696).
         self._promise_only_stop_gen: int = 0
+        # One bounded synthetic continuation when the BACKEND compacted the
+        # conversation mid-turn and then ended the turn without finishing the
+        # work (see COMPACTION_RECOVERY_PREFIX). Bounded separately from the
+        # promise-only budget: the two failure modes are independent, and a turn
+        # that hits one must not be denied recovery from the other. Reset like
+        # the other per-turn retry budgets on a landed turn.
+        self._compaction_continue_retries: int = 0
         self._batch_rejected: bool = False
         # Per-turn compaction-status failure tracking (Mesh compaction-spam
         # fix). Distinct from SessionManager._compact_cooldown_until, which
@@ -3528,6 +3614,17 @@ class _ChatSlot:
         # deleted window into the latter. Empty means "never observed a disk
         # identity" (fresh slot), which the guard treats as no evidence.
         self._disk_meta_created_at: str = ""
+        # Whether this slot has OBSERVED its transcript's metadata on disk at
+        # all — set wherever ``_disk_meta_created_at`` is recorded (hydrate
+        # sites and committed saves). Legacy metadata carries no
+        # ``created_at``, which leaves the identity string above EMPTY even
+        # though the file was genuinely observed; without this bit the
+        # delete-won guard would read that empty identity as "fresh slot, no
+        # evidence" and let a save racing a permanent delete recreate the
+        # deleted transcript. The bit supplies the missing-file witness for
+        # legacy sessions; the identity COMPARISON still requires a non-empty
+        # ``created_at`` on both sides.
+        self._disk_meta_observed: bool = False
         # The newest ``ts`` seen on disk at the last save, INCLUDING rows this
         # slot never observed. A subagent, cron, or CLI appending to a session a
         # live tab also has open writes rows that ``_save_slot_to_history``
@@ -3771,6 +3868,39 @@ class _ChatSlot:
             "current": current,
         }
 
+    def set_mcp_report(self, report: dict[str, Any] | None, session_id: str = "") -> bool:
+        """Replace this slot's MCP session report. True when it changed.
+
+        The payload is built and sanitized by
+        :class:`kiro_crew.acp.mcp_session_report.McpSessionReport`, which owns
+        redaction and the per-bucket caps; this only stores what it produced, so
+        a caller cannot widen those bounds by writing here.
+
+        ``session_id`` is the session the report DESCRIBES. It is stored beside
+        the payload because this copy outlives its owner: the report itself lives
+        on the transport and is inherently the session's, but a cached
+        projection is only as valid as the identity it was taken under.
+        """
+        normalised = report if isinstance(report, dict) else None
+        if normalised == self._mcp_report and session_id == self._mcp_report_session_id:
+            return False
+        self._mcp_report = normalised
+        self._mcp_report_session_id = session_id if normalised is not None else ""
+        return True
+
+    def clear_mcp_report(self) -> bool:
+        """Drop the report because this slot's session is gone. True if it had one.
+
+        Distinct from ``set_mcp_report(None)`` only in intent: it is called from
+        the session-reset funnel so a report can never outlive the session it
+        describes and be read as the next one's.
+        """
+        return self.set_mcp_report(None)
+
+    def mcp_report_payload(self) -> dict[str, Any] | None:
+        """The stored MCP session report, or None when this slot has none."""
+        return self._mcp_report
+
     def note_disk_tail(self, *candidates: str | None) -> None:
         """Record the newest ``ts`` known to be ON DISK for this session.
 
@@ -3897,7 +4027,7 @@ class _ChatSlot:
             existing = msg.get("meta")
             msg["meta"] = {
                 **(existing if isinstance(existing, dict) else {}),
-                "mid": f"m-{uuid.uuid4().hex[:16]}",
+                "mid": mint_row_mid(),
             }
         self.messages.append(msg)
         self.invalidate_source_links()
@@ -4043,13 +4173,21 @@ class _ChatSlot:
         *,
         content: str | None = None,
         meta: dict | None = None,
+        mid: str | None = None,
     ) -> dict | None:
-        """Replace fields on a previously appended message identified by ts."""
+        """Replace fields on a previously appended message.
+
+        Identified by ``mid`` (this row's server-minted identity) when one is
+        given, falling back to ``ts``. Prefer ``mid``: two rows can carry the same
+        ``ts``, so a ts lookup resolves the first match and can patch the wrong
+        row.
+        """
         return self._buffers.update_message(
             self,
             ts,
             content=content,
             meta=meta,
+            mid=mid,
         )
 
     # ── Queue helpers (dict-based queue items) ──
@@ -4146,6 +4284,47 @@ class _ChatSlot:
     def queue_depth(self) -> int:
         """Number of prompts currently queued behind the active turn."""
         return len(self._queue)
+
+    @property
+    def model_withheld(self) -> bool | None:
+        """Whether the live session withholds this slot's pinned model.
+
+        Tri-state, and the third state carries as much information as the other
+        two: ``True`` the account cannot run the pin (the spawn withheld it and
+        the session is on the backend default), ``False`` it can, ``None``
+        **unknown** -- no session has advertised a comparable list for this pin
+        yet. The frontend must fail open on ``None`` (see ``displayModel``);
+        unknown is not denied.
+
+        Recorded per model id, not per slot: the verdict answers a question
+        about ONE pin, so it is reported only while the slot still carries the
+        model it was computed for. That makes every writer of ``slot.model``
+        (the picker, the bulk pick, the rollback, the restore paths, the
+        canonical backfill) invalidate it for free -- a stale verdict outliving
+        a re-pin would be a display that names the wrong model, and there are
+        too many writers to keep an explicit reset at each one.
+
+        DISPLAY only. This is never a write source: the pin is deliberately
+        KEPT when withheld (it is inert and self-heals on re-upgrade), and the
+        pin-to-agent row writes ``slot.model`` itself.
+        """
+        if not self.model or self._model_withheld_for != self.model:
+            return None
+        return self._model_withheld
+
+    def record_model_withheld(self, withheld: bool | None) -> None:
+        """Pin a spawn-time withhold verdict to the model it was computed for.
+
+        ``None`` forgets the verdict (back to unknown) -- what a session
+        teardown does, since the verdict describes the session that advertised
+        the list, not the slot.
+        """
+        if withheld is None:
+            self._model_withheld = False
+            self._model_withheld_for = ""
+            return
+        self._model_withheld = withheld
+        self._model_withheld_for = self.model or ""
 
     @property
     def is_restricted(self) -> bool:
@@ -5047,13 +5226,56 @@ class DashboardState:
 
         self.sessions.on_stuck_turn = _on_stuck_turn
 
+    @staticmethod
+    def served_bundle_id(index: Path | None = None) -> str:
+        """A short content hash of the SERVED frontend bundle's entry point.
+
+        The WS status frame already lets the SPA reload itself across a gateway
+        UPGRADE (it compares ``version`` between pushes), but a rebuild of the
+        same version — the normal state of a git-checkout dev install, whose
+        in-app update pulls, rebuilds, and restarts without the version moving —
+        changes neither ``version`` nor ``commit``-visible fields in a way every
+        open tab observes. This id is the field that does move: it hashes the
+        entry ``index.html`` under ``static/dist`` (whose hashed asset names
+        change on every rebuild), so any tab holding a stale bundle can detect
+        the swap on its next status frame and reload.
+
+        Cached by ``(mtime_ns, size)``: the snapshot sits on the hot status
+        path (every ``/api/status`` poll and WS push), so the file is re-read
+        only when a rebuild actually replaced it. Empty string when there is no
+        served bundle (source tree without a built frontend, unit tests) — the
+        SPA treats empty as UNKNOWN and never reloads over it.
+
+        ``index`` is injectable for tests; the default is the entry point the
+        gateway actually serves (``server.py``'s ``_DIST_DIR``).
+        """
+        if index is None:
+            index = Path(__file__).resolve().parent.parent / "static" / "dist" / "index.html"
+        try:
+            st = index.stat()
+        except OSError:
+            return ""
+        key = (st.st_mtime_ns, st.st_size)
+        cached = _BUNDLE_ID_CACHE.get("v")
+        if cached and cached[0] == key:
+            return cached[1]
+        try:
+            digest = hashlib.sha256(index.read_bytes()).hexdigest()[:16]
+        except OSError:
+            return ""
+        _BUNDLE_ID_CACHE["v"] = (key, digest)
+        return digest
+
     def _count_lessons(self) -> int:
         """Count lessons from JSONL store + vector store (if enabled)."""
         count = len(self.lessons.load_all())
         if self.context_builder:
             vs = self.context_builder.memory.vector_store
             if vs:
-                count += len(vs.get_lessons())
+                # COUNT(*) — not get_lessons() — so the status paths that poll
+                # this per client do not materialize the whole lesson corpus
+                # just to len() it.
+                count += vs.count_lessons()
         return count
 
     def status_snapshot(
@@ -5173,6 +5395,14 @@ class DashboardState:
             "no_crons": self.no_crons,
             "branch": branch,
             "commit": commit,
+            # Content hash of the SERVED frontend bundle (see
+            # ``served_bundle_id``). The SPA compares it across status pushes
+            # and reloads when it moves — the signal ``version`` cannot give
+            # for a same-version rebuild (a git checkout's in-app update), and
+            # one that reaches every open tab, not just the one that clicked
+            # Update. Empty when no built bundle is served (dev source tree),
+            # which the SPA treats as unknown, never as a change.
+            "bundle_id": self.served_bundle_id(),
             # Which release lane these bytes came from: "nightly", "insider" or
             # "stable". Shipped as a RESOLVED ANSWER rather than leaving the
             # dashboard to parse `version` itself, because the rule is not
@@ -6156,7 +6386,11 @@ class DashboardState:
 
         Takes the list to persist explicitly so a caller can save a candidate
         list before committing it to ``_cron_folders`` (see ``create_cron_folder``),
-        keeping in-memory state and disk from diverging mid-operation. Any
+        keeping in-memory state and disk from diverging mid-operation. This is the
+        single persist chokepoint for all folder mutations: ``create_cron_folder``
+        passes a candidate list here before committing it, while ``save_cron_folders``
+        (used by ``rename_cron_folder`` and ``delete_cron_folder``) passes the
+        already-mutated ``_cron_folders`` to commit an in-place edit. Any
         malformed entries preserved at load time (``_unparsed_cron_folder_entries``)
         are appended, so a save cannot erase bytes a hand-edit left in a shape
         the loader could not validate.
@@ -7004,6 +7238,7 @@ class DashboardState:
         out = []
         subs = getattr(self, "subagents", None)
         for s in self._slots.values():
+            self._drop_orphaned_mcp_report(s)
             d = self.serialize_slot(
                 s,
                 include_check_status=include_check_status,
@@ -7012,6 +7247,51 @@ class DashboardState:
             d["subagents_running"] = bool(subs and subs.running_agents_for(f"dashboard:{s.key}"))
             out.append(d)
         return out
+
+    def _drop_orphaned_mcp_report(self, slot: "_ChatSlot") -> None:
+        """Drop a slot's MCP report unless it describes the slot's CURRENT session.
+
+        A report describes exactly ONE session. Clearing it at each teardown was
+        the wrong shape — review found path after path that skipped it (the reset
+        funnel, the reload and reset-conversation routes, the queued discard, a
+        channel handler, the cron reaper, the task runner, a project change) — and
+        a LIVENESS check ("does a session exist?") still missed the last of them,
+        because a reset RECREATES a session under the same key: the slot looked
+        alive while the report described the session that had gone.
+
+        So the question asked here is identity, not liveness — is the live session
+        the one this payload was taken under? A mismatch is dropped by
+        construction, which closes every one of those paths at once, including any
+        future one, and demotes the remaining ``clear_mcp_report()`` calls to a
+        courtesy that pushes the delta early rather than the thing correctness
+        rests on.
+
+        Validating HERE cannot be bypassed: this is the single projector both
+        ``/api/chat/slots`` and the WebSocket snapshot go through.
+
+        The key derivation mirrors ``chat_utils.effective_session_key`` — a
+        channel-born slot's turns run on the channel's own session — and is
+        inlined because ``chat_utils`` imports this module. One refinement over
+        that mirror: an in-flight turn's OWN key wins over the slot's routing.
+        The two diverge when the routing is reassigned on a live slot — a cron
+        injection binds ``linked_session_key`` to ``cron:<id>`` with no
+        ``running`` gate — and the report describes the session the turn is
+        actually running on, not the one a FUTURE turn would route to.
+        Resolving the routing there reads a different (or absent) provider,
+        mismatches, and clears a live session's report mid-turn. Same rule as
+        turn cancellation: address the turn, not the routing.
+        """
+        if slot.mcp_report_payload() is None:
+            return
+        session_key = (
+            getattr(slot, "_active_turn_session_key", "")
+            or getattr(slot, "linked_session_key", "")
+            or f"dashboard:{slot.key}"
+        )
+        provider = self.sessions.get_provider(session_key)
+        live_id = getattr(provider, "session_id", "") if provider is not None else ""
+        if live_id != slot._mcp_report_session_id:
+            slot.clear_mcp_report()
 
     @contextlib.contextmanager
     def suspend_slots_push(self) -> "Iterator[None]":

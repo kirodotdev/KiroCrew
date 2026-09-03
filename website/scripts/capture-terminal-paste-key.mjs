@@ -36,13 +36,43 @@
 import { chromium } from 'playwright'
 import { mkdirSync } from 'node:fs'
 import { serveDist } from './lib/serve-dist.mjs'
-import { json, logPageProblems } from './lib/stub-dashboard-api.mjs'
+import { json, logPageProblems, stubDashboardApi } from './lib/stub-dashboard-api.mjs'
 
 const OUT = process.argv[2] || '../temp-screenshots/terminal-paste-key'
 mkdirSync(OUT, { recursive: true })
 
 async function stubContext(context, theme) {
-  await context.routeWebSocket(/\/api\/ws/, () => {})
+  // The shared stub takes a page in its own harnesses; a BrowserContext exposes
+  // the same three methods it uses (route, routeWebSocket, addInitScript) and
+  // this harness runs exactly one page per context, so the effect is identical.
+  await stubDashboardApi(context, {
+    theme,
+    // Seed the docked terminal open with one tab, the same persisted shape a
+    // reload restores — clicking the nav row in a harness is flaky. Passed here
+    // rather than via addInitScript because the stub's own script clears storage.
+    localStorageEntries: {
+      'mc-bottom-terminal': JSON.stringify({
+        open: true, height: 300,
+        tabs: [{ id: 'fixture-tab-1' }], activeId: 'fixture-tab-1',
+      }),
+    },
+    extra: async (path, route) => {
+      // Create-slot must return a keyed slot object — the shared stub's array
+      // answer puts a keyless slot in redux and crashes the shell.
+      if (path === '/api/chat/slots' && route.request().method() === 'POST') {
+        await json(route, { key: 'fixture-chat', title: 'New Session…', agent: 'kirocrew' })
+        return true
+      }
+      if (path.startsWith('/api/chat/slots/')) {
+        await json(route, {})
+        return true
+      }
+      return false
+    },
+  })
+
+  // AFTER the shared stub, which routes `/api/ws` itself: the terminal socket
+  // matches that pattern too, and the LAST matching route registered wins.
   // Scripted PTY: ready + prompt on connect, then echo keystrokes/pastes back
   // (CR → CRLF so multi-line pastes render as lines, as a shell would).
   await context.routeWebSocket(/\/api\/ws\/terminal\//, ws => {
@@ -53,58 +83,6 @@ async function stubContext(context, theme) {
       ws.send(Buffer.from(m.toString('utf8').replace(/\r/g, '\r\n')))
     })
   })
-
-  // Table-driven fixture answers (exact path → payload). Deliberately NOT the
-  // if-chain layout the sibling harnesses use — jscpd gates clone windows
-  // across scripts, and a table also reads better for a fixture set this flat.
-  const FIXTURES = {
-    '/api/chat/folders': [],
-    '/api/chat/slots': [],
-    '/api/status': { sessions: 0, crons: 0, lessons: 0, uptime: 120, version: '0.5.0' },
-    '/api/notifications': { notifications: [], unread: 0 },
-    '/api/auth/me': { user: 'owner', app: '' },
-    '/api/themes': { themes: [], installed: [] },
-    '/api/dashboard/branding': { bot_name: 'Kiro Crew', avatar: '/logo.png' },
-    '/api/recent-projects': { dirs: [] },
-    '/api/agents': {
-      agents: [{ name: 'kirocrew', kiro_agent: 'kirocrew', workspace: 'default', memory_store: 'default' }],
-      default_agent: 'kirocrew',
-    },
-    '/api/agents/installed': [{ name: 'kirocrew' }],
-    '/api/workspaces': { workspaces: [{ name: 'default' }] },
-    '/api/chat/agents': [{ name: 'kirocrew', source: 'builtin' }],
-    '/api/kiro-prerequisite': {
-      platform: 'linux', installed: true, authenticated: true, ready: true,
-      initial_setup_complete: true, can_auto_install: false, can_login: false,
-      repair_required: false, docs_url: '', setup_allowed: false,
-      operation: { kind: '', status: 'idle', message: '', detail: '', url: '', error: '' },
-    },
-  }
-  await context.route('**/api/**', async route => {
-    const path = new URL(route.request().url()).pathname
-    // Create-slot must return a keyed slot object — an empty-array answer puts
-    // a keyless slot in redux and crashes the shell.
-    if (path === '/api/chat/slots' && route.request().method() === 'POST') {
-      return json(route, { key: 'fixture-chat', title: 'New Session…', agent: 'kirocrew' })
-    }
-    if (path === '/api/theme/boot') return json(route, { mode: theme, theme: '' })
-    if (Object.hasOwn(FIXTURES, path)) return json(route, FIXTURES[path])
-    if (path.startsWith('/api/chat/slots/')) return json(route, {})
-    if (path.startsWith('/api/instances')) return json(route, { instances: [], active: '' })
-    const objectish = /(config|tips|voice|autonudge|branding|status|usage-summary)/.test(path)
-    return json(route, objectish ? {} : [])
-  })
-
-  await context.addInitScript(t => {
-    localStorage.setItem('mc-theme', t)
-    localStorage.setItem('mc-onboarded', '1')
-    // Seed the docked terminal open with one tab, the same persisted shape a
-    // reload restores — clicking the nav row in a harness is flaky.
-    localStorage.setItem('mc-bottom-terminal', JSON.stringify({
-      open: true, height: 300,
-      tabs: [{ id: 'fixture-tab-1' }], activeId: 'fixture-tab-1',
-    }))
-  }, theme)
 }
 
 /** New page with touch emulation active (the key bar's render condition). */

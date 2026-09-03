@@ -9,6 +9,7 @@ import json
 import tempfile
 import threading
 import unittest
+import unittest.mock
 from pathlib import Path
 
 from sage_lib import review_pool as rp
@@ -474,3 +475,44 @@ class TestReviewEffort(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestRuntimePreflight(unittest.TestCase):
+    """runtime_preflight answers "could a reviewer session actually spawn?"
+
+    "" means yes; anything else names what is missing, so the driver can fail
+    the run fast with a triagable reason instead of completing with nothing
+    written and reporting an undiscriminated "no result record".
+    """
+
+    def test_available_runtime_returns_empty(self):
+        with unittest.mock.patch.object(rp, "AcpRuntime", object()), \
+                unittest.mock.patch.object(rp, "resolve_kiro_cli",
+                                           lambda: "/usr/local/bin/kiro-cli"):
+            self.assertEqual(rp.runtime_preflight(), "")
+
+    def test_missing_cli_names_the_runtime(self):
+        with unittest.mock.patch.object(rp, "AcpRuntime", object()), \
+                unittest.mock.patch.object(rp, "resolve_kiro_cli", lambda: None):
+            msg = rp.runtime_preflight()
+            self.assertIn("kiro-cli", msg)
+
+    def test_unimportable_acp_runtime_is_reported(self):
+        with unittest.mock.patch.object(rp, "AcpRuntime", None):
+            msg = rp.runtime_preflight()
+            self.assertTrue(msg)
+            self.assertIn("runtime", msg.lower())
+
+    def test_check_is_read_only(self):
+        # The preflight runs (off the event loop) before every review run — it
+        # must only LOOK for the executable, never spawn or write anything.
+        calls: list[str] = []
+
+        def _resolver() -> str:
+            calls.append("resolve")
+            return "/bin/kiro-cli"
+
+        with unittest.mock.patch.object(rp, "AcpRuntime", object()), \
+                unittest.mock.patch.object(rp, "resolve_kiro_cli", _resolver):
+            rp.runtime_preflight()
+        self.assertEqual(calls, ["resolve"])

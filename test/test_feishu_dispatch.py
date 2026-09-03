@@ -194,7 +194,7 @@ class FakeConvLog:
         self.agents: list[str | None] = []
         self.titles: dict[str, str] = {}
 
-    def append(self, key, role, text, *, agent=None) -> None:
+    def append(self, key, role, text, *, agent=None, mid=None) -> None:
         self.appended.append((key, role, text))
         self.agents.append(agent)
 

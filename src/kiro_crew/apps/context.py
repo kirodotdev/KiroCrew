@@ -16,6 +16,7 @@ from typing import Any
 from kiro_crew.apps.app_storage import AppStorage
 from kiro_crew.apps.cron_sdk import CronSDK
 from kiro_crew.apps.event_bus import EventBus
+from kiro_crew.apps.job_sdk import JobSDK
 from kiro_crew.apps.spawn_sdk import SpawnSDK
 
 
@@ -64,6 +65,7 @@ class AppContext:
     events: EventBus | None = None
     storage: AppStorage | None = None
     spawn: SpawnSDK | None = None
+    job: JobSDK | None = None
     health: AppHealthStatus = field(default_factory=AppHealthStatus)
 
 
@@ -119,6 +121,17 @@ def build_app_context(
     if perms.get("storage"):
         app_storage = AppStorage(app_name, data_dir)
 
+    # Build JobSDK if permitted. Unlike cron/spawn there is no host service to
+    # inject: the run store IS the app's own data dir, so the permission alone
+    # decides. Registering it in the process-wide lookup the shared routes read
+    # is deliberately NOT done here -- that is the gateway wiring's job (see
+    # hooks_integration._build_app_context_from_info), so this factory stays
+    # free of process-global side effects and a test can build a context
+    # without publishing an SDK to every route.
+    job_sdk = None
+    if perms.get("jobs"):
+        job_sdk = JobSDK(app_name, data_dir)
+
     return AppContext(
         name=app_name,
         data_dir=data_dir,
@@ -128,4 +141,5 @@ def build_app_context(
         events=event_bus,
         storage=app_storage,
         spawn=spawn_sdk,
+        job=job_sdk,
     )

@@ -202,6 +202,11 @@ def schemas() -> list[dict[str, Any]]:
                 "the real explanation in `why`, which is what the next crew "
                 "reads. "
                 "The crew and repo come from this session, not from arguments. "
+                "To record that you checked the queue and took NOTHING, send "
+                "`event_kind: sweep` with NO `number` — never invent an issue "
+                "number for a cycle you did no work in. That writes one "
+                "crew-level line and no work item, so it also takes none of the "
+                "work-item fields. "
                 "WARNING — `event` and `why` BECOME PUBLIC: they are rendered into "
                 "your claim comment on the forge as well as on your crew page. "
                 "Never "
@@ -216,7 +221,11 @@ def schemas() -> list[dict[str, Any]]:
                 "properties": {
                     "number": {
                         "type": "integer",
-                        "description": "Issue number this step belongs to",
+                        "description": (
+                            "Issue number this step belongs to. Omit it ONLY with "
+                            "`event_kind: sweep`, to record that you checked the "
+                            "queue and took nothing — never invent a number for that"
+                        ),
                     },
                     "phase": {
                         "type": "string",
@@ -309,7 +318,13 @@ def schemas() -> list[dict[str, Any]]:
                         "description": "Which kind of step this line records",
                     },
                 },
-                "required": ["number"],
+                # Nothing is unconditionally required. `number` was, which left a
+                # crew that swept an empty queue no way to record the cycle without
+                # inventing an issue number; the backend now pairs a missing number
+                # with the crew-level `sweep` kind and refuses every other
+                # combination, so the coupling is enforced where the write happens
+                # rather than by a schema that cannot express "one or the other".
+                "required": [],
             },
         },
     ]
@@ -466,8 +481,13 @@ def issue_radar_crew_record(name: str, args: dict[str, Any]) -> str:
         "owner": _cw_owner,
         "repo": _cw_repo,
         "crew_id": _cw_crew_id,
-        "number": args["number"],
     }
+    # Presence, not truthiness. Omitting `number` is a MEANING — "this step belongs
+    # to no issue" — so it is forwarded as an absence rather than as a zero, which
+    # the route would read as a malformed issue number. The route pairs the absence
+    # with the crew-level `sweep` kind and refuses any other combination.
+    if "number" in args:
+        _cw_body["number"] = args["number"]
     # Local-only resume fields, passed through verbatim. NOT scrubbed: an
     # absolute worktree path is the point of the field, and it is never
     # rendered into a comment (crew_store keeps these local).
@@ -536,9 +556,29 @@ def issue_radar_crew_record(name: str, args: dict[str, Any]) -> str:
         return f"Error: {_cw_resp['error']}"
     _cw_raw_item = _cw_resp.get("item")
     _cw_item: dict[str, Any] = _cw_raw_item if isinstance(_cw_raw_item, dict) else {}
-    _cw_ref = f"{_cw_owner}/{_cw_repo}#{args['number']}"
-    _cw_phase = _cw_item.get("phase") or _cw_body.get("phase") or "(phase unchanged)"
-    _cw_lines = [f"Recorded {_cw_ref}: phase `{_cw_phase}`."]
+    # A crew-level line has no issue to name and no item to report a phase for, so
+    # it is summarised by the crew it belongs to. Reusing the numbered wording here
+    # would print a bare `#` and claim a phase the write never touched.
+    if "number" in args:
+        _cw_ref = f"{_cw_owner}/{_cw_repo}#{args['number']}"
+        _cw_phase = _cw_item.get("phase") or _cw_body.get("phase") or "(phase unchanged)"
+        _cw_lines = [f"Recorded {_cw_ref}: phase `{_cw_phase}`."]
+    else:
+        # Whether a line was actually written matters to the caller: a coalesced
+        # checkpoint is still acknowledged, but a crew that believed each idle
+        # cycle added a line would misread its own log's length as its cycle count.
+        if _cw_resp.get("coalesced"):
+            _cw_lines = [
+                f"Crew-level step for {_cw_owner}/{_cw_repo} folded into the open "
+                "idle stretch (its ledger line already says the queue was empty, "
+                "so no duplicate was added -- the existing line's timestamp marks "
+                "when the stretch began)."
+            ]
+        else:
+            _cw_lines = [
+                f"Recorded a crew-level step for {_cw_owner}/{_cw_repo} "
+                "(no issue -- no work item was written)."
+            ]
     if _cw_body.get("event"):
         # Echo the stored line, not the argument — if a sanitizer pass
         # changed it, the crew must see what actually became public.

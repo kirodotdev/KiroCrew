@@ -104,7 +104,7 @@ replays full history.
 |---|---|---|---|
 | Sign-in | `kiro-cli login`; SSO `--use-device-flow --license pro` (`kiro_prerequisite.py:80,90`) | same | brings its own: a credential-refresh **command** named inside its own `settings.json`, plus a provider-routing env var on the child (companion) |
 | Credential store | projected, never copied: identity tables plus `migrations` rows plus selected `state` rows (`kiro_prerequisite.py:182-200`) | same store | its own; that refresh command is copied **verbatim** into the isolated seed at `0o600`. Dropping it breaks auth outright, so the seed cannot simply be emptied (companion) |
-| Recyclable on a host logout | yes | yes (`ACP_BACKENDS_KIRO_IDENTITY_STORE`, `acp/types.py:182-196`) | **no** — a live CC child must survive `kiro-cli logout` |
+| Recyclable on a host logout | yes | yes (`ACP_BACKENDS_KIRO_IDENTITY_STORE`, `acp_backends.py:303-316`) | **no** — a live CC child must survive `kiro-cli logout` |
 | Entitlement discovery | account API | account API | runtime, from the advertised model set at session init; the registry is filtered down to it (`dashboard/handlers/agents.py:1151-1160`) |
 | Readiness probe | `--version` then `whoami`, inside the OS sandbox (`kiro_prerequisite.py:4-7`) | same | binary resolution only, but for **both** components and through the spawn's own resolvers, so the answer cannot disagree with what a spawn does (`agent_sdk/backend_install.py`, `agent_sdk/drivers/acp.py`) |
 
@@ -260,7 +260,7 @@ path a public build takes when an operator picks Claude Code.
 | Methods returning a neutral value purely for a companion to override | 6 |
 | `ClaudeCodeProvider is not None and isinstance(...)` guards against a name hard-coded to `None` | 11 sites, 2 sentinels (`session.py:200`, `subagent.py:144`) |
 | Comment clusters naming the companion or a deleted module as the supplier | 19 |
-| Refusal / downgrade mechanisms | 9, including one degrade log line (`config/loader.py:4647-4652`) and five capability non-memberships |
+| Refusal / downgrade mechanisms | 9, including the degrade log in `acp_backends.resolve_selected_backend()` and five capability non-memberships |
 | Live `_is_claude` branches inside `acp/` | 13 |
 | CC-symbol lines in `src/kiro_crew` | 146 (352 including `test/`) |
 

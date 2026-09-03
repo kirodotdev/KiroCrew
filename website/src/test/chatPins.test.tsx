@@ -5,14 +5,15 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { createElement, type ReactNode } from 'react'
 import { useChatPins } from '../hooks/useChatPins'
 import { PinnedMessagesPanel } from '../pages/chat/PinnedMessagesPanel'
-import { PIN_PREVIEW_INPUT_MAX_CHARS, type ChatPin, type PinApiError } from '../api/pins'
+import { PIN_PREVIEW_INPUT_MAX_CHARS, type ChatPin } from '../api/pins'
+import { ApiError } from '../api/apiError'
 import { pinErrorCode } from '../hooks/useChatPins'
 
-/** Build the plain-Error-with-code shape pinsApi.create throws. */
-function pinError(message: string, code?: string): PinApiError {
-  const err: PinApiError = new Error(message)
-  err.code = code
-  return err
+/** Build the `ApiError` (with a code-bearing JSON body) that pinsApi now throws
+ *  via the shared transport, so `pinErrorCode` reads the code the real way. */
+function pinError(status: number, code?: string): ApiError {
+  const body = code ? JSON.stringify({ code }) : JSON.stringify({ error: 'boom' })
+  return new ApiError(status, `HTTP ${status}`, body)
 }
 
 // Mock the pins API. The hook branches structurally on the error's `code`
@@ -173,7 +174,7 @@ describe('useChatPins', () => {
     await waitFor(() => expect(result.current.pins).toHaveLength(1))
 
     ;(pinsApi.create as ReturnType<typeof vi.fn>).mockRejectedValue(
-      pinError('Pin create failed: 409', 'pin_limit_reached'),
+      pinError(409, 'pin_limit_reached'),
     )
 
     await act(async () => {
@@ -191,7 +192,7 @@ describe('useChatPins', () => {
     await waitFor(() => expect(result.current.pins).toHaveLength(1))
 
     ;(pinsApi.create as ReturnType<typeof vi.fn>).mockRejectedValue(
-      pinError('Pin create failed: 500', 'persist_failed'),
+      pinError(500, 'persist_failed'),
     )
 
     await act(async () => {
@@ -204,9 +205,14 @@ describe('useChatPins', () => {
     expect(result.current.error).toBe('pin')
   })
 
-  it('pinErrorCode extracts the backend code structurally', () => {
-    expect(pinErrorCode(pinError('Pin create failed: 409', 'pin_limit_reached'))).toBe('pin_limit_reached')
-    expect(pinErrorCode(pinError('Pin create failed: 500'))).toBeUndefined()
+  it('pinErrorCode extracts the backend code from the ApiError body', () => {
+    expect(pinErrorCode(pinError(409, 'pin_limit_reached'))).toBe('pin_limit_reached')
+    // ApiError whose body carries no `code` (only an `error` message) -> undefined.
+    expect(pinErrorCode(pinError(500))).toBeUndefined()
+    // Structural fallback: a plain Error still carrying a string `.code` resolves.
+    const legacy = new Error('x') as Error & { code?: unknown }
+    legacy.code = 'preview_too_large'
+    expect(pinErrorCode(legacy)).toBe('preview_too_large')
     expect(pinErrorCode(new Error('plain'))).toBeUndefined()
     expect(pinErrorCode('not an error')).toBeUndefined()
     expect(pinErrorCode(undefined)).toBeUndefined()

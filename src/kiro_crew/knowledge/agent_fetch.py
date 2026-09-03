@@ -10,7 +10,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
-from kiro_crew.security import redact_credentials, redact_exfiltration_urls
+from kiro_crew.security import redact_and_truncate
 
 if TYPE_CHECKING:
     from kiro_crew.knowledge.llm_pool import LLMPool
@@ -61,8 +61,7 @@ async def fetch_url_content(url: str, pool: "LLMPool") -> str:
     content_lower = content[:200].lower()
     for indicator in _ERROR_INDICATORS:
         if indicator.lower() in content_lower:
-            redacted, _ = redact_exfiltration_urls(content[:300])
-            redacted, _ = redact_credentials(redacted)
+            redacted = redact_and_truncate(content, 300)
             logger.error("fetch_url_content: error indicator '%s' found in response: %s", indicator, redacted[:200])
             raise RuntimeError(f"Failed to fetch {url}: {redacted[:300]}")
     # Sanity check: real documents should have meaningful length

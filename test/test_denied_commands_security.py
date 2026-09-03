@@ -16,6 +16,7 @@ from pathlib import Path
 
 import pytest
 
+from kiro_crew import security
 from kiro_crew.security import (
     _GIT_PUBLISH_RULE_PATTERNS,
     BUILTIN_DENIED_RULES,
@@ -32,13 +33,13 @@ _GOLDEN = Path(__file__).parent / "fixtures" / "denied_commands_golden.json"
 
 
 class TestCatalog:
-    def test_catalog_has_137_unique_ids(self):
+    def test_catalog_ids_are_unique(self):
         # 130 patterns ported byte-exact from the retired agent-config
         # deniedCommands list + 7 legacy security.py globs (secret-fetch tool
         # names + boto3 underscore destructive forms) restored as regexes.
-        assert len(BUILTIN_DENIED_RULES) == 140
+        assert len(BUILTIN_DENIED_RULES) == 148
         ids = [r.id for r in BUILTIN_DENIED_RULES]
-        assert len(set(ids)) == 140
+        assert len(set(ids)) == 148
 
     def test_token_mint_is_blocked_in_both_the_cli_and_module_forms(self):
         """`kirocrew token` mints a signed dashboard token that authenticates to EVERY gateway
@@ -177,7 +178,7 @@ class TestCatalog:
     def test_patterns_match_manifest_verbatim(self):
         golden = json.loads(_GOLDEN.read_text(encoding="utf-8"))
         golden_by_id = {g["id"]: g for g in golden}
-        assert len(golden_by_id) == 140
+        assert len(golden_by_id) == 148
         for rule in BUILTIN_DENIED_RULES:
             g = golden_by_id[rule.id]
             assert rule.pattern == g["pattern"]
@@ -191,7 +192,7 @@ class TestCatalog:
 
     def test_builtin_denied_rules_accessor_returns_dicts(self):
         rules = builtin_denied_rules()
-        assert len(rules) == 140
+        assert len(rules) == 148
         first = rules[0]
         assert set(first.keys()) == {"id", "pattern", "category", "description"}
         assert isinstance(first["id"], str)
@@ -693,10 +694,21 @@ class TestIsDeniedDualMatching:
     def test_malformed_regex_alone_allows(self):
         assert is_denied("some benign thing", denied_regexes=["(unclosed"]) is None
 
-    def test_git_publish_still_blocks_with_empty_denied_regexes(self):
-        # Git-publish floor runs before the tiers and is independent of the
-        # disableable regex tier.
-        assert is_denied("git push origin main", denied_regexes=[]) is not None
+    def test_git_publish_floor_honours_the_per_rule_opt_out(self):
+        # The floor runs before the tiers, but each of its GATED branches is now
+        # consulted against the effective set, so an operator who disabled every
+        # built-in has disabled these too. That is the point of the gating: a
+        # toggle the UI offers must not be a silent no-op in either direction.
+        assert is_denied("git push origin main", denied_regexes=[]) is None
+        # ``None`` fails closed to all built-ins enabled, so the default path
+        # still denies.
+        assert is_denied("git push origin main") is not None
+
+    def test_git_publish_unverifiable_glue_is_never_opt_out_able(self):
+        # Substitution glue fuses text into the push target, so the destination
+        # cannot be determined at all. This branch carries no per-rule gate — it
+        # is what keeps the gated branches non-bypassable.
+        assert is_denied("git push origin ma$(echo)in", denied_regexes=[]) is not None
 
 
 class TestLazyPossessiveGapSplit:
@@ -848,25 +860,39 @@ class TestUserPatternExactSemantics:
         assert m._disabled is False
         assert m._bounded is False  # built-in → fast fragment path
 
-    def test_documented_bound_user_only_builtins_full_input(self):
-        # DOCUMENTED TRADE-OFF (see security.md / _DenyMatcher.match): a USER
-        # custom regex is matched only over the first _DENY_FALLBACK_SCAN_MAX_CHARS
-        # chars (exact semantics + ReDoS-safety, at the cost of full-input —
-        # Python's re can't give all three). The built-in SECURITY FLOOR is NOT
-        # bounded: a destructive built-in after a long prefix in one segment is
-        # still caught at full length.
-        from kiro_crew.security import _DENY_FALLBACK_SCAN_MAX_CHARS
+    def test_documented_bound_applies_only_where_the_bounded_engine_is_needed(self):
+        # The residual cap is NARROWER than "any user regex". A pattern that splits
+        # into ONE fragment (no top-level ``.*``) is matched full-input whoever
+        # authored it: one fragment means no gap the forward-only matcher could
+        # fail to backtrack across, so its single ``re.search`` already has exact
+        # ``re.search`` semantics and the cap buys nothing. Padding past the cap
+        # therefore no longer defeats a plain user or edition rule — that was a
+        # bypass of a rule the panel advertises as enforcing, not a trade-off worth
+        # keeping. What still needs the bounded engine, and so still truncates: a
+        # pattern whose fragments can over-consume across a ``.*`` gap, where the
+        # linear matcher would UNDER-match and let a denied command through.
+        from kiro_crew.security import _DENY_FALLBACK_SCAN_MAX_CHARS, _DenyMatcher
 
         # Built-in floor: full-input (no truncation) — a >cap prefix in the SAME
         # segment does not hide a destructive built-in.
         long_prefix = "export X=" + ("a" * (_DENY_FALLBACK_SCAN_MAX_CHARS + 500)) + " ; rm -rf /"
         assert is_denied(long_prefix) is not None
-        # User custom rule: bounded — the documented residual. A benign pad past
-        # the cap before the user's own needle escapes the user's own rule.
+
+        # Single-fragment user rule: now FULL-INPUT. A pad past the cap no longer
+        # escapes the user's own rule.
         pat = r"my-custom-danger"
         pad = "x" * (_DENY_FALLBACK_SCAN_MAX_CHARS + 100)
-        assert is_denied(f"{pad}{pat}", denied_regexes=[pat]) is None  # documented gap
-        assert is_denied(pat, denied_regexes=[pat]) is not None  # normal-length: enforced
+        assert _DenyMatcher(pat)._bounded is False
+        assert is_denied(f"{pad}{pat}", denied_regexes=[pat]) is not None
+        assert is_denied(pat, denied_regexes=[pat]) is not None
+
+        # Still bounded, and still truncating: a non-final fragment ending in a
+        # greedy variable-width quantifier can over-consume across the gap, so this
+        # one keeps the exact-but-capped engine.
+        greedy = r"needle \S+ .* tail"
+        assert _DenyMatcher(greedy)._bounded is True
+        assert is_denied(f"{pad}needle zzz qqq tail", denied_regexes=[greedy]) is None
+        assert is_denied("needle zzz qqq tail", denied_regexes=[greedy]) is not None
 
 
 class TestIsDeniedReDoSResistance:
@@ -1039,7 +1065,7 @@ class TestIsDeniedReDoSResistance:
 
           1. ROUTING — the chain rules take the full-input fragment path (never the bounded
              whole-regex fallback, whose truncation cap is pinned separately by
-             ``test_documented_bound_user_only_builtins_full_input``), and every fragment they
+             ``test_documented_bound_applies_only_where_the_bounded_engine_is_needed``), and every fragment they
              split into is a plain literal, so each is one forward ``re.search`` scan with no
              variable-width backtracking;
           2. INVOCATIONS — doubling the adversarial input leaves the engine-invocation trace
@@ -5416,3 +5442,79 @@ class TestDenyMatchingIsQuoteNormalized:
         # ...and the tokenizer itself deliberately does NOT expand.
         assert security._shell_tokens('cat "$HOME"/.ssh/id_rsa') == ["cat", "$HOME/.ssh/id_rsa"]
         assert security._shell_tokens("") == []
+
+
+class TestPolynomialBacktrackingStaysBounded:
+    """The unbounded full-input path must not accept polynomial-backtracking regexes.
+
+    An earlier round of #7705 gave single-fragment patterns full-input matching so
+    an edition rule could not be silently capped at 2000 chars (padding bypass).
+    That reasoning was about correctness and missed cost: the length cap was also
+    what made POLYNOMIAL backtracking harmless. `a+a+$` is not the exponential
+    shape `_redos_prone` screens, so it publishes fine, and unbounded it measures
+    ~3.5s against 2,000 characters — a stall of the synchronous PreToolUse gate.
+    GPT 5.6 flagged it, then flagged the grouped spelling `(a+)(a+)$` that the
+    first screen still let through. Both were right.
+    """
+
+    def test_the_exponential_screen_does_not_catch_the_polynomial_family(self):
+        # Why a second predicate is needed at all: the publication screen passes
+        # this pattern, so nothing else stands between it and the gate.
+        assert security.is_safe_user_regex("a+a+$") is True
+        assert security.is_safe_user_regex("(a+)+$") is False
+
+    @pytest.mark.parametrize(
+        "pattern",
+        [
+            "a+a+$",
+            r"\w+\d+$",
+            ".*.*!",
+            "[a-z]*[a-z]+;",
+            "a{2,}b{2,}",
+            # Grouped spellings: parentheses do not change the backtracking, so
+            # treating a group as opaque let these through (GPT 5.6, #7705).
+            "(a+)(a+)$",
+            "(a+)a+$",
+            "a+(a+)$",
+            "(?:a+)(?:a+)$",
+            "(ab)+(cd)+$",
+            "((a+))(a+)$",
+        ],
+    )
+    def test_polynomial_shapes_are_flagged(self, pattern):
+        assert security._polynomial_backtracking_prone(pattern) is True
+
+    @pytest.mark.parametrize("pattern", ["(a+)(a+)$", "(a+)a+$", "(?:a+)(?:a+)$"])
+    def test_grouped_spellings_keep_the_bounded_engine(self, pattern):
+        # The whole point: each of these measured multiple SECONDS unbounded.
+        assert security._DenyMatcher(pattern)._bounded is True
+
+    @pytest.mark.parametrize(
+        "pattern",
+        [
+            r"rm\s+-rf\s+/",
+            r"ada[^;&#>|\n]*credentials",
+            r"curl.*169\.254\.169\.254",
+            "a+b",
+            r"(?:sudo\s+)?shutdown",
+        ],
+    )
+    def test_ordinary_rules_are_not_flagged(self, pattern):
+        # A literal between the quantified units is the common shape; flagging it
+        # would cost the fast path for nearly every real rule.
+        assert security._polynomial_backtracking_prone(pattern) is False
+
+    def test_a_flagged_pattern_keeps_the_bounded_engine(self):
+        matcher = security._DenyMatcher("a+a+$")
+        assert matcher._bounded is True, "must not take the unbounded full-input path"
+
+    def test_the_flagged_pattern_evaluates_fast_on_a_long_input(self):
+        # The actual property under test is wall-clock: on the bounded engine a
+        # 20k-character command must not stall the gate. Unbounded, this input
+        # would take minutes.
+        matcher = security._DenyMatcher("a+a+$")
+        subject = "a" * 20000 + "!"
+        start = time.perf_counter()
+        matcher.match(subject)
+        elapsed = time.perf_counter() - start
+        assert elapsed < 1.0, f"deny evaluation took {elapsed:.1f}s — gate would stall"

@@ -2939,3 +2939,128 @@ class TestFollowupRunLiveAndReentry(unittest.IsolatedAsyncioTestCase):
         data = json.loads((await self.mod._handle_chat_get(
             _Req(query={"run_id": "run1", "change_id": "GH-o-r-42"}))).body)
         self.assertTrue(data["resumable"])
+
+
+class TestFailureStringMapping(unittest.TestCase):
+    """Each skipped_reason renders a DISTINCT, cause-naming sentence.
+
+    "The reviewer found nothing" and "the reviewer never ran" collapsing into one
+    message is the ambiguity that made these failures untriageable — a reader
+    must be able to tell the causes apart from the run-level error alone.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self._old_home = os.environ.get("KIROCREW_HOME")
+        self.addCleanup(self._restore_home)
+        os.environ["KIROCREW_HOME"] = self.tmp
+        self.mod = _load_routes_module()
+
+    def _restore_home(self):
+        if self._old_home is None:
+            os.environ.pop("KIROCREW_HOME", None)
+        else:
+            os.environ["KIROCREW_HOME"] = self._old_home
+
+    def _mapped(self, reason: str) -> str:
+        return self.mod._first_change_error(
+            {"per_change": [{"skipped_reason": reason}]})
+
+    def test_every_reason_maps_to_its_own_sentence(self):
+        reasons = ("no_review_recorded", "review_record_incomplete",
+                   "runtime_unavailable", "review_failed")
+        rendered = {reason: self._mapped(reason) for reason in reasons}
+        for reason, text in rendered.items():
+            self.assertNotEqual(text, reason,
+                                f"{reason} passed through unmapped")
+            self.assertTrue(text, f"{reason} rendered empty")
+        self.assertEqual(len(set(rendered.values())), len(reasons),
+                         f"reasons share a sentence: {rendered}")
+
+    def test_never_ran_and_found_nothing_read_apart(self):
+        never_ran = self._mapped("runtime_unavailable")
+        found_nothing = self._mapped("no_review_recorded")
+        self.assertIn("never ran", never_ran)
+        self.assertNotIn("never ran", found_nothing)
+
+    def test_specific_error_text_outranks_the_reason_mapping(self):
+        # A record carrying the preflight's own message (which names the missing
+        # runtime) surfaces that message verbatim rather than the generic map.
+        out = self.mod._first_change_error({"per_change": [{
+            "deep_error": "the reviewer cannot run: no kiro-cli executable was "
+                          "found on this host",
+            "skipped_reason": "runtime_unavailable",
+        }]})
+        self.assertIn("kiro-cli", out)
+
+
+class TestRuntimePreflightWiring(unittest.IsolatedAsyncioTestCase):
+    """The review path checks the runtime BEFORE spawning anything.
+
+    On a host that cannot spawn a reviewer, the run must fail fast with an error
+    naming the missing runtime — the batch is never opened, no session is
+    dispatched, and every change's progress carries the discriminated reason —
+    instead of "completing" and reporting an untriageable "no result record".
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self._old_home = os.environ.get("KIROCREW_HOME")
+        self.addCleanup(self._restore_home)
+        os.environ["KIROCREW_HOME"] = self.tmp
+        self.mod = _load_routes_module()
+        self.mod._RUNS = []
+
+    def _restore_home(self):
+        if self._old_home is None:
+            os.environ.pop("KIROCREW_HOME", None)
+        else:
+            os.environ["KIROCREW_HOME"] = self._old_home
+
+    async def test_failing_preflight_fails_the_run_without_spawning(self):
+        batch_calls: list[str] = []
+
+        class _FakePool:
+            async def begin_batch(self):
+                batch_calls.append("begin")
+
+            async def end_batch(self):
+                batch_calls.append("end")
+
+        def _refuse_dispatch(loop, pool, **kw):
+            def dispatch(task, timeout=0, **kwargs):
+                raise AssertionError("a session was dispatched despite a "
+                                     "failed runtime preflight")
+            return dispatch
+
+        async def _noop_async(*a, **k):
+            return None
+
+        url = "https://github.com/kirodotdev/KiroCrew/pull/33"
+        run: dict = {"run_id": "rp1", "status": "running", "changes": [url],
+                     "change_ids": [_rd.change_id_for(url)], "progress": {}}
+        self.mod._RUNS = [run]
+        with unittest.mock.patch.object(
+                self.mod.review_pool, "runtime_preflight",
+                lambda: "the reviewer cannot run: no kiro-cli executable was "
+                        "found on this host"), \
+                unittest.mock.patch.object(
+                    self.mod.review_pool, "get_pool", lambda: _FakePool()), \
+                unittest.mock.patch.object(
+                    self.mod.review_pool, "make_sync_dispatch",
+                    _refuse_dispatch), \
+                unittest.mock.patch.object(self.mod, "_save_runs", _noop_async), \
+                unittest.mock.patch.object(
+                    self.mod, "_notify_finished", _noop_async):
+            await self.mod._run_review_bg(run, [url])
+
+        self.assertEqual(batch_calls, [])            # runtime never spawned
+        self.assertEqual(run["status"], "error")
+        self.assertIn("kiro-cli", run["error"])
+        entry = run["progress"][_rd.change_id_for(url)]
+        self.assertEqual(entry["phase"], "failed")
+        self.assertIn("kiro-cli", entry["error"])
+        recs = run["summary"]["per_change"]
+        self.assertEqual(recs[0]["skipped_reason"], "runtime_unavailable")

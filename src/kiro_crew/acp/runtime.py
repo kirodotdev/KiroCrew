@@ -2879,8 +2879,13 @@ class AcpRuntime:
 
         # Populate state from session/new response (configOptions, available models)
         handle.store_session_config(resp)
+        # The roster this session put on the wire. Set BEFORE drain_init so the
+        # report can be read as "of the N we sent, these reported" rather than
+        # as a bare list of names.
+        handle.mcp_session_report().begin_session(mcp_servers)
 
         mode_switched = False
+        staged_before_switch = 0
         # Set agent mode if specified. If set_mode raises, no handle is returned
         # to the caller, so terminate the session we just created above —
         # session/new already succeeded so the session exists in kiro-cli; a
@@ -2905,6 +2910,14 @@ class AcpRuntime:
         # explicit override reaches set_mode here.
         mode_agent = agent or (self._agent if kas_agents else None)
         if mode_agent and self._mode_available(mode_agent, resp):
+            # Measured BEFORE the request goes out, which is the only moment the
+            # answer is unambiguous: everything queued right now initialized
+            # under the pre-switch mode. Reading it after set_mode returns would
+            # count the switched-to agent's own registrations — which kiro-cli
+            # can emit before it answers — as pre-switch, and those frames are
+            # then consumed without being recorded, leaving the panel at a false
+            # "no report" for the rest of the session.
+            staged_before_switch = handle.queued_frame_count()
             try:
                 await self._send_and_await(
                     METHOD_SET_MODE,
@@ -2940,7 +2953,9 @@ class AcpRuntime:
         # After a real mode SWITCH, reports staged during session/new describe
         # the pre-switch roster, so they must not arm the idle shortcut.
         if self._expect_mcp_reports:
-            await handle.drain_init(ignore_queued_reports=mode_switched)
+            await handle.drain_init(
+                stale_report_frames=staged_before_switch if mode_switched else 0
+            )
         else:
             await handle.drain_init(no_report_ceiling=0.0)
 
@@ -3128,8 +3143,12 @@ class AcpRuntime:
             crew_agent=_crew,
         )
         handle.store_session_config(resp)
+        # session/load re-initializes this session's servers, so the resumed
+        # session gets its own report against the roster load re-declared.
+        handle.mcp_session_report().begin_session(mcp_servers)
 
         mode_switched = False
+        staged_before_switch = 0
         # Activate the agent (mirrors AcpClient step 4 — set_mode applies to a
         # resumed session too, not just fresh ones). If set_mode raises, the
         # caller falls back to create_session() (a fresh sid + its own queue),
@@ -3138,6 +3157,9 @@ class AcpRuntime:
         # in the shared process (and leave the reader routing late transcript-
         # replay frames to an abandoned queue). terminate_session unregisters too.
         if agent and self._mode_available(agent, resp):
+            # Same reason as create_session: measured before the request goes
+            # out, the only moment "queued" and "pre-switch" mean the same thing.
+            staged_before_switch = handle.queued_frame_count()
             try:
                 await self._send_and_await(
                     METHOD_SET_MODE,
@@ -3171,7 +3193,9 @@ class AcpRuntime:
         # remain to drain here. MCP-free runtimes skip the no-report ceiling.
         # After a real mode SWITCH, staged reports are pre-switch — don't arm.
         if self._expect_mcp_reports:
-            await handle.drain_init(ignore_queued_reports=mode_switched)
+            await handle.drain_init(
+                stale_report_frames=staged_before_switch if mode_switched else 0
+            )
         else:
             await handle.drain_init(no_report_ceiling=0.0)
 

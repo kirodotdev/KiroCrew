@@ -29,16 +29,29 @@ export function useInvalidateArtifactFolders(): () => void {
   }, [qc])
 }
 
+/** Options for a single artifact move. */
+export type MoveArtifactOptions = {
+  /**
+   * Called once the server has ACKNOWLEDGED this move.
+   *
+   * The optimistic write patches the cache immediately, which is not the same
+   * fact: a caller that treats the cache as proof (the drag-move undo bar)
+   * would offer an undo before the original move is durable, and the two
+   * writes can then race and cancel each other. Mirrors `MoveSlotOptions`.
+   */
+  onCommitted?: () => void
+}
+
 /**
  * Move an artifact into a folder (`''` = unfile to root) with optimistic
  * cache updates: every cached `['artifacts', ...]` list gets the artifact's
  * `folder_id` patched immediately; a failure rolls back via invalidation.
  * Mirrors `useMoveSlotToFolder` (the chat-sidebar precedent).
  */
-export function useMoveArtifactToFolder(): (slug: string, folderId: string) => void {
+export function useMoveArtifactToFolder(): (slug: string, folderId: string, opts?: MoveArtifactOptions) => void {
   const qc = useQueryClient()
   const { mutate } = useMutation({
-    mutationFn: ({ slug, folderId }: { slug: string; folderId: string }) =>
+    mutationFn: ({ slug, folderId }: { slug: string; folderId: string; onCommitted?: () => void }) =>
       api.setArtifactFolder(slug, folderId),
     onMutate: ({ slug, folderId }) => {
       qc.setQueriesData<{ artifacts: Artifact[] }>({ queryKey: ['artifacts'] }, (old) => {
@@ -52,6 +65,11 @@ export function useMoveArtifactToFolder(): (slug: string, folderId: string) => v
         old ? { ...old, folder_id: folderId } : old,
       )
     },
+    // The ack rides the mutation VARIABLES: TanStack Query's observer only
+    // invokes the LATEST call's per-call callbacks, so a per-call
+    // `mutate(..., { onSuccess })` would drop the ack whenever a second move
+    // started before the first settled — and the first offer never goes live.
+    onSuccess: (_data, vars) => vars.onCommitted?.(),
     onError: () => {
       // Rollback by refetch — cheaper and safer than replaying prior snapshots
       // across every cached list variant.
@@ -62,5 +80,8 @@ export function useMoveArtifactToFolder(): (slug: string, folderId: string) => v
       qc.invalidateQueries({ queryKey: ['artifact', slug] })
     },
   })
-  return useCallback((slug: string, folderId: string) => mutate({ slug, folderId }), [mutate])
+  // `mutate` is referentially stable across renders, so the returned callback is too.
+  return useCallback((slug: string, folderId: string, opts?: MoveArtifactOptions) => {
+    mutate({ slug, folderId, onCommitted: opts?.onCommitted })
+  }, [mutate])
 }

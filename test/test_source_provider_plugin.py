@@ -429,3 +429,120 @@ def test_sidebar_source_links_include_the_plugin_chip(plugin) -> None:
             "label": "CR-123",
         }
     ]
+
+
+def test_sidebar_dedups_on_ref_identity_not_canonical_url(plugin) -> None:
+    """One change mentioned under two URL shapes renders ONE chip, newest pin wins.
+
+    A provider whose grammar accepts an optional revision pin and keeps it in
+    the canonical URL (the seam's ``SourceRef`` has no revision field, so the
+    URL is the only place a pin can travel) produces two canonical URLs for one
+    change. Keying the dedup on the ref identity collapses them; the backwards
+    walk makes the most recent mention's URL the chip's link target.
+    """
+    from kiro_crew.dashboard import state as state_mod
+
+    prefix = "https://review.acme.example/cr/"
+
+    def parse_with_revision_pin(raw_url: str) -> source.SourceRef | None:
+        if not raw_url.startswith(prefix):
+            return None
+        tail = raw_url[len(prefix) :].rstrip("/")
+        number, _, pin = tail.partition("/")
+        if not number.isdigit():
+            return None
+        if pin and not (pin.startswith("revisions/") and pin[len("revisions/") :].isdigit()):
+            return None
+        canonical = f"{prefix}{number}/{pin}" if pin else f"{prefix}{number}"
+        return source.SourceRef(
+            "acme",
+            canonical,
+            "review.acme.example",
+            "",
+            "acme",
+            int(number),
+            kind="change",
+        )
+
+    plugin.parse = parse_with_revision_pin  # type: ignore[attr-defined]
+
+    slot = object.__new__(state_mod._ChatSlot)
+    slot.messages = [
+        {"role": "assistant", "content": f"Raised {CR_URL} for review."},
+        {"role": "assistant", "content": f"New revision: {CR_URL}/revisions/2"},
+    ]
+    slot._source_links_revision = 1
+    slot._source_links_cache = None
+    slot._projection = SlotProjection()
+
+    links = state_mod._ChatSlot._pr_source_links(slot)
+    # One chip, not two -- and it carries the NEWEST mention's URL (the pinned
+    # revision), because the backwards walk admits the most recent mention first.
+    assert links == [
+        {
+            "provider": "acme",
+            "number": 123,
+            "url": f"{CR_URL}/revisions/2",
+            "kind": "change",
+            "label": "CR-123",
+        }
+    ]
+
+
+def test_sidebar_keeps_same_numbered_changes_on_different_repos_distinct(plugin) -> None:
+    """Identity keying must not over-collapse: same number, different repo."""
+    from kiro_crew.dashboard import state as state_mod
+
+    slot = object.__new__(state_mod._ChatSlot)
+    slot.messages = [
+        {
+            "role": "assistant",
+            "content": (
+                "Compare https://github.com/acme/tools/pull/7 with "
+                "https://github.com/acme/gadgets/pull/7 today."
+            ),
+        }
+    ]
+    slot._source_links_revision = 1
+    slot._source_links_cache = None
+    slot._projection = SlotProjection()
+
+    links = state_mod._ChatSlot._pr_source_links(slot)
+    assert {link["url"] for link in links} == {
+        "https://github.com/acme/tools/pull/7",
+        "https://github.com/acme/gadgets/pull/7",
+    }
+
+
+def test_sidebar_keeps_same_host_jira_context_paths_distinct(plugin, monkeypatch) -> None:
+    """Two Jira instances on one host, same issue key, must stay two chips.
+
+    A self-hosted Jira's context path exists only in the canonical URL, so an
+    identity that dropped the URL entirely would collide them and one link
+    would silently disappear from the sidebar.
+    """
+    from kiro_crew.dashboard import state as state_mod
+
+    monkeypatch.setattr(source, "_jira_hosts_snapshot", frozenset({"jira.acme.internal"}))
+    monkeypatch.setattr(source, "_gitlab_hosts_loaded_at", 1.0)
+    monkeypatch.setattr(source.time, "monotonic", lambda: 2.0)
+
+    slot = object.__new__(state_mod._ChatSlot)
+    slot.messages = [
+        {
+            "role": "assistant",
+            "content": (
+                "Compare https://jira.acme.internal/teamA/browse/PROJ-9 with "
+                "https://jira.acme.internal/teamB/browse/PROJ-9 today."
+            ),
+        }
+    ]
+    slot._source_links_revision = 1
+    slot._source_links_cache = None
+    slot._projection = SlotProjection()
+
+    links = state_mod._ChatSlot._pr_source_links(slot)
+    assert {link["url"] for link in links} == {
+        "https://jira.acme.internal/teamA/browse/PROJ-9",
+        "https://jira.acme.internal/teamB/browse/PROJ-9",
+    }

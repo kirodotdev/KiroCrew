@@ -172,6 +172,8 @@ under `(allow default)`, never an edition-resolved or user-writable executable.
 
 - **Operator OAuth consent-endpoint extension (keystone leaf `oauth_endpoints.json`)** — the security module's OAuth banner-safety contract (`security.oauth_url_contains_credential`, and `_exfil_url_warning` under `allow_oauth_entropy=True`) exempts standard front-channel params (`state`, PKCE, …) from the base64-blob/query-length heuristics only at an exact-match `(host, path)` in the code-owned `_OAUTH_AUTHORIZATION_ENDPOINTS`. `~/.kiro/crew/oauth_endpoints.json` (`{"additional_authorization_endpoints": [{"host", "path"}]}`) is the operator's escape hatch for identity providers outside that launch set (Okta orgs, Auth0, self-hosted OIDC, tenant-scoped Entra paths): `security._load_operator_oauth_endpoints()` unions strictly validated entries with the builtin set at check time (`_approved_oauth_authorization_endpoint`, memoized on the file's stat so a hand-edit takes effect on the next check without a restart). **Enforcement point:** the dashboard's live MCP OAuth banner validates URLs with this same gate — `_emit_mcp_oauth_request` in `chat_runner.py` calls `security.oauth_url_contains_credential` directly — so an operator endpoint entry governs the banner path as well as every other consumer wired to the contract gate. Each entry widens a trust boundary, so the file is on `_CREW_SECRET_LEAVES` (full read+write keystone block on both the tool path and every shell form) — an agent must not be able to author its own exemption — and there is deliberately no dashboard writer; the operator hand-edits it out-of-band. Every read fails soft to the EMPTY set (missing/unreadable/corrupt/non-object file, mirroring `computer_use.enable_state.load_state`), invalid entries are skipped individually with a warning (no wildcards, schemes, ports, userinfo, percent-escapes, IP literals, `..`, whitespace, or backslashes; hosts are lowercase-normalized DNS names with a letter TLD, paths exact and case-sensitive), and the entry list is truncated at 50 before validation so a mangled file cannot amplify. HTTPS-only / no-explicit-port / exact-match stay enforced by the gate logic and are NOT relaxable via the file, and the exemption grants exactly what the builtin set grants — fixed-credential patterns, heavy percent-encoding, userinfo, fragments, backslashes, and unknown-param heuristics remain unconditional. An approval that came from an operator entry (not the builtin set) emits a best-effort `oauth_endpoint_extension_used` SEL event, deduped per process per endpoint.
 
+**Privacy-safe OAuth rejection diagnostics.** `security.diagnose_oauth_url_credential()` returns `None` for an accepted URL or an `OAuthUrlCredentialDiagnostic` for the first rejecting sub-check. The record carries only a stable `rule`, a URL-component category, an optional code-owned standard query-parameter name, and a shape profile: total length plus counts of ASCII uppercase, ASCII lowercase, digits, percent signs, URL punctuation, and all other characters. `oauth_url_contains_credential()` retains its boolean caller contract and logs that same bounded signature when it rejects. The diagnostic path does not change a rule, add a bypass, retry, or retain a URL. The URL and parameter value are never returned, logged, persisted, hashed, sampled, or represented by a prefix/suffix; malformed, credential-shaped, and unrecognized parameter names are omitted rather than echoed. This is sufficient for a controlled mint loop to distinguish standard OAuth entropy false positives (for example, `credential_scan_bare_secret_raw` on `state` versus `exfil_query_length`) without creating a second credential-bearing sink.
+
 **Windows UNC trusted-root gate** (`unc_probe_allowed` + `validate_file_path` in `hooks.py`) — a UNC path names a HOST, so resolving or stat-ing untrusted UNC-shaped text (`\\evil\share\x.png` or `//evil/share/x.png` echoed in any message or query) makes Windows open an outbound SMB connection to an attacker-named host. `validate_file_path` therefore consults `unc_probe_allowed` **before any resolution** on Windows — the ordering is the control, since `realpath` on UNC text is itself the probe — and the gate's comparison is purely lexical (`normcase`/`normpath`), never touching the network. Filesystem access is restricted to UNC paths under three trusted roots, all admitted on the same basis (directories this gateway itself writes to): (1) the crew **data home** — on a roaming profile the home directory is itself a UNC share, the one legitimate source of UNC attachment paths; (2) the **temp directory** — channel-side image staging; (3) the **kiro agents directory** (`<kiro home>/agents`) — `apps.bridges._register_agents` and `agent.rebuild_agent_config` write the managed specs there, and it is a *sibling* of the data home on the same share, so before #6721 its absence made `_read_agent_spec` silently read every user-level agent spec as absent on a UNC home. The prefix comparison is separator-boundary-anchored (a sibling share on the same host, or an `agents-evil` neighbour directory, is refused), a root that is not itself UNC-shaped admits nothing (the roots cannot become a bypass on an ordinary local home), and the agents root is **memoized per configuration** (keyed on the raw `KIRO_HOME` and the accessor identity): `kiro_agents_dir()` resolves `KIRO_HOME` with filesystem I/O — on a UNC-shaped override, an SMB touch — so it must not run per gate check on hot/async validation paths, and a computation failure memoizes the root as absent fail-safe (the gate stays total; recovery is an env change or restart, and the degraded state is the pre-#6721 status quo). The **project-level** agents dir (`project_agents_dir`) is deliberately NOT admitted: an arbitrary project directory is not gateway-written, so admitting it would be a genuine trust-boundary widening rather than a repair.
 
 **Write-only config protection** (`is_sensitive_write_path` in `security.py` + `hooks.py`) — runtime config files are protected against *modification* by agent tools while staying *readable*:
@@ -611,7 +613,7 @@ than an automatic readiness failure.
 
 ### Denied Commands (`security.py` + `hooks.py`)
 
-First-class `DeniedCommandRule` records in `BUILTIN_DENIED_RULES` (`security.py`) — each a stable `id`, a Python regex `pattern`, a `category`, and a human `description` — blocking destructive and credential-exfiltrating operations. They are enforced **only** at Kiro Crew's own `hooks.py` PreToolUse gate (`HookManager.on_tool_call` → `PolicyAuthority.is_denied`), never by kiro-cli. They are no longer a raw `deniedCommands` array injected into a kiro agent JSON, so there is no `execute_bash`/`shell` tool-settings copy and no project-dir `agents/defaults.json` override for them. Built-ins are **default-ON but user-DISABLEABLE** from Settings → Security (see "Denied-command rules, opt-out state, and read-only auto-approve" below). ada credential patterns are NOT in Kiro Crew's denied commands — kiro-cli has its own built-in deny list for `ada credentials` that cannot be overridden via agent config.
+First-class `DeniedCommandRule` records in `BUILTIN_DENIED_RULES` (`security.py`) — each a stable `id`, a Python regex `pattern`, a `category`, and a human `description` — blocking destructive and credential-exfiltrating operations. They are enforced **only** at Kiro Crew's own `hooks.py` PreToolUse gate (`HookManager.on_tool_call` → `PolicyAuthority.is_denied`), never by kiro-cli. They are no longer a raw `deniedCommands` array injected into a kiro agent JSON, so there is no `execute_bash`/`shell` tool-settings copy and no project-dir `agents/defaults.json` override for them. Built-ins are **default-ON but user-DISABLEABLE** from Settings → Security (see "Denied-command rules, opt-out state, and read-only auto-approve" below). Patterns for deployment-specific credential-vending CLIs are NOT in this catalog — a composed edition contributes those itself, either as an un-weakenable `SecurityOverlay` pattern or as a user-disableable rule through the `denied_rules` seam.
 
 **Credential exfiltration blocks**:
 - `.*echo.*\$AWS_SECRET.*`, `.*echo.*\$AWS_ACCESS.*`, `.*echo.*\$AWS_SESSION.*` — env var echo
@@ -623,9 +625,9 @@ First-class `DeniedCommandRule` records in `BUILTIN_DENIED_RULES` (`security.py`
 - `aws s3 cp .* s3://.*`, `aws s3 mv .* s3://.*`, `aws s3 sync .* s3://.*` — file upload exfiltration
 - `.*cat.*/\.aws/.*`, `.*cat.*/\.ssh/.*`, etc. — direct credential file reads
 
-**Allowed operations** (system prompt explicitly permits):
-- `ada credentials update` — blocked by kiro-cli's built-in deny list (not KiroCrew). Users must run ada in their own terminal; `credential_process` in `~/.aws/config` handles automatic refresh for AWS CLI commands
-- `ada profile add/list/print/delete` — also blocked by kiro-cli
+**Allowed operations** (not denied by this catalog):
+- `ada credentials update` — NOT denied by this catalog. A composed edition may deny the credential-*vending* form through its own `SecurityOverlay`; where it does, the supported pattern is to run the vending command in your own terminal once and let `credential_process` in `~/.aws/config` refresh automatically for AWS CLI calls
+- `ada profile add/list/print/delete` — NOT denied by this catalog either
 - `aws sts assume-role` — cross-account access
 - AWS CLI commands (`describe-*`, `list-*`, `get-*`, `filter-*`, `s3 cp`, `s3 ls`, etc.) — work via `credential_process`
 
@@ -695,12 +697,13 @@ First-class `DeniedCommandRule` records in `BUILTIN_DENIED_RULES` (`security.py`
   - **`patterns=None` means the regex tier contributes nothing** — deliberately NOT `is_denied`'s fail-closed-to-every-built-in. Getting that backwards would evaluate the whole catalogue against a synthesized target, which is exactly the state this tier exists to leave.
   - **This tier does not run the argv-structural floors** (credential mint, self-kill, restart/update/cloud) **or the verb-anchored git-publish detector**, and does not do per-segment (pass 2) re-evaluation. Each interprets shell syntax a synthesized target does not have: its tokens are the namespace and `key=value` pairs, values are whitespace-encoded so one cannot split into two tokens, and no such target names a program — so a search of a tree cannot mint a credential or kill a process, and splitting only manufactures pseudo-commands out of path substrings. A real command still reaches all of them through its own `command` target.
 
-- `is_denied(tool_name, extra_patterns, *, denied_regexes, reason_notes)` evaluates the *effective* denied-command set plus a dedicated verb-anchored git-publish detector. The **regex tier** (`denied_regexes`, matched via `re.search`, case-insensitive) is the enabled subset of `BUILTIN_DENIED_RULES` plus the user's `user_added` patterns from the keystone `denied_commands.json` opt-out state, which the hooks layer resolves via `compute_effective_denied(...)` and passes in; the **glob tier** (`extra_patterns`, fnmatch) carries legacy `auto_deny_tools` + the companion overlay. `reason_notes` is an optional `{pattern: operator note}` map (from `hooks.resolve_denied_notes`, forwarded opaquely by `PolicyAuthority.is_denied`) that decorates the refusal text only — it cannot add, remove, or alter a match. "Agent-configured patterns" no longer means a kiro agent JSON `deniedCommands` array — that injection path is retired. When `denied_regexes` is `None` the check fails closed to all built-ins enabled. The git-publish detector and protected-branch gate are unchanged always-on floors that run before either tier:
+- `is_denied(tool_name, extra_patterns, *, denied_regexes, reason_notes)` evaluates the *effective* denied-command set plus a dedicated verb-anchored git-publish detector. The **regex tier** (`denied_regexes`, matched via `re.search`, case-insensitive) is the enabled subset of `BUILTIN_DENIED_RULES` plus the user's `user_added` patterns from the keystone `denied_commands.json` opt-out state, which the hooks layer resolves via `compute_effective_denied(...)` and passes in; the **glob tier** (`extra_patterns`, fnmatch) carries legacy `auto_deny_tools` + the companion overlay. `reason_notes` is an optional `{pattern: operator note}` map (from `hooks.resolve_denied_notes`, forwarded opaquely by `PolicyAuthority.is_denied`) that decorates the refusal text only — it cannot add, remove, or alter a match. "Agent-configured patterns" no longer means a kiro agent JSON `deniedCommands` array — that injection path is retired. When `denied_regexes` is `None` the check fails closed to all built-ins enabled. The git-publish detector runs before either tier and is always-on; the protected-branch **gate** it feeds is default-on but **per-rule disableable** (see the opt-out note in the Protected-branch gate bullet below), except for the anti-obfuscation branches, which no opt-out can reach:
 
   - **Refusal string (a parsed micro-format, not free text):** the first line is always exactly `f"{DENY_REASON_PREFIX}{matched}"` — `DENY_REASON_PREFIX` is exported from `security.py` precisely so guards cannot drift from the producer. It is byte-stable on purpose, because three consumers parse it: `website/src/pages/chat/RecoveryCard.tsx` extracts the pattern with `/Blocked by security policy:\s*(.+?)\s*$/gm`, the test helper `_denied_by` partitions on the exact `"Blocked by security policy: "` separator, and `chat_runner` reads it for display (after redaction). When the matched pattern has an operator note, the note is appended as a **second line** — never on the first, which would be captured as part of the pattern. Because `RecoveryCard`'s regex is GLOBAL and per-line, a note containing the prefix would be parsed as a second, fabricated pattern; that is why notes carrying it are rejected at the endpoint and dropped in `resolve_denied_notes`. Both guards test `DENY_REASON_MATCH_PREFIX` (the colon-terminated form derived from the emitted prefix), NOT the emitted prefix itself: the regex makes the space after the colon optional, so `"Blocked by security policy:forged"` parses as a refusal line without containing the emitted string. Anything added to this format must keep line one intact.
   - **Git publish (verb-anchored regex):** `git push` is detected by `_is_git_publish()` (`_GIT_PUBLISH_RE` + `_GIT_PUBLISH_GLUE_RE`), **not** a substring glob. `push` must be the git *subcommand* (first non-flag token after `git`, allowing intervening `-x` / `-C path` / `-c k=v` options), so a commit message, branch name, grep pattern, or ssh remote payload that merely contains the word "push" is **not** blocked (e.g. `git commit -m '...push...'`, `git log --grep push`, `git switch -c fix/git-push`). Checked on the whole string first to catch command-substitution glue-evasion (`git$(echo ' ')push`, `git\`echo\`push`, `git_push`) and on segment-spanning chains (`git stash push && git push origin main`). Replaces the former broad `*git*push*` glob + ` stash push` exception, which over-blocked benign commands and surfaced as a silent `Tool use aborted` on the removed standalone provider.
-  - **Protected-branch gate:** `_is_git_publish()` is a **pure, side-effect-free detector** — it only answers "is this a git push?". Whether the push is *allowed* (feature branch) or *denied* (protected/bare) is decided by `_is_push_to_protected_branch()` at the single enforcement point in `is_denied` (via a deferred `push_allow_pending` flag), which is also where **both** SEL audits fire: `_emit_deny_event` on deny and `_schedule_push_allow_audit` (SEL `push_allowed`, operation `git_push`) on allow. The `push_allowed` audit is deferred to the *final* allow exit, so a compound `<feature push> && <denied command>` chain that later trips a deny pass logs a **deny**, not an allow.
-    - `_PROTECTED_BRANCHES` covers `main`/`mainline` plus the legacy Git default-branch name (see `_PROTECTED_BRANCHES` in `security.py`), plus ambiguous runtime-resolved refs `_AMBIGUOUS_REFS` = {`head`, `@`, `fetch_head`} — all matched by `_is_protected_branch_name()`. A push to any of these (or a **bare** `git push` / `git push <remote>` with no explicit branch, since the current branch might be protected) is denied.
+  - **Protected-branch gate:** `_is_git_publish()` is a **pure, side-effect-free detector** — it only answers "is this a git push?". Whether the push is *allowed* (feature branch) or *denied* (protected/bare) is decided by `_git_publish_floor_tags()`, which returns the set of **rule-id tags** the command trips, at the single enforcement point in `is_denied` (via a deferred `push_allow_pending` flag), which is also where **both** SEL audits fire: `_emit_deny_event` on deny and `_schedule_push_allow_audit` (SEL `push_allowed`, operation `git_push`) on allow. `_is_push_to_protected_branch()` is retained only as a thin boolean view over the tag set for callers that need the yes/no answer. The `push_allowed` audit is deferred to the *final* allow exit, so a compound `<feature push> && <denied command>` chain that later trips a deny pass logs a **deny**, not an allow.
+    - **Opt-out, and the part of it that is NOT optional.** Each tag names a real git-publish catalog rule, and a tag fires only while its rule is in the enabled set — so an operator CAN disable protected-branch push blocking per rule (or wholesale with `disable_all`) through the keystone `denied_commands.json`. Three branches deliberately bypass that check and deny unconditionally, emitting the sentinel `_GIT_PUBLISH_UNGATED` instead of a rule id: an ambiguous refspec (`_AMBIGUOUS_REFSPEC_RE`), a brace-expansion refspec (`_AMBIGUOUS_EXPANSION_RE`), and the two "cannot parse" fallbacks (unparseable argv, or a push detected upstream with no clean segment). Those are anti-obfuscation, not policy: an operator opting out of a rule is choosing to allow a command shape they can *read*, which is not a licence to allow one nobody can. `git-publish-push-brace-expansion-refspec` is therefore the one git-publish rule that stays **locked** in the Settings panel (`_FLOOR_ENFORCED_RULE_IDS`), because its coverage is an ungated branch and a toggle for it would be a lie. A denial now reports the matched rule's own `pattern`, so it resolves to a `rule_id` in SEL rather than the opaque `git push` label.
+    - `_PROTECTED_BRANCHES` covers `main`/`mainline` plus the legacy Git default-branch name (see `_PROTECTED_BRANCHES` in `security.py`), plus ambiguous runtime-resolved refs `_AMBIGUOUS_REFS` = {`head`, `@`, `fetch_head`}. A push to any of these (or a **bare** `git push` / `git push <remote>` with no explicit branch, since the current branch might be protected) is denied.
     - `_PUSH_ALL_BRANCHES_FLAGS` = {`--mirror`, `--all`} are denied **outright** (they push every local branch, so a per-branch target check cannot vouch for them), kept in lockstep with the `--(mirror|all)` regex in `config/defaults.json`.
     - `_is_push_to_protected_branch()` splits the command with `_split_segments()` and validates **every** `push` segment / refspec (closing the `push origin feat && push origin main` bypass), normalizing `refs/heads/…` paths and `local:remote` refspecs; refspecs with shell/revision syntax (`$`, `` ` ``, `@{…}` — `_AMBIGUOUS_REFSPEC_RE`) are treated as ambiguous and denied. If a push was detected upstream but **no** clean segment parses, it denies to be safe.
     - **Force push:** a force flag (`--force` / `-f` / `--force-with-lease`) does not by itself make a feature-branch push protected (force-push to a feature branch is normal PR/rebase workflow), but force-push to a *protected* branch is still blocked because the target check fires regardless of flags.
@@ -747,6 +750,137 @@ append `user_added` verbatim. Governance pins win — a pinned rule is re-added
 even if the user disabled it or set disable-all (tightest-wins). The hooks gate
 computes this once per tool call via `HookManager._effective_denied(ctx)` and
 passes it as `denied_regexes` into `is_denied`.
+
+**Edition-contributed rules — the `denied_rules` seam.** A composed edition can
+contribute additional `DeniedCommandRule` records through the
+`DeniedRuleProvider` platform adapter (`current_context().denied_rules`).
+`security.edition_denied_rules()` reads and validates them and
+`hooks.resolve_effective_denied_regexes` unions them into the `rules` argument of
+`compute_effective_denied`, so a contributed rule is **default-ON and resolved by
+exactly the same opt-out arithmetic as a built-in**: an operator can disable it by
+id or clear it with `disable_all` through the existing keystone file and the
+existing `/api/security/denied-commands` endpoints, and Settings → Security lists
+it (tagged `source="edition"`) alongside the built-ins.
+
+This is deliberately the opposite half of `SecurityOverlay.extra_deny_patterns`,
+which remains the un-weakenable floor: overlay patterns travel the GLOB tier via
+`extra_patterns` and no opt-out can reach them. An edition picks per pattern —
+floor, or default-on-but-overridable. Consequences of that split, all pinned by
+`test/test_denied_rule_seam.py`:
+
+- **Regex, not glob.** A contributed `pattern` is a Python regex on the regex
+  tier. Moving a pattern over from the overlay requires rewriting it; a glob's
+  `*` are quantifiers as a regex.
+- **Namespaced ids.** `disabled_ids` is one flat set, so an id colliding with a
+  built-in id is skipped (the built-in wins) rather than letting one rule's
+  toggle move another's.
+- **Not pinnable (v1).** Governance `commands`-scope pins resolve a pattern to a
+  rule id against the static catalog, so a pin cannot name a contributed rule. An
+  edition needing an un-opt-out-able pattern keeps using the overlay.
+- **Fail-soft.** A raising or absent provider yields no contributed rules; the
+  built-in catalog and the overlay floor are unaffected.
+- **Full-input matching, or not published.** The matcher has two engines: a
+  forward-only *fragment* matcher that splits a pattern on its top-level `.*` and
+  scans the WHOLE input, and an exact whole-regex `re.search` over a
+  length-capped window (`_DENY_FALLBACK_SCAN_MAX_CHARS`, 2000). The capped engine
+  exists because Python's backtracking `re` cannot give exact semantics AND
+  full-input AND ReDoS-safety at once, and it is required only for a pattern the
+  fragment matcher would UNDER-match: one with a top-level alternation, or whose
+  non-final fragments can over-consume across a `.*` gap. A pattern that splits
+  into **one** fragment (no top-level `.*`) needs neither trade-off — there is no
+  gap to backtrack across, so its single `re.search` is already exact AND
+  full-input — and it therefore takes the unbounded path whoever authored it:
+  built-in, edition-contributed, or user-added. This matters because a rule
+  enforced over only a 2000-char prefix is bypassed by padding the command
+  (`env PAD=<2001 chars> <denied cmd>`), which is not a guarantee the Settings
+  panel should show as enforcing. So a contributed pattern that WOULD land on the
+  capped engine is **skipped, not published** (`_matches_full_input`, the same
+  principle as the `is_safe_user_regex` screen above): an edition rewrites the gap
+  as a bounded class such as `[^;&|\n]*`, which keeps the pattern one fragment, or
+  uses the un-weakenable overlay if it truly needs the loose form. Note the gate
+  evaluates shell segments separately, so a pad behind a `;` was never the
+  exposure — only a pad inside the SAME segment as the needle.
+- **Discoverable in the panel.** A contributed row carries `source: "edition"` in
+  the snapshot and renders an `edition` badge with a tooltip in
+  Settings → Security, so an operator can tell a contributed rule from a shipped
+  one. A seam whose rules are indistinguishable from built-ins would still leave
+  the refusal unattributable, which is the gap the seam exists to close.
+
+**How the always-on gates report and fail.** Three details of the gates that now
+honour per-rule toggles:
+
+- **The git-publish gate fails CLOSED on an unresolvable tag.** A floor tag naming
+  no catalog row is a maintenance error, not a policy choice, and the two must not
+  share a code path: skipping an unknown tag would turn a renamed rule id into a
+  silent *allow* of a protected-branch push. An unresolvable tag therefore denies,
+  logs at ERROR, and reports under the ungated row. The structural test in
+  `test_push_branch_gate.py` still catches the drift at build time; this is the
+  behaviour if that guard is ever removed.
+- **The refusal names the rule ID; SEL keeps the pattern.** A gated git-publish
+  denial leads with the rule id and carries the regex on its note line. The
+  dashboard's RecoveryCard fills its chip verbatim from the first line, so leading
+  with a ~70-character regex would make the most frequent denial an agent user
+  hits unreadable, while the id is both short and the identity of the toggle that
+  turns it off. The SEL event still records the pattern, which is what maps an
+  event to a catalog row.
+- **A regex spanning two rows attributes each match to its own row.** The nc/ncat
+  reverse-shell regex covers two rules; denying while *either* was enabled meant
+  switching `reverse-shell-nc` off left plain `nc` blocked by its sibling. Each
+  match is now attributed to the row it belongs to (longest discriminator first,
+  so `ncat` is never read as `nc`), and every match is examined, so a leading
+  disabled spelling cannot shadow a trailing enforced one.
+- **One shape earns one tag.** An all-branches flag suppresses the bare /
+  single-argument fallback: with `--all` the absence of a refspec is not the
+  "which branch is this?" shape, since the flag already names the target set
+  exhaustively. Tagging both meant `push --all origin` also carried the
+  single-argument tag, so disabling mirror-all left the command blocked by its
+  sibling — enabled-and-off with enforcement unchanged.
+- **The unbounded path is gated on backtracking cost, not just correctness.** A
+  single-fragment pattern gets full-input matching (no 2000-char cap) *only* if
+  `_polynomial_backtracking_prone` clears it. `_redos_prone` screens the
+  EXPONENTIAL family at publication; it deliberately passes the POLYNOMIAL one
+  (`a+a+$`, `\w+\d+$`, `.*.*!`), which is harmless on a capped window and not
+  harmless off it — measured, `a+a+$` against 2,000 characters takes ~3.5s, 4,000
+  ~27s, 8,000 ~228s, inside the synchronous PreToolUse gate. A flagged pattern is
+  still enforced, on the bounded engine it already had; the predicate is NOT
+  folded into `is_safe_user_regex` because refusing such patterns outright would
+  drop rules that work today, and a rule silently not published is the defect
+  this module fights rather than a fix for it.
+- **One context snapshot per tool call.** The gate reads `current_context()` once
+  and reuses it for both the always-on structural checks and the rule-catalog
+  checks. Two reads let a live ceiling refresh land between them and judge one
+  call half under each policy state. The direction that makes it matter: the
+  structural IMDS/exfil checks are the only ones that catch an ENCODED address
+  (`credential-exfil-imds-any` exists because the curl/wget patterns match a
+  literal dotted quad), so a governance pin arriving after that point could never
+  reach the encoded form — and honouring a pin late is not honouring it.
+
+**Push-option spellings the target parser must not misread.** `git push` accepts
+the repository as a flag *value* (`--repo=<x>` / `--repo <x>`), and both spellings
+begin with `-`. A naive "strip the flags, the first positional is the remote" read
+therefore treats the only remaining token as the remote, so `git push --repo=origin
+main` classifies as the single-arg shape rather than the protected-branch one.
+`--branches` is likewise git's own modern alias for `--all` (2.44+). Both were
+harmless while the whole floor was unconditional — the misclassified shape was
+denied anyway — and became bypasses the moment the rules were individually
+disableable, since switching off the rule a shape is misattributed to publishes it.
+
+**Abbreviations are resolved the way git resolves them.** Git accepts any
+unambiguous PREFIX of a long option, so `--mirr` is `--mirror` and `--rep=origin`
+is `--repo=origin`. Matching flag literals exactly therefore missed every
+abbreviation, with the same misclassification consequence. The classifier now tests
+whether a token is `--` plus a prefix of an option it cares about
+(`_push_option_matches`), rather than comparing against a list of spellings — a
+spelling list can only ever trail the next abbreviation. It deliberately does NOT
+carry git's full option table: testing the prefix against only the dangerous
+options is equivalent to resolving against every option and then intersecting,
+because a non-dangerous option can only add a candidate and never remove a
+dangerous one. That equivalence is asserted over every prefix of every `git push`
+long option, so it is a checked property rather than a comment. A consequence worth
+stating: an ambiguous abbreviation reads as dangerous (`--a` matches `all`), which
+is free, since git refuses an ambiguous abbreviation itself and the command never
+runs; a fully-spelled unrelated flag such as `--atomic` is unaffected, being a
+prefix of nothing dangerous.
 
 **Opt-out state — keystone `denied_commands.json`.** The opt-out state is a
 security ceiling, so it lives in its OWN keystone file
@@ -851,14 +985,29 @@ once at init — so a just-disabled built-in or just-added user deny reaches
 unattended heartbeat sessions without a gateway restart (cross-surface
 consistency).
 
-**Defense-in-depth nuance** — roughly a third of the rules overlap an independent,
-always-on keystone control (sensitive-file reads, IMDS, git-publish, cred-env
-dumps). Most rules are disableable, but disabling a rule does **not** disable
-its keystone control — such a command stays blocked by defense-in-depth. The
-`git-publish` rules go one step further: the floor is their *only* enforcement
-(their ReDoS-prone patterns never reach the regex tier), so they are not
-disableable at all and the Settings surface locks them (see above). The
-~85 purely-opinionated destructive rules (AWS delete/mutate, `cdk`/`terraform`/
+**Defense-in-depth nuance** — roughly a third of the rules overlap an independent
+keystone control, and it matters which of those controls the rule's own toggle
+now reaches:
+
+- **Still always-on, opt-out cannot touch it:** the sensitive-file read floor.
+  Disabling `sensitive-file-read` leaves `~/.aws/credentials`, the SEL log, the
+  HMAC key and the rest of the fenced set blocked by the path floor, so such a
+  command stays refused by defense-in-depth.
+- **Now gated by the rule's own toggle:** the IMDS gate (`_check_imds_access`,
+  keyed to `credential-exfil-imds-any`) and the bash exfiltration branches
+  (`audit_bash_exfiltration`, each branch keyed to the catalog rule(s) it
+  implements). These used to fire regardless of opt-out state. They are still
+  default-ON — the toggle is opt-*out* — but an operator who disables the rule
+  now disables the branch with it, which is the point: a rule advertised as
+  disableable that stayed enforced anyway was a lie the Settings panel told.
+- **Split:** the `git-publish` rules. The floor is still their *only* enforcement
+  (their ReDoS-prone patterns never reach the regex tier), but the floor now
+  consults the enabled set, so disabling one allows exactly the command shape it
+  covers. The exception is `git-publish-push-brace-expansion-refspec`, whose
+  coverage is an ungated anti-obfuscation branch; it is the one git-publish rule
+  the Settings surface still locks (see the Protected-branch gate bullet above).
+
+The ~85 purely-opinionated destructive rules (AWS delete/mutate, `cdk`/`terraform`/
 `pulumi destroy`, `rm -rf`, `DROP DATABASE`, kill-kirocrew, reverse shells) have
 no keystone backup, so disabling those fully unblocks them (the actual user ask).
 
@@ -1179,6 +1328,42 @@ the destination's ordinary security checks and to the effective
 
 `_run_json()` emits credential-free SEL tool-invocation lifecycle events around every provider CLI attempt. Unsupported providers, invalid bounds, Windows sandbox absence, untrusted executables, and sandbox rejection record `denied`. An allowlisted command awaits its synchronous critical `invoked` append on a worker thread immediately before spawn, so an audit filesystem failure denies execution rather than launching a credential-bearing process unaudited, without blocking the gateway event loop. Cancellation while that worker is active remains fail-closed and waits for it to settle; if `invoked` landed, cleanup records `failed/request_cancelled` before re-raising and never spawns the provider. Provider launchers run in a dedicated process group, and timeout, output-overflow, and cancellation cleanup kills and reaps the complete launcher/provider tree so a sandbox wrapper cannot leave `gh` or `glab` orphaned on an unread pipe. Successful JSON decoding records `completed`; spawn, output, timeout, nonzero exit, decode, cancellation, and internal errors record `failed` with only a coarse reason. Audit records contain the logical provider (`gh`/`glab`), not argv, URL, repo path, output, environment, token, thread id, or exception text. Terminal audit failures are best effort and never alter an already-completed provider result.
 
+**Structured GitHub monitor provider boundary**
+(`monitoring/github_pull_request.py`): background pull-request shadow probes are a
+separate monitor-owned consumer of the shared synchronous `github_runner`, not of the
+dashboard handler. The target gate accepts only exact public `github.com` HTTPS
+pull-request identities and normalizes `www.github.com`; it refuses arbitrary and
+enterprise hosts, credentials/ports, repository-only paths, suffixes, queries,
+fragments, raw control characters, URL parameters, non-canonical numeric aliases,
+oversized pull-request numbers, and invalid owner/repository segments before resolving `gh`. Every
+provider call uses the runner's validated absolute executable, minimal GitHub-only
+environment, audit-or-deny invocation record, strict UTF-8 decoding, and
+`pin_host="github.com"`; no monitor-specific token source or credential storage
+exists.
+
+Raw stdout, stderr, response envelopes, URLs, timestamps, cursor/request ids, bodies,
+comments, and logs never cross the adapter boundary into monitor state, exceptions,
+or logging. Canonical state is an explicit small allowlist; check labels are stripped
+of controls and URLs, passed through `security.redact()`, and bounded in length and
+count before persistence. Provider failures
+are reduced in memory to fixed error kinds and reason codes, including a non-retryable
+setup kind for missing, untrusted, or unexecutable `gh`; raw diagnostic text is then
+discarded. The load-bearing primary read excludes `statusCheckRollup`; checks are read
+separately with the head revision, so a missing Checks permission or a push between
+requests produces typed incomplete supplemental evidence without erasing authorized
+primary facts. Open-PR review-thread pagination is bounded to ten 100-node pages,
+ignores outdated threads, and preserves usable nodes from partial GraphQL errors;
+incomplete or capped evidence fails closed as pending. A terminal merged/closed
+primary state does not issue either supplemental request. Shadow execution has no dispatcher
+dependency and refuses an enabled wake request before either provider or persistence
+work, so it cannot turn ambient GitHub authority into a model wake in this slice.
+Locally imposed check and review-thread caps remain durable incomplete evidence and do
+not consume the provider-error budget; transport failures and malformed provider
+pagination remain typed supplemental errors.
+
+The provider adapter's redaction is classified as inbound canonicalization rather
+than an egress surface.
+
 Sidebar status follows the same read-only boundary. `GET /api/chat/slots` and the WebSocket handshake schedule provider refreshes and opt into cached `ci`/`state` fields only for an exact configured-owner request, or for signed `local-app`/`local-startup` dashboard subjects when no owner is configured. Generic slot serialization omits those fields. `DashboardState` tracks owner-authorized WebSockets separately, sends generic slot updates to all authenticated clients, then overlays credential-backed status only to the owner subset. This prevents a cache populated by an owner request from being replayed to a non-owner or app-token caller. Review-thread cache removal, generation advancement, and stale in-flight detachment still complete after thread ownership validation and before mutation dispatch, so cancellation cannot preserve or repopulate pre-mutation data.
 
 **Stale pre-owner sessions must re-authenticate (`stale_session_reauth`)**: a dashboard token's subject is fixed at mint time as `owner_id or <bootstrap subject>`, and both `POST /api/auth/refresh` and the one-time-link exchange re-mint from the INCOMING subject, so a session signed in before `KIROCREW_OWNER_ID` was configured carries `local-app`/`local-startup` for its whole life. Setting or changing `KIROCREW_OWNER_ID` therefore requires every pre-existing dashboard session to re-authenticate: once an owner exists, the owner gate denies the bootstrap subjects, and that denial is the control working — re-accepting them would readmit every machine-local token to an owner-locked dashboard. The operator surprise comes from `owner_id` being overloaded: it is collected as the Slack Member ID for owner DM routing, but it is also the dashboard authorization principal and the token subject, so setting it for Slack DMs also rotates the dashboard's identity anchor. To make the remedy discoverable, every owner-gate deny site that fronts the shared owner predicate (`stale_owner_session_response` in `source_providers.py`, consulted by the chat mode/approve/worktree/followup gate, the source-provider routes, cloud provisioning, MCP-app calls, `ask_question`, the browser mutations, agent-config mutations, the AWS consent gate, and the instances federated search) labels exactly this case `401 {"code": "stale_session_reauth"}` instead of the generic `403 forbidden`, and the dashboard turns that signal into a sign-in-again banner that deliberately skips the silent-refresh path (refresh preserves the stale subject, so it can never recover this denial); direct-fetch surfaces that bypass the blessed transport (the app-sdk scoped API, the MCP-app tool relay, Mochi's approval bridge) raise the same prompt through the shared `staleOwnerSignal` detector. CHANGING an already-set owner also invalidates the previous owner's sessions, but those carry the old owner's subject — an ordinary non-owner now — so they keep the generic denial: the distinct label is only derivable for the bootstrap subjects, whose staleness is provable from the subject alone. The label is chosen strictly AFTER the deny decision — access is never granted, widened, or re-ordered — and only for an ALREADY-AUTHENTICATED dashboard-user caller whose signed subject is a bootstrap subject while an owner is configured; unsigned, invalid, app-token, and ordinary non-owner callers keep the generic denial, so the discriminator discloses nothing to an unauthenticated party.
@@ -1429,12 +1614,17 @@ server route set.
 - **Self-authenticating-webhook exemption (`token_auth.CSRF_EXEMPT_EXACT_METHODS`)**: exactly two paths skip the Origin check, each for POST only — `POST /api/messaging/teams` (`TEAMS_WEBHOOK_PATH`) and `POST /api/hooks/agent` (`AGENT_HOOK_PATH`). Both callers are server-to-server, send neither `Origin` nor `Referer`, and `check_origin` accepts a header-less request only from a loopback peer or the unix socket — so without the exemption each route answers 403 before its handler runs whenever the caller reaches the gateway directly (the Bot Framework Connector against a public hostname on a VM/App Service; a CI runner or review bot posting a hook from off-host), with no setting that widens it. Compensating control: neither handler reads a cookie, so the browser-with-auto-attached-cookies threat CSRF exists for does not apply, and each authenticates its own credential — the Bot Framework JWT (issuer, App-ID audience, RS256 signature over the Bot Framework JWKS, expiry) for Teams, and the webhook bearer token for the hook, where `_verify_hook_token` compares against the sha256 of every stored entry with `hmac.compare_digest` and stays the **sole** gate (401 when none match, including on a fresh install with no token at all). The two credentials are not equally strong and the code says so: the JWT is Microsoft-signed and unforgeable by anyone else, while the hook token is locally generated and user-managed, so its strength is the operator's handling of whichever runner holds it. What the exemption changes is only *reachability* — a leaked hook token was already sufficient from a loopback or proxied peer. Both routes throttle failed auth per source (`webhooks.auth_throttle`), the Teams route additionally caps the body at `TEAMS_MAX_ACTIVITY_BYTES` before delegating, and every hook 401 is recorded in the run history. The map is method-scoped for the same reason the token-auth bypass is, and on the hook path that scope closes a live collision rather than a hypothetical one: the literal `agent` also matches the `{hook_id}` wildcard of the dashboard-authed PUT/DELETE `/api/hooks/{hook_id}` CRUD routes. Any **third** entry is a security review; `test_teams_webhook_hardening.py` pins the whole map and drives the real middleware for both directions on both paths
 
 **Host-header validation (DNS-rebinding defense)** (`server.py` + `origin.py`):
-- `host_validation_middleware` (`server.py`) rejects any request whose `Host` header does not name a host the dashboard serves. Both entrypoints (`start_dashboard` and the headless `start_api_server`) build it from the shared `_make_host_validation_middleware` factory — a single exemption point that cannot drift between the two chains. It is registered **second** in the middleware chain (right after `host_canonical_redirect`, before `no_cache_middleware`/`csrf_middleware`/token auth)
+- `host_validation_middleware` (`server.py`) rejects any request whose `Host` header does not name a host the dashboard serves. Both entrypoints (`start_dashboard` and the headless `start_api_server`) build it from the shared `_make_host_validation_middleware` factory — a single exemption point that cannot drift between the two chains. It is registered right after `deny_audit_middleware` and `host_canonical_redirect`, and before `no_cache_middleware`/`csrf_middleware`/token auth
 - Runs on **every** HTTP method (not just mutating ones): a GET-based data exfiltration is the rebinding payload, and it is **independent** of the CSRF Origin check and loopback trust — a rebound request is loopback at the socket but forges `Host`
 - **Probe exemption (`origin.PROBE_PATHS`)**: `/api/health`, `/api/live`, `/api/ready` bypass the barrier — orchestrator probes (kubelet, Docker HEALTHCHECK, LBs) address the gateway by container/pod IP, which is never in the host allowlist. Compensating control: `_liveness_payload` gates the build-identity fields on `check_host` AND `is_direct_local_request`, so a rebound request learns only `{"ok": true}` — indistinguishable from a bare TCP connect succeeding. The exemption set is frozen and any addition to `PROBE_PATHS` is a security review; regression tests drive disallowed-Host probes through a real middleware chain (`test_api_health.py`)
 - `check_host()` (`origin.py`) compares the `Host` header (port-stripped, lower-cased) against `build_allowed_hosts()` (`origin.py`), which derives the host allowlist from the SAME `allowed_origins` set the CSRF check uses (so the two layers never drift) plus the canonical loopback names as a floor. Comparison is **port-independent** (hostname only), so an SSH-tunnel local port still matches
 - **Deny-by-default**: a missing/empty `allowed_origins` is treated as a denial (never fail-open); a missing/empty `Host` is allowed **only** from a loopback `request.remote` (local IPC clients like mcp-core/doctor that omit `Host`), positively confirmed rather than blanket-allowed
 - Rejects unknown Hosts with `403 Host header not allowed` + a `log_api_access` SEL event (`outcome="denied"`)
+
+**Deny-before-audit boundary** (`server.py`):
+- `sel_audit_middleware` is registered INNER to the Host, CSRF and token barriers, so a refusal one of them raises is a 403 that middleware never observes. The three known sites each call the shared `_audit_denied` helper (off the event loop, best-effort), but that is a convention a fourth site can omit — and the omission is invisible in production, since the refusal simply appears in no log
+- `deny_audit_middleware` (`_make_deny_audit_middleware`, shared factory, installed on BOTH entrypoints outer to every barrier) makes the recording positional instead: it catches a raised 401/403 on the way out and audits it through the same helper unless an inner layer already claimed the request. A future deny site that forgets everything is still recorded; what forgetting costs is the record's reason DETAIL, not the record
+- The audit surface widens by exactly ONE record class, and it is the class this control exists for. A layer CLAIMS a request (`origin.AUDIT_CLAIMED_KEY`, set through `origin.mark_audit_claimed`) exactly when it wrote the specific record itself: the two barriers via `_audit_denied`, `sel_audit_middleware` for the mutating `/api/` requests it actually logs (so its `outcome="error"` entry for a handler's 403 is not doubled), and the two WebSocket-origin handlers that log their own denial (`stt_stream.py`, `handlers/terminal.py`). The claim marker lives in `origin.py` rather than `server.py` because those handlers cannot import `server` without a cycle. `token_auth_middleware` RETURNS its 401/403 rather than raising and audits each with a specific reason code, and returned responses are not inspected here. Only 401/403 count as refusals — a 302 from host canonicalization and a 404 from routing pass through untouched. The one refusal that reaches the boundary unclaimed is `ws.py`'s cross-origin WebSocket 403 (`_check_ws_origin`), which audited nothing of its own and so was previously recorded nowhere. `test_api_health.py` drives these properties through a real middleware chain, including a synthetic barrier that audits nothing, and walks every `raise web.HTTPForbidden`/`HTTPUnauthorized` in the tree asserting that each self-auditing site claims
 
 **WebSocket origin validation** (`ws.py` + `origin.py`):
 - `_check_ws_origin()` calls shared `check_origin(require=True)` before `ws.prepare()`
@@ -1818,3 +2008,26 @@ window that broadcasts at a channel root. Restoring proper *threaded* delivery
 for warm-pool Slack sessions (by writing the HMAC sidecar at warm-pool claim
 time) is a delivery-quality follow-up, not an audience-safety gate — the
 disclosure hazard is closed by the refuse-on-unresolved rule above.
+
+#### Slack Upload Authorization Rungs (`file_send`)
+
+Both `file_send` legs resolve their destination through one oracle (`dashboard/upload_destination`), and both run the same two ceilings there before any destination work:
+
+| Rung | Predicate | Denial |
+|------|-----------|--------|
+| `channels`-scope governance | `upload_destination._slack_egress_permitted` → `vet_and_audit("channels", "slack", fail_closed=True)` | `403` `channels_governance_denied`, SEL governance decision recorded for grant AND denial |
+| Restricted-session ceiling | `upload_gate.uploads_restricted(channel_type="slack")` — the predicate the channel leg and the Telegram/Discord renderers' extraction path share | `403` `restricted_session`, SEL-audited by the shared predicate |
+
+On the Slack leg both are **direct calls**, not registry entries. Slack is deliberately absent from `channel_transports` (its dedicated client and streaming path are not registered), so it never reaches the shared send ladder that applies the governance vet for every other channel — the same situation `chat_compaction_notice._channel_egress_permitted` already resolves the same way. Registering Slack to reach the ladder would change what the registry means; a direct call to the audited seam does not.
+
+Why this leg needs them most: Slack is the broadest-audience surface (a tracked channel can be company-visible) and the only leg whose destination a REQUEST can name (`body["channel"]`, falling back to the session-map link then the owner DM), while the channel leg's destination comes exclusively from the caller's own session-map entry. Without these rungs an incognito/temporary session that refuses to write a transcript, read memory or save a title still uploaded local file bytes into a Slack channel or DM, and a profile denying the `channels` scope refused a Telegram upload while allowing a Slack one.
+
+**They precede destination resolution.** A denied caller never opens an owner DM and never reads the session map, so a refusal leaks nothing about where the file would have gone. (The shared admission gate — containment, MIME allowlist, content scans — still runs ahead of the oracle on both legs.)
+
+**The restricted rung restores the durable flags first.** For a channel-native key the ceiling reads `privacy_mode`'s process-local trackers, which only an INBOUND channel message populates. A turn no inbound message drove — a cron, a webhook-resumed session, a monitor/auto-nudge re-injection, an explicit `file_send` — would otherwise read empty trackers after a gateway restart and ship the bytes the user's `!incognito` forbids. `uploads_restricted` therefore calls `privacy_mode.hydrate` before consulting them, the same canonical restore `_is_restricted_session` uses, so the fix lands once for every caller of the shared predicate (both `file_send` legs and the renderers' extraction path) rather than per leg.
+
+**Sessionless callers are not muted.** The owner-DM fallback serves callers with no session of their own (a cron, the heartbeat, an out-of-band host action). An empty `X-Session-Key` is vetted under `HOST_SESSION_KEY` (`_host`), for the same reason `handlers.messaging` uses that sentinel on its channel legs: an empty key classifies as `unknown` and matches no profile at all, so vetting under it would make host-side governance inert here, while `_host` is the stable bind target operators attach it to. The restricted rung reads no slot and no channel privacy mode for such a key, so it answers permitted. Net effect on an ungoverned host: unchanged.
+
+**Identity asymmetry is inherited, not widened.** The Slack leg resolves its caller LENIENTLY (`_resolve_session_key()`, including the `/proc` ancestor walk) while the channel leg is handed the strict key. Both rungs read that same lenient key; neither introduces a new identity source.
+
+**Denials are refusals, not skips.** Both answer `403` with a machine-readable `code`, so the MCP tool surfaces "Slack upload failed" rather than reporting success for a file that never left. This differs deliberately from the channel leg, where "cannot deliver here" is the common case and a skip is correct.

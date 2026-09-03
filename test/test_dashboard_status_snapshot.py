@@ -379,3 +379,48 @@ class TestBuildInfoResolution:
             start_time=time.time(),
         )
         assert st._build_info == ("", "")
+
+
+class TestServedBundleId:
+    """The served-bundle hash the SPA compares across status pushes.
+
+    It is what lets a tab reload over a SAME-version rebuild (a git checkout's
+    in-app update), which moves neither ``version`` nor ``commit`` — see
+    ``DashboardState.served_bundle_id``.
+    """
+
+    def test_missing_bundle_reports_empty(self, tmp_path: pathlib.Path) -> None:
+        # No built frontend (source tree, unit tests): empty means UNKNOWN to
+        # the SPA — never a change, so no reload can fire off it.
+        assert DashboardState.served_bundle_id(tmp_path / "absent.html") == ""
+
+    def test_hashes_and_caches_by_stat(self, tmp_path: pathlib.Path) -> None:
+        index = tmp_path / "index.html"
+        index.write_text("<html>build-one</html>")
+        first = DashboardState.served_bundle_id(index)
+        assert first and len(first) == 16
+        # Same stat → same id, answered from cache (idempotent read).
+        assert DashboardState.served_bundle_id(index) == first
+
+    def test_rebuild_changes_id(self, tmp_path: pathlib.Path) -> None:
+        # A rebuild rewrites index.html with new hashed asset names — in
+        # practice a different length and a later mtime. The cache key is
+        # (mtime_ns, size), so model both moving: a same-length rewrite inside
+        # one mtime tick is not a case a real `npm run build` can produce.
+        import os
+
+        index = tmp_path / "index.html"
+        index.write_text("<html>build-one</html>")
+        first = DashboardState.served_bundle_id(index)
+        index.write_text("<html>build-two, with new hashed asset names</html>")
+        st = index.stat()
+        os.utime(index, ns=(st.st_atime_ns, st.st_mtime_ns + 1_000_000))
+        assert DashboardState.served_bundle_id(index) != first
+
+    def test_snapshot_carries_bundle_id(self, state: DashboardState) -> None:
+        # The field rides the shared snapshot (WS push + /api/status alike);
+        # in this test env there is a real built bundle or there is not — both
+        # shapes are legal, but the KEY must be present so the SPA can compare.
+        snap = state.status_snapshot()
+        assert "bundle_id" in snap
+        assert isinstance(snap["bundle_id"], str)

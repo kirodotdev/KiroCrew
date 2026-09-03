@@ -456,3 +456,93 @@ def test_corrupt_entry_raises_from_get_many(tmp_path) -> None:
     vault = SecretVault(tmp_path)
     with pytest.raises(ValueError, match="Vault store corrupt: an entry is malformed"):
         vault.get_many(["A"])
+
+
+# ── Non-dict top-level envelope guard (F5) ──
+
+
+def _write_raw_store(tmp_path: Path, raw_json: str) -> None:
+    """Write raw JSON bytes directly to the store path, bypassing the envelope builder."""
+    (tmp_path / ".vault").mkdir(exist_ok=True)
+    (tmp_path / ".vault" / "secrets.enc").write_text(raw_json, encoding="utf-8")
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "[]",  # JSON array
+        '["a","b"]',  # JSON array with content
+        '"x"',  # JSON string
+        "42",  # JSON number
+        "true",  # JSON boolean
+        "null",  # JSON null
+    ],
+)
+def test_non_dict_top_level_envelope_raises_value_error(tmp_path, raw) -> None:
+    """A store whose top-level JSON value is not an object fails closed with ValueError.
+
+    On origin/main (without the isinstance guard) this raised a raw AttributeError
+    from envelope.get().  The fix raises a descriptive ValueError that mirrors the
+    existing 'entries' guard, so callers see a consistent module-level error rather
+    than an internal implementation detail.
+    """
+    _seed_key(tmp_path)
+    _write_raw_store(tmp_path, raw)
+    vault = SecretVault(tmp_path)
+    with pytest.raises(ValueError, match="corrupt"):
+        vault._load_entries()
+
+
+def test_non_dict_envelope_error_contains_type_name(tmp_path) -> None:
+    """The ValueError message names the unexpected type, not the store content."""
+    _seed_key(tmp_path)
+    _write_raw_store(tmp_path, "[]")
+    vault = SecretVault(tmp_path)
+    with pytest.raises(ValueError) as exc:
+        vault._load_entries()
+    msg = str(exc.value)
+    # Message must mention "object" (expected) and the actual type.
+    assert "object" in msg
+    assert "list" in msg
+
+
+def test_non_dict_envelope_error_does_not_echo_store_content(tmp_path) -> None:
+    """The corrupt-envelope error carries no store content in the message."""
+    _seed_key(tmp_path)
+    store_payload = '"sensitive-payload-12345"'
+    _write_raw_store(tmp_path, store_payload)
+    vault = SecretVault(tmp_path)
+    with pytest.raises(ValueError) as exc:
+        vault._load_entries()
+    assert "sensitive-payload-12345" not in str(exc.value)
+
+
+def test_non_dict_envelope_raises_from_list_names(tmp_path) -> None:
+    """The public list_names() path surfaces the ValueError for a non-dict envelope."""
+    _seed_key(tmp_path)
+    _write_raw_store(tmp_path, "[]")
+    vault = SecretVault(tmp_path)
+    with pytest.raises(ValueError, match="corrupt"):
+        vault.list_names()
+
+
+def test_valid_store_still_loads_after_guard(tmp_path) -> None:
+    """A well-formed store is unaffected by the isinstance guard."""
+    vault = SecretVault(tmp_path)
+    vault._set_sync("k", "v")
+    # Must not raise — guard is only a speed-bump for non-dict values.
+    entries = vault._load_entries()
+    assert "k" in entries
+
+
+def test_corrupt_entries_guard_still_works_with_envelope_guard(tmp_path) -> None:
+    """The existing 'entries' guard (non-dict entries value) still fires correctly.
+
+    Ensures the new top-level guard does not mask or accidentally break the
+    entries-level guard that was already present.
+    """
+    _seed_key(tmp_path)
+    _write_store(tmp_path, ["not", "a", "dict"])
+    vault = SecretVault(tmp_path)
+    with pytest.raises(ValueError, match="Vault store corrupt: 'entries' must be an object"):
+        vault._load_entries()

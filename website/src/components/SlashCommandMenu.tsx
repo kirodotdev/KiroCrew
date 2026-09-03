@@ -143,9 +143,9 @@ const FRONTEND_COMMAND_NAMES = ['/kb', '/onboarding', '/plain'] as const
 const FRONTEND_COMMANDS: SlashCommand[] = FRONTEND_COMMAND_NAMES.map(name => ({ name }))
 
 export default function SlashCommandMenu({ input, anchorRef, onSelect, onClose, open = true, sendOnEnter = 'enter' }: Props) {
-  const { data: apiCommands = FALLBACK_COMMANDS, isFetching } = useQuery<SlashCommand[]>({
+  const { data: apiCommands = FALLBACK_COMMANDS, isFetching, isError } = useQuery<SlashCommand[]>({
     queryKey: ['slash-commands'],
-    queryFn: () => api.slashCommands(),
+    queryFn: ({ signal }) => api.slashCommands(signal),
     enabled: typeof api.slashCommands === 'function',
   })
   const commands = useMemo(() => {
@@ -218,11 +218,25 @@ export default function SlashCommandMenu({ input, anchorRef, onSelect, onClose, 
   }, [displayed, visible, itemRefs, selectedRef])
 
   if (!visible || !anchorRef.current) return null
-  // Unsettled zero-match (remote list still in flight): keep rendering
-  // nothing — the release gate is off and the row set is not yet decided.
-  if (displayed.length === 0 && !releaseKeysWhenEmpty) return null
+  // Rows are ordered by an effect, so a matching list is briefly empty here.
+  // Render nothing until it lands, whether or not a refetch is in flight.
+  if (displayed.length === 0 && filtered.length > 0) return null
 
   const { top, left, width, maxHeight } = menuGeometry(anchorRef.current, Math.max(displayed.length, 1), 40)
+
+  /** Copy for the zero-row state. A settled ERROR is not a zero-match: both
+   *  release Enter, but "No matching commands" asserts the live list was read
+   *  and did not hold the typed prefix. On a failed load it was never read —
+   *  the rows are the offline fallback, and the served list is provider-aware,
+   *  so a command it would have offered may simply never have arrived. Named
+   *  per the send binding on both paths, for the reason given below. */
+  const emptyKey = isError
+    ? (sendOnEnter === 'ctrl-enter'
+        ? 'components.slashCommandMenu.commands_load_failed_ctrl_enter_sends'
+        : 'components.slashCommandMenu.commands_load_failed_enter_sends')
+    : (sendOnEnter === 'ctrl-enter'
+        ? 'components.slashCommandMenu.no_matching_commands_ctrl_enter_sends'
+        : 'components.slashCommandMenu.no_matching_commands_enter_sends')
 
   return createPortal(
     <div
@@ -236,7 +250,9 @@ export default function SlashCommandMenu({ input, anchorRef, onSelect, onClose, 
         // it at the point of action, mirroring the $skill picker's empty state.
         // Named per the composer's send binding ('ctrl-enter' → bare Enter is
         // a newline); role="status" so screen-reader users hear the flip too.
-        ? <div role="status" className="px-3 py-3 text-[12px] text-muted">{i18nT(sendOnEnter === 'ctrl-enter' ? 'components.slashCommandMenu.no_matching_commands_ctrl_enter_sends' : 'components.slashCommandMenu.no_matching_commands_enter_sends')}</div>
+        ? (isFetching
+            ? <div className="px-3 py-3 text-[12px] text-muted">{i18nT('components.slashCommandMenu.loading_commands')}</div>
+            : <div role="status" className="px-3 py-3 text-[12px] text-muted">{i18nT(emptyKey)}</div>)
         : displayed.map((cmd, i) => (
         <button
           role="option"

@@ -14,10 +14,10 @@
  * routes.json: [{ "path": "/", "label": "Home" }, ...]  (or a bare ["/", "/about"])
  * Prints one JSON line per shot: {"route","label","file","ok","bytes","engine"}
  */
-import { spawnSync } from 'node:child_process'
 import { existsSync, mkdirSync, statSync, readFileSync } from 'node:fs'
 import { resolve, isAbsolute, join } from 'node:path'
 import { getPlaywright } from './ensure-playwright.mjs'
+import { installSsrfGuard } from './ssrf-guard.mjs'
 
 function args(argv) {
   const o = { base: 'http://localhost:3000', out: './shots', width: 1280, height: 900, full: false, routes: '', routesFile: '' }
@@ -60,14 +60,6 @@ function loadRoutes(o) {
   return (o.routes || '/').split(',').map(p => p.trim()).filter(Boolean).map(p => ({ path: p, label: safeLabel(slug(p)) }))
 }
 
-function chromeBinary() {
-  return [
-    '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
-    '/Applications/Chromium.app/Contents/MacOS/Chromium',
-    '/usr/bin/google-chrome', '/usr/bin/chromium', '/usr/bin/chromium-browser',
-  ].find(existsSync) || null
-}
-
 async function tryPlaywright() {
   return await getPlaywright()
 }
@@ -97,47 +89,55 @@ async function main() {
   const pw = await tryPlaywright()
   const results = []
 
-  if (pw) {
-    const browser = await pw.chromium.launch({ channel: 'chrome' }).catch(() => pw.chromium.launch())
-    const ctx = await browser.newContext({ viewport: { width: o.width, height: o.height } })
-    const page = await ctx.newPage()
-    for (const [i, r] of routes.entries()) {
-      // Index-prefixed: safeLabel() collapses distinct routes onto the same
-      // label ('/a/b' and '/a?b' both become 'a-b'), so a label alone let the
-      // second capture overwrite the first and both results then pointed at
-      // one image. The index is unique per route by construction.
-      const file = join(outDir, `${String(i + 1).padStart(2, '0')}-${r.label}.png`)
-      let ok = false
-      try {
-        await page.goto(o.base + r.path, { waitUntil: 'domcontentloaded', timeout: 30000 })
-        await settle(page, o)
-        await page.screenshot({ path: file, fullPage: !!o.full })
-        ok = existsSync(file)
-      } catch (e) { /* record failure below */ }
-      const bytes = ok ? statSync(file).size : 0
-      // Low byte-floor only catches truly empty files; real blank/skeleton
-      // detection is the visual fs_read check the critic does afterward.
-      results.push({ route: r.path, label: r.label, file, ok: ok && bytes > 2000, bytes, engine: 'playwright' })
-    }
-    await browser.close()
-  } else {
-    const bin = chromeBinary()
-    for (const [i, r] of routes.entries()) {
-      // Index-prefixed: safeLabel() collapses distinct routes onto the same
-      // label ('/a/b' and '/a?b' both become 'a-b'), so a label alone let the
-      // second capture overwrite the first and both results then pointed at
-      // one image. The index is unique per route by construction.
-      const file = join(outDir, `${String(i + 1).padStart(2, '0')}-${r.label}.png`)
-      let ok = false
-      if (bin) {
-        const res = spawnSync(bin, ['--headless=new', '--disable-gpu', '--hide-scrollbars', '--no-sandbox',
-          `--window-size=${o.width},${o.height}`, `--screenshot=${file}`, o.base + r.path], { stdio: 'ignore', timeout: 45000 })
-        ok = res.status === 0 && existsSync(file)
-      }
-      const bytes = ok ? statSync(file).size : 0
-      results.push({ route: r.path, label: r.label, file, ok: ok && bytes > 1000, bytes, engine: bin ? 'chrome-headless' : 'none' })
-    }
+  // Playwright is REQUIRED: it is the only render path that can address-validate
+  // every request and redirect (installSsrfGuard). A raw headless-Chrome
+  // screenshot follows redirects with no per-request hook, so it is not a safe
+  // fallback for a public URL — refuse rather than render unguarded.
+  if (!pw) {
+    console.error('capture-site: Playwright unavailable — cannot render safely.')
+    process.exit(3)
   }
+  // Pin Chromium's DNS for the vetted base host to the address the backend
+  // already validated (passed as --resolve=host:ip1,ip2), so a rebinding name
+  // cannot resolve to an internal IP on the browser's OWN lookup. Mirrors the
+  // git-clone curloptResolve pin; the per-request installSsrfGuard still guards
+  // any other host a redirect/subresource reaches.
+  const launchArgs = []
+  if (o.resolve) {
+    const idx = o.resolve.indexOf(':')
+    const host = idx > 0 ? o.resolve.slice(0, idx) : ''
+    const ip = idx > 0 ? o.resolve.slice(idx + 1).split(',')[0] : ''
+    if (host && ip) launchArgs.push(`--host-resolver-rules=MAP ${host} ${ip}`)
+  }
+  const browser = await pw.chromium.launch({ channel: 'chrome', args: launchArgs }).catch(() => pw.chromium.launch({ args: launchArgs }))
+  const ctx = await browser.newContext({ viewport: { width: o.width, height: o.height }, serviceWorkers: 'block' })
+  let baseOrigin = null
+  try { baseOrigin = new URL(o.base).origin } catch { baseOrigin = null }
+  await installSsrfGuard(ctx, baseOrigin)
+  const page = await ctx.newPage()
+  for (const [i, r] of routes.entries()) {
+    // Index-prefixed: safeLabel() collapses distinct routes onto the same
+    // label ('/a/b' and '/a?b' both become 'a-b'), so a label alone let the
+    // second capture overwrite the first and both results then pointed at
+    // one image. The index is unique per route by construction.
+    const file = join(outDir, `${String(i + 1).padStart(2, '0')}-${r.label}.png`)
+    let ok = false
+    try {
+      // A synthetic "/" route means "the base URL itself" (a full URL with a
+      // query becomes base + "/" upstream); appending "/" would corrupt it
+      // (…?view=cart/), so navigate to o.base unchanged for the root route.
+      const target = (r.path === '/' || r.path === '') ? o.base : o.base + r.path
+      await page.goto(target, { waitUntil: 'domcontentloaded', timeout: 30000 })
+      await settle(page, o)
+      await page.screenshot({ path: file, fullPage: !!o.full })
+      ok = existsSync(file)
+    } catch (e) { /* record failure below */ }
+    const bytes = ok ? statSync(file).size : 0
+    // Low byte-floor only catches truly empty files; real blank/skeleton
+    // detection is the visual fs_read check the critic does afterward.
+    results.push({ route: r.path, label: r.label, file, ok: ok && bytes > 2000, bytes, engine: 'playwright' })
+  }
+  await browser.close()
 
   for (const r of results) console.log(JSON.stringify(r))
   const good = results.filter(r => r.ok).length

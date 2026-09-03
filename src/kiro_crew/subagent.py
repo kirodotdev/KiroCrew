@@ -1210,9 +1210,11 @@ class SubagentInfo:
     _stall_suspect_at: float = (
         0.0  # first reaper sweep that saw the idle threshold exceeded; 2-sweep confirmation (scale dampening)
     )
-    _awaiting_approval: bool = (
-        False  # True while blocked on a human tool-approval prompt; exempt from idle-stall
-    )
+    # True while blocked on a human approval prompt — either the pre-execution
+    # spawn gate or a mid-run tool prompt; exempt from idle-stall. Paired with
+    # ``_exec_started is None`` it also tells the reaper which of the two a
+    # parked run is sitting on.
+    _awaiting_approval: bool = False
     # Attribution snapshot of the tool currently in flight, mirroring what
     # ``AcpSessionHandle`` keeps for the main agent. This is what lets the
     # liveness oracle key evidence to THIS subagent's own child process (by

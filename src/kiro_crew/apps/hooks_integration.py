@@ -28,6 +28,8 @@ from kiro_crew.apps.execution import (
     app_execution_denied,
     shipped_builtin_app_root,
 )
+from kiro_crew.apps.job_routes import register_job_routes
+from kiro_crew.apps.job_sdk import forget_sdk, get_sdk, reconcile_all, register_sdk
 from kiro_crew.apps.lifecycle import LifecycleDispatcher
 from kiro_crew.apps.manager import app_dir, list_apps
 from kiro_crew.apps.route_registry import RouteRegistry
@@ -88,6 +90,11 @@ def init_hooks_system(
     """
     global _route_registry, _lifecycle_dispatcher
 
+    # BEFORE the catch-all, not after: aiohttp matches in registration order, so
+    # /api/apps/{app_name}/{path:.*} would otherwise swallow every _jobs request
+    # and answer it from the app's own dispatch table.
+    register_job_routes(app)
+
     _route_registry = RouteRegistry(app)
     _route_registry.ensure_catch_all()
 
@@ -110,16 +117,12 @@ def get_lifecycle_dispatcher() -> LifecycleDispatcher | None:
     return _lifecycle_dispatcher
 
 
-async def stop_retained_startup_hooks(
-    app_name: str, *, bounded: bool
-) -> bool:
+async def stop_retained_startup_hooks(app_name: str, *, bounded: bool) -> bool:
     """Wait for retained startup execution, failing closed on ownership errors."""
     if _lifecycle_dispatcher is None:
         return True
     try:
-        return await _lifecycle_dispatcher.stop_detached_startup_hooks(
-            app_name, bounded=bounded
-        )
+        return await _lifecycle_dispatcher.stop_detached_startup_hooks(app_name, bounded=bounded)
     except Exception:  # noqa: BLE001 - destructive lifecycle work must fail closed
         logger.exception("Could not verify detached startup-hook cleanup for %s", app_name)
         return False
@@ -142,7 +145,7 @@ def _build_app_context_from_info(
     permissions = manifest.get("permissions", {})
     data_path = app_dir(name) / "data"
     data_path.mkdir(parents=True, exist_ok=True)
-    return build_app_context(
+    ctx = build_app_context(
         app_name=name,
         data_dir=data_path,
         permissions=permissions,
@@ -151,6 +154,13 @@ def _build_app_context_from_info(
         spawn_impl=spawn_impl,
         app_config=manifest.get("extra", {}),
     )
+    # The shared _jobs routes are mounted once for every app and resolve the app
+    # from the URL, so they need a name -> SDK lookup. Publishing happens here,
+    # in the gateway wiring, rather than inside build_app_context, so building a
+    # context in a test does not put an SDK behind the live routes.
+    if ctx.job is not None:
+        register_sdk(ctx.job)
+    return ctx
 
 
 async def on_app_enable(
@@ -231,19 +241,38 @@ async def on_app_enable(
     routes_hook = hooks.get("routes", "")
     if routes_hook and _route_registry:
         app_root = _app_hook_root(app_name)
-        registered = await _route_registry.register_app_routes(
-            app_name, app_root, routes_hook, ctx
-        )
+        registered = await _route_registry.register_app_routes(app_name, app_root, routes_hook, ctx)
         if registered:
             result["hooks_routes"] = registered
 
     # Invoke on_startup hook if declared
     startup_hook = hooks.get("on_startup", "")
     if startup_hook and _lifecycle_dispatcher:
-        success = await _lifecycle_dispatcher._invoke(
-            app_name, startup_hook, ctx, phase="startup"
-        )
+        success = await _lifecycle_dispatcher._invoke(app_name, startup_hook, ctx, phase="startup")
         result["hooks_startup"] = "ok" if success else "failed"
+
+    # Reconcile this app's job records now that its startup hook has registered
+    # the runners. The boot-time pass runs once, after the enable LOOP, so an app
+    # enabled later in the gateway's life never got one -- and reconciliation is
+    # only decidable once the runners are known, since "no runner for this kind"
+    # is one of the two outcomes it reports. Without this a record left
+    # non-terminal by a previous process stayed that way until the next restart,
+    # and `list_active` kept reporting work that had already stopped, which is the
+    # exact symptom this SDK exists to remove.
+    #
+    # Scoped to the hooks path on purpose: an app with no backend hooks returned
+    # above, and it can register no runners, so there is nothing here to decide
+    # against -- the boot-time pass already owns that case.
+    if getattr(ctx, "job", None) is not None:
+        try:
+            flipped = await asyncio.to_thread(ctx.job.reconcile)
+            if flipped:
+                result["job_reconcile"] = f"resolved {flipped} interrupted run(s)"
+        except Exception as exc:  # noqa: BLE001 - enable must not fail on this
+            logger.warning(
+                "App %s: job reconciliation after enable did not complete: %s", app_name, exc
+            )
+            result["job_reconcile"] = "failed: stale run records may remain"
 
     # Report health status
     health_snapshot = _publish_hook_health(app_name, ctx)
@@ -259,15 +288,69 @@ async def on_app_enable(
     return result
 
 
-async def stop_app_startup_hooks(
-    app_name: str, *, bounded: bool = False
-) -> bool:
+async def stop_app_startup_hooks(app_name: str, *, bounded: bool = False) -> bool:
     """Prove retained startup ownership clear before teardown mutates state."""
     if not _lifecycle_dispatcher:
         return True
-    return await _lifecycle_dispatcher.stop_detached_startup_hooks(
-        app_name, bounded=bounded
-    )
+    return await _lifecycle_dispatcher.stop_detached_startup_hooks(app_name, bounded=bounded)
+
+
+async def _cleanup_app_jobs(app_name: str, result: dict[str, Any]) -> None:
+    """Stop and drop an app's durable job runs, mirroring the cron contract:
+    idempotent, and a failure is REPORTED rather than crashing the disable.
+
+    Signalling is all the SDK can do about the WORK -- a runner that never polls
+    its handle within the deadline is reported -- and the RECORDS stay deleted:
+    the SDK marks every live handle discarded under the same lock its guarded
+    writer takes, so a worker returning mid-cleanup cannot write its record back,
+    and a partial delete is reported rather than read as clean.
+
+    Keyed off the REGISTRY, not the manifest grant. Gating this on
+    ``permissions.get("jobs")`` meant revoking the grant and then disabling took
+    the one path that skips it entirely: the SDK stays registered from the enable
+    that DID have the grant, its workers keep executing, and the lookup entry is
+    dropped afterwards -- so nothing can ever reach them again. The grant governs
+    whether an app may START jobs; whether it HAS any running is a fact about the
+    registry, and that is what teardown has to ask.
+
+    A separate function so that grant-independence is testable on its own; it was
+    unreachable while the logic sat inline behind the condition it must ignore.
+    """
+    job_sdk = get_sdk(app_name)
+    if job_sdk is None:
+        return
+    try:
+        cleanup = await job_sdk.remove_all_async()
+        if not cleanup.is_clean:
+            # Reported, not swallowed: a cleanup that left records behind OR left
+            # app code executing must not read as clean.
+            parts = []
+            if cleanup.failed:
+                parts.append(f"{cleanup.failed} run record(s) remain")
+            if cleanup.still_running:
+                parts.append(f"{cleanup.still_running} worker(s) still running")
+            result["job_cleanup"] = f"partial: removed {cleanup.removed}, " + "; ".join(parts)
+            sel().log_api_access(
+                caller="gateway",
+                operation="jobs.deregister",
+                outcome="partial",
+                resources=(
+                    f"app={app_name} removed={cleanup.removed} "
+                    f"failed={cleanup.failed} running={cleanup.still_running}"
+                ),
+            )
+        elif cleanup.removed:
+            result["job_cleanup"] = f"removed {cleanup.removed} run record(s)"
+    except OSError as exc:
+        logger.warning("App %s: job cleanup could not complete on disable: %s", app_name, exc)
+        result["job_cleanup"] = "failed: run records may remain"
+        sel().log_api_access(
+            caller="gateway",
+            operation="jobs.deregister",
+            outcome="failed",
+            resources=app_name,
+            error=str(exc),
+        )
 
 
 async def on_app_disable(
@@ -305,9 +388,7 @@ async def on_app_disable(
     # task becomes a hard teardown failure; callers keep trust in place rather
     # than falsely claiming all app code stopped.
     if startup_stopped is None:
-        startup_stopped = await stop_app_startup_hooks(
-            app_name, bounded=bounded_startup_cleanup
-        )
+        startup_stopped = await stop_app_startup_hooks(app_name, bounded=bounded_startup_cleanup)
     if not startup_stopped:
         result["startup_cleanup"] = (
             "failed: detached startup hook is still running; teardown not started"
@@ -367,14 +448,11 @@ async def on_app_disable(
                 # above forbids. Reported rather than retried: an unreadable store
                 # does not heal on its own.
                 logger.warning(
-                    "App %s: cron cleanup could not complete on disable — "
-                    "store unreadable: %s",
+                    "App %s: cron cleanup could not complete on disable — " "store unreadable: %s",
                     app_name,
                     exc,
                 )
-                result["cron_cleanup"] = (
-                    "failed: cron store unreadable — jobs may still be enabled"
-                )
+                result["cron_cleanup"] = "failed: cron store unreadable — jobs may still be enabled"
                 sel().log_api_access(
                     caller="gateway",
                     operation="app_crons_deregister",
@@ -396,6 +474,18 @@ async def on_app_disable(
                     resources=app_name,
                     error=str(exc),
                 )
+
+    # Stop and drop this app's durable job runs. Keyed off the registry, not
+    # the manifest grant -- see _cleanup_app_jobs for why that distinction is
+    # load-bearing on a revoked grant.
+    await _cleanup_app_jobs(app_name, result)
+
+    # Drop the lookup entry unconditionally, for the same reason the cleanup
+    # above ignores the grant: a revoked capability must not survive in the
+    # registry, and a conditional forget would leave the SDK published for the
+    # rest of the gateway's life. The route guard re-reads the manifest so it
+    # would refuse anyway, but the registry must not disagree with it.
+    forget_sdk(app_name)
 
     return result
 
@@ -480,16 +570,12 @@ async def on_gateway_startup(
         # Register routes (if declared)
         routes_hook = hooks.get("routes", "")
         if routes_hook and _route_registry:
-            await _route_registry.register_app_routes(
-                name, _app_hook_root(name), routes_hook, ctx
-            )
+            await _route_registry.register_app_routes(name, _app_hook_root(name), routes_hook, ctx)
 
         # Invoke on_startup hook (if declared)
         startup_hook = hooks.get("on_startup", "")
         if startup_hook and _lifecycle_dispatcher:
-            success = await _lifecycle_dispatcher._invoke(
-                name, startup_hook, ctx, phase="startup"
-            )
+            success = await _lifecycle_dispatcher._invoke(name, startup_hook, ctx, phase="startup")
             if success:
                 logger.info("Startup hook invoked for: %s", name)
 
@@ -501,6 +587,31 @@ async def on_gateway_startup(
         # _mark_cancelled_startup_residual at lifecycle.py:66), so an aggregate
         # would only re-log them, and only ever for this one caller.
         _publish_hook_health(name, ctx)
+
+    # AFTER the loop, deliberately: only here has every enabled app registered
+    # its runners, so a run whose kind has no runner can be told apart from an
+    # app that has simply not loaded yet. Reconciliation resolves runs that a
+    # previous gateway process left mid-flight -- a run must never be left
+    # `running` forever, and must never silently vanish.
+    try:
+        interrupted = await asyncio.to_thread(reconcile_all)
+        if interrupted:
+            logger.info("Startup: reconciled %d interrupted job run(s)", interrupted)
+            sel().log_api_access(
+                caller="gateway",
+                operation="jobs.reconcile",
+                outcome="completed",
+                resources=f"interrupted={interrupted}",
+            )
+    except Exception as exc:  # noqa: BLE001 - boot must not fail on a bad run store
+        logger.exception("Startup: job reconciliation failed")
+        sel().log_api_access(
+            caller="gateway",
+            operation="jobs.reconcile",
+            outcome="failed",
+            resources="startup",
+            error=str(exc),
+        )
 
 
 async def on_gateway_shutdown() -> None:

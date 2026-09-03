@@ -167,7 +167,11 @@ class TestDriverAdopts(_Base):
                            root=self.root, run_id="run-a", progress=prog)
         self.assertEqual(seen["CR-1"], "failed")
         self.assertEqual(out["result_records"], 0)
+        # The residual "turn completed, nothing written" case keeps this value —
+        # discriminated causes (runtime preflight, incomplete record) carry
+        # their own reasons and must never collapse back into it.
         self.assertEqual(out["per_change"][0]["skipped_reason"], "no_review_recorded")
+        self.assertFalse(out["per_change"][0]["result_recorded"])
 
 
 if __name__ == "__main__":  # pragma: no cover

@@ -42,6 +42,11 @@ const ALLOWED_CSS_VARS = new Set([
   '--diff-del', '--diff-del-text',
   '--diff-hunk', '--diff-hunk-text', '--diff-meta-text',
   '--shadow-sm', '--shadow-md', '--shadow-lg',
+  // Terminal ANSI hues a theme may override; the other fourteen entries the
+  // built-in terminal needs are derived from --bg / --text / --danger / --ok /
+  // --warn / --info above. Kept in sync with _THEME_CSS_VARS on the backend
+  // (TestAllowlistParity asserts the two sets are equal).
+  '--term-magenta', '--term-cyan',
 ])
 
 /**

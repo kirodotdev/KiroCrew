@@ -220,7 +220,75 @@ class TestReviewDriver(unittest.TestCase):
             return {"ok": True, "output": "", "error": ""}
         out = D.run_review(["CR-7"], dispatch=no_record, generate_report=False, root=self.root, post=True)
         self.assertEqual(out["deep_reviewed"], 0)
+        # The residual "turn completed, nothing written" case keeps this value;
+        # environment failures carry their own discriminated reasons instead.
         self.assertEqual(out["per_change"][0]["skipped_reason"], "no_review_recorded")
+        self.assertFalse(out["per_change"][0]["result_recorded"])
+
+    def test_incomplete_record_is_discriminated_from_no_record(self):
+        # A worker that writes a record but never marks the review complete is a
+        # DIFFERENT detectable cause than one that writes nothing — the two must
+        # not collapse into one reason (that ambiguity is what made the failure
+        # untriageable).
+        errors: dict = {}
+
+        def prog(cid, phase, extra=None):
+            if phase == "failed":
+                errors[cid] = (extra or {}).get("error", "")
+
+        def partial(task, timeout=0):
+            results.write_result({
+                "schema": "code-review-sage-result", "version": 1, "change_id": "CR-8",
+                "platform": "github", "repo_identity": "github.com/o/r", "revision": "1",
+                "phase1": {"gate_verdict": "PASS", "design_risk": "low", "criticality": "low"},
+                "blast_radius": {"rating": "SMALL", "signals": {}},
+                "counts": {"red": 0, "yellow": 0}, "findings": [],
+                "deep_reviewed": False, "title": "CR-8",
+                "files_covered": [], "coverage_complete": True,
+            }, self.root)
+            return {"ok": True, "output": "", "error": ""}
+
+        out = D.run_review(["CR-8"], dispatch=partial, generate_report=False,
+                           root=self.root, post=True, progress=prog)
+        rec = out["per_change"][0]
+        self.assertEqual(rec["skipped_reason"], "review_record_incomplete")
+        self.assertTrue(rec["result_recorded"])
+        self.assertIn("never completed", errors["CR-8"])
+        self.assertNotIn("no result record", errors["CR-8"])
+
+    def test_preflight_failure_fails_fast_and_never_dispatches(self):
+        # A failed runtime preflight must produce its own discriminated reason,
+        # name the missing runtime in the progress error, and return BEFORE any
+        # reviewer session is dispatched.
+        errors: dict = {}
+
+        def prog(cid, phase, extra=None):
+            errors[cid] = (phase, (extra or {}).get("error", ""))
+
+        out = D.run_review(
+            ["CR-1", "CR-2"], dispatch=self._fake_dispatch(),
+            generate_report=False, root=self.root, post=True, progress=prog,
+            preflight=lambda: "the reviewer cannot run: no kiro-cli executable "
+                              "was found on this host")
+        self.assertEqual(self.calls, [])            # nothing was dispatched
+        self.assertFalse(out["ok"])
+        self.assertIn("kiro-cli", out["error"])
+        self.assertEqual(out["changes"], 2)
+        self.assertEqual(out["result_records"], 0)
+        for rec in out["per_change"]:
+            self.assertEqual(rec["skipped_reason"], "runtime_unavailable")
+            self.assertIn("kiro-cli", rec["deep_error"])
+        self.assertEqual(errors["CR-1"][0], "failed")
+        self.assertIn("kiro-cli", errors["CR-1"][1])
+
+    def test_passing_preflight_runs_the_review(self):
+        # "" means the runtime is available — the run proceeds normally.
+        out = D.run_review(["CR-1"], dispatch=self._fake_dispatch(),
+                           generate_report=False, root=self.root, post=True,
+                           preflight=lambda: "")
+        self.assertTrue(out["ok"])
+        self.assertEqual(out["deep_reviewed"], 1)
+        self.assertGreater(len(self.calls), 0)
 
     def test_each_task_is_single_change(self):
         D.run_review(["CR-1", "CR-2"], dispatch=self._fake_dispatch(), archiver=self._archiver,

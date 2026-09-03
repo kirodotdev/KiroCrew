@@ -1,9 +1,20 @@
 /**
  * Chat message pins API client.
- * Follows the same transport pattern as client.ts (same-origin fetch with X-Session-Key).
+ *
+ * Routes through the blessed shared transport (`apiTransport`) rather than raw
+ * `fetch`, so pin failures get the SAME pipeline every other dashboard API call
+ * already has: the `X-Session-Key` header, an `ApiError` carrying the HTTP
+ * status + raw backend body, the backend's machine-readable `code` parsed once
+ * at the chokepoint, and a recorded entry in the shared error journal. This
+ * replaces the module's own hand-rolled error-body parsing (which duplicated
+ * `ApiError` + `parseErrorCode` and never fed the journal) with the one
+ * established mechanism. Consumers read the backend `code` off the thrown
+ * `ApiError` via `parseErrorCode(err.body)` — see `pinErrorCode` in useChatPins.
  */
 
-const _sk = { 'X-Session-Key': 'dashboard:ui' }
+import { apiTransport } from './apiTransport'
+
+const { get, post, del, j } = apiTransport
 
 // Keep transport bounded while leaving ample look-ahead beyond the 200-character
 // stored preview for server-side credential and URL redaction.
@@ -27,48 +38,13 @@ export interface PinMessageBody {
   preview: string
 }
 
-/**
- * Structured error from the pins API: a plain `Error` carrying the
- * machine-readable `code` field the backend returns (e.g. `pin_limit_reached`,
- * `preview_too_large`, `persist_failed`) so callers can branch on the specific
- * failure rather than showing a single generic message.
- *
- * Deliberately a TYPE, not a class: consumers branch structurally on `code`
- * (see `pinErrorCode` in useChatPins), which stays correct across module-mock
- * boundaries in tests, where an `instanceof` against a re-exported class would
- * not — and a type adds no runtime export a partial mock could drop.
- */
-export type PinApiError = Error & { code?: string }
-
 export const pinsApi = {
   list: (slotKey: string): Promise<{ pins: ChatPin[] }> =>
-    fetch(`/api/chat/pins?slot=${encodeURIComponent(slotKey)}`, { headers: _sk })
-      .then(r => { if (!r.ok) throw new Error(`Pin list failed: ${r.status}`); return r.json() }),
+    get(`/api/chat/pins?slot=${encodeURIComponent(slotKey)}`).then(j) as Promise<{ pins: ChatPin[] }>,
 
-  create: async (body: PinMessageBody): Promise<ChatPin> => {
-    const r = await fetch('/api/chat/pins', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', ..._sk },
-      body: JSON.stringify(body),
-    })
-    if (!r.ok) {
-      let code: string | undefined
-      try {
-        const data = await r.json() as Record<string, unknown>
-        if (typeof data.code === 'string') code = data.code
-      } catch {
-        // Body parse failure — fall through to the generic error below
-      }
-      const err: PinApiError = new Error(`Pin create failed: ${r.status}`)
-      err.code = code
-      throw err
-    }
-    return r.json() as Promise<ChatPin>
-  },
+  create: (body: PinMessageBody): Promise<ChatPin> =>
+    post('/api/chat/pins', body).then(j) as Promise<ChatPin>,
 
   remove: (id: string): Promise<{ ok: boolean }> =>
-    fetch(`/api/chat/pins/${encodeURIComponent(id)}`, {
-      method: 'DELETE',
-      headers: _sk,
-    }).then(r => { if (!r.ok) throw new Error(`Pin delete failed: ${r.status}`); return r.json() }),
+    del(`/api/chat/pins/${encodeURIComponent(id)}`).then(j) as Promise<{ ok: boolean }>,
 }

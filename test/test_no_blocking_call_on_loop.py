@@ -70,6 +70,8 @@ import io
 import pathlib
 import tokenize
 
+from source_corpus import parsed_candidates, src_root
+
 # module name -> attribute names that block when run on the loop AND have no
 # legitimate on-loop use (so a hard failure is always correct).
 _BANNED: dict[str, set[str]] = {
@@ -95,18 +97,8 @@ _NESTED_SCOPES = (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)
 
 
 def _src_root() -> pathlib.Path:
-    """Locate the kiro_crew source tree.
-
-    Prefer the importable package (correct regardless of CWD / install layout);
-    fall back to the in-repo path so the gate also runs standalone under a bare
-    ``python3`` with no deps installed (used for fast local triage).
-    """
-    try:
-        import kiro_crew  # noqa: PLC0415
-
-        return pathlib.Path(kiro_crew.__file__).resolve().parent
-    except Exception:
-        return pathlib.Path(__file__).resolve().parent.parent / "src" / "kiro_crew"
+    """Locate the kiro_crew source tree (see ``source_corpus.src_root``)."""
+    return src_root()
 
 
 def _import_bindings(tree: ast.Module) -> tuple[dict[str, str], dict[str, str]]:
@@ -189,6 +181,10 @@ def _suppressed_lines(source: str) -> set[int]:
     not only the call's first line.
     """
     out: set[int] = set()
+    if _SUPPRESS not in source:
+        # No comment token can carry the marker if the text does not, and
+        # re-lexing every async module to learn that costs 3.5s across the tree.
+        return out
     try:
         for tok in tokenize.generate_tokens(io.StringIO(source).readline):
             if tok.type == tokenize.COMMENT and _SUPPRESS in tok.string:
@@ -200,9 +196,17 @@ def _suppressed_lines(source: str) -> set[int]:
     return out
 
 
-def find_violations(source: str, path: str = "<source>") -> list[tuple[str, int, str]]:
-    """Return ``(path, lineno, dotted_name)`` for banned calls in async bodies."""
-    tree = ast.parse(source)
+def find_violations(
+    source: str, path: str = "<source>", *, tree: ast.Module | None = None
+) -> list[tuple[str, int, str]]:
+    """Return ``(path, lineno, dotted_name)`` for banned calls in async bodies.
+
+    ``tree`` lets a caller that already parsed *source* hand the tree over; it
+    must be the parse of *source*, since the suppression scan re-tokenizes the
+    text.
+    """
+    if tree is None:
+        tree = ast.parse(source)
     module_aliases, func_aliases = _import_bindings(tree)
     suppressed = _suppressed_lines(source)
     out: list[tuple[str, int, str]] = []
@@ -229,26 +233,31 @@ def find_violations(source: str, path: str = "<source>") -> list[tuple[str, int,
     return out
 
 
+#: A banned call only counts inside an ``ast.AsyncFunctionDef``, which cannot be
+#: parsed from text lacking the ``async`` keyword -- so a module without it holds
+#: no violation and is not worth parsing. The literal is the bare keyword and NOT
+#: ``"async def"``: ``async  def f():`` (two spaces) is valid Python, so the
+#: two-word spelling is not a necessary condition and would skip such a file.
+#:
+#: The banned names are deliberately not filtered on either. They resolve through
+#: import aliases (``import subprocess as sp``), so the literal at the call site
+#: is not predictable from ``_BANNED``.
+_REQUIRE_ALL = ("async",)
+
+
 def collect_repo_violations() -> list[tuple[str, int, str]]:
     """Scan every ``kiro_crew/**/*.py`` for on-loop blocking calls."""
-    root = _src_root()
-    base = root.parent
+    base = _src_root().parent
     out: list[tuple[str, int, str]] = []
-    for py in sorted(root.rglob("*.py")):
-        try:
-            src = py.read_text(encoding="utf-8")
-        except (OSError, UnicodeDecodeError):
-            continue
+    for py, src, tree in parsed_candidates(_REQUIRE_ALL):
+        # A syntactically-invalid module is the compiler's problem, not this
+        # gate's, so `parsed_candidates` skips it rather than masking the real
+        # build error.
         try:
             rel = str(py.relative_to(base))
         except ValueError:
             rel = str(py)
-        try:
-            out.extend(find_violations(src, rel))
-        except SyntaxError:
-            # A syntactically-invalid module is the compiler's problem, not
-            # this gate's; skip rather than mask the real build error.
-            continue
+        out.extend(find_violations(src, rel, tree=tree))
     return out
 
 

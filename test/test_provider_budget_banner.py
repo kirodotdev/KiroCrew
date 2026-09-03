@@ -185,6 +185,137 @@ class TestProviderBudgetBannerRecovery:
         state.sessions.reset.assert_not_awaited()
 
     @pytest.mark.asyncio
+    async def test_control_notice_before_banner_is_sanitized_and_recovered(
+        self, tmp_path, monkeypatch
+    ):
+        from kiro_crew.acp.types import STOP_REASON_END_TURN
+        from kiro_crew.dashboard.chat import _run_chat
+        from kiro_crew.providers.base import (
+            EVENT_COMPLETE,
+            EVENT_TEXT_CHUNK,
+            EVENT_TOOL_CALL,
+            LLMEvent,
+        )
+
+        captured: list[str] = []
+
+        async def _stream(message):
+            captured.append(message)
+            if len(captured) == 1:
+                yield LLMEvent(
+                    kind=EVENT_TOOL_CALL,
+                    title="write_file",
+                    tool_kind="write",
+                    tool_call_id="tc-compaction-banner",
+                )
+                yield LLMEvent(
+                    kind=EVENT_TEXT_CHUNK,
+                    text="Compacting...",
+                    control_notice=True,
+                )
+                yield LLMEvent(
+                    kind=EVENT_TEXT_CHUNK,
+                    text="You have 8154 weighted tokens left",
+                )
+                yield LLMEvent(kind=EVENT_COMPLETE, stop_reason=STOP_REASON_END_TURN)
+                return
+            yield LLMEvent(kind=EVENT_TEXT_CHUNK, text="Finished after recovery.")
+            yield LLMEvent(kind=EVENT_COMPLETE, stop_reason=STOP_REASON_END_TURN)
+
+        state = self._state(tmp_path, monkeypatch)
+        client = AsyncMock()
+        client.context_usage_pct = MagicMock(return_value=0.0)
+        client.stream = _stream
+        client.stream_command = _stream
+        client.served_model = "gpt-test-model"
+        self._wire(state, client)
+        slot = state.get_or_create_slot("s1")
+        slot._titled = True
+
+        await _run_chat(state, slot, "fix the bug")
+        await self._drain_bg(state)
+
+        assistant = [m.get("content", "") for m in slot.messages if m.get("role") == "assistant"]
+        assert any("Compacting..." in text for text in assistant)
+        assert not any("weighted tokens left" in text for text in assistant)
+        assert any("Finished after recovery." in text for text in assistant)
+        assert len(captured) == 2
+        assert "Continue from where it stopped" in captured[1]
+        state.sessions.record_success.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_stop_purges_queued_provider_recovery_and_restores_budget(
+        self, tmp_path, monkeypatch
+    ):
+        from kiro_crew.acp.types import STOP_REASON_END_TURN
+        from kiro_crew.dashboard import chat_runner
+        from kiro_crew.dashboard.chat import _run_chat
+        from kiro_crew.dashboard.chat_runner import _POSTTOKEN_RECOVER_MSG
+        from kiro_crew.providers.base import (
+            EVENT_COMPLETE,
+            EVENT_TEXT_CHUNK,
+            EVENT_TOOL_CALL,
+            LLMEvent,
+        )
+
+        async def _stream(_message):
+            yield LLMEvent(
+                kind=EVENT_TOOL_CALL,
+                title="write_file",
+                tool_kind="write",
+                tool_call_id="tc-purge-provider",
+            )
+            yield LLMEvent(kind=EVENT_TEXT_CHUNK, text="You have 8154 weighted tokens left")
+            yield LLMEvent(kind=EVENT_COMPLETE, stop_reason=STOP_REASON_END_TURN)
+
+        state = self._state(tmp_path, monkeypatch)
+        client = AsyncMock()
+        client.context_usage_pct = MagicMock(return_value=0.0)
+        client.stream = _stream
+        client.stream_command = _stream
+        client.served_model = "gpt-test-model"
+        self._wire(state, client)
+        slot = state.get_or_create_slot("s1")
+        slot._titled = True
+        real_start = chat_runner._start_next_queued_turn
+        monkeypatch.setattr(
+            chat_runner,
+            "_start_next_queued_turn",
+            AsyncMock(return_value=False),
+        )
+
+        await _run_chat(state, slot, "fix the bug")
+        await self._drain_bg(state)
+
+        assert [q.get("content") for q in slot._queue] == [_POSTTOKEN_RECOVER_MSG]
+        assert slot._posttoken_retry_used is True
+        slot._promise_only_retries = 1
+        slot._compaction_continue_retries = 1
+        queue_id = slot._queue[0]["id"]
+        slot.messages.append(
+            {
+                "role": "queued",
+                "content": _POSTTOKEN_RECOVER_MSG,
+                "cls": f'{{"queue_id":"{queue_id}"}}',
+            }
+        )
+        slot._stop_generation += 1
+        monkeypatch.setattr(chat_runner, "_start_next_queued_turn", real_start)
+
+        assert await real_start(state, slot) is False
+        assert slot._queue == []
+        assert slot._posttoken_retry_used is False
+        assert slot._promise_only_retries == 1
+        assert slot._compaction_continue_retries == 1
+        assert not any(
+            m.get("role") == "queued" and m.get("content") == _POSTTOKEN_RECOVER_MSG
+            for m in slot.messages
+        )
+        assert any(
+            call.args[0] == "queue_pop" for call in state.broadcast_ws.call_args_list if call.args
+        )
+
+    @pytest.mark.asyncio
     async def test_banner_prefix_keeps_real_final_text_without_recovery(
         self, tmp_path, monkeypatch
     ):
@@ -278,6 +409,120 @@ class TestProviderBudgetBannerRecovery:
         consolidate.assert_not_called()
         state.sessions.record_success.assert_not_called()
 
+    @pytest.mark.asyncio
+    async def test_cancelled_tool_turn_sanitizes_partial_banner(self, tmp_path, monkeypatch):
+        from kiro_crew.dashboard.chat import _run_chat
+        from kiro_crew.providers.base import (
+            EVENT_TEXT_CHUNK,
+            EVENT_TOOL_CALL,
+            LLMEvent,
+        )
+
+        async def _stream(_message):
+            yield LLMEvent(
+                kind=EVENT_TOOL_CALL,
+                title="write_file",
+                tool_kind="write",
+                tool_call_id="tc-cancel-banner",
+            )
+            yield LLMEvent(kind=EVENT_TEXT_CHUNK, text="You have 8154 weighted tokens left")
+            raise asyncio.CancelledError()
+
+        state = self._state(tmp_path, monkeypatch)
+        client = AsyncMock()
+        client.context_usage_pct = MagicMock(return_value=0.0)
+        client.stream = _stream
+        client.stream_command = _stream
+        client.served_model = "gpt-test-model"
+        self._wire(state, client)
+        slot = state.get_or_create_slot("s1")
+        slot._titled = True
+
+        await _run_chat(state, slot, "fix the bug")
+
+        assert slot._queue == []
+        assert not any("weighted tokens left" in m.get("content", "") for m in slot.messages)
+
+    @pytest.mark.asyncio
+    async def test_transient_tool_turn_sanitizes_partial_banner(self, tmp_path, monkeypatch):
+        from kiro_crew.acp.client import AcpError
+        from kiro_crew.acp.types import STOP_REASON_END_TURN
+        from kiro_crew.dashboard import chat_runner
+        from kiro_crew.dashboard.chat import _run_chat
+        from kiro_crew.providers.base import (
+            EVENT_COMPLETE,
+            EVENT_TEXT_CHUNK,
+            EVENT_TOOL_CALL,
+            LLMEvent,
+        )
+
+        captured: list[str] = []
+
+        async def _stream(message):
+            captured.append(message)
+            if len(captured) == 1:
+                yield LLMEvent(
+                    kind=EVENT_TOOL_CALL,
+                    title="write_file",
+                    tool_kind="write",
+                    tool_call_id="tc-transient-banner",
+                )
+                yield LLMEvent(kind=EVENT_TEXT_CHUNK, text="You have 8154 weighted tokens left")
+                raise AcpError(
+                    "Prompt error: {'message': 'Internal error: API Error: Internal server error'}"
+                )
+            yield LLMEvent(kind=EVENT_TEXT_CHUNK, text="Recovered safely.")
+            yield LLMEvent(kind=EVENT_COMPLETE, stop_reason=STOP_REASON_END_TURN)
+
+        state = self._state(tmp_path, monkeypatch)
+        client = AsyncMock()
+        client.context_usage_pct = MagicMock(return_value=0.0)
+        client.stream = _stream
+        client.stream_command = _stream
+        client.served_model = "gpt-test-model"
+        self._wire(state, client)
+        slot = state.get_or_create_slot("s1")
+        slot._titled = True
+        monkeypatch.setattr(chat_runner.asyncio, "sleep", AsyncMock())
+
+        await _run_chat(state, slot, "fix the bug")
+        await self._drain_bg(state)
+
+        assert len(captured) == 2
+        assert not any("weighted tokens left" in m.get("content", "") for m in slot.messages)
+        assert any("Recovered safely." in m.get("content", "") for m in slot.messages)
+
+    @pytest.mark.asyncio
+    async def test_stage_timeout_banner_preserves_terminal_reason(self, tmp_path, monkeypatch):
+        from kiro_crew.dashboard.chat import _run_chat
+        from kiro_crew.providers.base import (
+            EVENT_COMPLETE,
+            EVENT_TEXT_CHUNK,
+            LLMEvent,
+        )
+
+        async def _stream(_message):
+            yield LLMEvent(kind=EVENT_TEXT_CHUNK, text="You have 8154 weighted tokens left")
+            yield LLMEvent(kind=EVENT_COMPLETE, stop_reason="timeout")
+
+        state = self._state(tmp_path, monkeypatch)
+        client = AsyncMock()
+        client.context_usage_pct = MagicMock(return_value=0.0)
+        client.stream = _stream
+        client.stream_command = _stream
+        client.served_model = "gpt-test-model"
+        self._wire(state, client)
+        slot = state.get_or_create_slot("s1", mode="orchestrator")
+        slot._titled = True
+        slot._in_stage_execution = True
+
+        await _run_chat(state, slot, "run stage")
+        await self._drain_bg(state)
+
+        assert slot._last_stop_reason == "timeout"
+        assert slot._queue == []
+        assert not any("weighted tokens left" in m.get("content", "") for m in slot.messages)
+
     @staticmethod
     def _stage_state(tmp_path, monkeypatch, slot_key):
         from kiro_crew.dashboard import chat_orchestrator
@@ -292,6 +537,186 @@ class TestProviderBudgetBannerRecovery:
         slot._plan_goal = "Test provider artifact recovery"
         slot._auto_run = True
         return state, slot
+
+    @pytest.mark.asyncio
+    async def test_empty_initial_stage_stops_before_result_capture(self, tmp_path, monkeypatch):
+        from kiro_crew.acp.types import STOP_REASON_END_TURN
+        from kiro_crew.dashboard import chat_orchestrator
+
+        state, slot = self._stage_state(tmp_path, monkeypatch, "stage-empty-initial")
+        calls: list[dict] = []
+
+        async def _mock_run_chat(_state, _slot, _message, **kwargs):
+            calls.append(kwargs)
+            _slot._last_stop_reason = STOP_REASON_END_TURN
+
+        monkeypatch.setattr(chat_orchestrator, "_run_chat", _mock_run_chat)
+
+        await chat_orchestrator._stage_loop(state, slot, auto_run=True)
+
+        assert len(calls) == 1
+        assert calls[0]["_prompt_depth"] == 1
+        assert slot._auto_run is False
+        assert slot._orch_tracker is not None
+        assert slot._orch_tracker._stage_results == {}
+        assert slot._orch_tracker._stage_rounds == {}
+        assert any("returned no usable result" in m.get("content", "") for m in slot.messages)
+
+    @pytest.mark.asyncio
+    async def test_stage_timeout_rolls_back_uncaptured_round(self, tmp_path, monkeypatch):
+        from kiro_crew.dashboard import chat_orchestrator
+
+        state, slot = self._stage_state(tmp_path, monkeypatch, "stage-deadline-rollback")
+
+        async def _mock_run_chat(_state, _slot, _message, **_kwargs):
+            await asyncio.sleep(0)
+
+        async def _timeout(coro, _seconds, **_kwargs):
+            coro.close()
+            raise TimeoutError
+
+        monkeypatch.setattr(chat_orchestrator, "_run_chat", _mock_run_chat)
+        monkeypatch.setattr(chat_orchestrator, "_bounded_turn", _timeout)
+
+        await chat_orchestrator._stage_loop(state, slot, auto_run=True)
+
+        assert slot._auto_run is False
+        assert slot._orch_tracker is not None
+        assert slot._orch_tracker._stage_results == {}
+        assert slot._orch_tracker._stage_rounds == {}
+
+    @pytest.mark.asyncio
+    async def test_stage_exception_rolls_back_uncaptured_round(self, tmp_path, monkeypatch):
+        from kiro_crew.dashboard import chat_orchestrator
+
+        state, slot = self._stage_state(tmp_path, monkeypatch, "stage-error-rollback")
+
+        async def _raise(_state, _slot, _message, **_kwargs):
+            raise RuntimeError("stage failed")
+
+        monkeypatch.setattr(chat_orchestrator, "_run_chat", _raise)
+
+        await chat_orchestrator._stage_loop(state, slot, auto_run=True)
+
+        assert slot._auto_run is False
+        assert slot._orch_tracker is not None
+        assert slot._orch_tracker._stage_results == {}
+        assert slot._orch_tracker._stage_rounds == {}
+
+    @pytest.mark.parametrize("artifact_first", [False, True])
+    @pytest.mark.asyncio
+    async def test_compaction_only_rows_never_count_as_stage_results(
+        self, tmp_path, monkeypatch, artifact_first
+    ):
+        from kiro_crew.acp.types import STOP_REASON_END_TURN
+        from kiro_crew.dashboard import chat_orchestrator
+        from kiro_crew.dashboard.chat_runner import _STOP_REASON_PROVIDER_BUDGET_ARTIFACT
+
+        state, slot = self._stage_state(
+            tmp_path,
+            monkeypatch,
+            f"stage-compaction-only-{artifact_first}",
+        )
+        calls = 0
+
+        async def _mock_run_chat(_state, _slot, _message, **_kwargs):
+            nonlocal calls
+            calls += 1
+            if artifact_first and calls == 1:
+                _slot._last_stop_reason = _STOP_REASON_PROVIDER_BUDGET_ARTIFACT
+                return
+            _slot._last_stop_reason = STOP_REASON_END_TURN
+            _slot.append(
+                "assistant",
+                "Compacting...",
+                "msg msg-a",
+                meta={"kind": "compaction"},
+            )
+
+        monkeypatch.setattr(chat_orchestrator, "_run_chat", _mock_run_chat)
+
+        await chat_orchestrator._stage_loop(state, slot, auto_run=True)
+
+        assert calls == (2 if artifact_first else 1)
+        assert slot._auto_run is False
+        assert slot._orch_tracker is not None
+        assert slot._orch_tracker._stage_results == {}
+        assert slot._orch_tracker._stage_rounds == {}
+        assert any("returned no usable result" in m.get("content", "") for m in slot.messages)
+
+    @pytest.mark.asyncio
+    async def test_capture_failure_rolls_back_and_stops(self, tmp_path, monkeypatch):
+        from kiro_crew.acp.types import STOP_REASON_END_TURN
+        from kiro_crew.dashboard import chat_orchestrator
+
+        state, slot = self._stage_state(tmp_path, monkeypatch, "stage-capture-failure")
+
+        async def _mock_run_chat(_state, _slot, _message, **_kwargs):
+            _slot._last_stop_reason = STOP_REASON_END_TURN
+            _slot.append("assistant", "stage completed", "msg msg-a")
+
+        monkeypatch.setattr(chat_orchestrator, "_run_chat", _mock_run_chat)
+        monkeypatch.setattr(
+            chat_orchestrator,
+            "_capture_stage_result",
+            MagicMock(side_effect=OSError("disk full")),
+        )
+
+        await chat_orchestrator._stage_loop(state, slot, auto_run=True)
+
+        assert slot._auto_run is False
+        assert slot._orch_tracker is not None
+        assert slot._orch_tracker._stage_results == {}
+        assert slot._orch_tracker._stage_rounds == {}
+        assert any("result could not be saved" in m.get("content", "") for m in slot.messages)
+
+    @pytest.mark.asyncio
+    async def test_missing_subagent_manager_rolls_back_uncaptured_round(
+        self, tmp_path, monkeypatch
+    ):
+        from kiro_crew.acp.types import STOP_REASON_END_TURN
+        from kiro_crew.dashboard import chat_orchestrator
+
+        state, slot = self._stage_state(tmp_path, monkeypatch, "stage-no-subagent-manager")
+        state.subagents = None
+
+        async def _mock_run_chat(_state, _slot, _message, **_kwargs):
+            _slot._last_stop_reason = STOP_REASON_END_TURN
+            _slot.append("assistant", "stage completed", "msg msg-a")
+
+        monkeypatch.setattr(chat_orchestrator, "_run_chat", _mock_run_chat)
+
+        await chat_orchestrator._stage_loop(state, slot, auto_run=True)
+
+        assert slot._auto_run is False
+        assert slot._orch_tracker is not None
+        assert slot._orch_tracker._stage_results == {}
+        assert slot._orch_tracker._stage_rounds == {}
+
+    @pytest.mark.asyncio
+    async def test_non_normal_initial_stage_stops_before_result_capture(
+        self, tmp_path, monkeypatch
+    ):
+        from kiro_crew.dashboard import chat_orchestrator
+
+        state, slot = self._stage_state(tmp_path, monkeypatch, "stage-timeout-terminal")
+        calls: list[dict] = []
+
+        async def _mock_run_chat(_state, _slot, _message, **kwargs):
+            calls.append(kwargs)
+            _slot._last_stop_reason = "timeout"
+
+        monkeypatch.setattr(chat_orchestrator, "_run_chat", _mock_run_chat)
+
+        await chat_orchestrator._stage_loop(state, slot, auto_run=True)
+
+        assert len(calls) == 1
+        assert calls[0]["_prompt_depth"] == 1
+        assert slot._auto_run is False
+        assert slot._orch_tracker is not None
+        assert slot._orch_tracker._stage_results == {}
+        assert slot._orch_tracker._stage_rounds == {}
+        assert any("ended before completing" in m.get("content", "") for m in slot.messages)
 
     @pytest.mark.asyncio
     async def test_stage_retries_banner_before_result_capture(self, tmp_path, monkeypatch):
@@ -325,8 +750,10 @@ class TestProviderBudgetBannerRecovery:
         await chat_orchestrator._stage_loop(state, slot, auto_run=True)
 
         assert len(calls) == 2
+        assert calls[0][1]["_prompt_depth"] == 1
         assert calls[1][0] == _POSTTOKEN_RECOVER_MSG
         assert calls[1][1]["_synthetic_payload"] is True
+        assert calls[1][1]["_prompt_depth"] == 1
         assert len(timeouts) == 2
         assert 0 < timeouts[1] < timeouts[0]
         assert slot._orch_tracker is not None
@@ -335,6 +762,36 @@ class TestProviderBudgetBannerRecovery:
             "Auto-run stopped before marking the stage complete" in m.get("content", "")
             for m in slot.messages
         )
+
+    @pytest.mark.asyncio
+    async def test_empty_stage_continuation_stops_before_result_capture(
+        self, tmp_path, monkeypatch
+    ):
+        from kiro_crew.acp.types import STOP_REASON_END_TURN
+        from kiro_crew.dashboard import chat_orchestrator
+        from kiro_crew.dashboard.chat_runner import _STOP_REASON_PROVIDER_BUDGET_ARTIFACT
+
+        state, slot = self._stage_state(tmp_path, monkeypatch, "stage-empty-continuation")
+        calls: list[tuple[str, dict]] = []
+
+        async def _mock_run_chat(_state, _slot, message, **kwargs):
+            calls.append((message, kwargs))
+            if len(calls) == 1:
+                _slot._last_stop_reason = _STOP_REASON_PROVIDER_BUDGET_ARTIFACT
+            else:
+                _slot._last_stop_reason = STOP_REASON_END_TURN
+
+        monkeypatch.setattr(chat_orchestrator, "_run_chat", _mock_run_chat)
+
+        await chat_orchestrator._stage_loop(state, slot, auto_run=True)
+
+        assert len(calls) == 2
+        assert calls[1][1]["_prompt_depth"] == 1
+        assert slot._auto_run is False
+        assert slot._orch_tracker is not None
+        assert slot._orch_tracker._stage_results == {}
+        assert slot._orch_tracker._stage_rounds == {}
+        assert any("returned no usable result" in m.get("content", "") for m in slot.messages)
 
     @pytest.mark.asyncio
     async def test_repeated_stage_banner_stops_before_result_capture(self, tmp_path, monkeypatch):

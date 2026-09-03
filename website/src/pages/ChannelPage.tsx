@@ -1,7 +1,8 @@
 import { useState, useRef, useEffect, useCallback, useMemo, type ReactNode } from 'react'
 import Modal from '../components/Modal'
 import { Hourglass, Ear, Check, X, Wrench, Radio, VolumeX, User, MessageSquare, Users, Zap, AlertTriangle, RotateCcw } from 'lucide-react'
-import { useAppSelector } from '../store'
+import { useAppSelector, useAppDispatch } from '../store'
+import { triggerRefresh } from '../store/dashboardSlice'
 import type { RootState } from '../store'
 import { api } from '../api/client'
 import ApprovalCard from '../components/ApprovalCard'
@@ -462,13 +463,20 @@ function AddAgentForm({ onAdd, onCancel }: { onAdd: (role: string, task: string,
   const ime = useImeGuard()
   const [role, setRole] = useState('')
   const [task, setTask] = useState('')
-  const { agents, defaultAgent } = useAgents(0)
+  const { agents, defaultAgent, error: rosterError, reload: reloadRoster, reloading: rosterReloading } = useAgents(0)
+  const dispatch = useAppDispatch()
+  // Recover every roster consumer, not just this form — see SchedulePage's note.
+  const recoverRoster = useCallback(() => {
+    reloadRoster()
+    dispatch(triggerRefresh())
+  }, [reloadRoster, dispatch])
+  const rosterFailure = rosterError ? { reloading: rosterReloading, onReload: recoverRoster } : undefined
   const [agent, setAgent] = useState('')
   return (
     <div className="p-2 space-y-2 border-t border-border">
       <div>
         <span className="text-[11px] text-muted font-medium mb-1 block">{i18nT('pages.channelPage.agent')}</span>
-        <AgentSelector agents={agents} defaultAgent={defaultAgent} value={agent || defaultAgent} onChange={setAgent} />
+        <AgentSelector agents={agents} defaultAgent={defaultAgent} value={agent || defaultAgent} onChange={setAgent} rosterFailure={rosterFailure} />
       </div>
       <Input value={role} onChange={e => setRole(e.target.value)} placeholder={i18nT('pages.channelPage.role_e_g_logs_agent')} aria-label={i18nT('pages.channelPage.role')} autoFocus
         className="w-full text-[13px]" />

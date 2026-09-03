@@ -40,7 +40,15 @@ class SlotProjection:
         # filter instead of being dropped before ``parse_source_url`` sees it.
         path_markers = source_link_path_markers()
         stop_chars = set(" \t\n<>()[]{}\"'")
-        found: dict[str, dict] = {}
+        # Keyed on the ref's identity, not on ``ref.url``: a registered
+        # provider whose URL grammar accepts more than one shape for the same
+        # change (e.g. an optional revision pin kept in the canonical URL)
+        # would otherwise render one chip per shape -- identical label,
+        # identical status. Built-in parsers emit exactly one canonical URL
+        # per change, so for them the two keys are equivalent. What the
+        # identity contains (and Jira's instance-context exception) is
+        # ``SourceRef.identity``'s contract.
+        found: dict[tuple, dict] = {}
         # Charge every parse attempt, including rejected and duplicate URLs, so
         # one accepted oversized message cannot monopolize the event loop.
         parse_budget = max_links * 64
@@ -73,9 +81,14 @@ class SlotProjection:
                     ref = parse_source_url(candidate)
                 except ValueError:
                     continue
-                if ref.url in found:
+                identity = ref.identity
+                if identity in found:
                     continue
-                found[ref.url] = {
+                # First writer wins, and because the walk is backwards the
+                # first writer IS the most recent mention -- so the newest
+                # mention's URL (and any sub-path pin it carries) is the one
+                # the chip links to.
+                found[identity] = {
                     "provider": ref.provider,
                     "number": ref.number,
                     "url": ref.url,
@@ -195,6 +208,14 @@ class SlotProjection:
             "agent": slot.agent,
             "effective_agent": resolve_effective_agent(slot.agent, slot.project or None),
             "model": slot.model,
+            # The backend's own withhold verdict for `model`: true = the account
+            # cannot run the pin (this session is on the backend default), false
+            # = it can, null = not known yet. Carried so the frontend reads the
+            # answer instead of inferring it from whether the pin appears in
+            # `GET /api/models` -- a list every unrelated filter (deprecation,
+            # curation) narrows, which silently turned those filters into
+            # entitlement signals (#1819). DISPLAY only; never a write source.
+            "model_withheld": slot.model_withheld,
             "reasoning_effort": slot.reasoning_effort,
             "mode": slot.mode,
             "surface": slot.mode,
@@ -223,6 +244,12 @@ class SlotProjection:
             ),
             "source_links_total": len(source_links),
             "todo": slot.todo_payload(),
+            # The session's OWN MCP report, deliberately alongside "todo" rather
+            # than merged into any host-level MCP payload: /api/mcp/active and
+            # /api/mcp/probe answer questions about the host, this answers one
+            # about this session, and conflating them is what let a dashboard
+            # look like it had confirmed a server the session never mounted.
+            "mcp_report": slot.mcp_report_payload(),
             "has_options": has_options,
             "options": [redact(option) for option in options],
             "prompt_preview": prompt_preview,

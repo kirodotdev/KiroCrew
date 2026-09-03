@@ -19,10 +19,12 @@ resolvers live here, share one refusal/skip vocabulary, and are audited through
 one shape (``_audit_file_send`` in the handlers module, which owns the
 test-patchable ``_sel``).
 
-Rung by rung, as shipped today -- the Slack column is what #6060 asks to
-converge, and the two NOT RUN rows are the parts that need the architecture
-decision in that issue's step 2 (does Slack join ``channel_transports``, or does
-the ladder grow a Slack adapter?), so they are named here, not silently changed:
+Rung by rung. Both legs now run the same two ceilings -- the ``channels``-scope
+governance vet and the restricted-session ceiling -- which is the convergence
+#6060 step 2 asked for and #7290 decided: the Slack leg calls them DIRECTLY
+(:func:`_slack_egress_permitted`) rather than joining ``channel_transports``,
+because its dedicated client genuinely cannot ride the shared ladder. The rows
+that still differ differ for a reason named in the row:
 
 ======================================  =============================  ===========================================
 rung                                    channel leg                    Slack leg
@@ -32,9 +34,9 @@ destination source                      session-map mirror link only    request-
 recipient authorization                 ``transport.may_send_to``       ``is_tracked_channel``; a session-map
                                         (fail-closed)                   channel passes on a ``D`` prefix OR
                                                                         tracking (both fail-closed)
-``channels``-scope governance           yes, inside                     NOT RUN (#6060 step 2)
-(``vet_and_audit``, fail-closed, SEL)   ``_resolve_channel_target``
-restricted-session ceiling              yes                             NOT RUN (#6060 step 2)
+``channels``-scope governance           yes, inside                     yes, direct call keyed on ``slack``
+(``vet_and_audit``, fail-closed, SEL)   ``_resolve_channel_target``     (``_slack_egress_permitted``)
+restricted-session ceiling              yes                             yes, same shared predicate
 (``upload_gate.uploads_restricted``)
 transport registration +                yes                             n/a -- Slack's dedicated client is
 ``supports_proactive_send``                                             deliberately absent from
@@ -42,9 +44,11 @@ transport registration +                yes                             n/a -- S
 caller identity on the wire             STRICT session key, pinned by   lenient ``_resolve_session_key()``; the
                                         the MCP tool                    tool's three-state classifier refuses an
                                                                         unresolved caller before the leg runs
-resolution off the event loop           yes (``asyncio.to_thread``)     no -- ``open_dm`` is a coroutine, so this
-                                                                        ladder stays on the loop with its config
-                                                                        and tracking reads inline, as before
+resolution off the event loop           yes (``asyncio.to_thread``)     partly -- ``open_dm`` is a coroutine, so
+                                                                        the ladder stays on the loop with its
+                                                                        config and tracking reads inline; the two
+                                                                        ceilings above are offloaded, since they
+                                                                        read the profile directory
 ======================================  =============================  ===========================================
 
 Ambient lookups are PARAMETERS, not imports (``tracked_probe``,
@@ -66,6 +70,8 @@ from typing import Any
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.messaging import upload_gate
 from kiro_crew.messaging.link import SLACK_NAMESPACE, is_channel_session_key
+from kiro_crew.platform.context import PlatformCompositionError
+from kiro_crew.platform.governance_profiles import HOST_SESSION_KEY, vet_and_audit
 from kiro_crew.validation import FILE_SEND_SCHEMA, ValidationError, validate_tool_args
 
 logger = logging.getLogger(__name__)
@@ -134,6 +140,57 @@ class ChannelTarget:
     deliver: Callable[..., Any]
 
 
+def _slack_egress_permitted(session_key: str) -> bool:
+    """Vet a Slack file upload against the ``channels`` governance scope.
+
+    The channel leg inherits this from the shared send ladder. Slack is
+    deliberately absent from ``channel_transports`` and so never reaches that
+    ladder, which would leave the broadest-audience leg -- the only one whose
+    destination a REQUEST can name -- as the one unvetted, unaudited file egress.
+    Same shape as the other Slack egress that cannot reach the ladder
+    (``chat_compaction_notice._channel_egress_permitted``): a direct call to the
+    audited seam rather than a registry change, so the registry keeps meaning
+    "transports the shared ladder can drive".
+
+    An empty key is a caller with no session of its own -- a cron, the heartbeat,
+    an out-of-band host action -- reaching this leg through the owner-DM
+    fallback. It is vetted under ``HOST_SESSION_KEY`` for the same reason
+    ``handlers.messaging`` uses that sentinel on its channel legs: an empty key
+    classifies as ``unknown`` and matches no profile at all, so vetting under it
+    would make host-side governance inert here, while ``_host`` is the stable
+    bind target operators attach it to. A legitimate owner-DM send therefore
+    stays permitted on an ungoverned host, and is deniable by an explicit host
+    binding rather than by a fall-through.
+
+    Fail-closed: a degraded evaluation denies. ``PlatformCompositionError``
+    propagates -- an unusable governance ceiling is a host misconfiguration, not
+    a routine authorization answer, and must not be reported as one.
+
+    Synchronous by design -- the caller runs it through ``asyncio.to_thread``
+    because the gate reads the profile directory.
+    """
+    try:
+        decision = vet_and_audit(
+            "channels",
+            SLACK_NAMESPACE,
+            session_key=session_key or HOST_SESSION_KEY,
+            tool_name="file_send",
+            fail_closed=True,
+        )
+    except PlatformCompositionError:
+        raise
+    except Exception:
+        logger.debug(
+            "slack upload: governance check failed for %s; denying (fail-closed)",
+            session_key,
+            exc_info=True,
+        )
+        return False
+    # Default False: a Decision without ``permitted`` is an unusable answer from
+    # a gate and must not read as permission.
+    return bool(getattr(decision, "permitted", False))
+
+
 async def resolve_slack(
     state: Any,
     slack: Any,
@@ -142,6 +199,7 @@ async def resolve_slack(
     requested_channel: str,
     thread_ts: str | None,
     tracked_probe: TrackedProbe,
+    persisted_probe: upload_gate.PersistedProbe,
 ) -> SlackTarget | Refusal | Skip:
     """Resolve the Slack leg's destination and authorize the caller for it.
 
@@ -159,7 +217,40 @@ async def resolve_slack(
     a thread ts belongs to one channel, so pairing it with a different one would
     post into an unrelated conversation. ``state.sessions`` is read after the
     linkable test, so a key that names no session never touches it.
+
+    Both ceilings run BEFORE any of that: a caller who may not egress here never
+    opens an owner DM and never reads the session map, so a denial leaks nothing
+    about where the file would have gone.
     """
+    # Off-loop: the gate reads the profile directory and writes a SEL record
+    # either way (no-blocking-call-on-event-loop).
+    if not await asyncio.to_thread(_slack_egress_permitted, session_key):
+        return Refusal(
+            error="slack egress denied by the active governance profile",
+            code="channels_governance_denied",
+            status=403,
+            audit_error="channels_governance_denied",
+            downstream=SLACK_NAMESPACE,
+        )
+    # The ceiling the channel leg and the renderers' extraction path already
+    # enforce, on the same shared predicate (which SEL-audits its own denial): a
+    # session the user expected to leave no trace ships no local file bytes to a
+    # chat surface, and Slack -- where a tracked channel can be company-visible
+    # -- must not be the one exception. A Refusal, not a Skip: the caller asked
+    # for this send, so it must learn the file did not leave.
+    if await upload_gate.uploads_restricted(
+        state,
+        session_key,
+        channel_type=SLACK_NAMESPACE,
+        persisted_probe=persisted_probe,
+    ):
+        return Refusal(
+            error="restricted session: local file bytes may not leave it",
+            code="restricted_session",
+            status=403,
+            audit_error="restricted_session",
+            downstream=SLACK_NAMESPACE,
+        )
     target_channel = requested_channel
     channel_from_session_map = False
     # A dashboard session carries its Slack link in the session map; a

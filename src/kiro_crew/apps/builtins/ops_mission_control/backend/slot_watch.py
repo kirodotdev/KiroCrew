@@ -27,6 +27,7 @@ See ``docs/system-specs/modules/ops-mission-control.md``.
 
 from __future__ import annotations
 
+import json
 import logging
 from typing import Any
 
@@ -128,8 +129,38 @@ def reconcile(incident_id: str, slot: dict[str, Any] | None) -> Incident | None:
 
     try:
         return store.transition(incident_id, status, blocked_reason=reason)
+    except json.JSONDecodeError:
+        # Corruption is excluded from the tolerance below on purpose, and this clause
+        # exists to stop it being taken by accident: `JSONDecodeError` subclasses
+        # `ValueError`, which the next clause catches for the unrelated case of an
+        # illegal transition. Sharing one handler would file "the ledger is corrupt"
+        # under "we lost a race" at debug level.
+        #
+        # Unlike the EACCES path below, corruption is not transient: it will fail every
+        # future reconcile identically until a person fixes the file, so swallowing it
+        # means this instance quietly stops syncing status forever.
+        raise
     except (KeyError, ValueError):
         logger.debug("ops-mission-control: reconcile lost a race on %s", incident_id)
+        return None
+    except OSError:
+        # Reconciliation's whole job is to survive a mess, so it keeps its tolerant
+        # contract even though the store below it is now strict: `transition` reads the
+        # index for update, which refuses rather than publishing over a read it could not
+        # make, and that refusal must not turn a best-effort reconcile into a raised
+        # error on the board request that triggered it.
+        #
+        # Tolerating it is safe BECAUSE the store refused: the mutation was abandoned
+        # before writing, so the incident keeps whatever status it already had -- which is
+        # exactly what returning ``None`` here already means -- and the next reconcile
+        # pass retries from a clean read. Logged one level up from the race cases
+        # (`warning`, not `debug`) because an unreadable index is a real fault worth
+        # seeing, where losing a race is ordinary. Found in review (GPT 5.6).
+        logger.warning(
+            "ops-mission-control: reconcile skipped %s, dispatch index I/O failed",
+            incident_id,
+            exc_info=True,
+        )
         return None
 
 

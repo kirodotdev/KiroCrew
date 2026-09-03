@@ -37,6 +37,8 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from typing import Any, AsyncIterator, Awaitable, Callable, Optional
 
+from kiro_crew.metrics.events import WORKFLOW_RUNS, emit_counter
+
 from . import BudgetExceeded, WorkflowEvent
 from .context import DEFAULT_MAX_AGENTS_PER_RUN, AgentCounter, Budget, build_safe_globals
 from .dsl import parallel as _parallel
@@ -659,6 +661,15 @@ class WorkflowRunner:
                 "script_hash": script_hash,
                 "outcome": "started",
             },
+        )
+        # Beside the audit, and for the same reason: this is the one place every
+        # run passes before executing anything, foreground or background
+        # (``run_background`` drives this method). ``authored`` marks a run whose
+        # script this run writes from an intent; ``replay`` marks a
+        # restart-subtree that reuses cached agent results.
+        emit_counter(
+            WORKFLOW_RUNS,
+            {"authored": bool(intent and not source), "replay": bool(replay_results)},
         )
 
         # 0. Author-in-run: if we were handed an intent and no source, turn

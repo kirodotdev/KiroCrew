@@ -218,6 +218,7 @@ from kiro_crew.platform import boot_platform
 from kiro_crew.platform.context import (
     PlatformCompositionError,
     current_context,
+    redact_log_via_context,
     redact_via_context,
     safe_context_call,
 )
@@ -246,7 +247,12 @@ from kiro_crew.platform.update_governance import (
 from kiro_crew.providers.base import LLMEvent
 from kiro_crew.safety_override import flush_breadcrumb_writes, safety_override
 from kiro_crew.sandbox import ensure_agents_slice_limits, warm_backend
-from kiro_crew.security import redact, redact_credentials, redact_exfiltration_urls
+from kiro_crew.security import (
+    redact,
+    redact_and_truncate,
+    redact_credentials,
+    redact_exfiltration_urls,
+)
 from kiro_crew.sel import sel
 from kiro_crew.service.common import restart_command_hint
 from kiro_crew.session import HEARTBEAT_KEY, SessionManager
@@ -5292,10 +5298,21 @@ class GatewayOrchestrator:
             # Only notify when task is complete — suppress delivery for
             # incomplete tasks (HEARTBEAT_KEEP) to avoid spamming every cycle.
             if is_keep_response(result_safe):
-                logger.info("Heartbeat task incomplete, suppressing delivery: %s", task_text[:80])
+                # Gate-side LOG line, so it takes the context spelling: a host with
+                # a companion loaded must not have this text scanned with the
+                # weaker OSS pass. Truncation comes AFTER redaction — the
+                # invariant #7424 established, and the one
+                # ``redact_log_via_context`` hands to its callers by contract:
+                # slicing first would leave a credential as an unmatchable
+                # fragment. The sibling below stays on ``redact_and_truncate``
+                # because it feeds a DELIVERY, not a log, and the two want
+                # different failure modes on a non-composable host.
+                logger.info(
+                    "Heartbeat task incomplete, suppressing delivery: %s",
+                    redact_log_via_context(task_text)[:80],
+                )
             else:
-                task_safe, _ = redact_exfiltration_urls(task_text[:100])
-                task_safe, _ = redact_credentials(task_safe)
+                task_safe = redact_and_truncate(task_text, 100)
                 await self._deliver_result(
                     "💓 Heartbeat",
                     task_safe,
@@ -7756,8 +7773,7 @@ class GatewayOrchestrator:
                 # Show error in UI + queue for LLM context on next turn.
                 slot = self.dashboard_state.get_slot(slot_name)
                 if slot:
-                    task_preview, _ = redact_exfiltration_urls((info.task or "")[:100])
-                    task_preview, _ = redact_credentials(task_preview)
+                    task_preview = redact_and_truncate(info.task or "", 100)
                     error_text, _ = redact_exfiltration_urls(extra.get("error", "timed out"))
                     error_text, _ = redact_credentials(error_text)
                     # The visible transcript card must state the run's real
@@ -10168,6 +10184,40 @@ class GatewayOrchestrator:
 
         cleanup_orphaned_sessions()
 
+        # Same "previous run left residue" concern as the orphan sweep above, for
+        # telemetry rather than processes: any open-session crumb on disk belongs
+        # to a session that never reached a teardown path, so it is emitted as
+        # end_reason=crashed.
+        #
+        # Deliberately NOT awaited here. The scan is a glob plus a read/stat/unlink
+        # per crumb, so its cost scales with accumulated user data, and running it
+        # inline would delay readiness in proportion to that. It goes to a worker
+        # thread on a tracked task instead, and the process-start cutoff means it
+        # cannot mistake a session THIS process opens in the meantime for a
+        # casualty of the last one -- so it no longer has to finish before the
+        # gateway starts serving.
+        _telemetry_backfill_cutoff = time.time()
+
+        async def _backfill_unclean_session_telemetry() -> None:
+            try:
+                from kiro_crew.metrics.sessions import backfill_crashed_sessions
+
+                count = await asyncio.to_thread(
+                    backfill_crashed_sessions, _telemetry_backfill_cutoff
+                )
+                if count:
+                    logger.info(
+                        "Telemetry: back-filled %d unclean session lifetime(s) "
+                        "from the previous run",
+                        count,
+                    )
+            except Exception:  # telemetry must never break boot
+                logger.debug("unclean-session telemetry backfill failed", exc_info=True)
+
+        _backfill_task = asyncio.create_task(_backfill_unclean_session_telemetry())
+        self._background_tasks.add(_backfill_task)
+        _backfill_task.add_done_callback(self._background_tasks.discard)
+
         # Fill the sandbox probe cache BEFORE any on-loop spawn path can reach
         # detect_backend(). Waiting (off-loop) rather than firing-and-forgetting
         # is what makes that guarantee hold: a fire-and-forget prewarm leaves the
@@ -10321,6 +10371,28 @@ class GatewayOrchestrator:
                 prime_ceiling_projection()
                 register_post_install_hook(reproject_for_ceiling_change)
                 await asyncio.to_thread(start_refresher)
+
+        # Claim the install-scoped telemetry reporter role for this process.
+        # Install-level inventory (crons, skills, knowledge, config toggles) is the
+        # same for every process in the install, so if each telemetry-enabled
+        # process published it -- the gateway, gatewayd, spawned agents -- an
+        # aggregate over installs would count this install once per process. This
+        # is the gateway, so it is the one that publishes.
+        #
+        # It lives in run() itself, unconditionally: the claim belongs to being the
+        # gateway, not to any single service, and a feature-flagged host would take
+        # the whole subsystem down with it. _init_autonudge() below returns early
+        # under KIROCREW_AUTONUDGE=0, so a claim made in there means no process ever
+        # publishes inventory -- and nothing says so, because the gauge callbacks
+        # bail before probing and leave probe.failures empty, which reads exactly
+        # like a host that stopped exporting. test_reporter_claim_is_unconditional
+        # pins the call site. Best-effort: telemetry is never a boot blocker.
+        try:
+            from kiro_crew.metrics.inventory_gauges import mark_install_reporter
+
+            mark_install_reporter()
+        except Exception:  # noqa: BLE001 -- telemetry must never break gateway boot
+            logger.debug("could not claim the telemetry inventory role", exc_info=True)
 
         # AutoNudge must run after dashboard init — _fire callback dereferences
         # self.dashboard_state. In --no-dashboard mode the guard inside _fire

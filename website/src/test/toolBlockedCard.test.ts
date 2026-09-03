@@ -63,6 +63,24 @@ describe('the in-band tool-blocked card', () => {
     expect(parsed?.detail).not.toMatch(/continuation/i)
   })
 
+  it('counts only the blocked items, not the guidance the gateway appends', () => {
+    // `build_refusal_recovery_prompt` (dashboard/state.py) appends per-class
+    // remediation under a "How to do this properly:" heading. The blocked-item
+    // count comes from BULLET_RE over the WHOLE body, so guidance rendered as a
+    // `  - ` bullet would be counted as a second blocked tool call. It is
+    // indented plain prose for exactly that reason — this pins the shape.
+    const withGuidance =
+      '[Tool refusal — automatic recovery]\nBlocked:\n' +
+      '  - bash: Blocked: command accesses sensitive credential path\n' +
+      '\nHow to do this properly:\n' +
+      '    You do not need to read AWS credential material. Run the command you wanted.\n'
+    const parsed = parseRecoveryMessage(withGuidance)
+    expect(parsed?.kind).toBe('refusal')
+    expect(parsed?.body).toContain('How to do this properly:')
+    // One blocked call, so the title must not read as a multi-block summary.
+    expect(parsed?.title).not.toMatch(/2/)
+  })
+
   it('is distinct from the recovery refusal kind', () => {
     const recovery = parseRecoveryMessage(
       '[Tool refusal — automatic recovery]\nBlocked:\n  - bash: Blocked by security policy: r'

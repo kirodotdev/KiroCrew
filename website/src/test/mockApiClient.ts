@@ -9,5 +9,6 @@ vi.mock('../api/client', () => ({
     deleteChatSlot: vi.fn(),
     resumeChatSlot: vi.fn(),
     deleteSession: vi.fn(),
+    appContributors: vi.fn(() => Promise.resolve({ contributors: [] })),
   },
 }))

@@ -1,4 +1,4 @@
-import { isValidLoopbackReturnAddress } from '../utils/loopbackReturnAddress'
+import { isValidLoopbackReturnAddress, normalizeLoopbackReturnAddress } from '../utils/loopbackReturnAddress'
 import { describe, expect, it } from 'vitest'
 import type { ConnectionStatus } from '../api/client'
 import type { ChatMessage, McpServer } from '../types'
@@ -360,6 +360,33 @@ describe('loopback OAuth return-address validation', () => {
     'http://127.0.0.1:43123/?code=x#fragment',
   ])('rejects unsafe or incomplete return address %s', value => {
     expect(isValidLoopbackReturnAddress(value)).toBe(false)
+  })
+
+  // #7406: iOS Safari copies address-bar URLs without the scheme; the
+  // scheme-less paste must normalize to http:// and validate.
+  it.each([
+    '127.0.0.1:43123/?code=one-time&state=s',
+    'localhost:43123/callback?code=one-time',
+    '[::1]:43123/?code=one-time',
+  ])('accepts a scheme-less loopback paste %s via the http default', value => {
+    expect(normalizeLoopbackReturnAddress(value)).toBe(`http://${value}`)
+    expect(isValidLoopbackReturnAddress(value)).toBe(true)
+  })
+
+  it.each([
+    // The http default must not widen containment beyond the strict form.
+    '10.0.0.5:43123/?code=x',
+    'evil.example:43123/?code=x',
+    '127.0.0.1/?code=x',
+    // An explicit non-http scheme stays rejected — no rewrite to http.
+    'ftp://127.0.0.1:43123/?code=x',
+  ])('scheme default still rejects %s', value => {
+    expect(isValidLoopbackReturnAddress(value)).toBe(false)
+  })
+
+  it('leaves an already-schemed value untouched', () => {
+    expect(normalizeLoopbackReturnAddress(' http://127.0.0.1:43123/?code=x '))
+      .toBe('http://127.0.0.1:43123/?code=x')
   })
 })
 

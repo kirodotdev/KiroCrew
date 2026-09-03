@@ -98,21 +98,29 @@ const SCENARIOS = [
   // Stays on the list rather than deep-linking into the panel: the complaint was
   // that Feishu never showed up HERE, so the row itself is the evidence.
   { name: 'list', config: BASE_CONFIG, stayOnList: true },
-  { name: 'needs-setup', config: BASE_CONFIG },
+  // The guide card spells the install command out in prose, so it carries a
+  // SECOND copy of the pin (one per locale) that no Python caller reads.
+  // Assert it here too, or a stale hand-written pin ships beside the
+  // generated one and the panel shows two different commands.
+  {
+    name: 'needs-setup',
+    config: BASE_CONFIG,
+    expectText: /pip install "lark-oapi>=1\.4,<2"/,
+  },
   {
     name: 'missing-extra',
     config: {
       ...CREDENTIALED,
-      connect_error: 'lark-oapi is not installed — run: pip install "kirocrew[feishu]"',
+      connect_error: "lark-oapi is not installed — run: pip install 'lark-oapi>=1.4,<2'",
       sdk_installed: false,
       sdk_install_supported: true,
-      sdk_install_command: "/opt/kirocrew/.venv/bin/python -m pip install 'kirocrew[feishu]'",
+      sdk_install_command: "/opt/kirocrew/.venv/bin/python -m pip install 'lark-oapi>=1.4,<2'",
     },
     // Assert the COMMAND, not the badge reason: the badge cannot report this
     // state before a restart (maybe_start_feishu returns early when the channel
     // is disabled, ahead of the ImportError branch that writes the reason), so
     // the card is the surface under test.
-    expectText: /-m pip install 'kirocrew\[feishu\]'/,
+    expectText: /-m pip install 'lark-oapi>=1\.4,<2'/,
   },
   {
     name: 'sdk-unsupported',

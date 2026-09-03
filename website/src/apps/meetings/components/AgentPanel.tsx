@@ -308,7 +308,7 @@ export default function AgentPanel({
   }
 
   return (
-    <Card className="col-span-2 flex flex-col gap-2 max-h-[520px] overflow-y-auto">
+    <Card className="col-span-2 flex flex-col gap-2">
       {header}
       {(editable || (edit && onRevertOutput)) && (
         <div className="flex flex-wrap items-center justify-end gap-2 pt-2 border-t border-border">
@@ -343,13 +343,28 @@ export default function AgentPanel({
           {i18nT('apps.meetings.agentPanel.staleEdit', { name: agent.name })}
         </p>
       )}
-      {output ? (
-        <MarkdownRenderer content={output} />
-      ) : (
-        <p className="text-[13px] text-muted">
-          {i18nT('apps.meetings.agentPanel.awaitingOutput', { name: agent.name })}
-        </p>
-      )}
+      {/* The scroller must live INSIDE the Card, never on it: Card prepends
+          `card-glow`, whose `overflow:hidden` (declared after @tailwind utilities
+          in index.css) beats an `overflow-y-auto` utility on the same element —
+          equal specificity, later source order wins, and twMerge cannot resolve a
+          conflict with a hand-written class. Scrolling on an inner div mirrors how
+          the in-panel chat scrolls (#7664). */}
+      <div
+        data-testid="agent-output-pane"
+        // 60svh keeps the pane shorter than the column that scrolls it on a
+        // phone (the workspace gives this column ~380px there), so touch
+        // scrolling never traps inside a pane taller than its container.
+        // `vh` stays as the fallback, same idiom as AgentsPage.
+        className="max-h-[min(520px,60vh)] supports-[height:100svh]:max-h-[min(520px,60svh)] overflow-y-auto"
+      >
+        {output ? (
+          <MarkdownRenderer content={output} />
+        ) : (
+          <p className="text-[13px] text-muted">
+            {i18nT('apps.meetings.agentPanel.awaitingOutput', { name: agent.name })}
+          </p>
+        )}
+      </div>
       {confirmDialog}
     </Card>
   )

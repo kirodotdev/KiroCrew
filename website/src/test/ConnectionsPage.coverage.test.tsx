@@ -20,6 +20,7 @@
 // broadcasts. Interactions use `fireEvent` (no fake timers anywhere, so no
 // clock to keep in sync) and every assertion waits on rendered output.
 import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { StrictMode } from 'react'
 import { screen, fireEvent, waitFor, within } from '@testing-library/react'
 
 import type { ChatMessage, McpServer, RootState } from '../types'
@@ -33,6 +34,7 @@ const mcpCustomUpdate = vi.fn()
 const mcpOAuthRelay = vi.fn()
 const connectionsMint = vi.fn()
 const connectionsMintState = vi.fn()
+const connectionsPremint = vi.fn()
 const connectionsStatus = vi.fn()
 const connectionsCancel = vi.fn()
 const connectionsDisconnect = vi.fn()
@@ -48,6 +50,7 @@ vi.mock('../api/client', () => ({
     mcpOAuthRelay: (...a: unknown[]) => mcpOAuthRelay(...a),
     connectionsMint: (...a: unknown[]) => connectionsMint(...a),
     connectionsMintState: (...a: unknown[]) => connectionsMintState(...a),
+    connectionsPremint: (...a: unknown[]) => connectionsPremint(...a),
     connectionsStatus: (...a: unknown[]) => connectionsStatus(...a),
     connectionsCancel: (...a: unknown[]) => connectionsCancel(...a),
     connectionsDisconnect: (...a: unknown[]) => connectionsDisconnect(...a),
@@ -92,7 +95,7 @@ interface ChatSeed {
 }
 
 function mount(
-  { servicesEnabled = true, chat = {} }: { servicesEnabled?: boolean; chat?: ChatSeed } = {},
+  { servicesEnabled = true, chat = {}, strict = false }: { servicesEnabled?: boolean; chat?: ChatSeed; strict?: boolean } = {},
 ) {
   const store = createTestStore({
     chat: {
@@ -100,7 +103,8 @@ function mount(
       slotMessages: chat.slotMessages ?? {},
     } as unknown as RootState['chat'],
   })
-  return renderWithProviders(<ConnectionsPage servicesEnabled={servicesEnabled} />, { store })
+  const tree = <ConnectionsPage servicesEnabled={servicesEnabled} />
+  return renderWithProviders(strict ? <StrictMode>{tree}</StrictMode> : tree, { store })
 }
 
 /** The card for one provider, addressed the way the DOM exposes it. */
@@ -139,6 +143,7 @@ beforeEach(() => {
   connectionsMintState.mockReset().mockResolvedValue({
     slug: 'notion', state: 'minting', token: 'tok1',
   })
+  connectionsPremint.mockReset().mockResolvedValue({ ok: true, preminting: ['notion'] })
   // Authorization axis: empty by default, so the reachability-derived card states
   // these tests assert on are unchanged by the status feed.
   connectionsStatus.mockReset().mockResolvedValue({ schema_version: 1, connections: [] })
@@ -162,6 +167,68 @@ describe('the held-back gallery', () => {
     expect(cards()).toHaveLength(0)
     expect(screen.queryByLabelText('Search services')).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Connect' })).not.toBeInTheDocument()
+  })
+})
+
+// Warming the approval URLs ahead of any click. The engine (POST
+// /api/connections/premint) shipped with zero callers; this is the caller, and
+// what these tests pin is the shape of the call rather than its result — the
+// response is never a verdict, so nothing about the rendered gallery may depend
+// on it.
+describe('premint on mount', () => {
+  it('warms the mintable providers once, with no body, when the gallery mounts', async () => {
+    mount()
+
+    await waitFor(() => expect(connectionsPremint).toHaveBeenCalledTimes(1))
+    // Bodyless by contract: what is mintable is the server's to decide, so the
+    // caller passes nothing — no source, no provider list, no telemetry.
+    expect(connectionsPremint).toHaveBeenCalledWith()
+  })
+
+  it('warms once under StrictMode, where the mount effect is double-invoked', async () => {
+    // The real double-fire hazard: an in-flight warm is not cancellable, so a
+    // teardown flag cannot un-spawn the first activation and only a latching ref
+    // holds. Asserting "once" on a plain mount proves nothing about the guard —
+    // that render invokes the effect a single time either way.
+    mount({ strict: true })
+
+    await waitFor(() => expect(connectionsPremint).toHaveBeenCalledTimes(1))
+  })
+
+  it('does not warm while the services flag is off', async () => {
+    mount({ servicesEnabled: false })
+
+    // The gate offers no card and no Connect button, so there is nothing a warm
+    // URL could serve — and warming spawns a process.
+    expect(await screen.findByText('No services match this search.')).toBeInTheDocument()
+    expect(connectionsPremint).not.toHaveBeenCalled()
+  })
+
+  it('warms when the flag arrives after the first render, still only once', async () => {
+    // The flag rides the config query, so the page's first render is ALWAYS
+    // gated-off. A mount-only effect would either warm every install that never
+    // opted in, or never warm at all — this pins the keyed-on-the-flag shape.
+    const { rerender } = mount({ servicesEnabled: false })
+    expect(connectionsPremint).not.toHaveBeenCalled()
+
+    rerender(<ConnectionsPage servicesEnabled />)
+    await waitFor(() => expect(connectionsPremint).toHaveBeenCalledTimes(1))
+
+    rerender(<ConnectionsPage servicesEnabled />)
+    expect(connectionsPremint).toHaveBeenCalledTimes(1)
+  })
+
+  it('renders the gallery unchanged when the warm request rejects', async () => {
+    // A non-owner session is denied by design and the gateway may be older than
+    // the endpoint; either way the cold mint on Connect is the fallback, so the
+    // rejection must reach neither the cards nor an alert.
+    connectionsPremint.mockRejectedValue(new Error('403 forbidden'))
+
+    mount()
+
+    await waitFor(() => expect(cards()).toHaveLength(CONNECTION_PROVIDERS.length))
+    expect(within(card('notion')).getByRole('button', { name: 'Connect' })).toBeEnabled()
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
   })
 })
 

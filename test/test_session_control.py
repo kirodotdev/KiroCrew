@@ -22,6 +22,7 @@ from chat_test_helpers import _make_state
 
 from kiro_crew.config import loader
 from kiro_crew.dashboard import chat_delivery as cd
+from kiro_crew.dashboard import create_rate_limit
 from kiro_crew.dashboard import session_control as sc
 from kiro_crew.dashboard import stop_retry
 from kiro_crew.dashboard.chat_utils import slot_history_key
@@ -51,6 +52,21 @@ def _fresh_stop_windows():
     stop_retry.reset_for_tests()
     yield
     stop_retry.reset_for_tests()
+
+
+@pytest.fixture(autouse=True)
+def _fresh_create_budget():
+    """The per-caller create-rate window is process-wide module state.
+
+    Nearly every create test here calls as the same caller (``chat-1``), so the
+    20-per-window budget is consumed by the file itself: left behind, the 21st
+    create in a worker process is refused with ``create_rate_limited`` and the
+    test that happens to be 21st fails for a reason it never asserted. Which
+    test that is depends on xdist distribution, which is what made it flaky.
+    """
+    create_rate_limit.reset_for_tests()
+    yield
+    create_rate_limit.reset_for_tests()
 
 
 def _slot(state, name: str, **kwargs):
@@ -2792,11 +2808,20 @@ def test_a_mirror_link_landing_during_the_await_still_refuses(tmp_path, monkeypa
 def test_the_slot_cap_is_re_checked_after_the_await(tmp_path, monkeypatch):
     """The ceiling is read from live state, so it can fill inside the window too.
 
+    The ceiling is lowered for this test because what is under test is WHEN it is
+    read, not what it is: minting the production 500 slots is superlinear and cost
+    ~17s of pure setup for no extra property. The caller's own slot stays under the
+    lowered cap -- asserted below -- so the refusal can only come from the fill that
+    lands inside the await.
+
     Mutation guard: checking the cap only before the await lets two concurrent
     creations land over the ceiling.
     """
     state = _make_state(tmp_path)
     caller = _slot(state, "chat-1")
+    monkeypatch.setattr(sc, "MAX_LIVE_SLOTS", 3)
+    # Without this the test could pass on a cap checked only BEFORE the await.
+    assert state.live_slot_count() < sc.MAX_LIVE_SLOTS
 
     def _resolve_then_fill(_workspace):
         for i in range(sc.MAX_LIVE_SLOTS):

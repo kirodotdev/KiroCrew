@@ -46,24 +46,28 @@ is the security-sensitive one. Three rules, all mirrored from
 
 from __future__ import annotations
 
-import json
+import json  # noqa: F401 -- historical module export
 import os
 import re
 import subprocess
 from datetime import datetime, timedelta, timezone
-from urllib.parse import quote, urlparse
+from urllib.parse import quote, urlparse  # noqa: F401 -- historical module export
 
 from kiro_crew.apps.registry import minimal_env
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.sel import sel
 
+from . import gitlab_normalization as _normalization
+from . import gitlab_transport as _transport
 from .errors import (
     ProviderCliError,
     ProviderInvalidInputError,
     ProviderPermissionError,
     ProviderSetupError,
     PrSearchError,
-    RepoUrlError,
+)
+from .errors import RepoUrlError as RepoUrlError  # noqa: F401 — public re-export
+from .errors import (
     sanitize_cli_stderr,
 )
 
@@ -93,110 +97,20 @@ _PAGE_SIZE = 100
 # arbitrary API paths, so pagination is explicit here).
 _MAX_PAGES = 40
 
-_SEGMENT_RE = re.compile(r"^[A-Za-z0-9._-]+$")
+_SEGMENT_RE = _transport.SEGMENT_RE
 # A GitLab username is used in search filters that ride in a query string.
 _USERNAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,254}$")
-
-# Reserved path segments that are part of GitLab's own routing rather than a
-# project's namespace. A URL like /group/project/-/issues/5 must resolve to the
-# project "group/project", so everything from "/-/" onward is stripped, and a
-# namespace may never contain one of these.
-_GITLAB_RESERVED_SEGMENTS = frozenset(
-    {"-", "groups", "projects", "admin", "dashboard", "explore", "help", "users", "api"}
-)
+_GITLAB_RESERVED_SEGMENTS = _transport.GITLAB_RESERVED_SEGMENTS
 
 
 def parse_gitlab_repo_url(link: str, *, allowed_hosts: frozenset[str] = frozenset()) -> tuple[str, str, str]:
-    """Parse ``(host, namespace, project)`` from a GitLab project URL.
-
-    Accepts the project root (``https://gitlab.com/group/sub/proj``) as well as
-    any deeper page (``.../-/issues``, ``.../-/merge_requests/7``), since users
-    paste whatever tab they happen to be on. ``namespace`` may contain ``/``:
-    GitLab projects live in nested groups, and the full namespace is part of the
-    project's identity.
-
-    Deliberately strict, for the same reasons as
-    :func:`github_client.parse_github_repo_url`: full URL only, HTTPS only, no
-    userinfo, host must be gitlab.com or in ``allowed_hosts`` (SSRF guard), and
-    every path segment is charset-constrained before any value can reach a
-    subprocess argv.
-    """
-    if not link or not isinstance(link, str):
-        raise RepoUrlError("repo link is empty")
-    # urlparse itself raises on some malformed authorities (an unclosed IPv6
-    # bracket, for one), so even reaching the scheme check is not guaranteed.
-    try:
-        parsed = urlparse(link.strip())
-    except ValueError as exc:
-        raise RepoUrlError(f"unparseable URL: {link!r}") from exc
-    if parsed.scheme != "https":
-        raise RepoUrlError(f"not an https URL: {link!r}")
-    if parsed.username or parsed.password:
-        raise RepoUrlError("URLs with embedded credentials are not accepted")
-
-    # Strip a trailing dot so an absolute-FQDN URL (``gitlab.acme.internal.``)
-    # matches the allowlist, whose entries are canonicalized the same way by the
-    # config loader. Without this the two sides can never agree (fails closed).
-    # `hostname`/`port` parse the authority lazily, so a malformed one
-    # (``https://gitlab.com:notaport/g/p``) raises ValueError HERE rather than in
-    # urlparse. Uncaught it escaped /connect as an HTTP 500; a malformed URL is
-    # client input, so it becomes the same RepoUrlError (400) as every other
-    # unusable link.
-    try:
-        host = (parsed.hostname or "").lower().rstrip(".")
-        port = parsed.port
-    except ValueError as exc:
-        raise RepoUrlError(f"malformed host or port in {link!r}") from exc
-    # A self-managed instance may listen on a non-default port, so the allowlist
-    # is matched against host and host:port -- an entry without a port does not
-    # authorize an arbitrary port on the same host. An explicit :443 is treated
-    # as absent, matching the browser URL API, so the same URL resolves
-    # identically on both sides.
-    candidate = f"{host}:{port}" if port and port != 443 else host
-
-    if host in {"gitlab.com", "www.gitlab.com"}:
-        resolved_host = "gitlab.com"
-    elif host and candidate in allowed_hosts:
-        resolved_host = candidate
-    else:
-        raise RepoUrlError(
-            f"not a supported GitLab host: {link!r} — gitlab.com is always accepted; "
-            "a self-managed instance must be listed in the dashboard.gitlab_hosts config"
-        )
-
-    path = (parsed.path or "").rstrip("/")
-    # Everything from GitLab's "/-/" routing marker onward is a page within the
-    # project, not part of its path. String ops (not a regex) because a
-    # /(.+)/-/… pattern backtracks polynomially on adversarial input.
-    marker = "/-/"
-    idx = path.find(marker)
-    if idx >= 0:
-        path = path[:idx]
-    parts = [p for p in path.split("/") if p]
-    if len(parts) < 2:
-        raise RepoUrlError(
-            f"not a full project URL: {link!r} (expected .../<group>/<project>)"
-        )
-    parts[-1] = re.sub(r"\.git$", "", parts[-1])
-    for seg in parts:
-        if seg in (".", "..") or not _SEGMENT_RE.match(seg):
-            raise RepoUrlError(f"invalid path segment in {link!r}")
-    if any(seg.lower() in _GITLAB_RESERVED_SEGMENTS for seg in parts):
-        raise RepoUrlError(f"{link!r} is a GitLab system path, not a project")
-    namespace, project = "/".join(parts[:-1]), parts[-1]
-    return resolved_host, namespace, project
+    """Parse a project URL through the provider-specific transport boundary."""
+    return _transport.parse_gitlab_repo_url(link, allowed_hosts=allowed_hosts)
 
 
 def project_path(owner: str, repo: str) -> str:
-    """URL-encode ``owner/repo`` into GitLab's single ``:id`` path parameter.
-
-    GitLab addresses a project either by numeric id or by its URL-encoded full
-    path, where the namespace separators become ``%2F`` (``group/sub/proj`` ->
-    ``group%2Fsub%2Fproj``). Encoding here -- rather than at each of the ~25 call
-    sites -- means no endpoint can accidentally emit a raw slash and address the
-    wrong resource.
-    """
-    return quote(f"{owner}/{repo}", safe="")
+    """URL-encode ``owner/repo`` into GitLab's single ``:id`` path parameter."""
+    return _transport.project_path(owner, repo)
 
 
 # ── glab spawn hardening ─────────────────────────────────────────────────────
@@ -211,12 +125,7 @@ def project_path(owner: str, repo: str) -> str:
 # -- PATH/HOME/XDG plus glab's own auth/network vars -- instead of the gateway's
 # full env, so unrelated secrets (AWS/Slack/SSH) can never leak to a substituted
 # or compromised glab.
-_GLAB_ENV_PASSTHROUGH = (
-    "GITLAB_TOKEN", "GLAB_CONFIG_DIR",
-    "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "ALL_PROXY",
-    "http_proxy", "https_proxy", "no_proxy", "all_proxy",
-    "SSL_CERT_FILE", "SSL_CERT_DIR", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE",
-)
+_GLAB_ENV_PASSTHROUGH = _transport.GLAB_ENV_PASSTHROUGH
 
 _glab_bin_cache: str | None = None
 
@@ -305,16 +214,7 @@ def _resolve_host(host: str) -> str:
     an already-connected project. An omitted host is refused rather than
     silently resolved to gitlab.com.
     """
-    if not host:
-        raise ProviderCliError("a GitLab host is required for glab calls")
-    normalized = host.lower().rstrip(".")
-    if normalized in {"gitlab.com", "www.gitlab.com"}:
-        return "gitlab.com"
-    if normalized not in allowed_hosts():
-        raise ProviderCliError(
-            f"GitLab host {normalized!r} is not listed in the dashboard.gitlab_hosts allowlist"
-        )
-    return normalized
+    return _transport.resolve_host(host, allowed_hosts=allowed_hosts())
 
 
 def _glab_env(host: str) -> dict[str, str]:
@@ -327,13 +227,12 @@ def _glab_env(host: str) -> dict[str, str]:
     ``GITLAB_TOKEN`` is withheld for non-gitlab.com hosts (see the module
     docstring, rule 3).
     """
-    passthrough = {k: os.environ[k] for k in _GLAB_ENV_PASSTHROUGH if k in os.environ}
-    if host != "gitlab.com":
-        passthrough.pop("GITLAB_TOKEN", None)
-    passthrough["GITLAB_HOST"] = host
-    passthrough["GLAB_PAGER"] = "cat"
-    passthrough["NO_COLOR"] = "1"
-    return minimal_env(**passthrough)
+    return _transport.glab_env(
+        host,
+        source_env=os.environ,
+        passthrough_keys=_GLAB_ENV_PASSTHROUGH,
+        minimal_env=minimal_env,
+    )
 
 
 def _audit(op: str, target: str, outcome: str, *, error: str = "") -> None:
@@ -402,35 +301,20 @@ def _glab_run(
 # target host (as opposed to a project simply being out of reach for an
 # authenticated user). Matched case-insensitively against the stderr tail so the
 # connect dialog can offer `glab auth login` instead of an opaque exit code.
-_GLAB_AUTH_MARKERS = (
-    "glab auth login",
-    "not logged in",
-    "no token provided",
-    "authentication required",
-    "requires authentication",
-    "401 unauthorized",
-    "http 401",
-)
+_GLAB_AUTH_MARKERS = _transport.GLAB_AUTH_MARKERS
 
 
 def _raise_if_auth_failure(stderr_tail: str, host: str) -> None:
     """Re-classify an unauthenticated ``glab`` failure as ProviderSetupError."""
-    low = (stderr_tail or "").lower()
-    if any(m in low for m in _GLAB_AUTH_MARKERS):
-        raise ProviderSetupError(
-            f"the `glab` CLI is not authenticated for {host} — "
-            f"run `glab auth login --hostname {host}`",
-            reason="not_authenticated",
-        )
+    _transport.raise_if_auth_failure(stderr_tail, host, markers=_GLAB_AUTH_MARKERS)
 
 
 def _stderr_tail(proc: subprocess.CompletedProcess) -> str:
-    return sanitize_cli_stderr(" ".join((proc.stderr or "").strip().splitlines()[-3:]))
+    return _transport.stderr_tail(proc, sanitize=sanitize_cli_stderr)
 
 
 def _is_forbidden(tail: str) -> bool:
-    low = (tail or "").lower()
-    return "403" in low or "forbidden" in low or "insufficient" in low
+    return _transport.is_forbidden(tail)
 
 
 def _glab_api(
@@ -450,270 +334,76 @@ def _glab_api(
     already be built from validated segments by the caller; ``body`` rides on
     stdin as JSON so values with spaces/specials are never argv.
     """
-    pages: list[object] = []
-    page = 1
-    while True:
-        sep = "&" if "?" in path else "?"
-        target = f"{path}{sep}page={page}&per_page={_PAGE_SIZE}" if paginate else path
-        argv = ["glab", "api", target]
-        if method != "GET":
-            argv += ["--method", method]
-        input_text = None
-        if body is not None:
-            # glab reads a request body from stdin when given "--input -".
-            argv += ["--input", "-"]
-            input_text = json.dumps(body)
-        proc = _glab_run(argv, host=host, timeout=timeout, input_text=input_text)
-        if proc.returncode != 0:
-            tail = _stderr_tail(proc)
-            _raise_if_auth_failure(tail, host)
-            if _is_forbidden(tail):
-                raise ProviderPermissionError(
-                    f"glab api {path} was forbidden (exit {proc.returncode}): {tail}"
-                )
-            raise ProviderCliError(f"glab api {path} failed (exit {proc.returncode}): {tail}")
-        text = (proc.stdout or "").strip()
-        if not text:
-            data: object = [] if paginate else {}
-        else:
-            try:
-                data = json.loads(text)
-            except json.JSONDecodeError as exc:
-                raise ProviderCliError(f"glab returned unexpected output for {path}") from exc
-        if not paginate:
-            return data
-        if not isinstance(data, list):
-            return data
-        pages.extend(data)
-        if len(data) < _PAGE_SIZE or page >= _MAX_PAGES:
-            return pages
-        page += 1
+    return _transport.glab_api(
+        path,
+        host=host,
+        timeout=timeout,
+        paginate=paginate,
+        method=method,
+        body=body,
+        run=_glab_run,
+        page_size=_PAGE_SIZE,
+        max_pages=_MAX_PAGES,
+        stderr_tail=_stderr_tail,
+        raise_if_auth_failure=_raise_if_auth_failure,
+        is_forbidden=_is_forbidden,
+    )
 
 
 def _rows(data: object) -> list[dict]:
-    """Coerce an API response into a list of dicts (tolerating a non-list)."""
-    if not isinstance(data, list):
-        return []
-    return [row for row in data if isinstance(row, dict)]
+    return _normalization._rows(data)
 
 
 def _obj(data: object) -> dict:
-    return data if isinstance(data, dict) else {}
+    return _normalization._obj(data)
 
 
-# ── normalization: GitLab -> the GitHub-shaped vocabulary the app speaks ─────
-
-
+# Compatibility wrappers keep the longstanding gitlab_client patch/import surface.
 def _norm_state(state: object) -> str:
-    """``opened`` -> ``open``; ``locked`` -> ``open``; everything else verbatim.
-
-    GitLab's issue/MR states are opened/closed/merged/locked. The app's filters,
-    caches, and components are written against GitHub's open/closed (plus
-    ``merged_at`` for a merged MR), so ``opened`` is renamed here and ``locked``
-    -- a rarely-used GitLab state that still means the item is not closed -- is
-    folded into ``open`` rather than leaking a third value the UI cannot render.
-    """
-    text = str(state or "").lower()
-    if text in {"opened", "locked"}:
-        return "open"
-    return text or "open"
+    return _normalization._norm_state(state)
 
 
 def _hex_color(value: object) -> str:
-    """GitLab returns ``#RRGGBB``; the app (and GitHub) use bare 6-hex."""
-    text = str(value or "").strip().lstrip("#")
-    return text or "888888"
+    return _normalization._hex_color(value)
 
 
 def _label_names(raw: object) -> list[str]:
-    """GitLab issue/MR payloads carry labels as a plain array of names."""
-    if not isinstance(raw, list):
-        return []
-    return [str(name) for name in raw if isinstance(name, str) and name]
+    return _normalization._label_names(raw)
 
 
 def _username(user: object) -> str | None:
-    if not isinstance(user, dict):
-        return None
-    name = user.get("username")
-    return str(name) if name else None
+    return _normalization._username(user)
 
 
 def _usernames(raw: object) -> list[str]:
-    if not isinstance(raw, list):
-        return []
-    return [u for u in (_username(item) for item in raw) if u]
+    return _normalization._usernames(raw)
 
 
-# GitLab access levels -> the role vocabulary the members UI already renders.
-# GitLab has no "triage" role; Reporter is its closest analogue (can label and
-# close issues but not push), so it maps there.
-_ACCESS_LEVEL_ROLES = (
-    (50, "admin"),      # Owner
-    (40, "maintain"),   # Maintainer
-    (30, "write"),      # Developer
-    (20, "triage"),     # Reporter
-    (10, "read"),       # Guest
-)
+_ACCESS_LEVEL_ROLES = _normalization._ACCESS_LEVEL_ROLES
 
 
 def _role_for_access_level(level: object) -> str:
-    if not isinstance(level, (int, str)):
-        return "read"
-    try:
-        value = int(level)
-    except (TypeError, ValueError):
-        return "read"
-    for threshold, role in _ACCESS_LEVEL_ROLES:
-        if value >= threshold:
-            return role
-    return "read"
+    return _normalization._role_for_access_level(level)
 
 
 def _permissions_for_access_level(level: int) -> dict:
-    """Project access level -> GitHub's ``{admin, maintain, push, triage, pull}``.
-
-    The write routes gate on ``triage``/``push``, so this mapping is what decides
-    whether a GitLab user may label or close an issue from Issue Radar. It is
-    deliberately conservative: Reporter (20) gets triage but NOT push, matching
-    what GitLab itself permits.
-    """
-    return {
-        "admin": level >= 50,
-        "maintain": level >= 40,
-        "push": level >= 30,
-        "triage": level >= 20,
-        "pull": level >= 10,
-    }
+    return _normalization._permissions_for_access_level(level)
 
 
 def _access_level(details: dict) -> int:
-    """Highest effective access level the caller has on a project.
-
-    GitLab reports project access and inherited group access separately, and a
-    user may hold either or both; the effective right is the maximum.
-    """
-    perms = _obj(details.get("permissions"))
-    best = 0
-    for key in ("project_access", "group_access"):
-        entry = _obj(perms.get(key))
-        try:
-            level = int(entry.get("access_level") or 0)
-        except (TypeError, ValueError):
-            level = 0
-        best = max(best, level)
-    return best
+    return _normalization._access_level(details)
 
 
 def _norm_issue(raw: dict) -> dict:
-    """One GitLab issue -> the list-view row shape ``_ISSUE_JQ`` produces.
-
-    ``author_association`` has no GitLab equivalent (it is a GitHub-computed
-    relationship), so it is ``None`` here. That is safe rather than lossy: it
-    only feeds ``derive_members``, which is the FALLBACK roster for repos where
-    the members endpoint is forbidden -- and on GitLab the members endpoint is
-    readable by any project member, so the authoritative roster is used instead.
-    """
-    return {
-        "number": raw.get("iid"),
-        "title": raw.get("title") or "",
-        "url": raw.get("web_url") or "",
-        "labels": _label_names(raw.get("labels")),
-        "comments": raw.get("user_notes_count") or 0,
-        # GitLab has award emoji but does not summarize them on the issue; the
-        # up/down votes it does report are the meaningful triage signal.
-        "reactions": (raw.get("upvotes") or 0) + (raw.get("downvotes") or 0),
-        "thumbs_up": raw.get("upvotes") or 0,
-        "author_association": None,
-        "updated_at": raw.get("updated_at"),
-        "created_at": raw.get("created_at"),
-        "state": _norm_state(raw.get("state")),
-        "author": _username(raw.get("author")),
-        "assignees": _usernames(raw.get("assignees")),
-        "body": raw.get("description") or "",
-    }
+    return _normalization._norm_issue(raw)
 
 
 def _norm_issue_detail(raw: dict, labels_by_name: dict[str, dict]) -> dict:
-    """One GitLab issue -> the detail-pane shape ``_ISSUE_DETAIL_JQ`` produces.
-
-    GitLab's issue payload carries label NAMES only, but the detail pane renders
-    each label in its configured colour, so ``labels_by_name`` (from
-    :func:`list_repo_labels`) supplies the colour/description. A label missing
-    from that map still renders, with the neutral default colour.
-    """
-    upvotes = raw.get("upvotes") or 0
-    downvotes = raw.get("downvotes") or 0
-    total = upvotes + downvotes
-    milestone = _obj(raw.get("milestone"))
-    return {
-        "number": raw.get("iid"),
-        "title": raw.get("title") or "",
-        "body": raw.get("description") or "",
-        "state": _norm_state(raw.get("state")),
-        # GitLab has no close-reason concept.
-        "state_reason": None,
-        "url": raw.get("web_url") or "",
-        "author": _username(raw.get("author")),
-        "author_association": None,
-        "created_at": raw.get("created_at"),
-        "updated_at": raw.get("updated_at"),
-        "closed_at": raw.get("closed_at"),
-        "closed_by": _username(raw.get("closed_by")),
-        "comments": raw.get("user_notes_count") or 0,
-        "locked": bool(raw.get("discussion_locked")),
-        "labels": [
-            {
-                "name": name,
-                "color": _hex_color(labels_by_name.get(name, {}).get("color")),
-                "description": labels_by_name.get(name, {}).get("description") or "",
-            }
-            for name in _label_names(raw.get("labels"))
-        ],
-        "assignees": _usernames(raw.get("assignees")),
-        "milestone": (
-            {
-                "title": milestone.get("title"),
-                "state": milestone.get("state"),
-                "due_on": milestone.get("due_date"),
-            }
-            if milestone
-            else None
-        ),
-        "reactions": (
-            {
-                "total": total,
-                "plus1": upvotes,
-                "minus1": downvotes,
-                "laugh": 0,
-                "hooray": 0,
-                "confused": 0,
-                "heart": 0,
-                "rocket": 0,
-                "eyes": 0,
-            }
-            if total > 0
-            else None
-        ),
-    }
+    return _normalization._norm_issue_detail(raw, labels_by_name)
 
 
 def _shape_labels(raw: object) -> list[dict]:
-    """Normalize a GitLab label array to ``[{name, color, description}]``."""
-    out: list[dict] = []
-    for lab in _rows(raw):
-        if lab.get("name"):
-            out.append(
-                {
-                    "name": lab.get("name"),
-                    "color": _hex_color(lab.get("color")),
-                    "description": lab.get("description") or "",
-                }
-            )
-    return out
-
-
-# ── public surface: mirrors github_client function-for-function ──────────────
+    return _normalization._shape_labels(raw)
 
 
 def verify_repo_access(owner: str, repo: str, *, host: str = "", timeout: float = GL_TIMEOUT_SEC) -> dict:
@@ -846,16 +536,8 @@ def list_repo_collaborators(
 
 
 def derive_members(issues: list[dict]) -> list[dict]:
-    """FALLBACK roster. Always ``[]`` on GitLab.
-
-    GitHub derives membership from ``author_association``, which GitLab does not
-    report (see :func:`_norm_issue`). Returning empty is honest: the caller only
-    reaches this when the members endpoint was forbidden, and inventing a roster
-    from issue authors — who on GitLab may be complete strangers — would badge
-    non-members as members. The route surfaces the empty roster with its
-    ``source`` marker so the UI can say so.
-    """
-    return []
+    """Return no inferred roster when GitLab's authoritative endpoint is forbidden."""
+    return _normalization.derive_members(issues)
 
 
 def get_current_login(*, host: str = "", timeout: float = GL_TIMEOUT_SEC) -> str | None:
@@ -1043,114 +725,23 @@ _SYSTEM_NOTE_PATTERNS: tuple[tuple[str, str], ...] = (
     ("removed milestone", "demilestoned"),
 )
 
-_TITLE_CHANGE_RE = re.compile(r"changed title from \*\*(.*?)\*\* to \*\*(.*?)\*\*", re.DOTALL)
-_MENTION_REF_RE = re.compile(r"mentioned in (issue|merge request) ([\w./-]*[!#])(\d+)")
-_ASSIGNEE_RE = re.compile(r"@([A-Za-z0-9._-]+)")
-_COMMIT_REF_RE = re.compile(r"mentioned in commit ([0-9a-f]{7,40})")
+_TITLE_CHANGE_RE = _normalization._TITLE_CHANGE_RE
+_MENTION_REF_RE = _normalization._MENTION_REF_RE
+_ASSIGNEE_RE = _normalization._ASSIGNEE_RE
+_COMMIT_REF_RE = _normalization._COMMIT_REF_RE
 
 
 def _norm_note(note: dict) -> dict | None:
-    """One GitLab note -> a normalized timeline entry, or ``None`` to drop it."""
-    body = str(note.get("body") or "")
-    created = note.get("created_at")
-    actor = _username(note.get("author"))
-    if not note.get("system"):
-        upvotes = 0  # per-note award emoji need an extra call per note; not worth it
-        return {
-            "kind": "comment",
-            "actor": actor,
-            "created_at": created,
-            "body": body,
-            "author_association": None,
-            "reactions": None if upvotes <= 0 else {"total": upvotes, "plus1": upvotes},
-        }
-    low = body.lower()
-    kind = next((k for prefix, k in _SYSTEM_NOTE_PATTERNS if low.startswith(prefix)), None)
-    if kind is None:
-        return None
-    if kind in ("assigned", "unassigned"):
-        match = _ASSIGNEE_RE.search(body)
-        return {
-            "kind": kind,
-            "actor": actor,
-            "created_at": created,
-            "assignee": match.group(1) if match else None,
-        }
-    if kind == "renamed":
-        match = _TITLE_CHANGE_RE.search(body)
-        return {
-            "kind": "renamed",
-            "actor": actor,
-            "created_at": created,
-            "rename": {
-                "from": match.group(1) if match else None,
-                "to": match.group(2) if match else None,
-            },
-        }
-    if kind == "cross-referenced":
-        match = _MENTION_REF_RE.search(body)
-        return {
-            "kind": "cross-referenced",
-            "actor": actor,
-            "created_at": created,
-            "source": {
-                "number": int(match.group(3)) if match else None,
-                "title": None,
-                "url": None,
-                "state": None,
-                # "!" is GitLab's merge-request sigil; "#" is an issue.
-                "is_pr": bool(match and match.group(2).endswith("!")),
-            },
-        }
-    if kind == "referenced":
-        match = _COMMIT_REF_RE.search(body)
-        return {
-            "kind": "referenced",
-            "actor": actor,
-            "created_at": created,
-            "commit_id": match.group(1) if match else None,
-        }
-    if kind in ("milestoned", "demilestoned"):
-        return {"kind": kind, "actor": actor, "created_at": created, "milestone": None}
-    return None
+    # Read the facade table at call time so monkeypatches and extensions keep working.
+    return _normalization.norm_note(note, patterns=_SYSTEM_NOTE_PATTERNS)
 
 
 def _norm_label_event(event: dict, labels_by_name: dict[str, dict]) -> dict | None:
-    action = str(event.get("action") or "").lower()
-    if action not in ("add", "remove"):
-        return None
-    label = _obj(event.get("label"))
-    name = label.get("name")
-    if not name:
-        return None
-    return {
-        "kind": "labeled" if action == "add" else "unlabeled",
-        "actor": _username(event.get("user")),
-        "created_at": event.get("created_at"),
-        "label": {
-            "name": name,
-            "color": _hex_color(label.get("color") or labels_by_name.get(str(name), {}).get("color")),
-        },
-    }
+    return _normalization._norm_label_event(event, labels_by_name)
 
 
 def _norm_state_event(event: dict) -> dict | None:
-    state = str(event.get("state") or "").lower()
-    if state == "closed":
-        return {
-            "kind": "closed",
-            "actor": _username(event.get("user")),
-            "created_at": event.get("created_at"),
-            "state_reason": None,
-            "commit_id": None,
-        }
-    if state in ("reopened", "opened"):
-        return {
-            "kind": "reopened",
-            "actor": _username(event.get("user")),
-            "created_at": event.get("created_at"),
-        }
-    return None
+    return _normalization._norm_state_event(event)
 
 
 def _assemble_timeline(
@@ -1485,40 +1076,7 @@ def create_label(
 
 
 def _norm_pull(raw: dict) -> dict:
-    """One GitLab merge request -> the row shape ``_PR_JQ`` produces.
-
-    ``state`` folds ``merged`` into ``closed`` because that is what the app's
-    open/closed filter means; the distinction survives in ``merged_at``, which is
-    exactly how github_client distinguishes a merged PR from one closed unmerged.
-    """
-    state = str(raw.get("state") or "").lower()
-    row = {
-        "number": raw.get("iid"),
-        "title": raw.get("title") or "",
-        "url": raw.get("web_url") or "",
-        "state": "open" if state in ("opened", "locked") else "closed",
-        "draft": bool(raw.get("draft") if raw.get("draft") is not None else raw.get("work_in_progress")),
-        "labels": _label_names(raw.get("labels")),
-        "author": _username(raw.get("author")),
-        "author_association": None,
-        "updated_at": raw.get("updated_at"),
-        "created_at": raw.get("created_at"),
-        "closed_at": raw.get("closed_at"),
-        "merged_at": raw.get("merged_at"),
-        "assignees": _usernames(raw.get("assignees")),
-        "requested_reviewers": _usernames(raw.get("reviewers")),
-        "base": raw.get("target_branch"),
-        "head": raw.get("source_branch"),
-        # The head COMMIT, for the same reason github_client's list JQ carries it: a
-        # bulk approve has to name the revision the row was rendered at. GitLab's list
-        # payload gives ``sha`` directly; ``diff_refs`` is the detail-only richer form.
-        "head_sha": (_obj(raw.get("diff_refs")).get("head_sha") or raw.get("sha")),
-        "body": raw.get("description") or "",
-    }
-    # The card enrichment GitHub needs a second round trip for is already in this
-    # payload, so it is written here rather than by a separate enrich_* pass.
-    row.update(_pipeline_summary(raw))
-    return row
+    return _normalization._norm_pull(raw)
 
 
 def _list_pulls(owner: str, repo: str, state: str, *, host: str, timeout: float, paginate: bool) -> list[dict]:
@@ -1633,75 +1191,25 @@ def get_pr_detail(
 # (the reader wants a conflict signal) and would be wrong for a merge gate — which is
 # why ``routes._MERGE_ALLOWED_STATES`` keys off the raw status instead and admits only
 # the modern value.
-_MERGEABLE_STATUSES = frozenset({"mergeable", "can_be_merged"})
-# Values that mean "GitLab has not finished computing it yet" — reported as
-# unknown (None) rather than as not-mergeable, so the UI does not flash a false
-# conflict warning while the check is still running.
-_MERGE_STATUS_PENDING = frozenset({"checking", "unchecked", "preparing", ""})
+_MERGEABLE_STATUSES = _normalization._MERGEABLE_STATUSES
+_MERGE_STATUS_PENDING = _normalization._MERGE_STATUS_PENDING
 
 
 def _mergeable(raw: dict) -> bool | None:
-    status = str(raw.get("detailed_merge_status") or raw.get("merge_status") or "").lower()
-    if status in _MERGE_STATUS_PENDING:
-        return None
-    return status in _MERGEABLE_STATUSES
+    return _normalization._mergeable(raw)
 
 
-# ── pipelines as checks ─────────────────────────────────────────────────────
-#
-# GitHub reports per-PR status as check runs + commit statuses. GitLab reports a
-# pipeline per commit, with jobs inside it. A job is the closest analogue of a
-# check run (a named unit that passes or fails), so the MR's LATEST pipeline's
-# jobs become the check list. Bucketing mirrors github_client._check_bucket so
-# the same summary logic and UI colours apply, including its hard-won behaviour
-# that a CANCELLED job is informational rather than failing.
-_JOB_FAILURE_STATUSES = frozenset({"failed"})
-_JOB_RUNNING_STATUSES = frozenset({"running", "pending", "created", "waiting_for_resource", "preparing", "scheduled"})
-_JOB_OTHER_STATUSES = frozenset({"canceled", "cancelled", "skipped", "manual"})
+_JOB_FAILURE_STATUSES = _normalization._JOB_FAILURE_STATUSES
+_JOB_RUNNING_STATUSES = _normalization._JOB_RUNNING_STATUSES
+_JOB_OTHER_STATUSES = _normalization._JOB_OTHER_STATUSES
 
 
 def _job_bucket(status: str, allow_failure: bool) -> str:
-    """Map a GitLab job status to github_client's bucket vocabulary.
-
-    ``allow_failure`` jobs are bucketed as ``other``, not ``failure``: GitLab
-    does not fail the pipeline for them, so surfacing them as a failing check
-    would report a red PR that GitLab itself considers green.
-    """
-    text = (status or "").lower()
-    if text in _JOB_FAILURE_STATUSES:
-        return "other" if allow_failure else "failure"
-    if text in _JOB_RUNNING_STATUSES:
-        return "running"
-    if text == "success":
-        return "success"
-    if text in _JOB_OTHER_STATUSES:
-        return "other"
-    return "other"
+    return _normalization._job_bucket(status, allow_failure)
 
 
 def _norm_job(job: dict) -> dict:
-    """One GitLab job -> the check-row shape ``_CHECK_RUN_JQ`` produces.
-
-    ``bucket`` is precomputed because :func:`summarize_checks` reads it, and
-    ``source`` carries the publisher identity github_client's dedupe keys on --
-    ``gitlab-ci`` for every job, since one pipeline is one publisher.
-    """
-    status = str(job.get("status") or "")
-    bucket = _job_bucket(status, bool(job.get("allow_failure")))
-    stage = job.get("stage")
-    return {
-        "name": job.get("name") or "job",
-        # GitLab has no separate status/conclusion split; the job status is both.
-        "status": "in_progress" if bucket == "running" else "completed",
-        "conclusion": {"failure": "failure", "success": "success", "running": None}.get(bucket, "neutral"),
-        "bucket": bucket,
-        "url": job.get("web_url"),
-        "started_at": job.get("started_at") or job.get("created_at"),
-        "completed_at": job.get("finished_at"),
-        "summary": f"stage: {stage}" if stage else "",
-        "app": "GitLab CI",
-        "source": "gitlab-ci",
-    }
+    return _normalization._norm_job(job)
 
 
 _SHA_RE = re.compile(r"^[0-9a-fA-F]{7,64}$")
@@ -1749,89 +1257,27 @@ def list_pr_checks(
     return [_norm_job(job) for job in jobs]
 
 
-_CHECK_BUCKETS = ("failure", "running", "success", "other")
+_CHECK_BUCKETS = _normalization._CHECK_BUCKETS
 
 
 def summarize_checks(checks: list[dict]) -> dict:
-    """``{checks_counts, checks_state, checks_truncated}`` from bucketed rows.
-
-    Byte-identical contract to ``github_client.summarize_checks``, including the
-    ``checks_state`` priority (anything failing dominates, then running, then
-    success, then informational) so the card's dot never reads greener than the
-    list it summarizes, and ``None`` when there are no checks at all.
-    """
-    counts = dict.fromkeys(_CHECK_BUCKETS, 0)
-    for row in checks:
-        if not isinstance(row, dict):
-            continue
-        bucket = row.get("bucket")
-        counts[bucket if isinstance(bucket, str) and bucket in counts else "other"] += 1
-    for bucket in _CHECK_BUCKETS:
-        if counts[bucket]:
-            state: str | None = bucket
-            break
-    else:
-        state = None  # no checks at all -> the card shows no dot
-    return {"checks_counts": counts, "checks_state": state, "checks_truncated": False}
+    return _normalization.summarize_checks(checks)
 
 
 def enrich_pulls(owner: str, repo: str, pulls: list[dict], state: str, *, host: str = "") -> list[dict]:
-    """Attach card enrichment to each MR row. A no-op on GitLab, by construction.
-
-    GitHub needs a batched GraphQL round trip here because its REST list omits
-    diff size and check state. GitLab returns each MR's ``head_pipeline`` inline,
-    so :func:`_norm_pull` has already written the enrichment fields and there is
-    nothing left to fetch. Kept for signature parity so the route calls one shape.
-    """
-    del owner, repo, state, host
-    return pulls
+    return _normalization.enrich_pulls(owner, repo, pulls, state, host=host)
 
 
 def enrich_pulls_by_number(owner: str, repo: str, pulls: list[dict], *, host: str = "") -> list[dict]:
-    """Signature-parity counterpart to :func:`enrich_pulls`; also a no-op."""
-    del owner, repo, host
-    return pulls
+    return _normalization.enrich_pulls_by_number(owner, repo, pulls, host=host)
 
 
 def enrichment_complete(pulls: list[dict]) -> bool:
-    """Whether every row carries its card enrichment.
-
-    Reads the same ``checks_counts is not None`` invariant github_client does,
-    rather than hard-coding ``True``: a row that somehow arrived without
-    enrichment must keep itself OUT of the on-disk list cache, exactly as on
-    GitHub, instead of being cached as authoritative.
-    """
-    return all(pr.get("checks_counts") is not None for pr in pulls)
+    return _normalization.enrichment_complete(pulls)
 
 
 def _pipeline_summary(raw: dict) -> dict:
-    """Card enrichment derived from an MR's head pipeline.
-
-    A GitLab pipeline is one aggregate signal, not a set of named checks, so this
-    reports a single unit in the matching bucket -- enough for the row's coloured
-    dot, with the real per-job list arriving from :func:`list_pr_checks` when the
-    detail pane opens.
-
-    Diff size is reported as ``None`` (unknown), never ``0``: the list response
-    carries no line counts, and these rows are PERSISTED -- zeros would present
-    an unread diff as a confident "no changes" and the cache would serve that
-    until a manual refresh.
-    """
-    pipeline = _obj(raw.get("head_pipeline")) or _obj(raw.get("pipeline"))
-    status = str(pipeline.get("status") or "").lower()
-    counts = dict.fromkeys(_CHECK_BUCKETS, 0)
-    state: str | None = None
-    if status:
-        state = _job_bucket(status, False)
-        counts[state] = 1
-    return {
-        "additions": None,
-        "deletions": None,
-        "changed_files": None,
-        "checks_state": state,
-        "checks_counts": counts,
-        "checks_truncated": False,
-    }
+    return _normalization._pipeline_summary(raw)
 
 
 # ── cheap open-list probe (poll gating) ─────────────────────────────────────
@@ -2293,28 +1739,14 @@ def disable_auto_merge(
     )
 
 
-# GitLab pipeline statuses that mean "not finished", so cancelling is meaningful.
-_PIPELINE_CANCELLABLE_STATES = frozenset({
-    "created", "waiting_for_resource", "preparing", "pending", "running", "scheduled",
-})
+_PIPELINE_CANCELLABLE_STATES = _normalization._PIPELINE_CANCELLABLE_STATES
+_PIPELINE_RETRYABLE_STATES = _normalization._PIPELINE_RETRYABLE_STATES
+_PIPELINE_FINISHED_STATES = _normalization._PIPELINE_FINISHED_STATES
+_PIPELINE_CONCLUSION = _normalization._PIPELINE_CONCLUSION
 
-# A pipeline in one of these has finished AND has something for /retry to do.
-#
-# GitLab's ``/retry`` retries only the failed and canceled jobs, so a fully successful
-# or skipped pipeline has nothing to retry — offering the control there produced a
-# button that reported success while performing no work, which is worse than not
-# offering it. ``success`` and ``skipped`` are therefore absent: those pipelines are
-# still shown, just without a re-run affordance.
-_PIPELINE_RETRYABLE_STATES = frozenset({"failed", "canceled", "cancelled"})
 
-# Statuses that mean the pipeline has FINISHED, regardless of whether it can be
-# retried. This is what decides `status: "completed"` and whether `conclusion` is
-# populated -- a successful pipeline is finished even though it is not retryable.
-_PIPELINE_FINISHED_STATES = frozenset({"failed", "success", "canceled", "cancelled", "skipped"})
-
-# GitLab pipeline status -> the GitHub CONCLUSION vocabulary the shared UI reads.
-# Only the spellings that actually differ need an entry; the rest pass through.
-_PIPELINE_CONCLUSION = {"canceled": "cancelled"}
+def _norm_pipeline_run(row: dict) -> dict | None:
+    return _normalization._norm_pipeline_run(row)
 
 
 def list_pr_workflow_runs(
@@ -2337,33 +1769,8 @@ def list_pr_workflow_runs(
             paginate=False,
         )
     )
-    out: list[dict] = []
-    for row in rows:
-        if not isinstance(row, dict) or not row.get("id"):
-            continue
-        status = str(row.get("status") or "")
-        out.append({
-            "id": row.get("id"),
-            "name": row.get("name") or f"pipeline #{row.get('iid') or row.get('id')}",
-            # Normalized to the same two fields the GitHub rows use, so the UI
-            # reads one shape: GitLab reports a single status where GitHub splits
-            # status from conclusion.
-            "status": "completed" if status in _PIPELINE_FINISHED_STATES else status,
-            # Normalized to GITHUB's conclusion vocabulary, which is what the shared
-            # UI compares against: GitLab spells it "canceled" (one l) where GitHub
-            # uses "cancelled", so passing it through would leave a consumer keying
-            # on the GitHub spelling silently unable to see a cancelled pipeline.
-            "conclusion": (
-                _PIPELINE_CONCLUSION.get(status, status)
-                if status in _PIPELINE_FINISHED_STATES else None
-            ),
-            "url": row.get("web_url"),
-            "event": row.get("source"),
-            "created_at": row.get("created_at"),
-            "cancellable": status in _PIPELINE_CANCELLABLE_STATES,
-            "rerunnable": status in _PIPELINE_RETRYABLE_STATES,
-        })
-    return out
+    out = [_norm_pipeline_run(row) for row in rows]
+    return [row for row in out if row is not None]
 
 
 def cancel_workflow_run(

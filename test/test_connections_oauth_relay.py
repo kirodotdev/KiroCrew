@@ -43,6 +43,33 @@ def test_return_address_validation_accepts_runtime_callback_shape(host):
     assert callback.request_target == "/callback?code=one-time&state=opaque"
 
 
+@pytest.mark.parametrize("host", ["127.0.0.1", "localhost", "[::1]"])
+def test_return_address_validation_defaults_missing_scheme_to_http(host):
+    """#7406: iOS Safari copies address-bar URLs without the scheme; the
+    scheme-less paste must validate as if it carried http://."""
+    value = f"{host}:43123/callback?code=one-time&state=opaque"
+    callback = connections._validated_loopback_return_address(value)
+    assert callback is not None
+    assert callback.port == 43123
+    assert callback.request_target == "/callback?code=one-time&state=opaque"
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        # The http:// default must not admit anything the strict form refuses.
+        "10.0.0.5:43123/?code=x",
+        "evil.example:43123/?code=x",
+        "127.0.0.1:80/?code=x",
+        "127.0.0.1/?code=x",
+        # An explicit non-http scheme stays rejected — no rewrite to http.
+        "ftp://127.0.0.1:43123/?code=x",
+    ],
+)
+def test_scheme_default_does_not_widen_containment(value):
+    assert connections._validated_loopback_return_address(value) is None
+
+
 @pytest.mark.asyncio
 async def test_relay_delivers_to_loopback_without_following_redirects(monkeypatch):
     received: list[dict[str, str]] = []

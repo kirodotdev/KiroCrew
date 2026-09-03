@@ -23,6 +23,7 @@ See ``docs/system-specs/modules/ops-mission-control.md`` (data model).
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
@@ -64,6 +65,61 @@ STATE_UNKNOWN = "unknown"
 #: ``suppressed`` means "we read it and a human parked it".
 STATE_SUPPRESSED = "suppressed"
 VALID_STATES: frozenset[str] = frozenset({STATE_FIRING, STATE_OK, STATE_UNKNOWN, STATE_SUPPRESSED})
+
+
+class CorruptDocumentError(json.JSONDecodeError):
+    """A stored document that PARSED but is not usable as a mutation base.
+
+    Raised by the ``*_for_update`` readers when a document is valid JSON yet structurally
+    wrong -- a root that is not an object, or a row that is not one. Those cases destroy
+    data exactly like a parse failure does if the reader normalizes them away, because the
+    mutation rewrites the whole file from whatever the reader returned.
+
+    Subclasses :class:`json.JSONDecodeError` DELIBERATELY, and that is load-bearing rather
+    than convenient: every caller's corruption clause is written against
+    ``json.JSONDecodeError``, so this routes correctly through all of them with no change,
+    while a fresh exception type would be caught by none and would silently reopen the very
+    data loss those clauses exist to stop. Note that both are ``ValueError`` subclasses, so
+    a caller with an unrelated ``except ValueError`` will still claim this unless its
+    corruption arm comes first.
+
+    The subclass exists so the raises are greppable and their intent explicit instead of a
+    parser exception carrying a meaning the parser never assigned it. Suggested in review
+    (Design Review) and worth having before #7805 replicates this idiom across the four
+    merged siblings.
+    """
+
+
+class UnknownFieldError(CorruptDocumentError):
+    """A stored document holding a field THIS build does not know about.
+
+    A newer build added a field and wrote it; this reader's ``to_dict`` is ``asdict()`` over
+    the fields it knows, so the key would vanish on write.
+
+    **The reachable path today is a version ROLLBACK on one instance, not two instances sharing
+    a file.** An earlier version of this docstring justified it by ledger sync, which was wrong:
+    ``ledger_sync`` says "Only the ledger. NOT the dispatch index" and explains why -- the
+    index is last-writer-wins on a shared key, so syncing it would let two instances each
+    believe they own an incident. Caught in review (First Principles). What remains, and is
+    ordinary, is a bad release rolled back on a single machine: the file on disk was written
+    by the newer build, and the older build now reads it.
+
+    The other way to reach it is a future SCHEMA MIGRATION that retires a key, since an old
+    record then carries a field the new ``to_dict`` does not emit. That is indistinguishable
+    from the rollback case at the point of detection, which is why neither this class nor the
+    message it carries asserts which direction the skew runs.
+
+    The mutation must still refuse -- writing would strip the newer build's data, which is the
+    same loss every other refusal here prevents. What differs is the REMEDY: the file is fine
+    and the reader is behind, so the operator needs to move this instance forward, not repair a
+    document. Reporting it as corruption sends them to fix something that is not broken.
+
+    Subclasses :class:`CorruptDocumentError` so every caller that already refuses corruption
+    refuses this too with no change -- the distinction only has to be visible where an
+    operator reads it, which is the route layer's error code. Raised on data that is merely
+    NEWER; genuine content loss stays a plain ``CorruptDocumentError``.
+    """
+
 
 STATUS_UNCLAIMED = "unclaimed"
 STATUS_DISPATCHED = "dispatched"

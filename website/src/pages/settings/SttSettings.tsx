@@ -655,14 +655,16 @@ export default function SttSettings({ cardIndex }: {
                 {stt.prereqs.map((cmd, i) => (
                   <code key={i} className="block bg-bg-elevated rounded px-3 py-1.5 text-[13px] font-mono text-accent mb-1 select-all">{cmd}</code>
                 ))}
-                {/* The restart hint is tied to the pip command, not to the
-                    provider: a package only becomes importable in a fresh
+                {/* The restart hint is tied to the pip command -- matched on
+                    `-m pip install`, since the command names the extra's real
+                    distributions and no longer contains an extra name -- not to
+                    the provider: a package only becomes importable in a fresh
                     process, while an ffmpeg-only list needs no restart because
                     the PATH probe re-runs on every settings read. The button is
                     now the ONLY next step, because the in-dashboard installer it
                     used to sit beside is gone; whichever provider asked for the
                     extra, restarting is what makes it importable. */}
-                {stt.prereqs.some(c => c.includes('kirocrew[voice]')) && (
+                {stt.prereqs.some(c => c.includes('-m pip install')) && (
                   <div className="flex flex-wrap items-center gap-2 mt-2">
                     <p className="text-muted text-[13px]">{i18nT('pages.settings.sttSettings.then_restart_the_gateway_so_it_can_import_the_ne')}</p>
                     <RestartGatewayButton

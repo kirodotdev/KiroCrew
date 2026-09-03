@@ -26,11 +26,19 @@ from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.history import (
     _CONSOLIDATION_BACKOFF_BASE_SECS,
     _CONSOLIDATION_MAX_ATTEMPTS,
+    _SESSION_MAX_BYTES,
     ConversationLog,
     HistoryConsolidator,
 )
 
 KEY = "dashboard:chat-retry"
+
+# A row big enough that five of them exceed the rotation byte budget whatever it
+# is set to. Rotation on a handful of huge rows is driven by the byte-shrink loop,
+# not the line cap, so the workload has to be sized off the budget: a hardcoded
+# byte figure silently stops rotating when the budget is raised, and these tests
+# assert on a rotation having fired.
+_OVER_CAP_ROW_CHARS = _SESSION_MAX_BYTES // 3
 
 
 def _seed_log(tmp_path, key: str = KEY, count: int = 3) -> ConversationLog:
@@ -865,7 +873,7 @@ class TestRotationReleasesTheBudgetForNewContent:
             # Blow the byte budget so _maybe_rotate archives the failing messages
             # and bumps the generation itself.
             for i in range(5):
-                log.append(KEY, "user", f"{i}" * (600 * 1024))
+                log.append(KEY, "user", f"{i}" * _OVER_CAP_ROW_CHARS)
         assert log.get_metadata(KEY)["rotation_generation"] >= 1, "no rotation fired"
 
         with history_mod.allow_on_loop_persist():
@@ -905,7 +913,7 @@ class TestARotationDuringTheTurnStampsTheAttemptedSpan:
                 # Blow the byte budget so the real _maybe_rotate archives the
                 # attempted messages and bumps the generation mid-turn.
                 for i in range(5):
-                    log.append(KEY, "user", f"{i}" * (600 * 1024))
+                    log.append(KEY, "user", f"{i}" * _OVER_CAP_ROW_CHARS)
             assert log.get_metadata(KEY)["rotation_generation"] >= 1, (
                 "premise broken: no rotation fired during the turn"
             )

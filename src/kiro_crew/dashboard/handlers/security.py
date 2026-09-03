@@ -97,7 +97,7 @@ from kiro_crew.platform.governance_profiles import (
     resolve_active_scope,
     unknown_profile_scopes,
 )
-from kiro_crew.security import DENY_REASON_MATCH_PREFIX
+from kiro_crew.security import DENY_REASON_MATCH_PREFIX, edition_denied_rules
 
 logger = logging.getLogger(__name__)
 
@@ -197,6 +197,9 @@ def _denied_state(data: dict) -> dict:
         "disable_all": _coerce_bool(denied.get("disable_all", False), default=False),
         "disabled_ids": [i for i in disabled_ids if isinstance(i, str) and i],
         "user_added": list(user_added) if isinstance(user_added, list) else [],
+        # This function REBUILDS the object rather than passing it through, so an
+        # unlisted key is invisible to every consumer downstream. A new key must
+        # be added here or it silently does nothing.
     }
 
 
@@ -273,10 +276,28 @@ def build_denied_commands_snapshot() -> dict:
     floor_ids = floor_enforced_builtin_command_ids()
 
     builtins: list[dict] = []
-    for rule in builtin_denied_rules():
+    # Edition-contributed rules are listed in the SAME array so the panel's
+    # category grouping, counts and toggles work with no frontend change. They
+    # carry source="edition" so a consumer can tell them apart, and they are
+    # never pinned or floor-enforced: a governance pin resolves a pattern to a
+    # rule id against the static catalog only, so a pin cannot name one.
+    catalog: list[tuple[dict, bool]] = [(r, False) for r in builtin_denied_rules()]
+    catalog += [
+        (
+            {
+                "id": r.id,
+                "pattern": r.pattern,
+                "category": r.category,
+                "description": r.description,
+            },
+            True,
+        )
+        for r in edition_denied_rules()
+    ]
+    for rule, from_edition in catalog:
         rid = rule["id"]
-        is_pinned = rid in pinned
-        is_floor = rid in floor_ids
+        is_pinned = (not from_edition) and rid in pinned
+        is_floor = (not from_edition) and rid in floor_ids
         # Floor-enforced rules render forced-on even when the id somehow sits in
         # disabled_ids (state persisted before the toggle rejected it): the floor
         # consults no opt-out state, so honesty requires enabled=true.
@@ -299,6 +320,7 @@ def build_denied_commands_snapshot() -> dict:
                 "enabled": enabled,
                 "pinned": is_pinned,
                 "lock_reason": lock_reason,
+                "source": "edition" if from_edition else "builtin",
             }
         )
 
@@ -473,7 +495,11 @@ async def api_denied_commands_list(request: web.Request) -> web.Response:
 
 async def api_denied_command_builtin_toggle(request: web.Request) -> web.Response:
     """PATCH /api/security/denied-commands/builtins/{id} — {enabled: bool}."""
-    from kiro_crew.security import builtin_denied_rules, floor_enforced_builtin_command_ids
+    from kiro_crew.security import (
+        builtin_denied_rules,
+        edition_denied_rules,
+        floor_enforced_builtin_command_ids,
+    )
 
     op = "security.denied_commands.builtin_toggle"
     rule_id = request.match_info["id"]
@@ -491,7 +517,10 @@ async def api_denied_command_builtin_toggle(request: web.Request) -> web.Respons
         _audit(request, operation=op, outcome="denied", resources=f"{rule_id}=bad_type")
         return web.json_response({"error": "enabled must be a boolean"}, status=400)
 
-    if rule_id not in {r["id"] for r in builtin_denied_rules()}:
+    # Union the edition-contributed ids: a rule listed in the panel must be
+    # toggleable there, or the UI offers a switch the API 404s.
+    known_ids = {r["id"] for r in builtin_denied_rules()} | {r.id for r in edition_denied_rules()}
+    if rule_id not in known_ids:
         _audit(request, operation=op, outcome="denied", resources=f"{rule_id}=unknown")
         return web.json_response({"error": "unknown builtin rule"}, status=404)
 

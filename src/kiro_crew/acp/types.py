@@ -7,16 +7,26 @@ import re as _re
 from dataclasses import dataclass, field
 from typing import Any
 
-# Backend identifiers + the selectable registry live in the leaf module
+# Backend identifiers, the capability sets and the selectable registry live in the
+# leaf module
 # ``kiro_crew.acp_backends`` (it imports nothing from this package, which is what
 # lets the config loader and the dashboard read them). Re-exported here so every
 # existing ``from kiro_crew.acp.types import ACP_BACKEND_*`` call site is
 # unchanged — see the "ACP Backend Identifiers" section below for why they moved.
 from kiro_crew.acp_backends import (  # noqa: F401 - re-exported for existing importers
     ACP_BACKEND_CLAUDE,
+    ACP_BACKEND_CODEX,
     ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
+    ACP_BACKENDS_ACP_RUNTIME,
+    ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION,
+    ACP_BACKENDS_INTERNAL_SANDBOX,
+    ACP_BACKENDS_KIRO_IDENTITY_STORE,
+    ACP_BACKENDS_KIRO_SLASH_COMMANDS,
     ACP_BACKENDS_KNOWN,
+    ACP_BACKENDS_MODEL_VIA_CONFIG_OPTION,
+    ACP_BACKENDS_SESSION_SHARING,
+    ACP_BACKENDS_STEER,
     selectable_backends,
 )
 
@@ -132,71 +142,13 @@ ACP_CLIENT_CAPABILITIES: dict = {
 # extends (``register_selectable_backend``). A frozen ``ACP_BACKENDS_SELECTABLE``
 # snapshot here would be read before boot registration and silently miss it.
 
-# ── Capability membership (harness-parity H6, H7) ──
-# Every capability a backend may claim is an OPT-IN set here, never a negation at
-# the call site. ``not is_claude_backend`` reads correctly with two backends and
-# then silently hands the capability to the third, so a harness that has never
-# demonstrated the capability inherits it — and the operator who never opted into
-# that harness is the one who finds out. Adding a member is a deliberate edit
-# with evidence; inheriting a default is not a decision. See
-# docs/system-specs/modules/harness-parity.md.
-
-# Backends whose single process can host N concurrent ACP sessions (AcpRuntime
-# demux) AND can persist a SHARED subagent session across teardown. KAS runs on
-# AcpRuntime (multi-session), but its teardown maps to _kiro/session/delete,
-# which removes the persisted session — so a shared subagent would strand
-# spawn_continue (conversation_gone). KAS therefore opts in only once a
-# keep-aware teardown lands (native subagent work); until then its subagents get
-# dedicated sessions. claude-agent-acp runs through AcpClient (one process per
-# session) and is not a member.
-ACP_BACKENDS_SESSION_SHARING = frozenset({ACP_BACKEND_KIRO})
-
-# Backends implementing the ``_session/steer`` extension (mid-turn steer).
-ACP_BACKENDS_STEER = frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_KAS})
-
-# Backends carrying their OWN internal OS sandbox, which on macOS cannot nest
-# inside Kiro Crew's seatbelt (kernel EPERM) — so ``sandbox.wrap_argv`` skips
-# Crew's own layer for them. This is the one membership test that fails OPEN:
-# claiming it for a harness with no internal sandbox hands isolation to a layer
-# that never starts and leaves the agent process unconfined. Only kiro-cli
-# qualifies; a Node or Python harness does not, however it is spawned.
-#
-# KAS is NOT a member even though Crew now spawns it as ``kiro-cli acp
-# --agent-engine v3`` and the process on the end of the argv IS kiro-cli. The
-# relay spawns the KAS server without an ``--sandbox`` argument, and KAS's
-# sandbox factory resolves an absent config to its no-op backend, so no OS
-# sandbox starts inside — adding KAS here would skip Crew's seatbelt in favour of
-# a layer that does not exist. See :mod:`kiro_crew.acp.kas_transport`.
-ACP_BACKENDS_INTERNAL_SANDBOX = frozenset({ACP_BACKEND_KIRO})
-
-# Backends served by AcpRuntime + AcpSessionHandle — the kiro-agent family
-# (kiro-cli and KAS) whose single process hosts N sessions via demux.
-# claude-agent-acp runs one AcpClient per session and is NOT a
-# member. Membership drives the shared runtime start path and the kiro-family
-# spawn conventions: members read the cli.json effort/tool-search overlay and
-# receive effort at spawn, whereas claude applies it via a live push after the
-# session is ready. Stated as opt-in membership (harness-parity H5/H6) so the
-# four sites that mean "kiro or kas" say so positively rather than as
-# ``not is_claude_backend`` — an inference that silently captures every harness
-# added later. This is a SUPERSET of ACP_BACKENDS_SESSION_SHARING: running on
-# AcpRuntime is necessary for session sharing but not sufficient (KAS runs here
-# yet is excluded from sharing until keep-aware teardown lands).
-ACP_BACKENDS_ACP_RUNTIME = frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_KAS})
-
-# Backends whose sign-in lives in kiro-cli's OWN identity store, so an external
-# ``kiro-cli logout`` (or a switch to another account) invalidates a process that
-# is already running. Membership is what authorizes retiring a live session's
-# child when that store starts naming a different account: a harness
-# authenticated some other way must not be recycled on a store it never reads.
-# KAS is a member: it is spawned as ``kiro-cli acp --agent-engine v3
-# --auth-method cli`` (see :mod:`kiro_crew.acp.kas_transport`), and that
-# ``--auth-method cli`` is precisely the demonstration this set waits for — the
-# relay resolves every access token from kiro-cli's own store, so a logout that
-# invalidates the kiro backend invalidates a running KAS relay identically.
-# Excluding it would let a KAS session keep serving turns on the previous
-# account's credentials. Positive membership rather than "not claude"
-# (harness-parity H5).
-ACP_BACKENDS_KIRO_IDENTITY_STORE = frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_KAS})
+# ── Capability membership ──
+# The ``ACP_BACKENDS_*`` capability sets are DEFINED in the leaf module
+# ``kiro_crew.acp_backends`` and re-exported by the import above, so
+# ``from kiro_crew.acp.types import ACP_BACKENDS_STEER`` still resolves. They moved
+# for the same reason the backend identifiers did: a consumer outside this package
+# must be able to ask a capability question without importing ``kiro_crew.acp``,
+# whose ``__init__`` pulls in the client and runtime.
 
 # ── Provider labels ──
 # The backend identity key persisted in the session map. It indexes three
@@ -209,6 +161,7 @@ ACP_BACKENDS_KIRO_IDENTITY_STORE = frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_KAS}
 PROVIDER_LABEL_DEFAULT = "acp"
 PROVIDER_LABEL_CLAUDE = "claude_code"
 PROVIDER_LABEL_KAS = "kas"
+PROVIDER_LABEL_CODEX = "codex"
 
 # KAS reads only fs.readTextFile / fs.writeTextFile / terminal from the top
 # level of clientCapabilities; every other capability it honours lives under
@@ -510,13 +463,38 @@ class AcpEvent:
     # MCP OAuth notification fields (EVENT_MCP_OAUTH_REQUEST):
     server_name: str = ""
     oauth_url: str = ""
+    #: True when this text chunk is a backend CONTROL NOTICE that arrived as
+    #: ordinary assistant text -- today only the claude adapter's compaction
+    #: notices, which it emits as plain ``agent_message_chunk`` content with no
+    #: marker of any kind (see ``parse_claude_compaction_notice``).
+    #:
+    #: The chunk is still delivered, because classifying one is a GUESS about
+    #: prose and a layer that dropped it would turn any wrong guess into deleted
+    #: model output. This flag lets a consumer show the text while not counting it
+    #: as the turn's own ANSWER -- the distinction the dashboard needs to decide
+    #: whether a compacted turn still owes a reply. Recognition stays in the ACP
+    #: layer: a consumer that re-parsed the text would be re-deciding a protocol
+    #: question it does not own.
+    control_notice: bool = False
+    #: True when this event was SYNTHESIZED by the client rather than read off a
+    #: backend frame. Only the claude compaction terminal sets it: an automatic
+    #: compaction sends no terminal of its own, so one is manufactured once the
+    #: turn ends (``AcpClient._settle_claude_compaction``). A consumer that
+    #: treats a compaction terminal as a MID-TURN segment boundary must NOT do so
+    #: for a synthesized one -- it arrives after every text chunk of the turn, so
+    #: acting on it as a boundary discards whatever the backend produced after
+    #: compacting.
+    synthesized: bool = False
     # Native subagent list (EVENT_SUBAGENT_LIST) — kiro-cli per-subagent state.
     subagents: list[dict[str, Any]] | None = None
     #: True when the frame behind this event named no owner and was fanned out to
     #: several sessions on one runtime (see ``JsonRpcMessage.fanout_no_owner``).
     #: A consumer must not read such an event as ITS OWN activity -- it is
-    #: another tenant's traffic. Only the roster broadcast sets this today; the
-    #: same event kind reached through a routed ``session/update`` (the KAS
+    #: another tenant's traffic. Set by the roster broadcast (which never names
+    #: an owner) and by the MCP registration notifications when the frame did
+    #: not name this session -- a registration frame MAY carry a
+    #: ``params.sessionId``, and one that does is owned by the session it names.
+    #: The same event kind reached through a routed ``session/update`` (the KAS
     #: sub-agent lifecycle path) leaves it False, because that frame belongs to
     #: exactly one session.
     runtime_global: bool = False

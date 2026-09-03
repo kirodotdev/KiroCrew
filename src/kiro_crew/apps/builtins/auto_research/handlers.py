@@ -42,9 +42,9 @@ from kiro_crew.config.paths import data_home
 from kiro_crew.dashboard.chat_utils import (
     slot_history_key,
 )
-from kiro_crew.history import on_loop_persist_strict
 from kiro_crew.knowledge.llm_pool import LLMPool
 from kiro_crew.llm_helpers import _extract_json_of_type
+from kiro_crew.on_loop_db import OnLoopDBGuard
 from kiro_crew.platform_compat import is_link_or_junction, unlink_link_or_junction
 
 try:
@@ -203,48 +203,24 @@ def _safe_campaign_dir(campaign_id: str) -> Path | None:
 # --- Database ---
 
 
-class OnLoopDBError(RuntimeError):
-    """A campaigns-DB connection was opened on the event loop under strict mode."""
-
-
-_ON_LOOP_DB_WARN_INTERVAL_S = 60.0
-_on_loop_db_warn_last = 0.0
-
-
-def _check_on_loop_db_discipline() -> None:
-    """Enforce (strict) or diagnose (production) an on-loop ``_get_db`` entry.
-
-    Called at the top of :func:`_get_db`. No running event loop means the
-    caller is already off-loop (worker thread / executor / CLI) — the common,
-    correct case — and this is a no-op.
-    """
-    try:
-        asyncio.get_running_loop()
-    except RuntimeError:
-        return  # off-loop: the sanctioned path — nothing to flag
-    if on_loop_persist_strict():
-        raise OnLoopDBError(
-            "auto_research campaigns DB opened on the event loop; the 30s "
-            "busy timeout means one lock wait can stall the loop past the "
-            "watchdog budget and kill the gateway. Offload the DB section "
-            "(asyncio.to_thread / run_in_executor) like the surrounding "
-            "handlers do."
-        )
-    global _on_loop_db_warn_last
-    now = time.monotonic()
-    if now - _on_loop_db_warn_last >= _ON_LOOP_DB_WARN_INTERVAL_S:
-        _on_loop_db_warn_last = now
-        logger.warning(
-            "auto_research: _get_db() ran ON the event loop without "
-            "offloading; a contended write here blocks every task (including "
-            "the watchdog heartbeat) for up to 30s. Route it through "
-            "asyncio.to_thread / run_in_executor.",
-            stack_info=True,
-        )
+# The campaigns DB carries a 30s busy timeout, so one on-loop lock wait can
+# outlast the 25s loop-stall watchdog budget and kill the gateway. #7039
+# offloaded all six call sites and added this guard; it now uses the shared
+# implementation in ``kiro_crew.on_loop_db``. Defaults are deliberate: this
+# surface IS fully offloaded, so it stays on the shared
+# ``KIROCREW_STRICT_ON_LOOP_PERSIST`` switch (which the e2e harness exports) and
+# keeps the dev-mode arm, where a raise means genuinely new drift.
+_ON_LOOP_DB_GUARD = OnLoopDBGuard(
+    label="auto_research campaigns DB",
+    remedy=(
+        "Offload the DB section (asyncio.to_thread / run_in_executor) like the "
+        "surrounding handlers do."
+    ),
+)
 
 
 def _get_db() -> sqlite3.Connection:
-    _check_on_loop_db_discipline()
+    _ON_LOOP_DB_GUARD.check()
     dbp = db_path()
     dbp.parent.mkdir(parents=True, exist_ok=True)
     # Explicit 30s busy timeout (vs the 5s driver default). The research worker
@@ -443,7 +419,7 @@ def _campaign_model(config: dict) -> str:
 
     Availability is NOT screened here: no advertised-model list exists outside a
     live session. If the pick stops being served, the session layer's withhold
-    (``_pinned_model_withheld`` in chat_runner) KEEPS the pin, runs the worker on
+    (``_pinned_model_verdict`` in chat_runner) KEEPS the pin, runs the worker on
     the backend default, and posts a notice card — but that card lands in the
     app-owned ``research-<cid>`` transcript, which the Research Lab page does not
     render, so the fallback is not visible on this app's own surfaces.
@@ -1797,7 +1773,7 @@ async def _launch_loop(request: web.Request, cid: str, *, prepared: bool = False
     # Pin the campaign's explicit model pick on the worker slot ('' = inherit
     # the research agent's / backend's default resolution — never a hardcoded
     # id here). If a concrete pick is not served for this account, the session
-    # layer's withhold (_pinned_model_withheld) KEEPS the pin and runs the
+    # layer's withhold (_pinned_model_verdict) KEEPS the pin and runs the
     # worker on the backend default — the notice it posts lands in the hidden
     # research-<cid> transcript, not on the Research Lab page.
     campaign_model = row["model"] or ""
@@ -3373,8 +3349,11 @@ async def _handle_to_knowledge(request: web.Request) -> web.Response:
     # The Knowledge Library is an external surface (RAG/search), so even the
     # source name metadata must be redacted before ingestion — matching the
     # treatment _handle_to_artifact applies to its artifact name.
+    # Redact the question WHOLE, then bound: cutting first can split a
+    # credential at the 60-char boundary into fragments no redaction regex
+    # matches, leaking it into the Knowledge Library source name.
     name = (
-        f"Research: {_redact_finding({'v': row['question'][:60]})['v']}"
+        f"Research: {_redact_finding({'v': row['question']})['v'][:60]}"
         if row
         else f"Research: {cid}"
     )

@@ -38,14 +38,20 @@ Framework **pushes** activities to a messaging endpoint you host. Kiro Crew:
 
   The gateway itself speaks HTTP, so something must terminate TLS in front of it;
   Teams will not deliver to a non-HTTPS endpoint.
-- The Teams extra installed (for inbound JWT validation):
+- The JWT dependency installed (for inbound token validation), in the
+  environment that runs the gateway:
 
   ```bash
-  pip install "kirocrew[teams]"
+  pip install "PyJWT[crypto]==2.13.0"
   ```
 
-  If the channel is enabled without this extra, Kiro Crew logs an actionable
-  error and skips Teams (the rest of the gateway still starts).
+  This is the whole of the `teams` extra. Installing the dependency directly is
+  the form that works on every layout: Kiro Crew is not published on PyPI, so
+  `pip install "kirocrew[teams]"` cannot resolve, and the direct-URL form below
+  reinstalls Kiro Crew itself rather than just adding the dependency.
+
+  If the channel is enabled without it, Kiro Crew logs an actionable error and
+  skips Teams (the rest of the gateway still starts).
 
  > [!NOTE]
  > The error `invalid-egg-fragment` occurs because modern `pip` (v22+) deprecated and removed support for using `#egg=package_name[extra]` in direct Git URLs.

@@ -56,7 +56,7 @@ describe('SkillPickerMenu — deduping onto ChatInput\'s in-flight prefetch', ()
     await waitFor(() => expect(mockApi.skills).toHaveBeenCalled())
     const onSelect = vi.fn()
     render(<Harness client={qc} query="grill" onSelect={onSelect} />)
-    await waitFor(() => expect(screen.queryByText('Loading skills…')).not.toBeInTheDocument())
+    await waitFor(() => expect(screen.queryByText(/Loading skills…/)).not.toBeInTheDocument())
     await waitFor(() => expect(fireEvent.keyDown(document, { key: 'Enter' })).toBe(true))
     expect(onSelect).not.toHaveBeenCalled()
     // One call, not two: proof the dedupe happened rather than two independent

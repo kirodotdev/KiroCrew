@@ -78,6 +78,48 @@
     "description": "Blocks `wget` to the 169.254.169.254 instance metadata service (IMDS), a classic path to steal EC2 role credentials."
   },
   {
+    "id": "credential-exfil-imds-any",
+    "pattern": ".*169\\.254\\.169\\.254.*",
+    "category": "credential-exfil",
+    "description": "Blocks reaching the instance metadata service by ANY verb and ANY IP encoding (decimal, hex, octal, IPv6-mapped, and the fd00:ec2::254 endpoint) — the curl/wget rules above only cover those two verbs and the literal dotted quad."
+  },
+  {
+    "id": "data-exfil-curl-file-body",
+    "pattern": ".*curl.*--?data(-binary|-ascii|-urlencode)?[= ]@.*",
+    "category": "credential-exfil",
+    "description": "Blocks a `curl` request whose body is read from a LOCAL FILE (`-d @file` and every --data variant), the tell-tale shape of pushing local data out to a remote."
+  },
+  {
+    "id": "data-exfil-curl-multipart-upload",
+    "pattern": ".*curl.*(-F|--form)\\s*\\S*=@.*",
+    "category": "credential-exfil",
+    "description": "Blocks a `curl` multipart upload that attaches a local file (`-F field=@file`), for any field name."
+  },
+  {
+    "id": "data-exfil-curl-upload",
+    "pattern": ".*curl.*(--upload-file|(^|\\s)-T\\s*\\S).*",
+    "category": "credential-exfil",
+    "description": "Blocks a `curl` file upload (`--upload-file` / `-T file`), which sends a local file to a remote endpoint."
+  },
+  {
+    "id": "data-exfil-wget-post-file",
+    "pattern": ".*wget.*--post-file.*",
+    "category": "credential-exfil",
+    "description": "Blocks `wget --post-file`, which posts the contents of a local file to a remote endpoint."
+  },
+  {
+    "id": "data-exfil-nc-file-redirect",
+    "pattern": ".*(^|\\s)nc(at)?\\s+\\S.*<.*",
+    "category": "credential-exfil",
+    "description": "Blocks piping a local file into `nc`/`ncat` via input redirection, a plain-socket way to ship data off the host."
+  },
+  {
+    "id": "reverse-shell-devtcp",
+    "pattern": ".*/dev/(tcp|udp)/.*",
+    "category": "reverse-shell",
+    "description": "Blocks bash's /dev/tcp and /dev/udp pseudo-devices, which open a raw socket to a remote host without any external tool — the classic dependency-free reverse shell."
+  },
+  {
     "id": "credential-exfil-curl-aws-secret",
     "pattern": ".*curl.*\\$AWS_SECRET.*",
     "category": "credential-exfil",
@@ -490,6 +532,12 @@
     "pattern": ".*git\\s+(-\\S+\\s+[^-]\\S*\\s+|-\\S+\\s+)*push\\s+\\S+\\s*$",
     "category": "git-publish",
     "description": "Blocks 'git push <remote>' with a single argument (no branch), which pushes to the configured upstream and can publish to a protected branch unattended."
+  },
+  {
+    "id": "git-publish-push-ambiguous-ref",
+    "pattern": ".*git\\s+(-\\S+\\s+[^-]\\S*\\s+|-\\S+\\s+)*push\\s+.*[\\s:]\\+?(head|@|fetch_head)(\\s.*|$)",
+    "category": "git-publish",
+    "description": "Blocks 'git push' whose destination is a symbolic ref that resolves at run time (HEAD, @, FETCH_HEAD) — if the checked-out branch is a protected one, this publishes to it, and the target cannot be verified before the push runs."
   },
   {
     "id": "git-publish-push-protected-branch-name",

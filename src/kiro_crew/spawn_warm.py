@@ -57,4 +57,7 @@ async def warm_project_agents_for_spawn(state: Any, cwd: str) -> None:
     else:
         warm_dir = str(getattr(state.sessions, "_pool_cwd", "") or "")
     if warm_dir:
-        await warm_project_agent_names(warm_dir)
+        # Spawns arrive from several channels (dashboard, slack, cron, ...), so
+        # the channel is genuinely unknown here; the operation still names the
+        # surface that triggered the scan (#6764).
+        await warm_project_agent_names(warm_dir, operation="spawn_warm", source="unknown")

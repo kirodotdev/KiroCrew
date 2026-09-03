@@ -172,6 +172,7 @@ describe('destructive confirmations are translated', () => {
 export const QUOTED_OPERAND_CONFIRM_KEYS = [
   'apps.awsControl.console.delete_confirm', // filename operand, quoted per locale
   'apps.awsControl.console.folder_delete_confirm', // folder-name operand, quoted per locale #4821
+  'apps.awsControl.console.library_remove_confirm', // artifact-name operand, quoted per locale #6987
   'apps.codeReviewSage.components.learningRail.confirm_delete', // quoted since #4653
   'apps.crewCompanion.gallery.deleteConfirm', // ASCII quotes → locale pair #4821
   'apps.mdNotebook.row.deleteTitle', // already quoted; pin + fr NNBSP fix #5725
@@ -202,6 +203,7 @@ export const QUOTED_OPERAND_CONFIRM_KEYS = [
   'pages.devFleetPage.make_name_live', // ASCII quotes → locale pair #5725
   'pages.devFleetPage.rebase_name', // ASCII quotes → locale pair #5725
   'pages.devFleetPage.remove_name', // ASCII quotes → locale pair #5725
+  'pages.overview.promptsTab.delete_confirm', // quoted in all catalogs at introduction (#4634)
   'pages.overview.skillsTab.delete_confirm',
   'pages.overview.skillsTab.dismiss_confirm',
   'pages.overview.steeringTab.delete_confirm',
@@ -248,6 +250,10 @@ export const EXEMPT_CONFIRM_PLACEHOLDER_NAMES = new Set([
  * kind-word form and record that decision.
  */
 export const CONFIRM_OPERAND_KEY_EXEMPTIONS: Record<string, string> = {
+  'apps.awsControl.console.library_remove_confirm_slug':
+    'the {{folder}} operand is an S3 key prefix rendered inside a <folder> tag as a '
+    + 'monospace <code> chip, so the tag already delimits it and glyph quotes would '
+    + 'double-decorate a path whose own slashes are the delimiter a reader checks',
   'apps.mochi.approval.inline_ask':
     'the {{tool}} operand renders as a styled <code> chip via renderAroundTool, '
     + 'so glyph quotes would double-decorate it (#5725)',

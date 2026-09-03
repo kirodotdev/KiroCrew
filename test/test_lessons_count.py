@@ -27,7 +27,9 @@ def _make_state(
 
     if has_vector_store:
         ctx = MagicMock()
-        ctx.memory.vector_store.get_lessons.return_value = vector_lessons or []
+        # _count_lessons uses the O(1) COUNT(*) accessor, not get_lessons(),
+        # so the status paths never materialize the lesson corpus for a count.
+        ctx.memory.vector_store.count_lessons.return_value = len(vector_lessons or [])
         state.context_builder = ctx
     else:
         state.context_builder = None
@@ -50,8 +52,10 @@ class TestCountLessons:
 
     def test_both_jsonl_and_vector_store(self):
         """Sum of JSONL + vector store lessons."""
-        jsonl = [Lesson(ts="", rule="a", category="knowledge"),
-                 Lesson(ts="", rule="b", category="tool")]
+        jsonl = [
+            Lesson(ts="", rule="a", category="knowledge"),
+            Lesson(ts="", rule="b", category="tool"),
+        ]
         vs = [{"rule": "c"}, {"rule": "d"}, {"rule": "e"}]
         state = _make_state(jsonl_lessons=jsonl, vector_lessons=vs)
         assert state._count_lessons() == 5
@@ -74,3 +78,27 @@ class TestCountLessons:
         state = _make_state(vector_lessons=vs_lessons)
         snap = state.status_snapshot(lessons=42)
         assert snap["lessons"] == 42
+
+
+class TestVectorStoreCountLessons:
+    def test_count_lessons_matches_get_lessons_on_a_real_store(self, tmp_path):
+        """Executes the real SQL (every other test stubs it): the COUNT(*)
+        predicate must agree with ``get_lessons`` — same ``is_deleted = 0``
+        filter and same ``key LIKE 'lesson.%'`` scope — including after a
+        soft-delete. A predicate typo here would silently drift the Overview
+        card from the lessons page forever, with a green mock-only suite.
+        """
+        from kiro_crew.vector_memory import VectorMemoryStore
+
+        store = VectorMemoryStore(db_path=tmp_path / "mem.db")
+        store.init()
+        for i in range(3):
+            store.set_semantic(f"lesson.rule_{i}", f"rule {i}", 1.0, "user_explicit")
+        # Non-lesson row: must not be counted by either accessor.
+        store.set_semantic("pref.os", "linux", 0.9, "user_explicit")
+
+        assert store.count_lessons() == len(store.get_lessons()) == 3
+
+        # Soft-delete one lesson: both accessors must drop it.
+        assert store.delete_semantic("lesson.rule_0", "user_explicit")
+        assert store.count_lessons() == len(store.get_lessons()) == 2

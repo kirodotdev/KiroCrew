@@ -14,9 +14,11 @@ from __future__ import annotations
 import json
 import logging
 import os
+from pathlib import Path
 from typing import Any
 
 from kiro_crew import platform_compat
+from kiro_crew.apps.builtins.ops_mission_control.backend.models import CorruptDocumentError
 from kiro_crew.apps.manager import app_data_dir
 from kiro_crew.atomic_write import atomic_write
 
@@ -71,14 +73,101 @@ class _ConfigLock:
                 self._fd = None
 
 
+def _config_path() -> Path:
+    return app_data_dir(APP_NAME) / CONFIG_FILENAME
+
+
 def read_config() -> dict[str, Any]:
-    """Non-secret app config, or ``{}`` when absent/corrupt."""
-    path = app_data_dir(APP_NAME) / CONFIG_FILENAME
+    """Non-secret app config, or ``{}`` when absent/corrupt.
+
+    A DISPLAY/LOOKUP read: every accessor below it resolves to the caller's
+    default, so an unreadable config reads as "nothing configured" and an adapter
+    that needs a value stays disabled rather than 500ing the Settings page. See
+    :func:`_read_config_for_update` for why a writer may not stand on the same
+    answer.
+
+    An absent file is silent -- that is a fresh install, not a fault. Anything else
+    is logged, because this degradation is the quietest one in the app: every
+    provider stops polling while their credentials stay in the keystone store, so
+    Settings still shows each one as configured and nothing reports that the app
+    has gone deaf.
+    """
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (FileNotFoundError, OSError, json.JSONDecodeError):
+        data = json.loads(_config_path().read_text(encoding="utf-8"))
+    except FileNotFoundError:
         return {}
-    return data if isinstance(data, dict) else {}
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+        logger.warning(
+            "ops-mission-control: app config unreadable; every provider will read as "
+            "unconfigured and polling will stop",
+            exc_info=True,
+        )
+        return {}
+    if isinstance(data, dict):
+        return data
+    # A non-object root (`[]`, a bare string, `null`) parses fine, so no handler above fires
+    # -- and this branch answered `{}` in silence while the docstring above promised
+    # "anything else is logged". Worse than an ordinary stale comment: the sentence it
+    # contradicts is the one arguing that THIS degradation must not be quiet, because every
+    # provider stops polling while Settings still shows them configured. Found in review
+    # (GPT 5.6). The index display read grew the same warning a head earlier; this is its twin.
+    logger.warning(
+        "ops-mission-control: app config root is not an object; every provider will read as "
+        "unconfigured and polling will stop",
+    )
+    return {}
+
+
+def _read_config_for_update() -> dict[str, Any]:
+    """The config a read-modify-write is allowed to publish over.
+
+    ``merge_provider_config`` and ``set_top_level`` both rewrite the WHOLE file
+    from what they read -- the merge is per-FIELD within one provider slot, not
+    per-file -- so an empty base is not "nothing to carry forward", it is "drop
+    every other provider's configuration and every top-level key". Only a MISSING
+    file makes that true; an unreadable one (a transient EACCES/EIO, a scanner
+    holding the handle on Windows) is config we still have.
+
+    The loss is quiet and it disables detection: ``provider_enabled`` defaults to
+    ``False``, so a wiped config does not error, it just stops polling every
+    provider the operator had switched on -- while their tokens remain in the
+    keystone store, so the Settings page still shows each provider as
+    credentialed. The operator is left with an app that reports no signals and
+    looks configured.
+
+    Corruption propagates too -- the same deliberate divergence from the four merged
+    siblings of this idiom that :func:`store._read_index_for_update` explains. A
+    half-written or hand-broken config still names every provider the operator
+    enabled; replacing it discards that and leaves them re-entering settings they
+    already chose. Refusing surfaces the corruption instead.
+    """
+    try:
+        data = json.loads(_config_path().read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return {}
+    except json.JSONDecodeError as exc:
+        # Re-raised as the named type so every refusal from this reader is one
+        # `CorruptDocumentError` regardless of which door it came through. See the matching
+        # clause in `store._read_index_for_update` for the reasoning.
+        raise CorruptDocumentError(exc.msg, exc.doc, exc.pos) from exc
+    except UnicodeDecodeError as exc:
+        # Not valid UTF-8, so `json.loads` never runs. `UnicodeDecodeError` is a `ValueError`
+        # but not a `JSONDecodeError`, so unwrapped it would slip past every corruption clause
+        # into the tolerant arms and be swallowed. Found in review (GPT 5.6).
+        raise CorruptDocumentError(
+            f"app config is not valid UTF-8: {exc.reason}",
+            exc.object.decode("utf-8", "replace")[:120],
+            0,
+        ) from exc
+    if not isinstance(data, dict):
+        # Valid JSON that is not an object -- `[]`, a bare string, `null` -- parses without
+        # raising, so normalizing it to `{}` here would let the mutation rewrite the whole
+        # file from empty and destroy a config nobody could read. That is the same loss this
+        # reader exists to prevent, reached without a parse failure. Reported as a decode
+        # error because the document IS unusable, and because every caller already routes
+        # that correctly. Found in review (GPT 5.6).
+        raise CorruptDocumentError("app config root is not a JSON object", str(data)[:120], 0)
+    return data
 
 
 def provider_config(provider_id: str) -> dict[str, Any]:
@@ -164,7 +253,7 @@ def write_config(payload: dict[str, Any]) -> None:
     ``secrets.py``; the route layer rejects any key that looks secret-bearing
     before calling this.
     """
-    path = app_data_dir(APP_NAME) / CONFIG_FILENAME
+    path = _config_path()
     atomic_write(path, json.dumps(payload, indent=2, sort_keys=True))
 
 
@@ -174,15 +263,35 @@ def merge_provider_config(provider_id: str, updates: dict[str, Any]) -> dict[str
     Returns the provider's resulting config. A merge rather than a replace so a
     settings form that submits only the field it changed cannot silently drop the
     rest of the provider's configuration.
+
+    Raises ``OSError`` when the existing config could not be read; see
+    :func:`_read_config_for_update` for why that is not collapsed to an empty
+    document here, which would drop every OTHER provider's slot -- the same loss
+    the per-field merge exists to prevent, one level up.
     """
     with _ConfigLock():
-        config = read_config()
+        config = _read_config_for_update()
         providers = config.get("providers")
-        if not isinstance(providers, dict):
+        if providers is None:
             providers = {}
+        elif not isinstance(providers, dict):
+            # The per-slot half of the wrong-shape door, and it was still open: the strict
+            # read refuses a bad ROOT, but a valid-JSON config whose `providers` key is a
+            # list or a string was normalized to `{}` right here -- and since this function
+            # rewrites the whole file, that wiped every provider slot on the next merge.
+            # Exactly the loss `_coerce_index(strict=True)` closed on the index side, one
+            # level down. Found in review (Design Review), which noticed the description
+            # claimed per-row refusal while the config only had it at the root.
+            raise CorruptDocumentError(
+                "app config 'providers' is not an object", str(providers)[:120], 0
+            )
         slot = providers.get(provider_id)
-        if not isinstance(slot, dict):
+        if slot is None:
             slot = {}
+        elif not isinstance(slot, dict):
+            raise CorruptDocumentError(
+                f"app config slot {provider_id!r} is not an object", str(slot)[:120], 0
+            )
         slot.update(updates)
         providers[provider_id] = slot
         config["providers"] = providers
@@ -191,8 +300,12 @@ def merge_provider_config(provider_id: str, updates: dict[str, Any]) -> dict[str
 
 
 def set_top_level(key: str, value: Any) -> None:
-    """Set one non-provider config key (autonomy mode, tuning, primary flag)."""
+    """Set one non-provider config key (autonomy mode, tuning, primary flag).
+
+    Raises ``OSError`` when the existing config could not be read, for the reason
+    :func:`_read_config_for_update` gives.
+    """
     with _ConfigLock():
-        config = read_config()
+        config = _read_config_for_update()
         config[key] = value
         write_config(config)

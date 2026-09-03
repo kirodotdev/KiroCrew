@@ -300,6 +300,32 @@ class TestSetProjectApplier:
         assert slot.project == "/existing/project"
 
     @pytest.mark.asyncio
+    async def test_data_home_overlap_refused_without_mutating_slot(self, tmp_path, monkeypatch):
+        """#7392 pre-flight on the directive path: set_project routes here
+        in-process (never through the HTTP endpoint), so the overlap check
+        must also live here or the refusal regresses to spawn time on every
+        channel surface (FP review round 1). Patched on the source module —
+        _set_project imports it lazily from kiro_crew.sandbox."""
+        slot = _FakeSlot(project="/existing/project")
+        state = _FakeState()
+        monkeypatch.setattr(
+            "kiro_crew.sandbox.voice_runtime_workspace_conflict",
+            lambda *a, **k: "macOS agent workspace overlaps the protected voice runtime",
+        )
+        result = await apply_session_directive(
+            state,
+            slot,
+            slot.key,
+            "set_project",
+            {"project": str(tmp_path), "clear": False},
+            producer_is_user_facing=True,
+        )
+        assert result.startswith("Error:")
+        assert "voice runtime" in result
+        # Load-bearing: the slot was NOT repointed to the overlapping path.
+        assert slot.project == "/existing/project"
+
+    @pytest.mark.asyncio
     async def test_clear_empties_project(self, tmp_path):
         slot = _FakeSlot(project=str(tmp_path))
         state = _FakeState()

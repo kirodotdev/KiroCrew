@@ -1416,6 +1416,20 @@ def test_no_name_based_filesystem_question_where_a_descriptor_is_held() -> None:
                 # Reading a descriptor's own metadata is by definition not name-based.
                 if isinstance(fn.value, ast.Name) and fn.value.id.endswith("_fd"):
                     continue
+                # An `os.DirEntry` yielded by `os.scandir(<fd>)` is also not a name-based
+                # question, and this is the second naming convention the ratchet reads
+                # (`_fd` is the first): a receiver called `entry`, or ending `_entry`, must
+                # be one. CPython keeps the iterator's DESCRIPTOR on each entry and stats
+                # through it -- `entry.path` is the bare name and the stat still answers
+                # from a working directory the name does not exist in, which
+                # `test_a_direntry_from_a_descriptor_scan_stats_through_it` pins rather
+                # than leaving as a comment. The alternative form the ratchet would accept,
+                # `os.stat(entry.name, dir_fd=fd)`, asks the kernel the same question and
+                # costs one extra syscall per entry on trees with six figures of them.
+                if isinstance(fn.value, ast.Name) and (
+                    fn.value.id == "entry" or fn.value.id.endswith("_entry")
+                ):
+                    continue
                 offenders.append(f"{module}:{node.lineno} -> .{fn.attr}()")
 
     assert not offenders, (

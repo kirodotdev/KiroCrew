@@ -321,5 +321,107 @@ class TestPersistence(_HomeIsolated):
         self.assertEqual(reread.blocked_reason, BLOCKED_ON_APPROVAL)
 
 
+class TestReconcileKeepsItsTolerantContract(_HomeIsolated):
+    """`reconcile` is a background truth-sync, so it must survive what the store refuses.
+
+    The store's mutation base is now strict: `transition` reads the index for update and
+    RAISES rather than publishing over a read it could not make. That is right for the
+    store and wrong to let escape here -- reconciliation's whole job is to survive a mess,
+    and it already skips illegal transitions and lost races by returning `None`.
+
+    Tolerating the refusal is safe BECAUSE the store refused: the mutation was abandoned
+    before writing, so the incident keeps the status it already had, which is exactly what
+    `None` already means to every caller. The next reconcile pass retries from a clean
+    read. Found in review (GPT 5.6), whose suggested remedy was to revert the strict
+    reader -- that would restore the silent-truncation bug, so the tolerance was moved to
+    the caller that wants it instead.
+
+    On WHY these stub `store.transition` rather than making the file unreadable: `reconcile`
+    looks the incident up through `store.get_incident`, which goes through the LENIENT
+    `read_index`. So a fully unreadable index makes that lookup answer `None` and the
+    function returns before `transition` is ever called -- a file-level fault cannot reach
+    the path under test, and a test written that way passes without exercising it (mine did,
+    until the mutation probe caught it). The reachable window is the transient one GPT
+    named: the lookup succeeds, then `transition`'s own for-update read fails. Stubbing the
+    write to raise is that window, exactly.
+    """
+
+    @staticmethod
+    def _refusing_write(*_a, **_kw):
+        raise PermissionError(13, "Permission denied")
+
+    def test_a_refused_transition_skips_the_reconcile_instead_of_raising(self):
+        from unittest import mock
+
+        from kiro_crew.apps.builtins.ops_mission_control.backend import slot_watch, store
+        from kiro_crew.apps.builtins.ops_mission_control.backend.models import (
+            STATUS_NEEDS_HUMAN,
+        )
+
+        inc = self._claim()
+        # A slot that really derives a change, so the reconcile reaches `transition`.
+        # Asserted rather than assumed: a shape that derived nothing would make this
+        # test pass without exercising the path at all.
+        slot = {"pending_approval": True}
+        derived, _ = slot_watch.derive_status(inc, slot)
+        self.assertEqual(derived, STATUS_NEEDS_HUMAN, "premise: this slot derives a change")
+
+        with mock.patch.object(store, "transition", self._refusing_write):
+            self.assertIsNone(
+                slot_watch.reconcile(inc.incident_id, slot),
+                "a refused transition must skip the reconcile, not raise out of it",
+            )
+
+    def test_the_incident_keeps_the_status_it_already_had(self):
+        """The durable half: a skipped reconcile must not have changed anything."""
+        from unittest import mock
+
+        from kiro_crew.apps.builtins.ops_mission_control.backend import slot_watch, store
+
+        inc = self._claim()
+        before = inc.status
+
+        with mock.patch.object(store, "transition", self._refusing_write):
+            slot_watch.reconcile(inc.incident_id, {"pending_approval": True})
+
+        after = store.get_incident(inc.incident_id)
+        assert after is not None
+        self.assertEqual(after.status, before, "a skipped reconcile changed the incident")
+
+    def test_a_corrupt_index_is_refused_rather_than_tolerated(self):
+        """The deliberate asymmetry: EACCES is tolerated here, corruption is not.
+
+        The difference is persistence. An unreadable index is transient -- the next
+        reconcile probably succeeds, so skipping one status sync costs nothing. A
+        corrupt index fails identically on every future reconcile until a person fixes
+        the file, so tolerating it means this instance quietly stops syncing status
+        forever while the board still renders.
+
+        `JSONDecodeError` subclasses `ValueError`, which the tolerant clause already
+        catches for the unrelated illegal-transition case -- so without an explicit
+        clause the two failure modes would share one handler and corruption would be
+        filed under "we lost a race" at debug level. This pins that they do not.
+
+        Stubbed rather than driven from a corrupt file for the same reason as the
+        `OSError` tests above: `reconcile` looks the incident up through the LENIENT
+        `read_index`, which answers empty on a corrupt file, so the function returns
+        before `transition` is reached. The reachable window is the transient one --
+        the lookup parses, then the write's own read meets the corruption.
+        """
+        import json
+        from unittest import mock
+
+        from kiro_crew.apps.builtins.ops_mission_control.backend import slot_watch, store
+
+        inc = self._claim()
+
+        def _corrupt(*_a, **_kw):
+            raise json.JSONDecodeError("Expecting value", "{ not json", 2)
+
+        with mock.patch.object(store, "transition", _corrupt):
+            with self.assertRaises(json.JSONDecodeError):
+                slot_watch.reconcile(inc.incident_id, {"pending_approval": True})
+
+
 if __name__ == "__main__":
     unittest.main()

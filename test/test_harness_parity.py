@@ -20,6 +20,7 @@ import os
 import subprocess
 import sys
 from dataclasses import fields
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -28,6 +29,7 @@ from kiro_crew.acp import client as acp_client
 from kiro_crew.acp import runtime as acp_runtime
 from kiro_crew.acp.types import (
     ACP_BACKEND_CLAUDE,
+    ACP_BACKEND_CODEX,
     ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
     ACP_BACKENDS_ACP_RUNTIME,
@@ -38,10 +40,14 @@ from kiro_crew.acp.types import (
     ACP_CLIENT_CAPABILITIES,
     KAS_CLIENT_CAPABILITIES,
     PROVIDER_LABEL_CLAUDE,
+    PROVIDER_LABEL_CODEX,
     PROVIDER_LABEL_DEFAULT,
     PROVIDER_LABEL_KAS,
 )
 from kiro_crew.acp_backends import (
+    ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION,
+    ACP_BACKENDS_KIRO_SLASH_COMMANDS,
+    ACP_BACKENDS_MODEL_VIA_CONFIG_OPTION,
     BASELINE_SELECTABLE_BACKENDS,
     selectable_backends,
 )
@@ -377,6 +383,7 @@ def test_every_known_backend_has_a_label() -> None:
         ACP_BACKEND_KIRO: PROVIDER_LABEL_DEFAULT,
         ACP_BACKEND_CLAUDE: PROVIDER_LABEL_CLAUDE,
         ACP_BACKEND_KAS: PROVIDER_LABEL_KAS,
+        ACP_BACKEND_CODEX: PROVIDER_LABEL_CODEX,
     }
     assert set(labels) == set(ACP_BACKENDS_KNOWN), (
         "a known backend has no PROVIDER_LABEL_* of its own, so it would persist "
@@ -384,6 +391,155 @@ def test_every_known_backend_has_a_label() -> None:
         "providers.acp.provider_label"
     )
     assert len(set(labels.values())) == len(labels), "two backends share a label"
+
+
+def test_codex_is_known_but_not_shipped_selectable() -> None:
+    """H1/H8: a switch a build cannot answer for must not be offered by default.
+
+    This is not the stance ``claude`` has: claude is baseline-selectable because
+    ``client.py`` owns its spawn path and its adapter is a public npm package —
+    both true of codex now too. What codex still lacks is the other half,
+    ``backend_install.py``'s probe: without one its install row can only read
+    ``unknown``, so a failed session arrives with nothing to act on.
+    ``register_selectable_backend`` is the way in until that probe lands.
+    """
+    assert ACP_BACKEND_CODEX in ACP_BACKENDS_KNOWN
+    assert ACP_BACKEND_CODEX not in BASELINE_SELECTABLE_BACKENDS
+    assert ACP_BACKEND_CODEX not in selectable_backends()
+
+
+def test_codex_carries_its_own_provider_label() -> None:
+    """H11: the label is what keeps a codex session out of the kiro namespace.
+
+    Resume compatibility, session-map persistence and session-file cleanup all index
+    this key, so a codex session labelled ``acp`` would be resumed as kiro and then
+    pruned for want of a kiro transcript.
+    """
+    client = MagicMock()
+    client.backend = ACP_BACKEND_CODEX
+    provider = MagicMock(spec=providers_acp.AcpProvider)
+    provider.client = client
+    assert providers_acp.provider_label(provider) == PROVIDER_LABEL_CODEX
+    assert PROVIDER_LABEL_CODEX != PROVIDER_LABEL_DEFAULT
+
+
+def test_model_switch_channel_is_opt_in() -> None:
+    """H6: the config-option model channel is granted by membership, not negation.
+
+    kiro-cli switches models with ``session/set_model``; the claude and codex
+    adapters implement no such request and expose the model as a session config
+    option instead. Read as ``not is_kiro`` this would hand the config-option path
+    to every harness added later, and a harness that implements neither would
+    silently no-op its model switch.
+    """
+    assert ACP_BACKEND_CLAUDE in ACP_BACKENDS_MODEL_VIA_CONFIG_OPTION
+    assert ACP_BACKEND_CODEX in ACP_BACKENDS_MODEL_VIA_CONFIG_OPTION
+    assert ACP_BACKEND_KIRO not in ACP_BACKENDS_MODEL_VIA_CONFIG_OPTION
+    assert ACP_BACKENDS_MODEL_VIA_CONFIG_OPTION <= ACP_BACKENDS_KNOWN
+    source = "\n".join(
+        (
+            inspect.getsource(acp_client.AcpClient.set_model),
+            inspect.getsource(acp_client.AcpClient._apply_startup_model),
+        )
+    )
+    assert (
+        "ACP_BACKENDS_MODEL_VIA_CONFIG_OPTION" in source
+    ), "the model switch must read the membership set, not a per-backend literal"
+
+
+def test_effort_channel_is_opt_in() -> None:
+    """H6: the effort channel is granted by membership, not by "not claude".
+
+    The two channels are separate opt-ins because a harness can have neither. Read
+    as ``not is_claude_backend``, an adapter harness is handed kiro's ``/effort``
+    slash command, which rides ``_kiro.dev/commands/execute`` — a verb it does not
+    implement — so the push fails -32601 and the dashboard resets the session.
+    """
+    assert ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION <= ACP_BACKENDS_KNOWN
+    assert ACP_BACKENDS_KIRO_SLASH_COMMANDS <= ACP_BACKENDS_KNOWN
+    # Disjoint: a harness must not be told to push effort down both channels.
+    assert not (ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION & ACP_BACKENDS_KIRO_SLASH_COMMANDS)
+    assert ACP_BACKEND_KIRO in ACP_BACKENDS_KIRO_SLASH_COMMANDS
+    assert ACP_BACKEND_CODEX in ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION
+    assert ACP_BACKEND_CODEX not in ACP_BACKENDS_KIRO_SLASH_COMMANDS
+    source = "\n".join(
+        (
+            inspect.getsource(providers_acp.AcpProvider.change_effort),
+            inspect.getsource(providers_acp.AcpProvider.clear_effort),
+            inspect.getsource(providers_acp.AcpProvider._apply_effort_overlay),
+            inspect.getsource(providers_acp.AcpProvider._apply_tool_search_overlay),
+            inspect.getsource(providers_acp.AcpProvider.stream_command),
+        )
+    )
+    assert "is_claude_backend" not in source, (
+        "the effort, overlay and slash-command seams must read a membership set; "
+        "a claude test here decides the path for every harness added later"
+    )
+
+
+def test_only_overlay_readers_are_written_to() -> None:
+    """H6: the cli.json overlay is written only for the harnesses that read it.
+
+    The clear side (``_clear_cli_overlay_effort``) is membership-gated, so a write
+    gated on anything wider leaves a stale overlay in the user's workspace that no
+    later clear can reach — and the overlay names an effort level, so a harness
+    that DOES read the file later inherits a level nobody set for it.
+    """
+    for fn in (
+        providers_acp.AcpProvider._apply_effort_overlay,
+        providers_acp.AcpProvider._apply_tool_search_overlay,
+    ):
+        source = inspect.getsource(fn)
+        assert (
+            "ACP_BACKENDS_KIRO_SLASH_COMMANDS" in source
+        ), f"{fn.__name__}: overlay write is not scoped to the overlay's readers"
+
+
+def test_codex_spawn_keeps_its_own_branch() -> None:
+    """H9/H10: codex resolves its own adapter and declares its own handshake.
+
+    Falling through to the kiro branch would spawn kiro-cli under a codex label —
+    the exact failure ACP_BACKENDS_KNOWN's rejection exists to prevent one step
+    earlier — and folding its protocol version into the claude literal would make a
+    future divergence a silent downgrade for whichever harness moved first.
+    """
+    spawn_source = inspect.getsource(acp_client.AcpClient._spawn)
+    assert "_is_codex" in spawn_source
+    assert "_resolve_codex_acp_bin" in spawn_source
+    assert acp_client.PROTOCOL_VERSION_CODEX is not None
+    assert "PROTOCOL_VERSION_CODEX" in inspect.getsource(acp_client.AcpClient._initialize_session)
+
+
+def test_each_mcp_seam_is_spliced_only_for_its_own_harness() -> None:
+    """H6: a per-harness hook must not reach a session of a different harness.
+
+    Both defaults return ``[]``, so an ungated splice is inert in this tree — but an
+    edition that overrides both hooks would hand a claude session codex's server
+    entries and vice versa, and an entry whose transport the adapter does not
+    advertise fails the whole ``session/new`` rather than being skipped. Pinned at
+    the source, in the file's existing idiom, because the splice sits inside an
+    async session-setup path with no unit-level seam.
+    """
+    for fn in (
+        acp_client.AcpClient._new_session_following_substitution,
+        acp_client.AcpClient._initialize_session,
+    ):
+        source = inspect.getsource(fn)
+        if "_codex_session_mcp_servers" not in source:
+            continue
+        assert "if self._is_codex" in source, f"{fn.__name__}: codex seam spliced ungated"
+        assert "if self._is_claude" in source, f"{fn.__name__}: claude seam spliced ungated"
+
+
+def test_codex_mcp_seam_defaults_to_empty() -> None:
+    """The public core sends no mcpServers for codex, exactly as for claude.
+
+    kiro-cli receives its servers through ``--agent``; an edition overrides the seam.
+    A non-empty default here would put servers on a public session that the adapter
+    was never configured for.
+    """
+    client = acp_client.AcpClient.__new__(acp_client.AcpClient)
+    assert client._codex_session_mcp_servers() == []
 
 
 def test_model_preflight_allows_unknown_advertised_set() -> None:

@@ -17,7 +17,14 @@ const ContextMenuContent = React.forwardRef<
     <ContextMenuPrimitive.Content
       ref={ref}
       className={cn(
-        'z-[9999] min-w-[8rem] overflow-hidden rounded-lg border border-border bg-bg-elevated p-1 text-text shadow-lg',
+        // Cap the height to the space Radix measured between the anchor and the
+        // viewport edge (its own collision var) and scroll the overflow, so a
+        // menu taller than the room below stays fully reachable on a short
+        // viewport (mobile) instead of clipping its bottom items off-screen with
+        // `overflow-hidden`. Radix already flips the menu above the anchor when
+        // that side has more room; this handles the case where neither side is
+        // tall enough.
+        'z-[9999] min-w-[8rem] max-h-[var(--radix-context-menu-content-available-height)] overflow-y-auto overscroll-contain rounded-lg border border-border bg-bg-elevated p-1 text-text shadow-lg',
         // Entry animation only. Radix suspends unmount until an exit animation
         // finishes, and the still-mounted dismissable layer consumes the next
         // pointer-down — so an exit animation makes an immediate re-open (here,
@@ -88,7 +95,7 @@ const ContextMenuSubContent = React.forwardRef<
     <ContextMenuPrimitive.SubContent
       ref={ref}
       className={cn(
-        'z-[9999] min-w-[8rem] overflow-hidden rounded-lg border border-border bg-bg-elevated p-1 text-text shadow-lg',
+        'z-[9999] min-w-[8rem] max-h-[var(--radix-context-menu-content-available-height)] overflow-y-auto overscroll-contain rounded-lg border border-border bg-bg-elevated p-1 text-text shadow-lg',
         'data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95',
         className
       )}

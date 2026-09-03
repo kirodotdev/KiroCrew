@@ -199,7 +199,7 @@ def _load_settings() -> dict:
     as ``""`` (= inherit the session layer's resolution), never as an error. An
     UNKNOWN model name is deliberately kept: no advertised-model list exists
     outside a live session, and the session layer's withhold
-    (``_pinned_model_withheld`` in chat_runner) already keeps the pin, runs the
+    (``_pinned_model_verdict`` in chat_runner) already keeps the pin, runs the
     worker on the backend default and surfaces a notice when a pick stops being
     served.
     """

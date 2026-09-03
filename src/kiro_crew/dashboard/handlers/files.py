@@ -637,11 +637,12 @@ async def api_slack_upload_file(request: web.Request) -> web.Response:
 
     Destination and authorization come from the shared oracle
     (:func:`kiro_crew.dashboard.upload_destination.resolve_slack`), which holds
-    this leg's ladder — request-named channel, session-map-linked thread,
-    owner-DM fallback, tracked-channel authorization — next to the non-Slack
-    leg's, so the two cannot drift apart rung by rung (issue #6060). What stays
-    here is what only this leg can answer: the Slack client, its upload verb,
-    and the response shapes.
+    this leg's ladder — the ``channels``-scope governance vet, the
+    restricted-session ceiling, then a request-named channel, a
+    session-map-linked thread, or the owner-DM fallback with its tracked-channel
+    authorization — next to the non-Slack leg's, so the two cannot drift apart
+    rung by rung (issue #6060). What stays here is what only this leg can
+    answer: the Slack client, its upload verb, and the response shapes.
 
     The client-presence check stays AHEAD of the body parse, where it shipped: a
     gateway with no Slack client answers ``skipped: no_slack`` even for a
@@ -667,9 +668,10 @@ async def api_slack_upload_file(request: web.Request) -> web.Response:
     if error_resp is not None:
         return error_resp
     assert resolved is not None and raw is not None  # narrowed by the gate
-    # ``is_tracked_channel`` is handed to the oracle rather than imported there:
-    # one binding site, and the module stays free of the Slack handler's config
-    # dependency (same contract as ``persisted_probe`` below).
+    # ``is_tracked_channel`` and the persisted-transcript probe are handed to the
+    # oracle rather than imported there: one binding site, and the module stays
+    # free of both the Slack handler's config dependency and the ``dashboard``
+    # package ``messaging.upload_gate`` may not import.
     destination = await upload_destination.resolve_slack(
         state,
         slack,
@@ -677,6 +679,7 @@ async def api_slack_upload_file(request: web.Request) -> web.Response:
         requested_channel=body.get("channel", ""),
         thread_ts=body.get("thread_ts"),
         tracked_probe=is_tracked_channel,
+        persisted_probe=_probe_persisted_session,
     )
     if isinstance(destination, upload_destination.Refusal):
         _audit_file_send(
@@ -4778,8 +4781,34 @@ async def api_project_git_status(request: web.Request) -> web.Response:
         result["repoRoot"] = redact(result["repoRoot"])
     if result.get("branch"):
         result["branch"] = redact(result["branch"])
+    # Redact each file path, then drop entries that duplicate an earlier one
+    # (preserving order and first occurrence). Same collision class as
+    # api_project_tree: redact() can collapse two genuinely-different paths to
+    # the same placeholder. This list feeds GitPanel, which keys its rows on
+    # `${path}:${staged}` and takes its file total from files.length, so a
+    # collision would render two indistinguishable rows under one React key and
+    # overstate the count. (It cannot reach @pierre/trees as a duplicate the way
+    # api_project_tree's list can: the tree's "changed" mode already collapses
+    # status entries by path before handing them over.) The files[:500] cap was
+    # already applied to the raw listing above, so this only removes collisions.
+    #
+    # The key is (path, status, staged), NOT path alone: one file with both
+    # staged and unstaged changes ("MM", "AM", "MD") legitimately yields two
+    # entries sharing a path but differing in status/staged, and GitPanel
+    # renders them as separate rows. Keying on path alone would drop the
+    # unstaged lane and undercount the file total. A real redaction collision
+    # has an identical tuple, so it still collapses.
+    deduped_files: list[dict] = []
+    seen_keys: set[tuple[str, str | None, bool | None]] = set()
     for f in result.get("files", []):
         f["path"] = redact(f["path"])
+        key = (f["path"], f.get("status"), f.get("staged"))
+        if key in seen_keys:
+            continue
+        seen_keys.add(key)
+        deduped_files.append(f)
+    if "files" in result:
+        result["files"] = deduped_files
     return web.json_response(result)
 
 
@@ -4916,7 +4945,15 @@ async def api_project_tree(request: web.Request) -> web.Response:
     # Egress redaction, same rationale as api_project_git_status: listed names
     # are repo content and this body is rendered by the dashboard.
     result["root"] = redact(result["root"])
-    result["paths"] = [redact(p) for p in result["paths"]]
+    # De-duplicate after redaction, preserving order and first occurrence.
+    # redact() collapses each matched token to a fixed placeholder, so two
+    # genuinely-different project-relative paths (e.g. a src/ vs target/ Maven
+    # prefix and a credential-shaped filename token) can flatten to the same
+    # redacted string. The dashboard tree hands this list straight to
+    # @pierre/trees, whose appendPresortedPaths throws "Duplicate path" on
+    # adjacent identical entries. dict.fromkeys keeps first occurrence. This
+    # does not affect "truncated": the cap is applied to the raw listing above.
+    result["paths"] = list(dict.fromkeys(redact(p) for p in result["paths"]))
     return web.json_response(result)
 
 

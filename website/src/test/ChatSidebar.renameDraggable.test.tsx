@@ -11,8 +11,7 @@
  * while its rename input is open, and "true" otherwise.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { render, within } from '@testing-library/react'
-import userEvent from '@testing-library/user-event'
+import { fireEvent, render, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Provider } from 'react-redux'
 import { MemoryRouter } from 'react-router-dom'
@@ -71,10 +70,10 @@ import ChatSidebar from '../pages/ChatSidebar'
 const SLOT_KEY = 'chat-rename-1'
 const slot = { key: SLOT_KEY, title: 'My Session Title', running: false, tags: [], created: '', last_ts: '' }
 
-function renderSidebar() {
+function renderSidebar(connected = false, onSelectSlot?: (key: string) => void) {
   const store = createTestStore({
     dashboard: {
-      status: {}, connected: false, slots: [slot], approvalMode: 'normal',
+      status: {}, connected, slots: [slot], approvalMode: 'normal',
       channelTrusted: false, refreshTrigger: 0, unreadSlots: [], updateProgress: null,
       subagentRunning: {}, subagentDetails: {}, subagentText: {},
       sessionDefaultColor: null, sessionColorsMode: 'tint', sessionColorsPalette: 'horizon', sessionColorsIntensity: 'clear',
@@ -93,6 +92,7 @@ function renderSidebar() {
             <ChatSidebar
               slots={[slot]} activeSlot={null} unreadSlots={[]}
               history={[]} historyHasMore={false} defaultAgent="" installedAgents={[]}
+              onSelectSlot={onSelectSlot}
             />
           </MemoryRouter>
         </ThemeProvider>
@@ -122,26 +122,26 @@ describe('session row drag is disabled during inline rename', () => {
     expect(rowFor(container).getAttribute('data-draggable')).toBe('true')
   })
 
-  // Radix ContextMenu/DropdownMenu requires PointerEvent support that jsdom
-  // lacks. The rename+drag invariant is visually verified. Skipped until we
-  // add a jsdom PointerEvent polyfill or migrate to Playwright component tests.
-  it.skip('row becomes non-draggable once the rename input is open', async () => {
-    const user = userEvent.setup({ pointerEventsCheck: 0 })
-    const { container } = renderSidebar()
+  it('double-clicking the title selects once, opens rename, and disables dragging', () => {
+    const onSelectSlot = vi.fn()
+    const { container } = renderSidebar(true, onSelectSlot)
     const row = rowFor(container)
     expect(row.getAttribute('data-draggable')).toBe('true')
 
-    await user.click(within(row).getByLabelText('More options'))
-    const menu = document.querySelector('[role="menu"]') as HTMLElement
-    expect(menu).toBeTruthy()
-    await user.click(within(menu).getByText('Rename'))
+    const title = within(row).getByTitle('My Session Title')
+    fireEvent.click(title, { detail: 1 })
+    fireEvent.click(title, { detail: 2 })
+    fireEvent.doubleClick(title, { detail: 2 })
 
-    // Same row node, now rendering the input; drag must be off so the browser
-    // gives the input native click-to-place-caret.
+    expect(onSelectSlot).toHaveBeenCalledTimes(1)
+    expect(onSelectSlot).toHaveBeenCalledWith(SLOT_KEY)
+    // Same row node, now rendering the existing inline editor; drag must be off
+    // so the browser gives the textarea native click-to-place-caret behavior.
     expect(rowFor(container).getAttribute('data-draggable')).toBe('false')
+    const input = within(rowFor(container)).getByRole('textbox') as HTMLTextAreaElement
+    expect(input.value).toBe('My Session Title')
     // select-text overrides the row's inherited select-none so click-drag
     // selection works in the field — the other half of the fix.
-    const input = within(rowFor(container)).getByRole('textbox')
     expect(input.className).toContain('select-text')
   })
 })

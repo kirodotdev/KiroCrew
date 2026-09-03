@@ -15,6 +15,7 @@ per-account grant store (spec §9).
 from __future__ import annotations
 
 import asyncio
+import functools
 import logging
 from typing import Any
 
@@ -85,7 +86,17 @@ async def _run_once() -> None:
         # around the call, so the trail does not depend on who triggered it.
         _audit("backup_nightly", "backup/snapshots", "invoked")
         record = await asyncio.to_thread(
-            backup_mod.run_snapshot_backup, account, profile, region, bucket
+            functools.partial(
+                backup_mod.run_snapshot_backup,
+                account,
+                profile,
+                region,
+                bucket,
+                # Nobody is at the keyboard at 03:00. An upload refused here must
+                # not be recorded against the dashboard owner, which is what a
+                # hardcoded interactive caller inside the gate would have done.
+                caller=backup_mod.CALLER_SCHEDULED,
+            )
         )
         _audit("backup_nightly", str(record.get("key", "")), "succeeded")
         logger.info("aws-control nightly backup pushed: %s", record.get("key", ""))
@@ -108,9 +119,62 @@ async def _loop() -> None:
         await asyncio.sleep(_CHECK_INTERVAL_SECS)
 
 
-async def on_startup(ctx: Any) -> None:  # noqa: ARG001 — kept for the hook ABI
-    """Start the nightly loop. Idempotent across enable/disable cycles."""
+async def _register_job_runners(ctx: Any) -> None:
+    """Bind the backup kinds to their runners, then resolve any dead run.
+
+    Registration is the SDK's contract: a kind is bound to its callable ONCE, at
+    app init, and ``start`` then names only the kind. That is what lets the
+    browser and the reconciliation pass address a run without holding a Python
+    callable. It happens before the nightly-task guard below because a re-enable
+    builds a FRESH ``AppContext`` -- and therefore a fresh ``JobSDK`` with an
+    empty runner table -- so skipping it on the "already running" path would
+    leave an app whose kinds have no runners.
+
+    ``cancellable`` is left at its default of False. Neither backup runner polls
+    ``handle.cancelled``: the only stop signal they honour is the teardown event
+    ``_STOP``, checked in ``_authorize_upload``, which is not a cancel checkpoint.
+    The SDK cannot verify the assertion, so claiming True here would put a Cancel
+    button in front of the owner that does nothing. The UI hides it instead.
+
+    The reconcile call is deliberate and is NOT redundant with the gateway's.
+    ``reconcile_all()`` runs once after the WHOLE enable loop, so on the startup
+    path there is a window -- every app enabled after this one -- in which
+    ``_jobs/active`` would serve a run left behind by a process that is gone. The
+    backup UI adopts an in-flight record on mount, so that window is precisely
+    when it would show a phantom "running" for work nothing can finish. Calling
+    it here shortens the window to this app's own startup, and it is safe to run
+    twice: a terminal record is skipped (``job_sdk.py:786``), so the later pass
+    finds nothing left to do.
+    """
+    sdk = getattr(ctx, "job", None)
+    if sdk is None:
+        # Granted-but-absent is the app's to report, not to assume away: without
+        # the `jobs` permission the context carries no SDK, and a backup start
+        # would fail at the route with no explanation of why.
+        logger.warning(
+            "aws-control: no job runtime on the app context; "
+            "backups cannot run (is the 'jobs' permission declared?)"
+        )
+        return
+    for kind in backup_mod.JOB_KINDS:
+        sdk.register(kind, backup_mod.make_job_runner(sdk, kind))
+    try:
+        interrupted = await asyncio.to_thread(sdk.reconcile)
+    except Exception:  # noqa: BLE001 — a bad run store must not block enable
+        logger.warning("aws-control: job reconciliation failed", exc_info=True)
+        return
+    if interrupted:
+        logger.info("aws-control: resolved %d interrupted backup run(s)", interrupted)
+
+
+async def on_startup(ctx: Any) -> None:
+    """Register the backup runners, then start the nightly loop.
+
+    Idempotent across enable/disable cycles.
+    """
     global _task
+    # Before the guard below: a re-enable brings a new JobSDK that has no runners.
+    await _register_job_runners(ctx)
     if _task is not None and not _task.done():
         return
     # Re-enabling clears a stop left by a previous teardown, so an enable/disable

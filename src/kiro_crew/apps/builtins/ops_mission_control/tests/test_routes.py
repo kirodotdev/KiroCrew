@@ -13,6 +13,7 @@ caught.
 """
 
 import json
+import os
 import shutil
 import tempfile
 import unittest
@@ -639,6 +640,40 @@ class TestLedgerHygieneWiring(unittest.IsolatedAsyncioTestCase):
         ):
             result = routes._index_ledger_safely()
         self.assertEqual(result, {"scanned": 0, "written": 0, "skipped": 0, "embedded": 0})
+
+    async def test_a_prune_fault_cannot_cost_the_ledger_push(self):
+        """`prune_closed` sits before the push, and making the index read strict gave it a
+        new way to raise.
+
+        Letting it escape would mean one EACCES skips pushing the ledger `hygiene` just
+        deduped -- a later fault costing an earlier step's work, which is the rule
+        `dispatch.run_cycle`'s maintenance guards exist to keep. Pruning is the most
+        deferrable step here (the next run retires the same incidents); the push is what
+        other instances are waiting on. Found in review (Opus 4.8), which named the ordering
+        consequence rather than the status code.
+        """
+        from kiro_crew.apps.builtins.ops_mission_control.backend import store
+
+        def _refuse():
+            raise PermissionError(13, "Permission denied")
+
+        with mock.patch.object(store, "prune_closed", _refuse):
+            response, order = await self._run()
+
+        self.assertEqual(response.status, 200)
+        self.assertIn("sync:push", order, "the push must still run after a failed prune")
+        self.assertLess(order.index("hygiene"), order.index("sync:push"))
+
+    async def test_a_corrupt_index_still_stops_the_hygiene_pass(self):
+        """Corruption never self-heals, so it must not be skipped quietly on every run."""
+        from kiro_crew.apps.builtins.ops_mission_control.backend import store
+
+        def _corrupt():
+            raise json.JSONDecodeError("Expecting value", "{ not json", 2)
+
+        with mock.patch.object(store, "prune_closed", _corrupt):
+            with self.assertRaises(json.JSONDecodeError):
+                await self._run()
 
 
 if __name__ == "__main__":
@@ -3267,3 +3302,471 @@ class TestApprovedProposalSchedulesVerification(unittest.IsolatedAsyncioTestCase
         stored = store.get_incident(iid)
         assert stored is not None
         self.assertNotIn(stored.verification, models.OPEN_VERIFICATIONS)
+
+
+class TestAStoreThatRefusesToWriteIsReportedNotCrashed(unittest.IsolatedAsyncioTestCase):
+    """A refused keystone write must answer with the app's coded error, not a bare 500.
+
+    The two stores behind these routes are read-modify-writes that now REFUSE rather than
+    publishing over a read they could not make, so each write can raise ``OSError``. Nothing
+    converts that into a body: ``sel_audit_middleware`` logs and re-raises, and
+    ``deny_audit_middleware`` only handles ``web.HTTPException`` — so an escaping error becomes
+    aiohttp's default ``500`` with a plain-text body and no ``code`` to branch on.
+
+    On these particular routes the ambiguity is the security-relevant part. ``mode`` and
+    ``autonomy_rules`` ARE the authorization ceiling, and the secret routes decide whether a
+    live credential is stored or revoked — "did my change land?" is exactly the question the
+    operator must not be left guessing about. ``_handle_rotation_arm`` already set the shape
+    for this in the same file (``503 cron_store_unreadable``, with its progress list attached).
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self._prev = os.environ.get("KIROCREW_HOME")
+        self.addCleanup(self._restore_home)
+        os.environ["KIROCREW_HOME"] = self.tmp
+
+    def _restore_home(self):
+        if self._prev is None:
+            os.environ.pop("KIROCREW_HOME", None)
+        else:
+            os.environ["KIROCREW_HOME"] = self._prev
+
+    @staticmethod
+    def _refuse(*_a, **_kw):
+        raise PermissionError(13, "Permission denied")
+
+    async def _client(self, app):
+        from aiohttp.test_utils import TestClient, TestServer
+
+        client = TestClient(TestServer(app))
+        await client.start_server()
+        self.addAsyncCleanup(client.close)
+        return client
+
+    async def test_a_refused_secret_save_is_a_coded_503_not_a_500(self):
+        token = "u+ThisIsTheActualTokenValue"
+        app = web.Application()
+        routes.register_routes(app)
+        with mock.patch.object(routes, "is_app_enabled", return_value=True):
+            with mock.patch.object(routes, "put_secret", self._refuse):
+                client = await self._client(app)
+                resp = await client.put(
+                    "/api/apps/ops-mission-control/providers/pagerduty/secret",
+                    json={"field": "api_token", "value": token},
+                )
+                self.assertEqual(resp.status, 503)
+                body = await resp.json()
+
+        self.assertEqual(body["code"], "secret_store_unwritable")
+        self.assertIs(body["ok"], False)
+        # A refusal must not echo the credential it failed to store.
+        self.assertNotIn(token, json.dumps(body))
+
+    async def test_a_refused_revocation_never_reports_success(self):
+        """The load-bearing one. The failure this replaces did not 500 — it returned
+        ``{"ok": true, "removed": false}``, i.e. "there was nothing to revoke", while the
+        live token was still on disk. Anything 2xx here is the bug."""
+        app = web.Application()
+        routes.register_routes(app)
+        with mock.patch.object(routes, "is_app_enabled", return_value=True):
+            with mock.patch.object(routes, "delete_secret", self._refuse):
+                client = await self._client(app)
+                resp = await client.delete(
+                    "/api/apps/ops-mission-control/providers/pagerduty/secret"
+                )
+                self.assertEqual(resp.status, 503, "a refused revocation answered as success")
+                body = await resp.json()
+
+        self.assertEqual(body["code"], "secret_store_unwritable")
+        self.assertNotIn("removed", body, "the refusal must not claim a removal verdict")
+
+    async def test_a_refused_ceiling_write_is_a_coded_503(self):
+        """The ceiling is the one value where a silent partial apply is a security state."""
+        from kiro_crew.apps.builtins.ops_mission_control.backend import policy_store
+
+        app = web.Application()
+        routes.register_routes(app)
+        with mock.patch.object(routes, "is_app_enabled", return_value=True):
+            with mock.patch.object(policy_store, "set_ceiling", self._refuse):
+                client = await self._client(app)
+                resp = await client.put(
+                    "/api/apps/ops-mission-control/settings", json={"mode": "observe"}
+                )
+                self.assertEqual(resp.status, 503)
+                body = await resp.json()
+
+        self.assertEqual(body["code"], "policy_store_unwritable")
+        self.assertIs(body["ok"], False)
+
+    async def test_a_refused_provider_config_write_is_a_coded_503(self):
+        """The companion strict read landed, so this write can now refuse too.
+
+        This helper's docstring said `set_top_level` had no such guarantee "yet" and
+        pointed at the companion PR for `providers/__init__.py`. That PR is this change,
+        so `merge_provider_config` now propagates a failed read and this route needed the
+        same coded refusal. Found in review (Opus 4.8, Design Review).
+        """
+        app = web.Application()
+        routes.register_routes(app)
+        with mock.patch.object(routes, "is_app_enabled", return_value=True):
+            with mock.patch.object(routes, "merge_provider_config", self._refuse):
+                client = await self._client(app)
+                resp = await client.put(
+                    "/api/apps/ops-mission-control/providers/datadog/config",
+                    json={"site": "datadoghq.eu"},
+                )
+                self.assertEqual(resp.status, 503)
+                body = await resp.json()
+
+        self.assertEqual(body["code"], "app_config_unreadable")
+
+    async def test_a_corrupt_provider_config_is_a_coded_500_not_a_bare_one(self):
+        """Corruption is not retryable, so it must not be advertised as a 503.
+
+        Found in review (GPT 5.6): the coded refusal covered only `OSError`, so a malformed
+        `config.json` still answered the bare uncoded 500 this PR set out to remove.
+        """
+        corrupt = json.JSONDecodeError("Expecting value", "{ not json", 2)
+
+        def _corrupt(*_a, **_kw):
+            raise corrupt
+
+        app = web.Application()
+        routes.register_routes(app)
+        with mock.patch.object(routes, "is_app_enabled", return_value=True):
+            with mock.patch.object(routes, "merge_provider_config", _corrupt):
+                client = await self._client(app)
+                resp = await client.put(
+                    "/api/apps/ops-mission-control/providers/datadog/config",
+                    json={"site": "datadoghq.eu"},
+                )
+                self.assertEqual(resp.status, 500)
+                body = await resp.json()
+
+        self.assertEqual(body["code"], "app_config_corrupt")
+
+    async def test_a_claim_survives_a_failed_ledger_annotation(self):
+        """The claim is committed before the annotation runs, so it must not be un-reported.
+
+        `attach_ledger_matches` writes through `store.update_fields` -> `transition` ->
+        `_read_index_for_update()`, which this change gave two new ways to raise. Unguarded it
+        answered a bare uncoded 500 for a claim that had ALREADY been written durably and whose
+        webhook had already been acked. Found in review (Opus 4.8).
+
+        Its suggested fix was the coded 503 the sibling routes use, and that is wrong here for
+        the same reason it was wrong at `_schedule_verification`: a 503 says "the claim failed,
+        retry" about a claim that succeeded, the retry answers `409 signal_already_claimed`, and
+        the audit entry for a real claim is never written. The annotation is the deferrable half
+        -- the dispatch cycle re-derives matches next pass -- so the degraded answer is the
+        claim without its matches, still 200, still audited, with the degradation recorded.
+        """
+        from kiro_crew.apps.builtins.ops_mission_control.backend import dispatch, models
+
+        firing = models.Signal.create(
+            source="cloudwatch", native_id="alarm/x", title="broke", labels={"alarm_name": "x"}
+        )
+
+        app = web.Application()
+        routes.register_routes(app)
+        with mock.patch.object(routes, "is_app_enabled", return_value=True):
+            with mock.patch.object(
+                routes.get_registry(), "poll_all", mock.AsyncMock(return_value=([firing], {}))
+            ):
+                with mock.patch.object(dispatch, "attach_ledger_matches", self._refuse):
+                    with mock.patch.object(routes, "_audit") as audited:
+                        client = await self._client(app)
+                        resp = await client.post(
+                            "/api/apps/ops-mission-control/incident/claim",
+                            json={"signal": {"id": firing.id, "source": "cloudwatch"}},
+                        )
+                        body = await resp.json()
+
+        self.assertEqual(resp.status, 200, "a committed claim was reported as failed")
+        self.assertTrue(body["incident"]["incident_id"])
+        self.assertEqual(body["matches"], [], "matches degrade to empty, not to an error")
+        claims = [c for c in audited.call_args_list if c.args[0] == "incident_claim"]
+        self.assertEqual(len(claims), 1, "the claim must be audited exactly once")
+        self.assertEqual(claims[0].args[2], "success")
+        self.assertIn("without ledger matches", claims[0].kwargs.get("error", ""))
+
+    async def test_a_corrupt_index_is_not_reported_as_an_illegal_transition(self):
+        """The misclassification, pinned. This is the worst of the uncoded cases.
+
+        `_handle_transition` caught `except ValueError`, and `JSONDecodeError` subclasses
+        `ValueError`, so a corrupt index answered `409 illegal_transition` carrying the JSON
+        parser's message -- telling the operator their own state change was invalid when the
+        real fault was a broken file. A 409 sends them to fix their request; nothing sends
+        them to the file. Found in review (Opus 4.8); it is the same accident this change
+        closed at three non-route callers.
+        """
+        from kiro_crew.apps.builtins.ops_mission_control.backend import store
+
+        corrupt = json.JSONDecodeError("Expecting value", "{ not json", 2)
+
+        def _corrupt(*_a, **_kw):
+            raise corrupt
+
+        app = web.Application()
+        routes.register_routes(app)
+        with mock.patch.object(routes, "is_app_enabled", return_value=True):
+            with mock.patch.object(store, "get_incident", lambda *_a, **_kw: None):
+                with mock.patch.object(store, "transition", _corrupt):
+                    client = await self._client(app)
+                    resp = await client.post(
+                        "/api/apps/ops-mission-control/incident/transition",
+                        json={"id": "INV-1", "status": "resolved"},
+                    )
+                    body = await resp.json()
+
+        self.assertNotEqual(resp.status, 409, "corruption was blamed on the operator's request")
+        self.assertNotEqual(body.get("code"), "illegal_transition")
+        self.assertEqual(resp.status, 500)
+        self.assertEqual(body["code"], "dispatch_index_corrupt")
+
+    async def test_an_unreadable_index_on_transition_is_a_retryable_coded_503(self):
+        """The other half: transient gets 503, so "retry" is only said when it can work."""
+        from kiro_crew.apps.builtins.ops_mission_control.backend import store
+
+        app = web.Application()
+        routes.register_routes(app)
+        with mock.patch.object(routes, "is_app_enabled", return_value=True):
+            with mock.patch.object(store, "get_incident", lambda *_a, **_kw: None):
+                with mock.patch.object(store, "transition", self._refuse):
+                    client = await self._client(app)
+                    resp = await client.post(
+                        "/api/apps/ops-mission-control/incident/transition",
+                        json={"id": "INV-1", "status": "resolved"},
+                    )
+                    body = await resp.json()
+
+        self.assertEqual(resp.status, 503)
+        self.assertEqual(body["code"], "dispatch_index_unreadable")
+
+    async def test_a_refused_manual_claim_is_coded_rather_than_a_bare_500(self):
+        """`claim` raises on both failures by design, so the board's own route must translate."""
+        from kiro_crew.apps.builtins.ops_mission_control.backend import models, store
+
+        firing = models.Signal.create(
+            source="cloudwatch", native_id="alarm/x", title="broke", labels={"alarm_name": "x"}
+        )
+
+        app = web.Application()
+        routes.register_routes(app)
+        with mock.patch.object(routes, "is_app_enabled", return_value=True):
+            with mock.patch.object(
+                routes.get_registry(), "poll_all", mock.AsyncMock(return_value=([firing], {}))
+            ):
+                with mock.patch.object(store, "claim", self._refuse):
+                    client = await self._client(app)
+                    resp = await client.post(
+                        "/api/apps/ops-mission-control/incident/claim",
+                        json={"signal": {"id": firing.id, "source": "cloudwatch"}},
+                    )
+
+        self.assertEqual(resp.status, 503)
+        self.assertEqual((await resp.json())["code"], "dispatch_index_unreadable")
+
+    async def test_a_corrupt_policy_store_on_settings_is_a_coded_500(self):
+        """The regression this change introduced into a MERGED helper.
+
+        `_settings_write_or_refuse` caught only `OSError`. Making the config reader refuse on
+        a malformed document gave `set_top_level` a second way to raise, and the bare 500 came
+        back for it -- in the one helper whose docstring had promised this PR would close that
+        gap. Found in review (First Principles).
+        """
+        from kiro_crew.apps.builtins.ops_mission_control.backend import policy_store
+
+        corrupt = json.JSONDecodeError("Expecting value", "{ not json", 2)
+
+        def _corrupt(*_a, **_kw):
+            raise corrupt
+
+        app = web.Application()
+        routes.register_routes(app)
+        with mock.patch.object(routes, "is_app_enabled", return_value=True):
+            with mock.patch.object(policy_store, "set_ceiling", _corrupt):
+                client = await self._client(app)
+                resp = await client.put(
+                    "/api/apps/ops-mission-control/settings", json={"mode": "observe"}
+                )
+                body = await resp.json()
+
+        self.assertEqual(resp.status, 500)
+        self.assertEqual(body["code"], "policy_store_corrupt")
+        self.assertIs(body["ok"], False)
+
+    async def test_a_corrupt_index_is_not_reported_as_an_invalid_proposal(self):
+        """The last reachable `ValueError` arm, found by auditing all ten in this file.
+
+        `propose_action` reaches the strict reader through `update_fields` -> `transition`,
+        so a corrupt index raises `CorruptDocumentError` -- a `ValueError` -- and the
+        `except ValueError` arm reported it as `400 invalid_proposal`. That is worse than the
+        bare 500 it replaces: a 400 blames the operator's proposal, so they re-type the form
+        while the real fault sits on disk. Nine of the ten arms needed nothing -- three
+        already carried this clause and six cannot reach a strict reader at all.
+        """
+        from kiro_crew.apps.builtins.ops_mission_control.backend import store
+
+        corrupt = json.JSONDecodeError("Expecting value", "{ not json", 2)
+
+        def _corrupt(*_a, **_kw):
+            raise corrupt
+
+        app = web.Application()
+        routes.register_routes(app)
+        with mock.patch.object(routes, "is_app_enabled", return_value=True):
+            with mock.patch.object(store, "propose_action", _corrupt):
+                client = await self._client(app)
+                resp = await client.post(
+                    "/api/apps/ops-mission-control/incident/propose",
+                    json={"id": "INV-1", "action": "silence", "sink": "pagerduty"},
+                )
+                body = await resp.json()
+
+        self.assertNotEqual(resp.status, 400, "corruption was blamed on the operator's proposal")
+        self.assertNotEqual(body.get("code"), "invalid_proposal")
+        self.assertEqual(resp.status, 500)
+        self.assertEqual(body["code"], "dispatch_index_corrupt")
+
+    async def test_a_refused_proposal_decision_is_a_coded_503(self):
+        """A human's approval of a production action must not fail ambiguously.
+
+        `decide_proposal` is a locked read-modify-write that now refuses rather than
+        publishing over a failed read. Before this arm the handler could only answer a
+        coded 404, so a transient read failure became a bare 500 with no `code`.
+        """
+        from kiro_crew.apps.builtins.ops_mission_control.backend import store
+
+        app = web.Application()
+        routes.register_routes(app)
+        with mock.patch.object(routes, "is_app_enabled", return_value=True):
+            with mock.patch.object(store, "decide_proposal", self._refuse):
+                client = await self._client(app)
+                resp = await client.post(
+                    "/api/apps/ops-mission-control/incident/proposal/decide",
+                    json={"id": "INV-1", "approve": True},
+                )
+                self.assertEqual(resp.status, 503)
+                body = await resp.json()
+
+        self.assertEqual(body["code"], "dispatch_index_unreadable")
+
+    async def test_a_refused_destination_write_is_a_coded_503_too(self):
+        """The keys reached THROUGH an intermediary, which the first pass missed.
+
+        `slack_out.set_settings` and `ledger_sync.set_settings` call `policy_store.put`
+        internally -- their keys are operator-only, so they must -- so guarding only the
+        call sites that literally spell `policy_store` left the destination writes
+        answering a refused keystone write with a plain 500. These are the keys an agent
+        must not be able to redirect, so they are the last place to leave the operator
+        guessing. Found in review (GPT 5.6).
+        """
+        from kiro_crew.apps.builtins.ops_mission_control.backend import slack_out
+
+        app = web.Application()
+        routes.register_routes(app)
+        with mock.patch.object(routes, "is_app_enabled", return_value=True):
+            with mock.patch.object(slack_out, "set_settings", self._refuse):
+                client = await self._client(app)
+                resp = await client.put(
+                    "/api/apps/ops-mission-control/settings", json={"slack_channel": "C123456"}
+                )
+                self.assertEqual(resp.status, 503, "a refused destination write answered 200")
+                body = await resp.json()
+
+        self.assertEqual(body["code"], "policy_store_unwritable")
+
+    async def test_a_refusal_body_carries_no_field_the_dashboard_discards(self):
+        """`req` in the app's own api.ts reads only `error` from a non-2xx body.
+
+        An earlier revision shipped an `applied` key here on the reasoning that naming
+        what landed is actionable. It is -- but not there, because nothing reads it. The
+        partial set goes to the audit log instead, which has a reader and mirrors the
+        `settings_put` line the success path already writes.
+        """
+        from kiro_crew.apps.builtins.ops_mission_control.backend import policy_store
+
+        app = web.Application()
+        routes.register_routes(app)
+        with mock.patch.object(routes, "is_app_enabled", return_value=True):
+            with mock.patch.object(policy_store, "set_ceiling", self._refuse):
+                client = await self._client(app)
+                resp = await client.put(
+                    "/api/apps/ops-mission-control/settings", json={"mode": "observe"}
+                )
+                body = await resp.json()
+
+        self.assertNotIn("applied", body)
+        self.assertEqual(sorted(body), ["code", "error", "ok"])
+
+    async def test_an_ordinary_settings_write_still_succeeds(self):
+        """Negative control: the guard must not break the route it protects."""
+        app = web.Application()
+        routes.register_routes(app)
+        with mock.patch.object(routes, "is_app_enabled", return_value=True):
+            client = await self._client(app)
+            resp = await client.put(
+                "/api/apps/ops-mission-control/settings", json={"mode": "observe"}
+            )
+            self.assertEqual(resp.status, 200)
+            body = await resp.json()
+
+        self.assertIs(body["ok"], True)
+        self.assertEqual(body["applied"]["mode"], "observe")
+
+
+class TestCorruptionIsNotSwallowedWhenSchedulingVerification(unittest.TestCase):
+    """Corruption while scheduling a recheck must be REPORTED -- neither swallowed nor raised.
+
+    Two review lanes found opposite halves of this. Design Review caught that a corrupt index
+    was silently swallowed: `_schedule_verification` catches `(KeyError, ValueError, OSError)`
+    and `JSONDecodeError` subclasses `ValueError`, so corruption was filed under the
+    raced-away case at debug level and the action ran with no recheck, forever, invisibly.
+    GPT 5.6 then caught that simply re-raising is also wrong: both callers have ALREADY done
+    the real external write by the time this runs, so a raise turns a completed action into a
+    500 and invites a retry -- in `act` mode, a second real write against production.
+
+    So corruption gets its own clause that logs and writes a SEL audit entry, then returns
+    `("", "")` like the transient case. The action's true outcome still reaches the operator,
+    and the lost verification is durably recorded rather than dropped.
+    """
+
+    @staticmethod
+    def _raiser(exc):
+        def _fn(*_a, **_kw):
+            raise exc
+
+        return _fn
+
+    def test_a_corrupt_index_is_audited_rather_than_raising_after_the_action_ran(self):
+        from kiro_crew.apps.builtins.ops_mission_control.backend import store
+
+        corrupt = json.JSONDecodeError("Expecting value", "{ not json", 2)
+        with mock.patch.object(store, "update_fields", self._raiser(corrupt)):
+            with mock.patch.object(routes, "_audit") as audited:
+                result = routes._schedule_verification("INV-1", "silence", 60)
+
+        self.assertEqual(result, ("", ""), "a completed action must not be reported as failed")
+        ops = [c.args[0] for c in audited.call_args_list]
+        self.assertIn(
+            "action_verification_unscheduled",
+            ops,
+            "corruption was swallowed with no durable record",
+        )
+        outcome = next(c for c in audited.call_args_list if c.args[0] == "action_verification_unscheduled")
+        self.assertEqual(outcome.args[2], "failure")
+
+    def test_a_transient_failure_is_not_audited_as_an_unscheduled_verification(self):
+        """The asymmetry: a transient miss is retried by the next pass, so it stays quiet."""
+        from kiro_crew.apps.builtins.ops_mission_control.backend import store
+
+        denied = PermissionError(13, "Permission denied")
+        with mock.patch.object(store, "update_fields", self._raiser(denied)):
+            with mock.patch.object(routes, "_audit") as audited:
+                result = routes._schedule_verification("INV-1", "silence", 60)
+
+        self.assertEqual(result, ("", ""))
+        ops = [c.args[0] for c in audited.call_args_list]
+        self.assertNotIn("action_verification_unscheduled", ops)

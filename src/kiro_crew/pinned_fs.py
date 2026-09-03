@@ -40,26 +40,45 @@ import errno
 import os
 import shutil
 import stat as _stat
+from collections.abc import Iterable, Mapping
+from contextlib import suppress
+from dataclasses import dataclass
 from pathlib import Path, PurePath
 from typing import Callable
 
 __all__ = [
+    "PUT_BACK_FAILED",
+    "PUT_BACK_NAME_TAKEN",
     "PinnedPathRefusal",
+    "PinnedTree",
+    "REMOVAL_FAILED",
+    "REMOVAL_IDENTITY_CHANGED",
+    "REMOVAL_STAGE_FAILED",
+    "REMOVAL_UNVERIFIABLE",
     "SKIP_NOT_REGULAR",
     "SKIP_SYMLINK",
     "SKIP_VANISHED",
     "SkipReporter",
+    "StagedRemoval",
+    "TreeRemoval",
+    "close_all",
     "copy_file_pinned",
     "create_and_open_dir_pinned",
     "dir_flags",
+    "drain_verified_chain",
     "fatal_skip_reporter",
     "is_reparse_point",
     "is_regular_at",
     "stat_at",
     "open_dir_pinned",
     "open_in_pinned_parent",
+    "open_verified_chain",
     "pin_parent",
+    "put_back_no_clobber",
     "refuse_hardlink_alias",
+    "remove_dir_verified",
+    "remove_tree_pinned",
+    "scan_tree_pinned",
     "stage_tree_pinned",
     "supports_pinned_tree_walk",
     "supports_pinned_walk",
@@ -923,3 +942,809 @@ def _open_child_dir(parent_fd: int, entry: str, by_name: str, on_skip: SkipRepor
             on_skip(SKIP_SYMLINK, by_name)
             return None
         raise
+
+
+# ---------------------------------------------------------------------------
+# Verified removal
+#
+# Everything below owns ONE mechanism: removing something reached through a pinned
+# descriptor, where the removal itself must not address a name that could have been
+# swapped since it was checked. It lives here rather than at its call sites because it
+# was previously spelled once per site -- the interior directories of a trash batch, the
+# batch directory, and the coarse fallback -- and a fourth consumer is what finally shows
+# which parts are consumer-agnostic. That per-site respelling is the failure this module's
+# own docstring names, from #2446 and #2447.
+#
+# The policy stays with the caller. Nothing here logs, and nothing here decides whether a
+# refusal aborts or is reported and skipped: each function returns what happened and the
+# caller words it. That is the same split the walk above already uses.
+# ---------------------------------------------------------------------------
+
+#: Reason codes returned by :func:`remove_dir_verified` and :func:`remove_tree_pinned`.
+#: The caller words the message; these only classify.
+#:
+#: Named for the REMOVAL rather than borrowing the ``SKIP_`` prefix its first consumer
+#: uses. That consumer has its own ``SKIP_UNREADABLE``/``SKIP_IDENTITY_CHANGED`` for the
+#: batch it is skipping, and both families end up in the same log line -- one pair of names
+#: meaning two things, with one of them a DIFFERENT string, is how a later reader matching
+#: on the value gets it wrong.
+REMOVAL_IDENTITY_CHANGED = "removal_identity_changed"
+REMOVAL_UNVERIFIABLE = "removal_unverifiable"
+REMOVAL_FAILED = "removal_failed"
+REMOVAL_STAGE_FAILED = "removal_stage_failed"
+
+
+def close_all(fds: Iterable[int]) -> None:
+    """Close every descriptor in *fds*, tolerating one that is already closed.
+
+    A close that raises must not abandon the rest: a leaked directory descriptor pins its
+    inode for the life of the process, and a tree removal opens one per directory.
+
+    Public for the same reason :func:`dir_flags` is -- a second module walking trees the
+    same way needs it, and reaching for a private is how the divergence starts.
+    """
+    for fd in fds:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+
+
+@dataclass(frozen=True)
+class PinnedTree:
+    """What one pinned traversal saw, keyed by components relative to the scan root.
+
+    Three maps rather than one because the removal treats them differently: a directory is
+    removed with ``rmdir`` after its children, a link is unlinked without ever being
+    followed, and a file is unlinked. The values are inodes, which is the part that matters
+    -- see :func:`scan_tree_pinned`.
+    """
+
+    dirs: dict[tuple[str, ...], int]
+    files: dict[tuple[str, ...], int]
+    links: dict[tuple[str, ...], int]
+
+
+@dataclass(frozen=True)
+class StagedRemoval:
+    """The outcome of one identity-verified directory removal.
+
+    ``staged_name`` is set only when the entry was LEFT under the staging name, which is
+    the case a human has to be told about: the object there is not the one that was
+    approved, so the name it came from is not this code's to write to either. A removal
+    that failed but WAS renamed back therefore reports no staging name -- that is the same
+    fact, and a second field carrying it would be a second place for it to be wrong.
+    """
+
+    removed: bool
+    reason: str | None = None
+    staged_name: str | None = None
+    error: OSError | None = None
+
+
+@dataclass(frozen=True)
+class TreeRemoval:
+    """The outcome of :func:`remove_tree_pinned`.
+
+    ``survivors`` counts entries still present in the closing scan. It is reported rather
+    than raised on so a caller can keep a partly-emptied directory listed instead of
+    claiming success.
+
+    No ``error`` field, unlike :class:`StagedRemoval`: that one carries the exception
+    because its caller RE-RAISES it, and a whole-tree caller does not. It reports the
+    reason code and keeps the directory, so an exception object here would be surface
+    nothing reads.
+    """
+
+    removed: bool
+    survivors: int = 0
+    reason: str | None = None
+    staged_name: str | None = None
+
+
+def scan_tree_pinned(dir_fd: int, *, device: int) -> PinnedTree:
+    """One pinned traversal of the tree under *dir_fd*: its directories, files and links.
+
+    Records the inode of every entry, keyed by components relative to the scan root, plus
+    every LINK's key separately. Children are opened relative to the descriptor with
+    ``O_NOFOLLOW``, so no path is resolved and a directory that is really a link is not
+    descended into. The inodes come from the directory block itself
+    (``os.DirEntry.inode``), so recording them costs no extra syscall.
+
+    The inodes are the point. ``O_NOFOLLOW`` refuses a LINK, but a real directory RENAMED
+    into a scanned name is not a link and satisfies ``O_DIRECTORY`` -- so moving a live
+    directory onto a scanned directory's name redirects later unlinks at live files that
+    happen to share a name, and pinning the ROOT does not cover that, because the root's
+    own inode is unchanged by a rename inside it. Every directory a removal later opens
+    must be the inode this scan recorded. A map read at removal time cannot serve: it
+    reports the impostor.
+
+    Refuses an entry on another ``device``, which is how a mount arriving underneath is
+    caught: it is not a link either.
+
+    ITERATIVE, with an explicit stack, because a recursive walk of a deeply nested tree
+    raises ``RecursionError`` -- which is not ``OSError``, so it escapes callers that turn
+    a failed read into a refusal.
+
+    What it costs in descriptors, stated accurately because the obvious guess is wrong: a
+    directory's child directories are ALL opened before any of them is visited, so what is
+    held at once is the queued frontier, not the current path. A wide tree can therefore
+    exhaust descriptors as easily as a deep one. Both surface as ``EMFILE`` -- an ``OSError``
+    every caller here already treats as "cannot read this, keep it" -- so the failure is
+    contained either way; only the arithmetic differs. Files and links cost nothing, which is
+    what makes this bearable in practice: the trees this walks are wide in FILES and narrow
+    in directories.
+
+    Opening children eagerly is deliberate rather than incidental. Each child's inode is
+    taken from the directory block and cross-checked against the ``fstat`` of the descriptor
+    opened a moment later, and that pair is what catches a directory renamed into a scanned
+    name between the listing and the open. Deferring the open until the child is visited
+    would put every sibling's processing inside that window, trading a documented containment
+    property for a descriptor bound. The bound is the thing worth giving up.
+
+    Raises rather than returning a short list: this feeds decisions about deleting the only
+    copy of something, so an incomplete answer must not read as "nothing unaccounted for".
+    """
+    dirs: dict[tuple[str, ...], int] = {}
+    files: dict[tuple[str, ...], int] = {}
+    links: dict[tuple[str, ...], int] = {}
+    # (key prefix, descriptor, whether this function opened it and must close it)
+    stack: list[tuple[tuple[str, ...], int, bool]] = [((), dir_fd, False)]
+    try:
+        while stack:
+            here, fd, owned = stack.pop()
+            try:
+                with os.scandir(fd) as entries:
+                    listing = list(entries)
+                for entry in listing:
+                    key = here + (entry.name,)
+                    if entry.is_symlink():
+                        links[key] = entry.inode()
+                        continue
+                    if not entry.is_dir(follow_symlinks=False):
+                        files[key] = entry.inode()
+                        continue
+                    child = os.open(entry.name, dir_flags(), dir_fd=fd)
+                    try:
+                        info = os.fstat(child)
+                        if info.st_dev != device:
+                            raise OSError(
+                                f"refusing a scanned directory on another device: {entry.name!r}"
+                            )
+                        # The name was listed by `scandir` and opened a moment later, which
+                        # is a check-to-use window like any other -- and this one produces
+                        # the map every later verification is made of. A rename in between
+                        # means the inode recorded here belongs to the replacement, so the
+                        # map blesses it. `entry.inode()` is what the listing saw; the
+                        # descriptor is what was opened. They have to agree.
+                        if info.st_ino != entry.inode():
+                            raise OSError(
+                                "refusing a scanned directory that changed between the "
+                                f"listing and the open: {entry.name!r}"
+                            )
+                    except OSError:
+                        close_all((child,))
+                        raise
+                    dirs[key] = info.st_ino
+                    stack.append((key, child, True))
+            finally:
+                if owned:
+                    close_all((fd,))
+    finally:
+        # Whatever is still queued when an error unwinds this: the loop closes each
+        # descriptor as it finishes with it, so only the unvisited remainder is left.
+        close_all(fd for _key, fd, owned in stack if owned)
+    return PinnedTree(dirs=dirs, files=files, links=links)
+
+
+def open_verified_chain(
+    root_fd: int,
+    parts: tuple[str, ...],
+    *,
+    cache: dict[tuple[str, ...], int],
+    dirs: Mapping[tuple[str, ...], int],
+    device: int,
+) -> int:
+    """Open the directory named by *parts* under *root_fd*, or raise ``OSError``.
+
+    Every component is opened with ``O_NOFOLLOW`` relative to the previous one, so a
+    component that is (or becomes) a link fails the open instead of being followed, and
+    each one is admitted only as the inode *dirs* recorded for that name on *device*. A
+    rename landing after the scan is therefore refused rather than followed -- which
+    ``O_NOFOLLOW`` alone cannot do, since a renamed real directory is not a link.
+
+    Descriptors are cached because one tree has a handful of directories and can have tens
+    of thousands of files inside them, so each directory is verified once and then
+    addressed by the descriptor that was checked. The cache is the CALLER's, because
+    dropping it between phases is what forces a re-check -- see
+    :func:`drain_verified_chain`.
+    """
+    fd = root_fd
+    key: tuple[str, ...] = ()
+    for part in parts:
+        key = key + (part,)
+        cached = cache.get(key)
+        if cached is not None:
+            fd = cached
+            continue
+        expected = dirs.get(key)
+        if expected is None:
+            raise OSError(f"refusing a scanned directory the tree scan did not see: {part!r}")
+        child = os.open(part, dir_flags(), dir_fd=fd)
+        try:
+            info = os.fstat(child)
+        except OSError:
+            close_all((child,))
+            raise
+        if (info.st_dev, info.st_ino) != (device, expected):
+            close_all((child,))
+            raise OSError(f"refusing a scanned directory that changed identity: {part!r}")
+        cache[key] = child
+        fd = child
+    return fd
+
+
+def drain_verified_chain(cache: dict[tuple[str, ...], int]) -> None:
+    """Close and forget every descriptor in *cache*.
+
+    Emptied as it goes rather than closed in a loop and cleared afterwards: a failure
+    part-way would otherwise leave already-closed descriptors in the cache for a later
+    cleanup to close a SECOND time, and a reused number makes that second close land on an
+    unrelated file.
+    """
+    while cache:
+        _key, fd = cache.popitem()
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+
+
+def _name_is_free(parent_fd: int, name: str) -> bool:
+    """Whether *name* holds nothing under *parent_fd*, as far as one ``stat`` can say.
+
+    Deliberately conservative in both directions: only a definite "nothing is there" answers
+    True, so a name that cannot be read is treated as occupied rather than free. See
+    :func:`remove_dir_verified` for what this check does and does not buy.
+    """
+    try:
+        os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+    except FileNotFoundError:
+        return True
+    except OSError:
+        return False
+    return False
+
+
+def remove_dir_verified(
+    parent_fd: int,
+    name: str,
+    *,
+    expect: tuple[int, int],
+) -> StagedRemoval:
+    """Remove the directory at *name* under *parent_fd*, only if it is *expect*.
+
+    *expect* is ``(st_dev, st_ino)``. This is the single owner of rename-verify-remove.
+    ``rmdir`` addresses a NAME and so does any check above it, so an actor with write
+    access to the parent can swap the name between the two and have an unapproved
+    directory removed on another one's approval. So:
+
+    1. the name is renamed to ``.<name>.removing-<random>`` in the SAME parent, which is
+       atomic and moves whatever holds the name somewhere only this call knows;
+    2. the identity is re-checked THERE, through the parent descriptor, against *expect*;
+    3. only that staging name is removed.
+
+    The suffix is random because ``os.rename`` replaces an existing destination silently on
+    POSIX: a predictable name is one that can be squatted.
+
+    The rename BACK is the part that is easy to get wrong, so both halves are stated.
+
+    On a MISMATCH it never happens: the object under the staging name is not the one that
+    was approved, which means the name it came from is not this code's to write to either --
+    and rename replaces its destination, so putting the impostor back would destroy whatever
+    now answers to the original name.
+
+    On a failed ``rmdir`` it happens only if the original name is FREE. It has to be put back
+    where it can be found: this directory could not be removed because something is inside
+    it, and that something is unaccounted-for content nobody listed -- leaving it under an
+    unguessable name means nothing can point at it again. But POSIX rename REPLACES a
+    directory destination when that destination is an empty directory, so renaming back
+    blindly can silently remove one a concurrent writer created at the name. Checking the
+    name is free first is a check-to-use pair, and this module says elsewhere that those are
+    the mistake it exists to remove -- so what it does and does not buy is worth being exact
+    about. There is no no-replace rename for directories in the stdlib (``renameat2``'s
+    ``RENAME_NOREPLACE`` is Linux-only and unexposed), so the choice is between this and one
+    of two unconditional losses. What the check removes is the DETERMINISTIC case, where
+    something already holds the name by the time the removal fails; what is left is a race
+    inside two adjacent syscalls whose worst outcome is an empty directory removed, which
+    holds no data and is trivially remade. A name found occupied leaves the directory staged
+    and reported.
+
+    Never raises for these outcomes and never logs: the caller decides between
+    log-and-continue and raise, and words the message. ``error`` carries the underlying
+    ``OSError`` for a caller that re-raises.
+    """
+    try:
+        staging = f".{name}.removing-{os.urandom(4).hex()}"
+        os.rename(name, staging, src_dir_fd=parent_fd, dst_dir_fd=parent_fd)
+    except OSError as exc:
+        return StagedRemoval(removed=False, reason=REMOVAL_STAGE_FAILED, error=exc)
+    try:
+        moved = os.stat(staging, dir_fd=parent_fd, follow_symlinks=False)
+    except OSError as exc:
+        # NOT restored. What is under the staging name is unknown, so putting it back means
+        # renaming an unknown object onto the original name -- and POSIX rename REPLACES
+        # its destination, which would destroy whatever is there now.
+        return StagedRemoval(
+            removed=False, reason=REMOVAL_UNVERIFIABLE, staged_name=staging, error=exc
+        )
+    if not _stat.S_ISDIR(moved.st_mode) or (moved.st_dev, moved.st_ino) != expect:
+        # Also NOT restored, and this is the case that matters: an actor who swapped the
+        # directory and then placed something at the original name would have had the
+        # rename-back destroy it.
+        return StagedRemoval(removed=False, reason=REMOVAL_IDENTITY_CHANGED, staged_name=staging)
+    try:
+        os.rmdir(staging, dir_fd=parent_fd)
+    except OSError as exc:
+        # The identity matched, so this IS the approved directory and the original name is
+        # where it belongs -- but only while nothing else has taken that name. A rename-back
+        # that itself fails leaves the staging name, and that -- not a second flag saying the
+        # same thing -- is what the caller reports.
+        left: str | None = staging
+        if _name_is_free(parent_fd, name):
+            try:
+                os.rename(staging, name, src_dir_fd=parent_fd, dst_dir_fd=parent_fd)
+            except OSError:
+                pass
+            else:
+                left = None
+        return StagedRemoval(
+            removed=False,
+            reason=REMOVAL_FAILED,
+            staged_name=left,
+            error=exc,
+        )
+    return StagedRemoval(removed=True)
+
+
+def _unlink_verified(holder_fd: int, name: str, expect: tuple[int, int]) -> bool:
+    """Unlink *name* under *holder_fd*, only if it is still ``(st_dev, st_ino)`` *expect*.
+
+    The residual is irreducible and better stated than implied: POSIX has no
+    unlink-by-inode, so the stat and the unlink are two syscalls addressing the same NAME.
+    What CAN be done is refuse when the name no longer holds what the scan saw, which is
+    what turns "delete whatever answers to this name" into "delete this object, or nothing".
+    The remaining window needs a swap landing between two adjacent syscalls, and the
+    directory holding the name was itself reached only through verified descriptors.
+    """
+    try:
+        info = os.stat(name, dir_fd=holder_fd, follow_symlinks=False)
+    except OSError:
+        return False
+    if (info.st_dev, info.st_ino) != expect:
+        return False
+    try:
+        os.unlink(name, dir_fd=holder_fd)
+    except OSError:
+        return False
+    return True
+
+
+#: Outcomes of :func:`put_back_no_clobber`. ``None`` means the name is back.
+PUT_BACK_NAME_TAKEN = "name_taken"
+PUT_BACK_FAILED = "failed"
+
+
+def put_back_no_clobber(
+    src_parent_fd: int,
+    dst_dir_fd: int,
+    src_name: str,
+    dst_name: str,
+    *,
+    expect_ino: int,
+) -> str | None:
+    """Recreate *dst_name* inside *dst_dir_fd* from *src_name*, refusing to replace anything.
+
+    The undo half of "move an entry aside, remove the tree, put it back if the tree would
+    not go". It has to be no-clobber: something may have arrived at *dst_name* while the
+    entry was out, and that something is a file this code has never read.
+
+    *src_name* is treated as UNTRUSTED, which is the part that is easy to skip. It is a name
+    in a directory an actor may be able to write to, and the whole reason this function runs
+    is that an earlier step already failed -- so time has passed. The name is opened
+    ``O_NOFOLLOW`` and its inode checked against *expect_ino* before anything is read from
+    it, and the copy reads that DESCRIPTOR rather than re-opening the name. Without that, a
+    name swapped for a symbolic link is followed and whatever it points at -- a credential,
+    say -- is linked or copied into the destination under a name the caller will treat as its
+    own.
+
+    First choice is ``os.link``, which cannot clobber, and it is called with
+    ``follow_symlinks=False`` so a swap landing after the verification links the link itself
+    rather than its target. What LANDED is then checked by inode too, because that link is
+    still addressed by name.
+
+    Where hard links are unsupported there is no second no-clobber RENAME in the stdlib --
+    ``renameat2``'s ``RENAME_NOREPLACE`` is Linux-only and unexposed -- and the two obvious
+    substitutes are each a documented loss:
+
+    * ``rename`` after checking the name is free puts a check-to-use window between the look
+      and the act, so a file arriving in between is replaced. That is the same
+      trusted-a-name mistake this module exists to remove.
+    * giving up leaves the tree holding data with nothing that lists it: unreachable and
+      unrecoverable.
+
+    ``O_CREAT | O_EXCL`` is the third option and has neither flaw. The create either wins or
+    fails with ``EEXIST``, decided inside one syscall, so nothing can arrive in a window;
+    and it needs no hard-link support, so it strands nothing. The cost is a copy rather than
+    a link, paid only on a filesystem without links and only when a removal already failed.
+
+    Note WHY the copy path cannot be skipped by probing first: ``os.link in
+    os.supports_dir_fd`` tests whether the OS accepts ``dir_fd``, not what the MOUNT
+    supports, so a filesystem without hard links passes that probe and then refuses the
+    call. A guard built on the probe is a guard that fails exactly where it matters.
+
+    Returns ``None`` when the name is back, :data:`PUT_BACK_NAME_TAKEN` when something else
+    holds it (nothing was overwritten), or :data:`PUT_BACK_FAILED`.
+    """
+    try:
+        src = os.open(src_name, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0), dir_fd=src_parent_fd)
+    except OSError:
+        return PUT_BACK_FAILED
+    try:
+        if os.fstat(src).st_ino != expect_ino:
+            # The name no longer holds what was moved aside, so there is nothing here this
+            # function may put anywhere. Refusing leaves the caller to report the name.
+            return PUT_BACK_FAILED
+        linked = False
+        try:
+            os.link(
+                src_name,
+                dst_name,
+                src_dir_fd=src_parent_fd,
+                dst_dir_fd=dst_dir_fd,
+                follow_symlinks=False,
+            )
+        except FileExistsError:
+            return PUT_BACK_NAME_TAKEN
+        except (OSError, NotImplementedError):
+            pass
+        else:
+            linked = True
+        if linked:
+            # The link was addressed by NAME on both ends, so what landed is checked before
+            # the caller is told the entry is back.
+            try:
+                if os.stat(dst_name, dir_fd=dst_dir_fd, follow_symlinks=False).st_ino == expect_ino:
+                    return None
+            except OSError:
+                return PUT_BACK_FAILED
+            # NOT unlinked. The name holds something that is not what this call linked, so
+            # it is a replacement that arrived in between -- and it may be the only copy of
+            # whatever it is. The link this call made is no longer reachable through that
+            # name, so there is nothing of ours left to clean up either; reporting the
+            # failure is the whole remedy.
+            return PUT_BACK_FAILED
+        try:
+            dst = os.open(
+                dst_name,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                0o600,
+                dir_fd=dst_dir_fd,
+            )
+        except FileExistsError:
+            return PUT_BACK_NAME_TAKEN
+        except OSError:
+            return PUT_BACK_FAILED
+        try:
+            created = os.fstat(dst)
+        except OSError:
+            os.close(dst)
+            return PUT_BACK_FAILED
+        try:
+            # From the VERIFIED descriptor, not from the name again.
+            os.lseek(src, 0, os.SEEK_SET)
+            while True:
+                chunk = os.read(src, 1 << 20)
+                if not chunk:
+                    break
+                while chunk:
+                    chunk = chunk[os.write(dst, chunk) :]
+        except OSError:
+            # A half-written file is worse than none: it would carry SOME of the content and
+            # silently drop the rest, which reads as a smaller batch rather than as a failure.
+            #
+            # Emptied FIRST, through the descriptor this call is still holding. That part
+            # cannot touch anything else: `dst` is the file this call created, so even if the
+            # name now leads elsewhere the truncate lands on our own inode. It means the
+            # partial content is gone whether or not the unlink below happens.
+            #
+            # Then the name is removed, but only while it still holds that same file. The
+            # check narrows a two-syscall window rather than closing it - POSIX has no
+            # "unlink if this inode" - and the truncate above is what makes the residual
+            # bounded: the worst case is a file that arrived at a private name this call
+            # created moments earlier, inside a recovery path reached only after a removal
+            # already failed. Leaving the name in place instead would satisfy the window
+            # completely and leave a zero-length manifest at it, which a later read cannot
+            # tell from a corrupted one and a later retry cannot overwrite.
+            with suppress(OSError):
+                os.ftruncate(dst, 0)
+            _unlink_verified(dst_dir_fd, dst_name, (created.st_dev, created.st_ino))
+            return PUT_BACK_FAILED
+        finally:
+            os.close(dst)
+    finally:
+        os.close(src)
+    return None
+
+
+def remove_tree_pinned(
+    resolved_path: str,
+    *,
+    what: str,
+    approve: Callable[[int, PinnedTree], str | None],
+    refusal: type[Exception] = PinnedPathRefusal,
+    keep_until_empty: str | None = None,
+) -> TreeRemoval:
+    """Remove the directory *resolved_path* and everything in it, by descriptor throughout.
+
+    The whole-tree counterpart of the pieces above, for callers whose answer to "what may
+    be deleted here" is "all of it" -- a directory they have already established holds
+    nothing worth keeping. What it replaces at those call sites is
+    ``shutil.rmtree(path)``, which re-resolves the path: every ancestor is walked again by
+    the kernel, so one of them swapped to a link after the caller's own checks is followed
+    and the removal lands outside the tree entirely.
+
+    The sequence: pin the parent chain one ``openat`` per component, open the target
+    through it with ``O_NOFOLLOW``, scan it once, let *approve* look at what was found,
+    remove links and files against the scanned inodes, remove directories deepest-first
+    through :func:`remove_dir_verified`, re-scan to decide whether it is actually empty,
+    and only then remove the target itself -- verified against the descriptor the whole
+    operation was pinned to.
+
+    *approve* is where a caller re-establishes, THROUGH THE PINNED DESCRIPTOR, whatever it
+    believes about this directory. It is called once with ``(root_fd, tree)`` before
+    anything is removed, and returning a reason string refuses the whole removal having
+    touched nothing. It is REQUIRED, and not nullable. Resolving the parent does NOT by
+    itself prove the opened directory is the caller's, because ``Path.resolve()`` follows an
+    ancestor that is ALREADY a link -- so a swap landing before the resolve produces a
+    perfectly pinned walk to the wrong tree, and pinning alone would then delete it. What
+    defeats that is the caller asking a question only its own directory can answer, and
+    asking it of the descriptor rather than of the path. A removal that asks nothing is the
+    weaker mode, and there is no caller that wants it: leaving the parameter optional would
+    only make the weak mode available to a future caller by omission.
+
+    *keep_until_empty* names a top-level FILE to remove LAST, and it exists because the
+    order is load-bearing rather than tidy. Some trees are only DISCOVERABLE through one
+    entry -- an index, a manifest -- and removing that first means a later failure leaves
+    the rest of the tree on disk with nothing that lists it: data neither visible nor
+    recoverable, while the removal reported a partial success. So the named entry is skipped
+    by the file pass, the closing scan must find nothing but it, and only then is it moved
+    aside and the tree removed. If the tree still will not go, the entry goes back through
+    :func:`put_back_no_clobber`, which cannot overwrite whatever arrived at that name and
+    needs no hard-link support to succeed.
+
+    Raises *refusal* on a platform that cannot pin (see
+    :func:`supports_pinned_tree_walk`) rather than falling back to a by-name removal. That
+    is this module's standing rule: the caller is told and decides. It also raises
+    *refusal* when the target cannot be opened at all, which is precisely the ancestor swap
+    the pinned walk exists to catch.
+
+    Returns rather than raises for a tree that would not go: ``removed`` is False and
+    ``survivors`` says how much is left, so a caller can keep the directory visible instead
+    of reporting a success that did not happen.
+
+    *resolved_path* must already be RESOLVED -- see :func:`pin_parent` for why demanding
+    that is safe rather than brittle.
+    """
+    if not supports_pinned_tree_walk():
+        raise refusal(
+            f"refusing to remove the {what} by name: this platform cannot open relative to "
+            "a directory descriptor, so the removal would re-resolve every ancestor"
+        )
+    target = Path(resolved_path)
+    if target.parent == target:
+        raise refusal(f"refusing to remove the {what}: {resolved_path!r} has no parent")
+    parent_fd = pin_parent(str(target.parent), what=what, refusal=refusal)
+    try:
+        try:
+            root_fd = os.open(target.name, dir_flags(), dir_fd=parent_fd)
+        except OSError as exc:
+            raise refusal(f"refusing to remove the {what}: {exc}") from exc
+        try:
+            pinned = os.fstat(root_fd)
+            device = pinned.st_dev
+            cache: dict[tuple[str, ...], int] = {}
+            deferred_key: tuple[str, ...] | None = None
+            deferred_ino: int | None = None
+            try:
+                tree = scan_tree_pinned(root_fd, device=device)
+                withheld = approve(root_fd, tree)
+                if withheld is not None:
+                    # Before ANY removal, so a refusal costs nothing: the directory is
+                    # exactly as it was found.
+                    return TreeRemoval(
+                        removed=False,
+                        survivors=len(tree.dirs) + len(tree.files) + len(tree.links),
+                        reason=withheld,
+                    )
+                # Resolved against the SCAN, not by asking the directory again: the entry
+                # held back has to be the one this pass saw, so the identity re-checked
+                # after the removal has something honest to compare with. Named but absent
+                # means there is nothing to defer, which is not an error - a tree with no
+                # index entry is simply one where the order does not matter.
+                if keep_until_empty is not None and (keep_until_empty,) in tree.files:
+                    deferred_key = (keep_until_empty,)
+                    deferred_ino = tree.files[deferred_key]
+                # Links first and never followed: a link is unlinked, so what it points at
+                # is irrelevant -- but only if it is STILL the link the scan saw, because
+                # the name could now hold a real file that is somebody's only copy.
+                for key, ino in tree.links.items():
+                    try:
+                        holder = open_verified_chain(
+                            root_fd, key[:-1], cache=cache, dirs=tree.dirs, device=device
+                        )
+                    except OSError:
+                        continue
+                    _unlink_verified(holder, key[-1], (device, ino))
+                for key, ino in tree.files.items():
+                    if key == deferred_key:
+                        # Held back on purpose - see `keep_until_empty`. Removing it now and
+                        # then failing to remove the tree would leave data on disk that
+                        # nothing lists.
+                        continue
+                    try:
+                        holder = open_verified_chain(
+                            root_fd, key[:-1], cache=cache, dirs=tree.dirs, device=device
+                        )
+                    except OSError:
+                        continue
+                    _unlink_verified(holder, key[-1], (device, ino))
+                # Dropped FIRST, so the directory phase re-opens every directory and
+                # re-checks its inode. Reusing a descriptor cached during the file phase
+                # would satisfy the check with the identity the directory had THEN, and
+                # `rmdir` addresses a name.
+                drain_verified_chain(cache)
+                staged: str | None = None
+                for key in sorted(tree.dirs, key=len, reverse=True):
+                    try:
+                        # The FULL key, so the directory about to go is itself checked
+                        # against the scanned inode -- not merely the chain leading to it.
+                        open_verified_chain(
+                            root_fd, key, cache=cache, dirs=tree.dirs, device=device
+                        )
+                        holder = open_verified_chain(
+                            root_fd, key[:-1], cache=cache, dirs=tree.dirs, device=device
+                        )
+                    except OSError:
+                        continue
+                    outcome = remove_dir_verified(
+                        holder,
+                        key[-1],
+                        expect=(device, tree.dirs[key]),
+                    )
+                    if outcome.staged_name is not None:
+                        staged = outcome.staged_name
+                drain_verified_chain(cache)
+                # The post-condition is a FRESH pinned scan, for the same reason the
+                # removal is driven by the first one: asking "is it empty" of the same walk
+                # that decided what to delete lets one answer stand in for the other.
+                try:
+                    left = scan_tree_pinned(root_fd, device=device)
+                except OSError:
+                    # Cannot confirm it is empty, so it is not treated as empty: removing
+                    # the directory now would be doing it on an answer that was never read.
+                    return TreeRemoval(
+                        removed=False,
+                        reason=REMOVAL_UNVERIFIABLE,
+                        staged_name=staged,
+                    )
+                remaining = dict(left.files)
+                if deferred_key is not None:
+                    # By INODE, not by name. Everything after this treats the survivor as
+                    # the entry that was deliberately kept: it is moved aside and, once the
+                    # tree is gone, unlinked. A file substituted at that name after the
+                    # first scan would otherwise be accepted here and then destroyed.
+                    if remaining.pop(deferred_key, None) != deferred_ino:
+                        return TreeRemoval(
+                            removed=False,
+                            survivors=len(left.dirs) + len(left.files) + len(left.links),
+                            reason=REMOVAL_IDENTITY_CHANGED,
+                            staged_name=staged,
+                        )
+                survivors = len(left.dirs) + len(remaining) + len(left.links)
+                if survivors:
+                    return TreeRemoval(
+                        removed=False,
+                        survivors=survivors,
+                        reason=REMOVAL_FAILED,
+                        staged_name=staged,
+                    )
+            finally:
+                drain_verified_chain(cache)
+            if deferred_key is None or deferred_ino is None:
+                outcome = remove_dir_verified(
+                    parent_fd,
+                    target.name,
+                    expect=(pinned.st_dev, pinned.st_ino),
+                )
+                return TreeRemoval(
+                    removed=outcome.removed,
+                    reason=outcome.reason,
+                    staged_name=outcome.staged_name,
+                )
+            return _remove_with_deferred_entry(
+                parent_fd,
+                root_fd,
+                target.name,
+                deferred_key[0],
+                deferred_ino,
+                (pinned.st_dev, pinned.st_ino),
+            )
+        finally:
+            close_all((root_fd,))
+    finally:
+        close_all((parent_fd,))
+
+
+def _remove_with_deferred_entry(
+    parent_fd: int,
+    root_fd: int,
+    name: str,
+    entry: str,
+    entry_ino: int,
+    expect: tuple[int, int],
+) -> TreeRemoval:
+    """Move the deferred entry out, remove the now-empty tree, then delete the entry.
+
+    The entry and the directory have to go TOGETHER, and ``rmdir`` cannot run while the
+    entry is still in there. Unlinking it first leaves a window that a file created after
+    the closing scan turns into silent loss: the ``rmdir`` then fails on a non-empty
+    directory, and the tree - now without the entry that made it discoverable - is data on
+    disk that nothing lists.
+
+    So the entry is MOVED to the parent under an unguessable debris name instead of deleted.
+    From there the tree can be removed, and if that fails the entry goes straight back,
+    leaving it discoverable exactly as it was. A crash between the two renames leaves one
+    small file rather than an unreadable tree.
+
+    The way back is :func:`put_back_no_clobber`, never ``rename``: POSIX rename REPLACES its
+    destination silently, which is the property the debris name is chosen to be safe
+    against, and this direction needs the opposite - a file that arrived at the entry's name
+    in the interval must not be clobbered. The debris is unlinked only once the entry is
+    back, so no window has neither.
+    """
+    debris = f".{name}.{entry}.removing-{os.urandom(4).hex()}"
+    try:
+        os.rename(entry, debris, src_dir_fd=root_fd, dst_dir_fd=parent_fd)
+    except OSError:
+        return TreeRemoval(removed=False, reason=REMOVAL_STAGE_FAILED)
+    landed: int | None = None
+    try:
+        landed = os.stat(debris, dir_fd=parent_fd, follow_symlinks=False).st_ino
+    except OSError:
+        pass
+    if landed != entry_ino:
+        # The rename moved something that is not the verified entry, so the unlink at the
+        # end of this would destroy it. Left as debris, named for a human.
+        return TreeRemoval(removed=False, reason=REMOVAL_IDENTITY_CHANGED, staged_name=debris)
+    outcome = remove_dir_verified(parent_fd, name, expect=expect)
+    if not outcome.removed:
+        put_back_no_clobber(parent_fd, root_fd, debris, entry, expect_ino=landed)
+        # The debris is KEPT here, and that is the whole point of this branch. The tree
+        # survived, so the entry is what makes it discoverable, and the check available
+        # before an unlink can only confirm that DEBRIS is still the file that was staged -
+        # never that the name it was put back to still holds a good copy. A file replaced at
+        # the entry's name after the put-back would leave the debris as the last readable
+        # copy, and unlinking it would turn a batch that is merely stuck into one nothing
+        # lists and nothing can restore, which is exactly the loss the deferral exists to
+        # prevent. The cost is one small named file per stuck cleanup, reported below.
+        return TreeRemoval(
+            removed=False,
+            reason=outcome.reason,
+            # The directory's staging name first when there is one: the whole tree sits
+            # under it, so it is the more urgent thing to name. Otherwise the debris, so no
+            # retained copy is left unmentioned.
+            staged_name=outcome.staged_name or debris,
+        )
+    _unlink_verified(parent_fd, debris, (expect[0], landed))
+    return TreeRemoval(removed=True)

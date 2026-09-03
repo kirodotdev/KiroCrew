@@ -10,10 +10,12 @@ from pathlib import Path
 
 from aiohttp import web
 
+from kiro_crew.acp.types import STOP_REASON_END_TURN
 from kiro_crew.config.loader import KiroCrewConfig, config_dir
 from kiro_crew.context_management import OrchestrationTracker
 from kiro_crew.dashboard.chat_runner import (
     _POSTTOKEN_RECOVER_MSG,
+    _STOP_REASON_PROVIDER_BUDGET_ARTIFACT,
     _run_chat,
     _start_next_queued_turn,
 )
@@ -398,6 +400,7 @@ async def _stage_loop(
 
     _paused = False
     _cancelled = False
+    _active_uncaptured_stage: int | None = None
     # Mark the ENTIRE stage-execution lifetime, not each _run_chat call. A
     # stage turn can queue a recovery/continue turn (empty-response re-queue,
     # stale/tool-stall recovery) that runs slightly later on the same slot; a
@@ -468,6 +471,7 @@ async def _stage_loop(
 
             # Record round and emit separator (after timeout check)
             tracker.record_round(stage_num)
+            _active_uncaptured_stage = stage_num
             title = titles[stage_idx] if stage_idx < len(titles) else ""
             label = f"Stage {stage_num}: {title}" if title else f"Stage {stage_num}"
             sep = f"\n\n───── {label} ─────\n"
@@ -491,6 +495,39 @@ async def _stage_loop(
                     return False
                 tracker.abort_round(stage_num)
                 return True
+
+            def _abort_if_non_normal_terminal() -> bool:
+                if slot._last_stop_reason in (
+                    STOP_REASON_END_TURN,
+                    _STOP_REASON_PROVIDER_BUDGET_ARTIFACT,
+                ):
+                    return False
+                slot._auto_run = False
+                tracker.abort_round(stage_num)
+                terminal_msg = (
+                    f"⚠️ Stage {stage_num} ended before completing. "
+                    "Auto-run stopped before marking the stage complete."
+                )
+                slot.append("assistant", terminal_msg, "msg msg-a")
+                state.broadcast_ws(
+                    "chat_append",
+                    {"slot": slot.key, "html": terminal_msg, "cls": "msg msg-a"},
+                )
+                return True
+
+            def _has_nonempty_stage_result() -> bool:
+                for message_row in reversed(slot.messages):
+                    row_cls = message_row.get("cls", "")
+                    if isinstance(row_cls, str) and "stage-sep" in row_cls:
+                        break
+                    row_meta = message_row.get("meta") or {}
+                    if (
+                        message_row.get("role") == "assistant"
+                        and row_meta.get("kind") != "compaction"
+                        and str(message_row.get("content", "")).strip()
+                    ):
+                        return True
+                return False
 
             context = await _build_stage_context(slot, tracker, stage_idx)
             if _abort_if_stop_generation_changed() or _orchestration_stopped(slot, tracker):
@@ -545,7 +582,10 @@ async def _stage_loop(
                 _turn_deadline = _turn_loop.time() + _turn_timeout if _turn_timeout else None
 
                 async def _run_stage_message(
-                    stage_message: str, *, synthetic: bool = False
+                    stage_message: str,
+                    *,
+                    synthetic: bool = False,
+                    prompt_depth: int = 1,
                 ) -> None:
                     remaining = None
                     if _turn_deadline is not None:
@@ -558,6 +598,7 @@ async def _stage_loop(
                         stage_message,
                         _synthetic_payload=synthetic,
                         _directive_user_origin=False,
+                        _prompt_depth=prompt_depth,
                     )
                     if remaining is not None:
                         await _bounded_turn(turn, remaining)
@@ -567,8 +608,10 @@ async def _stage_loop(
                 await _run_stage_message(context)
                 if _abort_if_stop_generation_changed():
                     break
+                if _abort_if_non_normal_terminal():
+                    break
                 if (
-                    slot._last_stop_reason == "provider_budget_artifact"
+                    slot._last_stop_reason == _STOP_REASON_PROVIDER_BUDGET_ARTIFACT
                     and slot._stop_generation == _stage_stop_generation
                     and not _orchestration_stopped(slot, tracker)
                 ):
@@ -579,10 +622,16 @@ async def _stage_loop(
                         slot.key,
                     )
                     slot._posttoken_retry_used = True
-                    await _run_stage_message(_POSTTOKEN_RECOVER_MSG, synthetic=True)
+                    await _run_stage_message(
+                        _POSTTOKEN_RECOVER_MSG,
+                        synthetic=True,
+                        prompt_depth=1,
+                    )
                     if _abort_if_stop_generation_changed() or _orchestration_stopped(slot, tracker):
                         break
-                    if slot._last_stop_reason == "provider_budget_artifact":
+                    if _abort_if_non_normal_terminal():
+                        break
+                    if slot._last_stop_reason == _STOP_REASON_PROVIDER_BUDGET_ARTIFACT:
                         slot._auto_run = False
                         tracker.abort_round(stage_num)
                         artifact_msg = (
@@ -610,6 +659,7 @@ async def _stage_loop(
                     "Auto-run stopped."
                 )
                 slot._auto_run = False
+                tracker.abort_round(stage_num)
                 slot.append("assistant", _timeout_msg, "msg msg-a")
                 state.broadcast_ws(
                     "chat_append",
@@ -637,6 +687,7 @@ async def _stage_loop(
                     f"❌ Stage {stage_num} failed due to an internal error. Auto-run stopped."
                 )
                 slot._auto_run = False
+                tracker.abort_round(stage_num)
                 slot.append("assistant", _err_msg, "msg msg-a")
                 state.broadcast_ws(
                     "chat_append",
@@ -834,14 +885,42 @@ async def _stage_loop(
             if _abort_if_stop_generation_changed() or _orchestration_stopped(slot, tracker):
                 break
 
+            if not _has_nonempty_stage_result():
+                slot._auto_run = False
+                tracker.abort_round(stage_num)
+                empty_msg = (
+                    f"⚠️ Stage {stage_num} returned no usable result. "
+                    "Auto-run stopped before marking the stage complete."
+                )
+                slot.append("assistant", empty_msg, "msg msg-a")
+                state.broadcast_ws(
+                    "chat_append",
+                    {"slot": slot.key, "html": empty_msg, "cls": "msg msg-a"},
+                )
+                break
+
             # Capture result to disk
             try:
                 result_path = _capture_stage_result(slot, stage_num)
                 tracker.record_stage_result(stage_num, result_path)
+                _active_uncaptured_stage = None
             except OSError:
                 logger.warning(
                     "Failed to capture stage %d result to disk", stage_num, exc_info=True
                 )
+                slot._auto_run = False
+                tracker.abort_round(stage_num)
+                _active_uncaptured_stage = None
+                capture_msg = (
+                    f"⚠️ Stage {stage_num} result could not be saved. "
+                    "Auto-run stopped before marking the stage complete."
+                )
+                slot.append("assistant", capture_msg, "msg msg-a")
+                state.broadcast_ws(
+                    "chat_append",
+                    {"slot": slot.key, "html": capture_msg, "cls": "msg msg-a"},
+                )
+                break
 
             # Gate: if not auto_run, wait for user approval
             if not auto_run:
@@ -922,6 +1001,9 @@ async def _stage_loop(
         _cancelled = True
         raise
     finally:
+        if _active_uncaptured_stage is not None:
+            tracker.abort_round(_active_uncaptured_stage)
+            _active_uncaptured_stage = None
         # Clear the stage-execution guard exactly once, when the loop exits
         # (pause / completion / break / error). This spans any queued recovery
         # turns a stage started, and lets a later Cancel + re-plan arm again.

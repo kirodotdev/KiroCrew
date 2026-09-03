@@ -2440,27 +2440,27 @@ class TestPinnedModelWithheld:
         "model,provider", [("", "kiro"), ("auto", "kiro"), ("x", "claude_code")]
     )
     def test_unpinnable_combinations_are_never_withheld(self, model, provider):
-        assert chat_runner._pinned_model_withheld(MagicMock(), model, provider) is False
+        assert chat_runner._pinned_model_verdict(MagicMock(), model, provider) is None
 
     def test_claude_backend_is_exempt(self):
         client = MagicMock()
         client.is_claude_backend = True
 
-        assert chat_runner._pinned_model_withheld(client, "claude-opus-5", "kiro") is False
+        assert chat_runner._pinned_model_verdict(client, "claude-opus-5", "kiro") is None
 
     def test_provider_without_an_advertiser_leaves_the_pin_alone(self):
         client = MagicMock()
         client.is_claude_backend = False
         client.available_models = "not-callable"
 
-        assert chat_runner._pinned_model_withheld(client, "claude-opus-5", "kiro") is False
+        assert chat_runner._pinned_model_verdict(client, "claude-opus-5", "kiro") is None
 
     def test_advertiser_failure_fails_open(self):
         client = MagicMock()
         client.is_claude_backend = False
         client.available_models = MagicMock(side_effect=RuntimeError("no session"))
 
-        assert chat_runner._pinned_model_withheld(client, "claude-opus-5", "kiro") is False
+        assert chat_runner._pinned_model_verdict(client, "claude-opus-5", "kiro") is None
 
     def test_unadvertised_pin_is_reported_as_withheld(self):
         client = MagicMock()
@@ -2468,7 +2468,7 @@ class TestPinnedModelWithheld:
         client.available_models = MagicMock(return_value=[{"modelId": "claude-sonnet-4.6"}])
 
         with patch.object(chat_runner, "advertised_model_ids", return_value={"claude-sonnet-4.6"}):
-            assert chat_runner._pinned_model_withheld(client, "claude-opus-5", "kiro") is True
+            assert chat_runner._pinned_model_verdict(client, "claude-opus-5", "kiro") is True
 
 
 class TestContextUsagePayload:

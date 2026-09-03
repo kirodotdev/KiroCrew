@@ -11,6 +11,7 @@ import pytest
 from aiohttp import web
 
 from kiro_crew.dashboard.handlers import core as core_mod
+from kiro_crew.dashboard.origin import mark_audit_claimed
 
 
 def _probe_req(remote: str = "127.0.0.1", headers=None) -> web.Request:
@@ -425,6 +426,31 @@ def test_both_servers_install_the_shared_host_barrier() -> None:
         )
 
 
+def test_both_servers_install_the_shared_deny_audit_boundary() -> None:
+    """Wiring pin, mirroring the Host-barrier pin: BOTH entrypoints must install
+    the deny-audit boundary from the shared factory.
+
+    The boundary is what makes a pre-audit refusal audited by POSITION. Installed
+    on one entrypoint only, the headless server would silently keep the old
+    per-site guarantee while the dashboard had the structural one — the exact
+    drift the shared factories exist to prevent."""
+    import inspect
+
+    from kiro_crew.dashboard import server as server_mod
+
+    for func, name in (
+        (server_mod.start_dashboard, "start_dashboard"),
+        (server_mod.start_api_server, "start_api_server"),
+    ):
+        src = inspect.getsource(func)
+        assert (
+            "_make_deny_audit_middleware(" in src
+        ), f"{name} no longer installs the shared deny-audit boundary"
+        assert (
+            "deny_audit_middleware," in src
+        ), f"{name} builds the deny-audit boundary but never registers it"
+
+
 def test_every_middleware_denial_is_audited_off_the_loop() -> None:
     """Wiring pin: every middleware that refuses BEFORE ``sel_audit_middleware``
     must route its audit through the shared ``_audit_denied`` helper.
@@ -433,10 +459,15 @@ def test_every_middleware_denial_is_audited_off_the_loop() -> None:
     and invisible when omitted: the write runs OFF the event loop (the first
     ``sel()`` of a process constructs the log — trust-dir creation, key
     validation, an ``icacls`` subprocess on Windows), and it is best-effort (an
-    audit that raises must not turn the 403 into a 500). A bare raise with no
-    audit at all is the third failure: ``sel_audit_middleware`` is registered
-    inner to these, so the refusal would appear nowhere in the audit log.
+    audit that raises must not turn the 403 into a 500).
+
+    A bare raise with no audit at all is no longer a silent failure — the
+    deny-audit boundary records it by position (see the chain tests below) — so
+    these calls are what keeps each record's own reason detail, not what keeps
+    the record. Both halves are still worth pinning: the boundary's generic
+    record names the status and nothing about WHY.
     """
+    import importlib
     import inspect
 
     from kiro_crew.dashboard import server as server_mod
@@ -474,6 +505,362 @@ def test_every_middleware_denial_is_audited_off_the_loop() -> None:
             "_audit_denied so the off-loop and best-effort properties hold "
             "(sel_audit_middleware's ok/error request audit is unaffected)"
         )
+
+    # The positional guarantee behind those enrichment calls: both audit
+    # middlewares must CLAIM the requests they actually log, which is what keeps
+    # the deny-audit boundary from doubling their own ``outcome="error"`` entry
+    # for a refusal raised below them (see origin.AUDIT_CLAIMED_KEY). The claim
+    # must stay INSIDE the logged branch: claiming unconditionally would promise
+    # an audit for requests this middleware logs nowhere, and a cross-origin
+    # WebSocket GET refused in its handler would be silently unaudited again.
+    for func, name in (
+        (server_mod.start_dashboard, "start_dashboard"),
+        (server_mod.start_api_server, "start_api_server"),
+    ):
+        src = inspect.getsource(func)
+        assert "mark_audit_claimed(request)" in src, (
+            f"{name}'s sel_audit_middleware no longer claims the requests it "
+            "logs; the deny-audit boundary would double-record refusals it owns"
+        )
+        claim_at = src.index("mark_audit_claimed(request)")
+        guard_at = src.index('.startswith("/api/")')
+        assert guard_at < claim_at, (
+            f"{name}'s sel_audit_middleware claims before its method/path guard; "
+            "an unlogged request would be claimed and its refusal lost"
+        )
+
+    # Every deny site that writes its OWN audit record must claim, or the
+    # boundary adds a second, generic entry for the same refusal. These two do;
+    # ws.py deliberately does not, because it audits nothing of its own.
+    for module, path in (
+        ("kiro_crew.dashboard.stt_stream", "stt_stream"),
+        ("kiro_crew.dashboard.handlers.terminal", "handlers/terminal"),
+    ):
+        mod = importlib.import_module(module)
+        src = inspect.getsource(mod)
+        assert "mark_audit_claimed(request)" in src, (
+            f"{path} logs its own WebSocket-origin denial but no longer claims "
+            "the request; the deny-audit boundary will double-record it"
+        )
+
+
+# ── The deny-audit boundary, through a REAL middleware chain ─────────────────
+# The pin above proves the three KNOWN deny sites still enrich their record. It
+# cannot prove the property that matters for a FOURTH one: that a refusal raised
+# before the audit middleware is recorded because of where the boundary sits,
+# not because someone remembered the helper. These drive that through real HTTP.
+
+
+class _SelSpy:
+    """Collect ``log_api_access`` calls and the thread each ran on."""
+
+    def __init__(self) -> None:
+        self.calls: list[dict] = []
+        self.threads: list[str] = []
+
+    def log_api_access(self, **kwargs) -> None:
+        import threading
+
+        self.calls.append(kwargs)
+        self.threads.append(threading.current_thread().name)
+
+    def denials(self) -> list[dict]:
+        return [c for c in self.calls if c.get("outcome") == "denied"]
+
+
+def _boundary_app(*inner: object) -> web.Application:
+    """The deny-audit boundary outermost, then whatever barrier is under test."""
+    from kiro_crew.dashboard import server as server_mod
+
+    app = web.Application(
+        middlewares=[server_mod._make_deny_audit_middleware("dashboard_user"), *inner]
+    )
+    app["allowed_origins"] = {"http://localhost:5476"}
+
+    async def ok(_req: web.Request) -> web.Response:
+        return web.json_response({"ok": True})
+
+    app.router.add_get("/api/sessions", ok)
+    app.router.add_post("/api/sessions", ok)
+    return app
+
+
+@pytest.mark.asyncio
+async def test_a_forgetful_pre_audit_refusal_is_still_audited_by_position(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The fourth deny site, written the way the pin cannot catch.
+
+    This barrier raises a bare 403 and audits nothing — exactly the omission
+    that used to leave a refusal in no log at all, because
+    ``sel_audit_middleware`` is registered inner to it. The record must appear
+    anyway, off the event loop, and the 403 must still reach the client.
+    """
+    from aiohttp.test_utils import TestClient, TestServer
+
+    from kiro_crew.dashboard import server as server_mod
+
+    spy = _SelSpy()
+    monkeypatch.setattr(server_mod, "sel", lambda: spy)
+
+    @web.middleware
+    async def forgetful_barrier(request: web.Request, handler: object) -> web.StreamResponse:
+        raise web.HTTPForbidden(text="nope")
+
+    async with TestClient(TestServer(_boundary_app(forgetful_barrier))) as client:
+        resp = await client.get("/api/sessions")
+        assert resp.status == 403
+        assert await resp.text() == "nope"
+
+    denials = spy.denials()
+    assert len(denials) == 1, f"the refusal was not audited: {spy.calls}"
+    assert denials[0]["operation"] == "GET /api/sessions"
+    assert denials[0]["resources"] == "/api/sessions"
+    assert "403" in denials[0]["error"]
+    # Off the loop, via the shared helper — not an inline sel() call on the
+    # event loop, which the first sel() of a process would block on.
+    assert spy.threads[0] != "MainThread"
+
+
+@pytest.mark.asyncio
+async def test_a_barrier_that_audits_itself_is_not_recorded_twice(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The real Host barrier keeps its own richer record and gains no second one.
+
+    Enrichment and guarantee must not stack: the boundary is a backstop for
+    unclaimed refusals, so a site that already called ``_audit_denied`` produces
+    exactly one record — and it is the site's, naming the offending header.
+    """
+    from aiohttp.test_utils import TestClient, TestServer
+
+    from kiro_crew.dashboard import server as server_mod
+
+    spy = _SelSpy()
+    monkeypatch.setattr(server_mod, "sel", lambda: spy)
+
+    app = _boundary_app(server_mod._make_host_validation_middleware("dashboard_user"))
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.get("/api/sessions", headers={"Host": "attacker.example"})
+        assert resp.status == 403
+
+    denials = spy.denials()
+    assert len(denials) == 1, f"the refusal was recorded twice: {denials}"
+    assert "host header not allowed" in denials[0]["error"]
+
+
+@pytest.mark.asyncio
+async def test_a_refusal_the_audit_middleware_logs_itself_is_not_doubled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A 403 the audit middleware already recorded gains no second entry.
+
+    On a request inside its method/path set, ``sel_audit_middleware`` logs a
+    handler's refusal as ``outcome="error"`` and claims it, so the boundary
+    stays out. Without the claim the same refusal would carry two records under
+    two different outcomes.
+    """
+    from aiohttp.test_utils import TestClient, TestServer
+
+    from kiro_crew.dashboard import server as server_mod
+
+    spy = _SelSpy()
+    monkeypatch.setattr(server_mod, "sel", lambda: spy)
+
+    @web.middleware
+    async def claims_like_the_audit_middleware(
+        request: web.Request, handler: object
+    ) -> web.StreamResponse:
+        mark_audit_claimed(request)
+        return await handler(request)  # type: ignore[operator]
+
+    @web.middleware
+    async def handler_refuses(request: web.Request, handler: object) -> web.StreamResponse:
+        raise web.HTTPForbidden(text="handler said no")
+
+    app = _boundary_app(claims_like_the_audit_middleware, handler_refuses)
+    async with TestClient(TestServer(app)) as client:
+        assert (await client.post("/api/sessions")).status == 403
+
+    assert spy.denials() == [], f"a claimed refusal was recorded twice: {spy.calls}"
+
+
+@pytest.mark.asyncio
+async def test_a_refusal_the_audit_middleware_does_not_log_is_recorded_here(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The half the claim must NOT swallow.
+
+    ``sel_audit_middleware`` logs only mutating ``/api/`` requests on the
+    dashboard, so a cross-origin WebSocket upgrade (a GET) refused in its
+    handler is logged nowhere by it. Claiming such a request would promise an
+    audit nobody writes; leaving it unclaimed is what makes the boundary record
+    it.
+    """
+    from aiohttp.test_utils import TestClient, TestServer
+
+    from kiro_crew.dashboard import server as server_mod
+
+    spy = _SelSpy()
+    monkeypatch.setattr(server_mod, "sel", lambda: spy)
+
+    @web.middleware
+    async def audits_only_mutating_api(request: web.Request, handler: object) -> web.StreamResponse:
+        if request.method in {"POST", "PUT", "DELETE", "PATCH"} and request.path.startswith(
+            "/api/"
+        ):
+            mark_audit_claimed(request)
+        return await handler(request)  # type: ignore[operator]
+
+    @web.middleware
+    async def ws_origin_refuses(request: web.Request, handler: object) -> web.StreamResponse:
+        raise web.HTTPForbidden(text="WebSocket origin not allowed")
+
+    app = _boundary_app(audits_only_mutating_api, ws_origin_refuses)
+    async with TestClient(TestServer(app)) as client:
+        assert (await client.get("/api/sessions")).status == 403
+
+    denials = spy.denials()
+    assert len(denials) == 1, f"an unlogged GET refusal was lost: {spy.calls}"
+    assert denials[0]["operation"] == "GET /api/sessions"
+
+
+@pytest.mark.asyncio
+async def test_the_record_names_the_authenticated_caller_not_the_static_label(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Attribution: a refusal raised after auth is filed under who was refused.
+
+    ``token_auth_middleware`` runs inner to this boundary and puts an identity on
+    the request, so a WebSocket-origin 403 that reaches the boundary carries one.
+    Recording the factory's static label would file an app's or a user's refusal
+    under ``dashboard_user``. ``request["app"] == ""`` is positive proof of the
+    dashboard user, so an empty app falls through to the user, not to the label.
+    """
+    from aiohttp.test_utils import TestClient, TestServer
+
+    from kiro_crew.dashboard import server as server_mod
+
+    def _authed(identity: dict) -> object:
+        @web.middleware
+        async def sets_identity(request: web.Request, handler: object) -> web.StreamResponse:
+            for k, v in identity.items():
+                request[k] = v
+            return await handler(request)  # type: ignore[operator]
+
+        return sets_identity
+
+    @web.middleware
+    async def ws_origin_refuses(request: web.Request, handler: object) -> web.StreamResponse:
+        raise web.HTTPForbidden(text="WebSocket origin not allowed")
+
+    for identity, expected in (
+        ({"app": "code-review-sage", "user": "u-1"}, "code-review-sage"),
+        ({"app": "", "user": "alice"}, "alice"),
+        ({}, "dashboard_user"),
+    ):
+        spy = _SelSpy()
+        monkeypatch.setattr(server_mod, "sel", lambda s=spy: s)
+        app = _boundary_app(_authed(identity), ws_origin_refuses)
+        async with TestClient(TestServer(app)) as client:
+            assert (await client.get("/api/sessions")).status == 403
+        denials = spy.denials()
+        assert len(denials) == 1, f"{identity!r}: {spy.calls}"
+        assert denials[0]["caller"] == expected, f"{identity!r} recorded as {denials[0]['caller']}"
+
+
+def test_every_self_auditing_raised_refusal_claims_the_request() -> None:
+    """Exhaustive: enumerate every raised 401/403 and check its claim state.
+
+    The boundary records an unclaimed raised refusal, so a deny site that writes
+    its own record must claim or be double-logged. Rather than trusting a list,
+    walk the tree: each ``raise web.HTTPForbidden``/``HTTPUnauthorized`` either
+    audits itself and claims, or audits nothing and is covered by position.
+    """
+    import re
+    from pathlib import Path
+
+    import kiro_crew
+
+    root = Path(kiro_crew.__file__).parent
+    raise_re = re.compile(r"raise web\.HTTP(?:Forbidden|Unauthorized)\(")
+    found = 0
+    for path in sorted(root.rglob("*.py")):
+        lines = path.read_text(encoding="utf-8").splitlines()
+        for i, line in enumerate(lines):
+            if not raise_re.search(line):
+                continue
+            found += 1
+            # The deny site's own arm: the 12 lines above the raise.
+            arm = "\n".join(lines[max(0, i - 12) : i])
+            audits = "log_api_access(" in arm or "_emit_guard_audit(" in arm
+            claims = "mark_audit_claimed(" in arm
+            if audits and not claims:
+                raise AssertionError(
+                    f"{path.relative_to(root)}:{i + 1} writes its own denial audit but does "
+                    "not claim the request; the deny-audit boundary will double-record it. "
+                    "Call origin.mark_audit_claimed(request) before the raise."
+                )
+    assert found >= 5, f"the raise-site walk found only {found} sites; the regex has drifted"
+
+
+@pytest.mark.asyncio
+async def test_the_boundary_ignores_outcomes_that_are_not_refusals(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Only a permission decision is a denial.
+
+    A 302 from host canonicalization and a 404 from routing are raised as
+    exceptions by aiohttp too; auditing those as denials would bury the real
+    refusals in noise.
+    """
+    from aiohttp.test_utils import TestClient, TestServer
+
+    from kiro_crew.dashboard import server as server_mod
+
+    spy = _SelSpy()
+    monkeypatch.setattr(server_mod, "sel", lambda: spy)
+
+    @web.middleware
+    async def redirects(request: web.Request, handler: object) -> web.StreamResponse:
+        if request.path == "/api/redirect":
+            raise web.HTTPFound(location="/api/sessions")
+        return await handler(request)  # type: ignore[operator]
+
+    async with TestClient(TestServer(_boundary_app(redirects))) as client:
+        assert (await client.get("/api/redirect", allow_redirects=False)).status == 302
+        assert (await client.get("/api/does-not-exist")).status == 404
+        assert (await client.get("/api/sessions")).status == 200
+
+    assert spy.denials() == [], f"a non-refusal was audited as a denial: {spy.calls}"
+
+
+@pytest.mark.asyncio
+async def test_an_audit_failure_never_turns_the_refusal_into_a_500(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Best-effort, end to end: losing the record must not lose the denial.
+
+    A trust root too short to sign the chain makes ``sel()`` construction raise.
+    The client must still get the 403.
+    """
+    from aiohttp.test_utils import TestClient, TestServer
+
+    from kiro_crew.dashboard import server as server_mod
+
+    def _explode():
+        raise RuntimeError("trust root unusable")
+
+    monkeypatch.setattr(server_mod, "sel", _explode)
+
+    @web.middleware
+    async def forgetful_barrier(request: web.Request, handler: object) -> web.StreamResponse:
+        raise web.HTTPForbidden(text="nope")
+
+    async with TestClient(TestServer(_boundary_app(forgetful_barrier))) as client:
+        resp = await client.get("/api/sessions")
+        assert resp.status == 403
+        assert await resp.text() == "nope"
 
 
 def test_both_servers_warm_the_kiro_readiness_probe() -> None:

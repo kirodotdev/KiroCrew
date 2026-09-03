@@ -98,25 +98,49 @@ the legacy stem fails instead of agreeing with itself.
 
 The freshness floor narrows the window but does not establish ownership, so the report exposes `reclaim_blocked_reason` for a client to explain rather than offering an action that `move_to_trash()` must refuse. Tests that inspect this host state isolate `KIROCREW_POD_ROOT` with the homes.
 
-### The index is re-read after the scan, inside the lock
+### The index is re-read after the scan, and again per session
 
 Scanning a six-figure store is the slow part of a reclaim, so an index read *before*
 it is already stale by the time anything moves. `move_to_trash` therefore re-reads
-through a `refresh` callable **after** the scan and immediately before the move loop,
-making the authority check the freshest view available. The two active sets are
-**unioned**, so a re-read can only ever add protection, and a re-read that fails
-refuses the operation rather than proceeding on the stale view.
+through a `refresh` callable **after** the scan, and then again before **every**
+session the move loop reaches. The two active sets are **unioned**, so a re-read can
+only ever add protection.
 
-The move loop then closes part of what the re-read cannot, for a resume that
-**writes**. Every source file is stat'd there anyway, to record its size in the
-manifest, and that same stat carries an mtime. A candidate qualified by being
-untouched for `MIN_RECLAIM_AGE_DAYS`, so a source whose mtime is newer than the
-instant the reclaim began has been written to since every read that certified it —
-which an idle session's file cannot be. The whole session is left in place, whatever
-already moved for it is rolled back, and it is named in `TrashBatch.revived` so the
-caller can report it. This costs no extra syscall: the detection rides on a stat the
-loop already performs. A resume that only READS is invisible to it — see Known
-Limitations.
+The loop needs both signals it has, because they catch different resumes.
+
+A resume that **writes** is caught by mtime. Every source file is stat'd there anyway,
+to record its size in the manifest, and that same stat carries an mtime. A candidate
+qualified by being untouched for `MIN_RECLAIM_AGE_DAYS`, so a source whose mtime is
+newer than the instant the reclaim began has been written to since every read that
+certified it — which an idle session's file cannot be. This costs no extra syscall:
+the detection rides on a stat the loop already performs.
+
+A resume that only **reads** writes nothing, so mtime has nothing to see: the resume
+reads the old transcript to rebuild history and records the turn that follows under a
+newly mapped sid, leaving every file's mtime days old. That resume is visible in the
+index instead — it is mapped — which is why the re-read runs at the same per-session
+cadence rather than once before the loop.
+
+Either way the whole session is left in place, whatever already moved for it is rolled
+back, and it is named in `TrashBatch.revived` so the caller can report it. A session
+the re-read catches has nothing staged yet, so there is nothing to roll back.
+
+The per-session re-read has to be affordable, and that is the caller's half of the
+contract: `refresh` may be called once per selected session, and returning the **same
+object** as last time says "nothing has moved", which the loop recognises by identity
+and does not re-derive sets for. `_build_index` costs a file read plus a full json
+parse — about 0.26 ms even against a 100-entry map — so a rebuild per session would be
+~56 s at that floor and hours against a realistic map, at the `_MAX_SELECTION` cap.
+The dashboard's refresher therefore rebuilds only when `session_map.json`'s
+`(st_ino, st_mtime_ns, st_size)` moves; every mapping write lands via `mkstemp` plus
+`os.replace`, so the inode changes on every write and an unmoved token cannot hide
+one. A caller that returns a fresh index every call is correct, only slower.
+
+A re-read that fails **before** anything moves refuses the operation rather than
+proceeding on the stale view. One that fails **during** the loop is logged once and
+the last view read is kept: every re-read only widens the live sets, so a lost one
+costs the extra protection it would have added, not the protection already read, and
+abandoning a batch that has already moved files would be the worse trade.
 
 Naming a session in `revived` is a claim -- "this one was left where it was" -- so it
 is only made when the rollback actually completed. Putting a file back is
@@ -134,12 +158,12 @@ it would miss a session resumed during the scan or between the index re-read and
 loop, which is most of the elapsed time. Taking it early adds no false positives,
 because a candidate has to be untouched for `MIN_RECLAIM_AGE_DAYS` to qualify at all.
 
-Detection, not prevention: a session revived *after* its last file was stat'd and
-moved is still staged. For a resume that writes, the window is therefore the gap
-between one file's stat and its rename rather than the whole loop. For a resume that
-only reads it is still the whole loop, because there is no write for the stat to see.
-Either way what lands in that gap lands in the trash — fully restorable, with
-destruction still needing a second explicit `empty`.
+Detection, not prevention. For a resume that writes, the window is the gap between one
+file's stat and its rename. For a resume that only reads, it is the gap between the
+re-read that precedes its session and that session's files moving, plus however long
+the map write takes to become visible in the file this reads — bounded by
+`SessionMap._FLUSH_DEBOUNCE_SECS`. Either way what lands in that gap lands in the
+trash — fully restorable, with destruction still needing a second explicit `empty`.
 
 ## What is reclaimable
 
@@ -286,9 +310,88 @@ reversible move into data loss.
 
 On a default install both stores sit under `~/.kiro`, so staging is a
 same-filesystem `os.rename`: instant regardless of size, and instantly reversible.
-A data home mounted apart from the kiro-cli store falls back to `shutil.move`,
-which copies — correct, but slow and needing the space twice while it runs.
+A data home mounted apart from the kiro-cli store falls back to a copy — correct,
+but slow and needing the space twice while it runs.
 `StorageReport.trash_same_filesystem` reports which case applies.
+
+**The cross-filesystem copy is atomic and durable, in that order.**
+`_copy_across_filesystems()` copies into an `INCOMING_PREFIX` name beside the
+destination, carries the source's metadata onto it, `fsync`s it, publishes it with
+`replace_with_retry`, `fsync`s the destination's directory, and unlinks the source.
+Nothing there is cosmetic: copying straight to the final name (what `shutil.move`
+does) spends the whole copy with a partial file under the name the manifest will
+record; `copystat` runs BEFORE the file `fsync` because it writes the inode and the
+`fsync` is what forces the inode out, so the other order can publish the bytes under
+the temp's own `0600` and creation time — and this module ages sessions by their mtime;
+and unlinking before the destination `fsync` can return to a durable absence of the
+source with the destination's bytes still in the page cache.
+
+**Nothing that can raise runs after the unlink.** The staging loop reads an exception
+from the mover as "this file did not move" — it rolls the session back and omits the
+file from the manifest — so raising after the file HAS moved produces a half-staged
+session nothing records, which is the split the rollback exists to prevent. The source
+directory still wants syncing, because copy-then-unlink is TWO operations (unlike the
+same-filesystem rename, which is one, so forcing the destination side forces the
+removal with it) and a crash between them can leave BOTH names: a live session the user
+was told had been reclaimed beside a staged copy the manifest records as trashed. So
+the loop collects the drained directories and `_sync_batch()` syncs them once, after
+the batch is fully recorded, `best_effort` — a non-durable source entry can only
+resurrect a duplicate, never lose a copy. `test_nothing_that_can_raise_runs_after_a_file_has_moved`
+and `test_the_drained_source_directories_are_synced_once_per_batch` pin both halves.
+
+Because an exception out of a mover MEANS "nothing of this move survives", the failing
+DESTINATION SYNC withdraws the publication before re-raising — safe there because the
+source has not been touched yet, so removing the destination provably restores the state
+the call started in. The `src.unlink()` that follows is deliberately NOT treated that way,
+and the difference is the point. A filesystem can report a failure for an unlink that DID
+commit (a network filesystem losing the reply to a completed operation), and the source
+name existing afterwards does not prove the ORIGINAL still does: a concurrent append
+recreates that name with a new, empty file, at which point the destination holds the only
+copy of the history. Nothing observable at that instant separates "the unlink failed" from
+"the unlink succeeded and something recreated the name", so the destination is kept and
+the exception propagates untouched. The leftover is then a file no manifest entry names,
+which `_unlisted_files()` refuses to delete and which blocks emptying that batch until an
+operator clears it — a worse report than the truth, but recoverable, which bytes nobody
+can get back are not. `test_the_mover_keeps_the_copy_when_the_unlink_fails` and
+`test_the_exclusive_mover_keeps_the_copy_when_the_unlink_fails` pin it on each mover, and
+`test_a_failed_unlink_keeps_the_published_copy` pins the end-to-end case where the name is
+recreated.
+
+Only a COPY can dereference a symlink: `os.rename` moves the link itself and `os.link`
+links to the link, so neither mover's fast path can leak through one. Their copy fallbacks
+read through `_open_source_no_follow()`, which sets `O_NOFOLLOW` and refuses a link in the
+source's final component rather than reading what it points at — in both directions,
+because a session file swapped for a link to a credential store would copy the SECRET's
+bytes into an agent-readable trash, and a link planted in the trash would copy arbitrary
+bytes back out over a restored origin. Staging does not hand it a link today, since every
+enumeration scan uses `is_file(follow_symlinks=False)`, so this is hardening rather than a
+reachable hole being closed: it makes the copy safe on its own terms instead of by
+inheritance from a filter several hundred lines away.
+`test_the_copy_helper_refuses_a_symlink_instead_of_reading_its_target` pins it at the copy
+and `test_a_planted_source_symlink_never_reaches_the_trash` pins the end-to-end outcome.
+The final component is what a swap replaces; a symlinked PARENT directory is still
+traversed, which needs an `openat` walk down the chain and is its own change.
+
+The incoming name is naming only: `_unlisted_files()` deliberately does NOT exempt it,
+because a name says nothing about who wrote it and this module's threat model already
+assumes a batch can be planted in. So a crash mid-copy leaves debris that blocks
+emptying that batch until an operator clears it — the same posture main already has for
+an interrupted cross-filesystem move, whose partial file is equally unlisted.
+`TestCrossFilesystemStaging` fails if the copy publishes under the final name, skips
+any of the syncs, or if the scan starts passing over the incoming prefix.
+
+**`fsync_dir()` is quiet only where a directory sync cannot be expressed.** Windows
+has no directory descriptor to open and some network mounts reject `fsync` on a
+directory, so those return without complaint; every other errno is raised. The
+distinction is load-bearing rather than fussy, because each caller's next step is to
+destroy the only other copy — a swallowed `EIO` would hand it a false "durable" just
+before the unlink. `best_effort=True` downgrades even that to a warning, and is for
+callers whose operation is ALREADY COMMITTED (the drained source directories above; the
+vault's key and store writes, where a raise would report a stored secret as never
+written and drop it from a migration's rollback set). It is a keyword rather than a
+bare `except OSError` per call site so the decision is visible and still logged.
+`TestFsyncDirDiscriminates` fails if a device error is logged away by default or if a
+platform without directory descriptors starts raising.
 
 **Staging does not free space.** The bytes stay on disk until the trash is
 emptied. `StorageReport.trash_bytes` and the payload's `trash.still_on_disk` exist
@@ -297,9 +400,9 @@ its own payload.
 
 ### Manifests
 
-Every new batch starts an append-only `manifest.jsonl`: a header line followed by one entry per staged session recording each file's relative staged path, original path, and size. `_append_entry()` flushes each entry, but it does not `fsync`, so the implementation does not promise device-persistent durability across a power loss. `_manifest_records()` retains every valid record it can read and ignores a trailing malformed record, while `_unlisted_files()` prevents deletion of files that no retained manifest entry names. `TestTrashAccounting::test_a_truncated_final_line_does_not_lose_the_batch` pins that recovery posture.
+Every new batch starts an append-only `manifest.jsonl`: a header line followed by one entry per staged session recording each file's relative staged path, original path, and size. `_append_entry()` flushes each entry, and `_sync_batch()` `fsync`s the manifest and then EVERY staged directory level, deepest first, at each point `_move_to_trash_locked()` can leave a batch on disk. That is what makes a move that RETURNED durable: the moves are renames whose metadata the filesystem commits on its own schedule, so without it a power loss could come back to the sessions' only copies under an empty manifest — and a batch with no readable manifest is omitted from `list_trash()`, out of reach of restore and of empty alike. Every level, not just each file's own parent, because `mkdir(parents=True)` also creates the intermediates and a directory's name lives in its PARENT's entries — a session with archive segments but no transcript never otherwise records `crew` at all, and on the FIRST batch a machine ever stages the same call creates `trash/` and `trash/sessions/`, whose own entries `_fsync_tree()` walks down from the data home. A fresh chain is ALSO synced at the moment it is created, before any file is renamed into it: the same-filesystem move is a rename, which gives up the file's only other name in the same atomic step that creates the new one, so a rename that reaches disk while the `mkdir` that created its parent does not would leave no name resolving to the file at all. That sync costs one call per new directory rather than one per file, so the per-file path stays a bare rename; if it fails the session is rolled back and left in place, exactly as for a file that would not move, rather than abandoning a batch whose manifest has not been forced out. A failing sync RAISES: the batch is the only copy, so reporting a durable batch that is not one is worse than reporting a failure for work that partly happened. The single exception is the "resumed while being staged" path, which is already raising an error that names the session and locates its fragment; there a sync failure is logged so that pointer is not replaced by an `OSError`. None of this makes a crash mid-move consistent; a batch interrupted halfway still holds files its manifest never named, which is what `_unlisted_files()` is for. `_manifest_records()` retains every valid record it can read and ignores a trailing malformed record, while `_unlisted_files()` prevents deletion of files that no retained manifest entry names. `TestTrashAccounting::test_a_truncated_final_line_does_not_lose_the_batch` pins that recovery posture, and `TestStagedBatchDurability` fails if a returned move left the manifest or any staged directory level unsynced.
 
-A partial restore is the exception to append-only growth: `_rewrite_manifest()` writes a temporary replacement and uses `os.replace`. That gives readers the old or replacement pathname during the running filesystem operation, not a power-loss durability guarantee. A batch with no readable manifest is omitted from `list_trash()`: its files could not be put back, so offering it as restorable would be a false promise.
+A partial restore is the exception to append-only growth: `_rewrite_manifest()` writes the replacement through `atomic_write(..., fsync=True)` and then `fsync`s the batch directory, so both the new content and the rename that gave it the manifest's name are durable before the call returns. Without the directory half a power loss could return the pre-restore manifest, whose entries name files restore has already moved back into live storage. A batch with no readable manifest is omitted from `list_trash()`: its files could not be put back, so offering it as restorable would be a false promise.
 
 **A manifest that is a link stops the empty before anything is removed**
 (`SKIP_UNREADABLE`), and the check runs BEFORE the manifest is read and before the
@@ -605,6 +708,106 @@ would put a link where the session's data belongs — leaving a dangling pointer
 the batch is emptied. Only a link resolving *within* the batch reaches this check;
 `_staged_path` already refuses one that escapes.
 
+### All three removal paths are descriptor-bound, and one module owns the mechanism
+
+Emptying is the largest of the three removals but not the only one. Discarding a
+fully-restored batch and cleaning up a batch no session was staged into also remove a
+whole directory, and both did it with `shutil.rmtree(path)` - which re-resolves every
+ancestor, so a directory above the trash swapped to a link after the caller's own by-path
+read is followed and the removal lands outside the trash. Both now go through
+`pinned_fs.remove_tree_pinned`: parent chain pinned one `openat` per component, batch
+opened through it `O_NOFOLLOW`, one scan, and every removal inside addressed by a
+descriptor whose inode that scan recorded.
+
+Pinning is the weaker half of that, and the spec says so because the code does.
+`Path.resolve()` FOLLOWS an ancestor that is already a link, so a swap landing before the
+resolve produces a faithful pinned walk to the wrong tree. What closes that is an IDENTITY:
+each caller records the batch's `(st_dev, st_ino)` before ANY read of the batch's contents - at
+`target.mkdir(...)` under the mutation lock on the staging path, and at the TOP of
+`_restore_locked`, before its first manifest read, on the restore path - and the approval hook
+compares the pinned root's `fstat` against it as its first question. An unreadable identity
+refuses rather than proceeding.
+
+The restore's capture point is load-bearing and is why `_discard_restored_batch` takes the
+identity rather than sampling one. That cleanup is reached only after the manifest has been read
+and every listed file moved out, so an identity taken there would already be a substitute's if an
+ancestor had been swapped during any of that, and every later check would then agree with itself
+about the wrong directory. Anchored at the top instead, the same comparison refuses a swap that
+landed at any point inside the operation. A swap already in place BEFORE the restore begins is
+still followed - `pin_parent` resolves the parent path too, so an ancestor that is already a link
+cannot be told from a real path - but reaching that requires the victim tree to have served as
+the restore's own source, which means content was already injected into the live session stores;
+the removal of the emptied directory afterwards is not the damage.
+
+The content checks come second and are not what carries this. The approval also re-asks,
+from ONE inode-verified read of ONE file, that the manifest's header claims this batch's own
+directory name, and that NOTHING but the manifest remains - not "nothing unlisted", nothing
+at all. Both callers arrive with the batch already empty of files: the restore path has moved
+every listed file back out, and the staging path has a manifest with no entries. So a file at
+a listed path is not the listed file; it arrived at that name afterwards and may be the only
+copy of whatever it is, and consulting the listing would authorise deleting exactly that on
+the strength of a name the manifest happens to mention. The header check establishes that
+emptying the batch is *correct*, not that it *is* the batch: an actor who can write into the
+tree a swapped link points at can plant a header naming the selected batch, and every content
+question then answers yes about the wrong directory. An inode cannot be forged by writing
+files. A withheld approval removes nothing and keeps the batch, which stays listed and
+restorable; reporting a success that did not happen is what `ignore_errors=True` did.
+
+"Nothing but the manifest" includes LINKS, which these two paths refuse rather than remove even
+though the delete path removes scanned ones. A link holds no data of its own, but it is the only
+entry a removal can take by NAME: `_unlink_verified` compares the scanned inode and then unlinks,
+and POSIX has no atomic "unlink if this inode", so admitting a link admits that two-syscall
+window - plant one, let the approval pass it, put a file at that name in between, and the removal
+deletes the file. Neither of these removals was asked for, so they refuse; `empty_trash` still
+clears such a batch on the user's own say-so, through an approval that does remove links.
+
+Where the platform has no `openat`/`O_NOFOLLOW`, these two paths remove the batch through
+`rename-verify-remove` instead: `_stage_batch_by_name` renames it aside inside the trash root,
+verifies `(st_dev, st_ino)` on the RENAMED directory against the identity the caller captured,
+and only the staged name is removed; a mismatch or an unreadable identity puts the directory
+back under the name the user saw, and so does a tree that will not go. Refusing outright was an
+earlier answer here and it was wrong: this branch is the whole of Windows, so refusing left a
+batch behind after every restore and every rolled-back move, still listing sessions it no longer
+held - five pre-existing tests read that as a failure, and so would a user. What the rename buys
+is that the approved name no longer exists once it has happened, so nothing can be substituted
+at it, and the identity is checked on the directory that was actually moved. What it does not
+buy: the removal still resolves the staging path, so an actor who can OBSERVE that name inside
+the window can redirect it through an ancestor swapped afterwards. That residual is accepted on
+this platform for all three callers - the explicit empty and the two cleanups - through one
+owner rather than three spellings.
+
+Because the cleanup can now DECLINE, a fully restored batch can outlive it - and every entry
+in its manifest describes a file the restore already moved back OUT, so that batch shows a
+user sessions that are not in it and offers to restore them. That stale listing is an ACCEPTED
+RESIDUAL, not an oversight: clearing it needs a write to the batch path, and there is nowhere
+safe to put one. After the cleanup the descriptor is closed and every refusal is itself
+evidence the path may be redirected, so writing then answers a swap by writing through it.
+Before the cleanup, the full-restore branch has no write at all today, so adding one hands
+`atomic_write` - which REPLACES its destination - a path that a batch swapped to a link points
+wherever an actor chose, including another batch's manifest, whose staged sessions would
+become unlistable. A stale listing is visible and reversible; that is not. So neither cleanup
+path writes to the batch, the full-restore branch of `_restore_locked` does not either, and
+`empty_trash` clears the batch on the user's own say-so (verified in
+`test_a_full_restore_never_writes_to_the_batch_it_is_leaving`). The partial-restore branch
+keeps its pre-existing rewrite: it has to record what is still staged, and it is not reached
+through a refusal.
+
+`rename-verify-remove` - move a name to `.<name>.removing-<random>` in the same parent,
+re-check the identity there through the parent's descriptor, remove only that name, and
+rename BACK only when the identity matched - was spelled inline three times: the interior
+directories, the batch directory, and the coarse path. It is now
+`pinned_fs.remove_dir_verified`, with the pinned scan and the identity-verified chain-open
+beside it, and `session_storage` keeps only the policy: which map authorises the removal,
+what a refusal means to the user, and how it is worded. That split is deliberate rather than
+tidy-up: per-call-site respelling of this mechanism is what `pinned_fs` was created to end
+after #2446 and #2447, and a fourth copy would have repeated it. The descriptor-less platform
+has its own owner, `_stage_batch_by_name`, because `pinned_fs` cannot serve it -
+`remove_dir_verified` addresses a parent descriptor and that is precisely what this platform
+lacks - and all three callers there (the explicit empty and the two cleanups) go through it
+rather than respelling the rename. Which mechanism a call site gets is an explicit branch at
+the call site rather than a fallback inside the primitive: `pinned_fs` refuses by design rather
+than silently substituting a weaker one.
+
 ### The origin is derived, not trusted
 
 A manifest record's `origin` is not information restore needs: the staged path
@@ -627,7 +830,15 @@ so undoing a deletion would destroy the newer data it exists to protect.
 `_move_file_exclusive()` creates the destination exclusively (`os.link`, falling back
 to `O_CREAT | O_EXCL` across filesystems), making the check and the write one atomic
 step. A lost race rolls the session back and **retains** its manifest entry, because
-restoring the rest would splice two generations of one session together.
+restoring the rest would splice two generations of one session together. On the copy
+branch the destination is `fsync`ed and its directory `fsync`ed **before** the source
+is unlinked, and the source's directory `fsync`ed after: that unlink is the moment the
+copy stops being a second copy, buffered bytes on the far side of it are a session a
+power loss can erase from both places at once, and a non-durable unlink can instead
+leave both names — a session restored into live storage while its staged copy is still
+in the batch under its manifest entry.
+`test_a_cross_filesystem_restore_syncs_before_it_unlinks_the_source`
+fails if either sync moves after the unlink.
 
 `_rollback()` uses the same exclusive move. A rollback runs *after* something already
 failed, so the origin may have been recreated in the meantime, and a plain rename
@@ -890,14 +1101,14 @@ That is the conservative direction (never a wrong move), but a client cannot
 distinguish it from a malformed request without reading the code, and retrying is
 the only recovery.
 
-A session that goes live *later still* — after the `refresh`, while the move loop is
-running — is not all-or-nothing, provided the resume writes. The loop's mtime check
-leaves that one session in place and the rest of the batch proceeds, and the handler
-folds each such uid into the same `refused` list under `in_use`. The mechanism differs
-from the pre-pass (caught by a stat during the move rather than by the index before
-it) but the reason a reader needs is identical, so it carries no new code. A resume
-that only reads writes nothing for that stat to catch, so it is staged instead of
-refused — the gap recorded in Known Limitations.
+A session that goes live *later still* — after the first `refresh`, while the move loop
+is running — is not all-or-nothing. The loop leaves that one session in place and the
+rest of the batch proceeds, and the handler folds each such uid into the same `refused`
+list under `in_use`. A resume that writes is caught by the loop's mtime check; one that
+only reads is caught by the per-session index re-read, which is why that re-read runs
+inside the loop. The mechanism differs from the pre-pass (caught during the move rather
+than by the index before it) but the reason a reader needs is identical, so it carries
+no new code.
 
 **The guarantee is not weakened.** `move_to_trash()` still re-reads the session map
 inside the mutation lock and still unions the active sets, so the pre-pass can only
@@ -954,39 +1165,32 @@ batch is skipped and logged rather than deleted, so `freed_bytes` under-reports
 instead of the trash over-deleting. `TestEmptyTrash` and
 `test_restore_never_deletes_a_file_the_manifest_omits` cover both directions.
 
+All three now also re-establish the answer through the descriptor they remove by, not only
+by path. The by-path read is a pre-screen that produces the user-facing count; the pinned
+re-read is what the removal is bound to, because a file arriving after the pre-screen - or
+an ancestor swapped after it - makes the by-path answer describe a directory the removal is
+no longer addressing.
+
 ## Constants
 
 `kiro_crew.session_storage` owns the trash layout, manifest schema, age policy, and mutation-lock constants; `kiro_crew.dashboard.handlers.session_storage` owns the request selection bound. Callers import those constants rather than duplicating their literals, so code and tests remain the source of truth when the policy changes.
 
 ## Known Limitations
 
-- **A much smaller residual race remains for a resume that writes.** The authority
-  check is re-read after the scan and inside the reclaim lock, and the move loop then
-  rejects any source whose mtime is newer than the batch's validation instant, so a
-  session resumed *during* the loop is left in place and reported rather than staged.
-  What is left is detection, not prevention: the session map's writer still does not
-  take the reclaim lock, so a session revived between one file's stat and its rename
-  is staged anyway. That gap is microseconds rather than the whole loop, and it stays
-  restorable — nothing is destroyed without a second explicit action. Removing it
-  entirely still requires the session/slot code and this module to share one lock,
-  which is a wider change than this surface.
-- **A resume that only READS the transcript is not detected at all, and its window is
-  the whole loop.** The bullet above describes a resume that writes; the mtime check
-  has nothing to see when the resume writes nothing. The sequence: a retired session's files
-  are certified reclaimable, the session is resumed, the resume reads the old transcript
-  to rebuild history, and the turn that follows is recorded under a newly mapped SID
-  without rewriting that old transcript. Every one of the session's files therefore
-  still carries its original mtime, all of them pass the validation-instant check, and
-  the live slot's durable history is staged out from under it. Detection would need the
-  index re-read to happen inside the loop rather than once before it, and the naive form
-  of that is not affordable: `refresh` is `_build_index`, which costs a file read plus a
-  full json parse — about 0.26 ms even against a 100-entry map — so at the
-  `_MAX_SELECTION` cap of 200,000 units it is ~56 s at that floor and hours against a
-  realistic map, and it would take `SessionMap._MAP_LOCK` once per unit while the
-  reclaim lock is held. Making it affordable means the caller memoizing its own index on
-  a change token, which is a contract change to `refresh` rather than an adjustment to
-  the loop. Like the write-shaped gap this stays restorable: the history lands in the
-  trash, and destruction still needs a second explicit `empty`.
+- **A much smaller residual race remains, and it is now bounded for both shapes of
+  resume.** The authority check is re-read after the scan and again before every
+  session the move loop reaches, and the loop also rejects any source whose mtime is
+  newer than the batch's validation instant, so a session resumed *during* the loop is
+  left in place and reported rather than staged — whether the resume writes or only
+  reads. What is left is detection, not prevention, because the session map's writer
+  still does not take the reclaim lock. Two gaps survive that. A resume that writes can
+  land between one file's stat and its rename, which is microseconds. A resume that
+  only reads becomes visible when its mapping reaches `session_map.json`, and
+  `SessionMap` defers that write by `_FLUSH_DEBOUNCE_SECS` while the refresher reads the
+  file rather than the live in-process map, so that gap is bounded by the debounce
+  rather than by the loop. Both stay restorable — nothing is destroyed without a second
+  explicit action. Removing either entirely still requires the session/slot code and
+  this module to share one lock, which is a wider change than this surface.
 - Reclaiming is offered both by age (`cleanup`) and by explicit selection
   (`trash`). Neither can take a session the map still lists, so targeting one large
   conversation only works if that conversation is unmapped.

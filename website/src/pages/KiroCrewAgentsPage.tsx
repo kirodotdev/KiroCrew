@@ -29,6 +29,7 @@ import type { CronJob } from '../types'
 import type { KiroCrewAgent } from '../components/AgentSelector'
 import { SourceBadge } from '../components/SourceBadge'
 import { errMessage } from '../utils/thunkError'
+import { EFFORT_LEVELS, effortLabel, modelSupportsEffort } from '../lib/effort'
 
 import { i18nT } from '../i18n/t'
 import ErrorNotice from '../components/ErrorNotice'
@@ -57,6 +58,10 @@ interface AgentUpdatePayload {
   triggers: string
   /** '' = inherit (the kiro template's pin, then the global fallback). */
   model: string
+  /** '' = inherit the global default effort. Otherwise one of the levels the
+   *  backend accepts (low..max); a level is only honoured on a model that
+   *  supports effort at all. */
+  reasoning_effort: string
   /** Default session color (#rrggbb hex) for new sessions. '' = no default. */
   session_color: string
 }
@@ -350,6 +355,27 @@ export function ModelField({ options, value, onChange }: {
         value={value}
         onChange={onChange}
         aria-label={i18nT('pages.kiroCrewAgentsPage.edit_model')}
+      />
+    </Field>
+  )
+}
+
+/** The crew's reasoning-effort pin. Rendered only when the model the crew will
+ *  actually run on supports effort — the same gate the chat picker uses, so a
+ *  crew on Haiku is not offered a control the backend would drop. */
+export function EffortField({ value, onChange }: {
+  value: string; onChange: (v: string) => void
+}) {
+  return (
+    <Field label={i18nT('pages.kiroCrewAgentsPage.reasoning_effort')} hint={i18nT('pages.kiroCrewAgentsPage.reasoning_effort_hint')}>
+      <SimpleSelect
+        options={[...EFFORT_LEVELS]}
+        // '' is the inherit sentinel, labelled as such rather than as a level:
+        // it means "take the global default", which may itself be a level.
+        optionLabels={EFFORT_LEVELS.map(l => (l === '' ? i18nT('pages.kiroCrewAgentsPage.inherited') : effortLabel(l)))}
+        value={value}
+        onChange={onChange}
+        aria-label={i18nT('pages.kiroCrewAgentsPage.edit_reasoning_effort')}
       />
     </Field>
   )
@@ -710,6 +736,7 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
   const [triggers, setTriggers] = useState('')
   const [sessionColor, setSessionColor] = useState('')
   const [editModel, setEditModel] = useState(INHERIT_MODEL)
+  const [editEffort, setEditEffort] = useState('')
   const [confirmDelete, setConfirmDelete] = useState(false)
   /** The armed confirm row, scrolled into view when it appears: the danger zone
    *  is the last section, so on a short window the confirm buttons land under
@@ -739,6 +766,24 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
     enabled: !!editing,
   })
 
+  /** The model an effort level would be applied to: the pending pick when the
+   *  crew pins one, otherwise whatever the inherit chain resolves to. Reading
+   *  the PENDING value is deliberate — the effort control has to appear and
+   *  disappear as the user moves the model select, not one save later.
+   *
+   *  `resolved` describes the SAVED state, so it only answers for a pending
+   *  Inherited when the saved state was Inherited too. Once a stored pin is
+   *  cleared but not yet saved, `resolved.model` is still that pin — reusing it
+   *  would keep offering an effort control on the strength of a model the crew is
+   *  about to stop using, and the level would then be dropped at spawn. Nothing
+   *  here can know what the inherit chain lands on until the write happens, so
+   *  that state reports unresolved and says so. */
+  const modelPinPendingClear = editModel === INHERIT_MODEL && !!editingAgent?.model
+  const effortModel = editModel !== INHERIT_MODEL
+    ? editModel
+    : modelPinPendingClear ? '' : (resolved?.model || '')
+  const effortCapable = modelSupportsEffort(effortModel)
+
   const openCreate = useCallback(() => {
     sheetEpoch.current += 1
     setError('')
@@ -757,6 +802,7 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
     setTriggers(a.triggers || '')
     setSessionColor(a.session_color || '')
     setEditModel(a.model || INHERIT_MODEL)
+    setEditEffort(a.reasoning_effort || '')
     setSheet({ mode: 'edit', name: a.name })
   }, [defaultAgent])
 
@@ -841,6 +887,10 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
         // INHERIT_MODEL is normalized to '' server-side; send it verbatim so
         // clearing a pin is a real write rather than a skipped field.
         model: editModel,
+        // Sent unconditionally for the same reason as `model`: '' is a real
+        // value (clear the pin), so a skipped field would make clearing
+        // impossible.
+        reasoning_effort: editEffort,
         session_color: sessionColor,
       },
     })
@@ -999,10 +1049,11 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
       out.add('place')
     }
     if (editModel !== (editingAgent.model || INHERIT_MODEL)) out.add('model')
+    if (editEffort !== (editingAgent.reasoning_effort || '')) out.add('model')
     if (triggers !== (editingAgent.triggers || '')) out.add('routing')
     if (sessionColor !== (editingAgent.session_color || '')) out.add('routing')
     return out
-  }, [editingAgent, kiroAgent, workspace, memoryStore, editModel, triggers, sessionColor])
+  }, [editingAgent, kiroAgent, workspace, memoryStore, editModel, editEffort, triggers, sessionColor])
 
   const sections = useCrewEditorSections({
     templateLabel: provider.labels.agentTemplateField,
@@ -1300,17 +1351,71 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
                   {pane === 'model' && (
                     <>
                       <ModelField options={modelOptions} value={editModel} onChange={setEditModel} />
+                      {/* Offered when the model the crew will actually run on
+                          accepts effort — OR when a pin is already stored on a
+                          model that does not, so the only way to clear a
+                          stranded pin is not to first switch the model back. */}
+                      {(effortCapable || !!editEffort) && (
+                        <EffortField value={editEffort} onChange={setEditEffort} />
+                      )}
+                      {!effortCapable && !!editEffort && (
+                        <div className="rounded-md border border-warn-subtle bg-warn-subtle px-3 py-2.5 text-[11.5px] leading-relaxed text-muted">
+                          {/* Two different reasons a stored pin cannot apply, and
+                              they need different sentences: naming a model only
+                              works when there IS one. With nothing resolved,
+                              substituting the "Inherited" label would read as
+                              "Inherited does not take a reasoning effort", which
+                              names no model and states nothing true. */}
+                          {effortModel
+                            ? i18nT('pages.kiroCrewAgentsPage.effort_ignored_on_this_model', { model: effortModel })
+                            : i18nT('pages.kiroCrewAgentsPage.effort_pin_needs_a_model')}
+                        </div>
+                      )}
                       {resolved && (
-                        <div className="rounded-md border border-border bg-bg-accent px-3 py-2.5 text-[11.5px] leading-relaxed text-muted">
-                          <span className="text-text">
-                            {i18nT('pages.kiroCrewAgentsPage.resolves_to', { model: resolved.model || i18nT('pages.kiroCrewAgentsPage.inherited') })}
-                          </span>
-                          {' — '}
-                          {resolved.pinned
-                            ? i18nT('pages.kiroCrewAgentsPage.pinned_on_this_crew')
-                            : resolved.model
-                              ? i18nT('pages.kiroCrewAgentsPage.inherited_from_the_agent_template')
-                              : i18nT('pages.kiroCrewAgentsPage.no_pin_anywhere_the_backend_chooses')}
+                        <div className="flex flex-col gap-1 rounded-md border border-border bg-bg-accent px-3 py-2.5 text-[11.5px] leading-relaxed text-muted">
+                          <div>
+                            <span className="text-text">
+                              {i18nT('pages.kiroCrewAgentsPage.resolves_to', { model: resolved.model || i18nT('pages.kiroCrewAgentsPage.inherited') })}
+                            </span>
+                            {' — '}
+                            {resolved.pinned
+                              ? i18nT('pages.kiroCrewAgentsPage.pinned_on_this_crew')
+                              : resolved.model
+                                ? i18nT('pages.kiroCrewAgentsPage.inherited_from_the_agent_template')
+                                : i18nT('pages.kiroCrewAgentsPage.no_pin_anywhere_the_backend_chooses')}
+                          </div>
+                          {/* The effort half of the same readout. It answers
+                              "what will this crew think at" in every case,
+                              including the one where no level can apply — an
+                              absent control with no line about it is what makes
+                              the setting look missing rather than unavailable.
+                              Suppressed only for the stranded pin, where the
+                              warning above already says it and says what to do. */}
+                          {(effortCapable || !editEffort) && (
+                            <div>
+                              {effortCapable ? (
+                                <>
+                                  <span className="text-text">
+                                    {i18nT('pages.kiroCrewAgentsPage.effort_resolves_to', {
+                                      effort: resolved.reasoning_effort
+                                        ? effortLabel(resolved.reasoning_effort)
+                                        : i18nT('lib.effort.default'),
+                                    })}
+                                  </span>
+                                  {' — '}
+                                  {resolved.effort_pinned
+                                    ? i18nT('pages.kiroCrewAgentsPage.pinned_on_this_crew')
+                                    : resolved.reasoning_effort
+                                      ? i18nT('pages.kiroCrewAgentsPage.effort_inherited_from_the_global_default')
+                                      : i18nT('pages.kiroCrewAgentsPage.no_effort_pin_the_model_decides')}
+                                </>
+                              ) : effortModel ? (
+                                i18nT('pages.kiroCrewAgentsPage.effort_unavailable_on_this_model', { model: effortModel })
+                              ) : (
+                                i18nT('pages.kiroCrewAgentsPage.effort_needs_a_model')
+                              )}
+                            </div>
+                          )}
                         </div>
                       )}
                     </>

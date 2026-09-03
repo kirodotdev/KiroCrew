@@ -48,6 +48,8 @@ interface, the public edition is complete standalone.
 | `mcp_tooling` | adapter | `DefaultMcpToolingProvider` (all methods empty) | enterprise MCP server + skills + provider MCP scopes |
 | `agent_catalog` | adapter | `DefaultAgentCatalogProvider` (`builtin_agents()` → `[]`) | edition agent-catalog rows |
 | `prompt_sources` | adapter | `DefaultPromptSourceProvider` (`prompt_source_roots()` → `[]`) | edition prompt/SOP roots |
+| `skill_discovery` | adapter | `DefaultSkillDiscoveryProvider` (`skill_providers()` → `[]`) | edition skill discovery providers for the multi-provider search |
+| `denied_rules` | adapter | `DefaultDeniedRuleProvider` (`denied_rules()` → `[]`) | edition denied-command rules that are default-on but USER-DISABLEABLE (distinct from `security`, the un-weakenable overlay floor) |
 | `import_sources` | adapter | `DefaultImportSourceProvider` (`import_sources()` → `[]`) | edition onboarding-import sources |
 | `capability_manager` | adapter | `DefaultCapabilityManager` (`available()` → `False`) | operations-based external package manager: MCP servers, skills, agent packages, and client plugins |
 | `external_access` | adapter | `DefaultExternalAccessPolicy` (`admits_registry()` / `admits_cloud_deployment()` → `True`) | allowlist installable content to an internal registry; withhold cloud deployment |
@@ -955,6 +957,21 @@ is byte-identical) with no `CONTRACT_VERSION` bump.
   companion returns its resolved package prompt roots. **Split out of
   `McpToolingProvider` into its own Protocol** (a distinct concern). v1 addition;
   `Default` returns `[]`.
+- `SkillDiscoveryProvider.skill_providers() -> List[SkillProvider]` — WIRED: the
+  dashboard discover registry (`handlers/discover._build_registry`) registers each
+  returned provider after the built-in one, gated per provider by the same
+  `external_access.admits_registry("skill", name, api_base)` decision the built-in
+  provider passes through — a managed allowlist applies uniformly, with no
+  edition-specific carve-out. ADD-only and de-duped by name (the built-in wins a
+  collision, so an edition cannot silently replace an identity the policy
+  admitted). Each returned object implements the
+  `kiro_crew.skill_providers.base.SkillProvider` protocol and SHOULD expose an
+  `api_base` naming its catalog endpoint (the identity an allowlist is written
+  against; a provider without one is gated on an empty base). Provider-sourced
+  result fields flow through the existing `_redact_external` scrub before
+  reaching the dashboard. Read fail-closed through `safe_context_call` (fallback
+  `[]`). Default `[]`, so the public edition searches only the built-in catalog.
+  v1 addition; `Default` returns `[]`.
 - `ImportSourceProvider.import_sources() -> List[ImportSource]` — WIRED:
   `onboarding_import._sources()` unions the returned descriptors over the core
   builtins for every scan, apply, and id-validation path, so a registered source

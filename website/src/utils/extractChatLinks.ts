@@ -110,7 +110,12 @@ export function resourceIdentity(link: ExtractedLink): string {
 const CR_BASE_RE = [
   /^(https?:\/\/[^/]+\/.*?\/(?:pull|pull-requests|merge_requests)\/\d+)/i,
   /^(https?:\/\/[^/]+\/.*?\/issues\/\d+)/i,
-  /^(https?:\/\/[^/]+\/.*?\/reviews\/[\w-]+)/i,
+  // The intermediate segment is optional: a registered source provider may
+  // serve review paths at the host root (`https://host/reviews/CR-123`), and
+  // requiring a segment before `/reviews/` would leave such URLs without a
+  // base key — a revision-pinned variant (`.../CR-123/revisions/2`) would then
+  // not collapse onto the base mention in the Resources panel.
+  /^(https?:\/\/[^/]+\/(?:.*?\/)?reviews\/[\w-]+)/i,
 ]
 
 /**

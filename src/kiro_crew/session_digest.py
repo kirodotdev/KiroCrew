@@ -10,100 +10,22 @@ from __future__ import annotations
 
 import json
 import logging
-from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
-from typing import IO
 
 from kiro_crew.config.paths import data_home, kiro_sessions_dir
 from kiro_crew.history import ARCHIVE_DIR_NAME, ARCHIVE_SEGMENT_DELIMITER, SESSIONS_DIR_NAME
+from kiro_crew.jsonl_util import RECORD_CAP, bounded_records
 
 logger = logging.getLogger(__name__)
 
-# Longest record this module will materialise, in BYTES (terminator excluded: the
-# threshold applies to the record without its newline, so a cap-length record plus
-# its terminator is accepted and the peak read is cap+1). Both trees read here are
-# agent-writable, so `for line in handle` would hand one crafted newline-free line
-# a single allocation the size of the whole file.
-#
-# The bound is in bytes, not characters, and the files are opened binary for that
-# reason: a character cap is not a memory bound, because one astral code point is
-# four bytes of `str` under PEP 393, so a 256 MiB CHARACTER cap admits a gibibyte
-# of resident text. Decoding cannot widen a record past its byte count -- UTF-8
-# spends at least as many bytes per code point as CPython's widest string
-# representation -- so capping the read at N bytes caps the decoded `str` at N
-# bytes too, and the transient peak is a small constant multiple of this value,
-# flat in file size.
-#
-# The cap CANNOT be session_storage's ``_MANIFEST_RECORD_CAP`` (8 MiB): a manifest
-# record is a header or one session's file list, while these files carry whole
-# conversation turns. A legitimate record's ceiling is ~90 MB -- image_artifacts'
-# ``MAX_IMAGE_BYTES_PER_MESSAGE`` (64 MiB) base64-expands to ~85 MB, plus text --
-# and the largest observed on a live install (30,351 kiro-cli logs, 27 GB) is
-# 77,920,032 bytes, itself load-bearing: it carries an image content item, and the
-# largest ``Prompt`` record (turns and first_message) is 56,203,168 bytes. A cap
-# below those would silently undercount the biggest sessions, so 128 MiB is the
-# smallest round value that clears the derived ceiling with margin. This constant
-# is the dial if a legitimate record ever grows past it.
-_RECORD_CAP = 128 * 1024 * 1024
-
-
-def _bounded_lines(handle: IO[bytes], path: Path) -> Iterator[str]:
-    """Yield *handle*'s lines decoded, skipping any record over ``_RECORD_CAP`` bytes.
-
-    *handle* is BINARY so the cap can be a memory bound rather than a code-point
-    count (see ``_RECORD_CAP``). Decoding per record is equivalent to decoding the
-    whole file, because ``\\n`` is never part of a UTF-8 multi-byte sequence -- lead
-    and continuation bytes are all >= 0x80 -- so no sequence can straddle a record
-    boundary and be replaced differently than it would have been.
-
-    Record boundaries are ``readline``'s, which is what the ``for line in handle``
-    iteration this replaces used: a record containing an exotic line boundary
-    (``\\u2028``, ``\\x1c``, ...) stays one record and still parses. Using
-    ``str.splitlines`` here -- the shape
-    :func:`kiro_crew.session_storage._manifest_records` needs, because its reader
-    replaced a whole-file ``splitlines`` -- would split such a record in two and
-    lose the turn it describes. Binary reads narrow this in one direction only:
-    a lone ``\\r`` no longer ends a record, since universal-newline translation is
-    gone. Neither writer of these files emits one, and a planted file that does is
-    read as one over-cap record and skipped, which is the safe direction. A
-    ``\\r\\n`` terminator survives, because every caller strips the record first --
-    it only shifts the boundary by one byte, since the ``\\r`` counts toward the
-    read and a ``\\r\\n``-terminated record is therefore refused one byte sooner
-    than an ``\\n``-terminated one. Immaterial at this cap; stated so a future
-    reader does not read the threshold as byte-exact on a CRLF file.
-
-    An over-cap record is SKIPPED and its tail drained without being kept, so a
-    hostile file costs time proportional to its length and memory proportional to
-    the cap. Skipping is the right posture for these three callers and the wrong
-    one for the manifest reader: nothing here feeds a rewrite, the digest is
-    read-only per-row detail that already skips a malformed line and keeps going
-    (see the module docstring), so an over-cap record degrades exactly one row's
-    counts. ``restore()`` in session_storage rewrites the manifest from what it
-    parsed, which is why an over-cap record there aborts the whole read instead.
-    """
-    oversized = 0
-    while True:
-        # Reading cap+1 makes the verdict unambiguous: a returned chunk shorter
-        # than that either ended on a newline or hit EOF, so it is a whole record.
-        raw = handle.readline(_RECORD_CAP + 1)
-        if not raw:
-            break
-        if len(raw) > _RECORD_CAP and not raw.endswith(b"\n"):
-            oversized += 1
-            while True:
-                tail = handle.readline(_RECORD_CAP + 1)
-                if not tail or tail.endswith(b"\n"):
-                    break
-            continue
-        yield raw.decode("utf-8", errors="replace")
-    if oversized:
-        # %r: *path* names a file in an agent-writable tree, and the archive
-        # segments are discovered with iterdir(), so a planted name can embed a
-        # newline. The repr keeps one log record from forging others.
-        logger.debug(
-            "digest: skipped %d record(s) over %d bytes in %r", oversized, _RECORD_CAP, path
-        )
+# The shared reader's cap (see :data:`kiro_crew.jsonl_util.RECORD_CAP`, which
+# derives it from the largest legitimate transcript record -- the shape this
+# module reads, so that derivation is this module's own). Named here and passed
+# explicitly because both trees read here are agent-writable, so
+# `for line in handle` would hand one crafted newline-free line a single
+# allocation the size of the whole file.
+_RECORD_CAP = RECORD_CAP
 
 
 @dataclass(frozen=True)
@@ -189,14 +111,15 @@ def _scan_transcript(path: Path) -> tuple[str, int]:
     """Stream a transcript file and extract (first_user_message, user_turn_count).
 
     Skips metadata/archive header lines, and any record over ``_RECORD_CAP``
-    bytes (see :func:`_bounded_lines`, which also owns the decode). Never raises.
+    bytes (see :func:`kiro_crew.jsonl_util.bounded_records`, which also owns
+    the decode). Never raises.
     """
     first_msg = ""
     turn_count = 0
 
     try:
         with open(path, "rb") as f:
-            for line in _bounded_lines(f, path):
+            for line in bounded_records(f, path, cap=_RECORD_CAP, label="digest"):
                 line = line.strip()
                 if not line:
                     continue
@@ -231,7 +154,8 @@ def _scan_cli_log(path: Path) -> tuple[int, int]:
 
     User turns are lines with ``kind == "Prompt"``.
     Images are content items with ``kind == "image"`` in any record.
-    Records over ``_RECORD_CAP`` bytes are skipped (see :func:`_bounded_lines`).
+    Records over ``_RECORD_CAP`` bytes are skipped (see
+    :func:`kiro_crew.jsonl_util.bounded_records`).
     Never raises.
     """
     turns = 0
@@ -239,7 +163,7 @@ def _scan_cli_log(path: Path) -> tuple[int, int]:
 
     try:
         with open(path, "rb") as f:
-            for line in _bounded_lines(f, path):
+            for line in bounded_records(f, path, cap=_RECORD_CAP, label="digest"):
                 line = line.strip()
                 if not line:
                     continue
@@ -273,12 +197,13 @@ def _first_message_from_cli(path: Path) -> str:
     """Extract the first user message text from a kiro-cli event log.
 
     Returns the text of the first Prompt record's first text content item.
-    Records over ``_RECORD_CAP`` bytes are skipped (see :func:`_bounded_lines`).
+    Records over ``_RECORD_CAP`` bytes are skipped (see
+    :func:`kiro_crew.jsonl_util.bounded_records`).
     Never raises.
     """
     try:
         with open(path, "rb") as f:
-            for line in _bounded_lines(f, path):
+            for line in bounded_records(f, path, cap=_RECORD_CAP, label="digest"):
                 line = line.strip()
                 if not line:
                     continue

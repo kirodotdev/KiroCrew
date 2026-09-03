@@ -663,7 +663,49 @@ async def api_spawn_status(request: web.Request) -> web.Response:
         data["turns"] = info.turns
         data["last_tool"] = _redact(info.last_tool)
         data["elapsed"] = round(time.time() - info.started)
+        # Same predicate, same present-only-while-true convention as
+        # api_spawn_list. This endpoint is the one a blocking `kirocrew spawn
+        # run` polls every 2s (cli_commands.py), so leaving it out is what kept
+        # the CLI reproduction of #6484 silent: the caller sat on "waiting for
+        # result..." while the answer ("a prompt is waiting for you") was only
+        # discoverable from a separate `spawn list` or a log grep.
+        if _awaiting_spawn_approval(info):
+            data["awaiting_approval"] = True
     return web.json_response(data)
+
+
+def _awaiting_spawn_approval(info: object) -> bool:
+    """True only while a run is parked on the SPAWN-approval gate.
+
+    ``_awaiting_approval`` alone is NOT sufficient: ``run.py`` sets the same
+    flag for TOOL approvals raised INSIDE a running subagent (three sites), so
+    reading it bare would report a run at turn 5 waiting on a tool prompt as
+    though it were waiting to START -- rendering "waiting for spawn approval"
+    and telling a caller to approve it "to start this run" that already
+    started. ``_exec_started`` is the permanent discriminator: it is stamped
+    once when execution begins, so ``None`` means the run never entered
+    execution, which for a registered run is only reachable via the spawn gate.
+
+    Both read paths go through this ONE predicate rather than repeating the
+    pair, because the two handlers build their payloads independently and a
+    drift between them is invisible to a behavioural test.
+
+    ``subagent_manager/terminal.py`` computes the same pair for the reap message
+    (#7325). Deliberately not extracted onto ``SubagentInfo``: that read is a
+    plain attribute read on a live run inside the manager package, whereas this
+    one must survive the info doubles the handlers are tested with (below), and
+    unifying them would mean editing a reap path this change does not otherwise
+    touch. The duplication is two lines and both sites name each other.
+
+    ``getattr`` with a strict ``is True`` / ``is None``: these handlers are
+    exercised with lightweight info doubles (SimpleNamespace / MagicMock) that
+    carry only the fields a case cares about, so a bare attribute read raises
+    and a truthy Mock would otherwise advertise a wait that isn't happening.
+    """
+    return (
+        getattr(info, "_awaiting_approval", False) is True
+        and getattr(info, "_exec_started", None) is None
+    )
 
 
 async def api_spawn_list(request: web.Request) -> web.Response:
@@ -690,6 +732,14 @@ async def api_spawn_list(request: web.Request) -> web.Response:
             entry["turns"] = info.turns
             entry["last_tool"] = _redact(info.last_tool)
             entry["elapsed"] = round(time.time() - info.started)
+            # Present only while the run is parked on its spawn-approval
+            # prompt, so the default payload is unchanged. Without it a run
+            # waiting for a human is byte-identical to one that is executing --
+            # which is how #6484 presented: `kirocrew spawn list` showed the
+            # same hourglass for a run that had no child process and was only
+            # ever waiting to be approved.
+            if _awaiting_spawn_approval(info):
+                entry["awaiting_approval"] = True
         # Present only when a group was actually withheld, so the default
         # (everything on) payload is unchanged.
         withheld = [

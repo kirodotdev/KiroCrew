@@ -811,3 +811,73 @@ describe('persisted crew UI state does not clobber another tab', () => {
     expect(JSON.parse(localStorage.getItem(CREW_UI_KEY) || '{}')).toMatchObject(seeded)
   })
 })
+
+/**
+ * `activePermissions` must read the ACTIVE repository's record, forge included.
+ *
+ * This lookup was the one of its four that compared the slug alone — the rail's
+ * collapsed badge, the repo switcher and the repo settings page each spelled the
+ * forge comparison out — and it is the one with teeth, because `canWrite` gates
+ * the label-edit and close/reopen controls. On a mixed install holding one slug on
+ * two forges, `repos.find` returns whichever record comes FIRST, so the active
+ * repository could be granted or denied writes on the strength of the other one's
+ * permissions.
+ *
+ * The fixture puts the read-only record first deliberately: with a slug-only match
+ * that record wins for both repositories, so the assertion below distinguishes the
+ * fix from the defect rather than passing either way.
+ */
+describe('IssueRadarProvider — permissions on a mixed-forge install', () => {
+  const SLUG = { owner: 'group/sub', repo: 'thing' }
+  const ON_GITHUB = {
+    ...SLUG,
+    provider: 'github' as const,
+    host: 'github.com',
+    permissions: { pull: true },
+  }
+  const ON_GITLAB = {
+    ...SLUG,
+    provider: 'gitlab' as const,
+    host: 'gitlab.example.com',
+    permissions: { pull: true, push: true },
+  }
+
+  function renderMixed(active: { owner: string; repo: string; provider?: 'github' | 'gitlab'; host?: string }) {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(
+      <QueryClientProvider client={client}>
+        {/* Read-only GitHub record FIRST, so a loose match resolves to it. */}
+        <IssueRadarProvider
+          repos={[ON_GITHUB, ON_GITLAB] as never}
+          active={active}
+          onSwitch={onSwitch}
+          onAddRepo={() => {}}
+        >
+          <Probe />
+        </IssueRadarProvider>
+      </QueryClientProvider>,
+    )
+  }
+
+  it('reads the GitLab record for the GitLab repository, not the same-slug GitHub one', async () => {
+    renderMixed({ ...SLUG, provider: 'gitlab', host: 'gitlab.example.com' })
+    await waitFor(() => expect(ctx.activePermissions).not.toBeNull())
+    expect(ctx.activePermissions).toEqual({ pull: true, push: true })
+    expect(ctx.canWrite).toBe(true)
+  })
+
+  it('still reads the GitHub record when that is the active one', async () => {
+    renderMixed({ ...SLUG, provider: 'github', host: 'github.com' })
+    await waitFor(() => expect(ctx.activePermissions).not.toBeNull())
+    expect(ctx.activePermissions).toEqual({ pull: true })
+    expect(ctx.canWrite).toBe(false)
+  })
+
+  it('resolves a forge-less active repo to the GitHub record, which is what it means', async () => {
+    // Absent provider/host mean public GitHub — `repoScopeKey` says so, and
+    // `sameRepoRef` inherits it, so a legacy pointer keeps matching its record.
+    renderMixed({ ...SLUG })
+    await waitFor(() => expect(ctx.activePermissions).not.toBeNull())
+    expect(ctx.activePermissions).toEqual({ pull: true })
+  })
+})

@@ -125,9 +125,10 @@ class OrchestrationTracker:
     def abort_round(self, stage: int) -> None:
         """Forget an interrupted stage attempt so the next Go retries it.
 
-        Called only when a monotonic Stop-generation change proves the current
-        attempt was interrupted before result capture. Earlier completed stages,
-        result pointers, failures, and escalation history remain authoritative.
+        Called whenever a stage attempt is abandoned before result capture — a
+        stop, timeout, error, empty result, capture failure, or teardown. Earlier
+        completed stages, result pointers, failures, and escalation history remain
+        authoritative.
         """
         self._stage_rounds.pop(stage, None)
         self._stage_start = 0.0

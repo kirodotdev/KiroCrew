@@ -4,7 +4,7 @@ import { isArtifactEditing } from '../utils/artifactEditGuard'
 import { isReconcileNote } from '../lib/noteContract'
 import { useAppDispatch, useAppSelector } from '../store'
 import { store } from '../store'
-import { sseStatus, sseYolo, sseConnected, sseDisconnected, sseSlots, sseTodoUpdate, setChannelTrusted, sseSlotTitle, triggerRefresh, fetchSlots, markSlotUnread, setUpdateProgress, sseSubagentStatus, sseSubagentText, touchSlotActivity, patchSlotSourceLinks, type SubagentDetail } from '../store/dashboardSlice'
+import { sseStatus, sseYolo, sseConnected, sseDisconnected, sseSlots, sseTodoUpdate, sseMcpReportUpdate, setChannelTrusted, sseSlotTitle, triggerRefresh, fetchSlots, markSlotUnread, setUpdateProgress, sseSubagentStatus, sseSubagentText, touchSlotActivity, patchSlotSourceLinks, type SubagentDetail } from '../store/dashboardSlice'
 import { addNotification, ackNotificationByTs, unackNotificationByTs, removeNotificationByTs, clearAllNotifications, fetchNotifications, markBootNotificationsFetched } from '../store/notificationsSlice'
 import { dispatchMcNotification, TURN_DONE_KIND, APPROVAL_KIND, shouldChimeOnTurnDone } from './notificationEvent'
 import { emitThemeSound } from './themeSound'
@@ -17,7 +17,7 @@ import { TAB_ID } from '../api/tabId'
 import { api } from '../api/client'
 import { sanitizeLlmOutput } from '../utils/sanitize'
 import { applyStatusDelta, parseStatusDelta } from '../utils/pullRequestStatusDelta'
-import type { StatusData, ChatMessage, ChatSlot, ChatFolder, Notification, PullRequestStatusBatch, TodoList } from '../types'
+import type { StatusData, ChatMessage, ChatSlot, ChatFolder, Notification, PullRequestStatusBatch, TodoList, McpSessionReport } from '../types'
 import { i18nT } from '../i18n/t'
 
 type LogCallback = ((data: { level: string; msg: string }) => void) | null
@@ -94,6 +94,32 @@ export function resolvedSince(log: Map<string, number>, watermark: number): stri
   const out: string[] = []
   for (const [askId, seq] of log) if (seq > watermark) out.push(askId)
   return out
+}
+
+/** sessionStorage key latched when an in-app update reaches its `restarting`
+ *  step. The gateway then execs itself and the socket drops; on the next
+ *  successful reconnect the latch tells this tab to reload — the signal the
+ *  version comparison cannot give when a git checkout rebuilds the SAME
+ *  version. Session-scoped on purpose: only the tab that watched the update
+ *  restart needs it (other tabs recover via the bundle-id comparison). */
+export const UPDATE_RESTART_LATCH_KEY = 'mc-update-restarting'
+
+/** How long the latch stays honored. A restart resolves in seconds; a latch
+ *  older than this belongs to an update the user cancelled or that died
+ *  before exec, and reloading over an unrelated later reconnect would look
+ *  like the app randomly refreshing itself. */
+export const UPDATE_RESTART_LATCH_TTL_MS = 15 * 60 * 1000
+
+/** Read-and-clear the restart latch. True only when a fresh latch existed —
+ *  the caller reloads exactly once per latched update. Clears a stale latch
+ *  too, so an abandoned update cannot linger into a later session. */
+export function consumeUpdateRestartLatch(now: number = Date.now()): boolean {
+  let raw: string | null = null
+  try { raw = sessionStorage.getItem(UPDATE_RESTART_LATCH_KEY) } catch { return false }
+  if (raw === null) return false
+  try { sessionStorage.removeItem(UPDATE_RESTART_LATCH_KEY) } catch { /* best effort */ }
+  const at = Number(raw)
+  return Number.isFinite(at) && now - at < UPDATE_RESTART_LATCH_TTL_MS
 }
 
 /** Decide what a reconnect reconcile should drop and re-add.
@@ -226,6 +252,13 @@ export function useWebSocket() {
   const wasConnectedRef = useRef(false)
   const reconnectingRef = useRef(false)  // suppress markSlotUnread during reconnect catch-up
   const lastVersionRef = useRef<string | null>(null)
+  // Served-bundle hash from the last status frame. A same-version rebuild (a
+  // git checkout's in-app update) moves this while `version` stays put, so it
+  // is the cross-push comparison that catches the case the version check
+  // cannot — and it reaches every open tab, not just the one that clicked
+  // Update. '' from the server means "no built bundle / unknown" and is never
+  // treated as a change in either direction.
+  const lastBundleIdRef = useRef<string | null>(null)
   const lastGitlabHostsGenRef = useRef<number | null>(null)
   const lastFoldersGenRef = useRef<number | null>(null)
   const lastSlotsRawRef = useRef<string | null>(null)
@@ -743,6 +776,16 @@ export function useWebSocket() {
       // Cache auto-speak preference
       api.voiceConfig().then(c => { autoSpeakRef.current = !!c.autoSpeak }).catch(() => {})
       if (wasConnectedRef.current) {
+        // Reconnecting after an in-app update's restart: the disconnect WAS the
+        // gateway exec'ing its updated self, and this tab's JS predates the
+        // rebuild. Reload instead of the state re-fetch below — on a git
+        // checkout the version often does not change, so the 'dashboard'
+        // frame's version comparison would never fire and the tab would sit on
+        // the stale bundle (with the update overlay's spinner) forever.
+        if (consumeUpdateRestartLatch()) {
+          window.location.reload()
+          return
+        }
         // Reconnecting after disconnect — re-fetch state instead of
         // reloading the page.  Preserves unsent messages, scroll
         // position, and form inputs.
@@ -897,7 +940,14 @@ export function useWebSocket() {
             const prev = lastVersionRef.current
             const next = (data as StatusData).version
             if (next) lastVersionRef.current = next
-            if (prev && next && prev !== next) {
+            // Same rule for the served-bundle hash: a git checkout's in-app
+            // update rebuilds the SAME version, so `version` never moves and
+            // only the bundle id records that this tab's JS is now stale.
+            const prevBundle = lastBundleIdRef.current
+            const nextBundle = (data as StatusData).bundle_id
+            if (nextBundle) lastBundleIdRef.current = nextBundle
+            if ((prev && next && prev !== next)
+                || (prevBundle && nextBundle && prevBundle !== nextBundle)) {
               window.location.reload()
               return
             }
@@ -1014,6 +1064,15 @@ export function useWebSocket() {
           case 'todo_update': {
             const d = data as unknown as { slot?: string; todo?: TodoList | null }
             if (d.slot) dispatch(sseTodoUpdate({ slot: d.slot, todo: d.todo ?? null }))
+            break
+          }
+          case 'mcp_report_update': {
+            // A null report is a real value here, not a missing one: the gateway
+            // sends it when a session reset invalidates the previous report.
+            const d = data as unknown as { slot?: string; mcp_report?: McpSessionReport | null }
+            if (d.slot) {
+              dispatch(sseMcpReportUpdate({ slot: d.slot, mcp_report: d.mcp_report ?? null }))
+            }
             break
           }
           case 'slot_title':
@@ -1257,13 +1316,15 @@ export function useWebSocket() {
             break
           case 'chat_message_update':
             // Server emits this for two distinct flows: tool_call_id-keyed
-            // updates from claude-agent-acp tool_call_update, and ts-keyed
+            // updates from claude-agent-acp tool_call_update, and row-keyed
             // patches for mcp_oauth banner state flips. Route by which key
-            // the payload carries.
+            // the payload carries. The row-keyed branch prefers `mid` (the
+            // server-minted row identity) over `ts`, which two restored rows
+            // can share.
             if ((data as { tool_call_id?: string }).tool_call_id) {
               dispatch(sseChatMessageUpdate(data as { slot: string; tool_call_id: string; content?: string; meta?: Record<string, unknown> }))
             } else {
-              dispatch(sseChatMessagePatchByTs(data as { slot: string; ts: string; meta?: Record<string, unknown>; content?: string }))
+              dispatch(sseChatMessagePatchByTs(data as { slot: string; ts: string; mid?: string; meta?: Record<string, unknown>; content?: string }))
             }
             break
           case 'queue_pop':
@@ -1772,6 +1833,19 @@ export function useWebSocket() {
             break
           case 'update_progress': {
             const prog = data as { step: string; detail: string }
+            // `restarting` is the last event before the gateway execs itself
+            // and this socket dies — latch it so the reconnect handler knows
+            // the next successful connect is a post-update gateway and this
+            // tab's bundle must be reloaded (a same-version rebuild moves
+            // neither `version` nor anything else the tab compares).
+            if (prog.step === 'restarting') {
+              try { sessionStorage.setItem(UPDATE_RESTART_LATCH_KEY, String(Date.now())) } catch { /* best effort */ }
+            } else if (prog.step === 'failed' || prog.step === 'error' || prog.step === 'done') {
+              // A failure AFTER `restarting` was pushed (invalid exe path) means
+              // no exec is coming — an armed latch would reload over the next
+              // unrelated blip. `done` is only ever simulated, same cleanup.
+              try { sessionStorage.removeItem(UPDATE_RESTART_LATCH_KEY) } catch { /* best effort */ }
+            }
             if (prog.step === 'done') {
               dispatch(setUpdateProgress(null))
             } else {

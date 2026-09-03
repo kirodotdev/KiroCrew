@@ -12,6 +12,7 @@ import {
   CACHE_RETENTION_MS, loadActiveRepo, markAutoSelectFirstIssue, patchUiState, saveActiveRepo,
 } from './lib/format'
 import type { ActiveRepo } from './lib/types'
+import { sameRepoRef } from './lib/links'
 import { IssueRadarProvider } from './context'
 import Workspace from './Workspace'
 import RefSheet from './components/RefSheet'
@@ -98,9 +99,47 @@ export default function IssueRadarPage() {
     return <WelcomeCarousel onConnected={onConnected} />
   }
 
-  const resolved = active && repos.some((r) => r.owner === active.owner && r.repo === active.repo)
-    ? active
-    : { owner: repos[0].owner, repo: repos[0].repo }
+  // Resolve the active repository to the CONNECTED RECORD, on full identity.
+  //
+  // Two things used to go wrong here, and both produced a ref with no forge on it.
+  // The fallback arm built `{owner, repo}` from `repos[0]` and discarded that
+  // record's provider and host; and the membership test compared owner and repo
+  // alone, so a STORED slug-only pointer satisfied it and was handed back
+  // unenriched — `loadActiveRepo` accepts one deliberately, because a value
+  // persisted before GitLab support has no forge and rejecting it would drop the
+  // user's repository on upgrade. So the legacy pointer was never healed even
+  // though the record standing beside it carried the missing half.
+  //
+  // A forge-less ref is not merely incomplete, it reads as a DIFFERENT repository:
+  // `repoScopeKey` resolves an absent provider/host to public GitHub, so every
+  // surface keying a cache on `active` filed a GitLab or Azure repository's issues,
+  // labels and settings under GitHub's key, and every request that took the ref
+  // omitted the provider the backend needs to answer for the right forge.
+  //
+  // Returning the record itself fixes both arms at once: whatever identity the
+  // match was made on, what goes down is what the connect flow actually stored.
+  // The slug match is also gone — `sameRepoRef` compares the forge too, so on a
+  // mixed install a stored pointer can no longer resolve to the same slug on the
+  // wrong provider.
+  //
+  // Matching on identity ALONE is deliberate, and a slug fallback for the
+  // forge-less case was tried and reverted. A pointer with no provider/host is
+  // not a pointer of unknown forge: `repoScopeKey` resolves absent fields to
+  // public GitHub, so it NAMES github.com/owner/repo, which is why
+  // `sameRepoRef` pairs it with its GitHub record and why the predicate's own
+  // test refuses to pair it with a GitLab one. Resolving it to a same-slug
+  // record on another forge would therefore reassign the user's repository to a
+  // forge they never chose -- the exact "a slug is not an identity" error this
+  // fix exists to remove, reintroduced one layer up. When no GitHub record is
+  // connected the stored repository simply is not connected, so it falls back
+  // like any other missing one.
+  const connected = (active && repos.find((r) => sameRepoRef(r, active))) || repos[0]
+  const resolved: ActiveRepo = {
+    owner: connected.owner,
+    repo: connected.repo,
+    ...(connected.provider ? { provider: connected.provider } : {}),
+    ...(connected.host ? { host: connected.host } : {}),
+  }
 
   return (
     <IssueRadarProvider

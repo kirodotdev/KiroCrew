@@ -721,9 +721,35 @@ class SpawnAdmissionCoordinator(ManagerComponent):
             task_safe, _ = redact_exfiltration_urls(info.task)
             task_safe, _ = redact_credentials(task_safe)
             task_preview: str = task_safe[:80]
-            approved: bool = await self._manager._on_spawn_approval(
-                request_id, f"spawn_run({task_preview})", info.parent_session_key
+            # Mark the pre-execution spawn gate as a human-wait so the reaper
+            # does not misreport it. This is the SAME lifecycle the mid-run TOOL
+            # approvals use in run.py: set before the await, cleared in a
+            # finally. The run has NOT started here (_exec_started is None),
+            # which is exactly what lets _force_reap distinguish a never-answered
+            # spawn approval from a mid-run tool prompt and report the accurate
+            # cause.
+            info._awaiting_approval = True
+            # Name the wait as well as marking it. The flag above is machine
+            # state read by the reaper and (now) by the wire; this is the line an
+            # operator gets. #6484's reporter had no lead at all because
+            # ``kirocrew logs`` held no record keyed to the affected run id —
+            # while a wait with no deadline of its own held the run at turn 0.
+            # ``parent_session_key`` is in the record on purpose: an unowned
+            # spawn (the CLI posts none) raises its prompt with ``slot=""``, so
+            # it is surfaced only on the global approvals feed and appears in no
+            # chat tab, which is the case with the least other evidence.
+            logger.info(
+                "Subagent %s awaiting spawn approval (request_id=%s, parent=%s)",
+                info.id,
+                request_id,
+                info.parent_session_key or "<unowned>",
             )
+            try:
+                approved: bool = await self._manager._on_spawn_approval(
+                    request_id, f"spawn_run({task_preview})", info.parent_session_key
+                )
+            finally:
+                info._awaiting_approval = False
         except Exception:
             logger.exception("Spawn approval failed for %s", info.id)
             approved = False
@@ -779,6 +805,31 @@ class SpawnAdmissionCoordinator(ManagerComponent):
             logger.warning("Failed to create agent folder for %s", info.id, exc_info=True)
 
         Stats().inc_subagent_spawned()
+        # Beside that stat, and for the same reason: this is the confirmed-start
+        # funnel. Every path reaches it only AFTER the spawn is approved -- the
+        # approval path calls it once the user allows and returns earlier on a
+        # rejection -- so a rejected or unstarted spawn is never counted, which
+        # the admission-time increment could not promise. ``concurrency`` is the
+        # live running count, bounded by ``_max_concurrent``, so the aggregator's
+        # MAX over that attribute is the concurrency high-water mark without a
+        # second instrument.
+        #
+        # Imported HERE, not at module scope: ``bind_component_globals`` rebinds
+        # every ``*_impl`` function's ``__globals__`` to ``subagent``'s namespace
+        # for patch compatibility, so a module-level import in this file is not
+        # visible from inside this function at all.
+        try:
+            from kiro_crew.metrics.events import SUBAGENTS_SPAWNED, emit_counter
+
+            emit_counter(
+                SUBAGENTS_SPAWNED,
+                {
+                    "concurrency": self._manager._running_count,
+                    "batched": bool(getattr(info, "batch_id", "")),
+                },
+            )
+        except Exception:
+            logger.debug("subagent spawned counter failed", exc_info=True)
         sel().log_tool_invocation(
             session_key=info.parent_session_key,
             source="subagent",

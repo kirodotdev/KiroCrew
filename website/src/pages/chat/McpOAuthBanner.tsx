@@ -1,5 +1,5 @@
 import { useState, type ReactNode } from 'react'
-import { Lock, ExternalLink, CheckCircle, XCircle } from 'lucide-react'
+import { Lock, ExternalLink, CheckCircle, XCircle, History } from 'lucide-react'
 import type { ChatMessage } from '../../types'
 
 import { i18nT } from '../../i18n/t'
@@ -7,7 +7,9 @@ import OAuthRelayAffordance, { isSafeOAuthUrl } from '../../components/OAuthRela
 
 /**
  * Inline banner for kiro-cli MCP OAuth flow. `meta.completed` flips it to the
- * authenticated state; `meta.failed` flips it to the error state.
+ * authenticated state; `meta.failed` flips it to the error state;
+ * `meta.superseded` retires it once a newer request replaced the flow, so a
+ * link whose loopback listener is gone is never offered as live.
  */
 
 /** The chat banner's relay strings — its own `pages.chat.mcpOAuthBanner.*` keys.
@@ -41,14 +43,19 @@ export function renderMcpOAuthMessage(m: ChatMessage, hideCardOwned = false): Re
   const oauthUrl = (m.meta?.oauth_url as string) || ''
   const completed = !!m.meta?.completed
   const failed = !!m.meta?.failed
+  const superseded = !!m.meta?.superseded
   const error = (m.meta?.error as string) || ''
-  if (!oauthUrl && !completed && !failed) return null
+  // `superseded` carries no `oauth_url` (the backend pops it), so it has to be
+  // named here or the banner would silently vanish instead of telling the user
+  // the flow is over and what to do next — the whole point of the state.
+  if (!oauthUrl && !completed && !failed && !superseded) return null
   return (
     <McpOAuthBanner
       serverName={serverName}
       oauthUrl={oauthUrl}
       completed={completed}
       failed={failed}
+      superseded={superseded}
       error={error}
     />
   )
@@ -59,12 +66,14 @@ export default function McpOAuthBanner({
   oauthUrl,
   completed,
   failed,
+  superseded,
   error,
 }: {
   serverName: string
   oauthUrl: string
   completed: boolean
   failed?: boolean
+  superseded?: boolean
   error?: string
 }) {
   const label = serverName || i18nT('pages.chat.mcpOAuthBanner.mcp_server')
@@ -90,6 +99,21 @@ export default function McpOAuthBanner({
         <CheckCircle className="shrink-0 text-ok lucide-inline" />
         <span className="flex-1 text-text">
           <span className="font-mono font-semibold">{label}</span> {i18nT('pages.chat.mcpOAuthBanner.authenticated')}
+        </span>
+      </div>
+    )
+  }
+
+  // A newer request replaced this flow, so its loopback listener is gone and the
+  // link cannot be redeemed by anyone. Say so and point at the live button
+  // instead of rendering a link that walks the user through a whole provider
+  // login and dead-ends on `127.0.0.1:<dead-port>/?code=…` (issue #7580).
+  if (superseded) {
+    return (
+      <div className="flex items-center gap-2 px-4 py-3 rounded-lg ring-1 ring-inset forced-colors:border ring-border bg-muted/10 text-sm leading-5">
+        <History className="shrink-0 text-text/50 lucide-inline" />
+        <span className="flex-1 text-text">
+          <span className="font-mono font-semibold">{label}</span> {i18nT('pages.chat.mcpOAuthBanner.superseded')}
         </span>
       </div>
     )

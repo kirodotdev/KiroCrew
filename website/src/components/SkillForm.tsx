@@ -108,27 +108,77 @@ function everyTopKeyAtColumnZero(block: string, doc: Document.Parsed): boolean {
 /** Reproduce the reader's fold for a BARE LITERAL block scalar, from the source lines
  *  after its header.
  *
- *  Mirrors `fold_block_scalar` in `src/kiro_crew/frontmatter.py` for the `|` family only:
- *  it drops trailing blank lines, dedents by the first non-blank line's indent, joins with
- *  newlines and strips. The strip is the part no YAML chomping mode performs, and it is
- *  why comparing beats predicting -- a leading blank line survives in the parser and not
- *  here, and nothing about the indicator says so. */
-function backendFoldsLiteral(block: string, headerEnd: number): string {
+ *  Mirrors `fold_block_scalar` in `src/kiro_crew/frontmatter.py` for the `|` family: it
+ *  separates the trailing blank lines from the content, dedents by the first non-blank
+ *  line's indent, joins with newlines, and applies the header's chomping modifier --
+ *  `-` drops every trailing break, `+` keeps them all, and the default keeps exactly one.
+ *
+ *  It no longer trims. Until #7097 the backend fold ended in `.strip()`, which removed a
+ *  LEADING break and every trailing one -- neither of which any chomping mode does -- so
+ *  whether the two readers agreed depended on the block's CONTENT. They now agree on the
+ *  whole `|` family, which is why the comparison below stops refusing the leading-blank
+ *  and keep-chomped shapes. The comparison itself stays: it is what catches the next
+ *  drift, and a dedent rule is still not derivable from the indicator. */
+function backendFoldsLiteral(block: string, headerEnd: number, header: string): string {
   const rest = block.slice(headerEnd + 1).split('\n')
   const body: string[] = []
+  /* The same boundary the reader's own walk uses, judged in SPACES because that is what
+     YAML counts as indentation: a line with content at column 0 ends the scalar (so a
+     bare tab ends it, having no space indent at all), and so does a content line
+     indented LESS than the block's. Breaking only on "non-blank and unindented" let this
+     mirror keep lines the reader stops at, and it then predicted a value the reader
+     never returns. */
+  let contentIndent: number | null = null
+  /* A leading all-space line's own depth is a floor on the detected indent, because YAML
+     detects from the leading blanks too and ends the scalar rather than accept a
+     shallower content line after them. The reader applies the same floor; without it this
+     mirror kept lines the reader leaves in the surrounding document. */
+  let blankFloor = 0
   for (const line of rest) {
-    // The scalar ends at the first non-blank line that is not indented.
-    if (line.trim() !== '' && !/^\s/.test(line)) break
+    const stripped = line.replace(/^ +/, '')
+    if (stripped !== '') {
+      const lineIndent = line.length - stripped.length
+      if (lineIndent === 0) break
+      if (contentIndent === null) {
+        if (lineIndent < blankFloor) break
+        contentIndent = lineIndent
+      }
+      if (lineIndent < contentIndent) break
+    } else if (contentIndent === null) {
+      blankFloor = Math.max(blankFloor, line.length)
+    }
     body.push(line)
   }
   let end = body.length
   while (end && body[end - 1].trim() === '') end -= 1
-  if (!end) return ''
-  const kept = body.slice(0, end)
-  const first = kept.find(l => l.trim() !== '') ?? ''
-  const indent = first.length - first.replace(/^\s+/, '').length
-  const dedented = kept.map(l => (l.slice(0, indent).trim() === '' ? l.slice(indent) : l.replace(/^\s+/, '')))
-  return dedented.join('\n').trim()
+  const chomp = header.slice(1, 2)
+  /* The +1 is the last line's OWN terminating newline. Every line inside the fence has
+     one, including the last: the closing `---` is on its own line. Omitting it made a
+     clip-chomped scalar read one break short of what both parsers give. So a block that
+     is nothing but breaks has exactly as many as it has lines. */
+  const allBreaks = chomp === '+' ? '\n'.repeat(body.length) : ''
+  /* Indentation is SPACES, never tabs, so under `|` a line of two spaces then a tab is
+     two columns of indent followed by a TAB OF CONTENT -- which is how the backend
+     counts it. Matching on \s treated the tab as indentation, found no content line at
+     all, and made this mirror disagree with the reader it exists to predict. */
+  const first = body.find(l => l.replace(/^ +/, '') !== '')
+  if (first === undefined) return allBreaks
+  const indent = first.length - first.replace(/^ +/, '').length
+  const dedented = body.map(l =>
+    /^ *$/.test(l.slice(0, indent)) || l.trim() === '' ? l.slice(indent) : l.replace(/^\s+/, ''),
+  )
+  if (!dedented.some(l => l !== '')) return allBreaks
+  /* Classify the trailing breaks AFTER dedenting, as the backend does: whitespace
+     BEYOND the block's indent is content, so a trailing line of three spaces under a
+     two-space block is a one-space content line and not a break at all. Judging the raw
+     lines dropped it and reported a divergence against a reader that had kept it. */
+  end = dedented.length
+  while (end && dedented[end - 1] === '') end -= 1
+  const trailingBreaks = dedented.length - end + 1
+  /* Clip keeps exactly one break, and there is always one to keep: the count includes
+     the last line's own terminator, so it is never zero. */
+  const suffix = chomp === '-' ? '' : chomp === '+' ? '\n'.repeat(trailingBreaks) : '\n'
+  return dedented.slice(0, end).join('\n') + suffix
 }
 
 /** What the BACKEND reader would take a managed field's value to be, from its own
@@ -150,18 +200,23 @@ function backendReadsValue(block: string, pair: Pair<unknown, unknown>): string 
   if (colon === -1) return null
   const rhs = line.slice(colon + 1).trim()
   /* Block scalars. Three attempts at deciding agreement from the INDICATOR were all
-     wrong -- six (the reader's resolvable set), then four, then the realisation that the
-     reader's fold ends in `.strip()`, which eats LEADING whitespace too, so
-     `always: |-` with a blank first line reads `true` on the backend and
-     newline-then-true in the parser. Agreement depends on the CONTENT.
-     So stop predicting and SIMULATE, exactly as the single-line branch below does.
-     For a bare LITERAL indicator the reader's fold is short enough to reproduce
-     faithfully: drop trailing blank lines, dedent by the first non-blank line's indent,
-     join with newlines, strip. Verified against the real `fold_block_scalar`.
-     A FOLDED (`>`) form is NOT reproduced -- its blank-line and indentation folding rules
-     are intricate, and duplicating them is the cross-language coupling this change exists
-     to avoid -- so it falls through and is refused, as does an explicit indicator. */
-  if (/^\|[+-]?$/.test(rhs)) return backendFoldsLiteral(block, lineEnd)
+     wrong, and the reason has now been removed at the source: until #7097 the reader's
+     fold ended in `.strip()`, so `always: |-` with a blank first line read `true` on the
+     backend and newline-then-true in the parser, and agreement depended on the CONTENT.
+     The backend fold now follows YAML chomping and keeps a leading break, so the `|`
+     family agrees outright.
+     The SIMULATION stays anyway, exactly as the single-line branch below does: it is what
+     catches the next drift between the two implementations, and the dedent rule still is
+     not derivable from the indicator.
+     A FOLDED (`>`) form is still NOT reproduced -- its blank-line and indentation folding
+     rules are intricate, and duplicating them is the cross-language coupling #7187 chose
+     to avoid -- so it falls through and is refused. An EXPLICIT indicator (`|2-`) is now
+     resolved by the backend, but stays refused here for the same reason: relaxing that is
+     a capability change, not a correctness one, and refusing it merely declines an edit
+     the reader could have taken. Every remaining gap between this mirror and the backend
+     is in that safe direction -- it can only refuse a block both sides agree on, never
+     accept one they read differently. */
+  if (/^\|[+-]?$/.test(rhs)) return backendFoldsLiteral(block, lineEnd, rhs)
   return rhs.replace(/^["']+/, '').replace(/["']+$/, '')
 }
 
@@ -191,7 +246,15 @@ function backendDisagreesOnManagedField(block: string, doc: Document.Parsed): bo
     if (typeof (pair.value as { comment?: unknown }).comment === 'string') continue
     const backend = backendReadsValue(block, pair)
     if (backend === null) continue
-    if (backend !== scalarText(pair.value)) return true
+    /* Compare the two in the SAME space. `scalarText` drops one trailing newline from a
+       block node, because that break is the block's own terminator and the form's text
+       field does not show it -- re-emitting as `|` puts it back. Since #7097 the backend
+       fold keeps that break too (it is what a YAML parser returns), so comparing the raw
+       fold against the stripped parser text would report a disagreement on every block
+       scalar in the file and refuse them all. Normalise the backend side identically. */
+    const isBlockNode = pair.value.type === 'BLOCK_LITERAL' || pair.value.type === 'BLOCK_FOLDED'
+    const backendText = isBlockNode ? backend.replace(/\n$/, '') : backend
+    if (backendText !== scalarText(pair.value)) return true
   }
   return false
 }
@@ -440,16 +503,24 @@ function managedText(key: string, data: SkillFormData): string {
  *  which case the field is copied verbatim rather than re-rendered.
  *
  *  `always` needs its own comparison, and it must be an INVERSION rather than a
- *  list of false-like spellings. The form reads the flag as `meta.always ===
- *  'true'`, so the field is unchanged exactly when the checkbox still agrees with
- *  that same test applied to the original text. Enumerating `''` and `'false'`
- *  missed every other non-`true` spelling -- `always: yes` and `always: no` parse
- *  as STRINGS under the YAML 1.2 core schema, `always: 0` as a number -- and each
- *  one was silently deleted on an unrelated edit. Enumerating shapes is the exact
- *  mistake this whole change exists to stop making. */
+ *  list of false-like spellings. The form reads the flag as
+ *  `meta.always.trim().toLowerCase() === 'true'`, so the field is unchanged
+ *  exactly when the checkbox still agrees with that same test applied to the
+ *  original text. Enumerating `''` and `'false'` missed every other non-`true`
+ *  spelling -- `always: yes` and `always: no` parse as STRINGS under the YAML 1.2
+ *  core schema, `always: 0` as a number -- and each one was silently deleted on an
+ *  unrelated edit. Enumerating shapes is the exact mistake this whole change
+ *  exists to stop making.
+ *
+ *  The normalisation is load-bearing and must stay in step with the backend, which
+ *  reads this flag as `meta.get("always", "").strip().lower() == "true"`. Since
+ *  #7097 the reader honours YAML chomping, so `always: |+` followed by blank lines
+ *  legitimately reads `true\n\n`; and `always: "TRUE"` reaches here uppercased.
+ *  Without `.trim().toLowerCase()` on BOTH sides the form would show such a skill
+ *  as off while the loader treated it as on. */
 function managedUnchanged(key: string, data: SkillFormData, original: Record<string, string>): boolean {
   const was = original[key] ?? ''
-  if (key === 'always') return data.always === (was === 'true')
+  if (key === 'always') return data.always === (was.trim().toLowerCase() === 'true')
   return managedText(key, data) === was
 }
 
@@ -787,7 +858,12 @@ export function parseSkillContent(raw: string, key: string): SkillFormData {
     description: meta.description || '',
     triggers: meta.triggers || '',
     tags: meta.tags || '',
-    always: meta.always === 'true',
+    // `.trim().toLowerCase()` keeps this in step with the backend's
+    // `meta.get("always", "").strip().lower() == "true"`: a chomping-preserved
+    // trailing newline must not read as "not always-on" here while the loader
+    // reads it as on, and neither must `always: "TRUE"`, which the loader
+    // activates. See `managedUnchanged`, which inverts this exact test.
+    always: (meta.always ?? '').trim().toLowerCase() === 'true',
     body: split.body,
   }
 

@@ -45,6 +45,31 @@ paths your `app.json` declares. The host injects auth automatically.
 
 For the full hook list see [getting-started.md](getting-started.md#app-sdk-hooks).
 
+## Native Chat Panel
+
+`ChatPanel` mounts Kiro Crew's native chat experience for an existing session. The required
+`slotKey` selects the session. By default, the component keeps the standard embedded ChatPage
+behavior.
+
+```tsx
+import { ChatPanel } from '@kirocrew/app-sdk'
+
+<ChatPanel slotKey="coder-abc123" />
+```
+
+Set `conversationOnly` when the host app already provides navigation and needs the conversation
+without ChatPage's sessions rail. This mode keeps the native transcript, composer, and composer
+controls, and it leaves the host page in charge of the browser URL.
+
+```tsx
+<ChatPanel slotKey="coder-abc123" conversationOnly />
+```
+
+| Prop | Type | Required | Purpose |
+|---|---|---|---|
+| `slotKey` | `string` | yes | Select the Kiro Crew session rendered by the panel |
+| `conversationOnly` | `boolean` | no | Hide ChatPage's sessions rail and disable ChatPage URL synchronization |
+
 ## Chat Marker Protocol
 
 An agent encodes UI affordances inline in the prose it streams. A surface that renders a transcript

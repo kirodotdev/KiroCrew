@@ -231,6 +231,24 @@ class TestCollectRecentSessions:
         assert rows[0]["title"] == "ok"
         assert rows[0]["msgs"] == [{"role": "user", "content": "hi"}]
 
+    def test_skips_valid_json_lines_that_are_not_records(self, sess_dir):
+        path = sess_dir / "dashboard_non_record.jsonl"
+        path.write_text(
+            "\n".join(
+                [
+                    json.dumps({"_type": "metadata", "title": "ok"}),
+                    "null",
+                    json.dumps(["not", "a", "record"]),
+                    json.dumps({"role": "user", "content": "hi"}),
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+        rows = _collect_recent_sessions(None)
+
+        assert rows[0]["msgs"] == [{"role": "user", "content": "hi"}]
+
     def test_truncates_long_message_content(self, sess_dir):
         big = "x" * 10000
         _write_jsonl(sess_dir / "dashboard_a.jsonl", title="t", messages=[("user", big)])

@@ -160,4 +160,19 @@ describe('dedupResourceLinks', () => {
     expect(resourceKey('https://github.com/acme/repo/pull/274'))
       .toBe(resourceKey('https://github.com/acme/repo/pull/274/commits'))
   })
+
+  it('collapses root-level review paths and their sub-path variants', () => {
+    // A registered provider may serve reviews at the path root; a revision pin
+    // must key to the same base as the bare mention (issue #7250).
+    expect(resourceKey('https://review.acme.example/reviews/CR-123/revisions/2'))
+      .toBe('https://review.acme.example/reviews/CR-123')
+    expect(resourceKey('https://review.acme.example/reviews/CR-123/revisions/2'))
+      .toBe(resourceKey('https://review.acme.example/reviews/CR-123'))
+    // The nested shape keeps working.
+    expect(resourceKey('https://host.example/proj/reviews/CR-9/comments'))
+      .toBe('https://host.example/proj/reviews/CR-9')
+    // A path segment merely containing "reviews" is not a reviews arm.
+    expect(resourceKey('https://host.example/nonreviews/CR-1'))
+      .toBe('https://host.example/nonreviews/CR-1')
+  })
 })

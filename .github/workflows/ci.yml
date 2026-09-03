@@ -271,6 +271,37 @@ jobs:
           python3 scripts/check_focus_cue.py --test
           python3 scripts/check_focus_cue.py
 
+  feature-map-lint:
+    name: Feature Map Gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      # persist-credentials retained: feature-map-lint/Check the feature map covers the features this change adds runs `git fetch origin`
+      # against the same remote, through the shared diff-base resolver script.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Check the feature map covers the features this change adds
+        # Structural, not line-scoped, and that is the whole design. A feature
+        # arrives as a FILE appearing under the pages or handlers tree, or a route
+        # entry appearing in the router — so those are what demand a map row.
+        # Editing an existing page is how a feature changes BEHAVIOR, which the map
+        # deliberately does not describe, so an edit-only diff never fires. A gate
+        # that asked for a map review on every UI fix would produce a map nobody
+        # reads. Contract: docs/feature-map/README.md
+        env:
+          # `base.sha` for the same reason as the brand gate above: the merge ref
+          # this run checks out was computed against that exact commit.
+          FEATURE_MAP_BASE_REF: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          FEATURE_MAP_BASE_REF="$(bash "$GITHUB_WORKSPACE/.github/scripts/resolve-i18n-base.sh" \
+            "$FEATURE_MAP_BASE_REF" 'the feature-map gate')" || exit 1
+          export FEATURE_MAP_BASE_REF
+          # Self-test first: it plants one probe per trigger rule, so a widened or
+          # narrowed rule fails here instead of shipping a gate that asks for a map
+          # update on every edit — or never asks at all.
+          python3 scripts/check_feature_map.py --test
+          python3 scripts/check_feature_map.py
+
   changelog-history:
     name: Changelog History Gate
     runs-on: ubuntu-latest
@@ -466,7 +497,7 @@ jobs:
     timeout-minutes: 15
     strategy:
       matrix:
-        python-version: ["3.10", "3.12"]
+        python-version: ["3.12"]
     steps:
       # Full history so the black gate can compute THIS change's own diff. A
       # shallow clone truncates parent info and leaves no base ref, and the gate
@@ -587,8 +618,8 @@ jobs:
       # picture across the suite, not just the first shard to break.
       fail-fast: false
       matrix:
-        python-version: ["3.10", "3.12"]
-        # Duration-balanced shards (pytest-split). 4 groups x 2 Python = 8
+        python-version: ["3.12"]
+        # Duration-balanced shards (pytest-split). 4 groups x 1 Python = 4
         # parallel jobs, each on its own runner (4 cores via -n auto). To add
         # shards, extend this list AND bump SHARD_COUNT to match -- mind the
         # ~20 concurrent-job ceiling for public repos.
@@ -652,10 +683,10 @@ jobs:
         # by test count. -n auto still parallelizes within each shard across the
         # runner's cores -- sharding scales across runners, -n auto across cores.
         #
-        # Coverage runs only on 3.12 (fast sys.monitoring path); each shard emits
-        # a partial data file merged later by the coverage-combine job. 3.10
-        # passes --no-cov (overriding setup.cfg's forced --cov) for a trace-free,
-        # faster run.
+        # Coverage runs on every shard: since the floor moved to >= 3.12 the
+        # matrix has a single Python, so there is no --no-cov lane left. Each
+        # shard emits a partial data file merged later by the coverage-combine
+        # job.
         env:
           REDUCED: ${{ steps.scope.outputs.reduced }}
           TARGETS_FILE: ${{ runner.temp }}/backend-targets.txt
@@ -689,7 +720,7 @@ jobs:
           fi
           pytest -q -n auto --timeout=120 \
             --splits "$SHARD_COUNT" --group ${{ matrix.group }} \
-            ${{ matrix.python-version == '3.12' && '--cov=kiro_crew --cov=sage_lib' || '--no-cov' }}
+            --cov=kiro_crew --cov=sage_lib
         # Nothing is deselected. The eleven files that used to be -- the two sandbox
         # suites, the two ops git/gh suites, and the seven auto_improvement suites --
         # each carry `skipif(not userns_available())` on the tests that need a namespace
@@ -697,7 +728,7 @@ jobs:
         # named reason and the other ~523 run. See the note above the `jobs:` key.
 
       - name: Stage shard coverage data
-        if: matrix.python-version == '3.12' && steps.scope.outputs.reduced != 'true'
+        if: steps.scope.outputs.reduced != 'true'
         # Fold any xdist parallel data files into a single .coverage (no-op if
         # pytest-cov already combined this shard), then name it per-shard so the
         # combine job can merge all shards with `coverage combine`.
@@ -707,7 +738,7 @@ jobs:
           mv .coverage ".coverage.${{ matrix.group }}"
 
       - name: Upload shard coverage
-        if: matrix.python-version == '3.12' && steps.scope.outputs.reduced != 'true'
+        if: steps.scope.outputs.reduced != 'true'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: coverage-shard-${{ matrix.group }}
@@ -1326,7 +1357,7 @@ jobs:
         # The ceiling must EQUAL the measured count, not sit above it: slack is
         # silent admission, and a warning that lands inside it never surfaces
         # again. Re-measure with `cd website && npx eslint src/` when burning down.
-        run: npx eslint src/ --max-warnings 603
+        run: npx eslint src/ --max-warnings 597
 
       - name: Copy/paste detection
         working-directory: website

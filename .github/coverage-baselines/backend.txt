@@ -41,6 +41,20 @@ src/kiro_crew/apps/builtins/personal_shopper/backend/routes.py 71.5   # 186/260
 src/kiro_crew/apps/builtins/workflows/server.py 61.2   # 82/134
 src/kiro_crew/apps/hooks_integration.py 43.0   # 65/151
 src/kiro_crew/apps/route_registry.py 51.9   # 67/129
+# NOT a missing-tests entry, and NOT this PR's debt -- it exempts a CI-side
+# coverage ATTRIBUTION defect in a file no PR here touches, tracked as #7597.
+# The tests exist and pass: TestFleetProbe at test/test_pipeline_conductor_agent.py:179,
+# 47 tests green, and the file measures 86% (201/229) when coverage is scoped by
+# PATH. Under the lane's own `--cov=kiro_crew` (scoped by import name) the same
+# passing tests attribute nothing to it -- locally it does not appear among the
+# 1214 reported rows at all, and the 34/229 recorded below is exactly the
+# import-only footprint of a bare exec_module. Adding tests cannot move this
+# number, which is why the floor's usual remedy does not apply.
+# REMOVE THIS ENTRY when #7597 is fixed. The gate enforces that itself: once
+# attribution works the file reports >= 82.0% (floor + its 2.0pp band), which is
+# the `graduated` verdict -- an ::error:: demanding this line be deleted. So the
+# exemption cannot outlive the defect silently.
+src/kiro_crew/builtin_skills/pipeline-conductor/scripts/fleet_probe.py 14.8   # 34/229
 src/kiro_crew/channel.py 70.5   # 258/366
 src/kiro_crew/cli_chat.py 29.5   # 46/156
 src/kiro_crew/cli_cloud.py 61.2   # 178/291

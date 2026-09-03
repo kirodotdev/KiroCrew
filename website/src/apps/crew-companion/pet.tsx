@@ -754,6 +754,12 @@ function Companion() {
         if (k === 'session-error') { react('error', 2_000); setMood('scared') }
         else if (k === 'approval' || k === 'session-input') { bumpReaction(); setMood('curious') }
         else if (k === 'break' || k === 'break-breathe' || k === 'reminder') { /* ambient: no reaction */ }
+        // A successful finish is a BODY reaction only — the hop plus a celebrate
+        // prop. setMood('neutral') actively clears any still-live transient mood
+        // (a curious/scared eye pose from an approval or error in the last few
+        // seconds) so the eyes rest at 'primary'; ambient blink and cursor-tracking
+        // still run. 'other'/unknown kinds below keep the old happy reaction.
+        else if (k === 'session-done') { react('done', 2_400); setMood('neutral'); celebrateWithProp() }
         else { react('done', 2_400); setMood('happy'); celebrateWithProp() }
       }) ?? undefined,
     [react, setMood, bumpReaction, celebrateWithProp],

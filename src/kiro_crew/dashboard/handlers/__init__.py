@@ -317,6 +317,7 @@ from kiro_crew.dashboard.handlers.prompts import (  # noqa: E402, F401
     _redact_prompt,
     api_prompt_detail,
     api_prompts,
+    api_prompts_create,
     api_skill_detail,
     api_skill_file,
     api_skill_inject_on_trigger,
@@ -363,6 +364,7 @@ from kiro_crew.dashboard.handlers.sessions import (  # noqa: E402, F401
     api_session_archive_read,
     api_session_delete,
     api_session_detail,
+    api_session_directive,
     api_session_keepalive,
     api_session_tool_policy,
     api_sessions,
@@ -515,6 +517,13 @@ from kiro_crew.dashboard.theme_validate import (  # noqa: E402, F401
 _PROMPT_CACHE_TTL = 5.0  # seconds
 _prompt_cache: list[dict[str, Any]] | None = None
 _prompt_cache_ts: float = 0
+
+
+def _invalidate_prompt_cache() -> None:
+    """Drop the prompt-list cache so the next ``/api/prompts`` read reflects a
+    write immediately instead of after the TTL expires."""
+    global _prompt_cache  # noqa: PLW0603
+    _prompt_cache = None
 
 
 def _list_aim_prompts() -> list[dict[str, Any]]:

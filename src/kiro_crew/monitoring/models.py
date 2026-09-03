@@ -20,6 +20,8 @@ DEFAULT_MONITOR_AGENT_TURNS = 8
 DEFAULT_MONITOR_TOKENS = 250_000
 DEFAULT_MONITOR_PROVIDER_ERRORS = 3
 DEFAULT_MONITOR_CADENCE_SECS = 300
+MAX_MONITOR_CHECK_IDENTITIES_PER_BUCKET = 100
+MAX_MONITOR_CHECK_IDENTITY_CHARS = 200
 MONITOR_STOP_INVALID_RECORD = "invalid_monitor_record"
 MONITOR_STOP_RUNTIME_BUDGET = "runtime_budget"
 MONITOR_STOP_AGENT_TURN_BUDGET = "agent_turn_budget"
@@ -68,6 +70,7 @@ class ProviderErrorKind(str, Enum):
     AUTHENTICATION = "authentication"
     AUTHORIZATION = "authorization"
     NOT_FOUND = "not_found"
+    SETUP = "setup"
 
 
 class MonitorOutcome(str, Enum):
@@ -156,8 +159,10 @@ class MonitorObservation:
     fingerprint: str
     status: MonitorObservationStatus
     provider_error: ProviderErrorKind | None = None
+    supplemental_provider_error: ProviderErrorKind | None = None
     reason_code: str = ""
     summary: str = ""
+    head_changed: bool = False
 
     def __post_init__(self) -> None:
         if not isinstance(self.status, MonitorObservationStatus):
@@ -168,14 +173,24 @@ class MonitorObservation:
             raise ValueError("reason_code must be a string")
         if not isinstance(self.summary, str):
             raise ValueError("summary must be a string")
+        if not isinstance(self.head_changed, bool):
+            raise ValueError("head_changed must be a boolean")
         if self.status is MonitorObservationStatus.PROVIDER_ERROR:
             if not isinstance(self.provider_error, ProviderErrorKind):
                 raise ValueError("provider_error must be a ProviderErrorKind for a provider error")
+            if self.supplemental_provider_error is not None:
+                raise ValueError("supplemental_provider_error is not valid for a provider error")
+            if self.head_changed:
+                raise ValueError("head_changed is not valid for a provider error observation")
             return
         if not self.fingerprint:
             raise ValueError("fingerprint is required for a comparable observation")
         if self.provider_error is not None:
             raise ValueError("provider_error is only valid for a provider error observation")
+        if self.supplemental_provider_error is not None and not isinstance(
+            self.supplemental_provider_error, ProviderErrorKind
+        ):
+            raise ValueError("supplemental_provider_error must be a ProviderErrorKind")
 
 
 @dataclass
@@ -202,6 +217,11 @@ class MonitorState:
     input_tokens: int = 0
     output_tokens: int = 0
     consecutive_provider_errors: int = 0
+    probe_count: int = 0
+    provider_error_count: int = 0
+    last_probe_at: float = 0.0
+    last_decision: MonitorDecision | None = None
+    last_provider_error: ProviderErrorKind | None = None
     next_probe_at: float = 0.0
     outcome: MonitorOutcome | None = None
     stopped_reason: str = ""
@@ -220,6 +240,7 @@ class MonitorState:
             "created_ts",
             "last_observed_at",
             "last_completed_at",
+            "last_probe_at",
             "next_probe_at",
             "stopped_at",
         ):
@@ -231,6 +252,8 @@ class MonitorState:
             "input_tokens",
             "output_tokens",
             "consecutive_provider_errors",
+            "probe_count",
+            "provider_error_count",
         ):
             value = getattr(self, name)
             if isinstance(value, bool) or not isinstance(value, int) or value < 0:
@@ -263,6 +286,12 @@ class MonitorState:
             raise ValueError("last_completion_disposition must be a MonitorActionDisposition")
         if not isinstance(self.token_usage_known, bool):
             raise ValueError("token_usage_known must be a boolean")
+        if self.last_decision is not None and not isinstance(self.last_decision, MonitorDecision):
+            raise ValueError("last_decision must be a MonitorDecision")
+        if self.last_provider_error is not None and not isinstance(
+            self.last_provider_error, ProviderErrorKind
+        ):
+            raise ValueError("last_provider_error must be a ProviderErrorKind")
         if self.outcome is not None and not isinstance(self.outcome, MonitorOutcome):
             raise ValueError("outcome must be a MonitorOutcome")
         if not isinstance(self.stopped_reason, str):
@@ -329,6 +358,12 @@ def monitor_state_from_dict(raw: object) -> MonitorState:
     disposition = values.get("last_completion_disposition")
     if disposition is not None:
         values["last_completion_disposition"] = MonitorActionDisposition(disposition)
+    decision = values.get("last_decision")
+    if decision is not None:
+        values["last_decision"] = MonitorDecision(decision)
+    provider_error = values.get("last_provider_error")
+    if provider_error is not None:
+        values["last_provider_error"] = ProviderErrorKind(provider_error)
     return MonitorState(**values)
 
 

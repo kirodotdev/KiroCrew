@@ -1963,7 +1963,9 @@ class TestBackupEndpoints:
         ):
             resp = asyncio.run(
                 handlers[("GET", "/backup/{account}")](  # type: ignore[operator]
-                    _request("GET", f"/backup/{ACCOUNT}", match_info={"account": ACCOUNT})
+                    # `remote=1` is required now: the remote half is opt-in so the
+                    # poll that follows a run does not spend paid AWS calls on it.
+                    _request("GET", f"/backup/{ACCOUNT}?remote=1", match_info={"account": ACCOUNT})
                 )
             )
         body = _payload(resp)
@@ -1988,7 +1990,9 @@ class TestBackupEndpoints:
         ):
             resp = asyncio.run(
                 handlers[("GET", "/backup/{account}")](  # type: ignore[operator]
-                    _request("GET", f"/backup/{ACCOUNT}", match_info={"account": ACCOUNT})
+                    # `remote=1` is required now: the remote half is opt-in so the
+                    # poll that follows a run does not spend paid AWS calls on it.
+                    _request("GET", f"/backup/{ACCOUNT}?remote=1", match_info={"account": ACCOUNT})
                 )
             )
         body = _payload(resp)
@@ -2011,71 +2015,86 @@ class TestBackupEndpoints:
         ):
             resp = asyncio.run(
                 handlers[("GET", "/backup/{account}")](  # type: ignore[operator]
-                    _request("GET", f"/backup/{ACCOUNT}", match_info={"account": ACCOUNT})
+                    # `remote=1` is required now: the remote half is opt-in so the
+                    # poll that follows a run does not spend paid AWS calls on it.
+                    _request("GET", f"/backup/{ACCOUNT}?remote=1", match_info={"account": ACCOUNT})
                 )
             )
         assert _payload(resp)["remote"] is None
         find.assert_not_called()
 
-    def _run_backup(self, kind, *, runner_side=None, run_record=None):
+    def _run_backup(self, kind, *, start=None, sdk_present=True):
+        """Drive ``POST /backup/{account}/run``.
+
+        The handler no longer performs the backup: it claims a durable Job SDK
+        run and returns its id. So this stubs the SDK rather than the backup
+        functions. The runner's own behaviour -- resolving its account, refusing
+        a key that names none, and the reconciliation of a run left behind by a
+        dead gateway -- lives in ``test_aws_control_backup_job.py``.
+        """
         handlers = _registered()
         p1, p2, p3 = _enabled_owner_env()
         req = _request("POST", f"/backup/{ACCOUNT}/run", match_info={"account": ACCOUNT})
         req.json = AsyncMock(return_value={"kind": kind})  # type: ignore[method-assign]
-        record = run_record if run_record is not None else {"key": "snapshots/x.tar.gz"}
+        fake = (
+            SimpleNamespace(start_async=start or AsyncMock(return_value="e" * 32))
+            if sdk_present
+            else None
+        )
         with (
             p1,
             p2,
             p3,
             _consent_ok(),
             _drive_found(),
-            mock.patch.object(
-                routes_mod.backup_mod,
-                "run_snapshot_backup",
-                side_effect=runner_side,
-                return_value=record,
-            ),
-            mock.patch.object(
-                routes_mod.backup_mod,
-                "run_sessions_backup",
-                side_effect=runner_side,
-                return_value=record,
-            ),
+            mock.patch.object(routes_mod, "get_job_sdk", return_value=fake),
         ):
             resp = asyncio.run(
                 handlers[("POST", "/backup/{account}/run")](req)  # type: ignore[operator]
             )
         return resp
 
-    def test_run_snapshot_backup_returns_the_run_record(self):
+    def test_run_snapshot_backup_starts_a_job_and_returns_its_id(self):
         from kiro_crew.apps.builtins.aws_control.backend import backup as backup_mod
 
         resp = self._run_backup(backup_mod.KIND_SNAPSHOT)
         assert resp.status == 200
         body = _payload(resp)
-        assert body["ran"] is True and body["kind"] == backup_mod.KIND_SNAPSHOT
+        assert body["started"] is True
+        assert body["kind"] == backup_mod.KIND_SNAPSHOT
+        assert body["runId"] == "e" * 32
 
-    def test_run_sessions_backup_uses_the_sessions_runner(self):
+    def test_run_sessions_backup_claims_the_sessions_kind(self):
         from kiro_crew.apps.builtins.aws_control.backend import backup as backup_mod
 
-        resp = self._run_backup(backup_mod.KIND_SESSIONS)
+        start = AsyncMock(return_value="f" * 32)
+        resp = self._run_backup(backup_mod.KIND_SESSIONS, start=start)
         assert resp.status == 200
         assert _payload(resp)["kind"] == backup_mod.KIND_SESSIONS
+        # The account is the dedupe key, so a double click adopts the first run
+        # instead of doing the paid upload twice.
+        start.assert_awaited_once_with(backup_mod.KIND_SESSIONS, dedupe_key=ACCOUNT)
 
-    def test_run_maps_a_runtime_error_to_a_409(self):
-        # The backup builder raising RuntimeError (e.g. a teardown signal) is a
-        # conflict, not an AWS failure — it must surface as 409 backup_failed.
+    def test_run_reports_an_absent_job_runtime_as_503(self):
+        # Enabled, but no SDK was published: the `jobs` grant is missing or the
+        # context build failed. The runtime is absent — not a bad request.
         from kiro_crew.apps.builtins.aws_control.backend import backup as backup_mod
 
-        resp = self._run_backup(backup_mod.KIND_SNAPSHOT, runner_side=RuntimeError("shutting down"))
-        assert resp.status == 409
-        assert _payload(resp)["code"] == "backup_failed"
+        resp = self._run_backup(backup_mod.KIND_SNAPSHOT, sdk_present=False)
+        assert resp.status == 503
+        assert _payload(resp)["code"] == "jobs_unavailable"
 
-    def test_run_surfaces_an_aws_error(self):
+    def test_run_reports_a_refused_claim_as_503(self):
+        # The SDK could not persist the initial record, or the host refused a
+        # thread. Nothing started, and the code says which layer refused.
         from kiro_crew.apps.builtins.aws_control.backend import backup as backup_mod
+        from kiro_crew.apps.job_sdk import JobError
 
-        resp = self._run_backup(backup_mod.KIND_SNAPSHOT, runner_side=AWSError("upload denied"))
-        assert resp.status == 502
+        resp = self._run_backup(
+            backup_mod.KIND_SNAPSHOT, start=AsyncMock(side_effect=JobError("no disk"))
+        )
+        assert resp.status == 503
+        assert _payload(resp)["code"] == "backup_start_failed"
 
     def test_nightly_toggle_persists_the_flag(self):
         handlers = _registered()

@@ -474,6 +474,202 @@ class TestASessionResumedWhileStagingIsLeftAlone:
         assert batch.revived == ()
 
 
+class TestAReadOnlyResumeIsCaughtByTheIndexReRead:
+    """mtime sees writes, so a resume that only READS needs a second signal.
+
+    Resuming a session reads its old transcript to rebuild history and records the
+    turn that follows under a newly mapped sid, without rewriting that transcript.
+    Every file therefore keeps the mtime that qualified it and passes the check
+    above — so the loop consults the index too, at the same per-session cadence,
+    where the resume IS visible: it is mapped.
+    """
+
+    def test_a_resume_that_only_reads_the_transcript_is_left_in_place(
+        self, stores: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The case the mtime guard cannot see: nothing is written at all."""
+        crew_home, kiro_home = stores
+        _cli_half(kiro_home, "aaaa1111", log_bytes=16, age_days=400)
+        _transcript(crew_home, "dashboard_chat-1", size=16, age_days=400)
+        _cli_half(kiro_home, "bbbb2222", log_bytes=16, age_days=400)
+        _transcript(crew_home, "dashboard_chat-2", size=16, age_days=400)
+
+        pairs = {"aaaa1111": "dashboard_chat-1", "bbbb2222": "dashboard_chat-2"}
+        retired = _index(pairs)
+        resumed = {"yet": False}
+        real = session_storage._move_file
+
+        def _resume_the_second_session(src: Path, dst: Path) -> None:
+            # Mapped part-way through the batch, and nothing written: no utime, no
+            # append, no recreated origin. This is the whole point of the case.
+            real(src, dst)
+            resumed["yet"] = True
+
+        monkeypatch.setattr(session_storage, "_move_file", _resume_the_second_session)
+
+        def _refresh() -> SessionIndex:
+            return retired if not resumed["yet"] else _index(pairs, active={"bbbb2222"})
+
+        batch = session_storage.move_to_trash(
+            ["aaaa1111", "bbbb2222"],
+            reason="manual",
+            index=retired,
+            now=_NOW,
+            refresh=_refresh,
+        )
+
+        assert batch.revived == ("bbbb2222",)
+        assert batch.sessions == 1
+        # Left in place means every half, and nothing of it staged: the loop reaches
+        # this session before touching any of its files, so there is no rollback.
+        assert (kiro_home / "sessions" / "cli" / "bbbb2222.jsonl").is_file()
+        assert (kiro_home / "sessions" / "cli" / "bbbb2222.json").is_file()
+        assert (crew_home / "sessions" / "dashboard_chat-2.jsonl").is_file()
+        staged = list((crew_home / "sessions" / "trash").rglob("*bbbb2222*"))
+        assert staged == [], f"a session left in place has files in the batch: {staged}"
+
+    def test_the_index_is_consulted_before_every_session(self, stores: tuple[Path, Path]) -> None:
+        """Once before the loop is not enough — that is the gap being closed.
+
+        Pinned as a count rather than a behaviour because the behaviour it buys is
+        already covered above; what a future change could quietly drop is the
+        CADENCE, and then only a batch resumed at exactly the wrong moment would
+        notice.
+        """
+        crew_home, kiro_home = stores
+        for sid, stem in (("aaaa1111", "1"), ("bbbb2222", "2"), ("cccc3333", "3")):
+            _cli_half(kiro_home, sid, log_bytes=16, age_days=400)
+            _transcript(crew_home, f"dashboard_chat-{stem}", size=16, age_days=400)
+
+        retired = _index(
+            {
+                "aaaa1111": "dashboard_chat-1",
+                "bbbb2222": "dashboard_chat-2",
+                "cccc3333": "dashboard_chat-3",
+            }
+        )
+        calls = {"n": 0}
+
+        def _refresh() -> SessionIndex:
+            calls["n"] += 1
+            return retired
+
+        batch = session_storage.move_to_trash(
+            ["aaaa1111", "bbbb2222", "cccc3333"],
+            reason="manual",
+            index=retired,
+            now=_NOW,
+            refresh=_refresh,
+        )
+
+        assert batch.sessions == 3
+        # One before the authority checks, then one per session reached.
+        assert calls["n"] == 4
+
+    def test_an_unchanged_index_is_not_re_derived(self, stores: tuple[Path, Path]) -> None:
+        """The per-session re-read has to be affordable at the selection cap.
+
+        ``active_stems`` rebuilds a frozenset over the whole map every time it is
+        read, so re-deriving it per session is what would make a six-figure
+        selection unpayable. A caller says "nothing has moved" by returning the same
+        object, and that must cost one identity comparison rather than a rebuild.
+        """
+        crew_home, kiro_home = stores
+        for sid, stem in (("aaaa1111", "1"), ("bbbb2222", "2"), ("cccc3333", "3")):
+            _cli_half(kiro_home, sid, log_bytes=16, age_days=400)
+            _transcript(crew_home, f"dashboard_chat-{stem}", size=16, age_days=400)
+
+        derived: list[str] = []
+
+        class _CountingIndex(SessionIndex):
+            """Records every read of the set the union would rebuild."""
+
+            @property
+            def active_stems(self) -> frozenset[str]:
+                derived.append("active_stems")
+                return super().active_stems
+
+        retired = _CountingIndex(
+            stem_to_sid={
+                "dashboard_chat-1": "aaaa1111",
+                "dashboard_chat-2": "bbbb2222",
+                "dashboard_chat-3": "cccc3333",
+            }
+        )
+
+        batch = session_storage.move_to_trash(
+            ["aaaa1111", "bbbb2222", "cccc3333"],
+            reason="manual",
+            index=_index(
+                {
+                    "aaaa1111": "dashboard_chat-1",
+                    "bbbb2222": "dashboard_chat-2",
+                    "cccc3333": "dashboard_chat-3",
+                }
+            ),
+            now=_NOW,
+            refresh=lambda: retired,
+        )
+
+        assert batch.sessions == 3
+        # Once, for the union before the authority checks. Three more would mean
+        # every session paid for a rebuild of a set that had not changed.
+        assert derived == ["active_stems"]
+
+    def test_a_re_read_that_starts_failing_keeps_the_view_it_last_read(
+        self, stores: tuple[Path, Path], caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A lost re-read costs extra protection, not the protection already read.
+
+        Every re-read only widens the live sets, so failing to take one leaves the
+        guard exactly as strong as the last successful read made it. Abandoning a
+        batch that has already moved files would be the worse trade — and a refresh
+        broken from the start still fails closed, before anything moves.
+        """
+        crew_home, kiro_home = stores
+        for sid, stem in (("aaaa1111", "1"), ("bbbb2222", "2"), ("cccc3333", "3")):
+            _cli_half(kiro_home, sid, log_bytes=16, age_days=400)
+            _transcript(crew_home, f"dashboard_chat-{stem}", size=16, age_days=400)
+
+        pairs = {
+            "aaaa1111": "dashboard_chat-1",
+            "bbbb2222": "dashboard_chat-2",
+            "cccc3333": "dashboard_chat-3",
+        }
+        calls = {"n": 0}
+
+        def _refresh() -> SessionIndex:
+            calls["n"] += 1
+            if calls["n"] == 1:
+                # Before the authority checks: reports every session retired, so
+                # the batch is allowed to start.
+                return _index(pairs)
+            if calls["n"] == 2:
+                # Reached the first session, and the third has just been resumed.
+                return _index(pairs, active={"cccc3333"})
+            raise OSError("the map went away")
+
+        with caplog.at_level(logging.WARNING, logger=session_storage.__name__):
+            batch = session_storage.move_to_trash(
+                ["aaaa1111", "bbbb2222", "cccc3333"],
+                reason="manual",
+                index=_index(pairs),
+                now=_NOW,
+                refresh=_refresh,
+            )
+
+        # The two the failing re-reads could not speak for still moved.
+        assert batch.sessions == 2
+        # And the one the last GOOD read named is still protected, which is the
+        # difference between retaining the view and discarding it.
+        assert batch.revived == ("cccc3333",)
+        assert (kiro_home / "sessions" / "cli" / "cccc3333.jsonl").is_file()
+        warnings = [r for r in caplog.records if "could not re-read" in r.getMessage()]
+        # Once for the batch, not once per session: at the selection cap a
+        # per-session line is six figures of identical warnings.
+        assert len(warnings) == 1
+
+
 class TestRestoreIsAllOrNothing:
     def test_restores_every_half(self, stores: tuple[Path, Path]) -> None:
         crew_home, kiro_home = stores
@@ -494,6 +690,49 @@ class TestRestoreIsAllOrNothing:
         assert (crew_home / "sessions" / "dashboard_chat-1.jsonl").read_bytes() == b"t" * 64
         seg = crew_home / "sessions" / "archive" / "dashboard_chat-1__20260730-211852.jsonl"
         assert seg.read_bytes() == b"a" * 16
+        assert session_storage.list_trash() == []
+
+    def test_a_full_restore_never_writes_to_the_batch_it_is_leaving(
+        self, stores: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The full-restore branch writes NOTHING to the batch, and keeps its listing stale.
+
+        Both are one decision. Every entry below the header describes a file this restore
+        moved back out, so a batch the cleanup declines to remove still lists sessions that
+        are not in it. Clearing them needs a write to the batch PATH, and `atomic_write`
+        replaces its destination: a batch swapped to a link would send that write to another
+        batch's manifest and make ITS staged sessions unlistable. A stale listing is visible
+        and reversible; that is not. So the listing stays and `empty_trash` is the way out.
+        """
+        crew_home, kiro_home = stores
+        _cli_half(kiro_home, "aaaa1111", log_bytes=8, age_days=40)
+        _transcript(crew_home, "dashboard_chat-1", size=8, age_days=40)
+        batch = session_storage.move_to_trash(
+            ["aaaa1111"],
+            reason="manual",
+            index=_index({"aaaa1111": "dashboard_chat-1"}),
+            now=_NOW,
+        )
+
+        def _no_writes_here(*args: object, **kwargs: object) -> None:
+            raise AssertionError(f"the full-restore path wrote by name: {args!r}")
+
+        monkeypatch.setattr(session_storage, "atomic_write", _no_writes_here)
+        # A cleanup that DECLINES, which is what makes the stale listing reachable: the
+        # batch stays instead of going away with its manifest.
+        monkeypatch.setattr(session_storage, "_remove_emptied_batch", lambda *a, **k: False)
+
+        assert session_storage.restore(batch.batch_id) == 1
+
+        assert (kiro_home / "sessions" / "cli" / "aaaa1111.jsonl").read_bytes() == b"c" * 8
+        kept = session_storage.list_trash()
+        assert [b.batch_id for b in kept] == [batch.batch_id], "kept, not removed"
+        # The accepted residual, pinned so that clearing it later is a deliberate change.
+        assert kept[0].sessions == 1, "the listing goes stale rather than being rewritten"
+
+        # And the user is not stuck with it: the explicit empty still takes the batch.
+        monkeypatch.undo()
+        session_storage.empty_trash()
         assert session_storage.list_trash() == []
 
     def test_an_occupied_half_leaves_the_whole_session_staged(
@@ -854,6 +1093,16 @@ class TestSidecarFiles:
         _cli_half(kiro_home, "aaaa1111", log_bytes=8, age_days=40)
         sidecar = kiro_home / "sessions" / "cli" / "aaaa1111.lock"
         sidecar.write_bytes(b"lock")
+        # Age it with the rest of its session. The unit's age comes from the
+        # .json/.jsonl pair alone, but the move loop's revival check stats EVERY
+        # file it stages against a wall-clock instant, so a sidecar left stamped
+        # "now" is a file written after this batch was certified -- the state the
+        # check exists to refuse. Leaving it fresh passed only on the microseconds
+        # between this write and that instant, and a backward CLOCK_REALTIME step
+        # inside that window inverted it: "all 1 selected session(s) were resumed
+        # while being staged". An idle session's sidecar is as old as its logs.
+        aged = _NOW - 40 * _DAY
+        os.utime(sidecar, (aged, aged))
 
         batch = session_storage.move_to_trash(
             ["aaaa1111"], reason="manual", index=_index(), now=_NOW
@@ -1321,15 +1570,15 @@ class TestUntrustedNamesAreLogSafeOutsideListTrash:
         ``_unlisted_files`` seam — no hostile directory has to exist on disk.
         """
         forged = session_storage.trash_root() / self._FORGED_NAME
-        # Neither branch may write: the point under test is the log line.
-        monkeypatch.setattr(session_storage, "_rewrite_manifest", lambda *a, **k: None)
+        # No write to patch out any more: the caller clears the manifest before this is
+        # reached, so neither branch below writes at all.
 
         def _refuse(batch: Path) -> list[Path]:
             raise SessionStorageError(f"could not read all of {batch.name!r}")
 
         monkeypatch.setattr(session_storage, "_unlisted_files", _refuse)
         with caplog.at_level(logging.WARNING, logger="kiro_crew.session_storage"):
-            session_storage._discard_restored_batch(forged, {})
+            session_storage._discard_restored_batch(forged, None)
         self._assert_escaped(
             self._carrying(caplog, "keeping trash batch"), self._FORGED_NAME, "unreadable-scan"
         )
@@ -1339,7 +1588,7 @@ class TestUntrustedNamesAreLogSafeOutsideListTrash:
             session_storage, "_unlisted_files", lambda batch: [forged / "orphan.jsonl"]
         )
         with caplog.at_level(logging.WARNING, logger="kiro_crew.session_storage"):
-            session_storage._discard_restored_batch(forged, {})
+            session_storage._discard_restored_batch(forged, None)
         self._assert_escaped(
             self._carrying(caplog, "keeping trash batch"), self._FORGED_NAME, "leftover-files"
         )
@@ -3096,11 +3345,11 @@ class TestEmptyTrash:
         planted = holder / "dangling"
         planted.symlink_to(kiro_home / "nowhere")
 
-        real_scan = session_storage._scan_batch
+        real_scan = session_storage._scan_tree
         swapped: list[bool] = []
 
-        def scan_then_swap(batch_fd, device, here, dirs, files, links):  # type: ignore[no-untyped-def]
-            out = real_scan(batch_fd, device, here, dirs, files, links)
+        def scan_then_swap(dir_fd, *, device):  # type: ignore[no-untyped-def]
+            out = real_scan(dir_fd, device=device)
             # After the scan has recorded the link and before the pass unlinks it: the
             # name now holds a file that nothing staged and nothing lists.
             if not swapped:
@@ -3110,7 +3359,7 @@ class TestEmptyTrash:
             return out
 
         with pytest.MonkeyPatch.context() as patched:
-            patched.setattr(session_storage, "_scan_batch", scan_then_swap)
+            patched.setattr(session_storage, "_scan_tree", scan_then_swap)
             session_storage.empty_trash([batch.batch_id], on_skip=lambda _reason: None)
 
         assert swapped == [True], "the swap must land inside the window under test"
@@ -3462,11 +3711,11 @@ class TestEmptyTrash:
         root = session_storage.trash_root()
         staged = root / batch.batch_id
         manifest = staged / session_storage.MANIFEST_NAME
-        real_scan = session_storage._scan_batch
+        real_scan = session_storage._scan_tree
         calls: list[int] = []
 
-        def scan_then_swap(batch_fd, device, here, dirs, files, links):  # type: ignore[no-untyped-def]
-            out = real_scan(batch_fd, device, here, dirs, files, links)
+        def scan_then_swap(dir_fd, *, device):  # type: ignore[no-untyped-def]
+            out = real_scan(dir_fd, device=device)
             calls.append(1)
             # The SECOND scan is the post-condition. Swapping right after it lands between
             # the inode it verified and the rename that addresses the name.
@@ -3480,7 +3729,7 @@ class TestEmptyTrash:
 
         skips: list[str] = []
         with pytest.MonkeyPatch.context() as patched:
-            patched.setattr(session_storage, "_scan_batch", scan_then_swap)
+            patched.setattr(session_storage, "_scan_tree", scan_then_swap)
             session_storage.empty_trash([batch.batch_id], on_skip=skips.append)
 
         assert len(calls) >= 2, "the swap must land after the post-condition scan"
@@ -3738,11 +3987,11 @@ class TestEmptyTrash:
         bystander.write_bytes(b"ONLY COPY")
         original = manifest.read_bytes()
 
-        real_scan = session_storage._scan_batch
+        real_scan = session_storage._scan_tree
         rewritten: list[bool] = []
 
-        def scan_then_rewrite(batch_fd, device, here, dirs, files, links):  # type: ignore[no-untyped-def]
-            out = real_scan(batch_fd, device, here, dirs, files, links)
+        def scan_then_rewrite(dir_fd, *, device):  # type: ignore[no-untyped-def]
+            out = real_scan(dir_fd, device=device)
             # In place, so the manifest's own inode never changes.
             if not rewritten:
                 rewritten.append(True)
@@ -3756,7 +4005,7 @@ class TestEmptyTrash:
             return out
 
         with pytest.MonkeyPatch.context() as patched:
-            patched.setattr(session_storage, "_scan_batch", scan_then_rewrite)
+            patched.setattr(session_storage, "_scan_tree", scan_then_rewrite)
             ids, _total, identities = session_storage.staged_targets([batch.batch_id])
 
         assert rewritten == [True], "the rewrite must land inside the approval"
@@ -4578,12 +4827,11 @@ class TestEmptyTrash:
         parent_fd, batch_fd = session_storage._open_absolute_nofollow(staged)
         try:
             device = os.fstat(batch_fd).st_dev
-            dirs: dict[tuple[str, ...], int] = {}
-            present: dict[tuple[str, ...], int] = {}
-            session_storage._scan_batch(batch_fd, device, (), dirs, present, {})
+            scanned = session_storage._scan_tree(batch_fd, device=device)
+            dirs = scanned.dirs
 
             # The real staged directory opens against the scan that saw it.
-            session_storage._open_chain(batch_fd, (holder,), {}, dirs, device)
+            session_storage._open_chain(batch_fd, (holder,), cache={}, dirs=dirs, device=device)
 
             # A different REAL directory renamed into that name does not - and it is not
             # a symlink, so O_NOFOLLOW alone would have opened it. Checked against the
@@ -4595,7 +4843,7 @@ class TestEmptyTrash:
             (staged / holder).rename(staged / "moved-aside")
             impostor.rename(staged / holder)
             with pytest.raises(OSError):
-                session_storage._open_chain(batch_fd, (holder,), {}, dirs, device)
+                session_storage._open_chain(batch_fd, (holder,), cache={}, dirs=dirs, device=device)
         finally:
             os.close(batch_fd)
             os.close(parent_fd)
@@ -4627,17 +4875,23 @@ class TestEmptyTrash:
         impostor.mkdir()
         for rel in listed:
             (impostor / PurePosixPath(rel).name).write_bytes(b"LIVE DATA")
-        real_scan = session_storage._scan_batch
+        real_scan = session_storage._scan_tree
+        swapped: list[bool] = []
 
-        def scan_then_swap(dir_fd, device, prefix, dirs, files, links):  # type: ignore[no-untyped-def]
-            real_scan(dir_fd, device, prefix, dirs, files, links)
-            if prefix == () and holder.is_dir():
+        def scan_then_swap(dir_fd, *, device):  # type: ignore[no-untyped-def]
+            tree = real_scan(dir_fd, device=device)
+            # Once, right after the scan the approval is compared against, and before the
+            # removal reads it. A latch rather than a scan-depth test: the scan is one call
+            # per pass, so the pass number is the only thing that distinguishes them.
+            if not swapped and holder.is_dir():
+                swapped.append(True)
                 holder.rename(staged / "moved-aside")
                 impostor.rename(holder)
+            return tree
 
         skips: list[str] = []
         with pytest.MonkeyPatch.context() as patched:
-            patched.setattr(session_storage, "_scan_batch", scan_then_swap)
+            patched.setattr(session_storage, "_scan_tree", scan_then_swap)
             session_storage.empty_trash([batch.batch_id], on_skip=skips.append)
 
         assert skips == [session_storage.SKIP_INCOMPLETE]
@@ -4961,7 +5215,7 @@ class TestEmptyTrash:
         swapped: list[bool] = []
 
         def chain_then_swap(batch_fd, parts, cache, dirs, device):  # type: ignore[no-untyped-def]
-            fd = real_chain(batch_fd, parts, cache, dirs, device)
+            fd = real_chain(batch_fd, parts, cache=cache, dirs=dirs, device=device)
             # ONLY during the removal pass. A file's parent chain names the same key, so
             # hooking every call would swap during the FILE phase instead and end up
             # re-testing the sibling case above, which a different check already covers.
@@ -5056,20 +5310,25 @@ class TestEmptyTrash:
         listed = session_storage._manifest_rels(staged)
         assert listed
         victim = staged / PurePosixPath(listed[0])
-        real_scan = session_storage._scan_batch
+        real_scan = session_storage._scan_tree
+        swapped: list[bool] = []
 
-        def scan_then_swap(dir_fd, device, prefix, dirs, files, links):  # type: ignore[no-untyped-def]
-            real_scan(dir_fd, device, prefix, dirs, files, links)
-            if prefix == () and victim.is_file():
+        def scan_then_swap(dir_fd, *, device):  # type: ignore[no-untyped-def]
+            tree = real_scan(dir_fd, device=device)
+            # Once, right after the scan the approval is compared against. A latch rather
+            # than a scan-depth test: the scan is one call per pass.
+            if not swapped and victim.is_file():
+                swapped.append(True)
                 # A different file takes the staged file's name, on the same filesystem.
                 replacement = kiro_home / "not-approved.jsonl"
                 replacement.write_bytes(b"LIVE DATA")
                 victim.unlink()
                 replacement.rename(victim)
+            return tree
 
         skips: list[str] = []
         with pytest.MonkeyPatch.context() as patched:
-            patched.setattr(session_storage, "_scan_batch", scan_then_swap)
+            patched.setattr(session_storage, "_scan_tree", scan_then_swap)
             session_storage.empty_trash([batch.batch_id], on_skip=skips.append)
 
         assert skips == [session_storage.SKIP_INCOMPLETE]

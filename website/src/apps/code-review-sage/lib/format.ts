@@ -250,8 +250,39 @@ export function failureReason(run: {
       raw,
     }
   }
+  // ── The reviewer never started: the runtime preflight refused ──
+  // Three strings rather than one, because each names a different missing thing
+  // with a different remedy: `review_pool.runtime_preflight` returns either "no
+  // kiro-cli executable was found" or "the ACP runtime … is not importable", and
+  // `routes.py::_first_change_error` renders a third, generic sentence for a
+  // record that kept only the `runtime_unavailable` reason.
+  //
+  // Matched on the specific phrase, NOT on the word `kiro-cli`: a missing agent
+  // spec also names it ("Agent spec '…' is not installed: kiro-cli found no
+  // '….json' in … — repair with `kirocrew setup --agent-only --clean`", from
+  // acp/runtime.py) and reaches this function through the pool's spawn error. A
+  // bare /kiro-cli/ branch would replace that message — which already carries
+  // the exact repair command — with "install kiro-cli", losing the fix.
+  if (/no kiro-cli executable/.test(lower)) {
+    return { text: i18nT('apps.codeReviewSage.lib.format.cause_no_agent_cli'), raw }
+  }
+  if (/is not importable/.test(lower)) {
+    return { text: i18nT('apps.codeReviewSage.lib.format.cause_runtime_not_importable'), raw }
+  }
+  if (/runtime_unavailable|agent runtime is unavailable/.test(lower)) {
+    return { text: i18nT('apps.codeReviewSage.lib.format.cause_runtime_unavailable'), raw }
+  }
   if (/no result record|no_review_recorded/.test(lower)) {
     return { text: i18nT('apps.codeReviewSage.lib.format.cause_no_record'), raw }
+  }
+  // A record landed but the review never completed. Deliberately not matched by
+  // the branch above — "wrote a result record" is the opposite of "no result
+  // record" — so it needs its own. One phrase covers both wordings: the driver's
+  // per-change "review wrote a result record but never completed the review" and
+  // the run-level sentence `_first_change_error` maps `review_record_incomplete`
+  // to, "the reviewer wrote a findings record but never completed the review".
+  if (/never completed the review|review_record_incomplete/.test(lower)) {
+    return { text: i18nT('apps.codeReviewSage.lib.format.cause_record_incomplete'), raw }
   }
   if (/timed out|timeout/.test(lower)) {
     return { text: i18nT('apps.codeReviewSage.lib.format.cause_timeout'), raw }

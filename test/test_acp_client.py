@@ -27,7 +27,7 @@ from kiro_crew.acp.client import (
     _make_unified_diff,
     _resolve_vendored_claude_acp,
     _substitute_model_from_advisory,
-    _vendored_claude_acp_roots,
+    _vendored_acp_roots,
     format_command_result,
     parse_slash_command,
 )
@@ -146,7 +146,7 @@ class TestVendoredClaudeAcp:
 
     def test_roots_include_pkg_vendor_dir(self):
         # The toolbox-bundle vendor location must always be the first candidate.
-        roots = _vendored_claude_acp_roots()
+        roots = _vendored_acp_roots()
         assert roots[0].name == "node_modules" and roots[0].parent.name == "_vendor"
 
 
@@ -5833,6 +5833,159 @@ class TestBuildPermissionEvent:
         client._build_permission_event(msg)
         assert client._permission_options[22].get("reject") == "reject_once"
 
+    def test_plain_reject_id_without_kind_recorded(self):
+        """#7681: a deny-naming id with NO kind (plain "reject"/"deny") must be
+        classified as a per-tool reject. Missing it sent reject_tool down the
+        ``cancelled`` fallback, which the backend treats as cancelling the
+        TURN — every later tool call was auto-denied without prompting."""
+        client = AcpClient()
+        from kiro_crew.acp.types import JsonRpcMessage
+
+        for req_id, opt_id in ((24, "reject"), (25, "deny"), (26, "Deny_Once")):
+            msg = JsonRpcMessage(
+                id=req_id,
+                method="session/requestPermission",
+                params={
+                    "toolCall": {"title": "shell"},
+                    "options": [
+                        {"optionId": "allow", "name": "Allow", "kind": "allow_once"},
+                        {"optionId": opt_id, "name": "Deny"},
+                    ],
+                },
+            )
+            client._build_permission_event(msg)
+            assert client._permission_options[req_id].get("reject") == opt_id, opt_id
+
+    def test_every_deny_vocabulary_value_round_trips(self):
+        """Every id in the shared deny table and every deny behavior must be
+        recognized by BOTH classification sites — the event builder (recorded
+        reject option) and the auto-answer path (reject_option_id). Driven by
+        the table itself so a vocabulary addition cannot ship untested."""
+        from kiro_crew.acp._dispatch import (
+            _DENY_BEHAVIORS,
+            _DENY_OPTION_IDS,
+            reject_option_id,
+        )
+        from kiro_crew.acp.types import JsonRpcMessage
+
+        assert _DENY_OPTION_IDS, "derived deny-id table must not be empty"
+        client = AcpClient()
+        req_id = 9000
+        for opt_id in sorted(_DENY_OPTION_IDS):
+            params = {
+                "toolCall": {"title": "shell"},
+                "options": [
+                    {"optionId": "allow", "name": "Allow", "kind": "allow_once"},
+                    {"optionId": opt_id, "name": "Deny"},
+                ],
+            }
+            # Site 1: auto-answer path picks the deny id.
+            assert reject_option_id(params) == opt_id, opt_id
+            # Site 2: event builder records it as the reject option.
+            req_id += 1
+            client._build_permission_event(
+                JsonRpcMessage(id=req_id, method="session/requestPermission", params=params)
+            )
+            assert client._permission_options[req_id].get("reject") == opt_id, opt_id
+        for behavior in sorted(_DENY_BEHAVIORS):
+            params = {
+                "toolCall": {"title": "shell"},
+                "options": [
+                    {"optionId": "yes", "name": "Allow", "behavior": "allow"},
+                    {"optionId": "custom-no", "name": "Deny", "behavior": behavior},
+                ],
+            }
+            assert reject_option_id(params) == "custom-no", behavior
+            req_id += 1
+            client._build_permission_event(
+                JsonRpcMessage(id=req_id, method="session/requestPermission", params=params)
+            )
+            assert client._permission_options[req_id].get("reject") == "custom-no", behavior
+
+    def test_contradictory_kind_wins_over_deny_metadata(self):
+        """A valid spec `kind` classifies the option ALONE: an option carrying
+        {kind:"allow_once"} with a contradictory deny behavior or deny-naming
+        id must never be selected as the reject — answering with an allow
+        optionId would APPROVE the tool the caller meant to deny."""
+        from kiro_crew.acp._dispatch import reject_option_id
+
+        # behavior:"deny" on an allow-kind option: not a reject candidate.
+        params = {
+            "options": [
+                {"optionId": "yes", "name": "Allow", "kind": "allow_once", "behavior": "deny"},
+            ]
+        }
+        assert reject_option_id(params) is None
+        # deny-naming id on an allow-kind option: not a reject candidate.
+        params = {
+            "options": [
+                {"optionId": "deny", "name": "Allow", "kind": "allow_always"},
+            ]
+        }
+        assert reject_option_id(params) is None
+        # A genuine reject option alongside the contradictory one still wins.
+        params = {
+            "options": [
+                {"optionId": "yes", "name": "Allow", "kind": "allow_once", "behavior": "deny"},
+                {"optionId": "no", "name": "Deny", "behavior": "deny"},
+            ]
+        }
+        assert reject_option_id(params) == "no"
+
+    def test_deny_behavior_without_kind_recorded(self):
+        """#7681: an option that speaks ``behavior: "deny"`` instead of
+        ``kind`` is a per-tool reject whatever its id is called. An allow
+        behavior must never be classified as a reject."""
+        client = AcpClient()
+        from kiro_crew.acp.types import JsonRpcMessage
+
+        msg = JsonRpcMessage(
+            id=27,
+            method="session/requestPermission",
+            params={
+                "toolCall": {"title": "shell"},
+                "options": [
+                    {"optionId": "yes", "name": "Allow", "behavior": "allow"},
+                    {"optionId": "no", "name": "Deny", "behavior": "deny"},
+                ],
+            },
+        )
+        client._build_permission_event(msg)
+        assert client._permission_options[27].get("reject") == "no"
+        # The allow-behavior option was NOT misread as a reject.
+        assert client._permission_options[27].get("reject") != "yes"
+
+    @pytest.mark.asyncio
+    async def test_reject_with_advertised_deny_never_answers_cancelled(self):
+        """#7681 end-to-end pin: when ANY deny-shaped option was advertised,
+        reject_tool answers a per-tool ``selected`` reject — never the
+        turn-cancelling ``cancelled`` outcome."""
+        client = AcpClient()
+        from kiro_crew.acp.types import JsonRpcMessage
+
+        msg = JsonRpcMessage(
+            id=28,
+            method="session/requestPermission",
+            params={
+                "toolCall": {"title": "shell"},
+                "options": [
+                    {"optionId": "allow", "name": "Allow", "kind": "allow_once"},
+                    {"optionId": "deny", "name": "Deny"},
+                ],
+            },
+        )
+        client._build_permission_event(msg)
+        sent: list[dict] = []
+
+        async def _capture(request_id, payload):
+            sent.append(payload)
+
+        client._send_response = _capture  # type: ignore[method-assign]
+        await client.reject_tool(28)
+        assert len(sent) == 1
+        assert sent[0]["outcome"]["outcome"] != "cancelled"
+        assert sent[0]["outcome"] == {"outcome": "selected", "optionId": "deny"}
+
     def test_unknown_legacy_id_not_classified(self):
         """Unknown legacy ids do not get a synthesized kind."""
         client = AcpClient()
@@ -8704,7 +8857,92 @@ class TestResolveKiroBinEnvOverride:
         )
         # No inherited snapshot descriptor: the installed binary is exec'd in
         # place, so there is nothing to hand down to the wrapper chain.
-        assert "pass_fds" not in spawn_call.kwargs
+        #
+        # macOS is the exception, and for a different fd:
+        # bind_voice_safe_agent_workspace opens the agent workspace as a
+        # directory descriptor there so the child enters it by fchdir instead of
+        # re-resolving a pathname a same-UID symlink retarget could aim
+        # elsewhere. _spawn hands that descriptor to create_subprocess_limited
+        # as chdir_fd, which folds exactly that one fd into pass_fds so the
+        # spawn shim inherits it. Off darwin the binding returns None, so
+        # chdir_fd is None and pass_fds stays absent. The binding is also gated
+        # on the harness owning an internal sandbox (ACP_BACKENDS_INTERNAL_SANDBOX,
+        # which the default Kiro backend built here belongs to), so a backend
+        # outside that set stays on the pathname cwd whatever the platform says.
+        if sys.platform == "darwin":
+            pass_fds = spawn_call.kwargs["pass_fds"]
+            # Exactly the bound workspace descriptor, nothing else: no snapshot
+            # fd is inherited here, so the only descriptor handed down is the
+            # one the fchdir binding produced. Which int it is, is pinned on
+            # every OS by the forced-darwin companion below.
+            assert isinstance(pass_fds, tuple)
+            assert len(pass_fds) == 1
+            assert isinstance(pass_fds[0], int) and pass_fds[0] >= 0
+        else:
+            assert "pass_fds" not in spawn_call.kwargs
+
+    @pytest.mark.asyncio
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason=(
+            "the binding opens the workspace as a directory descriptor, which "
+            "needs O_DIRECTORY; Windows has no such flag and os.open on a "
+            "directory raises, so a forced-darwin binding refuses with "
+            "'cannot-verify' before any spawn is attempted"
+        ),
+    )
+    async def test_spawn_passes_exactly_the_bound_workspace_fd_on_darwin(
+        self, tmp_path, monkeypatch
+    ):
+        # The darwin half of the assertion above runs on no CI shard, because no
+        # macOS job collects this module. The binding gate is a runtime
+        # sys.platform read rather than an import-time constant, so forcing the
+        # platform runs the REAL binding on any POSIX host and pins the whole
+        # composition: _spawn -> bind_voice_safe_agent_workspace_async ->
+        # create_subprocess_limited(chdir_fd=...) -> a pass_fds holding exactly
+        # that descriptor. Spy-and-delegate rather than stub, so the fd compared
+        # against pass_fds is the one the real binding opened.
+        from kiro_crew.acp import client as client_module
+
+        fake = tmp_path / "kiro-cli"
+        fake.write_bytes(b"#!/bin/sh\n")
+        fake.chmod(0o755)
+        launch_path = str(fake)
+        mock_exec = AsyncMock(side_effect=RuntimeError("spawn failed"))
+        bound_fds: list[int | None] = []
+        real_bind = client_module.bind_voice_safe_agent_workspace_async
+
+        async def spy_bind(workspace):
+            spawn_dir, descriptor = await real_bind(workspace)
+            bound_fds.append(descriptor)
+            return spawn_dir, descriptor
+
+        with (
+            patch.object(client_module, "_resolve_kiro_bin", return_value=launch_path),
+            patch.object(
+                client_module,
+                "wrap_argv",
+                side_effect=lambda argv, mode, **kwargs: (list(argv), None),
+            ),
+            patch.object(client_module, "assert_voice_runtime_outside_agent_workspace"),
+            patch.object(client_module, "cgroup_scope_argv", side_effect=lambda argv: list(argv)),
+            patch.object(
+                client_module, "bind_voice_safe_agent_workspace_async", side_effect=spy_bind
+            ),
+            patch("asyncio.create_subprocess_exec", mock_exec),
+        ):
+            client = AcpClient(work_dir=tmp_path / "workspace")
+            monkeypatch.setattr(sys, "platform", "darwin")
+
+            with pytest.raises(RuntimeError, match="spawn failed"):
+                await client._spawn()
+
+        assert len(bound_fds) == 1
+        bound_fd = bound_fds[0]
+        assert isinstance(bound_fd, int)
+        # The spy reads the descriptor before _spawn's failure handler closes it,
+        # so the value survives even though the fd itself does not.
+        assert mock_exec.await_args.kwargs["pass_fds"] == (bound_fd,)
 
     def test_env_override_ignored_when_missing_file(self, tmp_path):
         # A configured-but-nonexistent path must not be returned; resolution

@@ -30,6 +30,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, cast
 
 from kiro_crew.config.loader import KiroCrewConfig
+from kiro_crew.dashboard.state import row_mid
 from kiro_crew.discord.attachments import (
     append_attachment_context,
     process_discord_attachments,
@@ -56,6 +57,7 @@ from kiro_crew.discord.session_resume import (
 )
 from kiro_crew.discord.transport import DISCORD_CAPABILITIES
 from kiro_crew.executors import run_in_embed_pool
+from kiro_crew.history import mint_row_mid
 from kiro_crew.hooks import TOOL_AUTO_APPROVE, TOOL_DENY
 from kiro_crew.messaging.attachments import IngestLimits
 from kiro_crew.messaging.attachments import cleanup as cleanup_attachments
@@ -750,15 +752,15 @@ class DiscordDispatcher:
                 # Loop-side: put the turn in the live dashboard window FIRST so
                 # the dashboard's own save serializes it in chronological
                 # position instead of appending it to the foreign tail.
-                mirrored = self._mirror_turn_to_live_slot(session_key, text, accumulated)
+                mirror_mids = self._mirror_turn_to_live_slot(session_key, text, accumulated)
                 await asyncio.to_thread(
                     self._persist_turn,
                     session_key,
                     text,
                     accumulated,
                     is_new_own_session,
-                    mirrored,
                     agent=agent,
+                    mirror_mids=mirror_mids,
                 )
             except Exception:
                 logger.warning(
@@ -1530,7 +1532,9 @@ class DiscordDispatcher:
             persisted_probe=_probe_persisted_session,
         )
 
-    def _mirror_turn_to_live_slot(self, session_key: str, user_text: str, reply_text: str) -> bool:
+    def _mirror_turn_to_live_slot(
+        self, session_key: str, user_text: str, reply_text: str
+    ) -> tuple[str, str] | None:
         """Land a resumed turn in the live dashboard window. Loop-side only.
 
         A disk-only append is not enough. The dashboard save writes
@@ -1541,21 +1545,30 @@ class DiscordDispatcher:
         so ordering is preserved. Mirrors ``dashboard/cron_inject.py``, which
         appends to the slot and persists idempotently for the same reason.
 
-        Returns True when the in-memory slot took the turn, so the disk write
-        can use the idempotent append and not duplicate it.
+        Returns the ``(user_mid, assistant_mid)`` the slot minted when the
+        in-memory window took the turn, else ``None``. The caller hands those to
+        the durable write so both copies of one row share ONE identity -- the
+        dual-writer shape ``cron_inject`` uses (``row_mid(slot.append(...))`` ->
+        ``append_if_absent(..., mid=...)``). Minting a SECOND id there instead
+        would defeat the idempotency check the mirrored write exists for:
+        ``append_if_absent`` only skips a body-equal row carrying the SAME mid,
+        so an unrelated id can never match the copy the slot save already landed
+        and the turn would be persisted twice. An empty string stands for a row
+        the slot did not mint an id for (a reply that was not written).
         """
         slot = self._live_dashboard_slot(session_key)
         if slot is None:
-            return False
+            return None
         try:
-            slot.append("user", user_text, "msg msg-u")
+            user_mid = row_mid(slot.append("user", user_text, "msg msg-u")) or ""
+            assistant_mid = ""
             if reply_text:
-                slot.append("assistant", reply_text, "msg msg-a")
+                assistant_mid = row_mid(slot.append("assistant", reply_text, "msg msg-a")) or ""
         except Exception:
             logger.debug(
                 "discord: could not mirror turn into live slot %s", session_key, exc_info=True
             )
-            return False
+            return None
         state = getattr(self._session_resume, "dashboard_state", None)
         push = getattr(state, "push_slots_update", None)
         if callable(push):
@@ -1563,7 +1576,7 @@ class DiscordDispatcher:
                 push()
             except Exception:
                 logger.debug("discord: slots push after resumed turn failed", exc_info=True)
-        return True
+        return (user_mid, assistant_mid)
 
     def _persist_turn(
         self,
@@ -1571,25 +1584,44 @@ class DiscordDispatcher:
         user_text: str,
         reply_text: str,
         is_new: bool,
-        mirrored: bool = False,
         agent: str | None = None,
+        mirror_mids: tuple[str, str] | None = None,
     ) -> None:
         """Record the turn to conversation_log (dashboard visibility + restart).
 
-        When the turn already went into a live dashboard slot (*mirrored*), the
-        disk write must be idempotent: that slot's own save re-serializes its
-        window, so a plain append would persist the same message twice.
+        *mirror_mids* is what ``_mirror_turn_to_live_slot`` returned: the ids the
+        live dashboard window minted for this turn's rows, or ``None`` when there
+        was no live slot to mirror into. It carries BOTH facts, so there is no
+        separate ``mirrored`` flag -- the presence of the tuple IS the flag, and a
+        second parameter encoding the same thing could only ever disagree with it.
+
+        With a live slot the disk write must be idempotent: that slot's own save
+        re-serializes its window, so a plain append would persist the same message
+        twice. The write goes under the SAME ids the window rows carry -- the
+        dual-writer shape ``cron_inject`` uses -- because ``append_if_absent``
+        skips only a body-equal row carrying the same mid. A fresh id there would
+        never match the slot save's copy and the turn would land on disk twice.
+
+        With no live slot nothing has the row yet, so it is a plain append under a
+        newly minted id.
         """
         if self.conv_log is None:
             return
-        if mirrored:
-            self.conv_log.append_if_absent(session_key, "user", user_text, agent=agent)
+        if mirror_mids is not None:
+            user_mid, assistant_mid = mirror_mids
+            self.conv_log.append_if_absent(
+                session_key, "user", user_text, agent=agent, mid=user_mid
+            )
             if reply_text:
-                self.conv_log.append_if_absent(session_key, "assistant", reply_text, agent=agent)
+                self.conv_log.append_if_absent(
+                    session_key, "assistant", reply_text, agent=agent, mid=assistant_mid
+                )
         else:
-            self.conv_log.append(session_key, "user", user_text, agent=agent)
+            self.conv_log.append(session_key, "user", user_text, agent=agent, mid=mint_row_mid())
             if reply_text:
-                self.conv_log.append(session_key, "assistant", reply_text, agent=agent)
+                self.conv_log.append(
+                    session_key, "assistant", reply_text, agent=agent, mid=mint_row_mid()
+                )
         if is_new:
             title = (user_text or "").strip().replace("\n", " ")[:40] or "Discord"
             self.conv_log.set_title(session_key, title)

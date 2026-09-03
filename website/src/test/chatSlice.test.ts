@@ -2144,6 +2144,92 @@ describe('sseChatMessagePatchByTs', () => {
     expect(out.messages[0].meta?.completed).toBeUndefined()
   })
 
+  // Two restored rows can carry the SAME ts (which is why rows also carry
+  // meta.mid), and a ts-keyed lookup resolves the first match. Retiring two
+  // superseded OAuth banners would then patch one row twice and leave the other
+  // rendering a dead Authorize link (issue #7580).
+  describe('row identity', () => {
+    /** Two banners deliberately sharing one ts, each with its own mid. */
+    function withCollidingBanners() {
+      const ts = '2026-05-28T01:00:00.000Z'
+      const rows = ['m-first', 'm-second'].map(mid => ({
+        role: 'mcp_oauth',
+        content: '🔐 linear requires authentication.',
+        cls: 'msg msg-info',
+        ts,
+        meta: { mid, server_name: 'linear', oauth_url: 'https://mcp.linear.app/authorize' },
+      }))
+      return {
+        state: {
+          ...initial,
+          activeSlot: 'slot-1',
+          messages: rows as ChatMessage[],
+          slotMessages: { 'slot-1': rows as ChatMessage[] },
+        },
+        ts,
+      }
+    }
+
+    it('patches the row named by mid, not the first row sharing its ts', () => {
+      const { state, ts } = withCollidingBanners()
+      const out = reducer(state, {
+        type: 'chat/sseChatMessagePatchByTs',
+        payload: {
+          slot: 'slot-1',
+          ts,
+          mid: 'm-second',
+          meta: { superseded: true, oauth_url: '' },
+          content: 'retired',
+        },
+      })
+      expect(out.messages[1].meta).toMatchObject({ superseded: true, oauth_url: '' })
+      expect(out.messages[1].content).toBe('retired')
+      // The colliding sibling must be left alone.
+      expect(out.messages[0].meta?.superseded).toBeUndefined()
+      expect(out.messages[0].meta?.oauth_url).toBe('https://mcp.linear.app/authorize')
+    })
+
+    it('retires BOTH colliding rows when each is named by its own mid', () => {
+      const { state, ts } = withCollidingBanners()
+      const patch = (s: typeof state, mid: string) =>
+        reducer(s, {
+          type: 'chat/sseChatMessagePatchByTs',
+          payload: { slot: 'slot-1', ts, mid, meta: { superseded: true, oauth_url: '' } },
+        })
+      const out = patch(patch(state, 'm-first'), 'm-second')
+      expect(out.messages.map(m => m.meta?.superseded)).toEqual([true, true])
+      expect(out.messages.every(m => !m.meta?.oauth_url)).toBe(true)
+    })
+
+    it('falls back to ts when the server sends no mid (legacy rows)', () => {
+      const { state, ts } = withMcpOauthBanner('slot-1')
+      const out = reducer(state, {
+        type: 'chat/sseChatMessagePatchByTs',
+        payload: { slot: 'slot-1', ts, meta: { completed: true } },
+      })
+      expect(out.messages[0].meta?.completed).toBe(true)
+    })
+
+    it('is a no-op when a mid names no row, rather than patching by ts instead', () => {
+      const { state, ts } = withCollidingBanners()
+      const out = reducer(state, {
+        type: 'chat/sseChatMessagePatchByTs',
+        payload: { slot: 'slot-1', ts, mid: 'm-absent', meta: { superseded: true } },
+      })
+      expect(out.messages.every(m => m.meta?.superseded === undefined)).toBe(true)
+    })
+
+    it('patches by mid even when the payload carries no ts at all', () => {
+      const { state } = withCollidingBanners()
+      const out = reducer(state, {
+        type: 'chat/sseChatMessagePatchByTs',
+        payload: { slot: 'slot-1', ts: '', mid: 'm-second', meta: { superseded: true } },
+      })
+      expect(out.messages[1].meta?.superseded).toBe(true)
+      expect(out.messages[0].meta?.superseded).toBeUndefined()
+    })
+  })
+
   it('no-op when slot is empty', () => {
     const { state, ts } = withMcpOauthBanner('slot-1')
     const out = reducer(state, {

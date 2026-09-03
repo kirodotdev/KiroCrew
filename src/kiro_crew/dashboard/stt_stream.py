@@ -28,7 +28,7 @@ except ImportError:  # pragma: no cover — exercised by test_import_error_*
 
 from kiro_crew import aws_consent, stt
 from kiro_crew.config.loader import KiroCrewConfig
-from kiro_crew.dashboard.origin import check_origin
+from kiro_crew.dashboard.origin import check_origin, mark_audit_claimed
 from kiro_crew.llm_helpers import run_bg_oneliner
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
@@ -1047,6 +1047,9 @@ async def api_ws_stt(request: web.Request) -> web.WebSocketResponse:
     """
     if not check_origin(request, require=True):
         _emit_guard_audit(request.remote or "unknown", outcome="forbidden")
+        # That record is the specific one; claim the request so the deny-audit
+        # boundary does not add a second, generic entry for the same refusal.
+        mark_audit_claimed(request)
         raise web.HTTPForbidden(text="WebSocket origin not allowed")
 
     cfg = KiroCrewConfig.load()

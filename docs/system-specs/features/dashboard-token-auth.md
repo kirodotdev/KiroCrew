@@ -81,12 +81,25 @@ Middleware chain (explicit ordering in `server.py`):
 
 ```mermaid
 graph LR
-    A[host_canonical_redirect] --> B[host_validation] --> C[no_cache] --> D[csrf] --> E[token_auth] --> F[sel_audit] --> G[spa_fallback]
+    Z[deny_audit] --> A[host_canonical_redirect] --> B[host_validation] --> C[no_cache] --> D[csrf] --> E[token_auth] --> F[sel_audit] --> G[spa_fallback]
 ```
 
 1. CSRF checks run first (reject cross-origin mutating requests)
 2. Token auth validates identity
 3. SEL audit logs the authenticated operation
+
+`deny_audit` (`_make_deny_audit_middleware`, installed on both entrypoints) is
+outer to every barrier that can refuse, and `sel_audit` is inner to all of them —
+so a 401/403 a barrier RAISES is recorded because of where the boundary sits,
+not because that deny site remembered to call `_audit_denied`. It records only a
+raised 401/403 on a request no layer has CLAIMED (`origin.AUDIT_CLAIMED_KEY`,
+set via `origin.mark_audit_claimed`), and a layer claims exactly when it wrote
+the specific record itself: the two barriers through `_audit_denied`, `sel_audit`
+for the mutating `/api/` requests it actually logs, and the two WebSocket-origin
+handlers that log their own denial. `token_auth` RETURNS its 401/403 rather than
+raising and audits each itself, so returned responses are not inspected. Not
+claiming is the safe direction — the boundary then records the refusal under a
+generic reason.
 
 ## Components
 
@@ -444,6 +457,7 @@ async def send_dashboard_link(slack, user_id, ttl=3600) -> str:
 
 ```python
 app.middlewares[:] = [
+    deny_audit_middleware,
     host_canonical_redirect,
     host_validation_middleware,
     no_cache_middleware,
@@ -465,7 +479,8 @@ cannot drift.
 The `--slack-only` gateway starts `start_api_server()` instead of
 `start_dashboard()`. It serves the **same** MCP tool route surface
 (`_register_mcp_routes`), so it mounts an auth chain at parity:
-`host_validation_middleware → csrf_middleware → token_auth_middleware(
+`deny_audit_middleware → host_validation_middleware → csrf_middleware →
+token_auth_middleware(
 internal_paths=_STRICT_INTERNAL_API_PATHS,
 mixed_internal_paths=_MIXED_INTERNAL_API_PATHS, spa_shell_handler=None) →
 sel_audit_middleware`. It generates and persists the same
@@ -654,4 +669,4 @@ dashboard session; if no other device is signed in, it restores the
 9. Bounded concurrent nonces (`TokenStateManager`) — prevents unbounded memory growth while allowing active link nonces to refresh their eviction position
 10. Explicit revocation via `kirocrew logout` — clears all nonces, IP bindings, and consumed tokens, and bumps the persisted revocation generation, ending every outstanding access cookie and refresh chain
 11. App-token scope confinement (CWE-269) — an `app`-claim token is confined deny-by-default to its own namespace (`/apps/<name>`, `/api/apps/<name>`) + its manifest `permissions.api` allowlist, enforced at every grant point; no-op for dashboard-user tokens
-12. Headless (`--slack-only`) auth parity — `start_api_server()` serves the same MCP route surface as the dashboard and mounts the same `host_validation → csrf → token_auth → sel_audit` chain against the shared `_STRICT_INTERNAL_API_PATHS`/`_MIXED_INTERNAL_API_PATHS` sets. Internal MCP routes require loopback **plus** `X-Internal-Secret` (loopback alone is not sufficient for these paths — port forwarders can spoof `127.0.0.1`); `sel_audit_middleware` alone only logs and is never a substitute for the token-auth chain
+12. Headless (`--slack-only`) auth parity — `start_api_server()` serves the same MCP route surface as the dashboard and mounts the same `deny_audit → host_validation → csrf → token_auth → sel_audit` chain against the shared `_STRICT_INTERNAL_API_PATHS`/`_MIXED_INTERNAL_API_PATHS` sets. Internal MCP routes require loopback **plus** `X-Internal-Secret` (loopback alone is not sufficient for these paths — port forwarders can spoof `127.0.0.1`); `sel_audit_middleware` alone only logs and is never a substitute for the token-auth chain

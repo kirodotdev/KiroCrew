@@ -6623,7 +6623,9 @@ class TestPinnedModelWithheld:
     succeeds. Nothing told the slot, so the composer chip and the picker went on
     naming a model no turn would use — the reported symptom after a plan
     downgrade (chip read ``claude-opus-5``; every turn ran on auto). The runner
-    now clears the dead pin using the same predicate the withhold uses.
+    reports the dead pin using the same predicate the withhold uses, and carries
+    the verdict in the slots payload so the frontend reads it instead of
+    inferring it from picker-list membership (#1819).
     """
 
     @staticmethod
@@ -6634,60 +6636,209 @@ class TestPinnedModelWithheld:
         return client
 
     def test_pin_absent_from_advertised_is_withheld(self):
-        from kiro_crew.dashboard.chat_runner import _pinned_model_withheld
+        from kiro_crew.dashboard.chat_runner import _pinned_model_verdict
 
         client = self._client(["auto", "claude-sonnet-5"])
-        assert _pinned_model_withheld(client, "claude-opus-5", "acp")
+        assert _pinned_model_verdict(client, "claude-opus-5", "acp") is True
 
     def test_advertised_pin_is_kept(self):
-        from kiro_crew.dashboard.chat_runner import _pinned_model_withheld
+        from kiro_crew.dashboard.chat_runner import _pinned_model_verdict
 
         client = self._client(["auto", "claude-opus-5"])
-        assert not _pinned_model_withheld(client, "claude-opus-5", "acp")
+        assert _pinned_model_verdict(client, "claude-opus-5", "acp") is False
 
     def test_unknown_entitlement_keeps_the_pin(self):
-        from kiro_crew.dashboard.chat_runner import _pinned_model_withheld
+        from kiro_crew.dashboard.chat_runner import _pinned_model_verdict
 
         # Advertised nothing (no session yet / backend omits the list) must read
-        # as "unknown", never as "nothing is allowed".
-        assert not _pinned_model_withheld(self._client([]), "claude-opus-5", "acp")
+        # as "unknown", never as "nothing is allowed" — and, since the verdict is
+        # displayed, never as "entitled" either: None is its own answer.
+        assert _pinned_model_verdict(self._client([]), "claude-opus-5", "acp") is None
 
     def test_auto_and_empty_are_never_withheld(self):
-        from kiro_crew.dashboard.chat_runner import _pinned_model_withheld
+        from kiro_crew.dashboard.chat_runner import _pinned_model_verdict
 
         client = self._client(["claude-sonnet-5"])
-        assert not _pinned_model_withheld(client, "auto", "acp")
-        assert not _pinned_model_withheld(client, "", "acp")
+        assert _pinned_model_verdict(client, "auto", "acp") is None
+        assert _pinned_model_verdict(client, "", "acp") is None
 
     def test_claude_code_provider_is_exempt(self):
-        from kiro_crew.dashboard.chat_runner import _pinned_model_withheld
+        from kiro_crew.dashboard.chat_runner import _pinned_model_verdict
 
         # slot.model is a canonical key there while the backend advertises bare
         # ids — comparing the two namespaces would call every model unusable.
         client = self._client(["claude-opus-4-8[1m]"])
-        assert not _pinned_model_withheld(client, "opus-4.8-1m", "claude_code")
+        assert _pinned_model_verdict(client, "opus-4.8-1m", "claude_code") is None
 
     def test_claude_backend_provider_is_exempt(self):
-        from kiro_crew.dashboard.chat_runner import _pinned_model_withheld
+        from kiro_crew.dashboard.chat_runner import _pinned_model_verdict
 
         client = self._client(["claude-opus-4-8[1m]"], claude_backend=True)
-        assert not _pinned_model_withheld(client, "claude-opus-4.8", "acp")
+        assert _pinned_model_verdict(client, "claude-opus-4.8", "acp") is None
 
     def test_provider_without_getter_keeps_the_pin(self):
-        from kiro_crew.dashboard.chat_runner import _pinned_model_withheld
+        from kiro_crew.dashboard.chat_runner import _pinned_model_verdict
 
         client = MagicMock()
         del client.available_models
         client.is_claude_backend = False
-        assert not _pinned_model_withheld(client, "claude-opus-5", "acp")
+        assert _pinned_model_verdict(client, "claude-opus-5", "acp") is None
 
     def test_getter_raising_keeps_the_pin(self):
-        from kiro_crew.dashboard.chat_runner import _pinned_model_withheld
+        from kiro_crew.dashboard.chat_runner import _pinned_model_verdict
 
         client = MagicMock()
         client.is_claude_backend = False
         client.available_models = MagicMock(side_effect=RuntimeError("boom"))
-        assert not _pinned_model_withheld(client, "claude-opus-5", "acp")
+        assert _pinned_model_verdict(client, "claude-opus-5", "acp") is None
+
+    def test_slot_reports_no_verdict_until_one_is_recorded(self):
+        slot = _ChatSlot("s1")
+        slot.model = "claude-opus-5"
+        # A slot that has never spawned knows nothing about entitlement, and the
+        # frontend fails open on that — so the default must be unknown, not False.
+        assert slot.model_withheld is None
+        assert slot.to_dict()["model_withheld"] is None
+
+    def test_slots_payload_carries_both_answers(self):
+        slot = _ChatSlot("s1")
+        slot.model = "claude-opus-5"
+        slot.record_model_withheld(True)
+        assert slot.to_dict()["model_withheld"] is True
+        slot.record_model_withheld(False)
+        assert slot.to_dict()["model_withheld"] is False
+
+    def test_verdict_is_reported_only_for_the_model_it_was_computed_for(self):
+        """Re-pinning must invalidate the verdict without anyone remembering to.
+
+        `slot.model` has many writers (the picker, the bulk pick, the pick
+        rollback, two restore paths, the canonical backfill). A verdict that
+        outlived a re-pin would label the NEW model with the OLD model's
+        entitlement, so the verdict is stored against the id it was computed for
+        instead of relying on each of those writers to clear it.
+        """
+        slot = _ChatSlot("s1")
+        slot.model = "claude-opus-5"
+        slot.record_model_withheld(True)
+        assert slot.model_withheld is True
+
+        slot.model = "claude-sonnet-5"  # the user picks a model they can run
+        assert slot.model_withheld is None, "a verdict must not survive a re-pin"
+
+        slot.model = "claude-opus-5"  # ...and back again
+        assert slot.model_withheld is True, "the verdict still describes this pin"
+
+        slot.model = ""  # pin cleared entirely
+        assert slot.model_withheld is None
+
+    def test_teardown_forgets_the_verdict(self):
+        slot = _ChatSlot("s1")
+        slot.model = "claude-opus-5"
+        slot.record_model_withheld(True)
+        # The verdict describes the session that advertised the list, so a
+        # session teardown drops it rather than leaving the next session labelled
+        # by the previous one's entitlement.
+        slot.record_model_withheld(None)
+        assert slot.model_withheld is None
+
+    def test_every_session_teardown_drops_the_verdict(self):
+        """A teardown site added later must not silently keep a dead verdict.
+
+        The drop cannot live in one chokepoint: `_reset_slot_session` is the
+        funnel for the switch handlers, but the runner tears a session down
+        directly at a turn boundary too (the deferred project-change reset, the
+        deferred conversation discard, the post-turn agent-switch reset) and
+        routing those through the funnel would also cancel pending question cards.
+        So the invariant is pinned here instead of trusting each author to
+        remember it.
+        """
+        from pathlib import Path
+
+        from kiro_crew.dashboard import chat_handlers, chat_runner
+
+        teardowns = ("state.sessions.reset(", "state.sessions.discard_conversation(")
+        for module in (chat_runner, chat_handlers):
+            lines = Path(module.__file__).read_text(encoding="utf-8").splitlines()
+            sites = [i for i, line in enumerate(lines) if any(t in line for t in teardowns)]
+            assert sites, f"no teardown call site found in {module.__name__}"
+            for i in sites:
+                # Asymmetric window: a drop placed AFTER the call has to clear the
+                # multi-line call plus its refusal check (`discard_conversation`
+                # returns False when a turn is in flight), so the trailing half is
+                # the wider one.
+                window = "\n".join(lines[max(0, i - 12) : i + 23])
+                assert "record_model_withheld(None)" in window, (
+                    f"{module.__name__}:{i + 1} replaces the session the withhold "
+                    f"verdict describes without dropping it -> {lines[i].strip()}"
+                )
+
+    @pytest.mark.asyncio
+    async def test_reset_chokepoint_forgets_the_verdict(self):
+        """The one reset funnel must drop it, so all its call sites do."""
+        from kiro_crew.dashboard.chat_handlers import _reset_slot_session
+
+        state = MagicMock()
+
+        async def _reset(_key, *, skip_if_busy=False):
+            return True
+
+        state.sessions.reset = _reset
+        slot = _ChatSlot("s1")
+        slot.model = "claude-opus-5"
+        slot.record_model_withheld(True)
+
+        with patch("kiro_crew.dashboard.chat_handlers._unblock_pending_waits"):
+            await _reset_slot_session(state, slot, "dashboard:s1")
+
+        assert slot.model_withheld is None
+
+    @pytest.mark.asyncio
+    async def test_a_declined_reset_keeps_the_live_session_s_verdict(self):
+        """`skip_if_busy` declining leaves the session -- and its verdict -- alive.
+
+        The reload route resets with ``skip_if_busy=True``, which returns False
+        when a turn is in flight and touches nothing. Dropping the verdict there
+        would republish a runnable pin as `auto` -- the defect the verdict exists
+        to remove -- for a session that never changed.
+        """
+        from kiro_crew.dashboard.chat_handlers import _reset_slot_session
+
+        state = MagicMock()
+
+        async def _declined(_key, *, skip_if_busy=False):
+            return False
+
+        state.sessions.reset = _declined
+        slot = _ChatSlot("s1")
+        slot.model = "claude-opus-5"
+        slot.record_model_withheld(True)
+
+        with patch("kiro_crew.dashboard.chat_handlers._unblock_pending_waits"):
+            reloaded = await _reset_slot_session(state, slot, "dashboard:s1", skip_if_busy=True)
+
+        assert reloaded is False
+        assert slot.model_withheld is True, "a declined reset must not erase the verdict"
+
+    @pytest.mark.asyncio
+    async def test_a_reset_that_raises_drops_the_verdict(self):
+        """A teardown that raised leaves a session the slot cannot vouch for."""
+        from kiro_crew.dashboard.chat_handlers import _reset_slot_session
+
+        state = MagicMock()
+
+        async def _boom(_key, *, skip_if_busy=False):
+            raise RuntimeError("teardown exploded")
+
+        state.sessions.reset = _boom
+        slot = _ChatSlot("s1")
+        slot.model = "claude-opus-5"
+        slot.record_model_withheld(True)
+
+        with patch("kiro_crew.dashboard.chat_handlers._unblock_pending_waits"):
+            with pytest.raises(RuntimeError):
+                await _reset_slot_session(state, slot, "dashboard:s1")
+
+        assert slot.model_withheld is None
 
     @pytest.mark.asyncio
     async def test_run_chat_reports_but_keeps_a_withheld_pin(self, tmp_path, monkeypatch):
@@ -6758,6 +6909,126 @@ class TestPinnedModelWithheld:
         assert any(
             "claude-opus-5" in t and "isn't offered right now" in t for t in notices
         ), f"expected a persisted notice naming the withheld model, got {notices}"
+        # And the verdict is CARRIED, not left for the frontend to re-derive: the
+        # slots payload states it, so the chip does not have to read "absent from
+        # GET /api/models" as "not entitled" (#1819).
+        assert slot.model_withheld is True
+        assert slot.to_dict()["model_withheld"] is True
+
+    @pytest.mark.asyncio
+    async def test_run_chat_records_an_entitled_pin_as_not_withheld(self, tmp_path, monkeypatch):
+        """The false answer must be carried too, not just the withhold.
+
+        It is the half that stops an unrelated `/api/models` filter from acting as
+        an entitlement signal. The verdict is computed against the wire id the
+        session was actually given, so a pin the picker's list omits is still
+        reported runnable.
+
+        Asserted on a DEPRECATED pin's replacement on purpose: `api_models` drops
+        deprecated ids before the entitlement narrowing, and `_normalize_model`
+        rewrites such a pin to its replacement at turn start — so the id the
+        session (and this verdict) sees is the replacement, never the deprecated
+        spelling the slot was carrying.
+        """
+        from kiro_crew.providers.base import EVENT_COMPLETE, LLMEvent
+
+        events = [LLMEvent(kind=EVENT_COMPLETE, usage=TurnUsage(input_tokens=3, output_tokens=4))]
+        state = TestTokenPersistenceBackfill._make_state_for_run_chat(tmp_path, monkeypatch)
+        slot = state.get_or_create_slot("s1")
+        slot.model = "claude-opus-4.6-1m"  # deprecated spelling: absent from GET /api/models
+
+        client = AsyncMock()
+        client.context_usage_pct = MagicMock(return_value=10.0)
+        client.is_claude_backend = False
+        # The session serves the replacement the pin normalizes to.
+        client.available_models = MagicMock(
+            return_value=[{"modelId": "auto"}, {"modelId": "claude-opus-4.6"}]
+        )
+        inner = MagicMock()
+        inner._model = ""
+        client.client = inner
+
+        async def _stream(msg):
+            del msg
+            for ev in events:
+                yield ev
+
+        client.stream = _stream
+        client.stream_command = _stream
+        state.sessions.get_or_create = AsyncMock(return_value=(client, True, False))
+
+        async def _fake_persist(k, m, e, provider="", **kwargs):
+            del k, m, e, provider, kwargs
+
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.chat_runner.persist_token_record_async", _fake_persist
+        )
+
+        from kiro_crew.dashboard.chat import _run_chat
+
+        await _run_chat(state, slot, "hello")
+
+        assert slot.model == "claude-opus-4.6", "the deprecated pin is rewritten at turn start"
+        assert slot.to_dict()["model_withheld"] is False
+        notices = [m.get("content", "") for m in slot.messages if m.get("role") == "notice"]
+        assert not any(
+            "isn't offered right now" in t for t in notices
+        ), f"an entitled pin must not be reported as withheld, got {notices}"
+
+    @pytest.mark.asyncio
+    async def test_a_replacement_session_that_advertises_nothing_publishes_unknown(
+        self, tmp_path, monkeypatch
+    ):
+        """A new session must never inherit the previous session's verdict.
+
+        A replacement can arrive without a teardown this slot saw (a reaped
+        session, a provider that re-spawned) and can advertise nothing at all --
+        a dead provider, or a backend that omits `models`. That is "not known",
+        and publishing the previous session's answer for it would label a live
+        session from an entitlement snapshot it never took.
+        """
+        from kiro_crew.providers.base import EVENT_COMPLETE, LLMEvent
+
+        events = [LLMEvent(kind=EVENT_COMPLETE, usage=TurnUsage(input_tokens=3, output_tokens=4))]
+        state = TestTokenPersistenceBackfill._make_state_for_run_chat(tmp_path, monkeypatch)
+        slot = state.get_or_create_slot("s1")
+        slot.model = "claude-opus-5"
+        slot.record_model_withheld(True)  # the PREVIOUS session withheld this pin
+
+        client = AsyncMock()
+        client.context_usage_pct = MagicMock(return_value=10.0)
+        client.is_claude_backend = False
+        client.available_models = MagicMock(return_value=[])  # advertises nothing
+        inner = MagicMock()
+        inner._model = ""
+        client.client = inner
+
+        async def _stream(msg):
+            del msg
+            for ev in events:
+                yield ev
+
+        client.stream = _stream
+        client.stream_command = _stream
+        state.sessions.get_or_create = AsyncMock(return_value=(client, True, False))
+
+        async def _fake_persist(k, m, e, provider="", **kwargs):
+            del k, m, e, provider, kwargs
+
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.chat_runner.persist_token_record_async", _fake_persist
+        )
+
+        from kiro_crew.dashboard.chat import _run_chat
+
+        await _run_chat(state, slot, "hello")
+
+        assert slot.to_dict()["model_withheld"] is None, "a stale verdict must not be republished"
+        assert slot.model == "claude-opus-5", "the pin itself is untouched"
+        notices = [m.get("content", "") for m in slot.messages if m.get("role") == "notice"]
+        assert not any(
+            "isn't offered right now" in t for t in notices
+        ), f"unknown entitlement must not be reported as a withhold, got {notices}"
 
     @pytest.mark.asyncio
     async def test_run_chat_survives_an_unreadable_config_on_a_pinned_slot(
@@ -9137,6 +9408,78 @@ class TestBulkApproveBroadcast:
         assert "req-1" in ids
         assert "req-2" in ids
 
+    @pytest.mark.asyncio
+    async def test_slot_scoped_trust_leaves_other_slots_pending(self, tmp_path, monkeypatch):
+        """A slot-scoped ``trust`` must NOT sweep other slots' pending approvals.
+
+        Regression: bulk auto-approve iterated EVERY slot regardless of scope, so
+        trusting one chat resolved the pending approval card in unrelated chats
+        (making them LOOK approved) while their ``_trust`` flag stayed False — so
+        their next tool call prompted again. Scope the sweep to the target
+        session; other slots keep their pending future AND their untrusted state.
+        """
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        monkeypatch.setattr("kiro_crew.dashboard.chat.sel", lambda: MagicMock())
+        state = _make_state(tmp_path)
+        state.push_slots_update = MagicMock()
+        state.broadcast_ws = MagicMock()
+        s1 = state.get_or_create_slot("s1")
+        s2 = state.get_or_create_slot("s2")
+        loop = asyncio.get_running_loop()
+        f1: asyncio.Future[str] = loop.create_future()
+        f2: asyncio.Future[str] = loop.create_future()
+        s1._approval_futures["req-1"] = f1
+        s2._approval_futures["req-2"] = f2
+
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post("/api/chat/mode", json={"mode": "trust", "slot": "s1"})
+            assert (await resp.json())["ok"] is True
+
+        # Target slot: approved + broadcast + trusted.
+        assert f1.done() and f1.result() == "approved"
+        assert s1._trust is True
+        # Other slot: still pending, never broadcast, still untrusted.
+        assert not f2.done()
+        assert s2._trust is False
+        resolved_ids = {
+            c.args[1]["id"]
+            for c in state.broadcast_ws.call_args_list
+            if c.args[0] == "approval_resolved"
+        }
+        assert "req-1" in resolved_ids
+        assert "req-2" not in resolved_ids
+        # Clean up the still-pending future so the loop does not warn on GC.
+        f2.set_result("rejected")
+
+    @pytest.mark.asyncio
+    async def test_unscoped_trust_still_sweeps_all_slots(self, tmp_path, monkeypatch):
+        """An all-slots ``trust`` (no slot named) keeps sweeping every slot."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        monkeypatch.setattr("kiro_crew.dashboard.chat.sel", lambda: MagicMock())
+        state = _make_state(tmp_path)
+        state.push_slots_update = MagicMock()
+        state.broadcast_ws = MagicMock()
+        s1 = state.get_or_create_slot("s1")
+        s2 = state.get_or_create_slot("s2")
+        loop = asyncio.get_running_loop()
+        f1: asyncio.Future[str] = loop.create_future()
+        f2: asyncio.Future[str] = loop.create_future()
+        s1._approval_futures["req-1"] = f1
+        s2._approval_futures["req-2"] = f2
+
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post("/api/chat/mode", json={"mode": "trust"})
+            assert (await resp.json())["ok"] is True
+
+        assert f1.done() and f2.done()
+        assert s1._trust is True and s2._trust is True
+        resolved_ids = {
+            c.args[1]["id"]
+            for c in state.broadcast_ws.call_args_list
+            if c.args[0] == "approval_resolved"
+        }
+        assert {"req-1", "req-2"} <= resolved_ids
+
 
 # ── Coverage: multi-pending approval 400 and trust auto-approve ──
 
@@ -9576,6 +9919,8 @@ class TestOrchestratorPlanGateArming:
 
         async def _rec(s, sl, msg, **kw):
             seen.append(sl._in_stage_execution)
+            sl._last_stop_reason = "end_turn"
+            sl.append("assistant", "stage completed", "msg msg-a")
 
         monkeypatch.setattr("kiro_crew.dashboard.chat_orchestrator._run_chat", _rec)
 
@@ -9607,6 +9952,8 @@ class TestOrchestratorPlanGateArming:
         async def _shrink(s, sl, msg, **kw):
             nonlocal calls
             calls += 1
+            sl._last_stop_reason = "end_turn"
+            sl.append("assistant", "stage completed", "msg msg-a")
             sl._stage_titles = ["A"]  # plan shrinks to 1 stage mid-run
 
         monkeypatch.setattr("kiro_crew.dashboard.chat_orchestrator._run_chat", _shrink)
@@ -9939,6 +10286,11 @@ class TestPythonStageLoop:
         slot._orch_tracker = None
         return slot
 
+    @staticmethod
+    async def _complete_stage(_state, slot, _message, **_kwargs):
+        slot._last_stop_reason = "end_turn"
+        slot.append("assistant", "stage completed", "msg msg-a")
+
     @pytest.mark.asyncio
     async def test_go_single_stage_then_stops(self, tmp_path, monkeypatch):
         """Go (single stage) executes one stage, emits approval message, returns."""
@@ -9953,7 +10305,7 @@ class TestPythonStageLoop:
         state.subagents.running_agents_for = MagicMock(return_value=[])
         slot = self._make_slot(max_stages=3)
 
-        run_chat_mock = AsyncMock()
+        run_chat_mock = AsyncMock(side_effect=self._complete_stage)
         monkeypatch.setattr("kiro_crew.dashboard.chat_orchestrator._run_chat", run_chat_mock)
 
         await _stage_loop(state, slot, auto_run=False)
@@ -9984,7 +10336,7 @@ class TestPythonStageLoop:
         state.subagents.running_agents_for = MagicMock(return_value=[])
         slot = self._make_slot(max_stages=3)
 
-        run_chat_mock = AsyncMock()
+        run_chat_mock = AsyncMock(side_effect=self._complete_stage)
         monkeypatch.setattr("kiro_crew.dashboard.chat_orchestrator._run_chat", run_chat_mock)
 
         await _stage_loop(state, slot, auto_run=True)
@@ -10019,6 +10371,8 @@ class TestPythonStageLoop:
         async def _mock_run_chat(s, sl, msg, **kw):
             nonlocal call_count
             call_count += 1
+            sl._last_stop_reason = "end_turn"
+            sl.append("assistant", "stage completed", "msg msg-a")
             if call_count >= 2:
                 # Simulate user clicking Stop after stage 2
                 slot._stop_state = "soft_pending"
@@ -10055,7 +10409,7 @@ class TestPythonStageLoop:
         # Force timeout on first check
         tracker.is_stage_timed_out = lambda: True
 
-        run_chat_mock = AsyncMock()
+        run_chat_mock = AsyncMock(side_effect=self._complete_stage)
         monkeypatch.setattr("kiro_crew.dashboard.chat_orchestrator._run_chat", run_chat_mock)
 
         await _stage_loop(state, slot, auto_run=True)
@@ -10109,6 +10463,8 @@ class TestPythonStageLoop:
 
         async def _mock_run_chat(s, sl, msg, **kw):
             seen.append(sl._in_stage_execution)
+            sl._last_stop_reason = "end_turn"
+            sl.append("assistant", "stage completed", "msg msg-a")
 
         monkeypatch.setattr("kiro_crew.dashboard.chat_orchestrator._run_chat", _mock_run_chat)
         start_next = AsyncMock(return_value=True)
@@ -10139,7 +10495,7 @@ class TestPythonStageLoop:
         state._slots = {}  # slot deleted while the plan ran
         slot.queue_append("queued during plan")
 
-        run_chat_mock = AsyncMock()
+        run_chat_mock = AsyncMock(side_effect=self._complete_stage)
         monkeypatch.setattr("kiro_crew.dashboard.chat_orchestrator._run_chat", run_chat_mock)
         start_next = AsyncMock(return_value=False)
         monkeypatch.setattr(
@@ -10277,6 +10633,7 @@ class TestPythonStageLoop:
         slot = self._make_slot(max_stages=2)
 
         async def _mock_run_chat(s, sl, msg, **kw):
+            sl._last_stop_reason = "end_turn"
             sl.append("assistant", "Result for stage", "msg msg-a")
 
         monkeypatch.setattr("kiro_crew.dashboard.chat_orchestrator._run_chat", _mock_run_chat)
@@ -10400,7 +10757,7 @@ class TestPythonStageLoop:
         state.subagents = MagicMock()
         state.subagents.running_agents_for = _running_agents
 
-        run_chat_mock = AsyncMock()
+        run_chat_mock = AsyncMock(side_effect=self._complete_stage)
         monkeypatch.setattr("kiro_crew.dashboard.chat_orchestrator._run_chat", run_chat_mock)
         monkeypatch.setattr("kiro_crew.dashboard.chat_orchestrator.asyncio.sleep", AsyncMock())
 
@@ -10424,7 +10781,7 @@ class TestPythonStageLoop:
         state.subagents.running_agents_for.return_value = None  # error case
         slot = self._make_slot(max_stages=3)
 
-        run_chat_mock = AsyncMock()
+        run_chat_mock = AsyncMock(side_effect=self._complete_stage)
         monkeypatch.setattr("kiro_crew.dashboard.chat_orchestrator._run_chat", run_chat_mock)
 
         await _stage_loop(state, slot, auto_run=True)
@@ -10446,7 +10803,7 @@ class TestPythonStageLoop:
         state.subagents = None  # manager missing
         slot = self._make_slot(max_stages=3)
 
-        run_chat_mock = AsyncMock()
+        run_chat_mock = AsyncMock(side_effect=self._complete_stage)
         monkeypatch.setattr("kiro_crew.dashboard.chat_orchestrator._run_chat", run_chat_mock)
 
         await _stage_loop(state, slot, auto_run=True)
@@ -10469,7 +10826,7 @@ class TestPythonStageLoop:
         state.subagents.running_agents_for = MagicMock(return_value=[])
         slot = self._make_slot(max_stages=3)
 
-        run_chat_mock = AsyncMock()
+        run_chat_mock = AsyncMock(side_effect=self._complete_stage)
         monkeypatch.setattr("kiro_crew.dashboard.chat_orchestrator._run_chat", run_chat_mock)
 
         # First Go: runs stage 1 only

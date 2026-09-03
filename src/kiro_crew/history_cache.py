@@ -20,10 +20,33 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 #: Default upper bound on the number of distinct session keys held in the
-#: in-memory transcript / metadata caches. Unbounded ``dict`` caches grow one
-#: entry per session key touched and never evict; a bounded LRU keeps hot
-#: sessions resident while giving the working set a deterministic ceiling.
+#: in-memory transcript caches. Unbounded ``dict`` caches grow one entry per
+#: session key touched and never evict; a bounded LRU keeps hot sessions
+#: resident while giving the working set a deterministic ceiling.
+#:
+#: This bound no longer covers the METADATA cache, which is sized separately by
+#: ``_METADATA_CACHE_MAX`` below for the reasons documented there.
 _TRANSCRIPT_CACHE_MAX = 256
+
+#: Upper bound for ``ConversationLog._meta_cache`` specifically, kept separate
+#: from ``_TRANSCRIPT_CACHE_MAX`` above.
+#:
+#: That bound is sized for the PARSED MESSAGE caches, whose entries are whole
+#: transcript windows. A metadata entry is one parsed first line — title, agent,
+#: created_at, tab_id, folder_id — measured in hundreds of bytes, so 256 buys
+#: almost nothing in RAM terms and costs a great deal in I/O: ``list_sessions``
+#: scans the WHOLE session directory in one cyclic pass, so an LRU smaller than
+#: the corpus is evicted in exactly the order it will next be read and its hit
+#: rate collapses to ~0. Measured on an 810-session store: a warm
+#: ``list_sessions`` re-opened and re-parsed ~554 first lines on every call
+#: (57.9 ms); with the cache able to hold the corpus the same call costs 24.5 ms,
+#: all of it the unavoidable ``glob`` + one ``stat`` per file.
+#:
+#: This is the same failure mode ``_SearchTextCache`` already documents and
+#: fixes — an LRU collapsing to a zero hit rate against the cyclic scan order —
+#: applied to the memo every sidebar page fetch depends on. Still bounded, so a
+#: gateway touching an unbounded number of sessions cannot grow without limit.
+_METADATA_CACHE_MAX = 8192
 
 _V = TypeVar("_V")
 

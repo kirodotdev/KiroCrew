@@ -1420,15 +1420,48 @@ def _app_api_allowlist(app_name: str) -> tuple[str, ...]:
     return allow
 
 
+# Literal first path segments registered under ``/api/apps/`` that are NOT the
+# ``/api/apps/{name}`` catch-all. Source of truth is the route table in
+# ``kiro_crew.apps.routes.setup_routes`` (the ``add_get``/``add_post`` calls for
+# ``/api/apps/registry``, ``/api/apps/registries``, ``/api/apps/blob``,
+# ``/api/apps/registry/install``, ``/api/apps/install`` and
+# ``/api/apps/register``), all registered BEFORE ``/api/apps/{name}``.
+#
+# These segments resolve to SHARED literal routes (registry listing, registry
+# install, blob proxy, install, self-registration, registry refresh — which
+# triggers outbound git fetches of every configured registry). Without this
+# carve-out an app that names itself after one of them (e.g. ``registries``)
+# would implicitly own that route via ``_app_owns_path`` and could invoke it
+# with no ``permissions.api`` grant (CWE-269 authorization bypass). The carve-out
+# is the primary security boundary; ``apps.manifest.RESERVED_APP_PATH_SEGMENTS``
+# mirrors this set to also refuse such names at manifest validation for NEW apps
+# (defense-in-depth). Keep both lists in sync with the routes.py table.
+RESERVED_APP_PATH_SEGMENTS: frozenset[str] = frozenset(
+    {"registry", "registries", "blob", "install", "register"}
+)
+
+
 def _app_owns_path(app_name: str, path: str) -> bool:
     """True if *path* is within *app_name*'s own namespace.
 
     Covers the reverse-proxy + UI surface (``/apps/<name>/...``) and the
     per-app management/config surface (``/api/apps/<name>/...``). Membership is
     a path-boundary match so app ``foo`` cannot reach app ``foo-bar``.
+
+    Carve-out: the ``/api/apps/<name>`` branch does NOT match when ``app_name``
+    is one of ``RESERVED_APP_PATH_SEGMENTS`` — those segments resolve to shared
+    literal routes registered before ``/api/apps/{name}``, so treating them as an
+    app's own namespace would hand any app so named implicit ownership of those
+    routes without a ``permissions.api`` grant. The ``/apps/<name>`` reverse-proxy
+    branch is a separate namespace (its literal-page reservations live in
+    ``apps.manifest.RESERVED_ROUTE_APP_NAMES``) and is intentionally left
+    unchanged.
     """
-    for base in (f"/apps/{app_name}", f"/api/apps/{app_name}"):
-        if path == base or path.startswith(base + "/"):
+    if path == f"/apps/{app_name}" or path.startswith(f"/apps/{app_name}/"):
+        return True
+    if app_name not in RESERVED_APP_PATH_SEGMENTS:
+        api_base = f"/api/apps/{app_name}"
+        if path == api_base or path.startswith(api_base + "/"):
             return True
     return False
 

@@ -12,7 +12,7 @@ import { SecretsPanel } from './SecretsPanel'
  * add and delete paths must be asserted on the REQUEST they send, not just on
  * the re-render they cause.
  */
-type FetchCall = { url: string; method: string; body?: unknown }
+type FetchCall = { url: string; method: string; body?: unknown; headers?: Record<string, string> }
 
 let calls: FetchCall[] = []
 
@@ -26,10 +26,22 @@ function installFetch() {
   const impl = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input)
     const method = init?.method ?? 'GET'
+    // Normalise Headers object / plain object / undefined to a plain record so
+    // tests can do a simple property lookup regardless of how fetch was called.
+    let headers: Record<string, string> | undefined
+    if (init?.headers) {
+      if (init.headers instanceof Headers) {
+        headers = {}
+        init.headers.forEach((v, k) => { headers![k] = v })
+      } else {
+        headers = { ...(init.headers as Record<string, string>) }
+      }
+    }
     calls.push({
       url,
       method,
       body: init?.body ? JSON.parse(String(init.body)) : undefined,
+      headers,
     })
 
     if (method === 'GET' && url === '/api/secrets') {
@@ -699,5 +711,41 @@ describe('SecretsPanel error feedback and in-flight guards', () => {
 
     await waitFor(() => expect(seen.length).toBeGreaterThan(0))
     expect(seen).toHaveLength(1)
+  })
+})
+
+describe('SecretsPanel session key', () => {
+  /**
+   * The panel sends the fixed `dashboard:ui` session key that the shared
+   * transport (`src/api/client.ts`) uses, on every request.  It previously read
+   * `localStorage['kiro_crew_token']` — a key nothing in the app ever writes —
+   * so that read always resolved to '' and was vestigial dead code.  This pins
+   * the panel to the same `dashboard:ui` identity every other panel sends, and
+   * guards against a regression back to a stored-token read.
+   */
+  it('sends the dashboard:ui session key on both the list GET and a mutating POST', async () => {
+    const user = userEvent.setup()
+
+    // Even with a stray token in localStorage, the panel must NOT read it —
+    // the header is the fixed dashboard:ui literal.
+    localStorage.setItem('kiro_crew_token', 'SHOULD-BE-IGNORED')
+    installFetch()
+
+    mount()
+    await screen.findByText('No secrets stored yet.')
+
+    const listGet = calls.find(c => c.method === 'GET' && c.url === '/api/secrets')
+    expect(listGet?.headers?.['X-Session-Key']).toBe('dashboard:ui')
+
+    await user.click(screen.getByRole('button', { name: 'Add secret' }))
+    await user.type(screen.getByLabelText('Secret name'), 'MY_KEY')
+    await user.type(screen.getByLabelText('Secret value'), 'sk-new')
+    await user.click(screen.getByRole('button', { name: 'Save' }))
+
+    await waitFor(() => {
+      const post = calls.find(c => c.method === 'POST')
+      expect(post).toBeTruthy()
+      expect(post?.headers?.['X-Session-Key']).toBe('dashboard:ui')
+    })
   })
 })

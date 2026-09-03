@@ -2216,6 +2216,7 @@ async def _resolve_manifest(entry: dict[str, Any]) -> dict[str, Any]:
 # manifest says otherwise. Install-status and trust fields are also absent —
 # ``_enrich_with_install_status`` and ``_apply_trust_fields`` run after this
 # and stamp them server-side.
+
 _REGISTRY_ROW_KEYS: frozenset[str] = frozenset(
     {
         "name",
@@ -2236,6 +2237,12 @@ _REGISTRY_ROW_KEYS: frozenset[str] = frozenset(
         "detectInstalled",
         "managed",
         "featured",
+        # GitHub star count baked into the row by the publisher (git-type
+        # third-party apps only). Reader: the frontend App Store list/detail
+        # display. Display-only — ``_apply_trust_fields`` sanitizes it to a
+        # non-negative int on EVERY row (the allowlist is not the only exit:
+        # a failed manifest fetch passes the row through unchanged).
+        "stargazersCount",
         "_registry",
         "_index_author",
     }
@@ -2533,12 +2540,33 @@ def _apply_trust_fields(
         if isinstance(registry_name, str):
             entry["_registry"] = _strip_git_target_userinfo(registry_name)
 
+        # ``stargazersCount`` is a trust cue, so it follows the ``featured``
+        # precedent below: only the publisher's bake step may mint it, and an
+        # external index can never self-report one (a fabricated ``★ 50K`` on
+        # a hostile git app would render identically to a signed-catalog
+        # count — a false trust cue is worse than none). The shape check
+        # still runs on EVERY row because this function is the only boundary
+        # every row crosses (``_resolve_manifest`` returns the row unchanged
+        # when the manifest fetch fails, so the allowlist projection is not a
+        # guaranteed exit). ``bool`` is excluded (it IS an int subclass), and
+        # the JS safe-integer bound is a layout guard: Python accepts a
+        # 309-digit int that JavaScript renders as hundreds of digits.
+        stars = entry.get("stargazersCount")
+        if (
+            not isinstance(stars, int)
+            or isinstance(stars, bool)
+            or stars < 0
+            or stars > official_catalog._STARS_MAX
+        ):
+            entry.pop("stargazersCount", None)
+
         index_author = entry.pop("_index_author", None)
         folded_author = _fold_author(index_author)
         if entry.get("_registry"):
             entry["provenance"] = "external"
             entry["verified"] = False
             entry.pop("featured", None)
+            entry.pop("stargazersCount", None)
             # ``origin`` is trust-adjacent (``"builtin"`` reads as first-party
             # to every consumer), and on an external row it can arrive from
             # untrusted content: an index may publish the key itself, and it

@@ -1189,6 +1189,17 @@ _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
         "chokepoint that applies the deploy handlers' credential + "
         "exfiltration-URL chain before the text reaches the dashboard.",
     ),
+    (
+        "Job runtime error responses",
+        "apps/job_routes.py",
+        "Error text returned by the shared `_jobs/*` HTTP surface that every app's "
+        "job runtime is served through. The SDK scrubs what a RUNNER produces, but "
+        "the refusal this surface raises itself quotes caller-supplied material -- "
+        "a job kind name, a dedupe key, or a path carried out of the SDK's own "
+        "exception -- so the `job_start_failed` body funnels through one `_safe` "
+        "chokepoint that applies the credential + exfiltration-URL chain before the "
+        "text reaches the dashboard.",
+    ),
 )
 
 # Modules that call a redactor but are NOT an output egress boundary, so they do
@@ -1222,6 +1233,14 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # hygiene so a response echoing a credential or exfiltration URL cannot
         # leak into the log ring / /api/logs stream; not an egress boundary.
         "task_planner.py",
+        # Capture-side, not egress: the per-session MCP report scrubs a server
+        # name and a failing server's startup error as it RECORDS them, so a
+        # credential never enters the accumulator at all. Deliberately earlier
+        # than the boundary — redacting first is what stops a credential being
+        # split across this module's own length cap and surviving in halves. The
+        # surfaces that SHOW the report are the registered sinks (the dashboard
+        # slot snapshot and the live stream).
+        "acp/mcp_session_report.py",
         # Audit-side log hygiene: log_decline scrubs the model-authored tool
         # title before writing the shared auto_approve_declined SEL row. The
         # audit log is a gate-side record, not an output bound for a human or
@@ -1263,6 +1282,14 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # the account snapshot is BUILT. It owns no output — the snapshot is
         # served only through routes.py, the registered sink for this app.
         "apps/builtins/aws_control/backend/accounts.py",
+        # Same shape, one layer earlier: scrubs runner-supplied job payload as the
+        # run record is BUILT and persisted. `_redact` covers `step`, `error` and
+        # each progress line, and `_json_safe` recurses through nested structures
+        # (dict KEYS as well as values) before `_persist` writes the record. It
+        # owns no output -- the record reaches a human only through
+        # apps/job_routes.py, the registered sink for this surface. The on-disk
+        # file is not the egress boundary the panel counts.
+        "apps/job_sdk.py",
         # Same shape: hosts _redact_memory_field, the shared recursive scrubber
         # for memory fields. It owns no output of its own — the handler modules
         # that call it (memory.py, cron.py) are the covered surfaces.
@@ -1447,7 +1474,15 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # app's own queue JSON (`/thread`). Because the stored copy is already
         # scrubbed, every later read of it — the panel's own `/queue`, and the
         # thread rendered beside a pin — serves clean data, so there is no
-        # separate egress boundary to register.
+        # separate egress boundary to register. Three modules of this backend
+        # match the call-site scan and the boundary between them adds no new
+        # transport or audience: `server.py` owns the redactor pair itself and
+        # the app's whole security-policy surface, `request_state.py` applies it
+        # while BUILDING the panel-facing request and comment shapes, and
+        # `http_api.py` runs the ingest pass and re-applies the same floor on
+        # the read path it serves.
+        "apps/builtins/design_tweak/backend/http_api.py",
+        "apps/builtins/design_tweak/backend/request_state.py",
         "apps/builtins/design_tweak/backend/server.py",
         "sync_bridge.py",
         "suggestions.py",
@@ -1519,6 +1554,10 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # Redacts INBOUND attacker-controllable provider metadata before it is
         # stored/displayed — a sanitizer on the way in, not an output boundary.
         "dashboard/handlers/mcp_discover.py",
+        # Inbound provider sanitization: check identities are stripped of URLs and
+        # credentials before they enter canonical monitor state. The controller's
+        # later agent-session injection is the registered output boundary.
+        "monitoring/github_pull_request.py",
         # Computer use: the redaction pass runs on third-party desktop content
         # (window titles, accessibility values) on its way INTO the model's
         # context, exactly like the MCP tool-result paths above. `policy.py` owns
@@ -1756,7 +1795,11 @@ def _write_protected_items() -> list[PostureItem]:
     return [
         PostureItem(
             label=f"~/{entry}",
-            detail="Reads allowed; the agent's file-edit tools cannot modify it",
+            detail=(
+                "Reads allowed; the agent's file-edit tool cannot modify it when the "
+                "call declares the ACP edit kind. Shell writes are not covered by "
+                "this control"
+            ),
         )
         for entry in security.write_protected_home_paths()
     ]
@@ -1985,7 +2028,9 @@ _CONTROLS: tuple[PostureControl, ...] = (
         unit="built-in rules",
         summary=(
             "Destructive and credential-exfiltrating shell operations blocked at the "
-            "PreToolUse gate. Configurable below; policy-pinned rules cannot be turned off."
+            "PreToolUse gate. Configurable below; policy-pinned rules cannot be turned "
+            "off. The count is the SHIPPED catalogue -- the set actually enforced is "
+            "this minus any rule disabled below, so it can be smaller."
         ),
         source="src/kiro_crew/security.py",
         items_fn=_denied_command_items,
@@ -2008,8 +2053,12 @@ _CONTROLS: tuple[PostureControl, ...] = (
         label="MCP input validation",
         unit="tool schemas",
         summary=(
-            "Every MCP tool call is checked against a typed schema: unicode "
-            "normalization, length limits, enum allow-lists, and unknown-field rejection."
+            "MCP tool calls with a registered schema are checked for unicode "
+            "normalization, length limits, enum allow-lists, and unknown-field "
+            "rejection. Coverage is per tool, not universal: computer-use refuses an "
+            "unregistered tool outright, while the core, cron and dashboard "
+            "dispatchers pass one through unvalidated unless its own handler "
+            "validates."
         ),
         source="src/kiro_crew/validation.py",
         items_fn=_tool_schema_items,

@@ -351,6 +351,14 @@ html:lang(ko) {
   --ctx-src-skillidx:color-mix(in srgb, #8f7bff 74%, var(--card));
   --ctx-src-tool:color-mix(in srgb, #b98cff 74%, var(--card));
   --ctx-src-mute:color-mix(in srgb, var(--text) 30%, var(--card));
+  /* Terminal ANSI hues with no semantic equivalent. The other fourteen entries
+     are derived from --bg / --text / --danger / --ok / --warn / --info, which
+     every theme already defines; only magenta and cyan need a value of their
+     own. A theme may override these two through the normal cascade. Plain hex on
+     purpose: the value is handed straight to xterm, which cannot parse a CSS
+     colour function. */
+  --term-magenta:#c678dd;
+  --term-cyan:#56b6c2;
 }
 /* Stronger shadows for some dark themes */
 [data-theme="monokai-dark"],[data-theme="solarized-dark"],[data-theme="nord-dark"],[data-theme="dracula-dark"],[data-theme="rosepine-dark"],[data-theme="catppuccin-dark"],[data-theme="tokyonight-dark"],[data-theme="gruvbox-dark"],[data-theme="ice-dark"]{
@@ -1321,8 +1329,16 @@ html:lang(ko) {
   .bg-accent::selection{background:rgba(255,255,255,.25);color:white}
   ::-webkit-scrollbar{width:6px;height:6px}
   ::-webkit-scrollbar-track{background:transparent}
-  ::-webkit-scrollbar-thumb{background:var(--border);border-radius:9999px}
-  ::-webkit-scrollbar-thumb:hover{background:var(--border-strong)}
+  /* --muted, not a --border rung: this thumb is the global scroll affordance for
+     every scroll box that carries neither .scroll-fade nor .scrollbar-overlay,
+     including on touch, where there is no hover to fall back on. It must clear
+     the WCAG 1.4.11 3:1 non-text floor against the surface it scrolls over, and
+     no border rung does in any theme but highcontrast. The grab rung is --text
+     because it has to stay legible AND read as stronger: --muted-strong is below
+     the floor in 9 themes and is not even lighter than --muted in 22 of them.
+     scrollbarThumbContrast.test.ts measures both rungs per theme. */
+  ::-webkit-scrollbar-thumb{background:var(--muted);border-radius:9999px}
+  ::-webkit-scrollbar-thumb:hover{background:var(--text)}
 }
 
 /* ── Ambient background ── */
@@ -1589,7 +1605,7 @@ file-tree-container{
   --trees-search-fg-override:var(--text);
   --trees-input-bg-override:var(--bg-elevated);
   --trees-indent-guide-bg-override:var(--border);
-  --trees-scrollbar-thumb-override:var(--border-strong);
+  --trees-scrollbar-thumb-override:var(--muted);
   --trees-font-family-override:var(--font-body);
   --trees-font-size-override:12.5px;
   --trees-padding-inline-override:0px;
@@ -1621,9 +1637,9 @@ file-tree-container{
 /* ── Auto-hiding scrollbar for code/diff blocks ── */
 .scroll-fade::-webkit-scrollbar{height:6px}
 .scroll-fade::-webkit-scrollbar-thumb{background:transparent;border-radius:3px;transition:background .2s}
-.scroll-fade:hover::-webkit-scrollbar-thumb{background:var(--border)}
+.scroll-fade:hover::-webkit-scrollbar-thumb{background:var(--muted)}
 .scroll-fade{scrollbar-width:thin;scrollbar-color:transparent transparent}
-.scroll-fade:hover{scrollbar-color:var(--border) transparent}
+.scroll-fade:hover{scrollbar-color:var(--muted) transparent}
 /* Same defect, same remedy as the overlay utility below: a finger never produces
    the :hover that reveals the thumb, so a code block wide enough to scroll shows
    no cue that it does. Predicate and token deliberately match that block rather
@@ -1632,8 +1648,8 @@ file-tree-container{
    this utility's own transparent base rules: a media query adds no specificity,
    so it ties them and wins on source order alone. */
 @media (pointer: coarse) {
-  .scroll-fade{scrollbar-color:var(--border) transparent}
-  .scroll-fade::-webkit-scrollbar-thumb{background:var(--border)}
+  .scroll-fade{scrollbar-color:var(--muted) transparent}
+  .scroll-fade::-webkit-scrollbar-thumb{background:var(--muted)}
 }
 
 /* ── Overlay auto-hiding vertical scrollbar ──
@@ -1642,20 +1658,28 @@ file-tree-container{
  * On WebKit the scrollbar is laid over the padding box (overlay); on
  * Firefox ``scrollbar-width:thin`` + transparent track approximates it. */
 .scrollbar-overlay{scrollbar-width:thin;scrollbar-color:transparent transparent}
-.scrollbar-overlay:hover{scrollbar-color:var(--border) transparent}
+.scrollbar-overlay:hover{scrollbar-color:var(--muted) transparent}
 .scrollbar-overlay::-webkit-scrollbar{width:6px}
 .scrollbar-overlay::-webkit-scrollbar-track{background:transparent}
 .scrollbar-overlay::-webkit-scrollbar-thumb{background:transparent;border-radius:9999px;transition:background .2s}
-.scrollbar-overlay:hover::-webkit-scrollbar-thumb{background:var(--border)}
-.scrollbar-overlay:hover::-webkit-scrollbar-thumb:hover{background:var(--border-strong)}
+.scrollbar-overlay:hover::-webkit-scrollbar-thumb{background:var(--muted)}
+.scrollbar-overlay:hover::-webkit-scrollbar-thumb:hover{background:var(--text)}
 /* On touch the overlay utility would stay perpetually transparent: a finger never
    produces the :hover that restores the thumb. A coarse pointer shows a persistent
    thin thumb instead, so a capped scroll surface keeps a real affordance. Fine
    pointers keep the hidden-until-hover behaviour so a scrollable box does not
-   always carry the global always-visible thumb. */
+   always carry the global always-visible thumb.
+   One token, --muted, across this branch and the hover reveal above it. It was
+   chosen here first, as the sole scroll affordance on touch, for clearing the
+   WCAG 1.4.11 3:1 non-text-contrast floor against --bg-elevated in every theme
+   where no border rung does. The hover reveal then kept --border for one release
+   on the argument that hover implies a pointer already engaged with the box; that
+   argument was a product judgement, not a conformance one, and 1.4.11 grants
+   hover no exemption, so both rungs now name the same measured token.
+   scrollbarThumbContrast.test.ts pins the floor per theme. */
 @media (pointer: coarse) {
-  .scrollbar-overlay{scrollbar-color:var(--border) transparent}
-  .scrollbar-overlay::-webkit-scrollbar-thumb{background:var(--border)}
+  .scrollbar-overlay{scrollbar-color:var(--muted) transparent}
+  .scrollbar-overlay::-webkit-scrollbar-thumb{background:var(--muted)}
 }
 
 /* ── Send button sweep ── */
@@ -1809,16 +1833,21 @@ file-tree-container{
      the squeeze band is not. The dev-only en-XA pseudolocale is excluded from
      the budget; the segments' nowrap backstop degrades it to a clean
      leading-edge clip.
-   - <640px the pill is icon-only (34px measured + 6px gap = 40), so only the
-     terminal rung shifts, and by that footprint — an unconditional 208 there
-     would blank the whole capsule on phones for nothing. The named readout
-     rungs need no <640 form: their elements render only on the desktop layout,
-     which never exists below the 768px form switch.
+   - <640px the pill is icon-only (34px measured + 6px gap = 40) and the ladder
+     takes NO shift at all: the group's base terminal rung below (200px) is the
+     only rung that fires there. A shifted rung once lived here at 240px, and
+     because a phone hands the right group ≤240px ROUTINELY, it blanked the
+     CPU/MEM/DSK and credits readouts the entire time an update was pending
+     (issue #7698) — trading a 40px squeeze band for the whole capsule. In the
+     200–240px band with the pill mounted the segments' nowrap backstop
+     degrades to a leading-edge clip instead, which is the recoverable harm.
+     The named readout rungs likewise need no <640 form: their elements render
+     only on the desktop layout, which never exists below the 768px form
+     switch.
 
-   Without the shift, the band between the base rung and the true content width
-   kept the readouts while the content no longer fit, and flex squeeze wrapped
-   them into two clipped lines inside the h-7 capsule. */
-@container (max-width:240px){ .tb-has-update .tb-capsule > *:not(:first-child){display:none} }
+   Without the ≥640px shift, the band between the base rung and the true
+   content width kept the readouts while the content no longer fit, and flex
+   squeeze wrapped them into two clipped lines inside the h-7 capsule. */
 @media (min-width:640px){
   @container (max-width:738px){ .tb-has-update .tb-drop-metrics{display:none} }
   @container (max-width:600px){ .tb-has-update .tb-drop-usage{display:none} }
@@ -2129,6 +2158,16 @@ body.mc-focus-mode.mc-focus-rail .focus-chrome-rail{
    fade completes (REVEAL_FLASH_FADE_MS in ChatSidebar.tsx covers it). */
 .session-row.session-reveal-flash{outline:2px solid var(--accent);outline-offset:-2px}
 .session-row.session-reveal-flash-fade{outline-color:transparent}
+/* Stalled goal loop (ChatSidebar `goalLoopStalled`): the loop is armed but its
+   last turn died and nothing is executing — the whole card flashes danger-red
+   until the user resumes. Two-class specificity outranks the Tailwind
+   bg-accent-subtle an active row carries, so the alarm wins on the selected
+   row too. The keyframe dips toward transparent at midpoint and RESTS on the
+   solid danger tint: the global reduced-motion kill-switch freezes animations
+   on their first frame, which must be the red one — a frozen transparent frame
+   would silence the alarm exactly for the users who asked for less motion. */
+.session-row.session-loop-stalled{background-color:var(--danger-subtle);animation:kc-loop-stalled-flash 1.6s ease-in-out infinite}
+@keyframes kc-loop-stalled-flash{0%,100%{background-color:var(--danger-subtle)}50%{background-color:transparent}}
 .session-row.session-colored{position:relative}
 /* Flush against the row's left edge, and inset vertically by exactly the row's
    corner radius — so the bar spans (row height - 2 * radius) and its ends stop

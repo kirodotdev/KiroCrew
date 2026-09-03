@@ -23,7 +23,7 @@
     "electron-builder": "26.15.3"
   },
   "overrides": {
-    "fast-uri": "3.1.5",
+    "fast-uri": "3.1.7",
     "js-yaml": "4.3.1"
   },
   "build": {
@@ -131,6 +131,9 @@
     },
     "files": [
       "main.js",
+      "gateway-supervisor.js",
+      "window-lifecycle.js",
+      "ipc-registrar.js",
       "app-menu.js",
       "windows-menu-model.js",
       "windows-titlebar.js",

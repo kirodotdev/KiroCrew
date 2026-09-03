@@ -13,8 +13,8 @@ which mirrors the Slack transport dispatch:
 
 ``on_callback`` resolves interactive tool approvals (``a:<rid>:<1|0>`` ->
 ``TelegramApprovalDecider.resolve_global``), applies ``/model`` picks
-(``m:<index>``) and re-injects ``[OPTIONS:]`` choices (``opt:<i>``) as fresh
-turns.
+(``m:<index>``) and re-injects provenance-tagged ``[OPTIONS:]`` choices
+(``opt:<index>:<session-tag>``) as literal fresh turns.
 
 Dependency direction is ``telegram -> messaging`` (allowed). The security
 ``tool_gate`` and spawn auto-approve are wired inline off ``ctx_builder.hooks``
@@ -36,6 +36,7 @@ from kiro_crew.acp.client import AcpError
 from kiro_crew.agent_discovery import list_agents
 from kiro_crew.config.loader import ACTIVATION_MENTION, ACTIVATION_OFF
 from kiro_crew.executors import run_in_embed_pool
+from kiro_crew.history import mint_row_mid
 from kiro_crew.hooks import TOOL_AUTO_APPROVE, TOOL_DENY
 from kiro_crew.messaging import auto_title, privacy_mode
 from kiro_crew.messaging.attachments import IngestLimits, append_attachment_context
@@ -68,7 +69,11 @@ from kiro_crew.messaging.link import (
     release_conversation_location,
     seed_generation,
 )
-from kiro_crew.messaging.renderer import SilentRenderer, display_safe
+from kiro_crew.messaging.renderer import (
+    SilentRenderer,
+    display_safe,
+    session_provenance_tag,
+)
 from kiro_crew.messaging.session_trust import add_trusted_session, is_session_trusted
 from kiro_crew.messaging.sessions_view import collect_recent_sessions_audited
 from kiro_crew.messaging.transport import InboundMessage
@@ -124,6 +129,28 @@ logger = logging.getLogger(__name__)
 # explicit override nor agent.default_agent is configured. Mirrors the Slack
 # path's _DEFAULT_KIROCREW_AGENT.
 _DEFAULT_KIROCREW_AGENT = "kirocrew"
+
+#: A pressed option is valid only while this chat still targets the session that
+#: rendered it. One constant serves both the pre-busy and post-rotation checks.
+_STALE_OPTIONS_REFUSAL = (
+    "🔘 These buttons belong to a conversation this chat has since moved away "
+    "from, so your choice was NOT applied. Type it as a message instead."
+)
+
+#: A legacy button carries no proof of which session authored its model-written
+#: label, so applying it to the current session would be a cross-session injection.
+_UNTAGGED_OPTIONS_REFUSAL = (
+    "🔘 These buttons predate a session-safety update, so which conversation "
+    "they belong to cannot be verified and your choice was NOT applied. "
+    "Type it as a message instead."
+)
+
+#: A busy-path queue or steer retains only bare text, dropping the provenance
+#: required to validate the choice when it later executes.
+_BUSY_OPTIONS_REFUSAL = (
+    "🔘 That conversation is busy with another turn, so your choice was NOT "
+    "applied. Type it as a message once the turn finishes."
+)
 
 
 # Keep queue collapse within the shared ingestion layer's per-turn file cap.
@@ -374,6 +401,7 @@ class TelegramDispatcher:
         drain: bool = True,
         interpret_commands: bool = True,
         privacy_request: str = "",
+        origin_tag: str = "",
     ) -> None:
         """Drive one authorized inbound message through TurnDriver end-to-end.
 
@@ -382,6 +410,11 @@ class TelegramDispatcher:
         drain path needs it: it re-enters with ``interpret_commands=False``, on text
         the modifier was already stripped from, so without it a
         ``/temporary <question>`` that had to queue would run unprotected.
+
+        *origin_tag* is the posting session encoded into an ``[OPTIONS:]``
+        button. A non-empty tag makes that button valid only while the current
+        and final post-rotation session keys still match it. The choice is never
+        queued or steered, because those paths retain text but not provenance.
         """
         assert self.client is not None, "TelegramDispatcher.client must be set"
         # Inbound channels-governance gate (off-loop) — recheck per message so a
@@ -604,7 +637,18 @@ class TelegramDispatcher:
         # turn bypass steer/queue. Surface the message (steer or queue) instead
         # of a silent block.
         session_key = self._session_key(route)
+        if origin_tag and session_provenance_tag(session_key) != origin_tag:
+            # The button belongs to a session this route no longer targets. This
+            # gate precedes the busy read so a stale press neither queues nor
+            # reveals whether the replacement conversation is running a turn.
+            await self._reply(chat_id, _STALE_OPTIONS_REFUSAL, thread=reply_thread)
+            return
         if self.sessions.is_busy(session_key):
+            if origin_tag:
+                # Queue and steer paths store only text. Letting a tagged choice
+                # enter either path would replay it later with no tag to validate.
+                await self._reply(chat_id, _BUSY_OPTIONS_REFUSAL, thread=reply_thread)
+                return
             await self._handle_busy(
                 session_key,
                 msg,
@@ -617,6 +661,11 @@ class TelegramDispatcher:
             return
 
         session_key = self._rotated_session_key(route)
+        if origin_tag and session_provenance_tag(session_key) != origin_tag:
+            # Idle/daily rotation can change the native key after the pre-busy
+            # check. Revalidate the final key so the choice cannot cross it.
+            await self._reply(chat_id, _STALE_OPTIONS_REFUSAL, thread=reply_thread)
+            return
         # Restore a privacy mode set before a restart. The in-memory trackers are
         # empty on a cold process, so without this a session the operator marked
         # incognito yesterday reads as unrestricted today and this turn's transcript
@@ -2287,8 +2336,12 @@ class TelegramDispatcher:
             )
             return
 
-        # [OPTIONS:] choice: "opt:<i>" — label recovered from the button text.
+        # [OPTIONS:] choice: ``opt:<index>:<origin-tag>``. The label is
+        # recovered from the button text; the tag binds it to the session that
+        # authored the keyboard.
         if data.startswith("opt:"):
+            parts = data.split(":", 2)
+            origin_tag = parts[2] if len(parts) == 3 else ""
             choice_text = cb.label
             # Retire the keyboard but KEEP the original answer text intact --
             # tapping an option must not overwrite the answer bubble. The choice
@@ -2296,6 +2349,16 @@ class TelegramDispatcher:
             await self.client.edit_message_reply_markup(
                 cb.chat_id, cb.message_id, {"inline_keyboard": []}
             )
+            if not origin_tag:
+                # A button created before provenance existed cannot prove which
+                # session its model-authored text belongs to. Never infer that
+                # from whatever session happens to be current now.
+                await self._reply(
+                    cb.chat_id,
+                    _UNTAGGED_OPTIONS_REFUSAL,
+                    thread=cb_thread,
+                )
+                return
             if not choice_text:
                 await self._reply(
                     cb.chat_id,
@@ -2303,10 +2366,8 @@ class TelegramDispatcher:
                     thread=cb_thread,
                 )
                 return
-            # Echo the picked option as its own block (a quoted bubble) so the
-            # user can see what they chose -- a button tap can't render as a
-            # real user message, so this stands in for it. Then re-dispatch the
-            # choice as a fresh turn whose answer streams in as a NEW message.
+            # Echo the picked option as its own block (a button tap can't
+            # render as a real user message), then re-dispatch as a fresh turn.
             echoed = await self._reply(
                 cb.chat_id,
                 f"<blockquote>{html.escape(choice_text)}</blockquote>",
@@ -2316,10 +2377,9 @@ class TelegramDispatcher:
             )
             if echoed is None:  # malformed HTML -> plain fallback
                 await self._reply(cb.chat_id, f"» {choice_text}", thread=cb_thread)
-            # Re-inject the choice as a fresh turn via the normal path, carrying
-            # the callback's ORIGINAL route (chat_type + Topic thread) so a forum
-            # [OPTIONS:] press re-dispatches under the SAME forum session key
-            # instead of a DM-shaped key.
+            # Re-inject the choice with the callback's ORIGINAL route so a forum
+            # press stays under the same Topic. ``from_widget`` bypasses forum
+            # activation because tapping this bot's own keyboard addresses it.
             synthetic = TelegramInboundMessage(
                 channel_type="telegram",
                 user_id=str(cb.user_id),
@@ -2329,13 +2389,17 @@ class TelegramDispatcher:
                     str(cb.message_thread_id) if getattr(cb, "message_thread_id", None) else None
                 ),
                 chat_type=cb.chat_type,
-                # The user tapped a keyboard THIS bot posted, so the message is
-                # addressed to it whatever the activation mode says. Without this a
-                # forum Topic on `mention` cleared the keyboard and then dropped the
-                # choice — the press looked like it worked and nothing answered.
                 from_widget=True,
             )
-            await self.handle_message(synthetic)
+            # The label is MODEL-AUTHORED. A leading command token is ordinary
+            # turn content, never permission for the model to execute `/new`,
+            # `/dashboard`, `/yolo`, or any future command. The non-empty tag
+            # still asks handle_message to validate current and final affinity.
+            await self.handle_message(
+                synthetic,
+                interpret_commands=False,
+                origin_tag=origin_tag,
+            )
 
     # ── Helpers ────────────────────────────────────────────────────────────
 
@@ -2667,9 +2731,11 @@ class TelegramDispatcher:
         # drained queue and the steered continuation alike.
         if privacy_mode.is_restricted(session_key):
             return
-        self.conv_log.append(session_key, "user", user_text, agent=agent)
+        self.conv_log.append(session_key, "user", user_text, agent=agent, mid=mint_row_mid())
         if reply_text:
-            self.conv_log.append(session_key, "assistant", reply_text, agent=agent)
+            self.conv_log.append(
+                session_key, "assistant", reply_text, agent=agent, mid=mint_row_mid()
+            )
         if is_new and not auto_title.is_titled(session_key):
             # Skipped when auto-title has CLAIMED this session, because the two
             # writers race and the loser is always the generated one: the fallback

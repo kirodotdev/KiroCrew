@@ -303,7 +303,7 @@ def test_get_masks_credentials_and_reports_state(tmp_path: Path, monkeypatch) ->
 
     class _State:
         feishu_connected = False
-        feishu_connect_error = 'lark-oapi is not installed — run: pip install "kirocrew[feishu]"'
+        feishu_connect_error = "lark-oapi is not installed — run: pip install 'lark-oapi>=1.4,<2'"
 
     async def _run():
         app = web.Application()
@@ -614,7 +614,19 @@ def test_rollback_keeps_a_concurrent_edit_it_does_not_own(tmp_path: Path, monkey
     `allow_group`, and our .env write fails. Rolling the whole section back would
     discard their change; the rollback compares per key, so `enabled` reverts and
     `allow_group` keeps THEIR value.
+
+    The injection is keyed to observed behavior, not call order: the save's apply
+    is the only write that leaves `allow_group` as True in THIS test's config, so
+    the foreign edit lands right after that call returns, strictly before the
+    handler proceeds to the failing .env write and the rollback. `loader` is
+    patched module-wide, so a leaked background writer from a sibling test in the
+    same worker process can also reach `_interleave`; a call-count heuristic let
+    such a caller suppress the injection entirely (issue #7944), and an unlocked
+    read-modify-write could lose it. Hence the once-gate under a lock and the
+    injection going through the real locked primitive.
     """
+    import threading
+
     import kiro_crew.dashboard.handlers.messaging as mod
 
     cfg = tmp_path / "config.json"
@@ -623,17 +635,28 @@ def test_rollback_keeps_a_concurrent_edit_it_does_not_own(tmp_path: Path, monkey
     )
 
     real_update = loader.update_config_locked
-    calls: list[int] = []
+    inject_gate = threading.Lock()
+    injected: list[bool] = []
+
+    def _set_foreign(data: dict) -> dict:
+        # Stand in for `kirocrew config set feishu.allow_group true` landing
+        # after our write and before our rollback.
+        data.setdefault("feishu", {})["allow_group"] = "set-by-someone-else"
+        return data
 
     def _interleave(*a, **kw):
         result = real_update(*a, **kw)
-        calls.append(len(calls))
-        if len(calls) == 1:
-            # Stand in for `kirocrew config set feishu.allow_group true` landing
-            # after our write and before our rollback.
-            data = json.loads(cfg.read_text(encoding="utf-8"))
-            data["feishu"]["allow_group"] = "set-by-someone-else"
-            cfg.write_text(json.dumps(data), encoding="utf-8")
+        target = a[0] if a else kw.get("path")
+        section = result.get("feishu") if isinstance(result, dict) else None
+        with inject_gate:
+            if (
+                not injected
+                and target == cfg
+                and isinstance(section, dict)
+                and section.get("allow_group") is True
+            ):
+                injected.append(True)
+                real_update(cfg, mutate=_set_foreign)
         return result
 
     async def _boom(updates):
@@ -665,6 +688,7 @@ def test_rollback_keeps_a_concurrent_edit_it_does_not_own(tmp_path: Path, monkey
 
     status = asyncio.run(_run())
     assert status >= 500, status
+    assert injected, "the foreign concurrent edit was never injected"
 
     out = json.loads(cfg.read_text(encoding="utf-8"))["feishu"]
     # Ours: reverted. Theirs: untouched.
@@ -741,7 +765,10 @@ def test_get_names_this_interpreter_when_the_sdk_is_missing(monkeypatch) -> None
     assert body["sdk_installed"] is False
     assert body["sdk_install_supported"] is True
     assert sys.executable in body["sdk_install_command"]
-    assert "kirocrew[feishu]" in body["sdk_install_command"]
+    # The dependency itself, because `pip install kirocrew[feishu]` cannot
+    # resolve -- this project is published on no index.
+    assert "lark-oapi" in body["sdk_install_command"]
+    assert "kirocrew[" not in body["sdk_install_command"]
     assert "-m pip install" in body["sdk_install_command"]
 
 

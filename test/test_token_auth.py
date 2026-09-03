@@ -2356,12 +2356,59 @@ def test_app_owns_path_boundaries() -> None:
     # Unrelated dashboard endpoints are never owned.
     assert not _app_owns_path("foo", "/api/sessions")
     assert not _app_owns_path("foo", "/api/config/kirocrew")
-    # The store's manual refresh lives at /api/app-store/refresh precisely so
-    # an app that names itself `registry` cannot claim it: under the old
-    # /api/apps/registry/refresh spelling the first assertion here would be
-    # True, handing that app the power to purge the shared catalog caches.
+    # An app named `registry` cannot claim the store's manual refresh, and TWO
+    # independent controls now say so. Route placement: the endpoint lives at
+    # /api/app-store/refresh, a namespace no app name can collide with. The
+    # reserved-segment carve-out below: even under the /api/apps/registry/refresh
+    # spelling (never a registered route — this pins the boundary, not a live
+    # endpoint) the name no longer owns the path, so relocating a shared route
+    # under /api/apps/ can no longer silently hand it to a same-named app.
     assert not _app_owns_path("registry", "/api/app-store/refresh")
-    assert _app_owns_path("registry", "/api/apps/registry/refresh")
+    assert not _app_owns_path("registry", "/api/apps/registry/refresh")
+
+    # Reserved-segment carve-out (issue #7111, sibling of #6206): the literal
+    # first-segment routes under /api/apps/ (registry, registries, blob, install,
+    # register) are SHARED routes registered before the /api/apps/{name}
+    # catch-all. An app that names itself after one of them must NOT implicitly
+    # own that route via _app_owns_path — that was the CWE-269 authorization
+    # bypass (POST /api/apps/registries/refresh triggers outbound git fetches of
+    # every configured registry with no permissions.api grant).
+    assert not _app_owns_path("registries", "/api/apps/registries/refresh")
+    assert not _app_owns_path("registries", "/api/apps/registries")
+    assert not _app_owns_path("registry", "/api/apps/registry/install")
+    assert not _app_owns_path("registry", "/api/apps/registry/install-stream")
+    assert not _app_owns_path("install", "/api/apps/install")
+    assert not _app_owns_path("register", "/api/apps/register")
+    assert not _app_owns_path("blob", "/api/apps/blob")
+
+    # A normal app name is UNAFFECTED: only the reserved literal segments are
+    # carved out, and path-boundary protection is unchanged.
+    assert _app_owns_path("foo", "/api/apps/foo/config")
+
+    # The /apps/ reverse-proxy/UI branch is a SEPARATE namespace and is
+    # intentionally left unchanged by the carve-out: its literal-page
+    # reservations live in apps.manifest.RESERVED_ROUTE_APP_NAMES, not here. An
+    # app can never actually be named one of these segments (manifest validation
+    # now rejects them), but were the /apps/ proxy reached it would still resolve
+    # by name — the carve-out deliberately touches only /api/apps/.
+    assert _app_owns_path("registries", "/apps/registries/api/x")
+    assert _app_owns_path("registry", "/apps/registry/ui/index.js")
+
+
+def test_reserved_app_path_segments_stay_in_sync() -> None:
+    """Issue #7111 drift guard: RESERVED_APP_PATH_SEGMENTS is defined
+    INDEPENDENTLY in dashboard.token_auth and apps.manifest (duplicated rather
+    than shared to avoid a manifest <-> token_auth import cycle). Both sets, plus
+    the literal /api/apps/<segment> route table in apps.routes.setup_routes, are
+    hand-maintained sources of truth that must agree; if they silently drift the
+    _app_owns_path carve-out reopens for the un-mirrored segment (the CWE-269
+    authorization bypass this fix closes). This asserts the two module sets are
+    identical so a future edit to one without the other fails loudly here.
+    """
+    from kiro_crew.apps.manifest import RESERVED_APP_PATH_SEGMENTS as manifest_segments
+    from kiro_crew.dashboard.token_auth import RESERVED_APP_PATH_SEGMENTS as token_auth_segments
+
+    assert token_auth_segments == manifest_segments
 
 
 def test_app_token_path_allowed_empty_name_denies() -> None:
@@ -2378,6 +2425,24 @@ async def test_app_token_denied_on_unscoped_endpoint(monkeypatch) -> None:
     mw = token_auth_middleware()
     token = generate_token("file-explorer", ttl_seconds=300, app="file-explorer")
     req = _make_request(path="/api/sessions", query={"token": token})
+    resp = await mw(req, _ok_handler)
+    assert resp.status == 403
+
+
+@pytest.mark.asyncio
+async def test_app_token_named_registries_denied_on_refresh(monkeypatch) -> None:
+    """Issue #7111: an app token named 'registries' must NOT reach the shared
+    POST /api/apps/registries/refresh (which triggers outbound git fetches of
+    every configured registry). With _app_api_allowlist forced empty, the only
+    way a grant could happen is the _app_owns_path carve-out failing — so a 403
+    here proves the deny is attributable to the carve-out, not a missing perm.
+    """
+    import kiro_crew.dashboard.token_auth as _ta
+
+    monkeypatch.setattr(_ta, "_app_api_allowlist", lambda name: ())
+    mw = token_auth_middleware()
+    token = generate_token("registries", ttl_seconds=300, app="registries")
+    req = _make_request(path="/api/apps/registries/refresh", query={"token": token})
     resp = await mw(req, _ok_handler)
     assert resp.status == 403
 

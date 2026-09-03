@@ -19,6 +19,13 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol, cast
 
+from kiro_crew.metrics.sessions import (
+    END_REASON_EVICTED,
+    discard_session_start,
+    record_session_ended,
+    record_session_started,
+)
+
 if TYPE_CHECKING:
     from kiro_crew.providers.base import LLMProvider
 else:
@@ -490,6 +497,9 @@ class SessionAllocationService:
             if self._sessions.get(key) is session:
                 del self._sessions[key]
                 dead = session.provider
+                # Same tick as the removal. Left unrecorded, the start crumb
+                # survives and the next boot calls this a crash.
+                await record_session_ended(key, end_reason=END_REASON_EVICTED)
         if dead is not None:
             await asyncio.to_thread(self._deps.unlink_session_queue, session)
             try:
@@ -565,6 +575,18 @@ class SessionAllocationService:
                 )
                 self._sessions[key] = session
                 won_race_session = session
+                try:
+                    await record_session_started(key)
+                except BaseException:
+                    # This await is the only suspension point between registering
+                    # the session and returning it. Cancelled here, the caller
+                    # hard-kills the provider while the entry stays visible, so a
+                    # claimant can be handed a session whose process is already
+                    # dying -- and the crumb would outlive it into a false crash.
+                    if self._sessions.get(key) is session:
+                        del self._sessions[key]
+                    await discard_session_start(key)
+                    raise
         if duplicate is not None:
             try:
                 await duplicate.shutdown()
@@ -991,6 +1013,31 @@ class SessionAllocationService:
         cache[agent] = (model, directory_mtime, now)
         return model
 
+    async def _crew_pins_effort(self, agent: str | None, crew_agent: object) -> bool:
+        """True when the crew this session runs as pins its own reasoning effort.
+
+        Read off the event loop: ``load_config`` parses (and deep-copies, even on
+        a cache hit) the whole config, which is not work to do inline. Only the
+        warm-pool decision calls this, so the cost lands once per cold start
+        rather than once per turn, and never on a session that was already
+        skipping the pool for a cheaper reason.
+
+        Failure answers False -- the pre-field behaviour. An unreadable config
+        must not stop a session from starting, and pooling it is only wrong for a
+        crew that pins an effort, which is exactly what could not be read.
+        """
+        try:
+            config = await asyncio.to_thread(self._deps.load_config)
+            crew = crew_agent if isinstance(crew_agent, str) else None
+            return bool(config.crew_pinned_effort(agent, crew))
+        except Exception:
+            self._deps.logger.warning(
+                "Could not read the crew effort pin for agent=%r; pooling as before",
+                agent,
+                exc_info=True,
+            )
+            return False
+
     def _dispatch_hard_kill(self, provider: LLMProvider) -> None:
         """Dispatch blocking provider teardown away from the event-loop thread."""
         kill = self._deps.get_sync_kill_provider()
@@ -1064,6 +1111,10 @@ class SessionAllocationService:
                             stale_provider = session.provider
                             stale_session = session
                             del self._sessions[key]
+                            # Same tick as the removal. Left unrecorded, the
+                            # start crumb survives and the next boot calls this
+                            # a crash rather than an eviction.
+                            await record_session_ended(key, end_reason=END_REASON_EVICTED)
                     if alive:
                         session.last_used = time.monotonic()
                         if (
@@ -1155,6 +1206,18 @@ class SessionAllocationService:
             pool_decision = "bypass_effort"
         elif extra_env:
             pool_decision = "bypass_env"
+        elif await self._crew_pins_effort(agent, extra_factory_kwargs.get("crew_agent")):
+            # Same reason as bypass_effort above, for the effort a CREW pins
+            # rather than one a caller passed: a pooled child was spawned under
+            # whatever effort overlay was current when the pool filled, and the
+            # claim path re-keys the model but never re-pushes effort — so a warm
+            # hit would silently run this crew at the wrong depth. Cold-starting
+            # is what makes the pin real.
+            #
+            # Last in the chain on purpose: it is the only arm that needs to read
+            # config, so every cheaper reason to skip the pool is settled first
+            # and a bypassing session never pays for the lookup.
+            pool_decision = "bypass_effort"
         else:
             pool_decision = ""
 
@@ -1347,6 +1410,16 @@ class SessionAllocationService:
                     ):
                         owner._session_map.clear_sid(key)
                     self._sessions[key] = session
+                    try:
+                        await record_session_started(key)
+                    except BaseException:
+                        # See open_task_session: a cancellation here would leave a
+                        # registered session whose provider the caller is about to
+                        # kill, plus a crumb the next boot reads as a crash.
+                        if self._sessions.get(key) is session:
+                            del self._sessions[key]
+                        await discard_session_start(key)
+                        raise
                     self._deps.logger.info(
                         "New session: %s agent=%s resumed=%s provider_switch=%s (total=%d)",
                         key,

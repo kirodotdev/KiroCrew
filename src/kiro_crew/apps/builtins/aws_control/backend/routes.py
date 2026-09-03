@@ -74,6 +74,8 @@ from kiro_crew.apps.builtins.aws_control.backend import costs as costs_mod
 from kiro_crew.apps.builtins.aws_control.backend import library as library_mod
 from kiro_crew.apps.builtins.aws_control.backend import shares as shares_mod
 from kiro_crew.apps.builtins.aws_control.backend import storage as storage_mod
+from kiro_crew.apps.job_sdk import JobError, UnknownJobKind
+from kiro_crew.apps.job_sdk import get_sdk as get_job_sdk
 from kiro_crew.apps.manager import is_app_enabled
 from kiro_crew.dashboard.handlers._shared import _owner_denial_response
 from kiro_crew.dashboard.handlers.source_providers import (
@@ -1246,6 +1248,97 @@ async def _handle_library_push(request: web.Request) -> web.Response:
 # --------------------------------------------------------------------------
 
 
+def _account_jobs(account: str) -> dict[str, Any]:
+    """Per-kind job state for THIS account, read from the SDK's own records.
+
+    The generic ``_jobs/active`` surface is app-scoped by construction -- one app,
+    one kind, every run -- and it withholds ``dedupe_key`` from its public view on
+    purpose, so a browser cannot tell which account a listed run belongs to. An
+    app whose work is per-account therefore needs an account-scoped read, and
+    providing one is the APP's job rather than the SDK's. This endpoint is already
+    account-scoped and already what the page reads for that account, so the
+    in-flight run belongs in it.
+
+    Server-side the key is available: ``list_active`` returns records, and only the
+    HTTP view drops the field. Filtering happens HERE, and the key still never
+    reaches the client.
+
+    ``lastFailed`` is the other half of a durable record being useful. The app's
+    own ``runs`` ledger only gains an entry when an upload SUCCEEDS, so a failed
+    run leaves it untouched and the row would go quiet as though nothing had been
+    asked for. The SDK holds how the run ended, so the most recent non-``done``
+    terminal run for this account is served alongside it.
+    """
+    sdk = get_job_sdk(backup_mod.APP_NAME)
+    if sdk is None:
+        return {}
+    out: dict[str, Any] = {}
+    for kind in backup_mod.JOB_KINDS:
+        active = next(
+            (r for r in sdk.list_active(kind) if r.dedupe_key == account),
+            None,
+        )
+        failed = None
+        if active is None:
+            # The NEWEST terminal run, then reported only if it did not succeed.
+            # Picking the first non-`done` run instead would skip past a newer
+            # success, so a fail-then-retry left the row saying "last run failed"
+            # directly above the fresh success it had just recorded -- the row
+            # contradicting itself, which is worse than saying nothing.
+            # `list_recent` is already sorted newest-first.
+            newest = next(
+                (r for r in sdk.list_recent(kind, limit=20) if r.dedupe_key == account),
+                None,
+            )
+            if newest is not None and newest.status != "done":
+                failed = newest
+        out[kind] = {
+            "active": _job_view(active),
+            "lastFailed": _job_view(failed),
+        }
+    return out
+
+
+def _job_view(run: Any) -> dict[str, Any] | None:
+    """The client's view of a run, for THIS endpoint's contract.
+
+    Deliberately not ``job_routes._public_view``, and not a copy of it either.
+    The two projections answer different questions, and they already differ in
+    fields today: ``_public_view`` serves ``cancellable`` and ``cancelling`` and
+    the full ``error``, while this one omits both cancel fields (the backup
+    runners declare no cancellability, so they would be permanently false) and
+    clamps ``error`` for the caption that renders it. ``_public_view`` also takes
+    a required ``cancelling`` set read from the SDK's live table, which this
+    endpoint has no reason to compute.
+
+    Sharing one projection between two endpoints with different contracts is how
+    a field leaks into one because the other needed it -- and the field at stake
+    is ``dedupe_key``, whose leaking is the defect this endpoint exists to fix.
+    ``test_the_account_never_reaches_the_client`` guards that here, which makes
+    this a separate contract with its own proof rather than a copy nobody
+    deduplicated. It is also a private helper of P1, so importing it would stop
+    P1 from changing its own projection.
+    """
+    if run is None:
+        return None
+    return {
+        "run_id": run.run_id,
+        "kind": run.kind,
+        "status": run.status,
+        "created_at": run.created_at,
+        "updated_at": run.updated_at,
+        "finished_at": run.finished_at,
+        # Clamped for the surface that renders it. The SDK stores up to 2000
+        # characters of whatever the runner raised, and the row shows this in a
+        # 12px caption -- an expired-credential botocore message would blow the
+        # line out. The marker matters as much as the limit: a sentence cut at
+        # 180 with no sign of it reads as a complete thought that happens to be
+        # ungrammatical. The full text stays in the run record, and the SDK has
+        # already redacted it.
+        "error": run.error if len(run.error) <= 180 else run.error[:177] + "...",
+    }
+
+
 async def _handle_backup_status(request: web.Request) -> web.Response:
     target = await _account_target(request)
     if isinstance(target, web.Response):
@@ -1254,8 +1347,17 @@ async def _handle_backup_status(request: web.Request) -> web.Response:
     payload: dict[str, Any] = {
         "nightly": await asyncio.to_thread(backup_mod.nightly_enabled, account),
         "runs": await asyncio.to_thread(backup_mod.last_runs, account),
+        "jobs": await asyncio.to_thread(_account_jobs, account),
         "remote": None,
     }
+    # The remote listing is OPT-IN, because this endpoint is now polled. Its
+    # remote half tag-discovers the bucket on every call and then lists the
+    # archive, so a minutes-long backup polled every 3s would fire hundreds of
+    # paid AWS round trips to learn `jobs.active`, which the server already holds
+    # in memory. The page asks for it only when the stored-archive disclosure is
+    # open, which is the same condition it already gates the display behind.
+    if request.query.get("remote") != "1":
+        return web.json_response(payload)
     denied = await _consent(aws_consent.SERVICE_S3, profile, region)
     if denied is None:
         try:
@@ -1270,25 +1372,66 @@ async def _handle_backup_status(request: web.Request) -> web.Response:
 
 
 async def _handle_backup_run(request: web.Request) -> web.Response:
+    """Start a backup and return its run id. Does NOT wait for it to finish.
+
+    The work is a durable Job SDK run, so the fact that a backup is in flight
+    lives on the server rather than in the browser tab that asked for it: a
+    reload, a navigation away, or a second tab all still see it, and a run left
+    behind by a gateway that died is resolved rather than advertised as running.
+    The client follows the run on ``GET /backup/{account}``, whose ``jobs`` block
+    is filtered to this account server-side. It does NOT read the app-scoped
+    ``_jobs`` surface, which withholds ``dedupe_key`` and so cannot answer
+    "is a backup running for THIS account".
+
+    The pre-flight below stays, but its job has changed. It is no longer the
+    authorization gate -- ``backup._authorize_upload`` is, inside the worker,
+    immediately before the upload, and it holds for a run started through the
+    generic ``_jobs`` surface too. What the pre-flight buys is a FAST, specific
+    refusal: an unreconnected account, unconfirmed S3, or a missing drive answers
+    409 with a code the UI can localise, instead of accepting the run and
+    reporting the same thing thirty seconds later as a failed record.
+
+    The terminal record is no longer in this response, because there is no
+    terminal record yet. It reaches the client through ``GET /backup/{account}``,
+    whose ``runs`` ledger the worker writes on success -- unchanged, and still
+    the app's own record of what a backup PRODUCED (key, size, when). The Job SDK
+    holds only that a run existed and how it ended.
+    """
     ctx = await _require_drive(request)
     if isinstance(ctx, web.Response):
         return ctx
-    _account, profile, region, bucket = ctx
+    account, _profile, _region, _bucket = ctx
     body = await _body(request)
     kind = str(body.get("kind", ""))
-    if kind == backup_mod.KIND_SNAPSHOT:
-        runner = backup_mod.run_snapshot_backup
-    elif kind == backup_mod.KIND_SESSIONS:
-        runner = backup_mod.run_sessions_backup
-    else:
+    if kind not in backup_mod.JOB_KINDS:
         return _bad_request("kind must be snapshot or sessions", "invalid_kind")
+    sdk = get_job_sdk(backup_mod.APP_NAME)
+    if sdk is None:
+        # Enabled, but no SDK was published for it: the `jobs` grant is missing
+        # from the manifest, or the context build failed. Not the owner's fault
+        # and not a bad request -- say the runtime is absent.
+        return web.json_response(
+            {"error": "the backup runtime is not available", "code": "jobs_unavailable"},
+            status=503,
+        )
     try:
-        record = await asyncio.to_thread(runner, _account, profile, region, bucket)
-    except AWSError as exc:
-        return _aws_failed(exc)
-    except RuntimeError as exc:
-        return _conflict(_safe_error(exc), "backup_failed")
-    return web.json_response({"ran": True, "kind": kind, "run": record})
+        # The account is the dedupe key: two runs of one kind for one account
+        # must not both perform the paid upload, so the second ADOPTS the first
+        # and returns its id. The SDK indexes on (kind, dedupe_key), so a
+        # snapshot and a sessions backup of the same account stay independent.
+        run_id = await sdk.start_async(kind, dedupe_key=account)
+    except UnknownJobKind:
+        # The kind is valid but nothing services it: startup registration did not
+        # run. A 503 for the same reason as above -- the runtime, not the request.
+        return web.json_response(
+            {"error": "the backup runtime is not available", "code": "jobs_unavailable"},
+            status=503,
+        )
+    except JobError as exc:
+        return web.json_response(
+            {"error": _safe_error(exc), "code": "backup_start_failed"}, status=503
+        )
+    return web.json_response({"started": True, "kind": kind, "runId": run_id})
 
 
 async def _handle_backup_nightly(request: web.Request) -> web.Response:

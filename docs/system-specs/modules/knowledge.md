@@ -357,6 +357,26 @@ Both entity extraction (`EntityExtractor`) and internal-URL fetch (`agent_fetch.
 
 **Citation enrichment** — `_attach_source_locations` batch-fetches `source_locations` (adds `section_title`, `chunk_range`, `anchor`); `_attach_citation_sources` adds `source_type`/`source_name`/`source_uri` plus the most specific per-document locator: `file_path` for folder/vault sources (from `folder_file_state`), `artifact_slug`/`artifact_name` for the aggregate artifact source (deep-links `/artifacts/<slug>`). Missing/unmapped sources degrade cleanly (extra keys simply absent).
 
+### On-loop connection guard (`on_loop_db.py`)
+
+`KnowledgeStore.db` is the single accessor every query in the store funnels through, so it carries the runtime half of the off-loop discipline (#7078, remedy A of #3057). `OnLoopDBGuard.check()` runs at the top of the property, before the cached-connection fast path — a second query on an already-open connection must not escape it:
+
+- **Off the loop** (worker thread, `executors.py` lane, CLI, cron, subagent) — no-op. This is the sanctioned path.
+- **On the loop, strict** — raises `OnLoopStoreError`, so an un-offloaded call-site fails a test instead of shipping.
+- **On the loop, otherwise** — a throttled WARNING with `stack_info` (once per 60s per guard) and the call proceeds. Production deliberately does not raise: that would convert a slow query into a failed request.
+
+This complements `scripts/check_sync_io_in_async.py` rather than duplicating it. The gate rejects a blocking call written *lexically* inside an `async def`; it cannot see an `async def` that reaches the store through a plain synchronous helper one frame down (`store.get_item(...)`), and no name-based AST scan can without whole-program type inference. The guard fires for every caller regardless of stack depth. `test_knowledge_store_onloop_db.py::test_static_gate_is_blind_to_that_same_call` asserts the blind spot against the real gate, so if a future gate learns to see the interprocedural form the overlap gets re-judged deliberately instead of silently.
+
+**Strictness** comes from `strict_enabled()`, the single parser of the truthy/falsy rules, which takes the env var name as a parameter — because "strict" means "this surface is fully offloaded, so enforce it", a property of a *surface* rather than of the process. Two surfaces can sit at different stages of the same cleanup, so each gets its own switch:
+
+| Surface | Switch | Dev mode arms strict? |
+|---|---|---|
+| `history.py` session mutations | `KIROCREW_STRICT_ON_LOOP_PERSIST` | yes |
+| auto_research campaigns DB | `KIROCREW_STRICT_ON_LOOP_PERSIST` (shared default) | yes |
+| knowledge store | `KIROCREW_STRICT_ON_LOOP_STORE` | **no** |
+
+The knowledge store's two narrowings exist for one reason and are both temporary: it still carries the 85 recorded on-loop callers in `.github/sync-io-in-async-baseline.txt` that #7019 owns. The separate switch is load-bearing because `KIROCREW_STRICT_ON_LOOP_PERSIST` is **already exported** into the e2e gateway by `setup.py`'s `test_e2e` and `.github/workflows/ci.yml`, scoped when written to history's clean surface — on that switch the on-loop `/api/knowledge/stats` and `/api/knowledge/namespaces` handlers would raise and 500 the e2e run. Excluding the dev-mode arm matters for the same backlog: raising on tracked work reports it as a regression, and the developer's rational response (unsetting `KIROCREW_DEV_MODE`) would silence `history.py`'s guard too. When #7019 empties that baseline, both arguments go and this store joins the shared switch — `test_knowledge_store_onloop_db.py::TestSharedSwitchCannotArmThisStore` asserts the CI export against the real workflow file, so that flip has to be deliberate.
+
 ### `local_knowledge_search` MCP tool (`mcp_core.py`)
 
 The LLM reaches retrieval through the `kirocrew-core` MCP tool `local_knowledge_search`:
@@ -419,6 +439,7 @@ Returns the item count per source **under the active filters**:
 - **LLM-derived text is redacted before storage and before return** — ingestion redacts extracted text (`ingestion._redact`), and `local_knowledge_search` redacts its assembled output.
 - **FTS query input is parameterized** — user query tokens are always double-quoted literals; the user never injects FTS5 operators.
 - **Embedding-dimension mismatches are skipped, not scored** — vector search excludes incomparable-dimension items so a model swap cannot fill the top-K with all-zero ghosts.
+- **Taking `store.db` on the event loop is a diagnosable event, not a silent one** — the accessor is guarded (`on_loop_db.OnLoopDBGuard`): strict raises `OnLoopStoreError`, production logs a throttled WARNING with a stack and proceeds. This is what covers callers the lexical `check_sync_io_in_async` gate cannot see, so the two must both stay — neither alone closes #3057.
 - **The self-heal rebuild path never touches SQLite on the event loop** — `_maybe_reembed_stale`'s stale COUNT, `rebuild_embeddings`' total COUNT / page SELECTs / batch progress commits, and the success-path job finalize all run via `asyncio.to_thread` (`store.db` is a per-thread connection, so each worker thread uses its own connection to the same WAL db). On a large KB (observed: ~1.3GB after an embedder-sig change) an inline COUNT can stall past the 25s loop-watchdog threshold and crash-loop the gateway. The one deliberate exception is the CancelledError finalize in `_run_reembed_job`, which stays inline so cancellation cannot pre-empt the single-flight finalize. When the stale count exceeds `_LARGE_REBUILD_WARN_THRESHOLD` the watcher logs a prominent WARNING before starting the full re-embed.
 - **`__none__` is a shared wire contract** — the no-source sentinel is defined as `_NO_SOURCE` in `dashboard/handlers/knowledge.py` and mirrored as `NO_SOURCE` in `website/src/pages/knowledge/SourceGroup.tsx`. Both sides must change together; it is effectively un-renameable once shipped.
 - **A source-scoped `total` is scoped, never global** — `/items?source_id=` reports the count for that source alone, because the per-source pager computes its page count from it.

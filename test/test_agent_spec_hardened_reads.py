@@ -765,6 +765,110 @@ class TestDenialAttribution:
         assert events[0]["source"] == "list_agents"
 
 
+class TestProjectNamesDenialAttribution:
+    """Sensitive-project-dir denials name the surface that asked (#6764).
+
+    Same contract as :class:`TestDenialAttribution`, for the OTHER denial path
+    in the module: ``project_agent_names`` refuses a sensitive project
+    directory before any filesystem access, and the SEL row it emits must
+    attribute the refusal to the request that triggered it rather than echoing
+    the helper's own name into the ``source`` vocabulary.
+    """
+
+    @staticmethod
+    def _denial_events(tmp_path, monkeypatch):
+        """Return a sensitive project dir and a spy collecting SEL fields."""
+        from types import SimpleNamespace
+
+        from kiro_crew import agent_discovery
+
+        project_dir = tmp_path / "protected-project"
+        project_dir.mkdir()
+        monkeypatch.setattr(
+            agent_discovery, "is_sensitive_path", lambda p: str(project_dir) in str(p)
+        )
+        events: list[dict] = []
+        monkeypatch.setattr(
+            agent_discovery,
+            "_sel",
+            lambda: SimpleNamespace(log_api_access=lambda **kw: events.append(kw)),
+        )
+        return project_dir, events
+
+    def test_default_call_shape_emits_exactly_the_historical_event(self, tmp_path, monkeypatch):
+        """The compatibility defaults preserve the pre-attribution event."""
+        from kiro_crew.agent_discovery import project_agent_names
+
+        project_dir, events = self._denial_events(tmp_path, monkeypatch)
+
+        assert project_agent_names(project_dir) == frozenset()
+        assert events == [
+            {
+                "caller": "agent_discovery",
+                "operation": "project_agent_names",
+                "outcome": "denied",
+                "source": "project_agent_names",
+                "resources": str(project_dir),
+                "error": "sensitive project dir rejected",
+            }
+        ]
+
+    def test_labelled_call_attributes_the_denial_to_that_surface(self, tmp_path, monkeypatch):
+        from kiro_crew.agent_discovery import project_agent_names
+
+        project_dir, events = self._denial_events(tmp_path, monkeypatch)
+
+        result = project_agent_names(
+            project_dir, operation="api_kirocrew_agents", source="dashboard"
+        )
+        assert result == frozenset()
+        assert len(events) == 1
+        assert events[0]["operation"] == "api_kirocrew_agents"
+        assert events[0]["source"] == "dashboard"
+        assert events[0]["caller"] == "agent_discovery"
+        assert events[0]["outcome"] == "denied"
+
+    def test_source_defaults_independently_of_operation(self, tmp_path, monkeypatch):
+        """Supplying an operation must not corrupt the source vocabulary."""
+        from kiro_crew.agent_discovery import project_agent_names
+
+        project_dir, events = self._denial_events(tmp_path, monkeypatch)
+
+        assert project_agent_names(project_dir, operation="project_declares_agent") == frozenset()
+        assert events[0]["operation"] == "project_declares_agent"
+        assert events[0]["source"] == "project_agent_names"
+
+    def test_warm_hop_forwards_the_labels_to_the_scan(self, tmp_path, monkeypatch):
+        """The executor hop must not erase the caller's attribution."""
+        import asyncio
+
+        from kiro_crew.agent_discovery import warm_project_agent_names
+
+        project_dir, events = self._denial_events(tmp_path, monkeypatch)
+
+        asyncio.run(
+            warm_project_agent_names(project_dir, operation="chat_turn", source="dashboard")
+        )
+        assert len(events) == 1
+        assert events[0]["operation"] == "chat_turn"
+        assert events[0]["source"] == "dashboard"
+
+    def test_bare_warm_emits_the_wrapper_defaults(self, tmp_path, monkeypatch):
+        """A forgotten future warm caller degrades to the wrapper's own truthful
+        labels (operation names the warm, channel unknown) -- pinned so the
+        default pair cannot drift unrecorded."""
+        import asyncio
+
+        from kiro_crew.agent_discovery import warm_project_agent_names
+
+        project_dir, events = self._denial_events(tmp_path, monkeypatch)
+
+        asyncio.run(warm_project_agent_names(project_dir))
+        assert len(events) == 1
+        assert events[0]["operation"] == "warm_project_agent_names"
+        assert events[0]["source"] == "unknown"
+
+
 # Exact direct-call inventory. A new caller must name its user-facing operation
 # and interface channel (or ``unknown`` for a helper shared across interfaces).
 # Forwarding helpers are pinned as forwarding rather than forced to use a fixed
@@ -813,17 +917,49 @@ _EXPECTED_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
 }
 
 
-def _read_agent_spec_call_sites() -> dict[str, list[tuple[str | None, str | None]]]:
-    """Return every ``_read_agent_spec`` call site and its label pair.
+# Same contract for ``project_agent_names`` (#6764): its sensitive-project-dir
+# denial carries operation/source, so every scan-reaching call site must name
+# its user-facing operation and interface channel. ``warm_project_agent_names``
+# is pinned as forwarding -- a fixed literal there would erase the attribution
+# of whichever surface requested the warm. ``cached_project_agent_names`` is
+# absent by design: it is a pure in-memory lookup that performs no filesystem
+# work and can never reach the denial log line.
+_EXPECTED_PROJECT_NAMES_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
+    "kiro_crew/agent_discovery.py": [("forward:operation", "forward:source")],
+    "kiro_crew/config/loader.py": [("project_declares_agent", "unknown")],
+    "kiro_crew/dashboard/handlers/agents.py": [("api_kirocrew_agents", "dashboard")],
+}
 
-    A site that hands the reader off by REFERENCE counts too. ``asyncio.to_thread(
-    _read_agent_spec, path, operation=..., source=...)`` never produces a Call
-    node named ``_read_agent_spec``, so matching only direct calls left every
-    off-loop caller invisible to this ratchet -- and one such site really did
-    sit behind the reader's defaults, recording its denials as an agent-listing
-    cache warm. Any call that merely PASSES the reader is therefore a site as
+
+# The warm wrapper's own callers are held to the same contract: the wrapper
+# forwards to ``project_agent_names``, so an unlabelled warm caller would land
+# every denial on the wrapper's defaults -- and the warm path is the
+# highest-traffic route to the scan (a chat turn's ``slot.project`` reaches it
+# every turn), so it is exactly where attribution matters most.
+_EXPECTED_WARM_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
+    "kiro_crew/dashboard/chat_handlers.py": [
+        ("api_chat", "dashboard"),
+        ("api_chat_slot_agent", "dashboard"),
+    ],
+    "kiro_crew/dashboard/chat_runner.py": [("chat_turn", "unknown")],
+    "kiro_crew/dashboard/handlers/side.py": [("side_panel", "dashboard")],
+    "kiro_crew/spawn_warm.py": [("spawn_warm", "unknown")],
+}
+
+
+def _labelled_call_sites(target: str) -> dict[str, list[tuple[str | None, str | None]]]:
+    """Return every *target* call site and its label pair.
+
+    A site that hands the *target* off by REFERENCE counts too: handing it to
+    ``asyncio.to_thread`` / ``functools.partial`` / an executor never produces
+    a Call node named after the target, so matching only direct calls leaves
+    every off-loop caller invisible to this ratchet. That is not hypothetical:
+    one such site (an executor hop handing off ``_read_agent_spec``) really did
+    sit behind the callee's defaults, recording its denials as an agent-listing
+    cache warm. Any call that merely PASSES the target is therefore a site as
     well, and its labels are read from the handing-off call, which is where the
-    forwarded kwargs are written.
+    forwarded kwargs are written. This applies to every entry in
+    ``_RATCHET_INVENTORY``, not to any one callee.
     """
     src = Path(__file__).resolve().parent.parent / "src"
     sites: dict[str, list[tuple[str | None, str | None]]] = {}
@@ -838,14 +974,12 @@ def _read_agent_spec_call_sites() -> dict[str, list[tuple[str | None, str | None
                 if isinstance(func, ast.Name)
                 else func.attr if isinstance(func, ast.Attribute) else ""
             )
-            if name != "_read_agent_spec":
-                # Not the reader itself -- but it is a site if it hands the
-                # reader off to be invoked elsewhere (to_thread, partial, an
+            if name != target:
+                # Not the callee itself -- but it is a site if it hands the
+                # callee off to be invoked elsewhere (to_thread, partial, an
                 # executor). Positional only: a callee is never passed by
                 # keyword in these shapes.
-                if not any(
-                    isinstance(arg, ast.Name) and arg.id == "_read_agent_spec" for arg in node.args
-                ):
+                if not any(isinstance(arg, ast.Name) and arg.id == target for arg in node.args):
                     continue
             labels: dict[str, str | None] = {"operation": None, "source": None}
             for kw in node.keywords:
@@ -864,18 +998,29 @@ def _read_agent_spec_call_sites() -> dict[str, list[tuple[str | None, str | None
     }
 
 
+# The ratchet's coverage: every attribution-labelled helper in the module, with
+# its exact call-site inventory. Extending attribution to a new helper means
+# adding it here so its callers keep the two vocabularies separate too (#6764
+# added ``project_agent_names``, mirroring #6722's ``_read_agent_spec``).
+_RATCHET_INVENTORY: dict[str, dict[str, list[tuple[str, str]]]] = {
+    "_read_agent_spec": _EXPECTED_CALL_SITE_LABELS,
+    "project_agent_names": _EXPECTED_PROJECT_NAMES_CALL_SITE_LABELS,
+    "warm_project_agent_names": _EXPECTED_WARM_CALL_SITE_LABELS,
+}
+
+
 class TestCallSiteLabelRatchet:
     """Every direct reader call is enumerated and explicitly attributed."""
 
-    def test_every_call_site_carries_the_expected_label(self):
-        assert _read_agent_spec_call_sites() == _EXPECTED_CALL_SITE_LABELS
+    @pytest.mark.parametrize("target", sorted(_RATCHET_INVENTORY))
+    def test_every_call_site_carries_the_expected_label(self, target):
+        assert _labelled_call_sites(target) == _RATCHET_INVENTORY[target]
 
-    def test_no_call_site_is_silently_unlabelled(self):
-        for path, pairs in _read_agent_spec_call_sites().items():
+    @pytest.mark.parametrize("target", sorted(_RATCHET_INVENTORY))
+    def test_no_call_site_is_silently_unlabelled(self, target):
+        for path, pairs in _labelled_call_sites(target).items():
             for operation, source in pairs:
                 assert (
                     operation is not None
-                ), f"{path} calls _read_agent_spec without an explicit operation label"
-                assert (
-                    source is not None
-                ), f"{path} calls _read_agent_spec without an explicit source label"
+                ), f"{path} calls {target} without an explicit operation label"
+                assert source is not None, f"{path} calls {target} without an explicit source label"

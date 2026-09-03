@@ -21,7 +21,10 @@ import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuIte
 import { timeAgo as _timeAgo } from '../utils/timeAgo'
 import ArtifactFolderDeleteDialog from '../components/ArtifactFolderDeleteDialog'
 import { DndDraggable, DndDroppable } from '../components/dnd'
-import { useArtifactFolders, useInvalidateArtifactFolders, useMoveArtifactToFolder } from '../hooks/useArtifactFolders'
+import { useArtifactFolders, useInvalidateArtifactFolders, useMoveArtifactToFolder, type MoveArtifactOptions } from '../hooks/useArtifactFolders'
+import useMoveUndo from '../hooks/useMoveUndo'
+import MoveUndoBar from '../components/MoveUndoBar'
+import { AnimatePresence } from 'framer-motion'
 import { useDndSensors } from '../hooks/useDndSensors'
 import { childFolders, isDescendantFolder, folderSubtreeStats, folderBreadcrumb } from '../utils/artifactFolderTree'
 import { compareText } from '../i18n/format'
@@ -881,8 +884,49 @@ export default function ArtifactsPage() {  const navigate = useNavigate()
     onSuccess: invalidateFolders,
   })
   const updateFolderMut = useMutation({
-    mutationFn: ({ id, body }: { id: string; body: { name?: string; parent_id?: string; order?: number; icon?: string; color?: string } }) =>
+    mutationFn: ({ id, body }: { id: string; body: { name?: string; parent_id?: string; order?: number; icon?: string; color?: string }; onCommitted?: () => void }) =>
       api.updateArtifactFolder(id, body),
+    // Optimistic, mirroring ChatSidebar's folder mutation: the drag-move undo
+    // offer (useMoveUndo) requires its `apply` to make the destination visible
+    // at once — an armed offer is DROPPED the moment live state stops matching
+    // it, so a folder move that only became visible on the post-settle refetch
+    // would retire its own offer in the gap between ack and refetch.
+    onMutate: async ({ id, body }) => {
+      await qc.cancelQueries({ queryKey: ['artifact-folders'] })
+      const before = qc.getQueryData<{ folders: ArtifactFolder[] }>(['artifact-folders'])?.folders.find(f => f.id === id)
+      qc.setQueryData<{ folders: ArtifactFolder[] }>(['artifact-folders'], old =>
+        old ? { ...old, folders: old.folders.map(f => (f.id === id ? { ...f, ...body } : f)) } : old,
+      )
+      return { id, body, before }
+    },
+    // The ack rides the mutation VARIABLES: TanStack Query's observer only
+    // invokes the LATEST call's per-call callbacks, so a per-call
+    // `mutate(..., { onSuccess })` would drop the ack whenever a rename/color/
+    // order mutation started before the drag's PATCH settled — and the drag's
+    // undo offer would never go live.
+    onSuccess: (_data, vars) => vars.onCommitted?.(),
+    // Field-scoped compare-and-set rollback, NOT a whole-list snapshot restore:
+    // a snapshot taken before this mutation would clobber every LATER
+    // concurrent optimistic change (another move, a rename) when this one
+    // fails. Restore only the fields this mutation set, and only where the
+    // cache still holds this mutation's own optimistic value.
+    onError: (_err, _vars, ctx) => {
+      if (!ctx?.before) return
+      const { id, body, before } = ctx
+      qc.setQueryData<{ folders: ArtifactFolder[] }>(['artifact-folders'], old =>
+        old ? {
+          ...old,
+          folders: old.folders.map(f => {
+            if (f.id !== id) return f
+            const cur = { ...f } as Record<string, unknown>
+            const opt = body as Record<string, unknown>
+            const prev = before as unknown as Record<string, unknown>
+            for (const k of Object.keys(opt)) if (cur[k] === opt[k]) cur[k] = prev[k]
+            return cur as unknown as ArtifactFolder
+          }),
+        } : old,
+      )
+    },
     onSettled: invalidateFolders,
   })
   const [deletingFolder, setDeletingFolder] = useState<ArtifactFolder | null>(null)
@@ -1096,6 +1140,87 @@ export default function ArtifactsPage() {  const navigate = useNavigate()
     }
   }, [deletingFolder, folders, scopeFolderId, openFolder, invalidateFolders])
 
+  const { data, isLoading, error } = useQuery<{ artifacts: Artifact[] }>({
+    queryKey: ['artifacts', { tag: tagFilter, kind: kindFilter }],
+    queryFn: () =>
+      api.artifacts({
+        tag: tagFilter || undefined,
+        kind: kindFilter || undefined,
+      }),
+  })
+
+  // Separate unfiltered query that drives the tag dropdown options so users
+  // can switch between tags without first resetting to "all tags". Without
+  // this, allTags would be derived only from currently-filtered results and
+  // co-occurring tags would disappear when one is selected.
+  const { data: allTagsData } = useQuery<{ artifacts: Artifact[] }>({
+    queryKey: ['artifacts', 'all-tags'],
+    queryFn: () => api.artifacts({}),
+  })
+
+  // Memoized so hooks depending on `artifacts` (the undo-bar useCallback and
+  // the tag/starred useMemos) see a stable reference between fetches — the
+  // bare `|| []` fallback minted a fresh array every render, which the
+  // exhaustive-deps rule flags once per consuming hook.
+  const artifacts = useMemo(() => data?.artifacts || [], [data?.artifacts])
+
+  // ── Drag-move undo ────────────────────────────────────────────────────────
+  // The offer's whole lifecycle — pending until the server acks, one-way to
+  // gone, superseded latched on a third-party placement, plus the 8s deadline
+  // and its hover hold — lives in useMoveUndo (ChatSidebar's session drag is
+  // the precedent). This surface supplies only the deps that are specific to
+  // the library: where an artifact (or a folder) sits, how to move it, and
+  // whether a folder id is still real. Two instances because the library has
+  // two draggable kinds with different locate/apply pairs; only DRAG-initiated
+  // moves arm them ("Move to folder…" menus name their destination). The two
+  // offers share ONE visual slot: arming either DISMISSES the other, so a
+  // displaced offer is retired rather than hidden — a hidden-but-live offer
+  // would resurrect when the winner retires, and its exiting bar would hold a
+  // second ⌘Z listener able to undo a move the user no longer sees.
+  const locateArtifact = useCallback((slug: string) => {
+    // The unfiltered list sees every artifact; the filtered one is a fallback
+    // for the brief window before the all-tags query has resolved. Both are
+    // patched optimistically by useMoveArtifactToFolder, so either is current.
+    const a = allTagsData?.artifacts?.find(x => x.slug === slug)
+      ?? artifacts.find(x => x.slug === slug)
+    // `undefined` = artifact gone (retire the offer); `null` = unfiled root.
+    return a ? (a.folder_id || null) : undefined
+  }, [allTagsData, artifacts])
+  const libFolderExists = useCallback(
+    (folderId: string) => folders.some(f => f.id === folderId),
+    [folders],
+  )
+  const applyArtifactMove = useCallback((slug: string, folderId: string | null, opts?: MoveArtifactOptions) => {
+    moveArtifact(slug, folderId ?? '', opts)
+  }, [moveArtifact])
+  const {
+    offer: artifactMove,
+    arm: armArtifactMove,
+    undo: undoArtifactMove,
+    dismiss: dismissArtifactMove,
+    bar: artifactUndoBar,
+  } = useMoveUndo({ locate: locateArtifact, apply: applyArtifactMove, folderExists: libFolderExists })
+  const locateLibFolder = useCallback((folderId: string) => {
+    const f = folders.find(x => x.id === folderId)
+    // `undefined` = folder deleted (retire the offer); `null` = top level.
+    return f ? (f.parent_id || null) : undefined
+  }, [folders])
+  const applyLibFolderMove = useCallback((folderId: string, parentId: string | null, opts?: MoveArtifactOptions) => {
+    // Same guards as the drop site: undo replays the ORIGIN parent, and if the
+    // origin was dragged inside this folder's own subtree meanwhile, replaying
+    // it would create a cycle the server rejects — no-op instead (the offer is
+    // already retired by then, so nothing lingers on screen).
+    if (parentId && (parentId === folderId || isDescendantFolder(folders, folderId, parentId))) return
+    updateFolderMut.mutate({ id: folderId, body: { parent_id: parentId ?? '' }, onCommitted: opts?.onCommitted })
+  }, [folders, updateFolderMut])
+  const {
+    offer: folderMove,
+    arm: armFolderMove,
+    undo: undoFolderMove,
+    dismiss: dismissFolderMove,
+    bar: folderUndoBar,
+  } = useMoveUndo({ locate: locateLibFolder, apply: applyLibFolderMove, folderExists: libFolderExists })
+
   // ── Library drag-and-drop ─────────────────────────────────────────────────
   // One DndContext covers both views. Artifact → folder-drop moves it; folder
   // → folder-drop nests it into the target, cycle-guarded. (Folders sort
@@ -1128,8 +1253,21 @@ export default function ArtifactsPage() {  const navigate = useNavigate()
     const o = e.over?.data.current as { type?: string; folderId?: string } | undefined
     if (!a || o?.type !== 'folder-drop') return
     const target = o.folderId ?? ''
+    const dest = target ? folders.find(f => f.id === target) : undefined
     if (a.type === 'artifact') {
-      if ((a.folderId || '') !== target) moveArtifact(a.slug, target)
+      // arm() performs the move AND parks its inverse; a drop back onto the
+      // folder the artifact already sits in arms (and moves, and dismisses)
+      // nothing.
+      if ((a.folderId || '') === target) return
+      dismissFolderMove()
+      armArtifactMove({
+        itemKey: a.slug,
+        fromFolderId: a.folderId || null,
+        toFolderId: target || null,
+        toFolderName: dest?.name ?? null,
+        toFolderColor: dest?.color,
+        itemTitle: a.name,
+      })
       return
     }
     // Folder drop = nest into the target (cycle-guarded — a folder can never
@@ -1140,31 +1278,19 @@ export default function ArtifactsPage() {  const navigate = useNavigate()
     if (isDescendantFolder(folders, a.id, target)) return
     const dragged = folders.find(f => f.id === a.id)
     if (!dragged) return
-    if ((dragged.parent_id || '') !== target) {
-      updateFolderMut.mutate({ id: a.id, body: { parent_id: target } })
-    }
-  }, [folders, moveArtifact, updateFolderMut])
+    if ((dragged.parent_id || '') === target) return
+    dismissArtifactMove()
+    armFolderMove({
+      itemKey: a.id,
+      fromFolderId: dragged.parent_id || null,
+      toFolderId: target || null,
+      toFolderName: dest?.name ?? null,
+      toFolderColor: dest?.color,
+      itemTitle: dragged.name,
+    })
+  }, [folders, armArtifactMove, armFolderMove, dismissArtifactMove, dismissFolderMove])
   const handleDragCancel = useCallback(() => { setActiveDrag(null); setOverFolderId(null) }, [])
 
-  const { data, isLoading, error } = useQuery<{ artifacts: Artifact[] }>({
-    queryKey: ['artifacts', { tag: tagFilter, kind: kindFilter }],
-    queryFn: () =>
-      api.artifacts({
-        tag: tagFilter || undefined,
-        kind: kindFilter || undefined,
-      }),
-  })
-
-  // Separate unfiltered query that drives the tag dropdown options so users
-  // can switch between tags without first resetting to "all tags". Without
-  // this, allTags would be derived only from currently-filtered results and
-  // co-occurring tags would disappear when one is selected.
-  const { data: allTagsData } = useQuery<{ artifacts: Artifact[] }>({
-    queryKey: ['artifacts', 'all-tags'],
-    queryFn: () => api.artifacts({}),
-  })
-
-  const artifacts = data?.artifacts || []
   const allTags = useMemo(() => {
     const s = new Set<string>()
     for (const a of allTagsData?.artifacts || []) for (const t of a.tags || []) s.add(t)
@@ -1834,6 +1960,34 @@ export default function ArtifactsPage() {  const navigate = useNavigate()
         ))}
         </div>
       </div>
+
+      {/* Drag-move confirmation + undo. Deliberately a SIBLING of the scroll
+          host (exactly as ChatSidebar renders it below the session lanes), so
+          it can never scroll away with the library and never covers the card
+          that just moved — the page shifts up by its height while it is up.
+          One slot for both offer kinds: arming either dismisses the other, so
+          at most one offer (and one ⌘Z listener) exists at a time. */}
+      <AnimatePresence initial={false}>
+        {artifactMove?.live && (
+          <MoveUndoBar key={artifactMove.id} moved={artifactMove}
+            onUndo={() => undoArtifactMove(artifactMove.id)}
+            onHoldChange={artifactUndoBar.onHoldChange}
+            remainingMs={artifactUndoBar.remainingMs}
+            paused={artifactUndoBar.paused}
+            /* The card leaves the current view on drop, so the row must say
+               WHICH card went — the sidebar's bar omits this because its row
+               visibly relocates instead of vanishing. */
+            showItemTitle />
+        )}
+        {folderMove?.live && (
+          <MoveUndoBar key={folderMove.id} moved={folderMove}
+            onUndo={() => undoFolderMove(folderMove.id)}
+            onHoldChange={folderUndoBar.onHoldChange}
+            remainingMs={folderUndoBar.remainingMs}
+            paused={folderUndoBar.paused}
+            showItemTitle />
+        )}
+      </AnimatePresence>
     </>
   )
 }

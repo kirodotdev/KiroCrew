@@ -27,6 +27,9 @@
   "skills": [
     "skills/design-critique"
   ],
+  "backend": {
+    "routes": "backend.routes:register_routes"
+  },
   "ui": {
     "pages": [
       {
@@ -42,7 +45,9 @@
       "/api/chat/slots",
       "/api/upload/file",
       "/api/file-raw",
-      "/api/status"
+      "/api/status",
+      "/api/apps/design-critique",
+      "/api/apps/design-critique/*"
     ],
     "events": [
       "chat_chunk",

@@ -10,8 +10,10 @@ from kiro_crew.autonudge import AutoNudgeService, NudgeLoop
 from kiro_crew.monitoring.models import (
     DEFAULT_MONITOR_CADENCE_SECS,
     MonitorBudgets,
+    MonitorDecision,
     MonitorOutcome,
     MonitorState,
+    ProviderErrorKind,
     monitor_state_from_dict,
     monitor_state_to_dict,
 )
@@ -139,6 +141,11 @@ def test_monitor_state_survives_store_round_trip(tmp_path) -> None:
         input_tokens=12_000,
         output_tokens=3_000,
         consecutive_provider_errors=1,
+        probe_count=4,
+        provider_error_count=2,
+        last_probe_at=1_240.0,
+        last_decision=MonitorDecision.RETRY_PROVIDER,
+        last_provider_error=ProviderErrorKind.RATE_LIMITED,
         next_probe_at=1_500.0,
         outcome=MonitorOutcome.BUDGET,
         stopped_reason="token_budget",
@@ -173,6 +180,11 @@ def test_monitor_state_survives_store_round_trip(tmp_path) -> None:
     assert restored.cadence_secs == 120
     assert restored.agent_turns == 2
     assert restored.total_tokens == 15_000
+    assert restored.probe_count == 4
+    assert restored.provider_error_count == 2
+    assert restored.last_probe_at == 1_240.0
+    assert restored.last_decision is MonitorDecision.RETRY_PROVIDER
+    assert restored.last_provider_error is ProviderErrorKind.RATE_LIMITED
     assert restored.outcome is MonitorOutcome.BUDGET
     assert restored.stopped_reason == "token_budget"
 

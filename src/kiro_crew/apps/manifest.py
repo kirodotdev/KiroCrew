@@ -47,6 +47,25 @@ RESERVED_APP_NAMES = frozenset({"system"})
 # to an app named "detail" via the catch-all.
 RESERVED_ROUTE_APP_NAMES = frozenset({"library"})
 
+# Literal first path segments registered under ``/api/apps/`` that resolve to a
+# SHARED route instead of the ``/api/apps/{name}`` installed-app catch-all
+# (registry listing/install, blob proxy, install, self-registration, registries
+# refresh). Source of truth is the route table in
+# ``kiro_crew.apps.routes.setup_routes``; this set is mirrored by
+# ``kiro_crew.dashboard.token_auth.RESERVED_APP_PATH_SEGMENTS`` — keep both in
+# sync with that table (they are duplicated rather than shared to avoid a
+# manifest <-> token_auth import cycle).
+#
+# The token_auth carve-out is the PRIMARY security boundary: it refuses to treat
+# these segments as an app's own ``/api/apps/<name>`` namespace, so even an app
+# already published under one of these names cannot implicitly own the shared
+# route. Reserving the names here is a forward-looking DEFENSE-IN-DEPTH backstop
+# that keeps NEW apps from claiming them at all. As with the other reservations
+# in this module, tightening a name is a one-way door — it invalidates an app
+# already published under that name — so this affects only names not yet
+# admitted; the carve-out is what constrains an already-published app so named.
+RESERVED_APP_PATH_SEGMENTS = frozenset({"registry", "registries", "blob", "install", "register"})
+
 #: Wire code for a reserved-name refusal. Callers that turn ``app_name_error``
 #: into a JSON error response set this as ``AppResult.error_code`` (serialized
 #: as ``code``) so the frontend can switch on the failure instead of parsing
@@ -105,6 +124,12 @@ def app_name_error(name: str) -> str | None:
             f"app name {name!r} is reserved (the dashboard /apps/{name} route is a "
             f"static page, so the app's own page would be unreachable)"
         )
+    if name in RESERVED_APP_PATH_SEGMENTS:
+        return (
+            f"app name {name!r} is reserved (the /api/apps/{name} path is a shared "
+            f"literal route registered before the /api/apps/{{name}} catch-all, so the "
+            f"name would collide with that route)"
+        )
     if name in UNPORTABLE_APP_NAMES:
         return (
             f"app name {name!r} is not portable: Windows reserves it as a device name, "
@@ -120,7 +145,11 @@ def is_reserved_app_name(name: str) -> bool:
     attach the machine-readable ``RESERVED_APP_NAME_CODE`` for exactly the
     reserved-name refusals, without re-deriving the reservation sets.
     """
-    return name in RESERVED_APP_NAMES or name in RESERVED_ROUTE_APP_NAMES
+    return (
+        name in RESERVED_APP_NAMES
+        or name in RESERVED_ROUTE_APP_NAMES
+        or name in RESERVED_APP_PATH_SEGMENTS
+    )
 
 
 def _is_rooted_path(rel_path: str) -> bool:
@@ -636,6 +665,11 @@ class Permissions:
     #: Declared rather than implicit so "which apps can start an agent" is
     #: auditable from the manifest instead of from an app's import graph.
     spawn: bool = False
+    #: May run durable background jobs through the host's Job SDK, and gains the
+    #: shared ``_jobs/*`` HTTP surface under its own namespace. Declared for the
+    #: same reason as ``spawn``: "which apps can start work that outlives the
+    #: page that started it" must be answerable from the manifest.
+    jobs: bool = False
     # WS cross-app visibility opt-in: app names (or ["*"]) allowed to use
     # slots:app:<this-app> / subagent:app:<this-app> declarations to observe
     # this app's slots and subagents. Empty list = no cross-app visibility.
@@ -659,6 +693,8 @@ class Permissions:
             d["cron"] = True
         if self.spawn:
             d["spawn"] = True
+        if self.jobs:
+            d["jobs"] = True
         if self.exposeToApps:
             d["exposeToApps"] = self.exposeToApps
         return d
@@ -685,6 +721,7 @@ class Permissions:
             memory=str(data.get("memory", "")),
             cron=data.get("cron") is True,
             spawn=data.get("spawn") is True,
+            jobs=data.get("jobs") is True,
             exposeToApps=_granted_list(data.get("exposeToApps")),  # noqa: N815
         )
 

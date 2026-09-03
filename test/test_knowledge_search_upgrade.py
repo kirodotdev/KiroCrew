@@ -1,6 +1,6 @@
 """Tests for knowledge search upgrade: embedding endpoints + search-for-context."""
-import pytest
 
+from kiro_crew.embeddings import PRIORITY_BULK, PRIORITY_NORMAL
 from kiro_crew.knowledge.embedder import (
     InProcessEmbedder,
     OllamaEmbedder,
@@ -41,10 +41,12 @@ class TestCreateEmbedderFromConfig:
         """The Ollama-era embedding_model key must NOT pin the identity —
         honoring it would mislabel vectors produced by the bundled model and
         defeat swap-triggered re-embeds (model id derives from the backend)."""
-        cfg = {"memory": {
-            "embedding_provider": "llama_cpp",
-            "embedding_model": "custom:latest",
-        }}
+        cfg = {
+            "memory": {
+                "embedding_provider": "llama_cpp",
+                "embedding_model": "custom:latest",
+            }
+        }
         emb = create_embedder_from_config(cfg)
         assert emb is not None
         assert emb.model != "custom:latest"
@@ -75,21 +77,41 @@ class TestInProcessEmbedder:
         class _FakeShared:
             def __init__(self):
                 self.texts = []
+                self.priorities = []
 
             def is_ready(self):
                 return True
 
-            def embed(self, text):
+            def embed(self, text, *, priority=PRIORITY_NORMAL):
                 self.texts.append(text)
+                self.priorities.append(priority)
                 return [0.1, 0.2]
 
         fake = _FakeShared()
-        monkeypatch.setattr(
-            "kiro_crew.embeddings.get_shared_embedder", lambda: fake
-        )
+        monkeypatch.setattr("kiro_crew.embeddings.get_shared_embedder", lambda: fake)
         emb = InProcessEmbedder()
         assert emb.embed("hello world") == [0.1, 0.2]
         assert fake.texts == ["hello world"]
+        # The scheduling class reaches the backend: default and explicit both.
+        assert emb.embed("bulk row", priority=PRIORITY_BULK) == [0.1, 0.2]
+        assert fake.priorities == [PRIORITY_NORMAL, PRIORITY_BULK]
+
+    def test_embed_for_item_forwards_priority_to_embed(self, monkeypatch):
+        """A corpus sweep's scheduling class must survive the embed_for_item hop —
+        silently dropping it puts the unattended sweep back on the full
+        interactive pool (the original flat-out symptom)."""
+        emb = InProcessEmbedder()
+        seen = {}
+
+        def _capture(text, *, priority=PRIORITY_NORMAL):
+            seen["priority"] = priority
+            return [0.1]
+
+        monkeypatch.setattr(emb, "embed", _capture)
+        emb.embed_for_item("T", "S", "content", priority=PRIORITY_BULK)
+        assert seen["priority"] == PRIORITY_BULK
+        emb.embed_for_item("T", "S", "content")
+        assert seen["priority"] == PRIORITY_NORMAL
 
     def test_is_available_negative_cached_when_not_ready(self, monkeypatch):
         """Model not loaded and probe fails → unavailable, negatively cached."""
@@ -106,9 +128,7 @@ class TestInProcessEmbedder:
                 return None  # model still downloading
 
         fake = _FakeShared()
-        monkeypatch.setattr(
-            "kiro_crew.embeddings.get_shared_embedder", lambda: fake
-        )
+        monkeypatch.setattr("kiro_crew.embeddings.get_shared_embedder", lambda: fake)
         emb = InProcessEmbedder()
         assert emb.is_available() is False
         assert emb.is_available() is False  # served from negative cache
@@ -128,7 +148,7 @@ class TestInProcessEmbedder:
         """
         emb = InProcessEmbedder()
         captured = {}
-        monkeypatch.setattr(emb, "embed", lambda text: captured.setdefault("text", text))
+        monkeypatch.setattr(emb, "embed", lambda text, **kw: captured.setdefault("text", text))
         emb.embed_for_item(
             "Short Title",
             "Brief summary",
@@ -150,7 +170,7 @@ class TestInProcessEmbedder:
 
         emb = InProcessEmbedder()
         captured = {}
-        monkeypatch.setattr(emb, "embed", lambda text: captured.setdefault("text", text))
+        monkeypatch.setattr(emb, "embed", lambda text, **kw: captured.setdefault("text", text))
         # ~6 chars/token over the full chunk budget — at the high end of observed
         # corpus chunks (max ~6227 chars) and well past the old 2000-char cap.
         big_chunk = "word " * int((CHUNK_TOKEN_SIZE + CHUNK_OVERLAP) * 6 / 5)
@@ -165,7 +185,7 @@ class TestInProcessEmbedder:
 
         emb = InProcessEmbedder()
         captured = {}
-        monkeypatch.setattr(emb, "embed", lambda text: captured.setdefault("text", text))
+        monkeypatch.setattr(emb, "embed", lambda text, **kw: captured.setdefault("text", text))
         big = "x" * (_EMBED_CONTENT_BUDGET * 3)
         with self._capture_warnings() as warned:
             emb.embed_for_item("T", "S", big)
@@ -201,7 +221,7 @@ class TestInProcessEmbedder:
         """Back-compat: omitting content still embeds title + summary only."""
         emb = InProcessEmbedder()
         captured = {}
-        monkeypatch.setattr(emb, "embed", lambda text: captured.setdefault("text", text))
+        monkeypatch.setattr(emb, "embed", lambda text, **kw: captured.setdefault("text", text))
         emb.embed_for_item("My Title", "A summary")
         assert captured["text"] == "My Title A summary"
 
@@ -210,29 +230,23 @@ class TestSearchForContext:
     """search_for_context endpoint logic."""
 
     def test_estimate_tokens(self):
-        try:
-            from kiro_crew.dashboard.handlers.knowledge import _estimate_tokens
-        except TypeError:
-            pytest.skip("requires Python 3.10+ (type union syntax)")
+        from kiro_crew.dashboard.handlers.knowledge import _estimate_tokens
+
         assert _estimate_tokens("hello world") == 2  # 11 chars // 4
         assert _estimate_tokens("") == 0
 
     def test_knowledge_fetch_defaults(self):
-        try:
-            from kiro_crew.dashboard.handlers.knowledge import (
-                KNOWLEDGE_FETCH_MAX_TOKENS,
-                KNOWLEDGE_FETCH_TOP_N,
-            )
-        except TypeError:
-            pytest.skip("requires Python 3.10+ (type union syntax)")
+        from kiro_crew.dashboard.handlers.knowledge import (
+            KNOWLEDGE_FETCH_MAX_TOKENS,
+            KNOWLEDGE_FETCH_TOP_N,
+        )
+
         assert KNOWLEDGE_FETCH_TOP_N == 3
         assert KNOWLEDGE_FETCH_MAX_TOKENS == 4096
 
     def test_context_card_carries_citation_fields(self):
-        try:
-            from kiro_crew.dashboard.handlers.knowledge import _build_context_card
-        except TypeError:
-            pytest.skip("requires Python 3.10+ (type union syntax)")
+        from kiro_crew.dashboard.handlers.knowledge import _build_context_card
+
         result = {
             "id": "i1",
             "title": "Auth Design",
@@ -254,10 +268,8 @@ class TestSearchForContext:
         assert card["chunk_range"] == "10-25"
 
     def test_context_card_artifact_slug(self):
-        try:
-            from kiro_crew.dashboard.handlers.knowledge import _build_context_card
-        except TypeError:
-            pytest.skip("requires Python 3.10+ (type union syntax)")
+        from kiro_crew.dashboard.handlers.knowledge import _build_context_card
+
         result = {
             "id": "i3",
             "title": "OP Vision",
@@ -273,10 +285,8 @@ class TestSearchForContext:
         assert card["artifact_name"] == "OP Vision Plan"
 
     def test_context_card_without_location_degrades(self):
-        try:
-            from kiro_crew.dashboard.handlers.knowledge import _build_context_card
-        except TypeError:
-            pytest.skip("requires Python 3.10+ (type union syntax)")
+        from kiro_crew.dashboard.handlers.knowledge import _build_context_card
+
         result = {"id": "i2", "title": "DB Schema", "source": "src-2"}
         card = _build_context_card(result, content="body", tokens=1)
         # No location / no source meta -> citation fields are None, not errors.
@@ -292,29 +302,23 @@ class TestRedactMeta:
     """_redact_meta security helper."""
 
     def test_redacts_strings(self):
-        try:
-            from kiro_crew.dashboard.chat_utils import _redact_meta
-        except TypeError:
-            pytest.skip("requires Python 3.10+")
+        from kiro_crew.dashboard.chat_utils import _redact_meta
+
         meta = {"title": "safe text", "content": "key is AKIAIOSFODNN7EXAMPLE here"}
         result = _redact_meta(meta)
         assert "AKIAIOSFODNN7EXAMPLE" not in result["content"]
         assert result["title"] == "safe text"
 
     def test_redacts_nested_dicts(self):
-        try:
-            from kiro_crew.dashboard.chat_utils import _redact_meta
-        except TypeError:
-            pytest.skip("requires Python 3.10+")
+        from kiro_crew.dashboard.chat_utils import _redact_meta
+
         meta = {"knowledge": {"content": [{"title": "ok", "text": "AKIAIOSFODNN7EXAMPLE"}]}}
         result = _redact_meta(meta)
         assert "AKIAIOSFODNN7EXAMPLE" not in str(result)
 
     def test_preserves_non_strings(self):
-        try:
-            from kiro_crew.dashboard.chat_utils import _redact_meta
-        except TypeError:
-            pytest.skip("requires Python 3.10+")
+        from kiro_crew.dashboard.chat_utils import _redact_meta
+
         meta = {"items": 3, "tokens": 1054, "titles": ["safe"]}
         result = _redact_meta(meta)
         assert result == {"items": 3, "tokens": 1054, "titles": ["safe"]}

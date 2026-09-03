@@ -74,7 +74,6 @@ src/components/MarkdownToc.tsx 55.0   # 77/140
 src/components/Strands.tsx 52.2   # 71/136
 src/components/folderColorPaint.ts 0.0   # 0/4
 src/components/notifications/NotificationDetailPanel.tsx 43.2   # 16/37
-src/hooks/useArtifactFolders.ts 29.6   # 8/27
 src/hooks/useBottomTerminal.ts 66.3   # 65/98
 src/hooks/useCronActions.ts 31.0   # 9/29
 src/hooks/usePopoutSync.ts 0.0   # 0/51

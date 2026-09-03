@@ -77,7 +77,7 @@ from kiro_crew.apps.builtins.issue_radar.backend import (
 )
 from kiro_crew.apps.manager import is_app_enabled
 from kiro_crew.config.loader import KiroCrewConfig
-from kiro_crew.context import ui_language_tag
+from kiro_crew.context import normalize_ui_language_tag, ui_language_tag
 from kiro_crew.loop_lock import LoopBoundLock
 from kiro_crew.sel import sel
 
@@ -1895,6 +1895,60 @@ def _ui_language() -> str:
         return ""
 
 
+#: Query param (GET) and body field (POST) the SPA rides its resolved language on.
+_LANG_HINT_FIELD = "lang"
+
+
+def _hint_language(raw: object) -> str:
+    """A browser-resolved UI language handed over on the request, or ``""``.
+
+    The dashboard's default is "follow the browser", which the SPA resolves
+    client-side in ``resolveLanguage()``. The backend has no locale transport of
+    its own — ``Accept-Language`` is read nowhere — so it cannot reach that
+    answer by itself, and every prose surface stays English on an install that
+    never set a language explicitly. The SPA therefore sends the tag it ALREADY
+    resolved as a per-request hint.
+
+    Per-request and NOT persisted is the whole point. "Auto" is browser-relative,
+    so writing a resolved tag into ``dashboard.language`` would tell a *different*
+    browser, with different ``navigator.languages``, to discard its own explicit
+    pick — the incoherence ``website/src/i18n/LanguageProvider.tsx`` is written to
+    prevent. A hint dies with its request, so each browser steers only its own
+    prose. It also keeps the catalog matcher in ONE language: the SPA sends a
+    concrete tag, so nothing here re-implements ``detect.ts``.
+
+    Validated through the same gate as the configured value
+    (:func:`kiro_crew.context.normalize_ui_language_tag`) — this value arrives
+    from the client on every AI call, so a malformed or unshipped tag must append
+    nothing rather than paste client-supplied text into a model prompt.
+
+    An ``en`` hint resolves to ``""`` deliberately. The directive-free prompt
+    already produces English, so an English browser's hint carries no
+    information — while honouring it would restamp every unconfigured install's
+    caches from ``""`` to ``"en"`` on upgrade, discarding summaries whose prose is
+    already in the right language. Suppressing it keeps the default install
+    byte-identical, prompts and caches alike, and still reaches every
+    non-English implicit locale.
+    """
+    tag = normalize_ui_language_tag(raw, source="issue-radar language hint")
+    return "" if tag == "en" else tag
+
+
+def _resolve_ui_language(hint: object = "") -> str:
+    """The language AI prose is written in: the configured tag, else the hint.
+
+    An explicit ``dashboard.language`` is a workspace-wide instruction and
+    outranks whatever a browser resolved for itself, so the hint is consulted
+    ONLY on the ``""`` path (see :func:`_ui_language`). A request that carries no
+    hint resolves exactly as it always did, which keeps non-SPA callers and older
+    clients on byte-identical prompts.
+
+    **Call this OFF the event loop** (``asyncio.to_thread``): it reads config via
+    :func:`_ui_language`. The hint half is pure.
+    """
+    return _ui_language() or _hint_language(hint)
+
+
 def _language_directive(ui_language: str, fields: str) -> str:
     """The output-language instruction appended to a one-shot AI prompt.
 
@@ -2137,19 +2191,20 @@ async def _handle_issue_ai(request: web.Request) -> web.Response:
     force_refresh = request.query.get("refresh") == "1"
     # Resolved once per request, off-loop (config-file I/O — see _ui_language),
     # and used BOTH to validate the cache hit and to steer a fresh generation.
-    lang = await asyncio.to_thread(_ui_language)
+    # The query hint carries the language THIS browser resolved for itself, and
+    # is consulted only when nothing is configured (see _resolve_ui_language).
+    lang = await asyncio.to_thread(_resolve_ui_language, request.query.get(_LANG_HINT_FIELD))
     cached = (
-        None if force_refresh else await _st(key, store.read_issue_ai_cache, owner, repo, number)
+        None
+        if force_refresh
+        else await _st(key, store.read_issue_ai_cache, owner, repo, number, ui_language=lang)
     )
-    # A cached summary is only servable if it was generated for the CURRENT
-    # dashboard language — otherwise a language switch would keep rendering the
-    # old-language card indefinitely (the pull-ai path gets this from its
-    # fingerprint; this cache has no fingerprint, so the tag is stored beside
-    # the payload and compared here). Legacy entries carry no tag and read as
-    # "" — identical to the unconfigured sentinel — so installs that never set
-    # a language keep every cached entry across the upgrade.
-    if cached is not None and str(cached.get("ui_language") or "") != lang:
-        cached = None
+    # The cache is PARTITIONED by output language rather than gated on it, so a
+    # summary written in another language is simply absent here. Partitioning is
+    # what makes a per-browser language safe: one slot per issue would have two
+    # browsers regenerate over each other on every open, paying a model call each
+    # time and never keeping a usable entry. A legacy cache lives at the "" path,
+    # which is the partition an install that never configured a language reads.
     if cached is not None:
         return web.json_response(
             {
@@ -2189,7 +2244,8 @@ async def _handle_issue_ai(request: web.Request) -> web.Response:
             owner,
             repo,
             number,
-            {**ai, "ui_language": lang},
+            ai,
+            ui_language=lang,
         )
     return web.json_response(
         {
@@ -2544,13 +2600,27 @@ async def _handle_pull_ai(request: web.Request) -> web.Response:
 
     # Resolved once per request, off-loop (config-file I/O — see _ui_language),
     # and fed to BOTH the fingerprint and the prompt so the cached summary's
-    # language always matches the key it is stored under.
-    lang = await asyncio.to_thread(_ui_language)
+    # language always matches the key it is stored under. The query hint carries
+    # the language THIS browser resolved for itself and is consulted only when
+    # nothing is configured (see _resolve_ui_language).
+    lang = await asyncio.to_thread(_resolve_ui_language, request.query.get(_LANG_HINT_FIELD))
     fingerprint = _pr_ai_fingerprint(detail, timeline, checks, ui_language=lang)
+    # Partitioned by language as well as fingerprinted: the fingerprint decides
+    # whether the PR has MOVED, but one file holds one fingerprint, so with a
+    # single slot a second browser reading another language would evict the
+    # first's summary on every open. The two are complementary, not redundant.
     cached = (
         None
         if force_refresh
-        else await _st(key, store.read_pr_ai_cache, owner, repo, number, fingerprint=fingerprint)
+        else await _st(
+            key,
+            store.read_pr_ai_cache,
+            owner,
+            repo,
+            number,
+            fingerprint=fingerprint,
+            ui_language=lang,
+        )
     )
     if cached is not None:
         return web.json_response(
@@ -2586,6 +2656,7 @@ async def _handle_pull_ai(request: web.Request) -> web.Response:
             repo,
             number,
             {"summary": summary, "fingerprint": fingerprint},
+            ui_language=lang,
         )
     return web.json_response(
         {
@@ -3415,7 +3486,13 @@ def _build_reco_prompt(
 
 
 async def _compute_label_recommendations(
-    request: web.Request, owner: str, repo: str, existing_labels: list[dict], issues: list[dict]
+    request: web.Request,
+    owner: str,
+    repo: str,
+    existing_labels: list[dict],
+    issues: list[dict],
+    *,
+    ui_language: str = "",
 ) -> dict:
     """One-shot, tool-less, ephemeral-session model call proposing NEW labels.
 
@@ -3425,7 +3502,13 @@ async def _compute_label_recommendations(
     proposal is genuinely new), ``category`` is constrained to the known set,
     ``color`` is validated to 6-hex (else a per-category default), text fields are
     redacted + length-clamped, and ``examples`` are kept only if they are real
-    issue numbers from the sample."""
+    issue numbers from the sample.
+
+    ``ui_language`` is the resolved BCP-47 tag the ``rationale`` prose is written
+    in, resolved by the CALLER — the handler owns it now (as the other three
+    prose surfaces already do) because it also has to stamp the cache with the
+    same tag, and two independent reads could disagree if the language moved
+    between them."""
     from kiro_crew.llm_helpers import ToolApprovalPolicy, parse_llm_json, stream_and_collect
     from kiro_crew.security import redact
 
@@ -3434,9 +3517,7 @@ async def _compute_label_recommendations(
         raise RuntimeError("session manager unavailable")
 
     kiro_agent = "kirocrew-lite"
-    # Off-loop: the language read is config-file I/O (see _ui_language).
-    lang = await asyncio.to_thread(_ui_language)
-    prompt = _build_reco_prompt(owner, repo, existing_labels, issues, ui_language=lang)
+    prompt = _build_reco_prompt(owner, repo, existing_labels, issues, ui_language=ui_language)
 
     import uuid
 
@@ -3544,7 +3625,14 @@ async def _handle_get_recommendations(request: web.Request) -> web.Response:
             {"error": f"{owner}/{repo} is not connected — call /connect first"}, status=404
         )
 
-    cached = await _st(key, store.read_recommendations_cache, owner, repo)
+    # Each recommendation carries `rationale` prose, so a set is only meaningful in
+    # the language it was generated in. The cache is PARTITIONED by that language
+    # rather than gated on it: the language can differ per-browser, and one shared
+    # slot would let two browsers read each other's set as absent and overwrite it
+    # on regenerate, discarding paid model output back and forth. Resolved off-loop
+    # (config-file I/O — see _ui_language).
+    lang = await asyncio.to_thread(_resolve_ui_language, request.query.get(_LANG_HINT_FIELD))
+    cached = await _st(key, store.read_recommendations_cache, owner, repo, ui_language=lang)
     return web.json_response(
         {
             "owner": owner,
@@ -3584,8 +3672,15 @@ async def _handle_generate_recommendations(request: web.Request) -> web.Response
     except GhCliError as exc:
         return web.json_response({"error": str(exc)}, status=502)
 
+    # Resolved once per request, off-loop (config-file I/O — see _ui_language), and
+    # used both to steer the generation and to stamp what the cache was written
+    # in. The body hint carries the language THIS browser resolved for itself and
+    # is consulted only when nothing is configured (see _resolve_ui_language).
+    lang = await asyncio.to_thread(_resolve_ui_language, body.get(_LANG_HINT_FIELD))
     try:
-        result = await _compute_label_recommendations(request, owner, repo, existing_labels, issues)
+        result = await _compute_label_recommendations(
+            request, owner, repo, existing_labels, issues, ui_language=lang
+        )
     except Exception:
         logger.exception("reco: computation failed for %s/%s", owner, repo)
         return web.json_response(
@@ -3595,7 +3690,9 @@ async def _handle_generate_recommendations(request: web.Request) -> web.Response
 
     generated_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     payload = {"recommendations": result["recommendations"], "generated_at": generated_at}
-    await _st(key, store.write_recommendations_cache, owner, repo, payload)
+    # Written into this language's partition, so regenerating in one language never
+    # destroys another's set (see store.recommendations_cache_path).
+    await _st(key, store.write_recommendations_cache, owner, repo, payload, ui_language=lang)
     return web.json_response(
         {
             "owner": owner,
@@ -3815,6 +3912,11 @@ async def _handle_get_tagging(request: web.Request) -> web.Response:
     # regenerate they can actually act on. Resolved off-loop (config-file I/O) and
     # compared exactly as the issue-ai cache does; a legacy entry carries no tag and
     # reads as "", so installs that never set a language keep their suggestions.
+    #
+    # Config-only, NOT the per-request hint the other prose routes accept: see
+    # _handle_generate_tagging for why a per-browser language would destroy this
+    # cache. The GET must resolve it the same way the POST stamps it, or the gate
+    # would drop every entry the queue just paid to generate.
     lang = await asyncio.to_thread(_ui_language)
     if cached is not None and str(cached.get("ui_language") or "") != lang:
         cached = None
@@ -3927,6 +4029,17 @@ async def _handle_generate_tagging(request: web.Request) -> web.Response:
     # Resolved once per request, off-loop (config-file I/O — see _ui_language), and
     # used for all three of: which issues still count as un-analysed, steering the
     # generation, and stamping what the cache is written in.
+    #
+    # Config-only, NOT the per-request hint the other prose routes accept, and that
+    # is a correctness requirement rather than an omission. This cache is ONE
+    # document per repo that ACCUMULATES across many batched calls, and
+    # store.merge_tagging_suggestions drops every accumulated entry when the stored
+    # language differs from the batch's — sound while the language is install-wide,
+    # because that difference means a deliberate operator switch happened once. A
+    # per-browser language turns the same code into a loop: two browsers reading
+    # different languages would alternate, each wiping the queue the other just
+    # paid a model to build, with neither user having done anything. Localizing this
+    # surface needs the cache partitioned BY language first.
     lang = await asyncio.to_thread(_ui_language)
     # `is not None`, not truthiness: an explicit empty `numbers` array means
     # "analyse exactly these (none)", and treating it as an omission started a
@@ -3990,6 +4103,11 @@ async def _handle_generate_tagging(request: web.Request) -> web.Response:
         repo,
         merged_batch,
         ui_language=lang,
+        # Resolves the language exactly as this handler did (config only), so the
+        # in-lock re-check and the value the batch was generated under cannot
+        # disagree. If this route ever starts accepting the per-request hint, this
+        # callable has to carry the same hint or every hinted write is refused as a
+        # language switch and nothing is ever persisted.
         verify_language=_ui_language,
     )
     # The store refused under its own lock: the configured language moved before

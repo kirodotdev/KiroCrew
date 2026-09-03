@@ -22,6 +22,7 @@ import {
   providerTerms,
   recordIdentityJson,
   repoWebUrl,
+  sameRepoRef,
   userUrlFor,
 } from '../apps/issue-radar/lib/links'
 
@@ -262,5 +263,51 @@ describe('Azure DevOps link shapes', () => {
       owner: 'contoso/Payments', repo: 'ledger',
       provider: 'azure', host: 'dev.azure.com', kind: 'pull',
     })
+  })
+})
+
+/**
+ * The single "is this the same repository" predicate.
+ *
+ * It replaced four hand-written copies of the same four-way comparison, one of
+ * which compared the slug alone. Defined as scope-key equality so "same
+ * repository" and "same cache entry" cannot drift apart, which is also what makes
+ * the legacy case below fall out for free rather than needing its own branch.
+ */
+describe('sameRepoRef', () => {
+  it('is true for the same repository on the same forge', () => {
+    expect(sameRepoRef(GH, { ...GH })).toBe(true)
+    expect(sameRepoRef(GL, { ...GL })).toBe(true)
+  })
+
+  it('is false for the same slug on a different provider', () => {
+    // The collision the predicate exists for: `acme/widget` is a different
+    // repository on GitHub and on GitLab, and treating them as one is what let a
+    // stored pointer resolve to the wrong record.
+    expect(sameRepoRef(GH, { ...GH, provider: 'gitlab' })).toBe(false)
+  })
+
+  it('is false for the same slug and provider on a different host', () => {
+    // A self-managed instance is not gitlab.com: `group/sub/proj` there names a
+    // project that may not exist on the public site at all.
+    expect(sameRepoRef(GL, SELF)).toBe(false)
+    expect(sameRepoRef(SELF, { ...SELF, host: 'gitlab.com' })).toBe(false)
+  })
+
+  it('matches a legacy forge-less record with its public-GitHub counterpart', () => {
+    // Absent means public GitHub, so a value persisted before GitLab support still
+    // matches its connected record — which is what lets the host page HEAL such a
+    // pointer instead of falling back away from it.
+    expect(sameRepoRef(LEGACY, GH)).toBe(true)
+    expect(sameRepoRef(GH, LEGACY)).toBe(true)
+  })
+
+  it('does not match a legacy forge-less record against a non-GitHub one', () => {
+    expect(sameRepoRef(LEGACY, { ...LEGACY, provider: 'gitlab' as const })).toBe(false)
+  })
+
+  it('is false on a different slug, whatever the forge', () => {
+    expect(sameRepoRef(GH, { ...GH, repo: 'other' })).toBe(false)
+    expect(sameRepoRef(GH, { ...GH, owner: 'other' })).toBe(false)
   })
 })

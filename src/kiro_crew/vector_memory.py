@@ -66,7 +66,7 @@ from kiro_crew.project_scope import (
     project_scope_satisfied,
     scope_is_admissible,
 )
-from kiro_crew.security import redact_credentials, redact_exfiltration_urls
+from kiro_crew.security import redact_and_truncate
 from kiro_crew.validation import ALLOWED_LESSON_CATEGORIES, normalize_lesson_category
 
 # Consolidation caps live in vector_memory_constants (a light module with no
@@ -1823,8 +1823,7 @@ class VectorMemoryStore:
             # is surfaced verbatim on the dashboard (/api/memory/events -> get_events).
             # Scrub exfiltration URLs + credentials before persisting the audit
             # snippet so poisoned text can't smuggle secrets onto that surface.
-            safe_snippet, _ = redact_exfiltration_urls(text[:200])
-            safe_snippet, _ = redact_credentials(safe_snippet)
+            safe_snippet = redact_and_truncate(text, 200)
             self._log_event(
                 SemanticRejectCode.INJECTION.value,
                 "episodic",
@@ -3077,6 +3076,21 @@ class VectorMemoryStore:
         else:
             rows = self._fetch_all_locked(sql)
         return [dict(r) for r in rows]
+
+    def count_lessons(self) -> int:
+        """Return the number of live lessons without materializing them.
+
+        ``get_lessons()`` returns full row dicts (including embedding blobs);
+        callers that only need the COUNT (the status paths poll it every few
+        seconds per client) must not pull every lesson row into memory just to
+        ``len()`` it. Same predicate and ``_db_lock`` serialization as
+        ``get_lessons``, so it is safe from executor threads and the loop
+        alike and always agrees with ``len(get_lessons())``.
+        """
+        rows = self._fetch_all_locked(
+            "SELECT COUNT(*) AS n FROM semantic_memory WHERE is_deleted = 0 AND key LIKE 'lesson.%'"
+        )
+        return int(rows[0]["n"]) if rows else 0
 
     def delete_lesson(self, rule_substring: str) -> bool:
         """Delete lessons whose value contains rule_substring."""

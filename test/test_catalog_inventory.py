@@ -67,6 +67,58 @@ class TestInventory:
         (row,) = oc.inventory([catalog_git()])
         assert "author" not in row
 
+    def test_a_git_entrys_star_count_is_carried(self):
+        """The publisher bakes ``stargazersCount`` into git entries, and this
+        projection is the production path that turns the catalog into store
+        rows -- dropping the field here silently disables the whole feature
+        (the row never reaches ``_merge_manifest``'s allowlist)."""
+        (row,) = oc.inventory([catalog_git(stargazersCount=1234)])
+        assert row["stargazersCount"] == 1234
+
+    def test_a_zero_star_count_is_carried(self):
+        """Zero is a real count; only ABSENCE means unknown."""
+        (row,) = oc.inventory([catalog_git(stargazersCount=0)])
+        assert row["stargazersCount"] == 0
+
+    @pytest.mark.parametrize(
+        "bad",
+        [-1, "1234", True, False, 3.5, None, [1], {"n": 1}, 9_007_199_254_740_992],
+        ids=["negative", "string", "true", "false", "float", "none", "list", "dict", "over-js-max"],
+    )
+    def test_a_malformed_star_count_is_dropped_not_coerced(self, bad):
+        """The document arrived over the network: a wrong type or an
+        implausible magnitude (beyond the JS safe-integer range) degrades this
+        one field, never the row and never the run."""
+        (row,) = oc.inventory([catalog_git(stargazersCount=bad)])
+        assert "stargazersCount" not in row
+
+    def test_a_builtin_entry_never_carries_a_star_count(self):
+        """Stars are a git-repo fact; a builtin has no repository of its own,
+        so even a document that claims one publishes no field."""
+        entry = catalog_git(stargazersCount=1234)
+        entry["source"] = {"type": "builtin", "url": URL, "ref": SHA}
+        rows = oc.inventory([entry])
+        assert all("stargazersCount" not in r for r in rows)
+
+    def test_list_catalog_rows_never_carries_the_star_count(self, monkeypatch):
+        """This projection reads the agent-writable CACHE
+        (``load_official_catalog``): a poisoned cache forging display copy is
+        survivable, but a forged trust cue beside Install is not — the count
+        flows only through the fresh-TLS-fetch projections."""
+        monkeypatch.setattr(oc, "load_official_catalog", lambda: [catalog_git(stargazersCount=77)])
+        (row,) = oc.list_catalog_rows()
+        assert "stargazersCount" not in row
+
+    def test_annotate_never_overlays_the_star_count(self):
+        """``annotate`` matches by NAME, and a same-name seed row can pin a
+        DIFFERENT repository (seed collisions keep the pin by design) — so an
+        overlay here would show the catalog repo's stars beside an Install
+        that clones another repo. The count flows through ``inventory()``
+        alone, where identity and count come from the same entry."""
+        row = {"name": "demo-app"}
+        oc.annotate([row], [catalog_git(stargazersCount=55)])
+        assert "stargazersCount" not in row
+
     @pytest.mark.parametrize(
         "name",
         [

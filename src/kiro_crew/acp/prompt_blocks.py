@@ -27,6 +27,7 @@ Wire shape (per docs/reference/kiro-cli/acp.md):
 from __future__ import annotations
 
 import base64
+import json
 import logging
 import os
 import re
@@ -223,3 +224,90 @@ def build_prompt_blocks(
             text = text.replace(raw, f"[image: {path.name}]")
 
     return [{"type": "text", "text": text}, *images]
+
+
+#: Block ``type`` values that get a dedicated counter in the structure summary.
+#: Anything else is folded into ``other`` so an unfamiliar shape still counts
+#: toward the total without ever being named or copied.
+_SUMMARY_KNOWN_TYPES = ("text", "image", "tool_use", "tool_result")
+
+
+def summarize_prompt_structure(blocks: object) -> dict:
+    """Return a CONTENT-FREE structural summary of an ACP prompt block list.
+
+    The returned dict reports ONLY shape metrics -- never any message text,
+    image bytes, tool arguments, or other content:
+
+    * ``block_count`` -- total number of blocks.
+    * ``type_counts`` -- a count per block ``type`` (``text`` / ``image`` /
+      ``tool_use`` / ``tool_result`` / ``other`` for any unrecognised or
+      typeless shape).
+    * ``empty_text_blocks`` -- text blocks whose ``text`` is missing, blank, or
+      whitespace-only (a structurally suspicious payload). A text block with no
+      ``text`` key at all is as suspect as one whose ``text`` is a blank
+      string, so both fold into this count.
+    * ``tool_use`` / ``tool_result`` -- the two tool-block counts surfaced at
+      the top level so a pairing imbalance (a ``tool_result`` with no matching
+      ``tool_use``, or vice versa) is visible at a glance.
+    * ``total_bytes`` -- length of ``json.dumps`` of the NORMALISED block list
+      (``[]`` when the argument is not a list or tuple), the approximate
+      serialized wire size of the outbound request. Measuring the normalised
+      list keeps the size coherent with the counts: a non-list argument reports
+      ``block_count: 0`` alongside ``total_bytes: 2`` (an empty ``[]``) rather
+      than a size describing a payload the counts claim is empty.
+
+    This summary is deliberately safe to log: it carries no content and
+    therefore cannot leak credentials or user data. That is a hard requirement
+    (issue #6022) -- the kiro-cli data dir is fenced precisely because it holds
+    SSO tokens, so the outbound-request diagnostics must expose counts, types,
+    and sizes ONLY, never the bytes themselves.
+
+    Defensive by contract: this is a diagnostics helper on the live prompt
+    path, so it never raises. A malformed ``blocks`` argument (not a list,
+    ``None`` entries, non-dict entries, unserialisable content) yields a
+    partial/minimal summary instead of propagating an exception into the turn.
+    """
+    summary: dict = {
+        "block_count": 0,
+        "type_counts": {},
+        "empty_text_blocks": 0,
+        "tool_use": 0,
+        "tool_result": 0,
+        "total_bytes": 0,
+    }
+    try:
+        block_list = list(blocks) if isinstance(blocks, (list, tuple)) else []
+        summary["block_count"] = len(block_list)
+
+        type_counts: dict[str, int] = {}
+        empty_text = 0
+        for block in block_list:
+            if isinstance(block, dict):
+                btype = block.get("type")
+                key = btype if btype in _SUMMARY_KNOWN_TYPES else "other"
+                if btype == "text":
+                    text = block.get("text")
+                    # A missing (or non-string) text key is as structurally
+                    # suspect as a present-but-blank one, so fold both into the
+                    # empty count.
+                    if not isinstance(text, str) or not text.strip():
+                        empty_text += 1
+            else:
+                key = "other"
+            type_counts[key] = type_counts.get(key, 0) + 1
+
+        summary["type_counts"] = type_counts
+        summary["empty_text_blocks"] = empty_text
+        summary["tool_use"] = type_counts.get("tool_use", 0)
+        summary["tool_result"] = type_counts.get("tool_result", 0)
+
+        try:
+            summary["total_bytes"] = len(json.dumps(block_list, default=str))
+        except (TypeError, ValueError):
+            # Unserialisable content must not sink the whole summary: keep the
+            # structural counts and report an unknown size rather than raising.
+            summary["total_bytes"] = -1
+    except Exception:
+        logger.debug("acp prompt: structure summary failed", exc_info=True)
+
+    return summary

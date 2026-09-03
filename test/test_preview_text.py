@@ -69,6 +69,22 @@ class TestStripMarkdownPreview:
     def test_whitespace_collapsed(self):
         assert strip_markdown_preview("a\n\n\nb   c") == "a b c"
 
+    def test_zwsp_only_message_yields_empty(self):
+        # Quiet monitor-loop cycles reply with a bare U+200B. ``str.split()``
+        # does not treat Cf format chars as whitespace, so without the drop
+        # the preview is truthy-but-invisible and the downstream
+        # empty-preview fallbacks never fire.
+        assert strip_markdown_preview("\u200b") == ""
+
+    def test_invisible_only_mix_yields_empty(self):
+        # ZWSP, ZWNJ, ZWJ, word joiner, BOM and soft hyphen with plain
+        # whitespace between: the whole Cf class collapses, not one codepoint.
+        assert strip_markdown_preview("\u200b\u200c \u200d\u2060\t\ufeff\u00ad") == ""
+
+    def test_format_chars_dropped_from_mixed_content(self):
+        # Dropped, not turned into spaces: visible text stays intact.
+        assert strip_markdown_preview("a\u200bb c") == "ab c"
+
 
 class TestSlotLastMessageStripsMarkdown:
     def _slot_with(self, *messages) -> _ChatSlot:
@@ -115,12 +131,32 @@ class TestSlotLastMessageStripsMarkdown:
         s = self._slot_with(("assistant", "---"))
         assert s.to_dict()["last_message"] == ""
 
+    def test_zwsp_only_message_falls_back_to_older_preview(self):
+        # A quiet monitor-loop cycle's say-nothing reply (bare U+200B) must
+        # not blank the sidebar subtitle: with format chars dropped the
+        # preview is empty, so the walk lands on the last real message.
+        s = self._slot_with(
+            ("assistant", "here is the real answer"),
+            ("assistant", "\u200b"),
+        )
+        assert s.to_dict()["last_message"] == "here is the real answer"
+
     def test_credential_split_by_markdown_is_still_redacted(self):
         # Codex PR-243 HIGH finding: stripping must run BEFORE redaction.
         # Markdown markers inside a secret split the credential signature past
         # the scanner; stripping afterwards would rejoin the fragments into a
         # valid credential in the broadcast preview.
         s = self._slot_with(("assistant", "key is AKIA**IOSFODNN7EXAMPLE** ok"))
+        msg = s.to_dict()["last_message"]
+        assert "AKIAIOSFODNN7EXAMPLE" not in msg
+        assert msg.startswith("key is ")
+
+    def test_credential_split_by_zwsp_is_still_redacted(self):
+        # The format-char drop can REASSEMBLE a credential that zero-width
+        # characters had split, so strip-before-redact is load-bearing for
+        # this class too: stripping after redaction would rejoin the halves
+        # into a live key in the broadcast preview.
+        s = self._slot_with(("assistant", "key is AKIA\u200bIOSFODNN7EXAMPLE ok"))
         msg = s.to_dict()["last_message"]
         assert "AKIAIOSFODNN7EXAMPLE" not in msg
         assert msg.startswith("key is ")
@@ -141,3 +177,30 @@ class TestHistoryLastMessagePreviewStripsMarkdown:
         ]
         log._path(key).write_text("\n".join(lines) + "\n")
         assert log.last_message_preview(key) == "Compacted the GitHub Triage rail"
+
+    def test_last_message_info_falls_back_past_zwsp_only_row(self, tmp_path):
+        import json
+        from datetime import datetime
+
+        from kiro_crew.history import ConversationLog
+
+        log = ConversationLog(base_dir=tmp_path)
+        log.init()
+        key = "dash-test"
+        lines = [
+            json.dumps(
+                {
+                    "role": "assistant",
+                    "content": "the real answer",
+                    "ts": "2026-01-01T00:00:00Z",
+                }
+            ),
+            # Newest row is a quiet monitor-cycle reply: a bare U+200B. Its
+            # preview must come out empty so the skip-empty scan passes it.
+            json.dumps({"role": "assistant", "content": "\u200b", "ts": "2026-01-02T00:00:00Z"}),
+        ]
+        log._path(key).write_text("\n".join(lines) + "\n")
+        preview, epoch = log.last_message_info(key)
+        assert preview == "the real answer"
+        # The timestamp travels with the row the preview came from.
+        assert epoch == datetime.fromisoformat("2026-01-01T00:00:00+00:00").timestamp()

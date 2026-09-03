@@ -46,6 +46,15 @@ export type MoveUndoController = {
   arm: (moved: MovedItem) => void
   /** Replay the inverse of `offerId`, if that is still the live offer. */
   undo: (offerId: number) => void
+  /**
+   * Retire the current offer (pending or live) without replaying anything.
+   * One-way to gone, like every other exit. For a surface that owns SEVERAL
+   * controllers over one visual slot: arming one dismisses the others, so a
+   * displaced offer is retired rather than merely hidden — a hidden-but-live
+   * offer would resurrect when the winner retires, and its exiting bar would
+   * hold a second ⌘Z listener able to undo a move the user no longer sees.
+   */
+  dismiss: () => void
   /** Props the bar needs from its owner: the remainder, and the hold channel. */
   bar: {
     remainingMs: number
@@ -53,6 +62,12 @@ export type MoveUndoController = {
     onHoldChange: (held: boolean) => void
   }
 }
+
+// Offer identity. Module-scoped and monotonic ACROSS hook instances, so two
+// controllers sharing one visual slot can never mint equal ids — Date.now()
+// could, within one millisecond, and equal ids make "which offer is newer"
+// undecidable at exactly the moment two surfaces raced.
+let nextOfferId = 1
 
 /**
  * "Last reversible move + its inverse", owned in one place.
@@ -101,7 +116,7 @@ export default function useMoveUndo({ locate, apply, folderExists }: MoveUndoDep
     // A drop back onto the folder the item already sits in is not a move —
     // arming undo for it would offer to undo nothing.
     if (moved.fromFolderId === moved.toFolderId) return
-    const id = Date.now()
+    const id = nextOfferId++
     setOffer({ ...moved, id, live: false, superseded: false })
     // No failure branch is needed: a move that never lands never acknowledges,
     // so the offer never goes live and the deadline clears the record. There is
@@ -117,6 +132,8 @@ export default function useMoveUndo({ locate, apply, folderExists }: MoveUndoDep
       )),
     })
   }, [apply])
+
+  const dismiss = useCallback(() => { setOffer(null) }, [])
 
   const undo = useCallback((offerId: number) => {
     const current = offerRef.current
@@ -204,5 +221,5 @@ export default function useMoveUndo({ locate, apply, folderExists }: MoveUndoDep
     setHeldOffer(held ? currentId : null)
   }, [currentId])
 
-  return { offer, arm, undo, bar: { remainingMs, paused, onHoldChange } }
+  return { offer, arm, undo, dismiss, bar: { remainingMs, paused, onHoldChange } }
 }

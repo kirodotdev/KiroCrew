@@ -201,7 +201,7 @@ describe('chat sidebar — goal-loop progress subtitle', () => {
 describe('chat sidebar — interrupted goal loop', () => {
   const STALLED_TITLE = 'Goal loop armed — last turn was interrupted; resume the chat or wait for the next cycle'
 
-  it('renders a static warn dot and "interrupted" when the loop session sits behind Resume', () => {
+  it('flashes the whole card danger-red and reads "interrupted" when the loop session sits behind Resume', () => {
     // The reported bug: the turn died on a transient model error (trailing
     // error row → summary interrupted=true) and the pill kept pulsing as if a
     // cycle were executing — for up to idle_secs, until the next fire.
@@ -213,11 +213,16 @@ describe('chat sidebar — interrupted goal loop', () => {
     expect(getByText(/Loop 47\/72 — interrupted/)).toBeTruthy()
     const pill = getByTitle(STALLED_TITLE)
     expect(pill).toBeTruthy()
-    // The pulse MEANS "work is happening" — it moved from the old inline dot to
-    // the status-gutter Goal glyph, which must be STATIC (warn) here, not pulsing.
+    // The pulse MEANS "work is happening" — the stalled glyph is STATIC danger
+    // ink; the flashing lives on the row container (`session-loop-stalled`,
+    // index.css), which pulses the WHOLE card red until the user resumes.
     const glyph = container.querySelector('.lucide-goal')
     expect(glyph).toBeTruthy()
     expect(glyph!.classList.contains('animate-pulse')).toBe(false)
+    expect(glyph!.classList.contains('text-danger')).toBe(true)
+    const row = container.querySelector('[data-session-row="k"]')
+    expect(row).toBeTruthy()
+    expect(row!.classList.contains('session-loop-stalled')).toBe(true)
     expect(container.querySelector('[title="Goal loop · cycle 47 of 72"]')).toBeNull()
   })
 

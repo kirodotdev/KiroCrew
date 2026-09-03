@@ -44,7 +44,7 @@ __all__ = [
 ]
 
 
-def derived_agent_permissions(allowed_tools: list, agent_filename: str) -> dict:
+def derived_agent_permissions(allowed_tools: object, agent_filename: str) -> dict:
     """The KAS policy a generated agent spec should carry, from its grant list.
 
     Deriving from the FILTERED ``allowedTools`` instead of restating a literal
@@ -55,7 +55,11 @@ def derived_agent_permissions(allowed_tools: list, agent_filename: str) -> dict:
 
     Plain data in, plain data out: a list of grant refs and a spec filename
     (the KAS ``agent_id`` is its stem), a JSON-ready dict back -- no ACP type
-    crosses the boundary. Function-local import for the same boot-path reason
+    crosses the boundary. ``allowed_tools`` is typed ``object`` because the
+    wrapped derive owns the validation and fails closed on any non-list
+    (including the absent-key ``None`` a caller reads off a config dict) --
+    narrowing it here would just force casts at call sites for a check the
+    derive already makes. Function-local import for the same boot-path reason
     as every other function here, though ``kas_permissions`` itself is a leaf
     that depends on nothing else in the package.
     """

@@ -7,6 +7,40 @@ import { i18nT } from '../../i18n/t'
 
 const API = '/api/apps/issue-radar'
 
+/** The per-request UI-language hint for the backend's AI-prose calls.
+ *
+ * `aiLanguage` must ALREADY be resolved through the app's own
+ * `resolveAiLanguage()` (`lib/format.ts`) by the calling component, which is the
+ * single place Issue Radar decides what language its AI output should be in --
+ * the same resolver `investigate.ts` and `review.ts` use. Deriving it here from
+ * a raw `activeLocale()` instead would give the app two disagreeing resolvers
+ * and ignore the user's explicit "Agent output language" pick, so a `ja` picker
+ * would produce Japanese investigations beside English summaries.
+ *
+ * Why a hint has to exist at all: the dashboard's default language is "follow
+ * the browser", resolved entirely client-side, and the gateway reads
+ * `Accept-Language` nowhere -- so without this the backend cannot know the
+ * language of any install that never set `dashboard.language`, and every AI card
+ * comes back English inside a fully localized UI. Sending the already-resolved
+ * tag also keeps the catalog matcher in one place (`detect.ts`) instead of
+ * growing a second copy in Python.
+ *
+ * Deliberately per-request and never written to config: "Auto" is
+ * browser-relative, so persisting what this browser resolved would tell a
+ * different browser to discard its own pick -- see the `adoptedServerValue`
+ * rationale in `LanguageProvider.tsx`. An explicitly configured
+ * `dashboard.language` still outranks it server-side.
+ *
+ * An empty tag sends NO field. `resolveAiLanguage` returns `''` both for "follow
+ * an English browser" and for an explicit English pick, and the directive-free
+ * prompt already produces English -- so omitting it leaves an English user's
+ * request byte-identical to what it has always been, caches included.
+ *
+ * Spread into the query for GETs and into the body for POSTs. */
+function langHint(aiLanguage: string): Record<string, string> {
+  return aiLanguage ? { lang: aiLanguage } : {}
+}
+
 export interface ConnectResponse {
   owner: string
   repo: string
@@ -960,10 +994,13 @@ export const CREW_PHASES = [
 export type CrewPhase = typeof CREW_PHASES[number]
 
 /** Mirrors `crew_store.EVENT_KINDS`. The store REFUSES an unknown kind, so this
- * union is enforced server-side rather than merely documented. */
+ * union is enforced server-side rather than merely documented.
+ *
+ * `sweep` is the one kind that belongs to no issue — a crew reporting that it
+ * checked the queue and took nothing — so its lines carry no `number`. */
 export const CREW_EVENT_KINDS = [
   'claim', 'investigate', 'reply', 'implement', 'ci',
-  'review', 'conflict', 'merge', 'handback', 'skip', 'yield',
+  'review', 'conflict', 'merge', 'handback', 'skip', 'yield', 'sweep',
 ] as const
 
 export type CrewEventKind = typeof CREW_EVENT_KINDS[number]
@@ -1090,7 +1127,10 @@ export interface CrewEvent {
   id: string
   ts: string
   crew_id: string
-  number: number
+  /** ABSENT on a crew-level line (`kind: 'sweep'`), which belongs to no issue.
+   *  Optional rather than nullable because the backend omits the key entirely —
+   *  a `0` would be indistinguishable from a real issue number. */
+  number?: number
   kind: CrewEventKind
   text: string
 }
@@ -1329,9 +1369,10 @@ export const issueRadarApi = {
   },
 
   /** AI triage (summary + suggested labels), cache-first server-side; pass
-   * refresh to force a regenerate. */
-  issueAi: async (ref: RepoRef, number: number, opts?: { refresh?: boolean }): Promise<IssueAiResponse> => {
-    const q = new URLSearchParams({ ...repoQuery(ref), number: String(number) })
+   * refresh to force a regenerate. `aiLanguage` is the tag from
+   * `resolveAiLanguage()` -- see `langHint`. */
+  issueAi: async (ref: RepoRef, number: number, aiLanguage: string, opts?: { refresh?: boolean }): Promise<IssueAiResponse> => {
+    const q = new URLSearchParams({ ...repoQuery(ref), ...langHint(aiLanguage), number: String(number) })
     if (opts?.refresh) q.set('refresh', '1')
     const r = await fetch(`${API}/issue-ai?${q.toString()}`, { credentials: 'same-origin' })
     if (!r.ok) throw new Error(await parseErrorBody(r))
@@ -1341,9 +1382,10 @@ export const issueRadarApi = {
   /** AI summary of a pull request — its description, whole conversation, and
    * check state. Cache-first server-side, and the cache self-invalidates when
    * the PR moves (new comment / push / flipped check), so no manual refresh is
-   * needed to pick up changes; pass refresh to force a regenerate anyway. */
-  pullAi: async (ref: RepoRef, number: number, opts?: { refresh?: boolean }): Promise<PrAiResponse> => {
-    const q = new URLSearchParams({ ...repoQuery(ref), number: String(number) })
+   * needed to pick up changes; pass refresh to force a regenerate anyway.
+   * `aiLanguage` is the tag from `resolveAiLanguage()` -- see `langHint`. */
+  pullAi: async (ref: RepoRef, number: number, aiLanguage: string, opts?: { refresh?: boolean }): Promise<PrAiResponse> => {
+    const q = new URLSearchParams({ ...repoQuery(ref), ...langHint(aiLanguage), number: String(number) })
     if (opts?.refresh) q.set('refresh', '1')
     const r = await fetch(`${API}/pull-ai?${q.toString()}`, { credentials: 'same-origin' })
     if (!r.ok) throw new Error(await parseErrorBody(r))
@@ -1698,22 +1740,25 @@ export const issueRadarApi = {
   },
 
   /** Read the repo's cached AI label recommendations (`recommendations` is null
-   * if none generated yet). Never runs the model. */
-  getRecommendations: async (ref: RepoRef): Promise<RecommendationsResponse> => {
-    const q = new URLSearchParams(repoQuery(ref))
+   * if none generated yet). Never runs the model. `aiLanguage` must match what
+   * the generate call used: the server refuses to serve a set written in another
+   * language, so a mismatch reads as "none generated yet". */
+  getRecommendations: async (ref: RepoRef, aiLanguage: string): Promise<RecommendationsResponse> => {
+    const q = new URLSearchParams({ ...repoQuery(ref), ...langHint(aiLanguage) })
     const r = await fetch(`${API}/recommendations?${q.toString()}`, { credentials: 'same-origin' })
     if (!r.ok) throw new Error(await parseErrorBody(r))
     return r.json()
   },
 
   /** Generate (and cache) label recommendations via one model call over the
-   * repo's labels + a sample of its open issues. */
-  generateRecommendations: async (ref: RepoRef): Promise<RecommendationsResponse> => {
+   * repo's labels + a sample of its open issues. `aiLanguage` is the tag from
+   * `resolveAiLanguage()` -- see `langHint`. */
+  generateRecommendations: async (ref: RepoRef, aiLanguage: string): Promise<RecommendationsResponse> => {
     const r = await fetch(`${API}/recommendations`, {
       method: 'POST',
       credentials: 'same-origin',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(repoBody(ref)),
+      body: JSON.stringify({ ...repoBody(ref), ...langHint(aiLanguage) }),
     })
     if (!r.ok) throw new Error(await parseErrorBody(r))
     return r.json()
@@ -1737,7 +1782,9 @@ export const issueRadarApi = {
   /** Read the untagged queue + any cached label suggestions for it. Never runs
    * the model, so it is safe to call whenever the Tagging dashboard mounts.
    * Pass refresh to re-read the issues from GitHub rather than the local cache
-   * (needed to notice labels added on GitHub itself). */
+   * (needed to notice labels added on GitHub itself).
+   *
+   * Sends NO language hint, deliberately -- see `generateTagging`. */
   tagging: async (
     ref: RepoRef, opts?: { refresh?: boolean },
   ): Promise<TaggingResponse> => {
@@ -1750,7 +1797,16 @@ export const issueRadarApi = {
 
   /** Generate label suggestions with ONE batched model call. Omit `numbers` to
    * take the next un-analysed slice of the queue (repeat to walk a long backlog);
-   * pass `numbers` to (re)analyse specific issues. */
+   * pass `numbers` to (re)analyse specific issues.
+   *
+   * Sends NO language hint, deliberately. The tagging cache is ONE document per
+   * repo that ACCUMULATES across many batched calls, and the store drops every
+   * accumulated entry when the language it was written in changes -- safe while
+   * the language is install-wide (a deliberate operator switch, once), but a
+   * per-browser hint would make two browsers on different languages alternate
+   * forever, each wiping the queue the other just paid a model to build. This
+   * surface needs its cache partitioned by language first; until then it follows
+   * `dashboard.language` only. */
   generateTagging: async (
     ref: RepoRef, numbers?: number[],
   ): Promise<GenerateTaggingResponse> => {

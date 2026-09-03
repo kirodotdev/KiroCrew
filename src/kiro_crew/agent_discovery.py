@@ -12,6 +12,7 @@ Each agent is identified by its ``modeId`` — the value passed to
 from __future__ import annotations
 
 import asyncio
+import functools
 import json
 import logging
 import os
@@ -373,7 +374,12 @@ def _project_signature(project_dir: str | Path) -> tuple[_ListAgentsSig, ...]:
     )
 
 
-def project_agent_names(project_dir: str | Path | None) -> frozenset[str]:
+def project_agent_names(
+    project_dir: str | Path | None,
+    *,
+    operation: str = "project_agent_names",
+    source: str = "project_agent_names",
+) -> frozenset[str]:
     """Dispatchable agent names declared by a project, cached on a stat signature.
 
     Only ``<project>/.kiro/agents/*.json`` contributes, because only those names are
@@ -385,6 +391,17 @@ def project_agent_names(project_dir: str | Path | None) -> frozenset[str]:
     resolver calls this on EVERY turn of a project-agent-bound session: bounding the
     file count is not enough on its own, since the cost that stalls a caller is the
     reads, not the count.
+
+    *operation*/*source* label the SEL denial event emitted on a sensitive
+    project directory, exactly as on :func:`_read_agent_spec` (#6764 mirrors
+    #6722): the calling surface names itself so the security trail attributes
+    the refusal to the request that triggered it. ``source`` is the interface
+    channel (``SecurityEvent.source`` vocabulary: dashboard, cli, slack, cron,
+    ...; ``"unknown"`` when the caller serves multiple channels) — every call
+    site passes it explicitly, enforced by the call-site ratchet test. Both
+    defaults exist ONLY so a bare call reproduces the historical event
+    byte-for-byte (a forgotten future call site degrades to exactly today's
+    trail); they are not for new call sites.
 
     Never raises; an unreadable checkout yields an empty set.
     """
@@ -399,8 +416,8 @@ def project_agent_names(project_dir: str | Path | None) -> frozenset[str]:
     if is_sensitive_path(key):
         logger.debug("Skipping sensitive project dir for agent discovery: %s", project_dir)
         _audit_denied(
-            operation="project_agent_names",
-            source="project_agent_names",
+            operation=operation,
+            source=source,
             resources=key,
             error="sensitive project dir rejected",
         )
@@ -457,7 +474,12 @@ def clear_project_agent_cache() -> None:
     _PROJECT_NAMES_CACHE.clear()
 
 
-async def warm_project_agent_names(project_dir: str | Path | None) -> None:
+async def warm_project_agent_names(
+    project_dir: str | Path | None,
+    *,
+    operation: str = "warm_project_agent_names",
+    source: str = "unknown",
+) -> None:
     """Populate the project name cache from the discovery pool, off the event loop.
 
     The counterpart to :func:`cached_project_agent_names`: an async caller runs this
@@ -469,6 +491,13 @@ async def warm_project_agent_names(project_dir: str | Path | None) -> None:
     ``StopIteration`` in particular cannot be delivered through a ``Future``, which
     hangs the awaiting caller instead of surfacing the error.
 
+    *operation*/*source* forward to :func:`project_agent_names` so a denial hit
+    during the warm names the surface that requested it rather than echoing the
+    helper's own name (#6764). The defaults name this hop truthfully: the warm
+    itself is the operation, and the helper serves several channels (dashboard
+    chat, spawn admission), so its channel is ``"unknown"`` unless the caller
+    says otherwise.
+
     A no-op without a *project_dir*. Best-effort and never raises: failing to warm
     costs one turn's fallback, and must not break turn handling.
     """
@@ -476,7 +505,8 @@ async def warm_project_agent_names(project_dir: str | Path | None) -> None:
         return
     try:
         await asyncio.get_running_loop().run_in_executor(
-            discovery_executor(), project_agent_names, project_dir
+            discovery_executor(),
+            functools.partial(project_agent_names, project_dir, operation=operation, source=source),
         )
     except Exception:  # noqa: BLE001 — a warm failure only costs a fallback
         logger.debug("Failed to warm project agent names for %s", project_dir, exc_info=True)

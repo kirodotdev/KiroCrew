@@ -9,7 +9,7 @@ from unittest.mock import patch
 import pytest
 from aiohttp import web
 
-from kiro_crew.dashboard.handlers.secrets import setup_secrets_routes
+from kiro_crew.dashboard.handlers.secrets import _sanitize_for_log, setup_secrets_routes
 from kiro_crew.secrets import SecretVault
 
 
@@ -155,15 +155,45 @@ class TestApiSecretsDelete:
                 assert vault.get("TEST_KEY") is None
 
     @pytest.mark.asyncio
-    async def test_delete_nonexistent(self, vault_dir: Path) -> None:
+    async def test_deletes_secret_removes_from_list(self, vault_dir: Path) -> None:
+        """A successful DELETE removes the name from the vault; a subsequent list
+        no longer includes it.  Proves the membership check does not block the
+        actual deletion path."""
         app = _app()
 
         from aiohttp.test_utils import TestClient, TestServer
 
         with patch("kiro_crew.dashboard.handlers.secrets.config_dir", return_value=str(vault_dir)):
             async with TestClient(TestServer(app)) as client:
-                resp = await client.delete("/api/secrets/MISSING")
-                assert resp.status == 200  # delete is idempotent
+                resp = await client.delete("/api/secrets/TEST_KEY")
+                assert resp.status == 200
+                data = await resp.json()
+                assert data["ok"] is True
+
+                list_resp = await client.get("/api/secrets")
+                assert list_resp.status == 200
+                names = (await list_resp.json())["names"]
+                assert "TEST_KEY" not in names
+                assert "DB_PASS" in names  # sibling entry untouched
+
+    @pytest.mark.asyncio
+    async def test_delete_nonexistent_returns_404(self, vault_dir: Path) -> None:
+        """DELETE of a name that was never stored returns 404 not_found.
+
+        Before the fix, vault.delete() was a silent no-op and the handler
+        returned 200 ok unconditionally, hiding mistyped names from the caller.
+        """
+        app = _app()
+
+        from aiohttp.test_utils import TestClient, TestServer
+
+        with patch("kiro_crew.dashboard.handlers.secrets.config_dir", return_value=str(vault_dir)):
+            async with TestClient(TestServer(app)) as client:
+                resp = await client.delete("/api/secrets/NONEXISTENT_NAME")
+                assert resp.status == 404
+                data = await resp.json()
+                assert data["code"] == "not_found"
+                assert "error" in data
 
 
 class TestApiSecretsOwnerAuthorization:
@@ -297,17 +327,29 @@ class TestApiSecretsLogInjection:
 
     @pytest.mark.asyncio
     async def test_crlf_in_delete_name_is_escaped_in_log(
-        self, vault_dir: Path, caplog: pytest.LogCaptureFixture
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
     ) -> None:
+        """A percent-encoded CR/LF in the path segment decodes to real control
+        characters in request.match_info["name"].  The handler must escape them
+        before logging so the emitted record cannot forge extra audit lines.
+
+        The name must actually exist in the vault so the handler reaches the
+        log statement (a non-existent name returns 404 before logging).
+        """
         app = _app()
 
         from aiohttp.test_utils import TestClient, TestServer
 
-        # A percent-encoded CR/LF in the path segment decodes to real control
-        # characters in request.match_info["name"].
-        with patch("kiro_crew.dashboard.handlers.secrets.config_dir", return_value=str(vault_dir)):
+        # Seed a vault entry whose name contains a literal CRLF.
+        injected_name = "x\r\nWARNING-forged"
+        vault = SecretVault(tmp_path)
+        vault._set_sync(injected_name, "v")
+
+        with patch("kiro_crew.dashboard.handlers.secrets.config_dir", return_value=str(tmp_path)):
             async with TestClient(TestServer(app)) as client:
                 with caplog.at_level(logging.INFO, logger="kiro_crew.dashboard.handlers.secrets"):
+                    # aiohttp URL-encodes the path when using client.delete(url)
+                    # with a plain string, so percent-encode manually.
                     resp = await client.delete("/api/secrets/x%0d%0aWARNING-forged")
                     assert resp.status == 200
 
@@ -379,3 +421,167 @@ class TestApiSecretsSetInputValidation:
                 # Name is still trimmed, as before.
                 assert data["name"] == "PADDED"
                 assert SecretVault(empty_vault_dir).list_names() == ["PADDED"]
+
+
+class TestApiSecretsSetWhitespaceValue:
+    """POST /api/secrets rejects a value that is whitespace-only (F2 regression).
+
+    Before the fix, ``name`` was stripped before its empty-check but ``value``
+    was not — so a body like ``{"name":"K","value":"   "}`` bypassed the
+    ``if not value:`` guard (a non-empty string of spaces is truthy) and wrote
+    a blank secret to the vault.  After the fix, ``value = value.strip()`` is
+    applied before the empty-check, so the three-space value collapses to ``""``
+    and correctly hits the existing ``missing_value`` 400 path.
+    """
+
+    @pytest.mark.asyncio
+    async def test_whitespace_only_value_is_rejected(self, empty_vault_dir: Path) -> None:
+        """``{"name":"K","value":"   "}`` must return 400 missing_value."""
+        app = _app()
+
+        from aiohttp.test_utils import TestClient, TestServer
+
+        with patch(
+            "kiro_crew.dashboard.handlers.secrets.config_dir",
+            return_value=str(empty_vault_dir),
+        ):
+            async with TestClient(TestServer(app)) as client:
+                resp = await client.post("/api/secrets", json={"name": "K", "value": "   "})
+                assert resp.status == 400
+                data = await resp.json()
+                assert data["code"] == "missing_value"
+                # The vault must not have stored K.
+                assert SecretVault(empty_vault_dir).list_names() == []
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("ws_value", ["   ", "\t", "\n", " \t \n "])
+    async def test_various_whitespace_variants_are_rejected(
+        self, empty_vault_dir: Path, ws_value: str
+    ) -> None:
+        """Tabs, newlines, and mixed whitespace all reduce to empty after strip."""
+        app = _app()
+
+        from aiohttp.test_utils import TestClient, TestServer
+
+        with patch(
+            "kiro_crew.dashboard.handlers.secrets.config_dir",
+            return_value=str(empty_vault_dir),
+        ):
+            async with TestClient(TestServer(app)) as client:
+                resp = await client.post("/api/secrets", json={"name": "K", "value": ws_value})
+                assert resp.status == 400
+                data = await resp.json()
+                assert data["code"] == "missing_value"
+                assert SecretVault(empty_vault_dir).list_names() == []
+
+    @pytest.mark.asyncio
+    async def test_normal_value_still_stores(self, empty_vault_dir: Path) -> None:
+        """Positive regression: a real value continues to be stored correctly."""
+        app = _app()
+
+        from aiohttp.test_utils import TestClient, TestServer
+
+        with patch(
+            "kiro_crew.dashboard.handlers.secrets.config_dir",
+            return_value=str(empty_vault_dir),
+        ):
+            async with TestClient(TestServer(app)) as client:
+                resp = await client.post("/api/secrets", json={"name": "K", "value": "real-value"})
+                assert resp.status == 200
+                data = await resp.json()
+                assert data["ok"] is True
+                assert SecretVault(empty_vault_dir).list_names() == ["K"]
+
+    @pytest.mark.asyncio
+    async def test_padded_value_is_stored_unchanged(self, empty_vault_dir: Path) -> None:
+        """A value with real content plus surrounding whitespace is stored VERBATIM.
+
+        The emptiness check uses ``value.strip()``, but the stored value must be
+        the original, untrimmed string — a credential can legitimately carry
+        leading/trailing whitespace and trimming it would corrupt the secret.
+        """
+        app = _app()
+
+        from aiohttp.test_utils import TestClient, TestServer
+
+        padded = "  sk-live-abc  "
+        with patch(
+            "kiro_crew.dashboard.handlers.secrets.config_dir",
+            return_value=str(empty_vault_dir),
+        ):
+            async with TestClient(TestServer(app)) as client:
+                resp = await client.post("/api/secrets", json={"name": "K", "value": padded})
+                assert resp.status == 200
+                # The vault must hold the ORIGINAL padded value, byte-for-byte.
+                assert SecretVault(empty_vault_dir).get("K").reveal() == padded
+
+
+class TestSanitizeForLog:
+    """Unit tests for the module-private _sanitize_for_log helper.
+
+    The asserts for ESC (\\x1b), NUL (\\x00), and DEL (\\x7f) are designed to
+    FAIL on origin/main (which only escaped \\n/\\r/\\t) and PASS after the
+    full C0+DEL fix that adds the _CONTROL_CHAR_RE substitution.
+    """
+
+    def test_newline_carriage_return_tab_escaped_as_two_char(self) -> None:
+        r"""\\n, \\r, \\t map to their familiar two-character spellings."""
+        assert _sanitize_for_log("\n") == "\\n"
+        assert _sanitize_for_log("\r") == "\\r"
+        assert _sanitize_for_log("\t") == "\\t"
+        assert _sanitize_for_log("a\nb\rc\td") == "a\\nb\\rc\\td"
+
+    def test_ansi_escape_sequence_escaped(self) -> None:
+        r"""ESC (\\x1b) in an ANSI colour code becomes \\x1b; printable chars kept."""
+        # ESC [ 3 1 m X -- the ANSI red-colour prefix followed by 'X'
+        result = _sanitize_for_log("\x1b[31mX")
+        # ESC must be escaped; the printable '[31mX' must be preserved verbatim
+        assert result == "\\x1b[31mX", repr(result)
+
+    def test_nul_byte_escaped(self) -> None:
+        r"""NUL (\\x00) becomes \\x00."""
+        result = _sanitize_for_log("\x00")
+        assert result == "\\x00", repr(result)
+
+    def test_del_escaped(self) -> None:
+        r"""DEL (\\x7f) becomes \\x7f."""
+        result = _sanitize_for_log("\x7f")
+        assert result == "\\x7f", repr(result)
+
+    def test_backslash_escaped_first_no_double_transform(self) -> None:
+        r"""A literal backslash becomes \\\\ and is not re-processed."""
+        # A single backslash in the input must yield exactly two backslashes out.
+        result = _sanitize_for_log("\\")
+        assert result == "\\\\", repr(result)
+        # Backslash before n must become \\\\n (escaped backslash + literal n),
+        # not \\n (which would look like an escaped newline).
+        result2 = _sanitize_for_log("\\n")
+        assert result2 == "\\\\n", repr(result2)
+
+    def test_printable_ascii_unchanged(self) -> None:
+        """Ordinary printable text passes through unmodified."""
+        plain = "hello-WORLD_123 /path/to/key"
+        assert _sanitize_for_log(plain) == plain
+
+    def test_mixed_controls_and_printable(self) -> None:
+        r"""A string mixing printable, \\n, and an ANSI escape is fully sanitized."""
+        inp = "key\x1b[0m\nname"
+        result = _sanitize_for_log(inp)
+        assert result == "key\\x1b[0m\\nname", repr(result)
+
+    def test_c1_control_escaped(self) -> None:
+        r"""A C1 control (e.g. CSI \\x9b) is escaped, not passed to the terminal."""
+        result = _sanitize_for_log("\x9b")
+        assert result == "\\x9b", repr(result)
+
+    def test_unicode_line_separators_escaped(self) -> None:
+        r"""U+2028 / U+2029 (Unicode line/paragraph separators) are escaped.
+
+        A Unicode-aware log viewer treats these as line breaks, so they are a
+        log-injection vector just like \\n; they must not survive verbatim.
+        """
+        assert _sanitize_for_log("\u2028") == "\\u2028", repr(_sanitize_for_log("\u2028"))
+        assert _sanitize_for_log("\u2029") == "\\u2029", repr(_sanitize_for_log("\u2029"))
+        # A forged-line payload via U+2028 is neutralized.
+        result = _sanitize_for_log("ok\u2028WARNING forged")
+        assert "\u2028" not in result and "\\u2028" in result, repr(result)

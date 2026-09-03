@@ -18,6 +18,7 @@ const BUSY = '[Session busy — automatic recovery]'
 const HOOK = '[Hook continuation — automatic]'
 const HALT = '[Stop-hook nudge cap reached]'
 const PROMISE_ONLY = '[Unfinished action — automatic recovery]'
+const COMPACTION = '[Context compacted — automatic recovery]'
 
 /** A refusal body shaped the way build_refusal_recovery_prompt() emits it. */
 function refusalBody(items: string[]): string {
@@ -210,6 +211,30 @@ describe('parseRecoveryMessage', () => {
     expect(promise?.detail).toBe('announced but not done · continuation sent automatically')
     expect(promise?.chip).toBe('')
     expect(promise?.body.startsWith('[')).toBe(false)
+  })
+
+  it('labels a post-compaction continuation without blaming a backend fault', () => {
+    // Verbatim opener from chat_utils._COMPACTION_CONTINUE_MSG.
+    const compaction = parseRecoveryMessage(
+      `${COMPACTION}\nThe conversation above was summarized mid-turn because the context window filled up.`,
+    )
+    expect(compaction?.kind).toBe('compaction')
+    expect(compaction?.title).toBe('Context compacted')
+    // Its own copy rather than the posttoken pair: nothing errored and nothing
+    // was lost, so a "backend error" detail would send the reader hunting a
+    // fault that does not exist.
+    expect(compaction?.detail).toBe('summarized mid-turn · continuation sent automatically')
+    expect(compaction?.detail).not.toContain('error')
+    expect(compaction?.chip).toBe('')
+    expect(compaction?.body.startsWith('[')).toBe(false)
+  })
+
+  it('does not claim an ordinary mention of compacting', () => {
+    // The ACP layer matches the adapter's notice on an exact literal for the
+    // same reason: model prose about compaction is not a control frame.
+    expect(parseRecoveryMessage('The context was compacted, so here is a summary.')).toBeNull()
+    // Hyphen instead of em dash — not the wire value.
+    expect(parseRecoveryMessage('[Context compacted - automatic recovery]\nbody')).toBeNull()
   })
 })
 

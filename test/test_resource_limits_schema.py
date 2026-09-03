@@ -521,9 +521,9 @@ class TestSingleParseSite:
     there were four of them, so a contributor tightening one could not see the
     others. A fifth reader must fail this test rather than be discovered later."""
 
-    def test_no_module_outside_the_loader_parses_these_keys_itself(self):
+    def test_no_module_outside_the_section_parser_parses_these_keys_itself(self):
         src = Path(__file__).resolve().parent.parent / "src" / "kiro_crew"
-        allowed = src / "config" / "loader.py"
+        allowed = src / "config" / "sections.py"
         # A raw ``.get("<key>")`` is how each of the retired readers pulled its
         # value straight out of the config dict.
         pattern = re.compile(r"\.get\(\s*[\"'](" + "|".join(_ALL_KEYS) + r")[\"']")
@@ -536,7 +536,7 @@ class TestSingleParseSite:
                     offenders.append(f"{path.relative_to(src)}:{num}: {line.strip()}")
         assert offenders == [], (
             "resource_limits keys must be parsed only by "
-            "ResourceLimitsConfig.from_raw in config/loader.py -- these sites read "
+            "ResourceLimitsConfig.from_raw in config/sections.py -- these sites read "
             "the raw dict themselves, which is how the two mechanisms' "
             "incompatible meanings of 0 drifted apart:\n" + "\n".join(offenders)
         )

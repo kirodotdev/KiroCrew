@@ -52,13 +52,13 @@ backend:
 	# Same `|| true` reasoning as the frontend target: an absent marker file must
 	# fall back to $(PY), not abort the recipe.
 	PY="$$(cat "$${KIROCREW_HOME:-$$HOME/.kiro/crew}/python-bin" 2>/dev/null || true)"; [ -n "$$PY" ] || PY="$(PY)"; \
-	  if [ -x $(VENV)/bin/python ] && ! $(VENV)/bin/python -c 'import sys; sys.exit(0 if sys.version_info >= (3,10) else 1)'; then \
-	    echo "  → recreating $(VENV) (existing interpreter < 3.10)"; rm -rf $(VENV); fi; \
-	  if ! "$$PY" -c 'import sys; sys.exit(0 if sys.version_info >= (3,10) else 1)' 2>/dev/null; then \
-	    echo "ERROR: '$$PY' is not Python >= 3.10 (package requires-python is >=3.10)." >&2; \
+	  if [ -x $(VENV)/bin/python ] && ! $(VENV)/bin/python -c 'import sys; sys.exit(0 if sys.version_info >= (3,12) else 1)'; then \
+	    echo "  → recreating $(VENV) (existing interpreter < 3.12)"; rm -rf $(VENV); fi; \
+	  if ! "$$PY" -c 'import sys; sys.exit(0 if sys.version_info >= (3,12) else 1)' 2>/dev/null; then \
+	    echo "ERROR: '$$PY' is not Python >= 3.12 (package requires-python is >=3.12)." >&2; \
 	    echo "       Without this gate the venv is built from a too-old interpreter, the" >&2; \
 	    echo "       version guard above deletes it on every run, and the install either" >&2; \
-	    echo "       backtracks forever or crashes at import. Provision 3.10+ first:" >&2; \
+	    echo "       backtracks forever or crashes at import. Provision 3.12+ first:" >&2; \
 	    echo "         bash ensure-python.sh   # or: make backend PY=python3.12" >&2; \
 	    exit 1; \
 	  fi; \
@@ -87,10 +87,10 @@ test: build
 #
 # Runs through the venv the `backend` target provisions rather than a bare
 # `$(PY) -m pip install --upgrade build`: on hosts whose system python3 is older
-# than 3.10 (Amazon Linux 2023 ships 3.9) that bare form installs `build` into
+# than 3.12 (Amazon Linux 2023 ships 3.9) that bare form installs `build` into
 # the *system* interpreter — mutating it without a venv, and tripping PEP 668
 # "externally-managed-environment" where the marker exists. Depending on
-# `backend` guarantees a >= 3.10 venv exists first.
+# `backend` guarantees a >= 3.12 venv exists first.
 wheel: frontend backend
 	$(PIP) install --upgrade build
 	$(VENV)/bin/python -m build --wheel

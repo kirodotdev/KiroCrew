@@ -165,8 +165,13 @@ async def test_a_row_whose_generation_is_gone_is_withdrawn():
 
 @pytest.mark.asyncio
 async def test_a_cold_row_is_left_to_the_cold_engine():
-    """``_mint_holder_alive`` answers False for a shared row, so the warm chokepoint
-    must judge only shared rows -- and leave a cold row's own verdict alone."""
+    """The two chokepoints partition the table, and each must leave the other's rows alone.
+
+    A cold row owns a ``client`` and carries no warm mark at all, so ``_warm_table_row``
+    excludes it and its verdict stays ``_mint_holder_alive``'s. The converse -- that a
+    warm-held row's verdict is THIS chokepoint's, because the cold judge abstains on one
+    -- is pinned in ``test_connections_handoff.py``.
+    """
     _mints["linear"] = {"state": "waiting", "oauth_url": "https://cold", "client": object()}
     assert await warm.expire_dead_mints() == []
     assert _mints["linear"]["state"] == "waiting"

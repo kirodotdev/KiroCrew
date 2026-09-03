@@ -12,6 +12,7 @@ import re
 import tempfile
 import time
 import uuid
+import weakref
 from collections.abc import Awaitable, Callable
 from datetime import datetime, timezone
 from itertools import islice
@@ -27,10 +28,13 @@ from kiro_crew.acp.client import AcpModelUnavailable
 from kiro_crew.agent_discovery import cached_project_agent_names, warm_project_agent_names
 from kiro_crew.agent_sdk.provider_identity import is_claude_code
 from kiro_crew.config.loader import (
+    AUTOCOMPACT_PCT_MAX,
+    AUTOCOMPACT_PCT_MIN,
     KiroCrewConfig,
     _workspace_name_for_dir,
     config_dir,
     default_project_dir,
+    published_autocompact_pct,
     resolve_agent_bindings,
 )
 from kiro_crew.dashboard.channel_slots import channel_slot_name, note_slot_closed
@@ -52,6 +56,7 @@ from kiro_crew.dashboard.chat_persistence import (
     COLOR_HEX_RE,
     _attach_variants,
     _rehydrate_slot_title,
+    _validate_autocompact_pct,
     get_reasoning_effort_values,
     save_slot_off_loop,
 )
@@ -103,6 +108,7 @@ from kiro_crew.messaging.link import is_channel_session_key
 from kiro_crew.providers.acp import AcpProvider
 from kiro_crew.providers.base import LLMProvider
 from kiro_crew.safety_override import safety_override
+from kiro_crew.sandbox import voice_runtime_workspace_conflict
 from kiro_crew.security import (
     is_sensitive_path,
     redact_credentials,
@@ -434,7 +440,9 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
                 # fall back to default bindings and falsely equate a
                 # project-agent slot with a request naming the default alias.
                 # Warm the cache off-loop first so the on-loop lookup is a hit.
-                await warm_project_agent_names(slot.project or None)
+                await warm_project_agent_names(
+                    slot.project or None, operation="api_chat", source="dashboard"
+                )
                 _stored = resolve_agent_bindings(_cfg, slot.agent, slot.project or None)
                 _requested = resolve_agent_bindings(_cfg, agent, slot.project or None)
                 # Identity itself lives on ResolvedBindings, next to the field
@@ -2262,10 +2270,18 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
             cfg_proj = cfg.dashboard.default_project if cfg else ""
             if isinstance(cfg_proj, str) and cfg_proj:
                 resolved = os.path.realpath(os.path.expanduser(cfg_proj))
-                if os.path.isdir(resolved) and not is_sensitive_path(resolved):
-                    cfg_proj = resolved
-                else:
-                    cfg_proj = ""
+                eligible = os.path.isdir(resolved) and not is_sensitive_path(resolved)
+                if eligible:
+                    # #7392 round 3: a configured default that overlaps the
+                    # data home would be refused at spawn anyway — skip it
+                    # here like a sensitive path, falling back to the
+                    # workspace default instead of wedging every new slot.
+                    # Off-loop (round 4): the shared scan primes runtime
+                    # paths (realpath/mkdir) on first use.
+                    eligible = (
+                        await asyncio.to_thread(voice_runtime_workspace_conflict, resolved)
+                    ) is None
+                cfg_proj = resolved if eligible else ""
             else:
                 cfg_proj = ""
             slot.project = cfg_proj or default_project_dir(workspace)
@@ -2404,9 +2420,48 @@ async def _reset_slot_session(
     completed an LLM round-trip, and such a turn is visible to any caller's
     has_active_turn() fast path — so a decline here implies a turn that started
     microseconds ago, which cannot have posted a card yet.
+
+    A successful reset also drops the slot's MCP session report, for the same
+    reason the pending card goes: it describes the session being torn down.
+    Every caller here changes what the next session will mount (agent, model,
+    workspace) or restarts it outright, so keeping the old report would leave
+    the UI presenting a dead session's server list as the live one's — the
+    stale-evidence failure that report exists to remove.
     """
     _unblock_pending_waits(state, slot)
-    return await state.sessions.reset(session_key, skip_if_busy=skip_if_busy)
+    try:
+        reloaded = await state.sessions.reset(session_key, skip_if_busy=skip_if_busy)
+    except BaseException:
+        # Raised or cancelled mid-teardown: the session is in a state this slot
+        # cannot vouch for, so neither is its verdict. Unknown fails open.
+        slot.record_model_withheld(None)
+        raise
+    if reloaded:
+        # The withhold verdict describes the session that advertised the model
+        # list, not the slot, so it goes with the session. Routed through this one
+        # funnel for the reason above: the switch handlers that reset a session
+        # are exactly the ones that can change which models the next session will
+        # advertise (agent, workspace, and the model pick itself), and a verdict
+        # surviving that would label the new session from the old one's
+        # entitlement.
+        #
+        # Gated on the reset having HAPPENED. What decides this is whether the
+        # session the verdict describes still exists: `skip_if_busy` DECLINES
+        # while a turn is in flight, leaving that session -- and therefore its
+        # verdict -- alive and accurate, while a completed teardown ends it. The
+        # membership heuristic the frontend falls back to on `null` is not itself
+        # the defect this carries a verdict to remove; inferring entitlement from
+        # that heuristic WHILE an authoritative answer exists is. Dropping on a
+        # decline would throw the authoritative answer away and re-create exactly
+        # that.
+        slot.record_model_withheld(None)
+        # The MCP session report rides the same gate for the same reason: it
+        # describes the session that was just torn down. Clearing is a courtesy
+        # delta push -- correctness rests on the identity projector in
+        # serialize_slots -- so it only fires when something was recorded.
+        if slot.clear_mcp_report():
+            state.broadcast_ws("mcp_report_update", {"slot": slot.key, "mcp_report": None})
+    return reloaded
 
 
 def _resolve_stop_event(slot: _ChatSlot, outcome: str) -> None:
@@ -3559,11 +3614,17 @@ async def api_chat_slot_reset_conversation(request: web.Request) -> web.Response
     mid-write, a plan between stages, and children still running after their
     parent's turn ended.
 
-    ``has_active_turn`` is the probe the reload route uses for this same teardown,
-    and it inherits that probe's edge: a turn holding the per-session semaphore
-    but not yet having a prompt in flight is not seen. Matching the sibling is
-    deliberate — a second, subtly different notion of "busy" for one teardown is
-    how the two drift apart.
+    The ``has_active_turn()`` check is a best-effort fast path; the
+    authoritative guard is the discard's ``skip_if_busy``, which probes the
+    per-session SEMAPHORE atomically with the session pop (see
+    :meth:`SessionManager.discard_conversation`). The fast path has a known
+    edge — a turn holding the semaphore but not yet having a prompt in flight
+    is invisible to it — and the atomic guard is what closes it, the same
+    contract the sibling reload route rests on, so the two teardowns keep one
+    notion of "busy". Of the refusal paths, only the atomic guard's decline is
+    SEL-recorded (``outcome="denied"``): it is the one refusal that happens
+    after the route has committed to the teardown, while the fast-path 409s
+    are pre-checks and stay unlogged, as they are on the sibling.
 
     The transcript is deliberately left in place, which means the tab still shows
     the earlier messages while the model no longer remembers them. That is the
@@ -3648,7 +3709,29 @@ async def api_chat_slot_reset_conversation(request: web.Request) -> web.Response
     if attached is not None:
         return attached
 
-    await state.sessions.discard_conversation(key, replay=replay)
+    # ``skip_if_busy``: the fast paths above cannot see a turn that holds the
+    # per-session semaphore but has not yet put a prompt in flight (an inbound
+    # channel message between the lease and its first stream event). The discard
+    # probes the semaphore atomically with the session pop, so a turn admitted
+    # after the guards above answered False is refused here instead of being
+    # torn down mid-lease.
+    discarded = await state.sessions.discard_conversation(key, replay=replay, skip_if_busy=True)
+    if not discarded:
+        sel().log_api_access(
+            caller=request.get("app", "") or "dashboard",
+            operation="slot_reset_conversation",
+            outcome="denied",
+            resources=f"slot={name} replay={replay}",
+        )
+        return web.json_response(
+            {"error": "a turn is in flight", "code": "turn_in_flight", "slot": name},
+            status=409,
+        )
+    # The fresh conversation will advertise its own model list, so the previous
+    # one's withhold verdict no longer describes this slot. Only on a performed
+    # discard: a refusal above leaves the old conversation (and its verdict) in
+    # place.
+    slot.record_model_withheld(None)
     sel().log_api_access(
         caller=request.get("app", "") or "dashboard",
         operation="slot_reset_conversation",
@@ -4268,7 +4351,9 @@ async def api_chat_slot_agent(request: web.Request) -> web.Response:
                 # PREVIOUS agent's project — latent until app agents could dispatch.
                 # Resolve WITH the slot's project scope (warmed off-loop first) so a
                 # project agent counts as resolved rather than falling back.
-                await warm_project_agent_names(slot.project or None)
+                await warm_project_agent_names(
+                    slot.project or None, operation="api_chat_slot_agent", source="dashboard"
+                )
                 bindings = resolve_agent_bindings(cfg, agent_name, slot.project or None)
                 ws_name = _workspace_name_for_dir(cfg, bindings.workspace_dir)
                 new_workspace = ws_name
@@ -4634,6 +4719,269 @@ async def api_chat_slot_model(request: web.Request) -> web.Response:
             _broadcast_context_reset(state, slot.key, None)
         state.push_slots_update()
         return web.json_response({"ok": True, "model": model_name})
+
+
+# Per-slot transaction locks for the autocompact endpoint. The write span
+# below contains awaits (body read, forced save), so two concurrent POSTs for
+# one slot can interleave: each captures the other's value as its rollback
+# snapshot, and a failed request's compare-and-swap rollback can then erase a
+# newer request's acknowledged write (value equality cannot identify
+# ownership when both requests carry the same pct). Serializing the whole
+# reauthorize -> pin -> mutate -> persist -> rollback -> live-map span per
+# slot makes the rollback unambiguous: only one request is ever inside the
+# span, so a rollback can only undo its own write. WeakValueDictionary so an
+# idle slot's lock is reclaimed with its last reference. Keyed by the
+# TRANSCRIPT (slot_history_key), not the slot: channel-linked aliases resolve
+# distinct slot names onto one file, and two requests through different alias
+# slots must serialize against each other or the loser's rollback/flush can
+# overwrite the winner's acknowledged durable write. A rebind mid-request is
+# handled by the expected_history_key pin and the post-persist
+# reauthorization, not by the lock key.
+_autocompact_txn_locks: "weakref.WeakValueDictionary[str, asyncio.Lock]" = (
+    weakref.WeakValueDictionary()
+)
+
+
+def _autocompact_txn_lock(history_key: str) -> asyncio.Lock:
+    lock = _autocompact_txn_locks.get(history_key)
+    if lock is None:
+        lock = asyncio.Lock()
+        _autocompact_txn_locks[history_key] = lock
+    return lock
+
+
+async def api_chat_slot_autocompact(request: web.Request) -> web.Response:
+    """GET/POST /api/chat/slots/{slot}/autocompact — per-session compact threshold.
+
+    GET returns the slot's override (``pct``, null when it follows the global),
+    the current global (``global_pct``), and the valid range. POST takes
+    ``{"pct": <number|null>}``: a number sets this session's override (rejected
+    outside the documented range, matching the global knob's PATCH validation),
+    null clears it back to the global. The value applies to the live session
+    immediately via the SessionManager override map and persists with the slot
+    metadata, so it survives gateway restarts.
+    """
+    state: DashboardState = request.app["state"]
+    name = request.match_info["slot"]
+    slot = state._slots.get(name)
+    if not slot:
+        return web.json_response({"error": "not found", "code": "slot_not_found"}, status=404)
+    # Session-aware ownership gate, not the slot-only check: the POST writes the
+    # override keyed by effective_session_key(slot), so a linked app-owned slot
+    # (channel stem) would let an app modify a foreign session's threshold and
+    # metadata. _check_slot_app_ownership authorizes the key the write actually
+    # lands on, same as /context and /note.
+    request_app = request.get("app", "")
+    denied = _check_slot_app_ownership(slot, name, request_app, "slot_autocompact")
+    if denied is not None:
+        return denied
+    if request.method == "GET":
+        return web.json_response(
+            {
+                "pct": slot.autocompact_pct,
+                "global_pct": published_autocompact_pct(),
+                "min": AUTOCOMPACT_PCT_MIN,
+                "max": AUTOCOMPACT_PCT_MAX,
+            }
+        )
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"error": "invalid JSON", "code": "invalid_json"}, status=400)
+    if not isinstance(body, dict):
+        return web.json_response(
+            {"error": "body must be a JSON object", "code": "invalid_json"}, status=400
+        )
+    if "pct" not in body:
+        return web.json_response(
+            {"error": "pct is required (number or null)", "code": "pct_required"}, status=400
+        )
+    pct = body["pct"]
+    if pct is not None:
+        # bool is an int subclass; True would otherwise read as 1.0 and be
+        # rejected by range, but reject it explicitly for a clear error.
+        if isinstance(pct, bool) or not isinstance(pct, (int, float)):
+            return web.json_response(
+                {"error": "pct must be a number or null", "code": "pct_not_a_number"}, status=400
+            )
+        try:
+            pct = float(pct)
+        except OverflowError:
+            # An int too large for a float; out of range by definition.
+            return web.json_response(
+                {"error": "pct must be a finite number", "code": "pct_not_finite"}, status=400
+            )
+        if pct != pct:  # NaN
+            return web.json_response(
+                {"error": "pct must be a finite number", "code": "pct_not_finite"}, status=400
+            )
+        if not (AUTOCOMPACT_PCT_MIN <= pct <= AUTOCOMPACT_PCT_MAX):
+            return web.json_response(
+                {
+                    "error": (
+                        f"pct must be between {AUTOCOMPACT_PCT_MIN:g} "
+                        f"and {AUTOCOMPACT_PCT_MAX:g}"
+                    ),
+                    "code": "pct_out_of_range",
+                },
+                status=400,
+            )
+    # Persist via the same forced-save mechanism every other slot-metadata
+    # route uses (tags / folders / pin: save_slot_off_loop(force=True) -- the
+    # empty-window merge for message-less slots, the full save otherwise;
+    # both read the slot fields INSIDE the transcript's cross-process lock
+    # and run the delete-won guard, so a permanent delete racing this write
+    # is refused by main's own tested path). A never-saved tab's override
+    # lives only in memory until the tab first persists, exactly like its
+    # model: the empty-window merge lands only into an existing line.
+    #
+    # Transactional shape (mirrors the tag-vocabulary delete): mutate the
+    # slot field, confirm the durable write with best_effort=False, and on
+    # any failure roll the field back and return a coded error -- the
+    # SessionManager override map (the live gate) is only touched after the
+    # persist verdict, so a failed request leaves live behavior unchanged.
+    # Serialize the whole transaction per slot: with awaits inside the write
+    # span, a second concurrent POST would otherwise capture this one's value
+    # as its rollback snapshot, and value-based rollback cannot tell "my
+    # write survived" from "someone else wrote the same number". Under the
+    # lock exactly one request is inside the span, so a rollback can only
+    # undo its own write. The client's per-slot promise chain orders writes
+    # from ONE client; this lock is the cross-client half. Keyed by the
+    # TRANSCRIPT so two alias slots resolving onto one file serialize too.
+    locked_history_key = slot_history_key(slot)
+    async with _autocompact_txn_lock(locked_history_key):
+        stale = _reauthorize_after_await(state, slot, name, request_app, "slot_autocompact")
+        if stale is not None:
+            return stale
+        # Pin the write to the transcript this authorization decision covered:
+        # the persist await below is a rebind window, and the save derives its
+        # target from live routing at write time. expected_history_key makes the
+        # save refuse (False, nothing written) if the routing moved, so the
+        # durable write can never land on a transcript this request was not
+        # authorized against. No await between the reauth above and this read.
+        authorized_history_key = slot_history_key(slot)
+        if authorized_history_key != locked_history_key:
+            # The slot was rebound between the lock-key read and acquisition:
+            # this request holds the OLD transcript's lock while the write
+            # would target the new one, so the serialization guarantee does
+            # not cover it. Same disposition as the mid-persist rebind below.
+            return web.json_response(
+                {"error": "session was deleted or rebound", "code": "session_gone"}, status=409
+            )
+        prior_pct = slot.autocompact_pct
+        slot.autocompact_pct = pct
+        if state.conversation_log:
+            try:
+                applied = await save_slot_off_loop(
+                    state,
+                    slot,
+                    force=True,
+                    best_effort=False,
+                    expected_history_key=authorized_history_key,
+                )
+            except Exception:
+                # Roll back this request's write and mark dirty so the
+                # periodic flush reconverges the durable record to the live
+                # field (a non-endpoint save may have durably written this
+                # rejected value before the failure).
+                slot.autocompact_pct = prior_pct
+                slot._dirty = True
+                logger.exception("Slot %s autocompact_pct persist failed", name)
+                return web.json_response(
+                    {"error": "could not persist threshold", "code": "persist_failed"}, status=500
+                )
+            if not applied:
+                # The save refused without writing: either the delete-won guard
+                # (session permanently deleted while the save awaited the lock)
+                # or the routing-moved pin (slot rebound to another transcript
+                # mid-request). Do not resurrect, do not write elsewhere, do not
+                # mutate live state.
+                slot.autocompact_pct = prior_pct
+                return web.json_response(
+                    {"error": "session was deleted or rebound", "code": "session_gone"}, status=409
+                )
+            # Mirror the COMMITTED value to every live slot whose current
+            # transcript key is the one this write landed on — not just the
+            # requesting slot: channel-linked aliases resolve distinct slot
+            # names onto one file, and a sibling left holding the old value
+            # would persist it back over this acknowledged commit on its next
+            # flush (its ordinary save writes ``autocompact_pct``
+            # unconditionally from its own field). Membership is re-derived
+            # here, NOT assumed: a slot rebound during the persist no longer
+            # writes this file, and mirroring it would apply a live change its
+            # reauthorization is about to deny. Snapshot values() — the event
+            # loop may mutate the dict between iterations. Priors are recorded
+            # so the confirm-save failure paths below can undo the mirror.
+            mirrored: list = []
+            for other in list(state._slots.values()):
+                if other is not slot and slot_history_key(other) == authorized_history_key:
+                    mirrored.append((other, other.autocompact_pct))
+                    other.autocompact_pct = pct
+            # The mirror runs on the event loop AFTER the persist returned, but
+            # a sibling's already-queued flush can acquire the transcript's
+            # file lock in the executor BEFORE the loop resumes here and write
+            # its then-stale field over the acknowledged commit (executor
+            # threads do not wait for the event loop). The mirror above fixes
+            # every live field; this second confirmed save re-orders the
+            # durable record after any such interleaved stale write — the file
+            # lock serializes it behind the sibling's write, and every field it
+            # can read is now the committed value. Same pin, same dispositions.
+            try:
+                confirmed = await save_slot_off_loop(
+                    state,
+                    slot,
+                    force=True,
+                    best_effort=False,
+                    expected_history_key=authorized_history_key,
+                )
+            except Exception:
+                for other, other_prior in mirrored:
+                    if slot_history_key(other) == authorized_history_key:
+                        other.autocompact_pct = other_prior
+                        other._dirty = True
+                slot.autocompact_pct = prior_pct
+                slot._dirty = True
+                logger.exception("Slot %s autocompact_pct confirm-persist failed", name)
+                return web.json_response(
+                    {"error": "could not persist threshold", "code": "persist_failed"}, status=500
+                )
+            if not confirmed:
+                for other, other_prior in mirrored:
+                    if slot_history_key(other) == authorized_history_key:
+                        other.autocompact_pct = other_prior
+                        other._dirty = True
+                slot.autocompact_pct = prior_pct
+                return web.json_response(
+                    {"error": "session was deleted or rebound", "code": "session_gone"}, status=409
+                )
+        # INVARIANT for this handler: every write is immediately preceded by an
+        # authorization decision with NO await between them. The persist await is
+        # a rebind window (same mechanism as the body read), so re-decide before
+        # the live override mutation; the slot-field change above rolls back for
+        # a rebound slot, whose successor re-derives its state on restore.
+        stale = _reauthorize_after_await(state, slot, name, request_app, "slot_autocompact")
+        if stale is not None:
+            slot.autocompact_pct = prior_pct
+            return stale
+        # Reauthorization can PASS after a rebind the pin never saw: a rebind
+        # landing after the save's internal routing read leaves the durable
+        # write correctly on the authorized transcript while the slot now
+        # resolves to a different session the caller may also own. Seeding the
+        # live map from effective_session_key(slot) would then apply the
+        # threshold to a session whose transcript never received it. Refuse:
+        # the committed transcript's siblings were mirrored above and its live
+        # override re-seeds on hydration; this slot's successor re-derives.
+        if slot_history_key(slot) != authorized_history_key:
+            slot.autocompact_pct = prior_pct
+            return web.json_response(
+                {"error": "session was deleted or rebound", "code": "session_gone"}, status=409
+            )
+        live_pct = slot.autocompact_pct
+        state.sessions.set_autocompact_pct(effective_session_key(slot), live_pct)
+        logger.info("Slot %s autocompact_pct set to %r", name, live_pct)
+        return web.json_response(
+            {"ok": True, "pct": live_pct, "global_pct": published_autocompact_pct()}
+        )
 
 
 async def api_chat_slots_model(request: web.Request) -> web.Response:
@@ -5004,6 +5352,25 @@ async def api_chat_slot_project(request: web.Request) -> web.Response:
                 error="sensitive path",
             )
             return web.json_response({"error": "Access denied"}, status=403)
+        # Pre-flight the voice-runtime workspace guard (issue #7392): a
+        # workspace that contains (or sits inside) the Kiro Crew data home is
+        # refused at agent spawn anyway, but only after the session exists and
+        # with a spawn-time stack trace. Reject it here, at the moment of
+        # choice, with the same actionable message. Off-loop: the check primes
+        # the runtime path cache (mkdir/realpath) on first use.
+        conflict = await asyncio.to_thread(voice_runtime_workspace_conflict, project)
+        if conflict is not None:
+            sel().log_api_access(
+                caller=request.get("user", "dashboard"),
+                operation="chat_slot_project",
+                outcome="denied",
+                resources=f"slot={name} project={project}",
+                error="voice runtime overlap",
+            )
+            return web.json_response(
+                {"error": conflict, "code": "workspace_overlaps_data_home"},
+                status=400,
+            )
     old_project = slot.project
     slot.project = project
     logger.info("Slot %s project set to %r", name, project)
@@ -5954,8 +6321,12 @@ async def api_chat_slot_resume(request: web.Request) -> web.Response:
         slot.created_at = meta["created_at"]
     # The identity of the transcript this resume read — lets a later save
     # recognize a file recreated by another writer after a permanent delete
-    # (the delete-won guard in ``_save_slot_to_history``).
+    # (the delete-won guard in ``_save_slot_to_history``). The observed bit
+    # records that a hydration READ happened even when the metadata carries
+    # no created_at (legacy files): without it, the guard's evidence gate
+    # treats the slot as never-hydrated and skips the delete-won comparison.
     slot._disk_meta_created_at = str(meta.get("created_at") or "")
+    slot._disk_meta_observed = bool(meta)
     # On a member key the pin came from the BINDING at slot creation above and
     # metadata may not override it (same tamperable file the guard refused to
     # trust). On an ordinary key, mode="member" may not ride in either — the
@@ -6007,6 +6378,14 @@ async def api_chat_slot_resume(request: web.Request) -> web.Response:
         # so a tampered/legacy JSONL can't seed a malformed sha that later
         # crashes the compare.
         slot.theme_consent_sha = normalize_theme_consent_sha(meta.get("theme_consent_sha"))
+    if meta.get("autocompact_pct") is not None:
+        # Restore the per-session compaction threshold, mirroring the
+        # persistence loaders: without this, a resumed slot's field stays None
+        # and the next save overwrites the persisted override with null, while
+        # the live gate silently falls back to the global.
+        slot.autocompact_pct = _validate_autocompact_pct(meta["autocompact_pct"])
+        if slot.autocompact_pct is not None and state.sessions:
+            state.sessions.set_autocompact_pct(effective_session_key(slot), slot.autocompact_pct)
     # Restore tags + the auto-tag once-flag (mirrors the persistence loaders).
     # Without the flag, resuming a session whose auto-tag the user removed
     # would re-run maybe_auto_tag on the next message and silently re-add it.
@@ -6275,63 +6654,81 @@ async def api_chat_mode(request: web.Request) -> web.Response:
 
     # If any slot has a pending approval and mode is trust/yolo, auto-approve it
     if mode in ("trust", "yolo"):
-        for slot in state._slots.values():
-            for aid, fut in list(slot._approval_futures.items()):
+        # A slot-scoped ``trust`` grants auto-approval to ONE session only (the
+        # target slot and any slot sharing its effective key). The pending-approval
+        # sweep MUST honour that scope: sweeping every slot's pending prompt would
+        # clear the approval card in unrelated chats — making them LOOK approved —
+        # while their ``_trust`` flag stays False, so their very next tool call
+        # prompts again. ``yolo`` is process-global and an unscoped ``trust`` (no
+        # slot named = the documented all-slots request) still sweeps everything,
+        # including background and channel approvals. Only a slot-scoped ``trust``
+        # narrows.
+        scoped = mode == "trust" and slot is not None
+        _target_key = effective_session_key(slot) if slot is not None and scoped else None
+        for _slot in state._slots.values():
+            if scoped and effective_session_key(_slot) != _target_key:
+                continue
+            for aid, fut in list(_slot._approval_futures.items()):
                 if not fut.done():
                     fut.set_result("approved")
                     # Persist resolved state into the permission message. The
                     # periodic flush skips non-dirty slots, so the mark must
                     # flag the slot or the write can be lost on restart.
-                    if _mark_permission_resolved(slot.messages, aid, mode):
-                        slot._dirty = True
+                    if _mark_permission_resolved(_slot.messages, aid, mode):
+                        _slot._dirty = True
                     # ``slot`` keys the frame for the slot-scoped WS gate — an
                     # app token cannot receive its own resolution without it.
                     state.broadcast_ws(
                         "approval_resolved",
-                        {"id": aid, "approved": True, "slot": slot.key},
+                        {"id": aid, "approved": True, "slot": _slot.key},
                     )
                     try:
                         sel().log_api_access(
-                            caller=f"dashboard:{slot.key}",
+                            caller=f"dashboard:{_slot.key}",
                             operation=f"tool_approval:bulk_{mode}",
                             outcome="approved",
                             resources=aid,
                         )
                     except Exception:
                         logger.warning("SEL audit failed for bulk approval %s", aid, exc_info=True)
-        # Also auto-approve all pending background approvals (cron/subagent/taskrunner)
-        for aid in list(state._approval_futures):
-            fut = state._approval_futures[aid]
-            if not fut.done():
-                state.resolve_approval(aid, True)
-                try:
-                    sel().log_api_access(
-                        caller="dashboard:background",
-                        operation=f"tool_approval:bulk_{mode}",
-                        outcome="approved",
-                        resources=aid,
-                    )
-                except Exception:
-                    logger.warning("SEL audit failed for bulk approval %s", aid, exc_info=True)
-        # Auto-approve pending channel approvals
-        mgr = getattr(state, "channel_manager", None)
-        if mgr:
-            for ch in mgr._channels.values():
-                for agent in ch.members.values():
-                    fut = agent._approval_future
-                    if fut and not fut.done():
-                        fut.set_result("approved")
-                        try:
-                            sel().log_api_access(
-                                caller=f"channel:{ch.id}:{agent.agent_name}",
-                                operation=f"tool_approval:bulk_{mode}",
-                                outcome="approved",
-                                resources=getattr(fut, "_approval_id", "unknown"),
-                            )
-                        except Exception:
-                            logger.warning(
-                                "SEL audit failed for channel bulk approval", exc_info=True
-                            )
+        # Background (cron/subagent/taskrunner) and channel approvals are NOT
+        # slot-scoped, so a slot-scoped ``trust`` must leave them pending — it
+        # asked for auto-approval on one session and cannot answer for unrelated
+        # background work. Only ``yolo`` and an all-slots ``trust`` sweep them.
+        if not scoped:
+            for aid in list(state._approval_futures):
+                fut = state._approval_futures[aid]
+                if not fut.done():
+                    state.resolve_approval(aid, True)
+                    try:
+                        sel().log_api_access(
+                            caller="dashboard:background",
+                            operation=f"tool_approval:bulk_{mode}",
+                            outcome="approved",
+                            resources=aid,
+                        )
+                    except Exception:
+                        logger.warning("SEL audit failed for bulk approval %s", aid, exc_info=True)
+            # Auto-approve pending channel approvals
+            mgr = getattr(state, "channel_manager", None)
+            if mgr:
+                for ch in mgr._channels.values():
+                    for agent in ch.members.values():
+                        fut = agent._approval_future
+                        if fut and not fut.done():
+                            fut.set_result("approved")
+                            try:
+                                sel().log_api_access(
+                                    caller=f"channel:{ch.id}:{agent.agent_name}",
+                                    operation=f"tool_approval:bulk_{mode}",
+                                    outcome="approved",
+                                    resources=getattr(fut, "_approval_id", "unknown"),
+                                )
+                            except Exception:
+                                logger.warning(
+                                    "SEL audit failed for channel bulk approval",
+                                    exc_info=True,
+                                )
 
     # Propagate trust/yolo to session approval policies so subagents inherit.
     #

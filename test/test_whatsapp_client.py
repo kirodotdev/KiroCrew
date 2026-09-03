@@ -15,6 +15,7 @@ import base64
 import io
 import sys
 import wave
+from pathlib import Path
 from types import ModuleType, SimpleNamespace
 from typing import Any
 
@@ -105,20 +106,35 @@ def test_session_exists_true_and_false(tmp_path):
 def test_connect_raises_without_extra(monkeypatch):
     monkeypatch.setattr(wac, "neonize_available", lambda: False)
     c = WhatsAppClient("/tmp/none.db")
-    with pytest.raises(RuntimeError, match="whatsapp"):
+    # Matches the DISTRIBUTION name: the message names neonize rather than the
+    # `kirocrew[whatsapp]` extra, which pip cannot resolve from any index.
+    with pytest.raises(RuntimeError, match="neonize"):
         asyncio.run(c.connect())
-    assert MISSING_EXTRA_HINT
+    assert "neonize" in MISSING_EXTRA_HINT
+    assert "kirocrew[" not in MISSING_EXTRA_HINT
 
 
 # ── connect(): fake neonize wiring ──────────────────────────────────────────
 class _FakeNewAClient:
-    """Captures event handlers by event class and records lifecycle calls."""
+    """Captures event handlers by event class and records lifecycle calls.
+
+    Mirrors two behaviours of the real ``NewAClient`` the channel depends on:
+
+    * constructing it CREATES the sqlite session store, so any probe of that file
+      after construction sees a non-empty session; and
+    * the rotating QR code arrives through the dedicated ``qr()`` callback slot,
+      carrying ONE code as bytes — never through the numbered event stream that
+      ``event()`` feeds, which only dispatches ``INT_TO_EVENT`` codes.
+    """
 
     def __init__(self, db_path: str) -> None:
         self.db_path = db_path
         self.handlers: dict[Any, Any] = {}
+        self.qr_callback: Any = None
         self.connected = False
         self.idled = False
+        Path(db_path).parent.mkdir(parents=True, exist_ok=True)
+        Path(db_path).write_bytes(b"sqlite-store")
 
     def event(self, ev_type):
         def _register(fn):
@@ -126,6 +142,10 @@ class _FakeNewAClient:
             return fn
 
         return _register
+
+    def qr(self, fn):
+        self.qr_callback = fn
+        return fn
 
     async def connect(self):
         self.connected = True
@@ -135,10 +155,6 @@ class _FakeNewAClient:
 
 
 # Event marker classes (only identity matters as dict keys).
-class QREv:  # noqa: D401
-    pass
-
-
 class PairStatusEv:
     pass
 
@@ -169,7 +185,6 @@ def _install_fake_neonize(monkeypatch):
     client_mod.NewAClient = _FakeNewAClient
     events_mod = ModuleType("neonize.aioze.events")
     for name, obj in {
-        "QREv": QREv,
         "PairStatusEv": PairStatusEv,
         "ConnectedEv": ConnectedEv,
         "DisconnectedEv": DisconnectedEv,
@@ -202,7 +217,6 @@ def test_connect_registers_handlers_and_starts_idle(monkeypatch, tmp_path):
     fake = c._client
     assert fake.connected is True
     assert set(fake.handlers) == {
-        QREv,
         PairStatusEv,
         ConnectedEv,
         DisconnectedEv,
@@ -210,20 +224,41 @@ def test_connect_registers_handlers_and_starts_idle(monkeypatch, tmp_path):
         TemporaryBanEv,
         MessageEv,
     }
-    # No session file -> pairing state announced before connect.
+    # QR is registered on the dedicated callback slot, never as a numbered event:
+    # `client.event(QR)` is never dispatched by neonize, so a handler placed there
+    # can never fire and the panel would wait for a code forever.
+    assert fake.qr_callback is not None
+    # No session file before the client was built -> pairing state announced. The
+    # fake creates the store in its constructor exactly as neonize does, so this
+    # also pins that the check is snapshotted BEFORE construction.
     assert c.state == STATE_PAIRING
     asyncio.run(c.disconnect())
 
 
-def test_qr_handler_records_codes_and_calls_observer(monkeypatch, tmp_path):
+def test_connect_with_existing_session_does_not_announce_pairing(monkeypatch, tmp_path):
+    c = _connect(monkeypatch, tmp_path, session=True)
+    assert c.state != STATE_PAIRING
+    asyncio.run(c.disconnect())
+
+
+def test_qr_callback_records_single_bytes_code_and_calls_observer(monkeypatch, tmp_path):
     c = _connect(monkeypatch, tmp_path)
     codes: list[list[str]] = []
     c.on_qr = codes.append
-    handler = c._client.handlers[QREv]
-    asyncio.run(handler(None, SimpleNamespace(Codes=["c1", "c2"])))
-    assert c.latest_qr == ["c1", "c2"]
-    assert codes == [["c1", "c2"]]
+    # neonize hands over ONE code as bytes per emission, not a batch.
+    asyncio.run(c._client.qr_callback(None, b"2@rotating,code=="))
+    assert c.latest_qr == ["2@rotating,code=="]
+    assert codes == [["2@rotating,code=="]]
     assert c.state == STATE_PAIRING
+    asyncio.run(c.disconnect())
+
+
+def test_qr_callback_replaces_previous_code(monkeypatch, tmp_path):
+    c = _connect(monkeypatch, tmp_path)
+    asyncio.run(c._client.qr_callback(None, b"first"))
+    asyncio.run(c._client.qr_callback(None, b"second"))
+    # Each emission supersedes the last, so the panel renders the live code.
+    assert c.latest_qr == ["second"]
     asyncio.run(c.disconnect())
 
 
@@ -234,8 +269,7 @@ def test_qr_handler_swallows_observer_error(monkeypatch, tmp_path):
         raise RuntimeError("qr observer failed")
 
     c.on_qr = boom
-    handler = c._client.handlers[QREv]
-    asyncio.run(handler(None, SimpleNamespace(Codes=["c1"])))  # must not raise
+    asyncio.run(c._client.qr_callback(None, b"c1"))  # must not raise
     asyncio.run(c.disconnect())
 
 

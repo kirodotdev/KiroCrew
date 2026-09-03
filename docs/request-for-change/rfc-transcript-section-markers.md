@@ -5,7 +5,7 @@ author: rnoack
 created: 2026-08-29
 last-audited: 2026-08-29
 audited-at: 202770d13
-doc-pr:
+doc-pr: 7033
 implementation-prs: []
 tracking-issues: []
 supersedes: []
@@ -24,7 +24,7 @@ superseded-by: []
   this one adds a row, that one changes how rows are written),
   `rfc-tool-derived-diff-cards.md` (the nearest precedent for promoting a
   transcript-derived affordance into the dashboard),
-  [#6853](https://github.com/kirodotdev/KiroCrew/pull/6853) (open — exposes
+  [#6853](https://github.com/kirodotdev/KiroCrew/pull/6853) (merged — exposes
   `reset_conversation` as a boundary-deferred session directive; the context-side
   counterpart to this RFC's view-side marker, see §2.3).
 
@@ -94,7 +94,7 @@ The two compose rather than compete: **mark the section for the view, reset the
 conversation for the context.**
 
 That pairing is not hypothetical. [#6853](https://github.com/kirodotdev/KiroCrew/pull/6853)
-(open, not yet merged) adds `reset_conversation` as a session directive and MCP
+has landed on `main`, adding `reset_conversation` as a session directive and MCP
 tool, and it reaches the effect the four guards above block by **queuing the
 discard for a later turn boundary** rather than applying it inline — the same
 shape this RFC uses for a marker (§5.4, §5.5). Its own motivation is this
@@ -102,16 +102,17 @@ document's use case: *"use when a session walks a list of independent items one
 at a time … and carrying item N's context into item N+1 buys nothing but
 tokens."*
 
-So if #6853 lands, both halves become self-service from inside the turn that
-wants them, through one boundary-deferred directive each. Two differences worth
-keeping straight: `reset_conversation` is user-surface gated
+So the context half is already self-service from inside the turn that wants it;
+adopting this RFC makes the view half self-service too, through one
+boundary-deferred directive each. Two differences worth keeping straight:
+`reset_conversation` is user-surface gated
 (`_USER_SURFACE_DIRECTIVES`) and so also works on messaging channels, whereas a
 section marker is inherently dashboard-only because it is a rendering; and the
 two effects are independent — a caller may want a clean view without a clean
 context, or the reverse.
 
-This RFC does not depend on #6853. Without it the view half is still
-self-service and the context half stays an out-of-band action.
+This RFC does not depend on #6853. The view half stands on its own; #6853 having
+landed makes the pairing available, not required.
 
 ## 3. Goals
 
@@ -248,7 +249,7 @@ This is why `/note` defers its visible line, and the machinery already exists:
 already call it (`chat_runner.py:3988`, `:4406`; `chat_orchestrator.py:244`,
 `:839`). **Reuse it; do not add a second notion of "held".**
 
-That is worth stating precisely, because a second one is already in flight:
+That is worth stating precisely, because a second one already exists:
 [#6853](https://github.com/kirodotdev/KiroCrew/pull/6853) defers its discard
 through `slot._pending_discard_conversation_key`, consumed at a boundary in
 `chat_runner.py`, not through `_deferred_notes`. The two are not obviously
@@ -665,7 +666,7 @@ marker would vanish on one of the two write paths.
    `/note` deferral (`_deferred_notes`, flushed by `flush_deferred_notes`), while
    [#6853](https://github.com/kirodotdev/KiroCrew/pull/6853) introduces a second
    boundary path (`slot._pending_discard_conversation_key`, consumed in
-   `chat_runner.py`) that additionally waits on sub-agents. If both land there are
-   two answers to "what happens at a turn boundary", which is the kind of pair
-   that drifts. Whether they should be one seam is a maintainer call, and it is
-   not a prerequisite for either change.
+   `chat_runner.py`) that additionally waits on sub-agents. If a marker lands
+   there are two answers to "what happens at a turn boundary", which is the kind
+   of pair that drifts. Whether they should be one seam is a maintainer call, and
+   it is not a prerequisite for either change.

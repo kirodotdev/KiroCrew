@@ -77,9 +77,42 @@ try:  # SEL audit — the runtime layer has no audit_source, so the pool emits i
 except Exception:  # pragma: no cover - standalone / test fallback
     _sel = None  # type: ignore[assignment]
 
+try:  # same resolver the AcpRuntime spawn path uses to locate the agent CLI
+    from kiro_crew.kiro_cli import resolve_kiro_cli
+except Exception:  # pragma: no cover - standalone / test fallback
+    resolve_kiro_cli = None  # type: ignore[assignment]
+
 from sage_lib import followup, store  # noqa: E402
 
 logger = logging.getLogger(__name__)
+
+
+def runtime_preflight() -> str:
+    """Cheap, read-only check that a reviewer session could actually be spawned.
+
+    Returns ``""`` when the runtime looks usable, else a message naming exactly
+    what is missing. Mirrors what ``_ensure_runtime_locked`` needs to spawn the
+    shared runtime — an importable ``AcpRuntime`` driving a ``kiro-cli``
+    subprocess — using the same resolver (``resolve_kiro_cli``) the runtime's
+    own spawn path goes through, so the answer here matches what a real spawn
+    would find. Without this check a review on a host with no usable agent CLI
+    completes with nothing written and reports an undiscriminated "no result
+    record", which cannot be triaged.
+
+    Deliberately does NOT spawn anything or touch the filesystem beyond the
+    executable lookup. That lookup still stats candidates under every ``PATH``
+    entry, so callers on the gateway event loop MUST offload this to a thread
+    (``asyncio.to_thread``) — one stale network mount in ``PATH`` would
+    otherwise stall the whole loop.
+    """
+    if AcpRuntime is None:
+        return ("the reviewer cannot run: the ACP runtime "
+                "(kiro_crew.acp.runtime) is not importable in this install")
+    if resolve_kiro_cli is not None and resolve_kiro_cli() is None:
+        return ("the reviewer cannot run: no kiro-cli executable was found on "
+                "this host (the reviewer session is driven by kiro-cli — "
+                "install it or add it to PATH)")
+    return ""
 
 
 def _is_abnormal_stop(reason: str) -> bool:

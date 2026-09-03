@@ -52,25 +52,29 @@ instead of silently targeting a host the caller never named.
 
 from __future__ import annotations
 
-import json
+import json  # noqa: F401 -- historical module export
 import os
 import re
 import subprocess
 import sys
-import tempfile
+import tempfile  # noqa: F401 -- historical module export
 from urllib.parse import quote, unquote, urlparse
 
 from kiro_crew.apps.registry import minimal_env
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
 
+from . import azure_normalization as _normalization
+from . import azure_transport as _transport
 from .errors import (
     ProviderCliError,
     ProviderInvalidInputError,
     ProviderPermissionError,
     ProviderSetupError,
     PrSearchError,
-    RepoUrlError,
+)
+from .errors import RepoUrlError as RepoUrlError  # noqa: F401 -- public re-export
+from .errors import (
     sanitize_cli_stderr,
 )
 
@@ -98,10 +102,8 @@ MAX_WINDOW_DAYS = 3650
 PR_SEARCH_MAX = 300
 
 # The one supported host. Azure DevOps Server (on-premises) is out of scope.
-AZURE_HOST = "dev.azure.com"
-# Legacy per-organization host, accepted when PARSING a pasted URL and
-# canonicalized to AZURE_HOST so one organization cannot become two identities.
-_LEGACY_HOST_SUFFIX = ".visualstudio.com"
+AZURE_HOST = _transport.AZURE_HOST
+_LEGACY_HOST_SUFFIX = _transport._LEGACY_HOST_SUFFIX
 
 # ``--api-version`` is MANDATORY on every ``az devops invoke`` call and differs
 # per endpoint: the CLI's own default is 5.0, which predates most of what this
@@ -122,10 +124,10 @@ _API_IDENTITY = "7.1-preview.1"
 
 # Azure list responses come back as ``{"count": n, "value": [...]}`` and are
 # paged with ``$top``/``$skip`` rather than a page number.
-_PAGE_SIZE = 100
+_PAGE_SIZE = _transport._PAGE_SIZE
 # Hard cap on pages walked by one paginated read, so a pathological project
 # cannot make a single request loop indefinitely.
-_MAX_PAGES = 40
+_MAX_PAGES = _transport._MAX_PAGES
 # Work-item comments are their own paged resource, keyed by a continuation token
 # rather than $skip, and Azure caps this page at 200.
 _COMMENT_PAGE_SIZE = 200
@@ -150,178 +152,34 @@ _PR_LOOKUP_TOP = 200
 
 # Azure has no colour on a work-item tag, so one is synthesized. Same neutral
 # default the other two clients fall back to, so a tag renders like a label.
-_SYNTHETIC_LABEL_COLOR = "888888"
+_SYNTHETIC_LABEL_COLOR = _normalization._SYNTHETIC_LABEL_COLOR
 
-# Conservative charset for an organization / project / repository segment.
-# Azure allows spaces in project and repository names, so a space is permitted
-# (values reach a subprocess as their own argv element, never a shell string),
-# but nothing that could act as a path or query separator is.
-_SEGMENT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 ._-]{0,63}$")
-# Segments that are part of Azure's own routing rather than a name.
-_RESERVED_SEGMENTS = frozenset({"_git", "_apis", "_workitems", "_build", "_settings", "_apps"})
+# Kept importable from the historical facade for direct tests and diagnostics.
+_SEGMENT_RE = _transport._SEGMENT_RE
+_RESERVED_SEGMENTS = _transport._RESERVED_SEGMENTS
 _SHA_RE = re.compile(r"^[0-9a-fA-F]{7,64}$")
-# A GUID as Azure returns identity ids. Validated before one reaches an argv or a
-# query string, since it is the one value here that comes from a prior response.
-_GUID_RE = re.compile(
-    r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
-)
+_GUID_RE = _normalization._GUID_RE
 # A login as the person filters accept it: an Azure unique name is usually an
 # email/UPN, so "@" and "+" are legal where they would not be on the other
 # providers.
 _LOGIN_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+@' -]{0,254}$")
 
 
-def _bad_segment(segment: str) -> bool:
-    """Whether a path segment is unusable as an org / project / repo name."""
-    if not segment or segment in (".", ".."):
-        return True
-    if segment.lower() in _RESERVED_SEGMENTS:
-        return True
-    return not _SEGMENT_RE.match(segment)
-
-
-_URL_PATH_SEPARATOR = re.compile(r"/+")
-
-
-def _url_path_segments(path: str) -> list[str]:
-    """The non-empty segments of a URL path.
-
-    A URL path separator is ``/`` on every host platform, so this deliberately
-    does NOT go through ``pathlib``/``os.path``: those rewrite the separator on
-    Windows and would take the URL apart with the wrong one. Runs of separators
-    collapse, so a doubled ``//`` yields no empty segment for a caller to mistake
-    for a real one.
-    """
-    return [segment for segment in _URL_PATH_SEPARATOR.split(path or "") if segment]
-
-
 def parse_azure_repo_url(link: str) -> tuple[str, str]:
-    """Parse ``("{organization}/{project}", repository)`` from an Azure DevOps URL.
-
-    Accepts the three forms a user can paste:
-
-    * ``https://dev.azure.com/{org}/{project}/_git/{repo}`` -- the repository page
-    * ``https://dev.azure.com/{org}/{project}`` -- the project page, where the
-      repository defaults to the project name (Azure creates one so named)
-    * ``https://{org}.visualstudio.com/{project}/_git/{repo}`` -- the legacy host,
-      canonicalized to the modern identity so one organization does not end up
-      with two cache trees
-
-    A trailing ``/``, a ``.git`` suffix, and any deeper path or query after the
-    repository segment (``/pullrequest/12``, ``?path=/src``) are IGNORED rather
-    than folded into the name -- users paste whichever tab they are on.
-
-    Deliberately strict, for the same reasons as the other two parsers: full URL
-    only, HTTPS only, no userinfo, host must be Azure's, and every segment is
-    charset-constrained before any value can reach a subprocess argv.
-    """
-    if not link or not isinstance(link, str):
-        raise RepoUrlError("repo link is empty")
-    try:
-        parsed = urlparse(link.strip())
-    except ValueError as exc:
-        raise RepoUrlError(f"unparseable URL: {link!r}") from exc
-    if parsed.scheme != "https":
-        raise RepoUrlError(f"not an https URL: {link!r}")
-    if parsed.username or parsed.password:
-        raise RepoUrlError("URLs with embedded credentials are not accepted")
-    # `hostname`/`port` parse the authority lazily, so a malformed one raises
-    # HERE rather than in urlparse; both are client input, so both become the
-    # same RepoUrlError the connect route maps to a 400.
-    try:
-        host = (parsed.hostname or "").lower().rstrip(".")
-        _ = parsed.port
-    except ValueError as exc:
-        raise RepoUrlError(f"malformed host or port in {link!r}") from exc
-
-    legacy_org = ""
-    if host == AZURE_HOST:
-        pass
-    elif host.endswith(_LEGACY_HOST_SUFFIX):
-        # The organization is the host's first label on the legacy form, so it is
-        # taken from there rather than from the path.
-        legacy_org = host[: -len(_LEGACY_HOST_SUFFIX)]
-        if _bad_segment(legacy_org):
-            raise RepoUrlError(f"invalid organization in {link!r}")
-    else:
-        raise RepoUrlError(
-            f"not a supported Azure DevOps host: {link!r} -- only {AZURE_HOST} and the "
-            "legacy {org}.visualstudio.com form are accepted (Azure DevOps Server is not supported)"
-        )
-
-    # Percent-decoded per segment, because a project or repository name may
-    # legitimately contain a space. Decoding cannot be allowed to reintroduce a
-    # separator, so a decoded segment carrying one is refused outright.
-    raw_parts = _url_path_segments(parsed.path or "")
-    parts: list[str] = []
-    for raw in raw_parts:
-        seg = unquote(raw)
-        if "/" in seg or "\\" in seg or "?" in seg or "#" in seg:
-            raise RepoUrlError(f"invalid path segment in {link!r}")
-        parts.append(seg)
-
-    if legacy_org:
-        org = legacy_org
-    else:
-        if not parts:
-            raise RepoUrlError(f"not a full Azure DevOps URL: {link!r}")
-        org, parts = parts[0], parts[1:]
-    if not parts:
-        raise RepoUrlError(
-            f"not a full Azure DevOps URL: {link!r} (expected .../{{project}} or .../{{project}}/_git/{{repo}})"
-        )
-    project, parts = parts[0], parts[1:]
-
-    # Everything from the `_git` marker onward addresses a repository; without
-    # the marker the URL names the project, whose default repository shares its
-    # name. Anything after the repository segment is a page within it.
-    if parts and parts[0] == "_git":
-        repo = parts[1] if len(parts) > 1 else project
-    elif parts and parts[0].lower() in _RESERVED_SEGMENTS:
-        # A project-level page that is not a repository page (boards, pipelines).
-        repo = project
-    else:
-        repo = project
-    repo = re.sub(r"\.git$", "", repo)
-
-    for seg in (org, project, repo):
-        if _bad_segment(seg):
-            raise RepoUrlError(f"invalid path segment in {link!r}")
-    return f"{org}/{project}", repo
+    """Parse the provider key from a supported Azure DevOps URL."""
+    return _transport.parse_azure_repo_url(link)
 
 
-def _split_owner(owner: str) -> tuple[str, str]:
-    """``"{org}/{project}"`` -> ``(org, project)``, split on the FIRST ``/`` only.
-
-    Azure's ``owner`` carries two independent names, and neither may contain a
-    slash, so a single split is exact. An owner with no ``/`` cannot address
-    anything -- every route below needs both halves -- so it is refused rather
-    than guessed at (defaulting the project to the organization would read a
-    different project's work items).
-    """
-    text = str(owner or "").strip().strip("/")
-    org, sep, project = text.partition("/")
-    if not sep:
-        raise ProviderCliError(
-            f"an Azure DevOps owner must be '{{organization}}/{{project}}' (got {owner!r})"
-        )
-    org, project = org.strip(), project.strip()
-    if _bad_segment(org) or _bad_segment(project):
-        raise ProviderCliError(f"invalid Azure DevOps organization/project: {owner!r}")
-    return org, project
-
-
-def _check_repo(repo: str) -> str:
-    """Validate a repository name before it reaches a route parameter."""
-    name = str(repo or "").strip()
-    if _bad_segment(name):
-        raise ProviderCliError(f"invalid Azure DevOps repository name: {repo!r}")
-    return name
+_bad_segment = _transport._bad_segment
+_URL_PATH_SEPARATOR = _transport._URL_PATH_SEPARATOR
+_url_path_segments = _transport._url_path_segments
+_split_owner = _transport._split_owner
+_check_repo = _transport._check_repo
 
 
 def _org_url(org: str) -> str:
-    """The ``--org`` value for an organization, always on the pinned host."""
-    return f"https://{AZURE_HOST}/{quote(org, safe='')}"
+    """Return the pinned organization URL through the current quote binding."""
+    return _transport._org_url(org, quote_value=quote)
 
 
 # ── az spawn hardening ───────────────────────────────────────────────────────
@@ -335,25 +193,7 @@ def _org_url(org: str) -> str:
 # hands the child a MINIMAL environment (PATH/HOME/XDG plus az's own auth and
 # network vars) instead of the gateway's full env, so unrelated secrets
 # (AWS/Slack/SSH) can never reach a substituted or compromised az.
-_AZ_ENV_PASSTHROUGH = (
-    # The Azure DevOps extension's own credential, and az's config/extension roots
-    # (which is where the `az login` session lives).
-    "AZURE_DEVOPS_EXT_PAT",
-    "AZURE_CONFIG_DIR",
-    "AZURE_EXTENSION_DIR",
-    "HTTP_PROXY",
-    "HTTPS_PROXY",
-    "NO_PROXY",
-    "ALL_PROXY",
-    "http_proxy",
-    "https_proxy",
-    "no_proxy",
-    "all_proxy",
-    "SSL_CERT_FILE",
-    "SSL_CERT_DIR",
-    "REQUESTS_CA_BUNDLE",
-    "CURL_CA_BUNDLE",
-)
+_AZ_ENV_PASSTHROUGH = _transport._AZ_ENV_PASSTHROUGH
 
 _az_bin_cache: str | None = None
 
@@ -432,53 +272,17 @@ def _az_bin() -> str:
     )
 
 
-def _resolve_host(host: str) -> str:
-    """Re-check ``host`` at the spawn boundary; only ``dev.azure.com`` passes.
-
-    Azure's host is pinned by ``provider.normalize_host``, but it is re-checked
-    here so a corrupted config entry or a future code path that forgets to
-    normalize cannot reach another server with the user's credential. An omitted
-    host is refused rather than defaulted, mirroring
-    ``gitlab_client._resolve_host``: a call that forgot the host must fail loudly
-    instead of silently targeting a host the caller never named.
-
-    Azure DevOps Server (on-premises) is refused because the ``azure-devops``
-    extension does not support it at all -- there is no credential path for it,
-    so accepting the host would only produce a confusing CLI failure.
-    """
-    if not host:
-        raise ProviderCliError("an Azure DevOps host is required for az calls")
-    normalized = host.lower().rstrip(".")
-    if normalized != AZURE_HOST:
-        raise ProviderCliError(
-            f"Azure DevOps host {normalized!r} is not supported -- only {AZURE_HOST} "
-            "(Azure DevOps Server / on-premises has no supported credential path)"
-        )
-    return normalized
+_resolve_host = _transport._resolve_host
 
 
 def _az_env(host: str) -> dict[str, str]:
-    """A minimal environment for ``az``: the platform's safe-key base plus az's
-    own auth and network/TLS vars when set -- NOT the gateway's full environment.
-
-    ``AZURE_DEVOPS_EXT_PAT`` is forwarded only for the pinned cloud host. It is a
-    single ambient credential with no host binding, so forwarding it to anything
-    else would hand a dev.azure.com token to that server.
-
-    ``AZURE_EXTENSION_USE_DYNAMIC_INSTALL=no`` is a security setting, not a
-    convenience one: with dynamic install enabled, a call naming an unknown
-    command group makes az download and execute an extension wheel. An automated
-    spawn must never install code, so a missing extension has to surface as an
-    error the user resolves themselves.
-    """
-    passthrough = {k: os.environ[k] for k in _AZ_ENV_PASSTHROUGH if k in os.environ}
-    if host != AZURE_HOST:
-        passthrough.pop("AZURE_DEVOPS_EXT_PAT", None)
-    passthrough["AZURE_EXTENSION_USE_DYNAMIC_INSTALL"] = "no"
-    passthrough["AZURE_CORE_COLLECT_TELEMETRY"] = "0"
-    passthrough["AZURE_CORE_NO_COLOR"] = "1"
-    passthrough["NO_COLOR"] = "1"
-    return minimal_env(**passthrough)
+    """Build the minimal ``az`` environment through the transport helper."""
+    return _transport._az_env(
+        host,
+        source_env=os.environ,
+        passthrough_keys=_AZ_ENV_PASSTHROUGH,
+        minimal_env=minimal_env,
+    )
 
 
 def _audit(op: str, target: str, outcome: str, *, error: str = "") -> None:
@@ -555,83 +359,24 @@ def _az_run(argv: list[str], *, host: str, timeout: float) -> subprocess.Complet
 # login instruction instead of an opaque exit code. TF400813 is Azure DevOps's
 # own "the user is not authorized" code, which it also returns for an expired or
 # absent session.
-_AZ_AUTH_MARKERS = (
-    "az login",
-    "az devops login",
-    "tf400813",
-    "please run 'az login'",
-    "unauthorized",
-    "401",
-    "before you can run this command you need to log in",
-)
+_AZ_AUTH_MARKERS = _transport._AZ_AUTH_MARKERS
 
 # Markers that mean the CLI or its azure-devops EXTENSION is missing. A missing
 # extension is reported as ``not_installed`` too: the fix is the same class of
 # user action (install something), and the connect dialog names it.
-_AZ_MISSING_MARKERS = (
-    'is not in the "az" command group',
-    "az extension add",
-    "extension is not installed",
-    "no such command",
-    "command not found",
-)
+_AZ_MISSING_MARKERS = _transport._AZ_MISSING_MARKERS
 
 
-def _raise_if_setup_failure(stderr_tail: str) -> None:
-    """Re-classify a missing-CLI / missing-extension / unauthenticated failure.
-
-    Order matters: the missing-extension check runs FIRST, because az's message
-    for an absent extension can also mention logging in, and telling a user to
-    authenticate a CLI that cannot serve the command at all sends them down the
-    wrong path.
-    """
-    low = (stderr_tail or "").lower()
-    if any(m in low for m in _AZ_MISSING_MARKERS):
-        raise ProviderSetupError(
-            "the `azure-devops` extension for the `az` CLI is not available -- "
-            "install it with `az extension add --name azure-devops`",
-            reason="not_installed",
-        )
-    if any(m in low for m in _AZ_AUTH_MARKERS):
-        raise ProviderSetupError(
-            f"the `az` CLI is not authenticated for {AZURE_HOST} -- run `az login` "
-            "(or `az devops login` with a personal access token)",
-            reason="not_authenticated",
-        )
+_raise_if_setup_failure = _transport._raise_if_setup_failure
 
 
 def _stderr_tail(proc: subprocess.CompletedProcess) -> str:
-    return sanitize_cli_stderr(" ".join((proc.stderr or "").strip().splitlines()[-3:]))
+    """Return sanitized stderr through the current facade binding."""
+    return _transport._stderr_tail(proc, sanitize=sanitize_cli_stderr)
 
 
-def _is_forbidden(tail: str) -> bool:
-    low = (tail or "").lower()
-    return "403" in low or "forbidden" in low or "does not have permission" in low
-
-
-def _body_file(body: object) -> str:
-    """Write a request body to a fresh 0600 temp file and return its path.
-
-    Azure's REST passthrough takes a body from a FILE (``--in-file``), not from
-    stdin, so a body has to be materialized on disk. Two properties matter:
-
-    * The mode is 0600 from creation (``mkstemp`` guarantees it), so a body is
-      never briefly world-readable -- bodies here carry comment prose and, for a
-      merge, the commit a merge is pinned to.
-    * The name is UNIQUE per call. A fixed name would let two concurrent requests
-      overwrite each other's body, so a merge could complete with another call's
-      payload, and would be a symlink-attack target in a shared temp directory.
-
-    The caller deletes it in a ``finally``.
-    """
-    fd, path = tempfile.mkstemp(prefix="kirocrew-az-", suffix=".json")
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            json.dump(body, handle)
-    except Exception:
-        os.unlink(path)
-        raise
-    return path
+_is_forbidden = _transport._is_forbidden
+_body_file = _transport._body_file
 
 
 def _az_invoke(
@@ -648,80 +393,26 @@ def _az_invoke(
     api_version: str,
     media_type: str = "",
 ) -> object:
-    """Run one ``az devops invoke`` call and parse the JSON response.
-
-    ``az devops invoke`` is the Azure CLI's generic REST passthrough: the
-    ``area``/``resource`` pair is resolved against the organization's own
-    ``_apis`` resource-location document, so an unsupported pair fails loudly
-    instead of silently addressing a different endpoint.
-
-    ``route`` supplies the route template's placeholders (``project``,
-    ``repositoryId``, ``pullRequestId``, ...) and ``query`` the query string.
-    Both are passed as separate argv elements -- never assembled into a shell
-    string -- so a value containing a space or an ``&`` cannot smuggle in another
-    parameter.
-
-    ``--detect false`` is always passed: detection would try to infer the
-    organization from the current git remote, and the cwd of a gateway process is
-    unrelated to the project being read.
-    """
-    argv = [
-        "az",
-        "devops",
-        "invoke",
-        "--org",
-        _org_url(org),
-        "--area",
-        area,
-        "--resource",
-        resource,
-        "--http-method",
-        method,
-        "--api-version",
-        api_version,
-        "--detect",
-        "false",
-        "--output",
-        "json",
-    ]
-    if route:
-        argv.append("--route-parameters")
-        argv.extend(f"{key}={value}" for key, value in route.items())
-    if query:
-        argv.append("--query-parameters")
-        argv.extend(f"{key}={value}" for key, value in query.items())
-    if media_type:
-        argv += ["--media-type", media_type]
-
-    path = ""
-    try:
-        if body is not None:
-            path = _body_file(body)
-            argv += ["--in-file", path]
-        proc = _az_run(argv, host=host, timeout=timeout)
-    finally:
-        if path:
-            try:
-                os.unlink(path)
-            except OSError:
-                pass
-
-    target = f"{area}/{resource}"
-    if proc.returncode != 0:
-        tail = _stderr_tail(proc)
-        _raise_if_setup_failure(tail)
-        if _is_forbidden(tail):
-            raise ProviderPermissionError(
-                f"az devops invoke {target} was forbidden (exit {proc.returncode}): {tail}"
-            )
-        raise ProviderCliError(f"az devops invoke {target} failed (exit {proc.returncode}): {tail}")
-    text = (proc.stdout or "").strip()
-    if not text:
-        return {}
-    try:
-        return json.loads(text)
-    except json.JSONDecodeError as exc:
-        raise ProviderCliError(f"az returned unexpected output for {target}") from exc
+    """Invoke through the extracted transport using this facade's patch seams."""
+    return _transport.invoke(
+        run=_az_run,
+        body_file=_body_file,
+        org_url=_org_url,
+        raise_if_setup_failure=_raise_if_setup_failure,
+        stderr_tail=_stderr_tail,
+        is_forbidden=_is_forbidden,
+        org=org,
+        area=area,
+        resource=resource,
+        host=host,
+        timeout=timeout,
+        route=route,
+        query=query,
+        method=method,
+        body=body,
+        api_version=api_version,
+        media_type=media_type,
+    )
 
 
 def _az_invoke_paged(
@@ -736,244 +427,39 @@ def _az_invoke_paged(
     api_version: str,
     limit: int = 0,
 ) -> list[dict]:
-    """Walk ``$top``/``$skip`` over a list endpoint and concatenate the values.
-
-    Azure pages by offset rather than by page number, and reports no "next page"
-    link on most of these routes, so a short page is the end-of-data signal.
-    Bounded by :data:`_MAX_PAGES` so one request cannot loop indefinitely on a
-    pathological project, and by ``limit`` when the caller wants fewer.
-    """
-    out: list[dict] = []
-    skip = 0
-    for _ in range(_MAX_PAGES):
-        top = _PAGE_SIZE
-        if limit:
-            remaining = limit - len(out)
-            if remaining <= 0:
-                break
-            top = min(_PAGE_SIZE, remaining)
-        page_query = dict(query or {})
-        page_query["$top"] = top
-        page_query["$skip"] = skip
-        rows = _values(
-            _az_invoke(
-                org=org,
-                area=area,
-                resource=resource,
-                host=host,
-                timeout=timeout,
-                route=route,
-                query=page_query,
-                api_version=api_version,
-            )
-        )
-        out.extend(rows)
-        if len(rows) < top:
-            break
-        skip += top
-    return out
+    """Page through the extracted transport using the current invoke binding."""
+    return _transport.invoke_paged(
+        invoke_one=_az_invoke,
+        values=_values,
+        page_size=_PAGE_SIZE,
+        max_pages=_MAX_PAGES,
+        org=org,
+        area=area,
+        resource=resource,
+        host=host,
+        timeout=timeout,
+        route=route,
+        query=query,
+        api_version=api_version,
+        limit=limit,
+    )
 
 
-def _obj(data: object) -> dict:
-    return data if isinstance(data, dict) else {}
+_obj = _normalization._obj
+_values = _normalization._values
+_identity_login = _normalization._identity_login
+_identity_logins = _normalization._identity_logins
+_identity_id = _normalization._identity_id
+_tag_names = _normalization._tag_names
+_tags_field = _normalization._tags_field
+_check_label = _normalization._check_label
+_shape_labels = _normalization._shape_labels
+_work_item_url = _normalization._work_item_url
+_field = _normalization._field
 
 
-def _values(data: object) -> list[dict]:
-    """The rows of an Azure list response.
-
-    Azure wraps a collection in ``{"count": n, "value": [...]}``, but a few
-    routes answer with a bare array, so both shapes are accepted.
-    """
-    if isinstance(data, list):
-        return [row for row in data if isinstance(row, dict)]
-    inner = _obj(data).get("value")
-    if isinstance(inner, list):
-        return [row for row in inner if isinstance(row, dict)]
-    return []
-
-
-# ── normalization: Azure DevOps -> the GitHub-shaped vocabulary the app speaks ─
-
-
-def _identity_login(raw: object) -> str | None:
-    """An Azure identity reference -> a login string.
-
-    ``uniqueName`` is the stable, human-typeable handle (usually an email/UPN) and
-    is what the person filters match on, so it is preferred; ``displayName`` is
-    the fallback for a service identity that has none.
-    """
-    if not isinstance(raw, dict):
-        return None
-    name = raw.get("uniqueName") or raw.get("displayName") or raw.get("principalName")
-    text = str(name).strip() if name else ""
-    return text or None
-
-
-def _identity_logins(raw: object) -> list[str]:
-    if not isinstance(raw, list):
-        return []
-    return [login for login in (_identity_login(item) for item in raw) if login]
-
-
-def _identity_id(raw: object) -> str | None:
-    """The GUID of an identity reference, validated before it can reach an argv."""
-    if not isinstance(raw, dict):
-        return None
-    value = str(raw.get("id") or "").strip()
-    return value if _GUID_RE.match(value) else None
-
-
-def _tag_names(raw: object) -> list[str]:
-    """``System.Tags`` -> a list of tag names.
-
-    Azure stores tags as ONE delimited string (``"needs-triage; blocked"``), so
-    this is a parse, not a field read. Tags are case sensitive and may contain
-    neither ``,`` nor ``;`` -- the delimiter is why -- and Azure normalizes the
-    separator to ``"; "`` on write.
-    """
-    text = str(raw or "").strip()
-    if not text:
-        return []
-    return [part.strip() for part in text.split(";") if part.strip()]
-
-
-def _tags_field(names: list[str]) -> str:
-    """A tag list -> the delimited ``System.Tags`` string Azure stores."""
-    return "; ".join(names)
-
-
-def _check_label(label: str) -> str:
-    """Validate one tag name before it is written into ``System.Tags``.
-
-    ``,`` and ``;`` are the delimiters Azure splits the field on, so a name
-    containing either would silently become two tags -- or corrupt a neighbouring
-    one -- on the read-modify-write below. Refusing is the only honest answer:
-    there is no escaping mechanism to fall back on.
-    """
-    name = str(label or "").strip()
-    if not name:
-        raise ProviderCliError("a tag name cannot be empty")
-    if "," in name or ";" in name:
-        raise ProviderCliError(
-            f"Azure DevOps tags cannot contain ',' or ';' (got {label!r}) -- those are "
-            "the delimiters the tag field is stored with"
-        )
-    if len(name) > 400:
-        raise ProviderCliError(f"tag name is too long: {label!r}")
-    return name
-
-
-def _shape_labels(names: list[str]) -> list[dict]:
-    """Tag names -> ``[{name, color, description}]``.
-
-    The colour is SYNTHETIC: an Azure work-item tag has no colour and no
-    description, so every tag renders in the same neutral colour the other two
-    clients fall back to for an uncoloured label.
-    """
-    return [{"name": name, "color": _SYNTHETIC_LABEL_COLOR, "description": ""} for name in names]
-
-
-def _work_item_url(org: str, project: str, number: int) -> str:
-    """The web URL of a work item.
-
-    Synthesized rather than read: the batch hydrate selects FIELDS, and Azure
-    only returns ``_links`` for a full (unselected) read, so asking for the link
-    would double the payload of every list refresh.
-    """
-    return f"https://{AZURE_HOST}/{quote(org, safe='')}/{quote(project, safe='')}/_workitems/edit/{int(number)}"
-
-
-def _field(fields: dict, name: str, default: object = None) -> object:
-    value = fields.get(name)
-    return default if value is None else value
-
-
-def _norm_issue(raw: dict, *, org: str, project: str, closed_states: frozenset[str]) -> dict:
-    """One work item -> the list-view row shape ``github_client._ISSUE_JQ`` produces.
-
-    ``author_association`` is ``None``: Azure has no computed
-    contributor-relationship concept at all, so reporting one would be fiction.
-    It only feeds :func:`derive_members`, which is honest about returning nothing.
-
-    ``reactions``/``thumbs_up`` are ``0`` rather than ``None`` because a work item
-    carries no reaction data of any kind -- zero is the true count, not an
-    unknown.
-    """
-    fields = _obj(raw.get("fields"))
-    number = raw.get("id")
-    state = str(_field(fields, "System.State", "") or "")
-    return {
-        "number": number,
-        "title": str(_field(fields, "System.Title", "") or ""),
-        "url": _work_item_url(org, project, int(number)) if isinstance(number, int) else "",
-        "labels": _tag_names(fields.get("System.Tags")),
-        "comments": _field(fields, "System.CommentCount", 0),
-        "reactions": 0,
-        "thumbs_up": 0,
-        "author_association": None,
-        "updated_at": _field(fields, "System.ChangedDate"),
-        "created_at": _field(fields, "System.CreatedDate"),
-        "state": "closed" if state in closed_states else "open",
-        "author": _identity_login(fields.get("System.CreatedBy")),
-        # Azure allows exactly ONE assignee per work item, so the list is either
-        # empty or a single entry -- the plural key is the app's shape, not a claim
-        # that Azure supports several.
-        "assignees": [
-            login for login in (_identity_login(fields.get("System.AssignedTo")),) if login
-        ],
-        "body": str(_field(fields, "System.Description", "") or ""),
-    }
-
-
-def _norm_issue_detail(raw: dict, *, org: str, project: str, closed_states: frozenset[str]) -> dict:
-    """One work item -> the detail-pane shape ``_ISSUE_DETAIL_JQ`` produces.
-
-    ``state_reason`` is ``None``: Azure's closing REASON (``System.Reason``) is a
-    process-template value ("Fixed", "Duplicate", "As Designed") with no mapping
-    onto GitHub's two-valued ``completed``/``not_planned``, and inventing one
-    would put a value the UI renders as a verdict behind a guess.
-
-    ``locked`` is always ``False`` -- a work item has no discussion lock -- and
-    ``milestone`` reports the iteration path, which is the closest Azure analogue
-    of a milestone and is what a triage reader is looking for.
-    """
-    fields = _obj(raw.get("fields"))
-    number = raw.get("id")
-    state = str(_field(fields, "System.State", "") or "")
-    is_closed = state in closed_states
-    iteration = str(_field(fields, "System.IterationPath", "") or "")
-    return {
-        "number": number,
-        "title": str(_field(fields, "System.Title", "") or ""),
-        "body": str(_field(fields, "System.Description", "") or ""),
-        "state": "closed" if is_closed else "open",
-        "state_reason": None,
-        "url": _work_item_url(org, project, int(number)) if isinstance(number, int) else "",
-        "author": _identity_login(fields.get("System.CreatedBy")),
-        "author_association": None,
-        "created_at": _field(fields, "System.CreatedDate"),
-        "updated_at": _field(fields, "System.ChangedDate"),
-        # Azure records no separate close timestamp unless the template defines
-        # Microsoft.VSTS.Common.ClosedDate, so it is read when present and the
-        # last change is NOT substituted for it -- that would date the close to
-        # whatever happened most recently.
-        "closed_at": _field(fields, "Microsoft.VSTS.Common.ClosedDate") if is_closed else None,
-        "closed_by": (
-            _identity_login(fields.get("Microsoft.VSTS.Common.ClosedBy")) if is_closed else None
-        ),
-        "comments": _field(fields, "System.CommentCount", 0),
-        "locked": False,
-        "labels": _shape_labels(_tag_names(fields.get("System.Tags"))),
-        "assignees": [
-            login for login in (_identity_login(fields.get("System.AssignedTo")),) if login
-        ],
-        "milestone": (
-            {"title": iteration.rsplit("\\", 1)[-1], "state": None, "due_on": None}
-            if iteration
-            else None
-        ),
-        "reactions": None,
-    }
+_norm_issue = _normalization._norm_issue
+_norm_issue_detail = _normalization._norm_issue_detail
 
 
 # ── project metadata: ids, identities, and the template's own state names ─────
@@ -1915,169 +1401,14 @@ def get_ref_summary(
 
 # Field -> the event kind its change becomes. Only fields the triage pane renders
 # are listed; everything else in an update is noise here.
-_TRACKED_UPDATE_FIELDS = (
-    "System.Tags",
-    "System.State",
-    "System.AssignedTo",
-    "System.Title",
-    "System.IterationPath",
-)
-
-
-def _update_actor(update: dict) -> str | None:
-    return _identity_login(update.get("revisedBy"))
-
-
-def _update_when(update: dict) -> object:
-    fields = _obj(update.get("fields"))
-    changed = _obj(fields.get("System.ChangedDate")).get("newValue")
-    return changed or update.get("revisedDate")
-
-
-def _tag_events(update: dict, actor: str | None, created: object) -> list[dict]:
-    """Label add/remove events reconstructed from a ``System.Tags`` diff.
-
-    Azure records the whole delimited string before and after, not a per-tag
-    event, so the two sets are differenced here. Order within the field is not
-    meaningful, so a pure reordering produces no events.
-    """
-    change = _obj(_obj(update.get("fields")).get("System.Tags"))
-    before = set(_tag_names(change.get("oldValue")))
-    after = set(_tag_names(change.get("newValue")))
-    events: list[dict] = []
-    for name in sorted(after - before):
-        events.append(
-            {
-                "kind": "labeled",
-                "actor": actor,
-                "created_at": created,
-                "label": {"name": name, "color": _SYNTHETIC_LABEL_COLOR},
-            }
-        )
-    for name in sorted(before - after):
-        events.append(
-            {
-                "kind": "unlabeled",
-                "actor": actor,
-                "created_at": created,
-                "label": {"name": name, "color": _SYNTHETIC_LABEL_COLOR},
-            }
-        )
-    return events
-
-
-def _state_events(
-    update: dict, actor: str | None, created: object, closed_states: frozenset[str]
-) -> list[dict]:
-    """close / reopen events reconstructed from a ``System.State`` diff.
-
-    A move between two OPEN states (New -> Active) is not a timeline event in
-    GitHub's vocabulary and is dropped, so the pane does not fill with workflow
-    churn the UI cannot render.
-    """
-    change = _obj(_obj(update.get("fields")).get("System.State"))
-    before = str(change.get("oldValue") or "")
-    after = str(change.get("newValue") or "")
-    if not after or before == after:
-        return []
-    was_closed, is_closed = before in closed_states, after in closed_states
-    if is_closed and not was_closed:
-        return [
-            {
-                "kind": "closed",
-                "actor": actor,
-                "created_at": created,
-                # Azure's System.Reason is a process-template value with no mapping
-                # onto GitHub's completed / not_planned pair -- see _norm_issue_detail.
-                "state_reason": None,
-                "commit_id": None,
-            }
-        ]
-    if was_closed and not is_closed:
-        return [{"kind": "reopened", "actor": actor, "created_at": created}]
-    return []
-
-
-def _assignee_events(update: dict, actor: str | None, created: object) -> list[dict]:
-    change = _obj(_obj(update.get("fields")).get("System.AssignedTo"))
-    before = _identity_login(change.get("oldValue"))
-    after = _identity_login(change.get("newValue"))
-    events: list[dict] = []
-    if before and before != after:
-        events.append(
-            {
-                "kind": "unassigned",
-                "actor": actor,
-                "created_at": created,
-                "assignee": before,
-            }
-        )
-    if after and after != before:
-        events.append(
-            {
-                "kind": "assigned",
-                "actor": actor,
-                "created_at": created,
-                "assignee": after,
-            }
-        )
-    return events
-
-
-def _norm_update(update: dict, closed_states: frozenset[str]) -> list[dict]:
-    """One work item revision -> zero or more normalized timeline events."""
-    fields = _obj(update.get("fields"))
-    if not any(name in fields for name in _TRACKED_UPDATE_FIELDS):
-        return []
-    actor = _update_actor(update)
-    created = _update_when(update)
-    events: list[dict] = []
-    events.extend(_tag_events(update, actor, created))
-    events.extend(_state_events(update, actor, created, closed_states))
-    events.extend(_assignee_events(update, actor, created))
-    title = _obj(fields.get("System.Title"))
-    if title.get("newValue") and title.get("oldValue") != title.get("newValue"):
-        events.append(
-            {
-                "kind": "renamed",
-                "actor": actor,
-                "created_at": created,
-                "rename": {"from": title.get("oldValue"), "to": title.get("newValue")},
-            }
-        )
-    iteration = _obj(fields.get("System.IterationPath"))
-    if iteration.get("newValue") and iteration.get("oldValue") != iteration.get("newValue"):
-        events.append(
-            {
-                "kind": "milestoned",
-                "actor": actor,
-                "created_at": created,
-                "milestone": str(iteration["newValue"]).rsplit("\\", 1)[-1],
-            }
-        )
-    return events
-
-
-def _norm_work_item_comment(comment: dict) -> dict:
-    """One work item comment -> the normalized ``comment`` timeline entry.
-
-    ``id`` and ``updated_at`` are load-bearing rather than decoration: the crew
-    claim protocol keeps ONE comment as its public ledger and rewrites it, so it
-    needs the id to address its own comment and the modified time to prove the
-    claim is alive (``created_at`` on an edited comment is still the original post
-    time). Azure supplies both.
-    """
-    modified = comment.get("modifiedDate") or comment.get("createdDate")
-    return {
-        "kind": "comment",
-        "id": comment.get("id"),
-        "actor": _identity_login(comment.get("createdBy")),
-        "created_at": comment.get("createdDate"),
-        "updated_at": modified,
-        "body": str(comment.get("text") or ""),
-        "author_association": None,
-        "reactions": None,
-    }
+_TRACKED_UPDATE_FIELDS = _normalization._TRACKED_UPDATE_FIELDS
+_update_actor = _normalization._update_actor
+_update_when = _normalization._update_when
+_tag_events = _normalization._tag_events
+_state_events = _normalization._state_events
+_assignee_events = _normalization._assignee_events
+_norm_update = _normalization._norm_update
+_norm_work_item_comment = _normalization._norm_work_item_comment
 
 
 def list_issue_timeline(
@@ -2144,75 +1475,10 @@ def list_issue_timeline(
 
 # Azure records a reviewer's vote as a SYSTEM thread carrying this property, so a
 # vote is recoverable even though system comments are otherwise dropped.
-_VOTE_PROPERTY_KEYS = ("CodeReviewVoteResult", "Microsoft.TeamFoundation.Discussion.VoteResult")
-# Azure's vote scale. 5 ("approved with suggestions") maps to APPROVED rather than
-# to a fourth UI state: it IS an approval, and inventing a state the shared pane
-# does not render would show nothing at all.
-_VOTE_STATES = {
-    10: "APPROVED",
-    5: "APPROVED",
-    0: "COMMENTED",
-    -5: "CHANGES_REQUESTED",
-    -10: "CHANGES_REQUESTED",
-}
-
-
-def _thread_property(thread: dict, keys: tuple[str, ...]) -> object:
-    """Read one of Azure's thread ``properties`` entries.
-
-    A property value is wrapped as ``{"type": ..., "$value": ...}``, and the key
-    spelling has varied across API versions, so several are tried.
-    """
-    props = _obj(thread.get("properties"))
-    for key in keys:
-        if key in props:
-            entry = props[key]
-            if isinstance(entry, dict):
-                return entry.get("$value")
-            return entry
-    return None
-
-
-def _norm_thread_comment(thread: dict, comment: dict) -> dict | None:
-    """One PR thread comment -> a normalized timeline entry, or ``None`` to drop it.
-
-    ``commentType == "system"`` is dropped: Azure writes an entry there for every
-    vote, every reviewer addition and every push, so keeping them would bury the
-    human discussion under "X voted" noise. A thread with a ``threadContext``
-    (a file and line) becomes a ``review_comment``, which is what makes a review's
-    substance visible; everything else is a plain ``comment``.
-    """
-    if str(comment.get("commentType") or "") == "system":
-        return None
-    body = str(comment.get("content") or "")
-    if not body.strip():
-        return None
-    context = _obj(thread.get("threadContext"))
-    path = context.get("filePath")
-    if not path:
-        return {
-            "kind": "comment",
-            "id": comment.get("id"),
-            "actor": _identity_login(comment.get("author")),
-            "created_at": comment.get("publishedDate"),
-            "updated_at": comment.get("lastUpdatedDate") or comment.get("publishedDate"),
-            "body": body,
-            "author_association": None,
-            "reactions": None,
-        }
-    line = _obj(context.get("rightFileStart")).get("line") or _obj(
-        context.get("leftFileStart")
-    ).get("line")
-    return {
-        "kind": "review_comment",
-        "actor": _identity_login(comment.get("author")),
-        "created_at": comment.get("publishedDate"),
-        "body": body,
-        "author_association": None,
-        "path": path,
-        "line": line,
-        "url": None,
-    }
+_VOTE_PROPERTY_KEYS = _normalization._VOTE_PROPERTY_KEYS
+_VOTE_STATES = _normalization._VOTE_STATES
+_thread_property = _normalization._thread_property
+_norm_thread_comment = _normalization._norm_thread_comment
 
 
 def list_pr_timeline(
@@ -2587,17 +1853,7 @@ def create_label(
     host: str = "",
     timeout: float = AZ_TIMEOUT_SEC,
 ) -> dict:
-    """Register a tag for use on the project's work items.
-
-    Azure has NO create-tag endpoint: a tag definition comes into existence when a
-    tag is first applied to a work item (the tags API can rename and delete, not
-    create). So this validates the name, returns the existing definition when the
-    project already has one, and otherwise returns the shaped tag without a write
-    -- the definition materializes the first time :func:`add_issue_labels` applies
-    it, which is what every caller of this function does next.
-
-    ``color`` and ``description`` are accepted for signature parity and cannot be
-    stored: an Azure tag has neither.
+    """Return an existing project tag or refuse a name Azure cannot pre-create.
 
     Azure has no create-tag-definition endpoint -- a tag comes into existence when
     it is first APPLIED to a work item -- so this cannot create anything. It
@@ -2736,120 +1992,11 @@ def add_pr_comment(
 # ── pull requests ───────────────────────────────────────────────────────────
 
 
-def _branch_name(ref: object) -> str | None:
-    """``refs/heads/main`` -> ``main``; anything else passes through unchanged."""
-    text = str(ref or "")
-    if not text:
-        return None
-    return text[len("refs/heads/") :] if text.startswith("refs/heads/") else text
-
-
-def _pr_labels(raw: object) -> list[str]:
-    """Azure PR labels, which are its own tag objects and may be deactivated."""
-    return [
-        str(row.get("name")) for row in _values(raw) if row.get("name") and row.get("active", True)
-    ]
-
-
-def _norm_pull(raw: dict) -> dict:
-    """One Azure pull request -> the row shape ``github_client._PR_JQ`` produces.
-
-    ``state`` folds ``completed`` (merged) and ``abandoned`` into ``closed``,
-    because that is what the app's open/closed filter means; the distinction
-    survives in ``merged_at``, exactly as it does on the other two providers.
-
-    ``updated_at`` needs an explanation: Azure exposes NO modification timestamp
-    on a pull request. The closing date is used when the PR is closed and the
-    creation date otherwise, which is the best available answer -- so an edit to an
-    open PR does not move it in a most-recently-updated ordering. The list is
-    therefore ordered by creation on this provider (see :func:`_list_pulls`), and
-    the probe that gates polling does not claim otherwise.
-
-    ``assignees`` is always empty: an Azure pull request has reviewers, not
-    assignees, and reporting reviewers as assignees would badge a reviewer as
-    owning the change.
-    """
-    status = str(raw.get("status") or "").lower()
-    merged = status == "completed"
-    closed_at = raw.get("closedDate")
-    return {
-        "number": raw.get("pullRequestId"),
-        "title": str(raw.get("title") or ""),
-        "url": _pr_web_url(raw),
-        "state": "open" if status == "active" else "closed",
-        "draft": bool(raw.get("isDraft")),
-        "labels": _pr_labels(raw.get("labels")),
-        "author": _identity_login(raw.get("createdBy")),
-        "author_association": None,
-        "updated_at": closed_at or raw.get("creationDate"),
-        "created_at": raw.get("creationDate"),
-        "closed_at": closed_at if status in ("completed", "abandoned") else None,
-        "merged_at": closed_at if merged else None,
-        "assignees": [],
-        "requested_reviewers": _identity_logins(raw.get("reviewers")),
-        "base": _branch_name(raw.get("targetRefName")),
-        "head": _branch_name(raw.get("sourceRefName")),
-        # The head COMMIT, for the same reason the other clients carry it in the
-        # list row: a bulk approve or a merge has to name the revision the row was
-        # rendered at. Azure calls it the last merge SOURCE commit.
-        "head_sha": _obj(raw.get("lastMergeSourceCommit")).get("commitId"),
-        "body": str(raw.get("description") or ""),
-        # Card enrichment is NOT available in the list payload on Azure (checks are
-        # policy evaluations, addressed per PR), so these stay unknown here and
-        # ``enrich_pulls`` fills them. ``checks_counts: None`` is what keeps an
-        # unenriched row out of the on-disk cache via ``enrichment_complete``.
-        "additions": None,
-        "deletions": None,
-        "changed_files": None,
-        "checks_state": None,
-        "checks_counts": None,
-        "checks_truncated": False,
-    }
-
-
-def _pr_web_url(raw: dict) -> str:
-    """The PR's web URL.
-
-    Azure's payload carries only an API ``url`` (and a ``_links.web`` that is
-    absent on the list route), so the human URL is composed from the repository's
-    project and name when the web link is missing.
-    """
-    web = _obj(_obj(raw.get("_links")).get("web")).get("href")
-    if web:
-        return str(web)
-    repo = _obj(raw.get("repository"))
-    project = _obj(repo.get("project")).get("name")
-    org = _org_from_api_url(repo.get("url"))
-    number = raw.get("pullRequestId")
-    if not (project and org and repo.get("name") and number):
-        return ""
-    return (
-        f"https://{AZURE_HOST}/{quote(str(org), safe='')}/{quote(str(project), safe='')}"
-        f"/_git/{quote(str(repo['name']), safe='')}/pullrequest/{int(number)}"
-    )
-
-
-def _org_from_api_url(url: object) -> str | None:
-    """The organization from an Azure API URL, for composing a web link.
-
-    Azure's API URLs come in two forms -- ``dev.azure.com/{org}/...`` and the
-    legacy ``{org}.visualstudio.com/...`` -- so both are read here rather than
-    assuming the modern one.
-    """
-    try:
-        parsed = urlparse(str(url or ""))
-        host = (parsed.hostname or "").lower()
-    except ValueError:
-        return None
-    if host.endswith(_LEGACY_HOST_SUFFIX):
-        candidate = host[: -len(_LEGACY_HOST_SUFFIX)]
-        return candidate if not _bad_segment(candidate) else None
-    if host == AZURE_HOST:
-        segments = _url_path_segments(parsed.path or "")
-        if segments:
-            candidate = unquote(segments[0])
-            return candidate if not _bad_segment(candidate) else None
-    return None
+_branch_name = _normalization._branch_name
+_pr_labels = _normalization._pr_labels
+_norm_pull = _normalization._norm_pull
+_pr_web_url = _normalization._pr_web_url
+_org_from_api_url = _normalization._org_from_api_url
 
 
 def _list_pulls(
@@ -2923,15 +2070,9 @@ def list_closed_pulls(
 # it the exact analogue of GitHub's weak ``mergeable`` field -- and NOT of a merge
 # gate. Anything not yet computed is reported as unknown (None) rather than as
 # not-mergeable, so the UI does not flash a false conflict warning mid-computation.
-_MERGE_SUCCEEDED = frozenset({"succeeded"})
-_MERGE_PENDING = frozenset({"queued", "notset", "", "none"})
-
-
-def _mergeable(raw: dict) -> bool | None:
-    status = str(raw.get("mergeStatus") or "").lower()
-    if status in _MERGE_PENDING:
-        return None
-    return status in _MERGE_SUCCEEDED
+_MERGE_SUCCEEDED = _normalization._MERGE_SUCCEEDED
+_MERGE_PENDING = _normalization._MERGE_PENDING
+_mergeable = _normalization._mergeable
 
 
 def get_pr_detail(
@@ -3092,91 +2233,13 @@ def _policy_evaluations(
 # ``gitlab_client._norm_job`` uses so the shared summary logic and UI colours
 # apply unchanged, including its behaviour that a cancelled unit is
 # informational rather than failing.
-_EVALUATION_BUCKETS = {
-    "approved": "success",
-    "rejected": "failure",
-    "broken": "failure",
-    "queued": "running",
-    "running": "running",
-    "notapplicable": "other",
-}
-_BUILD_RESULT_BUCKETS = {
-    "succeeded": "success",
-    "failed": "failure",
-    # Azure's "partially succeeded" means some tasks failed but were allowed to:
-    # the build did not fail, so reporting it red would show a red PR that Azure
-    # itself considers passing -- the same reason GitLab's allow_failure jobs
-    # bucket as informational.
-    "partiallysucceeded": "other",
-    "canceled": "other",
-    "cancelled": "other",
-    "none": "other",
-}
-_BUILD_RUNNING_STATUSES = frozenset({"notstarted", "inprogress", "postponed", "none", ""})
-_BUILD_FINISHED_STATUSES = frozenset({"completed"})
-
-
-def _evaluation_bucket(status: str) -> str:
-    return _EVALUATION_BUCKETS.get((status or "").lower(), "other")
-
-
-def _norm_evaluation(evaluation: dict) -> dict:
-    """One policy evaluation -> the check-row shape ``_CHECK_RUN_JQ`` produces.
-
-    ``bucket`` is precomputed because :func:`summarize_checks` reads it, and
-    ``source`` carries the publisher identity the dedupe keys on -- the policy
-    TYPE, so a required-reviewers policy and a build policy are distinct
-    publishers rather than one lump.
-    """
-    status = str(evaluation.get("status") or "")
-    bucket = _evaluation_bucket(status)
-    config = _obj(evaluation.get("configuration"))
-    policy_type = _obj(config.get("type"))
-    display = str(policy_type.get("displayName") or "policy")
-    settings = _obj(config.get("settings"))
-    detail = str(settings.get("displayName") or "")
-    blocking = bool(config.get("isBlocking", True))
-    return {
-        "name": detail or display,
-        "status": "in_progress" if bucket == "running" else "completed",
-        "conclusion": {"failure": "failure", "success": "success", "running": None}.get(
-            bucket, "neutral"
-        ),
-        "bucket": bucket if blocking or bucket != "failure" else "other",
-        "url": None,
-        "started_at": evaluation.get("startedDate"),
-        "completed_at": evaluation.get("completedDate"),
-        "summary": display if detail else "",
-        "app": "Azure DevOps policy",
-        "source": str(policy_type.get("id") or "policy"),
-    }
-
-
-def _norm_build(build: dict) -> dict:
-    """One pipeline build -> the check-row shape ``_CHECK_RUN_JQ`` produces."""
-    status = str(build.get("status") or "").lower()
-    result = str(build.get("result") or "").lower()
-    if status in _BUILD_FINISHED_STATUSES:
-        bucket = _BUILD_RESULT_BUCKETS.get(result, "other")
-    elif status in _BUILD_RUNNING_STATUSES:
-        bucket = "running"
-    else:
-        bucket = "other"
-    definition = _obj(build.get("definition"))
-    return {
-        "name": str(definition.get("name") or build.get("buildNumber") or "build"),
-        "status": "completed" if status in _BUILD_FINISHED_STATUSES else "in_progress",
-        "conclusion": {"failure": "failure", "success": "success", "running": None}.get(
-            bucket, "neutral"
-        ),
-        "bucket": bucket,
-        "url": _obj(_obj(build.get("_links")).get("web")).get("href"),
-        "started_at": build.get("startTime") or build.get("queueTime"),
-        "completed_at": build.get("finishTime"),
-        "summary": str(build.get("buildNumber") or ""),
-        "app": "Azure Pipelines",
-        "source": "azure-pipelines",
-    }
+_EVALUATION_BUCKETS = _normalization._EVALUATION_BUCKETS
+_BUILD_RESULT_BUCKETS = _normalization._BUILD_RESULT_BUCKETS
+_BUILD_RUNNING_STATUSES = _normalization._BUILD_RUNNING_STATUSES
+_BUILD_FINISHED_STATUSES = _normalization._BUILD_FINISHED_STATUSES
+_evaluation_bucket = _normalization._evaluation_bucket
+_norm_evaluation = _normalization._norm_evaluation
+_norm_build = _normalization._norm_build
 
 
 def _builds_for_sha(
@@ -3282,30 +2345,12 @@ def list_pr_checks(
     return rows
 
 
-_CHECK_BUCKETS = ("failure", "running", "success", "other")
+_CHECK_BUCKETS = _normalization._CHECK_BUCKETS
 
 
 def summarize_checks(checks: list[dict]) -> dict:
-    """``{checks_counts, checks_state, checks_truncated}`` from bucketed rows.
-
-    Byte-identical contract to the other two clients', including the
-    ``checks_state`` priority (anything failing dominates, then running, then
-    success, then informational) so the card's dot never reads greener than the
-    list it summarizes, and ``None`` when there are no checks at all.
-    """
-    counts = dict.fromkeys(_CHECK_BUCKETS, 0)
-    for row in checks:
-        if not isinstance(row, dict):
-            continue
-        bucket = row.get("bucket")
-        counts[bucket if isinstance(bucket, str) and bucket in counts else "other"] += 1
-    for bucket in _CHECK_BUCKETS:
-        if counts[bucket]:
-            state: str | None = bucket
-            break
-    else:
-        state = None  # no checks at all -> the card shows no dot
-    return {"checks_counts": counts, "checks_state": state, "checks_truncated": False}
+    """Return the provider-neutral check summary."""
+    return _normalization.summarize_checks(checks)
 
 
 def _enrich_rows(owner: str, repo: str, pulls: list[dict], *, host: str) -> list[dict]:
@@ -3359,13 +2404,8 @@ def enrich_pulls_by_number(
 
 
 def enrichment_complete(pulls: list[dict]) -> bool:
-    """Whether every row carries its card enrichment.
-
-    Reads the same ``checks_counts is not None`` invariant the other clients do:
-    a row that arrived unenriched must keep itself OUT of the on-disk list cache
-    rather than being cached as authoritative.
-    """
-    return all(pr.get("checks_counts") is not None for pr in pulls)
+    """Whether every row is safe to persist in the pull-request cache."""
+    return _normalization.enrichment_complete(pulls)
 
 
 # ── cheap open-list probe (poll gating) ─────────────────────────────────────
@@ -3594,9 +2634,9 @@ def search_pulls(
 #   auto-merge          -> ``autoCompleteSetBy``, a real reversible armed state
 #   cancel / re-run CI  -> a pipeline BUILD, not a workflow run
 #
-# Unlike GitLab, Azure can express all three review verdicts and all three merge
-# strategies, and it has a genuine arm-and-cancel auto-merge -- so nothing here is
-# refused for want of a native equivalent.
+# Azure supports all three merge strategies and reversible auto-complete, but its
+# reviewer vote is PR-scoped rather than revision-scoped. Verdicts are therefore
+# refused below; only a comment can be bound safely to the displayed discussion.
 
 
 def _pr_patch(

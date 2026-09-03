@@ -145,19 +145,20 @@ class TestPauseSource:
         assert row["sync_status"] == "paused"
 
     @pytest.mark.asyncio
-    async def test_pause_syncs_sync_status_into_properties(self, store, tmp_path):
-        """The watcher's pre-scan skip reads properties["sync_status"], not the
-        column, so a paused folder was still walked every sweep when the JSON
-        copy stayed "active"."""
+    async def test_pause_records_the_status_in_one_place(self, store, tmp_path):
+        """The pause lands in the COLUMN the watcher's pre-scan skip reads, and
+        nowhere else: a second copy in the properties JSON is what let a paused
+        folder go on being walked every sweep while one store said "active"."""
         sid = store.add_source(
             "test", "local_folder", str(tmp_path), properties={"sync_status": "active"},
         )
         async with TestClient(TestServer(_make_app(store))) as client:
             resp = await client.post(f"/api/knowledge/sources/{sid}/pause")
             assert resp.status == 200
-        row = store.db.execute("SELECT properties FROM sources WHERE id = ?", (sid,)).fetchone()
-        props = json.loads(row["properties"])
-        assert props["sync_status"] == "paused"
+        row = store.db.execute(
+            "SELECT sync_status, properties FROM sources WHERE id = ?", (sid,)).fetchone()
+        assert row["sync_status"] == "paused"
+        assert "sync_status" not in json.loads(row["properties"])
 
 
 class TestDeleteSourceDismissal:

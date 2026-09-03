@@ -945,6 +945,43 @@ _UI_LANGUAGE_CATALOGS = frozenset(
 )
 
 
+def normalize_ui_language_tag(value: object, *, source: str = "language") -> str:
+    """Admit an arbitrary value as a usable UI language tag, or return ``""``.
+
+    The single gate a BCP-47 tag passes to become a *usable* UI language,
+    whatever its provenance: the persisted ``dashboard.language`` (see
+    :func:`ui_language_tag`) or a value handed over by a caller — e.g. a
+    request-scoped hint carrying the language a browser already resolved for
+    itself, which is the only way the backend can learn an implicitly chosen
+    language at all. Both clear the identical bar deliberately: the frontend
+    admits a language through exactly one gate, and a second, laxer copy here
+    would let the two disagree about what the active language is (#1130).
+
+    Rejected as ``""``: a non-string, a blank, a value that is not tag-shaped
+    (``_UI_LANGUAGE_TAG_RE``), and a shape-valid tag naming no shipped catalog
+    (``_UI_LANGUAGE_CATALOGS``) — the last because steering a model to a
+    language the chrome around it cannot render puts two languages on one
+    screen. ``""`` therefore always means "no usable language", never "English";
+    callers must treat it as unknown.
+
+    ``source`` labels the provenance in the debug line only — it never changes
+    the verdict.
+    """
+    if not isinstance(value, str):
+        return ""
+    tag = value.strip()
+    if not tag or not _UI_LANGUAGE_TAG_RE.match(tag):
+        return ""
+    if tag not in _UI_LANGUAGE_CATALOGS:
+        # Debug, not warning: this fires on every context build for as long as
+        # the value stays persisted, and the UI itself already degraded to
+        # auto-detect — but without a line here an operator cannot distinguish
+        # "not configured" from "rejected" when the steer is absent.
+        logger.debug("%s %r names no shipped catalog; not steering", source, tag)
+        return ""
+    return tag
+
+
 def ui_language_tag(cfg: "KiroCrewConfig") -> str:
     """Return ``dashboard.language`` as a validated, *shipped* tag, or ``""``.
 
@@ -969,22 +1006,12 @@ def ui_language_tag(cfg: "KiroCrewConfig") -> str:
     ``""`` means "the backend does not know" — nothing was chosen (the
     "follow the browser" sentinel, resolved in the SPA's ``resolveLanguage()``),
     the stored value is not tag-shaped, or it names no shipped catalog. Callers
-    must treat it as unknown rather than as English.
+    must treat it as unknown rather than as English. A caller that CAN learn an
+    unconfigured browser's resolved language (a request-scoped hint) validates it
+    through the same :func:`normalize_ui_language_tag` gate this delegates to,
+    so config and hint can never disagree about what counts as usable.
     """
-    lang = cfg.dashboard.language
-    if not isinstance(lang, str):
-        return ""
-    lang = lang.strip()
-    if not lang or not _UI_LANGUAGE_TAG_RE.match(lang):
-        return ""
-    if lang not in _UI_LANGUAGE_CATALOGS:
-        # Debug, not warning: this fires on every context build for as long as
-        # the value stays persisted, and the UI itself already degraded to
-        # auto-detect — but without a line here an operator cannot distinguish
-        # "not configured" from "rejected" when the steer is absent.
-        logger.debug("dashboard.language %r names no shipped catalog; not steering", lang)
-        return ""
-    return lang
+    return normalize_ui_language_tag(cfg.dashboard.language, source="dashboard.language")
 
 
 def _build_ui_language_section(cfg: "KiroCrewConfig") -> str:
@@ -1963,13 +1990,30 @@ class ContextBuilder:
                 "or plainly that you cannot. One clause is enough. A "
                 "destructive one-liner handed over with no undo path is not a "
                 "terse answer, it is a trap.\n"
-                "- Plain words, short sentences. Brevity is not enough — a "
-                "short reply can still be dense and unreadable. Drop jargon "
-                "that dresses up a simple point, hedges, and repetition; a "
-                "technical term stays only when it IS the fact, not when it is "
-                "decoration.\n"
+                "- Plain words, short sentences, and the point at the front of "
+                "each one. Plain does not mean childish — write for a capable "
+                "reader in a hurry, not for a five-year-old. Brevity is not "
+                "enough: a short reply can still be dense and unreadable. Put "
+                "what the user must know in the first few words and stop; do "
+                "not make them assemble it across clauses chained with here, "
+                "then, but, so that or which means, and do not frame a fact as "
+                "a correction of something they never said (“this is not X, "
+                "it's Y” — just say Y). Drop jargon that dresses up a simple "
+                "point, hedges, and repetition; a technical term stays only "
+                "when it IS the fact, not when it is decoration. If a sentence "
+                "has to be read twice to find the point, rewrite it.\n"
                 "- Answer the question that was asked and nothing adjacent. "
                 "Take a position instead of listing options.\n"
+                "- Stopping or deviating is still an answer, not a case to "
+                "argue. LEAD WITH THE ACTION you recommend, as one plain "
+                "imperative sentence — not with what you found, not with "
+                "the situation. Then at most two sentences of the state that "
+                "makes that action necessary, and stop. What led there — "
+                "what you found, what it collides with, why the old plan no "
+                "longer fits, why your call is right — is explanation, "
+                "and stays opt-in like the rest. Justifying a deviation feels "
+                "mandatory; it is not, and the derivation buries the one thing "
+                "the user has to decide.\n"
                 "- Code, commands, paths, identifiers, error strings and file "
                 "contents stay verbatim and complete — this mode cuts prose, "
                 "never payload. Payload is what the user asked for or has to "
@@ -1989,9 +2033,14 @@ class ContextBuilder:
                 "that you read it. Say what the thing does, not where you "
                 "found it, and hand the reference over when the user asks to "
                 "check it.\n"
-                "- The moment the user asks why, asks you to explain, or asks "
-                "for a doc, review, walkthrough or deep dive, this mode is off "
-                "for that reply: give the full detail they asked for.\n\n"
+                "- A request for the reason is not a request for a document. "
+                "When the user asks why, or asks you to explain something, the "
+                "reason turns ON and every length rule stays in force: a few "
+                "plain sentences, one per point, and nothing adjacent to what "
+                "they asked. Only an explicit request for depth — a doc, a "
+                "review, a walkthrough, a deep dive, in detail, everything — "
+                "lifts the bound, and for that reply this mode is off: give "
+                "the full detail they asked for.\n\n"
                 "Explaining in full, unasked, is the rare exception — not a "
                 "lane you look for. The default, even for judgement calls, is "
                 'the terse answer plus a one-line offer (e.g. "say why for '

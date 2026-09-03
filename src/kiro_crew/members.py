@@ -30,7 +30,12 @@ from kiro_crew import platform_compat
 from kiro_crew.artifacts import slugify
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.paths import data_home
-from kiro_crew.jsonl_util import rotate_jsonl_at
+from kiro_crew.jsonl_util import (
+    RECORD_CAP,
+    UnreadableRecord,
+    rotate_jsonl_at,
+    strict_records,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +56,16 @@ ACTIVITY_FILE_NAME = "activity.jsonl"
 # also reads this whole file synchronously on every deduped call, so the
 # cap bounds that read as well as the disk.
 _ACTIVITY_LOG_MAX_BYTES = 1024 * 1024
+
+# Longest single RECORD the reader will materialise. Distinct from the file-size
+# cap above and not implied by it: rotation only fires when the writer next
+# appends, so a crafted newline-free line lands whole before any rotation sees
+# it, and `for line in handle` would then allocate all of it at once. This log is
+# agent-writable and its read feeds an append/suppress decision, so an over-cap
+# record aborts the read (see :func:`_read_activity_checked`) rather than being
+# skipped. Named here so a test can move the dial; real entries are ~150 bytes,
+# so the shared cap has enormous headroom over anything legitimate.
+_RECORD_CAP = RECORD_CAP
 
 #: Crew-slug -> DM-thread binding inside a member's directory.
 DM_FILE_NAME = "dm.json"
@@ -363,15 +378,32 @@ def record_activity(
     try:
         slug = slug_for_name(member)
         path = member_dir(slug)
-        if dedupe_session and any(
-            # Matched on BOTH fields: a colliding slug means one file can hold
-            # two members, so session alone would suppress the wrong entry.
-            # Only participation entries carry `session`, which is also the only
-            # kind deduped — routing decisions are distinct events.
-            r.get("session") == session_key and r.get("member") == member
-            for r in read_activity(slug)
-        ):
-            return False
+        if dedupe_session:
+            prior, complete = _read_activity_checked(slug)
+            if not complete:
+                # Fail closed. An over-cap record was refused, so `prior` is a
+                # prefix of the log and the probe below cannot prove this pair
+                # is absent from the part it could not read. Appending anyway
+                # would risk a duplicate participation entry, which inflates
+                # the counts that drive trigger generation and routing. Not
+                # recording is the same outcome the blanket handler below
+                # already produces for any other read failure, so no caller
+                # learns a new failure mode from this.
+                logger.warning(
+                    "member activity log unreadable in full; not recording %r to avoid a "
+                    "duplicate entry",
+                    member,
+                )
+                return False
+            if any(
+                # Matched on BOTH fields: a colliding slug means one file can hold
+                # two members, so session alone would suppress the wrong entry.
+                # Only participation entries carry `session`, which is also the only
+                # kind deduped — routing decisions are distinct events.
+                r.get("session") == session_key and r.get("member") == member
+                for r in prior
+            ):
+                return False
         path.mkdir(parents=True, exist_ok=True)
         # Newline on BOTH sides. The trailing one is ordinary JSONL framing; the
         # LEADING one is what survives a torn write. A record appended straight
@@ -405,6 +437,22 @@ def record_activity(
 def read_activity(slug: str, limit: int = 0) -> list[dict]:
     """Return a member's activity entries, oldest first.
 
+    The degrading view of :func:`_read_activity_checked`: it drops the
+    completeness flag. A generation stopped by an over-cap record still
+    contributes the entries it read BEFORE that record, so the caller sees a
+    prefix rather than nothing -- correct for a caller that only displays or
+    counts entries. A caller whose output feeds a durable decision must use
+    :func:`_read_activity_checked` and honour the flag, because a prefix is
+    indistinguishable from the whole log without it -- see the
+    ``dedupe_session`` probe in :func:`record_activity`.
+    """
+    rows, _complete = _read_activity_checked(slug, limit)
+    return rows
+
+
+def _read_activity_checked(slug: str, limit: int = 0) -> tuple[list[dict], bool]:
+    """Return a member's activity entries oldest first, and whether they are ALL of them.
+
     Reads the one rotated generation (``.jsonl.1``, see
     :data:`_ACTIVITY_LOG_MAX_BYTES`) before the live file — the same
     two-generation read as the stub fallback log's aggregator — so a
@@ -416,12 +464,24 @@ def read_activity(slug: str, limit: int = 0) -> list[dict]:
     likewise skipped rather than discarding what the other generation
     yielded. ``limit`` > 0 returns only the most recent N across both
     generations.
+
+    The second element is False when a record exceeded
+    :data:`_RECORD_CAP` and was therefore refused. That case cannot be
+    treated like a malformed line: this log is agent-writable, so one
+    crafted newline-free line would otherwise be materialised whole, and
+    :func:`kiro_crew.jsonl_util.strict_records` stops the read instead of
+    skipping it. Skipping would be worse than losing the entry — the
+    ``dedupe_session`` probe reads absence as "no prior entry" and appends a
+    duplicate, inflating the participation counts this log exists to feed.
+    So the flag is returned rather than swallowed, and the one caller that
+    writes based on this read fails closed on it.
     """
     try:
         live = member_dir(slug) / ACTIVITY_FILE_NAME
     except MemberSlugError:
-        return []
+        return [], True
     out: list[dict] = []
+    complete = True
 
     # Hold a shared (non-blocking) lock on the rotation lock file while
     # reading both generations.  This prevents a concurrent writer from
@@ -443,8 +503,8 @@ def read_activity(slug: str, limit: int = 0) -> list[dict]:
             if not path.is_file():
                 continue
             try:
-                with open(path, encoding="utf-8") as fh:
-                    for line in fh:
+                with open(path, "rb") as fh:
+                    for line in strict_records(fh, path, cap=_RECORD_CAP):
                         line = line.strip()
                         if not line:
                             continue
@@ -454,6 +514,21 @@ def read_activity(slug: str, limit: int = 0) -> list[dict]:
                             continue
                         if isinstance(row, dict):
                             out.append(row)
+            except UnreadableRecord:
+                # The generation is abandoned at the record it could not
+                # deliver, so what it yielded so far is a prefix, not the whole
+                # of it. Keep those rows (they are real entries the caller may
+                # display) but report the read as incomplete.
+                #
+                # "unreadable", not "over-cap": UnreadableRecord also covers a
+                # record that is not valid UTF-8, and naming only the cap here
+                # would send a reader looking for a size problem that may not
+                # exist.
+                complete = False
+                logger.warning(
+                    "member activity log has an over-cap record; %r read as incomplete", slug
+                )
+                continue
             except OSError:
                 logger.debug("member activity log read failed for %r", slug, exc_info=True)
                 continue
@@ -462,4 +537,4 @@ def read_activity(slug: str, limit: int = 0) -> list[dict]:
             platform_compat.release_lock(lock_fd)
             os.close(lock_fd)
 
-    return out[-limit:] if limit > 0 else out
+    return (out[-limit:] if limit > 0 else out), complete

@@ -148,3 +148,67 @@ describe('issueRadarApi investigation records', () => {
     expect(body.provider).toBe('gitlab')
   })
 })
+
+// The dashboard's default language is "follow the browser", resolved entirely in
+// this SPA; the gateway reads `Accept-Language` nowhere. So unless the client
+// SENDS the tag it resolved, the backend cannot know it and every AI card comes
+// back English inside a fully localized UI (#7144). The tag is resolved by the
+// CALLING COMPONENT through the app's own `resolveAiLanguage()` and passed in, so
+// these assert the wire, which is silent when it breaks: a dropped field just
+// stops localizing.
+describe('issueRadarApi AI calls carry the resolved language', () => {
+  const REF = { owner: 'o', repo: 'r' }
+
+  it('sends the tag on the issue and PR summary reads', async () => {
+    fetchMock.mockResolvedValue(jsonResponse(200, { summary: '' }))
+
+    await issueRadarApi.issueAi(REF, 7, 'zh-CN')
+    expect(fetchMock.mock.calls[0][0]).toContain('lang=zh-CN')
+
+    await issueRadarApi.pullAi(REF, 12, 'zh-CN')
+    expect(fetchMock.mock.calls[1][0]).toContain('lang=zh-CN')
+  })
+
+  it('sends the tag on both recommendations calls', async () => {
+    fetchMock.mockResolvedValue(jsonResponse(200, { recommendations: [] }))
+
+    // The read needs it too: the server refuses to serve a set written in
+    // another language, so a read that omitted it would discard the set the
+    // generate call just paid a model to produce.
+    await issueRadarApi.getRecommendations(REF, 'fr')
+    expect(fetchMock.mock.calls[0][0]).toContain('lang=fr')
+
+    await issueRadarApi.generateRecommendations(REF, 'fr')
+    const body = JSON.parse((fetchMock.mock.calls[1][1] as RequestInit).body as string)
+    expect(body.lang).toBe('fr')
+  })
+
+  it('sends NO field at all for an empty tag', async () => {
+    // `resolveAiLanguage` returns '' both for an English browser and an explicit
+    // English pick, and the directive-free prompt already produces English -- so
+    // an English user's request must stay byte-identical to what it always was.
+    fetchMock.mockResolvedValue(jsonResponse(200, { summary: '' }))
+
+    await issueRadarApi.issueAi(REF, 7, '')
+    expect(fetchMock.mock.calls[0][0]).not.toContain('lang=')
+
+    await issueRadarApi.generateRecommendations(REF, '')
+    const body = JSON.parse((fetchMock.mock.calls[1][1] as RequestInit).body as string)
+    expect(body).toEqual({ owner: 'o', repo: 'r' })
+  })
+
+  it('sends no language on either tagging call', async () => {
+    // Not an omission: the tagging cache is one accumulating document per repo
+    // and the store drops every accumulated entry on a language change, so a
+    // per-browser language would let two browsers wipe each other's queue. That
+    // surface needs its cache partitioned by language first.
+    fetchMock.mockResolvedValue(jsonResponse(200, { suggestions: {} }))
+
+    await issueRadarApi.tagging(REF)
+    expect(fetchMock.mock.calls[0][0]).not.toContain('lang=')
+
+    await issueRadarApi.generateTagging(REF, [4])
+    const body = JSON.parse((fetchMock.mock.calls[1][1] as RequestInit).body as string)
+    expect(body).toEqual({ owner: 'o', repo: 'r', numbers: [4] })
+  })
+})

@@ -37,6 +37,12 @@ export type RegistryApp = {
   trustRepository?: string
   branch?: string
   featured?: boolean | number
+  /**
+   * GitHub star count baked into git-type third-party rows by the publisher.
+   * Display-only; the server sanitizes it to a non-negative int
+   * (``_apply_trust_fields``) and built-ins never carry it.
+   */
+  stargazersCount?: number
   _registry?: string
   /**
    * Server-computed trust fields — the API trust boundary of
@@ -219,6 +225,22 @@ export function isRegistrySourced(app: Pick<InstalledApp, 'source' | 'origin'>):
 }
 
 /**
+ * Sanitize a self-reported GitHub star count for display.
+ *
+ * Shared by every path that turns a registry payload into a rendered row:
+ * `normalizeRegistryApp` (the Discover query boundary) AND `AppDetailPage`'s
+ * own row builds, which spread the raw `listRegistry()` payload without going
+ * through normalize. An older gateway does not sanitize this field
+ * server-side and external indexes are user-supplied JSON, so the client must
+ * hold the line alone: only a safe non-negative integer renders (`1e308` is
+ * finite but compact-formats into hundreds of digits; `NaN`/`-1`/`3.5` are
+ * `typeof number` and would pass a bare typeof gate).
+ */
+export function sanitizeStargazersCount(v: unknown): number | undefined {
+  return typeof v === 'number' && Number.isSafeInteger(v) && v >= 0 ? v : undefined
+}
+
+/**
  * Normalize a registry row for rendering.
  *
  * ``registry.py`` intentionally yields a MINIMAL index row when an app's
@@ -238,6 +260,7 @@ export function normalizeRegistryApp(raw: RegistryApp): RegistryApp {
     version: str(raw?.version, '0.0.0'),
     author: str(raw?.author),
     tags: Array.isArray(raw?.tags) ? raw.tags.filter((t): t is string => typeof t === 'string') : [],
+    stargazersCount: sanitizeStargazersCount(raw?.stargazersCount),
   }
 }
 

@@ -1041,8 +1041,28 @@ def read_ref_summary_cache(
 # what counts as "already on the issue", so suggestions must be recomputed).
 
 
-def issue_ai_cache_path(owner: str, repo: str, number: int, root: Path | None = None) -> Path:
-    return repo_data_dir(owner, repo, root) / f"issue-{int(number)}-ai.json"
+def issue_ai_cache_path(
+    owner: str, repo: str, number: int, root: Path | None = None, *, ui_language: str = ""
+) -> Path:
+    """Where one issue's AI triage result lives, PARTITIONED by output language.
+
+    The summary and each suggested label's `reason` are prose written in one
+    language, and the language can differ per-browser. One slot per issue would
+    therefore thrash: two browsers resolving different languages would each read
+    the other's entry as unusable, regenerate over it, and pay a model call on
+    every single open, so the cache would stop working for the install entirely.
+    A partition per language makes each browser's summary durable.
+
+    ``""`` -- no language known, which is every install that never configured one
+    -- keeps the ORIGINAL filename, so caches written before partitioning are
+    still found and no migration is needed.
+
+    The tag is safe in a filename by construction: it only ever arrives via
+    :func:`kiro_crew.context.normalize_ui_language_tag`, which admits nothing
+    outside a fixed set of shipped catalog names.
+    """
+    suffix = f"-{ui_language}" if ui_language else ""
+    return repo_data_dir(owner, repo, root) / f"issue-{int(number)}-ai{suffix}.json"
 
 
 def _cache_generated_at(data: dict, path: Path) -> str | None:
@@ -1066,7 +1086,8 @@ def _cache_generated_at(data: dict, path: Path) -> str | None:
 
 
 def write_issue_ai_cache(
-    owner: str, repo: str, number: int, payload: dict, *, root: Path | None = None
+    owner: str, repo: str, number: int, payload: dict, *,
+    root: Path | None = None, ui_language: str = "",
 ) -> None:
     """Cache one issue's AI triage result (``{summary, suggested_labels}``).
 
@@ -1074,19 +1095,17 @@ def write_issue_ai_cache(
     without it a cached card gives no hint whether it was written minutes or
     months ago.
 
-    ``ui_language`` (the BCP-47 tag the prose was generated under, ``""`` for
-    English-default installs) rides along because a cached result is only
-    servable for the language it was written in — the route compares it on
-    read and treats a mismatch as a miss, so a dashboard-language switch
-    regenerates instead of serving the old language."""
+    ``ui_language`` selects the partition to write (see
+    :func:`issue_ai_cache_path`); it is deliberately NOT also stored inside the
+    document, because the path already carries it and a second copy could only
+    ever disagree with it."""
     atomic_write(
-        issue_ai_cache_path(owner, repo, number, root),
+        issue_ai_cache_path(owner, repo, number, root, ui_language=ui_language),
         json.dumps(
             {
                 "owner": owner, "repo": repo, "number": int(number),
                 "summary": payload.get("summary", ""),
                 "suggested_labels": payload.get("suggested_labels", []),
-                "ui_language": str(payload.get("ui_language") or ""),
                 "generated_at": _now_iso(),
             },
             indent=2,
@@ -1094,13 +1113,17 @@ def write_issue_ai_cache(
     )
 
 
-def read_issue_ai_cache(owner: str, repo: str, number: int, root: Path | None = None) -> dict | None:
-    """Return ``{"summary", "suggested_labels", "ui_language", "generated_at"}``
-    for a cached issue, or None. Caches written before the stamp existed fall
-    back to the file's mtime (see _cache_generated_at); ones written before
-    ``ui_language`` existed read as ``""``, which matches the English-default
-    sentinel so legacy entries stay servable on unconfigured installs."""
-    path = issue_ai_cache_path(owner, repo, number, root)
+def read_issue_ai_cache(
+    owner: str, repo: str, number: int, root: Path | None = None, *, ui_language: str = ""
+) -> dict | None:
+    """Return ``{"summary", "suggested_labels", "generated_at"}``, or None.
+
+    Reads only the partition for ``ui_language``, so a summary written in another
+    language is a miss rather than something served with foreign prose -- and,
+    unlike a shared slot, is left intact for the browser that generated it.
+    Caches written before the ``generated_at`` stamp existed fall back to the
+    file's mtime (see _cache_generated_at)."""
+    path = issue_ai_cache_path(owner, repo, number, root, ui_language=ui_language)
     if not path.is_file():
         return None
     try:
@@ -1110,14 +1133,37 @@ def read_issue_ai_cache(owner: str, repo: str, number: int, root: Path | None = 
     return {
         "summary": data.get("summary", ""),
         "suggested_labels": data.get("suggested_labels", []),
-        "ui_language": str(data.get("ui_language") or ""),
         "generated_at": _cache_generated_at(data, path),
     }
 
 
 def delete_issue_ai_cache(owner: str, repo: str, number: int, root: Path | None = None) -> None:
-    """Drop a cached AI result (called after a label edit so it recomputes)."""
-    issue_ai_cache_path(owner, repo, number, root).unlink(missing_ok=True)
+    """Drop a cached AI result (called after a label edit so it recomputes).
+
+    Clears EVERY language partition, not just one. The applied label changes what
+    counts as "already on the issue", so the suggestions are stale in whatever
+    language they were written in -- dropping only the caller's language would
+    leave another browser reading advice that predates the edit."""
+    for path in issue_ai_cache_paths(owner, repo, number, root):
+        path.unlink(missing_ok=True)
+
+
+def issue_ai_cache_paths(
+    owner: str, repo: str, number: int, root: Path | None = None
+) -> list[Path]:
+    """Every existing language partition of one issue's AI cache.
+
+    Globs rather than iterating the shipped catalog set so a partition left behind
+    by a language that has since been removed from the registry is still cleaned
+    up instead of lingering forever.
+    """
+    unsuffixed = issue_ai_cache_path(owner, repo, number, root)
+    found = [unsuffixed] if unsuffixed.is_file() else []
+    # `issue-7-ai-*.json` cannot collide with another issue: the number is
+    # followed by the literal `-ai`, so `issue-7-ai-de.json` matches and
+    # `issue-70-ai.json` does not.
+    found.extend(sorted(unsuffixed.parent.glob(f"issue-{int(number)}-ai-*.json")))
+    return found
 
 
 # ── PR AI summary cache ──────────────────────────────────────────────────────
@@ -1130,16 +1176,29 @@ def delete_issue_ai_cache(owner: str, repo: str, number: int, root: Path | None 
 # repeated model call while nothing has changed.
 
 
-def pr_ai_cache_path(owner: str, repo: str, number: int, root: Path | None = None) -> Path:
-    return repo_data_dir(owner, repo, root) / f"pull-{int(number)}-ai.json"
+def pr_ai_cache_path(
+    owner: str, repo: str, number: int, root: Path | None = None, *, ui_language: str = ""
+) -> Path:
+    """Where one PR's AI summary lives, PARTITIONED by output language.
+
+    Same reasoning as :func:`issue_ai_cache_path`: the summary is prose in one
+    language, the language can differ per-browser, and a single slot per PR would
+    make two browsers overwrite each other's summary on every open. The
+    fingerprint alone cannot solve this -- it decides whether the PR has MOVED,
+    and one file holds one fingerprint, so the second browser's write evicts the
+    first. ``""`` keeps the ORIGINAL filename so existing caches survive.
+    """
+    suffix = f"-{ui_language}" if ui_language else ""
+    return repo_data_dir(owner, repo, root) / f"pull-{int(number)}-ai{suffix}.json"
 
 
 def write_pr_ai_cache(
-    owner: str, repo: str, number: int, payload: dict, *, root: Path | None = None
+    owner: str, repo: str, number: int, payload: dict, *,
+    root: Path | None = None, ui_language: str = "",
 ) -> None:
     """Cache one PR's AI summary together with the fingerprint it was built from."""
     atomic_write(
-        pr_ai_cache_path(owner, repo, number, root),
+        pr_ai_cache_path(owner, repo, number, root, ui_language=ui_language),
         json.dumps(
             {
                 "owner": owner, "repo": repo, "number": int(number),
@@ -1153,14 +1212,17 @@ def write_pr_ai_cache(
 
 
 def read_pr_ai_cache(
-    owner: str, repo: str, number: int, root: Path | None = None, *, fingerprint: str | None = None
+    owner: str, repo: str, number: int, root: Path | None = None, *,
+    fingerprint: str | None = None, ui_language: str = "",
 ) -> dict | None:
     """Return ``{"summary", "generated_at"}`` for a cached PR summary, or None.
 
     A stored fingerprint that does not match ``fingerprint`` is a MISS: the PR has
     moved (new comment, new push, check flipped) since the summary was written.
+    ``ui_language`` selects the partition, so another language's summary is absent
+    here rather than evicted.
     """
-    path = pr_ai_cache_path(owner, repo, number, root)
+    path = pr_ai_cache_path(owner, repo, number, root, ui_language=ui_language)
     if not path.is_file():
         return None
     try:
@@ -1184,16 +1246,45 @@ def read_pr_ai_cache(
 # Generated on explicit user action (the settings "Recommend labels" button),
 # so it is cached until the user regenerates.
 
-def recommendations_cache_path(owner: str, repo: str, root: Path | None = None) -> Path:
-    return repo_data_dir(owner, repo, root) / "recommendations-cache.json"
+def recommendations_cache_path(
+    owner: str, repo: str, root: Path | None = None, *, ui_language: str = ""
+) -> Path:
+    """Where a repo's label recommendations live, PARTITIONED by output language.
+
+    Each recommendation carries `rationale` prose written in one language, so a set
+    is only meaningful for the language it was generated in. Partitioning rather
+    than gating one shared document matters because the language can differ
+    per-browser: with a single slot, two browsers resolving different languages
+    would each read the other's set as absent and each regenerate would overwrite
+    it, silently discarding paid model output back and forth. Separate files remove
+    the eviction outright, and switching a language back finds the earlier set
+    still there instead of destroyed.
+
+    ``""`` -- no language known, which is every install that never configured one
+    -- keeps the ORIGINAL unsuffixed filename, so existing caches are still found
+    after the upgrade and no migration is needed.
+
+    The tag is safe in a filename by construction: it only ever arrives via
+    :func:`kiro_crew.context.normalize_ui_language_tag`, which admits nothing
+    outside a fixed set of shipped catalog names.
+    """
+    name = "recommendations-cache.json" if not ui_language else (
+        f"recommendations-cache-{ui_language}.json"
+    )
+    return repo_data_dir(owner, repo, root) / name
 
 
 def write_recommendations_cache(
-    owner: str, repo: str, payload: dict, *, root: Path | None = None
+    owner: str, repo: str, payload: dict, *, root: Path | None = None, ui_language: str = ""
 ) -> None:
-    """Cache a repo's AI label recommendations (``{recommendations, generated_at}``)."""
+    """Cache a repo's AI label recommendations (``{recommendations, generated_at}``).
+
+    ``ui_language`` selects the partition to write (see
+    :func:`recommendations_cache_path`); it is deliberately NOT also stored inside
+    the document, because the path already carries it and a second copy could only
+    ever disagree with it."""
     atomic_write(
-        recommendations_cache_path(owner, repo, root),
+        recommendations_cache_path(owner, repo, root, ui_language=ui_language),
         json.dumps(
             {
                 "owner": owner, "repo": repo,
@@ -1205,9 +1296,15 @@ def write_recommendations_cache(
     )
 
 
-def read_recommendations_cache(owner: str, repo: str, root: Path | None = None) -> dict | None:
-    """Return ``{"recommendations", "generated_at"}`` for a repo, or None."""
-    path = recommendations_cache_path(owner, repo, root)
+def read_recommendations_cache(
+    owner: str, repo: str, root: Path | None = None, *, ui_language: str = ""
+) -> dict | None:
+    """Return ``{"recommendations", "generated_at"}`` for a repo, or None.
+
+    Reads only the partition for ``ui_language``, so a set generated in another
+    language reads as absent rather than being served with foreign prose -- and,
+    unlike a shared slot, is left intact for whoever generated it."""
+    path = recommendations_cache_path(owner, repo, root, ui_language=ui_language)
     if not path.is_file():
         return None
     try:

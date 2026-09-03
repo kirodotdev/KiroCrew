@@ -1,18 +1,26 @@
 import { useCallback, useMemo, useState } from 'react'
 import { useQuery, useMutation, useQueryClient, type QueryClient } from '@tanstack/react-query'
-import { PIN_PREVIEW_INPUT_MAX_CHARS, pinsApi, type ChatPin, type PinApiError, type PinMessageBody } from '../api/pins'
+import { PIN_PREVIEW_INPUT_MAX_CHARS, pinsApi, type ChatPin, type PinMessageBody } from '../api/pins'
+import { ApiError } from '../api/apiError'
+import { parseErrorCode } from '../utils/errorReport'
 import { secureRandomId } from '../utils/secureId'
 
 /**
  * The backend `code` from a pins API failure, or undefined for anything else.
- * Lives HERE rather than in api/pins so the hook keeps zero new runtime
- * imports from that module — several test files replace '../api/pins' with a
- * partial factory mock, and an imported helper those mocks omit would make
- * this hook's error handling throw inside onError.
+ *
+ * pinsApi now routes through the shared transport, so a failure is an
+ * `ApiError` carrying the raw backend body — the machine-readable `code` is
+ * read from that body with the same `parseErrorCode` the transport journals
+ * with, rather than off a bespoke `.code` property. The structural
+ * `'code' in err` fallback is kept so any error object that still carries a
+ * direct `code` (older callers, hand-built test errors) resolves too.
  */
 export function pinErrorCode(err: unknown): string | undefined {
+  if (err instanceof ApiError) {
+    return parseErrorCode(err.body)
+  }
   if (err instanceof Error && 'code' in err) {
-    const code = (err as PinApiError).code
+    const code = (err as { code?: unknown }).code
     return typeof code === 'string' ? code : undefined
   }
   return undefined

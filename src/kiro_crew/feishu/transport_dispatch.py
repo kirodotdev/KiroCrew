@@ -29,6 +29,7 @@ from typing import TYPE_CHECKING, Any
 from kiro_crew.feishu.client import CHAT_GROUP
 from kiro_crew.feishu.renderer import FeishuRenderer
 from kiro_crew.feishu.transport import FEISHU_CAPABILITIES
+from kiro_crew.history import mint_row_mid
 from kiro_crew.messaging.conversation import ConversationState
 from kiro_crew.messaging.dispatch import (
     ChannelTurn,
@@ -336,9 +337,11 @@ class FeishuDispatcher:
         """
         if self.conv_log is None:
             return
-        self.conv_log.append(session_key, "user", user_text, agent=agent)
+        self.conv_log.append(session_key, "user", user_text, agent=agent, mid=mint_row_mid())
         if reply_text:
-            self.conv_log.append(session_key, "assistant", reply_text, agent=agent)
+            self.conv_log.append(
+                session_key, "assistant", reply_text, agent=agent, mid=mint_row_mid()
+            )
         if is_new:
             title = (user_text or "").strip().replace("\n", " ")[:40] or "Feishu"
             self.conv_log.set_title(session_key, title)

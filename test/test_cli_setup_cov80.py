@@ -298,7 +298,9 @@ class TestSetupWhatsApp:
         _setup_whatsapp()
 
         out = capsys.readouterr().out
-        assert "kirocrew[whatsapp]" in out
+        # neonize by name -- the extras form installs from no index.
+        assert "neonize" in out
+        assert "kirocrew[" not in out
         # Still enabled: the operator can install the extra afterwards, and doctor
         # reports the gap until they do. Refusing here would strand them.
         assert json.loads(cfg_file.read_text(encoding="utf-8"))["whatsapp"]["enabled"] is True

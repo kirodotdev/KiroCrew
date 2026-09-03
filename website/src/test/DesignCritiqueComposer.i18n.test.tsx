@@ -117,11 +117,11 @@ describe('Design Critique composer - target-kind localisation', () => {
 describe('Design Critique composer - recognition tail', () => {
   const TAIL_KEY = 'apps.designCritique.utils.i_ll_pull_the_frames'
 
-  it('leaves the English line byte-identical to what it read before', async () => {
+  it('pins the English recognition tail so it cannot drift untranslated', async () => {
     await i18next.changeLanguage('en')
     render(<Composer {...baseProps} refText={FIGMA} />)
     const noun = screen.getByText('Figma file')
-    expect(noun.parentElement?.textContent).toBe('Figma file · I\u2019ll pull the frames.')
+    expect(noun.parentElement?.textContent).toBe('Figma file \u00b7 export the frames as PNGs and drop them in \u2014 I critique the exported images.')
   })
 
   it('reads the tail from the catalog, so translating it reaches the screen', async () => {

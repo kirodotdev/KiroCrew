@@ -126,7 +126,7 @@ def _compute_budget(
             logger.warning("skill-budget: unreadable frontmatter for %s", key, exc_info=True)
             meta = {}
 
-        is_always = meta.get("always", "").lower() == "true"
+        is_always = meta.get("always", "").strip().lower() == "true"
 
         # Deliveries: own key + aliases
         deliveries: int | None = None

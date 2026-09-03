@@ -9,9 +9,31 @@
  * Shared by the Connections card and the chat banner's relay affordance so the
  * two surfaces cannot drift apart again (PR #4796 Design review).
  */
+
+/** RFC 3986 scheme followed by `://`. Requires the `//` on purpose: a bare
+ * `host:port/...` must not count as having a scheme, so it gets the default. */
+const SCHEME_RE = /^[a-z][a-z0-9+.-]*:\/\//i
+
+/** Default a scheme-less paste to `http://` (#7406).
+ *
+ * Mobile browsers — iOS Safari in particular — copy address-bar URLs without
+ * the scheme, so the paste-back flow otherwise rejects exactly the text the
+ * browser gave the user. The loopback callback listener is always plain HTTP,
+ * and every containment check in `isValidLoopbackReturnAddress` (loopback
+ * host, port floor, single code) applies to the normalized value, so the
+ * default cannot admit anything the strict form would refuse. Callers must
+ * validate AND submit this normalized value, mirroring the backend's own
+ * normalization in `_validated_loopback_return_address`.
+ */
+export function normalizeLoopbackReturnAddress(value: string): string {
+  const trimmed = value.trim()
+  if (!trimmed || SCHEME_RE.test(trimmed)) return trimmed
+  return `http://${trimmed}`
+}
+
 export function isValidLoopbackReturnAddress(value: string): boolean {
   try {
-    const url = new URL(value.trim())
+    const url = new URL(normalizeLoopbackReturnAddress(value))
     const loopback =
       url.hostname === '127.0.0.1'
       || url.hostname === '[::1]'

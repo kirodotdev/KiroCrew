@@ -70,6 +70,63 @@ describe('displayModel', () => {
   })
 })
 
+/** The backend computes the withhold at spawn, against the live session's own
+ *  advertised list, and now carries it in the slots payload (#1819). Reading
+ *  that beats re-deriving it from picker-list membership: every filter applied
+ *  to `/api/models` was otherwise an entitlement signal. */
+describe('displayModel with the backend verdict', () => {
+  const list = [
+    { name: 'auto' },
+    { name: 'claude-sonnet-5' },
+    { name: 'claude-opus-4.8' },
+  ]
+
+  it('shows auto when the backend says the pin is withheld', () => {
+    // Even though the list DOES offer it: the verdict comes from the live
+    // session, the list is a separate fetch that can be wider.
+    expect(displayModel('claude-sonnet-5', list, false, true)).toBe('auto')
+  })
+
+  it('honours a withheld verdict while the list is degraded', () => {
+    // The degraded flag says the LIST cannot be trusted. The verdict does not
+    // come from the list, so it is unaffected — and it is not stale either: the
+    // withhold is applied per spawn from the same advertised set, so while the
+    // session lives the verdict describes exactly what that session does.
+    expect(displayModel('claude-sonnet-5', list, true, true)).toBe('auto')
+  })
+
+  it('shows a pin the backend allows even when the list omits it', () => {
+    // The conflation this fixes: `/api/models` is narrowed by filters that have
+    // nothing to do with entitlement (deprecation today, curation or dedup
+    // later), so an absent row is not evidence the account lost the model. With
+    // a verdict, absence no longer relabels a runnable pin as 'auto'.
+    expect(displayModel('claude-opus-4.6-1m', list, false, false)).toBe('claude-opus-4.6-1m')
+  })
+
+  it('still returns the list spelling when the verdict allows a listed pin', () => {
+    // A verdict must not cost the row highlight: matching stays normalized and
+    // the list's own spelling is what ModelDropdownList compares against.
+    expect(displayModel('global.anthropic.claude-opus-4-8[1m]', list, false, false)).toBe(
+      'claude-opus-4.8',
+    )
+  })
+
+  it('falls back to membership when there is no verdict yet', () => {
+    // Unknown is the absence of an answer, not a denial: a slot that has never
+    // spawned a session carries null, and behaviour must be exactly as before.
+    for (const unknown of [null, undefined]) {
+      expect(displayModel('claude-opus-5', list, false, unknown)).toBe('auto')
+      expect(displayModel('claude-sonnet-5', list, false, unknown)).toBe('claude-sonnet-5')
+      expect(displayModel('claude-opus-5', list, true, unknown)).toBe('claude-opus-5')
+    }
+  })
+
+  it('never names a model for an unpinned slot, whatever the verdict', () => {
+    expect(displayModel('', list, false, false)).toBe('auto')
+    expect(displayModel('auto', list, false, false)).toBe('auto')
+  })
+})
+
 describe('pinIsWithheld', () => {
   it('is true when a real pin displays as auto', () => {
     expect(pinIsWithheld('claude-opus-5', 'auto')).toBe(true)

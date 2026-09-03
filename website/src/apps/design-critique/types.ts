@@ -141,6 +141,13 @@ export interface Job {
   scope?: Scope
   picked?: string[]
   refBrief?: string
+  // The backend render handle (clone id or local:/url: marker) for a scoping job.
+  handle?: string
+  // Backend background-job ids. The scan (discover) and render now run as detached
+  // server-side jobs; these let a resumed page reconnect by POLLING the same job
+  // instead of re-POSTing (which would start a second scan).
+  discoverJob?: string
+  renderJob?: string
 }
 
 // A screenshot staged in the composer, not sent yet.

@@ -845,3 +845,81 @@ class TestReparseLinkCoversJunctions:
         with mock.patch.object(store, "is_reparse_link", return_value=True):
             with pytest.raises(store.PathRejected, match="symlink"):
                 store.safe_project_dir("looks-real", tmp_path)
+
+
+class TestTheWalkAndTheScanRefuseJunctionsToo:
+    """Both directory walks must refuse a link through ``is_reparse_link``.
+
+    ``is_reparse_link``'s own docstring states the contract: "every place this
+    module refuses a link at a name Kiro Crew owns has to refuse a junction too, or
+    the refusal is POSIX-only". ``safe_project_dir`` honours it. ``list_files`` and
+    ``list_projects`` asked ``is_symlink()``, which does NOT report a Windows
+    directory junction -- and a junction is precisely a DIRECTORY link, so it is the
+    ``is_dir()`` arm of both loops that it reaches:
+
+    * ``list_files`` skips the link, then descends the directory. A junction is not
+      skipped and IS a directory, so the walk follows it out of the project and
+      returns names from wherever it points, under project-relative paths.
+    * ``list_projects`` skips a linked entry, then treats the directory as a real
+      project. A junction under ``projects/`` is therefore enumerated as a project,
+      which is the entry ``safe_project_dir`` refuses outright at the other door.
+
+    Junctions are the link type a Windows user can create WITHOUT elevation, so
+    these are the platform's cheapest bypass. Asserted through the shared helper
+    rather than by creating a real junction, because ``os.path.isjunction`` is 3.12+
+    and always ``False`` off Windows -- the same technique the project-entry test
+    above uses.
+    """
+
+    def test_the_file_walk_does_not_descend_a_junction(self, project: Path) -> None:
+        outside = project.parent / "outside"
+        outside.mkdir()
+        (outside / "secret.tex").write_text("secret", encoding="utf-8")
+        junction = project / "linked"
+        junction.mkdir()
+        (junction / "secret.tex").write_text("secret", encoding="utf-8")
+
+        with mock.patch.object(store, "is_reparse_link", lambda p: Path(p) == junction):
+            listed = store.list_files(project)
+
+        assert "linked/secret.tex" not in listed
+        assert "main.tex" in listed
+
+    def test_the_file_walk_consults_the_shared_helper(self, project: Path) -> None:
+        """A junction is only refused if the walk ASKS the helper about it."""
+        (project / "sub").mkdir(exist_ok=True)
+        seen: list[str] = []
+
+        def _spy(p):
+            seen.append(Path(p).name)
+            return False
+
+        with mock.patch.object(store, "is_reparse_link", _spy):
+            store.list_files(project)
+
+        assert "sub" in seen
+
+    def test_a_junction_under_projects_is_not_listed_as_a_project(self, data_root: Path) -> None:
+        pdir = store.projects_dir(data_root)
+        real = pdir / "paper"
+        real.mkdir(parents=True)
+        (real / "main.tex").write_text("", encoding="utf-8")
+        junction = pdir / "pwn"
+        junction.mkdir()
+        (junction / "main.tex").write_text("", encoding="utf-8")
+
+        with mock.patch.object(store, "is_reparse_link", lambda p: Path(p) == junction):
+            names = [p.name for p in store.list_projects(data_root)]
+
+        assert names == ["paper"]
+
+    @requires_symlinks
+    def test_a_symlinked_project_entry_is_still_skipped(self, data_root: Path) -> None:
+        """Regression control: the POSIX leg the previous check already covered."""
+        pdir = store.projects_dir(data_root)
+        real = pdir / "paper"
+        real.mkdir(parents=True)
+        (real / "main.tex").write_text("", encoding="utf-8")
+        make_dir_link(pdir / "alias", real)
+
+        assert [p.name for p in store.list_projects(data_root)] == ["paper"]

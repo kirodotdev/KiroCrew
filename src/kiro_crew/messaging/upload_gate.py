@@ -113,7 +113,14 @@ async def uploads_restricted(
       a transcript, read memory or save a title would still ship local file bytes
       into a DM or a supergroup-readable Topic. It is not a blanket fail-closed
       either — an unrestricted conversation is allowed, which is the common case,
-      and a channel with no modes at all reads ``False`` exactly as before.
+      and a channel with no modes at all reads ``False`` exactly as before. The
+      DURABLE flags are restored first, because that predicate reads process-local
+      trackers that only an INBOUND channel message populates: a turn no inbound
+      message drove — a cron, a webhook-resumed session, a monitor/auto-nudge
+      re-injection, an explicit ``file_send`` — would otherwise read empty
+      trackers after a gateway restart and ship the bytes the user's
+      ``!incognito`` forbids. Same canonical restore, for the same reason, as
+      ``dashboard.handlers._shared._is_restricted_session``.
     * A LIVE slot answers directly, off the same ``slot.is_restricted`` signal as
       the artifact gate, so the two cannot drift.
     * No live slot, but a ``dashboard:`` binding still resolved. This is a real
@@ -133,6 +140,12 @@ async def uploads_restricted(
     transport audits its authorization denials.
     """
     if not session_key.startswith(_DASHBOARD_PREFIX):
+        # Restore the durable flags before reading the process-local trackers (see
+        # the docstring). Idempotent, allocation-free for an unflagged key, and an
+        # in-memory ``SessionMap`` read rather than disk, so it is safe to run on
+        # the loop at every decision point. A state with no session manager is a
+        # no-op inside ``hydrate``.
+        privacy_mode.hydrate(getattr(dashboard_state, "sessions", None), session_key)
         # The channel's own mode, on the same predicate its transcript, memory and
         # title writes use, so one conversation cannot be private for three of them
         # and public for the fourth.

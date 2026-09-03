@@ -12,26 +12,27 @@ import {
   ArrowLeft, Download, Check, Loader2, Power, PowerOff,
   Trash2, RefreshCw, Bot, Zap, ArrowUp,
   Clock, ChevronLeft, ChevronRight, X, Monitor, Copy, Terminal,
-  Sparkles, Target, Settings2,
+  Sparkles, Target, Settings2, Star,
 } from 'lucide-react'
 import { needsDesktopApp } from '../lib/electron'
 import { api } from '../api/client'
 import { PageHeader, Card, CardTitle, Badge, Btn } from '../components/ui'
 import AppIcon from '../components/AppIcon'
 import TrustAppModal, { APP_EXECUTION_DENIED, isTrustDeniedError, useTrustGate } from '../components/appstore/TrustAppModal'
-import { isRegistrySourced } from '../components/appstore/types'
+import { isRegistrySourced, sanitizeStargazersCount } from '../components/appstore/types'
 import { recordEvent } from '../rum'
 import { useTheme } from '../hooks/useTheme'
 import { DOUBLE_TAP_MS, DOUBLE_TAP_SLOP, DOUBLE_TAP_ZOOM, usePinchZoom } from '../hooks/usePinchZoom'
 import AskAgentButton from '../components/AskAgentButton'
 
 import { i18nT } from '../i18n/t'
+import type { AppContributor } from '../types'
 import {
   appDisplayName, appDescription, appHighlights, appUseCases, appConfiguration,
 } from '../components/appstore/appManifest'
 import { isBuiltinServerRow, mergeBuiltinRow } from '../components/appstore/mergeBuiltinRow'
 import { classifyManifestArt, installedArt, installedArtList, installedArtListAligned, installedIcon } from '../components/appstore/useHeroArt'
-import { fmtDateNumeric } from '../i18n/format'
+import { fmtDateNumeric, fmtCompact, fmtNumber } from '../i18n/format'
 type AppInfo = {
   name: string
   displayName: string
@@ -69,6 +70,12 @@ type AppInfo = {
   repo?: string
   trustRepository?: string
   branch?: string
+  /**
+   * GitHub star count baked into git-type third-party rows by the publisher.
+   * Display-only and server-sanitized; built-ins never carry it, so presence
+   * is the display gate.
+   */
+  stargazersCount?: number
   // Installed state
   installed: boolean
   installedVersion?: string
@@ -598,6 +605,32 @@ export default function AppDetailPage() {
   const [showUninstallConfirm, setShowUninstallConfirm] = useState(false)
   const [keepData, setKeepData] = useState(true)
 
+  // Contributors row (Details panel). Resolved GitHub repo URL for the app's
+  // source, its top contributors, and the fetch's loading state. The row hides
+  // entirely unless a GitHub repo URL resolves and the fetch yields entries.
+  const [repoUrl, setRepoUrl] = useState('')
+  const [contributors, setContributors] = useState<AppContributor[]>([])
+  const [contribLoading, setContribLoading] = useState(false)
+
+  useEffect(() => {
+    // Prefer the registry/manifest repo, then the git URL the app was trusted
+    // from, then its source. GitHub-only in v1; a non-GitHub value leaves the
+    // row hidden (the backend also returns [] for one).
+    const candidates = [app?.repo, app?.manifest?.repo, app?.trustRepository, app?.source]
+    const url = candidates.find(
+      (v): v is string => typeof v === 'string' && /^https:\/\/github\.com\//i.test(v),
+    ) || ''
+    setRepoUrl(url)
+    if (!url) { setContributors([]); setContribLoading(false); return }
+    let cancelled = false
+    setContribLoading(true)
+    api.appContributors(url)
+      .then(res => { if (!cancelled) setContributors(res.contributors || []) })
+      .catch(() => { if (!cancelled) setContributors([]) })
+      .finally(() => { if (!cancelled) setContribLoading(false) })
+    return () => { cancelled = true }
+  }, [app])
+
   // Helper: open chat with a pre-filled message (same mechanism as useChatLauncher from app-sdk)
   const openChatWithMessage = useCallback((message: string) => {
     ;(window as Window & { __mc_chat_launch?: { message: string; ts: number } }).__mc_chat_launch = { message, ts: Date.now() }
@@ -646,6 +679,10 @@ export default function AppDetailPage() {
             resources: installed.resources,
             lifecycle: installed.lifecycle,
             updateAvailable: registryEntry.updateAvailable || false,
+            // Built-ins never carry a star count (they have no repository of
+            // their own) — enforce the invariant here rather than trusting the
+            // spread above, since mergeBuiltinRow copies the raw server row.
+            stargazersCount: undefined,
             manifest: m,
           })
         } else {
@@ -751,6 +788,7 @@ export default function AppDetailPage() {
             // fallback identifier is a separate decision from resolving art.
             repo: registryEntry?.repo || '',
             trustRepository: installed.trustRepository,
+            stargazersCount: sanitizeStargazersCount(registryEntry?.stargazersCount),
             installed: true,
             installedVersion: installed.version,
             enabled: installed.enabled,
@@ -774,6 +812,11 @@ export default function AppDetailPage() {
           description: registryEntry.description || '',
           version: registryEntry.version || '0.0.0',
           author: registryEntry.author || '',
+          // The spread above copies the RAW listRegistry payload, which never
+          // went through normalizeRegistryApp — sanitize the display-only star
+          // count explicitly so a hostile/older gateway cannot render NaN/-1
+          // or a layout-breaking 1e308 here (the list path is already covered).
+          stargazersCount: sanitizeStargazersCount(registryEntry.stargazersCount),
           // Preserve install status from registry (set by detectInstalled)
           installed: registryEntry.installed ?? false,
           platform: registryEntry.platform,
@@ -1226,7 +1269,15 @@ export default function AppDetailPage() {
               {app.installed && isSelfManaged && !isBuiltin && <Badge variant="ok">{i18nT('pages.appDetailPage.self_managed')}</Badge>}
               {app.installed && !isSelfManaged && !isBuiltin && <Badge variant={app.enabled ? 'ok' : 'warn'}>{app.enabled ? i18nT('pages.appDetailPage.enabled') : i18nT('pages.appDetailPage.disabled')}</Badge>}
             </div>
-            <div className="text-[13px] text-muted mb-3">{app.author} {i18nT('pages.appDetailPage.v_2')}{app.version}</div>
+            <div className="text-[13px] text-muted mb-3 flex items-center gap-1 flex-wrap">
+              <span>{app.author} {i18nT('pages.appDetailPage.v_2')}{app.version}</span>
+              {typeof app.stargazersCount === 'number' && (
+                <span className="inline-flex items-center gap-0.5">
+                  · <Star size={13} className="shrink-0" role="img" aria-label={i18nT('pages.appDetailPage.github_stars')} />
+                  {fmtCompact(app.stargazersCount)}
+                </span>
+              )}
+            </div>
 
             {/* Actions */}
             <div className="flex items-center gap-2 flex-wrap">
@@ -1595,7 +1646,59 @@ export default function AppDetailPage() {
             <CardTitle>{i18nT('pages.appDetailPage.details')}</CardTitle>
             <div className="grid gap-1.5 mt-2 text-[13px] text-muted">
               {app.repo && <div>{i18nT('pages.appDetailPage.repository')} {app.repo}</div>}
+              {typeof app.stargazersCount === 'number' && <div>{i18nT('pages.appDetailPage.github_stars_2', { value: fmtNumber(app.stargazersCount) })}</div>}
               {app.author && <div>{i18nT('pages.appDetailPage.author')} {app.author}</div>}
+              {repoUrl && (contribLoading || contributors.length > 0) && (
+                <div className="flex items-start gap-2 flex-wrap">
+                  <span className="shrink-0">{i18nT('pages.appDetailPage.contributors')}</span>
+                  {contribLoading ? (
+                    <div className="flex gap-1.5">
+                      {[0, 1, 2].map(i => (
+                        <span
+                          key={i}
+                          className="inline-block h-[22px] w-16 rounded-full animate-pulse"
+                          style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border)' }}
+                        />
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="flex items-center gap-1.5 flex-wrap">
+                      {contributors.slice(0, 6).map(c => (
+                        <span
+                          key={c.login}
+                          title={c.name}
+                          className="inline-flex items-center gap-1.5 rounded-full pl-0.5 pr-2 py-0.5"
+                          style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border)', color: 'var(--text)' }}
+                        >
+                          <span
+                            className="relative inline-flex h-[18px] w-[18px] items-center justify-center overflow-hidden rounded-full text-[10px]"
+                            style={{ background: 'var(--accent-subtle)', color: 'var(--accent)' }}
+                          >
+                            <span>{(c.name || c.login).slice(0, 1).toUpperCase()}</span>
+                            {c.avatarUrl && /^https:\/\/[^"')(\s]+$/.test(c.avatarUrl) && (
+                              <span
+                                aria-hidden="true"
+                                className="absolute inset-0 rounded-full"
+                                style={{ backgroundImage: `url("${c.avatarUrl}")`, backgroundSize: 'cover', backgroundPosition: 'center' }}
+                              />
+                            )}
+                          </span>
+                          <span className="text-[12px]">{c.name}</span>
+                        </span>
+                      ))}
+                      <a
+                        href={`${repoUrl.replace(/\.git$/, '').replace(/\/$/, '')}/graphs/contributors`}
+                        target="_blank"
+                        rel="noreferrer noopener"
+                        className="inline-flex items-center rounded-full px-2 py-0.5 text-[12px] no-underline"
+                        style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border)', color: 'var(--muted)' }}
+                      >
+                        {i18nT('pages.appDetailPage.all_contributors')}
+                      </a>
+                    </div>
+                  )}
+                </div>
+              )}
               {app.installedAt && <div>{i18nT('pages.appDetailPage.installed')} {fmtDateNumeric(app.installedAt)}</div>}
               {app.origin && <div>{i18nT('pages.appDetailPage.origin')} {app.origin} {i18nT('pages.appDetailPage.resources_2')} {app.resources || 'gateway'} {i18nT('pages.appDetailPage.lifecycle')} {app.lifecycle || 'gateway'}</div>}
               {app.manifest?.minKiroCrewVersion && <div>{i18nT('pages.appDetailPage.min_kirocrew_v')}{app.manifest.minKiroCrewVersion}</div>}

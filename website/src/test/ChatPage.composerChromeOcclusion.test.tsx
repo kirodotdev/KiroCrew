@@ -37,7 +37,7 @@ const SCRIM = /key="sessions-backdrop"[\s\S]{0,240}?z-\[(\d+)\]/.exec(CHAT_PAGE)
 /** The wave chip's wrapper, lifted to clear ThemeExperienceLayer's ceiling. */
 const CHIP = /className="px-4 mx-auto w-full relative z-\[(\d+)\]"/.exec(SUBAGENT_BAR)
 /** The wrapper introduced around the bar stack. */
-const STACK = /<div className="([^"]*)" data-testid="composer-status-stack">/.exec(CHAT_PAGE)
+const STACK = /<div ref=\{composerBandRef\} className="([^"]*)" data-testid="composer-status-stack">/.exec(CHAT_PAGE)
 /** QueueStack's fuse overhang — the seam that pulls its card into the composer. */
 const OVERLAP = /const OVERLAP = (\d+)/.exec(QUEUE_STACK)
 
@@ -76,7 +76,11 @@ describe('composer status chrome cannot occlude the header rename editor', () =>
     // permanent thumb would leave the class assertion passing and this failing.
     expect(STACK![1]).toContain('scrollbar-overlay')
     expect(INDEX_CSS).toMatch(/\.scrollbar-overlay::-webkit-scrollbar-thumb\{background:transparent/)
-    expect(INDEX_CSS).toMatch(/\.scrollbar-overlay:hover::-webkit-scrollbar-thumb\{background:var\(--border\)/)
+    // The token is --muted, matching the coarse-pointer rung: WCAG 1.4.11 grants
+    // hover no exemption, so the revealed thumb clears the same 3:1 floor as the
+    // persistent one. What this line pins is the hover-REVEAL shape (transparent
+    // base, painted on :hover); scrollbarThumbContrast.test.ts owns the floor.
+    expect(INDEX_CSS).toMatch(/\.scrollbar-overlay:hover::-webkit-scrollbar-thumb\{background:var\(--muted\)/)
   })
 
   it('restores a persistent thumb on coarse pointers, so a capped box has a touch affordance', () => {
@@ -86,8 +90,8 @@ describe('composer status chrome cannot occlude the header rename editor', () =>
     // to @media (pointer: coarse) — a permanent (unscoped) thumb would trip the
     // hover-revealed assertion above on fine pointers. Precedence: the house
     // already carries @media (pointer: coarse) blocks in index.css.
-    expect(INDEX_CSS).toMatch(/@media \(pointer: coarse\) \{[\s\S]*?\.scrollbar-overlay\{scrollbar-color:var\(--border\) transparent\}/)
-    expect(INDEX_CSS).toMatch(/@media \(pointer: coarse\) \{[\s\S]*?\.scrollbar-overlay::-webkit-scrollbar-thumb\{background:var\(--border\)\}/)
+    expect(INDEX_CSS).toMatch(/@media \(pointer: coarse\) \{[\s\S]*?\.scrollbar-overlay\{scrollbar-color:var\(--muted\) transparent\}/)
+    expect(INDEX_CSS).toMatch(/@media \(pointer: coarse\) \{[\s\S]*?\.scrollbar-overlay::-webkit-scrollbar-thumb\{background:var\(--muted\)\}/)
   })
 
   it('caps the bar stack and scrolls it internally, so it never climbs into the band', () => {

@@ -30,17 +30,13 @@ from kiro_crew.messaging.session_resume import ResumeReleaseError  # noqa: F401 
 from kiro_crew.messaging.session_resume import (
     PICKER_LIMIT,
     InboundResolution,
-    PickerRegistry,
     ResumeCopy,
     RoutingDecision,
-    SessionBinder,
     SessionChoice,
-    resolve_session_choices,
+    SessionResumeController,
 )
 from kiro_crew.messaging.split import split_markdown_safe
-from kiro_crew.sel import sel
-from kiro_crew.session_map import ConversationOwnershipConflict
-from kiro_crew.teams.cards import session_picker_card
+from kiro_crew.teams.cards import resolved_card, session_picker_card
 from kiro_crew.teams.client import TEAMS_MAX_TEXT, TeamsSendError
 from kiro_crew.teams.renderer import _display_safe
 
@@ -72,6 +68,94 @@ def _safe_teams_text(text: str, max_chars: int) -> str:
     return _display_safe(text)[:max_chars]
 
 
+class _TeamsResumeSurface:
+    owner_refusal = (
+        "🔒 `/sessions` requires exactly one configured `teams.allowed_emails` "
+        "entry — a dashboard session is the operator's own transcript, so it is "
+        "not listable on a shared allow-list."
+    )
+    choice_owner_refusal = "session resume is owner-only"
+    choice_expired = "this list expired — run `/sessions` again"
+    choice_missing = "that session is no longer available"
+    choice_expectation_failed = (
+        "couldn't save which session this conversation is linked to, so it "
+        "was NOT resumed — run `/sessions` to try again"
+    )
+    choice_claim_lost = (
+        "another session just connected here — run `/unlink`, then "
+        "`/sessions` to resume this one"
+    )
+    choice_binding_failed = "couldn't resume that session — run `/sessions` to try again"
+
+    def __init__(
+        self,
+        client: "TeamsClient",
+        conversation_id: str,
+        service_url: str,
+    ) -> None:
+        self.client = client
+        self.conversation_id = conversation_id
+        self.expectation_id = conversation_id
+        self.service_url = service_url
+
+    def display_safe(self, text: str, max_chars: int) -> str:
+        return _safe_teams_text(text, max_chars)
+
+    def no_choices(self, query: str) -> str:
+        normalized = " ".join(query.casefold().split())
+        if normalized:
+            label = _safe_teams_text(" ".join(query.split()), 100)
+            return (
+                f"No dashboard sessions matched “{label}”. Try fewer words, or run "
+                f"`/sessions` to see up to {PICKER_LIMIT} recent sessions."
+            )
+        return "No recent dashboard sessions."
+
+    def picker_heading(self, query: str, total: int) -> str:
+        return _picker_heading(query, total, " ".join(query.casefold().split()))
+
+    def choice_success(self, choice: SessionChoice) -> str:
+        return f"resumed “{choice.title}” — `/unlink` to come back"
+
+    async def post_picker(
+        self,
+        heading: str,
+        nonce: str,
+        choices: tuple[SessionChoice, ...],
+    ) -> str:
+        try:
+            message_id = await self.client.send_card(
+                self.conversation_id,
+                session_picker_card(prompt=heading, choices=choices, nonce=nonce),
+                self.service_url,
+            )
+            return message_id or ""
+        except TeamsSendError:
+            logger.warning("Teams resume: picker card delivery failed", exc_info=True)
+            await self.say("⚠️ Couldn't show the session list. Try `/sessions` again.")
+            return ""
+
+    async def settle_picker(self, message_id: str, text: str) -> bool:
+        try:
+            return bool(
+                await self.client.update_card(
+                    self.conversation_id,
+                    message_id,
+                    resolved_card(title="Sessions", outcome=text),
+                    self.service_url,
+                )
+            )
+        except TeamsSendError:
+            logger.debug("Teams resume: picker settle failed", exc_info=True)
+            return False
+
+    async def say(self, text: str) -> None:
+        try:
+            await self.client.send_message(self.conversation_id, text, self.service_url)
+        except TeamsSendError:
+            logger.warning("Teams resume: notice delivery failed", exc_info=True)
+
+
 class TeamsSessionResume:
     """Lists dashboard sessions and binds one bidirectionally to a Teams chat."""
 
@@ -87,15 +171,24 @@ class TeamsSessionResume:
         # docstring. Empty when the list holds none or several, and `is_owner` then
         # refuses everyone.
         self.owner_id = next(iter(allowed_emails)) if len(allowed_emails) == 1 else ""
-        self.pickers = PickerRegistry()
-        # Set by the gateway after construction (same pattern as ``client`` on the
-        # dispatcher). Binding a session from Teams changes what the dashboard must
-        # display; without a push an already-open dashboard shows no "driven from" chip
-        # until unrelated activity happens to refresh slots.
-        self.dashboard_state: object | None = None
-        self._binder = SessionBinder(sessions, channel_type="teams", copy=_TEAMS_COPY)
-        self._binder.title_display = _safe_teams_text
+        self._controller = SessionResumeController(
+            sessions,
+            conv_log,
+            channel_type="teams",
+            copy=_TEAMS_COPY,
+            title_display=_safe_teams_text,
+        )
+        self.pickers = self._controller.pickers
+        self._binder = self._controller.binder
         self._expectations = self._binder.expectations
+
+    @property
+    def dashboard_state(self) -> object | None:
+        return self._controller.dashboard_state
+
+    @dashboard_state.setter
+    def dashboard_state(self, state: object | None) -> None:
+        self._controller.dashboard_state = state
 
     # ── identity + addressing ─────────────────────────────────────────────
     def is_owner(self, identity: str) -> bool:
@@ -110,18 +203,6 @@ class TeamsSessionResume:
     @staticmethod
     def link_for(conversation_id: str) -> ChannelLink:
         return ChannelLink(channel_type="teams", channel_id=conversation_id)
-
-    def _push_slots(self) -> None:
-        """Nudge the dashboard so the two-way chip appears/disappears at once."""
-        state = self.dashboard_state
-        if state is None:
-            return
-        try:
-            push = getattr(state, "push_slots_update", None)
-            if callable(push):
-                push()
-        except Exception:
-            logger.debug("Teams: slots push after binding change failed", exc_info=True)
 
     # ── shared-core delegation ────────────────────────────────────────────
     def resolve_inbound(self, conversation_id: str) -> InboundResolution:
@@ -145,7 +226,7 @@ class TeamsSessionResume:
             conversation_id, self.link_for(conversation_id), self._title_of
         )
         if released is not None:
-            self._push_slots()
+            self._controller.push_slots()
         return released
 
     async def _title_of(self, session_key: str) -> str:
@@ -171,88 +252,13 @@ class TeamsSessionResume:
         query: str = "",
     ) -> None:
         """Post the session picker, or say why there is nothing to post."""
-
-        async def _say(text: str) -> None:
-            try:
-                await client.send_message(conversation_id, text, service_url)
-            except TeamsSendError:
-                logger.warning("Teams resume: notice delivery failed", exc_info=True)
-
-        if not self.is_owner(identity):
-            sel().log_api_access(
-                caller=identity or "unknown",
-                operation="teams.sessions_data_access",
-                outcome="denied",
-                source="teams",
-            )
-            await _say(
-                "🔒 `/sessions` requires exactly one configured `teams.allowed_emails` "
-                "entry — a dashboard session is the operator's own transcript, so it is "
-                "not listable on a shared allow-list."
-            )
-            return
-        if self.conv_log is None:
-            await _say("⚠️ Recent sessions are unavailable.")
-            return
-
-        try:
-            choices, total = await resolve_session_choices(self.conv_log, query, _safe_teams_text)
-        except Exception as exc:
-            sel().log_api_access(
-                caller=identity or "unknown",
-                operation="teams.sessions_data_access",
-                outcome="error",
-                source="teams",
-                resources="0 sessions read",
-                error=_safe_teams_text(str(exc), 200),
-            )
-            logger.exception("Teams sessions: history listing failed")
-            await _say("⚠️ Recent sessions are unavailable.")
-            return
-
-        sel().log_api_access(
+        await self._controller.show_picker(
+            _TeamsResumeSurface(client, conversation_id, service_url),
             caller=identity or "unknown",
-            operation="teams.sessions_data_access",
-            outcome="allowed",
-            source="teams",
-            resources=f"{len(choices)} sessions read",
+            picker_owner=identity,
+            is_owner=self.is_owner(identity),
+            query=query,
         )
-        normalized = " ".join(query.casefold().split())
-        if not choices:
-            if normalized:
-                label = _safe_teams_text(" ".join(query.split()), 100)
-                await _say(
-                    f"No dashboard sessions matched “{label}”. Try fewer words, or run "
-                    f"`/sessions` to see up to {PICKER_LIMIT} recent sessions."
-                )
-            else:
-                await _say("No recent dashboard sessions.")
-            return
-
-        self.pickers.purge()
-        self.pickers.drop_for(identity)
-        nonce = self.pickers.mint()
-        frozen = tuple(choices)
-        heading = _picker_heading(query, total, normalized)
-        try:
-            activity_id = (
-                await client.send_card(
-                    conversation_id,
-                    session_picker_card(prompt=heading, choices=frozen, nonce=nonce),
-                    service_url,
-                )
-                or ""
-            )
-        except TeamsSendError:
-            logger.warning("Teams resume: picker card delivery failed", exc_info=True)
-            # No nonce is registered, so nothing can resolve against a card that never
-            # landed -- and the user is told rather than left with silence.
-            await _say("⚠️ Couldn't show the session list. Try `/sessions` again.")
-            return
-        if activity_id:
-            # Owner alone is the scope: a Teams personal chat is 1:1, so the identity
-            # already names the conversation.
-            self.pickers.register(nonce, identity, activity_id, frozen)
 
     async def choose(
         self,
@@ -265,97 +271,18 @@ class TeamsSessionResume:
         index: int,
     ) -> None:
         """Resolve a picker press: bind the chosen session, or say why not."""
-
-        async def _settle(text: str) -> bool:
-            """Replace the picker with an outcome, so no row still looks pressable."""
-            try:
-                from kiro_crew.teams.cards import resolved_card
-
-                return bool(
-                    await client.update_card(
-                        conversation_id,
-                        activity_id,
-                        resolved_card(title="Sessions", outcome=text),
-                        service_url,
-                    )
-                )
-            except TeamsSendError:
-                logger.debug("Teams resume: picker settle failed", exc_info=True)
-                return False
-
-        if not self.is_owner(identity):
-            sel().log_api_access(
-                caller=identity or "unknown",
-                operation="teams.session_resume_choice",
-                outcome="denied",
-                source="teams",
-            )
-            await _settle("session resume is owner-only")
-            return
-
-        choice = self.pickers.take(nonce, index, identity, activity_id)
-        if choice is None:
-            await _settle("this list expired — run `/sessions` again")
-            return
-        if self.conv_log is None or not await asyncio.to_thread(self.conv_log.has_log, choice.key):
-            await _settle("that session is no longer available")
-            return
-
-        link = self.link_for(conversation_id)
-        async with self._binder.lock:
-            conflict = self._binder.binding_conflict(choice.key, choice.title, link)
-            if conflict is not None:
-                await _settle(conflict)
-                return
-            try:
-                # Record BEFORE the banner and the binding, all under the lock: once
-                # Teams shows "Resumed", only durable evidence survives a crash, and a
-                # rollback is unsafe (no map revision; a racing dashboard rebind skips
-                # this lock). A lost banner or bind fails toward ONE notice.
-                await self._binder.expectations.record(conversation_id, choice.key, choice.title)
-            except Exception:
-                logger.warning("Teams resume: the pick did not take effect", exc_info=True)
-                await _settle(
-                    "couldn't save which session this conversation is linked to, so it "
-                    "was NOT resumed — run `/sessions` to try again"
-                )
-                return
-            if not await _settle(f"resumed “{choice.title}” — `/unlink` to come back"):
-                return
-            # The settle above awaited a round trip. Re-check before writing: a
-            # dashboard mirror or another channel's link may have claimed this session
-            # or this conversation in that window.
-            conflict = self._binder.binding_conflict(choice.key, choice.title, link)
-            if conflict is not None:
-                await _settle(conflict)
-                return
-            try:
-                self.sessions.set_mirror_link(choice.key, link, accepts_inbound=True)
-                self._push_slots()
-            except ConversationOwnershipConflict:
-                # binding_conflict already checked, twice -- but it and the dashboard
-                # connect endpoint evaluate under different locks, so the precheck can
-                # lose the race. The atomic claim inside set_mirror_link catches it.
-                # An ordinary conflict, not a fault: say so in the precheck's words.
-                logger.debug("Teams resume: lost the claim race for this conversation")
-                await _settle(
-                    "another session just connected here — run `/unlink`, then "
-                    "`/sessions` to resume this one"
-                )
-                return
-            except Exception:
-                logger.exception("Teams resume: failed to persist binding")
-                await _settle("couldn't resume that session — run `/sessions` to try again")
-                return
-
-        sel().log_api_access(
+        choice = await self._controller.choose(
+            _TeamsResumeSurface(client, conversation_id, service_url),
             caller=identity or "unknown",
-            operation="teams.session_resume",
-            outcome="allowed",
-            source="teams",
-            resources=choice.key,
+            picker_owner=identity,
+            is_owner=self.is_owner(identity),
+            message_id=activity_id,
+            nonce=nonce,
+            index=index,
+            link=self.link_for(conversation_id),
         )
-        await self._replay(client, conversation_id, service_url, choice.key)
+        if choice is not None:
+            await self._replay(client, conversation_id, service_url, choice.key)
 
     async def _replay(
         self, client: "TeamsClient", conversation_id: str, service_url: str, session_key: str

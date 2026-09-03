@@ -68,8 +68,8 @@ echo "  ${DIM}Platform: $OS $ARCH${RESET}"
 # --- 1. Python -------------------------------------------------------------
 step 1 "Python"
 PY=""
-for c in python3.12 python3.11 python3.10 python3; do
-    if has "$c" && "$c" -c 'import sys; assert sys.version_info>=(3,10)' 2>/dev/null; then PY="$c"; break; fi
+for c in python3.12 python3.13 python3; do
+    if has "$c" && "$c" -c 'import sys; assert sys.version_info>=(3,12)' 2>/dev/null; then PY="$c"; break; fi
 done
 if [ -z "$PY" ]; then
     if [ "$OS" = "Darwin" ]; then
@@ -77,18 +77,44 @@ if [ -z "$PY" ]; then
         xcode-select --install 2>/dev/null || true
         warn "Finish the Xcode CLT install if prompted, then re-run this script."
     elif has apt-get; then $SUDO apt-get update -qq && $SUDO apt-get install -y python3 python3-venv python3-pip
-    elif has dnf; then $SUDO dnf install -y python3.11 python3.11-pip 2>/dev/null || $SUDO dnf install -y python3 python3-pip
+    elif has dnf; then $SUDO dnf install -y python3.12 python3.12-pip 2>/dev/null || $SUDO dnf install -y python3 python3-pip
     elif has yum; then $SUDO yum install -y python3 python3-pip
     elif has brew; then brew install python@3.12
     fi
-    # Re-probe with the same >=3.10 gate as above -- a bare existence check would
+    # Re-probe with the same >=3.12 gate as above -- a bare existence check would
     # wrongly latch onto a distro's default python3 (RHEL/CentOS 7 = 3.6,
-    # Amazon Linux 2023 = 3.9), which then fails later at pip/venv.
-    for c in python3.12 python3.11 python3.10 python3; do
-        if has "$c" && "$c" -c 'import sys; assert sys.version_info>=(3,10)' 2>/dev/null; then PY="$c"; break; fi
+    # Amazon Linux 2023 = 3.9, Ubuntu 22.04 = 3.10), which then fails later at
+    # pip/venv.
+    for c in python3.12 python3.13 python3; do
+        if has "$c" && "$c" -c 'import sys; assert sys.version_info>=(3,12)' 2>/dev/null; then PY="$c"; break; fi
     done
 fi
-[ -n "$PY" ] || { warn "Python 3.10+ required. Install it and re-run."; exit 1; }
+# Last resort before giving up: this script runs from a clone, so the repo's own
+# bootstrap is available and already knows how to provision 3.12 via mise's
+# python-build-standalone builds and record the interpreter it chose. Without
+# this, a distro whose archive tops out below 3.12 (Ubuntu 22.04 -> 3.10) exits
+# here, where the >= 3.10 floor had accepted the distro's python3.
+# True only when a version manager is ALREADY on this host. ensure-python.sh will
+# otherwise install mise by piping a remote script into sh, and this fallback runs
+# without the user having asked for it -- so it must not be able to reach that.
+_has_provisioner() {
+    command -v mise >/dev/null 2>&1 || [ -x "$HOME/.local/bin/mise" ]
+}
+if [ -z "$PY" ] && [ -f "$REPO_ROOT/ensure-python.sh" ] && _has_provisioner; then
+    info "No system Python 3.12+; provisioning one via ensure-python.sh…"
+    bash "$REPO_ROOT/ensure-python.sh" >/dev/null 2>&1 || true
+    _recorded="$(cat "${KIROCREW_HOME:-$HOME/.kiro/crew}/python-bin" 2>/dev/null || true)"
+    if [ -n "$_recorded" ] && [ -x "$_recorded" ] \
+        && "$_recorded" -c 'import sys; assert sys.version_info>=(3,12)' 2>/dev/null; then
+        PY="$_recorded"
+    fi
+fi
+if [ -z "$PY" ]; then
+    warn "Python 3.12+ is required and this host has none."
+    info "Install Python 3.12+, or install mise (https://mise.jdx.dev/installing-mise.html)"
+    info "and re-run — this script will then provision Python 3.12 through it."
+    exit 1
+fi
 ok "$($PY --version 2>&1)"
 
 # --- 2. AWS CLI ------------------------------------------------------------
@@ -151,6 +177,14 @@ fi
 step 4 "KiroCrew client"
 info "Installing the KiroCrew client (pip, editable)…"
 _venv="$REPO_ROOT/.venv"
+# Same requires-python reuse rule as install.sh and setup.sh: an existing venv
+# built on a pre-3.12 interpreter cannot host the package, and the pip install
+# below would be refused outright, so rebuild instead of reusing.
+if [ -x "$_venv/bin/python" ] \
+    && ! "$_venv/bin/python" -c "import sys; sys.exit(0 if sys.version_info >= (3, 12) else 1)" 2>/dev/null; then
+    warn "Existing venv predates the Python 3.12 floor — recreating it"
+    rm -rf "$_venv"
+fi
 [ -x "$_venv/bin/python" ] || "$PY" -m venv "$_venv"
 "$_venv/bin/pip" install --upgrade pip -q 2>/dev/null || true
 _pip_target="$REPO_ROOT"

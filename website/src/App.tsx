@@ -134,6 +134,7 @@ import { getCapsuleSegments } from './apps/capsuleSegments'
 import { FEATURE_REQUEST_PROMPT_FALLBACK } from './prompts/featureRequest'
 import { useKeyboardShortcuts, IS_MAC } from './hooks/useKeyboardShortcuts'
 import { useInstanceShortcuts } from './hooks/useInstanceShortcuts'
+import { useAutoConnectInstances } from './hooks/useAutoConnectInstances'
 import { useCommandPalette } from './hooks/useCommandPalette'
 import { useProvider } from './providers/context'
 import { useAgents } from './hooks/useAgents'
@@ -342,8 +343,17 @@ const REASONING_EFFORT_LEVELS = ['', 'low', 'medium', 'high', 'xhigh', 'max']
 // Sent to the backend and compared, never rendered — the picker has its own copy.
 const APPROVAL_MODE_LEVELS = ['normal', 'trust_reads', 'trust', 'yolo']
 
-function UpdateOverlay({ onCancel }: { onCancel: () => void }) {
+// Exported for the isolated capture harness (capture/update-overlay.tsx):
+// the overlay only mounts mid-update, a state a full-shell capture cannot
+// reach without stubbing the update endpoints end to end.
+export function UpdateOverlay({ onCancel }: { onCancel: () => void }) {
   const progress = useAppSelector(s => s.dashboard.updateProgress)
+  // The restart step kills this tab's socket BY DESIGN (the gateway execs
+  // itself), and progress events stop with it. Without naming that state the
+  // overlay freezes on whatever step last arrived — indistinguishable from a
+  // stall. `connected` is what tells "working, gateway is down on purpose"
+  // from "stuck".
+  const connected = useAppSelector(s => s.dashboard.connected)
   const dispatch = useAppDispatch()
   const step = progress?.step || ''
   const detail = progress?.detail || ''
@@ -414,6 +424,16 @@ function UpdateOverlay({ onCancel }: { onCancel: () => void }) {
             <button className="px-4 py-1.5 rounded-lg text-[13px] font-medium cursor-pointer bg-danger/10 border border-danger/30 text-danger hover:bg-danger/20 transition-colors" onClick={handleCancel}>
               {i18nT('app.cancel_update')}
             </button>
+          </div>
+        ) : !connected ? (
+          // The gateway went down mid-update — during the restart step that is
+          // the exec doing its job, and the health probe + WS backoff are
+          // already dialing. Say so, with the live elapsed count, instead of
+          // leaving a frozen step list that reads as a hang. On reconnect the
+          // restart latch (useWebSocket) reloads this tab, which is what
+          // finally clears the overlay.
+          <div className="text-[13px] text-accent flex items-center justify-center gap-1.5" role="status" data-testid="update-reconnecting">
+            <RefreshCw size={13} className="lucide-inline animate-spin" /> {i18nT('app.gateway_restarting_reconnecting')} ({elapsedStr})
           </div>
         ) : (
           <div className="text-[13px] text-muted">{i18nT('app.page_will_reconnect_when_ready')}</div>
@@ -2216,6 +2236,11 @@ export default function App() {
   // than once (strip + inline header copies).
   useInstanceShortcuts()
 
+  // Proactively bring remote-crew tunnels up on web-app load and on tab focus
+  // (behind the default-on mc-auto-connect setting), so a crew is live without
+  // a manual switcher click. Registered here once, like useInstanceShortcuts.
+  useAutoConnectInstances()
+
   // Kiro CLI monthly credit usage. /api/sessions/usage TRIGGERS the background
   // `kiro-cli /usage` fetch AND returns the cached result, so the pill is
   // self-sufficient on any page. Month-to-date total = credits_used, which the
@@ -2964,11 +2989,14 @@ export default function App() {
         {/* `tb-has-update` shifts the collapse ladder's rungs (index.css): the
             update pill is a conditional, non-shrinking sibling of the ladder,
             so while it is mounted the group's fixed content is wider by the
-            pill's footprint and every rung must fire that much earlier. The
-            class keys off the same selector the pill itself reads, so they
-            move together; during the pill's lazy-chunk fetch the class can
-            lead the pill by a moment, which costs readout room briefly and
-            harms nothing. */}
+            pill's footprint and the ≥640px rungs fire that much earlier. Below
+            640px no rung shifts (#7698): a phone hands the group ≤240px
+            routinely, so a shifted terminal rung blanked the readouts for the
+            whole time an update was pending; the nowrap backstop clips the
+            squeeze instead. The class keys off the same selector the pill
+            itself reads, so they move together; during the pill's lazy-chunk
+            fetch the class can lead the pill by a moment, which costs readout
+            room briefly and harms nothing. */}
         <div className={`tb-right relative${updateAvailable ? ' tb-has-update' : ''}`}>
 
           {/* Theme decoration: extra aside control (e.g. a stardate / clock). */}
@@ -3929,8 +3957,12 @@ export default function App() {
             <Route path="/deploy" element={<ArtifactDeployPage />} />
             {/* Builtin app routes — auto-discovered from registry. React Router v6
                 ranks static paths higher than parameterized ones, so /settings, /agents
-                etc. still match first. Unrecognized paths fall through to /chat. */}
-            <Route path="/:builtinApp" element={<BuiltinAppRoute />} />
+                etc. still match first. Unrecognized paths fall through to /chat.
+                The trailing splat also matches the BARE app path (empty splat),
+                so this one arm serves /aws-control and /aws-control/usage alike —
+                an app carries sub-segments for its own path navigation, same
+                shape as /settings/<tab>. */}
+            <Route path="/:builtinApp/*" element={<BuiltinAppRoute />} />
             <Route path="*" element={<ChatRedirect />} />
           </Routes>
         </main>

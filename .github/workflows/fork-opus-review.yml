@@ -364,6 +364,15 @@ jobs:
           echo "--- stage 1 candidates (never posted; kept here as tuning signal) ---"
           cat .review-candidates.md
 
+      # Re-assume the role BETWEEN the stages: the session lasts one hour, and a
+      # discovery stage that consumes most of it used to leave validation to die
+      # mid-call on an expired security token, failing the gate closed with no
+      # verdict. Keep in sync with claude-review.yml.
+      - uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6.2.3
+        with:
+          role-to-assume: ${{ secrets.AWS_BEDROCK_ROLE_ARN }}
+          aws-region: us-west-2
+
       # ── Stage 2 of 2: VALIDATION (authoritative) ───────────────────────────
       # Fresh call, no memory of stage 1's reasoning. Re-derives input / call path
       # / observable outcome for every candidate from code it opens itself, keeps

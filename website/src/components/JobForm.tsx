@@ -105,6 +105,8 @@ interface Props {
   prefill?: CronPrefill
   agents: KiroCrewAgent[]
   defaultAgent: string
+  /** The roster fetch failed — see AgentSelector's prop of the same name. */
+  rosterFailure?: { reloading: boolean; onReload: () => void }
   onSaved: () => void
   /** Vertical layout for side panel, horizontal for inline create */
   layout?: 'vertical' | 'horizontal'
@@ -116,7 +118,7 @@ interface Props {
   onSavingChange?: (saving: boolean) => void
 }
 
-export default function JobForm({ job, prefill, agents, defaultAgent, onSaved, layout = 'horizontal', externalSubmit, submitRef, onSavingChange }: Props) {
+export default function JobForm({ job, prefill, agents, defaultAgent, rosterFailure, onSaved, layout = 'horizontal', externalSubmit, submitRef, onSavingChange }: Props) {
   const defaults = parseJobDefaults(job)
   // In create mode (no job), a preset can seed the prompt + schedule fields.
   // Edit mode always reflects the job as-stored and ignores any prefill.
@@ -252,7 +254,7 @@ export default function JobForm({ job, prefill, agents, defaultAgent, onSaved, l
         <div className="flex gap-2 items-center flex-wrap">
           <Input placeholder={i18nT('components.jobForm.job_name')} value={name} onChange={e => setName(e.target.value)} />
           <Input placeholder={i18nT('components.jobForm.message_task')} style={{ flex: 2 }} value={msg} onChange={e => setMsg(e.target.value)} />
-          <AgentSelector agents={agents} defaultAgent={defaultAgent} value={agent} onChange={(name) => setAgent(name)} modal />
+          <AgentSelector agents={agents} defaultAgent={defaultAgent} value={agent} onChange={(name) => setAgent(name)} rosterFailure={rosterFailure} modal />
           <SimpleSelect
             options={modelOptions.values}
             optionLabels={modelOptions.labels}
@@ -317,7 +319,7 @@ export default function JobForm({ job, prefill, agents, defaultAgent, onSaved, l
         <div className="flex flex-col gap-1">
           <span className="text-[12px] text-muted font-medium">{i18nT('components.jobForm.agent')}</span>
           <span className="text-[11px] text-muted/70">{i18nT('components.jobForm.which_agent_handles_this_job_leave_default_for_t')}</span>
-          <AgentSelector agents={agents} defaultAgent={defaultAgent} value={agent} onChange={(name) => setAgent(name)} modal />
+          <AgentSelector agents={agents} defaultAgent={defaultAgent} value={agent} onChange={(name) => setAgent(name)} rosterFailure={rosterFailure} modal />
         </div>
         </>)}
         {!isLlmless && (

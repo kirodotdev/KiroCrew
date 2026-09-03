@@ -129,6 +129,8 @@ class TestApiEndpoint:
         async with TestClient(TestServer(app)) as client:
             resp = await client.post("/api/chat/nav/resolve-links", data="not json")
             assert resp.status == 400
+            body = await resp.json()
+            assert body["code"] == "invalid_json"
 
     @pytest.mark.asyncio
     async def test_empty_links(self):
@@ -143,6 +145,13 @@ class TestApiEndpoint:
         async with TestClient(TestServer(app)) as client:
             resp = await client.post("/api/chat/nav/resolve-links", json={"links": []})
             assert resp.status == 400
+            body = await resp.json()
+            assert body["code"] == "links_required"
+            # A present-but-not-a-list links field refuses at the same site.
+            resp = await client.post("/api/chat/nav/resolve-links", json={"links": "x"})
+            assert resp.status == 400
+            body = await resp.json()
+            assert body["code"] == "links_required"
 
     @pytest.mark.asyncio
     async def test_success(self, monkeypatch):
@@ -278,6 +287,8 @@ class TestApiEndpointResilience:
             for payload in ([1, 2, 3], "x", 42):
                 resp = await client.post("/api/chat/nav/resolve-links", json=payload)
                 assert resp.status == 400, f"body={payload!r} should be 400"
+                body = await resp.json()
+                assert body["code"] == "body_not_object"
 
     @pytest.mark.asyncio
     async def test_resolver_error_fails_soft_with_audit_event(self, monkeypatch):

@@ -20,7 +20,8 @@ import type { CronJob } from '../types'
 import { useAgents } from '../hooks/useAgents'
 import { useCronActions } from '../hooks/useCronActions'
 import { useScrollEdges } from '../hooks/useScrollEdges'
-import { useAppSelector } from '../store'
+import { useAppSelector, useAppDispatch } from '../store'
+import { triggerRefresh } from '../store/dashboardSlice'
 import { SaveCreateLabel, scheduleLabel, scheduleMinutes } from '../utils/cronUtils'
 import { useSortableTable } from '../hooks/useSortableTable'
 import { SortableTableHead } from '../components/SortableHeader'
@@ -208,7 +209,22 @@ function EmptyFolderChip({ folder, onRename, onDelete, error }: { folder: CronFo
 
 export default function SchedulePage() {
   const [jobs, setJobs] = useState<CronJob[]>([])
-  const { agents } = useAgents(0)
+  const dispatch = useAppDispatch()
+  const { agents, error: rosterError, reload: reloadRoster, reloading: rosterReloading } = useAgents(0)
+  // A recovered roster must not be recovered for this form alone. `useAgents`
+  // holds PER-INSTANCE state, and the app shell keeps its own copy (App.tsx
+  // feeds it to the agent-cycle shortcuts), so a retry that refreshed only this
+  // page would tell the user the roster is back while another surface still
+  // holds the empty one. Bumping the shared refresh trigger — the same channel
+  // chat already uses after an agent operation — makes one press recover every
+  // consumer.
+  const recoverRoster = useCallback(() => {
+    reloadRoster()
+    dispatch(triggerRefresh())
+  }, [reloadRoster, dispatch])
+  // Paired at the boundary: the picker is handed a failure it can act on, or
+  // nothing at all — never an error with no way out of it.
+  const rosterFailure = rosterError ? { reloading: rosterReloading, onReload: recoverRoster } : undefined
   // The default agent comes from the shared, WS-invalidated + focus-refetched
   // query rather than useAgents' one-shot value, so the agent-column label's
   // freshness matches the agents rail's — one source of truth (issue #6495).
@@ -954,6 +970,7 @@ export default function SchedulePage() {
             prefillWrites={creating && !!prefill && prefillWrites}
             agents={agents}
             defaultAgent={defaultAgent}
+            rosterFailure={rosterFailure}
             onClose={closeDetail}
             onSaved={() => { load(); closeDetail() }}
           />
@@ -1151,8 +1168,8 @@ type CronScriptSource = { source: string; file: string; function: string; trunca
  * keeps `selected` alive across dismissal so the calendar highlight and the
  * Executions filter survive.
  */
-function JobDetailDialog({ job, prefill, prefillWrites, agents, defaultAgent, onClose, onSaved }: {
-  job?: CronJob; prefill?: CronPrefill; prefillWrites?: boolean; agents: KiroCrewAgent[]; defaultAgent: string; onClose: () => void; onSaved: () => void
+function JobDetailDialog({ job, prefill, prefillWrites, agents, defaultAgent, rosterFailure, onClose, onSaved }: {
+  job?: CronJob; prefill?: CronPrefill; prefillWrites?: boolean; agents: KiroCrewAgent[]; defaultAgent: string; rosterFailure?: { reloading: boolean; onReload: () => void }; onClose: () => void; onSaved: () => void
 }) {
   const [confirmDelete, setConfirmDelete] = useState(false)
   const [deleting, setDeleting] = useState(false)
@@ -1203,7 +1220,7 @@ function JobDetailDialog({ job, prefill, prefillWrites, agents, defaultAgent, on
                 <span>{i18nT('pages.schedulePage.writes_notice')}</span>
               </div>
             )}
-            <JobForm job={job} prefill={prefill} agents={agents} defaultAgent={defaultAgent} onSaved={onSaved} layout="vertical" externalSubmit submitRef={submitRef} onSavingChange={setSaving} />
+            <JobForm job={job} prefill={prefill} agents={agents} defaultAgent={defaultAgent} rosterFailure={rosterFailure} onSaved={onSaved} layout="vertical" externalSubmit submitRef={submitRef} onSavingChange={setSaving} />
             {panelError && <div className="text-danger text-[13px]">{panelError}</div>}
             {job?.script && <ScriptSourcePanel jobId={job.id} />}
             {job?.script && (job.last_result || job.last_error) && (

@@ -3,9 +3,9 @@
 Provides ``/api/skills/-/discover`` (search) and extends the existing
 ``/api/skills/-/install`` to support provider-based installation.
 
-These handlers sit alongside the existing PromptFarm-specific handlers
-in prompts.py — the discover endpoint is additive (new capability), while
-the install handler is provider-aware (delegates to the right backend).
+The provider registry carries the built-in catalog plus any providers the
+composed edition contributes (``SkillDiscoveryProvider`` seam), each admitted
+through the same discovery policy.
 """
 
 from __future__ import annotations
@@ -21,7 +21,7 @@ from kiro_crew.dashboard.handlers._shared import _get_skills
 from kiro_crew.frontmatter import SKILL_LOADER, parse_frontmatter
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel as _sel
-from kiro_crew.skill_providers.base import ProviderRegistry
+from kiro_crew.skill_providers.base import ProviderRegistry, SkillProvider, provider_available
 from kiro_crew.skill_providers.skillsh import SkillsShConfig, SkillsShProvider
 from kiro_crew.skills import skills_dir as _skills_dir
 
@@ -100,12 +100,60 @@ def _build_registry() -> ProviderRegistry:
     if admits_registry("skill", skillsh.name, skillsh.api_base):
         registry.register(skillsh)
 
-    # PromptFarm — registered but availability depends on config. The existing
-    # /api/skills/-/remote endpoint remains for backward compat; the discover
-    # endpoint also includes PromptFarm results when configured.
-    # NOTE: PromptFarm integration via discover is a future addition —
-    # for now, the dedicated Browse PromptFarm modal remains the primary
-    # path for PromptFarm skills.
+    # Edition-contributed providers (CPP seam). Each passes through the same
+    # discovery-policy gate as the built-in provider, so a managed allowlist
+    # applies uniformly regardless of which edition supplied a provider. Read
+    # fail-closed: an adapter failure yields no extra providers rather than
+    # breaking discovery for the built-in catalog. Deferred import so this
+    # module never imports the platform package at module load.
+    from kiro_crew.platform.context import current_context, safe_context_call
+
+    extras: list[SkillProvider] = safe_context_call(
+        lambda: list(current_context().skill_discovery.skill_providers()),
+        fallback_factory=list,
+        log_message="edition skill_providers lookup failed; using none",
+    )
+    for provider in extras:
+        try:
+            name = str(provider.name)
+            # ``api_base`` is the identity an allowlist is written against; a
+            # provider that exposes none is gated on an empty base rather than
+            # skipped, so a deny policy still sees it.
+            api_base = str(getattr(provider, "api_base", "") or "")
+            # The name becomes the first path segment of an installed skill's
+            # key (``<provider>/<slug>`` under the skills root), so it must
+            # satisfy the same separator-free shape the install handler demands
+            # of the slug — otherwise a path-like name could resolve outside
+            # the skills root.
+            if not _SAFE_SLUG_RE.match(name):
+                logger.warning("Skipping edition skill provider with unsafe name %r", name)
+                continue
+            # Structural check: a provider missing part of the protocol (say,
+            # ``is_available``) would otherwise register fine and then break
+            # the aggregate search for every catalog, not just its own rows.
+            # Inside the try block deliberately: on Python 3.10/3.11 a
+            # runtime-checkable protocol isinstance EXECUTES properties, so a
+            # raising property must skip this provider, not crash discovery.
+            if not isinstance(provider, SkillProvider):
+                logger.warning(
+                    "Skipping edition skill provider %r: does not satisfy SkillProvider", name
+                )
+                continue
+        except Exception:
+            logger.warning("Skipping malformed edition skill provider", exc_info=True)
+            continue
+        if registry.get(name) is not None:
+            # ADD-only: the built-in catalog wins a name collision, so an
+            # edition cannot silently replace an identity the policy admitted.
+            logger.warning(
+                "Edition skill provider %r collides with a registered provider; skipping",
+                name,
+            )
+            continue
+        if admits_registry("skill", name, api_base):
+            # Register under the vetted name: ``provider.name`` is a property,
+            # and a second read could differ from what the gate checked.
+            registry.register(provider, name=name)
 
     return registry
 
@@ -164,14 +212,22 @@ async def api_skills_discover(request: web.Request) -> web.Response:
     results = await registry.search(query, provider=provider_filter, limit=limit)
 
     # Resolve installed state and build response items.
+    registered_names = set(registry.provider_names)
     items = []
     for r in results:
+        # A result's ``provider`` field is provider-supplied data. Only a
+        # vetted registration identity may pass through verbatim — anything
+        # else is blanked, so a row cannot render an arbitrary provenance
+        # string (installing it would 404 on the unknown provider anyway).
+        provider_id = (
+            r.provider if isinstance(r.provider, str) and r.provider in registered_names else ""
+        )
         # Check if a skill with a matching provider/slug key is already installed.
         # Use exact key match only — no suffix matching to avoid false positives
         # (e.g. "my-team/docker" matching a remote "docker" skill).
         slug = _slugify(r.id or r.name)
-        expected_key = f"{r.provider}/{slug}" if slug else ""
-        installed = r.installed or (expected_key and expected_key in local_keys)
+        expected_key = f"{provider_id}/{slug}" if slug and provider_id else ""
+        installed = bool(r.installed or (expected_key and expected_key in local_keys))
         # All provider-sourced fields are attacker-controllable -- redact
         # before surfacing. Benign ids (owner/repo/slug) pass unchanged;
         # an id that trips the credential/exfiltration scanners would only
@@ -180,8 +236,8 @@ async def api_skills_discover(request: web.Request) -> web.Response:
             "id": _redact_external(r.id),
             "name": _redact_external(r.name),
             "description": _redact_external(r.description),
-            "provider": r.provider,
-            "display_provider": _display_name(registry, r.provider),
+            "provider": provider_id,
+            "display_provider": _display_name(registry, provider_id),
             "repo_url": _redact_external(r.repo_url),
             "author": _redact_external(r.author),
             "installed": installed,
@@ -197,7 +253,7 @@ async def api_skills_discover(request: web.Request) -> web.Response:
             "installs": r.installs,
         })
 
-    active_providers = [p.name for p in registry.available_providers]
+    active_providers = registry.available_provider_names
 
     _sel().log_tool_invocation(
         session_key=request.get("session_key", "dashboard"),
@@ -290,7 +346,7 @@ async def api_skills_discover_install(request: web.Request) -> web.Response:
 
     registry = await asyncio.to_thread(_get_registry)
     provider = registry.get(provider_name)
-    if provider is None or not provider.is_available():
+    if provider is None or not provider_available(provider):
         return web.json_response(
             {"error": f"Provider '{provider_name}' is not available"}, status=404
         )
@@ -526,9 +582,22 @@ def _slugify(raw: str) -> str:
 
 
 def _display_name(registry: ProviderRegistry, provider_name: str) -> str:
-    """Get the human-readable display name for a provider."""
+    """Human-readable display label for a provider, safe to render.
+
+    ``display_name`` is provider-supplied like every other provider-sourced
+    string, so it goes through the same scrub — and falls back to the vetted
+    registration name when it is missing, non-string, empty, or raises.
+    """
     p = registry.get(provider_name)
-    return p.display_name if p else provider_name
+    if p is None:
+        return provider_name
+    try:
+        label = p.display_name
+    except Exception:
+        return provider_name
+    if not isinstance(label, str) or not label:
+        return provider_name
+    return _redact_external(label)
 
 
 async def api_skills_discover_preview(request: web.Request) -> web.Response:
@@ -560,7 +629,7 @@ async def api_skills_discover_preview(request: web.Request) -> web.Response:
 
     registry = await asyncio.to_thread(_get_registry)
     provider = registry.get(provider_name)
-    if provider is None or not provider.is_available():
+    if provider is None or not provider_available(provider):
         return web.json_response(
             {"error": f"Provider '{provider_name}' is not available"}, status=404
         )
@@ -632,13 +701,18 @@ async def api_skills_discover_preview(request: web.Request) -> web.Response:
     # still installed intact regardless of this display cap.
     max_preview = 64 * 1024
     # Provider-sourced fields (including the full SKILL.md body) are
-    # attacker-controllable -- redact before returning to the dashboard.
+    # attacker-controllable -- redact before returning to the dashboard. The
+    # body is size-uncapped provider input, so its full-text redaction runs
+    # off-loop (no-blocking-call-on-event-loop); the display cap is applied to
+    # the REDACTED text, because capping first can cut a credential at the
+    # boundary into fragments no redaction regex matches.
+    safe_content = await asyncio.to_thread(_redact_external, content)
     return web.json_response({
         "description": _redact_external(meta.get("description", "")),
         "name": _redact_external(meta.get("name", "")),
         "license": _redact_external(meta.get("license", "")),
         "author": _redact_external(meta.get("author", "")),
-        "content": _redact_external(content[:max_preview]),
+        "content": safe_content[:max_preview],
         "files": [_redact_external(f) for f in files[:200]],
         "file_count": len(files),
     })

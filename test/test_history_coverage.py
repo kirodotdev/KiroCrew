@@ -1443,6 +1443,11 @@ class TestSkillTextHelpers:
         [
             (None, ""),
             ("---\nname: x\n---\nbody text", "body text"),
+            # The locator tolerates a carriage return before each fence
+            # newline, exactly like SKILL_UPDATE's fence: a block the field
+            # parser reads must be a block this strips, or the header rides
+            # into the update-merge prompt under a re-emitted fence.
+            ("---\r\nname: x\r\n---\r\nbody text", "body text"),
             ("no frontmatter", "no frontmatter"),
         ],
     )

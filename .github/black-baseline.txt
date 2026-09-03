@@ -91,7 +91,6 @@ src/kiro_crew/apps/builtins/crew_companion/tests/test_routes.py
 src/kiro_crew/apps/builtins/crew_companion/tests/test_store.py
 src/kiro_crew/apps/builtins/crew_companion/tests/test_write_failures.py
 src/kiro_crew/apps/builtins/design_critique/tests/test_manifest.py
-src/kiro_crew/apps/builtins/design_tweak/backend/server.py
 src/kiro_crew/apps/builtins/dev_fleet/gateway_service.py
 src/kiro_crew/apps/builtins/dev_fleet/server.py
 src/kiro_crew/apps/builtins/dev_fleet/skills/pod-e2e/scripts/pod-playwright.py
@@ -130,13 +129,11 @@ src/kiro_crew/apps/builtins/ops_mission_control/tests/test_ledger_index.py
 src/kiro_crew/apps/builtins/ops_mission_control/tests/test_ledger_sync_git.py
 src/kiro_crew/apps/builtins/ops_mission_control/tests/test_notify_out.py
 src/kiro_crew/apps/builtins/ops_mission_control/tests/test_policy_store.py
-src/kiro_crew/apps/builtins/ops_mission_control/tests/test_providers.py
 src/kiro_crew/apps/builtins/ops_mission_control/tests/test_providers_datadog_cov80.py
 src/kiro_crew/apps/builtins/ops_mission_control/tests/test_routes.py
 src/kiro_crew/apps/builtins/ops_mission_control/tests/test_schedule_file.py
 src/kiro_crew/apps/builtins/ops_mission_control/tests/test_security.py
 src/kiro_crew/apps/builtins/ops_mission_control/tests/test_slack_out.py
-src/kiro_crew/apps/builtins/ops_mission_control/tests/test_store_and_gate.py
 src/kiro_crew/apps/builtins/ops_mission_control/tests/test_webhook.py
 src/kiro_crew/apps/builtins/papyrus/backend/gitops.py
 src/kiro_crew/apps/builtins/papyrus/backend/latex.py
@@ -155,7 +152,6 @@ src/kiro_crew/apps/dependencies.py
 src/kiro_crew/apps/dependency_ledger.py
 src/kiro_crew/apps/dev_mode.py
 src/kiro_crew/apps/execution.py
-src/kiro_crew/apps/hooks_integration.py
 src/kiro_crew/apps/install_receipt.py
 src/kiro_crew/apps/manager.py
 src/kiro_crew/apps/manifest.py
@@ -276,7 +272,6 @@ src/kiro_crew/eval/scenario.py
 src/kiro_crew/frontend.py
 src/kiro_crew/gateway_shutdown_budget.py
 src/kiro_crew/github_runner.py
-src/kiro_crew/hooks.py
 src/kiro_crew/image_artifacts.py
 src/kiro_crew/imaging.py
 src/kiro_crew/kiro_prerequisite.py
@@ -332,7 +327,6 @@ src/kiro_crew/mcp_tools/artifacts.py
 src/kiro_crew/mcp_tools/control.py
 src/kiro_crew/mcp_tools/knowledge.py
 src/kiro_crew/mcp_tools/skills.py
-src/kiro_crew/mcp_tools/spawn.py
 src/kiro_crew/mcp_utils.py
 src/kiro_crew/metrics/http_metrics.py
 src/kiro_crew/metrics/provider.py
@@ -398,7 +392,6 @@ test/metrics/test_schema.py
 test/metrics/test_startup_channel_attrs.py
 test/metrics/test_telemetry_titles.py
 test/metrics/test_watchdog_metrics.py
-test/test_acp_backend_kas.py
 test/test_acp_dynamic_config.py
 test/test_acp_error_surface.py
 test/test_acp_liveness.py
@@ -764,7 +757,6 @@ test/test_history_locking_remediation.py
 test/test_history_race.py
 test/test_hook_matcher_modes.py
 test/test_hooks.py
-test/test_hooks_coverage.py
 test/test_hooks_json_shared_file.py
 test/test_host_isolation_floor.py
 test/test_host_service_guard.py
@@ -816,7 +808,6 @@ test/test_knowledge_ingest_magic_byte.py
 test/test_knowledge_items_source_filter.py
 test/test_knowledge_kiroignore.py
 test/test_knowledge_project_docs.py
-test/test_knowledge_search_upgrade.py
 test/test_knowledge_source_spend.py
 test/test_knowledge_sync_local_file.py
 test/test_knowledge_workspace_autosource.py
@@ -824,7 +815,6 @@ test/test_lazy_data_home_paths.py
 test/test_learn.py
 test/test_lesson_contradiction.py
 test/test_lesson_ranking.py
-test/test_lessons_count.py
 test/test_lifecycle_hooks.py
 test/test_link_dashboard.py
 test/test_link_unfurl.py
@@ -993,7 +983,6 @@ test/test_queue_receipt.py
 test/test_quick_send.py
 test/test_read_bounded_json.py
 test/test_recovery_card_parity.py
-test/test_recovery_card_prefixes.py
 test/test_redact_meta_snapshot.py
 test/test_redaction_mirror_parity.py
 test/test_refresh_tokens.py

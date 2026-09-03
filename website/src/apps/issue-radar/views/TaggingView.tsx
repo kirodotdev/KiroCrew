@@ -7,7 +7,7 @@ import {
   type UntaggedIssue,
 } from '../api'
 import { useIssueRadar } from '../context'
-import { asArray } from '../lib/format'
+import { asArray, resolveAiLanguage } from '../lib/format'
 import ReadOnlyTag from '../components/ReadOnlyTag'
 import UntaggedIssueCard from './tagging/UntaggedIssueCard'
 import LabelsPanel, { settingsKeyForCategory } from './tagging/LabelsPanel'
@@ -49,6 +49,7 @@ export default function TaggingView() {
 function TaggingDashboard() {
   const {
     active, repoLabels, canWrite, labelsLoading, labelsError, toggleLabel, openIssues,
+    aiLanguage,
   } = useIssueRadar()
   const { owner, repo } = active
   const scopeKey = repoScopeKey(active)
@@ -447,6 +448,7 @@ function TaggingDashboard() {
         titleOf={titleOf}
         onPick={(name) => { toggleLabel(name); openIssues() }}
         onCreated={onLabelCreated}
+        aiLanguage={resolveAiLanguage(aiLanguage)}
       />
 
       {/* The queue and its actions are one feature — same panel. */}

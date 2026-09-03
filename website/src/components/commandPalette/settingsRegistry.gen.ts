@@ -1372,10 +1372,10 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "occurrence": 1
   },
   {
-    "id": "instances.chat-on-a-crew",
-    "label": "Chat on a crew",
-    "labelKey": "pages.settings.remoteCrewPanel.chat_on_a_crew",
-    "description": "Adds “New chat on crew” to the create menu, which starts a session that runs on a connected crew. Unfinished: it opens in that crew’s own pane, and sessions running on a crew are not listed here yet.",
+    "id": "instances.auto-connect-crews",
+    "label": "Auto-connect crews",
+    "labelKey": "pages.settings.remoteCrewPanel.auto_connect",
+    "description": "When on, opening the web app connects every crew automatically, and reconnects them when you come back to the tab. Turn off to connect a crew only when you switch to it.",
     "tab": "instances",
     "type": "toggle",
     "occurrence": 1

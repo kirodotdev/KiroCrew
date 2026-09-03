@@ -45,14 +45,20 @@ def decide_monitor(
         return _provider_error_decision(state, observation, state.budgets)
     if observation.status is MonitorObservationStatus.ACTIONABLE:
         if observation.fingerprint == state.last_wake_fingerprint:
+            if observation.supplemental_provider_error is not None:
+                return _supplemental_provider_error_decision(state, state.budgets)
             return MonitorDecision.NO_CHANGE
         return MonitorDecision.WAKE_ACTIONABLE
+    if observation.supplemental_provider_error is not None:
+        return _supplemental_provider_error_decision(state, state.budgets)
+    if observation.status is MonitorObservationStatus.SUCCESS:
+        if observation.head_changed:
+            return MonitorDecision.WAKE_ACTIONABLE
+        return MonitorDecision.STOP_SUCCESS
     if observation.fingerprint == state.last_fingerprint:
         return MonitorDecision.NO_CHANGE
     if observation.status is MonitorObservationStatus.PENDING:
         return MonitorDecision.RECORD_ONLY
-    if observation.status is MonitorObservationStatus.SUCCESS:
-        return MonitorDecision.STOP_SUCCESS
     return MonitorDecision.STOP_BLOCKED
 
 
@@ -86,6 +92,16 @@ def _provider_error_decision(
     error = observation.provider_error
     if error not in _RETRYABLE_PROVIDER_ERRORS:
         return MonitorDecision.STOP_BLOCKED
+    if state.consecutive_provider_errors + 1 >= budgets.max_provider_errors:
+        return MonitorDecision.STOP_BLOCKED
+    return MonitorDecision.RETRY_PROVIDER
+
+
+def _supplemental_provider_error_decision(
+    state: MonitorState,
+    budgets: MonitorBudgets,
+) -> MonitorDecision:
+    """Retry incomplete secondary evidence before retiring the readable target."""
     if state.consecutive_provider_errors + 1 >= budgets.max_provider_errors:
         return MonitorDecision.STOP_BLOCKED
     return MonitorDecision.RETRY_PROVIDER

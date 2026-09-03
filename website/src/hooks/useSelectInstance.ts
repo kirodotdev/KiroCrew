@@ -20,9 +20,10 @@
  */
 import { useCallback } from 'react'
 import { useMutation } from '@tanstack/react-query'
-import { api, type InstanceView } from '../api/client'
+import { type InstanceView } from '../api/client'
 import { useAppDispatch, useAppSelector } from '../store'
-import { setWarm, setActiveId, type WarmConn } from '../store/instancesSlice'
+import { setActiveId, type WarmConn } from '../store/instancesSlice'
+import { connectInstanceInto } from '../lib/connectInstance'
 
 /** Stable empty fallback for partial (test) stores — see the guarded read below. */
 const EMPTY_WARM: Record<string, WarmConn> = {}
@@ -36,14 +37,11 @@ export function useSelectInstance(instances: InstanceView[]) {
   const warm = useAppSelector(s => s.instances?.warm ?? EMPTY_WARM)
 
   const connectMutation = useMutation({
-    mutationFn: (id: string) => api.connectInstance(id),
-    onSuccess: (st, id) => {
-      if (st.state === 'connected' && st.local_port && st.token) {
-        dispatch(setWarm({ id, conn: { port: st.local_port, token: st.token } }))
-      }
-      // The pane was already activated on select; on failure the active pane
-      // shows the in-pane error/reconnect panel (see InstancesViewport).
-    },
+    // The connect-and-store body is shared with useAutoConnectInstances via
+    // connectInstanceInto, so the two paths cannot drift. The pane was already
+    // activated on select; on failure the active pane shows the in-pane
+    // error/reconnect panel (see InstancesViewport).
+    mutationFn: (id: string) => connectInstanceInto(dispatch, id),
   })
 
   /** Switch to instance `id`, or to the Local dashboard when `id` is null. */

@@ -301,25 +301,28 @@ describe("armSplashHistoryClear (simulated handoffs)", () => {
 });
 
 // Wiring contract: the behavior tests above prove the helper works; this pins
-// that main.js actually uses it — armed once per window in
+// that the window owner actually uses it — armed once per window in
 // setupWindowContents, which is what covers the main window AND per-connection
 // windows, and (being a persistent listener) the boot, recovery, and
 // token-prompt handoffs alike. A refactor that drops the arm call would leave
 // every other test green while reintroducing #5538 — the same pattern
 // hide-to-tray.test.js and fullscreen-bounds-settle.test.js use.
-describe("main.js splash-history wiring", () => {
-  const MAIN_JS = fs.readFileSync(path.join(__dirname, "..", "main.js"), "utf8");
+describe("window lifecycle splash-history wiring", () => {
+  const WINDOW_LIFECYCLE_JS = fs.readFileSync(
+    path.join(__dirname, "..", "window-lifecycle.js"),
+    "utf8",
+  );
 
   it("requires the helper", () => {
-    assert.match(MAIN_JS, /require\("\.\/splash-history"\)/);
+    assert.match(WINDOW_LIFECYCLE_JS, /require\("\.\/splash-history"\)/);
   });
 
   it("arms the prune inside setupWindowContents (once per window, before any handoff)", () => {
-    const start = MAIN_JS.indexOf("function setupWindowContents");
-    assert.notEqual(start, -1, "main.js must define setupWindowContents");
+    const start = WINDOW_LIFECYCLE_JS.indexOf("function setupWindowContents");
+    assert.notEqual(start, -1, "window-lifecycle.js must define setupWindowContents");
     // The arm call lives early in the function body — well before the ~2000
     // chars of view/bounds plumbing that follow view creation.
-    const region = MAIN_JS.slice(start, start + 2000);
+    const region = WINDOW_LIFECYCLE_JS.slice(start, start + 2000);
     assert.match(
       region,
       /armSplashHistoryClear\(view\.webContents/,
@@ -327,10 +330,10 @@ describe("main.js splash-history wiring", () => {
     );
   });
 
-  it("guards the arm with the window/view liveness check main.js uses everywhere else", () => {
-    const at = MAIN_JS.indexOf("armSplashHistoryClear(view.webContents");
+  it("guards the arm with the window/view liveness check window-lifecycle.js uses everywhere else", () => {
+    const at = WINDOW_LIFECYCLE_JS.indexOf("armSplashHistoryClear(view.webContents");
     assert.notEqual(at, -1);
-    const region = MAIN_JS.slice(at, at + 300);
+    const region = WINDOW_LIFECYCLE_JS.slice(at, at + 300);
     assert.match(region, /isAlive:.*isDestroyed\(\)/s);
   });
 });

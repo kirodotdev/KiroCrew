@@ -706,7 +706,11 @@ async def _stream_task(
         EVENT_TEXT_CHUNK,
         EVENT_TOOL_CALL,
     )
-    from kiro_crew.security import redact_credentials, redact_exfiltration_urls
+    from kiro_crew.security import (
+        redact_and_truncate,
+        redact_credentials,
+        redact_exfiltration_urls,
+    )
     from kiro_crew.sel import sel
 
     chunks: list[str] = []
@@ -763,8 +767,14 @@ async def _stream_task(
                     await client.approve_tool(event.request_id)
                     continue
                 # Normal mode — interactive approval
-                sanitized_input, _ = redact_credentials(event.tool_input[:500])
-                sanitized_input, _ = redact_exfiltration_urls(sanitized_input)
+                # Redact over the FULL input, then bound: cutting first can
+                # split a credential at the boundary into fragments no
+                # redaction regex matches, leaking it into the approval prompt.
+                # tool_input is model-authored and size-unbounded, so the
+                # full-text pass runs off-loop (no-blocking-call-on-event-loop).
+                sanitized_input = await asyncio.to_thread(
+                    redact_and_truncate, event.tool_input, 500
+                )
                 sanitized_name, _ = redact_credentials(event.text or "")
                 sanitized_name, _ = redact_exfiltration_urls(sanitized_name)
                 loop = asyncio.get_running_loop()

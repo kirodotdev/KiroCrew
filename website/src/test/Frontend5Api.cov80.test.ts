@@ -1,9 +1,11 @@
 /**
  * The two API-layer files whose behaviour is entirely in their error paths.
  *
- * `pins.ts` is three fetch calls that each turn a non-OK response into a thrown
- * Error — the request shape (URL encoding, method, the session-key header) and
- * that throw are the whole contract, and nothing else exercises either.
+ * `pins.ts` is three calls routed through the shared transport that each turn a
+ * non-OK response into a thrown `ApiError` — the request shape (URL encoding,
+ * method, the session-key header) and that throw are the whole contract, and
+ * nothing else exercises either. Importing `../api/client` for its install
+ * side-effect wires the blessed transport `pins.ts` now consumes.
  *
  * `apiTransport.ts` is the frozen downstream seam: every method is a wrapper
  * that resolves the installed helper at CALL time, plus a guard for the
@@ -13,7 +15,9 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 
+import '../api/client'
 import { pinsApi, PIN_PREVIEW_INPUT_MAX_CHARS, type PinMessageBody } from '../api/pins'
+import { ApiError } from '../api/apiError'
 
 /** One recorded fetch call. */
 interface Call {
@@ -23,7 +27,9 @@ interface Call {
 
 let calls: Call[] = []
 
-/** Queue one canned response per upcoming fetch. */
+/** Queue one canned response per upcoming fetch. The shared transport's `j`
+ *  reads `text()` on the error path and `json()` on success, so the stub
+ *  answers both from the same canned body. */
 function stubFetch(responses: Array<{ ok: boolean; status: number; body: unknown }>) {
   const queue = [...responses]
   calls = []
@@ -36,7 +42,10 @@ function stubFetch(responses: Array<{ ok: boolean; status: number; body: unknown
       return Promise.resolve({
         ok: next.ok,
         status: next.status,
+        url,
+        headers: { get: () => null },
         json: () => Promise.resolve(next.body),
+        text: () => Promise.resolve(next.body == null ? '' : JSON.stringify(next.body)),
       } as unknown as Response)
     }),
   )
@@ -66,9 +75,16 @@ describe('api/pins', () => {
     expect((calls[0].init?.headers as Record<string, string>)['X-Session-Key']).toBe('dashboard:ui')
   })
 
-  it('throws with the status when the list request fails', async () => {
-    stubFetch([{ ok: false, status: 503, body: null }])
-    await expect(pinsApi.list('zzslot')).rejects.toThrow(/503/)
+  it('throws an ApiError carrying the status and the backend body when the list request fails', async () => {
+    stubFetch([{ ok: false, status: 503, body: { code: 'pins_unavailable' } }])
+    const err = await pinsApi.list('zzslot').then(
+      () => { throw new Error('expected rejection') },
+      (e: unknown) => e,
+    )
+    expect(err).toBeInstanceOf(ApiError)
+    expect((err as ApiError).status).toBe(503)
+    // The raw body is retained so a consumer can parse the backend `code`.
+    expect((err as ApiError).body).toContain('pins_unavailable')
   })
 
   it('posts the pin body as JSON', async () => {
@@ -81,9 +97,15 @@ describe('api/pins', () => {
     expect(JSON.parse(String(calls[0].init?.body))).toEqual(body)
   })
 
-  it('throws with the status when the create request fails', async () => {
-    stubFetch([{ ok: false, status: 409, body: null }])
-    await expect(pinsApi.create(body)).rejects.toThrow(/409/)
+  it('throws an ApiError carrying the status and backend code when the create request fails', async () => {
+    stubFetch([{ ok: false, status: 409, body: { code: 'pin_limit_reached' } }])
+    const err = await pinsApi.create(body).then(
+      () => { throw new Error('expected rejection') },
+      (e: unknown) => e,
+    )
+    expect(err).toBeInstanceOf(ApiError)
+    expect((err as ApiError).status).toBe(409)
+    expect((err as ApiError).body).toContain('pin_limit_reached')
   })
 
   it('deletes by encoded id', async () => {
@@ -93,9 +115,14 @@ describe('api/pins', () => {
     expect(calls[0].init?.method).toBe('DELETE')
   })
 
-  it('throws with the status when the delete request fails', async () => {
-    stubFetch([{ ok: false, status: 404, body: null }])
-    await expect(pinsApi.remove('zzid')).rejects.toThrow(/404/)
+  it('throws an ApiError carrying the status when the delete request fails', async () => {
+    stubFetch([{ ok: false, status: 404, body: { code: 'pin_not_found' } }])
+    const err = await pinsApi.remove('zzid').then(
+      () => { throw new Error('expected rejection') },
+      (e: unknown) => e,
+    )
+    expect(err).toBeInstanceOf(ApiError)
+    expect((err as ApiError).status).toBe(404)
   })
 })
 

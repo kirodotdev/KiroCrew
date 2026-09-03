@@ -27,6 +27,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Any
 
+from kiro_crew.history import mint_row_mid
 from kiro_crew.imessage.client import redact_handle
 from kiro_crew.imessage.commands import HELP_TEXT, ConversationState, parse_command
 from kiro_crew.imessage.renderer import IMessageRenderer
@@ -287,9 +288,11 @@ class IMessageDispatcher:
         """
         if self.conv_log is None:
             return
-        self.conv_log.append(session_key, "user", user_text, agent=agent)
+        self.conv_log.append(session_key, "user", user_text, agent=agent, mid=mint_row_mid())
         if reply_text:
-            self.conv_log.append(session_key, "assistant", reply_text, agent=agent)
+            self.conv_log.append(
+                session_key, "assistant", reply_text, agent=agent, mid=mint_row_mid()
+            )
         if is_new:
             title = (user_text or "").strip().replace("\n", " ")[:40] or "iMessage"
             self.conv_log.set_title(session_key, title)

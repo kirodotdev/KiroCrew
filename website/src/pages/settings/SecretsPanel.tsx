@@ -14,8 +14,9 @@ import { i18nT } from '../../i18n/t'
  * 403/500 as a successful mutation: `onSuccess` fired and cleared the form,
  * silently discarding the secret the user had typed without ever storing it.
  * Throwing routes those statuses to `onError` instead, which leaves the form
- * populated so the value is not lost. Matches the `!r.ok` pattern used by
- * `src/api/pins.ts`.
+ * populated so the value is not lost. This is a local `!r.ok` guard rather than
+ * the shared `api/client.ts` transport because SecretsPanel authenticates with
+ * the raw stored token, not the transport's `dashboard:ui` session key.
  */
 const j = async (r: Response) => {
   if (!r.ok) {
@@ -32,7 +33,14 @@ const j = async (r: Response) => {
   }
   return r.json()
 }
-const _sk = { 'X-Session-Key': localStorage.getItem('kiro_crew_token') || '' }
+// Send the same fixed `dashboard:ui` session key the shared transport uses
+// (`src/api/client.ts`). This panel previously read `localStorage['kiro_crew_token']`,
+// but nothing in the app ever writes that key — the browser's dashboard identity
+// is the `dashboard:ui` literal, and the backend treats a missing/empty
+// X-Session-Key as `dashboard:ui` anyway — so the read was vestigial dead code
+// that always resolved to ''. Use the literal directly so the header is explicit
+// and matches every other panel.
+const _sk = { 'X-Session-Key': 'dashboard:ui' }
 const get = (url: string) => fetch(url, { headers: { ..._sk } })
 const post = (url: string, body?: object) =>
   fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json', ..._sk }, body: JSON.stringify(body) })

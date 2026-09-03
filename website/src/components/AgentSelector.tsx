@@ -17,6 +17,9 @@ export interface KiroCrewAgent {
   /** This agent's own default model. '' means inherit (kiro template pin, then
    *  the global fallback). Optional: older payloads predate the field. */
   model?: string
+  /** This agent's own default reasoning effort. '' means inherit the global
+   *  default. Optional: older payloads predate the field. */
+  reasoning_effort?: string
   description: string
   /** Free-text routing intent read by the orchestrator's select_crew. Optional:
    *  older payloads predate the field, and it falls back to `description`. */
@@ -47,6 +50,26 @@ interface Props {
    * popup closes.
    */
   modal?: boolean
+  /**
+   * Present when the roster could not be LOADED, as opposed to an install that
+   * genuinely has one agent. Without it those two states render identically —
+   * an empty list plus a trigger showing the default — which is the whole of
+   * #5990: the reporter could not tell a failed fetch from a one-agent roster,
+   * and neither could six triage passes.
+   *
+   * One object rather than three separate flags, so an error state with no way
+   * out of it is not representable: reporting the failure and being able to
+   * retry it arrive together or not at all. Optional as a whole, because a
+   * surface whose roster re-fetches on its own (the chat picker refetches on
+   * every slot and project change) recovers without asking the user to do
+   * anything.
+   *
+   * `reloading` drives the disabled + pending label, so an attempt that FAILS
+   * AGAIN still visibly completes: the hook sets an already-true error, React
+   * bails out of the re-render, and without it the button would be
+   * pixel-identical after every press during an outage.
+   */
+  rosterFailure?: { reloading: boolean; onReload: () => void }
 }
 
 /**
@@ -65,7 +88,7 @@ interface Props {
  * Popover has no option semantics of its own, so the listbox ARIA and roving
  * focus come from `useListboxKeyboard`, unchanged.
  */
-export default function AgentSelector({ agents, defaultAgent, value, onChange, modal = false }: Props) {
+export default function AgentSelector({ agents, defaultAgent, value, onChange, modal = false, rosterFailure }: Props) {
   const provider = useProvider()
   const [open, setOpen] = useState(false)
   const [filter, setFilter] = useState('')
@@ -81,6 +104,14 @@ export default function AgentSelector({ agents, defaultAgent, value, onChange, m
       : agents,
     [agents, filter],
   )
+
+  // A load failure is only worth reporting while it costs the user the list.
+  // Gated on the roster being EMPTY so a failed refresh over a roster we still
+  // hold, and a filter that matches nothing, both keep their own honest
+  // rendering rather than being overwritten by a stale error. Narrowed to the
+  // failure object rather than a boolean so the render below cannot reach for a
+  // retry that is not there.
+  const rosterFailed = agents.length === 0 ? rosterFailure : undefined
 
   // Focus return: in modal mode the popover's FocusScope is still trapping
   // when this runs, so focusing eagerly would fight the scope's own teardown
@@ -157,8 +188,10 @@ export default function AgentSelector({ agents, defaultAgent, value, onChange, m
     open,
     dropdownRef,
     inputRef,
-    // Radix autofocuses the first focusable node in the content — the filter
-    // box — so the hook must not also grab focus for the list.
+    // Radix autofocuses the first focusable node in the content. That is the
+    // filter box normally, and the Retry button when the roster failed to load
+    // and the filter is withheld — either way something else owns focus, so the
+    // hook must not also grab it for the list.
     hasFilterInput: true,
     filteredCount: filtered.length,
     onEnterSingleMatch: () => {
@@ -230,17 +263,23 @@ export default function AgentSelector({ agents, defaultAgent, value, onChange, m
         collisionPadding={8}
         className="w-auto min-w-[240px] max-w-[min(340px,calc(100vw-16px))] max-h-[min(280px,var(--radix-popover-content-available-height))] p-0 flex flex-col overflow-hidden bg-card"
       >
-        <div className="p-2 border-b border-border">
-          <Input
-            ref={inputRef}
-            type="text"
-            aria-label={i18nT('components.agentSelector.filter_agents')}
-            placeholder={i18nT('components.agentSelector.type_to_filter')}
-            value={filter}
-            onChange={e => setFilter(e.target.value)}
-            className="w-full px-2 py-1 text-[13px]"
-          />
-        </div>
+        {/* Withheld when the roster failed: a filter box directly above
+            "couldn't load the agent list" invites narrowing a list that does
+            not exist. There is nothing to filter, so the control is absent
+            rather than merely inert. */}
+        {!rosterFailed && (
+          <div className="p-2 border-b border-border">
+            <Input
+              ref={inputRef}
+              type="text"
+              aria-label={i18nT('components.agentSelector.filter_agents')}
+              placeholder={i18nT('components.agentSelector.type_to_filter')}
+              value={filter}
+              onChange={e => setFilter(e.target.value)}
+              className="w-full px-2 py-1 text-[13px]"
+            />
+          </div>
+        )}
         <div role="listbox" aria-label={i18nT('components.agentSelector.agent_list')} className="flex-1 min-h-0 overflow-y-auto divide-y divide-border">
           {filtered.map(a => {
             const isCurrent = active === a.name
@@ -272,8 +311,26 @@ export default function AgentSelector({ agents, defaultAgent, value, onChange, m
               </Btn>
             )
           })}
-          {filtered.length === 0 && <div className="px-3 py-2 text-[13px] text-muted italic">{i18nT('components.agentSelector.no_matches')}</div>}
+          {filtered.length === 0 && !rosterFailed && <div className="px-3 py-2 text-[13px] text-muted italic">{i18nT('components.agentSelector.no_matches')}</div>}
         </div>
+        {/* Outside the listbox, not another childless row inside it: the retry is
+            a button, and a button is not an `option` — putting it among them
+            would make the list announce a control it cannot select. */}
+        {rosterFailed && (
+          <div className="px-3 py-2 border-t border-border flex items-center justify-between gap-2">
+            <span className="text-[12px] text-danger">{i18nT('components.agentSelector.roster_load_failed')}</span>
+            <Btn
+              onClick={rosterFailed.onReload}
+              disabled={rosterFailed.reloading}
+              aria-busy={rosterFailed.reloading}
+              className="text-[12px] px-2 py-1 shrink-0"
+            >
+              {rosterFailed.reloading
+                ? i18nT('components.agentSelector.retrying')
+                : i18nT('components.agentSelector.retry')}
+            </Btn>
+          </div>
+        )}
       </PopoverContent>
     </Popover>
   )

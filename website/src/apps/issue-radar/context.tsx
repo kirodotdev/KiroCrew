@@ -20,7 +20,7 @@ import type {
 } from './lib/types'
 import { type ListDetailView, useListDetailView } from '../../hooks/useListDetailView'
 import { CREW_FILTERS, CREW_SORT_KEYS, CREW_VIEW_KINDS } from './lib/types'
-import { repoScopeKey } from './lib/links'
+import { repoScopeKey, sameRepoRef } from './lib/links'
 import { DEFAULT_BULK_CHUNK } from './lib/prActions'
 import {
   asArray, coerceAiLanguage, coerceDashboardTab, coerceRefreshPrefs, coerceSortKey, consumeAutoSelectFirstIssue,
@@ -395,10 +395,18 @@ export function IssueRadarProvider({
   // The active repo's GitHub permissions, used to gate the write UI (label
   // edits + close/reopen). Sourced from the connected-repo list (populated at
   // connect + self-healed by /repos), so no extra call is needed.
+  //
+  // Matched on the FULL identity. This was the one lookup of its four that
+  // compared the slug alone, while the rail badge, the repo switcher and the repo
+  // settings page each spelled out the forge comparison — and it is the lookup
+  // with teeth, because `canWrite` below gates the label-edit and close/reopen
+  // controls. On a mixed install holding `acme/widget` on two forges, a loose
+  // match could read the OTHER repository's permissions and either hide writes the
+  // user has or offer writes they do not.
   const activePermissions = useMemo<RepoPermissions | null>(() => {
-    const r = repos.find((x) => x.owner === owner && x.repo === repo)
+    const r = repos.find((x) => sameRepoRef(x, active))
     return r?.permissions ?? null
-  }, [repos, owner, repo])
+  }, [repos, active])
   const canWrite = !!(
     activePermissions &&
     (activePermissions.triage || activePermissions.push || activePermissions.maintain || activePermissions.admin)

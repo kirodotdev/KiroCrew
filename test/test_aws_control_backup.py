@@ -53,7 +53,7 @@ class TestAuthorizeUpload:
             return_value=json.dumps({"Account": "999988887777"}),
         ):
             with pytest.raises(RuntimeError, match="no longer points at"):
-                backup._authorize_upload(ACCOUNT, "p", "us-west-2")
+                backup._authorize_upload(ACCOUNT, "p", "us-west-2", caller=backup.CALLER_OWNER)
 
     def test_unparseable_sts_output_reads_as_no_account_and_refuses(self):
         # A garbled STS response must not be trusted as a match: it decodes to
@@ -61,7 +61,7 @@ class TestAuthorizeUpload:
         # upload is refused rather than proceeding on unknown identity.
         with mock.patch("kiro_crew.deploy.engine._checked", return_value="not json"):
             with pytest.raises(RuntimeError, match="no longer points at"):
-                backup._authorize_upload(ACCOUNT, "p", "us-west-2")
+                backup._authorize_upload(ACCOUNT, "p", "us-west-2", caller=backup.CALLER_OWNER)
 
     def test_upload_refused_when_app_disabled_during_build(self):
         # STS agrees, but the app was disabled while the archive built: the
@@ -74,7 +74,7 @@ class TestAuthorizeUpload:
             mock.patch("kiro_crew.apps.manager.is_app_enabled", return_value=False),
         ):
             with pytest.raises(RuntimeError, match="was disabled"):
-                backup._authorize_upload(ACCOUNT, "p", "us-west-2")
+                backup._authorize_upload(ACCOUNT, "p", "us-west-2", caller=backup.CALLER_OWNER)
 
     def test_upload_refused_when_s3_consent_no_longer_holds(self):
         # STS agrees and the app is on, but S3 consent was withdrawn: the
@@ -88,7 +88,7 @@ class TestAuthorizeUpload:
             mock.patch("kiro_crew.aws_consent.is_granted", return_value=(False, "expired")),
         ):
             with pytest.raises(RuntimeError, match="consent no longer holds.*expired"):
-                backup._authorize_upload(ACCOUNT, "p", "us-west-2")
+                backup._authorize_upload(ACCOUNT, "p", "us-west-2", caller=backup.CALLER_OWNER)
 
 
 # ---------------------------------------------------------------------------
@@ -111,7 +111,9 @@ class TestRunSnapshotBackup:
             mock.patch.object(backup.storage, "put_file") as put_file,
         ):
             with pytest.raises(RuntimeError, match="snapshot build failed"):
-                backup.run_snapshot_backup(ACCOUNT, "p", "us-west-2", "bkt")
+                backup.run_snapshot_backup(
+                    ACCOUNT, "p", "us-west-2", "bkt", caller=backup.CALLER_OWNER
+                )
         authz.assert_not_called()
         put_file.assert_not_called()
 
@@ -123,7 +125,9 @@ class TestRunSnapshotBackup:
             mock.patch.object(backup.storage, "put_file") as put_file,
         ):
             with pytest.raises(RuntimeError, match="produced no archive"):
-                backup.run_snapshot_backup(ACCOUNT, "p", "us-west-2", "bkt")
+                backup.run_snapshot_backup(
+                    ACCOUNT, "p", "us-west-2", "bkt", caller=backup.CALLER_OWNER
+                )
         put_file.assert_not_called()
 
     def test_snapshot_success_pushes_entropy_keyed_archive_and_records_run(self):
@@ -142,9 +146,11 @@ class TestRunSnapshotBackup:
             mock.patch.object(backup, "_authorize_upload") as authz,
             mock.patch.object(backup.storage, "put_file") as put_file,
         ):
-            record = backup.run_snapshot_backup(ACCOUNT, "p", "us-west-2", "bkt")
+            record = backup.run_snapshot_backup(
+                ACCOUNT, "p", "us-west-2", "bkt", caller=backup.CALLER_OWNER
+            )
 
-        authz.assert_called_once_with(ACCOUNT, "p", "us-west-2")
+        authz.assert_called_once_with(ACCOUNT, "p", "us-west-2", caller=backup.CALLER_OWNER)
         put_file.assert_called_once()
         # Same long-timeout contract as the sessions push: the declared
         # `_PUSH_TIMEOUT_SECS` has to REACH the uploader, not sit unread.
@@ -179,7 +185,9 @@ class TestRunSessionsBackup:
             mock.patch.object(backup.storage, "put_file") as put_file,
         ):
             with pytest.raises(RuntimeError, match="no session files to archive"):
-                backup.run_sessions_backup(ACCOUNT, "p", "us-west-2", "bkt")
+                backup.run_sessions_backup(
+                    ACCOUNT, "p", "us-west-2", "bkt", caller=backup.CALLER_OWNER
+                )
         authz.assert_not_called()
         put_file.assert_not_called()
 
@@ -217,7 +225,9 @@ class TestRunSessionsBackup:
             mock.patch.object(backup, "_authorize_upload"),
             mock.patch.object(backup.storage, "put_file", side_effect=fake_put),
         ):
-            record = backup.run_sessions_backup(ACCOUNT, "p", "us-west-2", "bkt")
+            record = backup.run_sessions_backup(
+                ACCOUNT, "p", "us-west-2", "bkt", caller=backup.CALLER_OWNER
+            )
 
         assert pushed["key"].startswith("sessions/sessions-")
         # A multi-GB sessions archive on a slow uplink needs the long timeout, not
@@ -340,7 +350,9 @@ class TestRefusalWithoutPinnedTraversal:
             mock.patch.object(backup, "_authorize_upload") as authz,
         ):
             with pytest.raises(RuntimeError) as exc:
-                backup.run_sessions_backup("123456789012", "p", "us-west-2", "b")
+                backup.run_sessions_backup(
+                    "123456789012", "p", "us-west-2", "b", caller=backup.CALLER_OWNER
+                )
         assert "refused" in str(exc.value)
         put.assert_not_called()
         authz.assert_not_called()

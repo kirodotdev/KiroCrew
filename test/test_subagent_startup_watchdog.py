@@ -120,3 +120,109 @@ async def test_force_reap_default_reason_keeps_deadline_message():
     assert info.done is True
     assert "Reaped after 1810s" in info.error
     assert mgr._write_tombstone.call_args.args[1] == "reaped"
+
+
+@pytest.mark.asyncio
+async def test_force_reap_approval_parked_reports_unanswered_spawn_approval():
+    """An approval-parked run (never started) reaped by the wall clock must NOT
+    be framed as an execution deadline it could not have reached.
+
+    This exercises the default-reason wall-clock reaper path (no ``reason``),
+    the exact path that produced the misleading
+    ``Reaped after 1801s (exceeded 1800s deadline) [turn 0/100]`` message.
+    """
+    mgr = _make_manager(startup_timeout=120)
+    _neuter_force_reap_collaborators(mgr)
+    # turns==0, _pid is None, _exec_started is None: the run never began.
+    info = _info(_awaiting_approval=True, _exec_started=None, _pid=None, turns=0)
+
+    await mgr._force_reap("a1b2c3d4", info, 1801.0)
+
+    assert info.done is True
+    # Accurate cause: never-answered spawn approval, run never started.
+    assert "awaiting" in info.error
+    assert "spawn approval" in info.error
+    assert "never started" in info.error
+    # Must NOT blame an execution deadline the run could not have reached.
+    assert "exceeded" not in info.error
+    assert "deadline" not in info.error
+    # Tombstone reason string is unchanged.
+    assert mgr._write_tombstone.call_args.args[1] == "reaped"
+
+
+@pytest.mark.asyncio
+async def test_force_reap_midrun_tool_parked_keeps_deadline_message():
+    """Proves the ``_exec_started is None`` conjunct is load-bearing.
+
+    ``run.py`` sets ``_awaiting_approval`` for mid-run TOOL prompts too, but
+    those runs already have ``_exec_started`` set. Such a run WAS running, so a
+    reap must keep the generic deadline message and NOT be misreported as an
+    unanswered spawn approval.
+    """
+    mgr = _make_manager(startup_timeout=120)
+    _neuter_force_reap_collaborators(mgr)
+    # _awaiting_approval True but execution already started (mid-run tool prompt).
+    info = _info(_awaiting_approval=True, _exec_started=1.0, _pid=None, turns=1)
+
+    await mgr._force_reap("a1b2c3d4", info, 1801.0)
+
+    assert info.done is True
+    assert "Reaped after 1801s" in info.error
+    assert "exceeded" in info.error
+    assert "deadline" in info.error
+    # Did NOT enter the new approval-parked branch.
+    assert "spawn approval" not in info.error
+    assert mgr._write_tombstone.call_args.args[1] == "reaped"
+
+
+# ── production wiring: the spawn-approval gate sets _awaiting_approval ──
+
+
+@pytest.mark.asyncio
+async def test_spawn_with_approval_marks_awaiting_flag_while_parked():
+    """The pre-execution spawn gate must set ``_awaiting_approval`` for the
+    duration of the human approval wait.
+
+    This is the production wire that ``_force_reap``'s approval-parked branch
+    depends on: without it, a run reaped while parked on an unanswered spawn
+    approval has ``_awaiting_approval`` False and falls through to the generic
+    deadline message — the exact bug this task fixes. The unit tests above
+    hand-set the flag, so only this test catches a regression that stops the
+    gate from setting it. It also pins ``_exec_started is None`` at the wait,
+    which is what makes the reap branch distinguish "never started" from a
+    mid-run tool prompt.
+    """
+    mgr = _make_manager(startup_timeout=120)
+
+    seen: dict[str, object] = {}
+
+    async def _approve(request_id, description, session_key):  # noqa: ANN001
+        # Snapshot the flag/exec state at the moment the run is parked on the
+        # approval — this is exactly the window in which the reaper fires.
+        seen["awaiting"] = info._awaiting_approval
+        seen["exec_started"] = info._exec_started
+        seen["description"] = description
+        return True
+
+    mgr._on_spawn_approval = _approve
+    # Neuter everything the approved path would do AFTER the wait — we only
+    # care that the flag is set during the await and cleared after it.
+    mgr._log_spawned = MagicMock()
+    mgr._run = AsyncMock()
+
+    info = _info(task="do a thing", parent_session_key="sess-1")
+    assert info._awaiting_approval is False
+
+    await mgr._spawn_with_approval(info)
+
+    # During the human wait the run was flagged as awaiting approval and had
+    # NOT begun execution.
+    assert seen["awaiting"] is True
+    assert seen["exec_started"] is None
+    # The spawn_run(...) preview reached the approval callback: a quick check that
+    # the flag was observed on the real wire, not on a stubbed-out one.
+    assert "spawn_run(" in str(seen["description"])
+    # The flag is a bounded human-wait window: cleared once the wait resolves,
+    # regardless of outcome (finally), so it never leaks into execution.
+    assert info._awaiting_approval is False
+    mgr._run.assert_awaited_once()

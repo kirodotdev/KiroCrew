@@ -61,6 +61,7 @@ from itertools import islice
 from typing import TYPE_CHECKING, Any
 
 from kiro_crew.dashboard.channel_folders import lookup_channel_folder
+from kiro_crew.dashboard.chat_utils import effective_session_key
 from kiro_crew.dashboard.state import _normalize_slot_key, durable_row_count
 from kiro_crew.history import carry_provenance, is_incognito_transcript
 from kiro_crew.loop_lock import LoopBoundLock
@@ -331,10 +332,24 @@ def surface_channel_session(
     # recognize a file recreated by another writer after a permanent delete
     # (the delete-won guard in ``_save_slot_to_history``). Channel slots adopt
     # append-created transcripts, so the observed on-disk value is the only
-    # honest anchor (the slot's own construction time never matches it).
+    # honest anchor (the slot's own construction time never matches it). The
+    # observed bit records that this read happened even for legacy metadata
+    # without created_at, so the delete-won guard's evidence gate engages.
     slot._disk_meta_created_at = str(meta.get("created_at") or "")
+    slot._disk_meta_observed = bool(meta)
     if meta.get("model"):
         slot.model = meta["model"]
+    if meta.get("autocompact_pct") is not None:
+        # Restore the per-session compaction threshold, mirroring the
+        # persistence loaders: without this, a surfaced slot's field stays
+        # None and the next save overwrites the persisted override with null.
+        # Local import: chat_persistence imports from this module, so a
+        # module-level import here would be circular.
+        from kiro_crew.dashboard.chat_persistence import _validate_autocompact_pct
+
+        slot.autocompact_pct = _validate_autocompact_pct(meta["autocompact_pct"])
+        if slot.autocompact_pct is not None and state.sessions:
+            state.sessions.set_autocompact_pct(effective_session_key(slot), slot.autocompact_pct)
     if meta.get("workspace"):
         slot.workspace = meta["workspace"]
     if meta.get("project"):

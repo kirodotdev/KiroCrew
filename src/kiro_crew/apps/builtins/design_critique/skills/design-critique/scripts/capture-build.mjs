@@ -22,6 +22,7 @@ import { existsSync, readFileSync, statSync, mkdirSync, readdirSync } from 'node
 import { join, resolve, extname, isAbsolute } from 'node:path'
 import { tmpdir } from 'node:os'
 import { getPlaywright } from './ensure-playwright.mjs'
+import { installSsrfGuard } from './ssrf-guard.mjs'
 
 // Build outputs worth trying, best first. storybook-static is the richest:
 // every component in every state, already rendered.
@@ -231,10 +232,17 @@ async function main() {
     process.exit(3)
   }
   const browser = await pw.chromium.launch({ channel: 'chrome' }).catch(() => pw.chromium.launch())
+  // Guard on the CONTEXT so popups inherit it, and block service workers so a
+  // built page cannot route requests through a worker the page-level interceptor
+  // never sees. The served base is our own loopback server (allowed for THIS
+  // origin only); the guard blocks a built page's redirect/subresource to any
+  // other private or loopback address.
+  const ctx = await browser.newContext({ viewport: { width: opt.width, height: opt.height }, serviceWorkers: 'block' })
+  await installSsrfGuard(ctx, base)
   const screens = []
   try {
     for (const route of routes) {
-      const page = await browser.newPage({ viewport: { width: opt.width, height: opt.height } })
+      const page = await ctx.newPage()
       const url = base + (route.startsWith('/') ? route : '/' + route)
       let chars = 0
       try {

@@ -39,7 +39,7 @@ from kiro_crew import platform_compat
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.paths import config_dir
 from kiro_crew.embeddings import make_sync_embed_fn
-from kiro_crew.frontmatter import BLOCK_SCALAR_INDICATORS, ONBOARDING_IMPORT, split_frontmatter
+from kiro_crew.frontmatter import ONBOARDING_IMPORT, parse_block_scalar_header, split_frontmatter
 from kiro_crew.hooks import FileTooLargeError, safe_read_file_bytes_nolink
 from kiro_crew.learn import _MAX_LESSONS_TOTAL, Lesson, LessonStore
 from kiro_crew.mcp_utils import mcp_server_alias
@@ -2046,8 +2046,19 @@ def _column0_activation_declared(text: str) -> bool:
     key rules therefore match the loader exactly: the frontmatter closes at the
     first line that STARTS with ``---`` (the loader's ``\\n---`` regex), and
     only column-0 keys count. A column-0 ``always`` activates on a truthy plain
-    value or a bare block-scalar indicator (fail-closed: this parser cannot see
-    the continuation lines the loader resolves); a column-0 ``triggers`` key
+    value or ANY block-scalar header the loader can resolve (fail-closed: this
+    parser cannot see the continuation lines the loader resolves, so it assumes
+    the worst). That set is read from
+    :func:`~kiro_crew.frontmatter.parse_block_scalar_header` rather than
+    re-listed here, because the gate is fail-closed only while its detected set
+    is a SUPERSET of what the loader resolves. It once held its own list of six
+    bare indicators, and widening the loader to the full header grammar without
+    it turned this screen fail-OPEN: ``always: |2-`` over a ``true``
+    continuation was not detected, was installed verbatim, and then read as
+    ``always == "true"`` -- external content self-activating into every session,
+    the exact hazard ``automatic_activation_excluded`` exists to reject. One
+    matcher means widening the loader can only ever make this stricter.
+    A column-0 ``triggers`` key
     activates by presence. ANY activating declaration rejects — stricter than
     the loader's last-wins on duplicate keys, which only ever diverges in the
     conservative direction.
@@ -2065,8 +2076,13 @@ def _column0_activation_declared(text: str) -> bool:
             return True
         if key != "always":
             continue
-        value = raw.strip().strip("\"'").casefold()
-        if value in {"1", "true", "yes"} or value in BLOCK_SCALAR_INDICATORS:
+        # Strip whitespace AFTER removing the quotes as well as before. The loader
+        # unquotes with ``str.strip("\"'")`` and its consumers then compare
+        # ``.strip().lower() == "true"``, so ``always: " true "`` activates a skill --
+        # while stripping only on the outside leaves ``" true "`` -> `` true ``, which
+        # matches no truthy word here and let that spelling through the screen.
+        value = raw.strip().strip("\"'").strip().casefold()
+        if value in {"1", "true", "yes"} or parse_block_scalar_header(value) is not None:
             return True
     return False
 

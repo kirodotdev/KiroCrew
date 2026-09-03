@@ -453,11 +453,13 @@ class TestDeliverCrossSurfaceUserMessage:
         raw = "tok AKIAIOSFODNN7EXAMPLE " + "x" * 800
         await _deliver_cross_surface_user_message(state, "k", raw)
         sent = tp.send_message.await_args.args[1]
-        # _prepare_mirror_msg truncates to 500 THEN redacts (redact_via_context),
-        # matching the Slack echo. Distinct from security.redact_and_truncate,
-        # which redacts-then-truncates (security-review e27617c6) — the mirror echo keeps
-        # the truncate-first order so the 500-char budget is measured pre-redaction.
-        assert sent == "💬 " + redact_via_context(raw[:500])
+        # _prepare_mirror_msg redacts over the FULL text (redact_via_context)
+        # THEN truncates to 500 — the same composition as
+        # security.redact_and_truncate, applied through the egress shim.
+        # Truncating first can cut a credential at the 500-char boundary into
+        # fragments no redaction regex matches, so the raw remainder would leak
+        # into the mirrored echo (the slice-before-redact class).
+        assert sent == "💬 " + redact_via_context(raw)[:500]
 
     @pytest.mark.asyncio
     async def test_send_failure_is_swallowed(self, tmp_path):

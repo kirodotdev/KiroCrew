@@ -29,6 +29,7 @@ kept choices for the card as well as the body — rather than
 
 from __future__ import annotations
 
+import hashlib
 import secrets
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
@@ -182,6 +183,21 @@ def display_safe_for(text: str, capabilities: TransportCapabilities) -> str:
     if not capabilities.mention_grammars:
         return safe
     return safe.replace("@", "@\u200b").replace("<!", "<\u200b!")
+
+
+def session_provenance_tag(session_key: str) -> str:
+    """A short, stable, non-reversible tag for the session that posted a widget.
+
+    Option buttons can outlive the conversation that rendered them. The tag lets
+    a dispatcher compare the posting session with the conversation's current
+    target before model-authored choice text enters a turn. A digest keeps the
+    internal key out of client-visible callback data; it is deterministic so the
+    check survives a gateway restart. This is an equality gate, not an authority
+    token: forging it grants no capability beyond typing the same text.
+    """
+    if not session_key:
+        return ""
+    return hashlib.sha256(session_key.encode("utf-8")).hexdigest()[:12]
 
 
 def new_approval_nonce() -> str:

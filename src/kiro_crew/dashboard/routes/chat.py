@@ -13,6 +13,7 @@ from aiohttp import web
 
 from kiro_crew.dashboard import chat, handlers, session_transfer
 from kiro_crew.dashboard.handlers.source_providers import (
+    api_app_contributors,
     api_issue_source,
     api_pull_request_auto_merge,
     api_pull_request_checks,
@@ -45,6 +46,7 @@ def register(app: web.Application) -> None:
     app.router.add_post("/api/source/pull-request/pending-review", api_pull_request_pending_review)
     app.router.add_post("/api/source/pull-request/submit-review", api_pull_request_submit_review)
     app.router.add_post("/api/source/issue", api_issue_source)
+    app.router.add_post("/api/source/contributors", api_app_contributors)
     app.router.add_get("/api/chat/slots", chat.api_chat_slots)
     app.router.add_post("/api/chat/slots", chat.api_chat_slot_create)
     app.router.add_post("/api/chat/slots/cleanup", chat.api_chat_slots_cleanup)
@@ -79,6 +81,8 @@ def register(app: web.Application) -> None:
     # Optimizer
     app.router.add_post("/api/optimizer/optimize", handlers.handle_optimize)
     app.router.add_post("/api/chat/slots/{slot}/model", chat.api_chat_slot_model)
+    app.router.add_get("/api/chat/slots/{slot}/autocompact", chat.api_chat_slot_autocompact)
+    app.router.add_post("/api/chat/slots/{slot}/autocompact", chat.api_chat_slot_autocompact)
     app.router.add_post(
         "/api/chat/slots/{slot}/reasoning-effort", chat.api_chat_slot_reasoning_effort
     )

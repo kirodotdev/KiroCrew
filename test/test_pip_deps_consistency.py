@@ -250,10 +250,9 @@ def test_dev_extra_covers_test_imports():
 def _dependency_group_requirements(group: str) -> list[str]:
     """Requirement strings from a pyproject ``[dependency-groups]`` list.
 
-    Text-level, like every other pyproject read in this module: the 3.10 shard
-    has no ``tomllib`` and this gate must run there too. The list items are
-    plain double-quoted strings, so collecting quoted spans between the group's
-    opening ``[`` and its closing ``]`` reads exactly what pip's
+    Text-level, like every other pyproject read in this module. The list items
+    are plain double-quoted strings, so collecting quoted spans between the
+    group's opening ``[`` and its closing ``]`` reads exactly what pip's
     ``--group`` resolver sees.
     """
     lines = _pyproject_text().splitlines()

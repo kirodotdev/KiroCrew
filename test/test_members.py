@@ -10,6 +10,7 @@ import json
 
 import pytest
 
+from kiro_crew import members
 from kiro_crew.members import (
     ACTIVITY_FILE_NAME,
     MemberSlugError,
@@ -369,3 +370,92 @@ class TestRecordActivityRotation:
         assert record_activity("M", "after-fail", "persistent") is True
         assert live.with_name(live.name + ".1").is_dir()
         assert "after-fail" in live.read_text(encoding="utf-8")
+
+
+class TestOverCapRecordFailsClosed:
+    """#6345: the activity log is agent-writable and its read decides an append.
+
+    ``for line in fh`` would materialise one crafted newline-free line whole.
+    The reader now aborts on an over-cap record, and because the
+    ``dedupe_session`` probe cannot prove absence from a log it could not
+    finish reading, it declines to append rather than risk a duplicate.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _small_cap(self, monkeypatch):
+        # raising=False so this file also RUNS against a pre-fix source, where
+        # the attribute does not exist: the tests then fail on behaviour (the
+        # append that should have been refused) rather than erroring on a
+        # missing name. Same idiom as test_session_digest's `create=True`.
+        monkeypatch.setattr(members, "_RECORD_CAP", 200, raising=False)
+
+    @staticmethod
+    def _log_for(slug: str):
+        path = member_dir(slug) / ACTIVITY_FILE_NAME
+        path.parent.mkdir(parents=True, exist_ok=True)
+        return path
+
+    def test_over_cap_record_refuses_to_append(self):
+        """Red on base: base skips the unparseable line, finds no match, and appends."""
+        log = self._log_for("m")
+        log.write_bytes(b"y" * 400 + b"\n")
+        before = log.read_bytes()
+        assert (
+            record_activity("m", "s1", "persistent", dedupe_session=True) is False
+        ), "must not append when the log could not be read in full"
+        assert log.read_bytes() == before, "log was modified despite the refusal"
+
+    def test_a_normal_log_still_appends(self):
+        """The refusal is specific to an over-cap record, not to every read."""
+        assert record_activity("m", "s1", "persistent", dedupe_session=True) is True
+        assert [r["session"] for r in read_activity("m")] == ["s1"]
+
+    def test_dedupe_still_suppresses_a_repeat_within_cap(self):
+        assert record_activity("m", "s1", "persistent", dedupe_session=True) is True
+        assert record_activity("m", "s1", "persistent", dedupe_session=True) is False
+        assert len(read_activity("m")) == 1
+
+    def test_read_activity_still_degrades_for_display(self):
+        """The public reader keeps its documented non-raising contract.
+
+        An over-cap record stops that generation, but the rows already read are
+        returned and no exception escapes — only the write path fails closed.
+        """
+        log = self._log_for("m")
+        log.write_bytes(
+            json.dumps({"member": "m", "session": "s1"}).encode() + b"\n" + b"y" * 400 + b"\n"
+        )
+        rows = read_activity("m")
+        assert [r["session"] for r in rows] == ["s1"]
+
+    def test_a_cr_delimited_log_does_not_produce_a_duplicate(self):
+        """The log is read binary now, so its boundaries must stay universal.
+
+        These logs were read in TEXT mode, where a bare carriage return ended a
+        record. The reader splits on it too, so this file parses as two records
+        and the dedupe probe still sees the prior entry. Splitting only on LF
+        would glue them into one unparseable line, the probe would see no prior
+        entry, and a duplicate would be appended -- which is what an earlier
+        revision of this PR did.
+        """
+        log = self._log_for("m")
+        first = json.dumps({"member": "m", "session": "s1"})
+        log.write_bytes(first.encode() + b"\r" + first.encode() + b"\n")
+        before = log.read_bytes()
+        assert record_activity("m", "s1", "persistent", dedupe_session=True) is False
+        assert log.read_bytes() == before, "a CR-delimited log must not gain a duplicate entry"
+        assert len(read_activity("m")) == 2, "both CR-delimited records must be read"
+
+    def test_record_exactly_at_cap_is_not_refused(self):
+        """The cap is inclusive, so a legitimate record at the limit still reads."""
+        log = self._log_for("m")
+        entry = {"member": "m", "session": "s1", "pad": ""}
+        pad = 200 - len(json.dumps(entry).encode())
+        entry["pad"] = "z" * pad
+        raw = json.dumps(entry).encode()
+        assert len(raw) == 200
+        log.write_bytes(raw + b"\n")
+        assert record_activity("m", "s1", "persistent", dedupe_session=True) is False, (
+            "the at-cap record must be READ (and so suppress the duplicate), "
+            "not refused as over-cap"
+        )

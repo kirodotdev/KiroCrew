@@ -248,11 +248,14 @@ def _strip_skill_frontmatter(text: str | None) -> str:
     ``stage_skill_candidate`` re-emits frontmatter of its own. Text without a
     leading block is returned unchanged (stripped). A fence LOCATOR, not a
     field parser — deliberately outside ``kiro_crew.frontmatter``; editing
-    its grammar means revisiting ``_frontmatter_value``'s dialect too.
+    its grammar means revisiting ``_frontmatter_value``'s dialect too. Like
+    that dialect's fence, an optional carriage return before each fence
+    newline is tolerated, so the locator strips exactly the block the field
+    parser reads.
     """
     if not text:
         return ""
-    m = re.match(r"^\s*---\n.*?\n---\n?(.*)$", text, re.DOTALL)
+    m = re.match(r"^\s*---\r?\n.*?\r?\n---\r?\n?(.*)$", text, re.DOTALL)
     return (m.group(1) if m else text).strip()
 
 

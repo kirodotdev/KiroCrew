@@ -41,6 +41,7 @@ vi.mock('../api/client', () => ({
     uninstallPreview: vi.fn().mockResolvedValue({ dependencies: { removable: [], shared: [], userInstalled: [] } }),
     installApp: vi.fn(),
     openApp: vi.fn(),
+    appContributors: vi.fn(() => Promise.resolve({ contributors: [] })),
   },
 }))
 

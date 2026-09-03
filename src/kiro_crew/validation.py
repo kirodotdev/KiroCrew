@@ -2035,6 +2035,11 @@ _ISSUE_RADAR_CREW_EVENT_KINDS = frozenset(
         "handback",
         "skip",
         "yield",
+        # The one crew-level kind: the crew looked at the queue and took nothing.
+        # It is the only kind valid with NO ``number``, and it is invalid WITH one
+        # — a relation between two fields, so it is enforced on the write route
+        # and in the store rather than here.
+        "sweep",
     }
 )
 #: Mirrors ``crew_store.SKIP_SCOPES`` — the classification a crew attaches to a
@@ -2107,7 +2112,16 @@ ISSUE_RADAR_CREW_RECORD_SCHEMA = ToolSchema(
         # Bounds the number that becomes the work item's FILENAME
         # (``crews/<crew_id>/<n>.json``) — same ENAMETOOLONG rationale as the
         # investigation record, hence the same constant.
-        FieldSpec("number", int, required=True, min_val=1, max_val=_ISSUE_RADAR_MAX_ITEM_NUMBER),
+        #
+        # NOT required. A crew that swept its queue and took nothing has no issue
+        # to name, and requiring one here left it recording the cycle against an
+        # issue it never acted on. The coupling that replaces the requirement —
+        # a missing number is valid ONLY with the crew-level ``sweep`` kind, and
+        # ``sweep`` is valid ONLY without one — is enforced on the write route and
+        # in the store, because it is a relation between two fields and this
+        # schema validates them one at a time. Keeping the bound here still
+        # matters: when a number IS sent it is the filename.
+        FieldSpec("number", int, min_val=1, max_val=_ISSUE_RADAR_MAX_ITEM_NUMBER),
         FieldSpec("phase", str, max_len=32, allowed=_ISSUE_RADAR_CREW_PHASES),
         # Bounded but deliberately NOT ``allowed=``, unlike ``phase`` beside it.
         # An out-of-vocabulary phase has to be refused — it would corrupt the

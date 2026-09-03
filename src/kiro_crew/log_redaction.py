@@ -17,7 +17,9 @@ the string the scan inspects. Any opaque object arg disqualifies preservation
 — its attributes can carry credentials a structured handler would serialize
 but no text scan can bound. ``exc_info`` is ALWAYS rendered, redacted into
 ``exc_text``, and cleared: a live traceback is an object graph whose frames
-carry locals no text scan can bound. The trade this makes explicit: redaction inspects the RENDERED
+carry locals no text scan can bound.
+
+The trade this makes explicit: redaction inspects the RENDERED
 text, never the internals of the ``args`` objects themselves, so a structured
 handler that serializes arg objects directly (attribute dumps, JSON) can emit
 content the text scan never saw. That limitation existed before too — the scan

@@ -32,6 +32,7 @@ from kiro_crew import sel as sel_mod
 from kiro_crew.config.loader import KiroCrewAgentConfig, KiroCrewConfig, WorkspaceConfig
 from kiro_crew.cron import CronSchedule
 from kiro_crew.eval.scenario import AssertionType
+from kiro_crew.security import BUILTIN_DENIED_RULES
 from kiro_crew.vector_memory import LessonWriteOutcome, LessonWriteResult
 
 # ── helpers ──
@@ -1173,18 +1174,30 @@ class TestPolicyCli:
         self, capsys: pytest.CaptureFixture[str]
     ) -> None:
         """Regression for #3454: an agent's only prior discovery mechanism for
-        the 139 built-in denied-command rules was to attempt one and be
-        refused. `policy show` must surface them even on a standalone
-        (non-enterprise) install, which is the common case the early-return
-        branch serves."""
+        the built-in denied-command rules was to attempt one and be refused.
+        `policy show` must surface them even on a standalone (non-enterprise)
+        install, which is the common case the early-return branch serves.
+
+        The totals are DERIVED from the catalog rather than spelled out: the
+        printer itself derives them, so a literal here would only duplicate
+        the explicit count assertion in ``test_denied_commands_security.py``
+        and rot on every rule that gets added (it did -- the docstring said
+        139 while the catalog held 140)."""
+        by_category: dict[str, int] = {}
+        for rule in BUILTIN_DENIED_RULES:
+            by_category[rule.category] = by_category.get(rule.category, 0) + 1
+        biggest, biggest_n = max(by_category.items(), key=lambda kv: kv[1])
         with patch(
             "kiro_crew.platform.context.current_context",
             return_value=SimpleNamespace(governance=None),
         ):
             cc._policy(_ns(policy_action="show"))
         out = capsys.readouterr().out
-        assert "commands.denied: 140 rules in 10 categories" in out
-        assert "aws-destructive(47)" in out
+        assert (
+            f"commands.denied: {len(BUILTIN_DENIED_RULES)} rules "
+            f"in {len(by_category)} categories"
+        ) in out
+        assert f"{biggest}({biggest_n})" in out
         # Counts only by default -- rule ids are the --ids opt-in.
         assert "aws-destructive-ec2-terminate-instances" not in out
 
@@ -1861,6 +1874,145 @@ class TestArtifactCli:
             )
         captured = capsys.readouterr()
         assert "Saved: slug=fresh version=1" in captured.out
+        assert captured.err == ""
+
+    def test_save_forwards_an_explicit_slug(self) -> None:
+        with _ArtifactHarness([_FakeResponse({"slug": "chosen", "version": 1})]) as h:
+            cc._artifact(
+                _ns(
+                    artifact_action="save",
+                    name="Chosen",
+                    slug="chosen-by-hand",
+                    content="body",
+                    content_file=None,
+                    tags=None,
+                    kind=None,
+                    description=None,
+                )
+            )
+        body = json.loads(h.urlopen.call_args[0][0].data.decode())
+        assert body["slug"] == "chosen-by-hand"
+
+    def test_save_forwards_an_empty_explicit_slug(self) -> None:
+        # "" is a slug the caller named, not a request to derive one. Filtering it
+        # out would silently route an explicit save into the derive-and-suffix
+        # branch — the exact asymmetry this flag exists to close.
+        with _ArtifactHarness([_FakeResponse({"slug": "x", "version": 1})]) as h:
+            cc._artifact(
+                _ns(
+                    artifact_action="save",
+                    name="Empty Slug",
+                    slug="",
+                    content="body",
+                    content_file=None,
+                    tags=None,
+                    kind=None,
+                    description=None,
+                )
+            )
+        body = json.loads(h.urlopen.call_args[0][0].data.decode())
+        assert "slug" in body
+        assert body["slug"] == ""
+
+    def test_save_with_an_empty_slug_surfaces_the_refusal(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # Forwarding "" is only worth anything if the refusal reaches the caller.
+        # The store rejects it via _validate_slug and the handler answers 400, so
+        # it arrives on the CLI's existing error path — no new error surface.
+        err = _http_error(
+            400,
+            json.dumps({"error": "invalid slug '': must match ^[a-z0-9]..."}).encode(),
+        )
+        with _ArtifactHarness([err]), pytest.raises(SystemExit) as exc:
+            cc._artifact(
+                _ns(
+                    artifact_action="save",
+                    name="Empty Slug",
+                    slug="",
+                    content="body",
+                    content_file=None,
+                    tags=None,
+                    kind=None,
+                    description=None,
+                )
+            )
+        assert exc.value.code == 1
+        captured = capsys.readouterr()
+        assert "invalid slug" in captured.err
+        assert captured.out == ""
+
+    def test_save_omits_the_slug_key_when_none_was_given(self) -> None:
+        # An ABSENT flag must send no key at all. Forwarding it as "" would hand
+        # the store a slug it refuses, so every plain `save` would start failing;
+        # only an explicitly-passed value may reach the request body.
+        with _ArtifactHarness([_FakeResponse({"slug": "derived", "version": 1})]) as h:
+            cc._artifact(
+                _ns(
+                    artifact_action="save",
+                    name="Derived",
+                    slug=None,
+                    content="body",
+                    content_file=None,
+                    tags=None,
+                    kind=None,
+                    description=None,
+                )
+            )
+        body = json.loads(h.urlopen.call_args[0][0].data.decode())
+        # Positive control: this is the save request body, so the absence below
+        # is a fact about the field and not about a request that never went out.
+        assert body["name"] == "Derived"
+        assert "slug" not in body
+
+    def test_save_with_a_taken_slug_reports_the_conflict(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # The store refuses an explicit slug rather than suffixing it, so the
+        # handler answers 409. It has to reach the caller as the named condition
+        # and a non-zero exit, never a traceback.
+        err = _http_error(409, json.dumps({"error": "artifact already exists: taken"}).encode())
+        with _ArtifactHarness([err]), pytest.raises(SystemExit) as exc:
+            cc._artifact(
+                _ns(
+                    artifact_action="save",
+                    name="Taken",
+                    slug="taken",
+                    content="body",
+                    content_file=None,
+                    tags=None,
+                    kind=None,
+                    description=None,
+                )
+            )
+        assert exc.value.code == 1
+        captured = capsys.readouterr()
+        assert "artifact already exists: taken" in captured.err
+        assert captured.out == ""
+
+    def test_save_with_an_explicit_slug_emits_no_suffix_warning(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # The warning advises `artifact update`, which is wrong guidance for a
+        # caller who named the slug: they get a 409, never a rename. The CLI must
+        # therefore key it on the server's field alone and not on the flag being
+        # set. The server half — an explicit slug reporting no collision — is
+        # pinned in test_artifacts_handlers.py.
+        with _ArtifactHarness([_FakeResponse({"slug": "chosen-by-hand", "version": 1})]):
+            cc._artifact(
+                _ns(
+                    artifact_action="save",
+                    name="Run Summary",
+                    slug="chosen-by-hand",
+                    content="body",
+                    content_file=None,
+                    tags=None,
+                    kind=None,
+                    description=None,
+                )
+            )
+        captured = capsys.readouterr()
+        assert "Saved: slug=chosen-by-hand version=1" in captured.out
         assert captured.err == ""
 
     def test_save_reads_content_file(

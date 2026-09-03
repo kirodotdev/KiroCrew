@@ -5,7 +5,7 @@ import { api, ApiError } from '../api/client'
 import { queryClient } from '../api/queryClient'
 import type { McpServer } from '../types'
 import { parseErrorCode } from '../utils/errorReport'
-import { isValidLoopbackReturnAddress } from '../utils/loopbackReturnAddress'
+import { isValidLoopbackReturnAddress, normalizeLoopbackReturnAddress } from '../utils/loopbackReturnAddress'
 import { i18nT } from '../i18n/t'
 import { useImeGuard } from '../hooks/useImeGuard'
 
@@ -166,11 +166,14 @@ export default function OAuthRelayAffordance({
   }
 
   const runRelay = async () => {
-    const value = returnAddress.trim()
+    // Normalize a scheme-less mobile paste to http:// first (#7406), then run
+    // the same client-side pre-check the Connections card runs: a malformed
+    // paste fails locally with the specific shared message instead of a
+    // round-trip collapsing into the generic delivery-failure copy. The
+    // NORMALIZED value is what gets submitted, so older gateways without the
+    // backend normalization accept it too.
+    const value = normalizeLoopbackReturnAddress(returnAddress)
     if (!value || busy) return
-    // Same client-side pre-check the Connections card runs: a malformed paste
-    // fails locally with the specific shared message instead of a round-trip
-    // collapsing into the generic delivery-failure copy.
     if (!isValidLoopbackReturnAddress(value)) {
       setError(i18nT('pages.connectionsPage.invalid_return_address'))
       return

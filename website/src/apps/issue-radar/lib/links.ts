@@ -329,6 +329,27 @@ export function repoScopeKey(ref: RepoRef): string {
   return `${ref.provider || 'github'}:${ref.host || 'github.com'}:${ref.owner}/${ref.repo}`
 }
 
+/** Whether two refs name the SAME repository, forge included.
+ *
+ * The comparison this replaces was hand-written at four call sites — the rail's
+ * collapsed badge, the repo switcher, the repo settings page, and the host page's
+ * membership test — each spelling out the same four-way `owner && repo &&
+ * (provider || 'github') && (host || 'github.com')` chain. Three of them got it
+ * right and one compared the slug alone, which is the shape of bug a repeated
+ * comparison produces: the rule is correct in most copies and the exception is
+ * invisible, because nothing makes the copies agree.
+ *
+ * Defined as scope-key equality rather than as a fresh field-by-field chain, so
+ * "same repository" and "same cache entry" cannot drift apart — a ref that
+ * compares equal here is a ref that keys the same cache, by construction. That
+ * also inherits the defaults for free: a value persisted before GitLab support
+ * carries no provider or host and means public GitHub, which is exactly what
+ * `repoScopeKey` already resolves it to, so a legacy pointer still matches its
+ * connected GitHub record. */
+export function sameRepoRef(a: RepoRef, b: RepoRef): boolean {
+  return repoScopeKey(a) === repoScopeKey(b)
+}
+
 /** Display vocabulary for a ref's provider.
  *
  * Mirrors `backend/provider.py:_TERMS`, so the UI, the notifications, and the AI

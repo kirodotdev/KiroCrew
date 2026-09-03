@@ -381,3 +381,59 @@ def test_health_accepts_a_valid_timeout_override(stub_cli, tmp_path, good):
     assert "HEALTHY=1" in res.stdout, res.stdout
     assert "ignoring POD_E2E_HEALTH_TIMEOUT" not in res.stderr, res.stderr
     assert "value too great for base" not in res.stderr, res.stderr
+
+
+@pytest.fixture()
+def ticking_date(tmp_path: Path) -> str:
+    """A `date` whose clock advances one whole second on every single call.
+
+    The real flake needed a genuine second boundary to fall in the one-fork gap
+    between the deadline assignment and the loop's own clock read -- a few
+    milliseconds in 1000, so it surfaced as an unreproducible macOS CI failure
+    rather than anything a test could pin. This shim makes that boundary land
+    there every time: call one returns N, call two returns N+1. Nothing else on
+    PATH is replaced, so the stub CLI and python3 still run normally.
+    """
+    bindir = tmp_path / "clockshim"
+    bindir.mkdir()
+    counter = tmp_path / "clock-counter"
+    shim = bindir / "date"
+    shim.write_text(textwrap.dedent(f"""\
+            #!/bin/sh
+            n=$(cat '{counter}' 2>/dev/null || echo 1000)
+            echo $((n + 1)) > '{counter}'
+            echo "$n"
+            """))
+    shim.chmod(0o755)
+    return str(bindir)
+
+
+def test_health_probes_at_least_once_when_the_clock_ticks_past_the_deadline(
+    stub_cli, tmp_path, ticking_date
+):
+    """The poll must be a do-while: probe, THEN judge the deadline.
+
+    `date +%s` is whole-second, so the pre-test form read a clock that could have
+    already ticked past a deadline computed one fork earlier and skipped its body
+    entirely. The body is the only place HEALTHY is set, so a healthy pod was
+    reported as "never became healthy" -- a false red whose message points the
+    operator at a boot log that shows a perfectly healthy boot.
+    """
+    res = _run(_health_snippet(stub_cli("200")), str(tmp_path), extra_path=ticking_date)
+    assert res.returncode == 0, res.stdout + res.stderr
+    assert "HEALTHY=1" in res.stdout, f"zero probes performed: {res.stdout}"
+    assert "FAIL:" not in res.stdout, res.stdout
+
+
+def test_health_still_gives_up_when_the_clock_runs_away(stub_cli, tmp_path, ticking_date):
+    """Probing first must not cost the deadline -- an unhealthy pod still ends.
+
+    Guards the other side of the same change: a do-while whose exit test was
+    dropped would hang an unattended harness forever on a pod that never answers.
+    With this clock every iteration burns a second, so the 1s deadline is past
+    immediately after the first probe.
+    """
+    res = _run(_health_snippet(stub_cli("0")), str(tmp_path), extra_path=ticking_date)
+    assert res.returncode == 0, res.stdout + res.stderr
+    assert "HEALTHY=0 FOREIGN=0" in res.stdout, res.stdout
+    assert "never became healthy" in res.stdout, res.stdout

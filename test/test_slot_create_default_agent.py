@@ -198,7 +198,9 @@ class TestSameBindingGuard:
             lambda name, project: name == "proj-agent" and project == "/proj",
         )
 
-        async def _noop_warm(project: Any) -> None:
+        async def _noop_warm(project: Any, **kw: Any) -> None:
+            # **kw: the warm takes keyword-only SEL attribution labels (#6764)
+            # that this guard test does not care about.
             return None
 
         monkeypatch.setattr(chat_handlers, "warm_project_agent_names", _noop_warm)

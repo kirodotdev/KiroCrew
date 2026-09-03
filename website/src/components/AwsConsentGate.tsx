@@ -1,4 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { ShieldCheck } from 'lucide-react'
 import { api, type AwsConsentStatus } from '../api/client'
 import { i18nT } from '../i18n/t'
 
@@ -29,10 +30,19 @@ import { i18nT } from '../i18n/t'
 export default function AwsConsentGate({
   service,
   onConsentChange,
+  compact = false,
 }: {
   service: string
   /** Invalidate caller-owned queries whose content depends on this grant. */
   onConsentChange?: () => void
+  /**
+   * Render a GRANTED receipt as one thin row instead of the full card. The ask
+   * state ignores this: a confirmation that starts billing must keep its full
+   * facts (service, region, credential source, account) regardless of where it
+   * mounts. Receipts are records, not decisions, so a row is enough — the
+   * withdraw stays reachable but no longer dominates the page.
+   */
+  compact?: boolean
 }) {
   const qc = useQueryClient()
   const consentQ = useQuery<AwsConsentStatus>({
@@ -72,6 +82,34 @@ export default function AwsConsentGate({
   // actually confirmed is more useful than "could not be resolved" -- it is
   // also the account the gate is still enforcing against.
   const account = c.identityResolved ? c.account : c.grant?.account || ''
+
+  // A granted receipt in compact mode is one row: the service, where it runs,
+  // and the account it bills — with withdraw kept small on the right. The
+  // account-changed warning still forces the full card, because that state
+  // needs its sentence.
+  if (compact && c.granted && !c.revokedOnAccountChange) {
+    return (
+      <div
+        className="flex flex-wrap items-center gap-x-3 gap-y-1 px-3 py-2 text-[13px]"
+        data-testid={'aws-consent-' + service}
+      >
+        <ShieldCheck size={14} className="shrink-0 text-ok" aria-hidden="true" />
+        <span className="font-medium text-text-strong">{c.serviceLabel}</span>
+        <span className="text-muted">{region}</span>
+        <span className="min-w-0 truncate font-mono text-[12px] text-muted">
+          {account || i18nT('components.awsConsentGate.unresolved_account')}
+        </span>
+        <span className="flex-1" />
+        <button
+          className="cursor-pointer bg-transparent border-none p-0 text-[12px] text-muted underline hover:text-danger"
+          disabled={busy}
+          onClick={() => revokeMut.mutate()}
+        >
+          {i18nT('components.awsConsentGate.withdraw')}
+        </button>
+      </div>
+    )
+  }
 
   return (
     <div

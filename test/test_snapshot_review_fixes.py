@@ -174,7 +174,7 @@ class TestLiveDatabasesAreStagedConsistently:
         assert skips, "the walk did not refuse the hardlink alias, so this proves nothing"
         assert not (stage / "kb.db").exists()
 
-        snap_mod._restage_databases(tree, stage)
+        snap_mod._restage_databases(tree, stage, bundle_root=stage)
         assert not (
             stage / "kb.db"
         ).exists(), "the consistency pass rebuilt a database the walk deliberately skipped"
@@ -193,7 +193,7 @@ class TestLiveDatabasesAreStagedConsistently:
 
         snap_mod._copytree_safe(tree, stage, allow_unpinned=bool(unpinnable_argv()))
         assert (stage / "kb.db").is_file()
-        snap_mod._restage_databases(tree, stage)
+        snap_mod._restage_databases(tree, stage, bundle_root=stage)
 
         c = sqlite3.connect(str(stage / "kb.db"))
         assert [r[0] for r in c.execute("SELECT v FROM t")] == ["MINE"]

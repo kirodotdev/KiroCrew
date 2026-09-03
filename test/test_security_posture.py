@@ -123,7 +123,9 @@ def _scope_body(scope: ast.AST):
         stack.extend(ast.iter_child_nodes(node))
 
 
-def _gate_side_baseline_log_sites(source: str) -> set[tuple[int, str]]:
+def _gate_side_baseline_log_sites(
+    source: str, *, tree: ast.AST | None = None
+) -> set[tuple[int, str]]:
     """Find log/audit writes in *source* whose text came from a BASELINE redactor.
 
     The property, not a name: a baseline redactor's result reaches a log write —
@@ -141,7 +143,8 @@ def _gate_side_baseline_log_sites(source: str) -> set[tuple[int, str]]:
     Returns ``{(lineno, "<log call>")}`` — the count is what the ratchet pins;
     the rendering is for the failure message.
     """
-    tree = ast.parse(source)
+    if tree is None:
+        tree = ast.parse(source)
     scopes: list[ast.AST] = [tree]
     scopes += [
         node
@@ -266,17 +269,20 @@ def _package_baseline_log_census() -> "tuple[tuple[str, int], ...]":
     cannot parse is a module it cannot see, and skipping one quietly is how a
     scan-based gate goes blind.
     """
-    from pathlib import Path
+    from source_corpus import parsed_candidates, src_root  # noqa: PLC0415
 
-    pkg = Path(security.__file__).resolve().parent
+    pkg = src_root()
     found: list[tuple[str, int]] = []
-    for path in sorted(pkg.rglob("*.py")):
+    # Every name in `_BASELINE_REDACTORS` starts with "redact", so a module
+    # without that text cannot hold a site and is not worth parsing. The
+    # SyntaxError is still not swallowed (`skip_syntax_errors=False`).
+    for path, source, tree in parsed_candidates(("redact",), skip_syntax_errors=False):
         rel = path.relative_to(pkg).as_posix()
         if rel.startswith(("_vendor/", "testing/")):
             continue
         if "/tests/" in rel or rel.endswith("_test.py"):
             continue
-        sites = _gate_side_baseline_log_sites(path.read_text(encoding="utf-8"))
+        sites = _gate_side_baseline_log_sites(source, tree=tree)
         if sites:
             found.append((rel, len(sites)))
     return tuple(found)
@@ -1152,3 +1158,94 @@ class TestGateSideLogRedactorSpelling:
             assert (
                 rel not in _BASELINE_LOG_SITE_CENSUS
             ), f"{rel} was converged by #7151 and must not carry a baseline log site"
+
+
+class TestPostureClaimsMatchEnforcement:
+    """The posture must not claim protection the code does not enforce.
+
+    This module's whole value is truthful attestation -- a report that
+    OVERSTATES coverage is worse than no report, because consumers treat it as
+    ground truth. These pin the three claims that were stronger than the code.
+    """
+
+    def test_dispatcher_falls_open_on_an_unregistered_tool(self) -> None:
+        """The behaviour the summary must not paper over.
+
+        Registry membership is NOT a proxy for coverage: ``spawn_steer`` and
+        friends are absent from ``MCP_CORE_SCHEMAS`` yet validate inside their
+        own handler. So this probes the DISPATCHER seam directly -- a registered
+        name rejects an unknown field, an unregistered one returns the caller's
+        dict untouched, which is what makes the old universal claim false.
+        """
+        from kiro_crew import mcp_computer, mcp_core
+        from kiro_crew.validation import ValidationError
+
+        payload = {"UNKNOWN_FIELD": "z" * 4096}
+        passed_through = mcp_core._validate_args("browser", dict(payload))
+        assert passed_through == payload, "expected the unregistered tool to fall open"
+
+        with pytest.raises(ValidationError):
+            mcp_core._validate_args("learn_add", {"rule": "r", "category": "tool", **payload})
+
+        # Computer-use is the one server that fails closed, which the summary says.
+        with pytest.raises(ValidationError):
+            mcp_computer._validate_args("definitely_not_a_tool", {})
+
+    def test_tool_schema_summary_does_not_claim_universal_coverage(self, snapshot) -> None:
+        control = self._control(snapshot, "tool_schemas")
+        summary = " ".join(control["summary"].split())
+        # The claim must be scoped to REGISTERED schemas and must name the
+        # pass-through, because two of the three servers fall open.
+        assert "registered schema" in summary
+        assert "unvalidated" in summary
+        assert not summary.startswith("Every MCP tool call is checked")
+
+    def test_denied_command_summary_names_shipped_vs_enforced(self, snapshot) -> None:
+        from kiro_crew import security
+
+        control = self._control(snapshot, "denied_commands")
+        summary = " ".join(control["summary"].split())
+        # The count is the catalogue; the enforced set drops disabled rules.
+        assert control["count"] == len(security.BUILTIN_DENIED_RULES)
+        assert "SHIPPED catalogue" in summary
+        assert (
+            len(security.compute_effective_denied(security.BUILTIN_DENIED_RULES, (), True, (), ()))
+            < control["count"]
+        )
+
+    def test_write_protected_detail_is_not_unconditional(self, snapshot) -> None:
+        control = self._control(snapshot, "write_protected_paths")
+        for item in control["items"]:
+            detail = " ".join(item["detail"].split())
+            assert "edit kind" in detail, detail
+            assert "cannot modify it when" in detail, detail
+            # The bash gate does NOT cover these paths, so the detail must not
+            # claim it does.
+            assert "shell writes are blocked" not in detail, detail
+
+    def test_the_bash_gate_really_does_not_cover_write_protected_paths(self) -> None:
+        """The detail says shell writes are uncovered; prove that is still true.
+
+        Every shell-write form against every protected entry is allowed today.
+        If the bash gate ever grows real coverage here this fails, and the
+        posture wording should then be corrected upwards rather than left stale.
+        """
+        entries = list(security.write_protected_home_paths())
+        assert entries, "expected at least one write-protected path"
+        for entry in entries:
+            assert security.is_denied(f"echo x > ~/{entry}") is None, entry
+
+    def test_mcp_summary_names_every_fall_open_dispatcher(self, snapshot) -> None:
+        """The summary attests over the dispatchers; all three that fall open
+        must be named, or the claim re-rots the moment a schemaless tool lands.
+        """
+        from kiro_crew import mcp_dashboard
+
+        control = self._control(snapshot, "tool_schemas")
+        summary = " ".join(control["summary"].split())
+        for dispatcher in ("core", "cron", "dashboard"):
+            assert dispatcher in summary, (dispatcher, summary)
+        assert mcp_dashboard._validate_args("__not_a_tool__", {"a": 1}) == {"a": 1}
+
+    def _control(self, snapshot, key):
+        return next(c for c in snapshot["controls"] if c["key"] == key)

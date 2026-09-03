@@ -49,7 +49,7 @@ class TestAQuestionMarkInTheFilenameDoesNotRedirectTheCopy:
     def test_the_requested_database_is_the_one_copied(self, tmp_path):
         name = "memory?snapshot=1.db"
         src_dir, dst_dir = self._stage(tmp_path, name)
-        snapshot._restage_databases(src_dir, dst_dir)
+        snapshot._restage_databases(src_dir, dst_dir, bundle_root=dst_dir)
         assert _read(dst_dir / name) == [
             "wanted"
         ], "the copy opened a different database than the one requested"
@@ -59,11 +59,11 @@ class TestAQuestionMarkInTheFilenameDoesNotRedirectTheCopy:
         # Windows where the `?` case above cannot exist.
         name = "memory#1.db"
         src_dir, dst_dir = self._stage(tmp_path, name)
-        snapshot._restage_databases(src_dir, dst_dir)
+        snapshot._restage_databases(src_dir, dst_dir, bundle_root=dst_dir)
         assert _read(dst_dir / name) == ["wanted"]
 
     def test_an_ordinary_name_still_works(self, tmp_path):
         name = "plain.db"
         src_dir, dst_dir = self._stage(tmp_path, name)
-        snapshot._restage_databases(src_dir, dst_dir)
+        snapshot._restage_databases(src_dir, dst_dir, bundle_root=dst_dir)
         assert _read(dst_dir / name) == ["wanted"]

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -51,6 +52,22 @@ def test_list_results(fake_config_dir):
     assert len(results) == 2
     assert results[0]["agent_id"] == "abc"
     assert results[1]["agent_id"] == "def"
+
+
+def test_list_results_skips_file_removed_after_scan(fake_config_dir, monkeypatch):
+    from kiro_crew.session_workspace import list_results, write_result
+
+    write_result("s1", "gone", "result")
+    original_glob = Path.glob
+
+    def deleting_glob(path, pattern):
+        for match in original_glob(path, pattern):
+            match.unlink()
+            yield match
+
+    monkeypatch.setattr(Path, "glob", deleting_glob)
+
+    assert list_results("s1") == []
 
 
 def test_history_roundtrip(fake_config_dir):

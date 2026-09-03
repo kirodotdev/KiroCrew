@@ -28,6 +28,8 @@ import pytest
 # Ensure the source tree is importable without pip install.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
+from source_corpus import parsed_candidates, src_root  # noqa: E402
+
 from kiro_crew.sandbox import (  # noqa: E402
     sandboxed_spawn_argv_async,
     shielded_prepare_off_loop,
@@ -199,13 +201,16 @@ class TestNoBareSandboxedSpawnArgvHops:
 
     _CHOKEPOINT = "sandboxed_spawn_argv"
 
+    #: Literals a bare hop needs before its AST shape can possibly match: the
+    #: chokepoint's own name (``reaching`` is computed per FILE, so a hop can
+    #: only be handed a reaching name if this module spells the chokepoint) and
+    #: one of the two hop spellings.
+    _REQUIRE_ALL = ("sandboxed_spawn_argv",)
+    _REQUIRE_ANY = ("run_in_executor", "to_thread")
+
     @staticmethod
     def _src_root() -> Path:
-        return Path(__file__).resolve().parent.parent / "src" / "kiro_crew"
-
-    def _python_files(self) -> list[Path]:
-        root = self._src_root()
-        return sorted(root.rglob("*.py"))
+        return src_root()
 
     @classmethod
     def _names_that_reach_the_chokepoint(cls, tree: ast.Module) -> set[str]:
@@ -256,12 +261,8 @@ class TestNoBareSandboxedSpawnArgvHops:
 
     def test_no_bare_hops_to_sandboxed_spawn_argv(self):
         violations: list[str] = []
-        for path in self._python_files():
+        for path, _text, tree in parsed_candidates(self._REQUIRE_ALL, self._REQUIRE_ANY):
             rel = path.relative_to(self._src_root())
-            try:
-                tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-            except SyntaxError:
-                continue
             reaching = self._names_that_reach_the_chokepoint(tree)
             for node in ast.walk(tree):
                 if not isinstance(node, ast.Call):
@@ -308,11 +309,9 @@ class TestNoBareSandboxedSpawnArgvHops:
                         violations.append(f"{rel}:{node.lineno}: direct call to {name}")
                 self.generic_visit(node)
 
-        for path in self._python_files():
-            try:
-                tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-            except SyntaxError:
-                continue
+        for path, _text, tree in parsed_candidates(
+            require_any=("wrap_argv", "sandboxed_spawn_argv")
+        ):
             Visitor(path).visit(tree)
 
         assert not violations, (

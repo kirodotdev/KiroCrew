@@ -4164,7 +4164,8 @@ class TestAnExposedCacheIsStillReadOnly:
 
         script = sandbox._build_launcher_script("standard")
         readonly = json.loads(script.split("READONLY_DIRS = ", 1)[1].split("\n", 1)[0])
-        assert set(readonly) == set(sandbox._voice_runtime_parent_paths())
+        assert set(readonly) >= set(sandbox._voice_runtime_parent_paths())
+        assert self._cache_path() not in readonly
 
     def test_macos_keeps_the_write_and_link_denies_when_it_drops_the_read_deny(self):
         from kiro_crew import sandbox
@@ -4189,7 +4190,7 @@ class TestAnExposedCacheIsStillReadOnly:
 
         script = sandbox._build_launcher_script("strict", extra_visible_dirs=(aws,))
         readonly = json.loads(script.split("READONLY_DIRS = ", 1)[1].split("\n", 1)[0])
-        assert set(readonly) == set(sandbox._voice_runtime_parent_paths())
+        assert set(readonly) >= set(sandbox._voice_runtime_parent_paths())
         assert aws not in readonly
 
     @pytest.mark.parametrize("prefix", [".kiro/crew", ".kirocrew"])

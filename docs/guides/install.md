@@ -36,7 +36,7 @@ Builds use plain `pip` + `npm`/Vite + `pytest`, driven by the repo-root
 
 | Requirement | Needed for | Floor |
 |-------------|------------|-------|
-| **Python** | Backend | `>= 3.10` (`requires-python` in `pyproject.toml`; `make build` provisions a 3.12 `.venv` by default) |
+| **Python** | Backend | `>= 3.12` (`requires-python` in `pyproject.toml`; `make build` provisions a 3.12 `.venv` by default) |
 | **Node.js + npm** | Building the dashboard | `20 \|\| >= 22` (`website/package.json` `engines`); `ensure-node.sh` targets 20, and drops to 16 on Amazon Linux 2 where newer official builds need a glibc that host does not have |
 | **`kiro-cli`** | Driving the LLM | Required; see below |
 
@@ -148,7 +148,7 @@ home (`~/.kiro/crew-venv`, override with `KIROCREW_VENV`) and symlinks
 data home, so no whole-home operation can ever delete the live interpreter. The
 selected channel is recorded to `~/.kiro/crew/channel`.
 
-If the host has no Python 3.10+, the installer provisions one itself instead of
+If the host has no Python 3.12+, the installer provisions one itself instead of
 touching the system: it downloads a SHA-256-pinned [uv](https://docs.astral.sh/uv/)
 binary (or uses an already-installed `uv` on `PATH`), then installs a
 [python-build-standalone](https://github.com/astral-sh/python-build-standalone)
@@ -271,11 +271,15 @@ Because a `[project]` table exists, setuptools reads the entry points from
 there and ignores `setup.cfg`'s `console_scripts`, so `kirocrew` is the only
 command installed on `PATH`.
 
-Optional extras (install with e.g. `pip install "kirocrew[voice]"`):
+Optional extras. Kiro Crew is not on PyPI, so `pip install "kirocrew[voice]"`
+cannot resolve — install an extra's own distributions into the environment that
+runs the gateway instead (e.g. `pip install 'boto3>=1.34,<2'
+'amazon-transcribe>=0.6,<1' 'pywhispercpp>=1.5,<2'` for `voice`). The dashboard
+prints the exact command, already pointed at the right interpreter.
 
 | Extra | Adds | For |
 |-------|------|-----|
-| `voice` | `boto3`, `amazon-transcribe` | Speech-to-text transcription |
+| `voice` | `boto3`, `amazon-transcribe`, `pywhispercpp` | Speech-to-text transcription |
 | `otlp` | `opentelemetry-exporter-otlp-proto-http` | OTLP/HTTP metrics export. Installing it does not enable egress; that still needs an explicit `telemetry.otlp_endpoint` |
 | `perf` | `py-spy` | Out-of-process profiling (`kirocrew perf sample --pid`). The in-process sampler needs nothing extra |
 | `teams` | `PyJWT[crypto]` | Microsoft Teams channel (validates the inbound Bot Framework RS256 JWT) |

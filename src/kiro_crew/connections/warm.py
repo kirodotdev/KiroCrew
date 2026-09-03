@@ -101,10 +101,20 @@ where a stat is unbounded -- so they are synchronous, and a coroutine reaches th
 ``test/test_connections_warm.py``, not merely described here.
 
 REQUEST PATH: :func:`warm_mint_all` is driven by ``POST /api/connections/premint``, which the
-Connections page WILL fire once on mount -- no frontend caller exists yet, so today the endpoint
-is reachable through the API only. It scans the candidates and hands them over, so the slugs it
-reports and the rows the engine claims come from one registry read. Proactive refresh attaches
-in :func:`_warm_mint_reaper` when slice N3 lands.
+Connections page fires once on mount. It scans the candidates and hands them over, so the slugs
+it reports and the rows the engine claims come from one registry read. The consumer of what it
+warms is :func:`adopt_shared_mint`, which ``POST /api/connections/mint`` tries BEFORE reserving
+a row of its own -- without it that endpoint's ``reserve_mint_row`` popped the shared row and
+disposed the very URL the click had been warmed for. Proactive refresh attaches in
+:func:`_warm_mint_reaper` when slice N3 lands.
+
+TWO AXES, and conflating them is what the handoff had to separate. ``shared`` is OWNERSHIP: an
+unclaimed premint any Connect may adopt, and the only mark a row still ``minting`` carries.
+``generation``/``activation`` is PROVENANCE: the verifier lives in the shared process, so
+:func:`_warm_row_alive` judges redeemability however the row is owned. Adoption clears the first
+and keeps the second, so every warm-side predicate keys on :func:`_warm_table_row` -- the
+disjunction -- and the cold engine's ``_mint_holder_alive`` ABSTAINS on a row carrying a
+``generation`` rather than reading its absent ``client`` as death.
 """
 
 from __future__ import annotations
@@ -700,12 +710,33 @@ def _runtime_alive(runtime: Any) -> bool:
         return False
 
 
+def _warm_table_row(entry: MintState) -> bool:
+    """True when the SHARED table owns this row's lifecycle -- claimed, or warm-minted.
+
+    TWO disjuncts, and both are load-bearing, because ``shared`` and ``generation``
+    answer different questions and :func:`adopt_shared_mint` moves only the first.
+
+    ``shared`` is OWNERSHIP: an unclaimed premint any Connect may adopt. It is also the
+    ONLY mark a row still ``minting`` carries, which is precisely the row a cancelled
+    activation must not leave behind -- so a generation-only test would stop counting it.
+
+    ``generation`` is PROVENANCE: the PKCE verifier lives in the shared process, so
+    redeemability is judged by :func:`_warm_row_alive` no matter who owns the row.
+    Adoption clears ``shared`` and keeps this, so an ownership-only test drops the
+    adopted row out of every count here -- and the counts are what keep its process
+    parked and its session held. The reaper would then retire the process holding the
+    URL the user is part-way through redeeming, which is the worst outcome available on
+    this path.
+    """
+    return bool(entry.get("shared")) or bool(entry.get("generation"))
+
+
 def _live_row_count(generation: int) -> int:
     """How many cards are still mid-consent on ``generation``."""
     return sum(
         1
         for entry in _mints.values()
-        if entry.get("shared")
+        if _warm_table_row(entry)
         and entry.get("generation") == generation
         and entry.get("state") in _LIVE_STATES
     )
@@ -721,7 +752,7 @@ def _activations_in_use() -> set[int]:
     return {
         int(entry["activation"])
         for entry in _mints.values()
-        if entry.get("shared") and entry.get("activation") and entry.get("state") in _LIVE_STATES
+        if _warm_table_row(entry) and entry.get("activation") and entry.get("state") in _LIVE_STATES
     }
 
 
@@ -1369,7 +1400,7 @@ def _warm_row_alive(entry: MintState) -> bool:
 def _shared_mints_pending() -> bool:
     """True while any card still needs the shared process alive."""
     return any(
-        entry.get("shared") and entry.get("state") in _LIVE_STATES for entry in _mints.values()
+        _warm_table_row(entry) and entry.get("state") in _LIVE_STATES for entry in _mints.values()
     )
 
 
@@ -1385,7 +1416,7 @@ async def _expire_shared_mints(reason: str, *, generation: int | None = None) ->
     flipped: list[str] = []
     async with _mints_lock:
         for slug, entry in _mints.items():
-            if not entry.get("shared") or entry.get("state") not in _LIVE_STATES:
+            if not _warm_table_row(entry) or entry.get("state") not in _LIVE_STATES:
                 continue
             if generation is not None and entry.get("generation") != generation:
                 continue
@@ -1399,11 +1430,16 @@ async def _expire_shared_mints(reason: str, *, generation: int | None = None) ->
 
 
 async def expire_dead_mints() -> list[str]:
-    """Withdraw every shared row whose holding process is gone. THE chokepoint."""
+    """Withdraw every warm-held row whose holding process is gone. THE chokepoint.
+
+    Adopted rows included, and that is not incidental: the cold engine's
+    ``_mint_holder_alive`` deliberately ABSTAINS on a row carrying a ``generation``
+    (it owns no ``client`` to read), so this is the only reader that can withdraw one.
+    """
     doomed: list[str] = []
     async with _mints_lock:
         for slug, entry in _mints.items():
-            if not entry.get("shared") or entry.get("state") != "waiting":
+            if not _warm_table_row(entry) or entry.get("state") != "waiting":
                 continue
             if _warm_row_alive(entry):
                 continue
@@ -1520,6 +1556,85 @@ def _mint_is_cold_held(entry: MintState | None) -> bool:
     return entry is not None and entry.get("state") == "waiting" and entry.get("client") is not None
 
 
+def _mint_is_adopted(entry: MintState | None) -> bool:
+    """True when a caller has taken ownership of a WARM row, so it is nobody's to reclaim.
+
+    :func:`_mint_is_cold_held` cannot answer this and never could: an adopted row owns
+    no ``client`` either -- its verifier is in the shared process -- so the cold test
+    reads it as free and the claim loop below replaces a URL the user is part-way
+    through redeeming. ``shared`` is the whole distinction: it is set while the premint
+    is unclaimed and cleared by :func:`adopt_shared_mint`.
+    """
+    return (
+        entry is not None
+        and entry.get("state") == "waiting"
+        and bool(entry.get("generation"))
+        and not entry.get("shared")
+    )
+
+
+async def adopt_shared_mint(slug: str, mcp_url: str) -> str | None:
+    """Take ownership of ``slug``'s UNCLAIMED premint. Returns its new row token, or None.
+
+    THE handoff, and the reason the premint has a consumer at all. Connect used to call
+    ``reserve_mint_row`` unconditionally, which pops WHATEVER row is at the slug -- so
+    ``start_oauth_mint`` disposed the very URL the warm table had minted for that click
+    and the cold spawn it then paid was the only thing the user ever saw. ``None`` means
+    nothing was adoptable and the caller must fall back to that cold path, which is
+    still correct and still the only path for a provider warming never covered.
+
+    FOUR refusals, each closing a different way to hand back a URL that cannot work: no
+    row; a row that is not an unclaimed premint (``shared`` absent -- a cold flow's or
+    an already-adopted one, whose owner's token fences it); a claim still ``minting``,
+    which holds nothing to give; and a row whose holder is gone, judged by
+    :func:`_warm_row_alive` -- the SAME generation-and-activation pair the reaper uses,
+    because a URL is redeemable only while the process holds its verifier AND the
+    session still answers its redirect.
+
+    ATOMIC BY CONSTRUCTION, like :func:`_claim_shared_mints`: everything between the
+    read and the last write is synchronous, so two clicks racing one row serialize on
+    ``_mints_lock`` and the loser observes ``shared`` already cleared. Nothing is
+    disposed here, so the engine's dispose-outside-the-table-lock rule is not merely
+    respected but unreachable.
+
+    THE TOKEN IS ROTATED, and the watcher with it. A fresh token is what fences the
+    adopting tab against the premint's own rollback and against a sibling tab, but
+    every write in :func:`~kiro_crew.connections.mint._mint_watcher` is guarded on the
+    token it was started with -- so rotating alone would leave the row watched by a
+    task that can no longer touch it: nothing would flip it to ``granted``, nothing
+    would expire it, and it would hold the shared process resident for good. Re-arming
+    is therefore part of the same synchronous run, not a follow-up.
+
+    PROVENANCE IS KEPT. ``generation``/``activation`` stay exactly as the activation
+    stamped them, because ownership moved and the verifier did not: the row is still
+    judged, parked and withdrawn by the warm table (:func:`_warm_table_row`).
+    """
+    adopted: str | None = None
+    async with _mints_lock:
+        entry = _mints.get(slug)
+        if (
+            entry is not None
+            and entry.get("shared")
+            and entry.get("state") == "waiting"
+            and entry.get("oauth_url")
+            and _warm_row_alive(entry)
+        ):
+            adopted = _new_mint_token()
+            stale = entry.pop("watcher", None)
+            if stale is not None:
+                stale.cancel()
+            entry["token"] = adopted
+            entry.pop("shared", None)
+            entry["watcher"] = asyncio.get_running_loop().create_task(
+                _mint_watcher(slug, mcp_url, adopted)
+            )
+    if adopted is not None:
+        # Off the loop: the FIRST ``sel()`` of a process constructs the log, and the warm
+        # module pins every such hop with a drift guard.
+        await asyncio.to_thread(_log_warm_event, "connections_warm_mint_adopt", f"provider:{slug}")
+    return adopted
+
+
 async def _claim_shared_mints(slugs: list[str]) -> tuple[dict[str, str], list[MintState]]:
     """Claim ``slugs`` for the shared process. Returns ``({slug: row token}, displaced rows)``.
 
@@ -1546,9 +1661,10 @@ async def _claim_shared_mints(slugs: list[str]) -> tuple[dict[str, str], list[Mi
     async with _mints_lock:
         for slug in slugs:
             prior = _mints.get(slug)
-            if _mint_is_cold_held(prior):
-                # A dedicated client owns this provider's verifier. Leave its URL on
-                # the card rather than replace a working link.
+            if _mint_is_cold_held(prior) or _mint_is_adopted(prior):
+                # A CALLER owns this provider's URL -- a dedicated client holds its
+                # verifier, or a Connect adopted the warm row this table minted. Leave
+                # its URL on the card rather than replace a working link.
                 continue
             if prior is not None:
                 # Hand it back, don't just drop it: the replaced row may own a watcher, and

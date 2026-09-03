@@ -92,11 +92,37 @@ jobs:
         run: |
           exact="<!-- ai-review-human-override target=ux head=$HEAD "
           all="<!-- ai-review-human-override target=all head=$HEAD "
-          record="$(gh api "repos/$REPO/issues/$PR/comments" --paginate 2>/dev/null \
+          # A comments feed this step could not READ is not a PR with no
+          # override recorded. `2>/dev/null || true` discarded both the error
+          # text and the exit status, so a transient API failure collapsed
+          # onto the same empty string as "no override recorded" and the lane
+          # re-gated a verdict a human had already cleared with
+          # /ai-review override. The common case is transient, so absorb it
+          # here: up to three attempts with a short backoff. A read that never
+          # succeeds fails this run CLOSED while naming the read as the cause;
+          # a PR genuinely carrying no override still reads successfully and
+          # resolves to inactive, as before.
+          comments=""
+          read_ok=""
+          for attempt in 1 2 3; do
+            if comments="$(gh api "repos/$REPO/issues/$PR/comments" --paginate)"; then
+              read_ok=1
+              break
+            fi
+            echo "Reading the PR comments failed on attempt $attempt."
+            if [ "$attempt" -lt 3 ]; then
+              sleep "$attempt"
+            fi
+          done
+          if [ -z "$read_ok" ]; then
+            echo "::error::Could not read this PR's comments after 3 attempts, so this lane cannot tell whether a human override is recorded for $HEAD. Failing closed rather than re-gating a verdict a human may have cleared -- re-run this job."
+            exit 1
+          fi
+          record="$(printf '%s' "$comments" \
             | jq -sr --arg exact "$exact" --arg all "$all" \
               'add // [] | [.[] | select(.user.login == "github-actions[bot]")
               | select((.body | startswith($exact)) or (.body | startswith($all)))]
-              | (last.body // "")' 2>/dev/null || true)"
+              | (last.body // "")')"
           actor="$(printf '%s\n' "$record" | sed -nE '1s/^.* actor=([^ ]+) source=([0-9]+) -->$/\1/p')"
           source="$(printf '%s\n' "$record" | sed -nE '1s/^.* actor=([^ ]+) source=([0-9]+) -->$/\2/p')"
           if [ -n "$actor" ] && [ -n "$source" ]; then

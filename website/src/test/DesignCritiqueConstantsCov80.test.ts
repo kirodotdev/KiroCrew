@@ -108,14 +108,6 @@ describe('blocked reasons', () => {
     }
   })
 
-  it('resolves the auth block, leaving shell commands verbatim', () => {
-    const auth = BLOCKED['no-access'].auth!
-    expect(resolved(auth.lead)).toBe(true)
-    expect(resolved(auth.tail)).toBe(true)
-    // A translated command does not run.
-    expect(auth.cmds).toContain('gh auth login')
-  })
-
   it('resolves the numbered Figma permission steps as copy', () => {
     const auth = BLOCKED['figma-no-permission'].auth!
     expect(auth.cmds).toHaveLength(3)
@@ -129,14 +121,14 @@ describe('blocked reasons', () => {
   })
 
   it('blockedFor returns a detached copy, so a caller cannot mutate the table', () => {
-    const entry = blockedFor('no-access')
-    expect(entry.say).toBe(BLOCKED['no-access'].say)
-    expect(entry.auth).not.toBe(BLOCKED['no-access'].auth)
+    const entry = blockedFor('figma-no-permission')
+    expect(entry.say).toBe(BLOCKED['figma-no-permission'].say)
+    expect(entry.auth).not.toBe(BLOCKED['figma-no-permission'].auth)
 
     entry.detail = 'zzz-detail'
     entry.auth!.lead = 'zzz-overwritten'
-    expect(BLOCKED['no-access'].auth!.lead).not.toBe('zzz-overwritten')
-    expect(BLOCKED['no-access'].detail).toBeUndefined()
+    expect(BLOCKED['figma-no-permission'].auth!.lead).not.toBe('zzz-overwritten')
+    expect(BLOCKED['figma-no-permission'].detail).toBeUndefined()
   })
 
   it('omits the auth block for reasons that have none', () => {

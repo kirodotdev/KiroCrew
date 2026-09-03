@@ -38,7 +38,7 @@ beforeEach(() => {
 })
 
 describe('NotificationFeed Phase 3: silenced (muted-channel) rows', () => {
-  it('hides silenced rows by default and reveals them via the Muted chip', () => {
+  it('hides silenced rows by default and reveals them via the Show muted chip', () => {
     renderFeed([
       mkN({ ts: '1', title: 'Visible note' }),
       mkN({ ts: '2', title: 'Muted note', silenced: true, priority: 'passive' }),
@@ -46,7 +46,7 @@ describe('NotificationFeed Phase 3: silenced (muted-channel) rows', () => {
     expect(screen.getByText('Visible note')).toBeTruthy()
     expect(screen.queryByText('Muted note')).toBeNull()
 
-    const chip = screen.getByRole('button', { name: /Muted \(1\)/ })
+    const chip = screen.getByRole('button', { name: /Show muted \(1\)/ })
     expect(chip.getAttribute('aria-pressed')).toBe('false')
     fireEvent.click(chip)
     expect(screen.getByText('Muted note')).toBeTruthy()
@@ -54,9 +54,30 @@ describe('NotificationFeed Phase 3: silenced (muted-channel) rows', () => {
     expect(screen.queryByText('Muted note')).toBeNull()
   })
 
+  // The label used to read "Muted (1)" in both states, which named the rows'
+  // state instead of the press's effect: a first-time user could not tell
+  // whether pressing reveals muted rows or mutes something. Each state must name
+  // the action the press performs.
+  it('names the action, so the label flips with the disclosure state', () => {
+    renderFeed([
+      mkN({ ts: '1', title: 'Visible note' }),
+      mkN({ ts: '2', title: 'Muted note', silenced: true, priority: 'passive' }),
+    ])
+    const chip = screen.getByRole('button', { name: /muted \(1\)/i })
+    expect(chip.textContent).toContain('Show muted (1)')
+    expect(chip.textContent).not.toContain('Hide')
+
+    fireEvent.click(chip)
+    expect(chip.textContent).toContain('Hide muted (1)')
+    expect(chip.textContent).not.toContain('Show')
+
+    fireEvent.click(chip)
+    expect(chip.textContent).toContain('Show muted (1)')
+  })
+
   it('does not render the Muted chip when nothing is silenced', () => {
     renderFeed([mkN({ ts: '1', title: 'Visible note' })])
-    expect(screen.queryByRole('button', { name: /Muted \(/ })).toBeNull()
+    expect(screen.queryByRole('button', { name: /muted \(/i })).toBeNull()
   })
 })
 

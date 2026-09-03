@@ -7,6 +7,7 @@ import { useMutation } from '@tanstack/react-query'
 import { MessageSquarePlus, Copy, Check, PlugZap } from 'lucide-react'
 import { ensureTerminalConnection, disposeTerminalConnection, getTerminalCwd, useTerminalConnStatus, useTerminalManualRetry, retryTerminalConnection } from '../utils/terminalRegistry'
 import { getTerminalFont, resolveTerminalFontFamily, subscribeTerminalFont } from '../hooks/useTerminalFont'
+import { ansiPaletteFromVars } from '../utils/terminalPalette'
 import { useIsTouchDevice } from '../hooks/useIsTouchDevice'
 import TerminalCompletion from './TerminalCompletion'
 import TerminalKeyBar from './TerminalKeyBar'
@@ -21,11 +22,15 @@ const termCache = new Map<string, { term: Terminal; fit: FitAddon }>()
 /* ── Terminal theme from CSS custom properties ── */
 function getTermTheme() {
   const style = getComputedStyle(document.documentElement)
+  const read = (name: string) => style.getPropertyValue(name)
   return {
     background:          style.getPropertyValue('--bg').trim()            || '#1e1e2e',
     foreground:          style.getPropertyValue('--text').trim()          || '#cdd6f4',
     cursor:              style.getPropertyValue('--accent').trim()        || '#89b4fa',
     selectionBackground: style.getPropertyValue('--accent-subtle').trim() || '#313244',
+    // The 16 ANSI entries: without them xterm renders ANSI-coloured output with
+    // its own palette, which ignores the theme entirely.
+    ...ansiPaletteFromVars(read),
   }
 }
 

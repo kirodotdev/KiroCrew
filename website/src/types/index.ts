@@ -3,9 +3,16 @@ export interface StatusData {
   start_time?: number
   sessions: number
   messages: number
-  cron_jobs: number
+  /**
+   * `null` means UNKNOWN — the WS pusher's count refresh has not succeeded
+   * yet (e.g. the lesson store is failing). StatCard renders null as a
+   * loading skeleton; publishing 0 instead would assert an authoritative
+   * false zero (issue #7204). HTTP/SSE paths always send numbers.
+   */
+  cron_jobs: number | null
   subagents: number
-  lessons: number
+  /** See cron_jobs — null = unknown, rendered as a skeleton, never a fake 0. */
+  lessons: number | null
   /**
    * Is a newer build available? `null`/absent means NO VERDICT — a check that
    * never ran, or one that failed. Only `true` may light an update affordance,
@@ -112,6 +119,14 @@ export interface StatusData {
   release_channel?: 'nightly' | 'insider' | 'stable'
   branch?: string
   commit?: string
+  /**
+   * Short content hash of the SERVED frontend bundle's entry point. The SPA
+   * compares it across status pushes and reloads when it moves — the reload
+   * signal `version` cannot give for a same-version rebuild (a git checkout's
+   * in-app update), and one that reaches every open tab. `""`/absent means no
+   * built bundle / older gateway: unknown, never a change.
+   */
+  bundle_id?: string
   platform?: string
   yolo?: boolean
   /** ISO timestamp when the current timed auto-approve grant expires ("" when none). */
@@ -720,6 +735,33 @@ export interface TodoList {
   current: string
 }
 
+/**
+ * What ONE agent session's MCP servers reported while starting.
+ *
+ * Distinct from every other MCP payload in the dashboard: `/api/mcp/active`
+ * reads an agent spec off disk and `/api/mcp/probe` records whether the gateway
+ * itself can start a server. Both answer a question about the host. This is the
+ * only one that answers "what did THIS session actually mount".
+ *
+ * Two properties callers must respect:
+ * - A name absent from every bucket means *no report yet*, never *not mounted*:
+ *   the backend's init drain is time bounded and a late frame still arrives.
+ * - The buckets are a SUPERSET of `configured`, because the backend also starts
+ *   the agent spec's own servers, not just the ones Kiro Crew injects.
+ */
+export interface McpSessionReport {
+  /** Server names Kiro Crew put on the wire for this session. */
+  configured: string[]
+  /** Reported initialized. */
+  ready: string[]
+  /** Reported a startup failure. */
+  failed: string[]
+  /** Asked for authorization and has not reported since. */
+  awaiting_auth: string[]
+  /** Server name -> its redacted failure reason, when one was reported. */
+  failures: Record<string, string>
+}
+
 export interface SessionLink {
   channel: string
   label: string
@@ -768,6 +810,15 @@ export interface ChatSlot {
    *  and it reports "" rather than guessing whenever resolution is unsettled — so
    *  a consumer must treat absent as "no news", never as a mismatch. */
   effective_agent?: string
+  /** The backend's verdict on whether the live session can run `model`:
+   *  `true` it cannot (the spawn withheld the pin and the session is on the
+   *  backend default), `false` it can, `null`/absent NOT KNOWN YET — no session
+   *  has advertised a comparable list for this pin.
+   *
+   *  Consumers must fail open on the unknown state (`displayModel` does): it is
+   *  the absence of an answer, never a denial. DISPLAY only — the pin is
+   *  deliberately kept when withheld, so this must not drive a write. */
+  model_withheld?: boolean | null
   key: string; title?: string; messages: number; running: boolean; stopping?: boolean; pending_approval?: boolean; created?: string; last_ts?: string; last_turn_ts?: string; last_message?: string; agent?: string; model?: string; reasoning_effort?: string; mode?: string; surface?: string; workspace?: string; trust?: boolean; trust_reads?: boolean; folder_id?: string; pinned?: boolean; tags?: string[]; links?: SessionLink[]; slack_linked?: boolean; slack_channel?: string; slack_thread_ts?: string; color_index?: number | null; color_hex?: string | null; memory_mode?: 'persistent' | 'incognito' | 'temporary'; clean_mode?: boolean; project?: string; forked_from?: string | null; source_links?: { provider: SourceProviderId; number: number; url: string; label?: string; repo?: string; ci?: 'running' | 'passed' | 'failed' | null; state?: 'open' | 'draft' | 'merged' | 'closed'; mergeable?: string; mergeStateStatus?: string; kind?: 'change' | 'issue' }[]; source_links_total?: number
   /** Provenance bucket from the backend `SlotOrigin` ("user" | "app" | "cron"
    * | "system"; absent/"" for untagged background slots). The session-pulse
@@ -802,6 +853,16 @@ export interface ChatSlot {
   wait_state?: { wait_id: string; seconds: number; deadline_ts: number } | null
   /** Agent TODO list. Null/absent = the todo tool was never used in this slot. */
   todo?: TodoList | null
+  /**
+   * What this slot's agent session reported about its own MCP servers.
+   *
+   * Null/absent means this slot has no session that reported — render that as
+   * absence of knowledge, NOT as "no servers". It is deliberately separate from
+   * `/api/mcp/active` and `/api/mcp/probe`, which answer questions about the
+   * HOST (what an agent spec declares, what the gateway can start) rather than
+   * about this session.
+   */
+  mcp_report?: McpSessionReport | null
 }
 
 export interface PullRequestCommit {
@@ -926,6 +987,16 @@ export interface IssueSource {
   linkedChanges: IssueLinkedChange[]
   /** Sections potentially incomplete because a provider request failed or hit a limit. */
   partialSections?: string[]
+}
+
+/** A single contributor to an app's source repository (GitHub only, v1).
+ *  Names and avatar URLs are provider-controlled — render as text / <img>. */
+export interface AppContributor {
+  login: string
+  /** Display name, falling back to the login when the profile has none. */
+  name: string
+  avatarUrl: string
+  profileUrl: string
 }
 
 export interface PullRequestSource {

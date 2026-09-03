@@ -20,7 +20,6 @@ import os
 import shutil
 import socket
 import stat
-import sys
 import tempfile
 from pathlib import Path
 from typing import Any, Iterator
@@ -759,15 +758,11 @@ async def test_wait_closed_returns_once_connections_are_cancelled(
     await asyncio.wait_for(started.wait(), timeout=5)
 
     server.close()
-    if sys.version_info >= (3, 12):
-        # Awaiting here first is the bug: prove it would block. Gated because
-        # the semantics are version-dependent -- measured blocking on 3.12.13,
-        # and CI showed 3.10 returning immediately, which matches the CPython
-        # change that made wait_closed() await accepted connections landing in
-        # 3.12.0. On 3.10 the reordering is a harmless no-op, so only the
-        # positive assertion below applies there.
-        with pytest.raises(asyncio.TimeoutError):
-            await asyncio.wait_for(asyncio.shield(server.wait_closed()), timeout=0.5)
+    # Awaiting here first is the bug: prove it would block. CPython 3.12.0 made
+    # wait_closed() await accepted connections, so with a stub still attached
+    # this cannot return -- which is why the daemon drains and cancels first.
+    with pytest.raises(asyncio.TimeoutError):
+        await asyncio.wait_for(asyncio.shield(server.wait_closed()), timeout=0.5)
 
     for task in handlers:
         task.cancel()

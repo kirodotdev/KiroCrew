@@ -388,3 +388,254 @@ class TestDefaultsJsonPushRegexes:
     def test_stash_push_not_blocked(self) -> None:
         assert not self._blocked("git stash pus" + "h --all")
         assert not self._blocked("git stash pus" + "h")
+
+
+class TestEveryGatedTagNamesARealCatalogRule:
+    """A gated tag naming no catalog rule is a SILENT ALLOW, not a loud error.
+
+    Now that the floor consults the per-rule enabled set, ``is_denied`` resolves
+    each gated tag through ``_GIT_PUBLISH_FLOOR_BY_ID.get(tag)``.  A miss yields
+    ``None`` and the branch ``continue``s — so a protected-branch push is simply
+    not denied, nothing reddens, and the command runs.  A rule rename or a typo
+    in one of the seven ``tags.add("...")`` literals is therefore a
+    push-protection bypass that no behavioural test in this file would catch,
+    because they all exercise commands whose tags currently DO resolve.
+
+    ``test_exfil_gate_opt_out.py`` has the twin guard for the exfiltration
+    branches; this is the git-publish half.
+    """
+
+    # Every literal a gated ``tags.add(...)`` in ``_push_segment_targets_protected``
+    # or ``_git_publish_floor_tags`` can emit.  Written out rather than scraped
+    # from source so that DELETING an emitter is visible here too.
+    GATED_TAGS = (
+        "git-publish-push-mirror-all",
+        "git-publish-push-bare",
+        "git-publish-push-single-arg",
+        "git-publish-push-wildcard-refspec",
+        "git-publish-push-ambiguous-ref",
+        "git-publish-push-protected-ref-path",
+        "git-publish-push-protected-branch-name",
+    )
+
+    def test_every_gated_tag_resolves_to_a_pattern(self) -> None:
+        missing = [t for t in self.GATED_TAGS if t not in security._GIT_PUBLISH_FLOOR_BY_ID]
+        assert not missing, (
+            f"gated git-publish tag(s) naming no catalog rule: {missing}. In is_denied "
+            "these resolve to None and the branch is SKIPPED, so the push is ALLOWED. "
+            "Fix the tag literal or add the catalog rule."
+        )
+
+    def test_every_gated_tag_is_a_real_rule_id(self) -> None:
+        ids = {r.id for r in security.BUILTIN_DENIED_RULES}
+        assert not [t for t in self.GATED_TAGS if t not in ids]
+
+    def test_the_ungated_sentinel_is_unspellable_as_a_rule_id(self) -> None:
+        """If an operator could name the sentinel, disabling that row would turn
+        off the anti-obfuscation branches — the one thing opt-out must not reach."""
+        assert security._GIT_PUBLISH_UNGATED not in self.GATED_TAGS
+        assert security._GIT_PUBLISH_UNGATED not in {r.id for r in security.BUILTIN_DENIED_RULES}
+
+    def test_the_emitter_only_ever_emits_known_tags(self) -> None:
+        """Drive the real function: everything it emits is either a listed gated
+        tag or the ungated sentinel — never a third, unhandled kind."""
+        known = set(self.GATED_TAGS) | {security._GIT_PUBLISH_UNGATED}
+        for cmd in (
+            "git push",
+            "git push origin",
+            "git push --mirror",
+            "git push --all origin",
+            "git push origin main",
+            "git push origin refs/heads/main",
+            "git push origin HEAD",
+            "git push origin @",
+            "git push origin feat/x",
+            "git push origin $(echo main)",
+            "git push origin 'main@{upstream}'",
+        ):
+            emitted = security._git_publish_floor_tags(cmd.lower())
+            assert emitted <= known, f"{cmd!r} emitted unknown tag(s): {emitted - known}"
+
+
+class TestPushOptionsCannotDodgeTheProtectedRule:
+    """Flag spellings that must not be read as the repository, or as no-op flags.
+
+    Both shapes were latent while the whole git-publish floor was unconditional:
+    they mis-CLASSIFIED a protected-branch push rather than allowing it, so the
+    floor denied anyway. Making the rules individually disableable is what turned
+    them into bypasses — switching off the rule the shape was mis-attributed to
+    published the push. Regression for the GPT 5.6 blocking finding on #7705.
+    """
+
+    def test_repo_flag_carries_the_remote_so_the_lone_token_is_a_refspec(self):
+        # `--repo=origin` starts with '-', so a naive flag strip leaves ["main"]
+        # and reads it as the REMOTE — classifying a push to main as the single-arg
+        # shape. It must be seen as the protected-branch shape instead.
+        for cmd in (
+            "git push --repo=origin main",
+            "git push --repo origin main",
+        ):
+            tags = security._git_publish_floor_tags(cmd)
+            assert "git-publish-push-protected" in tags or any(
+                t.startswith("git-publish-push-protected") for t in tags
+            ), f"{cmd!r} did not resolve to a protected-branch tag: {tags}"
+            assert "git-publish-push-single-arg" not in tags, (
+                f"{cmd!r} still mis-classified as the single-arg shape, so disabling "
+                "that one rule would publish to main"
+            )
+
+    def test_branches_is_an_all_branches_flag(self):
+        # `--branches` is git's own modern alias for `--all` (2.44+), so it pushes
+        # every local branch including protected ones.
+        tags = security._git_publish_floor_tags("git push --branches origin")
+        assert "git-publish-push-mirror-all" in tags, (
+            "--branches pushes all branches like --all; leaving it out means the "
+            "shape carries no tag at all and nothing denies it"
+        )
+
+    def test_repo_flag_without_a_refspec_is_still_caught(self):
+        # The flag named the remote and nothing named a branch — the bare form.
+        tags = security._git_publish_floor_tags("git push --repo=origin")
+        assert tags, "a repo-flag push with no refspec emitted no tag at all"
+
+
+class TestGitOptionAbbreviationsResolveLikeGit:
+    """Git resolves an unambiguous long-option PREFIX to that option, so matching
+    flag literals exactly misses every abbreviation.
+
+    This is the third round of findings in this one span, so it is fixed at the
+    INVARIANT rather than per spelling: the classifier now resolves a token against
+    the enumerated set of `git push` long options, the same way git does. A
+    spelling list can only ever trail the next abbreviation; a name table cannot.
+    """
+
+    def test_abbreviated_all_branches_flags_still_deny(self):
+        for cmd in (
+            "git push --mirr origin",
+            "git push --mir origin",
+            "git push --al origin",
+            "git push --branch origin",
+        ):
+            tags = security._git_publish_floor_tags(cmd)
+            assert "git-publish-push-mirror-all" in tags, (
+                f"{cmd!r} is an abbreviation git accepts for an all-branches flag, "
+                f"but it carried no all-branches tag: {tags}"
+            )
+
+    def test_abbreviated_repo_flag_still_shifts_the_positional_read(self):
+        for cmd in ("git push --rep=origin main", "git push --rep origin main"):
+            tags = security._git_publish_floor_tags(cmd)
+            assert any(
+                t.startswith("git-publish-push-protected") for t in tags
+            ), f"{cmd!r} did not resolve to a protected-branch tag: {tags}"
+            assert "git-publish-push-single-arg" not in tags
+
+    def test_an_unrelated_flag_is_not_swallowed(self):
+        """The guard against over-denial, which is why the option table is complete.
+
+        `--atomic` shares a prefix with `--all`. Resolving abbreviations against
+        `{all, branches, mirror}` alone would read `--a`-family flags as
+        all-branches and deny an ordinary feature-branch push. `--atomic` resolves
+        to exactly one option, so it must stay clean.
+        """
+        tags = security._git_publish_floor_tags("git push --atomic origin feat/x")
+        assert "git-publish-push-mirror-all" not in tags, (
+            "--atomic was misread as an all-branches flag, which denies a legitimate "
+            "feature-branch push"
+        )
+        assert not tags, f"a plain feature-branch push should emit no tag, got {tags}"
+
+    def test_an_ambiguous_abbreviation_covering_a_dangerous_option_fails_closed(self):
+        """`--a` is ambiguous to git (all, atomic, ...) so the command never runs.
+
+        Reading it as the dangerous member can therefore only deny a push that was
+        already going to fail — the safe direction for a floor.
+        """
+        assert security._push_option_matches("--a", security._PUSH_ALL_BRANCHES_OPTS)
+        assert "git-publish-push-mirror-all" in security._git_publish_floor_tags(
+            "git push --a origin"
+        )
+
+    def test_the_prefix_test_matches_a_full_option_table(self):
+        """Pins WHY no git-wide option table is carried here.
+
+        Resolving a token against every `git push` long option and then
+        intersecting with the dangerous ones gives the same answer as testing the
+        prefix against the dangerous ones directly: a non-dangerous option can only
+        ADD a candidate, never remove a dangerous one. Asserted over every prefix
+        of every option so the equivalence is a checked property rather than a
+        claim in a comment — if it ever stops holding, the table is needed and this
+        goes red.
+        """
+        full_table = frozenset(
+            {
+                "all",
+                "atomic",
+                "branches",
+                "delete",
+                "dry-run",
+                "exec",
+                "follow-tags",
+                "force",
+                "force-if-includes",
+                "force-with-lease",
+                "ipv4",
+                "ipv6",
+                "mirror",
+                "no-atomic",
+                "no-follow-tags",
+                "no-force-with-lease",
+                "no-progress",
+                "no-recurse-submodules",
+                "no-signed",
+                "no-thin",
+                "no-verify",
+                "porcelain",
+                "progress",
+                "prune",
+                "push-option",
+                "quiet",
+                "receive-pack",
+                "recurse-submodules",
+                "repo",
+                "set-upstream",
+                "signed",
+                "tags",
+                "thin",
+                "verbose",
+                "verify",
+            }
+        )
+        probes = {opt[:i] for opt in full_table for i in range(1, len(opt) + 1)}
+        probes |= {"zzz", "a", "m", "r", "b"}
+        for name in sorted(probes):
+            token = f"--{name}"
+            candidates = {opt for opt in full_table if opt.startswith(name)}
+            for target in (
+                security._PUSH_ALL_BRANCHES_OPTS,
+                security._PUSH_REPO_OPTS,
+            ):
+                assert bool(candidates & target) == security._push_option_matches(token, target), (
+                    f"{token!r}: full-table resolution and the direct prefix test "
+                    f"disagree for {set(target)} — the option table is load-bearing "
+                    "after all and must be restored"
+                )
+
+
+def test_an_all_branches_push_does_not_also_carry_the_single_arg_tag():
+    """`push --all origin` must not earn BOTH tags.
+
+    It used to: the all-branches flag tagged mirror-all, then the empty-refspec
+    fallback added single-arg on top. Disabling mirror-all therefore left the
+    command blocked by its sibling — the toggle read as enabled-and-off while
+    enforcement never changed, which is the exact defect class this PR closes.
+    GPT 5.6 flagged it on #7705.
+    """
+    tags = security._git_publish_floor_tags("git push --all origin")
+    assert "git-publish-push-mirror-all" in tags
+    assert "git-publish-push-single-arg" not in tags
+    assert "git-publish-push-bare" not in tags
+
+    # And the bare/single-arg shapes still tag when no all-branches flag is present.
+    assert "git-publish-push-single-arg" in security._git_publish_floor_tags("git push origin")
+    assert "git-publish-push-bare" in security._git_publish_floor_tags("git push")

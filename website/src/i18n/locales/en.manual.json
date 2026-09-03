@@ -21,6 +21,7 @@
     "expand_sidebar": "Expand sidebar",
     "gateway_connected": "Gateway connected",
     "gateway_offline": "Gateway offline",
+    "gateway_restarting_reconnecting": "Gateway is restarting — reconnecting…",
     "hide_full_changelog": "▾ Hide Full Changelog",
     "i_d_like_to_request_a_feature": "I’d like to request a feature!",
     "iam_identity_center": "IAM Identity Center",
@@ -75,6 +76,11 @@
     }
   },
   "apps": {
+    "awsControl": {
+      "console": {
+        "library_remove_confirm_slug": "This empties the cloud folder <folder>{{folder}}</folder>."
+      }
+    },
     "meetings": {
       "transcript": {
         "empty": "No transcript yet",
@@ -685,6 +691,7 @@
             "kind_reply": "Replied",
             "kind_review": "Review",
             "kind_skip": "Passed",
+            "kind_sweep": "Swept",
             "kind_yield": "Yielded",
             "no_next_recorded": "no next step recorded",
             "no_open_work_items": "Nothing in flight",
@@ -1134,6 +1141,8 @@
       "constants": {
         "blocked_figma_app_missing_hint": "Open the file in Figma desktop and try again, or export the frames as PNGs and drop them here.",
         "blocked_figma_app_missing_say": "I can’t reach Figma — the desktop app isn’t running, or I don’t have the Figma tools available.",
+        "blocked_figma_export_needed_hint": "Export each frame as a PNG and drop them in as screenshots — I critique the pixels either way.",
+        "blocked_figma_export_needed_say": "I can’t pull frames straight from a Figma link here — I don’t run the Figma desktop tools.",
         "blocked_figma_file_closed_hint": "Open it in Figma desktop, then try again.",
         "blocked_figma_file_closed_say": "Figma is running, but that file isn’t open.",
         "blocked_figma_no_permission_auth_lead": "Figma access is per account, and I read whatever the desktop app has open — I have no login of my own. Here is how to fix it.",
@@ -1143,8 +1152,6 @@
         "blocked_figma_no_permission_auth_tail": "If access isn’t coming, exporting the frames as PNGs works just as well — I critique pixels either way.",
         "blocked_figma_no_permission_hint": "Ask for access, or export the frames as PNGs and drop them here.",
         "blocked_figma_no_permission_say": "Your Figma account can’t view that file.",
-        "blocked_no_access_auth_lead": "Git access is set up per machine, not per app — do it once and every private repo works, here and everywhere else. Run these in your terminal.",
-        "blocked_no_access_auth_tail": "Then come back and press Try again. I never ask for or store a token — anything pasted into this app would end up in a saved transcript.",
         "blocked_no_access_hint": "If you have it checked out, give me the folder path instead.",
         "blocked_no_access_say": "I couldn’t open that repo. It’s either private (and I have no credentials for it) or it doesn’t exist — GitHub returns the same error for both.",
         "blocked_not_found_hint": "Check the owner and name, or give me a local folder path.",
@@ -1444,7 +1451,12 @@
       "queue_run_after_the_current_work_finishes_desc": "Run after the current work finishes",
       "steer_act_on_this_right_away_desc": "Act on this right away",
       "finishing": "Finishing…",
-      "keep_holding_to_record": "Keep holding to record"
+      "keep_holding_to_record": "Keep holding to record",
+      "auto_compact_at": "Auto-compact at",
+      "auto_compact_threshold": "Auto-compact threshold",
+      "auto_compact_load_failed": "Couldn't load the auto-compact setting",
+      "reset_to_global": "Reset to global ({{pct}}%)",
+      "following_global": "Following global ({{pct}}%)"
     },
     "chatPane": {
       "earlier_messages_load_failed": "Couldn't load earlier messages. Scroll to the top of the session to try again.",
@@ -1989,9 +2001,10 @@
       "notificationFeed": {
         "activity_will_appear_here": "Activity will appear here",
         "expand_grouped_notifications": "Expand {{count}} grouped notifications: {{title}}",
-        "muted_count": "Muted ({{count}})",
+        "hide_muted_count": "Hide muted ({{count}})",
         "open_notification": "Open notification: {{title}}",
         "show_less": "Show less",
+        "show_muted_count": "Show muted ({{count}})",
         "try_a_different_search": "Try a different search"
       }
     },
@@ -2181,6 +2194,8 @@
       "root": "(root)"
     },
     "skillPickerMenu": {
+      "loading_skills_ctrl_enter_held": "Loading skills… — Ctrl+Enter won’t send yet; use the Send button",
+      "loading_skills_enter_held": "Loading skills… — Enter won’t send yet; use the Send button",
       "no_matching_skills_ctrl_enter_sends": "No matching skills — Ctrl+Enter sends the message",
       "no_matching_skills_enter_sends": "No matching skills — Enter sends the message",
       "no_skills_mapped_to_agent": "No skills mapped to {{agent}}",
@@ -2300,8 +2315,7 @@
       "back_to_dashboard": "Back to dashboard",
       "restarting": "Restarting..."
     },
-    "voiceDisabledModal": {
-    },
+    "voiceDisabledModal": {},
     "voiceStatusBar": {
       "default_microphone": "Default microphone"
     },
@@ -2402,6 +2416,8 @@
       "title_md": "Medium width"
     },
     "slashCommandMenu": {
+      "commands_load_failed_ctrl_enter_sends": "Couldn't load commands — Ctrl+Enter sends the message",
+      "commands_load_failed_enter_sends": "Couldn't load commands — Enter sends the message",
       "desc_agent": "Switch or manage the active agent",
       "desc_changelog": "Show the release changelog",
       "desc_chat": "Save or load a chat session",
@@ -2431,6 +2447,7 @@
       "desc_tools": "Show available tools",
       "desc_usage": "Show billing and usage information",
       "desc_workflow": "List or run a saved workflow by name",
+      "loading_commands": "Loading commands…",
       "no_matching_commands_ctrl_enter_sends": "No matching commands — Ctrl+Enter sends the message",
       "no_matching_commands_enter_sends": "No matching commands — Enter sends the message"
     },
@@ -2733,6 +2750,8 @@
     },
     "appDetailPage": {
       "app_not_found_2": "App \"{{name}}\" not found",
+      "all_contributors": "All contributors",
+      "contributors": "Contributors",
       "disabled": "Disabled",
       "doesnt_exist": "\"{{name}}\" doesn't exist",
       "enabled": "Enabled",
@@ -3285,6 +3304,12 @@
       "hide_sessions_sidebar": "Hide sessions sidebar",
       "knowledge_item_one": "{{count}} knowledge item",
       "knowledge_item_other": "{{count}} knowledge items",
+      "mcp_session_also_started": "Also started in this session: {{names}}",
+      "mcp_session_awaiting_auth": "Waiting for authorization",
+      "mcp_session_failed": "Failed to start in this session",
+      "mcp_session_no_report": "No report from this session yet",
+      "mcp_session_source_note": "The list is this agent's configuration; the status beside each name is what this session reported.",
+      "mcp_session_started": "Started in this session",
       "message_queued_until_session_ready": "{{error}}. Your message is queued and will be sent when a session is ready — but it is held in this tab only, so if you navigate away or reload you will need to retype it.",
       "message_saved_as_draft": "{{error}}. Your message is saved as a draft in the session you sent it from.{{extra}}",
       "no_results": "No results",
@@ -4033,6 +4058,7 @@
         "disabled": "Disabled",
         "error": "Error",
         "online": "Online",
+        "online_help": "The gateway started this server itself. That is a check of this host, not a guarantee that a given chat session mounted it — each session reports its own servers in its MCP panel.",
         "outdated": "Outdated",
         "pending_disable_click_to_revert": "Pending: disable (click to revert)",
         "pending_enable_click_to_revert": "Pending: enable (click to revert)",
@@ -4077,12 +4103,10 @@
         "save": "Save"
       },
       "promptsTab": {
-        "prompts_count": "Prompts ({{count}})",
-        "prompts_filtered_count": "Prompts ({{count}} of {{total}})",
+        "failed_to_load_prompts": "Failed to load prompts",
+        "no_prompts_match_query": "No prompts match “{{query}}”.",
         "saved_prompts_from": "Saved prompts from {{registry}} and ~/.kiro/prompts/. Invoke with @name in chat or /prompts get name.",
-        "user_prompts_count": "User Prompts ({{count}})",
-        "user_prompts_filtered_count": "User Prompts ({{count}} of {{total}})",
-        "failed_to_load_prompts": "Failed to load prompts"
+        "user_prompts_count": "User Prompts ({{count}})"
       },
       "skillsTab": {
         "adds_new_requirements_to": "Adds new requirements to {{target}} — {{description}}",
@@ -4681,8 +4705,8 @@
         "update_setting_failed": "Failed to update setting: {{error}}"
       },
       "remoteCrewPanel": {
-        "chat_on_a_crew": "Chat on a crew",
-        "chat_on_a_crew_desc": "Adds “New chat on crew” to the create menu, which starts a session that runs on a connected crew. Unfinished: it opens in that crew’s own pane, and sessions running on a crew are not listed here yet."
+        "auto_connect": "Auto-connect crews",
+        "auto_connect_desc": "When on, opening the web app connects every crew automatically, and reconnects them when you come back to the tab. Turn off to connect a crew only when you switch to it."
       },
       "privacyPanel": {
         "recordMetricsLabel": "Record metrics",
@@ -4836,6 +4860,8 @@
         "layer_n": "Layer {{n}}",
         "enforced_by_floor": "Enforced by an always-on protection built into {{productName}}",
         "pinned_by_policy": "Enforced by your organization's security policy",
+        "edition_rule_badge": "edition",
+        "edition_rule_tooltip": "Added by this installation's edition, not the built-in catalog. On by default, and you can switch it off.",
         "pinned_for_the_host_surface": "Set by the host-surface profile. This is the ceiling for in-process host actions only — other surfaces have their own profiles and may allow this.",
         "yolo_duration_title": "How long auto-approve stays on",
         "yolo_duration_desc": "Applies whenever you turn auto-approve on from the dashboard, Slack, or the API — all of them use this one duration.",
@@ -4949,7 +4975,7 @@
       },
       "teamsPanel": {
         "active": "Active",
-        "jwt_required": "<strong>Microsoft Teams needs the PyJWT dependency.</strong> Inbound Bot Framework requests carry a signed token that has to be validated, so the channel refuses to start without it. Run <mono>pip install \"kirocrew[teams]\"</mono> in the environment that runs the gateway, then restart it.",
+        "jwt_required": "<strong>Microsoft Teams needs the PyJWT dependency.</strong> Inbound Bot Framework requests carry a signed token that has to be validated, so the channel refuses to start without it. Run <mono>pip install \"PyJWT[crypto]==2.13.0\"</mono> in the environment that runs the gateway, then restart it.",
         "microsoft_app_id": "Microsoft App ID",
         "needs_setup": "Needs setup",
         "not_active": "Not active",
@@ -5202,7 +5228,7 @@
         "group_allowlist_description": "Feishu group chat_ids allowed to drive a turn. Empty = no group is served.",
         "group_allowlist_label": "Allowed group chat IDs",
         "group_empty_hint": "Group chats are on but no chat_id is listed, so no group is served. Add a chat_id, or turn the toggle off.",
-        "guide_body": "In the Feishu developer console, create a <mono>custom app</mono> and open its <mono>Credentials & Basic Info</mono> page for the <mono>App ID</mono> and <mono>App Secret</mono> — paste both below. Then enable the <mono>Long connection</mono> event mode and subscribe to <mono>im.message.receive_v1</mono>. Each member’s <mono>open_id</mono> goes in the allow-list. The channel also needs its optional dependency: run <mono>pip install \"kirocrew[feishu]\"</mono> in the environment that runs the gateway, then restart it.",
+        "guide_body": "In the Feishu developer console, create a <mono>custom app</mono> and open its <mono>Credentials & Basic Info</mono> page for the <mono>App ID</mono> and <mono>App Secret</mono> — paste both below. Then enable the <mono>Long connection</mono> event mode and subscribe to <mono>im.message.receive_v1</mono>. Each member’s <mono>open_id</mono> goes in the allow-list. The channel also needs its optional dependency: run <mono>pip install \"lark-oapi>=1.4,<2\"</mono> in the environment that runs the gateway, then restart it.",
         "open_developer_console": "Open Feishu developer console"
       },
       "shortcutsPanel": {
@@ -5252,6 +5278,12 @@
     "worldsPopout": {
       "hide_controls": "Hide controls",
       "show_controls": "Show controls"
+    },
+    "developer": {
+      "featurePreviewsTab": {
+        "chat_on_a_crew": "Chat on a crew",
+        "chat_on_a_crew_desc": "Adds “New chat on crew” to the create menu, which starts a session that runs on a connected crew. Unfinished: it opens in that crew’s own pane, and sessions running on a crew are not listed here yet."
+      }
     }
   },
   "privacyDisclosure": {

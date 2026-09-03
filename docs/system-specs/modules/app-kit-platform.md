@@ -754,6 +754,22 @@ flagged, selection falls back to a
 deterministic order (hero art, then verified publishers, then name), so the
 surface is never empty and never arbitrary.
 
+`stargazersCount` follows the same precedent, because it is a trust cue: only
+the official catalog's publish step may mint it (baked at publish for
+git-source entries from the GitHub API, bounded to the JS safe-integer range),
+and `_apply_trust_fields` strips it entirely from external rows — an external
+index self-reporting a count would render identically to a publisher-verified
+one, and a false trust cue is worse than none. Client-side the count enters
+through `official_catalog.inventory()` **alone**: the one projection where a
+row's identity (repository) and its count come from the same catalog entry.
+`annotate()` matches rows by name — a same-name seed row can pin a different
+repository, so it never overlays the count — and the cache-served
+`list_catalog_rows()` never carries it (the cache is agent-writable). The
+count is **frozen at publish time**: it refreshes only when the catalog
+republishes (each publish re-fetches; the content-digest revision changes
+with it), so it is a trust-scale indicator, not a live metric. Absence means
+"unknown" and renders nothing — never zero.
+
 Writers: `apps/manager.py` (`_BUILTIN_APPS`, `_DEFAULT_ON_BUILTINS`,
 `_DEFAULT_ON_BACKFILL`, `register_builtin_apps`, `backfill_default_on_builtins`),
 `agent.py::run_first_run_setup`, `apps/discovery.py::discover_builtin_apps`,
@@ -778,7 +794,9 @@ Three tiers. Tier 0 (`dashboard`, `refresh`, `update_progress`) carries no
 sensitive payload and always delivers — and that classification is a claim about
 CONTENT, so it has to be maintained: `_push_status` writes the `dashboard` frame
 straight to each socket every few seconds, and its payload is deliberately
-counts-and-environment only. The checkout's `branch`/`commit` are stripped for app
+counts-and-environment only. The `cron_jobs` and `lessons` counts are nullable:
+`null` means the gateway's count refresh has not succeeded yet (unknown), never
+zero — app consumers must treat `null` as "no data", not `0`. The checkout's `branch`/`commit` are stripped for app
 tokens (they say what the operator is working on and have no consumer outside the
 owner surfaces); `/api/status` and the SSE stream run on dashboard-user tokens and
 keep the full snapshot. Moving the whole frame behind a declaration was rejected:
@@ -901,11 +919,38 @@ with a compensating per-response control — event scoping is that control for
 returns owner hash, host specs, cron and usage stats, and the live safety-override
 state, and an app that wants it declares it in `permissions.api`.
 
+**Implicit self-ownership stops at the shared literal routes.** Beyond the
+declared `permissions.api` allowlist, `_app_owns_path` grants an app token
+implicit ownership of its own namespace on both the reverse-proxy/UI surface
+(`/apps/<name>/...`) and the per-app management surface (`/api/apps/<name>/...`),
+via a path-boundary match so `foo` cannot reach `foo-bar`. That implicit grant is
+carved back on the `/api/apps` surface for the literal first path segments that
+resolve to a SHARED route registered before the `/api/apps/{name}` catch-all:
+`RESERVED_APP_PATH_SEGMENTS` in `token_auth` holds `registry`, `registries`,
+`blob`, `install`, and `register`, and the `/api/apps/<name>` branch of
+`_app_owns_path` refuses to match when the app name is one of them. Without the
+carve-out an app that named itself after such a segment, for example `registries`,
+would implicitly own that segment's endpoints, including the state-changing
+`POST /api/apps/registries/refresh` that triggers outbound git fetches of every
+configured registry, with no `permissions.api` grant at all (CWE-269
+authorization bypass). The carve-out is the primary boundary and binds even an
+app already published under one of these names; the `/apps/<name>` reverse-proxy
+branch is a distinct namespace whose literal-page reservations live in
+`RESERVED_ROUTE_APP_NAMES` and is intentionally left unchanged. As
+defense-in-depth for NEW apps, `apps/manifest.py` mirrors the same set as
+`RESERVED_APP_PATH_SEGMENTS` and rejects those names at validation
+(`app_name_error`, `is_reserved_app_name`); reserving a name is a one-way door, so
+that backstop only refuses names not yet admitted while the carve-out covers any
+already-published one. The two sets are duplicated rather than shared to avoid a
+`manifest` <-> `token_auth` import cycle and must stay in sync with the
+`/api/apps/` literal routes in `apps/routes.py`.
+
 Writers: `dashboard/ws_event_scope.py`, `dashboard/ws.py` (connect-time scope
 resolution), `dashboard/state.py` (`_send_ws_all`, `_ws_client_allowed`,
 `_serialize_for_client`, `SlotOrigin`), `dashboard/token_auth.py`
-(`_APP_TOKEN_IMPLICIT_ALLOW`, `app_token_path_allowed`), `apps/manifest.py`
-(`_granted_list`); consumers: `website/src/app-sdk/index.ts` (mirrors the tables
+(`_APP_TOKEN_IMPLICIT_ALLOW`, `app_token_path_allowed`, `_app_owns_path`,
+`RESERVED_APP_PATH_SEGMENTS`), `apps/manifest.py`
+(`_granted_list`, `RESERVED_APP_PATH_SEGMENTS`); consumers: `website/src/app-sdk/index.ts` (mirrors the tables
 for developer-facing diagnostics, drift-guarded by
 `website/src/test/appSdkEventScope.test.ts`). Runtime-facing summary for app
 authors: [../../../src/kiro_crew/docs/app-platform-trust-model.md](../../../src/kiro_crew/docs/app-platform-trust-model.md).
@@ -936,13 +981,15 @@ navigation behind the CSRF middleware's back. The path sits outside
 `/api/apps/` because that namespace grants an app token implicit ownership of
 `/api/apps/<its-own-name>/*` (`token_auth._app_owns_path`): an app named
 `registry` must not inherit the power to purge the shared catalog caches. The
-same exposure applies to the pre-existing fixed-segment siblings under
-`/api/apps/` (`registries`, `install`, `register` — e.g.
-`POST /api/apps/registries/refresh` is claimable by an app named
-`registries`); closing that class — reserving the colliding segments as app
-names versus a carve-out at the `_app_owns_path` boundary — is a one-way-door
-decision deliberately deferred to #7111 rather than folded into this
-endpoint's addition. The
+same exposure reached the fixed-segment siblings that do stay under `/api/apps/`
+(`registries`, `install`, `register` — e.g. `POST /api/apps/registries/refresh`,
+claimable by an app named `registries`), and that whole class is now closed by
+`RESERVED_APP_PATH_SEGMENTS` (§13): the `_app_owns_path` carve-out refuses those
+segments outright, mirrored by a manifest-time name reservation. Route placement
+remains the stronger guarantee for a NEW shared endpoint, which is why this one
+keeps it — a path outside `/api/apps/` cannot collide with any app name at all,
+so it does not depend on a hand-maintained segment list staying in sync with the
+route table. The
 dashboard's refresh button
 also posts `/api/apps/registries/refresh` (the external-registry index sweep),
 then refetches, so both of the store's sources are rebuilt by one click.

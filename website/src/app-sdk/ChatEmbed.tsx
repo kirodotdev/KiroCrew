@@ -11,6 +11,8 @@ import { useRef, useCallback, useEffect, useMemo, type ReactNode } from 'react'
 import { useQuery, useMutation } from '@tanstack/react-query'
 import { ArrowUp, Loader2 } from 'lucide-react'
 import ChatMessageList from './ChatMessageList'
+import { useChatScrollFollow } from './useChatScrollFollow'
+import { JumpToBottomButton } from './ChatScrollChrome'
 import FollowUpBar from '../components/FollowUpBar'
 import { deriveFollowUpOptions } from './protocol'
 import { useComposerDraft } from './useComposerDraft'
@@ -69,11 +71,17 @@ interface ChatSlotData {
 function ChatEmbed({ slotKey, agent, placeholder, frameless, startAtBottom, onSend, aboveComposer }: ChatEmbedProps) {
   const api = useAppApi()
   const endRef = useRef<HTMLDivElement>(null)
-  const scrollerRef = useRef<HTMLDivElement>(null)
   const lastHashRef = useRef('')
-  // When startAtBottom is on, we stick the scroller to the bottom until the
-  // user scrolls up past the threshold; scrolling back down re-pins.
-  const pinnedRef = useRef(true)
+  // startAtBottom mode delegates stick-to-bottom follow to the shared hook
+  // (same FollowController semantics as ChatPane and the main chat): RO-driven
+  // re-pin on growth AND collapse, released only by a genuine user scroll up.
+  // `enabled` is the explicit mode switch — refs stay attached in both modes,
+  // and a disabled hook is fully inert (no mount pin, no ResizeObserver), so a
+  // top-anchored embed is never yanked by a resize. Non-startAtBottom embeds
+  // keep their own contract below — a deliberate smooth scroll to each NEW
+  // MESSAGE regardless of position.
+  const follow = useChatScrollFollow({ resetKey: slotKey, enabled: !!startAtBottom })
+  const scrollerRef = follow.scrollerRef
 
   const { data: slotData, refetch } = useQuery({
     queryKey: ['app-sdk-embed', slotKey],
@@ -126,31 +134,16 @@ function ChatEmbed({ slotKey, agent, placeholder, frameless, startAtBottom, onSe
   const { draft, setDraft, picked, toggleOption, composition, submitOnEnter } =
     useComposerDraft({ followUpOptions })
 
-  // Track whether the user is parked at the bottom (startAtBottom mode only).
-  useEffect(() => {
-    if (!startAtBottom) return
-    const el = scrollerRef.current
-    if (!el) return
-    const onScroll = () => {
-      pinnedRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 40
-    }
-    el.addEventListener('scroll', onScroll, { passive: true })
-    return () => el.removeEventListener('scroll', onScroll)
-  }, [startAtBottom, slotKey])
-
-  // Auto-scroll when new messages arrive.
+  // startAtBottom follow is owned by useChatScrollFollow (attached below).
+  // Non-startAtBottom embeds keep the message-arrival smooth scroll: it fires
+  // on NEW MESSAGES only (not on content growth) and deliberately scrolls
+  // regardless of position — a top-anchored embed announcing each reply.
   const msgHash = messages.length + ':' + (messages[messages.length - 1]?.content?.length || 0)
   useEffect(() => {
+    if (startAtBottom) return
     if (msgHash === lastHashRef.current) return
     lastHashRef.current = msgHash
-    if (startAtBottom) {
-      // Instant jump on first paint + stick-to-bottom while streaming, unless
-      // the user has scrolled up to read (pin released).
-      const el = scrollerRef.current
-      if (el && pinnedRef.current) el.scrollTop = el.scrollHeight
-    } else {
-      endRef.current?.scrollIntoView({ behavior: 'smooth' })
-    }
+    endRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [msgHash, startAtBottom])
 
   const sendMutation = useMutation({
@@ -253,7 +246,8 @@ function ChatEmbed({ slotKey, agent, placeholder, frameless, startAtBottom, onSe
         </div>
       )}
 
-      <div ref={scrollerRef} className="flex-1 overflow-y-auto py-4 min-h-0">
+      <div ref={scrollerRef} onScroll={follow.onScroll} className="flex-1 overflow-y-auto py-4 min-h-0">
+        <div ref={follow.contentRef}>
         {messages.length === 0 && !running && (
           <div className="text-center text-muted text-[13px] py-10">{i18nT('appSdk.chatEmbed.session_ready_type_a_message_to_start')}</div>
         )}
@@ -262,7 +256,14 @@ function ChatEmbed({ slotKey, agent, placeholder, frameless, startAtBottom, onSe
             allowed to offer the tier (#5434). */}
         <ChatMessageList messages={messages} running={running} onApprove={approve} onApproveBatch={approveBatch} canTrust />
         <div ref={endRef} />
+        </div>
       </div>
+
+      {startAtBottom && (
+        <div className="relative">
+          <JumpToBottomButton visible={!follow.isAtBottom && messages.length > 0} onClick={follow.scrollToBottom} />
+        </div>
+      )}
 
       {aboveComposer && <div className="shrink-0">{aboveComposer}</div>}
 

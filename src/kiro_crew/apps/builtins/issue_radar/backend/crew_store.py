@@ -101,10 +101,26 @@ TERMINAL_PHASES = frozenset({"resolved", "skipped", "yielded", "handed-back", "p
 TTL_ACTIVE_PHASES = frozenset({"claimed", "investigating", "implementing"})
 EDITING_PHASES = frozenset({"implementing", "addressing-review"})
 
+#: ``sweep`` is the one kind that does NOT belong to an issue: it records that the
+#: crew looked at the queue and took nothing, which is the only step in the
+#: protocol with no work item behind it. Every other kind names something done TO
+#: an item, so those lines carry a number and ``sweep`` lines do not (see
+#: :func:`append_event`). Without it a crew that found an empty queue could only
+#: report the cycle by attributing it to some issue it did not act on.
 EVENT_KINDS = (
     "claim", "investigate", "reply", "implement", "ci",
-    "review", "conflict", "merge", "handback", "skip", "yield",
+    "review", "conflict", "merge", "handback", "skip", "yield", "sweep",
 )
+
+#: The one kind that records a crew-level step rather than one issue's. It is the
+#: only kind :func:`append_event` accepts without a number, and the only one the
+#: write route accepts with no work-item patch. A named constant rather than a set
+#: of one: the frontend already tests `kind === 'sweep'` by equality, and a
+#: collection whose only justification is a second member that does not exist
+#: reads as generality this app has not earned. A second crew-level kind turns
+#: these three equality tests into a membership test then, against a set that has
+#: two real members.
+CREW_LEVEL_EVENT_KIND = "sweep"
 
 #: Why an issue was passed over, as a closed vocabulary. Two things need it to be
 #: closed rather than free prose: a crew reads the recent-skip list to calibrate
@@ -993,9 +1009,74 @@ def _editing_item(
 # ── event ledger ────────────────────────────────────────────────────────────
 
 
-def _event_id(ts: str, crew_id: str, number: int, kind: str, text: str) -> str:
-    raw = f"{ts}|{crew_id}|{number}|{kind}|{text}".encode()
+def _event_id(ts: str, crew_id: str, number: int | None, kind: str, text: str) -> str:
+    """Content-addressed id for one ledger line.
+
+    ``number`` is ``None`` for a crew-level line. It renders as the empty string
+    so the formula for a NUMBERED line is byte-identical to what it has always
+    been -- changing that would give every existing line a new id and defeat the
+    merge-on-read dedupe for the whole ledger. The empty string cannot collide
+    with a real number, so the two families stay distinct.
+    """
+    shown = "" if number is None else int(number)
+    raw = f"{ts}|{crew_id}|{shown}|{kind}|{text}".encode()
     return hashlib.sha256(raw).hexdigest()[:16]
+
+
+def _event_entry(
+    crew_id: str,
+    number: int | None,
+    kind: str,
+    text: str,
+    *,
+    phase: str | None = None,
+) -> dict[str, Any]:
+    """Validate one ledger line and build it. The ONLY place a line is shaped.
+
+    Both writers go through here -- :func:`append_event` for an issue's line and
+    :func:`record_crew_checkpoint` for a crew-level one -- so the vocabulary
+    check, the number/kind pairing and the key order are stated once. Two
+    builders would let the numberless line drift from the numbered one, which is
+    the drift the pairing exists to prevent.
+
+    The pairing is enforced in BOTH directions: a numberless line must carry a
+    crew-level kind, and a crew-level kind must not carry a number. ``number`` is
+    typed ``int | None`` here and ``int`` on :func:`append_event`, so the
+    numberless case is unreachable through the public issue-line writer by type
+    as well as by this check.
+
+    CALL THIS UNDER THE EVENTS LOCK, immediately before writing the line. It
+    stamps ``ts``, and the stamp must be taken in the same order the lines are
+    appended: a caller that built its entry first and then blocked on the lock
+    would write a line whose timestamp PRECEDES the line already above it. That
+    inverts file order against timestamp order, and the two readers disagree ---
+    :func:`_latest_crew_event` walks the file backwards, so it would keep
+    coalescing onto that trailing sweep, while the crew page sorts by ``ts`` and
+    would never see it as the newest line. The idle stretch would then stay
+    hidden for as long as the crew kept idling, which is precisely what the
+    ongoing-stretch wording exists to show.
+    """
+    if kind not in EVENT_KINDS:
+        raise CrewStoreError(f"unknown event kind {kind!r}")
+    if number is None and kind != CREW_LEVEL_EVENT_KIND:
+        raise CrewStoreError(f"event kind {kind!r} needs an issue number")
+    if number is not None and kind == CREW_LEVEL_EVENT_KIND:
+        raise CrewStoreError(f"event kind {kind!r} is crew-level and takes no issue number")
+    ts = store._now_iso()
+    # Built in the original key order so a NUMBERED line serializes exactly as it
+    # always has; the numberless line simply omits the key in place.
+    entry: dict[str, Any] = {
+        "id": _event_id(ts, crew_id, number, kind, text),
+        "ts": ts,
+        "crew_id": crew_id,
+    }
+    if number is not None:
+        entry["number"] = int(number)
+    entry["kind"] = kind
+    entry["text"] = text
+    if phase is not None:
+        entry["phase"] = phase
+    return entry
 
 
 def append_event(
@@ -1009,7 +1090,7 @@ def append_event(
     *,
     phase: str | None = None,
 ) -> dict[str, Any]:
-    """Append one progress line.
+    """Append one issue's progress line.
 
     The id is content-addressed so a duplicated line merges on read rather than
     conflicting — the same discipline as ops-mission-control's ledger, whose own
@@ -1019,6 +1100,12 @@ def append_event(
     ``<details>`` block of the claim comment on the forge. Callers must keep
     absolute paths, host names and anything else environment-specific out of it;
     worktree paths belong in the work item's own fields.
+
+    A line that belongs to NO issue is written by
+    :func:`record_crew_checkpoint`, not here: that case has to read the crew's
+    tail and decide whether to append at all, under the same lock hold. This
+    function therefore requires a number, and the shared builder refuses a
+    crew-level kind through it.
 
     ``phase`` is the work item's phase AFTER this write, and it is the sole datum
     that makes a per-phase dwell fold possible (:func:`crew_routes` folds it).
@@ -1032,26 +1119,125 @@ def append_event(
     event id: two lines that differ only in the phase they record are still the same
     logged reason, and folding one in twice must still merge.
     """
-    if kind not in EVENT_KINDS:
-        raise CrewStoreError(f"unknown event kind {kind!r}")
-    ts = store._now_iso()
-    entry: dict[str, Any] = {
-        "id": _event_id(ts, crew_id, int(number), kind, text),
-        "ts": ts,
-        "crew_id": crew_id,
-        "number": int(number),
-        "kind": kind,
-        "text": text,
-    }
-    if phase is not None:
-        entry["phase"] = phase
-    path = events_path(owner, repo, root)
     lock_path = crews_dir(owner, repo, root) / "events.lock"
     with open(lock_path, "w") as fd:
         with platform_compat.file_lock(fd.fileno(), exclusive=True):
-            with open(path, "a", encoding="utf-8") as out:
-                out.write(json.dumps(entry) + "\n")
+            entry = _event_entry(crew_id, number, kind, text, phase=phase)
+            _write_event_line(owner, repo, entry, root)
     return entry
+
+
+def _write_event_line(
+    owner: str, repo: str, entry: dict[str, Any], root: Path | None = None
+) -> None:
+    """Append one already-built line. CALLER MUST HOLD the events lock.
+
+    Split out so a writer that has to READ the tail before deciding whether to
+    append can do both inside ONE lock hold (see :func:`record_crew_checkpoint`).
+    Re-entering :func:`append_event` there would take the lock on a second
+    descriptor and block on the hold this frame already has.
+    """
+    with open(events_path(owner, repo, root), "a", encoding="utf-8") as out:
+        out.write(json.dumps(entry) + "\n")
+
+
+def _latest_crew_event(
+    owner: str, repo: str, crew_id: str, root: Path | None = None
+) -> dict[str, Any] | None:
+    """This crew's newest ledger line, or ``None``. CALLER MUST HOLD the lock.
+
+    Reads through :func:`read_events`, so it inherits that function's tolerance of
+    a torn tail and its duplicate collapse rather than re-parsing the file here.
+    """
+    recent = read_events(owner, repo, root, crew_id=crew_id, limit=1)
+    return recent[0] if recent else None
+
+
+def record_crew_checkpoint(
+    owner: str,
+    repo: str,
+    crew_id: str,
+    event_text: str,
+    root: Path | None = None,
+) -> dict[str, Any]:
+    """Append one crew-level ledger line -- a step that belongs to no issue.
+
+    TAKES NO KIND. There is exactly one crew-level kind, and the route that calls
+    this already 400s anything else on the numberless path, so a parameter here
+    could only ever carry :data:`CREW_LEVEL_EVENT_KIND` -- a value to be re-checked
+    and rejected rather than a choice a caller makes. Writing the constant directly
+    removes the argument and the guard that policed it; :func:`_event_entry` still
+    enforces the number/kind pairing, so the shape is validated in one place either
+    way.
+
+    Returns the same ``{"item", "event", "skip"}`` shape as
+    :func:`commit_work_progress`, with ``item`` and ``skip`` as ``None``, so the
+    write route answers one shape and no caller has to branch on which kind of
+    write it made. ``coalesced`` says whether a line was actually written.
+
+    CONSECUTIVE SWEEPS COALESCE, and this is the whole reason the function reads
+    before it writes. "I checked and took nothing" is a recurring LATEST-VALUE
+    fact, not an event: an idle crew is nudged on a timer, so appending one line
+    per cycle would add an unbounded run of them. Every ledger read is capped and
+    discards the OLDEST line first (:data:`crew_routes._DEFAULT_EVENTS` is 200), so
+    a crew idling for a couple of hundred cycles would push its entire real work
+    history out of its own work log -- the feature would bury exactly what the log
+    exists to show. Recording the TRANSITION rather than the state is the same
+    discipline :func:`commit_work_progress` already applies to ``phase``, which is
+    stamped only when an item is created or actually moves.
+
+    So the FIRST sweep after real work is written, and a sweep whose crew already
+    has one as its newest line is answered with that existing line. The crew still
+    sees its checkpoint acknowledged; the log just does not grow a duplicate. The
+    timestamp therefore marks when the idle stretch BEGAN, which is the more useful
+    of the two readings -- "nothing to take since 09:12" beats "nothing to take as
+    of one minute ago", and how long the stretch has run is the question a human
+    opening a quiet crew is asking.
+
+    WHAT THE SURVIVING TIMESTAMP DOES NOT MEAN. It records when this crew last
+    REPORTED an empty queue, and nothing about the present: consecutive reports
+    fold, and a crew that stops -- an operator pause, a crash, a lost nudge timer
+    -- stops reporting without saying so, because nothing on the crew record
+    evidences liveness. So the ledger cannot distinguish a crew still checking from
+    one that quietly died mid-stretch, and the crew page therefore renders this line
+    as the past instant it is rather than as a claim about now. An earlier revision
+    qualified it as "checking since ...", which read as present-tense activity and
+    so masked exactly the failure an operator opens that page to notice. Closing
+    that properly needs a real last-seen datum, which is a separate change.
+
+    Deliberately NOT a branch inside :func:`commit_work_progress`. That function
+    exists to make three durable writes all-or-nothing, and every line of its lock
+    ordering and rollback is about reconciling an item, a repo-wide skip entry and
+    a ledger line. A crew-level line has nothing to reconcile and nothing to roll
+    back, so threading a ``None`` number through that transaction would add
+    branches to the most order-sensitive code in the store to describe a case that
+    has no transaction in it.
+
+    ``event_text`` BECOMES PUBLIC on the crew page under the same rule as any other
+    line -- see :func:`append_event`. Unlike an item line it is not rendered into a
+    claim comment, because a crew-level step has no issue to comment on.
+    """
+    # ONE lock hold spans the read and the write. Checking the tail and appending
+    # under two separate holds is a check-then-act: two crew turns waking together
+    # would both see no trailing sweep and both append, which is the exact run of
+    # duplicates this exists to prevent.
+    #
+    # COST, stated because the hold is exclusive: the tail read goes through
+    # `read_events`, which reads the WHOLE repo-wide events file and then walks it
+    # backwards to the first matching line. Nothing compacts that file today, so
+    # the hold grows with total ledger volume, not with this crew's share of it.
+    # Coalescing is what keeps an idle crew from being the thing that grows it --
+    # an idle crew appends once per stretch, not once per wake -- but a compaction
+    # story is still owed if the file becomes large enough to matter here.
+    lock_path = crews_dir(owner, repo, root) / "events.lock"
+    with open(lock_path, "w") as fd:
+        with platform_compat.file_lock(fd.fileno(), exclusive=True):
+            latest = _latest_crew_event(owner, repo, crew_id, root)
+            if latest is not None and latest.get("kind") == CREW_LEVEL_EVENT_KIND:
+                return {"item": None, "event": latest, "skip": None, "coalesced": True}
+            entry = _event_entry(crew_id, None, CREW_LEVEL_EVENT_KIND, event_text)
+            _write_event_line(owner, repo, entry, root)
+    return {"item": None, "event": entry, "skip": None, "coalesced": False}
 
 
 def read_events(

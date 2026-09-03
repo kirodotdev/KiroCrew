@@ -130,10 +130,10 @@ describe('TeamsPanel — the PyJWT dependency', () => {
     await screen.findByRole('heading', { name: 'Microsoft Teams' })
     const notice = screen.getByRole('alert')
     expect(notice).toHaveTextContent('PyJWT')
-    expect(notice).toHaveTextContent('pip install "kirocrew[teams]"')
+    expect(notice).toHaveTextContent('pip install "PyJWT[crypto]==2.13.0"')
     // The command must stay copy-pasteable, so it renders as a code token the
     // pseudolocale scanner and the reader both treat as literal.
-    expect(notice.querySelector('code')?.textContent).toBe('pip install "kirocrew[teams]"')
+    expect(notice.querySelector('code')?.textContent).toBe('pip install "PyJWT[crypto]==2.13.0"')
   })
 
   it('does not blame a restart while the dependency is what is missing', async () => {

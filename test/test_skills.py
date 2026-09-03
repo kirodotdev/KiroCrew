@@ -2119,6 +2119,23 @@ class TestStripFrontmatterCloserParity:
         out = SkillsLoader.strip_frontmatter("---\ndescription: test skill\n---")
         assert out == ""
 
+    def test_crlf_fences_strip_whatever_the_parser_parses(self) -> None:
+        """Line-ending side of the same invariant: the display dialect
+        tolerates a carriage return before each fence newline, so the
+        stripper must too — a CRLF document whose fields render in the UI
+        must not leak its whole block to the model."""
+        from kiro_crew.frontmatter import SKILL_LOADER, parse_frontmatter
+
+        doc = f"---\r\ndescription: test skill\r\n---\r\n{self.BODY}"
+        fields = parse_frontmatter(doc, SKILL_LOADER)
+        assert fields.get("description") == "test skill", (
+            "premise broken: the display parser no longer tolerates a CRLF "
+            "fence — re-check _COLUMN0_BLOCK_RE before touching the stripper"
+        )
+        out = SkillsLoader.strip_frontmatter(doc)
+        assert "description:" not in out, "frontmatter leaked past a CRLF fence"
+        assert out == self.BODY
+
     def test_no_closer_leaves_content_unchanged(self) -> None:
         doc = "---\ndescription: dangling opener, no closer"
         assert SkillsLoader.strip_frontmatter(doc) == doc

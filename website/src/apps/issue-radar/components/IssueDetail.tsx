@@ -49,7 +49,7 @@ import ListDetailBack from '../../../components/ListDetailBack'
 import InvestigateButton from './InvestigateButton'
 import { useIssueRadar } from '../context'
 import { useTitleScrolledOut } from '../lib/useTitleScrolledOut'
-import { relativeTimeOrDate, hexToRgba, asArray, detailPollMs } from '../lib/format'
+import { relativeTimeOrDate, hexToRgba, asArray, detailPollMs, resolveAiLanguage } from '../lib/format'
 import {
   issueRadarApi,
   AssigneesConflictError,
@@ -470,7 +470,7 @@ function Section({
 export default function IssueDetail({ issue }: { issue: Issue }) {
   const {
     active, colorByName, memberRoleByLogin, repoLabels, countByLabel, canWrite, stateFilter,
-    me, refreshPrefs, listDetail, refStack,
+    me, refreshPrefs, listDetail, refStack, aiLanguage,
   } = useIssueRadar()
   const { owner, repo } = active
   const scopeKey = repoScopeKey(active)
@@ -585,12 +585,15 @@ export default function IssueDetail({ issue }: { issue: Issue }) {
   // server-side (one model call per issue, served instantly on re-open). The
   // regenerate button forces a recompute via ?refresh=1 (same ref trick).
   const aiRefreshRef = useRef(false)
+  // The resolved AI-output language is part of the key: a summary fetched under
+  // one language must not be replayed from the client cache under another.
+  const aiLang = resolveAiLanguage(aiLanguage)
   const aiQuery = useQuery({
-    queryKey: ['issue-radar', 'issue-ai', scopeKey, issue.number],
+    queryKey: ['issue-radar', 'issue-ai', scopeKey, issue.number, aiLang],
     queryFn: () => {
       const useRefresh = aiRefreshRef.current
       aiRefreshRef.current = false
-      return issueRadarApi.issueAi(active, issue.number, { refresh: useRefresh })
+      return issueRadarApi.issueAi(active, issue.number, aiLang, { refresh: useRefresh })
     },
     // Wait for the detail read to land first (mirrors PrDetail's aiQuery). The AI
     // route derives its summary from the issue detail, and on a COLD open firing

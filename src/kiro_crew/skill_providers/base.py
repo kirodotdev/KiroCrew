@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import logging
 from dataclasses import dataclass, field
 from typing import Protocol, runtime_checkable
@@ -13,6 +14,40 @@ logger = logging.getLogger(__name__)
 # a warning) rather than stalling the aggregate search. Module-level so tests
 # can patch it instead of waiting out the production budget.
 _SEARCH_TIMEOUT_SECS = 10.0
+
+
+def provider_available(provider: SkillProvider) -> bool:
+    """Whether *provider* reports itself available, treating failure as no.
+
+    ``is_available`` is provider-supplied code; a missing method or an
+    exception must read as "not available" so one broken provider cannot break
+    the callers that iterate every registered provider — or 500 a per-provider
+    endpoint (install/preview) that probes it directly.
+    """
+    try:
+        return bool(provider.is_available())
+    except Exception:
+        logger.warning("Provider availability probe failed; treating as unavailable")
+        return False
+
+
+def _stamp_provenance(results: object, name: str) -> "list[SkillSearchResult]":
+    """Re-stamp each result row's ``provider`` with the registration key.
+
+    The ``provider`` field on a result is provider-authored data, so a
+    contributed catalog could claim another registered identity ("skillsh")
+    and have the UI route its preview/install to a different provider. The
+    registry knows which provider actually produced each batch — that key is
+    the only trustworthy provenance, so it overwrites whatever the row claims.
+    Non-result objects from a broken provider are dropped rather than crashing
+    the merge.
+    """
+    stamped: list[SkillSearchResult] = []
+    for r in results if isinstance(results, list) else []:
+        if not isinstance(r, SkillSearchResult):
+            continue
+        stamped.append(r if r.provider == name else dataclasses.replace(r, provider=name))
+    return stamped
 
 
 @dataclass(frozen=True)
@@ -100,9 +135,15 @@ class ProviderRegistry:
     def __init__(self) -> None:
         self._providers: dict[str, SkillProvider] = {}
 
-    def register(self, provider: SkillProvider) -> None:
-        """Add a provider to the registry."""
-        self._providers[provider.name] = provider
+    def register(self, provider: SkillProvider, *, name: str | None = None) -> None:
+        """Add a provider to the registry.
+
+        ``name`` pins the registration identity to a value the caller already
+        vetted. ``provider.name`` is a property, so re-reading it here could
+        return something other than what a policy gate checked — a captured
+        name makes the vetted string the key unconditionally.
+        """
+        self._providers[name if name is not None else provider.name] = provider
 
     def get(self, name: str) -> SkillProvider | None:
         """Get a provider by name."""
@@ -110,8 +151,24 @@ class ProviderRegistry:
 
     @property
     def available_providers(self) -> list[SkillProvider]:
-        """Return all providers that report as available."""
-        return [p for p in self._providers.values() if p.is_available()]
+        """Return all providers that report as available.
+
+        A provider whose ``is_available`` is missing or raises is treated as
+        unavailable rather than propagating — this property feeds the aggregate
+        search and the discover response, where one broken provider must not
+        take every other catalog down with it.
+        """
+        return [p for p in self._providers.values() if provider_available(p)]
+
+    @property
+    def available_provider_names(self) -> list[str]:
+        """Names of available providers, read from the registration keys.
+
+        Keys are the identities vetted at registration; reading ``p.name``
+        properties here instead would re-consult provider-controlled code on
+        every request.
+        """
+        return [name for name, p in self._providers.items() if provider_available(p)]
 
     @property
     def provider_names(self) -> list[str]:
@@ -133,11 +190,14 @@ class ProviderRegistry:
         """
         if provider:
             p = self._providers.get(provider)
-            if p is None or not p.is_available():
+            if p is None or not provider_available(p):
                 return []
             try:
-                return await asyncio.wait_for(
-                    p.search(query, limit=limit), timeout=_SEARCH_TIMEOUT_SECS
+                return _stamp_provenance(
+                    await asyncio.wait_for(
+                        p.search(query, limit=limit), timeout=_SEARCH_TIMEOUT_SECS
+                    ),
+                    provider,
                 )
             except asyncio.TimeoutError:
                 logger.warning("Provider %s timed out for query %r", provider, query)
@@ -146,23 +206,29 @@ class ProviderRegistry:
                 logger.warning("Provider %s failed for query %r", provider, query, exc_info=True)
                 return []
 
-        providers = self.available_providers
-        if not providers:
+        # Iterate (key, provider) pairs so failure logs name the vetted
+        # registration key instead of re-reading a provider-controlled
+        # ``name`` property inside an exception handler.
+        available = [(n, p) for n, p in self._providers.items() if provider_available(p)]
+        if not available:
             return []
 
-        async def _search_one(p: SkillProvider) -> list[SkillSearchResult]:
+        async def _search_one(name: str, p: SkillProvider) -> list[SkillSearchResult]:
             try:
-                return await asyncio.wait_for(
-                    p.search(query, limit=limit), timeout=_SEARCH_TIMEOUT_SECS
+                return _stamp_provenance(
+                    await asyncio.wait_for(
+                        p.search(query, limit=limit), timeout=_SEARCH_TIMEOUT_SECS
+                    ),
+                    name,
                 )
             except asyncio.TimeoutError:
-                logger.warning("Provider %s timed out for query %r", p.name, query)
+                logger.warning("Provider %s timed out for query %r", name, query)
                 return []
             except Exception:
-                logger.warning("Provider %s failed for query %r", p.name, query, exc_info=True)
+                logger.warning("Provider %s failed for query %r", name, query, exc_info=True)
                 return []
 
-        results_per_provider = await asyncio.gather(*[_search_one(p) for p in providers])
+        results_per_provider = await asyncio.gather(*[_search_one(n, p) for n, p in available])
         merged: list[SkillSearchResult] = []
         for results in results_per_provider:
             merged.extend(results)

@@ -53,6 +53,7 @@ from kiro_crew.messaging.renderer import (
     _default_redactor,
     apply_options_cap,
     new_approval_nonce,
+    session_provenance_tag,
     split_options_trailer,
 )
 from kiro_crew.messaging.split import split_markdown_safe
@@ -333,27 +334,32 @@ def _strip_hr(text: str) -> str:
     return out.strip()
 
 
-def build_inline_keyboard(options: list[str]) -> dict | None:
+def build_inline_keyboard(options: list[str], session_key: str) -> dict | None:
     """Build an InlineKeyboardMarkup from ``[OPTIONS:]`` labels.
 
-    ``callback_data`` is the index only (``opt:<i>``) -- Telegram caps it at
-    64 BYTES, so a multi-byte (CJK/emoji) label there could overflow and make
-    the whole send fail. The label is recovered from the button text at
-    callback time. Two buttons per row (mobile friendly).
+    ``callback_data`` is ``opt:<index>:<session-tag>``. The label stays out of
+    the payload because Telegram caps it at 64 bytes and a multi-byte CJK/emoji
+    label could overflow. The compact deterministic tag binds a later press to
+    the session that posted the keyboard; the label is recovered from the button
+    text at callback time. Two buttons per row keeps the keyboard mobile-friendly.
 
     A label is MODEL-authored text that Telegram renders, so it is a display sink
     like the answer body: the driver's byte-level scan can see a credential as
     broken that the rendered button shows whole. Scanned HERE because this is the
-    one place both callers pass through. Bounded work by construction -- at most
-    ``max_buttons`` labels of at most 64 chars -- so it stays on the loop.
+    one place both callers pass through. Each label is redacted WHOLE and bounded
+    to 64 chars only after the scan — cutting first can split a credential at the
+    boundary into fragments no redaction regex matches. Bounded work by
+    construction — at most ``max_buttons`` single-line labels — so it stays on
+    the loop.
     """
     if not options:
         return None
+    origin_tag = session_provenance_tag(session_key)
     buttons: list[list[dict]] = []
     row: list[dict] = []
     for i, opt in enumerate(options):
-        safe, _ = redact_for_display(opt[:64], _default_redactor)
-        row.append({"text": safe, "callback_data": f"opt:{i}"})
+        safe, _ = redact_for_display(opt, _default_redactor)
+        row.append({"text": safe[:64], "callback_data": f"opt:{i}:{origin_tag}"})
         if len(row) == 2:
             buttons.append(row)
             row = []
@@ -1107,7 +1113,7 @@ class TelegramRenderer(Renderer):
         # the rotation above ran before that expansion -- re-check, or a
         # near-limit answer with over-cap options seals past the transport cap.
         await self._rotate_on_length()
-        keyboard = build_inline_keyboard(opts) if opts else None
+        keyboard = build_inline_keyboard(opts, self._session_key) if opts else None
         sealed = bool(self._segment_text().strip()) or keyboard is not None
         await self._seal_current(keyboard=keyboard)
         clean_summary = _neutralize_md(summary)
@@ -1931,7 +1937,7 @@ class TelegramRenderer(Renderer):
         body_raw, opts = _extract_options("".join(self._buf))
         body_raw, opts = apply_options_cap(body_raw, opts, self.capabilities)
         self._buf = [body_raw]
-        keyboard = build_inline_keyboard(opts) if opts else None
+        keyboard = build_inline_keyboard(opts, self._session_key) if opts else None
         # No-rotation fallback: steers were injected but kiro-cli emitted no
         # marker to rotate at — prepend one summary chip so they're still shown.
         # This happens BEFORE length rotation so the summary counts against the

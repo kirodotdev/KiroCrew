@@ -92,6 +92,18 @@ describe('MoveUndoBar', () => {
     expect(container.querySelector(`[title*="${moved.itemTitle}"]`)).toBeTruthy()
   })
 
+  it('names the moved item in the visible row only when the surface asks for it', () => {
+    // The sidebar's row visibly relocates, so its bar omits the item; the
+    // artifacts library's card VANISHES from the current view on drop, so that
+    // surface opts in and the row itself says which item went.
+    const { container } = render(<MoveUndoBar moved={moved} onUndo={vi.fn()} showItemTitle />)
+    const item = container.querySelector('[data-testid="session-move-undo-item"]')
+    expect(item?.textContent).toContain(moved.itemTitle)
+    // Default: tooltip only, no visible item span.
+    const { container: plain } = renderBar()
+    expect(plain.querySelector('[data-testid="session-move-undo-item"]')).toBeNull()
+  })
+
   // ── Narrow sidebar (down to SIDEBAR_MIN = 180px) ───────────────────────────
   // The destination is the one thing this bar exists to say, so it must be the
   // LAST thing to go when the row runs out of room — not the first.

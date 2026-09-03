@@ -25,7 +25,7 @@ const CSS = readFileSync(resolve(__dirname, '../index.css'), 'utf8')
 
 /** Every class whose thumb is revealed ONLY by `:hover` — the pattern's members. */
 const HOVER_ONLY = [...CSS.matchAll(/\.([a-zA-Z0-9_-]+):hover::-webkit-scrollbar-thumb\{/g)].map(m => m[1])
-/** The `:hover` reveal, whose token the touch branches reuse rather than re-decide. */
+/** The `:hover` reveal — anchors the premise that the hover-only pattern exists. */
 const HOVER_THUMB = /\.scroll-fade:hover::-webkit-scrollbar-thumb\{background:([^}]+)\}/.exec(CSS)
 /** Bodies of every `@media (pointer: coarse)` block, concatenated. */
 const COARSE = [...CSS.matchAll(/@media \(pointer: coarse\) \{\n([\s\S]*?)\n\}/g)].map(m => m[1]).join('\n')
@@ -50,12 +50,18 @@ describe('a hover-revealed thumb keeps an affordance where hover cannot fire', (
     }
   })
 
-  it('reuses the hover reveal\'s token, so touch and hover cannot drift apart', () => {
-    // Both engines and both utilities name one token. A second value here would
-    // be a design decision nobody made, diverging the next time either is retuned.
+  it('names one token across both engines and both utilities, pinned to the contrast-safe rung', () => {
+    // Both engines and both utilities still name ONE token, so the two coarse
+    // branches cannot drift apart the next time either is retuned. That token is
+    // deliberately NOT the hover reveal's (--border): on touch this thumb is the
+    // sole scroll affordance, so it must clear the WCAG 1.4.11 3:1 non-text
+    // contrast floor against --bg-elevated in every theme, and --muted is the
+    // only existing token that does — scrollbarThumbContrast.test.ts measures
+    // that per theme. The exact pin here keeps a retune from silently swapping in
+    // a token whose contrast nobody measured.
     const decls = [...COARSE.matchAll(/\{(?:background|scrollbar-color):(var\([^)]+\))/g)].map(m => m[1])
     expect(decls.length).toBe(HOVER_ONLY.length * 2)
-    for (const d of decls) expect(d).toBe(HOVER_THUMB![1].trim())
+    for (const d of decls) expect(d).toBe('var(--muted)')
   })
 
   it('declares each branch after the base rule it overrides, which makes it win', () => {

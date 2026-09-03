@@ -2866,12 +2866,9 @@ class TestKiroPrerequisiteWorkflow:
         release_unlink.set()
         with pytest.raises(asyncio.CancelledError) as exc_info:
             await outer
-        if sys.version_info >= (3, 11):
-            # 3.10's Task rebuilds the awaiter-visible CancelledError from the
-            # task's LAST cancel message (message-less repeats blank it), so
-            # the original's args are only observable from 3.11, where the
-            # coroutine's actual exception object propagates.
-            assert exc_info.value.args == ("original-cancellation-5841",)
+        # The coroutine's actual exception object propagates, so the original
+        # cancel message survives the message-less repeats above.
+        assert exc_info.value.args == ("original-cancellation-5841",)
         assert not cleanup_path.exists()
 
     @pytest.mark.asyncio

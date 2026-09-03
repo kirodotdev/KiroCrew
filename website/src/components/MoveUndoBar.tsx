@@ -72,6 +72,17 @@ type Props = {
    * the "Sessions" label at narrow widths for the same reason.
    */
   compact?: boolean
+  /**
+   * Also name the MOVED ITEM in the visible row, not only in the hover tooltip.
+   *
+   * The sidebar never needs this: the moved row visibly relocates, so the bar
+   * only has to say where it went. In the artifacts LIBRARY the card vanishes
+   * from the current view on drop, so "Moved to Archive" alone leaves the user
+   * guessing which card went — and the wide page has the room the sidebar's
+   * `compact` mode was rationing. Renders the tooltip's own " — <item>"
+   * composition, so no new catalog strings are introduced.
+   */
+  showItemTitle?: boolean
 }
 
 /**
@@ -133,6 +144,7 @@ export default function MoveUndoBar({
   onUndo,
   onHoldChange,
   compact = false,
+  showItemTitle = false,
   remainingMs = MOVE_UNDO_MS,
   paused = false,
 }: Props) {
@@ -188,6 +200,13 @@ export default function MoveUndoBar({
               <FolderGlyph color={moved.toFolderColor} size={12} className="shrink-0" />
               <span className="truncate font-medium text-text-strong">{moved.toFolderName}</span>
             </>
+          )}
+          {/* Same " — <item>" composition the tooltip uses, promoted into the
+              visible row for surfaces where the moved item disappears on drop
+              (the library card leaves the current view; a sidebar row merely
+              relocates). Punctuation-joined, so no new catalog string. */}
+          {showItemTitle && (
+            <span className="truncate text-muted" data-testid="session-move-undo-item">— {moved.itemTitle}</span>
           )}
         </span>
         {/* Face reads "Undo" and nothing else — the chord is a power shortcut, not

@@ -104,6 +104,8 @@ from kiro_crew.agent_discovery import _read_agent_spec, spec_model
 from kiro_crew.agent_sdk.backend_identity import is_claude_backend_name
 from kiro_crew.config import KiroCrewConfig
 from kiro_crew.config.loader import (
+    AUTOCOMPACT_PCT_MAX,
+    AUTOCOMPACT_PCT_MIN,
     CONTEXT_WARN_MARGIN_PCT,
     POOL_SIZE_MAX,
     build_provider_factory,
@@ -1982,6 +1984,37 @@ class SessionManager:
     def check_context_usage(self, key: str, provider: LLMProvider) -> float:
         """Delegate context accounting and compaction triggering."""
         return self._compaction.check_context_usage(key, provider)
+
+    def set_autocompact_pct(self, key: str, pct: float | None) -> None:
+        """Set or clear (``None``) *key*'s per-session compaction threshold.
+
+        Values clamp into the documented ``AUTOCOMPACT_PCT_MIN``–``MAX`` range,
+        the same guarantee the config loader gives the global knob: an
+        out-of-range override (e.g. from a hand-edited persistence file) must
+        degrade to the nearest firing value, never silently disable the
+        backstop. The override is keyed independently of live-session
+        membership, so it survives resets and recycles; callers that persist it
+        (the dashboard slot) re-seed it after a gateway restart.
+        """
+        if pct is not None:
+            if pct != pct:  # NaN: comparisons below would both be False
+                return
+            try:
+                pct = min(max(float(pct), AUTOCOMPACT_PCT_MIN), AUTOCOMPACT_PCT_MAX)
+            except OverflowError:
+                # An int too large for a float; ignore like NaN.
+                return
+        self._compaction.set_autocompact_pct(key, pct)
+
+    def drop_autocompact_overrides_matching(
+        self, exact_keys: set[str], folded_keys: set[str], fold: Callable[[str], str]
+    ) -> int:
+        """Drop threshold overrides for permanently deleted, slotless sessions.
+
+        The slotless complement of ``destroy()``'s override clear — see the
+        coordinator method for the matching contract.
+        """
+        return self._compaction.drop_autocompact_overrides_matching(exact_keys, folded_keys, fold)
 
     async def compact_if_needed(self, key: str) -> str:
         """Delegate awaited between-turn compaction."""

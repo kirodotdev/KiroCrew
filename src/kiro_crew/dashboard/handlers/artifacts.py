@@ -603,11 +603,15 @@ def _strip_content(content: str) -> str:
 def _snippet_from(stripped: str) -> str:
     """Redacted, truncated display snippet from already-stripped text.
 
-    Redacts a generous prefix so patterns straddling the truncation boundary are
-    still caught (same controls the detail path applies to ``content``), then
-    trims to ``_SNIPPET_MAX_LEN``.
+    Redacts over the FULL text, then trims to ``_SNIPPET_MAX_LEN``. A bounded
+    pre-redaction window can cut a credential at its edge into fragments no
+    redaction regex matches, and redaction shrinking earlier text can slide
+    such a fragment into the final snippet. The full-text pass is expensive,
+    so list scans call this through :func:`_cached_snippet` (memoized per
+    artifact version) and always from the scan's executor thread, keeping it
+    off the event loop.
     """
-    head = _redact_text(stripped[: _SNIPPET_MAX_LEN * 3]).strip()
+    head = _redact_text(stripped).strip()
     return head[:_SNIPPET_MAX_LEN]
 
 
@@ -632,8 +636,13 @@ def _context_snippet(content: str, q_lower: str) -> str:
         # Match came from name/tags/description — no body line to center on.
         return _snippet_from(" ".join(lines))
     start = max(0, idx - 2)
-    window = [ln[:_CONTEXT_LINE_LEN] for ln in lines[start : idx + 3][:_CONTEXT_MAX_LINES]]
-    return _redact_text("\n".join(window))
+    window = lines[start : idx + 3][:_CONTEXT_MAX_LINES]
+    # Redact over the FULL window lines, then bound each line: cutting a line
+    # first can split a credential at the cut into fragments no redaction regex
+    # matches (same class as the prefix snippet above). Redaction tags carry no
+    # newlines, so the line structure survives the pass.
+    redacted = _redact_text("\n".join(window))
+    return "\n".join(ln[:_CONTEXT_LINE_LEN] for ln in redacted.splitlines())
 
 
 def _resolve_folder_ref(ref: Any, *, create_missing: bool) -> tuple[str, str | None]:
@@ -940,6 +949,34 @@ _content_cache: dict[str, tuple[tuple[int, str], str, str]] = {}
 _content_cache_bytes = 0
 _content_cache_lock = threading.Lock()
 
+#: Cache of the redacted prefix snippet, keyed by slug under the same
+#: (version, updated_at) key as the content cache. The snippet path redacts
+#: the FULL stripped body (see :func:`_snippet_from`), which is too expensive
+#: to repeat for every listed artifact on every debounced request — memoizing
+#: under the version key pays that pass once per artifact version. Entries are
+#: at most ``_SNIPPET_MAX_LEN`` chars, but slugs accumulate across
+#: create/delete cycles with no other pruning, so a fixed entry cap drops the
+#: whole cache when crossed (the same drop-all pressure valve the content
+#: cache uses); shares :data:`_content_cache_lock` (same executor-thread
+#: access pattern).
+_SNIPPET_CACHE_MAX_ENTRIES = 4096
+_snippet_cache: dict[str, tuple[tuple[int, str], str]] = {}
+
+
+def _cached_snippet(a: Any, stripped: str) -> str:
+    """The redacted prefix snippet for artifact *a*, memoized per version."""
+    key = (a.version, a.updated_at)
+    with _content_cache_lock:
+        hit = _snippet_cache.get(a.slug)
+        if hit and hit[0] == key:
+            return hit[1]
+    snippet = _snippet_from(stripped)
+    with _content_cache_lock:
+        if len(_snippet_cache) >= _SNIPPET_CACHE_MAX_ENTRIES:
+            _snippet_cache.clear()
+        _snippet_cache[a.slug] = (key, snippet)
+    return snippet
+
 
 def _cache_entry_bytes(raw: str, stripped: str) -> int:
     return len(raw) + len(stripped)
@@ -1003,7 +1040,7 @@ def _scan_artifacts(
             d["snippet"] = (
                 _context_snippet(raw, q_lower)
                 if (do_content and q_lower)
-                else _snippet_from(stripped)
+                else _cached_snippet(a, stripped)
             )
         out.append(d)
     return out
@@ -3479,14 +3516,17 @@ async def api_artifact_post_comment(request: web.Request) -> web.Response:
         # Anchor strings are LLM/agent-influenced (esp. on the MCP path) and are
         # echoed back to the dashboard, so redact credentials/exfil-URLs and cap
         # length — same treatment as the comment body (backend-security-controls).
+        # Redaction runs over the FULL value (capping first can cut a credential
+        # into fragments no regex matches), and the values are request-sized, so
+        # the pass runs off-loop (no-blocking-call-on-event-loop).
         def _anchor_str(v: object) -> str | None:
             if not isinstance(v, str) or not v:
                 return None
-            return _redact_text(v[:2000])
+            return _redact_text(v)[:2000]
 
-        anchor_quote = _anchor_str(anchor_data.get("quote"))
-        anchor_prefix = _anchor_str(anchor_data.get("prefix"))
-        anchor_suffix = _anchor_str(anchor_data.get("suffix"))
+        anchor_quote = await asyncio.to_thread(_anchor_str, anchor_data.get("quote"))
+        anchor_prefix = await asyncio.to_thread(_anchor_str, anchor_data.get("prefix"))
+        anchor_suffix = await asyncio.to_thread(_anchor_str, anchor_data.get("suffix"))
         anchor_start = anchor_data.get("start_offset")
         anchor_end = anchor_data.get("end_offset")
         anchor_ver = anchor_data.get("version_number")
@@ -3502,7 +3542,7 @@ async def api_artifact_post_comment(request: web.Request) -> web.Response:
     # author (or the agent badge). getpass.getuser() is the alias on dev desks.
     # The author is LLM/agent-influenced on the MCP path and echoed to the
     # dashboard, so redact + cap it like the body (backend-security-controls).
-    author = _redact_text(str(body.get("author") or "")[:256])
+    author = (await asyncio.to_thread(_redact_text, str(body.get("author") or "")))[:256]
     if not author and not is_agent:
 
         try:
@@ -3641,7 +3681,7 @@ async def api_artifact_reply_comment(request: web.Request) -> web.Response:
     # who left them), mirroring the create handler. Agent replies keep their
     # explicit author. Without this, replies render as "Unknown". Redact + cap
     # the LLM/agent-influenced author before it is echoed to the dashboard.
-    author = _redact_text(str(body.get("author") or "")[:256])
+    author = (await asyncio.to_thread(_redact_text, str(body.get("author") or "")))[:256]
     if not author and not is_agent:
 
         try:
@@ -3916,7 +3956,7 @@ async def api_artifact_delete_comment(request: web.Request) -> web.Response:
     # artifact activity feed (dashboard), so redact credentials/exfil URLs before
     # it is persisted or echoed (backend-security-controls) — same treatment as
     # comment bodies / author / anchors.
-    reason = _redact_text(str(body.get("reason") or "").strip()[:500])
+    reason = (await asyncio.to_thread(_redact_text, str(body.get("reason") or "").strip()))[:500]
 
     store = get_default_store()
     try:

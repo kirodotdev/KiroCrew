@@ -293,7 +293,9 @@ describe('TaggingView', () => {
     renderView()
     await waitFor(() => expect(screen.getByText('Labels')).toBeTruthy())
     await userEvent.click(screen.getByRole('button', { name: 'Suggest new labels' }))
-    await waitFor(() => expect(api.generateRecommendations).toHaveBeenCalledWith(expect.objectContaining({ owner: 'o', repo: 'r' })))
+    await waitFor(() => expect(api.generateRecommendations).toHaveBeenCalledWith(
+      expect.objectContaining({ owner: 'o', repo: 'r' }), '',
+    ))
   })
 
   it('shows a short reason on each suggested new label', async () => {

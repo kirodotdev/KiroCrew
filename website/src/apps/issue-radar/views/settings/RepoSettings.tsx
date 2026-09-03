@@ -8,7 +8,7 @@ import {
   issueRadarApi, DEFAULT_REPO_SETTINGS, SettingsConflictError,
   type RepoSettings, type RepoLabel, type Issue, type RepoMember, type RepoRef,
 } from '../../api'
-import { repoWebUrl, userUrlFor, membersUrlFor, providerTerms, repoScopeKey } from '../../lib/links'
+import { repoWebUrl, userUrlFor, membersUrlFor, providerTerms, repoScopeKey, sameRepoRef } from '../../lib/links'
 import { useIssueRadar } from '../../context'
 import ReadOnlyTag, { isReadOnly } from '../../components/ReadOnlyTag'
 import LabelPicker from '../../components/LabelPicker'
@@ -80,12 +80,7 @@ export default function RepoSettings({ repoRef }: { repoRef: RepoRef }) {
   const { repos, active, openSettings, openDashboard, switchRepo } = useIssueRadar()
   // Full-identity match: the same slug can exist on two providers, and a loose
   // match would show the other repo's permissions and settings.
-  const entry = repos.find(
-    (r) => r.owner === owner
-      && r.repo === repo
-      && (r.provider || 'github') === (repoRef.provider || 'github')
-      && (r.host || 'github.com') === (repoRef.host || 'github.com'),
-  )
+  const entry = repos.find((r) => sameRepoRef(r, repoRef))
 
   const labelsQuery = useQuery({
     queryKey: ['issue-radar', 'labels', scopeKey],
@@ -466,10 +461,7 @@ export default function RepoSettings({ repoRef }: { repoRef: RepoRef }) {
             // Only when it actually differs, though — switchRepo resets the saved
             // issue and PR filters, which would be a surprising side effect of
             // navigating within the repo you are already on.
-            const sameActive = active.owner === owner
-              && active.repo === repo
-              && (active.provider || 'github') === (repoRef.provider || 'github')
-              && (active.host || 'github.com') === (repoRef.host || 'github.com')
+            const sameActive = sameRepoRef(active, repoRef)
             if (!sameActive) switchRepo(repoRef)
             openDashboard('tagging')
           }}

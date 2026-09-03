@@ -134,6 +134,10 @@ def test_restart_refuses_spawn_after_blind_authenticated_shutdown(
             "kiro_crew.cli_server.service_controller.restart_service",
             return_value=False,
         ),
+        patch(
+            "kiro_crew.cli_server.service_controller.is_service_active",
+            return_value=False,
+        ),
         patch("kiro_crew.cli_server.run_marker.read_pid", return_value=marker_pid),
         patch(
             "kiro_crew.cli_server.platform_compat.find_listening_pids",

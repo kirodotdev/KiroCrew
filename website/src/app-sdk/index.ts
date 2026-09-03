@@ -110,7 +110,7 @@ const WS_SLOT_SCOPED_EVENTS = new Set([
   'queue_push', 'queue_cancel', 'queue_edit', 'queue_pop', 'queue_reorder',
   'steer_push',
   // Slot metadata / lifecycle
-  'slot_title', 'slot_clear', 'slot_agent_switch', 'todo_update',
+  'slot_title', 'slot_clear', 'slot_agent_switch', 'todo_update', 'mcp_report_update',
   'activity_event', 'session_summary',
   // Voice
   'voice_chunk', 'voice_complete', 'voice_error',
