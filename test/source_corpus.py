@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import ast
 import functools
+import unicodedata
 from collections.abc import Iterator, Sequence
 from pathlib import Path
 
@@ -78,6 +79,30 @@ def unreadable_files() -> tuple[Path, ...]:
     return _read_tree()[1]
 
 
+def _nfkc(text: str) -> str:
+    """NFKC-normalise, matching how CPython folds identifiers at parse time."""
+    return unicodedata.normalize("NFKC", text)
+
+
+@functools.lru_cache(maxsize=1)
+def _normalized_texts() -> tuple[str, ...]:
+    """NFKC-normalised copy of every file's text, in ``source_texts`` order.
+
+    A gate matches on a bare identifier, and CPython NFKC-folds identifiers at
+    parse time -- so a call written with a Unicode compatibility homoglyph of a
+    guarded name (``delete_items_b\uff41tch``) is that ASCII name in the AST but
+    NOT in the raw bytes. Filtering on raw text would skip the file and let the
+    offender through green. Normalising the haystack (here) and the needle (in
+    ``candidate_sources``) the same way closes that hole while keeping the
+    narrowing: NFKC is a fixpoint on ASCII, so every raw ASCII match is
+    preserved and only homoglyph spellings are newly caught. Computed once over
+    the whole tree (~0.3s) and cached, like the read itself. ``source_texts``
+    still returns the RAW text, which gates that scan comments or string
+    literals (a ``# render-ok`` marker, an import alias) depend on.
+    """
+    return tuple(_nfkc(text) for _path, text in source_texts())
+
+
 def candidate_sources(
     require_all: Sequence[str] = (),
     require_any: Sequence[str] = (),
@@ -87,11 +112,18 @@ def candidate_sources(
     An empty ``require_any`` imposes no alternation, so passing neither argument
     returns the whole corpus.
     """
+    # Match on the NFKC-normalised text with NFKC-normalised needles, so a call
+    # whose identifier is a Unicode compatibility homoglyph of a literal (which
+    # CPython folds to that literal at parse time, making it a real AST match) is
+    # not skipped by a raw-byte pre-filter. The yielded ``text`` stays RAW.
+    all_n = tuple(_nfkc(lit) for lit in require_all)
+    any_n = tuple(_nfkc(lit) for lit in require_any)
+    texts = source_texts()
+    norm = _normalized_texts()
     return tuple(
         (path, text)
-        for path, text in source_texts()
-        if all(lit in text for lit in require_all)
-        and (not require_any or any(lit in text for lit in require_any))
+        for (path, text), ntext in zip(texts, norm)
+        if all(lit in ntext for lit in all_n) and (not any_n or any(lit in ntext for lit in any_n))
     )
 
 
