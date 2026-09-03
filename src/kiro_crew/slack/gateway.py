@@ -198,6 +198,7 @@ from kiro_crew.mcp_gateway.rewriter import (
     resolve_overlay_dir,
     rewrite_agents,
 )
+from kiro_crew.mcp_hot_reload import parse_kiro_cli_version
 from kiro_crew.memory import MemoryStore
 from kiro_crew.messaging import APPROVAL_INTERACTIVE, TurnDriver, registry
 from kiro_crew.messaging.dispatch import build_directive_consumer, build_tool_gate
@@ -2448,10 +2449,9 @@ class GatewayOrchestrator:
             return
         try:
             if proc.returncode == 0:
-                # e.g. "kiro-cli 1.25.0" -> (1, 25, 0)
-                parts = out.decode(errors="replace").strip().split()[-1].split(".")
-                major, minor = int(parts[0]), int(parts[1])
-                if (major, minor) < (1, 26):
+                version = parse_kiro_cli_version(out.decode(errors="replace"))
+                if version is not None and version[:2] < (1, 26):
+                    major, minor = version[0], version[1]
                     print(
                         f"⚠️  kiro-cli {major}.{minor} is outdated (1.26+ required). "
                         "Update kiro-cli, or use the default claude-agent-acp backend."

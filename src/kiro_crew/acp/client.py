@@ -48,6 +48,7 @@ from kiro_crew.acp._dispatch import (
     _kiro_tool_name,
     _marker_bearing_text,
     _repair_escaped_marker,
+    agent_version_from_init,
     build_permission_event,
     derive_edit_diff,
     extract_tool_purpose,
@@ -2638,6 +2639,9 @@ class AcpClient:
         self._resume_session_id: str | None = None
         self._resumed = False
         self._can_load_session = False
+        # agentInfo.version from the initialize response — the version the
+        # spawned process runs, not the file on disk. "" until the handshake.
+        self._agent_version = ""
         # Models advertised by the backend in the session/new (or session/load)
         # response. claude-agent-acp returns the real versioned Claude list
         # (Opus 4.8/4.7, Sonnet 4.6, …); kiro-cli returns its own. Captured so
@@ -2792,6 +2796,14 @@ class AcpClient:
     def backend(self) -> str:
         """ACP backend identifier (e.g. ACP_BACKEND_CLAUDE for claude-agent-acp)."""
         return getattr(self, "_acp_backend", "")
+
+    @property
+    def agent_version(self) -> str:
+        """``agentInfo.version`` reported at ``initialize`` (``""`` until then).
+
+        The version this process RUNS — see :attr:`AcpRuntime.agent_version`.
+        """
+        return getattr(self, "_agent_version", "")
 
     @property
     def _is_claude(self) -> bool:
@@ -4515,6 +4527,7 @@ class AcpClient:
 
         # Check if kiro-cli supports session/load
         self._can_load_session = init_resp.get("agentCapabilities", {}).get("loadSession", False)
+        self._agent_version = agent_version_from_init(init_resp)
 
         # 2. Try session/load if we have a resume ID and kiro-cli supports it
         self._resumed = False

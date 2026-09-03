@@ -663,6 +663,11 @@ class AcpSessionProvider(LLMProvider):
         return self._handle.served_model
 
     @property
+    def agent_version(self) -> str:
+        """The version the backing process runs — see :attr:`AcpSessionHandle.agent_version`."""
+        return self._handle.agent_version
+
+    @property
     def _session_id(self) -> str:
         """Session ID (AcpClient-compatible attribute)."""
         return self._handle.session_id

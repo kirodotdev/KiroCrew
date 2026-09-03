@@ -6,6 +6,7 @@ import json
 import logging
 import os
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -15,6 +16,7 @@ from kiro_crew.dashboard.handlers.agents import (
     api_capability_mcp_install,
     api_capability_mcp_uninstall,
 )
+from kiro_crew.dashboard.handlers.mcp import _mcp_hot_reload_active as _REAL_GATE
 from kiro_crew.mcp_provenance import without_marker
 
 
@@ -27,6 +29,19 @@ def _owner_caller(monkeypatch):
     monkeypatch.setattr(
         "kiro_crew.dashboard.handlers.source_providers.is_owner_dashboard_request",
         lambda request: True,
+    )
+
+
+@pytest.fixture(autouse=True)
+def _no_hot_reload(monkeypatch):
+    """Run against live sessions that cannot be shown to reconcile, so every
+    sync here takes the reset path these tests were written for. The gate is
+    keyed to the request's session registry, which these MagicMock requests do
+    not carry; failing closed there is the production behaviour too.
+    ``TestApiMcpSyncHotReload`` overrides it per test."""
+    monkeypatch.setattr(
+        "kiro_crew.dashboard.handlers.mcp._mcp_hot_reload_active",
+        lambda request: False,
     )
 
 
@@ -740,6 +755,58 @@ class TestSyncMcpToAgent:
         assert "@builder-mcp" not in cfg["tools"]
         assert "@builder-mcp" not in cfg["allowedTools"]
 
+    def test_disable_marks_the_agent_entry_disabled(self, mcp_env):
+        """Dropping the ref alone leaves a running server's tools mounted under
+        kiro-cli's live reconcile; ``disabled: true`` on the entry is what stops
+        the process — and spares a cold session the spawn."""
+        agent_cfg, _ = mcp_env
+        from kiro_crew.dashboard.handlers.mcp import _sync_mcp_to_agent
+
+        _sync_mcp_to_agent("builder-mcp", enabled=False)
+        cfg = _load(agent_cfg)
+        assert cfg["mcpServers"]["builder-mcp"]["disabled"] is True
+        assert cfg["mcpServers"]["builder-mcp"]["command"] == "builder-mcp"
+
+    def test_disable_marks_both_alias_and_legacy_key(self, mcp_env):
+        agent_cfg, mcp_json = mcp_env
+        cfg = _load(agent_cfg)
+        cfg["mcpServers"]["ns/tool-mcp"] = {"command": "legacy"}
+        cfg["mcpServers"]["ns-tool-mcp"] = {"command": "alias"}
+        agent_cfg.write_text(json.dumps(cfg))
+        from kiro_crew.dashboard.handlers.mcp import _sync_mcp_to_agent
+
+        _sync_mcp_to_agent("ns/tool-mcp", enabled=False)
+        cfg = _load(agent_cfg)
+        assert cfg["mcpServers"]["ns/tool-mcp"]["disabled"] is True
+        assert cfg["mcpServers"]["ns-tool-mcp"]["disabled"] is True
+
+    def test_disable_leaves_a_non_mapping_entry_alone(self, mcp_env):
+        agent_cfg, _ = mcp_env
+        cfg = _load(agent_cfg)
+        cfg["mcpServers"]["builder-mcp"] = "builder-mcp"
+        agent_cfg.write_text(json.dumps(cfg))
+        from kiro_crew.dashboard.handlers.mcp import _sync_mcp_to_agent
+
+        _sync_mcp_to_agent("builder-mcp", enabled=False)
+        assert _load(agent_cfg)["mcpServers"]["builder-mcp"] == "builder-mcp"
+
+    def test_reenable_lifts_the_disabled_marker(self, mcp_env):
+        agent_cfg, _ = mcp_env
+        from kiro_crew.dashboard.handlers.mcp import _sync_mcp_to_agent
+
+        _sync_mcp_to_agent("builder-mcp", enabled=False)
+        _sync_mcp_to_agent("builder-mcp", enabled=True)
+        cfg = _load(agent_cfg)
+        assert "disabled" not in cfg["mcpServers"]["builder-mcp"]
+        assert "@builder-mcp" in cfg["tools"]
+
+    def test_remove_does_not_leave_a_disabled_ghost(self, mcp_env):
+        agent_cfg, _ = mcp_env
+        from kiro_crew.dashboard.handlers.mcp import _sync_mcp_to_agent
+
+        _sync_mcp_to_agent("builder-mcp", enabled=False, remove=True)
+        assert "builder-mcp" not in _load(agent_cfg)["mcpServers"]
+
     def test_remove_deletes_server_entry(self, mcp_env):
         agent_cfg, _ = mcp_env
         from kiro_crew.dashboard.handlers.mcp import _sync_mcp_to_agent
@@ -777,6 +844,23 @@ class TestSyncMcpToAgentBatch:
         _sync_mcp_to_agent_batch(["builder-mcp"], enabled=False)
         cfg = _load(agent_cfg)
         assert "@builder-mcp" not in cfg["tools"]
+
+    def test_batch_disable_marks_entries_and_reenable_lifts(self, mcp_env):
+        agent_cfg, _ = mcp_env
+        from kiro_crew.dashboard.handlers.mcp import _sync_mcp_to_agent_batch
+
+        _sync_mcp_to_agent_batch(["slack-mcp"], enabled=True)
+        _sync_mcp_to_agent_batch(["builder-mcp", "slack-mcp"], enabled=False)
+        cfg = _load(agent_cfg)
+        assert cfg["mcpServers"]["builder-mcp"]["disabled"] is True
+        assert cfg["mcpServers"]["slack-mcp"]["disabled"] is True
+
+        _sync_mcp_to_agent_batch(["builder-mcp", "slack-mcp"], enabled=True)
+        cfg = _load(agent_cfg)
+        assert "disabled" not in cfg["mcpServers"]["builder-mcp"]
+        assert "disabled" not in cfg["mcpServers"]["slack-mcp"]
+        assert "@builder-mcp" in cfg["tools"]
+        assert "@slack-mcp" in cfg["tools"]
 
     def test_enable_with_missing_mcp_json_still_adds_tool_refs(self, mcp_env):
         """Post #15 fix: existing servers get tool refs even when mcp.json missing."""
@@ -1265,6 +1349,94 @@ class TestApiMcpSyncToolsUpdate:
 
         assert resp.status == 200
         mock_batch.assert_not_called()
+
+
+class TestApiMcpSyncHotReload:
+    """The post-sync reset is skipped exactly when every live process reconciles
+    the agent file itself. Both arms are pinned: a gate that silently stayed
+    False would keep every restart the change exists to remove, and one that
+    stayed True over a stale process would leave the new server unmounted with
+    nothing red to say why."""
+
+    @staticmethod
+    def _provider(hot: bool) -> SimpleNamespace:
+        """A provider carrying the ``LLMProvider.mcp_config_hot_reload`` declaration."""
+        return SimpleNamespace(mcp_config_hot_reload=hot)
+
+    @staticmethod
+    async def _run(
+        monkeypatch, *, active: list, warm: list | None = None
+    ) -> tuple[dict, AsyncMock]:
+        from kiro_crew.dashboard.handlers.mcp import api_mcp_sync
+
+        # The real gate over the request's session registry; the autouse
+        # short-circuit is lifted so this class exercises it.
+        monkeypatch.setattr("kiro_crew.dashboard.handlers.mcp._mcp_hot_reload_active", _REAL_GATE)
+        sessions = MagicMock()
+        sessions.active_providers.return_value = list(active)
+        sessions.warm_providers.return_value = list(warm or [])
+        state = MagicMock()
+        state.sessions = sessions
+        req = MagicMock()
+        req.app = {"state": state}
+        reset = AsyncMock(return_value=3)
+        with (
+            patch("kiro_crew.mcp_discovery.discover_servers_to_sync", return_value=[]),
+            patch("kiro_crew.mcp_discovery.sync_to_agent_config", return_value=False),
+            patch("kiro_crew.dashboard.handlers.mcp._sync_mcp_to_agent_batch"),
+            patch("kiro_crew.dashboard.handlers.sessions._reset_all_sessions", reset),
+        ):
+            resp = await api_mcp_sync(req)
+        assert resp.status == 200
+        return json.loads(resp.body), reset
+
+    @pytest.mark.asyncio
+    async def test_all_live_sessions_reconciling_skips_the_reset(self, monkeypatch, mcp_env):
+        body, reset = await self._run(
+            monkeypatch, active=[self._provider(True)], warm=[self._provider(True)]
+        )
+        reset.assert_not_awaited()
+        assert body["sessions_reset"] == 0
+
+    @pytest.mark.asyncio
+    async def test_no_live_process_skips_the_reset(self, monkeypatch, mcp_env):
+        """Nothing running means nothing a reset could reach."""
+        body, reset = await self._run(monkeypatch, active=[], warm=[])
+        reset.assert_not_awaited()
+        assert body["sessions_reset"] == 0
+
+    @pytest.mark.asyncio
+    async def test_a_stale_warm_pool_process_still_resets(self, monkeypatch, mcp_env):
+        """Version skew: the pool holds a process spawned before an in-place
+        upgrade, which declares False on its own handshake version, so the gate
+        resets even though every registered session reconciles."""
+        body, reset = await self._run(
+            monkeypatch, active=[self._provider(True)], warm=[self._provider(False)]
+        )
+        reset.assert_awaited_once()
+        assert body["sessions_reset"] == 3
+
+    @pytest.mark.asyncio
+    async def test_a_non_declaring_session_still_resets(self, monkeypatch, mcp_env):
+        """One provider that does not declare the capability -- another harness,
+        the ABC default -- forces the reset for everyone."""
+        body, reset = await self._run(
+            monkeypatch, active=[self._provider(True), self._provider(False)]
+        )
+        reset.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_a_mocked_provider_never_reads_as_a_skip(self, monkeypatch, mcp_env):
+        """Only a literal ``True`` counts: a MagicMock provider's truthy attribute
+        must fall on the reset side."""
+        _body, reset = await self._run(monkeypatch, active=[MagicMock()])
+        reset.assert_awaited_once()
+
+    def test_gate_fails_closed_on_error(self):
+        """A gate that cannot answer must not skip the reset."""
+        req = MagicMock()
+        req.app = {}  # no state -> KeyError inside the gate
+        assert _REAL_GATE(req) is False
 
 
 class TestOffloadedSyncHoldsTheConfigLock:

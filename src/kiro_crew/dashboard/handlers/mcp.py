@@ -45,6 +45,7 @@ from kiro_crew.mcp_gateway.hashing import hash_command
 from kiro_crew.mcp_gateway.rewriter import records_dir
 from kiro_crew.mcp_gateway.shareability import ShareEvidence, ShareVerdict, assess
 from kiro_crew.mcp_gateway.verdict_cache import load_cache
+from kiro_crew.mcp_hot_reload import live_sessions_hot_reload
 from kiro_crew.mcp_provenance import ABSENT, resolve_write, stamp
 from kiro_crew.mcp_utils import (
     INTERNAL_CLIENT_ID_KEY,
@@ -301,6 +302,11 @@ def _sync_mcp_to_agent_unlocked(name: str, enabled: bool, *, remove: bool = Fals
         ):
             _existing.pop("autoApprove", None)
             changed = True
+        # A re-enable lifts the ``disabled`` the disable path below wrote onto
+        # this entry; the copy branch never carries one, so only an existing
+        # entry can hold it.
+        if isinstance(_existing, dict) and _existing.pop("disabled", None) is not None:
+            changed = True
         # Ensure @server-name in tools, and in allowedTools only if the
         # governance ceiling has nothing to say about this server. `tools` MOUNTS
         # it; `allowedTools` additionally auto-approves it, and auto-approve is
@@ -355,6 +361,16 @@ def _sync_mcp_to_agent_unlocked(name: str, enabled: bool, *, remove: bool = Fals
             source="dashboard",
             resources=f"{tool_ref} removed from tools/allowedTools",
         )
+    if not enabled and not remove:
+        # Dropping the ref unmounts the tools only for a session that has not
+        # started yet. kiro-cli is what reads this file, and its live reconcile
+        # (see :mod:`kiro_crew.mcp_hot_reload`) leaves a still-running server's
+        # tools mounted when only the ref goes — but stops the process for an
+        # entry marked ``disabled``. The marker also spares a cold session the
+        # spawn of a server nothing mounts. The ``disabled`` in the kiro-global
+        # file cannot stand in: ``includeMcpJson`` is pinned false, so kiro-cli
+        # never reads it.
+        _mark_agent_entries_disabled(cfg, (alias, name))
     if remove:
         cfg.get("mcpServers", {}).pop(alias, None)
         cfg.get("mcpServers", {}).pop(name, None)
@@ -362,6 +378,25 @@ def _sync_mcp_to_agent_unlocked(name: str, enabled: bool, *, remove: bool = Fals
         _atomic_json_write(path, cfg)
     except OSError as exc:
         logger.warning("Cannot write agent config %s: %s", path, exc)
+
+
+def _mark_agent_entries_disabled(cfg: dict, keys: tuple[str, ...]) -> bool:
+    """Set ``disabled: true`` on each present ``mcpServers`` entry named in ``keys``.
+
+    A key may name the alias or the legacy slash form of one server; both are
+    marked when both exist so neither spawns. Only a mapping entry can carry the
+    flag — a string/null entry is left as-is. Returns True when anything changed.
+    """
+    servers = cfg.get("mcpServers")
+    if not isinstance(servers, dict):
+        return False
+    changed = False
+    for key in keys:
+        entry = servers.get(key)
+        if isinstance(entry, dict) and entry.get("disabled") is not True:
+            entry["disabled"] = True
+            changed = True
+    return changed
 
 
 def _sync_mcp_to_agent_batch(names: list[str], enabled: bool) -> None:
@@ -418,6 +453,9 @@ def _sync_mcp_to_agent_batch_unlocked(names: list[str], enabled: bool) -> None:
             ):
                 _existing.pop("autoApprove", None)
                 changed = True
+            # Lift the ``disabled`` a batch disable wrote — see the single-server path.
+            if isinstance(_existing, dict) and _existing.pop("disabled", None) is not None:
+                changed = True
             # Same split as the single-server path above: mount always,
             # auto-approve only when the ceiling is silent about this server.
             tool_ref = f"@{alias}"
@@ -466,6 +504,11 @@ def _sync_mcp_to_agent_batch_unlocked(names: list[str], enabled: bool) -> None:
         }
         cfg["tools"] = [t for t in cfg.get("tools", []) if t not in refs_to_remove]
         cfg["allowedTools"] = [t for t in cfg.get("allowedTools", []) if t not in refs_to_remove]
+        # Mark the entries too — a dropped ref alone does not stop a server that
+        # a live session is already running (see the single-server path).
+        _mark_agent_entries_disabled(
+            cfg, tuple(names) + tuple(mcp_server_alias(name) for name in names)
+        )
         changed = True
         sel().log_api_access(
             caller="system",
@@ -1059,12 +1102,15 @@ async def api_mcp_quarantine_clear(request: web.Request) -> web.Response:
 
 
 async def api_mcp_sync(request: web.Request) -> web.Response:
-    """POST /api/mcp/sync — apply MCP config changes and restart sessions.
+    """POST /api/mcp/sync — apply MCP config changes to the running sessions.
 
     1. Discovers new MCP servers from mcp.json sources.
-    2. Adds them to both kirocrew agent config AND global mcp.json
-       (kiro-cli ACP only reads the global config).
-    3. Resets all sessions so changes take effect.
+    2. Adds them to both kirocrew agent config AND global mcp.json.
+    3. Makes the change reach the sessions. When every live process reconciles
+       the agent file itself (:mod:`kiro_crew.mcp_hot_reload`) the write has
+       already been picked up — no session is touched and the response reports
+       ``sessions_reset: 0``. Otherwise every session and the warm pool are
+       reset so the next message cold-starts on the new file.
     """
     from kiro_crew.mcp_discovery import (  # noqa: F811
         kirocrew_managed_names,
@@ -1211,12 +1257,18 @@ async def api_mcp_sync(request: web.Request) -> web.Response:
                 _sync_mcp_to_agent_batch, [s.name for s in to_sync], enabled=True
             )
 
-    # Always reset sessions — even with no new servers, the user may have
-    # toggled enable/disable which writes to kirocrew.json but requires
-    # a session restart for kiro-cli to pick up the change.
-    from kiro_crew.dashboard.handlers.sessions import _reset_all_sessions  # noqa: F811
+    # The reset exists only to make kiro-cli re-read a file it may already
+    # watch. Runs even with no new servers: an enable/disable toggle also wrote
+    # kirocrew.json, and on a harness without live reconcile only a restart
+    # applies it. Skipped only when EVERY process the reset would touch has
+    # shown it reconciles on its own; ``sessions_reset: 0`` is then the
+    # observable outcome.
+    if _mcp_hot_reload_active(request):
+        sessions_reset = 0
+    else:
+        from kiro_crew.dashboard.handlers.sessions import _reset_all_sessions  # noqa: F811
 
-    sessions_reset = await _reset_all_sessions(request)
+        sessions_reset = await _reset_all_sessions(request)
     return web.json_response(
         {
             "ok": True,
@@ -1225,6 +1277,25 @@ async def api_mcp_sync(request: web.Request) -> web.Response:
             "sessions_reset": sessions_reset,
         }
     )
+
+
+def _mcp_hot_reload_active(request: web.Request) -> bool:
+    """Whether every live session applies agent-file edits without a reset.
+
+    Keyed to the processes actually running — the registered sessions plus the
+    warm pool the reset would drain — and to the version each reported at its
+    own handshake, never to the binary on disk (which is newer than every live
+    process after an in-place upgrade). Fails CLOSED: any error answers False,
+    and the caller falls back to the reset that was always correct — a skipped
+    reset is the one outcome a user cannot see.
+    """
+    try:
+        sessions = request.app["state"].sessions
+        providers = list(sessions.active_providers()) + list(sessions.warm_providers())
+        return live_sessions_hot_reload(providers)
+    except Exception:
+        logger.warning("MCP hot-reload gate failed; resetting sessions instead", exc_info=True)
+        return False
 
 
 def _string_identifier(body: dict, field: str) -> tuple[str, web.Response | None]:

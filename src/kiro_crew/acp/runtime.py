@@ -30,6 +30,7 @@ from typing import Any, Callable, TypeVar
 
 from kiro_crew import agent_scratch, platform_compat
 from kiro_crew.acp._dispatch import (
+    agent_version_from_init,
     attach_kas_custom_agents,
     build_session_new_params,
     parse_session_modes,
@@ -794,6 +795,10 @@ class AcpRuntime:
         # Empty until the handshake completes, so callers fail CLOSED and send
         # text-only rather than guessing a modality the agent never advertised.
         self._prompt_capabilities: dict = {}
+        # agentInfo.version from the initialize response: the version of the
+        # binary THIS process is executing, which can differ from the one on
+        # disk after an in-place upgrade. Empty until the handshake completes.
+        self._agent_version = ""
         # Entitlement probe state (probe_advertised_models): single-flight lock
         # plus a short-TTL cache of the last non-empty answer.
         self._entitlement_probe_lock = asyncio.Lock()
@@ -898,6 +903,17 @@ class AcpRuntime:
         reject.
         """
         return bool(self._prompt_capabilities.get("image", False))
+
+    @property
+    def agent_version(self) -> str:
+        """``agentInfo.version`` the agent reported at ``initialize`` (``""`` until then).
+
+        This is the version of the binary the process is RUNNING, which is what
+        a capability decision about a live session must key on: after an
+        in-place kiro-cli upgrade the file on disk is newer than every process
+        spawned before it.
+        """
+        return self._agent_version
 
     def is_alive(self) -> bool:
         """True if the underlying process exists and has not exited."""
@@ -1487,6 +1503,7 @@ class AcpRuntime:
             # generic error with no fallback.
             _prompt_caps = init_resp.get("agentCapabilities", {}).get("promptCapabilities", {})
             self._prompt_capabilities = _prompt_caps if isinstance(_prompt_caps, dict) else {}
+            self._agent_version = agent_version_from_init(init_resp)
             self._initialized = True
             logger.info("AcpRuntime initialized (PID %d)", self._pid)
         except BaseException:

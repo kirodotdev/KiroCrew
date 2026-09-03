@@ -375,6 +375,22 @@ class LLMProvider(ABC):
         layer never has to guess from private attributes."""
         return False
 
+    @property
+    def mcp_config_hot_reload(self) -> bool:
+        """True when this provider's live process reconciles agent-config and
+        ``mcp.json`` edits on its own — only the changed MCP servers restart, the
+        conversation is kept — so the dashboard's MCP sync may leave it running
+        instead of resetting it.
+
+        Default False — the reset is the safe answer, and a harness that has not
+        demonstrated the reconcile must not inherit the skip (harness-parity
+        H6/H14). Declared here rather than probed off the instance; the ACP
+        implementation answers from ``ACP_BACKENDS_MCP_CONFIG_HOT_RELOAD``
+        membership plus the version its process reported at ``initialize``.
+        Consumers must act only on a literal ``True``, so a mocked provider's
+        attribute never reads as a skip."""
+        return False
+
     def available_models(self) -> list[dict[str, str]]:
         """Backend-advertised models (``[{modelId, name, ...}]``) for the model
         picker. Default empty for a provider that advertises none."""

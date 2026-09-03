@@ -442,6 +442,15 @@ class AcpRuntimeProtocol(Protocol):
         """
         ...
 
+    @property
+    def agent_version(self) -> str:
+        """``agentInfo.version`` from the handshake — the version the process runs.
+
+        ``""`` until the handshake completes; a capability gate reading it
+        fails closed on that.
+        """
+        ...
+
     async def send_request(self, method: str, params: dict[str, Any]) -> int:
         ...
 
@@ -1628,6 +1637,15 @@ class AcpSessionHandle:
         reported here. May be a profile-form id, which is a valid wire id.
         """
         return self._model or self._resolved_model_id
+
+    @property
+    def agent_version(self) -> str:
+        """The version the shared process RUNS (``""`` until its handshake).
+
+        Delegates to the runtime because the handshake is per process, not per
+        session: every handle on one runtime reports the same value.
+        """
+        return self._runtime.agent_version
 
     @property
     def config_options(self) -> list[dict[str, Any]]:

@@ -52,6 +52,7 @@ from kiro_crew.effort import (
     model_supports_effort,
     resolve_effort_for_model,
 )
+from kiro_crew.mcp_hot_reload import mcp_hot_reload_supported, parse_kiro_cli_version
 from kiro_crew.messaging.link import telemetry_channel_of
 from kiro_crew.providers.base import (
     CancelOutcome,
@@ -445,6 +446,17 @@ class AcpProvider(LLMProvider):
         return "" if model == DEFAULT_MODEL else model
 
     @property
+    def agent_version(self) -> str:
+        """``agentInfo.version`` the live process reported at its handshake.
+
+        ``""`` before startup and for a client shape that never handshaked.
+        Both client shapes (``AcpSessionProvider`` after startup, raw
+        ``AcpClient`` before it / on the claude seam) expose the same
+        attribute, so one read covers them.
+        """
+        return str(getattr(self._client, "agent_version", "") or "")
+
+    @property
     def cwd(self) -> str:
         """Working directory this provider operates in.
 
@@ -545,6 +557,22 @@ class AcpProvider(LLMProvider):
         whichever internal shape it happens to expose.
         """
         return self._client.backend in ACP_BACKENDS_KIRO_IDENTITY_STORE
+
+    @property
+    def mcp_config_hot_reload(self) -> bool:
+        """True when this provider's process reconciles MCP config edits itself.
+
+        Membership in ``ACP_BACKENDS_MCP_CONFIG_HOT_RELOAD`` AND a handshake
+        version at or above the floor (harness-parity H6/H14). Answered from
+        what THIS process reported at ``initialize``, never from the binary on
+        disk: after an in-place kiro-cli upgrade the file is newer than every
+        process spawned before it. Before the handshake (placeholder client,
+        empty version) this is False, so a session still starting is reset like
+        one that cannot reconcile.
+        """
+        return mcp_hot_reload_supported(
+            self._client.backend, parse_kiro_cli_version(self.agent_version)
+        )
 
     async def _start_kiro_runtime(self) -> None:
         """Spawn an AcpRuntime + session; time the kiro cold-start split.

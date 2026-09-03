@@ -124,6 +124,8 @@ Sending the wrong shape yields `-32602 Invalid params` or `-32601 Method not fou
 
 **`clientCapabilities` in the `initialize` request.** Both transports (`AcpClient._initialize_session` and `AcpRuntime`) send the shared `ACP_CLIENT_CAPABILITIES` dict from `acp/types.py`. Previously the key was omitted entirely, so the agent assumed the all-false default.
 
+**`agentInfo.version` from the `initialize` response.** Both transports retain it (`AcpClient.agent_version`, `AcpRuntime.agent_version`, surfaced through `AcpSessionHandle` → `AcpSessionProvider` → `AcpProvider.agent_version`; `""` until the handshake completes). It is the version the spawned process RUNS, which after an in-place kiro-cli upgrade differs from the binary on disk — the MCP hot-reload gate reads it for that reason. Parsed with the shared `agent_version_from_init` in `acp/_dispatch.py`; a missing or non-string value reads as unknown rather than failing the handshake.
+
 | Key | Value | Why |
 |---|---|---|
 | `fs.readTextFile` / `fs.writeTextFile` | `false` | We serve no `fs/*` handler; advertising them would invite requests that hit `_reject_unknown_server_request`. |
@@ -186,7 +188,12 @@ flag passed to `kiro-cli acp` at spawn time drives all configuration:
     file). Non-kirocrew agents (e.g. AIM-installed) load only their own
     `mcpServers`. The kirocrew agent loads from global `~/.kiro/settings/mcp.json`
     where `disabled` and `disabledTools` flags are respected. KiroCrew's dashboard
-    MCP tab writes directly to the global config.
+    MCP tab writes directly to the global config. Loading is not one-shot:
+    kiro-cli 2.10.0+ watches the agent file and reconciles a RUNNING session
+    against an edit (only the changed servers restart, conversation kept, applied
+    at the next turn boundary), which is why the dashboard's MCP sync skips its
+    session reset on that harness — gate and semantics in
+    [mcp.md](../../architecture/mcp.md#live-reconcile-when-no-restart-is-needed-at-all).
   - **claude-agent-acp**: does NOT read any config file or `--agent` flag, so
     `session/new` (and `session/load`) must carry the servers in the
     `mcpServers` param. `_session_mcp_servers()` — gated on

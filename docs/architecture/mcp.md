@@ -498,6 +498,55 @@ reconcile that failed is reported in the danger tint instead of the usual
 user sees is not honesty — the sessions did restart, but against a config that
 may not match the sources, and that is the one thing the caller needs told.
 
+### Live reconcile: when no restart is needed at all
+
+kiro-cli 2.10.0+ watches `~/.kiro/agents` and `mcp.json` and reconciles a
+RUNNING session against an edit: only the changed servers restart, the
+conversation is kept, and the change applies at the next turn boundary. That
+makes the restart above redundant on that harness — it exists only to make
+kiro-cli re-read a file it already watches. `kiro_crew/mcp_hot_reload.py` owns
+the gate, and it is keyed to the processes actually running, never to the
+binary on disk: every live provider — the registered sessions plus the warm
+pool the reset would drain — must declare `LLMProvider.mcp_config_hot_reload`
+as a literal `True` (default `False`, harness-parity H14). `AcpProvider`
+answers it from membership in `ACP_BACKENDS_MCP_CONFIG_HOT_RELOAD` (kiro-cli
+only — KAS gets its servers injected on `session/new`, claude reads no agent
+file) AND the `agentInfo.version` its own process reported at `initialize`
+being at or above `MCP_HOT_RELOAD_MIN_KIRO_CLI_VERSION`. That floor is
+2.21.0 — the release the reconcile semantics were observed on — not 2.10.0,
+where the watcher first shipped: a release in between keeps the always-correct
+reset until it is verified, because granting the skip to one that reconciles
+differently fails invisibly, and lowering the floor later is one line. The
+handshake version
+is what each process runs; after an in-place kiro-cli upgrade the file on disk
+is newer than every process spawned before it, so probing the file would answer
+for a version nothing is running. The gate fails CLOSED: one provider that has
+not handshaked, is below the floor, sits on another harness, or has not
+declared the capability at all resets everything as before. `POST
+/api/mcp/sync` consults it and, when it holds, touches no session —
+`sessions_reset: 0` is the observable outcome. With no live process at all
+there is nothing a reset could reach, so the answer is also to skip.
+`POST /api/sessions/restart` stays the unconditional manual path.
+
+The skip is inferred from that declaration, not observed: kiro-cli's
+`_kiro.dev/mcp/server_initialized` notification is the signal that a reconcile
+actually spawned the server, and the gate does not yet consult it. A watcher
+that fails at runtime therefore reads as success with nothing red; the
+troubleshooting entry below and the manual restart are the recovery, and
+confirmation-based hardening is a named follow-up.
+
+What the reconcile keys on shapes what the dashboard writes. An added, removed,
+or edited `mcpServers` entry is acted on; `disabled: true` stops the server's
+process and `disabledTools` hides a tool. A `@server` ref ADDED to `tools` is
+honoured from the next turn — so the sync's write order (entry, then ref) is
+fine. But a ref REMOVED while the server keeps running leaves its tools mounted,
+so dropping the ref is not a disable. The dashboard's disable path
+(`_sync_mcp_to_agent`, single and batch) therefore writes `disabled: true` onto
+the agent-file entry as well as removing the ref, and the enable path lifts it.
+The `disabled` in the kiro-global file cannot stand in: `includeMcpJson` is
+pinned false, so kiro-cli never reads that file. The marker also helps a cold
+session — a disabled server is no longer spawned only to sit unmounted.
+
 A probe that FAILS after the sanitizer stripped a declared env key names the key
 in its error (`_note_denied_env`). The sanitizer's own WARNING goes to the
 gateway log, which is not where someone staring at a red badge is looking: a
@@ -1023,6 +1072,11 @@ the gateway log.
 not appear in interactive kiro-cli or Kiro IDE sessions. If they do, something
 wrote them into a provider global.
 
-**A newly added server does not appear in sessions.** The warm pool holds
-pre-spawned processes carrying the old config. Use Apply & Restart, or
-`kirocrew config set`, which triggers a restart.
+**A newly added server does not appear in sessions.** On kiro-cli 2.21.0+ the
+running sessions reconcile the agent file themselves and the dashboard skips its
+reset (see "Live reconcile" above); a server that stays absent there means the
+entry never reached `~/.kiro/agents/kirocrew.json` — check `kirocrew doctor` —
+or the watcher failed at runtime, which the skip cannot see: `POST
+/api/sessions/restart` is the recovery. On an older kiro-cli, or another
+harness, the warm pool holds pre-spawned processes carrying the old config. Use
+Apply & Restart, or `kirocrew config set`, which triggers a restart.

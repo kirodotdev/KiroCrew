@@ -2589,6 +2589,10 @@ class SessionManager:
         """Remove and return all queued warm providers."""
         return await self._pool.drain_warm_pool()
 
+    def warm_providers(self) -> list[LLMProvider]:
+        """Snapshot the queued warm providers without consuming them."""
+        return self._pool.warm_providers()
+
     # ── Idle cleanup ──
 
     # ── Watchdog hooks ──

@@ -121,6 +121,21 @@ def set_mode_params(session_id: str, agent: str) -> dict[str, Any]:
     return {"sessionId": session_id, "modeId": agent}
 
 
+def agent_version_from_init(resp: dict[str, Any]) -> str:
+    """``agentInfo.version`` from an ``initialize`` result, ``""`` when absent.
+
+    Shared by both clients so the two handshakes read the same field the same
+    way: kiro-cli reports ``{"agentInfo": {"name": ..., "version": "2.21.0"}}``.
+    A missing or non-string value reads as unknown rather than raising — the
+    handshake must not fail over a field only a capability gate consults.
+    """
+    info = resp.get("agentInfo") if isinstance(resp, dict) else None
+    if not isinstance(info, dict):
+        return ""
+    version = info.get("version")
+    return version.strip() if isinstance(version, str) else ""
+
+
 def parse_session_modes(resp: dict[str, Any]) -> tuple[list[str], str, bool]:
     """Extract advertised mode ids, current mode id, and whether the backend
     advertised a modes list at all, from a ``session/new`` / ``session/load``

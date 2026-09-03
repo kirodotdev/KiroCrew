@@ -48,6 +48,7 @@ from kiro_crew.acp.types import (
 from kiro_crew.acp_backends import (
     ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION,
     ACP_BACKENDS_KIRO_SLASH_COMMANDS,
+    ACP_BACKENDS_MCP_CONFIG_HOT_RELOAD,
     ACP_BACKENDS_MODEL_VIA_CONFIG_OPTION,
     BASELINE_SELECTABLE_BACKENDS,
     selectable_backends,
@@ -239,6 +240,23 @@ def test_steer_is_opt_in() -> None:
     assert ACP_BACKEND_CLAUDE not in ACP_BACKENDS_STEER
 
 
+def test_mcp_config_hot_reload_is_opt_in() -> None:
+    """H6: skipping the post-sync session reset is claimed by membership.
+
+    The gate must read the set — a harness added to ``ACP_BACKENDS_KNOWN`` must
+    not inherit the skip, because a wrong member leaves a freshly installed
+    server unmounted with nothing red to say why. KAS receives its servers on
+    ``session/new`` and claude reads no agent file, so neither is a member.
+    """
+    from kiro_crew import mcp_hot_reload
+
+    source = inspect.getsource(mcp_hot_reload.mcp_hot_reload_supported)
+    assert "ACP_BACKENDS_MCP_CONFIG_HOT_RELOAD" in source
+    assert ACP_BACKEND_KIRO in ACP_BACKENDS_MCP_CONFIG_HOT_RELOAD
+    assert ACP_BACKEND_KAS not in ACP_BACKENDS_MCP_CONFIG_HOT_RELOAD
+    assert ACP_BACKEND_CLAUDE not in ACP_BACKENDS_MCP_CONFIG_HOT_RELOAD
+
+
 def test_steer_capability_declares_its_stamp() -> None:
     """H15: a provider that can steer must also report WHEN it steered.
 
@@ -323,6 +341,7 @@ def test_capability_sets_are_subsets_of_known_backends() -> None:
         ("ACP_BACKENDS_INTERNAL_SANDBOX", ACP_BACKENDS_INTERNAL_SANDBOX),
         ("ACP_BACKENDS_ACP_RUNTIME", ACP_BACKENDS_ACP_RUNTIME),
         ("ACP_BACKENDS_COMPACT", ACP_BACKENDS_COMPACT),
+        ("ACP_BACKENDS_MCP_CONFIG_HOT_RELOAD", ACP_BACKENDS_MCP_CONFIG_HOT_RELOAD),
     ):
         assert members <= ACP_BACKENDS_KNOWN, f"{name} names an unknown backend"
 

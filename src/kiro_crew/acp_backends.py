@@ -464,3 +464,20 @@ def model_registry_namespace(backend: str) -> str:
 # writing it for a harness that never reads it leaves a stale file in the user's
 # workspace that no later clear can reach.
 ACP_BACKENDS_KIRO_SLASH_COMMANDS = frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_KAS})
+
+# Backends that reconcile an edited agent config into their RUNNING sessions: a
+# file watcher on ``~/.kiro/agents`` and ``mcp.json`` restarts only the changed
+# MCP servers, keeps the conversation, and applies the edit at the next turn
+# boundary. Membership is what lets the dashboard's MCP writers SKIP the session
+# reset they otherwise perform after a config change — so a wrong member here
+# leaves a user's freshly installed server unmounted until they restart by hand,
+# with nothing red to tell them why. :mod:`kiro_crew.mcp_hot_reload` owns the
+# gate and additionally pins a version floor: the capability belongs to a
+# kiro-cli release, not to the harness name alone.
+#
+# KAS is NOT a member: its MCP servers are broker stubs injected on
+# ``session/new`` (:mod:`kiro_crew.acp.kas_agents`), so nothing on disk
+# describes its running set for a watcher to reconcile against. claude-agent-acp
+# reads no agent file at all (``ACP_BACKENDS_SESSION_MCP_ARRAY``), and codex-acp
+# has not demonstrated the capability — neither inherits it.
+ACP_BACKENDS_MCP_CONFIG_HOT_RELOAD = frozenset({ACP_BACKEND_KIRO})

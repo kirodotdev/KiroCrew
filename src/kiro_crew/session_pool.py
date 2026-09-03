@@ -455,6 +455,26 @@ class WarmSessionPool:
         pids.update(self._pool_sweep_pids)
         return pids
 
+    def warm_providers(self) -> list[LLMProvider]:
+        """Snapshot the queued warm providers without consuming any entry.
+
+        Drain-and-requeue like :meth:`_pool_pids` (``asyncio.Queue`` exposes no
+        peek), so a concurrent claim between the get and the put-back is the
+        one race: it sees a momentarily shorter queue, never a lost provider.
+        Read by the MCP hot-reload gate, which must treat a pooled process as a
+        live session — it already completed its handshake and loaded its MCP
+        servers, so it reconciles (or fails to) exactly like a claimed one.
+        """
+        items: list[tuple[LLMProvider, float]] = []
+        while not self._warm_pool.empty():
+            try:
+                items.append(self._warm_pool.get_nowait())
+            except asyncio.QueueEmpty:
+                break
+        for entry in items:
+            self._warm_pool.put_nowait(entry)
+        return [provider for provider, _spawn_time in items]
+
     def _in_flight_pids(self) -> set[int]:
         """Return a copy of the facade's start-to-registration PID guard."""
         return set(self._owner._starting_pids)
