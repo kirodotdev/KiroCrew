@@ -1572,6 +1572,72 @@ class TestSpecIoRunsOffTheEventLoop:
         assert list(runner._work_dir.glob("TASK_*.md")) == []
 
     @pytest.mark.asyncio
+    async def test_cancelled_start_backgrounding_does_not_orphan_spec(self, tmp_path: Path) -> None:
+        """A cancel AFTER the shielded write, during ``start_background``, cleans up too."""
+        started = asyncio.Event()
+        release = asyncio.Event()
+
+        async def _blocked_start(*args: Any, **kwargs: Any) -> str:
+            started.set()
+            await release.wait()
+            return "t1"
+
+        runner = _runner(tmp_path)
+        runner.start_background = _blocked_start
+        request_task = asyncio.create_task(
+            api_taskrunner_start(
+                _request(_state(runner), json_body={"spec": "__inline__:# cancel late"})
+            )
+        )
+        await started.wait()
+        assert list(runner._work_dir.glob("TASK_*.md")) != []  # spec exists mid-flight
+        request_task.cancel()
+        release.set()
+
+        with pytest.raises(asyncio.CancelledError):
+            await request_task
+
+        assert list(runner._work_dir.glob("TASK_*.md")) == []
+
+    @pytest.mark.asyncio
+    async def test_cancelled_start_never_unlinks_a_spec_a_registered_run_retains(
+        self, tmp_path: Path
+    ) -> None:
+        """Cancel after ``start_background`` registered the run: the spec survives.
+
+        ``start_background``'s internal rollback covers only its persistence
+        hop; a cancel landing after run registration retains the placeholder,
+        and deleting the spec it references would corrupt that run.
+        """
+        started = asyncio.Event()
+        release = asyncio.Event()
+        runner = _runner(tmp_path)
+
+        async def _registering_start(spec_path: str, **kwargs: Any) -> str:
+            runner._runs["t_retained"] = TaskRun(
+                spec_path=spec_path, spec_content="# cancel late", task_id="t_retained"
+            )
+            started.set()
+            await release.wait()
+            return "t_retained"
+
+        runner.start_background = _registering_start
+        request_task = asyncio.create_task(
+            api_taskrunner_start(
+                _request(_state(runner), json_body={"spec": "__inline__:# cancel late"})
+            )
+        )
+        await started.wait()
+        request_task.cancel()
+        release.set()
+
+        with pytest.raises(asyncio.CancelledError):
+            await request_task
+
+        # The registered run still owns its spec file — cleanup must not fire.
+        assert list(runner._work_dir.glob("TASK_*.md")) != []
+
+    @pytest.mark.asyncio
     async def test_cancelled_plan_claim_does_not_orphan_directory(
         self, tmp_path: Path, monkeypatch
     ) -> None:

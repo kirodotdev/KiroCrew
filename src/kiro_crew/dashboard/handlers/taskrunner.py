@@ -127,14 +127,19 @@ async def api_taskrunner_status(request: web.Request) -> web.Response:
     return web.json_response(data)
 
 
-def _validate_spec_path(raw: str) -> tuple[str | None, str, int]:
-    """Resolve and validate a caller-supplied spec path off the event loop."""
+def _validate_spec_path(raw: str) -> tuple[str | None, str]:
+    """Resolve and validate a caller-supplied spec path off the event loop.
+
+    Returns ``(resolved_path, "")`` on success, or ``(None, code)`` where
+    ``code`` is the machine-readable failure identifier the handler maps to
+    its error response (``invalid_spec_path`` or ``access_denied``).
+    """
     resolved = Path(raw).resolve()
     if ".." in Path(raw).parts or not resolved.is_file():
-        return None, "invalid spec path", 400
+        return None, "invalid_spec_path"
     if is_sensitive_path(str(resolved)):
-        return None, "access denied", 403
-    return str(resolved), "", 0
+        return None, "access_denied"
+    return str(resolved), ""
 
 
 def _write_inline_spec(work_dir: str | Path, content: str) -> Path:
@@ -206,6 +211,22 @@ async def _materialize_inline_spec(work_dir: str | Path, content: str) -> Path:
         raise cancelled
 
 
+def _spec_retained_by_run(state: DashboardState, spec_path: Path) -> bool:
+    """True when a registered run still references *spec_path* as its spec.
+
+    ``start_background`` can be cancelled AFTER it registered the run
+    placeholder (its internal rollback covers only the persistence hop), in
+    which case the run — and the dashboard surface reading it — legitimately
+    owns the spec file now: deleting it would corrupt a retained run. Ownership
+    of a handler-created spec transfers the moment any run records its path.
+    """
+    runner = state.task_runner
+    if runner is None:
+        return False
+    target = str(spec_path)
+    return any(run.spec_path == target for run in runner._runs.values())
+
+
 async def _claim_plan_dir(work_dir: Path) -> tuple[str, Path]:
     """Claim a plan directory without letting cancellation orphan the result."""
     worker = asyncio.create_task(asyncio.to_thread(_make_plan_dir, work_dir))
@@ -253,9 +274,15 @@ async def api_taskrunner_start(request: web.Request) -> web.Response:
     # use share one value — no gap where spec_path could differ from what was
     # checked, and the containment guard is visible to static analysis.
     if not spec_path.startswith("__inline__:"):
-        validated, error, status = await asyncio.to_thread(_validate_spec_path, spec_path)
+        validated, failure = await asyncio.to_thread(_validate_spec_path, spec_path)
         if validated is None:
-            return web.json_response({"error": error}, status=status)
+            if failure == "access_denied":
+                return web.json_response(
+                    {"error": "access denied", "code": "access_denied"}, status=403
+                )
+            return web.json_response(
+                {"error": "invalid spec path", "code": "invalid_spec_path"}, status=400
+            )
         spec_path = validated
 
     # Handle inline spec content
@@ -287,21 +314,34 @@ async def api_taskrunner_start(request: web.Request) -> web.Response:
             workspace_dir=workspace_dir,
             auto_approve=auto_approve,
         )
-    except Exception as exc:
-        # The handler owns the temp file ONLY when it created it: a rejected
-        # start must not strand TASK_*.md orphans in the work dir, and an
-        # external spec the caller passed by path must never be deleted.
+    except BaseException as exc:
+        # The handler owns the temp file ONLY when it created it AND no run
+        # retains it: a rejected start must not strand TASK_*.md orphans in
+        # the work dir, an external spec the caller passed by path must never
+        # be deleted, and a spec a registered run still references must never
+        # be deleted either — ``start_background`` cancelled after admission
+        # retains the run placeholder (its rollback covers only the
+        # persistence hop), so ownership has transferred to the run.
+        # ``BaseException`` (mirroring the from_chat rollback below) so a
+        # request cancelled during ``start_background`` also cleans up — the
+        # spec-write hop is shielded, but the very next await used to leak.
         # Cleanup is best-effort — its failure must not replace the startup
         # error the client is about to receive.
-        if created_spec is not None:
+        if created_spec is not None and not _spec_retained_by_run(state, created_spec):
             try:
                 await _remove_owned_path(created_spec)
+            except asyncio.CancelledError:
+                # The removal worker was drained to completion; the pending
+                # cancellation is re-delivered by the raise below / next await.
+                pass
             except OSError:
                 logger.warning(
                     "failed to remove inline spec %s after a rejected start",
                     created_spec,
                     exc_info=True,
                 )
+        if not isinstance(exc, Exception):
+            raise  # CancelledError and friends: propagate after cleanup.
         return web.json_response({"error": str(exc)}, status=400)
     return web.json_response({"ok": True, "spec": spec_path, "task_id": task_id})
 
