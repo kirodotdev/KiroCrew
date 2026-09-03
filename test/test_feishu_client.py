@@ -622,7 +622,14 @@ class TestHandleReceiveV1:
         assert inbound.chat_id == "chat-99"
 
     @pytest.mark.asyncio
-    async def test_non_text_message_type_ignored(self) -> None:
+    async def test_non_text_message_type_is_carried_not_dropped(self) -> None:
+        """It reaches the transport with no text and the type recorded (#7848).
+
+        It used to stop here, which left the sender with silence: the transport
+        is the only layer that knows whether this sender is authorised, so it is
+        the only layer that may answer. ``text`` stays empty so nothing can
+        mistake it for an instruction.
+        """
         from kiro_crew.feishu.client import LarkClient
 
         received: list[Any] = []
@@ -637,7 +644,32 @@ class TestHandleReceiveV1:
         client._handle_receive_v1(data)
         await asyncio.sleep(0.05)
 
-        assert len(received) == 0
+        assert len(received) == 1
+        inbound = received[0]
+        assert inbound.unsupported_type == "image"
+        assert inbound.text == ""
+        assert inbound.message_id == "img-1"
+        assert inbound.command_text == ""
+
+    @pytest.mark.asyncio
+    async def test_an_unreadable_message_with_no_sender_is_still_dropped(self) -> None:
+        """The sender gate stays ahead of the type decision: with no open_id
+        there is nobody to authorise, so there is nobody to answer."""
+        from kiro_crew.feishu.client import LarkClient
+
+        received: list[Any] = []
+
+        async def handler(inbound: Any) -> None:
+            received.append(inbound)
+
+        client = LarkClient(app_id="a", app_secret="s", on_message=handler)
+        client._loop = asyncio.get_running_loop()
+
+        data = _make_event(message_id="img-2", message_type="image", open_id="")
+        client._handle_receive_v1(data)
+        await asyncio.sleep(0.05)
+
+        assert received == []
 
     @pytest.mark.asyncio
     async def test_no_open_id_ignored(self) -> None:

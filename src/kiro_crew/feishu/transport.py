@@ -23,6 +23,7 @@ from collections.abc import Awaitable, Callable, Iterable
 from typing import Any
 
 from kiro_crew.feishu.client import CHAT_GROUP, CHAT_P2P, LarkClient, LarkInbound
+from kiro_crew.messaging.attachments import channel_reads_no_attachments
 from kiro_crew.messaging.transport import (
     ConfiguredChannelTarget,
     InboundMessage,
@@ -200,7 +201,12 @@ class FeishuTransport(MessagingTransport):
         if not isinstance(raw_envelope, LarkInbound):
             return
         inbound = raw_envelope
-        if not inbound.text:
+        # An unreadable message (``unsupported_type`` set, ``text`` empty) is
+        # NOT dropped here: it runs the same gates a turn would and is answered
+        # at the bottom. Everything else with no text still stops -- a frame
+        # whose body resolved to nothing has no instruction and nothing to say
+        # about it.
+        if not inbound.text and not inbound.unsupported_type:
             return
 
         # Chat-type gate (fail closed). The two served contexts are named
@@ -266,6 +272,19 @@ class FeishuTransport(MessagingTransport):
                 # popitem(last=False) evicts the OLDEST arrival.
                 while len(self._seen) > _SEEN_KEEP:
                     self._seen.popitem(last=False)
+
+        # Answered here, and only here, for three reasons that are each a gate
+        # above this line: an unauthorised sender learns nothing (``authorize``
+        # already returned), a group the bot merely sits in stays silent (the
+        # group gate), and a redelivered frame does not answer twice (the dedup
+        # window, which this deliberately sits after).
+        if inbound.unsupported_type:
+            if not self.capabilities.files_inbound:
+                await self.send_message(
+                    inbound.message_id,
+                    channel_reads_no_attachments(inbound.unsupported_type),
+                )
+            return
 
         if self._dispatch is not None:
             await self._dispatch(inbound)

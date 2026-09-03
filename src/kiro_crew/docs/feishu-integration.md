@@ -156,7 +156,10 @@ Known gaps, all follow-up work rather than defects:
 
 - **No streaming.** Feishu supports `PATCH /im/v1/messages/{id}`, so
   edit-in-place streaming is a natural next step.
-- **Text only.** Non-text messages (images, files, audio) are ignored inbound.
+- **Text only.** Non-text messages (images, files, audio) are not read inbound.
+  The bot answers with a short line saying so rather than staying silent, so a
+  photo does not look like a dead bot — but only to a sender who is already on
+  the allow-list, and in a group only one that is allow-listed too.
 - **Replies only.** The bot answers an inbound message and cannot start a
   conversation, so it is not a proactive-notification target.
 - **The panel configures the channel; it does not install it.** `lark-oapi` is an
