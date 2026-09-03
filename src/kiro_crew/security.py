@@ -12416,6 +12416,44 @@ def _text_contains_bare_secret(text: str) -> bool:
 # is sent to the token endpoint, not on this front channel.
 _OAUTH_ENTROPY_QUERY_PARAMS = frozenset({"code_challenge", "nonce", "state"})
 
+# The exemption is bounded to shapes the protocol itself can emit, so an
+# AWS-secret-shaped run cannot ride a front-channel parameter into the blanked
+# set. base64url (RFC 4648 s5) emits `-`/`_` and never `+`/`/`, and an S256
+# challenge is base64url of a 32-byte digest -- exactly 43 characters.
+_OAUTH_S256_CHALLENGE_RE = re.compile(r"[A-Za-z0-9_-]{43}\Z")
+
+
+def _oauth_entropy_form_is_protocol_shaped(key: str, form: str) -> bool:
+    """Return True when ONE decoded form of a value keeps a protocol shape."""
+    if key == "code_challenge":
+        return bool(_OAUTH_S256_CHALLENGE_RE.fullmatch(form))
+    return "+" not in form and "/" not in form
+
+
+def _oauth_entropy_value_is_protocol_shaped(key: str, value: str) -> bool:
+    """Return True when *value* has a shape OAuth entropy can legitimately take.
+
+    EVERY decoded form must keep the shape, not just the raw one. Decoding once
+    is not enough for the same reason it is not enough in `_exfil_url_warning`:
+    a double-encoded payload (`%252F` -> `%2F` -> `/`) survives a single pass,
+    so a raw-plus-one-decode test would let the base64-standard alphabet smuggle
+    an AWS-secret-shaped run into the blanked set. Decode until the text stops
+    changing, bounded by `_MAX_URL_DECODE_PASSES` so an over-encoded value
+    cannot spin here.
+    """
+    candidate = value
+    for _ in range(_MAX_URL_DECODE_PASSES):
+        if not _oauth_entropy_form_is_protocol_shaped(key, candidate):
+            return False
+        decoded = unquote(candidate)
+        if decoded == candidate:
+            return True
+        candidate = decoded
+    # Budget ran out with a layer still to go. A value that is STILL decodable
+    # was never seen in plaintext, so it cannot earn the exemption: refuse it
+    # and let the markerless scan judge the value as written.
+    return False
+
 
 def _oauth_credential_scan_target(
     url: str,
@@ -12428,9 +12466,11 @@ def _oauth_credential_scan_target(
     Fixed credential signatures are checked against the raw and decoded URL
     before this target is built. At an exact approved endpoint, only the
     code-owned state, nonce, and PKCE challenge fields are omitted from the
-    markerless bare-secret heuristic. Other recognized values, parameter names,
-    unknown parameters, and every non-query URL component remain in the scan
-    target.
+    markerless bare-secret heuristic, and only when the value carries a shape
+    the protocol can emit (see
+    :func:`_oauth_entropy_value_is_protocol_shaped`). Other recognized values,
+    parameter names, unknown parameters, and every non-query URL component
+    remain in the scan target.
     """
     if not approved_endpoint or not query:
         return url
@@ -12439,7 +12479,11 @@ def _oauth_credential_scan_target(
     for key, separator, value in (
         segment.partition("=") for segment in query.split("&")
     ):
-        approved_value = bool(separator) and key in _OAUTH_ENTROPY_QUERY_PARAMS
+        approved_value = (
+            bool(separator)
+            and key in _OAUTH_ENTROPY_QUERY_PARAMS
+            and _oauth_entropy_value_is_protocol_shaped(key, value)
+        )
         sanitized_segments.append(
             f"{key}{separator}" if approved_value else f"{key}{separator}{value}"
         )

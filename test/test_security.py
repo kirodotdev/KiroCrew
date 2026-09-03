@@ -2389,19 +2389,64 @@ class TestOAuthAuthorizationUrlRedaction:
         assert oauth_url_contains_credential(url) is True
         self._assert_general_redactors_remove_secret(url, encoded)
 
+    def test_bare_aws_secret_inside_state_fails_closed_everywhere(self) -> None:
+        assert len(self.BARE_AWS_SECRET) == 40
+        # A base64-standard-alphabet run is a shape base64url cannot emit, so it
+        # never inherits the entropy exemption -- no `+`/`/` reaches the blanked
+        # set at an approved endpoint.
+        assert "/" in self.BARE_AWS_SECRET
+        url = self.NOTION_URL.replace(self.STATE, self.BARE_AWS_SECRET, 1)
+        assert oauth_url_contains_credential(url) is True
+        self._assert_general_redactors_remove_secret(url, self.BARE_AWS_SECRET)
+
+    def test_percent_encoded_secret_alphabet_cannot_buy_the_exemption(self) -> None:
+        # The markerless scan runs on the raw and decoded URL, so the shape test
+        # must too: `%2F` must not launder a base64-standard run into exemption.
+        url = self.NOTION_URL.replace(self.STATE, self.BARE_AWS_SECRET.replace("/", "%2F"), 1)
+        assert oauth_url_contains_credential(url) is True
+
+    @pytest.mark.parametrize(
+        "encoded_slash",
+        ["%2F", "%252F", "%25252F", "%2525252F"],
+        ids=["single", "double", "triple", "over-budget"],
+    )
+    def test_no_encoding_depth_earns_the_entropy_exemption(self, encoded_slash: str) -> None:
+        # One decode pass is not enough to JUDGE the shape: `%252F` decodes to
+        # `%2F`, which still carries no literal `/`, so a raw-plus-one-decode test
+        # would hand the exemption to a base64-standard run. Every decoded form
+        # must keep the shape, and a value still decodable at the bound fails
+        # closed.
+        #
+        # Scoped to the exemption predicate on purpose. Whether the banner then
+        # WARNS on a doubly-encoded run is a separate, pre-existing property of
+        # the markerless scan, which decodes the URL twice while
+        # `_MAX_URL_DECODE_PASSES` is 3 -- so `%252F` goes unflagged even in a
+        # parameter that was never exempt and at an unapproved endpoint. This
+        # test must not claim to cover that gap.
+        value = self.BARE_AWS_SECRET.replace("/", encoded_slash)
+        assert security._oauth_entropy_value_is_protocol_shaped("state", value) is False
+
+    def test_off_length_challenge_loses_the_s256_exemption(self) -> None:
+        # An S256 challenge is base64url of a 32-byte digest: exactly 43 chars.
+        # A 40-char value in that field is not a challenge shape.
+        assert len(self.BARE_AWS_SECRET_ALNUM) == 40
+        url = self.NOTION_URL.replace(self.CHALLENGE, self.BARE_AWS_SECRET_ALNUM, 1)
+        assert oauth_url_contains_credential(url) is True
+
     @pytest.mark.parametrize("parameter", ["state", "code_challenge"])
     def test_markerless_secret_shape_is_banner_exempt_but_generically_redacted(
         self, parameter: str
     ) -> None:
         if parameter == "state":
-            value = self.BARE_AWS_SECRET
+            value = self.BARE_AWS_SECRET_ALNUM
             original = self.STATE
         else:
             value = self.BARE_AWS_SECRET_ALNUM + "abc"
             original = self.CHALLENGE
         url = self.NOTION_URL.replace(original, value, 1)
 
-        # A markerless value is indistinguishable from normal OAuth entropy at
+        # A markerless value that IS base64url-shaped (and, for the challenge,
+        # the right length) is indistinguishable from normal OAuth entropy at
         # this approved parameter boundary. General output redactors keep the
         # heuristic because they do not inherit the banner-only exemption.
         assert oauth_url_contains_credential(url) is False
