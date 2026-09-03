@@ -3155,6 +3155,48 @@ def _redaction_notice(count: int) -> str:
     )
 
 
+def _append_redaction_notice(slot: _ChatSlot, redacted: str) -> None:
+    """Append the credential-redaction notice for an already-persisted body.
+
+    ``redacted`` is the SAME string that was just written to the assistant row,
+    so counting composes with per-chunk redaction unchanged: whatever pass wrote
+    the tag (per-chunk in the run loop, or a finalizing re-redact), the artifact
+    is already in the text by the time this runs. The wire-stream redactors are
+    deliberately not in that list: they rewrite only what crosses WS/SSE, and
+    ``assistant_text`` is accumulated independently of them.
+
+    Tell the user the text was altered. Until #6189 this was silent: the
+    redactor's warnings are logged and nothing else, so a user copied a command
+    whose credential had become a placeholder and only found out when it failed
+    downstream.
+
+    The count comes from the TAG in the persisted text, not from the redactor's
+    returned warnings, because on the streaming path that warning list is almost
+    always empty here: the run loop redacts every chunk before it enters
+    ``assistant_text``, so a finalizing re-redact re-redacts already-clean text
+    and reports nothing. Warnings only fire for a credential split across chunk
+    boundaries, the rarer case. Reading the artifact instead of the event answers
+    the question the user actually has -- "is what I am about to copy still what
+    the assistant wrote?" -- and stays correct wherever the substitution happened.
+
+    The count sums every CREDENTIAL tag the redactor can emit, read from
+    ``CREDENTIAL_REDACTION_TAGS`` which ``security.py`` owns beside the passes
+    that write them. Enumerating tags by hand here is what previously left an
+    encoded-credential-only segment silently rewritten and undercounted a mixed
+    one; asking the redactor's own module means a newly added tag cannot escape.
+
+    SCOPE: credentials only. This notice does NOT fire for the
+    ``redact_exfiltration_urls`` pass, which rewrites a URL to
+    ``[REDACTED: suspicious URL to <domain>]`` just as silently. Same root cause,
+    different rewriter -- tracked separately rather than widened into this fix,
+    because issue #6189 reports the credential case and the notice wording
+    ("A credential ... was replaced") would have to change to cover both.
+    """
+    count = sum(redacted.count(tag) for tag in CREDENTIAL_REDACTION_TAGS)
+    if count:
+        slot.append("notice", _redaction_notice(count), "msg msg-info")
+
+
 def _flush_segment(
     state: DashboardState,
     slot: _ChatSlot,
@@ -3236,41 +3278,16 @@ def _flush_segment(
         last_msg["variants"] = pending_list
         last_msg["variant_idx"] = len(pending_list) - 1
         slot._pending_variants = []
-    # Tell the user the text was altered. Until now this was silent: the
-    # `cred_warnings` above are logged and nothing else, so a user copied a
-    # command whose credential had become a placeholder and only found out when
-    # it failed downstream (issue #6189).
-    #
-    # The count comes from the TAG in the persisted text, not from
-    # `cred_warnings`, because on the streaming path that list is almost always
-    # empty HERE: the run loop redacts every chunk before it enters
-    # `assistant_text` (EVENT_TEXT_CHUNK branch), so this call re-redacts
-    # already-clean text and reports nothing. `cred_warnings` only fires for a
-    # credential split across chunk boundaries, which is the rarer case. Reading
-    # the artifact instead of the event answers the question the user actually
-    # has -- "is what I am about to copy still what the assistant wrote?" -- and
-    # stays correct wherever the substitution happened: per-chunk, the
-    # StreamRedactor wire pass, or this call. All three write the same tag.
-    #
-    # Broadcast unconditionally: `quiet_persist` exists to suppress a DUPLICATE
-    # of the pre-steer assistant text that clients already rendered, and a notice
-    # row has no streamed counterpart to duplicate. Suppressing it there would
-    # drop the warning on exactly the path this fix exists to cover.
-    # The count sums every CREDENTIAL tag the redactor can emit, read from
-    # `CREDENTIAL_REDACTION_TAGS` which `security.py` owns beside the passes that
-    # write them. Enumerating tags by hand here is what previously left an
-    # encoded-credential-only segment silently rewritten and undercounted a mixed
-    # one; asking the redactor's own module means a newly added tag cannot escape.
-    #
-    # SCOPE: credentials only, so this notice does NOT fire for the
-    # `redact_exfiltration_urls` pass a few lines above, which rewrites a URL to
-    # `[REDACTED: suspicious URL to <domain>]` just as silently. Same root cause,
-    # same function, different rewriter -- tracked separately rather than widened
-    # into this fix, because issue #6189 reports the credential case and the notice
-    # wording ("A credential ... was replaced") would have to change to cover both.
-    _cred_redactions = sum(redacted.count(tag) for tag in CREDENTIAL_REDACTION_TAGS)
-    if _cred_redactions:
-        slot.append("notice", _redaction_notice(_cred_redactions), "msg msg-info")
+    # Tell the user the text was altered (issue #6189); shared with the
+    # exception-path persists via `_append_redaction_notice` so all eight
+    # persists carry one notice contract. The notice broadcasts unconditionally
+    # even under `quiet_persist`: that flag exists to suppress a DUPLICATE of the
+    # pre-steer assistant text clients already rendered, and a notice row has no
+    # streamed counterpart to duplicate -- suppressing it would drop the warning
+    # on exactly the path this fix exists to cover. See the helper for why the
+    # count reads the persisted TAG rather than the redactor's warnings and why
+    # the scope is credentials only.
+    _append_redaction_notice(slot, redacted)
     # Re-append any stop_event that belongs to this segment's trailing run,
     # placed AFTER the finalized assistant message so the UI shows
     # prose → stop card.
@@ -10509,11 +10526,9 @@ async def _run_chat(
     except asyncio.CancelledError:
         if assistant_text:
             slot.purge_chunks()
-            slot.append(
-                "assistant",
-                redact_credentials(redact_exfiltration_urls(assistant_text)[0])[0],
-                "msg msg-a",
-            )
+            _redacted = redact_credentials(redact_exfiltration_urls(assistant_text)[0])[0]
+            slot.append("assistant", _redacted, "msg msg-a")
+            _append_redaction_notice(slot, _redacted)
     except AcpAuthRequired as exc:
         # The signed-out CLI is discovered HERE, not by a probe: this is the
         # authoritative logout signal now that readiness is latched at boot.
@@ -10528,11 +10543,9 @@ async def _run_chat(
         needs_session_reset = True
         if assistant_text:
             slot.purge_chunks()
-            slot.append(
-                "assistant",
-                redact_credentials(redact_exfiltration_urls(assistant_text)[0])[0],
-                "msg msg-a",
-            )
+            _redacted = redact_credentials(redact_exfiltration_urls(assistant_text)[0])[0]
+            slot.append("assistant", _redacted, "msg msg-a")
+            _append_redaction_notice(slot, _redacted)
         _auth_msg = str(exc)
         slot.append("error", _auth_msg, "msg msg-err")
         _mark_kiro_signed_out(state)
@@ -10542,11 +10555,9 @@ async def _run_chat(
         needs_session_reset = True
         if assistant_text:
             slot.purge_chunks()
-            slot.append(
-                "assistant",
-                redact_credentials(redact_exfiltration_urls(assistant_text)[0])[0],
-                "msg msg-a",
-            )
+            _redacted = redact_credentials(redact_exfiltration_urls(assistant_text)[0])[0]
+            slot.append("assistant", _redacted, "msg msg-a")
+            _append_redaction_notice(slot, _redacted)
         slot._acp_pipe_death_retries += 1
         if _should_suppress_requeue(slot):
             pass
@@ -10582,11 +10593,9 @@ async def _run_chat(
         needs_session_reset = True  # checked in finally block
         if assistant_text:
             slot.purge_chunks()
-            slot.append(
-                "assistant",
-                redact_credentials(redact_exfiltration_urls(assistant_text)[0])[0],
-                "msg msg-a",
-            )
+            _redacted = redact_credentials(redact_exfiltration_urls(assistant_text)[0])[0]
+            slot.append("assistant", _redacted, "msg msg-a")
+            _append_redaction_notice(slot, _redacted)
         slot._prompt_busy_retries += 1
         if _should_suppress_requeue(slot):
             pass
@@ -10661,6 +10670,7 @@ async def _run_chat(
                 _safe, _ = redact_credentials(_safe)
                 slot.purge_chunks()
                 slot.append("assistant", _safe, "msg msg-a")
+                _append_redaction_notice(slot, _safe)
             # Option Y: pipe-death ("process exited"/"not running") shares the
             # _acp_pipe_death_retries counter with the AcpProcessDied handler;
             # genuine "already in progress" busy uses _prompt_busy_retries.
@@ -10932,6 +10942,7 @@ async def _run_chat(
                 _safe, _ = redact_credentials(_safe)
                 slot.purge_chunks()
                 slot.append("assistant", _safe, "msg msg-a")
+                _append_redaction_notice(slot, _safe)
             # Surface a brief recovery notice (one append). Tag it ONLY when the
             # requeue below will actually happen, or a terminal notice reads as pending.
             _will_recover = not _should_suppress_requeue(slot) and _prompt_depth == 0
@@ -10973,6 +10984,7 @@ async def _run_chat(
                 _safe, _ = redact_credentials(_safe)
                 slot.purge_chunks()
                 slot.append("assistant", _safe, "msg msg-a")
+                _append_redaction_notice(slot, _safe)
             # ── Poisoned-conversation escalation ────────────────────────────
             # A transient-classified error that reaches this terminal branch
             # with ZERO output means a full retry ladder was exhausted
