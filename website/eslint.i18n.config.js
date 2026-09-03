@@ -831,6 +831,14 @@ export default [
             exclude: [
               // Diagnostics and dev-only output.
               '^console\\.\\w+$', '^(Type)?Error$', '^URL(SearchParams)?$',
+              // Same class as `(Type)?Error` above: `new DOMException('Aborted',
+              // 'AbortError')` carries a protocol error NAME the platform matches
+              // by value (AbortError is how an abort is recognised), never copy.
+              '^DOMException$',
+              // `useStagedMount(gate, key, bypass)`'s string argument is a REMOUNT
+              // CACHE KEY -- an opaque identity with \u0000 separators, compared by
+              // value and never rendered. Anchored to the bare hook name.
+              '^useStagedMount$',
               // `popoutController.ts`'s two console shims: `logDebug` is
               // `console.debug` and `logWarn` is `console.warn`, both behind a debug
               // flag. Identical class to `^console\.\w+$` one line up — the argument
@@ -1005,6 +1013,10 @@ export default [
           'object-properties': {
             exclude: [
               'id', 'key', 'navId', 'slug', 'type', 'kind', 'code', 'name',
+              // `heightScopeKey: `${slot}@w${bucket}`` -- the virtualizer's height-
+              // cache partition key (slot id + width bucket), looked up by value.
+              // Same class as `key` one entry up; never rendered.
+              'heightScopeKey',
               'className', 'icon', 'path', 'route', 'href', 'url', 'method',
               'event', 'variant', 'color', 'align', 'position', 'placement',
               // Monaco tokenizer state transitions: `next: '@displayMath'`, `'@pop'`.

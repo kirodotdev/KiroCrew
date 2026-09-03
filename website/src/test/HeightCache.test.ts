@@ -22,8 +22,10 @@ afterEach(() => {
 
 // Arbitrary: short alphanumeric keys (real item keys are stable IDs).
 const keyArb = fc.stringMatching(/^[a-zA-Z0-9_-]{1,12}$/)
-// Arbitrary: non-negative finite heights (real heights are pixel measurements).
-const heightArb = fc.integer({ min: 0, max: 5000 })
+// Arbitrary: POSITIVE finite heights (real heights are pixel measurements).
+// Zero is deliberately outside the domain: load() drops it as poison (see the
+// zero-scrub suite below), so a zero does not round-trip BY DESIGN.
+const heightArb = fc.integer({ min: 1, max: 5000 })
 
 // Feature: chat-virtualizer, Property 3: Height Cache Consistency
 // **Validates: Requirements 3.1, 3.2**
@@ -685,5 +687,40 @@ describe('HeightCache: access-recency eviction', () => {
     expect(c.peek('live0')).toBeUndefined()
     expect(c.peek('live1')).toBe(100)
     expect(c.averageHeight()).toBe(100)
+  })
+})
+
+// A persisted ZERO is poison, not a measurement — blobs written before the RO
+// path gained its h > 0 floor carry zeros from rows measured while an ancestor
+// was display:none. Loading one back defeats the write-side floor's self-heal:
+// the offset tree prices the region at 0px, the window mounts nothing there,
+// and a row that never mounts is never re-measured. Field signature: a session
+// opens to a full-viewport blank (items present, zero mounted rows, both
+// spacers 0px) and stays that way across reloads, because the poison reloads
+// with it. load() must drop zeros so those rows come back as UNMEASURED, which
+// the estimate path handles.
+describe('HeightCache: poisoned zero entries are dropped on load', () => {
+  it('drops zero heights from a persisted blob and keeps positive ones', () => {
+    window.localStorage.setItem(
+      'vc_heights_poisoned',
+      JSON.stringify({ a: 0, b: 120, c: 0, d: 36 }),
+    )
+    const cache = new HeightCache('poisoned')
+    // Zeros load as ABSENT — the unmeasured state — not as 0px truths.
+    expect(cache.get('a')).toBeUndefined()
+    expect(cache.get('c')).toBeUndefined()
+    expect(cache.get('b')).toBe(120)
+    expect(cache.get('d')).toBe(36)
+  })
+
+  it('an all-zero blob loads as an empty cache, not a 0px transcript', () => {
+    window.localStorage.setItem(
+      'vc_heights_allzero',
+      JSON.stringify({ a: 0, b: 0, c: 0 }),
+    )
+    const cache = new HeightCache('allzero')
+    expect(cache.get('a')).toBeUndefined()
+    expect(cache.get('b')).toBeUndefined()
+    expect(cache.get('c')).toBeUndefined()
   })
 })

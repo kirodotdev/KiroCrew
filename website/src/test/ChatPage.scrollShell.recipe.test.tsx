@@ -150,8 +150,11 @@ describe('scroll shell: element order inside the scroller', () => {
   it('keeps both window spacers exempt from browser scroll anchoring', () => {
     // The spacers resize as the window moves; letting the browser anchor on
     // them (rather than real content) is the mid-fetch jump this exempts.
-    expect(SHELL).toContain("<div aria-hidden style={{ height: virt.offsetBefore, overflowAnchor: 'none' }} />")
-    expect(SHELL).toContain("<div aria-hidden style={{ height: virt.offsetAfter, overflowAnchor: 'none' }} />")
+    // They also carry the skeleton class and the transcript's own column
+    // width: an unmounted region rendered as a blank void reads as content
+    // that vanished rather than content not yet drawn.
+    expect(SHELL).toContain("<div aria-hidden className=\"vc-spacer-skeleton mx-auto w-full\" style={{ height: virt.offsetBefore, maxWidth: 'var(--mc-content-width, 900px)', overflowAnchor: 'none' }} />")
+    expect(SHELL).toContain("<div aria-hidden className=\"vc-spacer-skeleton mx-auto w-full\" style={{ height: virt.offsetAfter, maxWidth: 'var(--mc-content-width, 900px)', overflowAnchor: 'none' }} />")
   })
 
   it('gates the earlier-messages bar on the cursor belonging to the active slot', () => {
@@ -160,16 +163,28 @@ describe('scroll shell: element order inside the scroller', () => {
     expect(SHELL).toContain('{slotHasMore && cursorIsForActiveSlot && (')
   })
 
-  it('keeps the loading spinner sticky below the header, anchor-exempt, on an opaque bg', () => {
+  it('keeps the loading spinner an ABSOLUTE overlay below the header, anchor-exempt, badge-backed', () => {
     // Slice the WHOLE conditional block (gate to the next skeleton comment) so
     // the class is bound to the spinner element itself — a SHELL-wide contain
     // would stay green with the literal parked in a comment anywhere.
-    const spinner = between('{loadingOlder && (', '{/* Top spacer')
-    expect(spinner).toContain('className="sticky top-16 z-[1] flex justify-center py-2"')
+    //
+    // ABSOLUTE, not sticky: a sticky element still owns flow space, so
+    // mounting/unmounting it on every loadingOlder flip inserted/removed its
+    // own ~32px above the content — ±32px content twitches for a reader parked
+    // at the top, once per landing (momentum rig). The opaque background moved
+    // from the box to an inner badge, since a zero-footprint overlay now sits
+    // OVER transcript text and the glyph has to stay legible.
+    const spinner = between('{loadingOlder && spinnerNearTop !== false && (', '{/* Top spacer')
+    expect(spinner).toContain('className="absolute top-16 inset-x-0 z-[1] flex justify-center py-2 pointer-events-none"')
     expect(spinner).toContain('data-testid="older-messages-loading"')
     expect(spinner).toContain("overflowAnchor: 'none'")
     expect(spinner).toContain("background: 'var(--bg)'")
     expect(spinner).toContain('<Loader size={16} className="animate-spin text-muted" />')
+    // The overlay has no flow footprint, so its class must not go sticky
+    // again. Asserted against the className ATTRIBUTE, not the whole slice:
+    // the block's own comment explains why sticky was wrong, and a slice-wide
+    // negative would read that prose as the violation.
+    expect(spinner).not.toMatch(/className="[^"]*sticky/)
   })
 })
 

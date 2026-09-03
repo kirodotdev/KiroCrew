@@ -33,6 +33,7 @@ export default function TranscriptScrollShell({
   onScroll,
   virt,
   loadingOlder,
+  spinnerNearTop,
   scrollerStyle,
   aboveRows,
   belowRows,
@@ -43,6 +44,11 @@ export default function TranscriptScrollShell({
   onScroll: () => void
   virt: TranscriptVirtWiring
   loadingOlder: boolean
+  /** Whether the reader is still near the top, where the header-pinned loading
+   *  overlay belongs. Omitted (undefined) means "always show it" — the overlay
+   *  has zero layout footprint, so a host that does not track this cannot be
+   *  hurt by it. */
+  spinnerNearTop?: boolean
   /** Host-owned geometry merged onto the scroller (e.g. the fade-band clearance padding). */
   scrollerStyle?: React.CSSProperties
   /** Page content above the rows (the earlier-messages paging bar). */
@@ -105,25 +111,41 @@ export default function TranscriptScrollShell({
       {aboveRows}
       {/* Top sentinel: drives upward window expansion via virtualizer's IO. */}
       <div ref={virt.topSentinelRef} aria-hidden style={{ height: 1 }} />
-      {/* top-16 matches the h-16 header spacer above, so the pinned spinner
-          clears the overlay header instead of sitting under it.
+      {/* top-16 matches the h-16 header spacer above, so the spinner clears the
+          overlay header instead of sitting under it.
           overflow-anchor:none so appearing/vanishing here cannot become the
           browser's scroll anchor and jump the list mid-fetch. */}
-      {loadingOlder && (
-        <div className="sticky top-16 z-[1] flex justify-center py-2" data-testid="older-messages-loading" role="status" aria-label={i18nT('pages.chatPage.loading_earlier_messages')} style={{ overflowAnchor: 'none', background: 'var(--bg)' }}>
-          <Loader size={16} className="animate-spin text-muted" />
+      {loadingOlder && spinnerNearTop !== false && (
+        /* ABSOLUTE overlay, not sticky: a sticky element still owns flow
+           space, so mounting/unmounting it on every loadingOlder flip
+           inserted/removed its own ~32px above the content — measured on the
+           momentum rig as ±32px content twitches for a reader parked at the
+           top, once per landing. An absolute box has zero layout footprint;
+           the transcript never moves. The badge keeps its own background so
+           the glyph stays legible over transcript text it now overlaps.
+           `spinnerNearTop` lets the page hide it once the reader has scrolled
+           away from the top, where an overlay pinned to the header would
+           otherwise float over unrelated content. */
+        <div className="absolute top-16 inset-x-0 z-[1] flex justify-center py-2 pointer-events-none" data-testid="older-messages-loading" role="status" aria-label={i18nT('pages.chatPage.loading_earlier_messages')} style={{ overflowAnchor: 'none' }}>
+          <span className="rounded-full px-2 py-1" style={{ background: 'var(--bg)' }}>
+            <Loader size={16} className="animate-spin text-muted" />
+          </span>
         </div>
       )}
       {/* Top spacer — reserves the height of all items above the mounted
           window so the scrollbar stays accurate while only the window
           renders real DOM (keeps fast scroll cheap — O(window) nodes).
           overflow-anchor:none so the browser anchors on real content,
-          not on this spacer (which resizes as the window moves). */}
-      <div aria-hidden style={{ height: virt.offsetBefore, overflowAnchor: 'none' }} />
+          not on this spacer (which resizes as the window moves).
+          `vc-spacer-skeleton` paints placeholder bars at the transcript's own
+          column width: an unmounted region used to read as a blank void,
+          which looks like content that vanished rather than content not yet
+          drawn. */}
+      <div aria-hidden className="vc-spacer-skeleton mx-auto w-full" style={{ height: virt.offsetBefore, maxWidth: 'var(--mc-content-width, 900px)', overflowAnchor: 'none' }} />
       {children}
       {/* Bottom spacer — reserves the height of all items below the
           mounted window. overflow-anchor:none (see top spacer). */}
-      <div aria-hidden style={{ height: virt.offsetAfter, overflowAnchor: 'none' }} />
+      <div aria-hidden className="vc-spacer-skeleton mx-auto w-full" style={{ height: virt.offsetAfter, maxWidth: 'var(--mc-content-width, 900px)', overflowAnchor: 'none' }} />
       {/* Bottom sentinel: drives downward window expansion when in jump mode. */}
       <div ref={virt.bottomSentinelRef} aria-hidden style={{ height: 1 }} />
       {belowRows}

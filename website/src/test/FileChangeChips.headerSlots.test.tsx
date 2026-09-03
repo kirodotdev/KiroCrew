@@ -40,6 +40,7 @@ vi.mock('../pierre', async importOriginal => ({
 }))
 
 import FileChangeChips from '../components/FileChangeChips'
+import { __resetStagingForTests } from '../components/pierreStaging'
 
 const change = (path: string, before: string, after: string) => ({ path, before, after })
 const latest = () => hoisted.options[hoisted.options.length - 1]
@@ -52,6 +53,10 @@ beforeEach(() => {
   // The card's split/unified layout persists app-wide (`mc-diff-split`);
   // start each test from the unseeded default.
   localStorage.clear()
+  // Row mounting is staged through module-level queue state, so a test that
+  // spends the eager budget would leave the next one rendering placeholders
+  // instead of Pierre — these tests are about the header Pierre paints.
+  __resetStagingForTests()
   cleanup()
 })
 

@@ -20,7 +20,33 @@
 // localStorage key prefix — a storage identifier, never rendered. Not UI copy.
 // Kept in sync with SESSION_PREFIXES in `utils/storageGc.ts`, which garbage-
 // collects these keys; changing it orphans every persisted anchor.
-export const ANCHOR_KEY_PREFIX = 'vc_anchor_'
+//
+// v2: anchors written before the hard-input save gate existed can hold a
+// SELF-SCROLL displacement as if it were the reader's position (the "opens
+// mid-transcript with a skeleton wall" reports). Those blobs are
+// indistinguishable from honest ones after the fact, so the version bump
+// deliberately orphans them all — a one-time amnesty. The old-prefix reaper
+// below removes the orphans.
+export const ANCHOR_KEY_PREFIX = 'vc_anchor2_'
+const LEGACY_ANCHOR_KEY_PREFIX = 'vc_anchor_'
+
+/** One-time reap of pre-gate anchors (see the prefix doc). Runs at module
+ *  load; best-effort, quota/private-mode failures are ignored. */
+function reapLegacyAnchors(): void {
+  try {
+    const ls = typeof window !== 'undefined' ? window.localStorage : null
+    if (!ls) return
+    const doomed: string[] = []
+    for (let i = 0; i < ls.length; i++) {
+      const k = ls.key(i)
+      if (k && k.startsWith(LEGACY_ANCHOR_KEY_PREFIX) && !k.startsWith(ANCHOR_KEY_PREFIX)) {
+        doomed.push(k)
+      }
+    }
+    for (const k of doomed) ls.removeItem(k)
+  } catch { /* storage unavailable — nothing to reap */ }
+}
+reapLegacyAnchors()
 
 /** A persisted reading position. */
 export interface ScrollAnchor {

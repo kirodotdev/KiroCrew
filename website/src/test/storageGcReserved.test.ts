@@ -11,9 +11,13 @@
  */
 import { describe, it, expect, beforeEach } from 'vitest'
 import { gcOrphanedStorage, gcSessionStorage } from '../utils/storageGc'
+import { ANCHOR_KEY_PREFIX } from '../hooks/virtualizer/ScrollAnchorCache'
 
 const HEIGHTS = 'vc_heights_'
-const ANCHOR = 'vc_anchor_'
+/** Imported, not restated: the anchor key shape carries a format version, and a
+ *  hardcoded copy here silently stops describing the keys the sweep owns the
+ *  moment that version is bumped — which reads as the sweep having a hole. */
+const ANCHOR = ANCHOR_KEY_PREFIX
 /** Must stay in step with `ARTIFACT_HEIGHT_NS` in `pages/ArtifactsPage.tsx`. */
 const GALLERY = 'artifacts-gallery'
 
@@ -44,6 +48,19 @@ describe('gcOrphanedStorage', () => {
     const removed = gcOrphanedStorage(new Set(['alive']))
 
     expect(removed).toBe(3)
+    expect(localStorage.length).toBe(0)
+  })
+
+  it('collects a dead session under the PRE-BUMP anchor prefix too', async () => {
+    // The anchor key shape carries a format version. `ScrollAnchorCache` reaps
+    // the old shape outright, but only once the chat virtualizer loads — so for
+    // a user who never opens a chat the boot sweep is the only thing that ever
+    // reaches those keys, and bumping the prefix without keeping the old one here
+    // would strand them permanently.
+    localStorage.setItem('vc_anchor_gone', '{}')
+    localStorage.setItem(ANCHOR + 'gone', '{}')
+
+    expect(gcOrphanedStorage(new Set(['alive']))).toBe(2)
     expect(localStorage.length).toBe(0)
   })
 

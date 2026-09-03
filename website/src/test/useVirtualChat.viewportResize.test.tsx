@@ -11,6 +11,8 @@
 // animation).
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { renderHook, act } from '@testing-library/react'
 import { type RefObject } from 'react'
 import { useVirtualChat } from '../hooks/virtualizer/useVirtualChat'
@@ -51,6 +53,19 @@ class FakeResizeObserver {
   }
 }
 
+/**
+ * DIRECTION ASYMMETRY — only ONE of the two viewport directions needs a write.
+ *
+ * A SHRINK raises the maximum scrollTop (`scrollHeight - clientHeight` grows), and
+ * no engine ever pushes a reader DOWN, so a bottom-flush follower is stranded
+ * above the new bottom until something writes. That is the defect this file's
+ * other cases pin.
+ *
+ * A GROWTH lowers the maximum, so the engine's own clamp brings a flush reader
+ * back to flush with no write at all — and for a reader parked ABOVE the bottom
+ * that same clamp is what drags them to the end (the deleting-a-draft report). A
+ * pin there is therefore redundant at best and the yank itself at worst.
+ */
 describe('useVirtualChat: viewport-box resize re-pin', () => {
   let origRO: typeof ResizeObserver | undefined
   let origRaf: typeof requestAnimationFrame
@@ -232,5 +247,40 @@ describe('useVirtualChat: viewport-box resize re-pin', () => {
     // One re-pin when the settle window closes (we were following).
     act(() => { state.clientHeight = 340; vi.advanceTimersByTime(RAIL_SETTLE_MS + 1) })
     expect(el.scrollTop).toBe(2000 - 340)
+  })
+})
+
+describe('viewport GROWTH is left to the engine', () => {
+  it('does not write when the scroller grows under a followed reader', () => {
+    // The clamp already holds a flush reader flush; a write here would also fire
+    // for a reader parked above the bottom, which is the deletion yank.
+    const src = readFileSync(join(__dirname, '..', 'hooks', 'virtualizer', 'useVirtualChat.ts'), 'utf8')
+    const branch = src.slice(src.indexOf('if (entry.target === el) {'))
+    const head = branch.slice(0, branch.indexOf('viewportResized = true'))
+    // The skipped direction is GROWTH (`>`), not shrink: reversing this comparison
+    // is what made typing walk the transcript and deleting jump to the bottom.
+    expect(head).toMatch(/if \(prevCh > 0 && el\.clientHeight > prevCh\) continue/)
+    expect(head).not.toMatch(/el\.clientHeight < prevCh\) continue/)
+  })
+})
+
+describe('a composer-caused shrink is not followed', () => {
+  it('skips the pin when the composer explains the viewport change', () => {
+    // The reported phone defect: typing grows the composer, which shrinks the
+    // scroller, and following that walks the transcript up a line every few
+    // characters. Chrome mounting below the transcript is the SAME geometry with a
+    // different cause and must still re-pin — so the branch consults the cause.
+    const src = readFileSync(join(__dirname, '..', 'hooks', 'virtualizer', 'useVirtualChat.ts'), 'utf8')
+    const branch = src.slice(src.indexOf('if (entry.target === el) {'))
+    const head = branch.slice(0, branch.indexOf('viewportResized = true'))
+    expect(head).toMatch(/if \(composerExplainsViewportChange\(\)\) continue/)
+  })
+
+  it('the composer autosizer is what publishes that cause', () => {
+    // Both ends must exist or the guard above is permanently false and the pin
+    // simply never fires for anyone.
+    const input = readFileSync(join(__dirname, '..', 'components', 'ChatInput.tsx'), 'utf8')
+    expect(input).toMatch(/markComposerResize\(\)/)
+    expect(input).toMatch(/from '\.\.\/utils\/composerResize'/)
   })
 })

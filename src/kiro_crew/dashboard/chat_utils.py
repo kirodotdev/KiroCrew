@@ -18,6 +18,8 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import TYPE_CHECKING, Any
 
+from aiohttp import web
+
 if TYPE_CHECKING:
     from kiro_crew.providers.base import LLMEvent
     from kiro_crew.slack.outbound import PostedOptions
@@ -133,6 +135,33 @@ _COMPACTION_NOTICE_SHOW_FIRST_N = 2
 _COMPACTION_FAIL_COOLDOWN_SECS = 60.0
 
 
+def history_corpus_unreadable(code: str = "history_corpus_unreadable") -> Any:
+    """The one response for "this session's history corpus could not be read".
+
+    Three handlers independently wrapped a corpus read in `try/except` and, on
+    failure, substituted their own local encoding of "there is nothing there" --
+    `rotated = []`, `_rotated_head = []`, `all_msgs = []`. Each substitution turns
+    a read failure into a SUCCESSFUL response that reports a shorter transcript,
+    and this corpus is an index space, so the shortening also shifts every index
+    above the missing rows. A reader cannot see it and has nothing to retry, and a
+    fork taken at a rendered row lands on a different message.
+
+    Three separate hand-written recoveries is why the same defect was found three
+    times in three places. This exists so the recovery is one decision rather than
+    a choice each call site re-makes: on a corpus read failure, call this.
+
+    `code` names the surface (the fork path answers `fork_corpus_unreadable`) so a
+    client can tell which affordance to retry.
+    """
+    return web.json_response(
+        {
+            "error": "this session's history could not be read; please retry",
+            "code": code,
+        },
+        status=503,
+    )
+
+
 def _redact_deep(obj):
     """Recursively redact all string values in a nested structure."""
     if isinstance(obj, str):
@@ -166,7 +195,10 @@ def _redact_tool_field(text: str | None, *, limit: int = _MAX_TOOL_FIELD) -> str
         if len(encoded) > limit:
             # errors="ignore" cleanly drops a partial trailing multi-byte
             # sequence at the cut point.
-            text = encoded[:limit].decode("utf-8", errors="ignore") + f"\n… [truncated at {limit:,} bytes]"
+            text = (
+                encoded[:limit].decode("utf-8", errors="ignore")
+                + f"\n… [truncated at {limit:,} bytes]"
+            )
     text, _ = redact_exfiltration_urls(text)
     text, _ = redact_credentials(text)
     return text
@@ -194,9 +226,13 @@ def _build_stream_chunk(msg: dict) -> str:
     else:
         cls_val = _redact_deep(cls_val)
     return json.dumps(
-        {"type": msg.get("role", ""), "content": content, "ts": msg.get("ts", ""),
-         "cls": cls_val,
-         **({"meta": meta} if meta else {})}
+        {
+            "type": msg.get("role", ""),
+            "content": content,
+            "ts": msg.get("ts", ""),
+            "cls": cls_val,
+            **({"meta": meta} if meta else {}),
+        }
     )
 
 
@@ -373,7 +409,11 @@ def _broadcast_auto_tool(state: DashboardState, slot: _ChatSlot, event: "LLMEven
     state.broadcast_ws(
         "tool_call",
         {
-            "slot": slot.key, "tool": title, "kind": kind, "auto": True, "tool_call_id": tcid,
+            "slot": slot.key,
+            "tool": title,
+            "kind": kind,
+            "auto": True,
+            "tool_call_id": tcid,
             "purpose": _redact_tool_field(event.tool_purpose, limit=_MAX_TOOL_PURPOSE),
             "input_preview": _redact_tool_field(event.tool_input),
         },
@@ -381,9 +421,7 @@ def _broadcast_auto_tool(state: DashboardState, slot: _ChatSlot, event: "LLMEven
     return title
 
 
-def _append_compaction_notice(
-    state: DashboardState, slot: _ChatSlot, msg_text: str
-) -> None:
+def _append_compaction_notice(state: DashboardState, slot: _ChatSlot, msg_text: str) -> None:
     """Append a compaction status notice as an assistant message and broadcast it.
 
     The notice is tagged ``kind="compaction"`` so the dashboard can tell it apart
@@ -521,7 +559,7 @@ def _history_key_for(slot_key: str) -> str:
     if slot_key.startswith("dashboard:"):
         return slot_key
     while slot_key.startswith("dashboard_"):
-        slot_key = slot_key[len("dashboard_"):]
+        slot_key = slot_key[len("dashboard_") :]
     return f"dashboard:{slot_key}"
 
 
@@ -552,9 +590,7 @@ def dashboard_slot_key(session_key: str) -> str:
         # (``cron:<job_id>``), so the surface gate is checked against both
         # spellings. Whichever matched, the displaying tab is the job's own.
         job_id = session_key.removeprefix("cron:").split(":", 1)[0]
-        if not (
-            has_dashboard_surface(session_key) or has_dashboard_surface(f"cron:{job_id}")
-        ):
+        if not (has_dashboard_surface(session_key) or has_dashboard_surface(f"cron:{job_id}")):
             return ""
         return _normalize_slot_key(f"cron-{job_id}")
     if not has_dashboard_surface(session_key):
@@ -1313,7 +1349,7 @@ def _maybe_inject_persona(
         and isinstance(theme_consent_sha, str)
         and THEME_CONSENT_SHA_RE.fullmatch(theme_consent_sha)
     ):
-        text = _installed_theme_persona(color_theme[len("custom-"):])
+        text = _installed_theme_persona(color_theme[len("custom-") :])
         if text:
             actual = hashlib.sha256(text.encode("utf-8")).hexdigest()
             if hmac.compare_digest(actual, theme_consent_sha):
@@ -1349,8 +1385,10 @@ def _maybe_consolidate(state, slot) -> None:
         state.consolidator.maybe_consolidate(effective_session_key(slot))
     elif state.consolidator and slot.is_restricted:
         sel().log_api_access(
-            caller=f"dashboard:{slot.key}", operation="consolidate",
-            outcome="denied", source="dashboard",
+            caller=f"dashboard:{slot.key}",
+            operation="consolidate",
+            outcome="denied",
+            source="dashboard",
             resources="restricted_session_block",
         )
 
@@ -1609,10 +1647,7 @@ _APPROVAL_GATED_RE = re.compile(
     # delete it now" is as gated as "If you approve ...". Bias toward reject is
     # safe here (a false reject just lands normally); the #2696 GPT round widened
     # this from the pronoun list after "If CI passes ..." slipped through.
-    r"\bif\b"
-    r"|\bjust\s+say\s+the\s+word\b"
-    r"|\bwant\s+me\s+to\b"
-    r"|\bshall\s+i\b"
+    r"\bif\b" r"|\bjust\s+say\s+the\s+word\b" r"|\bwant\s+me\s+to\b" r"|\bshall\s+i\b"
     # Consent DEFERRAL: the action is gated on the user's approval/confirmation,
     # even when the sentence reads as "I'll ... now" ("I'll wait for your approval
     # before I delete it right now"). The earlier list only caught "with your
@@ -2399,7 +2434,7 @@ def _dequeue_next_message(slot, merge_enabled: bool) -> tuple:
                 break
             to_merge.append(item)
         if len(to_merge) > 1:
-            del slot._queue[:len(to_merge)]
+            del slot._queue[: len(to_merge)]
             merged = "\n\n".join(item["content"] for item in to_merge)
             return f"[{len(to_merge)} queued messages merged]\n\n{merged}", to_merge
     item = slot.queue_pop(0)

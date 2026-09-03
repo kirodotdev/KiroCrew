@@ -75,3 +75,19 @@ describe('ScrollAnchorCache', () => {
     expect(loadScrollAnchor('alive')).toEqual({ key: 'k', top: 5 })
   })
 })
+
+
+describe('legacy anchor amnesty (v1 -> v2)', () => {
+  it('loadScrollAnchor never resolves a pre-gate v1 blob', () => {
+    // A v1 anchor written before the hard-input gate existed: potentially a
+    // self-scroll displacement laundered into a reading position. The v2
+    // prefix orphans it; the reaper (module load) removes it, and no v2 read
+    // can ever resolve it.
+    localStorage.setItem('vc_anchor_sess-old', JSON.stringify({ key: 'm5', top: -90 }))
+    expect(loadScrollAnchor('sess-old')).toBeNull()
+    // Save/load under v2 round-trips normally.
+    saveScrollAnchor('sess-old', { key: 'm7', top: -12 })
+    expect(loadScrollAnchor('sess-old')).toEqual({ key: 'm7', top: -12 })
+    expect(localStorage.getItem('vc_anchor2_sess-old')).not.toBeNull()
+  })
+})

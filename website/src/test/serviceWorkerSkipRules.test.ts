@@ -72,3 +72,52 @@ describe('service worker skip rules', () => {
     expect(intercepts('/assets/App-abc123.js', 'no-cors')).toBe(false)
   })
 })
+
+// `mode === 'navigate'` is true for EVERY top-level document, not just the SPA.
+// Keying the shell refresh on the mode alone stored an app-window document under
+// `/` and `/index.html`, after which an offline dashboard navigation booted that
+// document instead of the dashboard. Runs the real file, like the tests above.
+function shellPutsFor(path: string): string[] {
+  const puts: string[] = []
+  const listeners: Record<string, (e: unknown) => void> = {}
+  const fakeSelf = {
+    addEventListener: (kind: string, fn: (e: unknown) => void) => { listeners[kind] = fn },
+    location: { origin: ORIGIN },
+    skipWaiting: () => {},
+    clients: { claim: () => {} },
+  }
+  const fakeCaches = {
+    open: async () => ({
+      addAll: async () => {},
+      put: async (key: string) => { puts.push(key) },
+    }),
+    keys: async () => [] as string[],
+    match: async () => undefined,
+    delete: async () => {},
+  }
+  const resp = { ok: true, clone: () => resp }
+  new Function('self', 'caches', 'fetch', readFileSync(SW_PATH, 'utf8'))(
+    fakeSelf, fakeCaches, () => Promise.resolve(resp),
+  )
+  const waits: unknown[] = []
+  listeners.fetch({
+    request: { method: 'GET', url: ORIGIN + path, mode: 'navigate' },
+    respondWith: (p: unknown) => { waits.push(p) },
+    waitUntil: (p: unknown) => { waits.push(p) },
+  })
+  return { puts, settled: Promise.all(waits.map((p) => Promise.resolve(p).catch(() => {}))) } as unknown as string[]
+}
+
+describe('the shell cache refresh is scoped to the shell', () => {
+  it('caches the SPA shell on a shell navigation', async () => {
+    const r = shellPutsFor('/') as unknown as { puts: string[]; settled: Promise<unknown> }
+    await r.settled
+    expect(r.puts).toEqual(['/', '/index.html'])
+  })
+
+  it('does NOT overwrite the shell from a standalone app-window document', async () => {
+    const r = shellPutsFor('/app-windows/mochi/panel.html') as unknown as { puts: string[]; settled: Promise<unknown> }
+    await r.settled
+    expect(r.puts).toEqual([])
+  })
+})

@@ -290,7 +290,19 @@ export default memo(function ToolCallLine({ message, running: _running, slot, on
   // deliberately indeterminate. The existing tool output remains the source
   // of truth; this status only makes an in-flight command visible while its
   // details panel is collapsed after approval.
-  const showShellActivity = isShell && turnRunning && !hasPendingPerm
+  //
+  // STICKY within the turn: the row APPEARS when the tool starts but does
+  // not collapse when it finishes -- it freezes into the elapsed total and
+  // is reclaimed with the whole turn's collapse. Collapsing per-completion
+  // pulsed ~26px above a bottom-pinned reader at every tool boundary of a
+  // working turn (the tool-rhythm 'bounces in place while I just watch'
+  // report: text streaming was stable, tool execution bounced), because
+  // the closing height ease moves the pinned viewport down and back up
+  // once per tool. Within-turn transcript height is now monotonic here.
+  const shellActivityShownRef = useRef(false)
+  const liveShellActivity = isShell && turnRunning && !hasPendingPerm
+  if (liveShellActivity) shellActivityShownRef.current = true
+  const showShellActivity = liveShellActivity || (isShell && shellActivityShownRef.current)
 
   // ── `wait` countdown ──
   // Matched to this pill by tool NAME, not by id: the wait_id is minted inside
@@ -410,10 +422,10 @@ export default memo(function ToolCallLine({ message, running: _running, slot, on
   }, [ts, hasPendingPerm, executionStartedAt])
 
   useEffect(() => {
-    if (!showShellActivity && !showWaitCountdown) return
+    if (!liveShellActivity && !showWaitCountdown) return
     const timer = window.setInterval(() => setActivityNow(Date.now()), 1000)
     return () => window.clearInterval(timer)
-  }, [showShellActivity, showWaitCountdown])
+  }, [liveShellActivity, showWaitCountdown])
 
   const elapsedSeconds = Math.max(0, Math.floor((activityNow - activityStartRef.current) / 1000))
   const elapsedLabel = fmtDurationParts(
@@ -948,7 +960,7 @@ export default memo(function ToolCallLine({ message, running: _running, slot, on
         <div className="ml-5 mt-1 text-[12px] leading-5 text-muted" data-testid="shell-activity">
           <span className="sr-only" aria-live="polite">{i18nT('pages.chat.activityViewer.running')}</span>
           <span aria-hidden="true" className="tabular-nums font-mono">
-            {i18nT('pages.chat.activityViewer.running')} · {elapsedLabel}
+            {liveShellActivity ? `${i18nT('pages.chat.activityViewer.running')} · ${elapsedLabel}` : elapsedLabel}
           </span>
         </div>
       </StatusRow>

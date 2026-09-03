@@ -47,7 +47,7 @@ interface Item { id: string }
 const getKey = (it: Item) => it.id
 const mkItems = (n: number): Item[] => Array.from({ length: n }, (_, i) => ({ id: `m${i}` }))
 
-function render(geom: Geom, items: Item[], sessionId: string) {
+function render(geom: Geom, items: Item[], sessionId: string, extra?: Partial<UseVirtualChatOptions<Item>>) {
   const { el, state } = makeScroller(geom)
   const ref: RefObject<HTMLDivElement | null> = { current: el }
   const initialProps: UseVirtualChatOptions<Item> = {
@@ -55,6 +55,7 @@ function render(geom: Geom, items: Item[], sessionId: string) {
     sessionId,
     getKey,
     externalScrollerRef: ref,
+    ...extra,
   }
   const view = renderHook(
     (props: UseVirtualChatOptions<Item>) => useVirtualChat<Item>(props),
@@ -661,7 +662,10 @@ describe('useVirtualChat: adaptive height estimate is wired into the offsets (GP
   it('the spacer offsets follow the adaptive estimate too', () => {
     const sid = 'estimate-wiring-spacers'
     seed(sid, Array.from({ length: 10 }, (_, i) => `m${i}`), 500)
-    const { view } = render({ scrollTop: 0, scrollHeight: 1000, clientHeight: 400 }, mkItems(200), sid)
+    // A NON-following reader: while follow is armed the window is tail-anchored
+    // by design, so a top-pinned window (the scenario this test needs) only
+    // exists for a reader who scrolled up / released follow.
+    const { view } = render({ scrollTop: 0, scrollHeight: 1000, clientHeight: 400 }, mkItems(200), sid, { followOutput: false })
     // offsetBefore + rendered window + offsetAfter must reconstruct the total,
     // so an under-estimate anywhere would show up as a mismatch.
     const v = view.result.current

@@ -239,7 +239,18 @@ function swVersionPlugin(): Plugin {
         // Falls back to version alone if git is unavailable (CI edge case).
         let sha = ''
         try { sha = execSync('git rev-parse --short HEAD', { encoding: 'utf-8' }).trim() } catch {}
-        const buildHash = sha ? `${pkg.version}-${sha}` : pkg.version
+        // A dirty tree means HEAD does not describe these bytes: two builds
+        // from different uncommitted states would stamp the SAME version, so
+        // the service worker never byte-changes and clients keep the previous
+        // deploy's shell cache alive. Suffix a timestamp so every dirty build
+        // is its own cache generation; clean builds stay reproducible.
+        let dirty = ''
+        try {
+          if (execSync('git status --porcelain', { encoding: 'utf-8' }).trim()) {
+            dirty = `-dev${Date.now().toString(36)}`
+          }
+        } catch {}
+        const buildHash = (sha ? `${pkg.version}-${sha}` : pkg.version) + dirty
         content = content.replace('%%SW_BUILD_HASH%%', buildHash)
         writeFileSync(swPath, content)
       } catch (e: unknown) {

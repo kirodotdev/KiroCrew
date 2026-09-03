@@ -84,6 +84,16 @@ function resumed(store: ReturnType<typeof makeStore>, key = 'A') {
 /** Lets queued microtasks (thunk settle + reducer) run. */
 const flush = () => new Promise<void>((r) => setTimeout(r, 0))
 
+// Pin the NARROW walk page size (100): loadOlderMessages sizes its page by
+// viewport (narrow 100 / desktop 300), and these fixtures hold only 300 rows
+// of history -- the desktop size would drain them in one page and leave
+// nothing for the contiguity assertions.
+window.matchMedia = ((q: string) => ({
+  matches: q.includes('max-width'), media: q, onchange: null,
+  addListener: () => {}, removeListener: () => {},
+  addEventListener: () => {}, removeEventListener: () => {},
+  dispatchEvent: () => false,
+})) as unknown as typeof window.matchMedia
 beforeEach(() => {
   olderSignals = []
   releaseOlder = []
@@ -430,9 +440,25 @@ describe('a background refresh must not re-validate a cursor a pending switch in
     await flush()
     expect(store.getState().chat.slotSwitchRequestId).not.toBeNull()
 
+    // The second switch's own settle does not end it either, because this slot
+    // carries cached rows with no previously-known server total: a bounded window
+    // cannot be proven to cover the gap, so the switch retries UNBOUNDED. Its
+    // claim has to outlive the bounded leg for the same reason the first release
+    // must not clear it — releasing between the two legs reopens the window.
     releaseSwitch[1]()
     await flush()
     await flush()
+    // A retry WAS issued (the count is not pinned: a superseded leg may retry too,
+    // and its answer is discarded rather than being this test's business).
+    expect(releaseSwitch.length).toBeGreaterThan(2)
+    expect(store.getState().chat.slotSwitchRequestId).not.toBeNull()
+
+    // Drain every remaining leg. Only when nothing is in flight does the claim go.
+    for (let i = 2; i < releaseSwitch.length; i++) {
+      releaseSwitch[i]()
+      await flush()
+      await flush()
+    }
     expect(store.getState().chat.slotSwitchRequestId).toBeNull()
   })
 })

@@ -78,3 +78,60 @@ describe('uniqueRowKeys', () => {
     expect(uniqueRowKeys(items, msgKey)).toEqual(uniqueRowKeys(items, msgKey))
   })
 })
+
+describe('headless boundary turn keying', () => {
+  // The topmost turn of a partially loaded transcript has no opening prompt
+  // (it sits in an unloaded older page). Every walk landing feeds that turn's
+  // HEAD, so a lead-derived key renamed the row per landing — a remount wave
+  // per wave (Pierre surfaces visibly reloading). Headless turns key on their
+  // TAIL, which content arriving above cannot touch.
+  const turnOf = (msgs: { ts: string; role: string }[]): DisplayItem => ({
+    kind: 'turn',
+    items: msgs.map((m, i) => ({ kind: 'single', msg: { role: m.role, content: `c${i}`, ts: m.ts } as ChatMessage, idx: i })),
+    complete: true,
+  }) as DisplayItem
+
+  it('keeps a headless turn key stable when a landing grows its head', () => {
+    const before = turnOf([{ ts: '300', role: 'tool' }, { ts: '400', role: 'assistant' }])
+    const after = turnOf([
+      { ts: '100', role: 'tool' }, { ts: '200', role: 'assistant' },
+      { ts: '300', role: 'tool' }, { ts: '400', role: 'assistant' },
+    ])
+    expect(virtualKeyFor(after, 0, msgKey)).toBe(virtualKeyFor(before, 0, msgKey))
+  })
+
+  it('flips to the lead key exactly once, when the opening prompt lands', () => {
+    const headless = turnOf([{ ts: '300', role: 'tool' }, { ts: '400', role: 'assistant' }])
+    const complete = turnOf([
+      { ts: '250', role: 'user' },
+      { ts: '300', role: 'tool' }, { ts: '400', role: 'assistant' },
+    ])
+    const headlessKey = virtualKeyFor(headless, 0, msgKey)
+    const completeKey = virtualKeyFor(complete, 0, msgKey)
+    expect(completeKey).not.toBe(headlessKey)
+    // And the completed key is the LEAD (prompt) identity: stable forever after.
+    const grown = turnOf([
+      { ts: '250', role: 'user' },
+      { ts: '300', role: 'tool' }, { ts: '400', role: 'assistant' }, { ts: '500', role: 'tool' },
+    ])
+    expect(virtualKeyFor(grown, 0, msgKey)).toBe(completeKey)
+  })
+
+  it('never tail-keys the trailing turn, even when headless', () => {
+    const streaming = turnOf([{ ts: '300', role: 'tool' }, { ts: '400', role: 'streaming' }])
+    const streamedMore = turnOf([{ ts: '300', role: 'tool' }, { ts: '400', role: 'streaming' }, { ts: '500', role: 'tool' }])
+    const keys1 = uniqueRowKeys([streaming], msgKey)
+    const keys2 = uniqueRowKeys([streamedMore], msgKey)
+    // Trailing (last item in the list) keeps the lead key: growth at the tail
+    // must not re-key the row the viewport is pinned to.
+    expect(keys1[0]).toBe(keys2[0])
+    expect(keys1[0]).toBe(virtualKeyFor(streaming, 0, msgKey, true))
+  })
+
+  it('tail-keys a non-trailing headless turn within the full list pass', () => {
+    const headless = turnOf([{ ts: '300', role: 'tool' }, { ts: '400', role: 'assistant' }])
+    const trailing = turnOf([{ ts: '900', role: 'user' }, { ts: '950', role: 'assistant' }])
+    const keys = uniqueRowKeys([headless, trailing], msgKey)
+    expect(keys[0]).toMatch(/^hlt-/)
+  })
+})

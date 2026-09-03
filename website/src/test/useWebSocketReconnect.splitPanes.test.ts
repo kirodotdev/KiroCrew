@@ -137,7 +137,9 @@ describe('useWebSocket reconnect hydrates background split panes', () => {
 
     // The background pane is re-hydrated through the bounded warm path…
     expect(warmedSlots()).toEqual(['chat-bg'])
-    // …while the active slot keeps its own unbounded refresh.
+    // …while the active slot keeps its own refresh. With an EMPTY view the
+    // count-matched refresh stays unbounded (no count to match -- see
+    // refreshSlot's doc), so the call carries no limit argument.
     expect(api.chatSlotDetail).toHaveBeenCalledWith('chat-active')
 
     unmount()

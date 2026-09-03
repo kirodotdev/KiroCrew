@@ -63,7 +63,30 @@ self.addEventListener('fetch', e => {
 
   // ── Shell navigation: network-first, fall back to cached shell ──────
   e.respondWith(
-    fetch(e.request).catch(() => {
+    fetch(e.request).then(resp => {
+      // Refresh the cached shell on every successful navigation TO THE SHELL.
+      // The shell cache was previously written only at install time, so the
+      // offline fallback could serve a shell from an arbitrarily old deploy: with
+      // a stable CACHE_VERSION across redeploys, one flaky navigation (a phone
+      // waking on a tunnel) silently booted a days-old bundle whose hashed assets
+      // still lived in the HTTP cache — a complete time capsule that fresh
+      // deploys never invalidated.
+      //
+      // The path check is load-bearing, not defensive. `mode === 'navigate'` is
+      // true for EVERY top-level document, including the standalone app-window
+      // documents this dashboard opens, so keying on the mode alone stored one of
+      // those under `/` and `/index.html` — after which an offline dashboard
+      // navigation booted an app window instead of the SPA.
+      const url = new URL(e.request.url)
+      const isShellPath = url.pathname === '/' || url.pathname === '/index.html'
+      if (e.request.mode === 'navigate' && resp.ok && isShellPath) {
+        const copy = resp.clone()
+        e.waitUntil(caches.open(CACHE).then(c => Promise.all([
+          c.put('/', copy.clone()), c.put('/index.html', copy),
+        ])).catch(() => {}))
+      }
+      return resp
+    }).catch(() => {
       // Network failed — serve cached shell for navigation requests so
       // the SPA can boot and show an offline/reconnecting state.
       // For non-navigation requests (sub-resources), return a proper

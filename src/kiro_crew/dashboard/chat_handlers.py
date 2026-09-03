@@ -89,6 +89,7 @@ from kiro_crew.dashboard.chat_utils import (
     _remove_queued_by_id,
     _sync_dashboard_slots,
     effective_session_key,
+    history_corpus_unreadable,
     slot_history_key,
     subagents_attached,
 )
@@ -1885,22 +1886,120 @@ async def api_chat_slot_detail(request: web.Request) -> web.Response:
             messages = mem_msgs
         total = len(messages)
         has_more = False
-        # This branch returns the whole corpus, so there is no older page to ask
-        # for. Sent anyway so the field is present on every response shape.
+        # This branch returns the whole UN-ARCHIVED corpus. Rows a size
+        # rotation moved into archive/ are NOT in it — so when such rows
+        # exist, advertise them: `next_before` is their collapsed row count,
+        # i.e. the boundary index (in the paginated corpus, which prepends the
+        # archived head) of this response's first row. The client's next
+        # "load earlier" then pages straight into the archived head instead of
+        # this response permanently retiring the affordance. Collapsed in the
+        # same units the paginated path slices in; a chunk run split by the
+        # rotation cut can make this off by one, which the client's mid-dedupe
+        # absorbs.
+        #
+        # The cursor is exact ONLY while the archived rows are a contiguous
+        # PREFIX of the chained corpus (rotation on the first chain member).
+        # A LATER member's archive is sandwiched between rows this response
+        # already carries: no single cursor can reach it, and paging from the
+        # head count would walk past it forever — those rows would simply be
+        # unreachable, and a fork index computed against the true corpus
+        # would name a different row than the one rendered. That shape is
+        # served from the true chained corpus below instead.
         next_before = 0
+        if state.conversation_log:
+            try:
+                rotated = await asyncio.to_thread(
+                    state.conversation_log.read_rotated_messages_chained,
+                    slot_history_key(slot),
+                )
+            except Exception:
+                # NOT `rotated = []`. An empty list is this handler's encoding of
+                # "this session has no archive", so swallowing the failure into it
+                # skips the whole block below and serves the live-only corpus with
+                # `next_before = 0` and no archive advertised — the same silent
+                # truncation, reached by a different route. The read is the only
+                # thing that knows the difference, so it has to answer here.
+                logger.warning("rotated-archive read failed", exc_info=True)
+                return history_corpus_unreadable()
+            if rotated:
+                rotated_count = len(_collapse_wire_rows(rotated))
+                mid_rotation = False
+                if rotated_count > 0:
+                    try:
+                        mid_rotation = await asyncio.to_thread(
+                            state.conversation_log.chain_mid_rotation,
+                            slot_history_key(slot),
+                        )
+                    except Exception:
+                        # A failed probe leaves `mid_rotation` False, which sends
+                        # the request down the prefix-cursor path -- correct ONLY
+                        # when the rotation is on the first chain member. If it is
+                        # not, that cursor addresses the wrong span and the
+                        # sandwiched archived rows become unreachable, which is
+                        # exactly the defect the mid-rotation branch exists to
+                        # avoid. Not knowing which case this is means not serving.
+                        logger.warning("mid-rotation probe failed", exc_info=True)
+                        return history_corpus_unreadable()
+                if rotated_count > 0 and mid_rotation:
+                    # Serve every row at its true position; no cursor needed.
+                    try:
+                        full_msgs = await asyncio.to_thread(
+                            state.conversation_log.read_messages_chained_full,
+                            slot_history_key(slot),
+                        )
+                        tail_snapshot = _snapshot_slot_window(slot)
+                        full_msgs = await asyncio.to_thread(
+                            _append_unflushed_tail, slot, full_msgs, snapshot=tail_snapshot
+                        )
+                        messages = full_msgs
+                        total = len(messages)
+                    except Exception:
+                        # FAIL CLOSED. This branch runs only when
+                        # `chain_mid_rotation` is true, and that predicate means
+                        # a chain member AFTER the first has archive segments --
+                        # so the archived block is SANDWICHED, not the corpus's
+                        # first `rotated_count` rows. A prefix cursor of
+                        # `rotated_count` therefore addresses the wrong span: the
+                        # page it returns does not advance past the sandwiched
+                        # rows, `has_more` then goes false, and those rows become
+                        # unreachable with no error the reader can see or retry.
+                        #
+                        # The sibling `elif` below uses the same value legitimately
+                        # because it runs when the rotation IS on the first member,
+                        # where `rotated_count` is exactly the boundary.
+                        #
+                        # Same retryable shape the fork handler returns for this
+                        # identical corpus and identical reason.
+                        logger.warning("chained-full mid-rotation read failed", exc_info=True)
+                        return history_corpus_unreadable()
+                elif rotated_count > 0:
+                    has_more = True
+                    next_before = rotated_count
+                    total += rotated_count
     else:
         # Legacy pagination path (retained for programmatic callers).
         # Always reads from chained disk history; no in-memory offset math.
+        # The FULL corpus — size-rotated archive heads included — so paging can
+        # walk past a rotation boundary instead of declaring the transcript
+        # complete at it (the reader's oldest messages live in archive/ after
+        # a big session rotates, and this path is their only way back in).
         history_key = slot_history_key(slot)
         try:
             all_msgs = (
-                await asyncio.to_thread(state.conversation_log.read_messages_chained, history_key)
+                await asyncio.to_thread(
+                    state.conversation_log.read_messages_chained_full, history_key
+                )
                 if state.conversation_log
                 else []
             )
         except Exception:
-            logger.warning("read_messages_chained failed for %s", history_key, exc_info=True)
-            all_msgs = []
+            # NOT `all_msgs = []`. This is the legacy pagination path and the only
+            # way back into a rotated archive, so folding the failure into an empty
+            # corpus answers 200 with the live tail and `has_more` false -- the
+            # reader is told their older history does not exist. See
+            # `history_corpus_unreadable` for why all three sites share one answer.
+            logger.warning("read_messages_chained_full failed for %s", history_key, exc_info=True)
+            return history_corpus_unreadable()
         # Append any un-flushed in-memory tail messages beyond what's on disk.
         # Snapshot on the LOOP, after the disk read: the two reads inside the helper
         # have no await between them, so a synchronous finalization cannot be caught

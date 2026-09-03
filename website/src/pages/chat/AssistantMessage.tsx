@@ -59,10 +59,16 @@ export function fmtCredits(c: number): string {
 }
 
 // A compact "Steered" chip rendered in place of the raw [STEERING …] marker.
-function SteerAckChip({ summary }: { summary: string }) {
+// `entrance` gates the fade-in to the STREAMING moment the chip first appears.
+// A settled transcript's chip must render at its final state: framer replays
+// `initial` on every MOUNT, and transcript rows legitimately remount (window
+// shifts, regroups) — with the entrance unconditional, each remount replayed
+// the fade and a parked reader saw the chip "blinking" (caught mid-fade in a
+// screen recording at ~50% opacity).
+function SteerAckChip({ summary, entrance }: { summary: string; entrance: boolean }) {
   return (
     <motion.div
-      initial={{ opacity: 0, y: 4 }}
+      initial={entrance ? { opacity: 0, y: 4 } : false}
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.25, ease: 'easeOut' }}
       className="mt-2 inline-flex flex-col items-start rounded-lg bg-accent-subtle px-3 py-2 text-[12px] leading-5 max-w-full"
@@ -279,6 +285,100 @@ const AssistantMessage = memo(function AssistantMessage({ content, isStreaming, 
     return turnStats.model ? `${base} · ${i18nT('pages.chat.assistantMessage.turn_model', { model: turnStats.model })}` : base
   })()
 
+  // The overflow menu lives IN the footer action row, in EVERY state. Upstream
+  // placed it below the row to keep the row from growing, but the below-row
+  // placement is a SECOND `ACTIONS_REVEAL_CLS` row carrying its own `mt-1`, and
+  // HOVER_NONE_ACTIONS_ROW_CLS makes these rows permanently visible with 44px
+  // targets on touch -- so it added a full row of height to EVERY completed
+  // turn's footer. Rows above a reader growing by that much is a page-scale
+  // downward displacement the first time they re-measure (reported from a phone
+  // at the moment a turn ended), and the two placements ALSO gave neighbouring
+  // messages visibly different footers depending on which state they were in.
+  // Share is present whenever the menu is; fork/plan appear here only in their
+  // unavailable state, because a loaded window keeps them as row buttons above
+  // where the everyday controls belong. Both fork handlers absent means an
+  // embedded pane (co-author, artifact chat), which carries no per-message
+  // actions at all — the menu, Share included, stays out with them.
+  const overflowMenu = (onFork || onPlanFromHere) ? (
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <button
+            className="text-muted hover:text-text p-0.5 rounded transition-colors"
+            title={i18nT('pages.chat.assistantMessage.more_actions')}
+            aria-label={i18nT('pages.chat.assistantMessage.more_actions')}
+            data-testid="assistant-more-actions"
+          >
+            <MoreHorizontal size={14} />
+          </button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="end" className="min-w-[210px]">
+          <DropdownMenuItem data-testid="share-message" onSelect={() => setShareOpen(true)}>
+            <span className="flex items-center gap-2">
+              <Share2 size={13} className="shrink-0" />
+              <span>{i18nT('pages.chat.assistantMessage.share_message')}</span>
+            </span>
+          </DropdownMenuItem>
+          {(forkIndex === undefined || !!forkMessageId) && (<>
+          {onFork && (
+            <DropdownMenuItem
+              // Radix skips a `disabled` item in keyboard nav and kills pointer events,
+              // so the unavailable reason stays reachable through aria-disabled.
+              aria-disabled={forkIndex === undefined || busyAction !== null || undefined}
+              aria-describedby={forkIndex === undefined ? `${reasonId}-fork` : undefined}
+              className="flex-col items-start gap-0.5"
+              data-testid="fork-from-here"
+              onSelect={(e) => {
+                if (busyAction !== null) { e.preventDefault(); return }
+                if (forkIndex === undefined) {
+                  e.preventDefault()
+                  setPagingToTarget(true)
+                  return
+                }
+                void runForkAction()
+              }}
+            >
+              <span className={`flex items-center gap-2 ${forkIndex === undefined ? 'opacity-50' : ''}`}>
+                {busyAction === 'fork' || loadingOlder ? <Loader2 size={13} className="shrink-0 animate-spin" /> : <GitFork size={13} className="shrink-0" />}
+                <span>{forkLabel}</span>
+              </span>
+              {forkIndex === undefined && <span id={`${reasonId}-fork`} data-testid="fork-unavailable-reason" className="text-[11px] leading-4 text-muted pl-[21px]">
+                {unavailableReason}
+              </span>}
+            </DropdownMenuItem>
+          )}
+          {onPlanFromHere && (
+            <DropdownMenuItem
+              aria-disabled={forkIndex === undefined || busyAction !== null || undefined}
+              aria-describedby={forkIndex === undefined ? `${reasonId}-plan` : undefined}
+              className="flex-col items-start gap-0.5"
+              data-testid="plan-from-here"
+              onSelect={(e) => {
+                if (busyAction !== null) { e.preventDefault(); return }
+                if (forkIndex === undefined) {
+                  e.preventDefault()
+                  setPagingToTarget(true)
+                  return
+                }
+                void runPlanAction()
+              }}
+            >
+              <span className={`flex items-center gap-2 ${forkIndex === undefined ? 'opacity-50' : ''}`}>
+                {busyAction === 'plan' || loadingOlder ? <Loader2 size={13} className="shrink-0 animate-spin" /> : <ClipboardList size={13} className="shrink-0" />}
+                <span>{planLabel}</span>
+              </span>
+              {forkIndex === undefined && <span id={`${reasonId}-plan`} className="text-[11px] leading-4 text-muted pl-[21px]">
+                {unavailableReason}
+              </span>}
+            </DropdownMenuItem>
+          )}
+          </>)}
+        </DropdownMenuContent>
+        {/* Radix portals the dialog to <body>; gating on shareOpen keeps the
+            lazy chunk unfetched until the first share. */}
+        {shareOpen && <Suspense fallback={null}><LazyShareMessageModal onClose={() => setShareOpen(false)} messageText={steerCleaned} prevUserText={prevUserText} /></Suspense>}
+      </DropdownMenu>
+  ) : null
+
   return <div data-role="assistant" className="group/msg">
     {/* 'message-bubble' is a stable theming hook — see website/docs/theming-contract.md */}
     <div ref={contentRef} className="message-bubble msg-content group/bubble relative text-sm leading-6 text-text overflow-hidden" style={{ overflowWrap: 'anywhere', wordBreak: 'break-word' }}>
@@ -295,13 +395,18 @@ const AssistantMessage = memo(function AssistantMessage({ content, isStreaming, 
           either way (steerCleaned), so nothing leaks as raw text. */}
       {!suppressSteerAck && steerAcks.length > 0 && (
         <div className="flex flex-col items-start gap-1 mb-2">
-          {steerAcks.map((a, i) => <SteerAckChip key={i} summary={a} />)}
+          {steerAcks.map((a, i) => <SteerAckChip key={i} summary={a} entrance={isStreaming} />)}
         </div>
       )}
       {!isStreaming && selectionActions.length > 0 && <SelectionToolbar containerRef={contentRef} actions={selectionActions} />}
     </div>
     {fileChanges && fileChanges.length > 0 && !isStreaming && (
-      <FileChangeChips fileChanges={fileChanges} onOpenDiff={onOpenDiff} onFileOpen={onFileOpen ? (p: string) => onFileOpen(p) : undefined} style={fileChipStyle} artifactPaths={artifactPaths} disclosureKey={messageTs ? `fcc-${messageTs}` : undefined} />
+      /* Pass `onFileOpen` by IDENTITY — a `(p) => onFileOpen(p)` wrapper here is
+         a new function every render, which busts FileChangeChips' memo and
+         cascades into Pierre re-initializing every diff row on each parent
+         render (the "file chips flash while typing" defect). The prop types
+         are directly compatible: extra optional params are ignored. */
+      <FileChangeChips fileChanges={fileChanges} onOpenDiff={onOpenDiff} onFileOpen={onFileOpen} style={fileChipStyle} artifactPaths={artifactPaths} disclosureKey={messageTs ? `fcc-${messageTs}` : undefined} />
     )}
     {!isStreaming && showFooter && turnStats && turnStats.elapsed_ms > 0 && (
       /* No `font-mono`: "1.98 credits · 59s" is a labelled measurement, not
@@ -374,94 +479,8 @@ const AssistantMessage = memo(function AssistantMessage({ content, isStreaming, 
             </div>
           )
         })()}
+        {overflowMenu}
       </div>
-      {/* Its own row below the hover actions on purpose: that row is a
-          legacy-status 3+ group the two-action rule forbids growing, so
-          overflow actions live here. Share is present whenever the menu is;
-          fork/plan appear only in their unavailable state (a loaded window
-          keeps them as row buttons above, where the everyday controls belong).
-          Both fork handlers absent means an embedded pane (co-author, artifact
-          chat), which carries no per-message actions at all — the menu, Share
-          included, stays out with them. */}
-      {(onFork || onPlanFromHere) && <div className={ACTIONS_REVEAL_CLS}>
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <button
-              className="text-muted hover:text-text p-0.5 rounded transition-colors"
-              title={i18nT('pages.chat.assistantMessage.more_actions')}
-              aria-label={i18nT('pages.chat.assistantMessage.more_actions')}
-              data-testid="assistant-more-actions"
-            >
-              <MoreHorizontal size={14} />
-            </button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="end" className="min-w-[210px]">
-            <DropdownMenuItem data-testid="share-message" onSelect={() => setShareOpen(true)}>
-              <span className="flex items-center gap-2">
-                <Share2 size={13} className="shrink-0" />
-                <span>{i18nT('pages.chat.assistantMessage.share_message')}</span>
-              </span>
-            </DropdownMenuItem>
-            {(onFork || onPlanFromHere) && (forkIndex === undefined || !!forkMessageId) && (<>
-            {onFork && (
-              <DropdownMenuItem
-                // Radix skips a `disabled` item in keyboard nav and kills pointer events,
-                // so the unavailable reason stays reachable through aria-disabled.
-                aria-disabled={forkIndex === undefined || busyAction !== null || undefined}
-                aria-describedby={forkIndex === undefined ? `${reasonId}-fork` : undefined}
-                className="flex-col items-start gap-0.5"
-                data-testid="fork-from-here"
-                onSelect={(e) => {
-                  if (busyAction !== null) { e.preventDefault(); return }
-                  if (forkIndex === undefined) {
-                    e.preventDefault()
-                    setPagingToTarget(true)
-                    return
-                  }
-                  void runForkAction()
-                }}
-              >
-                <span className={`flex items-center gap-2 ${forkIndex === undefined ? 'opacity-50' : ''}`}>
-                  {busyAction === 'fork' || loadingOlder ? <Loader2 size={13} className="shrink-0 animate-spin" /> : <GitFork size={13} className="shrink-0" />}
-                  <span>{forkLabel}</span>
-                </span>
-                {forkIndex === undefined && <span id={`${reasonId}-fork`} data-testid="fork-unavailable-reason" className="text-[11px] leading-4 text-muted pl-[21px]">
-                  {unavailableReason}
-                </span>}
-              </DropdownMenuItem>
-            )}
-            {onPlanFromHere && (
-              <DropdownMenuItem
-                aria-disabled={forkIndex === undefined || busyAction !== null || undefined}
-                aria-describedby={forkIndex === undefined ? `${reasonId}-plan` : undefined}
-                className="flex-col items-start gap-0.5"
-                data-testid="plan-from-here"
-                onSelect={(e) => {
-                  if (busyAction !== null) { e.preventDefault(); return }
-                  if (forkIndex === undefined) {
-                    e.preventDefault()
-                    setPagingToTarget(true)
-                    return
-                  }
-                  void runPlanAction()
-                }}
-              >
-                <span className={`flex items-center gap-2 ${forkIndex === undefined ? 'opacity-50' : ''}`}>
-                  {busyAction === 'plan' || loadingOlder ? <Loader2 size={13} className="shrink-0 animate-spin" /> : <ClipboardList size={13} className="shrink-0" />}
-                  <span>{planLabel}</span>
-                </span>
-                {forkIndex === undefined && <span id={`${reasonId}-plan`} className="text-[11px] leading-4 text-muted pl-[21px]">
-                  {unavailableReason}
-                </span>}
-              </DropdownMenuItem>
-            )}
-            </>)}
-          </DropdownMenuContent>
-        </DropdownMenu>
-        {/* Radix portals the dialog to <body>; gating on shareOpen keeps the
-            lazy chunk unfetched until the first share. */}
-        {shareOpen && <Suspense fallback={null}><LazyShareMessageModal onClose={() => setShareOpen(false)} messageText={steerCleaned} prevUserText={prevUserText} /></Suspense>}
-      </div>}
     </>)}
     {planSteps && onApplyPlan && !applied && !isRegenerating && (
       <button className="mt-1 px-3 py-2 rounded-md text-[13px] leading-5 font-medium border border-accent text-accent bg-transparent cursor-pointer hover:bg-accent hover:text-accent-fg transition-all" onClick={async () => { const ok = await onApplyPlan(planSteps); if (ok) setApplied(true) }}>

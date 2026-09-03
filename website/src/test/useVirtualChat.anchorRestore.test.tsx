@@ -198,6 +198,7 @@ describe('useVirtualChat: reading-position save on scroll settle', () => {
     // User scrolls up to read history: row 5 (top = 500-590 = -90) is the
     // topmost row still intersecting the viewport; row 4 ends above it.
     act(() => {
+      el.dispatchEvent(new Event('wheel'))
       state.scrollTop = 590
       el.dispatchEvent(new Event('scroll'))
     })
@@ -214,6 +215,7 @@ describe('useVirtualChat: reading-position save on scroll settle', () => {
     )
     attachRows(view, state, [4, 5, 6])
     act(() => {
+      el.dispatchEvent(new Event('wheel'))
       state.scrollTop = 590
       el.dispatchEvent(new Event('scroll'))
     })
@@ -274,5 +276,113 @@ describe('useVirtualChat: reading-position save on scroll settle', () => {
       view.rerender({ items: mkItems(10), sessionId: 'sess-other-2', getKey, externalScrollerRef: { current: el } })
     })
     expect(loadScrollAnchor('sess-flush-bottom')).toBeNull()
+  })
+})
+
+
+describe('useVirtualChat: anchor saves require hard input', () => {
+  let origRaf: typeof requestAnimationFrame
+  beforeEach(() => {
+    localStorage.clear()
+    origRaf = globalThis.requestAnimationFrame
+    globalThis.requestAnimationFrame = ((cb: FrameRequestCallback) => { cb(0); return 0 }) as typeof requestAnimationFrame
+    vi.useFakeTimers()
+  })
+  afterEach(() => {
+    vi.useRealTimers()
+    globalThis.requestAnimationFrame = origRaf
+  })
+
+  it('a self-scroll displacement (no hardware input) never becomes the saved anchor', () => {
+    const { el, state, view } = mount(
+      'sess-selfmove',
+      { scrollTop: 4600, scrollHeight: 5000, clientHeight: 400 },
+      mkItems(50),
+    )
+    const attach = (indices: number[]) => {
+      for (const i of indices) {
+        const node = document.createElement('div')
+        Object.defineProperty(node, 'offsetHeight', { configurable: true, get: () => 100 })
+        node.getBoundingClientRect = () =>
+          ({ top: i * 100 - state.scrollTop, bottom: i * 100 - state.scrollTop + 100, height: 100 } as DOMRect)
+        act(() => { view.result.current.measureRef(i)(node) })
+      }
+    }
+    attach([4, 5, 6, 7, 8])
+    // The shape of the live defect: scrollTop jumps mid-transcript and a
+    // scroll event fires -- but NO wheel/touch/key/scrollbar input exists.
+    act(() => {
+      state.scrollTop = 590
+      el.dispatchEvent(new Event('scroll'))
+    })
+    act(() => { vi.advanceTimersByTime(250) })
+    // The displaced position was NOT persisted: a reload still lands at the
+    // bottom instead of "opening at the top of the chat".
+    expect(loadScrollAnchor('sess-selfmove')).toBeNull()
+  })
+
+  it('clearing at the bottom stays unconditional (no input needed)', () => {
+    saveScrollAnchor('sess-uncond', { key: 'm5', top: -90 })
+    const { el, state } = mount(
+      'sess-uncond',
+      { scrollTop: 4600, scrollHeight: 5000, clientHeight: 400 },
+      mkItems(50),
+    )
+    // A self-scroll settles at the bottom: the stale anchor is cleared even
+    // though no hardware input happened -- clearing is the safe direction.
+    act(() => {
+      state.scrollTop = 4600
+      el.dispatchEvent(new Event('scroll'))
+    })
+    act(() => { vi.advanceTimersByTime(250) })
+    expect(loadScrollAnchor('sess-uncond')).toBeNull()
+  })
+})
+
+
+describe('useVirtualChat: switch flush honors follow (stick) over transient geometry', () => {
+  let origRaf: typeof requestAnimationFrame
+  beforeEach(() => {
+    localStorage.clear()
+    origRaf = globalThis.requestAnimationFrame
+    globalThis.requestAnimationFrame = ((cb: FrameRequestCallback) => { cb(0); return 0 }) as typeof requestAnimationFrame
+    vi.useFakeTimers()
+  })
+  afterEach(() => {
+    vi.useRealTimers()
+    globalThis.requestAnimationFrame = origRaf
+  })
+
+  it('switching away mid-follow never persists the pin-lag transient as an anchor', () => {
+    const { el, state, view, ref } = mount(
+      'sess-follow-a',
+      { scrollTop: 4600, scrollHeight: 5000, clientHeight: 400 },
+      mkItems(50),
+    )
+    // Mounted row nodes so the flush's anchor capture has something to bind
+    // (without them the capture returns null and nothing is ever saved --
+    // which would make this test pass vacuously in both directions).
+    for (const i of [44, 45, 46, 47, 48, 49]) {
+      const node = document.createElement('div')
+      Object.defineProperty(node, 'offsetHeight', { configurable: true, get: () => 100 })
+      node.getBoundingClientRect = () =>
+        ({ top: i * 100 - state.scrollTop, bottom: i * 100 - state.scrollTop + 100, height: 100 } as DOMRect)
+      act(() => { view.result.current.measureRef(i)(node) })
+    }
+    // Follow engaged, reader at the bottom; a scroll event arms the debounced
+    // save (the pin's own writes fire scroll events too).
+    act(() => {
+      el.dispatchEvent(new Event('scroll'))
+    })
+    // Streamed growth lands; the pin has not caught up yet, so INSTANTANEOUS
+    // geometry reads as "not at bottom". No event fires for this drift -- it
+    // is the transient the switch will observe.
+    state.scrollHeight = 5400
+    // Switch away inside the debounce window: the flush must trust follow
+    // (stick), clear the outgoing anchor, and persist nothing.
+    act(() => {
+      view.rerender({ items: mkItems(50), sessionId: 'sess-follow-b', getKey, externalScrollerRef: ref })
+    })
+    expect(loadScrollAnchor('sess-follow-a')).toBeNull()
   })
 })

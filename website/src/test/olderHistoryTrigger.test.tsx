@@ -20,6 +20,7 @@ import { useVirtualChat } from '../hooks/virtualizer/useVirtualChat'
 import { createTestStore } from './helpers'
 import { loadOlderMessages, resumeFromHistory } from '../store/chatSlice'
 import { shouldPaginateOlder } from '../pages/chat/pagination'
+import { shouldAutoFillOlder } from '../pages/ChatPage'
 import { api } from '../api/client'
 
 interface Item { id: string }
@@ -32,12 +33,13 @@ const TOTAL = 240
 const RESUME_RAW = 200
 const OLDEST = TOTAL - RESUME_RAW
 
-function Harness({ onTopReached, scrollerRef }: {
+function Harness({ onTopReached, scrollerRef, items }: {
   onTopReached: () => void
   scrollerRef: RefObject<HTMLDivElement | null>
+  items?: Item[]
 }) {
   const v = useVirtualChat<Item>({
-    items: mkItems(30), getKey, sessionId: 'older-history', overscan: 2,
+    items: items ?? mkItems(30), getKey, sessionId: 'older-history', overscan: 2,
     externalScrollerRef: scrollerRef, onTopReached,
   })
   return (
@@ -51,15 +53,21 @@ function Harness({ onTopReached, scrollerRef }: {
   )
 }
 
-interface FakeIOInst { cb: IntersectionObserverCallback }
+interface FakeIOInst { cb: IntersectionObserverCallback; opts?: IntersectionObserverInit; observed: Element[] }
 
-/** Replace IntersectionObserver with one whose callbacks the test fires by hand. */
+/** Replace IntersectionObserver with one whose callbacks the test fires by hand.
+ *  Records the constructor options and observed targets too, so a test can ask
+ *  which sentinel an observer watches and with how much lead. */
 function installFakeIO() {
   const instances: FakeIOInst[] = []
   class FakeIO {
     cb: IntersectionObserverCallback
-    constructor(cb: IntersectionObserverCallback) { this.cb = cb; instances.push(this) }
-    observe() {}
+    opts?: IntersectionObserverInit
+    observed: Element[] = []
+    constructor(cb: IntersectionObserverCallback, opts?: IntersectionObserverInit) {
+      this.cb = cb; this.opts = opts; instances.push(this)
+    }
+    observe(el: Element) { this.observed.push(el) }
     unobserve() {}
     disconnect() {}
     takeRecords() { return [] }
@@ -82,6 +90,106 @@ function fireIntersection(inst: FakeIOInst, target: HTMLElement) {
 }
 
 describe('older-history trigger — virtualizer callback', () => {
+  it('prefetches on the row-lead crossing, without the sentinel, and cannot self-loop', () => {
+    // The user-stated contract: start the fetch while ~two user turns still
+    // sit above the window, so a landing's remount churn stays off-screen
+    // (the hated blank-to-background flash happens when the reader is parked
+    // ON the seam). The trigger is the DOWNWARD CROSSING of a row count —
+    // pixels were tried and self-oscillated. Driven here by scroll recompute
+    // alone: the sentinel never fires, so every call is the prefetch's.
+    const { restore } = installFakeIO()
+    const onTopReached = vi.fn()
+    const scrollerRef: RefObject<HTMLDivElement | null> = { current: null }
+    // The scroll-driven window recompute is rAF-coalesced; run frames inline
+    // so each dispatched scroll settles synchronously.
+    const origRaf = globalThis.requestAnimationFrame
+    globalThis.requestAnimationFrame = ((cb: FrameRequestCallback) => { cb(0); return 0 }) as typeof requestAnimationFrame
+    // Sentinel-free harness ON PURPOSE: with zero-layout (jsdom) sentinels
+    // mounted, the window recompute derives position from their rects — all
+    // 0 — and start pins at 0, so no crossing can be exercised. The sentinel
+    // interplay is covered by the tests above; this one isolates the
+    // scroll-driven crossing + anti-loop.
+    function LeanHarness({ items }: { items?: Item[] }) {
+      const v = useVirtualChat<Item>({
+        items: items ?? mkItems(30), getKey, sessionId: 'older-history-lean', overscan: 2,
+        externalScrollerRef: scrollerRef, onTopReached,
+      })
+      return (
+        <div ref={scrollerRef as RefObject<HTMLDivElement>}>
+          {v.virtualItems.map((it) => (
+            <div key={it.key} data-index={it.index} ref={v.measureRef(it.index)} />
+          ))}
+        </div>
+      )
+    }
+    try {
+      const view = render(<LeanHarness />)
+      const el = scrollerRef.current!
+      let scrollTop = 0
+      Object.defineProperty(el, 'scrollTop', { configurable: true, get: () => scrollTop, set: (v: number) => { scrollTop = v } })
+      Object.defineProperty(el, 'clientHeight', { configurable: true, get: () => 400 })
+      Object.defineProperty(el, 'scrollHeight', { configurable: true, get: () => 2400 })
+      expect(onTopReached).not.toHaveBeenCalled()
+
+      // Park mid-transcript: start recomputes ABOVE the lead. No crossing yet.
+      act(() => { scrollTop = 1600; el.dispatchEvent(new Event('scroll')) })
+      expect(onTopReached).not.toHaveBeenCalled()
+
+      // Travel upward past the lead: the crossing fires the prefetch — once.
+      act(() => { scrollTop = 100; el.dispatchEvent(new Event('scroll')) })
+      expect(onTopReached).toHaveBeenCalledTimes(1)
+
+      // Lingering inside the lead does not re-fire (crossing, not presence).
+      act(() => { scrollTop = 60; el.dispatchEvent(new Event('scroll')) })
+      expect(onTopReached).toHaveBeenCalledTimes(1)
+
+      // Anti-loop: the page lands (indices +100, window re-based far away);
+      // the landing itself must not fire again.
+      act(() => {
+        view.rerender(
+          <LeanHarness items={[...mkItems(100, 'older'), ...mkItems(30)]} />,
+        )
+      })
+      expect(onTopReached).toHaveBeenCalledTimes(1)
+    } finally {
+      globalThis.requestAnimationFrame = origRaf
+      restore()
+    }
+  })
+
+  it('keeps the history-fetch lead below a page\'s rendered height', () => {
+    // The top sentinel starts a NETWORK fetch; the bottom one only expands the
+    // mounted window over rows already in memory. Separate observers let their
+    // leads differ — but the fetch lead has a CEILING, learned the hard way: it
+    // was raised to 1500px to hide fetch latency, and because tool-call grouping
+    // can collapse a 100-message page into a few hundred px of display rows, the
+    // sentinel stayed inside the margin after every insert. `shouldPaginateOlder`
+    // gates concurrency, not recurrence, so page after page fired serially —
+    // "loads nonstop near Load-earlier" on a real phone, each landing with its
+    // own estimate-to-real settle under the reader. The margin must stay below
+    // the height a typical page renders at, or pagination self-oscillates.
+    const { instances, restore } = installFakeIO()
+    const scrollerRef: RefObject<HTMLDivElement | null> = { current: null }
+    try {
+      const { container } = render(<Harness onTopReached={() => {}} scrollerRef={scrollerRef} />)
+      const top = container.querySelector('[data-sentinel="top"]') as HTMLElement
+      const bottom = container.querySelector('[data-sentinel="bottom"]') as HTMLElement
+      const px = (i?: FakeIOInst) => Number.parseInt(String(i?.opts?.rootMargin ?? '0'), 10)
+
+      const topIO = instances.find(i => i.observed.includes(top))
+      const bottomIO = instances.find(i => i.observed.includes(bottom))
+      expect(topIO).toBeTruthy()
+      expect(bottomIO).toBeTruthy()
+      expect(topIO).not.toBe(bottomIO)
+      // Ceiling: a short grouped page must still escape the margin when it
+      // lands, or the next fetch fires immediately and the loop never ends.
+      expect(px(topIO)).toBeGreaterThan(0)
+      expect(px(topIO)).toBeLessThanOrEqual(400)
+    } finally {
+      restore()
+    }
+  })
+
   it('calls onTopReached when the top sentinel comes into view', () => {
     const { instances, restore } = installFakeIO()
     const onTopReached = vi.fn()
@@ -148,7 +256,7 @@ describe('older-history trigger — fetch through the gate', () => {
     try {
       const top = container.querySelector('[data-sentinel="top"]') as HTMLElement
       fireIntersection(io.instances[0], top)
-      await waitFor(() => expect(detail).toHaveBeenCalledWith('slot-1', 100, OLDEST, expect.any(AbortSignal)))
+      await waitFor(() => expect(detail).toHaveBeenCalledWith('slot-1', 300, OLDEST, expect.any(AbortSignal)))
     } finally {
       io.restore()
     }
@@ -177,7 +285,7 @@ describe('older-history trigger — fetch through the gate', () => {
       .mockResolvedValue({ messages: [], has_more: true, total: TOTAL } as never)
     const store = resumedStore(true)
     const result = await store.dispatch(loadOlderMessages())
-    expect(detail).toHaveBeenCalledWith('slot-1', 100, OLDEST, expect.any(AbortSignal))
+    expect(detail).toHaveBeenCalledWith('slot-1', 300, OLDEST, expect.any(AbortSignal))
     expect(result.payload).not.toBeNull()
   })
 
@@ -243,4 +351,27 @@ describe('older-history trigger — ChatPage wiring contract', () => {
 
 
 
+})
+
+describe('auto-fill gate for a reader who did not climb', () => {
+  // The top sentinel/crossing can fire WITHOUT reader input: boot-phase
+  // estimate pricing keeps total height under a viewport for a beat, and a
+  // spacer collapse pulls the top within reach. Each self-issued landing
+  // re-fires the transition -- a page chain that walked a multi-megabyte
+  // transcript over a bottom-followed phone right after refresh. The gate:
+  // a followed reader on a scrollable transcript never auto-fetches; the
+  // short-transcript fill (no scrollbar exists) stays load-bearing.
+  it('refuses a scrollable transcript with no reader input this session', () => {
+    // Includes the boot-restored-anchor shape: follow already released,
+    // reader has touched nothing. Follow state is deliberately NOT an
+    // authorization signal (the replica probe walked a page per ~8s
+    // through the follow-released door with zero input events).
+    expect(shouldAutoFillOlder({ scrollHeight: 5000, clientHeight: 800, sawInput: false })).toBe(false)
+  })
+  it('fills a transcript too short to scroll, even with no input', () => {
+    expect(shouldAutoFillOlder({ scrollHeight: 820, clientHeight: 800, sawInput: false })).toBe(true)
+  })
+  it('serves a reader who actually scrolled (input is the request)', () => {
+    expect(shouldAutoFillOlder({ scrollHeight: 5000, clientHeight: 800, sawInput: true })).toBe(true)
+  })
 })

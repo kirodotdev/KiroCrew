@@ -29,6 +29,7 @@ import { queryClient } from './api/queryClient'
 import ErrorBoundary from './components/ErrorBoundary'
 import DashboardBootstrap from './components/DashboardBootstrap'
 import { installPageZoomSuppression } from './utils/pageZoom'
+import { installStaleShellHeal } from './lib/staleShellHeal'
 import 'katex/dist/katex.min.css'
 import './index.css'
 import './styles/cli-mode.css'
@@ -48,6 +49,8 @@ initI18n()
 // WebKit, which ignores both for user gestures. Installed before render so the
 // very first pinch is already suppressed. See utils/pageZoom.ts.
 installPageZoomSuppression()
+// Detect and break out of a stale service-worker shell (see the module doc).
+installStaleShellHeal()
 
 // Auto-recover from stale lazy-chunk errors after a frontend rebuild.
 // Vite fires `vite:preloadError` on window when a dynamic import() of a

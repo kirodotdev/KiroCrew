@@ -12,6 +12,7 @@ from kiro_crew.dashboard.chat_persistence import save_slot_off_loop, session_was
 from kiro_crew.dashboard.chat_utils import (
     _sync_dashboard_slots,
     effective_session_key,
+    history_corpus_unreadable,
     slot_history_key,
 )
 from kiro_crew.dashboard.state import (
@@ -20,6 +21,7 @@ from kiro_crew.dashboard.state import (
     request_slot_origin,
 )
 from kiro_crew.history import carry_provenance
+from kiro_crew.history_projection import drop_persisted_tail_prefix as _drop_persisted_tail_prefix
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
 
@@ -38,6 +40,15 @@ _FORK_DIRECTION_HEAD = "head"
 _FORK_DIRECTION_TAIL = "tail"
 _FORK_DIRECTIONS = (_FORK_DIRECTION_HEAD, _FORK_DIRECTION_TAIL)
 _MAX_MESSAGE_ID_CHARS = 256
+
+
+def drop_persisted_tail_prefix(full_disk: list[dict], tail: list[dict]) -> list[dict]:
+    """Re-exported from ``history_projection``, which owns the identity rule.
+
+    Kept importable from here because this module was its first consumer and is
+    where callers and tests reach for it.
+    """
+    return _drop_persisted_tail_prefix(full_disk, tail)
 
 
 async def api_chat_slot_fork(request: web.Request) -> web.Response:
@@ -517,6 +528,7 @@ async def api_chat_slot_fork(request: web.Request) -> web.Response:
                     },
                     status=503,
                 )
+        _fork_tail_len = len(new_msgs) if (all_messages and new_msgs) else 0
         if all_messages and new_msgs:
             # REBIND, never ``extend``. ``read_messages_chained`` hands back the
             # SHARED ``_msg_cache`` list BY IDENTITY whenever it falls through to
@@ -618,7 +630,10 @@ async def api_chat_slot_fork(request: web.Request) -> web.Response:
             slot._resumed_count = len(slot.messages)
             slot._dirty = False
         if not all_messages:
+            # The whole corpus is the in-memory window: disk contributed
+            # nothing, so for the mid-rotation rebuild below it is ALL tail.
             all_messages = list(slot.messages)
+            _fork_tail_len = len(all_messages)
         # Direct delete check, independent of the flush arms above: if the
         # periodic 5s flush hit the delete-won guard first, it cleared
         # ``_dirty`` and this handler's own flush arms never ran — the disk
@@ -640,6 +655,96 @@ async def api_chat_slot_fork(request: web.Request) -> web.Response:
                 },
                 status=409,
             )
+    # Fork indices arrive in the PAGINATED corpus's visible-row space, which
+    # prepends each chain key's size-rotated archive head
+    # (read_messages_chained_full). Mirror that corpus here, or every index
+    # sent after the reader paged past a rotation boundary resolves short by
+    # the archived visible-row count, silently forking the WRONG message —
+    # and archived rows could not be forked at all. Rotated rows are BY
+    # DEFINITION no longer in the live files, so this cannot duplicate
+    # anything the flush arms above already placed in ``all_messages``.
+    #
+    # Two shapes, matching the slot-detail handler exactly:
+    # - Archive only on the FIRST chain member: the archived rows are a
+    #   contiguous prefix of the chained corpus, so a flat prepend is exact.
+    # - A LATER member also rotated (``chain_mid_rotation``): the paginated
+    #   corpus interleaves rot/live per key, so a flat prepend would shift
+    #   ``at_message_index`` by the sandwiched rows. Rebuild the disk part
+    #   from the true chained corpus and re-append the unflushed tail the
+    #   arms above collected (``_fork_tail_len`` rows).
+    if state.conversation_log:
+        try:
+            _rotated_head = await asyncio.to_thread(
+                state.conversation_log.read_rotated_messages_chained,
+                slot_history_key(slot),
+            )
+        except Exception:
+            # NOT `_rotated_head = []`. Empty means "no archive" here, so folding
+            # the failure into it drops the archived head and shifts every index
+            # below it -- and this path forks BY INDEX, so it would copy a
+            # different cutoff than the one the reader pointed at, silently. Same
+            # retryable shape the snapshot loop below already returns.
+            logger.warning("rotated-archive read failed for fork", exc_info=True)
+            return history_corpus_unreadable("fork_corpus_unreadable")
+        if _rotated_head:
+            _mid_rotation = False
+            try:
+                _mid_rotation = await asyncio.to_thread(
+                    state.conversation_log.chain_mid_rotation,
+                    slot_history_key(slot),
+                )
+            except Exception:
+                # Same reasoning as the slot-detail probe: a False fallback picks
+                # the flat-prepend path, which is only correct when the rotation is
+                # on the first chain member. Getting that wrong here forks BY INDEX
+                # off a misindexed corpus, so it copies different messages than the
+                # ones the reader pointed at.
+                logger.warning("mid-rotation probe failed for fork", exc_info=True)
+                return history_corpus_unreadable("fork_corpus_unreadable")
+            _rebuilt = False
+            if _mid_rotation:
+                try:
+                    _full_disk = await asyncio.to_thread(
+                        state.conversation_log.read_messages_chained_full,
+                        slot_history_key(slot),
+                    )
+                    _tail = (
+                        all_messages[len(all_messages) - _fork_tail_len :] if _fork_tail_len else []
+                    )
+                    # `_tail` was derived as "unflushed" against the corpus the
+                    # snapshot loop read. THIS is a later read, and two
+                    # `to_thread` suspensions separate them, so a save landing in
+                    # that window puts those same rows on disk — appending the
+                    # tail blind then duplicates them, surfacing as an ambiguous
+                    # fork id or a doubled fork tail. The loop's stability
+                    # guarantee does not reach across this read, so re-derive
+                    # against what this read actually returned.
+                    all_messages = _full_disk + drop_persisted_tail_prefix(_full_disk, _tail)
+                    _rebuilt = True
+                except Exception:
+                    # FAIL CLOSED. The flat prepend below puts only THIS key's
+                    # rotated head in front, so when the rotation is on a later
+                    # chain member the earlier members' rotated rows are still
+                    # missing and every index shifts. An index-addressed fork
+                    # then copies DIFFERENT messages than the ones the reader
+                    # pointed at, silently — worse than not forking at all,
+                    # which the reader can see and retry. Same retryable shape
+                    # the snapshot loop above already returns.
+                    logger.warning("chained-full fork corpus read failed", exc_info=True)
+                    return history_corpus_unreadable("fork_corpus_unreadable")
+            if not _rebuilt:
+                # Same crash window as `read_messages_chained_full`'s concatenation,
+                # reached by a different branch: rotation archives the dropped lines
+                # first and rewrites the live file's head second, so a kill between
+                # those two steps leaves the archived rows in BOTH files. Prepending
+                # blind then serves them twice, and in this corpus a duplicated row
+                # is what makes a legacy fork index select the wrong cutoff.
+                #
+                # This branch is not covered by that function's own guard because it
+                # runs when the chained-full read was not used at all.
+                all_messages = _rotated_head + drop_persisted_tail_prefix(
+                    _rotated_head, all_messages
+                )
     visible = [m for m in all_messages if m.get("role") in ("user", "assistant")]
     if not visible:
         return web.json_response(

@@ -66,6 +66,8 @@ vi.mock('../hooks/virtualizer/useVirtualChat', () => ({
       virtualItems: opts.items.length
         ? [{ data: opts.items[0], index: 0, key: 'row0', mounted: true, height: 260 }]
         : [],
+      farmIsMeasured: () => true,
+      farmRecord: () => true,
       offsetBefore: 0,
       offsetAfter: 0,
       totalHeight: 0,

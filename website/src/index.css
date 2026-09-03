@@ -1537,6 +1537,17 @@ button:hover .app-icon{--ico-a:var(--accent);--ico-b:var(--text)}
 [data-mode="light"] .msg-content pre{background:rgba(0,0,0,.04)}
 /* Reset pre inside new code/diff block components */
 .msg-content .code-block>pre{background:transparent;border-radius:0;margin:0}
+/* The staged stand-in must be the SAME HEIGHT as the Pierre surface it stands in
+   for, or the swap moves the reader's scroll position (pierreStaging.ts states
+   that invariant; PlainCodeFallback.tsx carries the measured geometry). The rule
+   above sets line-height:1.5, 10px vertical padding and a 4px margin on every
+   transcript `pre`, and its `.code-block>pre` reset MISSES the staged stand-in
+   because that element sits inside `.pierre-surface`, not directly under the
+   block. Measured: 4px of padding surplus plus 8px of unreset margin = 12px
+   per code block, so a row with three of them dropped 36px when its chunks
+   resolved. Restore Pierre's measured box here, where the conflict is
+   visible: no margin, 8px top/bottom, 20px per line. */
+.msg-content .pierre-plain{margin:0;padding-top:8px;padding-bottom:8px;line-height:20px}
 .msg-content .diff-block>pre{padding:0}
 .msg-content .diff-block,.msg-content .code-block{margin:8px 0}
 
@@ -2686,3 +2697,28 @@ html[data-font-family="opendyslexic"] .nav-item {
   aspect-ratio: var(--mc-img-w) / var(--mc-img-h);
 }
 .mc-img-reserve-compact { --mc-img-cap: 180px; }
+
+/* Skeleton chat rows painted INSIDE the virtualizer's spacers. A spacer is the
+ * reserved height of rows that are not mounted (yet): while a pagination walk
+ * lands pages or the reader outruns mounting, the viewport can sit over pure
+ * spacer — which used to read as "all text vanished, only background left".
+ * Rounded bars in alternating widths read as chat rows at a glance. Colors ride
+ * the theme's muted foreground at low alpha, so every palette keeps contrast.
+ *
+ * DELIBERATELY STATIC. The first version pulsed opacity, and a spacer is
+ * routinely 20k+ px tall: animating opacity promotes the whole spacer into a
+ * compositor layer of that size, which on a phone GPU costs more than the
+ * long tasks the skeleton exists to paper over. `contain` fences the paint so
+ * the spacer can never invalidate its neighbors. */
+.vc-spacer-skeleton {
+  --vc-skel-bar: color-mix(in oklab, var(--fg, #888) 9%, transparent);
+  background-image:
+    linear-gradient(to bottom, var(--vc-skel-bar) 0 22px, transparent 22px 102px),
+    linear-gradient(to bottom, var(--vc-skel-bar) 0 22px, transparent 22px 102px),
+    linear-gradient(to bottom, var(--vc-skel-bar) 0 22px, transparent 22px 102px);
+  background-repeat: repeat-y;
+  /* One 102px tile per layer = three bars of alternating width per cycle. */
+  background-size: 62% 102px, 84% 102px, 44% 102px;
+  background-position: 24px 12px, 24px 46px, 24px 80px;
+  contain: layout paint style;
+}

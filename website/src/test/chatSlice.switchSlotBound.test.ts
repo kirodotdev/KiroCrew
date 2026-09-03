@@ -13,7 +13,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { configureStore } from '@reduxjs/toolkit'
 
 import { api } from '../api/client'
-import chatReducer, { OLDER_PAGE_LIMIT, loadOlderMessages, switchSlot } from '../store/chatSlice'
+import chatReducer, { OLDER_PAGE_LIMIT, OLDER_WALK_PAGE_LIMIT, loadOlderMessages, switchSlot } from '../store/chatSlice'
 
 vi.mock('../api/client')
 
@@ -67,7 +67,7 @@ describe('switchSlot initial load bound', () => {
     mockDetail({ messages: [], has_more: false, next_before: 0, total: 251 })
     await store.dispatch(loadOlderMessages() as never)
     expect(api.chatSlotDetail).toHaveBeenLastCalledWith(
-      'slot-a', OLDER_PAGE_LIMIT, 250, expect.anything(),
+      'slot-a', OLDER_WALK_PAGE_LIMIT, 250, expect.anything(),
     )
   })
 
@@ -113,16 +113,23 @@ describe('switchSlot initial load bound', () => {
     expect(st.slotOldestIndex).toBe(0)
   })
 
-  // Same guard as warmSlotCache and ChatPane's hydrate -- deliberate, not a raw-row
-  // guard: the handler collapses chunk runs BEFORE it slices, even mid-stream.
+  // A streaming slot gets the larger WALK page, never the unbounded corpus:
+  // on a busy session the unbounded switch measured 6.2MB / ~1s server-side
+  // per switch, and the kept-head cut reconciles a bounded page against the
+  // (usually fresh) cache.
+  // Reconciled with upstream's shrink contract (boundedRefetchShrink.test.ts):
+  // a STREAMING or PAINTED slot switches unbounded — a bounded page is a
+  // window, and unseen server growth can push it clear of a small cache. Only
+  // a fresh slot (nothing painted) takes the one-page bound.
   it('switches to a streaming slot unbounded', async () => {
     mockDetail({ running: true })
     const store = makeStore({ slotRun: { 'slot-a': { state: 'streaming' } } })
     await store.dispatch(switchSlot('slot-a') as never)
+    // fetchSlotDetail omits the limit argument entirely when unbounded.
     expect(api.chatSlotDetail).toHaveBeenCalledWith('slot-a')
   })
 
-  it('switches to an idle slot bounded', async () => {
+  it('switches to a fresh idle slot bounded to one page', async () => {
     mockDetail({})
     const store = makeStore({ slotRun: { 'slot-a': { state: 'idle' } } })
     await store.dispatch(switchSlot('slot-a') as never)

@@ -1,7 +1,16 @@
-import { afterEach, vi } from 'vitest'
+import { afterEach, beforeEach, vi } from 'vitest'
 import '@testing-library/jest-dom'
 import { server } from './mocks/server'
 import { initI18n, i18next } from '../src/i18n'
+import { __resetStagingForTests } from '../src/components/pierreStaging'
+
+// The Pierre mount queue is MODULE state — in a browser that is per-page, but a
+// vitest worker runs many test files in one process, so without this a file that
+// exhausts the eager budget leaves the NEXT file's code blocks and diff rows
+// queued behind an idle callback nobody flushes. They then render their plain
+// stand-in forever and assertions looking for highlighted output fail in a file
+// that passes perfectly on its own. Reset per test: one test is one "page".
+beforeEach(() => { __resetStagingForTests() })
 
 // lottie-web registers a module-scoped `setInterval(checkReady, 100)` purely by
 // being IMPORTED (`readyStateCheckInterval` in the prebuilt player bundles). That

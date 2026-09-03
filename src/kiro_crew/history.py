@@ -2579,6 +2579,24 @@ class ConversationLog:
     def read_messages_chained(self, key: str) -> list[dict]:
         return self._read_projection.read_messages_chained(key)
 
+    def read_messages_chained_full(self, key: str) -> list[dict]:
+        """Chained transcript INCLUDING each key's size-rotated archive head.
+
+        The pagination/fork index space: `before` / `next_before` cursors from
+        the slot-detail handler address rows of THIS corpus. The plain
+        `read_messages_chained` stays the window/consolidation corpus — its
+        callers hold offsets (``_disk_older_count``, ``last_consolidated``)
+        counted against the un-archived files, which rotated rows must not shift.
+        """
+        return self._read_projection.read_messages_chained_full(key)
+
+    def read_rotated_messages_chained(self, key: str) -> list[dict]:
+        return self._read_projection.read_rotated_messages_chained(key)
+
+    def chain_mid_rotation(self, key: str) -> bool:
+        """See ``HistoryReadProjection.chain_mid_rotation``."""
+        return self._read_projection.chain_mid_rotation(key)
+
     def _rebuild_tab_id_index(self) -> None:
         self._read_projection._rebuild_tab_id_index()
 

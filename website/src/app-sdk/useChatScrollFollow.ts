@@ -125,6 +125,13 @@ export function useChatScrollFollow(opts: {
     setIsAtBottom(computeAtBottom(readGeom(el), DEFAULT_BOTTOM_THRESHOLD))
   }, [writePin])
 
+  // Scroller height as of the last SCROLL event. Deliberately separate from
+  // `lastWriteClientHRef` (which tracks our own writes) and from anything the
+  // ResizeObserver touches: a viewport resize and the clamp it causes are two
+  // events, so a baseline the observer could advance first would fold the growth
+  // away before the clamp's scroll event asked about it.
+  const lastScrollClientHRef = useRef(0)
+
   const onScroll = useCallback(() => {
     if (!enabledRef.current) return
     const el = scrollerRef.current
@@ -139,6 +146,15 @@ export function useChatScrollFollow(opts: {
         scrollTop: geom.scrollTop,
         prevScrollTop: prevScrollTopRef.current,
         geom,
+        // A taller viewport lowers the maximum scrollTop, so the engine clamps a
+        // near-bottom reader flush with no write to observe. This hook observes
+        // exactly the changes that cause it — pane resizes and the soft keyboard —
+        // so without the signal a clamp reads as the reader returning to the
+        // bottom and re-arms follow for someone who never touched the scroller.
+        viewportGrowth:
+          lastScrollClientHRef.current > 0
+            ? geom.clientHeight - lastScrollClientHRef.current
+            : 0,
       })
       // A user scroll invalidates the self-scroll reference: keeping it would
       // let a later user move back to the same offset read as ours.
@@ -148,6 +164,7 @@ export function useChatScrollFollow(opts: {
       }
     }
     prevScrollTopRef.current = geom.scrollTop
+    lastScrollClientHRef.current = geom.clientHeight
   }, [])
 
   const scrollToBottom = useCallback(() => {

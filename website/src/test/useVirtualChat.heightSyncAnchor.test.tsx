@@ -69,11 +69,14 @@ describe('useVirtualChat: height-sync spacer repricing keeps the top visible row
     const node = document.createElement('div')
     Object.defineProperty(node, 'offsetHeight', { configurable: true, get: () => 250 })
     // Read #1 is the seed measurement itself (fractional heights read the
-    // rect), #2 is the sync's anchor capture, #3+ the compensation effect.
+    // rect), #2 is captureTopAnchorFrom inside the sync's anchor capture, #3
+    // the candidate-collection pass (the capture stores a LIST of visible
+    // fallback anchors, one more rect read per row), #4+ the compensation
+    // effect.
     let reads = 0
     node.getBoundingClientRect = () => {
       reads += 1
-      const top = reads <= 2 ? 100 : 130
+      const top = reads <= 3 ? 100 : 130
       return { top, bottom: top + 250, left: 0, right: 390, width: 390, height: 250, x: 0, y: top, toJSON: () => ({}) } as DOMRect
     }
     act(() => { view.result.current.measureRef(5)(node) })
@@ -83,6 +86,95 @@ describe('useVirtualChat: height-sync spacer repricing keeps the top visible row
     // layout effect re-reads top=130 → delta +30 → scrollTop corrected.
     const before = state.scrollTop
     act(() => { vi.advanceTimersByTime(120) })
+    expect(state.scrollTop - before).toBe(30)
+  })
+
+  it('re-pins a FOLLOWED reader to the new bottom pre-paint when repricing grows the content', () => {
+    // The measure farm reprices estimate-priced rows in background batches
+    // (deep-idle ~5s after a session opens), which grows scrollHeight under a
+    // reader parked at the bottom. The pre-paint re-pin in the height-anchor
+    // consumer is what makes that invisible; without it the correction falls
+    // through to the POST-paint pinAuto and the reader sees one displaced
+    // frame per landing wave — "opens, then starts jumping a moment later".
+    const { el, state } = makeScroller({ scrollTop: 4600, scrollHeight: 5000, clientHeight: 400 })
+    const ref: RefObject<HTMLDivElement | null> = { current: el }
+    const items = mkItems(30)
+    const view = renderHook(
+      (props: UseVirtualChatOptions<Item>) => useVirtualChat<Item>(props),
+      { initialProps: { items, sessionId: 'anchor-sync-stick', getKey, externalScrollerRef: ref, followOutput: true } },
+    )
+
+    // Seed one measurement, which schedules the debounced sync; the repricing
+    // it commits grows the content (farm-measured truth replacing estimates).
+    const node = document.createElement('div')
+    Object.defineProperty(node, 'offsetHeight', { configurable: true, get: () => 250 })
+    node.getBoundingClientRect = () =>
+      ({ top: 100, bottom: 350, left: 0, right: 390, width: 390, height: 250, x: 0, y: 100, toJSON: () => ({}) }) as DOMRect
+    act(() => { view.result.current.measureRef(5)(node) })
+    state.scrollHeight = 9000 // the reprice: content is now much taller
+
+    act(() => { vi.advanceTimersByTime(120) })
+    // Followed ⇒ the bottom is the position: scrollTop must sit at the NEW
+    // bottom, written in the same commit that repriced (pre-paint).
+    expect(state.scrollTop).toBe(9000 - 400)
+  })
+
+  it('does NOT re-pin a followed reader whose upward gesture is still in flight', () => {
+    // A reader who has just started scrolling up is still `stick` for the few
+    // ms until the scroll handler's rAF evaluates and releases follow. A
+    // repricing batch committing inside that gap must not force them to the
+    // bottom mid-gesture — reported as "I was reading mid-transcript and it
+    // suddenly jumped to the end", which then mass-remounted the rows and
+    // re-staged every diff (the "chips flash again" follow-on).
+    const { el, state } = makeScroller({ scrollTop: 2000, scrollHeight: 5000, clientHeight: 400 })
+    const ref: RefObject<HTMLDivElement | null> = { current: el }
+    const items = mkItems(30)
+    const view = renderHook(
+      (props: UseVirtualChatOptions<Item>) => useVirtualChat<Item>(props),
+      { initialProps: { items, sessionId: 'anchor-sync-gesture', getKey, externalScrollerRef: ref, followOutput: true } },
+    )
+
+    const node = document.createElement('div')
+    Object.defineProperty(node, 'offsetHeight', { configurable: true, get: () => 250 })
+    node.getBoundingClientRect = () =>
+      ({ top: 100, bottom: 350, left: 0, right: 390, width: 390, height: 250, x: 0, y: 100, toJSON: () => ({}) }) as DOMRect
+    act(() => { view.result.current.measureRef(5)(node) })
+    // Real hardware input NOW: the gesture is in flight.
+    act(() => { el.dispatchEvent(new Event('wheel')) })
+    state.scrollHeight = 9000
+    const before = state.scrollTop
+
+    act(() => { vi.advanceTimersByTime(120) }) // inside SCROLL_SETTLE_MS
+    expect(state.scrollTop).toBe(before)
+  })
+
+  it('honours a LATE anchor when the viewport never moved (turn-end reprice)', () => {
+    // A turn ending is the busiest the main thread gets, so this effect can run
+    // long after the capture. A wall-clock staleness gate dropped the anchor
+    // there and a still reader paid the whole reprice as one displacement. The
+    // discriminator is scrollTop: unchanged ⇒ the delta is entirely the
+    // reprice's, so correct it however late it lands.
+    const { el, state } = makeScroller({ scrollTop: 1000, scrollHeight: 5000, clientHeight: 400 })
+    const ref: RefObject<HTMLDivElement | null> = { current: el }
+    const items = mkItems(30)
+    const view = renderHook(
+      (props: UseVirtualChatOptions<Item>) => useVirtualChat<Item>(props),
+      { initialProps: { items, sessionId: 'anchor-late', getKey, externalScrollerRef: ref, followOutput: false } },
+    )
+
+    const node = document.createElement('div')
+    Object.defineProperty(node, 'offsetHeight', { configurable: true, get: () => 250 })
+    let reads = 0
+    node.getBoundingClientRect = () => {
+      reads += 1
+      const top = reads <= 3 ? 100 : 130
+      return { top, bottom: top + 250, left: 0, right: 390, width: 390, height: 250, x: 0, y: top, toJSON: () => ({}) } as DOMRect
+    }
+    act(() => { view.result.current.measureRef(5)(node) })
+
+    const before = state.scrollTop
+    // Flush the debounced sync LATE — far beyond any wall-clock age gate.
+    act(() => { vi.advanceTimersByTime(5000) })
     expect(state.scrollTop - before).toBe(30)
   })
 

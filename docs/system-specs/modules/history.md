@@ -537,6 +537,24 @@ archived instead of being permanently deleted:
   `_cleanup_old_archives()` reads the value from config when called with no
   explicit `retention_days`, and is rate-limited to once per hour.
 - **API**: `GET /api/session/archive` (list), `GET /api/session/archive/{name}` (read with path traversal protection)
+- **Rotated history stays pageable.** `read_messages_chained_full(key)` returns,
+  per chain key, that key's `reason="rotate"` archive segments (filename-stamp
+  order, numeric `-N` collision suffixes sorted numerically) followed by the
+  surviving file — the pre-rotation timeline. This is the **pagination corpus**:
+  the slot-detail handler's `before`/`next_before` cursors address its collapsed
+  rows, and the fork path prepends the same rotated rows so a clicked index
+  resolves to the same message (`read_rotated_messages_chained(key)` returns just
+  the rotated head). Only `rotate` segments participate — `compact`,
+  `foreign-dedup`, and rewrite drops are content the product DISCARDED and never
+  resurface. The no-limit slot-detail branch advertises an archived head via
+  `has_more=true` / `next_before=<collapsed rotated-row count>` instead of
+  retiring the affordance. Plain `read_messages_chained` keeps its
+  archive-blind semantics: `_disk_older_count` and `last_consolidated` offsets
+  are counted against the un-archived files and must not shift when a rotation
+  lands. Rotated rows parse with a per-key cache invalidated on the segments'
+  stat signature. Retention still applies: archives past
+  `session.archive_retention_days` are deleted, and the history behind them
+  becomes unreachable again — pageable-rotated-history is best-effort by design.
 
 ### Pairing a session key with its files
 

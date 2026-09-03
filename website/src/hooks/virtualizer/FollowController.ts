@@ -103,6 +103,115 @@ export function isSelfScroll(
 }
 
 /**
+ * Is a height-sync anchor captured at `capturedScrollTop` still usable now that
+ * the scroller reads `liveScrollTop`?
+ *
+ * A viewport-relative capture consumed after the viewport MOVED corrects the
+ * reader's own scrolling rather than the repricing it was taken for (measured
+ * as a 2706px teleport on the phone rig during a cold-cache walk). scrollTop is
+ * the exact discriminator: a reprice ABOVE the viewport changes where rows sit,
+ * never scrollTop. So unchanged ⇒ the whole delta belongs to the reprice and is
+ * safe to correct HOWEVER LATE it lands; changed ⇒ something else moved the
+ * viewport (a finger, iOS momentum — which keeps moving with no further hard
+ * input, so an input-timestamp gate misses it — or Chromium's native anchoring,
+ * which already absorbed the shift, making the correction a no-op anyway).
+ *
+ * Wall-clock age was the first approximation and failed on the wrong side at
+ * the worst moment: a turn ending is the busiest the main thread gets, so the
+ * consumer runs late, a STILL reader's anchor was dropped, and they paid the
+ * entire reprice as one displacement.
+ */
+/**
+ * How far a reader must be moved to stay put when a row ABOVE them is repriced.
+ *
+ * The height INDEX learns a mounted row's real height only when the debounced
+ * sync runs, and the released-reader correction is keyed on the index's version
+ * — so growth above a mid-transcript reader displaces them for the whole
+ * debounce and is then undone. On the device that is one +108 CSS px step and an
+ * exact −108 step ~100ms later: a bounce with a net effect of nothing. The
+ * observer already knows the row and both heights, so the correction belongs in
+ * that same fire.
+ *
+ * Only a row that lay ENTIRELY above the fold BEFORE the change counts, and
+ * `prevHeight` is what decides that: a row straddling the top edge grows
+ * downward from its own top, so what the reader sees is the row they are looking
+ * at expanding — usually because they opened it — and holding their scroll
+ * position there would fight the expansion instead of hiding it.
+ *
+ * The sign is kept: a SHRINK above the fold pulls content up by the same rule.
+ */
+export function repriceAboveFoldDelta(input: {
+  /** Row's viewport-relative top, as the observer sees it (post-layout). */
+  rowTop: number
+  prevHeight: number
+  newHeight: number
+  /** Viewport-relative top of the scroll container. */
+  foldTop: number
+}): number {
+  // The test is on the row's TOP, not its whole box. A reprice does not move a
+  // row's top -- it moves its BOTTOM, and with it everything below, so a row
+  // that STRADDLES the top edge displaces the reader by the full change just
+  // like one entirely above it. Measured on the device and reproduced in
+  // Chromium with `overflow-anchor: none`: four of the five drift steps in a
+  // twelve-step walk were straddling rows shrinking 12-24px each, and excluding
+  // them is what left the reader displaced.
+  //
+  // A row whose top is at or below the fold is still excluded: it grows and
+  // shrinks downward, away from everything already on screen, and its own top --
+  // the reader's eye line on it -- does not move.
+  if (input.rowTop >= input.foldTop) return 0
+  return input.newHeight - input.prevHeight
+}
+
+
+/**
+ * Whether a geometry commit (spacer repricing) must WAIT for the reader to stop.
+ *
+ * The invariant this enforces: whatever is loading, what the reader is looking
+ * at does not move. Growth above them extends upward, growth below extends
+ * downward, and their own eye line stays put.
+ *
+ * Compensating a commit that lands mid-gesture cannot deliver that on iOS
+ * Safari, which has no native scroll anchoring: the correction is a `scrollTop`
+ * write, and a write issued while a finger or momentum owns the scroller either
+ * fights the gesture or arrives a frame late, which is the bounce. Not
+ * committing is the only option that moves nothing — so a released reader's
+ * geometry waits, and lands in one compensated commit once they are still.
+ *
+ * A FOLLOWED reader is exempt: the bottom pin owns their position, and stalling
+ * the streaming row's growth would re-create the spacer lurch that its eager
+ * sync path exists to prevent.
+ *
+ * There is deliberately NO deferral ceiling. A cap would guarantee a visible
+ * displacement during exactly the long continuous scroll this exists to protect,
+ * and it buys nothing that waiting does not: a gesture always ends, and the
+ * spacers stay on their estimates until it does — which is how every
+ * never-measured row is already priced.
+ */
+export function geometryCommitDeferred(input: {
+  /** Follow armed — the bottom pin owns positioning, so never defer. */
+  stick: boolean
+  now: number
+  /** Last real hardware input (wheel, touch, key). */
+  lastHardInputAt: number
+  /** Last scroll event that was NOT one of our own writes (includes momentum). */
+  lastUserScrollAt: number
+  settleMs: number
+}): boolean {
+  if (input.stick) return false
+  const lastMotion = Math.max(input.lastHardInputAt, input.lastUserScrollAt)
+  return input.now - lastMotion <= input.settleMs
+}
+
+export function heightAnchorStillUsable(
+  capturedScrollTop: number,
+  liveScrollTop: number,
+  epsilon: number = SELF_SCROLL_EPSILON,
+): boolean {
+  return Math.abs(liveScrollTop - capturedScrollTop) <= epsilon
+}
+
+/**
  * Distance (px) from the true bottom within which a user scroll RE-ENGAGES
  * follow. Deliberately much tighter than DEFAULT_BOTTOM_THRESHOLD: that 100px
  * band drives the jump-to-bottom pill's visibility, and reusing it for follow
@@ -125,7 +234,9 @@ export const FOLLOW_REENGAGE_PX = 16
  *   2. Any other upward move → release, regardless of distance from the
  *      bottom. The scroll position now belongs to the user; only returning to
  *      the bottom (3) re-engages.
- *   3. Downward arrival within FOLLOW_REENGAGE_PX of the bottom → re-engage.
+ *   3. A genuine DOWNWARD move that arrives within FOLLOW_REENGAGE_PX of the
+ *      bottom → re-engage. A neutral event inside the band does NOT: that is
+ *      how content collapsing under a still reader re-armed follow.
  *   4. Otherwise (downward/neutral, still away from the bottom) → keep the
  *      previous state.
  *
@@ -140,14 +251,46 @@ export function resolveUserScrollStick(args: {
   scrollTop: number
   prevScrollTop: number
   geom: ScrollGeom
+  /** Change in the scroller's own height since the previous scroll event.
+   *
+   *  Positive = the viewport GREW (the composer shrank under a deletion, the
+   *  keyboard closed). That growth lowers the maximum scrollTop, so the engine
+   *  clamps any reader parked closer to the bottom than the growth — with no
+   *  application write anywhere. The clamp then arrives here as an ordinary
+   *  scroll event sitting at distance ~0, which rule 1 below used to read as
+   *  "the reader came back to the bottom" and re-arm follow for someone who
+   *  never touched the scroller. The next turn to start then took them to the
+   *  end. Rule 1 exists to absorb a CONTENT-shrink clamp mid-stream, and content
+   *  shrink moves `scrollHeight`, not `clientHeight` — so the two are
+   *  distinguishable, and this is the delta that tells them apart. */
+  viewportGrowth?: number
 }): boolean {
   const { stick, followOutput, scrollTop, prevScrollTop, geom } = args
   if (!followOutput) return false
   const dist = distanceFromBottom(geom)
-  if (dist <= atBottomEpsilon()) return true
+  // A viewport growth large enough to explain the reader's arrival at the bottom
+  // is the engine's clamp, not the reader. Leave `stick` exactly as it was.
+  // A native clamp only ever LOWERS scrollTop, so a downward move concurrent with
+  // the growth is the user's own and must still re-engage follow. Without the
+  // direction term a reader who deliberately scrolls down while the keyboard
+  // closes is refused their re-engagement.
+  const clampedByViewport =
+    (args.viewportGrowth ?? 0) > atBottomEpsilon() && scrollTop <= prevScrollTop + atBottomEpsilon()
+  if (dist <= atBottomEpsilon()) return clampedByViewport ? stick : true
   if (prevScrollTop < 0) return dist <= FOLLOW_REENGAGE_PX
   if (scrollTop < prevScrollTop - 0.5) return false
-  if (dist <= FOLLOW_REENGAGE_PX) return true
+  // Re-engagement requires a genuine DOWNWARD move, not merely a non-upward
+  // event that finds the reader inside the band. A neutral event (identical
+  // scrollTop -- the tail of an iOS momentum run, or any scroll fired while the
+  // reader is at rest) used to satisfy this, so a reader sitting mid-transcript
+  // could be re-armed by CONTENT rather than by their own hand: when rows
+  // outside the window reprice smaller than their estimates, the remaining
+  // content collapses under them and the bottom band arrives at the reader
+  // instead of the reader arriving at it. Follow re-engaged, and the next pin
+  // took them to the end -- reported as scrolling along and suddenly landing at
+  // the bottom. Distance alone cannot tell those apart; the direction of the
+  // reader's own move can.
+  if (scrollTop > prevScrollTop + 0.5 && dist <= FOLLOW_REENGAGE_PX) return true
   return stick
 }
 
@@ -194,12 +337,31 @@ export function evaluateAutoPin(args: {
   lastWriteTop: number
   epsilon?: number
   viewportShrink?: number
+  /** Is a turn actually producing output right now?
+   *
+   *  Follow means "keep me at the end of a LIVE turn". With nothing running there
+   *  is no output to follow, so a reader sitting above the bottom is not
+   *  following — and an automatic pin there is a yank with no cause, reported
+   *  from a phone as the transcript springing back after scrolling up about a
+   *  hundred pixels with nothing streaming.
+   *
+   *  Defaults to `true` = assume a run is live, which keeps the behaviour of a
+   *  caller that has no run signal to give (the app-SDK chat surface). The chat
+   *  transcript passes the real thing. */
+  runActive?: boolean
 }): AutoPinResult {
   const { stick, geom, lastWriteTop } = args
   const epsilon = args.epsilon ?? SELF_SCROLL_EPSILON
   const viewportShrink = Math.max(0, args.viewportShrink ?? 0)
+  const runActive = args.runActive ?? true
   const target = bottomTarget(geom)
   if (!stick) return { pin: false, stick: false, target }
+  // Idle: release rather than merely skip the pin. Skipping would leave follow
+  // armed, so the next turn to start would yank this reader to the bottom from
+  // wherever they had settled — the same defect one event later.
+  if (!runActive && distanceFromBottom(geom) > atBottomEpsilon()) {
+    return { pin: false, stick: false, target }
+  }
   // Release only on a genuine user scroll-UP: scrollTop dropped below our last
   // write AND we are now meaningfully away from the bottom. A pure content
   // SHRINK mid-stream (a partial markdown line re-parsing, a code fence opening

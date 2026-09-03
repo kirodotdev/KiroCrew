@@ -39,6 +39,8 @@ vi.mock('../hooks/virtualizer/useVirtualChat', () => ({
         index,
         mounted: true,
         data,
+      farmIsMeasured: () => true,
+      farmRecord: () => true,
       })),
       isAtBottom: true,
       getFollow: () => true,
@@ -198,10 +200,18 @@ describe('ChatPage – older-messages loading indicator', () => {
     expect(el.style.overflowAnchor).toBe('none')
     // Pinned, not parked at the list top: the only trigger fires from the pins
     // panel, so an unpinned indicator renders off-screen in a long session.
-    expect(el.className).toContain('sticky')
+    // ABSOLUTE overlay with zero layout footprint: a sticky element still
+    // owned flow space, so each loadingOlder flip inserted/removed ~32px
+    // above the content -- a per-landing twitch for a reader parked at the
+    // top (measured on the momentum rig).
+    expect(el.className).toContain('absolute')
+    expect(el.className).not.toContain('sticky')
     expect(el.className).toContain('top-16')
-    // Opaque, or the messages scrolling beneath it show through.
-    expect(el.style.background).not.toBe('')
+    // The container is a transparent zero-footprint overlay; opacity lives
+    // on the BADGE child, or the messages scrolling beneath show through.
+    const badge = el.querySelector('span') as HTMLElement
+    expect(badge).not.toBeNull()
+    expect(badge.style.background).not.toBe('')
   })
 
   it('clears when the older page fails, so it cannot spin forever', async () => {

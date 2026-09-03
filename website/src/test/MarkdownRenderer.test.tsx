@@ -595,7 +595,12 @@ describe('MarkdownRenderer path chips — stat gate', () => {
     const { container } = render(<MarkdownRenderer content={'`/home/user/ghost.md`'} />)
     await waitFor(() => expect(globalThis.fetch).toHaveBeenCalled())
     const code = container.querySelector('code')!
-    expect(code.querySelector('svg')).toBeNull()
+    // Nothing VISIBLE, rather than no element at all: a path-shaped span holds an
+    // `opacity-0` copy of the glyph so a confirmation arriving later cannot change
+    // the paragraph's width (MarkdownRenderer.chipGlyphReserve.test.tsx). An
+    // invisible icon carries no affordance, so what this guards is unchanged —
+    // a real glyph must never reach a chip the backend did not confirm.
+    expect(code.querySelector('svg:not([class*="opacity-0"])')).toBeNull()
     // Non-path chips now have cursor-pointer for click-to-copy, but no file glyph.
     expect(code.className).toContain('cursor-pointer')
   })

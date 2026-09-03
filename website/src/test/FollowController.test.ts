@@ -5,12 +5,15 @@
 //   - a user scroll-up is never overridden by a late widget load (race-proof)
 //   - our own programmatic pins are not mistaken for user scrolls
 import { describe, it, expect } from 'vitest'
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import * as fc from 'fast-check'
 import {
   computeAtBottom,
   distanceFromBottom,
   bottomTarget,
   isSelfScroll,
+  heightAnchorStillUsable,
   resolveUserScrollStick,
   evaluateAutoPin,
   atBottomEpsilon,
@@ -31,6 +34,27 @@ describe('geometry helpers', () => {
     expect(distanceFromBottom(geom)).toBe(50)
     expect(computeAtBottom(geom, DEFAULT_BOTTOM_THRESHOLD)).toBe(true)
     expect(computeAtBottom({ ...geom, scrollTop: 400 }, DEFAULT_BOTTOM_THRESHOLD)).toBe(false)
+  })
+})
+
+describe('heightAnchorStillUsable', () => {
+  it('honours an anchor the viewport never moved away from, however late', () => {
+    // A reprice ABOVE the viewport moves where rows sit, never scrollTop — so an
+    // unchanged scrollTop means the whole delta belongs to the reprice. A turn
+    // ending is the busiest the main thread gets, so the consumer runs late;
+    // dropping the anchor there made a still reader pay the reprice as one
+    // displacement.
+    expect(heightAnchorStillUsable(1000, 1000)).toBe(true)
+    expect(heightAnchorStillUsable(1000, 1001)).toBe(true) // sub-pixel/rounding
+  })
+
+  it('drops an anchor once the viewport has moved (finger or iOS momentum)', () => {
+    // The delta is contaminated by the reader's own motion; correcting it
+    // corrects their scrolling (2706px teleport on the phone rig). Momentum
+    // keeps moving with NO further hard input, which is why an input-timestamp
+    // gate misses it and a scrollTop comparison does not.
+    expect(heightAnchorStillUsable(1000, 1600)).toBe(false)
+    expect(heightAnchorStillUsable(1000, 400)).toBe(false)
   })
 })
 
@@ -143,6 +167,46 @@ describe('resolveUserScrollStick — direction-aware follow decision', () => {
     expect(FOLLOW_REENGAGE_PX).toBeLessThan(DEFAULT_BOTTOM_THRESHOLD / 2)
     expect(FOLLOW_REENGAGE_PX).toBeGreaterThan(atBottomEpsilon())
   })
+
+  it('does NOT re-engage when the band arrives at a STILL reader', () => {
+    // Rows outside the window repricing smaller than their estimates collapses
+    // the remaining content under a mid-transcript reader, so the bottom band
+    // reaches them without them moving. A neutral event there used to re-arm
+    // follow, and the next pin took them to the end -- reported as scrolling
+    // along and suddenly landing at the bottom. Their scrollTop is identical:
+    // nothing about this is the reader returning to the bottom.
+    expect(
+      resolveUserScrollStick({
+        stick: false, followOutput: true,
+        scrollTop: 590, prevScrollTop: 590, geom: { scrollTop: 590, scrollHeight: 1000, clientHeight: 400 },
+      }),
+    ).toBe(false)
+  })
+
+  it('DOES re-engage when the reader moves down into the band themselves', () => {
+    // The behaviour the band exists for, and the discriminator: same geometry,
+    // same distance -- the only difference is that this reader moved toward the
+    // bottom.
+    expect(
+      resolveUserScrollStick({
+        stick: false, followOutput: true,
+        scrollTop: 590, prevScrollTop: 400, geom: { scrollTop: 590, scrollHeight: 1000, clientHeight: 400 },
+      }),
+    ).toBe(true)
+  })
+
+  it('still follows at the TRUE bottom however the reader got there', () => {
+    // Rule 1 is untouched: a mid-stream shrink drops scrollTop to exactly the
+    // new bottom (which reads as an upward move), and releasing there froze
+    // streaming follow for the rest of the turn. At the true bottom there is
+    // nothing below to be yanked to.
+    expect(
+      resolveUserScrollStick({
+        stick: false, followOutput: true,
+        scrollTop: 600, prevScrollTop: 900, geom: { scrollTop: 600, scrollHeight: 1000, clientHeight: 400 },
+      }),
+    ).toBe(true)
+  })
 })
 
 describe('evaluateAutoPin — the race-proof core', () => {
@@ -151,6 +215,43 @@ describe('evaluateAutoPin — the race-proof core', () => {
   it('does not pin when not sticking', () => {
     const r = evaluateAutoPin({ stick: false, geom: tall, lastWriteTop: 600 })
     expect(r).toEqual({ pin: false, stick: false, target: 600 })
+  })
+
+  it('IDLE: releases a reader sitting above the bottom instead of pinning them', () => {
+    // Follow means "keep me at the end of a LIVE turn". With nothing running
+    // there is no output to follow, so a reader 120px up is not following — and
+    // pinning them is a spring-back with no cause (reported from a phone after
+    // scrolling up about a hundred pixels with nothing streaming). Releasing
+    // rather than merely skipping matters: leaving follow armed would hand the
+    // yank to whichever turn starts next.
+    //
+    // `lastWriteTop` EQUALS scrollTop on purpose, so the pre-existing
+    // scroll-up release cannot fire and this pins the idle rule alone: the gap
+    // opened because content grew below the fold, not because anyone scrolled.
+    const up = { scrollTop: 480, scrollHeight: 1000, clientHeight: 400 } // 120px above bottom
+    const r = evaluateAutoPin({ stick: true, geom: up, lastWriteTop: 480, runActive: false })
+    expect(r).toEqual({ pin: false, stick: false, target: 600 })
+  })
+
+  it('IDLE: a reader ALREADY at the bottom keeps following', () => {
+    // Rows settling under a reader parked at the very bottom must still keep them
+    // there; the idle rule is about not MOVING someone who left the bottom.
+    const r = evaluateAutoPin({ stick: true, geom: tall, lastWriteTop: 600, runActive: false })
+    expect(r.stick).toBe(true)
+    expect(r.pin).toBe(false)
+  })
+
+  it('RUNNING: the same reader 120px up is still followed', () => {
+    // The gate is the run, not the distance: mid-turn, follow deliberately
+    // survives a large gap so a burst of output does not strand the reader.
+    const up = { scrollTop: 480, scrollHeight: 1000, clientHeight: 400 }
+    const r = evaluateAutoPin({ stick: true, geom: up, lastWriteTop: 480, runActive: true })
+    expect(r).toEqual({ pin: true, stick: true, target: 600 })
+  })
+
+  it('omitting runActive assumes a live run, so a caller with no signal is unchanged', () => {
+    const up = { scrollTop: 480, scrollHeight: 1000, clientHeight: 400 }
+    expect(evaluateAutoPin({ stick: true, geom: up, lastWriteTop: 480 }).pin).toBe(true)
   })
 
   it('STREAMING/WIDGET: large single growth while glued at bottom still follows', () => {
@@ -345,5 +446,101 @@ describe('atBottomEpsilon — fractional-DPR resting gate', () => {
     } finally {
       restore()
     }
+  })
+})
+
+describe('resolveUserScrollStick — what brought the reader to the bottom', () => {
+  it('a VIEWPORT growth that clamps the reader to the bottom does not arm follow', () => {
+    // Deleting a draft shrinks the composer, so the scroller GROWS, the maximum
+    // scrollTop drops, and the engine clamps a near-bottom reader flush — with no
+    // application write anywhere. That clamp arrives as an ordinary scroll event
+    // sitting at distance ~0. Reading it as "the reader came back" arms follow for
+    // someone who never touched the scroller, and the next turn to start takes
+    // them to the end.
+    const armed = resolveUserScrollStick({
+      stick: false,
+      followOutput: true,
+      scrollTop: 600,
+      prevScrollTop: 600,
+      geom: { scrollTop: 600, scrollHeight: 1000, clientHeight: 400 },
+      viewportGrowth: 96,
+    })
+    expect(armed).toBe(false)
+  })
+
+  it('a CONTENT-shrink clamp still arms follow, which is what rule 1 is for', () => {
+    // Mid-stream a partial markdown line re-parsing shrinks the CONTENT, clamping
+    // scrollTop while leaving the reader genuinely at the new bottom. Follow must
+    // survive that or streaming stops following for the rest of the response.
+    const armed = resolveUserScrollStick({
+      stick: true,
+      followOutput: true,
+      scrollTop: 600,
+      prevScrollTop: 620,
+      geom: { scrollTop: 600, scrollHeight: 1000, clientHeight: 400 },
+      viewportGrowth: 0,
+    })
+    expect(armed).toBe(true)
+  })
+
+  it('omitting viewportGrowth keeps the previous meaning for callers with no signal', () => {
+    const armed = resolveUserScrollStick({
+      stick: false,
+      followOutput: true,
+      scrollTop: 600,
+      prevScrollTop: 600,
+      geom: { scrollTop: 600, scrollHeight: 1000, clientHeight: 400 },
+    })
+    expect(armed).toBe(true)
+  })
+})
+
+describe('resolveUserScrollStick — a clamp only ever lowers scrollTop', () => {
+  it('a deliberate downward move concurrent with viewport growth still re-engages', () => {
+    // Reported by review: without a direction term, a reader who scrolls DOWN to
+    // the bottom while the keyboard closes has their own re-engagement refused,
+    // because the growth alone was taken as proof the engine moved them.
+    // scrollHeight 1000, clientHeight 400 -> 450: bottom moves 600 -> 550, and the
+    // reader moved 500 -> 550 by hand. A clamp could not have raised 500 to 550.
+    const armed = resolveUserScrollStick({
+      stick: false,
+      followOutput: true,
+      scrollTop: 550,
+      prevScrollTop: 500,
+      geom: { scrollTop: 550, scrollHeight: 1000, clientHeight: 450 },
+      viewportGrowth: 50,
+    })
+    expect(armed).toBe(true)
+  })
+
+  it('the same growth with no movement is still classified as the clamp', () => {
+    const armed = resolveUserScrollStick({
+      stick: false,
+      followOutput: true,
+      scrollTop: 550,
+      prevScrollTop: 550,
+      geom: { scrollTop: 550, scrollHeight: 1000, clientHeight: 450 },
+      viewportGrowth: 50,
+    })
+    expect(armed).toBe(false)
+  })
+})
+
+describe('both consumers report the viewport signal', () => {
+  it('the app-sdk hook passes viewportGrowth from its own scroll-event baseline', () => {
+    // Review finding: this hook observes pane resizes and the soft keyboard — the
+    // exact causes of a viewport-growth clamp — yet omitted the signal, so it kept
+    // the original defect while the chat virtualizer was fixed. The baseline must
+    // be its own, advanced by the scroll handler: a ref the ResizeObserver could
+    // advance first would fold the growth away before the clamp is classified.
+    const src = readFileSync(join(__dirname, '..', 'app-sdk', 'useChatScrollFollow.ts'), 'utf8')
+    const call = src.slice(src.indexOf('resolveUserScrollStick({'))
+    const args = call.slice(0, call.indexOf('})'))
+    expect(args).toMatch(/viewportGrowth:/)
+    expect(args).toContain('lastScrollClientHRef.current')
+    // Advanced in the scroll handler, not in the observer.
+    expect(src).toMatch(/prevScrollTopRef\.current = geom\.scrollTop\s*\n\s*lastScrollClientHRef\.current = geom\.clientHeight/)
+    // Not reusing the write-tracking ref, whose meaning is different.
+    expect(args).not.toContain('lastWriteClientHRef')
   })
 })

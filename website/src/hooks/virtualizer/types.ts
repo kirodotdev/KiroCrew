@@ -5,8 +5,38 @@ export interface UseVirtualChatOptions<T> {
   items: T[]
   /** Stable key extractor used as the height-cache key. */
   getKey: (item: T, index: number) => string
+  /**
+   * Identity that SURVIVES a display-key reshuffle, for scroll-anchor
+   * resolution only. Display keys (getKey) can be renamed wholesale by a
+   * prepend landing — dedupe suffixes shift and a turn's lead key changes when
+   * an older page regroups into it — and an anchor held by such a key dies
+   * exactly when it is needed, dropping the compensation (measured: content
+   * sliding −721px in one frame under a still reader). Return something
+   * derived from the row's TAIL message (a prepend regroups a turn's HEAD,
+   * never its tail). Optional: defaults to getKey, which preserves today's
+   * behavior for callers whose keys are already stable.
+   */
+  getStableId?: (item: T, index: number) => string
+  /**
+   * Display index at (or below) which the older-history prefetch fires — the
+   * caller's own notion of "close enough to the top". ChatPage passes the
+   * index of the SECOND USER MESSAGE from the top of the loaded transcript,
+   * per the stated contract "start loading while I am still two of my own
+   * messages away". Fired on the downward CROSSING of this index, so a
+   * landing (which shifts every index) re-arms it without looping. Defaults
+   * to a small display-row lead.
+   */
+  prefetchStartIndex?: number
   /** Height to use when no measurement is cached. Default: 80. */
   estimatedHeight?: number
+  /**
+   * Identity for the HEIGHT CACHE only (defaults to sessionId). Callers whose
+   * row heights depend on layout width append a width bucket, so heights
+   * measured at one width are never served at another (desktop cache on a
+   * phone = a correction jump on every mount). Scroll restore and prepend
+   * detection stay on the pure sessionId.
+   */
+  heightScopeKey?: string
   /** Items to mount above and below the visible viewport. Default: 5. */
   overscan?: number
   /** Session ID — partitions the persisted height cache. */
@@ -97,6 +127,22 @@ export interface UseVirtualChatOptions<T> {
    */
   streamingIndex?: number
   /**
+   * Is a turn producing output right now?
+   *
+   * Gates the AUTOMATIC bottom pin only; explicit pins (slot entry, the
+   * jump-to-bottom pill, sending) are unaffected. Following means "keep me at
+   * the end of a live turn", so with nothing running a reader who sits above the
+   * bottom is not following, and pinning them there is a yank with no cause —
+   * reported from a phone as the transcript springing back after a scroll up of
+   * about a hundred pixels with nothing streaming. Broader than a streaming row
+   * on purpose: a turn spends much of its life in tool calls, with no streaming
+   * row named, and follow has to keep working there.
+   *
+   * Omitted = assume a run is live, which is the behaviour of every caller that
+   * has no such signal to give.
+   */
+  runActive?: boolean
+  /**
    * Called when the top sentinel comes into view, alongside the upward window
    * expansion. Lets the caller fetch history that lies behind the loaded slice;
    * the virtualizer itself only ever widens the window over `items`.
@@ -123,6 +169,17 @@ export interface ScrollToIndexOptions {
 }
 
 export interface UseVirtualChatReturn<T> {
+  /** True when row `index` has a real (render-based) measurement cached. */
+  farmIsMeasured: (index: number) => boolean
+  /** True when the row is currently mounted in the live window (the
+   *  ResizeObserver owns its height; the farm must skip it). */
+  farmRowMounted: (index: number) => boolean
+  /**
+   * Background write-back from the off-screen measure farm. Identity-checked:
+   * the write is dropped (returns false) when the key no longer matches the
+   * item at `index` (a landing shifted indices mid-measure).
+   */
+  farmRecord: (index: number, key: string, px: number) => boolean
   /** Attach to the scroll container (`overflow-y: auto`). */
   scrollerRef: React.RefObject<HTMLDivElement | null>
   /** Attach to the inner content wrapper (sized to totalHeight). */

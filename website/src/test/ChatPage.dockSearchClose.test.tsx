@@ -73,6 +73,8 @@ vi.mock('../hooks/virtualizer/useVirtualChat', () => ({
         index,
         mounted: true,
         data,
+      farmIsMeasured: () => true,
+      farmRecord: () => true,
       })),
       isAtBottom: true,
       getFollow: () => true,

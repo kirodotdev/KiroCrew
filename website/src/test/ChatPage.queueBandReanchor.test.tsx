@@ -39,15 +39,23 @@ describe('composer status stack re-anchors the transcript while it resizes', () 
   })
 
   it('the ref attaches a ResizeObserver that re-anchors only while following', () => {
-    const cb = /const composerBandRef = useCallback\(\(el: HTMLDivElement \| null\) => \{([\s\S]*?)\n {2}\}, \[scrollBottom\]\)/.exec(CHAT_PAGE)
+    // The dep list is matched loosely on purpose: which callbacks the closure
+    // captures is incidental, and pinning it verbatim is what makes this test
+    // fail on a change that strengthens the gate it actually guards.
+    const cb = /const composerBandRef = useCallback\(\(el: HTMLDivElement \| null\) => \{([\s\S]*?)\n {2}\}, \[[^\]]*scrollBottom[^\]]*\]\)/.exec(CHAT_PAGE)
     expect(cb, 'composerBandRef callback not found in ChatPage.tsx').not.toBeNull()
     const body = cb![1]
     // Re-attaches across unmount/remount: the previous observer is dropped first.
     expect(body).toContain('composerBandObserverRef.current?.disconnect()')
-    // The observer body is gated on FOLLOW — a reader parked above the bottom
-    // has released follow, and re-anchoring would yank them — and the scroll is
+    // The observer body is gated on FOLLOW — a reader parked above the bottom has
+    // released follow, and re-anchoring would yank them — and the scroll is
     // instant ('auto' via scrollBottom(true)) so it can track an animation.
-    expect(body).toMatch(/new ResizeObserver\(\(\) => \{\s*if \(vGetFollowRef\.current\(\)\) scrollBottom\(true\)\s*\}\)/)
+    //
+    // `autoFollowAllowed()` is that gate, and it is strictly stronger than the
+    // follow flag alone: the flag is `stickRef.current` and nothing else, so a
+    // band arriving while a reader sits far up used to satisfy it. It now also
+    // requires live geometry near the bottom.
+    expect(body).toMatch(/new ResizeObserver\(\(\) => \{\s*if \(autoFollowAllowed\(\)\) scrollBottom\(true\)\s*\}\)/)
     expect(body).toContain('ro.observe(el)')
   })
 })

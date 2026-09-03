@@ -182,14 +182,32 @@ export default memo(function DiffBlock({ code, complete, onFileOpen, pathHint, s
 
   // Patch-level controls, slotted into Pierre's header metadata area (light
   // DOM, so outer-tree styling and the group-hover reveal both apply).
+  // Space for the Open affordance is reserved on exactly the condition that runs
+  // the probe, so the probe's OUTCOME never changes this row's geometry.
+  //
+  // Without the reserve, a successful HEAD adds a third button to the actions row
+  // after an async round-trip. On a pointer surface that reflows the diff body by a
+  // couple of pixels; under `HOVER_NONE_ACTIONS_ROW_CLS` (touch) the row is
+  // `flex-wrap` with `p-3` targets, so the third button WRAPS it to a second line
+  // and the header grows by a whole row — the transcript below then slides by that
+  // much, mid-read, which is what "the file diff's loading pushed it up" is.
+  //
+  // Reserved space costs a phone row even for a file that turns out to be missing.
+  // That is the right trade: a header that is one row taller from first paint is
+  // stationary, and a header that changes height while someone is reading is not.
+  const reserveOpen = Boolean(onFileOpen && probePath && isSafePath(probePath))
+
   const headerControls = () => (
     <span className={`relative z-10 flex items-center gap-1 opacity-0 group-hover/diff:opacity-100 group-focus-within/diff:opacity-100 transition-opacity ${HOVER_NONE_ACTIONS_ROW_CLS}`}>
-      {filePath && onFileOpen && (
+      {reserveOpen && (
         <button
-          className="px-1.5 py-0.5 rounded text-[12px] text-muted hover:text-text hover:bg-bg-hover cursor-pointer"
-          onClick={() => onFileOpen(filePath)}
-          title={i18nT('components.diffBlock.open_in_side_panel', { path: filePath })}
-          aria-label={i18nT('components.diffBlock.open_in_side_panel', { path: filePath })}
+          className={`px-1.5 py-0.5 rounded text-[12px] text-muted hover:text-text hover:bg-bg-hover cursor-pointer ${filePath ? '' : 'invisible pointer-events-none'}`}
+          onClick={filePath && onFileOpen ? () => onFileOpen(filePath) : undefined}
+          disabled={!filePath}
+          aria-hidden={!filePath}
+          tabIndex={filePath ? undefined : -1}
+          title={filePath ? i18nT('components.diffBlock.open_in_side_panel', { path: filePath }) : undefined}
+          aria-label={filePath ? i18nT('components.diffBlock.open_in_side_panel', { path: filePath }) : undefined}
         >
           {i18nT('components.diffBlock.open')}
         </button>

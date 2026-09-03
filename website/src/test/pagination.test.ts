@@ -1,7 +1,7 @@
 // Feature: chat-older-history
 // The whole gate: provenance and scrollability checks were removed, not relocated.
 import { describe, it, expect } from 'vitest'
-import { shouldPaginateOlder, canForkAtWindow, searchScopeIsLimited } from '../pages/chat/pagination'
+import { shouldPaginateOlder, canForkAtWindow, searchScopeIsLimited, shouldContinueOlderWalk } from '../pages/chat/pagination'
 
 describe('shouldPaginateOlder', () => {
   it('paginates when the server reported more history and nothing is in flight', () => {
@@ -63,5 +63,38 @@ describe('searchScopeIsLimited', () => {
 
   it('an untrustworthy cursor cannot be overridden by a stale hasMore either way', () => {
     expect(searchScopeIsLimited({ slotHasMore: true, cursorIsForActiveSlot: false })).toBe(true)
+  })
+})
+
+describe('shouldContinueOlderWalk', () => {
+  const base = { sawRealInput: true, nearTop: false, walking: true, pagesSinceInput: 0 }
+
+  it('walks while the reader is waiting on the walk they started', () => {
+    expect(shouldContinueOlderWalk(base)).toBe(true)
+    expect(shouldContinueOlderWalk({ ...base, walking: false, nearTop: true })).toBe(true)
+  })
+
+  it('never walks before the reader has expressed intent this session', () => {
+    // A refresh parks a reader with zero wheel/touch input; boot-phase
+    // transients must not be able to start a walk over them.
+    expect(shouldContinueOlderWalk({ ...base, sawRealInput: false })).toBe(false)
+  })
+
+  it('stops once the page budget for one expression of intent is spent', () => {
+    // The `walking` latch is still true here — each landing re-establishes it —
+    // so ONLY the budget can end the walk. Without it, one wheel event walked
+    // the whole archive and the spinner never cleared.
+    expect(shouldContinueOlderWalk({ ...base, pagesSinceInput: 4 })).toBe(false)
+    expect(shouldContinueOlderWalk({ ...base, pagesSinceInput: 3 })).toBe(true)
+  })
+
+  it('refills the budget on fresh input, so a climbing reader is continuous', () => {
+    // The caller zeroes the counter on wheel/touch; proven here as the
+    // budget-respecting boundary the caller relies on.
+    expect(shouldContinueOlderWalk({ ...base, pagesSinceInput: 0, maxPages: 4 })).toBe(true)
+  })
+
+  it('does not walk when the reader is neither near the top nor waiting', () => {
+    expect(shouldContinueOlderWalk({ ...base, walking: false, nearTop: false })).toBe(false)
   })
 })

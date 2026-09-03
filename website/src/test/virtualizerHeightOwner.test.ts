@@ -81,7 +81,7 @@ describe('height truth has one owner (structural)', () => {
     // make this ratchet fail for edits that have nothing to do with the
     // invariant -- and would let an unrelated guard being added read as a
     // height regression.
-    const heightGuards = code.match(/heightIndexRef\.current\?\.sessionId\s*!==\s*sessionId/g) ?? []
+    const heightGuards = code.match(/heightIndexRef\.current\?\.sessionId\s*!==\s*heightScope/g) ?? []
     expect(heightGuards).toHaveLength(1)
     // Session identity has ONE record, on the owner. Any parallel ref beside it
     // is a second spelling that can drift from the owner it describes -- the
@@ -130,6 +130,14 @@ describe('HeightIndex read surface (behavioural)', () => {
       keyAt: (i) => keys[i] ?? null,
     })
   }
+
+  it('height scope defaults to sessionId (heightScopeKey is opt-in)', () => {
+    // The guard reads heightScope = heightScopeKey ?? sessionId. This pins the
+    // fallback so callers without width-dependent rows keep byte-identical
+    // behavior.
+    const code = stripComments(readSource('useVirtualChat.ts'))
+    expect(code).toMatch(/const heightScope = heightScopeKey \?\? sessionId/)
+  })
 
   it('separates "how tall is this row" from "has this row been measured"', () => {
     const idx = makeIndex(`sep-${Math.random()}`, ['a', 'b'])

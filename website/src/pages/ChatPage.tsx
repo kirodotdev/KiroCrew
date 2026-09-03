@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback, useEffect, useLayoutEffect, useMemo } from 'react'
+import { useState, useRef, useCallback, useDeferredValue, useEffect, useLayoutEffect, useMemo } from 'react'
 import { createPortal } from 'react-dom'
 import { useLocation, useNavigate, useNavigationType, useSearchParams } from 'react-router-dom'
 import { useQuery, useQueries, useMutation, useQueryClient } from '@tanstack/react-query'
@@ -24,7 +24,7 @@ import { usePlanActionMutation, isPlanAction } from '../hooks/usePlanActionMutat
 import { useQueuedMessageActions } from '../hooks/useQueuedMessageActions'
 import { useChatPopouts } from '../hooks/useChatPopouts'
 import {
-  switchSlot, createSlot, deleteSlot, fetchHistory, loadOlderMessages, isSupersededPagingRejection,
+  switchSlot, createSlot, deleteSlot, fetchHistory, loadOlderMessages, abortActiveOlderFetch, isSupersededPagingRejection,
   appendMessage, appendSlotMessage, resumeFromHistory, clearUnresumableResume, forkSlot,
   setSlotRunning, startLocalTurn, syncSlotRunningFromServer, setPendingInput, setAgentSwitchNotice, resolveByApprovalId, clearPendingPermissions,
   selectComposerBusy,
@@ -66,12 +66,13 @@ import CollapsibleToolGroup from './chat/CollapsibleToolGroup'
 import ThinkingBlock from './chat/ThinkingBlock'
 import { RowDisclosureProvider } from './chat/rowDisclosure'
 import type { DisplayItem, TurnItem } from './chat/types'
+import { MeasureFarm } from '../hooks/virtualizer/MeasureFarm'
 import McpToolsPanel from './chat/McpToolsPanel'
 import { deriveLoadedMcpTools } from '../lib/mcpLoadedTools'
 import type { McpServer } from '../types'
 import { useScrollManager } from './chat/useScrollManager'
 import { useBubbleVanishProbe } from './chat/useBubbleVanishProbe'
-import { shouldPaginateOlder, canForkAtWindow, searchScopeIsLimited } from './chat/pagination'
+import { shouldPaginateOlder, shouldContinueOlderWalk, canForkAtWindow, searchScopeIsLimited, earlierAffordanceInView, EARLIER_BAR_SELECTOR } from './chat/pagination'
 import EarlierMessagesBar from './chat/EarlierMessagesBar'
 import TranscriptScrollShell from './chat/TranscriptScrollShell'
 import { useVirtualChat } from '../hooks/virtualizer/useVirtualChat'
@@ -82,6 +83,64 @@ import { type PasteBlock, expandAll as expandPasteTokens, findTokenRanges, prune
 import { extractPromptFromToken, extractSlackContextFromToken } from '../utils/tokenPrompt'
 /** Delay (ms) before scrolling to bottom after a state update, giving React time to commit. */
 const SCROLL_AFTER_RENDER_MS = 100
+/** Min gap between scroll-gesture-driven retries of a failed older-history
+ * page. One request per gesture on a dead link, not one per scroll event. */
+const OLDER_RETRY_COOLDOWN_MS = 1500
+/** Cadence of the level-triggered top-parked pagination poll. Slow on purpose:
+ * it is the backstop that guarantees progress while the reader holds the top,
+ * not the fast path (the sentinel/crossing triggers still fire first). */
+const OLDER_TOP_POLL_MS = 700
+/**
+ * How long after the reader's last scroll the top-of-transcript walk keeps
+ * paging. Past this they have stopped climbing, and a page landing then is
+ * movement they did not ask for.
+ */
+const OLDER_WALK_ACTIVE_MS = 1500
+// Idle prefetch: quiet time required before background pages load, and the
+// poll cadence. Quiet > the farm's deep-idle threshold is deliberate — the
+// farm gets first claim on idle time; prefetch only runs once it is caught up.
+// A page may LAND only after the scroller has been still this long: landing
+// compensation writes scrollTop, and mid-momentum writes fight the fling.
+const OLDER_LANDING_SETTLE_MS = 400
+/** A transcript at least this much taller than its viewport is scrollable
+ *  in earnest: the reader can climb to ask for history, so nothing fetches
+ *  it for them. Below it, auto-fill is load-bearing (no scrollbar exists). */
+const OLDER_FILL_SLACK_PX = 120
+
+/** Whether a top-sentinel fire may auto-fetch history for a reader who did
+ *  not climb. Exported for tests: this single predicate is what separates
+ *  the load-bearing short-transcript fill (no scrollbar exists, so nothing
+ *  else CAN load history) from the boot-transient page chain that walked
+ *  megabytes over a parked phone after every refresh.
+ *
+ *  Keyed on INPUT, not on follow: a boot that restores a saved scroll
+ *  anchor releases follow before the reader has touched anything, and a
+ *  follow-based gate read that as a climbing reader -- the replica probe
+ *  showed the walk running at one page per ~8s through that door with
+ *  zero input events. Real wheel/touch input is the only signal that a
+ *  fetch is reader-initiated; the sole inputless exception is a transcript
+ *  too short to scroll, where the fill is load-bearing (no scrollbar
+ *  exists, so nothing else could ever load its history). */
+export function shouldAutoFillOlder(g: { scrollHeight: number; clientHeight: number; sawInput: boolean }): boolean {
+  if (g.scrollHeight <= g.clientHeight + OLDER_FILL_SLACK_PX) return true
+  return g.sawInput
+}
+const IDLE_PREFETCH_QUIET_MS = 6000
+const IDLE_PREFETCH_TICK_MS = 1000
+/** How long one real gesture authorizes the idle prefetch.
+ *
+ *  MUST exceed IDLE_PREFETCH_QUIET_MS: the prefetch only fires after that much
+ *  quiet, so an authorization window shorter than the quiet window can never be
+ *  open when the tick arrives and the prefetch would be dead code.
+ *
+ *  It is a WINDOW and not a latch because the latch was the defect. A landing's
+ *  own compensation writes scrollTop, which fires a `scroll` event, which the
+ *  quiet timer accepts as activity -- so with permanent authorization the loop
+ *  ran land -> quiet -> land at a steady beat over a reader who was not asking
+ *  for any of it. Only `wheel` and `touchmove` refresh this stamp, and our own
+ *  writes produce neither, so the window ages out on its own: a gesture burst
+ *  buys a couple of pages, not the rest of the session. */
+const IDLE_PREFETCH_AUTH_MS = 20000
 
 /**
  * Height of the transcript's tail spacer, in px.
@@ -218,7 +277,11 @@ import SubagentProgressBar from './chat/SubagentProgressBar'
 import TaskProgressBar from './chat/TaskProgressBar'
 import SidePanel, { CHAT_PANE_MIN_W, sidePanelFillWidth } from './chat/SidePanel'
 import { useSidePanelDock } from '../hooks/useSidePanelDock'
-import { createTurnGrouper, applyRunningState, hasReasoningContent, isReasoningRole } from './chat/groupDisplayItems'
+import { createTurnGrouper, applyRunningState, hasReasoningContent, isReasoningRole, TURN_OPENER_ROLES } from './chat/groupDisplayItems'
+// Hold-down for the display-layer running latch: a slots broadcast that
+// catches the agent between tool calls flaps `running` false for well under
+// a second; only a false that persists longer reflects the turn ending.
+const RUNNING_LATCH_MS = 2500
 import { setSessionPreviewPending, normalizeUrl, PREVIEW_EXPAND_EVENT, PREVIEW_SNIP_EVENT } from '../components/WebPreviewPanel'
 import { detectPreviewUrl, previewFeedDecision } from '../utils/detectPreviewUrl'
 import { fileLandingSlot } from '../utils/uploadRouting'
@@ -467,14 +530,83 @@ export function turnLeadKey(it: TurnItem, msgKey: (m: ChatMessage) => string): s
  *  unit-testable. A `turn` inherits the key of its leading item so promoting a
  *  single into a turn (and vice-versa) keeps the row identity — and thus its
  *  cached height and DOM node — stable. */
-export function virtualKeyFor(
+/** Anchor identity that survives a prepend's key reshuffle: the TAIL message's
+ *  identity. A page landing regroups older messages into the top turn's HEAD —
+ *  renaming its lead-derived display key — but a turn's newest message is
+ *  untouched by content arriving before it, so an anchor held by the tail
+ *  resolves across the landing and its compensation is not dropped. Falls back
+ *  to positional markers only for degenerate empty rows, mirroring
+ *  virtualKeyFor's own fallbacks. */
+export function stableAnchorIdFor(
   it: DisplayItem,
   index: number,
   msgKey: (m: ChatMessage) => string,
 ): string {
+  const tailOf = (t: TurnItem): ChatMessage | null =>
+    t.kind === 'single' ? t.msg : (t.msgs[t.msgs.length - 1] ?? null)
+  let tail: ChatMessage | null = null
+  if (it.kind === 'turn') {
+    const last = it.items[it.items.length - 1]
+    tail = last ? tailOf(last) : null
+  } else {
+    tail = tailOf(it)
+  }
+  if (!tail) return `anchor-empty-${index}`
+  return `a-${msgIdentityKey(tail, msgKey)}`
+}
+
+export function virtualKeyFor(
+  it: DisplayItem,
+  index: number,
+  msgKey: (m: ChatMessage) => string,
+  isTrailing = false,
+): string {
   if (it.kind === 'turn') {
     const first = it.items[0]
     if (!first) return `turn-empty-${index}`
+    // A turn WITH its opening prompt keys on that lead: the lead never
+    // changes once the prompt is loaded, and the trailing turn's tail grows
+    // every stream tick (tail-keying it would remount per token).
+    //
+    // A HEADLESS turn -- the topmost boundary turn of a partially loaded
+    // transcript, whose opening prompt is still in an unloaded older page --
+    // keys on its TAIL instead. Every older-page landing feeds that turn's
+    // HEAD, so a lead-derived key renamed the row per landing: React sees a
+    // new element, unmounts the giant row and remounts it (Pierre surfaces
+    // visibly "reload", and the height cache line is orphaned) -- once per
+    // walk wave, which is the refresh-then-walk bounce. The tail is
+    // untouched by content arriving above it, so the key holds across the
+    // whole walk; when the opening prompt finally lands the key flips to
+    // the lead ONCE (one remount, its height migrated by the departure
+    // rename pass). A headless turn is by construction not the trailing
+    // streaming turn in any live session older than one page, and a fresh
+    // session's single turn has its prompt loaded, so tail growth cannot
+    // re-key it in practice.
+    // ...with one exception: the TRAILING turn is never tail-keyed, even
+    // headless. A refresh into a giant in-flight turn loads a window that
+    // is entirely that one turn -- headless AND growing at the tail, where
+    // a tail key would remount it per stream tick. Lead-keying it merely
+    // keeps the pre-fix behavior (renamed per landing) for the one turn
+    // that is anchored to the viewport bottom anyway.
+    // ...and only at INDEX 0: the walk feeds the head of the TOPMOST row
+    // alone. A mid-list turn without an opener lead (an interim fold, a
+    // single mid-stream promoting into the turn it leads) keeps the #253
+    // lead-key contract -- its head is bounded by settled content, so
+    // landings cannot rename it, and tail-keying it would itself remount
+    // the row at every fold boundary.
+    const leadMsg = first.kind === 'single' ? first.msg : first.msgs[0]
+    // `complete === false` is the running-turn marker (applyRunningState):
+    // an in-flight turn grows at its tail and must never key on it,
+    // whatever its position -- the semantic twin of the positional
+    // isTrailing guard, and the one that holds when the loaded window IS
+    // one giant in-flight turn (refresh mid-turn: index 0 AND trailing).
+    if (index === 0 && !isTrailing && it.complete !== false && leadMsg && !TURN_OPENER_ROLES.has(leadMsg.role)) {
+      const last = it.items[it.items.length - 1]
+      const tail = last
+        ? (last.kind === 'single' ? last.msg : (last.msgs[last.msgs.length - 1] ?? null))
+        : null
+      if (tail) return `hlt-${msgIdentityKey(tail, msgKey)}`
+    }
     return turnLeadKey(first, msgKey)
   }
   return turnLeadKey(it, msgKey)
@@ -516,7 +648,7 @@ export function uniqueRowKeys(
 ): string[] {
   const seen = new Map<string, number>()
   return items.map((it, i) => {
-    const base = virtualKeyFor(it, i, msgKey)
+    const base = virtualKeyFor(it, i, msgKey, i === items.length - 1)
     const n = seen.get(base)
     if (n === undefined) {
       seen.set(base, 1)
@@ -1148,6 +1280,11 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     return out
   }, [messages, activeSlot])
   const slotRunning = useAppSelector(s => s.chat.slotRunning)
+  // Live mirror for `autoFollowAllowed`, a stable callback several effects
+  // depend on: taking `slotRunning` as a dependency would re-attach those
+  // observers on every turn boundary.
+  const slotRunningRef = useRef(!!slotRunning)
+  slotRunningRef.current = !!slotRunning
   // Turn disclosure ("N tool calls" / "Worked through N steps"), keyed by the
   // virtualizer's stable row key. This lives HERE rather than in TurnBlock
   // because the transcript is virtualised: a row is unmounted once it leaves
@@ -1480,6 +1617,26 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     scrollToDisplayIndex,
   } = useScrollManager()
 
+  // Width bucket for the height cache's scope (see heightScopeKey below).
+  // Quantized to 16px; capped at 944 because the content column maxes out at
+  // 900px + 32px row padding, so all wider scrollers share one bucket.
+  // Initialized from innerWidth (the scroller is not mounted yet on first
+  // render) and corrected from the real clientWidth in the layout effect.
+  const [scrollerWidthBucket, setScrollerWidthBucket] = useState(() =>
+    Math.min(typeof window !== 'undefined' ? Math.round(window.innerWidth / 16) * 16 : 944, 944))
+  useLayoutEffect(() => {
+    const el = scrollerRef.current
+    if (!el) return
+    const compute = () => setScrollerWidthBucket(Math.min(Math.round(el.clientWidth / 16) * 16, 944))
+    compute()
+    if (typeof ResizeObserver === 'undefined') return
+    // Debounced: mid-drag resize storms must not thrash the height index.
+    let t: ReturnType<typeof setTimeout> | undefined
+    const ro = new ResizeObserver(() => { clearTimeout(t); t = setTimeout(compute, 200) })
+    ro.observe(el)
+    return () => { ro.disconnect(); clearTimeout(t) }
+  }, [scrollerRef])
+
   // Single scroll controller: the virtualizer (`virt`, created below) owns
   // follow + scroll-to-bottom. These refs bridge the early effects/handlers
   // (declared before `virt` in source order) to the virtualizer's API without
@@ -1489,7 +1646,23 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // first commit (before the mirror populates it) behaves like the fresh-slot
   // bottom pin it accompanies.
   const vGetFollowRef = useRef<() => boolean>(() => true)
+  // Live scroller element for gates that run before `virt` exists in scope
+  // (handleTopReached is a dependency of the useVirtualChat call itself).
+  const vScrollerElRef = useRef<HTMLElement | null>(null)
+  // Whether THIS session has seen real reader input (wheel/touch) on the
+  // scroller. Programmatic scrolls (landing compensation, bottom pins) fire
+  // scroll events but neither of these, so the flag genuinely means "the
+  // reader drove". Read by every self-issued history-fetch gate.
+  const sawRealInputRef = useRef(false)
+  // Timestamp of the last REAL gesture (wheel/touchmove). Separate from the
+  // latch above because the idle prefetch's authorization must expire.
+  const lastRealInputAtRef = useRef(0)
   const vScrollToBottomRef = useRef<(behavior?: ScrollBehavior) => void>(() => {})
+  // Mirrored so the early handlers (declared above `virt`) can refuse to page on
+  // unsettled geometry, the same gate the walk poll and idle prefetch apply.
+  const vFarmIsMeasuredRef = useRef<((i: number) => boolean) | null>(null)
+  // Mirrored for the interval bodies, which must not re-arm per render.
+  const earlierBarInViewRef = useRef<() => boolean>(() => false)
   const mountIndexRef = useRef<(index: number) => boolean>(() => false)
 
   const [prefillHint, setPrefillHint] = useState(false)
@@ -3424,9 +3597,53 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   const { active: dragOver, dropTargetProps } = useChatFileDrop(handleDrop)
 
   // Scroll to bottom helper — delegates to the virtualizer (single controller).
+  // Distance-aware: a smooth glide is for SHORT hops. Sending from deep in
+  // history used to smooth-scroll through tens of thousands of estimate-priced
+  // pixels — every frame mounted, measured and repriced a fresh window, so the
+  // trip itself took seconds and arrived at a still-mounting tail. Beyond a few
+  // viewports, teleport (the industry norm: message send lands at the bottom
+  // instantly; smooth motion is reserved for distances the eye can follow).
   const scrollBottom = useCallback((instant: boolean = false) => {
-    vScrollToBottomRef.current(instant ? 'auto' : 'smooth')
-  }, [])
+    const el = scrollerRef.current
+    const far = el ? el.scrollHeight - el.scrollTop - el.clientHeight > el.clientHeight * 3 : false
+    vScrollToBottomRef.current(instant || far ? 'auto' : 'smooth')
+  }, [scrollerRef])
+
+  /**
+   * Whether an AUTOMATIC bottom pin is allowed: the follow flag AND live
+   * geometry must agree.
+   *
+   * The flag alone is not enough for anything the reader did not ask for. A turn
+   * can start on its own -- a subagent completion, a cron notification, an
+   * auto-nudge cycle -- and an in-flow band can resize at any time; with a stale
+   * armed flag either one teleports a reader who is deep in history to the
+   * bottom. The distance cannot be stale, so requiring it makes that impossible.
+   * Explicit intent (the send path, the jump-to-bottom pill) does NOT go through
+   * here: there the reader asked to be at the bottom.
+   */
+  const autoFollowLastChRef = useRef(0)
+  const autoFollowAllowed = useCallback(() => {
+    if (!vGetFollowRef.current()) return false
+    // Nothing running means there is no output to follow, so an automatic pin is
+    // a yank with no cause. The bands this gates (the tip/survey card and the
+    // composer status stack) mount and resize on their own schedule, which is
+    // how a reader who had scrolled up got sent back to the bottom with nothing
+    // streaming. Explicit intent -- sending, the jump-to-bottom pill -- does not
+    // come through here.
+    if (!slotRunningRef.current) return false
+    const el = scrollerRef.current
+    if (!el) return true
+    // A SHRINKING viewport is the composer growing under the reader's own
+    // typing. Chasing it walks the transcript up a line every few characters,
+    // which is the "picture keeps moving while I type" report -- so follow is
+    // frozen for that direction here too, not only in the virtualizer's own
+    // viewport branch. Growth (composer collapsing, keyboard closing) still
+    // pins: that space is being given back.
+    const prevCh = autoFollowLastChRef.current
+    autoFollowLastChRef.current = el.clientHeight
+    if (prevCh > 0 && el.clientHeight < prevCh) return false
+    return el.scrollHeight - el.scrollTop - el.clientHeight <= el.clientHeight
+  }, [scrollerRef])
 
   // Scroll compensation for two in-flow bands that render outside the
   // virtualizer's measured rows: the tip card and the session-pulse survey
@@ -3450,11 +3667,11 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     if (!vGetFollowRef.current()) return
     const raf = requestAnimationFrame(() => {
       requestAnimationFrame(() => {
-        if (vGetFollowRef.current()) scrollBottom(true)
+        if (autoFollowAllowed()) scrollBottom(true)
       })
     })
     return () => cancelAnimationFrame(raf)
-  }, [activeTip, surveyLayoutTick, scrollBottom])
+  }, [activeTip, surveyLayoutTick, scrollBottom, autoFollowAllowed])
 
   // Same compensation for the composer status stack (progress bars, sub-agent
   // delivery line, queue stack). The virtualizer's own viewport branch DOES
@@ -3478,11 +3695,11 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     composerBandObserverRef.current = null
     if (!el || typeof ResizeObserver === 'undefined') return
     const ro = new ResizeObserver(() => {
-      if (vGetFollowRef.current()) scrollBottom(true)
+      if (autoFollowAllowed()) scrollBottom(true)
     })
     ro.observe(el)
     composerBandObserverRef.current = ro
-  }, [scrollBottom])
+  }, [scrollBottom, autoFollowAllowed])
 
   // Navigate to a (possibly off-window) display index: mount it first via the
   // virtualizer so the DOM-based scroll can find it, then scroll next frame.
@@ -3710,12 +3927,14 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // fling fires scroll dozens of times/sec. Coalesce to at most once per frame,
   // mirroring the virtualizer's own scroll-listener throttle so this handler
   // doesn't reintroduce scroll-time main-thread cost.
-  const pinRafRef = useRef(false)
+  // Cancel-and-reschedule, never latch-on-pending: a handle whose callback
+  // never fires (bfcache-dropped frame) would block every later signal
+  // permanently (frameSchedulerLatch guard). Coalesces identically.
+  const pinRafRef = useRef(0)
   const onScrollPin = useCallback(() => {
-    if (pinRafRef.current) return
-    pinRafRef.current = true
-    requestAnimationFrame(() => {
-      pinRafRef.current = false
+    if (pinRafRef.current) cancelAnimationFrame(pinRafRef.current)
+    pinRafRef.current = requestAnimationFrame(() => {
+      pinRafRef.current = 0
       updatePinnedPrompt()
     })
   }, [updatePinnedPrompt])
@@ -4378,11 +4597,17 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // Scroll to show Footer when agent starts running (loading indicator appears)
   const prevRunningRef = useRef(false)
   useEffect(() => {
-    if (slotRunning && !prevRunningRef.current && vGetFollowRef.current()) {
+    // LIVE geometry, not just the follow flag. A turn can start without the
+    // reader having asked for anything -- a subagent completion, a cron
+    // notification and an auto-nudge cycle all flip `slotRunning` on their own --
+    // and a stale armed flag then teleports a reader who is deep in history to
+    // the bottom. Requiring them to actually BE near the bottom makes that
+    // impossible: the flag can be wrong, the distance cannot.
+    if (slotRunning && !prevRunningRef.current && autoFollowAllowed()) {
       setTimeout(() => scrollBottom(), SCROLL_AFTER_RENDER_MS)
     }
     prevRunningRef.current = slotRunning
-  }, [slotRunning, scrollBottom])
+  }, [slotRunning, scrollBottom, autoFollowAllowed])
 
   // Reconcile the active slot's running state from WS slot updates. The reducer
   // guards against a stale snapshot overwriting an unconfirmed local turn.
@@ -6123,10 +6348,36 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   const groupTurns = useMemo(() => createTurnGrouper(), [])
   const groupedTurns = useMemo(() => groupTurns(messages), [groupTurns, messages])
 
+  // LATCHED running for the DISPLAY layer only. The raw flag is derived
+  // from slots broadcasts that catch the agent momentarily idle BETWEEN
+  // tool calls, so mid-turn it flaps false for a beat and back. Each flap
+  // marks the trailing turn complete: TurnBlock auto-collapses it, the
+  // next broadcast re-expands it, and on a long-running turn (hundreds of
+  // steps) that is a multi-thousand-px accordion right above a reader
+  // parked at the bottom -- the field-reported self-bounce, reproduced on
+  // the bottom rig as a ~2Hz scrollHeight oscillation. TRUE applies
+  // immediately (a new turn must render live), FALSE only after holding
+  // steady past the flap window.
+  const [runningLatched, setRunningLatched] = useState(slotRunning)
+  useEffect(() => {
+    if (slotRunning) { setRunningLatched(true); return }
+    const timer = setTimeout(() => setRunningLatched(false), RUNNING_LATCH_MS)
+    return () => clearTimeout(timer)
+  }, [slotRunning])
   const displayItems = useMemo<DisplayItem[]>(
-    () => applyRunningState(groupedTurns, slotRunning),
-    [groupedTurns, slotRunning],
+    () => applyRunningState(groupedTurns, runningLatched),
+    [groupedTurns, runningLatched],
   )
+  // The transcript render is the page's heaviest tree (a landed page regroups
+  // 1500+ messages and remounts a window of rich rows), and rendering it at
+  // urgent priority is what freezes composer input and every main-thread
+  // animation during a landing. Deferring the VIRTUALIZER's input marks that
+  // whole subtree as interruptible: urgent updates (typing, button states,
+  // spinners) commit against the previous list, and the regrouped list renders
+  // when the main thread has room. Everything that must agree with the
+  // RENDERED rows (the DOM-index ref, row keys, the prefetch index) reads the
+  // deferred value, so index spaces stay consistent.
+  const renderedDisplayItems = useDeferredValue(displayItems)
 
   // Keep the ref in sync so handleRangeChanged / updatePinnedPrompt
   // read the latest displayItems. useLayoutEffect (not useEffect): the DOM's
@@ -6137,7 +6388,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // see below). A layout effect runs in the commit phase, before that rAF, so
   // the ref is caught up by the time the recompute reads it. Still a passive
   // side effect, not render-body mutation, so React's rules of render hold.
-  useLayoutEffect(() => { displayItemsRef.current = displayItems }, [displayItems])
+  useLayoutEffect(() => { displayItemsRef.current = renderedDisplayItems }, [renderedDisplayItems])
 
   // Opt-in #7045 diagnostic: log store-vs-render counts whenever the number of
   // mounted transcript rows drops (see useBubbleVanishProbe). Off (and free)
@@ -6177,7 +6428,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
       : '[data-testid="pinned-prompt-minimize"]'
     ;(document.querySelector(sel) as HTMLElement | null)?.focus()
   }, [chatConfig.pinPromptMinimized])
-  useEffect(() => { updatePinnedPrompt() }, [displayItems, updatePinnedPrompt])
+  useEffect(() => { updatePinnedPrompt() }, [renderedDisplayItems, updatePinnedPrompt])
   // Expanded state PERSISTS as the pinned prompt is replaced by the next one
   // while scrolling — the user asked for a sticky "keep it open" behaviour, so we
   // do NOT collapse on `pinned.idx` change. It still resets on slot switch below
@@ -6215,9 +6466,30 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     if (!id) { id = `mid-${msgIdSeq.current++}`; msgIds.current.set(m, id) }
     return id
   }, [])
+  const stableAnchorId = useCallback(
+    (it: DisplayItem, index: number) => stableAnchorIdFor(it, index, stableMsgKey),
+    [stableMsgKey],
+  )
+  // The prefetch contract, verbatim from the user: "start loading while I am
+  // still two USER MESSAGES from the top" — messages they sent, not any two
+  // display rows (a row can be a nudge, a tool group, a lone card). Resolve
+  // the display index holding the SECOND user-authored message from the top of
+  // the loaded transcript; the virtualizer fires the older-history fetch on
+  // the downward crossing of that index.
+  const prefetchStartIndex = useMemo(() => {
+    const holdsUser = (t: TurnItem): boolean =>
+      t.kind === 'single' ? t.msg.role === 'user' : t.msgs.some((m) => m.role === 'user')
+    let seen = 0
+    for (let i = 0; i < renderedDisplayItems.length; i++) {
+      const it = renderedDisplayItems[i]
+      const has = it.kind === 'turn' ? it.items.some(holdsUser) : holdsUser(it)
+      if (has && ++seen === 2) return i
+    }
+    return undefined
+  }, [renderedDisplayItems])
   const rowKeys = useMemo(
-    () => uniqueRowKeys(displayItems, stableMsgKey),
-    [displayItems, stableMsgKey],
+    () => uniqueRowKeys(renderedDisplayItems, stableMsgKey),
+    [renderedDisplayItems, stableMsgKey],
   )
   // Index lookup into the deduped list, so this getKey prices an item
   // correctly ONLY against the displayItems of its own render. Live consumers
@@ -6237,12 +6509,60 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // window like any other item. See useVirtualChat call below for the
   // memory-vs-flicker trade-off rationale.)
 
+  // THE admission rule for every AUTOMATIC older fetch: the control that offers
+  // history must be on the reader's screen. See earlierAffordanceInView for why
+  // this replaces the per-trigger geometry/latch proxies, each of which had a
+  // second cause that was not the reader.
+  const earlierBarInView = useCallback(() => {
+    const el = vScrollerElRef.current
+    if (!el) return false
+    const bar = el.querySelector(EARLIER_BAR_SELECTOR)
+    const vr = el.getBoundingClientRect()
+    const br = bar?.getBoundingClientRect()
+    return earlierAffordanceInView(
+      br ? { top: br.top, bottom: br.bottom } : null,
+      { top: vr.top, bottom: vr.bottom },
+    )
+  }, [])
+
   // Reaching the top of a resumed transcript fetches the history behind the loaded slice.
   const handleTopReached = useCallback(() => {
     const chat = store.getState().chat
     if (!shouldPaginateOlder({ loadingOlder: chat.loadingOlder, slotHasMore: chat.slotHasMore })) return
+    // A bottom-FOLLOWED reader on a SCROLLABLE transcript did not ask for
+    // this: the top sentinel only reaches them through boot/measurement
+    // transients (estimate-priced rows keep total height under a viewport
+    // for a beat; a spacer collapse pulls the top within reach), and each
+    // self-issued landing re-fires the transition -- a page chain over a
+    // parked reader, felt as 'it starts loading previous the moment I
+    // refresh, then jumps'. When the transcript cannot scroll at all the
+    // fill is load-bearing (a short resumed session has no scrollbar to
+    // climb), so it stays; the moment it is scrollable, further history
+    // is reader-initiated (climb releases follow, sentinel then serves).
+    if (!earlierBarInView()) return
+    const el = vScrollerElRef.current
+    // The "too short to scroll" branch of shouldAutoFillOlder fires on GEOMETRY,
+    // so it also fires on a geometry TRANSIENT — and the comment above names the
+    // two that produce one. What it did not account for is that the composer's
+    // text is ChatPage state, so every keystroke re-renders this tree and gives
+    // the virtualizer another chance to be caught mid-measurement. Reported from
+    // a phone as history loading while TYPING. Both the walk poll and the idle
+    // prefetch already refuse to page on unsettled geometry; this door did not,
+    // and it is the one the sentinel comes through.
+    const nRows = displayItemsRef.current.length
+    for (let i = 0; i < nRows; i++) { if (!vFarmIsMeasuredRef.current?.(i)) return }
+    // `sawRealInputRef` is a one-way latch, so on a scrollable transcript it is
+    // open for the rest of the session after a single touch — which is not what
+    // this site's own comment promises ("further history is reader-initiated").
+    // The state it actually means is "the reader is not sitting at the live end":
+    // a climb releases follow, and the sentinel then serves them.
+    if (el && !shouldAutoFillOlder({
+      scrollHeight: el.scrollHeight,
+      clientHeight: el.clientHeight,
+      sawInput: !vGetFollowRef.current(),
+    })) return
     void dispatch(loadOlderMessages())
-  }, [dispatch])
+  }, [dispatch, earlierBarInView])
   /**
    * The click path needs no gate beyond the in-flight check the thunk already makes.
    *
@@ -6260,9 +6580,20 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   }, [dispatch])
 
   const virt = useVirtualChat<DisplayItem>({
-    items: displayItems,
+    items: renderedDisplayItems,
     getKey: virtualKey,
+    // Anchor resolution survives the per-landing key reshuffle by identifying
+    // rows by their TAIL message — see stableAnchorIdFor.
+    getStableId: stableAnchorId,
+    prefetchStartIndex,
     sessionId: activeSlot ?? '__no_slot__',
+    // Width-bucketed height scope: measured row heights are only valid for
+    // the width they were measured at. The content column is capped at 900px
+    // (+32px row padding), so every scroller wider than the cap shares ONE
+    // bucket (desktop sidebar toggles do not re-measure); below the cap the
+    // bucket quantizes to 16px so a phone, a rotated phone, and a narrow
+    // desktop window each keep their own measured geometry.
+    heightScopeKey: `${activeSlot ?? '__no_slot__'}@w${scrollerWidthBucket}`,
     estimatedHeight: 100,
     // Overscan tradeoff (experimental):
     //   smaller (3)   → least memory, frequent widget remounts on small scrolls
@@ -6296,6 +6627,9 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     // debouncing it into a stale-then-jump spacer (see the `streamingIndex`
     // option's doc and useVirtualChat.spacerLurch.test.tsx).
     streamingIndex: isStreaming && displayItems.length > 0 ? displayItems.length - 1 : undefined,
+    // `slotRunning`, not `isStreaming`: a turn spends much of its life in tool
+    // calls with no streaming row named, and follow has to keep working there.
+    runActive: !!slotRunning,
     onTopReached: handleTopReached,
   })
 
@@ -6312,12 +6646,264 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // that call vGetFollowRef.current() still see this commit's callback.
   useLayoutEffect(() => {
     vGetFollowRef.current = virt.getFollow
+    vScrollerElRef.current = virt.scrollerRef?.current ?? vScrollerElRef.current
     vScrollToBottomRef.current = virt.scrollToBottom
+    vFarmIsMeasuredRef.current = virt.farmIsMeasured
+    earlierBarInViewRef.current = earlierBarInView
     mountIndexRef.current = virt.mountIndex
   })
 
   // Legacy aliases so the JSX below keeps reading the same names.
   const visibleDisplayItems = virt.virtualItems
+
+
+
+  // A reader parked within one viewport of the absolute top while older
+  // history remains is a STANDING request for more. Every edge-triggered
+  // fire in this path has a death mode (measured on a pod rig — runs stalled
+  // after 3/5/9/10 pages, nondeterministically): the top sentinel only fires
+  // on intersection TRANSITIONS and a small landing never pushes it back out
+  // of view; the window-start crossing needs a >lead→≤lead transition that a
+  // top-pinned recompute skips; and a landing-edge chain races the scroll
+  // compensation it reads. So this is deliberately LEVEL-triggered: a slow
+  // poll, gated to near-top + hasMore + idle + no error. It cannot stack
+  // requests (loadingOlder gates), cannot spin on a dead link (slotOlderError
+  // gates; the scroll-retry below owns that path), and stops the moment the
+  // reader leaves the top or history is exhausted.
+  useEffect(() => {
+    if (!slotHasMore) return
+    const el = virt.scrollerRef?.current
+    // The reader's own INPUT, not scroll position: a landing's compensation
+    // moves scrollTop thousands of px without the reader touching anything,
+    // which would otherwise end the walk after every single page — on desktop
+    // (no rubber-band to hold the top) that reduced "load to the beginning"
+    // to one page per manual climb. While the last fetch this poll issued is
+    // newer than the last wheel/touch, the reader is still waiting on the
+    // walk it started: keep going. Any input hands control back to the
+    // near-top gate.
+    let lastInput = Date.now()
+    // Pages this walk has issued since the last real input (see
+    // shouldContinueOlderWalk: the `walking` latch alone self-perpetuates).
+    let walkPagesSinceInput = 0
+    // The walk needs the reader to have ACTUALLY climbed: a phone refresh
+    // parks at the bottom with zero wheel/touch input ever, and boot-phase
+    // transients (pre-layout scrollTop near 0, the giant-turn grouped list
+    // briefly shorter than a viewport) can slip one self-issued page past
+    // the near-top gate. With lastInput frozen at mount, that single
+    // landing made `walking` TRUE FOREVER and the poll walked the entire
+    // multi-megabyte transcript over a parked reader -- the field report
+    // 'it just keeps loading previous after a refresh'. Requiring one real
+    // input event this session before any poll-issued fetch turns the walk
+    // back into what its own comment promises: reader-initiated.
+    const noteInput = () => {
+      lastInput = Date.now()
+      walkPagesSinceInput = 0
+      sawRealInputRef.current = true
+      lastRealInputAtRef.current = Date.now()
+    }
+    el?.addEventListener('wheel', noteInput, { passive: true })
+    el?.addEventListener('touchmove', noteInput, { passive: true })
+    // The walk is "in progress" when the newest older-page LANDING postdates
+    // the newest user input — regardless of which trigger fired the fetch.
+    // (An earlier draft keyed this on the poll's own fires and never engaged:
+    // the sentinel/crossing triggers always win the race for the first page,
+    // and its landing throws the reader off the near-top gate before the next
+    // tick, so the poll never got the first fire it required.)
+    let lastLanding = 0
+    let prevLoading = false
+    // Any scroll event — momentum coasting included, which fires no
+    // wheel/touchmove — marks the transcript as still MOVING. A landing's
+    // prepend compensation writes scrollTop, and on iOS a programmatic write
+    // mid-momentum fights the fling's own curve: the reader sees the view
+    // snap. Pages land only when the scroller is fully settled.
+    let lastScrollEvt = 0
+    const noteScroll = () => {
+      lastScrollEvt = Date.now()
+      // Motion kills any in-flight page: landings commit only while still.
+      abortActiveOlderFetch()
+    }
+    el?.addEventListener('scroll', noteScroll, { passive: true })
+    const t = setInterval(() => {
+      const el2 = virt.scrollerRef?.current
+      if (!el2 || el2.clientHeight <= 0) return
+      const chat = store.getState().chat
+      if (prevLoading && !chat.loadingOlder) lastLanding = Date.now()
+      prevLoading = chat.loadingOlder
+      const walking = lastLanding > lastInput
+      if (!shouldContinueOlderWalk({
+        sawRealInput: sawRealInputRef.current,
+        nearTop: el2.scrollTop <= el2.clientHeight,
+        walking,
+        pagesSinceInput: walkPagesSinceInput,
+      })) return
+      // A bottom-followed reader is reading the LIVE end: the top-of-
+      // transcript walk has nothing for them, and its landings are pure
+      // disturbance budget. The sentinel/crossing triggers (reader-scroll
+      // driven) still page history the moment they actually climb.
+      if (vGetFollowRef.current()) return
+      if (!earlierBarInViewRef.current()) return
+      if (Date.now() - lastScrollEvt < OLDER_LANDING_SETTLE_MS) return
+      // ...and stops entirely once they are no longer climbing. The settle gate
+      // above only says "not mid-gesture", so on its own it made a reader who
+      // STOPPED near the top the ideal candidate: they would sit still and watch
+      // several pages land under them, one prepend each, which is felt as the
+      // transcript starting to move on its own a second after they let go.
+      // History still reaches back as far as they like -- it loads while they
+      // climb, which is when they are asking for it.
+      if (Date.now() - lastScrollEvt > OLDER_WALK_ACTIVE_MS) return
+      if (!chat.slotHasMore || chat.loadingOlder || chat.slotOlderError) return
+      if (chat.slotCursorKey !== chat.activeSlot) return
+      // Same contract as the idle prefetch: a page lands only on FULLY
+      // MEASURED geometry. Without this the walk outran the farm and piled
+      // unmeasured rows over the parked reader -- every measurement landing
+      // was an estimate correction under their eyes (reproduced on the rig
+      // as per-landing twitches at the top). Turn-grouped pages measure in
+      // ~1-2s, so the walk's pace barely changes.
+      const nRows = displayItemsRef.current.length
+      for (let i = 0; i < nRows; i++) { if (!virt.farmIsMeasured(i)) return }
+      walkPagesSinceInput += 1
+      void dispatch(loadOlderMessages())
+    }, OLDER_TOP_POLL_MS)
+    return () => {
+      clearInterval(t)
+      el?.removeEventListener('scroll', noteScroll)
+      el?.removeEventListener('wheel', noteInput)
+      el?.removeEventListener('touchmove', noteInput)
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- listeners re-arm on these triggers only; handlers read refs
+  }, [slotHasMore, dispatch, virt.scrollerRef])
+
+  // ---- Idle history prefetch (feeds the measure farm) ----
+  // The bounded initial fetch means most of a long transcript is not loaded,
+  // so the farm has nothing to measure and the reader's first back-scroll
+  // still crosses estimate territory. While the user is IDLE and everything
+  // currently loaded is measured, pull the next older page; the farm then
+  // measures it, and the cycle repeats until the whole session is measured
+  // geometry (persisted per device+width). Ordering matters: pages land only
+  // when the farm is caught up, so the unmeasured frontier never outruns the
+  // sweep, and any landing happens while nobody is watching.
+  useEffect(() => {
+    if (!slotHasMore || !activeSlot) return
+    const el = virt.scrollerRef?.current
+    let lastActivity = Date.now()
+    // The quiet gate is checked at DISPATCH, but the fetch lands 1-2s later —
+    // possibly mid-gesture on a phone, where a landing's scrollTop
+    // compensation fights the momentum curve (iOS overrides programmatic
+    // writes during a fling) and a stray frame inside the bottom band can
+    // re-arm follow. Aborting the in-flight prefetch the moment ANY activity
+    // resumes guarantees a page never lands under the reader: the thunk
+    // rejects as aborted, the reducer merges nothing and sets no error flag.
+    let inFlight: { abort: () => void } | null = null
+    const noteActivity = () => {
+      lastActivity = Date.now()
+      if (inFlight) { inFlight.abort(); inFlight = null }
+    }
+    el?.addEventListener('scroll', noteActivity, { passive: true })
+    el?.addEventListener('wheel', noteActivity, { passive: true })
+    el?.addEventListener('touchmove', noteActivity, { passive: true })
+    const t = setInterval(() => {
+      if (Date.now() - lastActivity < IDLE_PREFETCH_QUIET_MS) return
+      if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return
+      // Reader-initiated only -- the same authorization the sentinel and the
+      // walk poll require (shouldAutoFillOlder). This prefetch was the third
+      // self-issue door: its quiet signal listens to scroll events, but a
+      // landing's own compensation writes scrollTop, so on a slow phone the
+      // loop ran land -> quiet window -> next page at a steady beat (the
+      // replica probe measured one ?before= page every ~8s with zero input
+      // events, felt as 'something keeps slowly loading, then bounces').
+      // A transcript too short to scroll still fills; input unlocks the rest.
+      // A bottom-followed reader is at the LIVE end: a page of history has
+      // nothing for them and its landing is pure disturbance budget. The walk
+      // poll already refuses them for exactly this reason; the prefetch did not,
+      // which is how a reader parked at the bottom got moved by it.
+      if (vGetFollowRef.current()) return
+      if (!earlierBarInViewRef.current()) return
+      const scrEl = vScrollerElRef.current
+      // Authorization EXPIRES (see IDLE_PREFETCH_AUTH_MS). `sawRealInputRef` is a
+      // one-way latch, so passing it here meant one touch of the transcript --
+      // which reading a long chat requires -- unlocked the prefetch for the rest
+      // of the mount.
+      const recentInput = Date.now() - lastRealInputAtRef.current <= IDLE_PREFETCH_AUTH_MS
+      if (scrEl && !shouldAutoFillOlder({ scrollHeight: scrEl.scrollHeight, clientHeight: scrEl.clientHeight, sawInput: recentInput })) return
+      const chat = store.getState().chat
+      if (!chat.slotHasMore || chat.loadingOlder || chat.slotOlderError) return
+      if (chat.slotCursorKey !== chat.activeSlot) return
+      // Never during a live turn: streaming appends re-group the list.
+      if ((chat.slotRun?.[chat.activeSlot ?? '']?.state ?? 'idle') !== 'idle') return
+      // Only once the farm is caught up: every loaded row measured.
+      const n = displayItemsRef.current.length
+      for (let i = 0; i < n; i++) { if (!virt.farmIsMeasured(i)) return }
+      const req = dispatch(loadOlderMessages())
+      inFlight = req
+      void (req as unknown as Promise<unknown>).finally?.(() => { if (inFlight === req) inFlight = null })
+    }, IDLE_PREFETCH_TICK_MS)
+    return () => {
+      clearInterval(t)
+      inFlight?.abort()
+      el?.removeEventListener('scroll', noteActivity)
+      el?.removeEventListener('wheel', noteActivity)
+      el?.removeEventListener('touchmove', noteActivity)
+    }
+    // virt's stable members only: the return object's identity changes every
+    // render, and depending on it re-arms the interval per render — which
+    // resets the quiet-time clock so the prefetch never fires at all.
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- interval must not re-arm per render (see comment above)
+  }, [slotHasMore, activeSlot, dispatch, virt.scrollerRef, virt.farmIsMeasured])
+
+  // The sticky in-flight spinner is only meaningful where pages LAND — at the
+  // top of the loaded transcript. `loadingOlder` is now true for the whole
+  // automatic walk (a dozen pages back-to-back), so gating the spinner on the
+  // fetch alone kept it pinned over the reader even mid-transcript. Track
+  // "near the top" cheaply: the setState is value-stable away from the
+  // threshold, so mid-scroll updates bail before rendering.
+  const [spinnerNearTop, setSpinnerNearTop] = useState(true)
+  useEffect(() => {
+    const el = virt.scrollerRef?.current
+    if (!el) return
+    let raf = 0
+    const onScroll = () => {
+      // Cancel-and-reschedule, never latch-on-pending (frameSchedulerLatch
+      // guard): a dropped frame handle must not wedge the near-top signal.
+      if (raf) cancelAnimationFrame(raf)
+      raf = requestAnimationFrame(() => {
+        raf = 0
+        setSpinnerNearTop(el.scrollTop < el.clientHeight * 1.5)
+      })
+    }
+    onScroll()
+    el.addEventListener('scroll', onScroll, { passive: true })
+    return () => { el.removeEventListener('scroll', onScroll); if (raf) cancelAnimationFrame(raf) }
+  }, [virt.scrollerRef, activeSlot])
+
+  // A failed older-page fetch PARKS pagination: the top sentinel is already
+  // inside the viewport, so no new crossing ever fires and automatic paging
+  // never resumes — the only way forward is the retry bar, which on a phone
+  // is easy to miss, so the transcript reads as "history ends here"
+  // (reproduced: fail page 3 of 7 once, scrolling never fetches again).
+  // Treat a FURTHER upward scroll as retry intent — the reader is still
+  // asking for older content. Cooldown-gated so a dead link costs one
+  // request per gesture, not one per scroll event; the thunk's own
+  // loadingOlder gate covers the in-flight window.
+  const olderRetryAtRef = useRef(0)
+  useEffect(() => {
+    const el = virt.scrollerRef?.current
+    if (!el) return
+    let prevTop = el.scrollTop
+    const onScroll = () => {
+      const st = el.scrollTop
+      const up = st < prevTop
+      prevTop = st
+      if (!up) return
+      const chat = store.getState().chat
+      if (!chat.slotOlderError || chat.loadingOlder || !chat.slotHasMore) return
+      const now = Date.now()
+      if (now - olderRetryAtRef.current < OLDER_RETRY_COOLDOWN_MS) return
+      olderRetryAtRef.current = now
+      void dispatch(loadOlderMessages())
+    }
+    el.addEventListener('scroll', onScroll, { passive: true })
+    return () => el.removeEventListener('scroll', onScroll)
+  }, [dispatch, activeSlot, virt.scrollerRef])
   // No "load more" pagination indicator with virtualization — the
   // windowing engine swaps mounted/placeholder automatically.
 
@@ -6999,7 +7585,21 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                   if (isHiddenInvisibleAssistantRow(later)) continue
                   if (later.role === 'assistant' || later.role === 'streaming') return false // not last assistant in turn
                 }
-                // End of messages — show footer only if agent is done
+                // End of messages. A run still in progress has not produced this
+                // turn's footer yet — but a message that already CARRIES turn
+                // stats is a turn that finished, and a LATER run (a cron, a
+                // monitor cycle, another tab, a background job) must not retract
+                // the footer of a turn it has nothing to do with.
+                //
+                // Retracting it removed the stats line, the timestamp row and the
+                // overflow trigger — measured frame by frame from a phone
+                // recording: ~108px, gone for 3 frames at 60fps, at the very
+                // bottom edge of the transcript. Content shrinking there makes
+                // the engine clamp a bottom-parked reader down, and nothing ever
+                // pushes them back up when the footer returns, so each flicker
+                // cost the reader their position permanently.
+                const stats = (m.meta as Record<string, unknown> | undefined)?.turn_stats as TurnStats | undefined
+                if (stats && (stats.elapsed_ms ?? 0) > 0) return true
                 return !slotRunning
               })()} onSpeak={handleSpeak} onRegenerate={i === lastTextIdxRef.current && !slotRunning && !regenerating && activeSlot ? handleRegenerate : undefined} variants={m.variants} variantIdx={m.variant_idx} onSwitchVariant={i === lastTextIdxRef.current && m.variants && m.variants.length > 1 && activeSlot ? (idx: number) => { api.switchVariant(activeSlot, idx).catch((e: unknown) => {
                 showRefusedPress('switch_variant', e)
@@ -7070,6 +7670,40 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
       })() : renderMessage(it.idx, it.msg)}
     </div>
   }, [stableMsgKey, renderMessage, approve, toApiDecision, dismissApproval, toggleAct, activityOpen])
+
+  // ---- Measure-farm wiring ----
+  // The farm's renderItem must reproduce the transcript row wrappers EXACTLY
+  // (same classes, same maxWidth, default disclosure) so an off-screen
+  // measurement equals the height the row will really mount at. Group rows
+  // whose members are all permissions render null in the transcript; the farm
+  // mirrors that so their measured height is the wrapper's own (near-zero).
+  const renderFarmItem = useCallback((i: number): React.ReactNode => {
+    const item = renderedDisplayItems[i]
+    if (!item) return null
+    if (item.kind === 'turn') {
+      return <TurnBlock turn={item} renderItem={renderTurnItem} collapseAll={chatConfig.collapseAllSteps} appToolCallIds={appToolCallIds} disclosure={undefined} disclosureKey={`farm-${i}`} onDisclosureChange={() => {}} />
+    }
+    return (
+      <div className={`px-4 mx-auto w-full py-1`} style={{ maxWidth: 'var(--mc-content-width, 900px)' }}>
+        {item.kind === 'group' ? (() => {
+          if (item.msgs.every(m => m.role === 'permission')) return null
+          return (
+            <CollapsibleToolGroup
+              count={item.msgs.filter(m => m.role !== 'permission').length}
+              disclosureKey={`farm-ctg-${i}`}
+              hasPermission={false}
+              isRunning={false}
+              permissionMeta={undefined}
+              pendingPermCount={0}
+              onApprove={approve}
+              onViewActivity={toggleAct}
+              activityOpen={false}
+            >{item.msgs.map((m, j) => <div key={msgIdentityKey(m, stableMsgKey)}>{renderMessage(item.startIdx + j, m)}</div>)}</CollapsibleToolGroup>
+          )
+        })() : renderMessage(item.idx, item.msg)}
+      </div>
+    )
+  }, [renderedDisplayItems, renderTurnItem, chatConfig.collapseAllSteps, appToolCallIds, approve, toggleAct, stableMsgKey, renderMessage])
 
   /**
    * Mobile sessions drawer, as ONE value rather than an open flag plus a
@@ -8190,6 +8824,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               onScroll={onScrollPin}
               virt={virt}
               loadingOlder={loadingOlder}
+              spinnerNearTop={spinnerNearTop}
               // Second half of the fade-band clearance, alongside
               // TRANSCRIPT_TAIL_SPACER_PX. Unlike the tail spacer this one also
               // applies to a transcript short enough not to scroll, so both are
@@ -8203,6 +8838,31 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               )}
               </>}
               belowRows={<>
+              {/* Off-screen measurement farm. Kept FIRST in `belowRows` — i.e.
+                  after the rows and before the footer, exactly where it sat
+                  before the scroll shell was extracted: it renders into a
+                  zero-height overflow-hidden box, so its position only has to
+                  be inside the transcript's own column (the width is what
+                  makes the measurements true). */}
+              <MeasureFarm
+                enabled={!!activeSlot && !slotLoading}
+                // NOT paused on slotRunning: a session with an agent working
+                // is "running" for minutes at a stretch (tool executions),
+                // and gating the farm on it disabled measured geometry on
+                // exactly the sessions people actively read — every row they
+                // scrolled to was estimate-priced and corrected under their
+                // finger. Streaming regroups are safe: farmRecord revalidates
+                // row identity at write time and drops stale writes.
+                paused={loadingOlder}
+                count={renderedDisplayItems.length}
+                originIndex={visibleDisplayItems[0]?.index ?? Math.max(0, renderedDisplayItems.length - 1)}
+                isMeasured={virt.farmIsMeasured}
+                isMounted={virt.farmRowMounted}
+                keyAt={(i) => { const it = renderedDisplayItems[i]; return it ? virtualKey(it, i) : null }}
+                record={virt.farmRecord}
+                renderItem={renderFarmItem}
+                scrollerEl={() => scrollerRef.current}
+              />
               {/* Footer */}
               <ChatFooter running={slotRunning} stopping={slotStopping} state={slotState} lastRole={lastRole} streamTick={streamTick} regenerating={regenerating} stopState={currentSlot?.stop_state} />
               {activeSlot && !slotLoading && !embedded && !popout && slotSwitchTarget !== activeSlot && (

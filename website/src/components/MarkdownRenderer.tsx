@@ -858,6 +858,14 @@ function resolveSessionChip(raw: string, actions: SessionActions): { key: string
 
 type PathResolution = {
   candidate: boolean
+  /** Path SHAPE alone, independent of whether probing is enabled.
+   *
+   * `candidate` also requires the probe to be on, so it flips the moment a
+   * message stops streaming — and anything keyed to it would appear then,
+   * re-wrapping a paragraph whose text has just become final. The glyph reserve
+   * is keyed to this instead, so it is already in place before the probe's
+   * answer (or the probe itself) can arrive. */
+  shaped: boolean
   kind: PathKind | undefined
   path: string
   splitPath: string
@@ -873,7 +881,8 @@ type PathResolution = {
  */
 function usePathResolution(raw: string, probeEnabled: boolean): PathResolution {
   const { path: splitPath, line, endLine } = splitLineRef(raw)
-  const candidate = probeEnabled && isPathCandidate(splitPath)
+  const shaped = isPathCandidate(splitPath)
+  const candidate = probeEnabled && shaped
   const literalCandidate = candidate && line != null
   const splitKind = usePathKind(candidate ? splitPath : null)
   const literalKind = usePathKind(literalCandidate ? raw : null)
@@ -881,6 +890,7 @@ function usePathResolution(raw: string, probeEnabled: boolean): PathResolution {
 
   return {
     candidate,
+    shaped,
     kind: literalWins ? literalKind : splitKind,
     path: literalWins ? raw : splitPath,
     splitPath,
@@ -926,6 +936,41 @@ function activatePath(path: string, kind: PathKind, reveal: boolean, actions: Pa
 }
 
 const CHIP_BASE = 'bg-bg-elevated px-1.5 py-0.5 rounded text-accent text-sm font-mono'
+
+/** Geometry of a path chip's leading glyph, shared by the confirmed chip and by
+ *  the reserve that stands in for it while the path is unconfirmed.
+ *
+ *  Both sites MUST read these two values, because equal width in every state is
+ *  the whole mechanism: the glyph is an inline atom, so 16px (12px box + 4px
+ *  margin) appearing mid-paragraph can push a line over and change the row's
+ *  height. Measured in a browser at phone widths, that re-wrap costs 24px — one
+ *  line — and it lands under a reader who is scrolling history, because a path
+ *  is probed the first time its row mounts. Same rule the image reserve follows
+ *  (`reservedImageStyle`): reserve the box before the async answer arrives, so
+ *  the answer restyles instead of reflowing. */
+const CHIP_GLYPH_SIZE = 12
+const CHIP_GLYPH_GEOMETRY = 'inline align-middle mr-1'
+
+/**
+ * Invisible stand-in for the chip glyph, for a path-shaped span that is not (or
+ * not yet) a confirmed path.
+ *
+ * It renders the same icon element at the same size and margin, so it occupies
+ * the confirmed chip's width exactly rather than an approximation of it — the
+ * geometry cannot drift because a different icon or a different margin would
+ * have to be written at both sites. `opacity-0` rather than a blank span keeps
+ * the line box identical too: an empty inline-block contributes a different
+ * baseline than an svg does.
+ *
+ * Blank, deliberately NOT a dimmed glyph: `InlineCode`'s glyph is what tells a
+ * reader at rest which paths the backend actually confirmed, and a placeholder
+ * glyph would erase that distinction to buy nothing — the reserve only needs the
+ * space, not a mark.
+ */
+function ChipGlyphReserve({ path }: { path: string }) {
+  const Glyph = fileIcon(path)
+  return <Glyph size={CHIP_GLYPH_SIZE} aria-hidden="true" className={`${CHIP_GLYPH_GEOMETRY} opacity-0`} />
+}
 
 /**
  * The chip's hover instruction, naming the application shift+click will actually
@@ -1110,10 +1155,18 @@ function InlineCode({ children, ...props }: { children?: React.ReactNode } & Rec
 
   if (pathResolution.probePending
     || (pathResolution.kind !== 'file' && pathResolution.kind !== 'dir')) {
+    // Keyed to `shaped`, not to `candidate` or `probePending`, so the reserve is
+    // present in EVERY state this span can be in — streaming, probe in flight,
+    // and probe answered "not a path". A reserve that appeared only while a probe
+    // was pending would simply move the re-wrap to the moment it went away.
+    // A session chip needs none: `isPathCandidate` demands a separator, a drive
+    // or an extension, and a session key carries none of the three, so the two
+    // chips cannot claim the same span.
+    const reserve = pathResolution.shaped ? <ChipGlyphReserve path={pathResolution.splitPath} /> : null
     // Inside an anchor the link owns the click, so stay the inert span this was
     // before #4433 rather than cancelling the navigation to copy. Nothing is
     // lost: the browser's own "Copy link address" still reaches the URL.
-    if (insideLink) return <code className={CHIP_BASE} {...safeProps}>{children}</code>
+    if (insideLink) return <code className={CHIP_BASE} {...safeProps}>{reserve}{children}</code>
     const session = resolveSessionChip(raw, sessionActions)
     if (session) {
       return (
@@ -1125,7 +1178,7 @@ function InlineCode({ children, ...props }: { children?: React.ReactNode } & Rec
         >{children}</SessionChip>
       )
     }
-    return <CopyableCode className={CHIP_BASE} safeProps={safeProps} text={codeStr}>{children}</CopyableCode>
+    return <CopyableCode className={CHIP_BASE} safeProps={safeProps} text={codeStr}>{reserve}{children}</CopyableCode>
   }
   const isDir = pathResolution.kind === 'dir'
   const { path, splitPath, kind, line: targetLine, endLine: targetEndLine } = pathResolution
@@ -1184,7 +1237,7 @@ function InlineCode({ children, ...props }: { children?: React.ReactNode } & Rec
         // the location is already in the text the user is hovering.
         title={`${raw}\n${revealHint}\n${i18nT('components.markdownRenderer.ctrl_click_to_copy')}`}
       >
-        <Glyph size={12} aria-hidden="true" className="inline align-middle mr-1 opacity-70" />
+        <Glyph size={CHIP_GLYPH_SIZE} aria-hidden="true" className={`${CHIP_GLYPH_GEOMETRY} opacity-70`} />
         {targetLine != null && raw.length > splitPath.length
           // Keep the location suffix atomic. A range is the case that actually
           // misleads: broken across lines, `…2026.md:10-` / `16` reads as a citation

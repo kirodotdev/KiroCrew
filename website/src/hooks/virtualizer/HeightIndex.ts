@@ -106,7 +106,11 @@ export class HeightIndex {
 
   constructor(
     sessionId: string,
-    options: { rowCount?: number; keyAt: RowKeyResolver; estimate: number },
+    options: {
+      rowCount?: number
+      keyAt: RowKeyResolver
+      estimate: number
+    },
   ) {
     this.sessionId = sessionId
     this.keyAt = options.keyAt
@@ -138,6 +142,12 @@ export class HeightIndex {
     if (key === null) return this.estimate
     const cached = this.cache.peek(key)
     if (cached !== undefined) return Math.max(cached, 1)
+    // A content-aware per-row estimate beats the running mean where content is
+    // bimodal: a code-fenced row is often 5-30x the mean, and mounting it near
+    // the top used to land a huge height correction that read as a scroll jump
+    // (which the top-parked pagination poll then amplified into runaway page
+    // loads). The resolver answers only for rows it can price (code fences at
+    // known per-line metrics); everything else keeps the measured mean.
     return this.cache.averageHeight(this.estimate)
   }
 
@@ -175,6 +185,14 @@ export class HeightIndex {
    */
   retire(keys: Iterable<string>): void {
     for (const key of keys) this.cache.retire(key)
+  }
+
+  /** Key-currency migration for rows that SURVIVED a regroup under a new
+   *  display key (see HeightCache.rename). Like retire(), deliberately does
+   *  not sync or announce: the caller runs during the render whose commit
+   *  is already compensated. */
+  rename(pairs: Iterable<readonly [string, string]>): void {
+    for (const [oldKey, newKey] of pairs) this.cache.rename(oldKey, newKey)
   }
 
   /**

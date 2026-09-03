@@ -5,6 +5,7 @@ import { useRowDisclosure } from '../pages/chat/rowDisclosure'
 import { PierreFilePair } from '../pierre'
 import { ROW_ANIM_MS, ROW_CSS_CLICKABLE_TITLE, ROW_CSS_CLOSING, ROW_CSS_OPEN } from './fileChangeChipsCss'
 import { countLines } from '../utils/diffLineCounts'
+import { useStagedMount } from './pierreStaging'
 import { usePersistedBool } from '../hooks/usePersistedBool'
 
 import { i18nT } from '../i18n/t'
@@ -73,6 +74,23 @@ export function headerClickAction(path: readonly EventTarget[]): 'open' | 'toggl
   return has('[data-title]') ? 'open' : 'toggle'
 }
 
+/** Height of a mounted COLLAPSED Pierre file-pair row, in px.
+ *
+ *  Load-bearing, not cosmetic: a staged row reserves exactly this, so releasing
+ *  it swaps content at an unchanged height and the transcript does not move
+ *  under the reader. Measured on a real browser against a session carrying 28
+ *  such rows — every one of them 36px — and `.fcc-row` contributes no box of its
+ *  own, so the placeholder's own 36px IS the row's height. A drift here is a
+ *  scroll jump per released row, so `FileChangeChips.staging.test.tsx` pins the
+ *  placeholder to it rather than trusting the class to stay `h-9`. */
+export const STAGED_ROW_HEIGHT_PX = 36
+
+/**
+ * Whether this row may mount its Pierre file-pair yet.
+ *
+ * `immediate` bypasses staging entirely for the rows where a placeholder would
+ * be wrong rather than merely early — see the call site for which those are.
+ */
 function ExpandedRow({ fc, added, removed, isArtifact, onFileOpen, disclosureKey, sideBySide }: {
   fc: FileChangeEntry
   added: number
@@ -87,6 +105,21 @@ function ExpandedRow({ fc, added, removed, isArtifact, onFileOpen, disclosureKey
   // Held mounted for one animation after `open` goes false, so collapsing has
   // a frame to animate in before Pierre drops the body.
   const [closing, setClosing] = useState(false)
+  // Two kinds of row must never be staged, both for height stability:
+  //  - one the reader has expanded (or is collapsing): its body is the point,
+  //    and a placeholder would take it away mid-gesture;
+  //  - a degenerate change whose two sides are identical, which Pierre renders
+  //    as an EMPTY container measuring 0px. Reserving a header's height for that
+  //    one would ADD height on release rather than match it — the scroll jump
+  //    this design exists to avoid, inverted.
+  const degenerate = fc.before === fc.after
+  // Latch identity: stable across virtualizer remounts of the same change row.
+  // Path + side lengths distinguishes rows well enough; a collision merely
+  // mounts a row without queueing, which is the latch's effect anyway.
+  const mounted = useStagedMount(
+    open || closing || degenerate,
+    `${fc.path}\u0000${fc.before.length}\u0000${fc.after.length}`,
+  )
   const rowRef = useRef<HTMLDivElement>(null)
   // Pierre titles the header from `name`; the full path would wrap the row and
   // bury the filename, so the row shows the basename and the path stays on the
@@ -94,15 +127,21 @@ function ExpandedRow({ fc, added, removed, isArtifact, onFileOpen, disclosureKey
   const name = basename(fc.path)
   const oldFile = useMemo(() => ({ name, contents: fc.before }), [name, fc.before])
   const newFile = useMemo(() => ({ name, contents: fc.after }), [name, fc.after])
+  // Depend on WHETHER a file-open handler exists, never on its identity: the
+  // options only splice a CSS block in when the title is clickable, so an
+  // unstable callback from a parent must not re-create `options` — Pierre
+  // re-initializes the diff view when options change identity, which reads as
+  // the row flashing/reloading.
+  const clickableTitle = !!onFileOpen
   const options = useMemo(
     () => ({
       collapsed: !open && !closing,
       diffStyle: (sideBySide ? 'split' : 'unified') as 'split' | 'unified',
       overflow: 'wrap' as const,
       disableFileHeader: false,
-      unsafeCSS: (closing ? ROW_CSS_CLOSING : ROW_CSS_OPEN) + (onFileOpen ? ROW_CSS_CLICKABLE_TITLE : ''),
+      unsafeCSS: (closing ? ROW_CSS_CLOSING : ROW_CSS_OPEN) + (clickableTitle ? ROW_CSS_CLICKABLE_TITLE : ''),
     }),
-    [open, closing, onFileOpen, sideBySide],
+    [open, closing, clickableTitle, sideBySide],
   )
   useEffect(() => {
     if (!closing) return
@@ -194,15 +233,33 @@ function ExpandedRow({ fc, added, removed, isArtifact, onFileOpen, disclosureKey
          flat tree, so hovering the filename picks this up. */
       title={fc.path}
       onClick={onRowClick}
+      aria-busy={!mounted}
     >
-      <PierreFilePair
-        oldFile={oldFile}
-        newFile={newFile}
-        options={options}
-        renderHeaderPrefix={prefix}
-        renderHeaderFilenameSuffix={filenameSuffix}
-        renderHeaderMetadata={metadata}
-      />
+      {mounted ? (
+        <PierreFilePair
+          oldFile={oldFile}
+          newFile={newFile}
+          options={options}
+          renderHeaderPrefix={prefix}
+          renderHeaderFilenameSuffix={filenameSuffix}
+          renderHeaderMetadata={metadata}
+        />
+      ) : (
+        /* The staged stand-in. Same height, same three things in the same
+           places, so releasing the row reads as the text sharpening rather than
+           as the layout moving. The chevron is the live control: pressing it
+           sets `open`, which makes the row immediate and mounts it at once. */
+        <div
+          className="flex items-center gap-2 px-2 font-mono text-[13px] text-muted animate-pulse motion-reduce:animate-none"
+          style={{ height: STAGED_ROW_HEIGHT_PX }}
+        >
+          {prefix()}
+          <span className="truncate min-w-0">{name}</span>
+          <span className="ml-auto shrink-0">
+            <DiffStatBar added={added} removed={removed} />
+          </span>
+        </div>
+      )}
     </div>
   )
 }

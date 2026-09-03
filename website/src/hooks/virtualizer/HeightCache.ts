@@ -231,6 +231,30 @@ export class HeightCache {
    * UNMOUNTED -- remembering a row that scrolled out of the window is what this
    * cache is for.
    */
+  /** Move a measurement to a new key: the ROW survived a commit but its
+   *  display key changed (a landing regroup absorbs a page boundary and the
+   *  turn's lead item -- its key currency -- changes). Retiring the old key
+   *  would send a mounted giant row back to estimate pricing, and the
+   *  re-measure plus next landing's re-retire cycle showed up on the bottom
+   *  rig as a per-landing multi-thousand-px breathe. The value moves as-is;
+   *  mean bookkeeping is unchanged (same measurement, new name). No-op when
+   *  the old key holds nothing or the new key already has a measurement. */
+  rename(oldKey: string, newKey: string): void {
+    if (oldKey === newKey) return
+    const v = this.cache.get(oldKey)
+    if (v === undefined) return
+    if (this.cache.get(newKey) !== undefined) return
+    this.cache.delete(oldKey)
+    // A renamed row is LIVE (it survived the commit under a new key), so
+    // the entry lands un-retired. A retired source's height is already out
+    // of measuredSum and must be added back, or a later set(newKey) would
+    // subtract a value that was never counted.
+    if (this.retired.delete(oldKey)) this.measuredSum += v
+    this.cache.set(newKey, v)
+    this.dirty = true
+    this.scheduleFlush()
+  }
+
   retire(key: string): void {
     if (!this.cache.has(key) || this.retired.has(key)) return
     this.retired.add(key)
@@ -396,9 +420,20 @@ export class HeightCache {
     // Use Object.keys instead of Object.entries so own-property keys like
     // "__proto__" are visible (Object.entries skips them when they were
     // serialized into the prototype slot by JSON.parse).
+    //
+    // ZERO is poison, not a measurement, and it is dropped here (v > 0, not
+    // >= 0). Blobs written before the RO write path gained its h > 0 floor
+    // carry zeros from rows measured while an ancestor was display:none, and a
+    // loaded zero DEFEATS the self-heal that floor relies on: the offset tree
+    // prices the poisoned region at 0px, the window math finds nothing there to
+    // mount, and a row that never mounts is never re-measured. Observed in the
+    // field as a session opening to a full-viewport blank — 7 items, 0 mounted
+    // rows, both spacers 0px — persisting across reloads. Dropping the entry
+    // instead makes the row unmeasured, which is the state the estimate path
+    // and the write-side floor already handle.
     for (const k of Object.keys(parsed as Record<string, unknown>)) {
       const v = (parsed as Record<string, unknown>)[k]
-      if (typeof v === 'number' && Number.isFinite(v) && v >= 0) {
+      if (typeof v === 'number' && Number.isFinite(v) && v > 0) {
         this.cache.set(k, v)
         this.measuredSum += v
       }

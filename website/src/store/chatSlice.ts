@@ -1,4 +1,5 @@
 import { createSlice, createAsyncThunk, createSelector, type PayloadAction } from '@reduxjs/toolkit'
+import { whenScrollQuiet } from '../lib/scrollQuiet'
 import { api } from '../api/client'
 import { addSlotOptimistic, updateSlot, removeSlotOptimistic, markSlotRead, fetchSlots, slotSurfaceKey, sseSlots, sseConnected } from './dashboardSlice'
 import { resolveDefaultColor } from '../utils/sessionColors'
@@ -1272,6 +1273,80 @@ export const fetchHistory = createAsyncThunk(
  *  with is simply page one of the same pagination `loadOlderMessages` runs. */
 export const OLDER_PAGE_LIMIT = 100
 
+/** Page size for walking BACK through history (loadOlderMessages), distinct
+ * from the slot-open first page. The open page is latency-critical — it is the
+ * slot-switch paint, which is exactly what #5404 bounded — so it stays small.
+ * A back-walk page is read while the walk's own spinner shows and each page
+ * costs a full round trip (painful over a phone tunnel), so bigger pages cut
+ * the walk's dominant cost: a 13-page walk becomes 5. */
+export const OLDER_WALK_PAGE_LIMIT = 300
+
+/** The handler's own ceiling (`min(int(limit), 500)` in chat_handlers). Asking
+ *  for more is silently clamped, so a caller that needs to KNOW whether its
+ *  window covered the cache has to compare against this, not against what it
+ *  asked for. */
+export const SLOT_DETAIL_MAX_LIMIT = 500
+
+/**
+ * Rows to request when switching to a slot, or `undefined` for the unbounded
+ * shape.
+ *
+ * A switch used to go UNBOUNDED for any slot with rows already painted, and the
+ * comment beside it carried its own measurement: 6.2MB/~1s unbounded against
+ * 0.7MB/57ms bounded. So the FIRST visit to a session was the fast one and every
+ * return to it paid for the whole chained transcript — on a 43MB session that is
+ * the reported "switching chats got slow and janky", and it got worse as more
+ * history became reachable.
+ *
+ * The reason for going unbounded was real but narrower than the rule: a bounded
+ * page is a WINDOW, and if the server grew past it the window could sit entirely
+ * newer than the cache, leaving a hole in the middle of the transcript. That is
+ * a question of COVERAGE, not of boundedness — so ask for the cache plus one
+ * page, which covers everything held unless the server grew by more than a page
+ * since (impossible while idle; a streaming slot still goes unbounded). The
+ * caller verifies coverage against the response and re-fetches unbounded only
+ * when the bound was actually hit.
+ */
+export function slotSwitchFetchLimit(input: {
+  streaming: boolean
+  cached: number
+  pageLimit?: number
+  maxLimit?: number
+}): number | undefined {
+  const pageLimit = input.pageLimit ?? OLDER_PAGE_LIMIT
+  const maxLimit = input.maxLimit ?? SLOT_DETAIL_MAX_LIMIT
+  if (input.streaming) return undefined
+  if (input.cached <= 0) return pageLimit
+  return Math.min(maxLimit, input.cached + pageLimit)
+}
+
+/**
+ * Whether a bounded switch response may have failed to cover the cache.
+ *
+ * The hazard the unbounded shape existed to avoid is a HOLE: the window sitting
+ * entirely newer than the cache, so the merge leaves a gap mid-transcript. That
+ * can only happen if the server GREW by at least a window's worth while this tab
+ * was looking elsewhere — a smaller window still overlaps, and a window larger
+ * than the corpus reaches its start.
+ *
+ * So the discriminator is growth since this tab's last view of the slot
+ * (`slotServerTotal`, retained per key), not the size of the response. An
+ * unknown prior total cannot prove overlap, so it retries — declining to guess,
+ * the same rule `retainServerTotal` itself follows.
+ */
+export function slotSwitchNeedsUnboundedRetry(input: {
+  requestedLimit: number | undefined
+  cached: number
+  serverTotal: number | undefined
+  priorServerTotal: number | undefined
+}): boolean {
+  const { requestedLimit, cached, serverTotal, priorServerTotal } = input
+  if (requestedLimit === undefined) return false
+  if (cached <= 0) return false
+  if (typeof serverTotal !== 'number' || typeof priorServerTotal !== 'number') return true
+  return serverTotal - priorServerTotal >= requestedLimit
+}
+
 // Aborts the in-flight older-history fetch, or null when none is running.
 // Module-level because switchSlot must reach a fetch it did not start.
 let _abortLoadOlder: (() => void) | null = null
@@ -1691,13 +1766,34 @@ export const switchSlot = createAsyncThunk<
     // still describes the OUTGOING slot. `slotRun` is keyed per slot, so it
     // answers for the incoming one. Guarded because a partial preloaded state
     // can omit `slotRun` entirely, and throwing here would skip the fetch.
-    const state = (getState() as { chat: ChatState }).chat
-    const streaming = (state.slotRun?.[key]?.state ?? 'idle') !== 'idle'
     // A bounded page is a WINDOW, and unseen server growth can push that window clear
     // of a small cache entirely, so only a slot with nothing painted may be bounded.
-    const cached = state.slotMessages?.[safeKey(key)]?.length ?? 0
     try {
-      return await fetchSlotDetail(key, streaming || cached > 0 ? undefined : OLDER_PAGE_LIMIT)
+      // Bounded ONLY for a slot with nothing painted (a fresh switch, boot).
+      // Streaming or painted slots stay unbounded: a bounded page is a WINDOW,
+      // and unseen server growth can push it clear of a small cache entirely —
+      // the shrink contract in chatSlice.boundedRefetchShrink.test.ts pins
+      // this with a live capture. The fresh-slot bound keeps the switch/boot
+      // cost at one page (measured 6.2MB/~1s unbounded vs 0.7MB/57ms bounded).
+      const state = (getState() as { chat: ChatState }).chat
+      const streaming = (state.slotRun?.[key]?.state ?? 'idle') !== 'idle'
+      const cached = state.slotMessages?.[safeKey(key)]?.length ?? 0
+      const limit = slotSwitchFetchLimit({ streaming, cached })
+      const first = await fetchSlotDetail(key, limit)
+      // Coverage check, not a second guess at the limit: only growth larger than
+      // the window this tab just asked for can leave a hole between the window
+      // and the cache. Everything else already overlaps.
+      if (
+        slotSwitchNeedsUnboundedRetry({
+          requestedLimit: limit,
+          cached,
+          serverTotal: first.total,
+          priorServerTotal: state.slotServerTotal?.[safeKey(key)],
+        })
+      ) {
+        return await fetchSlotDetail(key)
+      }
+      return first
     } catch (e) {
       // A thrown error crosses the thunk boundary as `miniSerializeError(e)`,
       // which keeps string fields only -- `ApiError.status` (a number) never
@@ -2704,6 +2800,18 @@ export const deleteHistorySession = createAsyncThunk(
   async (key: string) => { await api.deleteSession(key); return key },
 )
 
+/** Abort any in-flight older-page fetch. Wired to transcript MOTION: the
+ *  settle gates guard the DISPATCH moment, but a page dispatched during a
+ *  reading pause lands 1-2s later — mid-fling on a phone, where the prepend
+ *  compensation fights the momentum curve (reproduced on the momentum rig as
+ *  ±3000px content jumps during coast). Aborting on motion means a landing
+ *  can only ever commit while the scroller is still; the walk re-dispatches
+ *  when stillness returns. An abort rejection carries no payload, so the
+ *  rejected reducer sets no error flag. */
+export function abortActiveOlderFetch(): void {
+  _abortLoadOlder?.()
+}
+
 export const loadOlderMessages = createAsyncThunk(
   'chat/loadOlder',
   async (_, { getState, rejectWithValue }) => {
@@ -2715,7 +2823,24 @@ export const loadOlderMessages = createAsyncThunk(
     const abort = () => controller.abort()
     _abortLoadOlder = abort
     try {
-      const d = await api.chatSlotDetail(slot, OLDER_PAGE_LIMIT, state.slotOldestIndex, controller.signal)
+      // Landing size is a LAYOUT BURST: on a phone (slow CPU, slow network)
+      // a 300-row landing is a long task during which the anchor
+      // compensation paints late and the reader visibly loses their place
+      // ('突然加载一大堆就不在原来的位置'). Narrow viewports take smaller,
+      // cheaper landings; the walk simply takes more of them.
+      const isNarrow = typeof window !== 'undefined' && typeof window.matchMedia === 'function'
+        && window.matchMedia('(max-width: 640px)').matches
+      const walkLimit = isNarrow ? OLDER_PAGE_LIMIT : OLDER_WALK_PAGE_LIMIT
+      const d = await api.chatSlotDetail(slot, walkLimit, state.slotOldestIndex, controller.signal)
+      // LANDING BUFFER: the fetch overlaps the reader's gesture, but the
+      // MUTATION must not -- splicing rows mid-glide races the pre-paint
+      // anchor machinery against the gesture's own pixel-addressed window
+      // recompute (phone rig: kilopixel per-landing jumps whose anchor
+      // consume mis-bound and stood down). Hold the payload until the
+      // scroller has been quiet for a beat; bounded, so a reader who never
+      // pauses still gets the page (see scrollQuiet.ts).
+      await whenScrollQuiet(controller.signal)
+      if (controller.signal.aborted) throw new DOMException('Aborted', 'AbortError')
       return { slot, nextBefore: d.next_before || 0, messages: filterMessages(d.messages || []), hasMore: d.has_more || false, total: d.total || 0 }
     } catch (e) {
       // Rethrow a cancellation so the reducer can tell it from a real failure;

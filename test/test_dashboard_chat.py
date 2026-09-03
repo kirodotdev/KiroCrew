@@ -1284,20 +1284,20 @@ class TestSlotDetailPagination:
         """
         state = await self._slot_with_history(tmp_path, monkeypatch, "offloop")
         log = state.conversation_log
-        real = log.read_messages_chained
+        real = log.read_messages_chained_full
         seen: list[int] = []
 
         def recording(key):
             seen.append(threading.get_ident())
             return real(key)
 
-        monkeypatch.setattr(log, "read_messages_chained", recording)
+        monkeypatch.setattr(log, "read_messages_chained_full", recording)
         loop_thread = threading.get_ident()
 
         async with TestClient(TestServer(_make_app(state))) as client:
             resp = await client.get("/api/chat/slots/offloop?limit=5")
             assert resp.status == 200
-        assert seen, "read_messages_chained was never called"
+        assert seen, "read_messages_chained_full was never called"
         assert loop_thread not in seen
 
     @pytest.mark.asyncio

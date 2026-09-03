@@ -14,7 +14,7 @@
  */
 import { describe, it, expect, vi, afterEach } from 'vitest'
 import { createTestStore } from './helpers'
-import { switchSlot, refreshSlot, loadOlderMessages, clearMessages, deleteSlot, OLDER_PAGE_LIMIT } from '../store/chatSlice'
+import { switchSlot, refreshSlot, loadOlderMessages, clearMessages, deleteSlot, OLDER_PAGE_LIMIT, OLDER_WALK_PAGE_LIMIT } from '../store/chatSlice'
 import { shouldPaginateOlder } from '../pages/chat/pagination'
 import { api } from '../api/client'
 
@@ -65,7 +65,7 @@ describe('bounded initial fetch leaves older history reachable', () => {
     detail.mockResolvedValue(page(rows(2, 'older'), false, 0) as never)
     await store.dispatch(loadOlderMessages())
 
-    expect(detail).toHaveBeenLastCalledWith(SLOT, OLDER_PAGE_LIMIT, 240, expect.any(AbortSignal))
+    expect(detail).toHaveBeenLastCalledWith(SLOT, OLDER_WALK_PAGE_LIMIT, 240, expect.any(AbortSignal))
     const chat = store.getState().chat
     expect(chat.messages).toHaveLength(5)
     expect(chat.messages[0].content).toBe('older0')

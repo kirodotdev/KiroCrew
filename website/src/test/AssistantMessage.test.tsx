@@ -183,7 +183,17 @@ describe('AssistantMessage', () => {
     expect(screen.queryByTitle('Fork conversation from here')).not.toBeInTheDocument()
     const more = screen.getByTestId('assistant-more-actions')
     const row = screen.getByTitle('Copy').parentElement as HTMLElement
-    expect(row).not.toContainElement(more)
+    // IN the row for the AVAILABLE state: this state removed the row's two
+    // dedicated fork/plan buttons in favour of this menu, so the trigger inside
+    // is a net -1 control — it does not grow the row, which is what the
+    // out-of-row placement exists to prevent (and the unavailable state, where
+    // the row renders no fork/plan at all, still keeps it outside — see the
+    // sibling case). A second reveal row carried its own `mt-1`, and with
+    // HOVER_NONE_ACTIONS_ROW_CLS making these rows permanently visible at 44px
+    // on touch it added a full row of height to EVERY completed turn's footer:
+    // rows above a reader growing by that much is a page-scale downward
+    // displacement the first time they re-measure.
+    expect(row).toContainElement(more)
 
     openOverflow()
     const forkItem = screen.getByTestId('fork-from-here')
@@ -234,17 +244,23 @@ describe('AssistantMessage', () => {
     expect(screen.queryAllByTitle('More actions')).toHaveLength(1)
   })
 
-  it('keeps the unavailable overflow trigger OUT of the footer action row', () => {
-    // The row must match BASE's shape in the SAME state, not a loaded row: without an
-    // index base rendered no fork/plan at all, so a trigger inside the row is a net +1.
+  it('keeps the overflow trigger IN the footer action row in every state', () => {
+    // Upstream placed it BELOW the row so the row could not grow by a control.
+    // The below-row placement is a second `ACTIONS_REVEAL_CLS` row carrying its
+    // own `mt-1`, and HOVER_NONE_ACTIONS_ROW_CLS makes these rows permanently
+    // visible with 44px targets on touch — so it added a full row of height to
+    // EVERY completed turn's footer. Rows above a reader growing by that much
+    // is a page-scale downward displacement the first time they re-measure
+    // (reported from a phone at the moment a turn ended), and splitting the
+    // placement by state ALSO gave neighbouring messages visibly different
+    // footers. One row, same shape in every state, is the contract now.
     const props = { content: 'x'.repeat(80), isStreaming: false, slotRunning: false, onSpeak: vi.fn(), onRegenerate: vi.fn() }
-    render(<AssistantMessage {...props} />)
-    const baseRowButtons = (screen.getByTitle('Copy').parentElement as HTMLElement).querySelectorAll('button').length
-    cleanup()
     render(<AssistantMessage {...props} onFork={vi.fn()} onPlanFromHere={vi.fn()} onLoadEarlier={vi.fn()} />)
     const row = screen.getByTitle('Copy').parentElement as HTMLElement
-    expect(row).not.toContainElement(screen.getByTestId('assistant-more-actions'))
-    expect(row.querySelectorAll('button')).toHaveLength(baseRowButtons)
+    expect(row).toContainElement(screen.getByTestId('assistant-more-actions'))
+    // …and it is the ONLY reveal row: no sibling row was added below it.
+    const rows = document.querySelectorAll('[data-role="assistant"] .opacity-0')
+    expect(rows.length).toBe(1)
   })
 
   it('renders no fork or plan affordance at all when handlers are absent (embedded co-author pane)', () => {
@@ -901,9 +917,9 @@ describe('action footer touch sizing', () => {
   it('enlarges the actions to 40px touch targets where the pointer cannot hover', () => {
     render(<AssistantMessage content="Hi" isStreaming={false} slotRunning={false} onRegenerate={() => {}} />)
     const footer = screen.getByTitle('Regenerate').parentElement!
-    expect(footer.className).toContain('[@media(hover:none)]:[&_button]:p-2.5')
-    expect(footer.className).toContain('[@media(hover:none)]:[&_svg]:h-5')
-    expect(footer.className).toContain('[@media(hover:none)]:[&_svg]:w-5')
+    expect(footer.className).toContain('[@media(hover:none)]:[&_button]:p-3')
+    expect(footer.className).toContain('[@media(hover:none)]:[&_svg]:h-4')
+    expect(footer.className).toContain('[@media(hover:none)]:[&_svg]:w-4')
     // The grown row exceeds a phone's width, so it must wrap rather than
     // crush the timestamp and clip the trailing actions.
     expect(footer.className).toContain('[@media(hover:none)]:flex-wrap')

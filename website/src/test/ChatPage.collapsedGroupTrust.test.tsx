@@ -52,9 +52,13 @@ describe('ChatPage CollapsibleToolGroup mounts (#5434 contract)', () => {
   const mounts = mountAttributeBlocks(source)
 
   it('finds the mounts (fail-closed: a rename or refactor must re-establish this contract)', () => {
-    // Exactly the two known mounts. If this count changes, re-verify the new
-    // mount set's resolve paths and update this contract deliberately.
-    expect(mounts).toHaveLength(2)
+    // Exactly the three known mounts: the transcript row, the pinned panel,
+    // and the measure farm's off-screen replica. The farm mount is inert by
+    // construction (hasPermission={false}, isRunning={false}, no pending
+    // permission rows are ever farm targets' concern — approvals resolve in
+    // the transcript mount). If this count changes, re-verify the new mount
+    // set's resolve paths and update this contract deliberately.
+    expect(mounts).toHaveLength(3)
   })
 
   it('no mount declares canTrust — their resolve path is the one-shot resolveApproval', () => {

@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect, useLayoutEffect, useCallback, useMemo, useId, memo } from 'react'
+import { markComposerResize } from '../utils/composerResize'
 import { ArrowUpFromLine, ArrowUp, Loader2, RotateCw, Plus, Crop, Bot, Mic, Keyboard, Square, BookOpen, X, ClipboardList, CheckCircle, Ban, Sparkles, Target, Lock, Folder, FolderOpen, FileText, FileDiff, PenLine } from 'lucide-react'
 import SketchDialog from './SketchDialog'
 import CopyBranchButton from './CopyBranchButton'
@@ -252,10 +253,92 @@ function isBlockquotePrefix(linePrefix: string): boolean {
   return sawMarker
 }
 
+/** Off-screen twin used to measure the composer's content height.
+ *
+ *  Measuring must NOT touch the live textarea's box. The live element is a flex
+ *  item, so setting its height (even for one synchronous read) changes what the
+ *  transcript scroller above it is allotted — the scroller reclaims the height
+ *  one-for-one, measured on the real dashboard: composer 44 -> 140px moved the
+ *  scroller's clientHeight 561 -> 465px. A momentarily TALLER scroller has a
+ *  smaller maximum scrollTop, so the engine clamps any reader parked closer to
+ *  the bottom than the textarea is tall, and the reader lands at the end with no
+ *  application write anywhere. `overflow:hidden` does not prevent this: overflow
+ *  governs scrollbars, not a flex item's contribution to its parent.
+ *
+ *  Engine asymmetry is why this reads as an iOS-only defect: Blink defers scroll
+ *  offset clamping to the rendering lifecycle, so a transient that is undone
+ *  inside the same task never clamps, while WebKit clamps during layout. A
+ *  Chromium reproduction of the keystroke case therefore shows nothing at all. */
+/** Far enough off-screen that no scrollable ancestor can reach the twin. */
+const TWIN_OFFSCREEN_PX = '-99999px'
+
+let measureTwin: HTMLTextAreaElement | null = null
+
+/** Content height of `el`'s value, measured without mutating `el`. */
+function measuredContentHeight(el: HTMLTextAreaElement): number {
+  if (typeof document === 'undefined') return INPUT_MIN_H
+  if (!measureTwin) {
+    measureTwin = document.createElement('textarea')
+    measureTwin.setAttribute('aria-hidden', 'true')
+    measureTwin.tabIndex = -1
+    measureTwin.readOnly = true
+    document.body.appendChild(measureTwin)
+  }
+  const twin = measureTwin
+  const cs = window.getComputedStyle(el)
+  // `position:fixed` keeps the twin out of every flow, so no ancestor of the live
+  // composer — and therefore not the transcript scroller — can see it at all. It
+  // also escapes a transformed ancestor, which a `position:absolute` twin would not.
+  // Set per property rather than through one `cssText` declaration string: that
+  // form reads as user-facing copy to the i18n gate, and this one matches the
+  // property-by-property copying below.
+  twin.style.position = 'fixed'
+  twin.style.top = TWIN_OFFSCREEN_PX
+  twin.style.left = TWIN_OFFSCREEN_PX
+  twin.style.visibility = 'hidden'
+  twin.style.pointerEvents = 'none'
+  twin.style.height = '0'
+  twin.style.overflow = 'hidden'
+  twin.style.resize = 'none'
+  twin.style.border = '0'
+  // Everything that can move where the text wraps or how tall a line is. Width and
+  // the horizontal box must match or the twin wraps at a different column and
+  // reports a height the live element would never have. The live textarea is
+  // `border-none`, which is why clearing the border above is safe: under
+  // `box-sizing:border-box` a themed border would otherwise give the twin a WIDER
+  // content box than the element it stands in for.
+  const COPIED = [
+    'width', 'boxSizing',
+    'paddingTop', 'paddingRight', 'paddingBottom', 'paddingLeft',
+    'font', 'fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'fontStretch',
+    'fontFeatureSettings', 'fontVariationSettings', 'fontKerning',
+    'lineHeight', 'letterSpacing', 'wordSpacing', 'textIndent', 'textTransform',
+    'whiteSpace', 'wordBreak', 'overflowWrap', 'hyphens', 'tabSize',
+    'direction', 'writingMode', 'unicodeBidi',
+  ] as const
+  const style = twin.style as unknown as Record<string, string>
+  const computed = cs as unknown as Record<string, string>
+  for (const prop of COPIED) {
+    const v = computed[prop]
+    // Firefox returns '' for the `font` shorthand; the longhands below it cover the
+    // same ground, so skip rather than clobber a good value with an empty one.
+    if (v) style[prop] = v
+  }
+  // An empty composer still renders its PLACEHOLDER in the content box, and that
+  // counts toward scrollHeight — several of these placeholders are long translated
+  // strings that wrap to two lines at phone width, so measuring the empty value
+  // alone would clip the box to one line. The text is measured as the twin's VALUE
+  // rather than as its `placeholder` attribute: the two lay out through the same
+  // path at the same width, and an off-screen node carrying a real placeholder
+  // attribute would answer accessibility and test queries meant for the live one.
+  twin.value = el.value || el.placeholder || ''
+  return twin.scrollHeight
+}
+
 /** Auto-size textarea to fit content (only when not manually sized).
- *  Sets overflow:hidden during measurement so the parent flex container
- *  never sees the collapsed (height:0) intermediate state — prevents the
- *  Virtuoso message list above from reflowing and causing visible vibration.
+ *
+ *  The measurement happens on an off-screen twin (see `measuredContentHeight`),
+ *  so this function's only write to the live element is its FINAL height.
  *
  *  `parked` is a hard precondition, not an optimisation. Voice hold mode and the
  *  dictation panel both keep the textarea mounted inside an `sr-only` box (value,
@@ -276,17 +359,15 @@ function applyHeight(
   if (manualHeight !== null) return // manual height — wrapper controls size
   const cap = prefillHint ? INPUT_PREFILL_MAX_H : INPUT_DEFAULT_MAX_H
   const prev = el.style.height
-  const prevOverflow = el.style.overflow
-  const prevScrollTop = el.scrollTop // height:0 below resets scroll; preserve for non-typing callers
-  el.style.overflow = 'hidden'
-  el.style.height = '0'
-  const next = Math.max(INPUT_MIN_H, Math.min(el.scrollHeight, cap)) + 'px'
-  el.style.height = next === prev ? prev : next
-  el.style.overflow = prevOverflow
-  el.scrollTop = prevScrollTop
+  const next = Math.max(INPUT_MIN_H, Math.min(measuredContentHeight(el), cap)) + 'px'
+  if (next !== prev) {
+    el.style.height = next
+    // Attribute the transcript's resulting viewport change to the composer, so the
+    // transcript can hold still instead of chasing it (see composerResize.ts).
+    markComposerResize()
+  }
   // When typing at the end of overflowing content, snap to the bottom so the caret
-  // stays visible — restoring prevScrollTop loses it (the value-commit re-resets
-  // scrollTop after this runs).
+  // stays visible.
   const caretAtEnd = el.selectionStart === el.value.length && el.selectionEnd === el.value.length
   if (document.activeElement === el && el.scrollHeight > el.clientHeight && caretAtEnd) {
     el.scrollTop = el.scrollHeight

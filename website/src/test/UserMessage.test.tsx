@@ -254,9 +254,9 @@ describe('action footer on touch devices', () => {
   it('enlarges the actions to 40px touch targets where the pointer cannot hover', () => {
     render(<UserMessage content="hello" renderContent={renderContent} />)
     const cls = footer().className
-    expect(cls).toContain('[@media(hover:none)]:[&_button]:p-2.5')
-    expect(cls).toContain('[@media(hover:none)]:[&_svg]:h-5')
-    expect(cls).toContain('[@media(hover:none)]:[&_svg]:w-5')
+    expect(cls).toContain('[@media(hover:none)]:[&_button]:p-3')
+    expect(cls).toContain('[@media(hover:none)]:[&_svg]:h-4')
+    expect(cls).toContain('[@media(hover:none)]:[&_svg]:w-4')
     // Three 40px actions plus a localized timestamp can exceed a narrow
     // phone's width, so the grown row must wrap rather than clip.
     expect(cls).toContain('[@media(hover:none)]:flex-wrap')

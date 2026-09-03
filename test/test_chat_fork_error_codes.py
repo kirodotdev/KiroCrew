@@ -60,7 +60,13 @@ def test_no_refusal_in_this_module_is_prose_only() -> None:
 
 
 def test_the_ratchet_can_actually_fail() -> None:
-    """Self-check: a scan matching nothing would pass the assertion above vacuously."""
+    """Self-check: a scan matching nothing would pass the assertion above vacuously.
+
+    The count moves when a refusal enters or leaves this module's own body. Two
+    corpus-read refusals now answer through `chat_utils.history_corpus_unreadable`,
+    which sets the code by construction, so the scanner no longer sees them here —
+    a stronger guarantee than a per-site scan, but two fewer sites to count.
+    """
     coded = [f for f in _findings() if f.bucket == "compliant"]
     assert len(coded) == 27, f"scanner reached {len(coded)} coded sites, expected 27"
     assert all(f.code_value for f in coded)
@@ -300,3 +306,39 @@ async def test_every_refusal_carries_both_a_code_and_its_prose(tmp_path, monkeyp
         assert status == 400, payload
         assert isinstance(body.get("code"), str) and body["code"], payload
         assert isinstance(body.get("error"), str) and body["error"], payload
+
+
+def test_an_unreadable_mid_rotation_corpus_refuses_instead_of_approximating() -> None:
+    """The full-corpus read failing must FAIL CLOSED, by source inspection.
+
+    Driving this through the wire needs a mid-rotation chain plus a read that
+    throws only on the second call, which the seeded fixture cannot express; the
+    property that matters is structural, so it is asserted structurally.
+
+    Why it matters: the fallback that used to sit here prepended only THIS key's
+    rotated head, so a rotation on a LATER chain member left earlier members'
+    rotated rows missing and shifted every index. An index-addressed fork then
+    copied different messages than the reader pointed at, with nothing on screen
+    to say so. A retryable refusal is visible and recoverable; a silently wrong
+    fork is neither.
+    """
+    from pathlib import Path
+
+    src = (Path(__file__).resolve().parents[1] / "src/kiro_crew" / _TARGET).read_text()
+    head, _, tail = src.partition("chained-full fork corpus read failed")
+    assert tail, "the full-read failure branch is gone -- re-point this guard"
+    # Scope to the except block itself: the `if not _rebuilt:` prepend further
+    # down is the LEGITIMATE path (full read fine, chain simply not mid-rotation)
+    # and must keep working, so it has to stay outside this window.
+    block, _, _rest = tail.partition("if not _rebuilt:")
+    assert "fork_corpus_unreadable" in block, (
+        "the full-corpus read failure must refuse with a retryable code; "
+        "approximating the index space silently forks the wrong messages"
+    )
+    # The 503 now lives in `chat_utils.history_corpus_unreadable`, which every
+    # corpus-read failure answers through — so assert the call, and let that
+    # helper's own module carry the status literal.
+    assert "history_corpus_unreadable(" in block, "the refusal must be retryable, not terminal"
+    assert (
+        "_rotated_head + all_messages" not in block
+    ), "the flat prepend must not run after a failed full read"

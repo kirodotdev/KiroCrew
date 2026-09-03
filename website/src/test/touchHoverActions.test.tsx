@@ -29,9 +29,9 @@ import type { ChatPin } from '../api/pins'
 const ROW_TOUCH_CLASSES = [
   '[@media(hover:none)]:opacity-100',
   '[@media(hover:none)]:flex-wrap',
-  '[@media(hover:none)]:[&_button]:p-2.5',
-  '[@media(hover:none)]:[&_svg]:h-5',
-  '[@media(hover:none)]:[&_svg]:w-5',
+  '[@media(hover:none)]:[&_button]:p-3',
+  '[@media(hover:none)]:[&_svg]:h-4',
+  '[@media(hover:none)]:[&_svg]:w-4',
 ]
 
 const expectRowTouchOverrides = (cls: string) => {
