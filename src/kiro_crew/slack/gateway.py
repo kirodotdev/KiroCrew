@@ -10182,7 +10182,9 @@ class GatewayOrchestrator:
         # Clean up orphaned kiro-cli processes from previous runs
         from kiro_crew.session import cleanup_orphaned_sessions
 
-        cleanup_orphaned_sessions()
+        # Off-loop: the sweep is synchronous filesystem work and this runs
+        # inside the orchestrator coroutine.
+        await asyncio.to_thread(cleanup_orphaned_sessions)
 
         # Same "previous run left residue" concern as the orphan sweep above, for
         # telemetry rather than processes: any open-session crumb on disk belongs
@@ -10420,6 +10422,10 @@ class GatewayOrchestrator:
             nonlocal _shutting_down
             if _shutting_down:
                 print("\n👻 Force exit!")
+                # Synchronous by necessity: a signal handler cannot await.
+                # The process calls os._exit immediately below, so loop latency
+                # is no longer meaningful on this path.
+                #
                 cleanup_orphaned_sessions()
                 # os._exit skips atexit, so the log queue's drain hook never
                 # runs — flush the queued gateway.log tail here, bounded so a
@@ -10640,8 +10646,9 @@ class GatewayOrchestrator:
             logger.warning("Graceful shutdown timed out — force exiting")
 
         print("👻 Goodbye!")
-        # Kill any kiro-cli processes that survived graceful shutdown
-        cleanup_orphaned_sessions()
+        # Kill any kiro-cli processes that survived graceful shutdown.
+        # Off-loop: still inside the orchestrator coroutine here.
+        await asyncio.to_thread(cleanup_orphaned_sessions)
         # This is a hard exit too: os._exit skips atexit, so the log queue's
         # drain hook never runs here either. Without this the whole shutdown
         # tail is lost -- including the "Graceful shutdown timed out" warning

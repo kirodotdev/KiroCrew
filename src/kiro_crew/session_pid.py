@@ -736,7 +736,16 @@ def cleanup_orphaned_sessions() -> None:
 
     # Third pass: remove stale session_pid_*.txt files for dead processes
     stale_pid_files = 0
-    for pid_file in config_dir().glob("session_pid_*.txt"):
+    pid_files = list(config_dir().glob("session_pid_*.txt"))
+    # Snapshot the host's thread-group leaders ONCE for the whole sweep — one
+    # directory read instead of a synchronous /proc read per mapping.
+    #
+    # Ordering matters: snapshot AFTER globbing. A pid that starts in the window
+    # between the two lands IN the set and is retained; one that exits in that
+    # window is absent and is pruned, which is correct. Snapshotting first would
+    # invert both.
+    leaders = platform_compat.live_thread_group_leaders()
+    for pid_file in pid_files:
         try:
             pid = int(pid_file.stem.removeprefix("session_pid_"))
         except ValueError:
@@ -749,7 +758,21 @@ def cleanup_orphaned_sessions() -> None:
                 logger.debug("Could not remove malformed pid file: %s", pid_file.name)
             continue
         # os.kill(pid, 0) would terminate the process on Windows — probe instead.
-        if not platform_compat.pid_exists(pid):
+        #
+        # The leaders set narrows the liveness test: a dead session's pid can be
+        # recycled as a THREAD of an unrelated live process, and a tid satisfies
+        # ``pid_exists``, so the mapping used to survive indefinitely. That is
+        # not merely clutter — the sidecar binds the pid and the session key but
+        # NOT the process's identity, so while a stale mapping lingers
+        # ``peer_resolve`` answers for whatever process now holds that pid with
+        # the PREVIOUS owner's session key. Same-uid only, so robustness rather
+        # than a privilege boundary, but a misattribution either way. Observed on
+        # a host whose pid counter had wrapped: 233 mappings, 1 already resolving
+        # to a 6-day-dead session via a thread of an unrelated process.
+        #
+        # ``leaders is None`` means the question was unanswerable (non-Linux,
+        # unreadable /proc), so it never contributes to a prune.
+        if not platform_compat.pid_exists(pid) or (leaders is not None and pid not in leaders):
             pid_file.unlink(missing_ok=True)
             # Remove the HMAC sidecar (session_pid_<pid>.sig) alongside its
             # .txt — a dangling sidecar is harmless (verification requires
