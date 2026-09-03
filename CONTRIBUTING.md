@@ -78,8 +78,8 @@ need an explicit opt-in there.
 
 **Messaging channels are optional**: the default `kirocrew setup` configures
 none, and the dashboard + CLI work without any channel credentials. Connect
-Slack, Discord, Telegram, Teams, Webex, WeCom, or WeChat later, or run
-`kirocrew setup --slack` for the guided Slack path.
+Slack, Discord, Telegram, Teams, Webex, WeCom, WeChat, WhatsApp, Feishu, or
+iMessage later, or run `kirocrew setup --slack` for the guided Slack path.
 
 ## Development Skills (agents and humans)
 
