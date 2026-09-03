@@ -138,9 +138,10 @@ def build_prompt_blocks(
 ) -> list[dict]:
     """Return ACP prompt blocks for *message*.
 
-    Each readable image path found in *message* becomes an ``image`` block and is
-    replaced in the text by ``[image: <name>]`` so the model still sees where the
-    attachment sat in the sentence.
+    Each readable image path found in *message* becomes an ``image`` block while
+    remaining in the text as a tool-readable fallback. This is intentionally
+    redundant: if a downstream renderer drops the image block, the agent can still
+    open the source file instead of receiving neither pixels nor a path.
 
     ``allow_image=False`` (the agent did not advertise
     ``promptCapabilities.image``) leaves the path in the text untouched: the file
@@ -221,7 +222,6 @@ def build_prompt_blocks(
             data = base64.b64encode(out_bytes).decode("ascii")
             seen.add(raw)
             images.append({"type": "image", "data": data, "mimeType": out_mime})
-            text = text.replace(raw, f"[image: {path.name}]")
 
     return [{"type": "text", "text": text}, *images]
 
