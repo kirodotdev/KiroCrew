@@ -570,6 +570,23 @@ def _sanitize_detail(text: str) -> str:
     return safe[-_MAX_VISIBLE_DETAIL:]
 
 
+def _terminal_audit_detail(result: ProcessResult, succeeded: bool) -> str:
+    """The terminal audit event's error label for a run that finished or timed out.
+
+    *succeeded* is the verdict the caller already reached, not ``result.ok``, so
+    the label always follows that verdict and can never contradict the
+    ``outcome`` recorded beside it. The update path spells the verdict
+    ``update.ok and not error``, where ``error`` is itself set from this same
+    run, so the two agree there.
+    """
+
+    if succeeded:
+        return ""
+    if result.timed_out:
+        return "timeout"
+    return "nonzero exit"
+
+
 def _canonical_candidate(path: str) -> str:
     try:
         return os.path.realpath(path)
@@ -851,13 +868,12 @@ def _project_identity_database(source: Path, destination: Path) -> bool:
 def _atomic_write_secret_bytes(path: Path, content: bytes) -> None:
     """Atomically stage one bounded Kiro identity file, owner-only from birth.
 
-    ``restrict_to_owner=True`` locks the temp file down BEFORE the identity
-    bytes reach it — the previous post-rename lockdown left them readable
-    under the inherited DACL on Windows for the write window, and a lockdown
-    failure after the rename left the published file unprotected (issue
-    #5285). The default ``restrict_on_error="raise"`` keeps this fail-loud:
-    every failure now happens before the final path is touched, so an
-    unprotectable identity file never exists there at all.
+    ``restrict_to_owner=True`` locks the staged temp file down BEFORE the
+    identity bytes reach it (``0o600`` on POSIX, an owner-only DACL on
+    Windows), so those bytes never sit in a file readable at the parent's
+    inherited DACL. The default ``restrict_on_error="raise"`` keeps that
+    unconditional: a lockdown failure aborts before the final path is touched,
+    so an unprotectable identity file never exists there at all.
     """
 
     atomic_write(path, content, fsync=True, restrict_to_owner=True)
@@ -2984,15 +3000,12 @@ class KiroPrerequisiteService:
                         (update.output or "").strip()
                         or f"kiro-cli update exited with code {update.returncode}"
                     )
+                updated = update.ok and not error
                 await self._set_terminal_audit(
                     "update_cli",
-                    "completed" if update.ok and not error else "failed",
+                    "completed" if updated else "failed",
                     "gateway-setup",
-                    (
-                        ""
-                        if update.ok and not error
-                        else "timeout" if update.timed_out else "nonzero exit"
-                    ),
+                    _terminal_audit_detail(update, updated),
                 )
         if not error:
             # Re-probe so a successful update flips ``acp_supported`` / ``ready``
@@ -3049,17 +3062,11 @@ class KiroPrerequisiteService:
                 "probe execution failed",
             )
             return ProcessResult(ok=False, error="Kiro CLI probe could not run")
-        if result.ok:
-            audit_detail = ""
-        elif result.timed_out:
-            audit_detail = "timeout"
-        else:
-            audit_detail = "nonzero exit"
         await self._set_terminal_audit(
             action,
             "completed" if result.ok else "failed",
             "gateway-status",
-            audit_detail,
+            _terminal_audit_detail(result, result.ok),
         )
         return result
 
@@ -3206,28 +3213,23 @@ class KiroPrerequisiteService:
                 "probe execution failed",
             )
             return ProcessResult(ok=False, error="Kiro identity probe could not run")
-        if result.ok:
-            audit_detail = ""
-        elif result.timed_out:
-            audit_detail = "timeout"
-        else:
-            audit_detail = "nonzero exit"
         await self._set_terminal_audit(
             action,
             "completed" if result.ok else "failed",
             "gateway-status",
-            audit_detail,
+            _terminal_audit_detail(result, result.ok),
         )
         return result
 
     def _mark_setup_complete(self) -> None:
         if self._initial_setup_complete:
             return
-        # restrict_to_owner=True locks the temp file down before the content
-        # reaches it and implies 0o600, replacing the previous mode= plus
-        # post-rename restrict_to_owner pair, whose lockdown landed only after
-        # the marker was already published under the inherited DACL on Windows
-        # (issue #5285).
+        # restrict_to_owner=True locks the staged temp file down before any
+        # content reaches it (0o600 on POSIX, an owner-only DACL on Windows), so
+        # the published marker is owner-only from the instant the rename makes
+        # it visible. The default restrict_on_error="raise" is what makes that
+        # unconditional: a lockdown that fails aborts before the rename instead
+        # of publishing the marker under the parent's inherited DACL.
         atomic_write(
             self._setup_marker,
             "complete\n",
