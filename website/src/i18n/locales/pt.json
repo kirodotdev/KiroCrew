@@ -12588,7 +12588,16 @@
         "test_sound": "Testar som",
         "use_default": "Usar o padrão",
         "volume": "Volume",
-        "preset_pulse": "Pulso"
+        "preset_pulse": "Pulso",
+        "push_section": "Notificações push",
+        "push_toggle_label": "Enviar notificações para este dispositivo",
+        "push_toggle_description": "Receba notificações do sistema mesmo com o app fechado, via Web Push.",
+        "push_install_hint": "No iOS, adicione o {{productName}} à tela inicial para ativar as notificações push.",
+        "push_unsupported": "Este navegador não suporta notificações Web Push.",
+        "push_error_blocked": "As notificações estão bloqueadas no navegador.",
+        "push_error_permission": "Permissão não concedida.",
+        "push_error_subscribe": "Falha ao inscrever-se.",
+        "push_error_unsubscribe": "Falha ao cancelar a inscrição."
       },
       "privacyPanel": {
         "recordMetricsLabel": "Registrar métricas",

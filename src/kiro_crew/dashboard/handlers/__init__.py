@@ -664,6 +664,9 @@ from kiro_crew.dashboard.handlers.core import (  # noqa: E402, F401
 )
 from kiro_crew.dashboard.handlers.notifications_push import (  # noqa: E402, F401
     api_push_notification,
+    api_push_subscribe,
+    api_push_unsubscribe,
+    api_vapid_public_key,
 )
 from kiro_crew.dashboard.handlers.onboarding_import import (  # noqa: E402, F401
     api_onboarding_import_apply,

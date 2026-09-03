@@ -29,6 +29,60 @@ self.addEventListener('activate', e => {
   self.clients.claim()
 })
 
+// ── Web Push ────────────────────────────────────────────────────────────────
+// Chromium and Firefox deliver the push payload to this classic `push` handler.
+// (Safari/iOS 18.4+ renders the same Declarative Web Push JSON natively and does
+// not fire this event — the one payload shape covers both worlds.) The only
+// sender is _web_push_payload, which always emits `{ web_push: 8030,
+// notification: {...} }`, so we read exactly that shape.
+self.addEventListener('push', e => {
+  if (!e.data) return
+  let payload
+  try {
+    payload = e.data.json()
+  } catch {
+    return
+  }
+  const n = payload && payload.notification
+  if (!n || !n.title) return
+  // Suppress the OS banner when a dashboard tab is already visible on this
+  // device: the open app renders the same note in-tab via useNativeNotification
+  // (over the WebSocket), so pushing it too would double-notify. When no tab is
+  // visible (the case Web Push exists for — closed/backgrounded app) we show it.
+  e.waitUntil(
+    self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then(clients => {
+      const visible = clients.some(c => c.visibilityState === 'visible')
+      if (visible) return
+      return self.registration.showNotification(n.title, {
+        body: n.body || '',
+        tag: n.tag || 'kirocrew-notif',
+        data: n.data || { url: n.navigate || '/' },
+        icon: '/icon-192.png',
+        badge: '/icon-192.png',
+      })
+    })
+  )
+})
+
+// Focus an existing dashboard tab (or open one) at the notification's deep link.
+self.addEventListener('notificationclick', e => {
+  e.notification.close()
+  const target = (e.notification.data && (e.notification.data.url || e.notification.data.navigate)) || '/'
+  e.waitUntil(
+    self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then(clients => {
+      for (const client of clients) {
+        // Reuse a same-origin tab if one is open; navigate it to the target.
+        if ('focus' in client) {
+          client.focus()
+          if ('navigate' in client && target !== '/') client.navigate(target).catch(() => {})
+          return
+        }
+      }
+      if (self.clients.openWindow) return self.clients.openWindow(target)
+    })
+  )
+})
+
 self.addEventListener('fetch', e => {
   if (e.request.method !== 'GET') return
   const url = new URL(e.request.url)

@@ -7943,7 +7943,16 @@
         "sound": "Sound",
         "sources": "Sources",
         "test": "Test",
-        "volume": "Volume"
+        "volume": "Volume",
+        "push_section": "Push notifications",
+        "push_toggle_label": "Send notifications to this device",
+        "push_toggle_description": "Receive OS notifications even when the app is closed, via Web Push.",
+        "push_install_hint": "On iOS, add {{productName}} to your home screen first to enable push notifications.",
+        "push_unsupported": "This browser does not support Web Push notifications.",
+        "push_error_blocked": "Notifications are blocked in the browser.",
+        "push_error_permission": "Permission not granted.",
+        "push_error_subscribe": "Failed to subscribe.",
+        "push_error_unsubscribe": "Failed to unsubscribe."
       },
       "postureDisclosure": {
         "more": "more",
