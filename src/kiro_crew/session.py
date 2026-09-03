@@ -13,8 +13,10 @@ lightweight background work (heartbeat, lesson extraction).  It
 stays alive between uses, serialized by the per-session semaphore.
 
 At >= ``cfg.session.autocompact_pct`` context usage, fires a background
-compaction task. Both backends compact **in place** so the session — and
-any queued or agentic work on it — continues without a user nudge:
+compaction task. A backend that can serve ``/compact`` compacts **in
+place** so the session — and any queued or agentic work on it —
+continues without a user nudge; one that cannot is declined before any
+dispatch:
 
 * **kiro-cli:** run ``/compact`` in place under the session semaphore
   (native command execute + ``_kiro.dev/compaction/status`` wait). The
@@ -29,6 +31,13 @@ any queued or agentic work on it — continues without a user nudge:
   semaphore. The SDK preserves the same session ID across the
   compact_boundary; the session keeps its summary and continues without
   a recycle.
+* **KAS:** nothing is dispatched. KAS treats the ``/compact`` prompt as
+  ordinary text and never answers it with a compaction status, so the
+  gate declines (``compact_unsupported``) before the compaction task is
+  scheduled: an ungated dispatch stranded the wait for the full budget
+  while holding the semaphore and then recycled the session (#7812). KAS
+  summarizes on its own initiative, the same way ``cc_managed`` leaves
+  Claude-Code sessions to compact themselves.
 
 A failed compact records a per-key cooldown so a broken /compact does
 not fire on every subsequent turn. The compact callback fires on both

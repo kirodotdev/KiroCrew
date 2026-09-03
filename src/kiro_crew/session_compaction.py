@@ -129,6 +129,26 @@ class _CompactionOwner(Protocol):
     ) -> bool: ...
 
 
+def _compact_unsupported_backend(provider: LLMProvider) -> str | None:
+    """Backend id this provider names as unable to serve ``/compact``, else None.
+
+    The same capability #7800 gave the manual entry points, read for the
+    automatic one.  The property is spelled ``manual_`` because the manual
+    command was its first consumer, but its ANSWER is a property of the
+    BACKEND -- ``ACP_BACKENDS_COMPACT`` membership -- not of the entry point,
+    so it is the right question here too: a backend that cannot act on the
+    ``/compact`` prompt cannot act on it whoever sent it.
+
+    Read with the consumption contract the ABC declares: only a non-empty
+    ``str`` counts.  That guard is load-bearing rather than defensive -- the
+    compaction suite drives this gate with bare ``object()`` and ``MagicMock``
+    providers, and a truthy attribute read on either must not be mistaken for
+    a positively named unsupported backend.
+    """
+    backend = getattr(provider, "manual_compact_unsupported_backend", None)
+    return backend if isinstance(backend, str) and backend else None
+
+
 class CompactionCoordinator:
     """Coordinate context compaction while ``SessionManager`` remains facade."""
 
@@ -255,6 +275,17 @@ class CompactionCoordinator:
         Pending-verdict settlement is a side effect and therefore precedes
         every declining gate.  A deferred reading may arm damping, but its
         ambiguity must never trigger the destructive critical reset.
+
+        ``compact_unsupported`` is deliberately the LAST permanent gate and
+        sits BELOW the threshold check: a backend that cannot serve
+        ``/compact`` still has a context meter worth reporting, and declining
+        above the threshold check would take the per-turn usage line in
+        ``check_context_usage`` with it.  Placing it here also means the only
+        behaviour that changes for such a backend is the one that was broken --
+        the dispatch itself -- and it changes before ``_compact_session`` is
+        ever scheduled, so no ``compacting`` entry, no background task and no
+        ``session.semaphore`` acquisition happens for a compaction that could
+        only have ended in the 300s strand (#7812).
         """
         baseline = self.state.pending_verdict.get(key)
         if baseline is not None and not self._deps.context_pct_is_unknown(provider):
@@ -267,6 +298,38 @@ class CompactionCoordinator:
             return "cc_managed"
         if pct < self.effective_autocompact_pct(key):
             return "below_threshold"
+        unsupported = _compact_unsupported_backend(provider)
+        if unsupported is not None:
+            # Declining, not recycling. The one current non-member (KAS)
+            # summarizes on its own initiative and its
+            # ``summarization_completed`` frame calls
+            # ``reset_after_compaction()`` on the meter
+            # (``acp/session_handle.py``), so the reading this gate just read
+            # falls back below the threshold without us acting -- the same
+            # relationship ``cc_managed`` encodes for Claude-Code sessions.
+            # Recycling sooner would not have been the smaller harm: it
+            # destroys the live conversation, which is the second half of the
+            # reported defect and not merely its consequence.
+            #
+            # Surfaced the way the gate's own rungs are surfaced: one
+            # ``logger.info`` from HERE, as ``unconfirmed``, ``in_progress`` and
+            # ``cooldown`` already do -- rather than a branch in
+            # ``check_context_usage``, which is where ``cc_managed`` and
+            # ``below_threshold`` are phrased because those two also carry the
+            # context-meter line. This line REPLACES that per-turn meter line
+            # for a declined backend rather than adding to it (the decline
+            # matches neither branch there), and it carries strictly more than
+            # ``cc_managed``'s: the key, the reading, AND which backend
+            # answered. INFO, not WARNING: a standing correct condition is not
+            # an anomaly, and every sibling rung is INFO too.
+            self._deps.logger.info(
+                "Session %s context at %.0f%% -- %s manages compaction itself; "
+                "skipping the /compact dispatch it cannot answer",
+                key,
+                pct,
+                unsupported,
+            )
+            return "compact_unsupported"
         if self._deps.context_pct_is_unknown(provider):
             self._deps.logger.info(
                 "Session %s context %.0f%% is unconfirmed for this session — "
