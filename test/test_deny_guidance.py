@@ -1276,5 +1276,27 @@ class TestNoticeIntegration:
         )
         assert "How to do this properly" not in body
 
+    def test_answered_body_never_tells_an_unfinished_turn_to_stop(self):
+        """`answered=True` means text was SENT, never that the task is DONE.
+
+        No caller can tell a delivered answer from a one-line preamble ("Let me
+        check the logs.") before the blocked call: both are plain prose flushed at
+        the same point in the stream. So the awareness body must not assert a
+        finished answer — a turn that had only narrated its intent would read that
+        as licence to stop with the work undone. Continue-from-there is the
+        default here; stopping is the narrow, explicitly conditional case.
+        """
+        body = build_refusal_recovery_prompt(
+            [("Running: git push", "Blocked by security policy: git push")], answered=True
+        )
+        # The anti-repeat guarantee, which is the whole point of the flag.
+        assert "Do NOT repeat" in body
+        assert "continue the task where you left off" not in body
+        # ...but it must not claim the turn answered, nor stop unconditionally.
+        assert "you already gave" not in body
+        assert "If the answer stands as given" not in body
+        assert "If the task is NOT finished, continue from there" in body
+        assert "Only if the task IS finished" in body
+
     def test_empty_refusals_still_yield_nothing(self):
         assert build_refusal_recovery_prompt([]) == ""

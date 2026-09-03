@@ -2710,7 +2710,7 @@ def parse_hook_continuations(stdouts: list[str]) -> list[str]:
 
 
 def build_refusal_recovery_prompt(
-    refusals: list[tuple[str, str]], *, credential_tool_hint: str = ""
+    refusals: list[tuple[str, str]], *, credential_tool_hint: str = "", answered: bool = False
 ) -> str:
     """Build the body of an automatic continuation after a recoverable tool refusal.
 
@@ -2735,6 +2735,25 @@ def build_refusal_recovery_prompt(
     different tool) or stop on its own with a reason. The caller prepends
     :data:`REFUSAL_RECOVERY_PREFIX`. Returns "" if there is nothing to recover.
 
+    ``answered`` says the turn ALREADY streamed text the user has read, despite
+    the block. The premise of the default wording — "the turn ended early, pick up
+    where you left off" — is then false, and acting on it makes the model re-answer
+    a question the user has already read, once per blocked call and at full turn
+    cost. So the body flips to awareness-only: same block reasons, same
+    remediation, but an explicit instruction not to restate what was sent.
+
+    That flag deliberately does NOT claim the turn *finished* — no caller can tell
+    a delivered answer from a one-line preamble ("Let me check the logs.") before
+    the blocked call, because the two are indistinguishable prose flushed at the
+    same point in the stream. So this branch conditions its instruction on whether
+    the task is done rather than asserting it: continue-from-there is the default
+    and stopping is the narrow case. Asserting a finished answer here would tell a
+    turn that had only narrated its intent to stop with the work undone.
+    The reason still has to be delivered rather than dropped, because on a backend
+    without mid-turn steer this turn is the ONLY channel for it — without it the
+    model's last word on the subject is kiro-cli's "User denied tool execution",
+    and it will keep attributing the block to the user in later turns.
+
     Lives here (a leaf module that owns the prefix) rather than in context.py so
     chat_runner can import it at module top without a circular import. There is
     deliberately no retry cap: the model decides when to stop, and the user's
@@ -2743,9 +2762,18 @@ def build_refusal_recovery_prompt(
     if not refusals:
         return ""
     lines = [
-        "One or more tool calls in your previous turn were blocked by a Kiro Crew "
-        "safety policy, which ended the turn early. This was NOT a user action — "
-        "do not treat it as a cancellation or interruption by the user.",
+        (
+            "One or more tool calls in your previous turn were blocked by a Kiro "
+            "Crew safety policy. This was NOT a user action — do not treat it as a "
+            "cancellation or interruption by the user. That turn already put text "
+            "on screen for the user, so this note is for awareness: carry on from "
+            "there rather than starting over."
+            if answered
+            else "One or more tool calls in your previous turn were blocked by a "
+            "Kiro Crew safety policy, which ended the turn early. This was NOT a "
+            "user action — do not treat it as a cancellation or interruption by "
+            "the user."
+        ),
         "",
         "Blocked:",
     ]
@@ -2753,10 +2781,19 @@ def build_refusal_recovery_prompt(
         lines.append(f"  - {title}: {reason}" if reason else f"  - {title}")
     lines += [
         "",
-        "Decide how to proceed: use an allowed alternative (for a shell command, "
-        "a read-only variant), a different tool, or — if the block is correct and "
-        "you genuinely cannot proceed — say so and stop. Otherwise continue the "
-        "task where you left off.",
+        (
+            "Do NOT repeat, restate or re-derive what you already sent — the user "
+            "has read it. If the task is NOT finished, continue from there: use an "
+            "allowed alternative (for a shell command, a read-only variant) or a "
+            "different tool, and say what it changed. Only if the task IS finished "
+            "and the block left nothing missing, reply with one short line noting "
+            "the block and stop."
+            if answered
+            else "Decide how to proceed: use an allowed alternative (for a shell "
+            "command, a read-only variant), a different tool, or — if the block is "
+            "correct and you genuinely cannot proceed — say so and stop. Otherwise "
+            "continue the task where you left off."
+        ),
     ]
     # Per-class remediation, de-duplicated across the turn's refusals: several
     # blocked calls in one turn are usually the same wall hit from different

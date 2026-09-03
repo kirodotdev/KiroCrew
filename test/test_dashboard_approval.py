@@ -1263,6 +1263,117 @@ class TestRefusalRecovery:
         client.reject_tool.assert_called()
 
     @pytest.mark.asyncio
+    async def test_deny_after_an_answer_injects_awareness_not_a_redo(self, tmp_path):
+        """A denied call followed by a real answer must not ask for a resume.
+
+        The regression this pins: the turn answered the user's question despite
+        the block, then the continuation told it to "continue the task where you
+        left off" — so it answered the same question again, at full turn cost,
+        once per blocked call.
+        """
+        cb = _context_builder(
+            ToolHookResult.deny("Blocked by security policy: git push")
+        )
+        state, client = _make_state(tmp_path, context_builder=cb)
+        slot = _make_slot()
+        client.context_usage_pct = MagicMock(return_value=0.0)
+        client._client = client
+        client.last_prompt_stats = None
+
+        calls = {"n": 0}
+
+        def _stream(*a, **kw):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                # Blocked, then the model answers anyway from what it already had.
+                return _async_iter(
+                    [
+                        _permission_event(),
+                        LLMEvent(kind=EVENT_TEXT_CHUNK, text="Here is the answer."),
+                        _complete_event(),
+                    ]
+                )
+            return _async_iter([_complete_event()])
+
+        client.stream = MagicMock(side_effect=_stream)
+
+        with _patch_stats():
+            await _run_chat(state, slot, "hello")
+            if slot.task:
+                await slot.task
+
+        recovery = [
+            m["content"]
+            for m in slot.messages
+            if m.get("role") == "inject"
+            and m.get("content", "").startswith(REFUSAL_RECOVERY_PREFIX)
+        ]
+        assert recovery, "the block reason must still reach the model"
+        body = recovery[-1]
+        # Awareness is kept …
+        assert "security policy: git push" in body.lower()
+        assert "NOT a user action" in body
+        # … the redo instruction is not.
+        assert "continue the task where you left off" not in body
+        assert "Do NOT repeat" in body
+
+    @pytest.mark.asyncio
+    async def test_answer_before_the_block_also_gets_awareness_not_a_redo(self, tmp_path):
+        """The answer-THEN-block ordering must reach the same awareness body.
+
+        The sibling above covers block-then-answer, where the answer is still in
+        ``assistant_text`` at end of turn. Here the model answers FIRST and then
+        calls the blocked tool, and the tool boundary flushes that answer out of
+        ``assistant_text`` — so the end-of-turn buffer is empty even though the
+        user has already read the answer on screen. Keying the body on that buffer
+        alone sent the resume instruction for this ordering, which is the same
+        duplicate answer at full turn cost (GPT round on #8275).
+        """
+        cb = _context_builder(
+            ToolHookResult.deny("Blocked by security policy: git push")
+        )
+        state, client = _make_state(tmp_path, context_builder=cb)
+        slot = _make_slot()
+        client.context_usage_pct = MagicMock(return_value=0.0)
+        client._client = client
+        client.last_prompt_stats = None
+
+        calls = {"n": 0}
+
+        def _stream(*a, **kw):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                # The answer lands first; the blocked call ends the turn after it.
+                return _async_iter(
+                    [
+                        LLMEvent(kind=EVENT_TEXT_CHUNK, text="Here is the answer."),
+                        _permission_event(),
+                        _complete_event(),
+                    ]
+                )
+            return _async_iter([_complete_event()])
+
+        client.stream = MagicMock(side_effect=_stream)
+
+        with _patch_stats():
+            await _run_chat(state, slot, "hello")
+            if slot.task:
+                await slot.task
+
+        recovery = [
+            m["content"]
+            for m in slot.messages
+            if m.get("role") == "inject"
+            and m.get("content", "").startswith(REFUSAL_RECOVERY_PREFIX)
+        ]
+        assert recovery, "the block reason must still reach the model"
+        body = recovery[-1]
+        assert "security policy: git push" in body.lower()
+        assert "NOT a user action" in body
+        assert "continue the task where you left off" not in body
+        assert "Do NOT repeat" in body
+
+    @pytest.mark.asyncio
     async def test_clean_turn_does_not_enqueue_recovery(self, tmp_path):
         """An auto-approved tool with no refusal must not trigger recovery."""
         cb = _context_builder(ToolHookResult.auto_approve())
@@ -1316,6 +1427,43 @@ class TestBuildRefusalRecoveryPrompt:
         # The caller prepends REFUSAL_RECOVERY_PREFIX; the body must not.
         out = build_refusal_recovery_prompt([("bash", "reason")])
         assert REFUSAL_RECOVERY_PREFIX not in out
+
+    def test_answered_turn_gets_awareness_body_not_a_continuation(self):
+        """A turn that already answered must not be told to resume the task.
+
+        Same reasons, same remediation — but "continue the task where you left
+        off" is what made the model re-answer a question the user had already
+        read, once per blocked call.
+        """
+        out = build_refusal_recovery_prompt(
+            [("bash", "command accesses sensitive credential path")], answered=True
+        )
+        # The reason still reaches the model: on a backend without mid-turn steer
+        # this turn is the only channel for it.
+        assert "bash" in out
+        assert "sensitive credential path" in out
+        assert "NOT a user action" in out
+        # …but the premise flips from "ended the turn early" to awareness-only.
+        assert "ended the turn early" not in out
+        assert "this note is for awareness" in out
+        assert "continue the task where you left off" not in out
+        assert "Do NOT repeat" in out
+
+    def test_unanswered_turn_keeps_the_continuation_body(self):
+        out = build_refusal_recovery_prompt([("bash", "reason")], answered=False)
+        assert "ended the turn early" in out
+        assert "continue the task where you left off" in out
+        assert "this note is for awareness" not in out
+
+    def test_answered_keeps_per_class_remediation(self):
+        # The awareness variant drops the resume instruction, not the guidance:
+        # "how to do this properly" is the awareness the user is owed.
+        reason = "Blocked by security policy: cat ~/.aws/credentials"
+        assert build_refusal_recovery_prompt(
+            [("Running: cat creds", reason)], answered=True
+        ).count("How to do this properly:") == build_refusal_recovery_prompt(
+            [("Running: cat creds", reason)]
+        ).count("How to do this properly:")
 
 
 class TestPendingProjectReset:
