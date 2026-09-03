@@ -680,6 +680,28 @@ def test_applier_monitor_update_budget_stopped_denial_names_the_budget(monkeypat
     assert "max_cycles" not in result
 
 
+def test_a_probe_state_double_is_a_legacy_loop_only_while_it_carries_the_gate():
+    """Pin ``_FakeLoop``'s premise against the production predicate itself.
+
+    ``monitor_update`` splits on record KIND before it reads a single bound, and a
+    ``monitor`` object alone does not decide that kind. So every paused-loop test
+    below depends on ``gate=True`` putting its double on the LEGACY side — a
+    dependency the class docstring states but nothing executes, so an edit to
+    ``is_structured_monitor_loop`` reports itself only as five assertion failures
+    against a refusal string that names neither the flag nor the routing. This one
+    fails alongside them naming the predicate, so the batch has a cause in it.
+    """
+    from kiro_crew.autonudge import is_structured_monitor_loop
+
+    gated_prompt_loop = _FakeLoop("loop-gated", monitor=_FakeMonitor(), gate=True)
+    controller_record = _FakeLoop("loop-structured", monitor=_FakeMonitor())
+    plain_prompt_loop = _FakeLoop("loop-plain")
+
+    assert not is_structured_monitor_loop(gated_prompt_loop)
+    assert is_structured_monitor_loop(controller_record)
+    assert not is_structured_monitor_loop(plain_prompt_loop)
+
+
 def test_applier_owed_terminal_turn_is_not_reported_as_a_spent_cap(monkeypatch):
     """A channel loop whose subject MERGED must not be told it ran out of cycles.
 
