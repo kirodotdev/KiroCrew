@@ -1233,3 +1233,147 @@ class TestSessionScopedSkillResolution:
         ]
         assert len(denied) == len(paths)
         assert all(call.kwargs["source"] == "app_isolation" for call in denied)
+
+
+# ── The package-skill detail read goes through the descriptor gate ──
+
+
+class TestPackageSkillDetailReadsThroughTheGate:
+    """``api_skill_detail``'s ``package/`` branch reads what it validated.
+
+    ``validate_file_path(row["path"])`` canonicalizes and refuses a sensitive
+    target, and then the read used to open that same name a second time. A
+    HARDLINK defeats the first resolution with no race and no link: it shares its
+    target's inode, so ``realpath`` yields the alias's own innocent path and
+    ``is_sensitive_path`` judges that instead of the file whose bytes come back.
+    The gate ``fstat``s the one descriptor it opened and refuses ``st_nlink > 1``.
+    """
+
+    @staticmethod
+    def _request(name: str):
+        req = MagicMock()
+        req.method = "GET"
+        req.match_info = {"name": name}
+        req.app = {"state": MagicMock()}
+        return req
+
+    @staticmethod
+    def _wire(monkeypatch, path: Path) -> None:
+        from kiro_crew.dashboard.handlers import prompts
+
+        loader = MagicMock()
+        loader.load_skill = lambda _name: None
+        monkeypatch.setattr(prompts, "_get_skills", lambda _state: loader)
+
+        mgr = MagicMock()
+        mgr.available = lambda: True
+
+        async def _list_skills():
+            return [{"key": "package/aliased", "name": "aliased", "path": str(path)}]
+
+        mgr.list_skills = _list_skills
+        monkeypatch.setattr(prompts, "_capability_manager", lambda: mgr)
+
+    @pytest.mark.asyncio
+    async def test_a_hardlinked_package_skill_is_not_served(self, tmp_path, monkeypatch):
+        from kiro_crew.dashboard.handlers import api_skill_detail
+
+        secret = tmp_path / "credentials"
+        secret.write_text("# aws_secret_access_key = SHOULD-NOT-APPEAR\n", encoding="utf-8")
+        alias = tmp_path / "pkg" / "SKILL.md"
+        alias.parent.mkdir(parents=True)
+        try:
+            import os as _os
+
+            _os.link(secret, alias)
+        except (OSError, NotImplementedError) as exc:  # pragma: no cover - host capability
+            pytest.skip(f"filesystem does not support hardlinks: {exc}")
+        if alias.stat().st_nlink < 2:  # pragma: no cover - host capability
+            pytest.skip("filesystem did not create a second link")
+        self._wire(monkeypatch, alias)
+
+        resp = await api_skill_detail(self._request("package/aliased"))
+        # The same 404 an unreadable skill already produced, so a refusal is not
+        # distinguishable from I/O trouble.
+        assert resp.status == 404
+        assert b"SHOULD-NOT-APPEAR" not in resp.body
+
+    @pytest.mark.asyncio
+    async def test_an_ordinary_package_skill_is_still_served(self, tmp_path, monkeypatch):
+        from kiro_crew.dashboard.handlers import api_skill_detail
+
+        real = tmp_path / "pkg" / "SKILL.md"
+        real.parent.mkdir(parents=True)
+        real.write_text("# Real Skill\nBody.\n", encoding="utf-8")
+        self._wire(monkeypatch, real)
+
+        resp = await api_skill_detail(self._request("package/aliased"))
+        assert resp.status == 200
+        assert "Body." in json.loads(resp.body)["content"]
+
+    @pytest.mark.asyncio
+    async def test_a_refused_package_skill_leaves_an_audit_line(self, tmp_path, monkeypatch):
+        """The 404 is deliberately indistinguishable; the SEL line is not.
+
+        A 404 is also what a skill name nobody installed produces, so without an
+        audit record a planted alias leaves the operator nothing to find. The
+        line says only THAT bytes were withheld: the gate judges and reads
+        through one descriptor and answers a bare ``None``.
+        """
+        from kiro_crew.dashboard import handlers as handlers_pkg
+        from kiro_crew.dashboard.handlers import api_skill_detail
+
+        secret = tmp_path / "credentials"
+        secret.write_text("# aws_secret_access_key = SHOULD-NOT-APPEAR\n", encoding="utf-8")
+        alias = tmp_path / "pkg" / "SKILL.md"
+        alias.parent.mkdir(parents=True)
+        try:
+            import os as _os
+
+            _os.link(secret, alias)
+        except (OSError, NotImplementedError) as exc:  # pragma: no cover - host capability
+            pytest.skip(f"filesystem does not support hardlinks: {exc}")
+        if alias.stat().st_nlink < 2:  # pragma: no cover - host capability
+            pytest.skip("filesystem did not create a second link")
+        self._wire(monkeypatch, alias)
+        recorder = MagicMock()
+        monkeypatch.setattr(handlers_pkg, "sel", lambda: recorder)
+
+        assert (await api_skill_detail(self._request("package/aliased"))).status == 404
+        refusals = [
+            c
+            for c in recorder.log_tool_invocation.call_args_list
+            if c.kwargs["tool_name"] == "api_skill_detail"
+        ]
+        assert [c.kwargs["outcome"] for c in refusals] == ["error"]
+        assert refusals[0].kwargs["tool_kind"] == "skill"
+
+    @pytest.mark.asyncio
+    async def test_the_package_skill_read_runs_off_the_event_loop(self, tmp_path, monkeypatch):
+        """No caller cap applies here, so the gate reads up to its own 50 MB.
+
+        Asserted as a shape rather than a duration: the read must happen on some
+        thread other than the one running the loop, which is what
+        ``asyncio.to_thread`` guarantees and a direct call cannot.
+        """
+        import threading
+
+        from kiro_crew.dashboard.handlers import api_skill_detail, prompts
+
+        real = tmp_path / "pkg" / "SKILL.md"
+        real.parent.mkdir(parents=True)
+        real.write_text("# Real Skill\nBody.\n", encoding="utf-8")
+        self._wire(monkeypatch, real)
+
+        loop_thread = threading.current_thread()
+        read_threads: list[threading.Thread] = []
+        gate = prompts.safe_read_file_bytes_nolink
+
+        def _record_thread(*args, **kwargs):
+            read_threads.append(threading.current_thread())
+            return gate(*args, **kwargs)
+
+        monkeypatch.setattr(prompts, "safe_read_file_bytes_nolink", _record_thread)
+
+        assert (await api_skill_detail(self._request("package/aliased"))).status == 200
+        assert read_threads and loop_thread not in read_threads

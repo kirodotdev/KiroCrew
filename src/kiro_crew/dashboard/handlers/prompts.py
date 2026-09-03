@@ -25,6 +25,7 @@ from kiro_crew.frontmatter import SKILL_LOADER, parse_frontmatter
 from kiro_crew.hooks import (
     FileTooLargeError,
     safe_read_file_bytes_nolink,
+    validate_file_path,
     verified_replace_file_nolink,
 )
 from kiro_crew.platform_compat import is_link_or_junction
@@ -190,16 +191,108 @@ def _description_from_text(text: str) -> str:
     return ""
 
 
+def _audit_unread(tool_name: str, tool_kind: str, outcome: str, metadata: dict) -> None:
+    """SEL-record content a read gate would not hand back.
+
+    A silent fallback is what makes a planted alias invisible: the surface keeps
+    answering — an entry with no description, a 404 — so nothing above it can see
+    that a read was refused rather than merely empty. SEL is operator-side and
+    unreachable through the endpoint, so recording the event here leaves the HTTP
+    response no more of an oracle than it already was.
+
+    *outcome* is coarse on purpose, and the coarseness is the gate's rather than
+    a choice: ``blocked`` is the one cause that is knowable, because
+    ``validate_file_path`` rejected the name outright before any open. Everything
+    else collapses into a bare ``None`` from one descriptor — a refused inode
+    (hardlinked, non-regular, escaped its parent) and an ordinary read failure
+    are indistinguishable there, and re-``stat``ing the path to tell them apart
+    would be another by-name look at the input these reads exist to stop
+    trusting. So the audit line records THAT the bytes were withheld, never why.
+
+    Best-effort: a listing or a detail view must not fail because an audit write
+    did.
+    """
+    try:
+        _sel().log_tool_invocation(
+            session_key="",
+            agent="api",
+            source="dashboard",
+            tool_name=tool_name,
+            tool_kind=tool_kind,
+            outcome=outcome,
+            metadata=metadata,
+        )
+    except Exception:  # noqa: BLE001 — an audit write must not break the response
+        logger.debug("Could not audit an unread %s", tool_kind, exc_info=True)
+
+
 def _extract_sop_description(path: Path) -> str:
     """Description for a path the caller has NOT already read — the listing walk.
 
     The scoped detail read must use :func:`_description_from_text` instead, on
     the bytes its read gate validated.
+
+    Read through ``hooks.safe_read_file_bytes_nolink`` rather than by name. Every
+    caller arrives here having already decided that *path* names a prompt, and a
+    decision made about a NAME does not describe the file a later open by that
+    name returns. Two things break the equivalence, and only one of them needs a
+    race: the entry can be replaced between the decision and this open, and a
+    HARDLINK needs no replacement at all — it shares its target's inode, so
+    ``realpath`` yields the alias's own name, ``is_symlink()`` is False and
+    ``is_sensitive_path`` sees an ordinary ``*.md`` sitting inside the prompt
+    directory while the bytes belong to whatever it aliases. That is decisive
+    here because a project's ``.kiro/prompts`` holds content the user CLONED and
+    this description is PUBLISHED in the listing: an alias of ``~/.aws/credentials``
+    would have that file's first ``#`` comment line served as a prompt's
+    description, and its ``~/.ssh/config`` sibling likewise. The gate opens FIRST
+    with ``O_NOFOLLOW`` and judges the descriptor it actually read — refusing
+    ``st_nlink > 1``, a non-regular inode, and an ``is_sensitive_path`` target —
+    so the inode described is the inode validated. ``st_nlink`` is the only
+    signal a second name for a protected inode leaves, and it is readable only on
+    a descriptor.
+
+    ``within_root`` is the canonical path's OWN parent, and it is what carries
+    this guarantee onto Windows, where ``O_NOFOLLOW`` does not exist at all: the
+    gate asks for it with ``getattr``, so there the open follows a leaf swapped
+    for a link and only the fd-real-path check
+    (``GetFinalPathNameByHandleW``) can still see that the inode opened is not the
+    one resolved. Deriving the root from the canonicalized path rather than from
+    an authorization is deliberate and sufficient for that job — a link the
+    caller's entry legitimately points at is already followed by the
+    canonicalization, so its target's own directory is the root, and only a
+    substitution landing AFTER it escapes.
+
+    A refusal yields NO DESCRIPTION rather than dropping the entry. Whether a
+    prompt exists is the caller's decision, not this function's, and a library
+    that lost a file because its metadata was refused would hide a name the
+    scoped read still serves. That also keeps an unreadable prompt (a bad mode,
+    a transient error) listed with an empty description, exactly as the by-name
+    read did — but it is SEL-recorded, because an entry that lists with no
+    description is otherwise identical to a prompt that simply has none, and a
+    planted alias would leave the operator nothing to find. The decode failure
+    below is not recorded: it is a property of bytes the gate already admitted,
+    not a withheld read.
+
+    ``allow_truncate`` keeps the gate's 50 MB cap a bound rather than a refusal:
+    a description is frontmatter or the first heading, both at the head of the
+    file, so a truncated read answers the same question, while raising would turn
+    one oversized file into a 500 for the whole listing — something the
+    unbounded by-name read could not do.
     """
     # Strict decode: a file that is not UTF-8 has no description we can trust,
     # and replacement characters would put mojibake in the list.
     try:
-        return _description_from_text(path.read_text(encoding="utf-8"))
+        canonical = validate_file_path(str(path))
+        if canonical is None:
+            _audit_unread("api_prompts", "prompt", "blocked", {"path": str(path)})
+            return ""
+        raw = safe_read_file_bytes_nolink(
+            canonical, within_root=os.path.dirname(canonical), allow_truncate=True
+        )
+        if raw is None:
+            _audit_unread("api_prompts", "prompt", "error", {"path": str(path)})
+            return ""
+        return _description_from_text(raw.decode("utf-8"))
     except (OSError, UnicodeDecodeError):
         return ""
 
@@ -284,8 +377,6 @@ async def api_prompt_detail(request: web.Request) -> web.Response:
         )
         return web.json_response({"error": "not found"}, status=404)
     name = raw.split("/", 1)[-1] if "/" in raw else raw
-    from kiro_crew.hooks import validate_file_path  # noqa: F811
-
     resolved = validate_file_path(p["path"])
     if resolved is None:
         _sel().log_tool_invocation(
@@ -298,21 +389,59 @@ async def api_prompt_detail(request: web.Request) -> web.Response:
             metadata={"name": name, "path": p["path"]},
         )
         return web.json_response({"error": "access denied"}, status=403)
+    # Read through the SAME hardlink-rejecting gate the scoped read uses, not by
+    # name. ``validate_file_path`` canonicalizes and refuses a sensitive target,
+    # but a canonical path is a fact about a NAME at one instant: opening that
+    # name again re-resolves every component, so the bytes served here need not
+    # be the bytes anything above checked. A hardlink defeats the check outright
+    # with no race at all — it shares its target's inode, so the alias's own path
+    # is what ``realpath`` yields and ``is_sensitive_path`` judges, while the
+    # bytes are the aliased file's. This endpoint resolves across every source,
+    # including a project's ``.kiro/prompts``, which holds content the user
+    # CLONED — so an aliased ``~/.aws/credentials`` there would be returned in
+    # full. The gate opens FIRST with ``O_NOFOLLOW``, then ``fstat``s that one
+    # descriptor and refuses ``st_nlink > 1`` or a non-regular inode, making the
+    # inode validated the inode returned.
+    #
+    # ``within_root`` is the canonical path's OWN parent, not an authorization:
+    # this branch resolves across every source (package SOP roots — plural, from
+    # the platform seam — and both user scopes), so there is no single authorized
+    # directory to name the way ``?scope=`` names one for the scoped read. It is
+    # passed anyway because it is the ONLY thing that carries this guarantee onto
+    # Windows, where ``O_NOFOLLOW`` does not exist and the gate's ``getattr`` for
+    # it yields 0: there the open follows a leaf swapped for a link after
+    # canonicalization, and the fd-real-path check
+    # (``GetFinalPathNameByHandleW``) is what still sees that the inode opened is
+    # not the one resolved. A link the entry legitimately points at is already
+    # followed by ``validate_file_path``, so its target's own directory IS the
+    # root and only a later substitution escapes it.
+    #
+    # The cap moves from a pre-read ``stat`` onto the gate's own bound, so the
+    # size that refuses is the size of the bytes actually read rather than of a
+    # separately-stat'd name. ``FileTooLargeError`` is not an ``OSError``, so it
+    # is caught explicitly to keep the coded 413 instead of an unaudited 500.
     try:
-        path = Path(resolved)
-        if path.stat().st_size > MAX_PROMPT_BYTES:
-            _sel().log_tool_invocation(
-                session_key="",
-                agent="api",
-                source="dashboard",
-                tool_name="api_prompt_detail",
-                tool_kind="prompt",
-                outcome="too_large",
-                metadata={"name": name, "path": p["path"]},
-            )
-            return web.json_response({"error": "file too large"}, status=413)
-        content = path.read_text(encoding="utf-8", errors="replace")
-    except OSError:
+        body_bytes = safe_read_file_bytes_nolink(
+            resolved, within_root=os.path.dirname(resolved), max_bytes=MAX_PROMPT_BYTES
+        )
+    except FileTooLargeError:
+        _sel().log_tool_invocation(
+            session_key="",
+            agent="api",
+            source="dashboard",
+            tool_name="api_prompt_detail",
+            tool_kind="prompt",
+            outcome="too_large",
+            metadata={"name": name, "path": p["path"]},
+        )
+        return web.json_response({"error": "file too large"}, status=413)
+    if body_bytes is None:
+        # The gate refuses and reads through one descriptor, so it cannot say
+        # which of the two happened — and collapsing them is the point rather
+        # than a loss: reporting a refusal differently from an I/O error would
+        # make this endpoint an oracle for whether a given path is protected.
+        # Reported as the "not readable" outcome the by-name read already
+        # produced for a file it could not open.
         _sel().log_tool_invocation(
             session_key="",
             agent="api",
@@ -323,6 +452,7 @@ async def api_prompt_detail(request: web.Request) -> web.Response:
             metadata={"name": name, "path": p["path"]},
         )
         return web.json_response({"error": "file not readable"}, status=500)
+    content = body_bytes.decode("utf-8", errors="replace")
     _sel().log_tool_invocation(
         session_key="",
         agent="api",
@@ -2283,15 +2413,50 @@ async def api_skill_detail(request: web.Request) -> web.Response:
             package_skills = []
         row = _match_package_row(package_skills, name, pkg_name)
         if row is not None and row.get("path"):
-            from kiro_crew.hooks import validate_file_path  # noqa: F811
-
             resolved = validate_file_path(str(row["path"]))
             if resolved is None:
                 return web.json_response({"error": "access denied"}, status=403)
+            # Same descriptor gate as the prompt reads above, for the same reason:
+            # canonicalizing a path and then opening that name is two resolutions,
+            # and a hardlink needs neither a race nor a link to defeat the first
+            # one — it shares its target's inode, so ``realpath`` yields the
+            # alias's own name and ``is_sensitive_path`` judges that instead of the
+            # file whose bytes come back. The gate opens once with ``O_NOFOLLOW``
+            # and refuses ``st_nlink > 1``, a non-regular inode, or an opened
+            # descriptor whose real path left the canonical parent (the last of
+            # which is what still holds on Windows, where ``O_NOFOLLOW`` does not
+            # exist). ``row["path"]`` comes from the capability seam rather than a
+            # cloned checkout, so the actor here needs write access to a package
+            # skill root — a weaker requirement than the prompt sites, but the same
+            # defect and the same fix.
+            #
+            # A refusal leaves ``content`` unset, which is the 404 an unreadable
+            # skill already produced, so nothing is distinguishable from I/O
+            # trouble — but it is SEL-recorded, because a 404 is also what a name
+            # nobody installed produces and a refusal would otherwise be silent.
+            # ``FileTooLargeError`` is not an ``OSError`` and would otherwise
+            # escape as an unaudited 500; it is the one refusal whose cause IS
+            # knowable, so it is recorded as itself.
+            #
+            # Off the loop, like the delete and update verbs above: no
+            # caller-supplied cap applies here, so the gate reads up to its own
+            # 50 MB default from storage that can be network-backed, and this
+            # handler shares one event loop with every other session's turn.
+            skill_bytes: bytes | None
             try:
-                content = Path(resolved).read_text(encoding="utf-8", errors="replace")
-            except OSError:
-                pass
+                skill_bytes = await asyncio.to_thread(
+                    safe_read_file_bytes_nolink, resolved, within_root=os.path.dirname(resolved)
+                )
+                refusal = "error"
+            except FileTooLargeError:
+                skill_bytes = None
+                refusal = "too_large"
+            if skill_bytes is not None:
+                content = skill_bytes.decode("utf-8", errors="replace")
+            else:
+                _audit_unread(
+                    "api_skill_detail", "skill", refusal, {"name": name, "path": str(row["path"])}
+                )
     if content is None and (name.startswith("kiro-user/") or name.startswith("kiro-workspace/")):
         # Open-standard kiro-cli skills are read-only here — load via the
         # same path-resolution logic used by the tree/file endpoints so the
