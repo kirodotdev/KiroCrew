@@ -4186,13 +4186,31 @@ def _mount_pinned_source_names(proc_root: str = "/proc") -> tuple[set[str], bool
       window escapes the re-listing; that needs the full pid space to wrap
       within the scan's milliseconds, and the residual error is
       retention-side only on the next sweep.)
-    - A read failure is forgiven ONLY when the pid provably belongs to a
-      DIFFERENT real user (its ``/proc/<pid>`` stats to a uid that is not
-      ours, not root, and not the host's overflow uid) — such a process
-      cannot be binding a source this uid staged, because the sandboxed child
-      keeps this uid and NO_NEW_PRIVS. Root can enter any namespace, and a
-      holder in a foreign user namespace stats as the overflow uid, so those
-      count as coverage gaps.
+    - A read failure is forgiven in two cases and counts as a coverage gap
+      otherwise. ``EINVAL`` says that TASK has no ``nsproxy``, which is not yet
+      a statement about the NAMESPACE: a thread-group leader can exit through
+      ``pthread_exit`` while sibling threads keep running, and threads share the
+      nsproxy, so a live namespace can sit behind a zombie leader while
+      ``proc_root`` — which lists only leaders — shows nothing else to scan. So
+      the group is consulted through ``/proc/<pid>/task/<tid>/mountinfo``, with
+      exactly two outcomes per sibling and no third: one that READS contributes
+      pins and nothing else, and one that does not read, for ANY reason,
+      makes coverage unprovable. Departed siblings are counted rather than
+      excused, because one exiting between the listing and its read may have
+      spawned a successor THREAD first, and a thread is invisible to the outer
+      re-listing (which enumerates thread-group leaders only), so no re-listing
+      can recover it. Tasks in one group can also hold DIFFERENT mount
+      namespaces, since a thread may ``unshare(CLONE_NEWNS)``, so a readable
+      sibling never speaks for an unreadable one. When every sibling reads, the
+      leader's own departure still makes this a vanish, because a departing task
+      may have handed its namespace to a PROCESS forked after this pass's
+      listing and only a re-listing can see that. Any OTHER errno on the leader
+      is forgiven only when the pid provably belongs to a DIFFERENT real user
+      (its ``/proc/<pid>`` stats to a uid that is not ours, not root, and not
+      the host's overflow uid) — such a process cannot be binding a source this
+      uid staged, because the sandboxed child keeps this uid and NO_NEW_PRIVS.
+      Root can enter any namespace, and a holder in a foreign user namespace
+      stats as the overflow uid, so those count as coverage gaps.
 
     A namespace held only by an nsfs fd or a bind-mounted ``ns/mnt`` — zero
     member processes — has no mountinfo to scan and is out of scope; the
@@ -4207,6 +4225,22 @@ def _mount_pinned_source_names(proc_root: str = "/proc") -> tuple[set[str], bool
     own_uid = getuid() if getuid is not None else None
     overflow_uid = _overflow_uid()
 
+    def _collect(mountinfo_path: str) -> None:
+        """Add every prefix-shaped bind SOURCE named in one mountinfo to ``pinned``.
+
+        Propagates ``OSError`` exactly as ``open`` would, so each caller decides
+        what an unreadable task means for coverage.
+        """
+        with open(mountinfo_path, encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                if _MOUNT_SOURCE_PREFIX not in line:
+                    continue
+                fields = line.split()
+                if len(fields) > 3:
+                    source = os.path.basename(fields[3])
+                    if source.startswith(_MOUNT_SOURCE_PREFIX):
+                        pinned.add(source)
+
     for _ in range(_PIN_SCAN_MAX_PASSES):
         try:
             listed = [n for n in os.listdir(proc_root) if n.isdecimal()]
@@ -4219,24 +4253,77 @@ def _mount_pinned_source_names(proc_root: str = "/proc") -> tuple[set[str], bool
         for name in new_pids:
             seen.add(name)
             try:
-                with open(
-                    os.path.join(proc_root, name, "mountinfo"),
-                    encoding="utf-8",
-                    errors="replace",
-                ) as fh:
-                    for line in fh:
-                        if _MOUNT_SOURCE_PREFIX not in line:
-                            continue
-                        fields = line.split()
-                        if len(fields) > 3:
-                            source = os.path.basename(fields[3])
-                            if source.startswith(_MOUNT_SOURCE_PREFIX):
-                                pinned.add(source)
+                _collect(os.path.join(proc_root, name, "mountinfo"))
             except (FileNotFoundError, ProcessLookupError):
                 # May have handed its namespace to a child forked before the
                 # exit — visible to the next listing, so take another pass.
                 vanished = True
-            except OSError:
+            except OSError as exc:
+                if exc.errno == errno.EINVAL:
+                    # EINVAL says THIS TASK's nsproxy is gone, so this task is a
+                    # member of no mount namespace. That is NOT yet a statement
+                    # about the namespace: a thread-group leader can exit through
+                    # ``pthread_exit`` while sibling THREADS keep running, and
+                    # threads share the nsproxy, so the namespace — and its binds
+                    # on our sources — can still be alive behind a zombie leader.
+                    # ``proc_root`` lists only thread-group LEADERS, so the
+                    # re-listing below can never see those threads. Measured on a
+                    # real zombie leader: ``/proc/<tgid>/mountinfo`` is EINVAL
+                    # while ``/proc/<tgid>/task/<live-tid>/mountinfo`` reads fine.
+                    # So ask the group before concluding anything; one readable
+                    # thread yields the WHOLE namespace's mount table, because
+                    # every thread in the group shares it.
+                    task_dir = os.path.join(proc_root, name, "task")
+                    try:
+                        tids = os.listdir(task_dir)
+                    except FileNotFoundError:
+                        tids = []  # the group is gone entirely
+                    except OSError:
+                        complete = False  # cannot ask — coverage unprovable
+                        continue
+                    unaccounted = 0
+                    for tid in tids:
+                        if tid == name:
+                            continue  # the leader: it already answered EINVAL
+                        try:
+                            _collect(os.path.join(task_dir, tid, "mountinfo"))
+                        except OSError:
+                            unaccounted += 1
+                    # INVARIANT, and there is deliberately no third case: a sibling
+                    # that READS contributes pins and nothing else, and a sibling
+                    # that does not read, for ANY reason, makes coverage unprovable.
+                    #
+                    # Departed siblings are counted too, rather than excused. One
+                    # that exits between the ``tids`` snapshot and its read may have
+                    # spawned a successor THREAD first, and a successor thread is
+                    # invisible to the outer re-listing, which enumerates
+                    # thread-group LEADERS only — so no re-listing can recover it
+                    # and only fail-closed is honest. The cost is transient, never a
+                    # stall: a sibling caught mid-exit is a race, so the next sweep
+                    # sees a settled group, whereas the zombie LEADER this branch
+                    # exists for is a steady state and stays reclaimable.
+                    #
+                    # Tasks in one group can also hold DIFFERENT mount namespaces (a
+                    # thread may ``unshare(CLONE_NEWNS)``, and the launcher's own
+                    # user namespace grants its descendants the CAP_SYS_ADMIN that
+                    # needs), so a readable sibling never speaks for an unreadable
+                    # one.
+                    if unaccounted:
+                        complete = False
+                        continue
+                    # Otherwise this is a VANISH, unconditionally. Reaching this
+                    # branch at all means the LEADER departed, and a departing task
+                    # may have handed its namespace to a process forked after this
+                    # pass's listing, which only a re-listing can see — so a
+                    # sibling that could be read must not be able to cancel it:
+                    # the pins it yields are kept, its success is not evidence.
+                    #
+                    # This terminates: the pid enters ``seen`` above and is never
+                    # re-read, so a stable zombie costs exactly one extra pass,
+                    # while genuine churn exhausts ``_PIN_SCAN_MAX_PASSES`` and
+                    # returns complete=False, which retains rather than removes.
+                    vanished = True
+                    continue
                 try:
                     st_uid: int | None = os.stat(os.path.join(proc_root, name)).st_uid
                 except OSError:
@@ -4374,15 +4461,18 @@ def _cleanup_stale_sandbox_mount_sources(*, roots: Sequence[str] | None = None) 
         # An always-closed pin scan is otherwise indistinguishable from a
         # working one while the dominant (directory) leak class re-accumulates
         # — surface it so an operator can tell retention from reclamation.
-        pinned_note = (
-            "pinned by a live mount namespace"
-            if pin_scan is not None and pin_scan[1]
-            else "pin scan incomplete"
-        )
-        logger.info(
+        scan_complete = pin_scan is not None and pin_scan[1]
+        # WARNING for the incomplete case, INFO for the benign pinned one.
+        # Holding entries back because a live namespace binds them is normal
+        # operation; holding them back because coverage is unprovable is a
+        # FAULT that stops directory reclamation host-wide until the runtime
+        # tmpfs is out of inodes. At INFO it also does not reach a default
+        # deployment's log at all, which is how the leak this guards against
+        # ran unobserved while this very line fired on every sweep.
+        (logger.info if scan_complete else logger.warning)(
             "sandbox mount-source sweep: %d dir candidate(s) held back (%s)",
             dirs_held_back,
-            pinned_note,
+            ("pinned by a live mount namespace" if scan_complete else "pin scan incomplete"),
         )
     return removed
 

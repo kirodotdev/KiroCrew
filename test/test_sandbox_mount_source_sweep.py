@@ -29,8 +29,13 @@ Two halves lock the fix in:
 from __future__ import annotations
 
 import ast
+import builtins
+import errno
+import logging
 import os
 import shutil
+import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -81,6 +86,26 @@ def _pin(monkeypatch: pytest.MonkeyPatch, names: set[str], *, complete: bool = T
         "kiro_crew.sandbox._mount_pinned_source_names",
         lambda proc_root="/proc": (names, complete),
     )
+
+
+def _raise_einval_for(monkeypatch: pytest.MonkeyPatch, target: Path) -> None:
+    """Fail ``open()`` on ONE path the way procfs fails for a namespaceless task.
+
+    ``/proc/<pid>/mountinfo`` is synthesized per read from the task's
+    ``nsproxy``; once that is gone (the task has exited and awaits reap) the
+    open returns ``EINVAL``. No real file can be made to do that, and a real
+    zombie's pid cannot be planted under ``tmp_path``, so the errno is injected
+    for the one target path and every other open is delegated untouched.
+    """
+    real_open = builtins.open
+    target_str = str(target)
+
+    def fake_open(file, *args, **kwargs):  # noqa: ANN001, ANN202
+        if str(file) == target_str:
+            raise OSError(errno.EINVAL, os.strerror(errno.EINVAL), target_str)
+        return real_open(file, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "open", fake_open)
 
 
 class TestMountSourceSweep:
@@ -446,6 +471,350 @@ class TestMountPinnedSourceNames:
         assert pinned == set()
         assert complete is False
 
+    def test_namespaceless_task_is_not_a_coverage_gap(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """``EINVAL`` establishes absence-of-pin; it must not read as a gap.
+
+        procfs answers ``EINVAL`` for one reason here — the task's ``nsproxy``
+        is already gone, i.e. it has exited and awaits reap — so it belongs to
+        NO mount namespace and can reference no source. That is the strongest
+        evidence this scan can obtain, yet it was filed as "coverage
+        unprovable", which holds back EVERY directory candidate. One unreaped
+        child (routine on any host) therefore disabled directory reclamation
+        permanently and host-wide, until the runtime tmpfs was out of inodes
+        and ``systemd-run --scope`` could no longer start a spawn.
+        """
+        proc = tmp_path / "proc"
+        self._write_mountinfo(
+            proc,
+            "301",
+            "36 35 0:22 /kirocrew_sb_5_aa /home/u/.aws rw - tmpfs tmpfs rw\n",
+        )
+        zombie = proc / "302"
+        zombie.mkdir()
+        (zombie / "mountinfo").write_text("")  # present, but the READ raises
+        _raise_einval_for(monkeypatch, zombie / "mountinfo")
+
+        pinned, complete = _mount_pinned_source_names(proc_root=str(proc))
+
+        assert pinned == {"kirocrew_sb_5_aa"}
+        assert complete is True
+
+    def test_namespaceless_task_still_forces_a_rescan_for_its_successor(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """Forgiving ``EINVAL`` must not also skip the re-listing.
+
+        The task has EXITED, so it may have handed its namespace to a child
+        forked after this pass's listing, and only another listing can see
+        that successor. Forgiving without a rescan would report complete while
+        the successor's pin went unrecorded — and the sweep would then rmdir a
+        source a live namespace still binds, leaving that mount's root inode
+        ``S_DEAD`` and every create under the masked path failing.
+        """
+        proc = tmp_path / "proc"
+        proc.mkdir()
+        (proc / "1").mkdir()
+        (proc / "1" / "mountinfo").write_text("")
+        gone = proc / "401"
+        gone.mkdir()
+        (gone / "mountinfo").write_text("")
+        _raise_einval_for(monkeypatch, gone / "mountinfo")
+        successor = proc / "402"
+        successor.mkdir()
+        (successor / "mountinfo").write_text(
+            "36 35 0:22 /kirocrew_sb_11_bb /home/u/.ssh rw - tmpfs tmpfs rw\n"
+        )
+        real_listdir = os.listdir
+        calls = {"n": 0}
+
+        def listing(path):  # noqa: ANN001
+            if str(path) == str(proc):
+                calls["n"] += 1
+                if calls["n"] == 1:
+                    return ["1", "401"]  # the successor is not yet visible
+                return ["1", "401", "402"]
+            return real_listdir(path)
+
+        monkeypatch.setattr(os, "listdir", listing)
+
+        pinned, complete = _mount_pinned_source_names(proc_root=str(proc))
+
+        assert calls["n"] >= 2, "a namespaceless task must trigger another listing pass"
+        assert pinned == {"kirocrew_sb_11_bb"}
+        assert complete is True
+
+    @pytest.mark.skipif(
+        not os.path.isdir("/proc/self") or not os.path.exists("/bin/true"),
+        reason="needs a real Linux procfs and a trivial child to leave unreaped",
+    )
+    def test_kernel_answers_einval_for_a_real_zombie(self):
+        """Pin the KERNEL premise the forgiveness rests on.
+
+        The fix reads one errno as proof of "no mount namespace". If a future
+        kernel answers something else for a task past ``exit_task_namespaces``,
+        that proof silently becomes a coverage gap again and directory
+        reclamation dies exactly as before, with no test failing. So assert the
+        behaviour directly, on a zombie this test creates: an exited child that
+        is deliberately not reaped until the assertions are done.
+        """
+        child = subprocess.Popen(["/bin/true"])  # noqa: S603 - fixed argv, no shell
+        try:
+            deadline = time.time() + 5.0
+            state = ""
+            while time.time() < deadline:
+                try:
+                    with open(f"/proc/{child.pid}/stat") as fh:
+                        state = fh.read().rsplit(") ", 1)[1][0]
+                except OSError:  # pragma: no cover - raced the reap
+                    break
+                if state == "Z":
+                    break
+                time.sleep(0.01)
+            if state != "Z":  # pragma: no cover - scheduler-dependent
+                pytest.skip("child did not reach the zombie state in time")
+
+            with pytest.raises(OSError) as caught:
+                with open(f"/proc/{child.pid}/mountinfo"):
+                    pass
+            assert caught.value.errno == errno.EINVAL
+            assert not isinstance(caught.value, FileNotFoundError)
+        finally:
+            child.wait()
+
+    def test_zombie_leader_with_a_live_thread_is_pinned_not_forgiven(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """A live namespace can sit behind a zombie LEADER, and must still pin.
+
+        A thread-group leader can exit through ``pthread_exit`` while sibling
+        threads keep running. Threads share the ``nsproxy``, so the mount
+        namespace -- and its binds on our staged sources -- stays alive, yet
+        ``/proc/<tgid>/mountinfo`` answers EINVAL because the LEADER's nsproxy is
+        gone. ``/proc`` lists only leaders, so the vanish re-listing can never see
+        the surviving thread either. Forgiving on the leader's errno alone would
+        report ``complete=True`` with that namespace's pin unrecorded, and the
+        sweep would then rmdir a source it still binds, leaving the mount's root
+        inode S_DEAD and every create under the masked credential path failing.
+
+        Measured kernel behaviour, pinned by
+        ``test_kernel_answers_einval_for_a_zombie_leader_with_a_live_thread``.
+        """
+        proc = tmp_path / "proc"
+        self._write_mountinfo(proc, "500", "")
+        leader = proc / "501"
+        leader.mkdir()
+        (leader / "mountinfo").write_text("")  # present, but the READ raises
+        _raise_einval_for(monkeypatch, leader / "mountinfo")
+        thread_dir = leader / "task" / "502"
+        thread_dir.mkdir(parents=True)
+        (thread_dir / "mountinfo").write_text(
+            "36 35 0:22 /kirocrew_sb_21_tt /home/u/.aws rw - tmpfs tmpfs rw\n"
+        )
+
+        pinned, complete = _mount_pinned_source_names(proc_root=str(proc))
+
+        assert pinned == {"kirocrew_sb_21_tt"}
+        assert complete is True
+
+    def test_group_with_no_namespace_left_is_still_a_vanish(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """When NO task in the group holds a namespace, absence-of-pin is real.
+
+        The task dir carries only the leader, so nothing in the group can be
+        binding a source: coverage is kept and the entry stays reclaimable. (The
+        re-listing this records is asserted by the successor test above.)
+        """
+        proc = tmp_path / "proc"
+        self._write_mountinfo(proc, "600", "")
+        leader = proc / "601"
+        (leader / "task" / "601").mkdir(parents=True)
+        (leader / "mountinfo").write_text("")
+        _raise_einval_for(monkeypatch, leader / "mountinfo")
+
+        pinned, complete = _mount_pinned_source_names(proc_root=str(proc))
+
+        assert pinned == set()
+        assert complete is True
+
+    @pytest.mark.skipif(
+        os.getuid() == 0 if hasattr(os, "getuid") else True,
+        reason="root ignores file modes; the EACCES probe needs a non-root uid",
+    )
+    def test_unreadable_thread_in_the_group_marks_the_scan_incomplete(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """A group we cannot interrogate is a coverage gap, not a free pass.
+
+        The leader answers EINVAL and the one sibling thread cannot be read, so
+        whether that namespace binds a source is unknown and directory removal
+        must stay closed.
+        """
+        proc = tmp_path / "proc"
+        self._write_mountinfo(proc, "700", "")
+        leader = proc / "701"
+        leader.mkdir()
+        (leader / "mountinfo").write_text("")
+        _raise_einval_for(monkeypatch, leader / "mountinfo")
+        thread_dir = leader / "task" / "702"
+        thread_dir.mkdir(parents=True)
+        sibling = thread_dir / "mountinfo"
+        sibling.write_text("irrelevant\n")
+        os.chmod(sibling, 0)
+        try:
+            pinned, complete = _mount_pinned_source_names(proc_root=str(proc))
+        finally:
+            os.chmod(sibling, 0o644)
+
+        assert pinned == set()
+        assert complete is False
+
+    @pytest.mark.skipif(
+        not os.path.isdir("/proc/self"),
+        reason="needs a real Linux procfs to observe a zombie leader",
+    )
+    def test_kernel_answers_einval_for_a_zombie_leader_with_a_live_thread(self):
+        """Pin the kernel behaviour the thread-group step exists for.
+
+        The leader exits through ``pthread_exit`` while a sibling thread runs on.
+        The tgid read must answer EINVAL (its nsproxy is gone) while the sibling's
+        per-task read must SUCCEED (the namespace is alive). If a kernel ever made
+        both answer the same way, the reachability argument for consulting the
+        group would be gone and this fails instead of the sweep quietly removing a
+        live bind source.
+        """
+        program = (
+            "import ctypes, threading, time\n"
+            "threading.Thread(target=time.sleep, args=(30,)).start()\n"
+            "time.sleep(0.2)\n"
+            "ctypes.CDLL('libc.so.6', use_errno=True).pthread_exit(None)\n"
+        )
+        child = subprocess.Popen([sys.executable, "-c", program])  # noqa: S603
+        try:
+            deadline = time.time() + 10.0
+            state = ""
+            while time.time() < deadline:
+                try:
+                    with open("/proc/%d/stat" % child.pid) as fh:
+                        state = fh.read().rsplit(") ", 1)[1][0]
+                except OSError:  # pragma: no cover - raced the exit
+                    break
+                if state == "Z":
+                    break
+                time.sleep(0.02)
+            if state != "Z":  # pragma: no cover - platform/scheduler dependent
+                pytest.skip("leader did not become a zombie while a thread lived")
+
+            with pytest.raises(OSError) as caught:
+                with open("/proc/%d/mountinfo" % child.pid):
+                    pass
+            assert caught.value.errno == errno.EINVAL
+
+            tids = os.listdir("/proc/%d/task" % child.pid)
+            siblings = [t for t in tids if t != str(child.pid)]
+            assert siblings, "the surviving thread must still be listed under task/"
+            readable = []
+            for tid in siblings:
+                try:
+                    with open("/proc/%d/task/%s/mountinfo" % (child.pid, tid)) as fh:
+                        fh.read()
+                    readable.append(tid)
+                except OSError:
+                    pass
+            assert readable, (
+                "a surviving thread's mountinfo must be readable -- that is the "
+                "only way the scan can see the namespace behind a zombie leader"
+            )
+        finally:
+            child.kill()
+            child.wait()
+
+    @pytest.mark.skipif(
+        os.getuid() == 0 if hasattr(os, "getuid") else True,
+        reason="root ignores file modes; the EACCES probe needs a non-root uid",
+    )
+    def test_a_readable_sibling_must_not_mask_an_unreadable_one(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """One unaccounted task sinks coverage, whatever a sibling reported.
+
+        Tasks in one thread group can hold DIFFERENT mount namespaces: a thread
+        may ``unshare(CLONE_NEWNS)``, and the launcher's own user namespace grants
+        its descendants the CAP_SYS_ADMIN that needs. So reading one sibling
+        proves nothing about a sibling that cannot be read, and letting the
+        readable one satisfy coverage would report ``complete=True`` while an
+        unread namespace may still bind a source -- which the sweep would then
+        remove, leaving that mount's root inode S_DEAD.
+
+        The pin that WAS read still counts: pins are additive and real either way.
+        """
+        proc = tmp_path / "proc"
+        self._write_mountinfo(proc, "800", "")
+        leader = proc / "801"
+        leader.mkdir()
+        (leader / "mountinfo").write_text("")
+        _raise_einval_for(monkeypatch, leader / "mountinfo")
+        readable = leader / "task" / "802"
+        readable.mkdir(parents=True)
+        (readable / "mountinfo").write_text(
+            "36 35 0:22 /kirocrew_sb_31_rr /home/u/.aws rw - tmpfs tmpfs rw\n"
+        )
+        opaque = leader / "task" / "803"
+        opaque.mkdir(parents=True)
+        blocked = opaque / "mountinfo"
+        blocked.write_text("irrelevant\n")
+        os.chmod(blocked, 0)
+        try:
+            pinned, complete = _mount_pinned_source_names(proc_root=str(proc))
+        finally:
+            os.chmod(blocked, 0o644)
+
+        assert pinned == {"kirocrew_sb_31_rr"}, "the pin that was read must be kept"
+        assert complete is False, "an unaccounted sibling must sink coverage"
+
+    @pytest.mark.parametrize("departure", ["gone", "namespaceless"])
+    def test_a_departed_sibling_sinks_coverage_even_beside_a_readable_one(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, departure: str
+    ):
+        """A sibling that does not read makes coverage unprovable, full stop.
+
+        A sibling exiting between the ``tids`` listing and its read may have spawned
+        a successor THREAD first. A thread is invisible to the outer re-listing,
+        which enumerates thread-group LEADERS only, so unlike a successor PROCESS it
+        cannot be recovered by taking another pass -- fail-closed is the only honest
+        answer. Excusing the departure instead would report ``complete=True`` with
+        that successor's namespace never read, and the sweep would then remove a
+        source it may still bind, leaving the mount's root inode S_DEAD.
+
+        The pin that WAS read still counts: pins are additive and real either way.
+        Both departure shapes are covered -- gone (``ENOENT``) and namespaceless
+        (``EINVAL``).
+        """
+        proc = tmp_path / "proc"
+        self._write_mountinfo(proc, "900", "")
+        leader = proc / "901"
+        leader.mkdir()
+        (leader / "mountinfo").write_text("")
+        _raise_einval_for(monkeypatch, leader / "mountinfo")
+        readable = leader / "task" / "902"
+        readable.mkdir(parents=True)
+        (readable / "mountinfo").write_text(
+            "36 35 0:22 /kirocrew_sb_41_aa /home/u/.aws rw - tmpfs tmpfs rw\n"
+        )
+        departed = leader / "task" / "903"
+        departed.mkdir(parents=True)
+        if departure == "namespaceless":
+            (departed / "mountinfo").write_text("")
+            _raise_einval_for(monkeypatch, departed / "mountinfo")
+        # "gone" leaves no mountinfo file at all, so the read raises ENOENT.
+
+        pinned, complete = _mount_pinned_source_names(proc_root=str(proc))
+
+        assert pinned == {"kirocrew_sb_41_aa"}, "the pin that was read must be kept"
+        assert complete is False, "a sibling that did not read must sink coverage"
+
     def test_missing_proc_root_reports_incomplete(self, tmp_path: Path):
         pinned, complete = _mount_pinned_source_names(proc_root=str(tmp_path / "noproc"))
         assert pinned == set()
@@ -489,6 +858,51 @@ class TestMountPinnedSourceNames:
                 "(e.g. the test itself runs sandboxed) — fail-closed retention applies"
             )
         assert complete is True
+
+
+class TestHeldBackDiagnostic:
+    """Retention must be distinguishable from reclamation in the log.
+
+    A permanently-closed pin scan produces the same observable as a healthy
+    one — zero removals — while the dominant (directory) leak class
+    re-accumulates. The report exists to break that tie, so its LEVEL is part
+    of the contract: at INFO it does not reach a default deployment's log at
+    all, which is how the exhaustion this sweep guards against ran unobserved
+    while this very line fired on every sweep.
+    """
+
+    def test_unprovable_coverage_is_reported_as_a_fault(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ):
+        _pin(monkeypatch, set(), complete=False)
+        _make_dir(tmp_path, f"kirocrew_sb_{_DEAD_PID}_held01")
+
+        with caplog.at_level(logging.INFO, logger="kiro_crew.sandbox"):
+            removed = _cleanup_stale_sandbox_mount_sources(roots=[str(tmp_path)])
+
+        assert removed == 0
+        held = [r for r in caplog.records if "held back" in r.getMessage()]
+        assert len(held) == 1
+        assert held[0].levelno == logging.WARNING
+        assert "pin scan incomplete" in held[0].getMessage()
+
+    def test_a_live_pin_stays_ordinary_information(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ):
+        """Holding an entry a live namespace binds is correct operation, not a
+        fault — it must not be escalated, or the fault signal drowns."""
+        name = f"kirocrew_sb_{_DEAD_PID}_pinned1"
+        _pin(monkeypatch, {name}, complete=True)
+        _make_dir(tmp_path, name)
+
+        with caplog.at_level(logging.INFO, logger="kiro_crew.sandbox"):
+            removed = _cleanup_stale_sandbox_mount_sources(roots=[str(tmp_path)])
+
+        assert removed == 0
+        held = [r for r in caplog.records if "held back" in r.getMessage()]
+        assert len(held) == 1
+        assert held[0].levelno == logging.INFO
+        assert "pinned by a live mount namespace" in held[0].getMessage()
 
 
 class TestMountSourceCandidateRoots:
