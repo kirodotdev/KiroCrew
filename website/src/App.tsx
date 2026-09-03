@@ -3091,7 +3091,48 @@ export default function App() {
               if (!metricsOpen) {
                 segments.push(<button key="metrics" className={`${seg} text-muted hover:text-text`} onClick={() => { setMetricsOpen(true); safeSetItem('mc-topbar-metrics', '1') }} title={i18nT('app.system_metrics')} aria-label={i18nT('app.system_metrics')} aria-pressed={false}><AudioWaveform size={12} /></button>)
               } else if (!sysMetrics) {
-                if (sysMetricsError) segments.push(<button key="metrics" className={`${seg} text-danger text-[11px]`} title={i18nT('app.click_to_hide')} onClick={() => { setMetricsOpen(false); safeSetItem('mc-topbar-metrics', '0') }}><AudioWaveform size={11} /> {i18nT('app.metrics_unavailable')}</button>)
+                // Every OPEN state pushes a toggle. This branch is reached
+                // whenever the query has produced no frame, which is the whole
+                // of the first fetch AND the retry window of a failing one
+                // (`isError` is only set once react-query's retries are spent).
+                // Pushing nothing there took the toggle off screen while the
+                // readout was logically open, so the click that was aimed at it
+                // landed on the capsule's background and did nothing — the
+                // reported "the metrics doesn't open". The control has to
+                // outlive the data it displays.
+                if (sysMetricsError) {
+                  segments.push(<button key="metrics" className={`${seg} text-danger text-[11px]`} title={i18nT('app.click_to_hide')} onClick={() => { setMetricsOpen(false); safeSetItem('mc-topbar-metrics', '0') }}><AudioWaveform size={11} /> {i18nT('app.metrics_unavailable')}</button>)
+                } else {
+                  // Em dashes, not a spinner. The sibling usage segment draws the
+                  // same distinction for the same reason: a spinner asserts a
+                  // fetch is about to land, and on a host that never reports
+                  // metrics (the reporter's `kiro-cli: unavailable`) that claim
+                  // never comes true. The dashes reuse the loaded branch's own
+                  // "no valid reading" glyph, so the two open states differ in
+                  // opacity rather than in shape.
+                  //
+                  // Shape is the point, not width: the readings are narrower as
+                  // dashes and the loaded readout's own width moves anyway (9% to
+                  // 10% is a reflow). What this removes is the SEGMENT MOUNT — the
+                  // capsule used to gain a button and a divider when the frame
+                  // landed, and it now only re-renders text inside a button that
+                  // was already there. A child mounting inside a
+                  // `container-type`-contained group is what stranded the header's
+                  // backdrop (see .topbar-glass in index.css), so the two halves
+                  // of this fix meet here.
+                  segments.push(<button key="metrics" className={`${seg} gap-2 text-[11px] font-mono opacity-60`} title={`${i18nT('app.system_metrics')} — ${i18nT('app.click_to_hide')}`} aria-pressed={true} onClick={() => { setMetricsOpen(false); safeSetItem('mc-topbar-metrics', '0') }}>
+                    {/* Same two-form structure as the loaded readout: the
+                        container query picks the icon on the narrow rung, and the
+                        name is sr-only so the icon-only form is still named. */}
+                    <span className="sr-only">{i18nT('app.system_metrics')}</span>
+                    <AudioWaveform size={12} className="tb-narrow-only text-accent" />
+                    <span className="tb-drop-metrics flex items-center gap-2 text-muted">
+                    <span>{i18nT('app.cpu')} —</span>
+                    <span>{i18nT('app.mem')} —</span>
+                    <span>{i18nT('app.dsk')} —</span>
+                    </span>
+                  </button>)
+                }
               } else {
                 // Validity is decided on the RAW frame; formatting happens on a
                 // sanitized copy. A `memTotal > 0` check says nothing about

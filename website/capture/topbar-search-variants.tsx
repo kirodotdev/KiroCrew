@@ -33,6 +33,13 @@
  * ?budget=off|norungs|nonowrap  before states for the update-pill budget fix
  *               (documented at the parse site below)
  * ?fix=off      strip the gutter that admits the badge's overhang (before state)
+ * ?metrics=loaded|pending  which metrics-readout state to render. `pending` is the
+ *               open-but-no-frame state: the query has produced neither a frame
+ *               nor an error, which is the whole of the first fetch and the retry
+ *               window of a failing one
+ * ?metricsfix=off  reproduce the defect for `?metrics=pending` by pushing NO
+ *               segment at all, which is what the open branch did before #7967 --
+ *               the readout is logically open and its toggle is off screen
  * ?pins=N       render N pinned-crew chips in the identity group's chip row
  *               (default 0 — the group renders exactly as it did without them)
  * ?unread=N     unread count carried by the LAST pinned chip, the one a cut reaches
@@ -54,6 +61,11 @@ const pins = Number(params.get('pins') || '0')
 const unread = Number(params.get('unread') || '0')
 const rowW = params.get('roww')
 const update = params.get('update') === 'on'
+// The metrics readout's state, and the before/after switch for the state that had
+// no segment at all. Separate params for the same reason as `?fix` above: the
+// scene and its regression have to be selectable independently.
+const metricsState = params.get('metrics') === 'pending' ? 'pending' : 'loaded'
+const metricsFix = params.get('metricsfix') !== 'off'
 const updateLabel = params.get('updatelabel') || '有可用更新'
 // The before states for the update-pill budget fix, separable because the fix
 // has two independent halves and evidence must attribute the effect to the
@@ -214,13 +226,23 @@ function TopBar() {
         <div className="tb-capsule flex items-center gap-2 h-7 px-2.5 rounded-xl bg-card">
           <span className="w-1.5 h-1.5 rounded-full bg-ok shrink-0" />
           <span className="w-px h-3.5 bg-border shrink-0" />
-          <button data-seg className={`${seg} gap-2 text-[11px] font-mono`}>
-            <AudioWaveform size={12} className="tb-narrow-only text-accent" />
-            <span className="tb-drop-metrics flex items-center gap-2">
-              <span>CPU 1%</span><span>MEM 42%</span><span>DSK 20%</span>
-            </span>
-          </button>
-          <span className="w-px h-3.5 bg-border shrink-0" />
+          {/* Verbatim from App.tsx's two open states. `pending` is dimmed and
+              carries an em dash per metric rather than a spinner, which holds the
+              capsule at the loaded width -- so the frame's arrival does not
+              reflow the group, and the container-query rungs are calibrated
+              against ONE width for both states. `metricsfix=off` pushes nothing,
+              which is the defect: an open readout whose toggle is not on screen. */}
+          {metricsState === 'pending' && !metricsFix ? null : (
+            <button data-seg data-metrics className={`${seg} gap-2 text-[11px] font-mono${metricsState === 'pending' ? ' opacity-60' : ''}`}>
+              <AudioWaveform size={12} className="tb-narrow-only text-accent" />
+              <span className={`tb-drop-metrics flex items-center gap-2${metricsState === 'pending' ? ' text-muted' : ''}`}>
+                {metricsState === 'pending'
+                  ? <><span>CPU —</span><span>MEM —</span><span>DSK —</span></>
+                  : <><span>CPU 1%</span><span>MEM 42%</span><span>DSK 20%</span></>}
+              </span>
+            </button>
+          )}
+          {metricsState === 'pending' && !metricsFix ? null : <span className="w-px h-3.5 bg-border shrink-0" />}
           <button data-seg className={seg}>
             <Coins size={12} />
             <span className="tb-drop-usage font-mono text-[11px] whitespace-nowrap tabular-nums">12.2万<span className="text-muted">/1万</span></span>
