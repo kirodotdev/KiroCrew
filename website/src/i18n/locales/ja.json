@@ -2882,6 +2882,7 @@
         "highlight_4": "抽出したアクションアイテムを確認してからファイリング—ノイズはアーカイブし、残りをファイル",
         "highlight_5": "プラグ可能なタスクとカレンダープロバイダ。ローカルタスク台帳とiCalendar(.ics)リーダーが付属し、組織は独自のものを登録できます",
         "highlight_6": "ミーティングの進行中に、文字起こしを別の言語で 1 行ずつ読み返せます",
+        "highlight_7": "エージェントのノートと並べて自分のノートを残せます — スクリーンショットを貼り付けると、ミーティングの経過時間つきで記録されます",
         "page_label": "会議"
       },
       "meeting": {
@@ -2901,9 +2902,23 @@
         "restart": "もう一度開始",
         "retryAgents": "再試行",
         "start": "開始",
+        "toggleNote": "ノート",
         "toggleTasks": "アクションアイテム",
         "toggleTranslation": "翻訳",
         "unpause": "再開"
+      },
+      "note": {
+        "close": "ノートを閉じる",
+        "edit": "編集",
+        "editorLabel": "ノートの本文",
+        "hint": "入力すると自動的に保存されます。",
+        "placeholder": "自分用のメモをここに入力します。Markdown が使えます。",
+        "preview": "プレビュー",
+        "saved": "保存済み",
+        "saving": "保存中…",
+        "title": "マイノート",
+        "unsaved": "未保存の変更",
+        "uploading": "画像を追加中…"
       },
       "pillBar": {
         "addLink": "リンクを追加",
@@ -2960,6 +2975,9 @@
         "messageFailed": "そのメッセージを送信できませんでした。",
         "minutesRevertFailed": "編集を破棄できませんでした。",
         "minutesSaveFailed": "編集を保存できませんでした。",
+        "noteImageFailed": "その画像を追加できませんでした。PNG、JPEG、GIF、WebP のいずれかを貼り付けてください。",
+        "noteImageTooLarge": "その画像は大きすぎてノートに追加できません。",
+        "noteSaveFailed": "ノートを保存できませんでした。",
         "startFailed": "ミーティングを開始できませんでした。",
         "started": "ミーティング開始。",
         "statusFailed": "ミーティングステータスを変更できませんでした。",

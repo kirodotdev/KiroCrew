@@ -17,7 +17,8 @@
     "Correct recurring speech-to-text mistakes once with a domain dictionary and every later meeting gets them right",
     "Review extracted action items before anything is filed — archive the noise, file the rest",
     "Pluggable task and calendar providers: ships a local task ledger and an iCalendar (.ics) reader, and an organization can register its own",
-    "Read the transcript back line by line in another language while the meeting runs"
+    "Read the transcript back line by line in another language while the meeting runs",
+    "Keep your own notes beside the agents' — paste a screenshot and it lands with the meeting's elapsed time"
   ],
   "defaultEnabled": false,
   "platform": {
@@ -35,7 +36,8 @@
     "api": [
       "/api/apps/meetings",
       "/api/apps/meetings/*",
-      "/api/ws/stt"
+      "/api/ws/stt",
+      "/api/file-raw"
     ],
     "network": true,
     "storage": true

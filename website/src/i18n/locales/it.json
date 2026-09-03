@@ -2943,6 +2943,7 @@
         "highlight_4": "Rivedi le azioni estratte prima che qualcosa venga registrato — archivia il rumore, registra il resto",
         "highlight_5": "Provider di attività e calendario collegabili: include un registro locale delle attività e un lettore iCalendar (.ics), e un’organizzazione può registrarne di propri",
         "highlight_6": "Rileggi la trascrizione riga per riga in un'altra lingua mentre la riunione è in corso",
+        "highlight_7": "Tieni i tuoi appunti accanto a quelli degli agenti — incolla uno screenshot e viene salvato con il tempo trascorso della riunione",
         "page_label": "Riunioni",
         "use_case_1": "Acquisisci una riunione dal vivo mentre agenti paralleli creano la trascrizione, le note strutturate, il diagramma e la revisione delle attività.",
         "configuration_1": "Consenti al browser di accedere al microfono per l'acquisizione dal vivo; configura facoltativamente nelle Impostazioni un percorso o URL iCalendar, il registro attività locale, i ruoli agente e i termini di correzione vocale."
@@ -2965,6 +2966,7 @@
         "retryAgents": "Riprova",
         "start": "Avvia",
         "toggleTasks": "Azioni da fare",
+        "toggleNote": "Nota",
         "toggleTranslation": "Traduzione",
         "unpause": "Riprendi"
       },
@@ -3041,7 +3043,10 @@
         "taskFiled": "Azione registrata.",
         "untitled": "Riunione senza titolo",
         "minutesSaveFailed": "Non è stato possibile salvare le tue modifiche.",
-        "minutesRevertFailed": "Non è stato possibile scartare le tue modifiche."
+        "minutesRevertFailed": "Non è stato possibile scartare le tue modifiche.",
+        "noteSaveFailed": "Non è stato possibile salvare la tua nota.",
+        "noteImageFailed": "Non è stato possibile aggiungere quell'immagine. Incolla un PNG, JPEG, GIF o WebP.",
+        "noteImageTooLarge": "Quell'immagine è troppo grande per una nota."
       },
       "settings": {
         "addTerm": "Aggiungi",
@@ -3118,6 +3123,19 @@
         "chat": "Chat",
         "html": "Diagramma",
         "markdown": "Appunti"
+      },
+      "note": {
+        "title": "La mia nota",
+        "close": "Chiudi la nota",
+        "placeholder": "Scrivi qui i tuoi appunti. Markdown è supportato.",
+        "saving": "Salvataggio…",
+        "unsaved": "Modifiche non salvate",
+        "saved": "Salvata",
+        "hint": "Viene salvata automaticamente mentre scrivi.",
+        "editorLabel": "Testo della nota",
+        "preview": "Anteprima",
+        "edit": "Modifica",
+        "uploading": "Aggiunta dell'immagine…"
       }
     },
     "mochi": {

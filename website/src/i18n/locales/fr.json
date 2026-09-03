@@ -2994,6 +2994,7 @@
         "highlight_4": "Relis les actions extraites avant tout enregistrement — archive le bruit, enregistre le reste",
         "highlight_5": "Fournisseurs de tâches et d’agenda enfichables : un registre de tâches local et un lecteur iCalendar (.ics) sont fournis, et une organisation peut enregistrer les siens",
         "highlight_6": "Relis la transcription ligne par ligne dans une autre langue pendant que la réunion se déroule",
+        "highlight_7": "Garde tes propres notes à côté de celles des agents — colle une capture d'écran et elle arrive avec le temps écoulé de la réunion",
         "page_label": "Réunions",
         "use_case_1": "Capture une réunion en direct pendant que des agents parallèles produisent la transcription, les notes structurées, le diagramme et la revue des actions à mener.",
         "configuration_1": "Autorise le navigateur à accéder au microphone pour la capture en direct ; configure éventuellement dans les paramètres un chemin ou une URL iCalendar, le registre local des tâches, les rôles d'agent et les termes de correction vocale."
@@ -3016,6 +3017,7 @@
         "retryAgents": "Réessayer",
         "start": "Démarrer",
         "toggleTasks": "Actions à suivre",
+        "toggleNote": "Note",
         "toggleTranslation": "Traduction",
         "unpause": "Reprendre"
       },
@@ -3092,7 +3094,10 @@
         "taskFiled": "Action enregistrée.",
         "untitled": "Réunion sans titre",
         "minutesSaveFailed": "Impossible d'enregistrer tes modifications.",
-        "minutesRevertFailed": "Impossible d'abandonner tes modifications."
+        "minutesRevertFailed": "Impossible d'abandonner tes modifications.",
+        "noteSaveFailed": "Impossible d'enregistrer votre note.",
+        "noteImageFailed": "Impossible d'ajouter cette image. Collez un PNG, JPEG, GIF ou WebP.",
+        "noteImageTooLarge": "Cette image est trop volumineuse pour une note."
       },
       "settings": {
         "addTerm": "Ajouter",
@@ -3169,6 +3174,19 @@
         "chat": "Discussion",
         "html": "Schéma",
         "markdown": "Notes"
+      },
+      "note": {
+        "title": "Ma note",
+        "close": "Fermer la note",
+        "placeholder": "Écrivez ici vos propres notes. Markdown est pris en charge.",
+        "saving": "Enregistrement…",
+        "unsaved": "Modifications non enregistrées",
+        "saved": "Enregistrée",
+        "hint": "Enregistrement automatique au fil de la saisie.",
+        "editorLabel": "Texte de la note",
+        "preview": "Aperçu",
+        "edit": "Modifier",
+        "uploading": "Ajout de l'image…"
       }
     },
     "mochi": {

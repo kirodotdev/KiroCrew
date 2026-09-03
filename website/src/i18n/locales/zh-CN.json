@@ -2831,6 +2831,7 @@
         "highlight_4": "在提交任何内容之前先审阅提取出的行动项 — 噪音归档，其余提交",
         "highlight_5": "任务和日历提供方可插拔：内置本地任务账本和 iCalendar（.ics）读取器，组织也可以注册自己的实现",
         "highlight_6": "会议进行时，逐行用另一种语言读回转录内容",
+        "highlight_7": "在智能体笔记旁边记录你自己的笔记 — 粘贴截图后会附上会议进行到的时间",
         "page_label": "会议"
       },
       "meeting": {
@@ -2851,6 +2852,7 @@
         "retryAgents": "重试",
         "start": "开始",
         "toggleTasks": "行动项",
+        "toggleNote": "笔记",
         "toggleTranslation": "翻译",
         "unpause": "继续"
       },
@@ -2923,7 +2925,10 @@
         "taskFiled": "行动项已提交。",
         "untitled": "未命名会议",
         "minutesSaveFailed": "无法保存你的修改。",
-        "minutesRevertFailed": "无法放弃你的修改。"
+        "minutesRevertFailed": "无法放弃你的修改。",
+        "noteSaveFailed": "无法保存你的笔记。",
+        "noteImageFailed": "无法添加该图片。请粘贴 PNG、JPEG、GIF 或 WebP。",
+        "noteImageTooLarge": "该图片太大，无法添加到笔记中。"
       },
       "settings": {
         "addTerm": "添加",
@@ -2998,6 +3003,19 @@
         "chat": "对话",
         "html": "图示",
         "markdown": "笔记"
+      },
+      "note": {
+        "title": "我的笔记",
+        "close": "关闭笔记",
+        "placeholder": "在此记下你自己的笔记。支持 Markdown。",
+        "saving": "正在保存…",
+        "unsaved": "有未保存的更改",
+        "saved": "已保存",
+        "hint": "输入时自动保存。",
+        "editorLabel": "笔记内容",
+        "preview": "预览",
+        "edit": "编辑",
+        "uploading": "正在添加图片…"
       }
     },
     "mochi": {

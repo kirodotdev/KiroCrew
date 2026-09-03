@@ -136,6 +136,24 @@ VALID_TRANSCRIPT_SOURCES = (
     TRANSCRIPT_SOURCE_SYSTEM,
 )
 
+#: The user's own note for a meeting, inside the meeting directory.
+#:
+#: **The leading underscore is load-bearing, not decoration.** Agent output files
+#: share this directory and their names are derived as
+#: ``safe_agent_id(id) + WIDGET_EXT_MAP[widget_type]``. ``_SAFE_AGENT_ID_RE`` is
+#: ``^[a-z0-9][a-z0-9-]*$``, which cannot produce a leading underscore — so no
+#: configured agent, whatever the user names it, can ever be handed this path as
+#: its ``OUTPUT_FILE`` and overwrite what the user wrote. ``note.md`` and
+#: ``notes.md`` are both reachable that way (``note`` and ``notes`` are legal agent
+#: ids), which is why neither is used. Pinned by
+#: ``test_note_filename_is_unreachable_by_any_agent``.
+NOTE_FILE = "_note.md"
+
+#: Subdirectory holding images pasted into a note. Referenced from the note as a
+#: RELATIVE path (``![10:23](images/xxx.png)``), which is what lets the dashboard's
+#: markdown renderer resolve it through the existing hardened file route.
+NOTE_IMAGES_DIR = "images"
+
 # The always-on system agent that maintains ``tasks.json``. Not a configurable
 # entry in ``meeting_agents`` — it is a core feature of the app.
 TASK_EXTRACTOR_ID = "task-extractor"
@@ -284,3 +302,18 @@ MAX_MINUTES_CHARS = 200_000
 #: below the gateway's own 60 MiB ``client_max_size``. Raised for this ONE route
 #: rather than for all of them: every other body here is a short field.
 MAX_MINUTES_BODY_BYTES = 3 * 1024 * 1024
+
+# ── notes ───────────────────────────────────────────────────────────────────
+
+#: Ceiling on a meeting note. Generous — this is a human typing for at most the
+#: four hours ``MAX_SESSION_DURATION`` allows — but bounded, because the note is
+#: written by a request body and read back into a poll response.
+MAX_NOTE_CHARS = 100_000
+
+#: Ceiling on one pasted note image. A full-screen PNG screenshot on a retina
+#: display is comfortably under this; anything larger is not a screenshot.
+MAX_NOTE_IMAGE_BYTES = 8 * 1024 * 1024
+
+#: Images one meeting's note may accumulate. Bounds the directory a single meeting
+#: can create, since each paste writes a new file and nothing deletes them.
+MAX_NOTE_IMAGES = 200

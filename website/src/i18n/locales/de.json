@@ -2937,6 +2937,7 @@
         "highlight_4": "Prüfe die extrahierten Aufgaben, bevor etwas angelegt wird — archiviere das Rauschen, lege den Rest an",
         "highlight_5": "Austauschbare Anbieter für Aufgaben und Kalender: enthalten sind ein lokales Aufgabenregister und ein iCalendar-Leser (.ics), und eine Organisation kann eigene registrieren",
         "highlight_6": "Lies das Transkript während des Meetings Zeile für Zeile in einer anderen Sprache mit",
+        "highlight_7": "Führe deine eigenen Notizen neben denen der Agenten — füge einen Screenshot ein und er landet mit der bisherigen Meeting-Dauer",
         "page_label": "Besprechungen",
         "use_case_1": "Erfasse eine Live-Besprechung, während parallele Agenten Transkript, strukturierte Notizen, Diagramm und die Prüfung der Aufgaben erstellen.",
         "configuration_1": "Erlaube dem Browser für die Live-Erfassung den Mikrofonzugriff; konfiguriere optional in den Einstellungen einen iCalendar-Pfad oder eine URL, das lokale Aufgaben-Ledger, Agentenrollen und Begriffe zur Spracherkennungskorrektur."
@@ -2959,6 +2960,7 @@
         "retryAgents": "Erneut versuchen",
         "start": "Starten",
         "toggleTasks": "Aufgaben",
+        "toggleNote": "Notiz",
         "toggleTranslation": "Übersetzung",
         "unpause": "Fortsetzen"
       },
@@ -3033,7 +3035,10 @@
         "taskFiled": "Aufgabe angelegt.",
         "untitled": "Besprechung ohne Titel",
         "minutesSaveFailed": "Deine Änderungen konnten nicht gespeichert werden.",
-        "minutesRevertFailed": "Deine Änderungen konnten nicht verworfen werden."
+        "minutesRevertFailed": "Deine Änderungen konnten nicht verworfen werden.",
+        "noteSaveFailed": "Ihre Notiz konnte nicht gespeichert werden.",
+        "noteImageFailed": "Dieses Bild konnte nicht hinzugefügt werden. Fügen Sie ein PNG, JPEG, GIF oder WebP ein.",
+        "noteImageTooLarge": "Dieses Bild ist zu groß für eine Notiz."
       },
       "settings": {
         "addTerm": "Hinzufügen",
@@ -3109,6 +3114,19 @@
         "chat": "Chat",
         "html": "Diagramm",
         "markdown": "Notizen"
+      },
+      "note": {
+        "title": "Meine Notiz",
+        "close": "Notiz schließen",
+        "placeholder": "Schreiben Sie hier Ihre eigenen Notizen. Markdown wird unterstützt.",
+        "saving": "Wird gespeichert…",
+        "unsaved": "Nicht gespeicherte Änderungen",
+        "saved": "Gespeichert",
+        "hint": "Wird beim Schreiben automatisch gespeichert.",
+        "editorLabel": "Notiztext",
+        "preview": "Vorschau",
+        "edit": "Bearbeiten",
+        "uploading": "Bild wird hinzugefügt…"
       }
     },
     "mochi": {

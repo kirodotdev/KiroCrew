@@ -254,6 +254,7 @@ export function useMeetingSession({ eventId, fallbackTitle, config, notify }: Op
   const [partialTranscript, setPartialTranscript] = useState('')
   const [fullMeetingId, setFullMeetingId] = useState('')
   const transcriptFullNoticeRef = useRef('')
+  const [noteOpen, setNoteOpen] = useState(false)
   const [translationOpen, setTranslationOpen] = useState(false)
   const [chatViewAgents, setChatViewAgents] = useState<string[]>([])
   const [selectedPreset, setSelectedPreset] = useState(config?.default_preset ?? '')
@@ -327,7 +328,7 @@ export function useMeetingSession({ eventId, fallbackTitle, config, notify }: Op
         : false,
   })
 
-  const transcriptKey = [...scope, 'transcript'] as const
+const transcriptKey = [...scope, 'transcript'] as const
   const transcriptQuery = useQuery({
     queryKey: transcriptKey,
     queryFn: async () => {
@@ -349,6 +350,66 @@ export function useMeetingSession({ eventId, fallbackTitle, config, notify }: Op
         ? (config?.poll_interval_idle ?? 30_000)
         : false,
   })
+
+  // ── the user's own note ───────────────────────────────────────────────────
+  //
+  // Fetched only while the panel is open, and NOT polled: this is the one thing in
+  // the meeting the user owns, so the authoritative copy is the textarea they are
+  // typing into. Refetching under them is how an autosaving editor loses a
+  // sentence, and there is no second writer to poll for.
+  const noteQuery = useQuery({
+    queryKey: [...scope, 'note'],
+    queryFn: () => meetingsApi.note(meetingId),
+    enabled: initQuery.isSuccess && noteOpen,
+    refetchInterval: false,
+    refetchOnWindowFocus: false,
+  })
+
+  const noteMutation = useMutation({
+    mutationFn: (content: string) => meetingsApi.saveNote(meetingId, content),
+    onSuccess: response => {
+      // Seed the cache from the response instead of invalidating: an invalidate
+      // would refetch and hand the editor a value mid-keystroke.
+      queryClient.setQueryData([...scope, 'note'], {
+        content: response.content,
+        updated_at: response.updated_at,
+        path: response.path,
+      })
+    },
+    // `notify` directly rather than `failureNotice`: that helper is declared
+    // further down (referencing it here would be a use-before-init), and its one
+    // special case — the 409 "another meeting is active" — cannot arise for a note.
+    onError: () => notify(i18nT('apps.meetings.session.noteSaveFailed'), { type: 'error' }),
+  })
+
+  /**
+   * Store one pasted image, resolving with the markdown pieces to insert.
+   *
+   * Returns `null` on failure rather than throwing: a rejected paste must leave the
+   * note exactly as it was, and the user is told with a toast. The two cases worth
+   * distinguishing are the ones they can act on — shrink the image, or paste a
+   * different format.
+   */
+  const uploadNoteImage = useCallback(
+    async (file: File): Promise<{ alt: string; src: string } | null> => {
+      try {
+        const stored = await meetingsApi.uploadNoteImage(meetingId, file)
+        return { alt: stored.alt, src: stored.src }
+      } catch (error) {
+        const tooLarge = error instanceof MeetingsApiError && error.status === 413
+        notify(
+          i18nT(
+            tooLarge
+              ? 'apps.meetings.session.noteImageTooLarge'
+              : 'apps.meetings.session.noteImageFailed',
+          ),
+          { type: 'error' },
+        )
+        return null
+      }
+    },
+    [meetingId, notify],
+  )
 
   // ── live translation ──────────────────────────────────────────────────────
   //
@@ -778,6 +839,17 @@ export function useMeetingSession({ eventId, fallbackTitle, config, notify }: Op
     chatViewAgents,
     selectedPreset,
     transcription,
+    /** The user's own note. Not polled — the textarea is the authoritative copy. */
+    note: {
+      open: noteOpen,
+      content: noteQuery.data?.content ?? '',
+      updatedAt: noteQuery.data?.updated_at ?? '',
+      path: noteQuery.data?.path ?? '',
+      saving: noteMutation.isPending,
+    },
+    setNoteOpen,
+    saveNote: (content: string) => noteMutation.mutate(content),
+    uploadNoteImage,
     /** Live translation: `''` language means the feature is off. */
     translation: {
       language: translationLanguage,

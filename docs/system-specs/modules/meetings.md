@@ -18,6 +18,7 @@ action items.
 | `.../backend/domain/dictionary.py` | speech-correction dictionary (TOML) |
 | `.../backend/domain/session.py` | batching dispatcher + meeting state machine |
 | `.../backend/domain/translate.py` | live per-line translation queue + its prompt |
+| `.../backend/domain/images.py` | image-signature sniffing for note pastes |
 | `.../backend/providers/tasks.py` | **task-provider seam** + the local ledger |
 | `.../backend/providers/calendar.py` | **calendar-provider seam** + the `.ics` reader |
 | `.../backend/routes/` | `_common` (gate + validation), `meeting_lifecycle`, `agents`, `tasks`, `calendar`, `settings` |
@@ -62,6 +63,9 @@ GET    /meetings/{id}/outputs       batch-read every agent output + tasks
 GET    /meetings/{id}/translations[?since=N]   translated lines, cursor-paged
 PUT    /meetings/{id}/outputs       replace one agent's minutes  {agent_id, content}
 DELETE /meetings/{id}/outputs       discard the edit, serve the agent's own output {agent_id}
+GET    /meetings/{id}/note          the user's own note + its absolute path
+PUT    /meetings/{id}/note          {content} — replace it
+POST   /meetings/{id}/note/images   multipart — one pasted screenshot
 POST   /meetings/{id}/attachments   {action: add|remove, attachments[]|index}
 POST   /meetings/{id}/agents        {agent_id, enable} — toggle mid-meeting
 POST   /meetings/{id}/mute          {agent_id, muted}
@@ -94,6 +98,8 @@ meetings/<safe_id>/transcript.jsonl finalized speech + typed broadcasts
 meetings/<safe_id>/<agent>.md    a markdown agent's output
 meetings/<safe_id>/<agent>.html  an HTML agent's output
 meetings/<safe_id>/translations.json  live translation, reset on language change
+meetings/<safe_id>/_note.md      the user's own note
+meetings/<safe_id>/images/*      screenshots pasted into the note
 edits/<safe_id>/<agent>.md        the user's edit of that agent's minutes (sidecar)
 ```
 
@@ -114,6 +120,17 @@ agent was markdown is not served once its `widget_type` becomes html — at whic
 point the user's text would be handed to the iframe renderer. The sidecar's
 filename is derived from the agent's validated id, never from the request, and
 the directory passes through `store.contain` like every other derived path.
+
+**Two names in that layout are security properties rather than style, and both are
+about who can be handed which path.** An agent's output path is always
+`meeting_dir / (safe_agent_id(id) + WIDGET_EXT_MAP[type])` — a FLAT filename — and
+`_SAFE_AGENT_ID_RE` (`^[a-z0-9][a-z0-9-]*$`) can produce neither a leading
+underscore nor a path separator. So `_note.md` is unreachable by any agent because
+of the underscore (`note.md` and `notes.md` are both legal agent ids and WOULD be
+reachable), and `images/` is unreachable because it is a DIRECTORY. Pinned by
+`test_note_filename_is_unreachable_by_any_agent`, asserted through the validator so
+loosening the regex fails there rather than silently handing an agent the user's
+writing.
 
 Deleting a meeting removes its complete per-meeting directory (metadata,
 transcript, tasks, notes, and diagrams) and its app-owned edit directory. The route
@@ -287,6 +304,33 @@ line number**, because a `queryFn` that runs twice for one cursor (React Strict 
 in dev) would otherwise duplicate every line. Stored `n` stays monotonic when the
 file is trimmed. A failed line is persisted with `text: ""` on purpose, so the panel
 marks it rather than leaving a gap indistinguishable from nobody speaking.
+
+## The user's note
+
+`_note.md` per meeting, with pasted screenshots under `images/`. Three decisions
+worth carrying forward:
+
+* **The note is not redacted**, unlike everything else this app accepts, and the PUT
+  body is validated by hand rather than with `field_str`. That helper treats a
+  non-string as *missing* — so a malformed request would answer 200 having ERASED
+  the memo — and it `strip()`s, destroying trailing blank lines the user typed. A
+  note is the one thing here the user cannot regenerate.
+* **The note is never polled**, and the save response seeds the cache instead of
+  invalidating: the textarea is the authoritative copy, and refetching under the user
+  is how an autosaving editor loses a sentence.
+* **Image paste never reads the client filename.** The extension is sniffed from the
+  bytes (`domain/images.sniff_image_ext`) and the name is a fresh uuid4, so no client
+  string reaches a path. An unrecognised signature is REFUSED, which is what keeps
+  SVG out (no binary signature, and a document that can carry `<script>`).
+  `store.safe_note_image_name` additionally requires exactly the generated shape,
+  because `contain()` alone is not enough: it bounds a path to the DATA ROOT, so
+  `../m2/note-taker.md` — another meeting's agent output — would pass.
+
+No second file-serving route was added. `MarkdownRenderer`'s `ImgWithFallback`
+rewrites a relative `<img src>` to `/api/file-raw?path=…` when a `BasePathCtx` is
+present, and that route is already hardened (content type from MAGIC BYTES only,
+`O_NOFOLLOW`, `nosniff`, SVG CSP). The note's `GET` returns its own absolute `path`
+for exactly this.
 
 ## The two provider seams
 
@@ -505,9 +549,17 @@ toast, and the user can still type into the broadcast bar to feed the agents.
   `website/src/test/sketchSrcdoc.test.ts` — nothing executable survives, **and** a
   Mermaid diagram plus an inline-styled HTML table still render (the guards
   against over-stripping the panel into a blank).
+* **A deliberate redaction EXEMPTION, for the user's own writing.** The note is
+  returned verbatim: it is text on its way back to only the person who typed it and
+  is never fed to an agent. It renders through the dashboard's shared markdown
+  sanitizer, which is what keeps the round trip safe without altering the text.
+* **An uploaded image's name is never the client's.** The extension comes from the
+  bytes and the stem is a uuid4; `store.safe_note_image_name` then requires exactly
+  that shape, because path containment alone permits `../<other-meeting>/<agent>.md`.
 * **No blocking call on the loop.** The calendar fetch is aiohttp; transcript
   reads/appends, DNS validation, the local `.ics` read, the data-dir seed, the
-  enable check, and the task-provider `create` all run on an executor.
+  enable check, the note reads/writes, image sniffing, and the task-provider
+  `create` all run on an executor.
 
 ## What the port changed
 
@@ -527,8 +579,11 @@ internal-git update-check cron was deleted (a builtin versions with the package)
 scheme/address refusals), `test_meetings_routes.py` (the HTTP contract,
 validation, redaction, the enable gate), `test_meetings_minutes.py` (the
 editable minutes: sidecar ownership, the read overlay, staleness, the widget
-gate, redaction asymmetry, body caps), and `test_meetings_translation.py` (the
-injection guard, the bounded queue, off-by-default), with the shared fixtures and
+gate, redaction asymmetry, body caps), `test_meetings_translation.py` (the
+injection guard, the bounded queue, off-by-default), and `test_meetings_note.py` +
+`test_meetings_note_images.py` (the two unreachability properties, the by-hand body
+validation, the signature sniffing), with the shared fixtures and
+the fake session manager in `test/meetings_helpers.py`. Every dispatch goes through that
 fake session manager; no test spawns a process or opens a socket.
 
 These live in the repo-level `test/` tree, not an in-package `tests/`:
@@ -539,6 +594,6 @@ Frontend: `website/src/test/MeetingsApiClient.test.ts` (fetch-boundary
 translation), `MeetingsSessionLogic.test.ts` (dedup, preset resolution, the
 transition table), `MeetingsAgentPillBar.test.tsx`, `MeetingsBroadcastBar.test.tsx`,
 `MeetingsAgentPanel.test.tsx` (including the iframe sandbox),
-`MeetingsTranslation.test.tsx`, and
+`MeetingsTranslation.test.tsx`, `MeetingsNote.test.tsx`, and
 `MeetingsTranscriptPanel.test.tsx` (durable/live rows, follow mode, and the
 split-to-primary layout transition).

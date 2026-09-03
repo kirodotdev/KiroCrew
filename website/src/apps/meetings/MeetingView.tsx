@@ -11,6 +11,7 @@ import {
   Mic,
   MicOff,
   MoreHorizontal,
+  NotebookPen,
   Play,
   RefreshCw,
   Square,
@@ -30,6 +31,7 @@ import AgentPanel from './components/AgentPanel'
 import AgentPillBar from './components/AgentPillBar'
 import BroadcastBar from './components/BroadcastBar'
 import MeetingWorkspace from './components/MeetingWorkspace'
+import NoteSidebar from './components/NoteSidebar'
 import TaskSidebar from './components/TaskSidebar'
 import TranscriptPanel from './components/TranscriptPanel'
 import TranslationSidebar from './components/TranslationSidebar'
@@ -81,6 +83,7 @@ export default function MeetingView({
     actions,
     pending,
     translation,
+    note,
   } = session
 
   if (loading) return <Skeleton className="h-40 m-6" />
@@ -224,6 +227,17 @@ export default function MeetingView({
                   />
                   <span>{i18nT('apps.meetings.meeting.refresh')}</span>
                 </DropdownMenuItem>
+                <DropdownMenuItem
+                  onSelect={() => {
+                    // One side panel at a time (see the translation item below).
+                    setSidebarOpen(false)
+                    session.setTranslationOpen(false)
+                    session.setNoteOpen(open => !open)
+                  }}
+                >
+                  <NotebookPen size={13} className="shrink-0 text-muted" />
+                  <span>{i18nT('apps.meetings.meeting.toggleNote')}</span>
+                </DropdownMenuItem>
                 {/* Offered only when a target language is configured: with translation
                     off (the default) the item would open a panel that can never fill.
                     Settings is where it gets turned on. */}
@@ -234,6 +248,7 @@ export default function MeetingView({
                       // panels' 260px height floors together exceed a short
                       // viewport and squeeze the transcript out entirely.
                       setSidebarOpen(false)
+                      session.setNoteOpen(false)
                       session.setTranslationOpen(open => !open)
                     }}
                   >
@@ -244,6 +259,7 @@ export default function MeetingView({
                 <DropdownMenuItem
                   onSelect={() => {
                     session.setTranslationOpen(false)
+                    session.setNoteOpen(false)
                     setSidebarOpen(open => !open)
                   }}
                 >
@@ -346,6 +362,18 @@ export default function MeetingView({
           />
         )}
       </div>
+
+      {note.open && (
+        <NoteSidebar
+          content={note.content}
+          updatedAt={note.updatedAt}
+          path={note.path}
+          saving={note.saving}
+          onUploadImage={session.uploadNoteImage}
+          onSave={session.saveNote}
+          onClose={() => session.setNoteOpen(false)}
+        />
+      )}
 
       {translation.open && translation.language && (
         <TranslationSidebar

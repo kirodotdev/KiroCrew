@@ -1857,6 +1857,7 @@
         "highlight_4": "Review extracted action items before anything is filed — archive the noise, file the rest",
         "highlight_5": "Pluggable task and calendar providers: ships a local task ledger and an iCalendar (.ics) reader, and an organization can register its own",
         "highlight_6": "Read the transcript back line by line in another language while the meeting runs",
+        "highlight_7": "Keep your own notes beside the agents' — paste a screenshot and it lands with the meeting's elapsed time",
         "page_label": "Meetings",
         "use_case_1": "Capture a live meeting while parallel agents build the transcript, structured notes, diagram, and action-item review.",
         "configuration_1": "Allow browser microphone access for live capture; optionally configure an iCalendar path or URL, the local task ledger, agent roles, and speech-correction terms in Settings."
@@ -1879,6 +1880,7 @@
         "retryAgents": "Retry",
         "start": "Start",
         "toggleTasks": "Action items",
+        "toggleNote": "Note",
         "toggleTranslation": "Translation",
         "unpause": "Resume"
       },
@@ -1953,7 +1955,10 @@
         "taskFiled": "Action item filed.",
         "untitled": "Untitled meeting",
         "minutesSaveFailed": "Could not save your edits.",
-        "minutesRevertFailed": "Could not discard your edits."
+        "minutesRevertFailed": "Could not discard your edits.",
+        "noteSaveFailed": "Could not save your note.",
+        "noteImageFailed": "Could not add that image. Paste a PNG, JPEG, GIF or WebP.",
+        "noteImageTooLarge": "That image is too large to add to a note."
       },
       "settings": {
         "addTerm": "Add",
@@ -2018,6 +2023,19 @@
         "chat": "Chat",
         "html": "Diagram",
         "markdown": "Notes"
+      },
+      "note": {
+        "title": "My note",
+        "close": "Close note",
+        "placeholder": "Type your own notes here. Markdown works.",
+        "saving": "Saving…",
+        "unsaved": "Unsaved changes",
+        "saved": "Saved",
+        "hint": "Saves automatically as you type.",
+        "editorLabel": "Note text",
+        "preview": "Preview",
+        "edit": "Edit",
+        "uploading": "Adding image…"
       }
     },
     "mochi": {

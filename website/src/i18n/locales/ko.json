@@ -2882,6 +2882,7 @@
         "highlight_4": "등록 전에 추출된 액션 아이템을 검토합니다 — 불필요한 것은 보관하고 나머지는 등록하세요",
         "highlight_5": "교체 가능한 작업·캘린더 제공자: 로컬 작업 원장과 iCalendar (.ics) 리더를 기본 제공하며, 조직이 자체 제공자를 등록할 수 있습니다",
         "highlight_6": "회의가 진행되는 동안 전사를 다른 언어로 한 줄씩 읽을 수 있습니다",
+        "highlight_7": "에이전트의 노트 옆에 나만의 노트를 남길 수 있습니다 — 스크린샷을 붙여넣으면 회의 경과 시간과 함께 기록됩니다",
         "page_label": "회의"
       },
       "meeting": {
@@ -2901,9 +2902,23 @@
         "restart": "다시 시작",
         "retryAgents": "재시도",
         "start": "시작",
+        "toggleNote": "노트",
         "toggleTasks": "액션 아이템",
         "toggleTranslation": "번역",
         "unpause": "재개"
+      },
+      "note": {
+        "close": "노트 닫기",
+        "edit": "편집",
+        "editorLabel": "노트 본문",
+        "hint": "입력하면 자동으로 저장됩니다.",
+        "placeholder": "여기에 나만의 메모를 입력하세요. Markdown을 사용할 수 있습니다.",
+        "preview": "미리보기",
+        "saved": "저장됨",
+        "saving": "저장 중…",
+        "title": "내 노트",
+        "unsaved": "저장되지 않은 변경 사항",
+        "uploading": "이미지 추가 중…"
       },
       "pillBar": {
         "addLink": "링크 추가",
@@ -2960,6 +2975,9 @@
         "messageFailed": "해당 메시지를 보낼 수 없습니다.",
         "minutesRevertFailed": "편집을 취소할 수 없습니다.",
         "minutesSaveFailed": "편집을 저장할 수 없습니다.",
+        "noteImageFailed": "이미지를 추가할 수 없습니다. PNG, JPEG, GIF, WebP 중 하나를 붙여넣으세요.",
+        "noteImageTooLarge": "이미지가 너무 커서 노트에 추가할 수 없습니다.",
+        "noteSaveFailed": "노트를 저장할 수 없습니다.",
         "startFailed": "회의를 시작할 수 없습니다.",
         "started": "회의가 시작되었습니다.",
         "statusFailed": "회의 상태를 변경할 수 없습니다.",

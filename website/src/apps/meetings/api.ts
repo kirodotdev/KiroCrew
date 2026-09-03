@@ -67,6 +67,27 @@ export interface MeetingsConfig {
   translation_language: string
 }
 
+/** The user's own note for a meeting. `updated_at` is `''` before the first save. */
+export interface MeetingNote {
+  content: string
+  updated_at: string
+  /**
+   * Absolute path of the note file. Used as the markdown renderer's base path so the
+   * note's RELATIVE image links resolve through the dashboard's own file route.
+   */
+  path: string
+}
+
+/** One stored note image. `alt` is the meeting's elapsed time, or `''` if not started. */
+export interface NoteImage {
+  ok: boolean
+  filename: string
+  /** Relative, e.g. `images/ab12….png` — resolved against the note's location. */
+  src: string
+  alt: string
+  content_type: string
+}
+
 /** One translated transcript line. `text` is `''` when the translation failed. */
 export interface TranslationLine {
   n: number
@@ -242,10 +263,16 @@ export class MeetingsApiError extends Error {
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`${API}${path}`, {
-    ...init,
-    headers: init?.body ? { 'Content-Type': 'application/json', ...init?.headers } : init?.headers,
-  })
+  // A `FormData` body must NOT get an explicit Content-Type: the browser sets
+  // `multipart/form-data` together with the boundary it generated, and naming the
+  // type by hand omits the boundary — the server then fails to parse a body that
+  // looks perfectly well formed from the client side.
+  const isMultipart = typeof FormData !== 'undefined' && init?.body instanceof FormData
+  const headers =
+    init?.body && !isMultipart
+      ? { 'Content-Type': 'application/json', ...init?.headers }
+      : init?.headers
+  const res = await fetch(`${API}${path}`, { ...init, headers })
   if (!res.ok) {
     // The backend answers every error as `{"error": "..."}`; fall back to the
     // status text when the body is not JSON (a proxy error page, say).
@@ -344,6 +371,27 @@ export const meetingsApi = {
     request<TranscriptResponse>(
       `/meetings/${encodeURIComponent(id)}/transcript${cursor ? `?cursor=${cursor}` : ''}`,
     ),
+  note: (id: string) =>
+    request<MeetingNote>(`/meetings/${encodeURIComponent(id)}/note`),
+  /**
+   * Store one pasted image and get back the markdown pieces to insert.
+   *
+   * `FormData`, so no `Content-Type` header is set by hand — the browser has to
+   * supply the multipart boundary, and setting the header manually omits it.
+   */
+  uploadNoteImage: (id: string, file: File) => {
+    const body = new FormData()
+    body.append('file', file)
+    return request<NoteImage>(`/meetings/${encodeURIComponent(id)}/note/images`, {
+      method: 'POST',
+      body,
+    })
+  },
+  saveNote: (id: string, content: string) =>
+    request<{ ok: boolean } & MeetingNote>(`/meetings/${encodeURIComponent(id)}/note`, {
+      method: 'PUT',
+      body: JSON.stringify({ content }),
+    }),
   /**
    * Translated lines newer than `since`. Cursor-based rather than full-document:
    * the panel polls while it is open and a long meeting accumulates hundreds of

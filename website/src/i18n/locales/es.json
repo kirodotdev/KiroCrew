@@ -2943,6 +2943,7 @@
         "highlight_4": "Revisa las tareas extraídas antes de registrar nada — archiva el ruido y registra el resto",
         "highlight_5": "Proveedores de tareas y de calendario conectables: incluye un registro local de tareas y un lector de iCalendar (.ics), y una organización puede registrar los suyos",
         "highlight_6": "Lee la transcripción línea a línea en otro idioma mientras la reunión sigue en curso",
+        "highlight_7": "Guarda tus propias notas junto a las de los agentes — pega una captura de pantalla y queda con el tiempo transcurrido de la reunión",
         "page_label": "Reuniones",
         "use_case_1": "Captura una reunión en directo mientras agentes paralelos crean la transcripción, las notas estructuradas, el diagrama y la revisión de tareas.",
         "configuration_1": "Permite que el navegador acceda al micrófono para la captura en directo; configura de forma opcional en Ajustes una ruta o URL de iCalendar, el registro local de tareas, los roles de agente y los términos de corrección de voz."
@@ -2965,6 +2966,7 @@
         "retryAgents": "Reintentar",
         "start": "Empezar",
         "toggleTasks": "Tareas",
+        "toggleNote": "Nota",
         "toggleTranslation": "Traducción",
         "unpause": "Reanudar"
       },
@@ -3041,7 +3043,10 @@
         "taskFiled": "Tarea registrada.",
         "untitled": "Reunión sin título",
         "minutesSaveFailed": "No se pudieron guardar tus cambios.",
-        "minutesRevertFailed": "No se pudieron descartar tus cambios."
+        "minutesRevertFailed": "No se pudieron descartar tus cambios.",
+        "noteSaveFailed": "No se pudo guardar tu nota.",
+        "noteImageFailed": "No se pudo añadir esa imagen. Pega un PNG, JPEG, GIF o WebP.",
+        "noteImageTooLarge": "Esa imagen es demasiado grande para una nota."
       },
       "settings": {
         "addTerm": "Añadir",
@@ -3118,6 +3123,19 @@
         "chat": "Chat",
         "html": "Diagrama",
         "markdown": "Notas"
+      },
+      "note": {
+        "title": "Mi nota",
+        "close": "Cerrar la nota",
+        "placeholder": "Escribe aquí tus propias notas. Se admite Markdown.",
+        "saving": "Guardando…",
+        "unsaved": "Cambios sin guardar",
+        "saved": "Guardada",
+        "hint": "Se guarda automáticamente mientras escribes.",
+        "editorLabel": "Texto de la nota",
+        "preview": "Vista previa",
+        "edit": "Editar",
+        "uploading": "Añadiendo la imagen…"
       }
     },
     "mochi": {
