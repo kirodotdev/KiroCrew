@@ -1,0 +1,3 @@
+{"_type": "archive", "reason": "rotate", "archived_at": "2026-01-14T09:00:00+00:00", "count": 2}
+{"role": "user", "content": "Earlier turn, archived.", "ts": "2026-01-14T09:00:00+00:00", "source_thread": "dashboard", "source_user": "dashboard"}
+{"role": "assistant", "content": "An archive slice, used by retention paths.", "ts": "2026-01-14T09:01:00+00:00", "source_thread": "dashboard", "source_user": "dashboard"}
