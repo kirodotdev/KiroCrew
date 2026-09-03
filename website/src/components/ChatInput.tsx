@@ -223,6 +223,24 @@ function stripTrailingBlankLines(s: string): string {
   return sawNewline ? s.slice(0, i + 1) : s
 }
 
+/** True when the text on the caret's line, before the caret, is ONLY markdown
+ *  blockquote markers — `>`, `> > `, optionally indented. A collapsed-paste
+ *  chip then flows on that line (`> [ Paste #1 · N lines ]`) instead of being
+ *  forced onto its own line, which strands the `>` above the chip and makes
+ *  the user delete the injected newline to quote a paste. Whitespace alone
+ *  (no `>`) is NOT a quote prefix — the own-line shape stays for those.
+ *  Linear scan, no regex. */
+function isBlockquotePrefix(linePrefix: string): boolean {
+  let sawMarker = false
+  for (let i = 0; i < linePrefix.length; i++) {
+    const c = linePrefix.charCodeAt(i)
+    if (c === 62 /* > */) { sawMarker = true; continue }
+    if (c === 32 /* space */ || c === 9 /* \t */) continue
+    return false
+  }
+  return sawMarker
+}
+
 /** Auto-size textarea to fit content (only when not manually sized).
  *  Sets overflow:hidden during measurement so the parent flex container
  *  never sees the collapsed (height:0) intermediate state — prevents the
@@ -2355,8 +2373,13 @@ function ChatInput({
       // Surround the token with newlines so the chip lives on its own line —
       // long-form pasted content rarely flows with typed text around it.
       // Skip the leading newline when the caret is at the start of a line,
-      // and the trailing one when the caret is at the end of a line.
-      const leadingNewline = before && !before.endsWith('\n') ? '\n' : ''
+      // and the trailing one when the caret is at the end of a line. Also
+      // skip the leading one when everything before the caret on its line is
+      // a bare blockquote prefix (`> `, `> > `, optionally indented): the
+      // user is quoting the paste, and forcing the chip down a line strands
+      // the `>` above it.
+      const linePrefix = before.slice(before.lastIndexOf('\n') + 1)
+      const leadingNewline = before && !before.endsWith('\n') && !isBlockquotePrefix(linePrefix) ? '\n' : ''
       const trailingNewline = after && !after.startsWith('\n') ? '\n' : ''
       const insert = leadingNewline + token + trailingNewline
       valueFromUserRef.current = true // a paste is a real user edit, not a draft restore

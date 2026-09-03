@@ -387,6 +387,75 @@ describe('ChatInput paste: caret lands after the inserted content', () => {
   })
 })
 
+describe('ChatInput paste tokens: blockquote prefix keeps the chip on the quote line', () => {
+  // Typing "> " and then pasting used to force the chip onto its own line,
+  // stranding the quote marker above it (`> ⏎ [ Paste #1 … ]`) — the user had
+  // to delete the injected newline every time to make the quote read right
+  // (issue: collapse-paste prepends a blank line after a quote prefix).
+  const bigPaste = Array.from({ length: 12 }, (_, i) => `payload line ${i}`).join('\n')
+  const pasteText = (el: HTMLElement, text: string) =>
+    fireEvent.paste(el, { clipboardData: { types: ['text/plain'], items: [], getData: () => text } })
+
+  beforeEach(() => {
+    ;(document as unknown as { execCommand: (...a: unknown[]) => boolean }).execCommand = vi.fn(() => false)
+  })
+
+  it('pasting after "> " flows the chip on the quote line — no injected newline', async () => {
+    const ta = mountTokens('> ', [])
+    ta.focus()
+    ta.setSelectionRange(2, 2)
+    pasteText(ta, bigPaste)
+    expect(ta.value).toBe('> [ Paste #1 · 12 lines ]')
+    await nextFrame()
+    expect(ta.selectionStart).toBe(ta.value.length)
+  })
+
+  it('a nested quote prefix ("> > ") also flows', () => {
+    const ta = mountTokens('> > ', [])
+    ta.focus()
+    ta.setSelectionRange(4, 4)
+    pasteText(ta, bigPaste)
+    expect(ta.value).toBe('> > [ Paste #1 · 12 lines ]')
+  })
+
+  it('a quote prefix on a LATER line flows too (earlier lines untouched)', () => {
+    const initial = 'as discussed:\n> '
+    const ta = mountTokens(initial, [])
+    ta.focus()
+    ta.setSelectionRange(initial.length, initial.length)
+    pasteText(ta, bigPaste)
+    expect(ta.value).toBe('as discussed:\n> [ Paste #1 · 12 lines ]')
+  })
+
+  it('an indented quote prefix ("  > ") flows', () => {
+    const ta = mountTokens('  > ', [])
+    ta.focus()
+    ta.setSelectionRange(4, 4)
+    pasteText(ta, bigPaste)
+    expect(ta.value).toBe('  > [ Paste #1 · 12 lines ]')
+  })
+
+  it('ordinary text before the caret still pushes the chip to its own line', () => {
+    // The own-line behavior is deliberate for prose — only a bare quote
+    // prefix opts into inline flow. Pins that this fix does not regress it.
+    const ta = mountTokens('see: ', [])
+    ta.focus()
+    ta.setSelectionRange(5, 5)
+    pasteText(ta, bigPaste)
+    expect(ta.value).toBe('see: \n[ Paste #1 · 12 lines ]')
+  })
+
+  it('a line of only whitespace (no ">") still pushes the chip to its own line', () => {
+    // Whitespace alone is not a quote — without a marker the prefix rule must
+    // not fire, or an indented caret would silently change long-standing shape.
+    const ta = mountTokens('   ', [])
+    ta.focus()
+    ta.setSelectionRange(3, 3)
+    pasteText(ta, bigPaste)
+    expect(ta.value).toBe('   \n[ Paste #1 · 12 lines ]')
+  })
+})
+
 describe('ChatInput paste tokens: clipboard copy and cut', () => {
   const clip = () => {
     const box = { data: '' }
