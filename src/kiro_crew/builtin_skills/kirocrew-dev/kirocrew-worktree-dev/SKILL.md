@@ -287,6 +287,19 @@ where a pod cannot run.
 3. **No preview at all (also valid).** For many changes, the build gate + unit
    tests are enough confidence to cut the PR. Previewing live is optional.
 
+### Turn a preview into proof
+
+A pod being healthy proves only that a gateway answered. To prove changed
+behavior, run the copy-pasteable trace in
+`docs/guides/worktree-verification-recipes.md` for the changed surface. The
+recipes use the feature map to select the owning endpoint, assert seeded backend
+state, run the packaged pod-e2e Playwright harness and preserve screenshot
+evidence, or diagnose and reclaim a failed pod.
+
+The recipes distinguish pod commands already on `main` from `pod api`, which
+arrives with PR #8218. They also record the current session-control compatibility
+gap rather than presenting an HTTP 403 as an agent-driving proof.
+
 ### Agent specs + MCP servers are a SEPARATE isolation axis from the data home
 
 `KIROCREW_HOME` isolates config, DB, sessions and workspace. It does **not**
