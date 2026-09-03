@@ -959,7 +959,8 @@ def monitor_start(name: str, args: dict[str, Any]) -> str:
             + (
                 f"observing {gated.target} every {interval_secs}s and "
                 "re-injecting the message only when it changes, so quiet cycles "
-                f"cost no turn and the {max_cycles or 0} cap counts delivered turns"
+                "cost no turn"
+                + (f" and the {max_cycles} cap counts delivered turns" if max_cycles else "")
                 if gated is not None
                 else f"the message will re-inject every {interval_secs}s"
             )

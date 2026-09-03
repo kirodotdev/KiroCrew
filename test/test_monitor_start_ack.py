@@ -76,6 +76,38 @@ def test_the_ack_carries_the_opt_out_to_the_scheduler(bound_session):
     assert gated is not None and gated.get("gate") is True, "absent means gated"
 
 
+def test_a_gated_loop_with_zero_max_cycles_does_not_contradict_itself(bound_session):
+    """max_cycles=0 means "unlimited", so the ack must describe the cap exactly once.
+
+    The cap clause and the "NO cycle cap" clause live far apart in the ack
+    expression, so an explicit zero renders BOTH unless the cadence clause shares
+    the tail's truthiness guard -- asserting the loop both counts a cap and has
+    none -- on the one parameter that decides whether an unattended loop can spend
+    without limit.
+    """
+    out = _ack("Watch https://github.com/acme/widgets/pull/42", max_cycles=0)
+    assert not (
+        "cap counts" in out and "NO cycle cap" in out
+    ), "an unlimited gated loop must not both count a cap and declare none"
+    # The unlimited loop must POSITIVELY declare it has no cap, not just omit the
+    # contradiction: silence here would let a bounded-sounding ack ship for a loop
+    # that can actually spend without limit.
+    assert "NO cycle cap" in out, "a zero-cap gated loop must declare it has no cap"
+    assert "cap counts" not in out, "and must not also claim a cap counts turns"
+
+
+def test_a_gated_loop_with_a_truthy_max_cycles_states_the_cap(bound_session):
+    """A truthy cap is the counterpart: the ack must state the cap and NOT deny it.
+
+    The zero-cap case proves the "unlimited" branch renders alone; this proves the
+    bounded branch does too, so the two clauses never both appear -- the same
+    contradiction, guarded from the other side.
+    """
+    out = _ack("Watch https://github.com/acme/widgets/pull/42", max_cycles=5)
+    assert "cap counts" in out, "a bounded gated loop must state its cap counts turns"
+    assert "NO cycle cap" not in out, "and must not also declare it has no cap"
+
+
 def test_an_ambiguous_instruction_is_reported_as_ungated(bound_session):
     """Two subjects means no inference, so the ack must not claim a gate."""
     out = _ack(
