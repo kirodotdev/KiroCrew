@@ -177,8 +177,19 @@ function sameBlocks(a: PasteBlock[], b: PasteBlock[]): boolean {
   return b.every(x => ids.has(x.id))
 }
 
+// Decisions mapped here resolve via the ONE-SHOT `api.resolveApproval`
+// endpoint, which has no trust verb: POST /api/approvals/{id}/{action} honors
+// exactly `approve`, `reject` and `reject_once` (dashboard/handlers/sessions.py),
+// and the next identical call prompts again. Any UI feeding this path must offer
+// only those decisions — mapping a trust verb to `approve` here runs the tool
+// once while the composer reports a standing grant the backend never recorded
+// (#5400 on the spawn-approval card, #5434 on the collapsed tool row, #5486
+// here). The Trust affordances are withheld from this path at their render
+// sites (`approvalTrustGrantable`); this arm stays fail-closed so a trust verb
+// that reaches it anyway is rejected rather than silently upgraded — the same
+// rule ChatPage's `toApiDecision` carries verbatim.
 function toApiDecision(d: string): 'approve' | 'reject' | 'reject_once' {
-  if (d === 'approved' || d === 'trust' || d === 'trust_reads') return 'approve'
+  if (d === 'approved') return 'approve'
   if (d === 'rejected_once') return 'reject_once'
   return 'reject'
 }
@@ -885,6 +896,17 @@ function ChatInput({
     || (pendingApproval?.content || '').match(/^(?:🔧\s*)?\[([a-z_]+)\]/)?.[1]
     || ''
   const approvalIsUnattended = UNATTENDED_APPROVAL_SOURCES.has(approvalSource)
+  /** True when a standing Trust grant can actually be RECORDED for this card.
+   *  FAIL-CLOSED: the Trust affordances are withheld unless this holds, because
+   *  the only other resolve path is the one-shot `api.resolveApproval`, which
+   *  has no trust verb — offering Trust there claims a standing grant the
+   *  backend never records (#5400, #5434, #5486).
+   *  - `activeSlot`: `api.approveChatSlot` is slot-scoped, so with no slot the
+   *    grant has nowhere to land and `handleApprovalAction` falls through to the
+   *    one-shot endpoint.
+   *  - `!approvalIsUnattended`: session trust is incoherent for a job that is
+   *    not this session (see `approvalSource` above). */
+  const approvalTrustGrantable = !!activeSlot && !approvalIsUnattended
   const simplified = useSimplifiedToolNames()
   const uiLang = useLanguage().resolved
   const approvalLabelRaw = sanitizeLlmOutput(pendingApproval?.content || '').replace(/^🔧\s*/, '')
@@ -3076,8 +3098,8 @@ function ChatInput({
                   )}
                   <div className="flex gap-1.5 flex-wrap items-center">
                       <button disabled={approvalSubmitting} className={approvalBtnClass} onClick={() => handleApprovalAction('approved')}><CheckCircle size={12} className="shrink-0" />{i18nT('components.chatInput.allow_once')}</button>
-                      {approvalIsReadOnly && !approvalIsUnattended && <button disabled={approvalSubmitting} className={approvalBtnClass} onClick={() => handleApprovalAction('trust_reads')}><BookOpen size={12} className="shrink-0" />{i18nT('components.chatInput.trust_reads')}</button>}
-                      {!approvalIsUnattended && approvalTrustCommandGrantable && (
+                      {approvalIsReadOnly && approvalTrustGrantable && <button disabled={approvalSubmitting} className={approvalBtnClass} onClick={() => handleApprovalAction('trust_reads')}><BookOpen size={12} className="shrink-0" />{i18nT('components.chatInput.trust_reads')}</button>}
+                      {approvalTrustGrantable && approvalTrustCommandGrantable && (
                         <TrustDropdown
                             fullCommand={approvalFullCommand}
                             baseCommand={approvalBaseCommand}
