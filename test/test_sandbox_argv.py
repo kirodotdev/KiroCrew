@@ -3183,6 +3183,49 @@ class TestMacOsNestingDetection:
         # EPERMs, and reading that as a host verdict is the bug this fixes.
         mock_detect.assert_not_called()
 
+    @patch("kiro_crew.sandbox.detect_backend")
+    def test_the_passthrough_silently_drops_extra_hidden_dirs(
+        self, mock_detect, monkeypatch, tmp_path
+    ):
+        """A caller's ``extra_hidden_dirs`` is UNENFORCED on the passthrough.
+
+        It is not a bug -- a nested re-wrap is denied by design on both platforms,
+        so there is no mount namespace to build and nothing to bind-mask into --
+        but it is a fact a caller must not build a security control on, and it is
+        invisible from the call site: the wrap returns successfully, and the mask
+        it was asked for simply does not exist.
+
+        This bites hardest where it is least visible. Every app backend is spawned
+        through ``wrap_argv`` by ``apps/backend.py``, so it runs with this marker
+        set, and every spawn IT then wraps takes this branch. Dev Fleet's sync is
+        exactly that shape -- it wraps each sync step from inside the sandbox -- so
+        a mask an app backend asks for to keep a step away from one of its own paths
+        would cover nothing while reading, at the call site, as a control. An app
+        backend that needs such a boundary has to get it somewhere other than here:
+        the sync runner keeps the synced checkout off its import path with the
+        interpreter's own ``-I`` rather than with a mask.
+
+        CHARACTERIZATION, NOT A CONTRACT. If nested confinement ever becomes
+        possible, this test is one of the things that should change WITH it -- it
+        records what the passthrough does today so a caller cannot be misled by it,
+        and it is not an argument for keeping the behaviour.
+        """
+        secret = tmp_path / "provenance"
+        secret.mkdir()
+        monkeypatch.setenv("KIROCREW_SANDBOX_ACTIVE", "1")
+        monkeypatch.setattr(sandbox_mod, "_macos_sandbox_state", lambda: True)
+        with patch("kiro_crew.sel.sel"):
+            result, cleanup = wrap_argv(
+                ["/usr/bin/npm", "ci"], mode="strict", extra_hidden_dirs=(str(secret),)
+            )
+
+        # No launcher script, so nothing exists that COULD carry a bind-mask...
+        assert cleanup is None
+        # ...and the path appears nowhere in what will actually be executed.
+        assert not any(str(secret) in arg for arg in result)
+        assert result[-2:] == ["/usr/bin/npm", "ci"]
+        mock_detect.assert_not_called()
+
     @patch("kiro_crew.sandbox.detect_backend", return_value="none")
     def test_forged_marker_without_kernel_confirmation_is_refused(
         self, mock_detect, monkeypatch

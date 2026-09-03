@@ -705,6 +705,26 @@ stdlib-only, so the copy needs no package context. Both halves matter: `-I` drop
 the cwd from `sys.path`, and the snapshot means an editable install cannot make
 the tree being synced supply the code doing the verifying.
 
+**The generated runner itself carries `-I` too, and for the same reason.** `python
+-c` puts the inherited cwd at `sys.path[0]`, ahead of the standard library, and
+the cwd a module-style app backend hands down is the gateway's own source root —
+which on the editable install Dev Fleet exists to manage *is* `<checkout>/src`,
+the tree being synced. So the runner's own startup imports (`os`, `shutil`,
+`subprocess`, `json`) resolve against that directory first, and the runner is the
+one process here that is **not** sandbox-wrapped: only the step argvs go through
+`sandboxed_spawn_argv`. Without `-I`, a `shutil.py` dropped in that directory runs
+arbitrary code outside the per-step sandbox. The shadowing module only has to be
+on disk when the runner *starts* — a revision an earlier sync already landed, or
+anything an agent wrote in the checkout between syncs, is enough — so this is not
+a race with the run's own merge. It is set on the interpreter rather than scrubbed
+inside the script so it holds for the process's whole life, including any import
+the runner grows later after a step has merged untrusted content. It costs
+nothing: the script is stdlib-only by design, and the `-E`/`-s` that `-I` implies
+remove env and user-site import sources it never uses. A mask from the sandbox
+could not substitute — an app backend's `extra_hidden_dirs` is silently dropped by
+`wrap_argv`'s nested passthrough (pinned in `test_sandbox_argv.py`), so it would
+read as a control at the call site and enforce nothing.
+
 **The install is skipped when the answer is already on disk.** Most syncs are
 backend-only and change nothing under `website/`, so paying a full scratch install
 to re-derive "is this lockfile installable" on every Pull + Build is cost without
@@ -970,6 +990,38 @@ Disk and loaded launchd definitions must both report `KeepAlive=true` and
 `GRACEFUL_SHUTDOWN_SECS` (10s), leaving the remaining budget for cleanup and
 exit before launchd escalates to SIGKILL. An agent with a legacy contract falls
 back to staged-only Make Live and names `kirocrew service install` as the repair.
+
+## Git environment hardening
+
+Every git invocation from this module — foreground inspection, the unattended
+background fetch, rebase, the sync pull, and any git a build step runs — carries
+`runtime._GIT_ENV_NEUTRALIZERS`, injected as **environment** rather than as
+per-call-site `-c` flags so one chokepoint covers call sites that have not been
+written yet. The environment form has the same precedence as `git -c`, so it
+overrides every config file, including an agent-writable repo-local one.
+
+Two different jobs live in that one dict, and they are worth keeping apart:
+
+- **Config-driven execution.** `GIT_ALLOW_PROTOCOL` / `GIT_PROTOCOL_FROM_USER`
+  make git itself refuse `ext::` and custom remote helpers; the four
+  `GIT_CONFIG_KEY_*` / `VALUE_*` pairs disable `core.fsmonitor` and
+  `core.hooksPath`, reset `credential.helper` to empty, and pin `core.sshCommand`
+  to plain `ssh`. Each of those is a config key a repo can set to name a program
+  git will spawn. (The operator's own *global* credential helpers are re-pinned
+  after the reset — see `_GIT_TRUSTED_HELPERS` — because a global config is
+  operator-owned rather than part of the repo attack surface.)
+- **Which object graph git answers from.** `GIT_NO_REPLACE_OBJECTS=1` is not a
+  config key and is not about code execution. A `refs/replace/<oid>` ref
+  substitutes one object for another in *every* read, so `log`,
+  `rev-list --count`, `merge-base` and `merge --ff-only` all answer about the
+  substitute graph — a history no checked-out commit names. Every git answer this
+  module acts on is a statement about the checkout on disk, so the real graph is
+  the only one that answers the question asked, and "behind by N commits" derived
+  from a grafted walk is simply wrong. `git replace` is a legitimate local
+  operation, so this is a correctness pin first and a tamper pin second. It is
+  therefore an env var in its own right and **not** one of the counted config
+  pairs: `GIT_CONFIG_COUNT` stays at 4. `platform/update_governance.py` and
+  `auto_improvement`'s clone setup pin it for the same reason.
 
 ## Output Redaction
 
