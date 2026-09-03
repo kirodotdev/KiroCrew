@@ -24,10 +24,13 @@ from aiohttp import web
 from kiro_crew.apps.manager import app_lifecycle_lock, get_app_manifest, is_app_enabled
 from kiro_crew.apps.manifest import RESERVED_APP_NAMES
 from kiro_crew.dashboard.handlers._shared import read_bounded_json
+from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
+from kiro_crew.notifications import vapid_keys
 from kiro_crew.notifications.bus import (
     NotificationPayload,
     NotificationValidationError,
 )
+from kiro_crew.notifications.push_store import PushSubscriptionError
 from kiro_crew.sel import sel
 
 logger = logging.getLogger(__name__)
@@ -252,3 +255,86 @@ async def api_push_notification(request: web.Request) -> web.Response:
         resources=full_channel,
     )
     return web.json_response({"ok": True, "note": note})
+
+
+# ── Web Push subscription management (dashboard-user routes) ────────────────
+# These are distinct from api_push_notification above: that is the APP-token
+# producer endpoint; these three are DASHBOARD-USER endpoints the browser calls
+# to register/deregister its Web Push subscription and to fetch the VAPID public
+# key. The token-auth middleware authenticates them; they additionally require a
+# dashboard-user identity (app tokens have no business subscribing a browser).
+
+
+def _reject_non_owner(request: web.Request) -> web.Response | None:
+    """Return a 403 unless the caller is the owner dashboard user, else None.
+
+    Web Push subscription is an owner-only concern: the subscription store is
+    identity-free and durable, so any endpoint registered in it receives every
+    one of the owner's notifications indefinitely. An app token (non-empty
+    ``request["app"]``), a non-owner dashboard user, or an absent identity are
+    all refused — the same ``is_owner_dashboard_request`` gate that fences
+    secrets/prompts/source-provider routes. The denial is SEL-audited (a
+    permission decision must leave an audit trail, matching core.py's
+    ``_deny_app_token``) and answers with the shared ``dashboard_user_required``
+    code so clients match on one denial spelling.
+    """
+    if is_owner_dashboard_request(request):
+        return None
+    try:
+        sel().log_api_access(
+            caller=str(request.get("app") or request.get("user") or "unknown"),
+            operation="notification_push_subscription",
+            outcome="denied",
+            source="dashboard",
+            resources=request.path,
+            error="owner dashboard user required",
+        )
+    except Exception:
+        logger.warning("SEL logging failed for push subscription denial", exc_info=True)
+    return web.json_response(
+        {"error": "dashboard user required", "code": "dashboard_user_required"},
+        status=403,
+    )
+
+
+async def api_vapid_public_key(request: web.Request) -> web.Response:
+    """GET /api/notifications/push/vapid-public-key — the applicationServerKey."""
+    if (denied := _reject_non_owner(request)) is not None:
+        return denied
+    return web.json_response({"publicKey": vapid_keys.public_key_b64url()})
+
+
+async def api_push_subscribe(request: web.Request) -> web.Response:
+    """POST /api/notifications/push/subscribe — register a browser subscription."""
+    if (denied := _reject_non_owner(request)) is not None:
+        return denied
+    body, cap_err = await read_bounded_json(request)
+    if cap_err is not None:
+        return cap_err
+    assert body is not None
+    state = request.app["state"]
+    try:
+        entry = state.push_subscription_store.add(body)
+    except PushSubscriptionError as exc:
+        return web.json_response(
+            {"error": str(exc), "code": "push_subscription_invalid"}, status=400
+        )
+    return web.json_response({"ok": True, "endpoint": entry["endpoint"]})
+
+
+async def api_push_unsubscribe(request: web.Request) -> web.Response:
+    """POST /api/notifications/push/unsubscribe — drop a browser subscription."""
+    if (denied := _reject_non_owner(request)) is not None:
+        return denied
+    body, cap_err = await read_bounded_json(request)
+    if cap_err is not None:
+        return cap_err
+    assert body is not None
+    endpoint = body.get("endpoint")
+    if not isinstance(endpoint, str) or not endpoint:
+        return web.json_response(
+            {"error": "endpoint is required", "code": "push_endpoint_required"}, status=400
+        )
+    state = request.app["state"]
+    removed = state.push_subscription_store.remove(endpoint)
+    return web.json_response({"ok": True, "removed": removed})

@@ -6344,6 +6344,18 @@ _CREW_SECRET_LEAVES: list[str] = [
     # too. The channel's own client opens it directly rather than through this
     # gate, so pairing keeps working.
     "whatsapp",
+    # The Web Push VAPID keypair and the browser subscription store. vapid_keys.json
+    # holds the application-server EC PRIVATE key; push_subscriptions.json holds each
+    # registered device's auth + p256dh secret. Together they are enough to sign a
+    # VAPID JWT and POST an encrypted push to every endpoint, raising OS notification
+    # banners on the operator's devices with no dashboard credential involved. Owner-
+    # only mode does not isolate another same-UID process (a prompt-injected agent's
+    # fs_read is exactly that), so they belong behind the shared floor. The
+    # notification subsystem opens them directly rather than through this gate, so
+    # push keeps working. Leaves (not flat entries) so both _CREW_HOME_PREFIXES,
+    # including a legacy .kirocrew home, are covered.
+    "vapid_keys.json",
+    "push_subscriptions.json",
     # The Notes builtin's vault registry. It is not a secret, but it stores each
     # vault's on-disk ``localPath``, which auto-sync trusts and runs ``git
     # add``/``commit``/``push`` against. A prompt-injected agent that could

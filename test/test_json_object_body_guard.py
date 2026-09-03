@@ -169,6 +169,14 @@ _CAP_REGISTER: dict[str, tuple[str, str]] = {
         "<default>",
         _BOUNDED_BY_DEFAULT,
     ),
+    "handlers/notifications_push.py::api_push_subscribe": (
+        "<default>",
+        _BOUNDED_BY_DEFAULT,
+    ),
+    "handlers/notifications_push.py::api_push_unsubscribe": (
+        "<default>",
+        _BOUNDED_BY_DEFAULT,
+    ),
     "handlers/messaging.py::api_teams_activity": (
         "TEAMS_MAX_ACTIVITY_BYTES",
         _BOUNDED_EXPLICIT,

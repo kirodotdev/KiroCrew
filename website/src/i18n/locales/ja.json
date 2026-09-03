@@ -12252,7 +12252,16 @@
         "test": "テスト",
         "test_sound": "サウンドをテスト",
         "use_default": "デフォルトを使用",
-        "volume": "ボリューム"
+        "volume": "ボリューム",
+        "push_section": "プッシュ通知",
+        "push_toggle_label": "この端末に通知を送信",
+        "push_toggle_description": "アプリを閉じていても Web Push で OS 通知を受け取れます。",
+        "push_install_hint": "iOS では、プッシュ通知を有効にするにはまず {{productName}} をホーム画面に追加してください。",
+        "push_unsupported": "このブラウザーは Web Push 通知に対応していません。",
+        "push_error_blocked": "通知はブラウザーでブロックされています。",
+        "push_error_permission": "許可が与えられませんでした。",
+        "push_error_subscribe": "購読に失敗しました。",
+        "push_error_unsubscribe": "購読解除に失敗しました。"
       },
       "privacyPanel": {
         "recordMetricsDescription": "このマシンでパフォーマンスメトリクスを収集します。",
