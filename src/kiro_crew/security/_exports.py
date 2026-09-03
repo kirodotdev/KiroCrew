@@ -35,6 +35,7 @@ EXPORTED_NAMES: tuple[str, ...] = (
     "DENY_REASON_PREFIX",
     "DeniedCommandRule",
     "ENV_ASSIGNMENT_RE",
+    "EXFILTRATION_REDACTION_TAG_PREFIX",
     "Future",
     "FutureTimeoutError",
     "JWT_MULTI_SEGMENT",

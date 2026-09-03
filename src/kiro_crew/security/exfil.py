@@ -1028,6 +1028,19 @@ def scan_exfiltration_urls(text: str) -> list[str]:
     return warnings
 
 
+#: Stable PREFIX of the substitution :func:`redact_exfiltration_urls` writes in
+#: place of a suspicious URL. The full tag interpolates the redacted URL's
+#: domain (``f"{EXFILTRATION_REDACTION_TAG_PREFIX}{domain}]"``), so unlike the
+#: constant credential tags it cannot be equality-compared -- which is why it is
+#: a PREFIX constant and deliberately NOT a member of
+#: :data:`kiro_crew.security.redaction.CREDENTIAL_REDACTION_TAGS` (see that
+#: tuple's docstring). A consumer that must detect this rewriter's
+#: substitutions (the dashboard chat notice, issue #8132) prefix-counts THIS
+#: constant; the substitution below is built from it so the two can never
+#: drift.
+EXFILTRATION_REDACTION_TAG_PREFIX = "[REDACTED: suspicious URL to "
+
+
 def redact_exfiltration_urls(text: str) -> tuple[str, list[str]]:
     """Scan and redact suspicious exfiltration URLs from text.
 
@@ -1048,7 +1061,7 @@ def redact_exfiltration_urls(text: str) -> tuple[str, list[str]]:
             port=match.group(2) or "",
             is_https=match.group(0).lower().startswith("https://"),
         ):
-            result = result.replace(match.group(0), f"[REDACTED: suspicious URL to {domain}]")
+            result = result.replace(match.group(0), f"{EXFILTRATION_REDACTION_TAG_PREFIX}{domain}]")
     return result, warnings
 
 

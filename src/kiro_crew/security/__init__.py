@@ -233,6 +233,7 @@ from .exfil import (
     _STRUCTURAL_VALIDATORS,
     _STS_TOKEN_RE,
     _URL_RE,
+    EXFILTRATION_REDACTION_TAG_PREFIX,
     OAuthUrlCredentialDiagnostic,
     OAuthUrlShapeProfile,
     _approved_oauth_authorization_endpoint,

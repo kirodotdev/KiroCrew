@@ -885,8 +885,11 @@ _REDACTED_ENCODED_CREDENTIAL_TAG = "[REDACTED: encoded credential]"
 #: this text rewritten at all". :func:`redact_exfiltration_urls` is a separate
 #: rewriter that substitutes ``[REDACTED: suspicious URL to <domain>]`` -- a
 #: variable string, so it is prefix-matched rather than compared, which is why it
-#: is not a member here. Text can therefore be rewritten with every tag in this
-#: tuple absent.
+#: is not a member here. Its stable prefix is exported as
+#: :data:`kiro_crew.security.exfil.EXFILTRATION_REDACTION_TAG_PREFIX` (beside
+#: the rewriter itself), and a consumer that needs the full "was this text
+#: rewritten" answer must check that constant by prefix ALONGSIDE this tuple --
+#: the dashboard chat notice does exactly that (issues #6189 and #8132).
 #:
 #: This tuple exists because the enumeration used to live at the call site, where
 #: it silently missed the encoded tag and under-reported redactions on the
