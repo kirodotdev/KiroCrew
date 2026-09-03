@@ -10429,6 +10429,7 @@
         "agent_for_pool_processes_empty_uses_default_agen": "풀 프로세스용 에이전트. 비워 두면 기본 에이전트를 사용합니다. 재시작이 필요합니다.",
         "approval_mode": "승인 모드",
         "auto": "자동",
+        "auto_enables_sandbox_for_untrusted_tools_switchi": "'auto'는 신뢰할 수 없는 도구에 샌드박스를 적용합니다. 'wsl2'로 전환하거나 'wsl2'에서 전환하면 게이트웨이 재시작 후 적용됩니다.",
         "auto_size_max": "자동 크기 조정 최대값",
         "auto_update": "자동 업데이트",
         "ceiling_on_the_auto_sized_concurrent_subagent_co": "자동 조정되는 동시 서브에이전트 수의 상한입니다 (최대 동시 서브에이전트 수가 0일 때만 적용). 호스트 메모리/CPU 계산식이 이 값을 넘지 않습니다. 범위: 1–64. 기본값: 16.",
@@ -10473,6 +10474,7 @@
         "pool_ttl": "풀 TTL",
         "provider": "제공자",
         "restart_required_to_apply_changes": "{{description}} 변경 사항을 적용하려면 재시작해야 합니다.",
+        "restart_required_which_wsl2_distribution_to_sand": "재시작 필요. 샌드박스에 사용할 WSL2 배포판 — Docker Desktop 자체 유틸리티 인스턴스는 여기에 표시되지 않습니다.",
         "sandbox": "샌드박스",
         "save": "저장",
         "saved": "저장됨",
@@ -10486,7 +10488,9 @@
         "using_legacy_mode_agent_default_agent_as_agent_t": "레거시 모드 사용 중 — agent.default_agent를 에이전트 템플릿으로 사용",
         "warm_pool": "웜 풀",
         "workspace": "워크스페이스",
-        "workspaces": "워크스페이스"
+        "workspaces": "워크스페이스",
+        "wsl2_distribution": "WSL2 배포판",
+        "wsl_default_distro": "(WSL 기본값)"
       },
       "mcpTab": {
         "actions": "동작",

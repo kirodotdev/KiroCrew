@@ -46,10 +46,12 @@ from kiro_crew.port_resolution import resolve_serving_port
 from kiro_crew.sandbox import (
     _AGENT_DENIED_ENV_KEYS,
     SandboxUnavailableError,
+    _operator_wants_wsl2,
     cgroup_scope_argv,
     popen_limited,
     run_limited,
     wrap_argv,
+    wsl2_selected,
 )
 from kiro_crew.security import is_sensitive_path, redact
 from kiro_crew.sel import sel
@@ -122,9 +124,7 @@ def _resolve_safe_pgid(proc: subprocess.Popen) -> int | None:
     except (ProcessLookupError, PermissionError, OSError):
         return None
     if pgid <= 1 or pgid == os.getpgid(0):
-        logger.error(
-            "kill guard: refusing broadcast/self pgid %d for pid %d", pgid, pid
-        )
+        logger.error("kill guard: refusing broadcast/self pgid %d for pid %d", pgid, pid)
         return None
     return pgid
 
@@ -221,7 +221,8 @@ def _drain_after_kill(proc: subprocess.Popen, job_id: str | None) -> None:
         logger.warning(
             "Post-kill drain timed out (5s) for cron %s (pid %s); the child "
             "outlived SIGKILL or another process holds the pipe — closing pipes",
-            job_id, proc.pid,
+            job_id,
+            proc.pid,
         )
     finally:
         for pipe in (proc.stdout, proc.stderr):
@@ -286,8 +287,7 @@ class ScriptContext:
         # fallback for a directly-constructed context and is 5476 on a --port auto
         # gateway, which is a SIBLING rather than this instance.
         self._port = int(
-            os.environ.pop("_KIROCREW_DIAL_PORT", "")
-            or os.environ.get("KIROCREW_PORT", "5476")
+            os.environ.pop("_KIROCREW_DIAL_PORT", "") or os.environ.get("KIROCREW_PORT", "5476")
         )
         # Secret injected via temp file (not inherited env) to prevent privilege escalation.
         # Pop env var and unlink file immediately so fn(ctx) cannot access the secret directly.
@@ -693,7 +693,7 @@ def _split_script_spec(script_path: str) -> tuple[str, str]:
     func_colon = script_path.rfind(":")
     if func_colon == -1 or (drive_colon and func_colon == 1):
         raise ValueError(f"Invalid script path '{script_path}': expected 'path.py:func'")
-    return script_path[:func_colon], script_path[func_colon + 1:]
+    return script_path[:func_colon], script_path[func_colon + 1 :]
 
 
 def resolve_script_path(script_path: str) -> tuple[str, str]:
@@ -837,7 +837,17 @@ def run_script_sandboxed(
             os.close(fd)
 
         argv = [sys.executable, launcher_path]
-        sandboxed_argv, sandbox_cleanup = wrap_argv(argv, mode="standard")
+        # posix_shell_argv=False: this is a native-Windows Python invocation
+        # (Windows sys.executable + a Windows temp-file path), not the POSIX
+        # sh/bash -c shape the wsl2 backend can confine. Without this, once
+        # an operator selects agent.sandbox: "wsl2", the wsl2 guest launcher
+        # would append this argv verbatim after itself and try to exec a
+        # Windows path inside the Linux guest -- neither a valid guest path
+        # nor runnable there. False makes wsl2 report unavailable for this
+        # call, falling through to Windows' pre-existing no-backend handling
+        # (fail-closed, or the sandbox_allow_unsandboxed_exec opt-in) --
+        # exactly what script crons already did before wsl2 existed.
+        sandboxed_argv, sandbox_cleanup = wrap_argv(argv, mode="standard", posix_shell_argv=False)
 
         # Build clean env: secrets (Slack tokens, owner id, internal secret)
         # are never inherited; the internal secret is passed via the 0600 file.
@@ -855,8 +865,12 @@ def run_script_sandboxed(
 
         sandboxed_argv = cgroup_scope_argv(sandboxed_argv)  # cgroup DoS ceiling
         proc = popen_limited(
-            sandboxed_argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            text=True, env=clean_env, start_new_session=True,
+            sandboxed_argv,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=clean_env,
+            start_new_session=True,
         )
         _register_proc(job_id, proc)
         try:
@@ -950,8 +964,25 @@ def _resolve_command_shell() -> str | None:
     # On Windows there is no shipped shell whose language matches what
     # mcp_cron._vet_shell_command was written against: cmd.exe is not POSIX at
     # all, and Git-for-Windows's sh.exe IS bash. Refuse rather than route the
-    # vetted string through a shell that widens its language.
+    # vetted string through a shell that widens its language --- UNLESS the
+    # operator has selected the wsl2 sandbox backend, which offers a real
+    # POSIX /bin/sh inside its distribution. The literal path below is never
+    # resolved on the WINDOWS filesystem: it becomes the argv
+    # sandbox.wrap_argv's wsl2 backend appends after its staged launcher, and
+    # is looked up inside the GUEST, where it genuinely is a POSIX shell.
+    # _shell_is_posix_strict below still probes it for real rather than
+    # trusting that by name, so an unusual distro that replaced /bin/sh is
+    # still caught exactly as the existing probe already catches macOS.
     if platform_compat.IS_WINDOWS:
+        if wsl2_selected():
+            # `agent.sandbox_wsl_distro` names WHICH guest "/bin/sh" actually
+            # is, so the cache key must include it -- see
+            # _shell_is_posix_strict's own note on why the bare string alone
+            # would be unsafe here.
+            distro = _operator_wants_wsl2() or ""
+            if _shell_is_posix_strict("/bin/sh", cache_key=f"wsl2:{distro}:/bin/sh"):
+                return "/bin/sh"
+            return None
         return None
     # POSIX: NEVER consult PATH (shutil.which("sh")). PATH may contain an
     # agent-writable directory that precedes /bin — an agent can plant
@@ -977,7 +1008,7 @@ def _resolve_command_shell() -> str | None:
 _POSIX_STRICT_CACHE: dict[str, bool] = {}
 
 
-def _shell_is_posix_strict(shell: str) -> bool:
+def _shell_is_posix_strict(shell: str, *, cache_key: str | None = None) -> bool:
     """Return True iff *shell* refuses brace expansion (POSIX-sh semantics).
 
     Runs ``<shell> -c 'echo x.{a,a}'`` in an OS sandbox (strict tier, cron env)
@@ -992,16 +1023,29 @@ def _shell_is_posix_strict(shell: str) -> bool:
     trusted-path lookup in ``_resolve_command_shell``. If a future change ever
     widens that resolver to consult PATH again, the sandbox wrap here still
     denies an agent-planted shim the un-isolated execution it would need.
+    Sandbox-routed also means this probe transparently exercises the wsl2
+    backend when it is selected: ``wrap_argv`` does not know or care that
+    *shell* is a literal ``/bin/sh`` rather than a real path on this host, so
+    the same probe that fingerprints the native shell also fingerprints the
+    GUEST's ``/bin/sh`` for that call, with no WSL2-specific probe logic
+    needed here.
+
+    *cache_key* defaults to *shell* (unchanged native/macOS behavior: exactly
+    one real ``/bin/sh`` per host, so the shell string alone is a stable
+    identity). A wsl2 caller MUST pass a distro-qualified key instead —
+    ``"/bin/sh"`` names a DIFFERENT binary depending on which distro is
+    selected, and caching on the bare string would let a probe result from
+    one distro silently vouch for a different one after the operator
+    switches ``agent.sandbox_wsl_distro``.
     """
 
-    cached = _POSIX_STRICT_CACHE.get(shell)
+    key = cache_key if cache_key is not None else shell
+    cached = _POSIX_STRICT_CACHE.get(key)
     if cached is not None:
         return cached
     sandbox_cleanup: str | None = None
     try:
-        argv, sandbox_cleanup = wrap_argv(
-            [shell, "-c", "echo x.{a,a}"], mode="strict"
-        )
+        argv, sandbox_cleanup = wrap_argv([shell, "-c", "echo x.{a,a}"], mode="strict")
         # Same discipline as every other sandbox-routed spawn in this module
         # (test_every_routed_spawn_applies_resource_limits / _cgroup_scope): the
         # probe is a child process, so it observes the same fork-bomb / RSS
@@ -1024,7 +1068,7 @@ def _shell_is_posix_strict(shell: str) -> bool:
                 os.unlink(sandbox_cleanup)
             except OSError:
                 pass
-    _POSIX_STRICT_CACHE[shell] = result
+    _POSIX_STRICT_CACHE[key] = result
     return result
 
 
@@ -1066,12 +1110,20 @@ def run_command_sandboxed(command: str, timeout: int = 300, job_id: str | None =
     # instead of a job it could mark failed, so the remedy never reached the user.
     sandbox_cleanup: str | None = None
     try:
-        sandboxed_argv, sandbox_cleanup = wrap_argv(argv, mode="cc")
+        # posix_shell_argv=True: argv is [shell, "-c", command] -- genuine
+        # POSIX shell argv the wsl2 backend can confine (default is False;
+        # see wrap_argv's own docstring for why this chokepoint opts in
+        # rather than out).
+        sandboxed_argv, sandbox_cleanup = wrap_argv(argv, mode="cc", posix_shell_argv=True)
         sandboxed_argv = cgroup_scope_argv(sandboxed_argv)  # cgroup DoS ceiling
         clean_env = _clean_cron_env()
         proc = popen_limited(
-            sandboxed_argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            text=True, env=clean_env, start_new_session=True,
+            sandboxed_argv,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=clean_env,
+            start_new_session=True,
         )
         if job_id:
             _register_proc(job_id, proc)
@@ -1082,12 +1134,20 @@ def run_command_sandboxed(command: str, timeout: int = 300, job_id: str | None =
             except subprocess.TimeoutExpired:
                 _kill_proc_group(proc)
                 _drain_after_kill(proc, job_id)
-                return {"status": "error", "output": f"❌ Command timed out after {timeout}s", "exit_code": -1}
+                return {
+                    "status": "error",
+                    "output": f"❌ Command timed out after {timeout}s",
+                    "exit_code": -1,
+                }
         finally:
             if job_id:
                 cancelled = _unregister_proc(job_id, proc)
         if cancelled:
-            return {"status": "cancelled", "output": "Cancelled by user", "exit_code": proc.returncode}
+            return {
+                "status": "cancelled",
+                "output": "Cancelled by user",
+                "exit_code": proc.returncode,
+            }
         if len(output) > _MAX_COMMAND_OUTPUT:
             output = output[:_MAX_COMMAND_OUTPUT] + "\n\n[truncated — output exceeded 64KB]"
         if proc.returncode != 0:

@@ -6877,6 +6877,7 @@
         "agent_for_pool_processes_empty_uses_default_agen": "Agent for pool processes. Empty uses default agent. Restart required.",
         "approval_mode": "Approval Mode",
         "auto": "auto",
+        "auto_enables_sandbox_for_untrusted_tools_switchi": "'auto' enables sandbox for untrusted tools. Switching to or from 'wsl2' takes effect after a gateway restart.",
         "auto_size_max": "Auto-Size Max",
         "auto_update": "Auto Update",
         "config_summary": "Config Summary",
@@ -6909,6 +6910,7 @@
         "pool_size": "Pool Size",
         "pool_ttl": "Pool TTL",
         "provider": "Provider",
+        "restart_required_which_wsl2_distribution_to_sand": "Restart required. Which WSL2 distribution to sandbox in — Docker Desktop's own utility instances are not offered here.",
         "sandbox": "Sandbox",
         "saved": "Saved",
         "session_timeout": "Session Timeout",
@@ -6919,7 +6921,9 @@
         "using_legacy_mode_agent_default_agent_as_agent_t": "Using legacy mode — agent.default_agent as agent template",
         "warm_pool": "Warm Pool",
         "workspace": "Workspace",
-        "workspaces": "Workspaces"
+        "workspaces": "Workspaces",
+        "wsl2_distribution": "WSL2 Distribution",
+        "wsl_default_distro": "(WSL default)"
       },
       "mcpTab": {
         "actions": "Actions",

@@ -191,7 +191,6 @@ src/kiro_crew/context_management.py
 src/kiro_crew/crew_chat.py
 src/kiro_crew/cron.py
 src/kiro_crew/cron_history.py
-src/kiro_crew/cron_script.py
 src/kiro_crew/dashboard/cautious_boot.py
 src/kiro_crew/dashboard/channel_folders.py
 src/kiro_crew/dashboard/chat_auto_tag.py

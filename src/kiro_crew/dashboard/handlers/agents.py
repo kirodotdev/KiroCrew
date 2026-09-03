@@ -12,6 +12,7 @@ import re
 import stat
 import subprocess
 import uuid
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -1276,21 +1277,61 @@ async def api_default_agent(request: web.Request) -> web.Response:
 _CONFIG_SCHEMA_ACP_BACKEND = "agent.acp_backend"
 
 
-def _supply_live_enum(entry: dict) -> None:
-    """In place: give ``agent.acp_backend`` the values this build can actually serve.
+def _live_enum_sandbox_values() -> list[str]:
+    """Lazy import: ``handlers.core`` resolves ``_get_config_lock`` from this
+    module (see the matching lazy import further down), so a top-level import
+    the other way would cycle."""
+    from kiro_crew.dashboard.handlers.core import _selectable_sandbox_values
 
-    The field carries no static ``enum`` on purpose (see ``AgentConfig``): an
-    edition registers its backends at boot, strictly after ``SCHEMA_REGISTRY`` is
-    built, so a frozen list could only be wrong — it would omit a registered
-    backend from the dashboard while the PATCH allowlist accepted it.
+    return _selectable_sandbox_values()
 
-    Resolved from the same owner as the PATCH allowlist and the config load path,
-    so the three cannot disagree. One binding today, so it is spelled once rather
-    than made a registry; turn it into a path -> callable map when a second
-    dynamic enum appears.
+
+def _live_enum_wsl2_distro_values() -> list[str]:
+    """The WSL2 distros a picker offers for ``agent.sandbox_wsl_distro``.
+
+    Deliberately NOT the same enforcement as the other two entries here:
+    this field stays a plain pattern-matched string at the PATCH/load layer
+    (``sandbox.py``'s own module docstring on ``wsl2_distro_choices``
+    explains why — an operator can still hand-set a filtered-out distro like
+    a Docker Desktop utility instance). This live list only shapes what the
+    DROPDOWN suggests.
     """
-    if entry.get("path") == _CONFIG_SCHEMA_ACP_BACKEND:
-        entry["enumValues"] = selectable_backend_values()
+    from kiro_crew.sandbox import wsl2_distro_choices
+
+    return wsl2_distro_choices()
+
+
+# path -> callable map for schema entries whose valid-value set depends on
+# the host/build rather than being a fixed enum. Both live behind a
+# frozen-at-import ``enum=None`` in AgentConfig (see its field metadata) for
+# the identical reason: a static list can only be wrong once the truth
+# depends on runtime state, and disagreeing with the PATCH allowlist's own
+# `values_fn` is exactly how the old literal `acp_backend` list drifted.
+_LIVE_ENUM_SUPPLIERS: dict[str, Callable[[], list[str]]] = {
+    _CONFIG_SCHEMA_ACP_BACKEND: selectable_backend_values,
+    "agent.sandbox": _live_enum_sandbox_values,
+    "agent.sandbox_wsl_distro": _live_enum_wsl2_distro_values,
+}
+
+
+async def _supply_live_enum(entry: dict) -> None:
+    """In place: give a host/build-dependent field its live selectable values.
+
+    Resolved from the same owner as the PATCH allowlist and the config load
+    path, so the three cannot disagree. Dispatched off the event loop
+    unconditionally: ``_live_enum_wsl2_distro_values`` shells out to
+    ``wsl.exe`` via a synchronous ``subprocess.run`` (up to
+    ``_WSL2_PROBE_TIMEOUT_SECS``), and every supplier routes through the
+    same executor rather than special-casing the one that happens to block
+    today — a future supplier that grows its own blocking call inherits the
+    same safety for free, and this handler is on the hot path every
+    Settings page load.
+    """
+    supplier = _LIVE_ENUM_SUPPLIERS.get(entry.get("path", ""))
+    if supplier is not None:
+        entry["enumValues"] = await asyncio.get_running_loop().run_in_executor(
+            subprocess_executor(), supplier
+        )
 
 
 async def api_config_schema(request: web.Request) -> web.Response:
@@ -1315,7 +1356,7 @@ async def api_config_schema(request: web.Request) -> web.Response:
         d = config_entry_to_dict(entry)
         if entry.sensitive or dataclasses.is_dataclass(d.get("defaultValue")):
             d["defaultValue"] = None
-        _supply_live_enum(d)
+        await _supply_live_enum(d)
         result.append(d)
 
     return web.json_response({"entries": result})

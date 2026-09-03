@@ -10584,6 +10584,7 @@
         "agent_for_pool_processes_empty_uses_default_agen": "পুল প্রসেসের জন্য এজেন্ট। খালি রাখলে ডিফল্ট এজেন্ট ব্যবহার হয়। রিস্টার্ট প্রয়োজন।",
         "approval_mode": "অনুমোদন মোড",
         "auto": "auto",
+        "auto_enables_sandbox_for_untrusted_tools_switchi": "'auto' অবিশ্বস্ত টুলের জন্য স্যান্ডবক্স সক্রিয় করে। 'wsl2'-এ বা 'wsl2' থেকে পরিবর্তন গেটওয়ে পুনরায় চালু করার পরে কার্যকর হয়।",
         "auto_size_max": "অটো-সাইজ সর্বোচ্চ",
         "auto_update": "স্বয়ংক্রিয় আপডেট",
         "ceiling_on_the_auto_sized_concurrent_subagent_co": "স্বয়ংক্রিয়ভাবে ঠিক করা সমসাময়িক সাবএজেন্ট সংখ্যার সর্বোচ্চ সীমা (শুধু Max Concurrent Subagents = 0 হলে প্রযোজ্য)। হোস্টের মেমরি/CPU সূত্র কখনো এটি ছাড়ায় না। পরিসর 1–64। ডিফল্ট: 16।",
@@ -10628,6 +10629,7 @@
         "pool_ttl": "পুল TTL",
         "provider": "প্রোভাইডার",
         "restart_required_to_apply_changes": "{{description}} পরিবর্তন প্রয়োগ করতে রিস্টার্ট প্রয়োজন।",
+        "restart_required_which_wsl2_distribution_to_sand": "পুনরায় চালু করা প্রয়োজন। স্যান্ডবক্সের জন্য কোন WSL2 ডিস্ট্রিবিউশন ব্যবহার হবে — Docker Desktop-এর নিজস্ব ইউটিলিটি ইনস্ট্যান্স এখানে দেখানো হয় না।",
         "sandbox": "স্যান্ডবক্স",
         "save": "সেভ করো",
         "saved": "সংরক্ষিত",
@@ -10641,7 +10643,9 @@
         "using_legacy_mode_agent_default_agent_as_agent_t": "লিগ্যাসি মোড ব্যবহার হচ্ছে — এজেন্ট টেম্পলেট হিসেবে agent.default_agent",
         "warm_pool": "ওয়ার্ম পুল",
         "workspace": "ওয়ার্কস্পেস",
-        "workspaces": "ওয়ার্কস্পেস"
+        "workspaces": "ওয়ার্কস্পেস",
+        "wsl2_distribution": "WSL2 ডিস্ট্রিবিউশন",
+        "wsl_default_distro": "(WSL ডিফল্ট)"
       },
       "mcpTab": {
         "actions": "অ্যাকশন",

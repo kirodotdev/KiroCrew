@@ -207,7 +207,8 @@ class TestSubprocessRegistry:
             result.update(run_command_sandboxed("sleep 30", timeout=60, job_id="cancelme"))
 
         with patch(
-            "kiro_crew.cron_script.wrap_argv", side_effect=lambda argv, mode: (argv, None)
+            "kiro_crew.cron_script.wrap_argv",
+            side_effect=lambda argv, mode, **kwargs: (argv, None),
         ), patch(
             "kiro_crew.cron_script.cgroup_scope_argv", side_effect=lambda argv: argv
         ), patch(
@@ -253,7 +254,8 @@ class TestSubprocessRegistry:
         # that a job_id-less run is NOT added to the registry — mechanics that
         # don't need the sandbox.
         with patch(
-            "kiro_crew.cron_script.wrap_argv", side_effect=lambda argv, mode: (argv, None)
+            "kiro_crew.cron_script.wrap_argv",
+            side_effect=lambda argv, mode, **kwargs: (argv, None),
         ), patch(
             "kiro_crew.cron_script.cgroup_scope_argv", side_effect=lambda argv: argv
         ), patch(

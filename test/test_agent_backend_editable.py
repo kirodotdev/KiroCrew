@@ -97,7 +97,8 @@ def test_registering_an_unknown_backend_is_refused(restore_registry):
     assert "byo-harness" not in acp_backends.selectable_backends()
 
 
-def test_the_schema_endpoint_serves_the_same_set_as_the_allowlist():
+@pytest.mark.asyncio
+async def test_the_schema_endpoint_serves_the_same_set_as_the_allowlist():
     """GET /api/config/schema drives which options the UI enables.
 
     The tab renders every known backend but disables any value the schema does not
@@ -105,22 +106,24 @@ def test_the_schema_endpoint_serves_the_same_set_as_the_allowlist():
     an option that is enabled and then refused (or hide one that works).
     """
     entry: Dict[str, Any] = {"path": FIELD, "enumValues": None}
-    _supply_live_enum(entry)
+    await _supply_live_enum(entry)
     assert entry["enumValues"] == _EDITABLE_CONFIG[FIELD]["values_fn"]()
 
 
-def test_the_schema_endpoint_leaves_other_fields_alone():
+@pytest.mark.asyncio
+async def test_the_schema_endpoint_leaves_other_fields_alone():
     """The binding is one path, not a blanket rewrite of every enum."""
     entry: Dict[str, Any] = {"path": "agent.provider", "enumValues": ["acp"]}
-    _supply_live_enum(entry)
+    await _supply_live_enum(entry)
     assert entry["enumValues"] == ["acp"]
 
 
-def test_a_registered_backend_reaches_the_schema_endpoint(restore_registry):
+@pytest.mark.asyncio
+async def test_a_registered_backend_reaches_the_schema_endpoint(restore_registry):
     """The other half of the same guarantee: the UI lights it up with no FE change."""
     acp_backends.register_selectable_backend(ACP_BACKEND_CLAUDE)
     entry: Dict[str, Any] = {"path": FIELD, "enumValues": None}
-    _supply_live_enum(entry)
+    await _supply_live_enum(entry)
     assert ACP_BACKEND_CLAUDE in entry["enumValues"]
 
 

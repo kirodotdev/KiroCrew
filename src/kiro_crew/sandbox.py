@@ -13,8 +13,13 @@ The parent KiroCrew process is completely unaffected — isolation applies
 only to the spawned child.  Falls back gracefully to no sandbox when the
 OS mechanism is unavailable (logged as warning).
 
-Config: ``"sandbox": "auto" | "off"`` in ``~/.kiro/crew/config.json``.
+Config: ``"sandbox": "auto" | "off" | "wsl2"`` in ``~/.kiro/crew/config.json``.
 ``"auto"`` (default) uses namespace sandbox on Linux, seatbelt on macOS.
+``"wsl2"`` (Windows only, never auto-selected) routes the POSIX-shell-shaped
+spawns (app lifecycle scripts, command cron jobs, script hooks) through a
+WSL2 distribution's real Linux user namespace via :func:`wsl_namespace_argv`,
+since native Windows has no OS-level backend of its own. See
+``agent.sandbox_wsl_distro`` to pin a specific distribution.
 """
 
 from __future__ import annotations
@@ -27,8 +32,11 @@ import errno
 import functools
 import json
 import logging
+import ntpath
 import os
+import posixpath
 import re
+import secrets
 import select
 import shlex
 import shutil
@@ -1680,6 +1688,8 @@ def unavailable_remedy() -> str:
     ``"transient"`` failure is momentary resource pressure and must never be
     presented as something the operator should reconfigure.
     """
+    if sys.platform == "win32" and _operator_wants_wsl2() is not None:
+        return "" if _last_wsl2_failure is None else _last_wsl2_failure[2]
     if _last_unshare_failure is None:
         return ""
     return _last_unshare_failure[2]
@@ -1694,6 +1704,8 @@ def unavailable_reason() -> str:
     run. Sibling accessor to :func:`unavailable_remedy`, reading the same
     recorded failure so the two can never describe different probes.
     """
+    if sys.platform == "win32" and _operator_wants_wsl2() is not None:
+        return "" if _last_wsl2_failure is None else _last_wsl2_failure[1]
     if _last_unshare_failure is None:
         return ""
     return _last_unshare_failure[1]
@@ -2538,6 +2550,319 @@ def is_wsl() -> bool:
         return False
 
 
+# ── WSL2 backend probe (Windows only) ──
+#
+# is_wsl() above answers "is THIS process running inside a WSL2 guest" — the
+# opposite question from what follows: "can the Windows-side gateway process
+# reach a WORKING WSL2 guest to sandbox a child in". The two never interact:
+# a process is either Linux (is_wsl() applies) or win32 (this section
+# applies), never both.
+#
+# Measured live on a real host (idle, 29GB free RAM, no contention): a cold
+# `wsl.exe -d <distro> -- echo` round trip took 7.5s — far slower than the
+# Linux unshare() syscall _probe_unshare mirrors. The generous timeout below
+# and the transient/permanent cache split are load-bearing, not defensive
+# padding: a short timeout would misclassify a merely-slow-to-boot distro as
+# permanently unavailable and poison the cache for the process lifetime.
+
+_WSL2_PROBE_TIMEOUT_SECS = 30.0
+
+# Exit status the probe's guest shell uses to say "no python3 here", chosen away
+# from anything ``unshare`` itself returns (1 on a refused namespace, 126/127 on
+# an exec failure) so the two verdicts cannot be confused.
+_WSL2_PROBE_NO_PYTHON3_EXIT = 113
+
+# Guest-side sweep of launchers left behind by a spawn that died before its
+# self-unlink stanza ran. Minutes, matched to ``find -mmin``; generous because a
+# launcher older than this cannot still be waiting to execute.
+_WSL2_STALE_LAUNCHER_MINUTES = 60
+
+_last_wsl2_failure: tuple[bool, str, str] | None = None
+_wsl2_backend_ok: bool | None = None
+_wsl2_probed_distro: str | None = None
+_wsl2_warm_thread: threading.Thread | None = None
+
+
+def _wsl_env() -> dict[str, str]:
+    """Environment for every wsl.exe invocation: forces UTF-8 output.
+
+    Every WSL build since 0.51.01 honors ``WSL_UTF8=1`` and emits UTF-8
+    instead of its native UTF-16LE. Verified live on this host: ``wsl.exe
+    --version`` without this env var returns null-interleaved bytes that a
+    plain ``text=True`` decode garbles into unusable, unparseable output —
+    every string comparison below (distro listing, stderr classification)
+    depends on this being set.
+    """
+    env = dict(os.environ)
+    env["WSL_UTF8"] = "1"
+    return env
+
+
+def _wsl_run(
+    argv: list[str], *, input_text: str | None = None, timeout: float = _WSL2_PROBE_TIMEOUT_SECS
+) -> subprocess.CompletedProcess[str]:
+    """The ONE ``subprocess.run`` call every WSL2 helper below routes through.
+
+    ``encoding="utf-8"`` is load-bearing, not the ``text=True`` default:
+    verified live that ``text=True`` alone decodes with
+    ``locale.getpreferredencoding()`` (``cp1252`` on this host), which raises
+    ``UnicodeEncodeError``/mis-decodes the moment either side of the pipe
+    carries a non-ASCII byte — exactly the UTF-8 output ``_wsl_env()``'s
+    ``WSL_UTF8=1`` produces. Centralizing this is what makes it impossible
+    for a future WSL2 call site to individually forget it.
+    """
+    return subprocess.run(
+        argv,
+        input=input_text,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=timeout,
+        env=_wsl_env(),
+    )
+
+
+_WSL2_DISTRO_LIST_CACHE_SECS = 10.0
+_wsl2_distro_list_cache: tuple[float, dict[str, str] | None] | None = None
+
+# Docker Desktop's own internal WSL2 utility instances (the container-runtime
+# VM and its data volume). They exist on any host running Docker Desktop
+# with the WSL2 engine, are not meant to run arbitrary user workloads, and
+# are minimal/purpose-built — not guaranteed to ship `unshare` or the other
+# tools the launcher script needs. Filtered from the DROPDOWN a picker
+# offers, not from validation: an operator who deliberately wants one can
+# still set it by hand in config.json (agent.sandbox_wsl_distro is a plain
+# string field, not enum-validated at the write layer).
+_WSL2_UTILITY_DISTRO_PREFIXES = ("docker-desktop",)
+
+
+def _list_wsl2_distros() -> dict[str, str] | None:
+    """Return ``{distro_name: state}`` from ``wsl.exe -l -v``, or ``None`` if
+    the listing itself failed (wsl.exe missing, or did not answer in time).
+
+    State-column text is locale-dependent (confirmed the hard way by
+    upstream Kiro Crew PR #6808's own WSL2 discovery work) — this function
+    never branches on it. Callers only need dict MEMBERSHIP: does the
+    requested distro exist at all, independent of what its state column says
+    in the operator's language.
+
+    Cached for :data:`_WSL2_DISTRO_LIST_CACHE_SECS` (module-global, not
+    per-caller): both the probe path and the UI-facing
+    :func:`wsl2_distro_choices` call this, and a `wsl.exe` round trip is
+    seconds, not milliseconds — uncached, a Settings page load plus an
+    in-flight probe could shell out twice in the same instant for the
+    identical answer.
+    """
+    global _wsl2_distro_list_cache
+    now = time.monotonic()
+    if _wsl2_distro_list_cache is not None:
+        cached_at, cached_value = _wsl2_distro_list_cache
+        if now - cached_at < _WSL2_DISTRO_LIST_CACHE_SECS:
+            return cached_value
+    wsl_bin = platform_compat.trusted_system_bin("wsl.exe")
+    if not wsl_bin:
+        _wsl2_distro_list_cache = (now, None)
+        return None
+    try:
+        proc = _wsl_run([wsl_bin, "-l", "-v"])
+    except (subprocess.TimeoutExpired, OSError):
+        _wsl2_distro_list_cache = (now, None)
+        return None
+    if proc.returncode != 0:
+        _wsl2_distro_list_cache = (now, None)
+        return None
+    distros: dict[str, str] = {}
+    for line in proc.stdout.splitlines()[1:]:  # skip the NAME/STATE/VERSION header
+        stripped = line.lstrip("* ").strip()
+        if not stripped:
+            continue
+        parts = stripped.split()
+        distros[parts[0]] = parts[1] if len(parts) > 1 else ""
+    _wsl2_distro_list_cache = (now, distros)
+    return distros
+
+
+def wsl2_distro_choices() -> list[str]:
+    """Public: WSL2 distro names to OFFER a picker, ``""`` (WSL's own
+    default) always first.
+
+    Windows-only; returns ``[""]`` on every other platform or when the
+    listing itself fails (wsl.exe missing, timed out) — a picker with only
+    the default option is the correct degraded state, not an error the
+    caller needs to handle specially. Excludes Docker Desktop's internal
+    utility distros (see :data:`_WSL2_UTILITY_DISTRO_PREFIXES`) from what is
+    OFFERED; it does not and cannot prevent one being set by hand.
+    """
+    if not platform_compat.IS_WINDOWS:
+        return [""]
+    distros = _list_wsl2_distros()
+    if not distros:
+        return [""]
+    names = sorted(
+        name for name in distros if not name.lower().startswith(_WSL2_UTILITY_DISTRO_PREFIXES)
+    )
+    return ["", *names]
+
+
+def _probe_wsl2_once(distro: str) -> tuple[bool, bool, str, str]:
+    """One attempt at confirming *distro* (``""`` = WSL's own default) offers
+    a working Linux user namespace. Mirrors :func:`_probe_unshare_once`'s
+    ``(ok, transient, reason, remedy)`` contract.
+
+    Three steps, in order, so a failure names the right layer: (1) confirm
+    the distro is actually registered with ``wsl.exe`` itself — this is what
+    lets "WSL2 isn't installed" read differently from "this distro doesn't
+    exist" — then (2) that the guest has a ``python3`` on its PATH, which the
+    staged launcher runs under (a minimal distro can pass the namespace check
+    and still fail every spawn without it), then (3) a live ``unshare --user
+    --map-root-user`` inside it, the exact primitive
+    :func:`wsl_namespace_argv` needs at spawn time.
+    """
+    wsl_bin = platform_compat.trusted_system_bin("wsl.exe")
+    if not wsl_bin:
+        return False, False, "wsl.exe not found on this host", "REMEDY_WSL2_NOT_INSTALLED"
+
+    distros = _list_wsl2_distros()
+    if distros is None:
+        # wsl.exe exists but would not answer `-l -v` -- WSL2 may still be
+        # initializing after a fresh `wsl --install`, or the host is under
+        # load. Not evidence of a permanent absence.
+        return False, True, "wsl.exe did not answer `-l -v` (WSL2 may still be starting)", ""
+    if not distros:
+        return False, False, "WSL2 has no registered distributions", "REMEDY_WSL2_NO_DISTRO"
+    if distro and distro not in distros:
+        return False, False, f"no such WSL2 distribution: {distro!r}", "REMEDY_WSL2_NO_DISTRO"
+
+    argv = [wsl_bin]
+    if distro:
+        argv += ["-d", distro]
+    argv += [
+        "--",
+        "sh",
+        "-c",
+        f"command -v python3 >/dev/null 2>&1 || exit {_WSL2_PROBE_NO_PYTHON3_EXIT}; "
+        "unshare --user --map-root-user true",
+    ]
+    try:
+        proc = _wsl_run(argv)
+    except subprocess.TimeoutExpired:
+        return False, True, "unshare probe inside WSL2 timed out (distro may still be starting)", ""
+    except OSError as exc:
+        return False, True, f"wsl.exe spawn failed: {exc}", ""
+    if proc.returncode == 0:
+        return True, False, "ok", ""
+    if proc.returncode == _WSL2_PROBE_NO_PYTHON3_EXIT:
+        return (
+            False,
+            False,
+            "python3 not found inside the WSL2 guest (the sandbox launcher runs under it)",
+            "REMEDY_WSL2_NO_PYTHON3",
+        )
+    stderr = (proc.stderr or "").strip()
+    return (
+        False,
+        False,
+        f"unshare(CLONE_NEWUSER) failed inside WSL2 guest (exit {proc.returncode}): {stderr[:200]}",
+        "REMEDY_WSL2_USERNS_REFUSED",
+    )
+
+
+def _record_wsl2_probe_failure(transient: bool, reason: str, remedy: str = "") -> None:
+    """Sole writer of ``_last_wsl2_failure`` — mirrors
+    :func:`_record_probe_failure`'s contract so a stale remedy token can
+    never outlive the failure it names."""
+    global _last_wsl2_failure
+    _last_wsl2_failure = (transient, reason, remedy)
+
+
+def _kick_wsl2_background_warm(distro: str) -> None:
+    """Start the WSL2 warm thread if not already running for *distro*."""
+    global _wsl2_warm_thread
+
+    def _run() -> None:
+        global _wsl2_backend_ok, _wsl2_probed_distro, _last_wsl2_failure
+        ok, transient, reason, remedy = _probe_wsl2_once(distro)
+        if ok:
+            _last_wsl2_failure = None
+            _wsl2_backend_ok = True
+            _wsl2_probed_distro = distro
+            logger.info("Background warm: WSL2 sandbox backend available (distro=%r)", distro)
+            return
+        _record_wsl2_probe_failure(transient, reason, remedy)
+        if not transient:
+            _wsl2_backend_ok = False
+            _wsl2_probed_distro = distro
+            logger.warning("Background warm: WSL2 probe permanent failure: %s", reason)
+        # transient: leave the cache at None (unknown) so the next call re-probes.
+
+    if _wsl2_warm_thread is not None and _wsl2_warm_thread.is_alive():
+        return
+    _wsl2_warm_thread = threading.Thread(target=_run, name="sandbox-wsl2-probe-warm", daemon=True)
+    try:
+        _wsl2_warm_thread.start()
+    except RuntimeError:
+        _wsl2_warm_thread = None
+        logger.debug("WSL2 warm thread start failed; cache stays cold")
+
+
+def _probe_wsl2(distro: str) -> bool:
+    """Return True if *distro* offers a working WSL2 sandbox.
+
+    Same never-block-on-loop / retry-once-off-loop discipline as
+    :func:`_probe_unshare`, with its OWN cache: a WSL2 probe answers a
+    different question ("does this distro work") than the Linux probe, so it
+    cannot share ``_backend``/``_last_unshare_failure`` without one
+    overwriting the other's verdict when both could theoretically be probed
+    in the same process (a Linux-built test harness exercising the win32
+    branch via a flipped platform flag, for instance).
+    """
+    global _wsl2_backend_ok, _wsl2_probed_distro, _last_wsl2_failure
+    if _wsl2_backend_ok is not None and _wsl2_probed_distro == distro:
+        return _wsl2_backend_ok
+
+    on_loop = False
+    try:
+        asyncio.get_running_loop()
+        on_loop = True
+    except RuntimeError:
+        pass
+
+    if on_loop:
+        _kick_wsl2_background_warm(distro)
+        _record_wsl2_probe_failure(
+            True,
+            "WSL2 probe deferred to background thread (cold cache on event "
+            "loop); cache warms once wsl.exe answers — retry",
+        )
+        return False
+
+    for attempt in (1, 2):
+        ok, transient, reason, remedy = _probe_wsl2_once(distro)
+        if ok:
+            _last_wsl2_failure = None
+            _wsl2_backend_ok = True
+            _wsl2_probed_distro = distro
+            return True
+        _record_wsl2_probe_failure(transient, reason, remedy)
+        if not transient:
+            _wsl2_backend_ok = False
+            _wsl2_probed_distro = distro
+            logger.warning("WSL2 probe failed (permanent): %s", reason)
+            return False
+        logger.warning("WSL2 probe failed (transient, attempt %d/2): %s", attempt, reason)
+        if attempt == 1:
+            time.sleep(_PROBE_TRANSIENT_RETRY_DELAY_SECS)
+    return False
+
+
+def reset_wsl2_backend() -> None:
+    """Reset cached WSL2 probe state (for testing or config change)."""
+    global _wsl2_backend_ok, _wsl2_probed_distro, _last_wsl2_failure
+    _wsl2_backend_ok = None
+    _wsl2_probed_distro = None
+    _last_wsl2_failure = None
+
+
 @functools.lru_cache(maxsize=1)
 def is_docker_container() -> bool:
     """Public: True if this process is running inside a Docker/OCI container.
@@ -2687,12 +3012,42 @@ def _ssh_supports_accept_new() -> bool:
     return False
 
 
+def _sensitive_dir_names(sandbox_level: str) -> list[str]:
+    """Home-relative sensitive directory names for *sandbox_level*.
+
+    The single source of truth for which relative names count as sensitive —
+    factored out of :func:`_build_launcher_script` so :func:`wsl_namespace_argv`
+    can build the Windows-side masking list from the identical selection
+    instead of a second, driftable copy.
+    """
+    if sandbox_level == "standard":
+        return list(_STANDARD_DIRS)
+    if sandbox_level == "cc":
+        return _sandbox_policy().cc_dirs()
+    return _sandbox_policy().strict_dirs()
+
+
+# Emitted into a guest-staged launcher (``unlink_self=True``). The interpreter
+# has already read and compiled the file by the time module code runs, so the
+# unlink cannot affect this run; it only stops the staging directory growing by
+# one file per spawn where the spawner has no path to delete it itself.
+_LAUNCHER_UNLINK_SELF_STANZA = """
+try:
+    os.unlink(os.path.abspath(__file__))
+except OSError:
+    pass
+"""
+
+
 def _build_launcher_script(
     sandbox_level: str = "strict",
     *,
     strip_python_env: bool = False,
     extra_hidden_dirs: tuple[str, ...] = (),
     extra_visible_dirs: tuple[str, ...] = (),
+    extra_readonly_dirs: tuple[str, ...] = (),
+    identity: tuple[int, int, str] | None = None,
+    unlink_self: bool = False,
 ) -> str:
     """Build a Python launcher script for the Linux namespace sandbox.
 
@@ -2707,21 +3062,43 @@ def _build_launcher_script(
        and ``exec``s the real command.
 
     The child retains the real UID/GID — no UID 0, no UID 65534.
+
+    *identity*: ``(uid, gid, home)`` to use INSTEAD of
+    ``os.getuid()``/``os.getgid()``/``Path.home()``. Every real Linux caller
+    leaves this ``None`` (identical behavior to before this parameter
+    existed) — it exists solely for :func:`wsl_namespace_argv`, whose
+    BUILDER process is native Windows Python, where ``os.getuid()`` does not
+    exist at all and ``Path.home()`` resolves a Windows path, not the WSL2
+    guest's own. The script this function returns always EXECUTES inside a
+    genuine Linux process either way (real Linux, or the WSL2 guest), so
+    only the values baked in at build time need substituting — never the
+    embedded script's own logic.
+
+    *extra_readonly_dirs*: absolute paths to seal read-only on top of the
+    derived set, in the TARGET filesystem's flavor like *extra_hidden_dirs*.
+    Exists for the same caller: the crew governance tree is sealed rather than
+    hidden (an absent ceiling reads as the permissive default), and the
+    ``$HOME``-relative and ``config_dir()``-relative resolutions below name the
+    BUILDER's paths, which under WSL2 are Windows paths the guest cannot use.
+
+    *unlink_self*: emit a stanza that unlinks the launcher file once the
+    interpreter has loaded it. Every real Linux caller leaves this ``False``
+    (the spawner deletes the file it staged); only a guest-staged launcher,
+    which its Windows-side spawner cannot reach afterwards, cleans up after
+    itself.
     """
-    home = str(Path.home())
-    uid = os.getuid()
-    gid = os.getgid()
+    if identity is not None:
+        uid, gid, home = identity
+    else:
+        home = str(Path.home())
+        uid = os.getuid()
+        gid = os.getgid()
     # Source the sensitive-dir lists from the active PlatformContext so the
     # The internal companion can extend them (+ .midway/.ada).  The Default adapter
     # returns ``list(_STRICT_DIRS)`` / ``list(_CC_DIRS)``, so standalone is
     # unchanged.  ``_STANDARD_DIRS`` is not an extension point (no interface
     # method) and stays on the module global.
-    if sandbox_level == "standard":
-        dirs = _STANDARD_DIRS
-    elif sandbox_level == "cc":
-        dirs = _sandbox_policy().cc_dirs()
-    else:
-        dirs = _sandbox_policy().strict_dirs()
+    dirs = _sensitive_dir_names(sandbox_level)
     files = _CC_FILES if sandbox_level in ("cc", "strict") else []
     expose_files = _CC_EXPOSE_FILES if sandbox_level == "cc" else []
     env_prefixes = list(_SENSITIVE_ENV_PREFIXES)
@@ -2736,11 +3113,38 @@ def _build_launcher_script(
         # KiroCrew's PYTHONPATH/PYTHONHOME leak in and shadow their own deps.
         env_prefixes = env_prefixes + list(_PYTHON_ENV_PREFIXES)
     hide_ssh = sandbox_level == "strict"
-    hidden_dirs = [os.path.join(home, d) for d in dirs]
-    hidden_dirs.extend(_relocated_policy_cache_dirs())
-    hidden_dirs.extend(_relocated_crew_targets(_CREW_HIDDEN_LEAVES))
-    hidden_dirs.extend(_voice_runtime_sandbox_paths())
-    hidden_dirs.extend(os.path.abspath(path) for path in extra_hidden_dirs)
+    # posixpath, not os.path: `home` is always a POSIX path (the guest's own
+    # home, real or WSL2-resolved), but the BUILDER of this script — the
+    # Python process calling _build_launcher_script — is not always POSIX
+    # itself. wsl_namespace_argv calls this from native Windows Python, where
+    # os.path is ntpath and would join with a backslash, embedding a
+    # mixed-separator path the Linux guest's own launcher process (running
+    # this script natively, so ITS OWN os.path calls below are always
+    # correctly posixpath) would then fail to find. posixpath.join is
+    # identical to os.path.join on real POSIX hosts, so this is a no-op for
+    # the existing Linux backend.
+    hidden_dirs = [posixpath.join(home, d) for d in dirs]
+    if identity is None:
+        # These resolve via config_dir()/Path.home() as the CALLING process's
+        # own host paths — correct for the native backend, whose calling
+        # process and sandboxed target share one filesystem. For WSL2 the
+        # caller is Windows Python but the target is the guest filesystem, so
+        # these would inject unusable backslash paths; the WSL2-side
+        # equivalents are translated through DrvFs and threaded in by the
+        # caller (wsl_namespace_argv) as extra_hidden_dirs instead.
+        hidden_dirs.extend(_relocated_policy_cache_dirs())
+        hidden_dirs.extend(_relocated_crew_targets(_CREW_HIDDEN_LEAVES))
+        hidden_dirs.extend(_voice_runtime_sandbox_paths())
+    # `extra_hidden_dirs` entries are already absolute in the TARGET
+    # filesystem's own flavor: real host paths for the native backend
+    # (abspath'd with os.path, which is that host's own module), already-
+    # translated `/mnt/<drive>/...` guest paths for WSL2 (abspath'd with
+    # posixpath, since the BUILDER here is Windows Python and os.path would
+    # otherwise reinterpret a leading `/` against the wrong drive).
+    hidden_dirs.extend(
+        (posixpath.abspath(path) if identity is not None else os.path.abspath(path))
+        for path in extra_hidden_dirs
+    )
     unhidden = [
         path for path in hidden_dirs if _hidden_path_contains_visible_path(path, extra_visible_dirs)
     ]
@@ -2758,21 +3162,35 @@ def _build_launcher_script(
     # ``run`` must stay readable because it holds this launcher, but making both
     # its lexical and canonical spellings read-only prevents an agent from
     # renaming the hidden voice-runtime mount out from under the path-based rule.
-    readonly_dirs.extend(_voice_runtime_parent_paths())
+    # Builder-host paths, so gated like the hidden set above.
+    if identity is None:
+        readonly_dirs.extend(_voice_runtime_parent_paths())
     # The crew data home's ceilings. Read-only rather than hidden because in-sandbox
     # code resolves them (a script cron's ``boot_platform()``, the config loader) and an
     # absent ceiling reads as the permissive standalone default — masking one would
     # REMOVE it. A caller's ``extra_visible_dirs`` cannot re-open the write side, for the
     # reason spelled out for the governance cache above.
     readonly_dirs.extend(
-        os.path.join(home, target)
+        posixpath.join(home, target)
         for target in _CREW_READONLY_TARGETS
-        if os.path.join(home, target) not in hidden_dirs
+        if posixpath.join(home, target) not in hidden_dirs
     )
     # A relocated data home escapes every ``$HOME``-relative rule above, which would
     # leave the ceiling writable on exactly the managed fleets that set it.
+    if identity is None:
+        readonly_dirs.extend(
+            path
+            for path in _relocated_crew_targets(_CREW_READONLY_LEAVES)
+            if path not in hidden_dirs
+        )
+    # Caller-supplied seals, in the target filesystem's flavor (see the hidden set).
     readonly_dirs.extend(
-        path for path in _relocated_crew_targets(_CREW_READONLY_LEAVES) if path not in hidden_dirs
+        path
+        for path in (
+            (posixpath.abspath(p) if identity is not None else os.path.abspath(p))
+            for p in extra_readonly_dirs
+        )
+        if path not in hidden_dirs
     )
     # A caller-supplied hidden path may be a FILE, and the two launcher loops hide
     # each kind differently: a directory gets an empty dir bind-mounted over it, a file
@@ -2799,16 +3217,17 @@ def _build_launcher_script(
     dirs_json = json.dumps(list(dict.fromkeys(hidden_dirs)))
     readonly_json = json.dumps(list(dict.fromkeys(readonly_dirs)))
     files_json = json.dumps(
-        list(dict.fromkeys([os.path.join(home, f) for f in files] + hidden_dirs))
+        list(dict.fromkeys([posixpath.join(home, f) for f in files] + hidden_dirs))
     )
-    expose_json = json.dumps([(os.path.join(home, f), f.split("/")[-1]) for f in expose_files])
+    expose_json = json.dumps([(posixpath.join(home, f), f.split("/")[-1]) for f in expose_files])
     env_prefixes_json = json.dumps(env_prefixes)
-    ssh_dir = json.dumps(os.path.join(home, ".ssh"))
-    ssh_known_hosts = json.dumps(os.path.join(home, ".ssh", "known_hosts"))
+    ssh_dir = json.dumps(posixpath.join(home, ".ssh"))
+    ssh_known_hosts = json.dumps(posixpath.join(home, ".ssh", "known_hosts"))
     sandbox_level_json = json.dumps(sandbox_level)
     strict_host_key_opt = (
         " -o StrictHostKeyChecking=accept-new" if _ssh_supports_accept_new() else ""
     )
+    unlink_self_stanza = _LAUNCHER_UNLINK_SELF_STANZA if unlink_self else ""
 
     return f'''#!/usr/bin/env python3
 """Namespace sandbox launcher — spawned by KiroCrew."""
@@ -2828,7 +3247,7 @@ import ctypes
 import os
 import stat
 import tempfile
-
+{unlink_self_stanza}
 _CLONE_NEWUSER = 0x10000000
 _CLONE_NEWNS   = 0x00020000
 _MS_RDONLY     = 1
@@ -3588,6 +4007,308 @@ def namespace_argv(
     platform_compat.chmod_safe(path, 0o700)
 
     return [sys.executable, *_LAUNCHER_INTERPRETER_FLAGS, path, *resolved_argv]
+
+
+# ── Backend: WSL2 namespace sandbox (Windows only) ──
+#
+# The Windows analogue of namespace_argv above: reuses _build_launcher_script
+# UNMODIFIED (same unshare/bind-mount logic, same launcher script text), but
+# the BUILDER process is native Windows Python, which cannot call
+# os.getuid()/os.getgid() and whose Path.home() resolves the wrong home
+# entirely. Everything below exists to bridge that one gap, never to
+# reimplement the sandbox itself.
+
+_WSL2_IDENTITY_CACHE: dict[str, tuple[int, int, str]] = {}
+_WSL2_DRVFS_VERIFIED: dict[str, bool] = {}
+
+
+def _resolve_wsl2_identity(distro: str) -> tuple[int, int, str] | None:
+    """Resolve (uid, gid, home) INSIDE *distro*, cached per distro for the
+    process lifetime (identity does not change while the gateway runs, same
+    rationale as detect_backend's positive-result caching).
+    """
+    if distro in _WSL2_IDENTITY_CACHE:
+        return _WSL2_IDENTITY_CACHE[distro]
+    wsl_bin = platform_compat.trusted_system_bin("wsl.exe")
+    if not wsl_bin:
+        return None
+    argv = [wsl_bin]
+    if distro:
+        argv += ["-d", distro]
+    argv += ["--", "sh", "-c", 'id -u && id -g && echo "$HOME"']
+    try:
+        proc = _wsl_run(argv)
+    except (subprocess.TimeoutExpired, OSError):
+        return None
+    if proc.returncode != 0:
+        return None
+    lines = proc.stdout.splitlines()
+    if len(lines) < 3:
+        return None
+    try:
+        uid, gid = int(lines[0].strip()), int(lines[1].strip())
+    except ValueError:
+        return None
+    home = lines[2].strip()
+    if not home.startswith("/"):
+        return None
+    identity = (uid, gid, home)
+    _WSL2_IDENTITY_CACHE[distro] = identity
+    return identity
+
+
+def _verify_wsl2_drvfs_mount(distro: str) -> bool:
+    """Confirm *distro* mounts Windows drives at the DEFAULT ``/mnt/<letter>``
+    location before any code trusts a hand-rolled path translation from it.
+
+    ``wslpath`` itself proved unreliable for this exact purpose — verified
+    live against a real, current WSL2 host: ``wslpath -a`` silently drops
+    backslashes on some multi-segment Windows paths even when invoked
+    through a plain argv list (never a shell), so it is not a dependable
+    translation primitive here. Hand-rolling the mapping without
+    verification would be worse — ``/etc/wsl.conf`` can remap or disable
+    DrvFs automount entirely — so this checks the guest's OWN mount table
+    once, cached per distro, and callers refuse to translate rather than
+    trust an unverified guess.
+    """
+    if distro in _WSL2_DRVFS_VERIFIED:
+        return _WSL2_DRVFS_VERIFIED[distro]
+    wsl_bin = platform_compat.trusted_system_bin("wsl.exe")
+    ok = False
+    if wsl_bin:
+        argv = [wsl_bin]
+        if distro:
+            argv += ["-d", distro]
+        argv += ["--", "sh", "-c", "mountpoint -q /mnt/c && echo DRVFS_OK"]
+        try:
+            proc = _wsl_run(argv)
+            ok = proc.returncode == 0 and "DRVFS_OK" in proc.stdout
+        except (subprocess.TimeoutExpired, OSError):
+            ok = False
+    _WSL2_DRVFS_VERIFIED[distro] = ok
+    return ok
+
+
+def _translate_windows_path_to_wsl2(distro: str, windows_path: str) -> str:
+    """Translate an absolute Windows path to its WSL2 DrvFs equivalent.
+
+    Caller MUST have already confirmed :func:`_verify_wsl2_drvfs_mount` for
+    *distro* — this function does not re-check and raises on anything that
+    is not an absolute, drive-rooted Windows path (a relative path, a UNC
+    path, or a path already in POSIX form are all refused rather than
+    guessed at).
+    """
+    # `ntpath.splitdrive`, not `os.path.splitdrive`: this parses a Windows-style
+    # path STRING, a format-level question independent of the host OS. On a
+    # POSIX host `os.path` aliases `posixpath`, whose `splitdrive` always
+    # returns `("", path)` — there is no such thing as a drive letter — which
+    # would reject every real Windows path outright rather than translating it.
+    drive, rest = ntpath.splitdrive(windows_path)
+    if not drive or not drive.endswith(":") or not rest.startswith(("\\", "/")):
+        raise ValueError(f"not an absolute, drive-rooted Windows path: {windows_path!r}")
+    letter = drive[0].lower()
+    rest = rest.replace("\\", "/").lstrip("/")
+    return f"/mnt/{letter}/{rest}" if rest else f"/mnt/{letter}"
+
+
+def _wsl2_windows_side_masking(sandbox_level: str) -> tuple[list[str], list[str]]:
+    """The operator's REAL Windows-side paths to hide and to seal under wsl2.
+
+    Returns ``(hidden, readonly)`` as Windows paths, not yet translated.
+    :func:`_build_launcher_script` derives the same two sets against the
+    GUEST home baked into ``identity``, which holds none of the operator's
+    files; this is the same derivation against the Windows home and the
+    Windows-side data home, so the crew governance tree keeps its three
+    dispositions (hidden / read-only / visible) across DrvFs:
+
+    - hidden: the mode's sensitive dirs (which carry the crew secret leaves
+      in every mode), the relocated governance cache and secret leaves, the
+      voice runtime snapshot, and ``.ssh`` at the strict tier (the launcher's
+      own ``HIDE_SSH`` check only sees the guest home);
+    - read-only: the crew ceilings in both spellings, their relocated
+      resolution, and the voice runtime parents.
+
+    Whole directories where the native path re-exposes a single file
+    (``known_hosts``): stricter, never looser.
+    """
+    windows_home = str(Path.home())
+    hidden = [os.path.join(windows_home, d) for d in _sensitive_dir_names(sandbox_level)]
+    hidden.extend(_relocated_policy_cache_dirs())
+    hidden.extend(_relocated_crew_targets(_CREW_HIDDEN_LEAVES))
+    hidden.extend(_voice_runtime_sandbox_paths())
+    if sandbox_level == "strict":
+        hidden.append(os.path.join(windows_home, ".ssh"))
+    readonly = [os.path.join(windows_home, target) for target in _CREW_READONLY_TARGETS]
+    readonly.extend(_relocated_crew_targets(_CREW_READONLY_LEAVES))
+    readonly.extend(_voice_runtime_parent_paths())
+    return hidden, readonly
+
+
+def wsl_namespace_argv(
+    argv: list[str],
+    sandbox_level: str = "strict",
+    *,
+    strip_python_env: bool = False,
+    distro: str = "",
+    cwd: str | None = None,
+) -> list[str]:
+    """Wrap *argv* to run inside a WSL2 distribution's real Linux user
+    namespace — the Windows analogue of :func:`namespace_argv`.
+
+    Reuses :func:`_build_launcher_script` unmodified. Four things differ from
+    the Linux path: (1) uid/gid/home are resolved INSIDE the guest rather
+    than read from the calling (Windows) process; (2) the launcher script is
+    staged inside the guest's OWN filesystem rather than under Windows
+    ``config_dir()`` (unreachable as a native WSL path without the slower
+    ``/mnt/c/...`` DrvFs round trip); (3) *cwd* is threaded through as
+    ``wsl.exe --cd``, because the working directory of ``wsl.exe`` itself (a
+    Windows process) does not propagate into the guest shell it starts; (4)
+    the operator's REAL Windows-side sensitive directories are additionally
+    masked, translated through DrvFs — see below.
+
+    **Why (4) matters.** ``_build_launcher_script``'s own ``hidden_dirs``
+    masks only the GUEST's home (``identity``'s ``home``, e.g.
+    ``/home/alice``) — a mostly-empty account that holds none of the
+    operator's real credentials. WSL2's default DrvFs mount makes the
+    operator's actual Windows filesystem, including
+    ``C:\\Users\\<user>\\.aws``/``.ssh`` and the governance keystone under
+    ``config_dir()``, reachable INSIDE the guest at ``/mnt/c/...`` — and this
+    function itself proves that reachability every call (``--cd`` requires
+    it). Left unmasked, a sandboxed app-lifecycle script, command cron, or
+    hook could read or overwrite those real files, defeating both the
+    credential-hiding claim and — for the keystone specifically —
+    ``security._SENSITIVE_HOME_DIRS``'s "the agent can neither read nor
+    write its own ceiling" invariant. So this function computes the same
+    sensitive-directory set :func:`_build_launcher_script` would mask
+    natively, resolves it against the REAL Windows home, translates each
+    entry through DrvFs, and passes the result in as ``extra_hidden_dirs``.
+
+    DrvFs mount verification therefore runs unconditionally (not only when
+    *cwd* is given): the masking list is only trustworthy once every
+    Windows-side path it names is confirmed reachable at the standard
+    ``/mnt/<drive>`` location this function's translator assumes.
+
+    Raises ``RuntimeError`` on any resolution/staging/translation failure —
+    this function NEVER falls back to returning *argv* unwrapped, and never
+    proceeds with a masking list it could not fully build. The caller
+    (``wrap_argv``) is the fail-closed boundary and a raise here is what
+    keeps it that way.
+
+    The crew governance tree gets the same three dispositions it has on the
+    native backends, resolved against the WINDOWS data home: secret leaves
+    hidden, ceilings sealed read-only (an absent ceiling reads as the
+    permissive default, so hiding one would remove it), both translated
+    through DrvFs and threaded in as ``extra_hidden_dirs`` /
+    ``extra_readonly_dirs``. See :func:`_wsl2_windows_side_masking`.
+
+    Staged launchers under ``~/.kirocrew-sandbox-run/`` inside the guest
+    clean up two ways, because the Windows-side spawner cannot reach a
+    guest-native path afterwards: each launcher unlinks itself once the
+    guest interpreter has loaded it (``unlink_self``), and the staging round
+    trip sweeps any sibling older than :data:`_WSL2_STALE_LAUNCHER_MINUTES`
+    that a spawn dying before exec left behind.
+    """
+    identity = _resolve_wsl2_identity(distro)
+    if identity is None:
+        raise RuntimeError(f"could not resolve uid/gid/home inside WSL2 distro {distro!r}")
+
+    if not _verify_wsl2_drvfs_mount(distro):
+        raise RuntimeError(
+            f"cannot verify WSL2 distro {distro!r} mounts Windows drives at the "
+            "standard /mnt/<drive> location (custom /etc/wsl.conf automount "
+            "settings?) -- refusing to sandbox without being able to confirm "
+            "the operator's real Windows-side sensitive directories are "
+            "reachable and maskable inside the guest"
+        )
+
+    windows_hidden, windows_readonly = _wsl2_windows_side_masking(sandbox_level)
+    try:
+        guest_hidden_dirs = tuple(
+            _translate_windows_path_to_wsl2(distro, p) for p in windows_hidden
+        )
+        guest_readonly_dirs = tuple(
+            _translate_windows_path_to_wsl2(distro, p) for p in windows_readonly
+        )
+    except ValueError as exc:
+        # One of our OWN constructed paths failed to translate -- a bug, not
+        # an operator-input problem, but the masking list this call builds
+        # cannot be trusted incomplete, so this fails closed like every
+        # other resolution step in this function.
+        raise RuntimeError(f"failed to translate sensitive paths for WSL2 masking: {exc}") from exc
+
+    script = _build_launcher_script(
+        sandbox_level,
+        strip_python_env=strip_python_env,
+        identity=identity,
+        extra_hidden_dirs=guest_hidden_dirs,
+        extra_readonly_dirs=guest_readonly_dirs,
+        unlink_self=True,
+    )
+
+    wsl_bin = platform_compat.trusted_system_bin("wsl.exe")
+    if not wsl_bin:
+        raise RuntimeError("wsl.exe not found")
+
+    # Named by US, not by `mktemp` inside the guest: an earlier version
+    # captured `mktemp`'s own output via `$(...)`, which had to be a SEPARATE
+    # wsl.exe call from the content write because a command substitution
+    # combined with piped stdin in the same `sh -c` invocation reproducibly
+    # dropped the captured value on this platform (verified live — a WSL2
+    # console/pipe-allocation quirk, not a Kiro Crew bug). Generating the name
+    # here needs no substitution at all, so create-and-write collapses to a
+    # SINGLE wsl.exe round trip — closing the window the two-call form left
+    # open between an empty, discoverable file and its content landing,
+    # during which a same-UID sibling (a concurrently-sandboxed cron job or
+    # hook, exactly the untrusted workload this backend exists to confine)
+    # could have raced to replace it before this launcher ever executes.
+    guest_run_dir = f"{identity[2]}/.kirocrew-sandbox-run"
+    staged_path = f"{guest_run_dir}/kirocrew_sandbox_{secrets.token_hex(16)}.py"
+    quoted_dir = shlex.quote(guest_run_dir)
+    quoted_path = shlex.quote(staged_path)
+    write_argv = [wsl_bin]
+    if distro:
+        write_argv += ["-d", distro]
+    write_argv += [
+        "--",
+        "sh",
+        "-c",
+        # `set -C` (noclobber) makes `cat >` refuse to write through the
+        # redirection if the target already exists, rather than silently
+        # truncating it — so a same-UID sibling that pre-created this exact
+        # (128-bit-random) name to plant its own content is refused, not
+        # raced.
+        f"mkdir -p -m 700 {quoted_dir} && "
+        # Best-effort sweep of launchers a crashed spawn left behind; its
+        # outcome must never decide whether THIS spawn is staged.
+        f"{{ find {quoted_dir} -maxdepth 1 -name 'kirocrew_sandbox_*.py' "
+        f"-mmin +{_WSL2_STALE_LAUNCHER_MINUTES} -delete 2>/dev/null || true; }} && "
+        f"(set -C; cat > {quoted_path}) && chmod 700 {quoted_path}",
+    ]
+    try:
+        write_proc = _wsl_run(write_argv, input_text=script)
+    except (subprocess.TimeoutExpired, OSError) as exc:
+        raise RuntimeError(f"failed to write WSL2 launcher script: {exc}") from exc
+    if write_proc.returncode != 0:
+        raise RuntimeError(
+            f"failed to write WSL2 launcher script (exit {write_proc.returncode}): "
+            f"{(write_proc.stderr or '').strip()[:300]}"
+        )
+
+    wrapped = [wsl_bin]
+    if distro:
+        wrapped += ["-d", distro]
+    if cwd:
+        # DrvFs is already confirmed above (unconditionally, for the
+        # sensitive-path masking), so no second verification is needed here.
+        wrapped += ["--cd", _translate_windows_path_to_wsl2(distro, cwd)]
+    # The same interpreter flags as the native launcher: without ``-S`` a
+    # same-UID workload's ``usercustomize.py`` under the guest's own
+    # site-packages would run BEFORE the script reaches ``unshare()``, i.e.
+    # unconfined and with DrvFs in reach. The flags precede the script exactly
+    # as ``namespace_argv`` places them, so ``_launcher_script_of`` reads the
+    # same slot on both backends.
+    wrapped += ["--", "python3", *_LAUNCHER_INTERPRETER_FLAGS, staged_path, *argv]
+    return wrapped
 
 
 # ── Backend: macOS sandbox-exec ──
@@ -4450,6 +5171,76 @@ def _allow_unsandboxed_exec() -> bool:
         return False
 
 
+def wsl2_selected() -> bool:
+    """Public: True if the operator has selected ``agent.sandbox == "wsl2"``.
+
+    Thin public wrapper around :func:`_operator_wants_wsl2` for callers
+    outside this module that only need the yes/no answer, never the resolved
+    distro name — e.g. ``cron_script.py``'s command-cron shell resolver,
+    which decides whether ``/bin/sh`` should mean "refuse, no POSIX shell on
+    Windows" or "a real one exists, via WSL2." Avoids a private
+    (underscore-prefixed) cross-module import.
+    """
+    return _operator_wants_wsl2() is not None
+
+
+def wsl2_env_passthrough(env: dict[str, str], names: tuple[str, ...]) -> dict[str, str]:
+    """Return *env* with WSLENV extended so *names* cross into a WSL2 guest.
+
+    A no-op unless the wsl2 backend is selected, or *names* is empty. Setting
+    a variable in the environment handed to ``wsl.exe`` — a Windows process —
+    does NOT make it visible inside the guest shell it starts: WSL forwards
+    only the names ``WSLENV`` itself lists. A caller building the env for a
+    spawn that MIGHT be wsl2-wrapped (a script hook, an app lifecycle script)
+    calls this once with the names it actually injects, e.g.
+    ``KIROCREW_HOOK_EVENT``/``KIROCREW_HOOK_CONTEXT`` — never the platform
+    baseline keys (``PATH``, ``HOME``, ...), which the guest must supply from
+    its OWN correct values, not the Windows host's.
+
+    Merges with any ``WSLENV`` already present in *env* rather than
+    overwriting it, and returns a NEW dict (the caller's *env* is untouched).
+    """
+    if not names or not wsl2_selected():
+        return env
+    existing_names = [n for n in env.get("WSLENV", "").split(":") if n]
+    merged = dict.fromkeys([*existing_names, *names])
+    result = dict(env)
+    result["WSLENV"] = ":".join(merged)
+    return result
+
+
+def _operator_wants_wsl2() -> str | None:
+    """The operator's chosen WSL2 distro if ``agent.sandbox == "wsl2"``, else
+    ``None``.
+
+    Deliberately reads ``agent.sandbox`` directly rather than trusting
+    ``wrap_argv``'s own ``mode`` parameter: several callers (app lifecycle
+    scripts, cron scripts) pass ``mode`` as a VISIBILITY LEVEL
+    ("standard"/"cc"/"strict"), not the operator's real ``agent.sandbox``
+    value, so a "wsl2" written to config.json would never reach
+    ``detect_backend`` through that parameter. Returns the empty string
+    (WSL's own default distro) rather than a specific name when
+    ``sandbox_wsl_distro`` is unset.
+
+    Read lazily from config to avoid an import cycle with the config loader,
+    mirroring :func:`_allow_no_isolation` / :func:`_allow_unsandboxed_exec`.
+    Fail direction matches theirs exactly: an unreadable config must never
+    grant a DIFFERENT backend than what was actually configured, so any
+    error here returns ``None`` (not selected) rather than guessing.
+    """
+    try:
+        from kiro_crew.config.loader import (
+            KiroCrewConfig,  # circular import: sandbox is a low-level dep of config.loader
+        )
+
+        agent_cfg = KiroCrewConfig.load().agent
+        if getattr(agent_cfg, "sandbox", "auto") != "wsl2":
+            return None
+        return str(getattr(agent_cfg, "sandbox_wsl_distro", "") or "")
+    except Exception:
+        return None
+
+
 # Fallback tier for configured_sandbox_mode() when the config cannot be read.
 # "auto" (= standard), matching wrap_argv's own default: an unreadable config
 # must not be a way to obtain a LOOSER sandbox than the operator configured.
@@ -4688,12 +5479,72 @@ def _no_backend_guidance() -> str:
             )
             + optout
         )
+    if sys.platform == "win32" and _operator_wants_wsl2() is not None:
+        _, wsl2_reason, wsl2_remedy = _last_wsl2_failure or (False, "", "")
+        distro = _operator_wants_wsl2() or "(WSL default)"
+        if wsl2_remedy == "REMEDY_WSL2_NOT_INSTALLED":
+            base = (
+                "agent.sandbox is set to 'wsl2', but WSL2 itself is not reachable "
+                "on this host. Install it with `wsl --install` from an elevated "
+                "PowerShell prompt, then restart the gateway. "
+            )
+        elif wsl2_remedy == "REMEDY_WSL2_NO_DISTRO":
+            base = (
+                f"agent.sandbox is set to 'wsl2' (distro={distro!r}), but WSL2 "
+                "has no matching registered distribution. List what is "
+                "installed with `wsl -l -v`, install one with `wsl --install "
+                "-d <name>` if none exists, or set agent.sandbox_wsl_distro in "
+                "~/.kiro/crew/config.json to an existing distro's exact name. "
+            )
+        elif wsl2_remedy == "REMEDY_WSL2_NO_PYTHON3":
+            base = (
+                f"agent.sandbox is set to 'wsl2' (distro={distro!r}); WSL2 is "
+                "reachable, but the distro has no `python3` on its PATH and the "
+                "sandbox launcher runs under it. Install one inside the distro "
+                "(for example `wsl -d <name> -- sudo apt install -y python3`), "
+                "then restart the gateway. "
+            )
+        elif wsl2_remedy == "REMEDY_WSL2_USERNS_REFUSED":
+            base = (
+                f"agent.sandbox is set to 'wsl2' (distro={distro!r}); WSL2 "
+                "itself is reachable, but the distro's own kernel refused "
+                "unshare(CLONE_NEWUSER) — the same mechanism the native Linux "
+                f"sandbox depends on (probe: {wsl2_reason}). On an Ubuntu 23.10 "
+                "or newer distro this is usually "
+                "kernel.apparmor_restrict_unprivileged_userns=1 inside the "
+                "guest: from a shell in the distro, run `sudo apparmor_parser -r` "
+                "on an unconfined-userns profile for /usr/bin/python3 (the "
+                "profile the native Linux `kirocrew service install` ships "
+                "works there too), or set that sysctl to 0 in the guest's "
+                "/etc/sysctl.d — it governs only the WSL2 VM, not Windows. "
+                "Restart the gateway afterwards. "
+            )
+        elif _last_wsl2_failure is None:
+            # The distro probed fine; this spawn was refused because its argv
+            # is not POSIX-shell-shaped (``posix_shell_argv`` left False), so
+            # naming the probe here would send the operator after a working
+            # backend.
+            base = (
+                f"agent.sandbox is set to 'wsl2' (distro={distro!r}) and the "
+                "distribution works, but this spawn is a native-Windows "
+                "invocation (a script cron's Python launcher, an MCP server, a "
+                "git call) that the wsl2 backend cannot confine: only the "
+                "POSIX-shell-shaped spawns (app lifecycle scripts, command cron "
+                "jobs, script hooks) route through it. "
+            )
+        else:
+            base = (
+                f"agent.sandbox is set to 'wsl2' (distro={distro!r}), but the "
+                f"probe could not confirm it works (probe: {wsl2_reason or 'unknown'}). "
+            )
+        return base + optout
     return (
         "If this host genuinely lacks a sandbox backend, set "
         "agent.sandbox_allow_unsandboxed_exec=true in "
         "~/.kiro/crew/config.json to explicitly allow unsandboxed "
         "execution, or install a supported sandbox backend "
-        "(Linux user namespaces, or macOS sandbox-exec). "
+        "(Linux user namespaces, or macOS sandbox-exec — or, on Windows, "
+        "agent.sandbox='wsl2' with a working WSL2 distribution). "
     )
 
 
@@ -4724,7 +5575,9 @@ def unavailable_kind() -> str:
     """
     if detect_backend() != "none":
         return ""
-    transient, _reason, _remedy = _last_unshare_failure or (False, "none", "")
+    wsl2_selected = sys.platform == "win32" and _operator_wants_wsl2() is not None
+    failure_source = _last_wsl2_failure if wsl2_selected else _last_unshare_failure
+    transient, _reason, _remedy = failure_source or (False, "none", "")
     return _classify_unavailable(transient)
 
 
@@ -5058,6 +5911,30 @@ def detect_backend(config_mode: str = "auto") -> str:
         return "none"
     if _backend is not None:
         return _backend
+    if sys.platform == "win32":
+        wsl_distro = _operator_wants_wsl2()
+        if wsl_distro is not None:
+            if _probe_wsl2(wsl_distro):
+                _backend = "wsl2"
+                logger.info(
+                    "Sandbox backend: wsl2 (distro=%r, config_mode=%s)", wsl_distro, config_mode
+                )
+                return _backend
+            transient, reason, _remedy = _last_wsl2_failure or (False, "none", "")
+            if transient:
+                logger.warning(
+                    "WSL2 sandbox backend probe failed transiently (%s); result NOT "
+                    "cached — the next spawn re-probes",
+                    reason,
+                )
+                return "none"
+            _backend = "none"
+            logger.info("Sandbox backend: none (wsl2 selected but unavailable: %s)", reason)
+            return _backend
+        # Not selected: fall through to the ordinary chain below. Both
+        # userns_available() and _probe_sandbox_exec() are unconditionally
+        # False on win32 (Linux-only / macOS-only respectively), so this
+        # lands on "none" exactly as it did before wsl2 existed.
     if userns_available():
         _backend = "namespace"
     elif _probe_sandbox_exec():
@@ -5118,6 +5995,7 @@ def reset_backend() -> None:
     global _backend, _last_unshare_failure
     _backend = None
     _last_unshare_failure = None
+    reset_wsl2_backend()
 
 
 # wrap_argv's ``mode`` vocabulary is a superset of the governance ``sandbox``
@@ -5225,6 +6103,8 @@ def wrap_argv(
     extra_visible_dirs: tuple[str, ...] = (),
     is_kiro_cli: bool | None = None,
     first_party_fixed_argv: bool = False,
+    cwd: str | None = None,
+    posix_shell_argv: bool = False,
 ) -> tuple[list[str], str | None]:
     """Wrap a command argv with OS-level sandbox if available.
 
@@ -5236,6 +6116,17 @@ def wrap_argv(
         extra_hidden_dirs: Additional absolute directory trees to deny.
         extra_visible_dirs: Trusted paths that must remain visible when an
             otherwise-hidden parent contains them.
+        cwd: The Windows working directory the caller intends for *argv*.
+            Ignored by every backend except ``wsl2`` — there, a child's
+            working directory cannot simply be inherited: ``wsl.exe`` is
+            itself a Windows process, so the ``cwd=`` a caller passes to
+            ``Popen``/``create_subprocess_exec`` sets wsl.exe's OWN launch
+            directory, not the guest shell's, and the two are on different
+            filesystems entirely. Passing it here lets ``wrap_argv``
+            translate and thread it through as ``wsl.exe --cd``. Every
+            other backend keeps inheriting cwd the ordinary way (the
+            caller's own ``cwd=`` to subprocess creation still applies), so
+            existing callers that do not pass this see no change at all.
         is_kiro_cli: Explicit executable classification for descriptor-backed
             Kiro snapshots whose launch path no longer has a ``kiro-cli``
             basename. ``None`` retains basename detection for other callers.
@@ -5251,6 +6142,25 @@ def wrap_argv(
             (env-scrubbed, loudly warned, SEL ``outcome="unconfined"``) instead
             of fail-closing. Inert whenever a backend exists or
             ``sandbox_allow_unsandboxed_exec`` is set.
+        posix_shell_argv: False by DEFAULT — deliberately opt-IN, not
+            opt-out. ``wrap_argv``/``sandboxed_spawn_argv`` are shared
+            chokepoints with dozens of callers across the codebase, most of
+            which build native-Windows executable invocations (an MCP
+            server spawn, an ``npm install``, a terminal command, a
+            ``git`` call) rather than POSIX shell argv. Only the three
+            call sites that build genuine POSIX ``sh``/``bash -c`` argv —
+            where the wsl2 backend can actually confine what is running —
+            pass ``True`` explicitly. Every other, unexamined caller keeps
+            its exact PRE-wsl2 behavior with zero code change on its part:
+            an opt-out default would have silently handed all of them to
+            the wsl2 guest launcher the moment an operator selected it,
+            which appends *argv* verbatim after itself expecting a POSIX
+            command — neither a valid guest path nor something the guest's
+            Python (if any) could run for a Windows-shaped invocation like
+            ``[sys.executable, script_path]``. With the default ``False``,
+            such a caller sees wsl2 report as unavailable, falling through
+            to the same fail-closed/opt-in behavior Windows already has
+            when no backend exists.
 
     Returns:
         (wrapped_argv, cleanup_path_or_None).
@@ -5527,6 +6437,50 @@ def wrap_argv(
                 return sandbox_exec_argv(argv, sandbox_level, strip_python_env=strip_python_env)
 
     backend = detect_backend(config_mode=mode)
+    if backend == "wsl2" and not posix_shell_argv:
+        # This caller's argv is not POSIX-shell-shaped; wsl2 cannot confine
+        # it (see the parameter's own docstring). Reporting no backend here
+        # is what the pre-existing "none" handling below already does
+        # correctly -- fail-closed, or the operator's unsandboxed-exec
+        # opt-in -- so nothing about that path is duplicated or changed.
+        backend = "none"
+
+    if backend == "wsl2":
+        if extra_hidden_dirs or extra_visible_dirs:
+            # Deliberate scope limit, not an oversight: no in-scope caller
+            # needs these on the wsl2 backend today, and silently dropping a
+            # requested hide would be a correctness/security regression
+            # rather than a graceful degradation.
+            raise SandboxUnavailableError(
+                "The wsl2 sandbox backend does not support "
+                "extra_hidden_dirs/extra_visible_dirs.",
+                kind="no_backend",
+                detail="wsl2 backend: extra_hidden_dirs/extra_visible_dirs unsupported",
+            )
+        wsl_distro = _operator_wants_wsl2() or ""
+        try:
+            wrapped = wsl_namespace_argv(
+                argv,
+                sandbox_level,
+                strip_python_env=strip_python_env,
+                distro=wsl_distro,
+                cwd=cwd,
+            )
+        except RuntimeError as exc:
+            # detect_backend() already confirmed the probe passes for this
+            # distro, so reaching here means something changed between probe
+            # and use (the distro stopped, a transient resource hiccup while
+            # staging) -- report it as retryable rather than a permanent
+            # host verdict, matching the transient/permanent split every
+            # other backend in this function observes.
+            raise SandboxUnavailableError(
+                f"WSL2 sandbox setup failed: {exc}",
+                kind="transient",
+                detail=str(exc),
+            ) from exc
+        # No Windows-reachable cleanup path: the staged launcher lives inside
+        # the guest filesystem (see wsl_namespace_argv's docstring).
+        return wrapped, None
 
     if backend == "namespace":
         if extra_hidden_dirs or extra_visible_dirs:
@@ -5596,7 +6550,12 @@ def wrap_argv(
         if floor_mandates_sandbox or not opted_in:
             # ONE read of the pair: a concurrent re-probe swaps the whole tuple,
             # so failure and remedy can never come from different probes.
-            transient, probe_reason, probe_remedy = _last_unshare_failure or (
+            # On win32 with wsl2 selected, the relevant probe history lives in
+            # _last_wsl2_failure — a DIFFERENT cache, answering a different
+            # question, from the Linux unshare probe's _last_unshare_failure.
+            _wsl2_selected = sys.platform == "win32" and _operator_wants_wsl2() is not None
+            _failure_source = _last_wsl2_failure if _wsl2_selected else _last_unshare_failure
+            transient, probe_reason, probe_remedy = _failure_source or (
                 False,
                 "no probe detail recorded",
                 "",
@@ -5765,6 +6724,8 @@ async def wrap_argv_async(
     extra_visible_dirs: tuple[str, ...] = (),
     is_kiro_cli: bool | None = None,
     first_party_fixed_argv: bool = False,
+    cwd: str | None = None,
+    posix_shell_argv: bool = False,
     _prepare: Callable[..., tuple[list[str], str | None]] | None = None,
 ) -> tuple[list[str], str | None]:
     """Cancellation-safe, off-loop sandbox preparation for async spawn paths.
@@ -5776,6 +6737,11 @@ async def wrap_argv_async(
     launcher/profile before propagating cancellation. ``_prepare`` preserves
     each caller's module-local test seam; production callers pass their imported
     :func:`wrap_argv`, and the default is this module's implementation.
+
+    ``cwd``: forwarded to :func:`wrap_argv` unchanged — see its own docstring.
+    Needed here because this is the entry point an ``async def`` caller (e.g.
+    ``apps/lifecycle_scripts.py``) actually uses; ``wrap_argv`` itself now
+    refuses outright when called from a running event loop.
     """
     options: dict[str, Any] = {"mode": mode}
     if strip_python_env:
@@ -5788,6 +6754,10 @@ async def wrap_argv_async(
         options["is_kiro_cli"] = is_kiro_cli
     if first_party_fixed_argv:
         options["first_party_fixed_argv"] = True
+    if cwd is not None:
+        options["cwd"] = cwd
+    if posix_shell_argv:
+        options["posix_shell_argv"] = True
     prepare = functools.partial(wrap_argv if _prepare is None else _prepare, argv, **options)
 
     def _prepare_wrapped() -> tuple[list[str], dict[str, str], str | None]:
@@ -5882,6 +6852,7 @@ def sandboxed_spawn_argv(
     extra_hidden_dirs: tuple[str, ...] = (),
     extra_visible_dirs: tuple[str, ...] = (),
     first_party_fixed_argv: bool = False,
+    posix_shell_argv: bool = False,
 ) -> tuple[list[str], dict[str, str], str | None]:
     """Single chokepoint for agent-influenced subprocess spawns.
 
@@ -5913,6 +6884,12 @@ def sandboxed_spawn_argv(
             agent/repo/user-config influence; every passing site must be
             allowlisted in ``test/test_spawn_audit.py::FIRST_PARTY_SPAWNS``.
             See :func:`wrap_argv` for the no-backend carve-out it gates.
+        posix_shell_argv: Threaded to :func:`wrap_argv`; see its own
+            docstring. False by default (opt-IN) — pass True only when
+            *argv* is genuine POSIX ``sh``/``bash -c`` shell argv the wsl2
+            backend can confine. This chokepoint is shared by dozens of
+            callers building native-Windows executable invocations, and
+            those must see zero behavior change from wsl2 existing.
 
     Returns:
         ``(wrapped_argv, scrubbed_env, cleanup_path_or_None)``. The caller MUST
@@ -5927,6 +6904,7 @@ def sandboxed_spawn_argv(
             extra_hidden_dirs=extra_hidden_dirs,
             extra_visible_dirs=extra_visible_dirs,
             first_party_fixed_argv=first_party_fixed_argv,
+            posix_shell_argv=posix_shell_argv,
         )
     else:
         wrapped, cleanup = wrap_argv(
@@ -5934,6 +6912,7 @@ def sandboxed_spawn_argv(
             mode=mode,
             strip_python_env=strip_python_env,
             first_party_fixed_argv=first_party_fixed_argv,
+            posix_shell_argv=posix_shell_argv,
         )
     # ``wrap_argv`` only strips PYTHONPATH/PYTHONHOME inside the launcher script,
     # so on the fail-open path (no sandbox backend, opted-in unsandboxed exec) it
@@ -6071,6 +7050,7 @@ async def sandboxed_spawn_argv_async(
     extra_hidden_dirs: tuple[str, ...] = (),
     extra_visible_dirs: tuple[str, ...] = (),
     first_party_fixed_argv: bool = False,
+    posix_shell_argv: bool = False,
     executor: ThreadPoolExecutor | None = None,
     _prepare: Callable[..., tuple[list[str], dict[str, str], str | None]] | None = None,
 ) -> tuple[list[str], dict[str, str], str | None]:
@@ -6093,6 +7073,8 @@ async def sandboxed_spawn_argv_async(
         options["extra_visible_dirs"] = extra_visible_dirs
     if first_party_fixed_argv:
         options["first_party_fixed_argv"] = True
+    if posix_shell_argv:
+        options["posix_shell_argv"] = True
     return await shielded_prepare_off_loop(
         functools.partial(
             sandboxed_spawn_argv if _prepare is None else _prepare,

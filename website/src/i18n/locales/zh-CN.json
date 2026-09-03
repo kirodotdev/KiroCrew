@@ -10429,6 +10429,7 @@
         "agent_for_pool_processes_empty_uses_default_agen": "用于池化进程的代理。留空则使用默认代理。需要重启。",
         "approval_mode": "审批模式",
         "auto": "自动",
+        "auto_enables_sandbox_for_untrusted_tools_switchi": "'auto' 会为不受信任的工具启用沙箱。切换到或离开 'wsl2' 需在网关重启后生效。",
         "auto_size_max": "自动调整上限",
         "auto_update": "自动更新",
         "ceiling_on_the_auto_sized_concurrent_subagent_co": "自动调整的并发子代理数上限（仅当“最大并发子代理数”为 0 时生效）。主机内存/CPU 计算公式绝不会超过此值。范围 1–64。默认值：16。",
@@ -10473,6 +10474,7 @@
         "pool_ttl": "池 TTL",
         "provider": "提供方",
         "restart_required_to_apply_changes": "{{description}} 需要重启才能生效。",
+        "restart_required_which_wsl2_distribution_to_sand": "需要重启。用于沙箱的 WSL2 发行版 — 此处不提供 Docker Desktop 自身的工具实例。",
         "sandbox": "沙箱",
         "save": "保存",
         "saved": "已保存",
@@ -10486,7 +10488,9 @@
         "using_legacy_mode_agent_default_agent_as_agent_t": "使用旧版模式 — 以 agent.default_agent 作为代理模板",
         "warm_pool": "预热池",
         "workspace": "工作区",
-        "workspaces": "工作区"
+        "workspaces": "工作区",
+        "wsl2_distribution": "WSL2 发行版",
+        "wsl_default_distro": "(WSL 默认)"
       },
       "mcpTab": {
         "actions": "操作",

@@ -28,6 +28,7 @@
         "default_agent": "",
         "sweep_agents_backups": false,
         "sandbox": "auto",
+        "sandbox_wsl_distro": "",
         "sandbox_allow_no_isolation": false,
         "sandbox_allow_unsandboxed_exec": false,
         "apps_allow_third_party": false,
@@ -309,13 +310,28 @@
       "sensitive": false,
       "tags": [],
       "label": "Sandbox",
-      "help": "Sandbox mode for ACP provider. Default 'auto' engages OS-level isolation (namespace on Linux, sandbox-exec on macOS) and automatically defers to kiro-cli's internal sandbox on macOS when it is enabled (kiro-cli >= 2.13; nested seatbelt causes EPERM). Set to 'off' to skip Kiro Crew's own OS-level sandbox — delegation to kiro-cli's internal sandbox still fires on macOS if it is enabled, and a SECURITY warning is logged when neither layer is active.",
+      "help": "Sandbox mode for ACP provider. Default 'auto' engages OS-level isolation (namespace on Linux, sandbox-exec on macOS) and automatically defers to kiro-cli's internal sandbox on macOS when it is enabled (kiro-cli >= 2.13; nested seatbelt causes EPERM). Set to 'off' to skip Kiro Crew's own OS-level sandbox — delegation to kiro-cli's internal sandbox still fires on macOS if it is enabled, and a SECURITY warning is logged when neither layer is active. 'wsl2' is Windows-only: it routes the POSIX-shell-shaped subprocess spawns (app lifecycle scripts, command cron jobs, script hooks) through a WSL2 distribution's real Linux user namespace, since native Windows has no OS-level backend of its own. Kept as a static enum value (unlike 'acp_backend' above) because it must survive schema validation even on a config.json synced from a non-Windows host; PATCH /api/config/kirocrew and the dashboard picker gate whether it is OFFERED on host capability, not whether it validates.",
       "hasChildren": false,
       "enumValues": [
         "auto",
-        "off"
+        "off",
+        "wsl2"
       ],
       "defaultValue": "auto"
+    },
+    {
+      "path": "agent.sandbox_wsl_distro",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "WSL2 Distribution",
+      "help": "Which WSL2 distribution to use when agent.sandbox is 'wsl2'. Empty (default) uses WSL's own default distribution (equivalent to invoking wsl.exe without -d). Ignored on every other platform and every other sandbox mode.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": ""
     },
     {
       "path": "agent.sandbox_allow_no_isolation",

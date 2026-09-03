@@ -2537,6 +2537,7 @@ class KiroCrewConfig:
                     agent_data.get("sweep_agents_backups", False), False
                 ),
                 sandbox=agent_data.get("sandbox", "auto"),
+                sandbox_wsl_distro=agent_data.get("sandbox_wsl_distro", "") or "",
                 sandbox_allow_no_isolation=bool(
                     agent_data.get("sandbox_allow_no_isolation", False)
                 ),

@@ -10739,6 +10739,7 @@
         "agent_for_pool_processes_empty_uses_default_agen": "Agente para los procesos del pool. Si está vacío, se usa el agente predeterminado. Requiere reinicio.",
         "approval_mode": "Modo de aprobación",
         "auto": "auto",
+        "auto_enables_sandbox_for_untrusted_tools_switchi": "'auto' activa el sandbox para herramientas no confiables. Cambiar a o desde 'wsl2' surte efecto tras reiniciar el gateway.",
         "auto_size_max": "Máx. de tamaño automático",
         "auto_update": "Actualización automática",
         "ceiling_on_the_auto_sized_concurrent_subagent_co": "Límite máximo del número de subagentes simultáneos ajustado automáticamente (solo aplica cuando Máx. de subagentes simultáneos = 0). La fórmula de memoria/CPU del host nunca lo supera. Rango 1–64. Predeterminado: 16.",
@@ -10783,6 +10784,7 @@
         "pool_ttl": "TTL del pool",
         "provider": "Proveedor",
         "restart_required_to_apply_changes": "{{description}} Debes reiniciar para aplicar los cambios.",
+        "restart_required_which_wsl2_distribution_to_sand": "Requiere reinicio. Qué distribución de WSL2 usar para el sandbox — las instancias internas de Docker Desktop no se ofrecen aquí.",
         "sandbox": "Sandbox",
         "save": "Guardar",
         "saved": "Guardado",
@@ -10796,7 +10798,9 @@
         "using_legacy_mode_agent_default_agent_as_agent_t": "Usando el modo antiguo — agent.default_agent como plantilla de agente",
         "warm_pool": "Pool en caliente",
         "workspace": "Espacio de trabajo",
-        "workspaces": "Espacios de trabajo"
+        "workspaces": "Espacios de trabajo",
+        "wsl2_distribution": "Distribución de WSL2",
+        "wsl_default_distro": "(Predeterminado de WSL)"
       },
       "mcpTab": {
         "actions": "Acciones",

@@ -10739,6 +10739,7 @@
         "agent_for_pool_processes_empty_uses_default_agen": "Agent pour les processus du pool. Vide = agent par défaut. Redémarrage requis.",
         "approval_mode": "Mode d'approbation",
         "auto": "auto",
+        "auto_enables_sandbox_for_untrusted_tools_switchi": "'auto' active le bac à sable pour les outils non fiables. Le passage vers ou depuis 'wsl2' prend effet après un redémarrage de la passerelle.",
         "auto_size_max": "Taille auto max",
         "auto_update": "Mise à jour auto",
         "ceiling_on_the_auto_sized_concurrent_subagent_co": "Plafond du nombre de sous-agents simultanés calculé automatiquement (s’applique uniquement quand Sous-agents simultanés max = 0). La formule mémoire/CPU de l’hôte ne le dépasse jamais. Plage 1–64. Par défaut : 16.",
@@ -10783,6 +10784,7 @@
         "pool_ttl": "TTL du pool",
         "provider": "Fournisseur",
         "restart_required_to_apply_changes": "{{description}} Redémarrage requis pour appliquer les modifications.",
+        "restart_required_which_wsl2_distribution_to_sand": "Redémarrage requis. Distribution WSL2 utilisée pour le bac à sable — les instances utilitaires internes de Docker Desktop ne sont pas proposées ici.",
         "sandbox": "Sandbox",
         "save": "Enregistrer",
         "saved": "Enregistré",
@@ -10796,7 +10798,9 @@
         "using_legacy_mode_agent_default_agent_as_agent_t": "Mode héritage — agent.default_agent comme modèle d'agent",
         "warm_pool": "Pool préchauffé",
         "workspace": "Espace de travail",
-        "workspaces": "Espaces de travail"
+        "workspaces": "Espaces de travail",
+        "wsl2_distribution": "Distribution WSL2",
+        "wsl_default_distro": "(Par défaut WSL)"
       },
       "mcpTab": {
         "actions": "Actions",

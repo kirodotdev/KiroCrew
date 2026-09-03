@@ -618,8 +618,26 @@ class AgentConfig:
             "Set to 'off' to skip Kiro Crew's own OS-level sandbox — delegation "
             "to kiro-cli's internal sandbox still fires on macOS if it is "
             "enabled, and a SECURITY warning is logged when neither layer is "
-            "active.",
-            enum=["auto", "off"],
+            "active. 'wsl2' is Windows-only: it routes the POSIX-shell-shaped "
+            "subprocess spawns (app lifecycle scripts, command cron jobs, "
+            "script hooks) through a WSL2 distribution's real Linux user "
+            "namespace, since native Windows has no OS-level backend of its "
+            "own. Kept as a static enum value (unlike 'acp_backend' above) "
+            "because it must survive schema validation even on a config.json "
+            "synced from a non-Windows host; PATCH /api/config/kirocrew and "
+            "the dashboard picker gate whether it is OFFERED on host "
+            "capability, not whether it validates.",
+            enum=["auto", "off", "wsl2"],
+        ),
+    )
+    sandbox_wsl_distro: str = field(
+        default="",
+        metadata=_meta(
+            "WSL2 Distribution",
+            "Which WSL2 distribution to use when agent.sandbox is 'wsl2'. "
+            "Empty (default) uses WSL's own default distribution (equivalent "
+            "to invoking wsl.exe without -d). Ignored on every other platform "
+            "and every other sandbox mode.",
         ),
     )
     sandbox_allow_no_isolation: bool = field(

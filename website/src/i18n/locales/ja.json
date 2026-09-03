@@ -10429,6 +10429,7 @@
         "agent_for_pool_processes_empty_uses_default_agen": "プール処理用のエージェント。空の場合はデフォルトエージェントを使用します。再起動が必要です。",
         "approval_mode": "承認モード",
         "auto": "自動",
+        "auto_enables_sandbox_for_untrusted_tools_switchi": "'auto' は信頼されていないツールに対してサンドボックスを有効にします。'wsl2' への切り替え、または 'wsl2' からの切り替えはゲートウェイの再起動後に反映されます。",
         "auto_size_max": "自動サイズ最大値",
         "auto_update": "自動更新",
         "ceiling_on_the_auto_sized_concurrent_subagent_co": "自動サイズ調整対象の並行サブエージェント数の上限（最大並行サブエージェント数 = 0 の場合のみ適用）。ホストメモリ/CPU 計算式がこれを超えることはありません。範囲: 1〜64。デフォルト: 16。",
@@ -10473,6 +10474,7 @@
         "pool_ttl": "プール TTL",
         "provider": "プロバイダー",
         "restart_required_to_apply_changes": "{{description}} 変更を適用するには再起動が必要です。",
+        "restart_required_which_wsl2_distribution_to_sand": "再起動が必要です。サンドボックスに使用する WSL2 ディストリビューション — Docker Desktop 自身のユーティリティインスタンスはここには表示されません。",
         "sandbox": "サンドボックス",
         "save": "保存",
         "saved": "保存済み",
@@ -10486,7 +10488,9 @@
         "using_legacy_mode_agent_default_agent_as_agent_t": "レガシーモード使用中 — エージェントテンプレートとして agent.default_agent を使用",
         "warm_pool": "ウォームプール",
         "workspace": "ワークスペース",
-        "workspaces": "ワークスペース"
+        "workspaces": "ワークスペース",
+        "wsl2_distribution": "WSL2 ディストリビューション",
+        "wsl_default_distro": "(WSL のデフォルト)"
       },
       "mcpTab": {
         "actions": "アクション",

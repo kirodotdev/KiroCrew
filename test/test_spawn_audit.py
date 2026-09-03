@@ -1145,6 +1145,17 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         "pod/runtime.py::recent_journal",
         "sandbox.py::_probe_sandbox_exec",
         "sandbox.py::_ssh_supports_accept_new",
+        # The one wsl.exe invocation point every WSL2 sandbox helper routes
+        # through (probing distro availability, resolving guest uid/gid/home,
+        # verifying the DrvFs mount, staging the launcher script). Same
+        # disposition as ensure_agents_slice_limits below: sandboxing it
+        # would be circular — it constructs the WSL2 sandbox boundary
+        # wsl_namespace_argv confines an agent-influenced spawn inside.
+        # `wsl.exe` is resolved via platform_compat.trusted_system_bin, never
+        # PATH; distro is the operator's own agent.sandbox_wsl_distro
+        # config, not agent/LLM input; the staged script's CONTENT is
+        # _build_launcher_script's fixed output.
+        "sandbox.py::_wsl_run",
         # The aggregate slice-ceiling apply: `systemctl --user set-property
         # --runtime kirocrew-agents.slice MemoryMax=<N>M MemorySwapMax=0
         # TasksMax=<N>`. Argv is a fixed verb plus module-constant unit name;
