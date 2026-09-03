@@ -29,6 +29,7 @@ kirocrew pod up   <wt> --provision# provision (if needed) then bring it up
 kirocrew pod up   <wt> --approval reads  # boot its gateway in an approval mode
 kirocrew pod up   <wt> --crons          # boot its gateway with the cron scheduler on
 kirocrew pod up   <wt> --seed minimal  # pre-populate its HOME from a named scenario
+kirocrew pod scenarios [--json]        # list named scenarios and their descriptions
 kirocrew pod ls                   # what's running (≈ kubectl get pods) + orphaned HOMEs (with age)
 kirocrew pod prune [--all] [--dry-run]  # bulk-reclaim orphaned HOMEs (default: older than 3d; --all for every age)
 kirocrew pod status <wt>          # up/down + health
@@ -64,9 +65,17 @@ dist is missing — pointing you at the slow build — while `pod up <wt> --prov
 ## Seed the isolated home
 
 ```bash
+kirocrew pod scenarios
+kirocrew pod scenarios --json
 kirocrew pod up my-wt --seed minimal
 kirocrew pod up my-wt --seed ~/.kiro/crew
 ```
+
+`pod scenarios` reads the packaged fixture registry and lists names in sorted
+order with the first description line from each `fixture.yaml`. The default is a
+human-readable table; `--json` emits a stable array of `{name, description}`
+objects. Description extraction uses the fixture manifest's narrow scalar format
+and does not require PyYAML at runtime.
 
 A bare name selects a fixture shipped under `kiro_crew/tests_fixtures/<name>/`
 and populates the whole isolated home. Anything with a path separator or a

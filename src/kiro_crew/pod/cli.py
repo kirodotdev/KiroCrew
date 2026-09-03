@@ -920,6 +920,30 @@ def _cleanup_internal(cfg: PodConfig, args: argparse.Namespace) -> None:
     sys.exit(rc)
 
 
+def _scenarios(cfg: PodConfig, args: argparse.Namespace) -> None:
+    """List the named fixtures accepted by ``pod up --seed``."""
+    from kiro_crew import seed as seed_mod
+
+    rows = [
+        {"name": name, "description": seed_mod.fixture_summary(name)}
+        for name in sorted(seed_mod.available_fixtures())
+    ]
+    if getattr(args, "json", False):
+        print(json.dumps(rows))
+        return
+    if not rows:
+        print("no seed scenarios found (the packaged fixtures tree is missing)")
+        return
+
+    width = max(len("SCENARIO"), *(len(str(row["name"])) for row in rows))
+    print(f"{'SCENARIO':<{width}}  DESCRIPTION")
+    for row in rows:
+        name = str(row["name"])
+        description = str(row["description"] or "(no description)")
+        print(f"{name:<{width}}  {description}")
+    print(f"\nseed one with: kirocrew pod up <worktree> --seed {rows[0]['name']}")
+
+
 _VERBS: dict[str, PodHandler] = {
     "up": _up,
     "down": _down,
@@ -928,6 +952,7 @@ _VERBS: dict[str, PodHandler] = {
     "status": _status,
     "token": _token,
     "url": _url,
+    "scenarios": _scenarios,
     "logs": _logs,
     "install": _install,
     "provision": _provision,
@@ -942,7 +967,7 @@ def dispatch(args: argparse.Namespace) -> None:
     if not action:
         print(
             "Usage: kirocrew pod "
-            "{up|down|ls|prune|status|token|url|logs|exec|install|provision} …"
+            "{up|down|ls|prune|status|token|url|scenarios|logs|exec|install|provision} …"
         )
         sys.exit(2)
     cfg = PodConfig.load()

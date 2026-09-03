@@ -1722,7 +1722,7 @@ Examples:
     pod_parser = cli_help.add_command(sub, "pod")
     pod_sub = pod_parser.add_subparsers(
         dest="pod_action",
-        metavar="{up,down,ls,prune,status,token,url,logs,exec,provision,install}",
+        metavar="{up,down,ls,prune,status,token,url,scenarios,logs,exec,provision,install}",
     )
     pod_up = pod_sub.add_parser("up", help="Schedule an isolated pod for a worktree")
     pod_up.add_argument("name", help="Worktree name")
@@ -1804,6 +1804,11 @@ Examples:
     pod_token.add_argument("--ttl", default="2h", help="Token TTL (default: 2h)")
     pod_url = pod_sub.add_parser("url", help="Print a pod's base URL")
     pod_url.add_argument("name", help="Worktree name")
+    pod_scenarios = pod_sub.add_parser(
+        "scenarios",
+        help="List the seed scenarios `pod up --seed <scenario>` accepts",
+    )
+    pod_scenarios.add_argument("--json", action="store_true", help="Emit rows as JSON")
     pod_logs = pod_sub.add_parser("logs", help="Tail a pod's journal")
     pod_logs.add_argument("name", help="Worktree name")
     pod_logs.add_argument("-n", "--lines", type=int, default=50, help="Lines to tail (default: 50)")
