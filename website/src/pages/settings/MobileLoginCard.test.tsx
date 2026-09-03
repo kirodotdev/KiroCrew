@@ -65,6 +65,54 @@ describe('MobileLoginCard', () => {
     expect(alert).not.toHaveTextContent('Try again')
   })
 
+  it('tells a restricted session to switch sessions instead of retrying', async () => {
+    ;(api.mobileLoginLink as ReturnType<typeof vi.fn>).mockRejectedValue(Object.assign(
+      new Error('restricted session'),
+      { body: JSON.stringify({ code: 'restricted_session' }) },
+    ))
+
+    renderWithProviders(<MobileLoginCard />)
+    fireEvent.click(screen.getByRole('button', { name: 'Create mobile sign-in link' }))
+
+    const alert = await screen.findByRole('alert')
+    expect(alert).toHaveTextContent(
+      'Incognito and temporary sessions cannot create sign-in links. Switch to a regular session to create one.',
+    )
+    expect(alert).not.toHaveTextContent('Try again')
+  })
+
+  it('tells an expired session to sign in again instead of retrying', async () => {
+    ;(api.mobileLoginLink as ReturnType<typeof vi.fn>).mockRejectedValue(Object.assign(
+      new Error('caller session expired'),
+      { body: JSON.stringify({ code: 'caller_session_expired' }) },
+    ))
+
+    renderWithProviders(<MobileLoginCard />)
+    fireEvent.click(screen.getByRole('button', { name: 'Create mobile sign-in link' }))
+
+    const alert = await screen.findByRole('alert')
+    expect(alert).toHaveTextContent(
+      'Your session has expired. Sign in again, then create the link.',
+    )
+    expect(alert).not.toHaveTextContent('Try again')
+  })
+
+  it('still offers a retry for a code the card does not recognise', async () => {
+    // An unmapped code must degrade to the generic retry copy, not to a blank
+    // alert — the lookup replaced a ternary whose default did exactly this.
+    ;(api.mobileLoginLink as ReturnType<typeof vi.fn>).mockRejectedValue(Object.assign(
+      new Error('governance denied'),
+      { body: JSON.stringify({ code: 'governance_denied' }) },
+    ))
+
+    renderWithProviders(<MobileLoginCard />)
+    fireEvent.click(screen.getByRole('button', { name: 'Create mobile sign-in link' }))
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'Could not create a sign-in link. Try again.',
+    )
+  })
+
   it('explains how to copy manually when clipboard access is unavailable', async () => {
     ;(api.mobileLoginLink as ReturnType<typeof vi.fn>).mockResolvedValue({
       url: 'https://dashboard.example/?token=abc.def',

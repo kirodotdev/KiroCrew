@@ -11742,6 +11742,8 @@
         "send_the_copied_link_to_your_mobile_device_then_open_it": "복사한 링크를 모바일 기기로 보낸 다음 그곳에서 여세요.",
         "dashboard_url_required_to_create_a_mobile_sign_in_link": "대시보드 URL이 구성되지 않았습니다. 모바일 로그인 링크를 만들려면 dashboard.url을 설정하세요.",
         "could_not_create_a_sign_in_link_try_again": "로그인 링크를 만들 수 없습니다. 다시 시도하세요.",
+        "restricted_sessions_cannot_create_a_sign_in_link": "시크릿 세션과 임시 세션에서는 로그인 링크를 만들 수 없습니다. 만들려면 일반 세션으로 전환하세요.",
+        "session_expired_sign_in_again_to_create_a_link": "세션이 만료되었습니다. 다시 로그인한 다음 링크를 만드세요.",
         "copy_failed_select_the_link_and_copy_it_manually": "복사하지 못했습니다. 링크를 선택하고 직접 복사하세요."
       },
       "aboutPanel": {
