@@ -130,8 +130,13 @@ test("liveness recovery stands down during an update install", () => {
   );
   assert.match(
     REGISTRAR_SOURCE,
-    /onInstallDispatched:\s*\(\)\s*=>\s*gateway\.onInstallDispatched\(\)/,
+    /onInstallDispatched:\s*\(\)\s*=>\s*\{[\s\S]{0,200}?gateway\.onInstallDispatched\(\)/,
     "ipc-registrar.js no longer connects updater dispatch to the gateway liveness owner",
+  );
+  assert.match(
+    REGISTRAR_SOURCE,
+    /onInstallDispatched:\s*\(\)\s*=>\s*\{[\s\S]{0,200}?closeCrewCompanionForUpdate\(\)/,
+    "ipc-registrar.js no longer closes the Crew Companion overlay at update dispatch -- it floats orphaned over the vanished dashboard during the quit handoff",
   );
 });
 
@@ -150,8 +155,13 @@ test("a failed install re-arms gateway recovery", () => {
   );
   assert.match(
     REGISTRAR_SOURCE,
-    /onInstallFailed:\s*\(\)\s*=>\s*gateway\.onInstallFailed\(\)/,
+    /onInstallFailed:\s*\(\)\s*=>\s*\{[\s\S]{0,200}?gateway\.onInstallFailed\(\)/,
     "ipc-registrar.js no longer connects install failure to gateway recovery",
+  );
+  assert.match(
+    REGISTRAR_SOURCE,
+    /onInstallFailed:\s*\(\)\s*=>\s*\{[\s\S]{0,200}?reopenCrewCompanionAfterUpdate\(\)/,
+    "ipc-registrar.js no longer reopens the Crew Companion overlay when a failed install leaves the app running",
   );
 });
 

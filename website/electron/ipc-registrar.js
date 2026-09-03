@@ -31,6 +31,12 @@ function createIpcRegistrar({
   port,
   detectWsl = detectWsl2,
   glog,
+  // Close/reopen the Crew Companion overlay around an update install so it does
+  // not float orphaned over the vanished dashboard during the quit handoff.
+  // Optional and no-op by default: an updater path must never depend on the
+  // companion being wired.
+  closeCrewCompanionForUpdate = () => {},
+  reopenCrewCompanionAfterUpdate = () => {},
 } = {}) {
   if (!electron) throw new Error("createIpcRegistrar: electron is required");
   if (!store) throw new Error("createIpcRegistrar: store is required");
@@ -304,12 +310,21 @@ function createIpcRegistrar({
         // the intentional shutdown and disarms probing throughout bundle swap.
         // auto-update invokes onInstallDispatched before awaiting stopGateway;
         // keep these as separate callbacks so that ordering remains explicit.
-        onInstallDispatched: () => gateway.onInstallDispatched(),
+        // Closing the companion overlay here — before the gateway stops — keeps a
+        // reconcile tick from reopening it in the window where it is still up.
+        onInstallDispatched: () => {
+          gateway.onInstallDispatched();
+          closeCrewCompanionForUpdate();
+        },
         // WHY failure recovery is active: dispatch stopped both the watchdog and
         // gateway. A failed swap does not quit, so nothing else can restore the
         // dashboard; the supervisor clears the flag, respawns, reconnects, and
-        // re-arms liveness in that order.
-        onInstallFailed: () => gateway.onInstallFailed(),
+        // re-arms liveness in that order. The companion closed at dispatch is
+        // reopened to match — its loop self-heals once the restored gateway answers.
+        onInstallFailed: () => {
+          gateway.onInstallFailed();
+          reopenCrewCompanionAfterUpdate();
+        },
         onUpdateState: broadcastUpdateState,
         log: makeUpdaterLogger(log),
       });
