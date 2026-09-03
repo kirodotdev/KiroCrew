@@ -121,7 +121,7 @@ describe("createPermissionCheckHandler", () => {
 
   it("denies non-media permissions and foreign origins", () => {
     const h = createPermissionCheckHandler(quiet);
-    for (const p of ["geolocation", "notifications", "midi", "clipboard-read", "unknown"]) {
+    for (const p of ["geolocation", "midi", "clipboard-read", "unknown"]) {
       assert.equal(h(APP, p, ORIGIN, {}), false, `${p} must be denied`);
     }
     assert.equal(h(wcAt("http://evil.example/"), "media", "http://evil.example", { mediaType: "audio" }), false);
@@ -361,7 +361,7 @@ describe("denial logging", () => {
     const seen = [];
     const deps = { isAppOrigin: () => true, onDeny: (...a) => seen.push(a) };
     const check = createPermissionCheckHandler(deps);
-    for (const p of ["geolocation", "web-app-installation", "background-sync", "notifications", "midi"]) {
+    for (const p of ["geolocation", "web-app-installation", "background-sync", "midi"]) {
       check(APP, p, ORIGIN, {});
     }
     check(APP, "media", ORIGIN, { mediaType: "video" }); // camera, by design
@@ -463,8 +463,71 @@ describe("HTML fullscreen — the dead fullscreen button", () => {
 
   it("does not widen anything else — geolocation stays denied", () => {
     const req = createPermissionRequestHandler(quiet);
-    for (const p of ["geolocation", "notifications", "midi", "clipboard-read", "pointerLock"]) {
+    for (const p of ["geolocation", "midi", "clipboard-read", "pointerLock"]) {
       assert.equal(grant(req, APP, p, {}), false, `${p} must stay denied`);
+    }
+  });
+});
+
+describe("notifications — the silent desktop-notification gap", () => {
+  // The dashboard fires page-context `new Notification()` (useNativeNotification,
+  // useWebSocket approval toasts). Chromium prompts and grants in a plain
+  // browser, so Chrome-tab users got native OS toasts; the blanket deny here
+  // pinned `Notification.permission` to 'denied' in the packaged app and the
+  // same code no-oped silently. Issue #8308.
+  it("GRANTS notifications to the dashboard", () => {
+    const req = createPermissionRequestHandler(quiet);
+    assert.equal(grant(req, APP, "notifications", {}), true);
+    const check = createPermissionCheckHandler(quiet);
+    assert.equal(check(APP, "notifications", ORIGIN, {}), true);
+  });
+
+  it("the CHECK verdict alone unblocks the renderer hook", () => {
+    // useNativeNotification only fires on Notification.permission === 'granted',
+    // which reflects THIS handler's synchronous check — a request-side grant
+    // with a denying check would leave the hook dead. Pin the check directly.
+    const check = createPermissionCheckHandler(quiet);
+    assert.equal(check(null, "notifications", ORIGIN, {}), true, "null-wc check must pass on origin");
+  });
+
+  it("DENIES notifications to the untrusted embedded browser view", () => {
+    // A browsed page must not post OS toasts wearing this app's identity —
+    // an OS notification is trusted chrome, ideal phishing surface.
+    const untrusted = { isUntrusted: (wc) => wc === APP, onDeny: () => {} };
+    const req = createPermissionRequestHandler(untrusted);
+    assert.equal(grant(req, APP, "notifications", {}), false);
+    const check = createPermissionCheckHandler(untrusted);
+    assert.equal(check(APP, "notifications", ORIGIN, {}), false);
+  });
+
+  it("DENIES notifications to a foreign origin", () => {
+    const foreign = wcAt("https://evil.example/");
+    assert.equal(grant(createPermissionRequestHandler(quiet), foreign, "notifications", {}), false);
+    assert.equal(
+      createPermissionCheckHandler(quiet)(foreign, "notifications", "https://evil.example", {}),
+      false,
+    );
+  });
+
+  it("answers notifications WITHOUT entering the macOS mic path", () => {
+    // Same rationale as fullscreen: no OS resource Electron must broker, so a
+    // notification must never be gated on — or prompt for — the microphone.
+    const boom = () => { throw new Error("TCC leg must not run for notifications"); };
+    const req = createPermissionRequestHandler({
+      ...quiet,
+      getMicAccessStatus: boom,
+      askForMicAccess: boom,
+      onMicBlocked: boom,
+    });
+    assert.equal(grant(req, APP, "notifications", {}), true);
+  });
+
+  it("request and check handlers AGREE on notifications", () => {
+    for (const isUntrusted of [() => false, () => true]) {
+      const deps = { ...quiet, isUntrusted };
+      const fromRequest = grant(createPermissionRequestHandler(deps), APP, "notifications", {});
+      const fromCheck = createPermissionCheckHandler(deps)(APP, "notifications", ORIGIN, {});
+      assert.equal(fromRequest, fromCheck);
     }
   });
 });
