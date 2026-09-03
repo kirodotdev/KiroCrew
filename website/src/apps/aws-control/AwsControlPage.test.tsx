@@ -470,6 +470,24 @@ describe('edge states', () => {
     expect(await screen.findByTestId('drive-section')).toBeTruthy()
   })
 
+  it('a 403 that is NOT app_disabled is an error to diagnose, not a disabled app', async () => {
+    // The same route answers 403 for a non-owner caller. Showing "this app is
+    // disabled" for that would send the reader to wait out a setting that is
+    // not the problem; the notice (with its agent hand-off) is the right answer.
+    vi.mocked(awsControlApi.accounts).mockRejectedValue(
+      new AwsControlError('dashboard_owner_required', 403),
+    )
+    renderWithProviders(<AwsControlPage />)
+
+    const notice = await screen.findByTestId('aws-control-error')
+    expect(notice).toHaveTextContent(i18nT('apps.awsControl.page.error_title'))
+    // Permission-worded, not "try again in a moment": a retry cannot clear a 403.
+    expect(notice).toHaveTextContent(i18nT('apps.awsControl.page.error_forbidden_body'))
+    expect(notice).not.toHaveTextContent(i18nT('apps.awsControl.page.error_body'))
+    expect(within(notice).getByRole('button', { name: /ask the agent/i })).toBeTruthy()
+    expect(screen.queryByTestId('aws-control-disabled')).toBeNull()
+  })
+
   it('while accounts are still loading, the accounts pane renders full width, no rail', async () => {
     // There is nothing for the rail or the drive panes to show before the list
     // answers, so the pane that will handle "no resolved account" also carries
@@ -714,7 +732,63 @@ describe('add accounts', () => {
     fireEvent.click(boxes[0])
     fireEvent.click(screen.getByTestId('add-accounts-register'))
 
-    expect(await screen.findByTestId('add-accounts-error')).toBeTruthy()
+    const notice = await screen.findByTestId('add-accounts-error')
+    // No hand-off beside unsaved input: the ticked profiles survive the refusal.
+    expect(within(notice).queryByRole('button', { name: /ask the agent/i })).toBeNull()
+    expect(boxes[0]).toBeChecked()
+  })
+
+  it('a failed profile scan is a notice, not "nothing left to add"', async () => {
+    // With the scan failed, `unregistered` is an empty fallback — and the
+    // none-left sentence would assert the opposite of what happened.
+    vi.mocked(awsControlApi.availableProfiles).mockRejectedValue(
+      new AwsControlError('http_500', 500),
+    )
+    await openAccountsPane()
+
+    fireEvent.click(await screen.findByTestId('add-accounts-toggle'))
+    expect(await screen.findByTestId('add-accounts-load-error')).toHaveTextContent(
+      i18nT('apps.awsControl.page.add_accounts_load_error'),
+    )
+    expect(screen.queryByTestId('add-accounts-none')).toBeNull()
+  })
+
+  it('a ticked profile withholds every hand-off on the pane until the tick is cleared', async () => {
+    // The ticks live only in the disclosure's state. "Ask the agent" on any
+    // notice on this pane navigates to chat, which unmounts the disclosure and
+    // drops the selection — so while a tick is open the pane's other notices
+    // (here the row Reconnect) offer retry only, and the hand-off comes back
+    // once the selection is empty again.
+    vi.mocked(awsControlApi.accounts).mockResolvedValue(accountsPayload({
+      accounts: [UNRESOLVED_ROW],
+      totals: { accounts: 1, profiles: 1, profilesHealthy: 0 },
+    }))
+    vi.mocked(awsControlApi.reconnectPlan).mockRejectedValue(new AwsControlError('http_500', 500))
+    renderWithProviders(<AwsControlPage />)
+
+    fireEvent.click(await screen.findByTestId('account-card'))
+    const panel = await screen.findByTestId('row-reconnect')
+    fireEvent.click(within(panel).getByTestId('reconnect-toggle'))
+    const notice = await screen.findByTestId('reconnect-error')
+    // No draft yet: the hand-off is offered.
+    expect(within(panel).getByRole('button', { name: /ask the agent/i })).toBeTruthy()
+
+    fireEvent.click(screen.getByTestId('add-accounts-toggle'))
+    const boxes = await screen.findAllByTestId('add-accounts-checkbox')
+    fireEvent.click(boxes[0])
+    expect(boxes[0]).toBeChecked()
+    await waitFor(() =>
+      expect(within(panel).queryByRole('button', { name: /ask the agent/i })).toBeNull(),
+    )
+    // The notice itself and its retry stay; only the navigating action is gone.
+    expect(notice).toBeTruthy()
+    expect(within(panel).getByTestId('reconnect-error-retry')).toBeTruthy()
+
+    fireEvent.click(boxes[0])
+    expect(boxes[0]).not.toBeChecked()
+    await waitFor(() =>
+      expect(within(panel).getByRole('button', { name: /ask the agent/i })).toBeTruthy(),
+    )
   })
 })
 

@@ -17,7 +17,7 @@
  * in the crew or a dashboard confirmation card. The only writes are the
  * paid-service consent gates, which are their own durable-state components.
  */
-import { useState, useMemo } from 'react'
+import { useEffect, useState, useMemo } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
@@ -40,7 +40,7 @@ import { fmtBytes, fmtNumber } from '../../i18n/format'
 import { awsControlApi, AwsControlError } from './api'
 import UsagePane, { ConnectionsSection, ReconnectAction, SetupCard } from './ConsoleView'
 import { DriveSectionView, LibrarySection, BackupSection, AccessSection } from './DrivePage'
-import { PaneHeader } from './shared'
+import { PaneHeader, AwsErrorNotice } from './shared'
 import type { AwsAccount, AccountHealth, DriveStatus } from './types'
 
 /** Tailwind token for each health light, keyed as an `as const` map (literal-safe). */
@@ -193,10 +193,12 @@ function AccountSwitcher({ accounts, selected, onSelect, onManage }: {
  * so its click toggles the inline Reconnect guidance instead — a red row must
  * always offer a way back to green.
  */
-function AccountRow({ account, current, onUse }: {
+function AccountRow({ account, current, onUse, askAgent }: {
   account: AwsAccount
   current: boolean
   onUse: () => void
+  /** Whether this row's Reconnect notice may hand off to the agent; the pane decides. */
+  askAgent: boolean
 }) {
   const keys = account.profiles.length
   const resolved = Boolean(account.account)
@@ -251,7 +253,7 @@ function AccountRow({ account, current, onUse }: {
       </button>
       {!resolved && showReconnect && account.profiles[0] && (
         <div className="px-3 pb-2" data-testid="row-reconnect">
-          <ReconnectAction profile={account.profiles[0]} />
+          <ReconnectAction profile={account.profiles[0]} askAgent={askAgent} />
         </div>
       )}
     </div>
@@ -265,13 +267,26 @@ function AccountRow({ account, current, onUse }: {
  * primary content. On success it invalidates the accounts query so a newly
  * registered profile appears without a manual refresh.
  */
-function AddAccounts() {
+function AddAccounts({ onDraftChange }: {
+  /**
+   * Fires with `true` while at least one profile is ticked and not yet
+   * registered, `false` once the selection is empty again. The ticks live only
+   * in this component's state, so anything on the pane that navigates away —
+   * an agent hand-off on a sibling notice — would drop them; the pane uses this
+   * to withhold those hand-offs while a selection is open.
+   */
+  onDraftChange: (hasDraft: boolean) => void
+}) {
   const queryClient = useQueryClient()
   const [open, setOpen] = useState(false)
   // The set of profile NAMES the operator has ticked. Names, not indices, so a
   // list refetch that reorders rows can't silently move a checkmark to another
   // profile — registering the wrong profile is a trust error, not a UI glitch.
   const [checked, setChecked] = useState<Set<string>>(new Set())
+  const hasDraft = checked.size > 0
+  useEffect(() => {
+    onDraftChange(hasDraft)
+  }, [hasDraft, onDraftChange])
 
   const availableQ = useQuery({
     queryKey: ['aws-control', 'profiles-available'],
@@ -339,6 +354,17 @@ function AddAccounts() {
 
       {open && (
         <div className="mt-3" data-testid="add-accounts-body">
+          {/* A failed profile scan is not "no profiles to add": without this the
+              disclosure opened onto the none-left sentence, which asserts the
+              opposite of what happened. */}
+          <AwsErrorNotice
+            askAgent={!hasDraft}
+            error={availableQ.error}
+            message={availableQ.isError ? i18nT('apps.awsControl.page.add_accounts_load_error') : null}
+            onRetry={() => availableQ.refetch()}
+            className="mb-2"
+            testId="add-accounts-load-error"
+          />
           {data && (
             <p className="mb-2 text-[12px] text-muted" data-testid="add-accounts-count">
               {i18nT('apps.awsControl.page.add_accounts_count', {
@@ -348,7 +374,7 @@ function AddAccounts() {
             </p>
           )}
 
-          {unregistered.length === 0 ? (
+          {availableQ.isError ? null : unregistered.length === 0 ? (
             <p className="text-[13px] text-muted" data-testid="add-accounts-none">
               {i18nT('apps.awsControl.page.add_accounts_none')}
             </p>
@@ -382,12 +408,15 @@ function AddAccounts() {
               )}
 
               {/* Never fail silently: a rejected register keeps its message on
-                  screen so the operator knows nothing was added. */}
-              {registerM.isError && (
-                <p className="mt-2 text-[12px] text-danger" data-testid="add-accounts-error" role="alert">
-                  {i18nT('apps.awsControl.page.add_accounts_error')}
-                </p>
-              )}
+                  screen so the operator knows nothing was added. No hand-off:
+                  the ticked profiles are unsaved input, and the hand-off would
+                  navigate away from them. */}
+              <AwsErrorNotice
+                error={registerM.error}
+                message={registerM.isError ? i18nT('apps.awsControl.page.add_accounts_error') : null}
+                className="mt-2"
+                testId="add-accounts-error"
+              />
 
               <Btn
                 onClick={() => registerM.mutate([...checked])}
@@ -420,6 +449,14 @@ function AccountsPane({ accountsQ, selected, onUse }: {
 }) {
   const [query, setQuery] = useState('')
   const data = accountsQ.data
+  // Every hand-off on this pane is withheld while the Add-accounts disclosure
+  // holds ticked-but-unregistered profiles: "Ask the agent" navigates to chat,
+  // which unmounts the disclosure and drops the selection. The reconnect and
+  // orphaned-consent notices are the sites; the register notice beside the
+  // checkboxes never hands off. Same rule the Files pane applies to an open
+  // folder-name field.
+  const [registrationDraft, setRegistrationDraft] = useState(false)
+  const handOff = !registrationDraft
 
   // Client-side filter over name + id; harmless when few accounts.
   const filtered = useMemo(() => {
@@ -535,6 +572,7 @@ function AccountsPane({ accountsQ, selected, onUse }: {
               account={a}
               current={Boolean(selected && a.account === selected.account)}
               onUse={() => onUse(a)}
+              askAgent={handOff}
             />
           ))}
         </div>
@@ -545,7 +583,7 @@ function AccountsPane({ accountsQ, selected, onUse }: {
           rather than on a page of its own. */}
       {selected && (
         <div className="mt-8" data-testid="accounts-connections">
-          <ConnectionsSection account={selected} />
+          <ConnectionsSection account={selected} askAgent={handOff} />
         </div>
       )}
 
@@ -560,12 +598,12 @@ function AccountsPane({ accountsQ, selected, onUse }: {
           <p className="text-[13px] text-text" data-testid="orphan-consent-note">
             {i18nT('apps.awsControl.page.orphan_consent')}
           </p>
-          {s3Orphan && <AwsConsentGate service="s3" />}
-          {ceOrphan && <AwsConsentGate service="ce" />}
+          {s3Orphan && <AwsConsentGate service="s3" askAgent={handOff} />}
+          {ceOrphan && <AwsConsentGate service="ce" askAgent={handOff} />}
         </div>
       )}
 
-      <AddAccounts />
+      <AddAccounts onDraftChange={setRegistrationDraft} />
     </section>
   )
 }
@@ -620,6 +658,7 @@ function DrivePaneGate({ pane, account, drive, driveQ, children }: {
           <div data-testid="console-storage-consent">
             <p className="mb-2 text-[13px] text-muted">{i18nT('apps.awsControl.console.storage_consent_needed')}</p>
             <AwsConsentGate
+              askAgent
               service="s3"
               onConsentChange={() => qc.invalidateQueries({ queryKey: ['aws-control', 'drive', id] })}
             />
@@ -630,9 +669,24 @@ function DrivePaneGate({ pane, account, drive, driveQ, children }: {
             </div>
           </div>
         ) : (
-          <p className="text-[13px] text-muted" data-testid="console-unavailable">{i18nT('apps.awsControl.console.account_unavailable')}</p>
+          <AwsErrorNotice
+            askAgent
+            error={driveErr}
+            message={i18nT('apps.awsControl.console.account_unavailable')}
+            testId="console-unavailable"
+          />
         )
       )}
+      {/* Any other failure to read the drive. Left unrendered, a 5xx here showed
+          the pane title over nothing at all — not loading, not empty, not
+          broken — with no way to learn which. */}
+      <AwsErrorNotice
+        askAgent
+        error={driveQ.error}
+        message={driveQ.isError && !drive409 ? i18nT('apps.awsControl.console.drive_status_failed') : null}
+        onRetry={() => qc.invalidateQueries({ queryKey: ['aws-control', 'drive', id] })}
+        testId="drive-status-error"
+      />
       {/* No bucket yet, so the pane carries the one action that changes that. */}
       {drive && !drive.exists && (
         <div className="rounded-lg border border-border bg-card px-4 py-3" data-testid="capability-drive-setup">
@@ -760,8 +814,16 @@ export default function AwsControlPage() {
 
   // A 403 app_disabled means the app was disabled after this bundle loaded (the
   // shell shows its own disabled state on first load). Show the standard
-  // disabled-app copy rather than a raw error wall.
-  if (accountsQ.isError && accountsQ.error instanceof AwsControlError && accountsQ.error.status === 403) {
+  // disabled-app copy rather than a raw error wall. Keyed on the CODE, not the
+  // status: the same route answers 403 for a non-owner caller
+  // (`dashboard_owner_required`), and that is an error to diagnose, not a
+  // disabled app to wait out.
+  if (
+    accountsQ.isError &&
+    accountsQ.error instanceof AwsControlError &&
+    accountsQ.error.status === 403 &&
+    accountsQ.error.message === 'app_disabled'
+  ) {
     return (
       <div className="flex h-full flex-col">
         <div className="flex-1 overflow-y-auto px-4 py-6 md:px-6">
@@ -777,21 +839,34 @@ export default function AwsControlPage() {
   }
 
   if (accountsQ.isError) {
+    // A 403 here is a permission answer (`dashboard_owner_required`), not a
+    // transient read, so it gets copy that names the fix instead of the generic
+    // "try again in a moment" — Retry only succeeds once the session is the
+    // owner's, and the sentence must not promise otherwise.
+    const forbidden = accountsQ.error instanceof AwsControlError && accountsQ.error.status === 403
     return (
       <div className="flex h-full flex-col">
         <div className="flex-1 overflow-y-auto px-4 py-6 md:px-6" data-testid="accounts-error">
-          <EmptyState
-            testId="aws-control-error"
-            icon={<Cloud />}
-            title={i18nT('apps.awsControl.page.error_title')}
-            subtitle={i18nT('apps.awsControl.page.error_body')}
-            action={
-              <Btn onClick={() => accountsQ.refetch()} data-testid="error-retry">
-                <RefreshCw size={13} />
-                {i18nT('apps.awsControl.page.retry')}
-              </Btn>
-            }
-          />
+          {/* The page's own error, not an EmptyState wearing red: an empty state
+              says "nothing here yet", and a failed read says nothing of the
+              sort. The notice carries the failure to the agent; Retry stays,
+              because a transient read is the one case the reader can clear. */}
+          <div className="mx-auto flex max-w-[480px] flex-col items-center gap-3 py-12">
+            <AwsErrorNotice
+              askAgent
+              error={accountsQ.error}
+              title={i18nT('apps.awsControl.page.error_title')}
+              message={i18nT(forbidden
+                ? 'apps.awsControl.page.error_forbidden_body'
+                : 'apps.awsControl.page.error_body')}
+              className="w-full"
+              testId="aws-control-error"
+            />
+            <Btn onClick={() => accountsQ.refetch()} data-testid="error-retry">
+              <RefreshCw size={13} />
+              {i18nT('apps.awsControl.page.retry')}
+            </Btn>
+          </div>
         </div>
       </div>
     )

@@ -17,7 +17,7 @@ import {
 import { Btn, Badge, ContentSkeleton } from '../../components/ui'
 import AwsConsentGate from '../../components/AwsConsentGate'
 import { i18nT } from '../../i18n/t'
-import { CopyBtn, SectionHeader, PaneHeader } from './shared'
+import { CopyBtn, SectionHeader, PaneHeader, AwsErrorNotice } from './shared'
 import { StorageMeter } from './DrivePage'
 import { fmtCurrency, fmtDate } from '../../i18n/format'
 import { awsControlApi, AwsControlError } from './api'
@@ -46,8 +46,12 @@ const RECONNECT_HINT_KEY: Record<ProfileKind, string> = {
  * Inline Reconnect for a failing key, moved here from the Accounts list. Fetches
  * the profile's reconnect-plan on demand and shows the command in a mono block
  * with a copy button plus a one-sentence hint for its credential kind.
+ *
+ * `askAgent` is the host's call, not this component's: the same Reconnect
+ * renders on the accounts pane next to the Add-accounts checkboxes, and a
+ * hand-off there navigates away from a ticked-but-unregistered selection.
  */
-export function ReconnectAction({ profile }: { profile: AwsProfile }) {
+export function ReconnectAction({ profile, askAgent }: { profile: AwsProfile; askAgent: boolean }) {
   const [open, setOpen] = useState(false)
   const [copied, setCopied] = useState(false)
   const planQ = useQuery<ReconnectPlan>({
@@ -79,11 +83,13 @@ export function ReconnectAction({ profile }: { profile: AwsProfile }) {
               {i18nT('apps.awsControl.page.reconnect_loading')}
             </div>
           )}
-          {planQ.isError && (
-            <div className="text-danger" data-testid="reconnect-error">
-              {i18nT('apps.awsControl.page.reconnect_error')}
-            </div>
-          )}
+          <AwsErrorNotice
+            askAgent={askAgent}
+            error={planQ.error}
+            message={planQ.isError ? i18nT('apps.awsControl.page.reconnect_error') : null}
+            onRetry={() => planQ.refetch()}
+            testId="reconnect-error"
+          />
           {planQ.data && (
             <>
               <p className="text-muted mb-2">{i18nT(RECONNECT_HINT_KEY[planQ.data.kind])}</p>
@@ -108,7 +114,7 @@ export function ReconnectAction({ profile }: { profile: AwsProfile }) {
 }
 
 /** One thin row per profile/key: name, kind, region, health + Reconnect if failing. */
-function ConnectionRow({ profile }: { profile: AwsProfile }) {
+function ConnectionRow({ profile, askAgent }: { profile: AwsProfile; askAgent: boolean }) {
   return (
     <div className="px-3 py-2.5" data-testid="connection-row">
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
@@ -125,13 +131,17 @@ function ConnectionRow({ profile }: { profile: AwsProfile }) {
           </span>
         </span>
       </div>
-      {!profile.identityOk && <ReconnectAction profile={profile} />}
+      {!profile.identityOk && <ReconnectAction profile={profile} askAgent={askAgent} />}
     </div>
   )
 }
 
-/** The Connections card: one thin row per key, with inline Reconnect for failing ones. */
-export function ConnectionsSection({ account }: { account: AwsAccount }) {
+/**
+ * The Connections card: one thin row per key, with inline Reconnect for failing
+ * ones. `askAgent` flows down to those Reconnect notices; the accounts pane
+ * that hosts this card decides it from whether a registration draft is open.
+ */
+export function ConnectionsSection({ account, askAgent }: { account: AwsAccount; askAgent: boolean }) {
   return (
     <section data-testid="connections-section">
       <SectionHeader icon={<Link2 size={15} />} title={i18nT('apps.awsControl.console.connections')} />
@@ -142,7 +152,7 @@ export function ConnectionsSection({ account }: { account: AwsAccount }) {
       ) : (
         <div className="rounded-md border border-border bg-card divide-y divide-border" data-testid="connections-list">
           {account.profiles.map((p) => (
-            <ConnectionRow key={p.name} profile={p} />
+            <ConnectionRow key={p.name} profile={p} askAgent={askAgent} />
           ))}
         </div>
       )}
@@ -208,11 +218,23 @@ export function SetupCard({ account, region }: { account: string; region: string
         )}
       </div>
 
-      {previewMut.isError && (
-        <p className="mt-2 text-[13px] text-danger" data-testid="drive-preview-error">
-          {i18nT('apps.awsControl.console.setup_error')}
-        </p>
-      )}
+      <AwsErrorNotice
+        askAgent
+        error={previewMut.error}
+        message={previewMut.isError ? i18nT('apps.awsControl.console.setup_error') : null}
+        className="mt-2"
+        testId="drive-preview-error"
+      />
+      {/* The CONFIRM can fail too — AccessDenied on CreateBucket is the common
+          case — and it used to fail silently: the button just came back. The
+          permissions drawer below is the fix, so this line sits right above it. */}
+      <AwsErrorNotice
+        askAgent
+        error={confirmMut.error}
+        message={confirmMut.isError ? i18nT('apps.awsControl.console.setup_confirm_error') : null}
+        className="mt-2"
+        testId="drive-confirm-error"
+      />
 
       {/* Collapsed "show the exact permissions to paste" drawer for AccessDenied setups. */}
       <div className="mt-3">
@@ -229,6 +251,13 @@ export function SetupCard({ account, region }: { account: string; region: string
         {showPolicy && (
           <div className="mt-2" data-testid="policy-drawer">
             {policyQ.isLoading && <div className="text-muted text-[12px]">{i18nT('apps.awsControl.console.loading')}</div>}
+            <AwsErrorNotice
+              askAgent
+              error={policyQ.error}
+              message={policyQ.isError ? i18nT('apps.awsControl.console.setup_policy_error') : null}
+              onRetry={() => policyQ.refetch()}
+              testId="policy-error"
+            />
             {policyQ.data && (
               <div className="flex flex-col gap-2">
                 <pre className="max-h-64 overflow-auto rounded-md bg-bg px-3 py-2 font-mono text-[11px] text-text whitespace-pre-wrap break-all">
@@ -284,6 +313,12 @@ export default function UsagePane({ account }: { account: AwsAccount }) {
   const driveErr = driveQ.error instanceof AwsControlError ? driveQ.error : null
   const driveConsentRefused =
     driveQ.isError && driveErr?.status === 409 && driveErr.message === 'aws_consent_required'
+  // A bill read that failed for a reason OTHER than the consent gate. The gate's
+  // own 409 is not an error to diagnose — the ask below is its answer — so it
+  // keeps the quiet em-dash alone; everything else (Cost Explorer not enabled,
+  // a throttle, a dead key) gets a notice the agent can read.
+  const costsErr = costsQ.error instanceof AwsControlError ? costsQ.error : null
+  const costsFailed = costsQ.isError && costsErr?.message !== 'aws_consent_required'
   const s3ConsentQ = useQuery<AwsConsentStatus>({
     queryKey: ['awsConsent', 's3'],
     queryFn: () => api.awsConsent('s3'),
@@ -331,6 +366,14 @@ export default function UsagePane({ account }: { account: AwsAccount }) {
           )}
         </div>
       </div>
+      <AwsErrorNotice
+        askAgent
+        error={costsQ.error}
+        message={costsFailed ? i18nT('apps.awsControl.console.costs_unavailable') : null}
+        onRetry={() => costsQ.refetch()}
+        className="mt-2"
+        testId="costs-error"
+      />
 
       {/* Cost Explorer ask, driven by the CONSENT state rather than by
           `costs.consentMissing`. That field only arrives when the backend has
@@ -340,7 +383,7 @@ export default function UsagePane({ account }: { account: AwsAccount }) {
           Cost Explorer with no confirmation control anywhere in the product. */}
       {ceConsentQ.data?.granted === false && (
         <div className="mt-6" data-testid="costs-consent-gate">
-          <AwsConsentGate service="ce" onConsentChange={refetchGated} />
+          <AwsConsentGate service="ce" onConsentChange={refetchGated} askAgent />
         </div>
       )}
 
@@ -348,6 +391,24 @@ export default function UsagePane({ account }: { account: AwsAccount }) {
           The sections themselves are the rail's own items, so this pane states
           sizes only and links nowhere. */}
       {driveQ.isLoading && <div className="mt-6"><ContentSkeleton rows={3} /></div>}
+      {/* The storage meter's read failing rendered no meter and no explanation.
+          A dead connection (409) points back at Reconnect; anything else is a
+          read to diagnose. The consent 409 is excluded because its ask lives on
+          the Files pane, not here. */}
+      <AwsErrorNotice
+        askAgent
+        error={driveQ.error}
+        message={
+          driveQ.isError && !driveConsentRefused
+            ? i18nT(driveErr?.status === 409
+              ? 'apps.awsControl.console.account_unavailable'
+              : 'apps.awsControl.console.drive_status_failed')
+            : null
+        }
+        onRetry={() => driveQ.refetch()}
+        className="mt-6"
+        testId="usage-drive-error"
+      />
       {drive?.exists && (
         <div className="mt-6" data-testid="usage-storage">
           <div className="mb-2 flex flex-wrap items-center gap-x-2 gap-y-1">
@@ -375,8 +436,8 @@ export default function UsagePane({ account }: { account: AwsAccount }) {
             {i18nT('apps.awsControl.page.paid_services_title')}
           </h2>
           <div className="mt-3 overflow-hidden rounded-md border border-border bg-card divide-y divide-border">
-            {s3Receipt && <AwsConsentGate service="s3" compact onConsentChange={refetchGated} />}
-            {ceReceipt && <AwsConsentGate service="ce" compact onConsentChange={refetchGated} />}
+            {s3Receipt && <AwsConsentGate service="s3" compact onConsentChange={refetchGated} askAgent />}
+            {ceReceipt && <AwsConsentGate service="ce" compact onConsentChange={refetchGated} askAgent />}
           </div>
         </section>
       )}

@@ -55,7 +55,7 @@ import type {
   DriveSection, DriveStatus, ArtifactKind, LibraryArtifact,
   BackupKind, BackupRun, BackupJobState, Share, DriveUsage,
 } from './types'
-import { CopyBtn, PaneHeader } from './shared'
+import { CopyBtn, PaneHeader, AwsErrorNotice } from './shared'
 
 /* Literal-key maps from enum → full catalog key, so no i18nT() call assembles a
  * key by interpolation (dynamicKeys gate): extractors and unused-key tooling
@@ -279,6 +279,18 @@ const withoutSlug = (set: ReadonlySet<string>, slug: string) => {
   next.delete(slug)
   return next
 }
+/* A FAILURE is a slug plus the value its request rejected with, so the card that
+   reports it can hand the agent the real refusal rather than only the sentence.
+   Same copy-on-write shape as the sets above; `null` marks a rejection that
+   carried nothing, so membership alone still answers "did this card fail". */
+type Failures = ReadonlyMap<string, unknown>
+const withFailure = (map: Failures, slug: string, err: unknown): Failures =>
+  new Map(map).set(slug, err ?? null)
+const withoutFailure = (map: Failures, slug: string): Failures => {
+  const next = new Map(map)
+  next.delete(slug)
+  return next
+}
 
 /**
  * The Library folder — what is ACTUALLY in the bucket's `artifacts/` prefix.
@@ -349,14 +361,14 @@ export function LibrarySection({ account, bucket }: { account: string; bucket: s
      time, which is a design constraint on the surface rather than a shared slot
      standing in for N. */
   const [pendingSlugs, setPendingSlugs] = useState<ReadonlySet<string>>(new Set())
-  const [failedSlugs, setFailedSlugs] = useState<ReadonlySet<string>>(new Set())
+  const [failedSlugs, setFailedSlugs] = useState<Failures>(new Map())
   const removeMut = useMutation({
     mutationFn: (slug: string) => awsControlApi.libraryRemove(account, slug),
     onMutate: (slug: string) => {
       setPendingSlugs((prev) => withSlug(prev, slug))
       // A retry retires its OWN previous failure, so one card never shows both
       // states -- and never touches another card's.
-      setFailedSlugs((prev) => withoutSlug(prev, slug))
+      setFailedSlugs((prev) => withoutFailure(prev, slug))
     },
     onSuccess: (_data, slug) => {
       /* Clear the confirm ONLY if it is still this removal's. A `delete_prefix`
@@ -373,7 +385,7 @@ export function LibrarySection({ account, bucket }: { account: string; bucket: s
       qc.invalidateQueries({ queryKey: ['aws-control', 'drive', account] })
       qc.invalidateQueries({ queryKey: ['aws-control', 'library', account] })
     },
-    onError: (_err, slug: string) => setFailedSlugs((prev) => withSlug(prev, slug)),
+    onError: (err, slug: string) => setFailedSlugs((prev) => withFailure(prev, slug, err)),
     // Settled, not success: a failed removal has to stop claiming to be running.
     onSettled: (_data, _err, slug: string) => setPendingSlugs((prev) => withoutSlug(prev, slug)),
   })
@@ -418,11 +430,13 @@ export function LibrarySection({ account, bucket }: { account: string; bucket: s
     /* The failure renders on the CARD, not here, so it belongs to the row that
        asked for it whichever strip happens to be open -- see `failedSlugs`. */
     error: '',
+    // Nothing typed lives on this pane, so the strip's own notice may hand off.
+    askAgent: true,
     pending: pendingSlugs.has(slug),
     // Cancel retires this row's failure with the attempt it describes, and only
     // this row's: backing out should not leave a standing red beside a copy that
     // is still there, nor touch a sibling's.
-    onCancel: () => { setConfirmSlug(null); setFailedSlugs((prev) => withoutSlug(prev, slug)) },
+    onCancel: () => { setConfirmSlug(null); setFailedSlugs((prev) => withoutFailure(prev, slug)) },
     onConfirm: () => removeMut.mutate(slug),
     action: pendingSlugs.has(slug)
       ? i18nT('apps.awsControl.console.library_removing')
@@ -548,8 +562,13 @@ export function LibrarySection({ account, bucket }: { account: string; bucket: s
           the blurb over blank space, which reads as "there is nothing here" --
           the one conclusion we specifically cannot draw. */}
       {listQ.isError && (
-        <div className="rounded-lg border border-border bg-card p-6 text-center" data-testid="library-error">
-          <p className="mb-3 text-[13px] text-text">{i18nT('apps.awsControl.console.library_list_failed')}</p>
+        <div className="flex flex-col items-center gap-3 rounded-lg border border-border bg-card p-6" data-testid="library-error">
+          <AwsErrorNotice
+            askAgent
+            error={listQ.error}
+            message={i18nT('apps.awsControl.console.library_list_failed')}
+            className="w-full"
+          />
           <Btn onClick={() => listQ.refetch()} data-testid="library-retry">
             <RefreshCw size={13} />
             {i18nT('apps.awsControl.console.retry')}
@@ -570,7 +589,13 @@ export function LibrarySection({ account, bucket }: { account: string; bucket: s
           className="mb-3 flex flex-wrap items-center gap-x-3 gap-y-2 rounded-lg border border-border bg-card px-3 py-2.5"
           data-testid="library-local-error"
         >
-          <p className="flex-1 text-[12px] text-text">{i18nT('apps.awsControl.console.library_local_failed')}</p>
+          <AwsErrorNotice
+            askAgent
+            error={localQ.error}
+            message={i18nT('apps.awsControl.console.library_local_failed')}
+            variant="inline"
+            className="min-w-0 flex-1"
+          />
           <Btn onClick={() => localQ.refetch()} data-testid="library-local-retry">
             <RefreshCw size={13} />
             {i18nT('apps.awsControl.console.retry')}
@@ -618,6 +643,7 @@ export function LibrarySection({ account, bucket }: { account: string; bucket: s
                 localAnswered={localAnswered}
                 confirm={confirmSlug === slug ? confirmFor(slug, bySlug.get(slug)?.name || slug) : null}
                 failed={failedSlugs.has(slug)}
+                failedWith={failedSlugs.get(slug)}
                 onAskRemove={() => askRemove(slug)}
               />
             ))}
@@ -726,9 +752,15 @@ export function LibrarySection({ account, bucket }: { account: string; bucket: s
                   </DropdownMenu>
                 </div>
                 {failedSlugs.has(slug) && (
-                  <p className="px-3 pb-2 text-[11px] leading-snug text-danger" data-testid="library-remove-error">
-                    {i18nT('apps.awsControl.console.library_remove_failed')}
-                  </p>
+                  <div className="px-3 pb-2">
+                    <AwsErrorNotice
+                      askAgent
+                      error={failedSlugs.get(slug)}
+                      message={i18nT('apps.awsControl.console.library_remove_failed')}
+                      variant="inline"
+                      testId="library-remove-error"
+                    />
+                  </div>
                 )}
                 {confirmSlug === slug && (
                   <div className="px-3 pb-2.5">
@@ -769,13 +801,18 @@ export function LibrarySection({ account, bucket }: { account: string; bucket: s
  * menu click reads as a no-op while a live destructive control sits parked out
  * of sight.
  */
-function TileConfirm({ label, error, pending, onCancel, onConfirm, action, testId = 'drive-grid-confirm' }: {
+function TileConfirm({ label, error, errorSource, askAgent, pending, onCancel, onConfirm, action, testId = 'drive-grid-confirm' }: {
   /* A NODE, not a string: the library's removal names the cloud folder it will
      empty, and a bucket path belongs in a <code> chip inside the sentence rather
      than flattened into it. Every existing caller passes a string, which is a
      ReactNode. */
   label: React.ReactNode
   error: string
+  /** The value the failed request rejected with, so the notice can carry it to the agent. */
+  errorSource?: unknown
+  /** Whether the failure notice offers the hand-off. The CALLER knows whether
+      anything typed is on screen around this strip; the strip does not. */
+  askAgent: boolean
   pending: boolean
   onCancel: () => void
   onConfirm: () => void
@@ -787,7 +824,7 @@ function TileConfirm({ label, error, pending, onCancel, onConfirm, action, testI
   return (
     <div className="mt-1 w-full border-t border-border pt-2" data-testid={testId}>
       <p className="mb-2 text-[12px] leading-snug text-text">{label}</p>
-      {error && <p className="mb-2 text-[11px] text-danger" data-testid={`${testId}-error`}>{error}</p>}
+      <AwsErrorNotice askAgent={askAgent} error={errorSource} message={error} variant="inline" className="mb-2" testId={`${testId}-error`} />
       <div className="flex flex-wrap items-center gap-2">
         {/* Disabled while the request runs, and that is a correctness rule rather
             than polish: this strip is the ONLY place the outcome can render, so
@@ -806,7 +843,7 @@ function TileConfirm({ label, error, pending, onCancel, onConfirm, action, testI
 }
 
 /** One artifact that IS in the cloud, as a preview card. */
-function LibraryCloudCard({ slug, local, localAnswered, confirm, failed, onAskRemove }: {
+function LibraryCloudCard({ slug, local, localAnswered, confirm, failed, failedWith, onAskRemove }: {
   slug: string
   local: LibraryArtifact | undefined
   localAnswered: boolean
@@ -815,6 +852,8 @@ function LibraryCloudCard({ slug, local, localAnswered, confirm, failed, onAskRe
   /** Whether THIS card's own removal failed. Keyed by slug, so a sibling's
       failure never renders here and opening a sibling never erases it. */
   failed: boolean
+  /** What that removal rejected with, for the agent hand-off on the notice. */
+  failedWith?: unknown
   onAskRemove: () => void
 }) {
   /* With no local artifact behind it the name IS the slug, so printing both puts
@@ -980,9 +1019,15 @@ function LibraryCloudCard({ slug, local, localAnswered, confirm, failed, onAskRe
           this removal and then looked at another card still sees that it did not
           happen, instead of being told nothing at all. */}
       {failed && (
-        <p className="px-3 pb-2 text-[11px] leading-snug text-danger" data-testid="library-remove-error">
-          {i18nT('apps.awsControl.console.library_remove_failed')}
-        </p>
+        <div className="px-3 pb-2">
+          <AwsErrorNotice
+            askAgent
+            error={failedWith}
+            message={i18nT('apps.awsControl.console.library_remove_failed')}
+            variant="inline"
+            testId="library-remove-error"
+          />
+        </div>
       )}
       {confirm && (
         <div className="px-3 pb-3">
@@ -1044,11 +1089,11 @@ function AddFromArtifactsDialog({ account, onClose }: { account: string; onClose
    * independent of every other's.
    */
   const [addingSlugs, setAddingSlugs] = useState<ReadonlySet<string>>(new Set())
-  const [failedSlugs, setFailedSlugs] = useState<ReadonlySet<string>>(new Set())
+  const [failedSlugs, setFailedSlugs] = useState<Failures>(new Map())
   const addOne = async (slug: string) => {
     // A retry clears the previous failure, so one card never shows both states.
     setAddingSlugs((prev) => withSlug(prev, slug))
-    setFailedSlugs((prev) => withoutSlug(prev, slug))
+    setFailedSlugs((prev) => withoutFailure(prev, slug))
     try {
       await awsControlApi.libraryPush(account, slug)
       // Both keys: the ledger changed (so the picker's rows restate their state)
@@ -1057,8 +1102,8 @@ function AddFromArtifactsDialog({ account, onClose }: { account: string; onClose
       // remount.
       qc.invalidateQueries({ queryKey: ['aws-control', 'library', account] })
       qc.invalidateQueries({ queryKey: ['aws-control', 'drive', account] })
-    } catch {
-      setFailedSlugs((prev) => withSlug(prev, slug))
+    } catch (err) {
+      setFailedSlugs((prev) => withFailure(prev, slug, err))
     } finally {
       setAddingSlugs((prev) => withoutSlug(prev, slug))
     }
@@ -1189,8 +1234,13 @@ function AddFromArtifactsDialog({ account, onClose }: { account: string; onClose
               conclusion a failure cannot support. Same mistake the cloud listing
               beside it already guards against. */}
           {libQ.isError && (
-            <div className="py-6 text-center" data-testid="library-add-error">
-              <p className="mb-3 text-[13px] text-text">{i18nT('apps.awsControl.console.library_local_failed')}</p>
+            <div className="flex flex-col items-center gap-3 py-6" data-testid="library-add-error">
+              <AwsErrorNotice
+                askAgent
+                error={libQ.error}
+                message={i18nT('apps.awsControl.console.library_local_failed')}
+                className="w-full"
+              />
               <Btn onClick={() => libQ.refetch()} data-testid="library-add-retry">
                 <RefreshCw size={13} />
                 {i18nT('apps.awsControl.console.retry')}
@@ -1212,6 +1262,7 @@ function AddFromArtifactsDialog({ account, onClose }: { account: string; onClose
                     onPush={() => { void addOne(a.slug) }}
                     pushing={addingSlugs.has(a.slug)}
                     failed={failedSlugs.has(a.slug)}
+                    failedWith={failedSlugs.get(a.slug)}
                   />
                 ))}
               </div>
@@ -1225,12 +1276,14 @@ function AddFromArtifactsDialog({ account, onClose }: { account: string; onClose
 
 /** One candidate in the picker: a real preview, and one action. */
 function PickerCard({
-  artifact, onPush, pushing, failed,
+  artifact, onPush, pushing, failed, failedWith,
 }: {
   artifact: LibraryArtifact
   onPush: () => void
   pushing: boolean
   failed: boolean
+  /** What the failed add rejected with, for the agent hand-off on the notice. */
+  failedWith?: unknown
 }) {
   const synced = artifact.pushedVersion !== null
   const upToDate = artifact.pushedVersion === artifact.version
@@ -1282,9 +1335,14 @@ function PickerCard({
           </p>
         )}
         {failed && !notPushable && (
-          <p className="mt-2 text-[11px] leading-snug text-danger" data-testid="library-push-error">
-            {i18nT('apps.awsControl.console.library_push_failed')}
-          </p>
+          <AwsErrorNotice
+            askAgent
+            error={failedWith}
+            message={i18nT('apps.awsControl.console.library_push_failed')}
+            variant="inline"
+            className="mt-2"
+            testId="library-push-error"
+          />
         )}
         {!notPushable && (
           <div className="mt-2.5">
@@ -1387,13 +1445,18 @@ const noSort = () => {}
 
 const KEY_SEGMENT = /^[A-Za-z0-9][A-Za-z0-9 ._()+@=-]*$/
 
+/** A sentence for the reader plus, when a request failed, what it rejected
+ *  with — so the notice can hand the agent the real refusal. A client-side
+ *  name check has no `error`; the sentence is the whole story. */
+type Failure = { message: string; error?: unknown }
+
 export function DriveSectionView({ account, bucket }: { account: string; bucket: string }) {
   const qc = useQueryClient()
   const [mode, setMode] = useViewMode('drive', 'list')
   const [path, setPath] = useState('')
   const [share, setShare] = useState<{ key: string } | null>(null)
-  const [uploadError, setUploadError] = useState('')
-  const [downloadError, setDownloadError] = useState('')
+  const [uploadError, setUploadError] = useState<Failure | null>(null)
+  const [downloadError, setDownloadError] = useState<Failure | null>(null)
   const [crumbMenu, setCrumbMenu] = useState(false)
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null)
   const [confirmFolder, setConfirmFolder] = useState<string | null>(null)
@@ -1415,6 +1478,13 @@ export function DriveSectionView({ account, bucket }: { account: string; bucket:
     folderCreateMut.reset()
     setCreatingFolder(false)
   }
+  /** Whether a notice on THIS pane may hand off to the agent. The folder-name
+   *  field is the one draft the pane holds, and every notice here — a failed
+   *  listing, upload, move, download or delete — shares the screen with it
+   *  while the disclosure is open. Gated on the disclosure rather than on the
+   *  field having text, so the button does not flicker in and out as the
+   *  reader types. */
+  const handOff = !creatingFolder
   /* How many objects the last folder delete actually removed. One click can
      remove far more than one file, and the count is only knowable AFTER the
      fact - the response carries it, while a figure shown BEFORE consent would
@@ -1459,10 +1529,13 @@ export function DriveSectionView({ account, bucket }: { account: string; bucket:
     // A dropped file whose put fails on the wire would otherwise vanish
     // silently — nothing renders it, so the user believes it uploaded. The
     // name is interpolated because a multi-file drop shares one error line.
-    onError: (_e: unknown, vars: { file: File; key: string }) => {
-      setUploadError(i18nT('apps.awsControl.console.drive_upload_failed', {
-        name: vars.key.split('/').pop() ?? vars.key,
-      }))
+    onError: (e: unknown, vars: { file: File; key: string }) => {
+      setUploadError({
+        message: i18nT('apps.awsControl.console.drive_upload_failed', {
+          name: vars.key.split('/').pop() ?? vars.key,
+        }),
+        error: e,
+      })
     },
   })
   const deleteMut = useMutation({
@@ -1498,9 +1571,9 @@ export function DriveSectionView({ account, bucket }: { account: string; bucket:
 
   const onPick = (file: File | undefined) => {
     if (!file) return
-    setUploadError('')
+    setUploadError(null)
     if (!KEY_SEGMENT.test(file.name)) {
-      setUploadError(i18nT('apps.awsControl.console.drive_bad_name'))
+      setUploadError({ message: i18nT('apps.awsControl.console.drive_bad_name') })
       return
     }
     uploadMut.mutate({ file, key: path ? `${path}/${file.name}` : file.name })
@@ -1511,10 +1584,10 @@ export function DriveSectionView({ account, bucket }: { account: string; bucket:
    *  a 10-file drop can fail on one file while the rest upload, and the
    *  picker's anonymous "that file name" would not say which one. */
   const uploadDropped = (list: FileList, folder: string) => {
-    setUploadError('')
+    setUploadError(null)
     for (const file of Array.from(list)) {
       if (!KEY_SEGMENT.test(file.name)) {
-        setUploadError(i18nT('apps.awsControl.console.drive_bad_name_named', { name: file.name }))
+        setUploadError({ message: i18nT('apps.awsControl.console.drive_bad_name_named', { name: file.name }) })
         continue
       }
       const prefix = folder || path
@@ -1527,13 +1600,13 @@ export function DriveSectionView({ account, bucket }: { account: string; bucket:
    *  flight. Drives the highlight only — the drop handlers re-derive their own
    *  target so a missed dragleave cannot misroute a drop. */
   const [dropTarget, setDropTarget] = useState<string | null>(null)
-  const [moveError, setMoveError] = useState('')
+  const [moveError, setMoveError] = useState<Failure | null>(null)
 
   const moveMut = useMutation({
     mutationFn: ({ fromKey, toKey }: { fromKey: string; toKey: string }) =>
       awsControlApi.driveMove(account, 'drive', fromKey, toKey),
     onSuccess: () => {
-      setMoveError('')
+      setMoveError(null)
       qc.invalidateQueries({ queryKey: ['aws-control', 'drive-list', account] })
       qc.invalidateQueries({ queryKey: ['aws-control', 'drive', account] })
     },
@@ -1542,12 +1615,15 @@ export function DriveSectionView({ account, bucket }: { account: string; bucket:
       // a live share link — moving would 404 it) and destination_exists (the
       // destination folder already holds this name; never overwritten).
       const err = e instanceof AwsControlError ? e : null
-      setMoveError(i18nT(
-        err?.message === 'share_active'
-          ? 'apps.awsControl.console.move_shared'
-          : err?.status === 409
-            ? 'apps.awsControl.console.move_conflict'
-            : 'apps.awsControl.console.move_failed'))
+      setMoveError({
+        message: i18nT(
+          err?.message === 'share_active'
+            ? 'apps.awsControl.console.move_shared'
+            : err?.status === 409
+              ? 'apps.awsControl.console.move_conflict'
+              : 'apps.awsControl.console.move_failed'),
+        error: e,
+      })
     },
   })
 
@@ -1571,7 +1647,7 @@ export function DriveSectionView({ account, bucket }: { account: string; bucket:
     const base = fromKey.split('/').pop() ?? fromKey
     const fromDir = fromKey.split('/').slice(0, -1).join('/')
     if (fromDir === folder) return
-    setMoveError('')
+    setMoveError(null)
     moveMut.mutate({ fromKey, toKey: folder ? `${folder}/${base}` : base })
   }
 
@@ -1630,19 +1706,19 @@ export function DriveSectionView({ account, bucket }: { account: string; bucket:
     // covered it passed only because it MOCKED window.open into returning a
     // tab. The isolation noopener buys is restored on the next line by nulling
     // `opener` on the window we just got: same guarantee, handle kept.
-    setDownloadError('')
+    setDownloadError(null)
     const tab = window.open('', '_blank')
     if (tab) tab.opener = null
     try {
       const { url } = await awsControlApi.driveDownload(account, 'drive', key)
       if (tab) tab.location.href = url
       else window.open(url, '_blank', 'noopener')
-    } catch {
+    } catch (e) {
       // Never leave an orphaned blank tab behind, and never rethrow: this runs
       // from an onClick with no catch, so a rethrow becomes an unhandled
       // rejection that tells the USER nothing. Report it in the row instead.
       tab?.close()
-      setDownloadError(i18nT('apps.awsControl.console.download_failed'))
+      setDownloadError({ message: i18nT('apps.awsControl.console.download_failed'), error: e })
     }
   }
 
@@ -1706,16 +1782,33 @@ export function DriveSectionView({ account, bucket }: { account: string; bucket:
         onChange={(e) => onPick(e.target.files?.[0])}
       />
 
-      {uploadError && <p className="mb-2 text-[12px] text-danger" data-testid="drive-upload-error">{uploadError}</p>}
-      {moveError && <p className="mb-2 text-[12px] text-danger" role="alert" data-testid="drive-move-error">{moveError}</p>}
-      {folderError && <p className="mb-2 text-[12px] text-danger" data-testid="drive-folder-error">{folderError}</p>}
-      {folderCreateMut.isError && <p className="mb-2 text-[12px] text-danger" data-testid="drive-folder-create-error">{i18nT('apps.awsControl.console.folder_create_failed')}</p>}
+      {/* A rejected NAME is a client-side check that never reached AWS: there is
+          no report and nothing for the agent to read, so those two carry no
+          hand-off. A wire failure on the same strip (`error` set) keeps it. */}
+      <AwsErrorNotice
+        error={uploadError?.error}
+        message={uploadError?.message}
+        askAgent={handOff && uploadError?.error !== undefined}
+        className="mb-2"
+        testId="drive-upload-error"
+      />
+      <AwsErrorNotice askAgent={handOff} error={moveError?.error} message={moveError?.message} className="mb-2" testId="drive-move-error" />
+      <AwsErrorNotice message={folderError} askAgent={false} className="mb-2" testId="drive-folder-error" />
+      {/* Also no hand-off: a failed create leaves the typed name in the still-open
+          input, and the hand-off navigates away from it. */}
+      <AwsErrorNotice
+        error={folderCreateMut.error}
+        message={folderCreateMut.isError ? i18nT('apps.awsControl.console.folder_create_failed') : null}
+        askAgent={false}
+        className="mb-2"
+        testId="drive-folder-create-error"
+      />
       {deletedCount !== null && (
         <p className="mb-2 text-[12px] text-muted" data-testid="drive-folder-deleted">
           {i18nT('apps.awsControl.console.folder_deleted', { objects: deletedCount })}
         </p>
       )}
-      {downloadError && <p className="mb-2 text-[12px] text-danger" data-testid="drive-download-error">{downloadError}</p>}
+      <AwsErrorNotice askAgent={handOff} error={downloadError?.error} message={downloadError?.message} className="mb-2" testId="drive-download-error" />
 
       {/* Breadcrumb within the section. Root plus one overflow is two sibling
           controls; the folder you are IN is text, not a third button. The
@@ -1759,6 +1852,17 @@ export function DriveSectionView({ account, bucket }: { account: string; bucket:
       )}
 
       {listQ.isLoading && <ContentSkeleton rows={2} />}
+
+      {/* A failed listing is not an empty folder — the Library folder beside
+          this one already says so, and this one rendered NOTHING: no skeleton,
+          no rows, no empty state, no sentence. */}
+      <AwsErrorNotice
+        askAgent={handOff}
+        error={listQ.error}
+        message={listQ.isError ? i18nT('apps.awsControl.console.files_list_failed') : null}
+        onRetry={() => listQ.refetch()}
+        testId="drive-list-error"
+      />
 
       {/* Empty, and said properly. "This folder is empty." inside a table with
           five headers left a reader who had just come from a Library folder
@@ -1847,6 +1951,8 @@ export function DriveSectionView({ account, bucket }: { account: string; bucket:
                   <TileConfirm
                     label={i18nT('apps.awsControl.console.folder_delete_confirm', { name: name.split('/').pop() ?? name })}
                     error={folderDeleteMut.isError ? i18nT('apps.awsControl.console.folder_delete_failed') : ''}
+                    errorSource={folderDeleteMut.error}
+                    askAgent={handOff}
                     pending={folderDeleteMut.isPending}
                     onCancel={() => setConfirmFolder(null)}
                     onConfirm={() => folderDeleteMut.mutate(name, { onSuccess: () => setConfirmFolder(null) })}
@@ -1916,6 +2022,8 @@ export function DriveSectionView({ account, bucket }: { account: string; bucket:
                   <TileConfirm
                     label={i18nT('apps.awsControl.console.delete_confirm', { name: f.key.split('/').pop() ?? f.key })}
                     error={deleteMut.isError ? i18nT('apps.awsControl.console.delete_failed') : ''}
+                    errorSource={deleteMut.error}
+                    askAgent={handOff}
                     pending={deleteMut.isPending}
                     onCancel={() => setConfirmDelete(null)}
                     onConfirm={() => deleteMut.mutate(f.key, { onSuccess: () => setConfirmDelete(null) })}
@@ -2041,11 +2149,18 @@ export function DriveSectionView({ account, bucket }: { account: string; bucket:
                         <span className="min-w-0 flex-1 text-text">
                           {i18nT('apps.awsControl.console.folder_delete_confirm', { name: name.split('/').pop() ?? name })}
                         </span>
-                        {folderDeleteMut.isError && (
-                          <span className="text-danger" data-testid="drive-folder-delete-error">
-                            {i18nT('apps.awsControl.console.folder_delete_failed')}
-                          </span>
-                        )}
+                        {/* `basis-full`: the strip is a wrapping flex row holding
+                            Cancel and Delete, and an inline notice with its
+                            hand-off would be a third action on that row. On its
+                            own line it stays inline-shaped without joining them. */}
+                        <AwsErrorNotice
+                          askAgent={handOff}
+                          error={folderDeleteMut.error}
+                          message={folderDeleteMut.isError ? i18nT('apps.awsControl.console.folder_delete_failed') : null}
+                          variant="inline"
+                          className="basis-full"
+                          testId="drive-folder-delete-error"
+                        />
                         <Btn onClick={() => setConfirmFolder(null)} data-testid="drive-folder-delete-cancel">
                           {i18nT('apps.awsControl.console.cancel')}
                         </Btn>
@@ -2128,11 +2243,15 @@ export function DriveSectionView({ account, bucket }: { account: string; bucket:
                           <span className="min-w-0 flex-1 text-text">
                             {i18nT('apps.awsControl.console.delete_confirm', { name: f.key.split('/').pop() ?? f.key })}
                           </span>
-                          {deleteMut.isError && (
-                            <span className="text-danger" data-testid="drive-delete-error">
-                              {i18nT('apps.awsControl.console.delete_failed')}
-                            </span>
-                          )}
+                          {/* Same `basis-full` reason as the folder strip above. */}
+                          <AwsErrorNotice
+                            askAgent={handOff}
+                            error={deleteMut.error}
+                            message={deleteMut.isError ? i18nT('apps.awsControl.console.delete_failed') : null}
+                            variant="inline"
+                            className="basis-full"
+                            testId="drive-delete-error"
+                          />
                           <Btn onClick={() => setConfirmDelete(null)} data-testid="drive-delete-cancel">
                             {i18nT('apps.awsControl.console.cancel')}
                           </Btn>
@@ -2220,6 +2339,18 @@ function ShareDialog({ account, section, fileKey, onClose }: { account: string; 
             </div>
             <label htmlFor="aws-share-note" className="mb-1 block text-[12px] text-muted">{i18nT('apps.awsControl.console.share_note')}</label>
             <Input id="aws-share-note" value={note} onChange={(e) => setNote(e.target.value)} placeholder={i18nT('apps.awsControl.console.share_note_placeholder')} className="mb-3 w-full" data-testid="share-note" />
+            {/* A refused share (publishing denied by policy, a dead key) used to
+                leave the button simply re-enabled, as if nothing had been asked.
+                No hand-off here: the note field above still holds whatever was
+                typed, and the hand-off navigates away from it. The refusal is
+                journaled regardless, so the agent can still be asked afterwards. */}
+            <AwsErrorNotice
+              error={shareMut.error}
+              message={shareMut.isError ? i18nT('apps.awsControl.console.share_failed') : null}
+              askAgent={false}
+              className="mb-3"
+              testId="share-error"
+            />
             <Btn primary onClick={() => shareMut.mutate()} disabled={shareMut.isPending} data-testid="share-create">
               {shareMut.isPending ? i18nT('apps.awsControl.console.share_creating') : i18nT('apps.awsControl.console.share_create')}
             </Btn>
@@ -2312,10 +2443,18 @@ function BackupRow({
             ? i18nT('apps.awsControl.console.backup_last_run', { when: fmtRelative(run.at), size: fmtBytes(run.bytes) })
             : i18nT('apps.awsControl.console.backup_never')}
         </div>
+        {/* Two different failures share one line: a START the route refused
+            (its thrown error rides along) and a RUN the server reports as its
+            last outcome, whose reason arrives as text inside a 200 — so that
+            one has only its sentence to hand over. */}
         {(failed || startError) && (
-          <div className="text-[12px] text-danger" data-testid={`backup-error-${kind}`}>
-            {startError || i18nT('apps.awsControl.console.backup_failed', { reason: failed?.error || '' })}
-          </div>
+          <AwsErrorNotice
+            askAgent
+            error={startError ? runMut.error : undefined}
+            message={startError || i18nT('apps.awsControl.console.backup_failed', { reason: failed?.error || '' })}
+            variant="inline"
+            testId={`backup-error-${kind}`}
+          />
         )}
         {kind === 'sessions' && (
           // The archive takes BOTH halves of a session, and the CLI
@@ -2369,6 +2508,15 @@ export function BackupSection({ account }: { account: string }) {
     <section data-testid="backup-section">
       <PaneHeader icon={<Archive size={18} />} title={i18nT('apps.awsControl.console.backup_title')} />
       {backupQ.isLoading && <ContentSkeleton rows={2} />}
+      {/* A status read that fails must not leave the pane as a bare title — that
+          reads as "no backups configured", the one thing it cannot mean. */}
+      <AwsErrorNotice
+        askAgent
+        error={backupQ.error}
+        message={backupQ.isError ? i18nT('apps.awsControl.console.backup_status_failed') : null}
+        onRetry={() => backupQ.refetch()}
+        testId="backup-status-error"
+      />
       {data && (
         <div className="rounded-md border border-border bg-card divide-y divide-border">
           {BACKUP_KINDS.map((kind) => (
@@ -2392,11 +2540,35 @@ export function BackupSection({ account }: { account: string }) {
             </div>
             <Toggle checked={data.nightly} onChange={(v) => nightlyMut.mutate(v)} label={i18nT('apps.awsControl.console.backup_nightly')} />
           </div>
+          {/* The toggle snaps back on a failed write; without a line under it the
+              snap-back reads as a flaky control rather than a refused request.
+              Directly under the row it explains, so the snap-back and its reason
+              share one glance. */}
+          {nightlyMut.isError && (
+            <div className="px-3 py-2">
+              <AwsErrorNotice
+                askAgent
+                error={nightlyMut.error}
+                message={i18nT('apps.awsControl.console.backup_nightly_failed')}
+                testId="backup-nightly-error"
+              />
+            </div>
+          )}
         </div>
       )}
 
+      {/* The remote half failed INSIDE a 200: the backend read the local ledger
+          fine and reports why the archive listing did not come back. The reason
+          is the message and the sentence is the lead, so the hand-off carries the
+          text AWS actually returned rather than only "couldn't read". */}
       {data?.remoteError && (
-        <p className="mt-2 text-[12px] text-muted" data-testid="backup-remote-error">{i18nT('apps.awsControl.console.backup_remote_error')}</p>
+        <AwsErrorNotice
+          askAgent
+          title={i18nT('apps.awsControl.console.backup_remote_error')}
+          message={data.remoteError}
+          className="mt-2"
+          testId="backup-remote-error"
+        />
       )}
 
       {/* Gated on status data existing, NOT on `data.remote`. The remote half is
@@ -2438,6 +2610,17 @@ export function BackupSection({ account }: { account: string }) {
         </div>
       )}
 
+      {/* Restore is the call the recommended write-only policy denies (the
+          caveat above says so) — and its failure used to be invisible, the one
+          outcome that caveat exists to explain. */}
+      <AwsErrorNotice
+        askAgent
+        error={restoreMut.error}
+        message={restoreMut.isError ? i18nT('apps.awsControl.console.backup_restore_failed') : null}
+        className="mt-2"
+        testId="backup-restore-error"
+      />
+
       {restoreMut.data && (
         <div className="mt-2 rounded-md border border-border bg-bg-elevated p-2.5 text-[12px]" data-testid="backup-restored">
           <div className="mb-1 text-muted">{i18nT('apps.awsControl.console.backup_restored_note')}</div>
@@ -2469,6 +2652,22 @@ export function AccessSection({ account }: { account: string }) {
     <section data-testid="access-section">
       <PaneHeader icon={<Share2 size={18} />} title={i18nT('apps.awsControl.console.access_title')} />
       {sharesQ.isLoading && <ContentSkeleton rows={1} />}
+      {/* A failed ledger read is not "no links": this pane's whole job is naming
+          what is exposed, so silence here is the worst possible answer. */}
+      <AwsErrorNotice
+        askAgent
+        error={sharesQ.error}
+        message={sharesQ.isError ? i18nT('apps.awsControl.console.access_list_failed') : null}
+        onRetry={() => sharesQ.refetch()}
+        testId="access-list-error"
+      />
+      <AwsErrorNotice
+        askAgent
+        error={forgetMut.error}
+        message={forgetMut.isError ? i18nT('apps.awsControl.console.access_forget_failed') : null}
+        className="mb-2"
+        testId="access-forget-error"
+      />
       {sharesQ.data && shares.length === 0 && (
         <p className="text-[13px] text-muted" data-testid="access-empty">{i18nT('apps.awsControl.console.access_empty')}</p>
       )}

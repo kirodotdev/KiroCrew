@@ -173,6 +173,29 @@ describe('UsagePane', () => {
     expect(within(stats).queryByTestId('console-cost-value')).toBeNull()
     // No consent ask fires — this is a failure, not a missing gate.
     expect(screen.queryByTestId('costs-consent-gate')).toBeNull()
+    // The em dash stays quiet, but the failure itself is said — with the
+    // hand-off, since "CE disabled" is exactly what the agent can act on.
+    const notice = await screen.findByTestId('costs-error')
+    expect(notice).toHaveTextContent(i18nT('apps.awsControl.console.costs_unavailable'))
+    expect(within(notice).getByRole('button', { name: /ask the agent/i })).toBeTruthy()
+  })
+
+  it('a consent-refused 409 on costs is the ask, not an error notice', async () => {
+    // The gate's own refusal is answered by the CE ask below the row; a red
+    // banner beside it would report the reader's pending decision as a fault.
+    const { AwsControlError } = await import('./api')
+    vi.mocked(awsControlApi.drive).mockResolvedValue(driveExists)
+    vi.mocked(awsControlApi.costs).mockRejectedValue(new AwsControlError('aws_consent_required', 409))
+    stubConsent({ s3: notGranted, ce: notGranted })
+
+    renderWithProviders(<UsagePane account={ACCOUNT} />)
+
+    expect(await screen.findByTestId('costs-consent-gate')).toBeTruthy()
+    await waitFor(
+      () => expect(within(screen.getByTestId('console-stats')).getByTitle(i18nT('apps.awsControl.console.costs_unavailable'))).toBeTruthy(),
+      { timeout: 4000 },
+    )
+    expect(screen.queryByTestId('costs-error')).toBeNull()
   })
 
   it('shows a visible "as of" hint next to the cost figure when it came from cache', async () => {
@@ -296,7 +319,7 @@ describe('UsagePane', () => {
 
 describe('ConnectionsSection', () => {
   it('renders one row per key with its kind, region and health — no Reconnect on a healthy key', async () => {
-    renderWithProviders(<ConnectionsSection account={ACCOUNT} />)
+    renderWithProviders(<ConnectionsSection account={ACCOUNT} askAgent />)
 
     const conns = await screen.findByTestId('connections-section')
     const rows = within(conns).getAllByTestId('connection-row')
@@ -310,7 +333,7 @@ describe('ConnectionsSection', () => {
 
   it('shows the empty line when the account has no keys', async () => {
     const bare: AwsAccount = { ...ACCOUNT, profiles: [] }
-    renderWithProviders(<ConnectionsSection account={bare} />)
+    renderWithProviders(<ConnectionsSection account={bare} askAgent />)
 
     expect(await screen.findByTestId('connections-empty')).toHaveTextContent(
       i18nT('apps.awsControl.page.not_connected_yet'),
@@ -323,7 +346,7 @@ describe('ConnectionsSection', () => {
       method: 'terminal', kind: 'credential-process', command: 'aws sso login --profile work',
     })
 
-    renderWithProviders(<ConnectionsSection account={DEGRADED} />)
+    renderWithProviders(<ConnectionsSection account={DEGRADED} askAgent />)
 
     const row = await screen.findByTestId('connection-row')
     expect(row).toHaveTextContent(i18nT('apps.awsControl.console.key_failed'))
@@ -340,12 +363,27 @@ describe('ReconnectAction', () => {
   it('shows the reconnect error state when the plan query fails', async () => {
     vi.mocked(awsControlApi.reconnectPlan).mockRejectedValue(new Error('plan failed'))
 
-    renderWithProviders(<ReconnectAction profile={DEGRADED.profiles[0]} />)
+    renderWithProviders(<ReconnectAction profile={DEGRADED.profiles[0]} askAgent />)
 
     fireEvent.click(await screen.findByTestId('reconnect-toggle'))
     // The panel resolves to its error message, not a command block.
     expect(await screen.findByTestId('reconnect-error')).toBeTruthy()
     expect(screen.queryByTestId('reconnect-command')).toBeNull()
+    expect(screen.getByRole('button', { name: /ask the agent/i })).toBeTruthy()
+  })
+
+  it('withholds the hand-off when the host says so', async () => {
+    // The accounts pane hosts this next to the Add-accounts checkboxes; while a
+    // selection is ticked it passes false, and the notice must not navigate.
+    vi.mocked(awsControlApi.reconnectPlan).mockRejectedValue(new Error('plan failed'))
+
+    renderWithProviders(<ReconnectAction profile={DEGRADED.profiles[0]} askAgent={false} />)
+
+    fireEvent.click(await screen.findByTestId('reconnect-toggle'))
+    expect(await screen.findByTestId('reconnect-error')).toBeTruthy()
+    expect(screen.queryByRole('button', { name: /ask the agent/i })).toBeNull()
+    // The retry stays: it is the reader's own recovery and navigates nowhere.
+    expect(screen.getByTestId('reconnect-error-retry')).toBeTruthy()
   })
 })
 
@@ -376,6 +414,39 @@ describe('SetupCard', () => {
     fireEvent.click(await screen.findByTestId('drive-preview-btn'))
     expect(await screen.findByTestId('drive-preview-error')).toBeTruthy()
     expect(screen.queryByTestId('drive-confirm-btn')).toBeNull()
+  })
+
+  it('a refused CONFIRM is said under the button, not swallowed', async () => {
+    // AccessDenied on CreateBucket is the common way this card fails, and the
+    // button used to just come back enabled. The confirm step stays so the
+    // reader can paste the permissions below and try again.
+    const { AwsControlError } = await import('./api')
+    vi.mocked(awsControlApi.driveBootstrapPreview).mockResolvedValue({
+      preview: true, account: ACCOUNT.account, region: 'us-west-2', resource: 'kirocrew-drive-abc123',
+    })
+    vi.mocked(awsControlApi.driveBootstrapConfirm).mockRejectedValue(new AwsControlError('aws_call_failed', 502))
+
+    renderWithProviders(<SetupCard account={ACCOUNT.account} region="us-west-2" />)
+    fireEvent.click(await screen.findByTestId('drive-preview-btn'))
+    fireEvent.click(await screen.findByTestId('drive-confirm-btn'))
+
+    const notice = await screen.findByTestId('drive-confirm-error')
+    expect(notice).toHaveTextContent(i18nT('apps.awsControl.console.setup_confirm_error'))
+    expect(within(notice).getByRole('button', { name: /ask the agent/i })).toBeTruthy()
+    expect(screen.getByTestId('drive-confirm-btn')).toBeTruthy()
+  })
+
+  it('a failed permissions read is said inside the drawer', async () => {
+    vi.mocked(awsControlApi.iamPolicy).mockRejectedValue(new Error('boom'))
+
+    renderWithProviders(<SetupCard account={ACCOUNT.account} region="us-west-2" />)
+    fireEvent.click(await screen.findByTestId('policy-toggle'))
+
+    const drawer = await screen.findByTestId('policy-drawer')
+    expect(await within(drawer).findByTestId('policy-error')).toHaveTextContent(
+      i18nT('apps.awsControl.console.setup_policy_error'),
+    )
+    expect(within(drawer).queryByTestId('policy-copy')).toBeNull()
   })
 
   it('reveals the IAM policy in the setup drawer and offers it to copy', async () => {

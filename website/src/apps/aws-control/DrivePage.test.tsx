@@ -55,6 +55,10 @@ vi.mock('../../api/client', () => ({
 import { awsControlApi, AwsControlError } from './api'
 import { api } from '../../api/client'
 import {
+  recordError, consumeChatHandoff, installSoftNavigate,
+  __resetErrorJournalForTests, __resetNavSeamForTests,
+} from '../../utils/errorReport'
+import {
   DriveSectionView, LibrarySection, BackupSection, AccessSection, StorageMeter,
 } from './DrivePage'
 
@@ -932,8 +936,13 @@ describe('DrivePage sections: folder disclosure and downloads', () => {
     fireEvent.click(await screen.findByTestId('drive-delete-confirm-action'))
 
     // The failure surfaces in-strip and the strip stays open (no onSuccess close).
-    expect(await screen.findByTestId('drive-delete-error')).toBeTruthy()
+    const notice = await screen.findByTestId('drive-delete-error')
     expect(screen.getByTestId('drive-delete-confirm')).toBeTruthy()
+    // The strip is a wrapping row holding Cancel and Delete; the notice (and its
+    // hand-off) takes a full line of its own rather than becoming a third action
+    // beside them.
+    expect(notice).toHaveClass('basis-full')
+    expect(within(notice).getByRole('button', { name: /ask the agent/i })).toBeTruthy()
   })
 })
 
@@ -2576,5 +2585,216 @@ describe('DrivePage sections: drag and drop', () => {
     })
     const strip = await screen.findByTestId('drive-upload-error')
     expect(strip.textContent).toContain('doomed.md')
+  })
+})
+
+/**
+ * Every failure this app can show renders through the shared error notice, and
+ * every notice offers the agent hand-off with the REAL failure attached — not
+ * the localised sentence the reader saw. The cases below are the ones that used
+ * to render nothing at all; the migrated ones keep their test ids and are
+ * covered by the assertions above.
+ */
+describe('DrivePage sections: error surfaces reach the agent', () => {
+  /** An `AwsControlError` exactly as `request` would build it: code + journaled report. */
+  function failure(code: string, status: number, endpoint: string, body: string): AwsControlError {
+    const report = recordError({ source: 'api', message: body, status, code, endpoint, detail: body })
+    return new AwsControlError(code, status, report)
+  }
+
+  const navigated: string[] = []
+  beforeEach(() => {
+    __resetErrorJournalForTests()
+    __resetNavSeamForTests()
+    navigated.length = 0
+    sessionStorage.clear()
+    installSoftNavigate((to) => { navigated.push(to) })
+    stubDrivePresent()
+  })
+
+  it('a failed Files listing is a notice with Retry, not an empty folder', async () => {
+    vi.mocked(awsControlApi.driveList)
+      .mockRejectedValueOnce(new AwsControlError('aws_call_failed', 502))
+      .mockResolvedValue({ files: [], folders: [] })
+    await renderDrive('drive')
+
+    const notice = await screen.findByTestId('drive-list-error')
+    expect(notice).toHaveTextContent(i18nT('apps.awsControl.console.files_list_failed'))
+    expect(notice).toHaveAttribute('role', 'alert')
+    // The empty state must NOT have claimed the folder is empty.
+    expect(screen.queryByTestId('drive-empty')).toBeNull()
+
+    fireEvent.click(screen.getByTestId('drive-list-error-retry'))
+    expect(await screen.findByTestId('drive-empty')).toBeTruthy()
+    expect(awsControlApi.driveList).toHaveBeenCalledTimes(2)
+  })
+
+  it('the hand-off carries the endpoint, status and code — not only the sentence on screen', async () => {
+    vi.mocked(awsControlApi.driveList).mockRejectedValue(
+      failure('aws_call_failed', 502, '/api/apps/aws-control/drive/111122223333/list', 'AccessDenied: s3:ListBucket'),
+    )
+    await renderDrive('drive')
+
+    const notice = await screen.findByTestId('drive-list-error')
+    fireEvent.click(within(notice).getByRole('button', { name: /ask the agent/i }))
+
+    expect(navigated).toEqual(['/chat'])
+    const staged = consumeChatHandoff() ?? ''
+    expect(staged).toContain('/api/apps/aws-control/drive/111122223333/list')
+    expect(staged).toContain('HTTP 502')
+    expect(staged).toContain('aws_call_failed')
+    expect(staged).toContain('AccessDenied: s3:ListBucket')
+  })
+
+  it('a refused share link is said in the dialog instead of re-enabling the button silently', async () => {
+    vi.mocked(awsControlApi.driveList).mockResolvedValue({
+      files: [{ key: 'report.pdf', size: 2048, modified: '2026-08-20T00:00:00Z' }],
+      folders: [],
+    })
+    vi.mocked(awsControlApi.driveShare).mockRejectedValue(new AwsControlError('publish_denied', 403))
+    await renderDrive('drive')
+
+    fireEvent.keyDown(await screen.findByTestId('drive-more'), { key: 'Enter' })
+    fireEvent.click(await screen.findByTestId('drive-share'))
+    fireEvent.change(await screen.findByTestId('share-note'), { target: { value: 'for the Q3 review' } })
+    fireEvent.click(await screen.findByTestId('share-create'))
+
+    const notice = await screen.findByTestId('share-error')
+    expect(notice).toHaveTextContent(i18nT('apps.awsControl.console.share_failed'))
+    // No hand-off here: the note field still holds the typed text, and the
+    // hand-off would navigate away from it. The draft survives the refusal.
+    expect(within(notice).queryByRole('button', { name: /ask the agent/i })).toBeNull()
+    expect(screen.getByTestId('share-note')).toHaveValue('for the Q3 review')
+    // Still no result: nothing was shared.
+    expect(screen.queryByTestId('share-result')).toBeNull()
+  })
+
+  it('a failed backup-status read and a refused nightly toggle each get their own line', async () => {
+    vi.mocked(awsControlApi.backup)
+      .mockRejectedValueOnce(new AwsControlError('http_500', 500))
+      .mockResolvedValue(emptyBackup)
+    await renderDrive('backup')
+    const notice = await screen.findByTestId('backup-status-error')
+    expect(notice).toHaveTextContent(i18nT('apps.awsControl.console.backup_status_failed'))
+    // No rows were invented for a status we do not have.
+    expect(screen.queryByTestId('backup-row-snapshot')).toBeNull()
+
+    // A read the reader can re-issue offers Retry, and Retry re-reads.
+    fireEvent.click(screen.getByTestId('backup-status-error-retry'))
+    expect(await screen.findByTestId('backup-row-snapshot')).toBeTruthy()
+    expect(screen.queryByTestId('backup-status-error')).toBeNull()
+  })
+
+  it('a refused nightly toggle says so under the toggle it failed to move', async () => {
+    vi.mocked(awsControlApi.backup).mockResolvedValue(emptyBackup)
+    vi.mocked(awsControlApi.backupNightly).mockRejectedValue(new AwsControlError('restricted_session', 403))
+    await renderDrive('backup')
+
+    const toggle = within(await screen.findByTestId('backup-nightly')).getByRole('switch')
+    fireEvent.click(toggle)
+    const notice = await screen.findByTestId('backup-nightly-error')
+    expect(notice).toHaveTextContent(i18nT('apps.awsControl.console.backup_nightly_failed'))
+    // Adjacent to the row it explains: the notice is the nightly row's next sibling.
+    expect(screen.getByTestId('backup-nightly').nextElementSibling).toContainElement(notice)
+  })
+
+  it('a rejected folder name is a notice WITHOUT the hand-off — nothing reached AWS', async () => {
+    vi.mocked(awsControlApi.driveList).mockResolvedValue({ files: [], folders: [] })
+    await renderDrive('drive')
+
+    fireEvent.click(await screen.findByTestId('drive-folder-toggle'))
+    fireEvent.change(await screen.findByTestId('drive-folder-name'), { target: { value: 'bad/name' } })
+    fireEvent.click(screen.getByTestId('drive-folder-create'))
+
+    const notice = await screen.findByTestId('drive-folder-error')
+    expect(notice).toHaveTextContent(i18nT('apps.awsControl.console.folder_bad_name'))
+    expect(within(notice).queryByRole('button', { name: /ask the agent/i })).toBeNull()
+    expect(awsControlApi.driveFolderCreate).not.toHaveBeenCalled()
+  })
+
+  it('a refused restore is reported next to the caveat that predicts it', async () => {
+    vi.mocked(awsControlApi.backup).mockResolvedValue({
+      nightly: true,
+      runs: {},
+      remote: {
+        snapshot: [{ key: 'backup/snapshot/2026-08-24.tar', size: 4096, modified: '2026-08-24T00:00:00Z' }],
+        sessions: [],
+      },
+    })
+    vi.mocked(awsControlApi.backupRestore).mockRejectedValue(new AwsControlError('aws_call_failed', 502))
+    await renderDrive('backup')
+
+    fireEvent.click(await screen.findByTestId('backup-remote-toggle'))
+    const archive = await screen.findByTestId('backup-archive')
+    fireEvent.click(within(archive).getByTestId('backup-restore'))
+
+    expect(await screen.findByTestId('backup-restore-error')).toHaveTextContent(
+      i18nT('apps.awsControl.console.backup_restore_failed'),
+    )
+    expect(screen.queryByTestId('backup-restored')).toBeNull()
+  })
+
+  it('the remote-archive reason the backend reports inside a 200 travels as the message', async () => {
+    vi.mocked(awsControlApi.backup).mockResolvedValue({
+      ...emptyBackup,
+      remote: null,
+      remoteError: 'AccessDenied: s3:ListBucket on backup/',
+    })
+    await renderDrive('backup')
+
+    const notice = await screen.findByTestId('backup-remote-error')
+    expect(notice).toHaveTextContent(i18nT('apps.awsControl.console.backup_remote_error'))
+    expect(notice).toHaveTextContent('AccessDenied: s3:ListBucket on backup/')
+    fireEvent.click(within(notice).getByRole('button', { name: /ask the agent/i }))
+    expect(consumeChatHandoff() ?? '').toContain('AccessDenied: s3:ListBucket on backup/')
+  })
+
+  it('a failed share-ledger read is a notice, never "no links"', async () => {
+    vi.mocked(awsControlApi.shares).mockRejectedValue(new AwsControlError('http_500', 500))
+    await renderDrive('access')
+
+    expect(await screen.findByTestId('access-list-error')).toHaveTextContent(
+      i18nT('apps.awsControl.console.access_list_failed'),
+    )
+    expect(screen.queryByTestId('access-empty')).toBeNull()
+  })
+
+  it('a refused Forget keeps the row and says why', async () => {
+    vi.mocked(awsControlApi.shares).mockResolvedValue({
+      shares: [{
+        id: 's1', account: ACCOUNT_ID, section: 'drive', key: 'report.pdf',
+        createdAt: '2026-08-24T05:00:00Z', expiresAt: '2099-01-01T00:00:00Z', note: '',
+      }],
+    })
+    vi.mocked(awsControlApi.shareForget).mockRejectedValue(new AwsControlError('http_500', 500))
+    await renderDrive('access')
+
+    fireEvent.click(await screen.findByTestId('access-forget'))
+    expect(await screen.findByTestId('access-forget-error')).toHaveTextContent(
+      i18nT('apps.awsControl.console.access_forget_failed'),
+    )
+    expect(screen.getByTestId('access-row')).toBeTruthy()
+  })
+
+  it('while the folder-name field is open, no Files notice offers the hand-off — the typed name survives', async () => {
+    // Every notice on the pane shares the screen with that one draft, so the
+    // gate is the disclosure, not the individual notice.
+    vi.mocked(awsControlApi.driveList).mockResolvedValue({
+      files: [{ key: 'report.pdf', size: 2048, modified: '2026-08-20T00:00:00Z' }],
+      folders: [],
+    })
+    vi.mocked(awsControlApi.driveDelete).mockRejectedValue(new AwsControlError('aws_call_failed', 502))
+    await renderDrive('drive')
+
+    fireEvent.click(await screen.findByTestId('drive-folder-toggle'))
+    fireEvent.change(await screen.findByTestId('drive-folder-name'), { target: { value: 'quarterly' } })
+
+    fireEvent.keyDown(await screen.findByTestId('drive-more'), { key: 'Enter' })
+    fireEvent.click(await screen.findByTestId('drive-delete'))
+    fireEvent.click(await screen.findByTestId('drive-delete-confirm-action'))
+
+    const notice = await screen.findByTestId('drive-delete-error')
+    expect(within(notice).queryByRole('button', { name: /ask the agent/i })).toBeNull()
+    expect(screen.getByTestId('drive-folder-name')).toHaveValue('quarterly')
   })
 })

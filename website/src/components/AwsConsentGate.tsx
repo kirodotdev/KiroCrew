@@ -1,6 +1,8 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { ShieldCheck } from 'lucide-react'
+import { RefreshCw, ShieldCheck } from 'lucide-react'
 import { api, type AwsConsentStatus } from '../api/client'
+import ErrorNotice from './ErrorNotice'
+import { Btn } from './ui'
 import { i18nT } from '../i18n/t'
 
 /**
@@ -31,6 +33,7 @@ export default function AwsConsentGate({
   service,
   onConsentChange,
   compact = false,
+  askAgent = false,
 }: {
   service: string
   /** Invalidate caller-owned queries whose content depends on this grant. */
@@ -43,6 +46,13 @@ export default function AwsConsentGate({
    * withdraw stays reachable but no longer dominates the page.
    */
   compact?: boolean
+  /**
+   * Offer the agent hand-off on this gate's error notices. Off by default for
+   * the same reason `ErrorNotice` defaults it off: the gate sits inside settings
+   * panels that hold unsaved drafts, and only the HOST knows whether the
+   * navigation would destroy one. A host with nothing to lose opts in.
+   */
+  askAgent?: boolean
 }) {
   const qc = useQueryClient()
   const consentQ = useQuery<AwsConsentStatus>({
@@ -72,9 +82,48 @@ export default function AwsConsentGate({
     onSettled: invalidate,
   })
 
+  // A status read that failed used to render NOTHING — indistinguishable from a
+  // gate that has nothing to ask, on the surface that decides whether a paid
+  // service may bill. The message is the transport's own (journaled), so the
+  // notice recovers its endpoint and status from that. A transient read is the
+  // one failure the reader can clear alone, and with the grant/withdraw
+  // controls gone this notice is the card's only surface, so it carries the
+  // retry itself rather than relying on the host to offer one.
+  if (consentQ.isError) {
+    return (
+      <div className="flex flex-col items-start gap-2" data-testid={'aws-consent-' + service + '-error-card'}>
+        <ErrorNotice
+          message={consentQ.error instanceof Error ? consentQ.error.message : String(consentQ.error)}
+          title={i18nT('components.awsConsentGate.status_failed')}
+          askAgent={askAgent}
+          className="w-full"
+          testId={'aws-consent-' + service + '-error'}
+        />
+        <Btn onClick={() => consentQ.refetch()} data-testid={'aws-consent-' + service + '-error-retry'}>
+          <RefreshCw size={13} />
+          {i18nT('components.awsConsentGate.retry')}
+        </Btn>
+      </div>
+    )
+  }
   if (!consentQ.isSuccess) return null
   const c = consentQ.data
   const busy = grantMut.isPending || revokeMut.isPending
+  // The write that last failed, if any. `onSettled` re-reads the status either
+  // way, so the card below already shows the truth; this line says WHY the
+  // click did not change it.
+  const writeError = grantMut.error ?? revokeMut.error
+  const writeNotice = (className: string) => writeError ? (
+    <ErrorNotice
+      message={writeError instanceof Error ? writeError.message : String(writeError)}
+      title={i18nT(grantMut.error
+        ? 'components.awsConsentGate.confirm_failed'
+        : 'components.awsConsentGate.withdraw_failed')}
+      askAgent={askAgent}
+      className={className}
+      testId={'aws-consent-' + service + '-write-error'}
+    />
+  ) : null
   const region = c.region || i18nT('components.awsConsentGate.provider_default')
   // Prefer the LIVE account, but fall back to the one the grant recorded. A
   // probe can fail for reasons that say nothing about the grant (no network, no
@@ -107,6 +156,9 @@ export default function AwsConsentGate({
         >
           {i18nT('components.awsConsentGate.withdraw')}
         </button>
+        {/* A full-width child of the row, so a refused withdraw is said under the
+            receipt it failed to remove rather than breaking the row's layout. */}
+        {writeNotice('basis-full')}
       </div>
     )
   }
@@ -172,6 +224,7 @@ export default function AwsConsentGate({
           </button>
         </>
       )}
+      {writeNotice('mt-2')}
     </div>
   )
 }

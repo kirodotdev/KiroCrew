@@ -13,7 +13,8 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { awsControlApi, AwsControlError } from './api'
+import { awsControlApi, AwsControlError, errorReportOf } from './api'
+import { __resetErrorJournalForTests, recentErrors } from '../../utils/errorReport'
 
 const BASE = '/api/apps/aws-control'
 
@@ -44,6 +45,7 @@ let fetchSpy: ReturnType<typeof vi.spyOn>
 
 beforeEach(() => {
   fetchSpy = vi.spyOn(globalThis, 'fetch')
+  __resetErrorJournalForTests()
 })
 
 afterEach(() => {
@@ -88,6 +90,63 @@ describe('request error contract (AwsControlError)', () => {
     // fetch itself rejecting must propagate — the client has no offline fallback.
     fetchSpy.mockRejectedValue(new TypeError('Failed to fetch'))
     await expect(awsControlApi.accounts()).rejects.toThrow('Failed to fetch')
+  })
+
+  it('journals a non-ok response and hands the entry to the error, query string stripped', async () => {
+    // The UI renders a LOCALISED sentence, never the backend prose, so the shared
+    // notice's message-match lookup can never find this failure. The report has
+    // to travel on the error itself — with the endpoint, status, code and raw
+    // body the agent needs, and WITHOUT the query string (an object key or a
+    // share note does not belong in a prompt).
+    fetchSpy.mockResolvedValue(
+      jsonResponse({ error: 'AccessDenied on GetObject', code: 'aws_call_failed' }, 502),
+    )
+    const err = await awsControlApi
+      .driveDownload('111122223333', 'drive', 'secret folder/report.pdf')
+      .catch((e) => e as AwsControlError)
+
+    expect(err).toBeInstanceOf(AwsControlError)
+    expect(err.report).toBeDefined()
+    expect(err.report).toMatchObject({
+      source: 'api',
+      status: 502,
+      code: 'aws_call_failed',
+      message: 'AccessDenied on GetObject',
+      endpoint: `${BASE}/drive/111122223333/download`,
+    })
+    expect(err.report?.detail).toContain('AccessDenied on GetObject')
+    expect(err.report?.endpoint).not.toContain('secret')
+    // The same entry is in the journal, and `errorReportOf` returns exactly it.
+    expect(recentErrors()[0]).toBe(err.report)
+    expect(errorReportOf(err)).toBe(err.report)
+  })
+
+  it('journals a non-JSON body under the status code, so a 502 page still reaches the agent', async () => {
+    fetchSpy.mockResolvedValue(rawResponse('<html>502 Bad Gateway</html>', 502))
+    const err = await awsControlApi.accounts().catch((e) => e as AwsControlError)
+    expect(err.report).toMatchObject({ status: 502, code: 'http_502', message: 'http_502' })
+    expect(err.report?.detail).toContain('502 Bad Gateway')
+  })
+
+  it('journals a transport failure and recovers it by message, without changing the thrown error', async () => {
+    fetchSpy.mockRejectedValue(new TypeError('Failed to fetch'))
+    const err = await awsControlApi.accounts().catch((e) => e as unknown)
+    expect(err).toBeInstanceOf(TypeError)
+    const report = errorReportOf(err)
+    expect(report).toMatchObject({
+      source: 'api',
+      message: 'Failed to fetch',
+      endpoint: `${BASE}/accounts`,
+    })
+    expect(report?.status).toBeUndefined()
+  })
+
+  it('errorReportOf answers undefined for an error built outside the client', () => {
+    // Tests construct `AwsControlError` directly; the notice must degrade to the
+    // sentence alone rather than throw on a missing report.
+    expect(errorReportOf(new AwsControlError('app_disabled', 403))).toBeUndefined()
+    expect(errorReportOf('not an error')).toBeUndefined()
+    expect(errorReportOf(undefined)).toBeUndefined()
   })
 
   it('sends same-origin credentials and no method on a plain GET', async () => {

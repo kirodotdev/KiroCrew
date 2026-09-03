@@ -328,3 +328,69 @@ refused, and SEL-audited. Account-targeted AWS operations additionally enforce
 live identity and service consent, and egress paths enforce publish governance.
 Library removal is deliberately outside that egress set: it sends no bytes out,
 so a profile that denies publishing can still empty a bucket it is paying for.
+
+## Error surfaces
+
+Every failure the dashboard shows for this app renders through one wrapper,
+`shared.AwsErrorNotice`, over the dashboard's shared `ErrorNotice` — never an
+ad-hoc red paragraph, and never nothing. The wrapper exists because of a
+mismatch the shared notice cannot bridge on its own: `ErrorNotice` recovers an
+error's context from the error journal by matching the message it renders, and
+this app renders a LOCALISED sentence keyed off the backend `code`, not the
+backend prose, so that lookup can never match here. The client closes the gap
+at the transport instead. `api.request` journals every non-ok response
+(`utils/errorReport.recordError`: status, machine-readable `code`, path-only
+endpoint, raw body) and hands the resulting entry to the thrown
+`AwsControlError` as `report`; a transport-level rejection is journaled by its
+own message and rethrown unchanged. `api.errorReportOf` is the one reader of
+both paths, and `AwsErrorNotice` passes what it returns to the notice as the
+structured report — so the "ask the agent" hand-off carries the endpoint, the
+status, the code and the body, while the reader sees the sentence.
+`api.test.ts::request error contract` pins the journal entry's shape, the
+query-string strip, and that an error built outside the client (as tests do)
+degrades to the sentence alone rather than throwing.
+
+The hand-off keeps `ErrorNotice`'s opt-in default and is stated at every call
+site in this app. The safety argument for leaving it off is an unsaved draft the
+navigation would destroy, so the three notices rendered beside unsaved input —
+the folder-create failure under the folder-name field, the share failure under
+the share note, and the register failure under the Add-accounts checkboxes —
+leave it off; the refusal is journaled regardless. Two panes go further and
+gate every notice they render on their one draft being absent, because all of
+those notices share the screen with it: the Files pane on the folder-name
+disclosure being closed, and the accounts pane on no profile being ticked in
+the Add-accounts form (`AddAccounts` reports that through `onDraftChange`; the
+row and connections-card Reconnect notices and the orphaned-consent rescue all
+take the pane's `handOff`). A
+client-side name check (a rejected folder or file name) leaves it off too: no
+request was made, so there is no report and nothing for the agent to read.
+Every other notice opts in. `AwsConsentGate` is shared with settings panels
+that DO hold drafts, so it takes the decision as an `askAgent` prop, off by
+default, which this app sets. Every READ notice this app renders itself offers
+a Try-again button under the notice (`onRetry`), because a transient read is
+the one failure the reader can clear alone; a mutation's retry is the control
+that fired it, which is still on screen. `AwsConsentGate`'s own status-read
+failure carries that button itself, because with the grant and withdraw
+controls gone the notice is the whole card. The page-level accounts failure words
+a 403 as a permission answer (sign in as the owner) rather than as a transient
+read, because a retry cannot clear it. A confirm strip that already holds
+Cancel and Delete renders its inline notice on its own line (`basis-full`), so
+the hand-off never becomes a third action in that row.
+
+Two classes of failure previously rendered nothing and now render a notice:
+every read whose query had no error branch (the Files listing, drive status
+outside the consent 409, the permissions drawer, backup status, the share
+ledger, the local profile scan) and every mutation whose error was never read
+(drive create-confirm, share creation, nightly toggle, restore, share removal).
+A failed read must not fall through to the surface's empty state — a failed
+listing is not an empty folder, a failed profile scan is not "nothing left to
+add" — and the tests for each state assert the empty state's absence alongside
+the notice. Two states are deliberately NOT errors: a 403 whose code is
+`app_disabled` renders the disabled-app copy (any other 403 — a non-owner
+caller's `dashboard_owner_required` — is an error to diagnose and goes to the
+notice), and a costs 409 `aws_consent_required` is answered by the Cost Explorer
+ask, not a banner beside it. A reason the backend reports inside a 200 (the
+backup archive's `remoteError`) travels as the notice's message under the
+localised lead, so the hand-off carries the text AWS returned.
+`DrivePage.test.tsx::error surfaces reach the agent`,
+`AwsControlPage.test.tsx::edge states`, and `ConsoleView.test.tsx` pin these.
