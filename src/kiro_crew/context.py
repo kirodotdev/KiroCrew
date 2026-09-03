@@ -1069,6 +1069,27 @@ def _build_ui_language_section(cfg: "KiroCrewConfig") -> str:
     )
 
 
+def steering_target_admissible(resolved: Path, base: Path | None = None) -> bool:
+    """Admission gate for a steering document's RESOLVED path.
+
+    The session loader (:func:`_load_steering_resources`) admits a glob hit —
+    symlinks included, since ``Path.resolve()`` follows them — when the target
+    stays under the trust base, is a regular file, and is not a sensitive
+    location. *base* defaults to ``$HOME``, the loader's own anchor; the
+    dashboard's steering listing admits a leaf symlink through this same
+    predicate with the source's LINK trust base (``$HOME`` for ``user``, the
+    steering root itself for ``workspace``), so a repository-committed link
+    can never read outside the root it ships in, and the ``user`` case cannot
+    disagree with what the loader injects.
+    """
+    base_resolved = str((base or Path.home()).resolve()) + os.sep
+    return (
+        str(resolved).startswith(base_resolved)
+        and resolved.is_file()
+        and not is_sensitive_path(str(resolved))
+    )
+
+
 def _load_steering_resources() -> str:
     """Load steering files from the agent config's resources array.
 
@@ -1101,21 +1122,13 @@ def _load_steering_resources() -> str:
             return ""
         resources = cfg.get("resources", [])
         parts: list[str] = []
-        home_resolved = str(Path.home().resolve()) + os.sep
         for res in resources:
             if not isinstance(res, str) or not res.startswith("file://"):
                 continue
             raw_pattern = res.removeprefix("file://")
             base = Path.home()
             for p in sorted(base.glob(raw_pattern)):
-                resolved = p.resolve()
-                if not str(resolved).startswith(home_resolved):
-                    continue
-                if (
-                    resolved.is_file()
-                    and p.suffix == ".md"
-                    and not is_sensitive_path(str(resolved))
-                ):
+                if p.suffix == ".md" and steering_target_admissible(p.resolve()):
                     try:
                         parts.append(safe_read_file(str(p)))
                     except PermissionError:

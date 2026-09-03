@@ -19,6 +19,11 @@ steering documents are in effect.
 Path handling mirrors the skills browser (``handlers/_shared.py``): traversal,
 absolute paths, ``~`` expansion, non-``.md`` suffixes, symlinked intermediate
 directories and sensitive locations are all rejected before any read or write.
+A LEAF symlink is listed and readable — read-only — when its resolved target
+passes the session loader's admission gate against the source's LINK trust
+base (:func:`kiro_crew.context.steering_target_admissible`: ``$HOME`` for
+``user``, the steering root itself for ``workspace`` — ``_link_trust_base``);
+it never resolves for write.
 """
 
 from __future__ import annotations
@@ -41,6 +46,7 @@ from kiro_crew.atomic_write import (
     open_access_control_source,
     pinned_parent_replace_supported,
 )
+from kiro_crew.context import steering_target_admissible
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.executors import discovery_executor
 from kiro_crew.frontmatter import STEERING_LOADER, set_frontmatter_fields, split_frontmatter
@@ -276,8 +282,10 @@ def list_steering_blocking(project_dir: Path | None = None) -> dict[str, Any]:
 
     Returns ``{"files": [...], "roots": [...], "project": "<display path>"}``.
     Each file entry: ``{key, name, rel, source, path, size, description,
-    inclusion, inclusion_declared, file_match_pattern}`` where ``key`` is
-    ``"<source>/<rel>"``.
+    inclusion, inclusion_declared, file_match_pattern, linked, editable,
+    target}`` where ``key`` is ``"<source>/<rel>"``. ``linked`` marks a leaf
+    symlink admitted read-only; ``target`` carries its resolved display path
+    (``""`` otherwise) and ``editable`` is False exactly for linked entries.
     """
     files: list[dict[str, Any]] = []
     roots: list[dict[str, Any]] = []
@@ -308,27 +316,46 @@ def list_steering_blocking(project_dir: Path | None = None) -> dict[str, Any]:
                 break
             if entry.name.startswith("."):
                 continue
-            # Symlinked entries are never listed: the key they would produce
-            # must not be resolvable for write, so listing one would offer the
-            # user a file they cannot edit (see resolve_steering_file).
-            if entry.is_symlink():
-                continue
+            linked = entry.is_symlink()
             try:
                 resolved = entry.resolve(strict=True)
-            except OSError:
+            except (OSError, RuntimeError):
+                # RuntimeError is a symlink LOOP (pathlib raises it instead of
+                # ELOOP) — reachable now that leaf links are resolved at all;
+                # one loop.md must hide itself, not 500 the whole listing.
                 continue
             # Reject symlinked intermediate directories that escape the trust
             # base (a leaf symlink whose target is still contained is fine).
             if not _contained(entry.parent, base_resolved):
                 continue
-            if not resolved.is_file() or is_sensitive_path(str(resolved)):
+            if linked:
+                # A leaf symlink is listed READ-ONLY when its resolved target
+                # passes the same admission gate the session loader applies
+                # (regular file, not sensitive, under this source's link
+                # trust base — see _link_trust_base: $HOME for `user`, the
+                # steering root itself for `workspace`). For `user` these
+                # files load into every session, so hiding them made the tab
+                # disagree with what the agent actually reads. The key still
+                # refuses to resolve for write (see resolve_steering_file),
+                # so the entry is not editable.
+                link_base = _link_trust_base(source, root, base_resolved)
+                if not steering_target_admissible(resolved, link_base):
+                    continue
+            elif not resolved.is_file() or is_sensitive_path(str(resolved)):
                 continue
             try:
                 size = int(entry.stat().st_size)
             except OSError:
                 continue
             rel = entry.relative_to(root).as_posix()
-            meta = _head_meta(entry, root)
+            # A linked document's head lives in its target, which can sit
+            # outside the steering root — bind that read to the same link
+            # trust base the admission gate above just checked it against.
+            meta = (
+                _head_meta(resolved, _link_trust_base(source, root, base_resolved))
+                if linked
+                else _head_meta(entry, root)
+            )
             files.append({
                 "key": f"{source}/{rel}",
                 "name": entry.name,
@@ -342,6 +369,9 @@ def list_steering_blocking(project_dir: Path | None = None) -> dict[str, Any]:
                 "inclusion": meta["inclusion"],
                 "inclusion_declared": _redact_meta(meta["inclusion_declared"]),
                 "file_match_pattern": _redact_meta(meta["file_match_pattern"]),
+                "linked": linked,
+                "editable": not linked,
+                "target": _redact_meta(_display_path(resolved)) if linked else "",
             })
     return {
         "files": files,
@@ -369,6 +399,20 @@ def _base_for(source: str, project_dir: Path | None) -> Path | None:
     if source == "user":
         return Path.home()
     return Path(project_dir) if project_dir else None
+
+
+def _link_trust_base(source: str, root: Path, base_resolved: Path) -> Path:
+    """The base a leaf symlink's resolved TARGET must stay under.
+
+    ``user`` gets ``$HOME`` — the session loader's own anchor, and the parity
+    this latitude exists for: those linked targets already load into every
+    session. ``workspace`` has no such loader (kiro-cli reads that root
+    itself), so a repository-committed link earns no latitude beyond the
+    steering root: with the whole project as the base, ``leak.md -> ../../.env``
+    would turn the steering GET into a verbatim reader for any file in the
+    project.
+    """
+    return base_resolved if source == "user" else root
 
 
 def _deepest_existing(path: Path) -> Path | None:
@@ -401,13 +445,26 @@ def _contained(candidate: Path, base_resolved: Path) -> bool:
 
 
 def resolve_steering_file(
-    key: str, project_dir: Path | None, *, for_write: bool = False
+    key: str,
+    project_dir: Path | None,
+    *,
+    for_write: bool = False,
+    follow_links: bool = False,
 ) -> Path | None:
     """Resolve ``key`` to an absolute steering file path, or None if rejected.
 
     With ``for_write`` the target need not exist yet (the deepest existing
     ancestor is validated instead) and write-protected locations are rejected
     too.  Without it the target must already be a regular file.
+
+    ``follow_links`` is READ-only latitude: a leaf symlink resolves to its
+    target when that target passes the loader's admission gate against this
+    source's LINK trust base (regular file, not sensitive, under ``$HOME``
+    for ``user`` or the steering root itself for ``workspace`` — see
+    ``_link_trust_base``), matching what the listing shows. It is
+    deliberately not the default: update and delete resolve with the default
+    and must keep refusing a leaf symlink, or PUT would truncate — and DELETE
+    unlink — a file that is not a steering document.
     """
     parts = _split_key(key)
     if parts is None:
@@ -432,11 +489,22 @@ def resolve_steering_file(
     # base. A link that still resolves inside the base (e.g.
     # ``.kiro/steering/rules.md -> ../../README.md``) would otherwise let PUT
     # truncate, and DELETE unlink, a file that is not a steering document.
+    # The read path opts into following it via ``follow_links``, gated on the
+    # loader's own admission predicate.
     try:
         if target.is_symlink():
-            return None
+            if not follow_links:
+                return None
+            resolved = target.resolve(strict=True)
+            if not steering_target_admissible(
+                resolved, _link_trust_base(source, root, base_resolved)
+            ):
+                return None
+            return resolved
         resolved = target.resolve(strict=True)
-    except OSError:
+    except (OSError, RuntimeError):
+        # RuntimeError is pathlib's symlink-loop signal — a loop.md is "not
+        # found", the same answer a dangling link gets.
         return None
     if not resolved.is_file() or is_sensitive_path(str(resolved)):
         return None
@@ -496,12 +564,21 @@ def _resolve_and_read_blocking(key: str, project_dir: Path | None) -> tuple[str,
     so without ``within_root`` an ancestor directory swapped for a symlink
     between resolution and open could still escape the tree.
 
+    A LINKED entry (leaf symlink the listing admitted read-only) resolves to
+    its target, which can sit outside the steering root — that read is bound
+    to the source's LINK trust base instead (``$HOME`` for ``user``, the
+    steering root itself for ``workspace`` — ``_link_trust_base``), the same
+    anchor ``steering_target_admissible`` admits the target against. The
+    descriptor checks still apply to the inode actually opened, so a link
+    retargeted after resolution can reach nothing outside the base the
+    listing admitted from.
+
     The ``lstat`` below only supplies the size for the 413 message; the file
     can still grow past the cap before the descriptor read, in which case the
     helper raises ``FileTooLargeError`` — caught here so that race yields 413
     rather than a 500.
     """
-    target = resolve_steering_file(key, project_dir)
+    target = resolve_steering_file(key, project_dir, follow_links=True)
     if target is None:
         return "", "", "notfound"
     display = _redact_meta(_display_path(target))
@@ -509,8 +586,19 @@ def _resolve_and_read_blocking(key: str, project_dir: Path | None) -> tuple[str,
     root = (
         next((p for s, p in steering_roots(project_dir) if s == parts[0]), None) if parts else None
     )
-    if root is None:
+    if root is None or parts is None:
         return "", display, "notfound"
+    # The nominal path and the resolved one disagree exactly when the leaf is a
+    # link — recheck the leaf itself rather than comparing paths, since an
+    # ordinary file can also resolve elsewhere through allowed ancestor links.
+    try:
+        linked = (root / parts[1]).is_symlink()
+    except OSError:
+        linked = False
+    base = _base_for(parts[0], project_dir)
+    if base is None:
+        return "", display, "notfound"
+    within_root = _link_trust_base(parts[0], root, base) if linked else root
     try:
         pre = target.lstat()
     except OSError:
@@ -521,7 +609,7 @@ def _resolve_and_read_blocking(key: str, project_dir: Path | None) -> tuple[str,
         return "", display, f"toolarge:{pre.st_size}"
     try:
         data = safe_read_file_bytes_nolink(
-            str(target), within_root=str(root), max_bytes=STEERING_FILE_MAX_BYTES
+            str(target), within_root=str(within_root), max_bytes=STEERING_FILE_MAX_BYTES
         )
     except FileTooLargeError:
         # Grew past the cap between the lstat and the descriptor read.

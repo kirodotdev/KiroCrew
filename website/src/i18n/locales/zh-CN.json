@@ -10805,6 +10805,7 @@
         "inclusion_file_match_pattern": "已声明用于匹配 {{pattern}} 的文件",
         "inclusion_mode": "包含模式：{{mode}}",
         "inclusion_unrecognized": "{{declared}} 不是已知的包含模式，将按 {{fallback}} 处理",
+        "linked_read_only": "链接自 {{target}}（只读）。请编辑目标文件。",
         "loading": "正在加载…",
         "new_steering_file": "新建引导文件",
         "new_steering_file_2": "新建引导文件",

@@ -11123,6 +11123,7 @@
         "inclusion_file_match_pattern": "Declarado para arquivos que correspondem a {{pattern}}",
         "inclusion_mode": "Modo de inclusão: {{mode}}",
         "inclusion_unrecognized": "{{declared}} não é um modo de inclusão conhecido; é interpretado como {{fallback}}",
+        "linked_read_only": "Vinculado de {{target}} — somente leitura. Edite o arquivo de destino.",
         "loading": "Carregando…",
         "new_steering_file": "Novo arquivo de steering",
         "new_steering_file_2": "Novo arquivo de steering",

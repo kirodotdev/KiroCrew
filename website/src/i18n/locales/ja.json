@@ -10805,6 +10805,7 @@
         "inclusion_file_match_pattern": "{{pattern}} に一致するファイル向けに宣言されています",
         "inclusion_mode": "インクルードモード: {{mode}}",
         "inclusion_unrecognized": "{{declared}} は既知のインクルードモードではありません。{{fallback}} として扱われます",
+        "linked_read_only": "{{target}} へのリンク（読み取り専用）。リンク先のファイルを編集してください。",
         "loading": "読み込み中…",
         "new_steering_file": "新しいステアリングファイル",
         "new_steering_file_2": "新しいステアリングファイル",

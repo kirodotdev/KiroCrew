@@ -357,12 +357,14 @@ class TestResolution:
         (root / "link.md").symlink_to(secret)
         assert resolve_steering_file("user/link.md", None) is None
 
-    def test_symlinked_leaf_inside_base_also_rejected(self, fake_home):
-        """A link that resolves INSIDE the base is still not a steering file.
+    def test_symlinked_leaf_inside_base_rejected_for_write_but_listed(self, fake_home):
+        """A leaf link never resolves for write, but an admissible one lists.
 
         ``.kiro/steering/rules.md -> ../../README.md`` passes a base-containment
         check, so without a leaf-symlink rejection PUT would truncate — and
         DELETE unlink — an unrelated file the user never opened in the tab.
+        The listing DOES show it, read-only: the target is under $HOME, a
+        regular file and not sensitive, so the session loader reads it.
         """
         root = fake_home / ".kiro" / "steering"
         root.mkdir(parents=True, exist_ok=True)
@@ -370,7 +372,10 @@ class TestResolution:
         victim.write_text("# real readme\n", encoding="utf-8")
         (root / "rules.md").symlink_to(victim)
         assert resolve_steering_file("user/rules.md", None) is None
-        assert [f["key"] for f in list_steering_blocking(None)["files"]] == []
+        entries = list_steering_blocking(None)["files"]
+        assert [f["key"] for f in entries] == ["user/rules.md"]
+        assert entries[0]["linked"] is True
+        assert entries[0]["editable"] is False
 
     def test_symlinked_subdir_escaping_base_rejected(self, fake_home, tmp_path):
         root = fake_home / ".kiro" / "steering"
@@ -383,6 +388,192 @@ class TestResolution:
     def test_write_target_need_not_exist(self, fake_home):
         target = resolve_steering_file("user/new/doc.md", None, for_write=True)
         assert target == fake_home / ".kiro" / "steering" / "new" / "doc.md"
+
+
+class TestLinkedEntries:
+    """Leaf symlinks list read-only through the loader's own admission gate.
+
+    ``context._load_steering_resources`` follows a leaf symlink and loads its
+    target whenever that target is under ``$HOME``, a regular file, and not
+    sensitive — so the listing admits exactly the same set
+    (``steering_target_admissible``), read-only, or the tab reports
+    "Steering (0)" for documents that load into every session.
+    """
+
+    @staticmethod
+    def _link(fake_home, rel: str, target: Path) -> Path:
+        root = fake_home / ".kiro" / "steering"
+        root.mkdir(parents=True, exist_ok=True)
+        link = root / rel
+        link.symlink_to(target)
+        return link
+
+    def test_admissible_link_lists_read_only_with_target_meta(self, fake_home):
+        target = fake_home / "dotfiles" / "conventions.md"
+        target.parent.mkdir(parents=True)
+        target.write_text("# Conventions\nrules\n", encoding="utf-8", newline="")
+        self._link(fake_home, "conventions.md", target)
+
+        out = list_steering_blocking(None)
+        by_key = {f["key"]: f for f in out["files"]}
+        entry = by_key["user/conventions.md"]
+        assert entry["linked"] is True
+        assert entry["editable"] is False
+        # The description comes from the TARGET's head, and the resolved
+        # target travels with the entry (home collapsed to ``~``). Display
+        # paths are OS-native, so fold the separator before comparing.
+        assert entry["description"] == "Conventions"
+        assert entry["target"].replace("\\", "/") == "~/dotfiles/conventions.md"
+        assert entry["size"] == target.stat().st_size
+
+    def test_regular_entries_report_editable(self, fake_home):
+        _write_steering(fake_home / ".kiro" / "steering", "plain.md")
+        entry = list_steering_blocking(None)["files"][0]
+        assert entry["linked"] is False
+        assert entry["editable"] is True
+        assert entry["target"] == ""
+
+    def test_link_to_sensitive_target_stays_hidden(self, fake_home):
+        secret = fake_home / ".aws" / "creds.md"
+        secret.parent.mkdir(parents=True)
+        secret.write_text("aws_secret_access_key=nope\n", encoding="utf-8")
+        self._link(fake_home, "innocent.md", secret)
+        out = list_steering_blocking(None)
+        assert [f["key"] for f in out["files"]] == []
+        assert "nope" not in json.dumps(out)
+
+    def test_link_escaping_home_stays_hidden(self, fake_home, tmp_path):
+        outside = tmp_path / "outside.md"
+        outside.write_text("# Outside\n", encoding="utf-8")
+        self._link(fake_home, "outside.md", outside)
+        assert list_steering_blocking(None)["files"] == []
+
+    def test_dangling_link_stays_hidden(self, fake_home):
+        self._link(fake_home, "gone.md", fake_home / "nowhere.md")
+        assert list_steering_blocking(None)["files"] == []
+
+    def test_looping_link_stays_hidden_not_500(self, fake_home):
+        """A self-referential link raises RuntimeError from resolve, not OSError.
+
+        ``Path.resolve(strict=True)`` reports a symlink LOOP as RuntimeError;
+        catching only OSError turned one ``loop.md`` into a 500 for the whole
+        listing and the detail read.
+        """
+        root = fake_home / ".kiro" / "steering"
+        root.mkdir(parents=True, exist_ok=True)
+        (root / "loop.md").symlink_to(root / "loop.md")
+        assert list_steering_blocking(None)["files"] == []
+        assert resolve_steering_file("user/loop.md", None, follow_links=True) is None
+
+    def test_workspace_link_inside_steering_root_lists_read_only(self, fake_home, tmp_path):
+        """Workspace latitude stops at the steering root — a link within it lists."""
+        proj = tmp_path / "proj"
+        root = proj / ".kiro" / "steering"
+        target = root / "shared" / "conventions.md"
+        target.parent.mkdir(parents=True)
+        target.write_text("# Project conventions\n", encoding="utf-8", newline="")
+        (root / "conventions.md").symlink_to(target)
+        entries = list_steering_blocking(proj)["files"]
+        by_key = {f["key"]: f for f in entries}
+        entry = by_key["workspace/conventions.md"]
+        assert entry["linked"] is True
+        assert entry["editable"] is False
+        assert entry["description"] == "Project conventions"
+        # The target itself is also a plain listed document.
+        assert by_key["workspace/shared/conventions.md"]["linked"] is False
+
+    def test_workspace_link_to_project_file_outside_root_stays_hidden(self, fake_home, tmp_path):
+        """A repository-committed link must not read project files through steering.
+
+        ``workspace`` has no session loader following links (kiro-cli reads the
+        root itself), so there is no parity to honor — and with the whole
+        project as the base, ``leak.md -> ../../.env`` would serve the
+        project's own credentials verbatim through the steering GET.
+        """
+        proj = tmp_path / "proj"
+        env = proj / ".env"
+        proj.mkdir()
+        env.write_text("SECRET_TOKEN=nope\n", encoding="utf-8")
+        root = proj / ".kiro" / "steering"
+        root.mkdir(parents=True)
+        (root / "leak.md").symlink_to(env)
+        out = list_steering_blocking(proj)
+        assert [f["key"] for f in out["files"]] == []
+        assert "nope" not in json.dumps(out)
+        assert resolve_steering_file("workspace/leak.md", proj, follow_links=True) is None
+
+    def test_workspace_link_escaping_project_stays_hidden(self, fake_home, tmp_path):
+        """A link out of the project entirely (into $HOME) is likewise hidden."""
+        notes = fake_home / ".config" / "notes.md"
+        notes.parent.mkdir(parents=True)
+        notes.write_text("home file a repo link must not reach\n", encoding="utf-8")
+        proj = tmp_path / "proj"
+        root = proj / ".kiro" / "steering"
+        root.mkdir(parents=True)
+        (root / "notes.md").symlink_to(notes)
+        entries = list_steering_blocking(proj)["files"]
+        assert [f["key"] for f in entries] == []
+        assert resolve_steering_file("workspace/notes.md", proj, follow_links=True) is None
+
+    @pytest.mark.asyncio
+    async def test_read_endpoint_serves_workspace_linked_content(self, fake_home, tmp_path):
+        proj = tmp_path / "proj"
+        root = proj / ".kiro" / "steering"
+        target = root / "shared" / "conventions.md"
+        target.parent.mkdir(parents=True)
+        target.write_text("# Project conventions\nbody\n", encoding="utf-8", newline="")
+        (root / "conventions.md").symlink_to(target)
+        async with TestClient(TestServer(_make_app(_state(proj)))) as client:
+            resp = await client.get("/api/steering/workspace/conventions.md")
+            assert resp.status == 200
+            data = await resp.json()
+        assert data["content"] == "# Project conventions\nbody\n"
+
+    def test_resolve_follows_links_only_when_asked(self, fake_home):
+        target = fake_home / "notes.md"
+        target.write_text("# Notes\n", encoding="utf-8")
+        self._link(fake_home, "notes.md", target)
+        assert resolve_steering_file("user/notes.md", None) is None
+        assert (
+            resolve_steering_file("user/notes.md", None, follow_links=True)
+            == target.resolve()
+        )
+
+    def test_resolve_refuses_inadmissible_target_even_following(self, fake_home, tmp_path):
+        outside = tmp_path / "outside.md"
+        outside.write_text("# Outside\n", encoding="utf-8")
+        self._link(fake_home, "outside.md", outside)
+        assert resolve_steering_file("user/outside.md", None, follow_links=True) is None
+
+    @pytest.mark.asyncio
+    async def test_read_endpoint_serves_linked_content(self, fake_home):
+        target = fake_home / "dotfiles" / "conventions.md"
+        target.parent.mkdir(parents=True)
+        target.write_text("# Conventions\nlinked body\n", encoding="utf-8", newline="")
+        self._link(fake_home, "conventions.md", target)
+        async with TestClient(TestServer(_make_app(_state()))) as client:
+            resp = await client.get("/api/steering/user/conventions.md")
+            assert resp.status == 200
+            data = await resp.json()
+        assert data["content"] == "# Conventions\nlinked body\n"
+
+    @pytest.mark.asyncio
+    async def test_put_and_delete_still_refuse_linked_entries(self, fake_home):
+        """READ/LIST latitude must not leak into the write verbs."""
+        target = fake_home / "dotfiles" / "conventions.md"
+        target.parent.mkdir(parents=True)
+        target.write_text("# Conventions\noriginal\n", encoding="utf-8", newline="")
+        link = self._link(fake_home, "conventions.md", target)
+        async with TestClient(TestServer(_make_app(_state()))) as client:
+            put = await client.put(
+                "/api/steering/user/conventions.md", json={"content": "clobbered"}
+            )
+            assert put.status == 404
+            delete = await client.delete("/api/steering/user/conventions.md")
+            assert delete.status == 404
+        # Neither the link nor the target moved.
+        assert link.is_symlink()
+        assert target.read_text(encoding="utf-8") == "# Conventions\noriginal\n"
 
 
 # ── HTTP endpoints ──

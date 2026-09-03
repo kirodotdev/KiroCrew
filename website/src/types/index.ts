@@ -501,6 +501,18 @@ export interface SteeringFile {
   /** `fileMatchPattern` verbatim, `''` when absent. Only meaningful alongside
    *  `inclusion: fileMatch`. */
   file_match_pattern: string
+  /** True for a leaf symlink admitted read-only: its resolved target passes the
+   *  session loader's gate against the source's trust base, so the document
+   *  loads into sessions but the write path refuses it. Optional because the
+   *  UI reads it defensively — a cached listing from an older backend simply
+   *  renders no chip. */
+  linked?: boolean
+  /** False exactly for linked entries — the tab disables Edit/Delete on them.
+   *  Optional: an absent field fails OPEN (editable), see `selectedReadOnly`. */
+  editable?: boolean
+  /** Resolved symlink target (display path, home collapsed to `~`); `''` when
+   *  the entry is not linked. */
+  target?: string
 }
 
 /** Response shape of ``GET /api/steering``. */

@@ -11282,6 +11282,7 @@
         "inclusion_file_match_pattern": "Объявлен для файлов, соответствующих {{pattern}}",
         "inclusion_mode": "Режим включения: {{mode}}",
         "inclusion_unrecognized": "{{declared}} — неизвестный режим включения, читается как {{fallback}}",
+        "linked_read_only": "Ссылка на {{target}} — только чтение. Редактируйте целевой файл.",
         "loading": "Загрузка…",
         "new_steering_file": "Новый файл steering",
         "new_steering_file_2": "Новый файл steering",

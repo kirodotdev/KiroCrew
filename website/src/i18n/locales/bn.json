@@ -10964,6 +10964,7 @@
         "inclusion_file_match_pattern": "{{pattern}} এর সাথে মেলে এমন ফাইলের জন্য ঘোষিত",
         "inclusion_mode": "অন্তর্ভুক্তির মোড: {{mode}}",
         "inclusion_unrecognized": "{{declared}} পরিচিত কোনো অন্তর্ভুক্তির মোড নয় — এটি {{fallback}} হিসেবে পড়া হয়",
+        "linked_read_only": "{{target}} থেকে লিঙ্ক করা — শুধু পড়ার জন্য। লক্ষ্য ফাইলটি সম্পাদনা করুন।",
         "loading": "লোড হচ্ছে…",
         "new_steering_file": "নতুন স্টিয়ারিং ফাইল",
         "new_steering_file_2": "নতুন স্টিয়ারিং ফাইল",

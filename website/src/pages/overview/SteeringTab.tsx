@@ -1,6 +1,6 @@
 import { useState, useMemo, useEffect } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Compass, RefreshCw } from 'lucide-react'
+import { Compass, Link2, RefreshCw } from 'lucide-react'
 import { api } from '../../api/client'
 import { store } from '../../store'
 import { Card, Btn, SearchInput, EmptyState } from '../../components/ui'
@@ -136,6 +136,30 @@ function InclusionChip({ file, showDefault = false }: { file: SteeringFile; show
       }`}
     >
       {unrecognized ? declared : mode}
+    </span>
+  )
+}
+
+/** Icon-only marker on a linked row.
+ *
+ *  A linked document loads into every session like any other steering file, but
+ *  the write path refuses its key (`resolve_steering_file` never follows a leaf
+ *  link for write). The full explanation — including the target to edit
+ *  instead — is a visible banner in the detail pane; this marker only flags the
+ *  row. Icon-only deliberately: the 240px list column makes the name span yield
+ *  width to any chip text, truncating the very filename the row exists to show.
+ *  No aria-label either — the row's own "Select {path}" label overrides
+ *  children for AT, so a string here never reaches it; the reason lives in the
+ *  banner, which is real text. */
+function LinkedChip({ file }: { file: SteeringFile }) {
+  if (file.linked !== true) return null
+  return (
+    <span
+      data-testid="steering-linked-chip"
+      title={i18nT('pages.overview.steeringTab.linked_read_only', { target: file.target })}
+      className="text-muted shrink-0 inline-flex items-center"
+    >
+      <Link2 className="lucide-inline" aria-hidden />
     </span>
   )
 }
@@ -543,6 +567,11 @@ export default function SteeringTab() {
 
   const selected = useMemo(() => files.find(f => f.key === selectedKey) ?? null, [files, selectedKey])
 
+  /** Linked entries are read-only: the backend never resolves their key for
+   *  write, so offering Edit/Save or Delete would only manufacture a 404.
+   *  `=== false` fails open for a cached listing predating the field. */
+  const selectedReadOnly = selected?.editable === false
+
   // Narrow viewport shows one pane at a time; a desktop shows both.
   const { isMobile, showList, showDetail, openDetail, closeDetail } = useListDetailView()
 
@@ -604,6 +633,7 @@ export default function SteeringTab() {
       >
         <div className="flex items-center gap-1.5 min-w-0">
           <span className="text-[13px] font-semibold text-text truncate flex-1">{f.rel}</span>
+          <LinkedChip file={f} />
           <InclusionChip file={f} />
           <span className="text-[10px] px-1.5 py-[1px] rounded-full bg-bg-elevated text-muted border border-border font-bold shrink-0">
             {sourceLabel(f.source)}
@@ -802,6 +832,9 @@ export default function SteeringTab() {
                     <span className="text-[11px] px-1.5 py-[1px] rounded-full bg-bg-elevated text-muted border border-border font-bold shrink-0">
                       {sourceLabel(selected.source)}
                     </span>
+                    {/* No LinkedChip here: the read-only banner directly below
+                      * states the full sentence, and a header chip is what
+                      * pushed Edit/Delete onto a second line. */}
                     <InclusionChip file={selected} showDefault />
                     {/* The absolute path is reference detail, not identity: it
                         never fits beside the name on a phone and would push the
@@ -813,7 +846,15 @@ export default function SteeringTab() {
                       <Btn onClick={() => setEditing(false)}>{i18nT('pages.overview.steeringTab.cancel')}</Btn>
                       <Btn primary disabled={!draft.trim() || updateFile.isPending || (draftMode === 'fileMatch' && !normalizePattern(draftPattern))} onClick={() => updateFile.mutate({ key: selected.key, content: draft, declaration: changedDeclaration() })}>{i18nT('pages.overview.steeringTab.save')}</Btn>
                     </>) : (<>
-                      <Btn disabled={detail === undefined} onClick={() => { setDraft(detail?.content ?? ''); setDraftProjectKey(projectKey); setDraftMode(unrecognizedMode(selected) ? '' : (selected.inclusion || 'always')); setDraftPattern(selected.file_match_pattern || ''); /* An unrecognised declaration resolves to `always`, so seeding either
+                      {/* Disabled rather than hidden for a linked entry, so the
+                        * controls' absence does not read as a rendering bug; the
+                        * title says why, naming the target file to edit instead. */}
+                      <Btn
+                        disabled={detail === undefined || selectedReadOnly}
+                        title={selectedReadOnly
+                          ? i18nT('pages.overview.steeringTab.linked_read_only', { target: selected.target })
+                          : undefined}
+                        onClick={() => { setDraft(detail?.content ?? ''); setDraftProjectKey(projectKey); setDraftMode(unrecognizedMode(selected) ? '' : (selected.inclusion || 'always')); setDraftPattern(selected.file_match_pattern || ''); /* An unrecognised declaration resolves to `always`, so seeding either
    side from it is wrong, and the two failures are opposite. Seeding the
    BASE from it makes picking `always` a no-op, leaving the warning chip
    in place — a silent retry loop on the very failure this tab ends.
@@ -822,11 +863,31 @@ export default function SteeringTab() {
    author's declaration to `always`. Both start unset: nothing is sent
    until a mode is actually picked, and any pick is a real change. */
                         setBaseMode(unrecognizedMode(selected) ? '' : (selected.inclusion || 'always')); setBasePattern(selected.file_match_pattern || ''); setEditing(true) }}>{i18nT('pages.overview.steeringTab.edit')}</Btn>
-                      <Btn danger onClick={() => { if (confirm(i18nT('pages.overview.steeringTab.delete_confirm', { path: selected.rel }))) deleteFile.mutate(selected.key) }}>{i18nT('pages.overview.steeringTab.delete')}</Btn>
+                      <Btn
+                        danger
+                        disabled={selectedReadOnly}
+                        title={selectedReadOnly
+                          ? i18nT('pages.overview.steeringTab.linked_read_only', { target: selected.target })
+                          : undefined}
+                        onClick={() => { if (confirm(i18nT('pages.overview.steeringTab.delete_confirm', { path: selected.rel }))) deleteFile.mutate(selected.key) }}>{i18nT('pages.overview.steeringTab.delete')}</Btn>
                     </>)}
                   </div>
                 </div>
                 <div className="flex-1 min-h-0 overflow-y-auto p-4 flex flex-col">
+                  {selectedReadOnly && (
+                    /* Visible, not tooltip-only: Chrome and Safari suppress
+                       mouse events on a disabled button, so the Edit/Delete
+                       titles never surface there, and touch has no hover at
+                       all — the same reasoning as the unrecognized-mode
+                       banner below. This line is also the only place the
+                       resolved target is actually rendered. */
+                    <div className="mb-3 rounded-md border border-border bg-bg-elevated p-3">
+                      <p className="text-[12px] leading-relaxed text-muted">
+                        <Link2 className="lucide-inline" aria-hidden />{' '}
+                        {i18nT('pages.overview.steeringTab.linked_read_only', { target: selected.target })}
+                      </p>
+                    </div>
+                  )}
                   {unrecognizedMode(selected) && (
                     /* A typo'd mode silently resolves to `always`, and the
                        only sign of it was the chip's tooltip — unreachable on

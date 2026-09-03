@@ -10964,6 +10964,7 @@
         "inclusion_file_match_pattern": "Deklariert für Dateien, die {{pattern}} entsprechen",
         "inclusion_mode": "Einbindungsmodus: {{mode}}",
         "inclusion_unrecognized": "{{declared}} ist kein bekannter Einbindungsmodus – er wird als {{fallback}} gelesen",
+        "linked_read_only": "Verknüpft mit {{target}} — schreibgeschützt. Bearbeiten Sie die Zieldatei.",
         "loading": "Wird geladen…",
         "new_steering_file": "Neue Steering-Datei",
         "new_steering_file_2": "Neue Steering-Datei",

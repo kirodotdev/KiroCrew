@@ -63,8 +63,8 @@ const SCOPE_HINT = {
 
 const FILES = {
   files: [
-    { key: 'user/personal.md', name: 'personal.md', rel: 'personal.md', source: 'user', path: '~/.kiro/steering/personal.md', size: 12, description: 'Personal', inclusion: 'always', inclusion_declared: '', file_match_pattern: '' },
-    { key: 'workspace/api.md', name: 'api.md', rel: 'api.md', source: 'workspace', path: '~/proj/.kiro/steering/api.md', size: 20, description: 'API standards', inclusion: 'always', inclusion_declared: '', file_match_pattern: '' },
+    { key: 'user/personal.md', name: 'personal.md', rel: 'personal.md', source: 'user', path: '~/.kiro/steering/personal.md', size: 12, description: 'Personal', inclusion: 'always', inclusion_declared: '', file_match_pattern: '', linked: false, editable: true, target: '' },
+    { key: 'workspace/api.md', name: 'api.md', rel: 'api.md', source: 'workspace', path: '~/proj/.kiro/steering/api.md', size: 20, description: 'API standards', inclusion: 'always', inclusion_declared: '', file_match_pattern: '', linked: false, editable: true, target: '' },
   ],
   roots: [
     { source: 'user', path: '~/.kiro/steering', exists: true },
@@ -133,6 +133,70 @@ describe('SteeringTab', () => {
     expect(screen.getAllByText('Global').length).toBeGreaterThan(0)
     expect(screen.getAllByText('Workspace').length).toBeGreaterThan(0)
     expect(screen.getByText('Steering (2)')).toBeInTheDocument()
+  })
+
+  it('badges a linked entry and disables Edit and Delete on it', async () => {
+    // A symlinked steering file loads into every session, but the write path
+    // refuses its key — the tab must show the file while saying why it cannot
+    // be edited here, naming the target file that can.
+    const linked = {
+      ...FILES.files[0],
+      key: 'user/conventions.md', name: 'conventions.md', rel: 'conventions.md',
+      path: '~/.kiro/steering/conventions.md', description: 'Conventions',
+      linked: true, editable: false, target: '~/dotfiles/conventions.md',
+    }
+    mockApi.steeringFiles.mockResolvedValue({ ...FILES, files: [linked, FILES.files[1]] })
+    mockApi.steeringFile.mockResolvedValue({ key: 'user/conventions.md', content: '# Conventions\nbody', path: '~/dotfiles/conventions.md', source: 'user' })
+    renderTab()
+    await waitFor(() => expect(screen.getByText('conventions.md')).toBeInTheDocument())
+    // Icon-only marker on the ROW only (chip text would truncate the filename
+    // in the 240px column; the header needs none — the banner is right below).
+    const chips = screen.getAllByTestId('steering-linked-chip')
+    expect(chips.length).toBe(1)
+    expect(chips[0]).toHaveAttribute(
+      'title',
+      'Linked from ~/dotfiles/conventions.md — read-only. Edit the target file instead.',
+    )
+    await waitFor(() => expect(screen.getByTestId('md')).toBeInTheDocument())
+    expect(screen.getByText('Edit')).toBeDisabled()
+    expect(screen.getByText('Delete')).toBeDisabled()
+    // The reason is VISIBLE in the detail body, not tooltip-only: browsers
+    // suppress hover on disabled buttons and touch has no hover at all.
+    expect(screen.getByText(
+      'Linked from ~/dotfiles/conventions.md — read-only. Edit the target file instead.',
+    )).toBeInTheDocument()
+    // Disabled is explained where it is seen, not only on the chip.
+    expect(screen.getByText('Edit')).toHaveAttribute(
+      'title',
+      'Linked from ~/dotfiles/conventions.md — read-only. Edit the target file instead.',
+    )
+  })
+
+  it('keeps Edit and Delete live on a regular entry beside a linked one', async () => {
+    const linked = {
+      ...FILES.files[0],
+      key: 'user/conventions.md', name: 'conventions.md', rel: 'conventions.md',
+      linked: true, editable: false, target: '~/dotfiles/conventions.md',
+    }
+    mockApi.steeringFiles.mockResolvedValue({ ...FILES, files: [linked, FILES.files[0]] })
+    renderTab()
+    await waitFor(() => expect(screen.getByText('personal.md')).toBeInTheDocument())
+    fireEvent.click(screen.getByRole('button', { name: 'Select personal.md' }))
+    await waitFor(() => expect(screen.getByTestId('md')).toBeInTheDocument())
+    expect(screen.getByText('Edit')).not.toBeDisabled()
+    expect(screen.getByText('Delete')).not.toBeDisabled()
+  })
+
+  it('renders a listing that predates the linked fields as editable, unbadged', async () => {
+    // `editable === false` is the read-only trigger, so an absent field fails
+    // OPEN to today's behavior — a cached pre-upgrade listing must not lock
+    // every row, and a missing `linked` must simply render no chip.
+    const { linked: _l, editable: _e, target: _t, ...bare } = FILES.files[0]
+    mockApi.steeringFiles.mockResolvedValue({ ...FILES, files: [bare] })
+    renderTab()
+    await waitFor(() => expect(screen.getByTestId('md')).toBeInTheDocument())
+    expect(screen.queryByTestId('steering-linked-chip')).not.toBeInTheDocument()
+    expect(screen.getByText('Edit')).not.toBeDisabled()
   })
 
   it('hides the default-mode chip in the list but states it in the detail header', async () => {

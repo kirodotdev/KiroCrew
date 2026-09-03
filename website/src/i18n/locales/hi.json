@@ -10964,6 +10964,7 @@
         "inclusion_file_match_pattern": "{{pattern}} से मेल खाने वाली फ़ाइलों के लिए घोषित",
         "inclusion_mode": "समावेशन मोड: {{mode}}",
         "inclusion_unrecognized": "{{declared}} एक ज्ञात समावेशन मोड नहीं है — इसे {{fallback}} के रूप में पढ़ा जाता है",
+        "linked_read_only": "{{target}} से लिंक — केवल पढ़ने के लिए। लक्ष्य फ़ाइल संपादित करें।",
         "loading": "लोड हो रहा है…",
         "new_steering_file": "नई स्टीयरिंग फ़ाइल",
         "new_steering_file_2": "नई स्टीयरिंग फ़ाइल",

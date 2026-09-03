@@ -10805,6 +10805,7 @@
         "inclusion_file_match_pattern": "{{pattern}}과(와) 일치하는 파일에 대해 선언됨",
         "inclusion_mode": "포함 모드: {{mode}}",
         "inclusion_unrecognized": "{{declared}}은(는) 알려진 포함 모드가 아니며 {{fallback}}(으)로 처리됩니다",
+        "linked_read_only": "{{target}}에 연결됨(읽기 전용). 대상 파일을 편집하세요.",
         "loading": "불러오는 중…",
         "new_steering_file": "새 스티어링 파일",
         "new_steering_file_2": "새 스티어링 파일",
