@@ -556,6 +556,25 @@ export function messageRowKey(m: ChatMessage, i: number): string {
   return keyTs ? `${role}-${keyTs}` : `${role}-${i}`
 }
 
+/** Disclosure-map identity for a tool row (#8204). messageRowKey is
+ *  `${role}-${clientTs ?? ts}` and tool rows are never clientTs-stamped, so a
+ *  burst of tool rows appended in one server tick all share `tool-<tick>` —
+ *  expanding one expanded them all, because the row key doubled as the
+ *  toolDisclosure map key. Fold `meta.tool_call_id` in when present (ACP-issued,
+ *  globally unique) so each row owns its disclosure entry.
+ *
+ *  Deliberately NOT folded into messageRowKey: the React-key role is not at
+ *  stake (each renderMessage element is the sole child of a separately keyed
+ *  wrapper), and the key-stability suite pins messageRowKey(tool) === 'tool-<ts>'.
+ *  Scoped to role 'tool' and identity when the id is absent, so every other
+ *  role's in-session disclosure state keeps its existing key shape.
+ *  Exported for tests. */
+export function toolDisclosureKey(m: ChatMessage, key: string): string {
+  if (m.role !== 'tool') return key
+  const tcid = m.meta?.tool_call_id
+  return typeof tcid === 'string' && tcid ? `${key}-${tcid}` : key
+}
+
 /** Render user message content with file chips and image markdown. Handles:
  *  - Fresh messages: meta.files present, displayTxt has @relative/path tokens
  *  - Replayed history: no meta.files, content has [attached_file N] /full/path
@@ -6841,7 +6860,13 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
       if (spawnLaunch) return <SubagentRunCard key={key} launch={spawnLaunch} slot={activeSlot || ''} />
       // Animate tools in the trailing group (after last assistant/streaming text)
       const isInTrailingGroup = slotStateRef2.current === 'tool_running' && i > lastTextIdxRef.current
-      return <ToolCallLine key={key} message={m} running={isInTrailingGroup} onFileOpen={handleFileOpen} disclosure={toolDisclosure[key]} disclosureKey={key} onDisclosureChange={setToolDisclosureFor} appInPanel={mcpAppPanel} onOpenApp={revealAppInPanel} transcriptHot={transcriptHot} />
+      // Disclosure identity folds in tool_call_id (#8204) — same-tick tool rows
+      // share the row key, and keying the disclosure map by it made one row's
+      // expand/collapse hit them all. React key stays the row key on purpose:
+      // sibling uniqueness is owned by the keyed wrapper, and remounting on a
+      // key change here would drop measured heights for nothing.
+      const dKey = toolDisclosureKey(m, key)
+      return <ToolCallLine key={key} message={m} running={isInTrailingGroup} onFileOpen={handleFileOpen} disclosure={toolDisclosure[dKey]} disclosureKey={dKey} onDisclosureChange={setToolDisclosureFor} appInPanel={mcpAppPanel} onOpenApp={revealAppInPanel} transcriptHot={transcriptHot} />
     }
     if (m.role === 'file') {
       try {
