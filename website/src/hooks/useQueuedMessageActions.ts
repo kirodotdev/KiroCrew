@@ -16,6 +16,12 @@ export interface QueuedSendRecord {
    *  send keeps its queue id but fails this equality, so an edited card falls
    *  to the parser instead of clobbering the edit with pre-edit state. */
   sent: string
+  /** The slot's recorded `@rel` alias map for the sent files, captured before
+   *  the send-clear dropped it (fork GPT review): restoring text + files
+   *  WITHOUT the aliases re-created the pre-fix stuck chip — the restored
+   *  mention was invisible to reconciliation, so hand-deleting it left a
+   *  stale chip that the next send silently re-attached. */
+  aliases?: Record<string, string[]>
 }
 
 /** Queued-send stash, keyed by the `queue_id` the send receipt returns (the
@@ -69,7 +75,7 @@ export interface QueuedMessageActionsOptions {
    *  Omitted, the recovered state is dropped, which is what cancelling in a
    *  split pane did before #5891 and what no host should do.
    */
-  restoreDraft?: (text: string, files: string[]) => void
+  restoreDraft?: (text: string, files: string[], aliases?: Record<string, string[]>) => void
 }
 
 const queueIdOf = (m: ChatMessage): string | undefined => m.meta?.queueId as string | undefined
@@ -194,10 +200,14 @@ export function useQueuedMessageActions({
       // worse than the verbatim restore this replaced.
       const stashed = queuedSendStash.get(queueId)
       if (stashed) queuedSendStash.delete(queueId)
-      const { text, files } = stashed && stashed.sent === msg.content
+      const hit = stashed && stashed.sent === msg.content
+      const { text, files } = hit
         ? { text: stashed.raw, files: stashed.files }
         : restoreQueuedContent(msg.content)
-      restoreDraftRef.current?.(text, files)
+      // The stash also carries the alias map the send-clear dropped; the
+      // parser fallback cannot know it, and a restore without aliases falls
+      // into the documented reload-limitation class rather than corrupting.
+      restoreDraftRef.current?.(text, files, hit ? stashed.aliases : undefined)
     }
     // Optimistically remove the card; the WS echo is a no-op if already gone.
     dispatch(cancelQueuedMessage({ slot, queue_id: queueId }))

@@ -155,6 +155,251 @@ describe('ChatInput paste tokens: atomic delete gestures', () => {
   })
 })
 
+describe('ChatInput mention tokens: atomic gestures (maintainer ruling, PR #6511)', () => {
+  // A picked `@rel` mention rides the same atomic-token rails as a paste
+  // chip: Backspace/Delete anywhere ON or INSIDE it removes the full literal
+  // (the parent's exact-alias reconciliation then unstages the chip), arrows
+  // step over it, and a caret can never rest inside it -- so there is no way
+  // to produce a shortened or edited form of a picked mention at all.
+  const alias = '@src/main.ts'
+
+  function MentionHarness({ initial, aliases }: { initial: string; aliases: string[] }) {
+    const [v, setV] = React.useState(initial)
+    return (
+      <ChatInput value={v} onChange={setV} onSend={vi.fn()} mentionTokens={aliases} />
+    )
+  }
+  const mountMentions = (initial: string, aliases: string[] = [alias]) => {
+    renderWithProviders(<MentionHarness initial={initial} aliases={aliases} />)
+    return screen.getByLabelText('Message input') as HTMLTextAreaElement
+  }
+
+  it('Backspace with the caret just past the mention removes the whole token', async () => {
+    const ta = mountMentions(`check ${alias} now`)
+    const end = `check ${alias}`.length
+    ta.setSelectionRange(end, end)
+    fireEvent.keyDown(ta, { key: 'Backspace' })
+    expect(ta.value).toBe('check  now')
+    await nextFrame()
+    expect(ta.selectionStart).toBe('check '.length)
+  })
+
+  it('Backspace with the caret INSIDE the mention removes the whole token', () => {
+    const ta = mountMentions(`check ${alias} now`)
+    const inside = 'check @src/ma'.length
+    ta.setSelectionRange(inside, inside)
+    fireEvent.keyDown(ta, { key: 'Backspace' })
+    expect(ta.value).toBe('check  now')
+  })
+
+  it('deleting a SELECTION that swallows the mention whole carries its :line suffix out too (fork GPT review)', async () => {
+    // The select-snap handler aligns selection endpoints on mention EDGES,
+    // so selecting exactly `@src/main.ts` in `@src/main.ts:42` is an
+    // ordinary gesture. Every atomic delete branch was gated `isCollapsed`,
+    // so Backspace here fell to native deletion and stranded the bare `:42`
+    // as message text -- violating the whole-token contract the PR body
+    // states ("removes the whole `@rel` literal plus a trailing `:line`
+    // suffix").
+    const ta = mountMentions(`check ${alias}:42 now`)
+    ta.setSelectionRange('check '.length, `check ${alias}`.length)
+    fireEvent.keyDown(ta, { key: 'Backspace' })
+    expect(ta.value).toBe('check  now')
+    await nextFrame()
+    expect(ta.selectionStart).toBe('check '.length)
+  })
+
+  it('a selection delete with no stranding suffix stays native (no atomic intervention)', () => {
+    // A selection ending past ordinary text after the token has nothing to
+    // strand -- the new branch must not fire, leaving native deletion (which
+    // jsdom does not simulate, so the value staying unchanged proves the
+    // handler did not intervene).
+    const ta = mountMentions(`check ${alias} now`)
+    ta.setSelectionRange('check '.length, `check ${alias} no`.length)
+    fireEvent.keyDown(ta, { key: 'Backspace' })
+    expect(ta.value).toBe(`check ${alias} now`)
+  })
+
+  it('CUT of a selected mention carries its :line suffix out of the text AND onto the clipboard (fork GPT + UX review)', async () => {
+    // handleCut owns the cut path for this composer, so cut is inside the
+    // adopted atomic-gesture boundary. Cut-to-move must round-trip: the
+    // clipboard receives the REMOVED text (mention + suffix), the same
+    // "what you keep is what was removed" rule expandSelectionForClipboard
+    // already applies to paste tokens.
+    const box = { data: '' }
+    const ta = mountMentions(`check ${alias}:42 now`)
+    ta.setSelectionRange('check '.length, `check ${alias}`.length)
+    fireEvent.cut(ta, { clipboardData: { setData: (_t: string, d: string) => { box.data = d } } })
+    expect(box.data).toBe(`${alias}:42`)
+    expect(ta.value).toBe('check  now')
+    await nextFrame()
+    expect(ta.selectionStart).toBe('check '.length)
+  })
+
+  it('Cmd+Backspace with the caret INSIDE the mention takes the whole token and suffix, not a slice (fork GPT review)', async () => {
+    // The line-delete used to widen only deleteStart, so the mention's tail
+    // survived past the interior caret and the chip unstaged around a
+    // fragment. The shared excision primitive takes the mention whole.
+    const ta = mountMentions(`intro ${alias}:42 tail`)
+    const inside = 'intro @src/ma'.length
+    ta.setSelectionRange(inside, inside)
+    fireEvent.keyDown(ta, { key: 'Backspace', metaKey: true })
+    expect(ta.value).toBe(' tail')
+    await nextFrame()
+    expect(ta.selectionStart).toBe(0)
+  })
+
+  it('Cmd+Delete with the caret INSIDE the mention takes the whole token and suffix, not the head (fork GPT review)', async () => {
+    const ta = mountMentions(`intro ${alias}:42 tail`)
+    const inside = 'intro @src/ma'.length
+    ta.setSelectionRange(inside, inside)
+    fireEvent.keyDown(ta, { key: 'Delete', metaKey: true })
+    expect(ta.value).toBe('intro ')
+    await nextFrame()
+    expect(ta.selectionStart).toBe('intro '.length)
+  })
+
+  it('CUT of a mention with no suffix stays native (handler declines)', () => {
+    const box = { data: '' }
+    const ta = mountMentions(`check ${alias} now`)
+    ta.setSelectionRange('check '.length, `check ${alias}`.length)
+    fireEvent.cut(ta, { clipboardData: { setData: (_t: string, d: string) => { box.data = d } } })
+    expect(box.data).toBe('') // handler declined; native cut owns it
+    expect(ta.value).toBe(`check ${alias} now`)
+  })
+
+  it('Delete with the caret just before the mention removes the whole token', () => {
+    const ta = mountMentions(`${alias} tail`)
+    ta.setSelectionRange(0, 0)
+    fireEvent.keyDown(ta, { key: 'Delete' })
+    expect(ta.value).toBe(' tail')
+  })
+
+  it('Delete with the caret INSIDE the mention removes the whole token', () => {
+    const ta = mountMentions(`${alias} tail`)
+    ta.setSelectionRange(4, 4)
+    fireEvent.keyDown(ta, { key: 'Delete' })
+    expect(ta.value).toBe(' tail')
+  })
+
+  it('removal consumes a trailing :line suffix so no stray `:42` is left behind', () => {
+    const ta = mountMentions(`see ${alias}:42 here`)
+    const end = `see ${alias}`.length
+    ta.setSelectionRange(end, end)
+    fireEvent.keyDown(ta, { key: 'Backspace' })
+    expect(ta.value).toBe('see  here')
+  })
+
+  it('removal consumes a :line suffix that sits against a closing wrapper (fork GPT review)', () => {
+    const ta = mountMentions(`see (${alias}:42) here`)
+    const end = `see (${alias}`.length
+    ta.setSelectionRange(end, end)
+    fireEvent.keyDown(ta, { key: 'Backspace' })
+    expect(ta.value).toBe('see () here')
+  })
+
+  it('Cmd+Backspace with the caret between the token and its :42 takes the suffix too (fork GPT review)', async () => {
+    const ta = mountMentions(`intro ${alias}:42 tail`)
+    const caret = `intro ${alias}`.length
+    ta.setSelectionRange(caret, caret)
+    fireEvent.keyDown(ta, { key: 'Backspace', metaKey: true })
+    // Line-back deletion covers line-start..caret; the mention ending at the
+    // caret carries its stranded `:42` out with it.
+    expect(ta.value).toBe(' tail')
+    await nextFrame()
+    expect(ta.selectionStart).toBe(0)
+  })
+
+  it('Alt+Backspace (word-back delete) adjacent to a mention deletes it atomically', () => {
+    const ta = mountMentions(`x ${alias}`)
+    ta.setSelectionRange(ta.value.length, ta.value.length)
+    fireEvent.keyDown(ta, { key: 'Backspace', altKey: true })
+    expect(ta.value).toBe('x ')
+  })
+
+  it('ArrowLeft and ArrowRight step over the whole mention in one press', async () => {
+    const ta = mountMentions(`a ${alias} b`)
+    const end = `a ${alias}`.length
+    ta.setSelectionRange(end, end)
+    fireEvent.keyDown(ta, { key: 'ArrowLeft' })
+    await nextFrame()
+    expect(ta.selectionStart).toBe('a '.length)
+    fireEvent.keyDown(ta, { key: 'ArrowRight' })
+    await nextFrame()
+    expect(ta.selectionStart).toBe(end)
+  })
+
+  it('a collapsed caret placed inside the mention (click) snaps out to the nearer edge', () => {
+    const ta = mountMentions(`a ${alias} b`)
+    const inside = 'a @s'.length
+    ta.setSelectionRange(inside, inside)
+    fireEvent.select(ta)
+    expect(ta.selectionStart).toBe('a '.length)
+    expect(ta.selectionEnd).toBe('a '.length)
+  })
+
+  it('a drag selection ending mid-mention snaps past the whole token', () => {
+    const ta = mountMentions(`a ${alias} b`)
+    ta.setSelectionRange(0, 'a @src/m'.length)
+    fireEvent.select(ta)
+    expect(ta.selectionStart).toBe(0)
+    expect(ta.selectionEnd).toBe('a '.length)
+  })
+
+  it('text that matches no recorded alias is ordinary editable text', () => {
+    const ta = mountMentions('check @other.ts now')
+    const end = 'check @other.ts'.length
+    ta.setSelectionRange(end, end)
+    fireEvent.keyDown(ta, { key: 'Backspace' })
+    // Handler bows out; native per-character deletion applies (a no-op
+    // under happy-dom, so the value is unchanged).
+    expect(ta.value).toBe('check @other.ts now')
+  })
+
+  it('the highlight mirror paints the mention as a pill so it reads as a token (fork UX review)', () => {
+    const ta = mountMentions(`check ${alias} now`)
+    const pill = ta.parentElement?.querySelector('[data-mention-token]')
+    expect(pill).toBeTruthy()
+    expect(pill?.textContent).toBe(alias)
+  })
+
+  it('Ctrl+Z after an atomic delete restores the mention text (chip restages via exact-alias revival)', async () => {
+    // The composer drives its own per-slot undo history precisely because
+    // programmatic value changes break NATIVE textarea undo. An atomic
+    // token removal deletes >= UNDO_BULK_DELTA chars, so it is its own
+    // undo boundary; one Ctrl/Cmd+Z brings the exact alias text back, and
+    // the parent's revival then restages the chip from the text alone.
+    const ta = mountMentions(`check ${alias} now`)
+    const end = `check ${alias}`.length
+    ta.setSelectionRange(end, end)
+    fireEvent.keyDown(ta, { key: 'Backspace' })
+    expect(ta.value).toBe('check  now')
+    fireEvent.keyDown(ta, { key: 'z', ctrlKey: true })
+    await waitFor(() => expect(ta.value).toBe(`check ${alias} now`))
+  })
+
+  it('a mention and a paste token are each atomic in the same draft', () => {
+    const onBlocks = vi.fn()
+    const ta = ((): HTMLTextAreaElement => {
+      function Both() {
+        const [v, setV] = React.useState(`${alias} and ${token}`)
+        const [blocks, setBlocks] = React.useState<PasteBlock[]>([block])
+        return <ChatInput value={v} onChange={setV} onSend={vi.fn()} mentionTokens={[alias]} pasteBlocks={blocks} onPasteBlocksChange={b => { onBlocks(b); setBlocks(b) }} />
+      }
+      renderWithProviders(<Both />)
+      return screen.getByLabelText('Message input') as HTMLTextAreaElement
+    })()
+    // Delete the paste token from its end: atomic, and the block drops.
+    ta.setSelectionRange(ta.value.length, ta.value.length)
+    fireEvent.keyDown(ta, { key: 'Backspace' })
+    expect(ta.value).toBe(`${alias} and `)
+    expect(onBlocks).toHaveBeenLastCalledWith([])
+    // Then the mention from inside: atomic too.
+    ta.setSelectionRange(3, 3)
+    fireEvent.keyDown(ta, { key: 'Backspace' })
+    expect(ta.value).toBe(' and ')
+  })
+})
+
 describe('ChatInput paste tokens: caret and selection navigation', () => {
   it('ArrowLeft steps over the whole token in one press', async () => {
     const ta = mountTokens(token)
