@@ -1,13 +1,41 @@
-# KiroCrew Backend AutoSDE Rules
+# Kiro Crew AutoSDE Rules
 #
-# Backend (Python) counterpart to website/AUTOSDE.yaml (React/TypeScript
-# frontend rules). Rules here govern the Python package under src/kiro_crew/.
-# Both files are enforced by the Claude and Codex PR reviewers.
+# Root rules cover backend Python plus cross-stack invariants whose file patterns
+# span backend, frontend, and docs. Frontend-only rules live in
+# website/AUTOSDE.yaml. Both files are enforced by the Claude and Codex PR
+# reviewers.
 #
 # De-Amazoned from the internal package rule set (internal links removed).
 # Blocking rules are backed by real vulnerabilities/incidents in this codebase.
 
 custom-rules:
+  - id: feature-map-correctness
+    blocking: true
+    file-patterns:
+      - "docs/feature-map/README.md"
+      - "website/src/pages/**"
+      - "src/kiro_crew/dashboard/handlers/**"
+      - "website/src/App.tsx"
+    rule: |
+      Keep the feature map semantically aligned with every structural dashboard
+      change in the pull request. The mechanical gate proves only that the map
+      was touched; this rule judges whether that edit is true.
+
+      - For every dashboard page or backend handler added or deleted in the
+        diff, and every `<Route>` registration added or removed in
+        `website/src/App.tsx`, require the corresponding map row to be added,
+        removed, or updated. A new feature needs a new or updated row; a removed
+        feature needs its row removed or updated.
+      - Verify every changed map row against the code in the diff. Its user
+        navigation path, frontend page, backend handler, and representative
+        endpoints must exist and identify the feature's real ownership.
+      - Reject unrelated map churn. A whitespace-only, reflow-only, or cosmetic
+        map edit beside a real structural change is a token touch made only to
+        satisfy `scripts/check_feature_map.py`, not evidence the map was reviewed.
+      - The map's net additions, removals, and row edits must match the scope the
+        pull request claims. Do not accept rows for unrelated features or omit
+        a structural feature because the map file changed somewhere else.
+
   - id: backend-security-controls
     blocking: true
     file-patterns:

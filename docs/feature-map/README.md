@@ -24,10 +24,13 @@ entry is added or removed in `website/src/App.tsx`, while this file is
 untouched. Editing existing files never trips it. The job row is in
 [../ci/ci-and-reviews.md](../ci/ci-and-reviews.md).
 
-The judgment half is yours: the check cannot tell whether a row's *content* is
-still true, only that a structural change went by without anyone looking at the
-map. When the check fires and the honest answer is "no feature changed", touch
-the row the new file belongs to — that is the review the gate is buying.
+The judgment half is reviewer-owned: the blocking `feature-map-correctness`
+rule in root `AUTOSDE.yaml` verifies each changed row against the code diff and
+rejects unrelated or cosmetic map churn. The mechanical check cannot tell
+whether a row's *content* is still true, only that a structural change went by
+without anyone looking at the map. When the check fires and the honest answer
+is "no feature changed", update the row the new file belongs to so its columns
+remain truthful; a whitespace or cosmetic edit does not count.
 
 ## How to read this
 
