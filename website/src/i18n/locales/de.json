@@ -4781,6 +4781,8 @@
         "access_empty": "Keine aktiven Freigabelinks.",
         "access_expires_in": "läuft ab {{when}}",
         "access_forget": "Aus Liste entfernen",
+        "access_object_missing": "Datei gelöscht",
+        "access_unchecked": "Diese Links wurden nicht mit dem Drive abgeglichen, daher wird eine gelöschte Datei hier nicht markiert.",
         "access_footer": "Das Entfernen aus der Liste widerruft den Link nicht — ein geteilter Link funktioniert bis zu seinem Ablauf.",
         "keys_count_one": "{{count}} Schlüssel",
         "keys_count_other": "{{count}} Schlüssel",

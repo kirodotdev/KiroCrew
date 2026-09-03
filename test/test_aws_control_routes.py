@@ -24,6 +24,7 @@ from __future__ import annotations
 import asyncio
 import datetime as dt
 import json
+import logging
 from types import SimpleNamespace
 from unittest import mock
 from unittest.mock import AsyncMock
@@ -1094,18 +1095,244 @@ class TestDriveShare:
 class TestSharesListForget:
     def test_shares_list_filters_by_account(self):
         handlers = _registered()
-        entries = [{"id": "sh-1", "key": "a.txt"}]
+        entries = [{"id": "sh-1", "section": "drive", "key": "a.txt"}]
+        p1, p2, p3 = _enabled_owner_env()
         with (
-            mock.patch.object(routes_mod, "is_app_enabled", return_value=True),
+            p1,
+            p2,
+            p3,
+            _consent_ok(),
+            _drive_found(),
             mock.patch.object(routes_mod.shares_mod, "list_shares", return_value=entries) as listed,
+            mock.patch.object(
+                routes_mod.storage_mod, "list_object_keys", return_value={"drive/a.txt"}
+            ),
         ):
             resp = asyncio.run(
                 handlers[("GET", "/shares")](  # type: ignore[operator]
                     _request("GET", f"/shares?account={ACCOUNT}")
                 )
             )
-        assert _payload(resp) == {"shares": entries}
+        assert _payload(resp) == {"shares": entries, "checked": True}
         listed.assert_called_once_with(ACCOUNT)
+
+    def test_a_row_whose_object_is_gone_is_marked_in_the_payload(self):
+        # The reported defect, at the route: a deleted object left the row
+        # asserting a link that resolves to nothing, with no signal at all.
+        handlers = _registered()
+        entries = [
+            {"id": "sh-1", "section": "drive", "key": "gone.txt"},
+            {"id": "sh-2", "section": "drive", "key": "here.txt"},
+        ]
+        p1, p2, p3 = _enabled_owner_env()
+        with (
+            p1,
+            p2,
+            p3,
+            _consent_ok(),
+            _drive_found(),
+            mock.patch.object(routes_mod.shares_mod, "list_shares", return_value=entries),
+            mock.patch.object(
+                routes_mod.storage_mod, "list_object_keys", return_value={"drive/here.txt"}
+            ),
+        ):
+            resp = asyncio.run(
+                handlers[("GET", "/shares")](  # type: ignore[operator]
+                    _request("GET", f"/shares?account={ACCOUNT}")
+                )
+            )
+        body = _payload(resp)
+        assert body["checked"] is True
+        # Marked, NOT dropped: both rows are still there. The ledger records an
+        # unexpired URL, and deleting the object does not un-mint it.
+        assert [row["id"] for row in body["shares"]] == ["sh-1", "sh-2"]
+        assert body["shares"][0]["objectMissing"] is True
+        assert "objectMissing" not in body["shares"][1]
+
+    def test_the_ledger_is_read_before_the_drive_is_listed(self):
+        # ORDER, pinned. A row read after the listing could be a share minted
+        # while it was in flight -- absent from it for being newer, and marked
+        # as pointing at a deleted object. Reading first makes that unreachable,
+        # which is why this route needs no observed-at cutoff.
+        handlers = _registered()
+        order: list[str] = []
+        p1, p2, p3 = _enabled_owner_env()
+
+        def _list_shares(_account):
+            order.append("ledger")
+            return [{"id": "sh-1", "section": "drive", "key": "a.txt"}]
+
+        def _list_keys(*_args, **_kwargs):
+            order.append("drive")
+            return {"drive/a.txt"}
+
+        with (
+            p1,
+            p2,
+            p3,
+            _consent_ok(),
+            _drive_found(),
+            mock.patch.object(routes_mod.shares_mod, "list_shares", _list_shares),
+            mock.patch.object(routes_mod.storage_mod, "list_object_keys", _list_keys),
+        ):
+            asyncio.run(
+                handlers[("GET", "/shares")](  # type: ignore[operator]
+                    _request("GET", f"/shares?account={ACCOUNT}")
+                )
+            )
+        assert order == ["ledger", "drive"]
+
+    def test_an_empty_ledger_takes_no_listing(self):
+        # Nothing to check, so no paid call is made -- and `checked` is
+        # vacuously true because no claim went unverified.
+        handlers = _registered()
+        p1, p2, p3 = _enabled_owner_env()
+        with (
+            p1,
+            p2,
+            p3,
+            mock.patch.object(routes_mod.shares_mod, "list_shares", return_value=[]),
+            mock.patch.object(routes_mod.storage_mod, "list_object_keys") as keys,
+        ):
+            resp = asyncio.run(
+                handlers[("GET", "/shares")](  # type: ignore[operator]
+                    _request("GET", f"/shares?account={ACCOUNT}")
+                )
+            )
+        assert _payload(resp) == {"shares": [], "checked": True}
+        keys.assert_not_called()
+
+    def test_an_unscoped_list_reports_that_it_checked_nothing(self):
+        # The ledger spans accounts, so there is no single drive to read. The
+        # rows still render; the payload says they are unverified rather than
+        # letting an absent flag read as "the object is there".
+        handlers = _registered()
+        entries = [{"id": "sh-1", "section": "drive", "key": "a.txt"}]
+        with (
+            mock.patch.object(routes_mod, "is_app_enabled", return_value=True),
+            mock.patch.object(routes_mod.shares_mod, "list_shares", return_value=entries),
+            mock.patch.object(routes_mod.storage_mod, "list_object_keys") as keys,
+        ):
+            resp = asyncio.run(
+                handlers[("GET", "/shares")](_request("GET", "/shares"))  # type: ignore[operator]
+            )
+        body = _payload(resp)
+        assert body == {"shares": entries, "checked": False}
+        keys.assert_not_called()
+
+    def test_an_unreadable_drive_leaves_every_row_unmarked(self, caplog):
+        # THE degradation that matters. A throttle, a timeout or a garbled
+        # listing must never be rendered as "these objects are gone" -- the rows
+        # come back untouched, and the AWS reason reaches the operator's LOG
+        # rather than the payload, which carries no reason field at all.
+        handlers = _registered()
+        entries = [{"id": "sh-1", "section": "drive", "key": "a.txt"}]
+        p1, p2, p3 = _enabled_owner_env()
+        with (
+            p1,
+            p2,
+            p3,
+            _consent_ok(),
+            _drive_found(),
+            caplog.at_level(logging.INFO, logger=routes_mod.logger.name),
+            mock.patch.object(routes_mod.shares_mod, "list_shares", return_value=entries),
+            mock.patch.object(
+                routes_mod.storage_mod,
+                "list_object_keys",
+                side_effect=AWSError("ThrottlingException: slow down"),
+            ),
+        ):
+            resp = asyncio.run(
+                handlers[("GET", "/shares")](  # type: ignore[operator]
+                    _request("GET", f"/shares?account={ACCOUNT}")
+                )
+            )
+        assert resp.status == 200
+        assert _payload(resp) == {"shares": entries, "checked": False}
+        # Swallowing the reason entirely would leave an operator with a section
+        # that silently stopped checking, so it is asserted where it now lives.
+        assert "Throttling" in caplog.text
+
+    def test_an_account_with_no_drive_still_renders_its_rows(self, caplog):
+        handlers = _registered()
+        entries = [{"id": "sh-1", "section": "drive", "key": "a.txt"}]
+        p1, p2, p3 = _enabled_owner_env()
+        with (
+            p1,
+            p2,
+            p3,
+            _consent_ok(),
+            _drive_found(name=""),
+            caplog.at_level(logging.INFO, logger=routes_mod.logger.name),
+            mock.patch.object(routes_mod.shares_mod, "list_shares", return_value=entries),
+        ):
+            resp = asyncio.run(
+                handlers[("GET", "/shares")](  # type: ignore[operator]
+                    _request("GET", f"/shares?account={ACCOUNT}")
+                )
+            )
+        assert _payload(resp) == {"shares": entries, "checked": False}
+        assert "this account has no drive yet" in caplog.text
+
+    def test_a_withheld_s3_consent_degrades_instead_of_409ing(self):
+        # This GET now reaches S3, so it runs the consent gate -- but the Access
+        # section is the ledger's only surface and must not disappear behind a
+        # 409 for a grant that only governs the remote half.
+        #
+        # Everything PAST the gate is stubbed to succeed, so the gate is the only
+        # reason the listing does not happen: without it this render would reach
+        # a paid call on a withdrawn grant and report `checked: true`.
+        handlers = _registered()
+        entries = [{"id": "sh-1", "section": "drive", "key": "a.txt"}]
+        p1, p2, p3 = _enabled_owner_env()
+        with (
+            p1,
+            p2,
+            p3,
+            mock.patch.object(
+                routes_mod.aws_consent, "refuse_and_log", AsyncMock(return_value=False)
+            ),
+            _drive_found(),
+            mock.patch.object(routes_mod.shares_mod, "list_shares", return_value=entries),
+            mock.patch.object(
+                routes_mod.storage_mod, "list_object_keys", return_value={"drive/a.txt"}
+            ) as keys,
+        ):
+            resp = asyncio.run(
+                handlers[("GET", "/shares")](  # type: ignore[operator]
+                    _request("GET", f"/shares?account={ACCOUNT}")
+                )
+            )
+        assert resp.status == 200
+        assert _payload(resp)["checked"] is False
+        keys.assert_not_called()
+
+    def test_an_unavailable_account_is_audited_as_a_denial(self):
+        # A permission decision reaches SEL even though the route degrades: the
+        # profile no longer resolves to the requested account, and that is the
+        # one event an incident review asks about.
+        handlers = _registered()
+        entries = [{"id": "sh-1", "section": "drive", "key": "a.txt"}]
+        with (
+            mock.patch.object(routes_mod, "is_app_enabled", return_value=True),
+            mock.patch.object(
+                routes_mod.accounts_mod, "resolve_account_profile", AsyncMock(return_value=None)
+            ),
+            mock.patch.object(routes_mod.shares_mod, "list_shares", return_value=entries),
+            mock.patch.object(routes_mod, "_audit") as audited,
+        ):
+            resp = asyncio.run(
+                handlers[("GET", "/shares")](  # type: ignore[operator]
+                    _request("GET", f"/shares?account={ACCOUNT}")
+                )
+            )
+        assert _payload(resp)["checked"] is False
+        # Asserted BEFORE the fields are read: a regression that stops auditing
+        # leaves `call_args` as None, and dereferencing it reports an
+        # AttributeError instead of the event that went missing.
+        assert audited.called
+        assert audited.call_args.args[0] == "shares_list"
+        assert audited.call_args.kwargs["error"] == "account_unavailable"
 
     def test_forget_removes_a_known_share(self):
         handlers = _registered()

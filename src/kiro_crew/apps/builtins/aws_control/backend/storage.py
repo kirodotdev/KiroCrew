@@ -405,6 +405,69 @@ def list_library_folders(profile: str, region: str, bucket: str, *, account: str
     ]
 
 
+def list_object_keys(profile: str, region: str, bucket: str, *, account: str) -> set[str]:
+    """Every object key in the drive — RAW, unredacted, complete or raised.
+
+    The share ledger's rows name objects, and only the bucket can say whether
+    one is still there. This is the read that answers it for a whole render at
+    once: one listing, membership-tested per row.
+
+    Deliberately NOT :func:`object_exists` per row, which is the obvious shape
+    and the wrong one here. That function answers ``rc == 0``, so a throttle, a
+    timeout, an expired session and a 404 are one answer. Collapsing them is
+    correct where it lives — a mint refuses rather than signing a URL for an
+    object it could not see — and is the opposite of correct on this path,
+    where "could not see" would report a live share as broken. One listing that
+    fails LOUDLY replaces up to ``shares._MAX_SHARES`` probes that cannot.
+
+    The same two rules :func:`list_library_folders` states hold here, for the
+    same reason — the caller reasons about ABSENCE, and absence from a partial
+    listing is not absence:
+
+    * No ``--max-items`` and no page token. The CLI auto-paginates and applies
+      ``--query`` to the MERGED result, so the answer is the COMPLETE key set
+      or an error, never a first page a caller could mistake for the drive.
+    * An unreadable response RAISES instead of degrading to an empty set,
+      unlike :func:`usage`. Empty means "the drive holds nothing", and a caller
+      acting on that would mark every share it holds as pointing at nothing.
+
+    Also deliberately NOT redacted, for the reason :func:`list_library_folders`
+    gives: these keys are compared against LEDGER keys, and a redacted key
+    matches none of them — so a share whose object is present would read as
+    absent. Nothing here reaches the dashboard; only the membership answer does.
+
+    The whole bucket rather than one section per call: a share row can name any
+    shareable section, and one listing has one failure mode where several would
+    have one each. Listing the whole bucket at drive scale is the cost
+    :func:`usage` already accepts.
+    """
+    out = _checked(
+        [
+            "s3api",
+            "list-objects-v2",
+            "--bucket",
+            bucket,
+            "--expected-bucket-owner",
+            account,
+            "--output",
+            "json",
+            "--query",
+            "Contents[].Key",
+        ],
+        profile,
+        action="s3:ListBucket",
+        timeout=120,
+    )
+    try:
+        rows = json.loads(out or "[]") or []
+    except json.JSONDecodeError:
+        raise AWSError(
+            "the object listing returned a response that could not be read as JSON; "
+            "refusing to report the drive as empty"
+        ) from None
+    return {row for row in rows if isinstance(row, str)}
+
+
 #: Ceiling for a single owner-pinned transfer. ``put-object`` is one request and
 #: S3 rejects a body over 5 GiB; ``s3 cp`` would have split it into a multipart
 #: upload, but no ``aws s3`` command accepts ``--expected-bucket-owner``, so a

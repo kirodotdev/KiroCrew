@@ -107,6 +107,46 @@ removes its ledger record. Backup objects are not shareable.
 and `test_aws_control_routes.py::TestSharesListForget.test_forget_removes_a_known_share`
 pin those boundaries.
 
+The share ledger is CURRENT STATE, not an audit log: `shares._prune` drops every
+expired entry on both the read and the write path, and `record_share` keeps only
+the newest `_MAX_SHARES`. The audit trail of minted URLs is the SEL event
+`routes._audit` writes per grant, so nothing is lost by this file forgetting.
+The state it holds is a GRANT — a URL was minted for this key and has not
+expired — and NOT a claim that the object is still there.
+
+That distinction decides how a deleted object is handled. `GET /shares` reads the
+account's drive (`storage.list_object_keys`) and `shares.mark_missing_objects`
+sets `objectMissing` on every row whose `section/key` the drive does not hold; no
+row is removed and nothing is written. Dropping the row would be wrong on both
+counts: a presigned URL signs bucket, key and expiry but no version, so
+recreating the key makes an unexpired URL resolve again — the grant is dormant,
+not dead — and dropping the record is exactly the `forget` the app documents as
+the user's decision. The mark is not persisted for the same reason: it is a fact
+about the bucket at render time, which recreating the key would make stale in the
+under-reporting direction. This is a deliberate divergence from
+`library.reconcile`, which does prune, because that ledger claims a cloud copy
+exists and the bucket can settle that claim.
+
+The listing is best-effort and its outcome is reported, never implied: `checked`
+says whether the rows were compared against the drive, because an absent
+`objectMissing` otherwise reads as "the object is there" on a render where the
+drive was never read. WHY the check did not run is logged rather than sent — the
+reason is a backend-authored English sentence and the console is rendered in
+thirteen locales, so it shows a translated "not checked" line gated on `checked`,
+the same resolution the Library's `remoteError` reaches.
+`storage.list_object_keys` raises rather than degrading to an empty set, and
+per-row `storage.object_exists` is deliberately not used — it answers `rc == 0`,
+so a throttle or a timeout is indistinguishable from a 404, which is correct when
+refusing to mint and would mark live shares dead here. The ledger is read BEFORE
+the listing is taken, which is what makes an `observed_at` cutoff unnecessary: no
+row in hand can postdate the listing.
+`test_aws_control_routes.py::TestSharesListForget` pins the mark, the read order,
+the unmarked degradation, the logged reason, and the empty-ledger case that takes
+no listing at all.
+
+Existing rows stranded before this shipped are corrected on the next render;
+there is no migration over `shares.json`.
+
 AWS Control does not create bucket-policy account grants or public CDN shares.
 The IAM-policy endpoint renders `deploy.iam.policy_json` for the operator to
 apply; it does not write IAM policy.

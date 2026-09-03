@@ -13,6 +13,18 @@ dir into a credential store. It is returned once, to the human who asked.
 
 Storage: ``<app data dir>/shares.json``, atomic-write + sidecar lock, same
 pattern as the deploy pending store.
+
+What the file holds is CURRENT STATE, not an audit log, and the difference
+decides what may edit it. It is state because it self-empties: :func:`_prune`
+drops every expired entry on both the read and the write path, and
+:func:`record_share` keeps only the newest ``_MAX_SHARES``. An audit log does
+neither. The audit trail of minted URLs is a separate, real one — ``routes``
+writes a SEL event for every grant — so nothing is lost by this file forgetting.
+
+The state it holds is a GRANT: a URL was minted for this key, and has not
+expired. It is NOT a claim that the object is still there, which is why
+:func:`mark_missing_objects` annotates a row whose object is gone instead of
+removing it. Only the two functions below WRITE this file.
 """
 
 from __future__ import annotations
@@ -22,8 +34,9 @@ import json
 import logging
 import uuid
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Collection, Optional
 
+from kiro_crew.apps.builtins.aws_control.backend import storage
 from kiro_crew.apps.manager import app_data_dir
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.platform_compat import file_lock
@@ -143,3 +156,63 @@ def forget_share(share_id: str) -> Optional[dict[str, Any]]:
             removed = next((e for e in entries if e.get("id") == share_id), None)
             _save(kept)
     return removed
+
+
+def mark_missing_objects(
+    entries: list[dict[str, Any]], present_keys: Collection[str]
+) -> list[dict[str, Any]]:
+    """Annotate rows whose object is not in ``present_keys`` (``objectMissing``).
+
+    ANNOTATES, never prunes, and writes nothing: the returned rows are for one
+    response. That is the whole shape of the correction, and the reason is what
+    this ledger claims. It claims "a presigned URL was minted for this key and
+    has not expired yet" — and deleting the object does not un-mint the URL or
+    shorten its expiry, so the bucket cannot disprove the claim. It can only add
+    to it. Contrast ``library.reconcile``, which DOES prune: that ledger claims
+    "a cloud copy exists", which is exactly a claim the bucket settles.
+
+    Two consequences make dropping the row the wrong reading rather than merely
+    the harsher one:
+
+    * A presigned URL signs bucket, key and expiry — not a version. Re-creating
+      the key while the URL is unexpired makes it resolve again, so a deleted
+      object leaves the grant DORMANT, not dead. A dropped row would forget a
+      bearer URL that can come back to life, which is the under-reporting
+      direction the Access section exists to avoid.
+    * Dropping the row is precisely :func:`forget_share`, which this app
+      documents to the user as removing the record while the link lives on. A
+      delete route taking that decision silently would be the system doing the
+      one thing the copy promises it will not do on the user's behalf.
+
+    The mark is not persisted for the same reason it is not a prune: it is a
+    fact about the bucket at render time, and a stored ``objectMissing`` would
+    itself go stale the moment the key is re-created — stale in the direction
+    that under-reports access. A value recomputed per render cannot go stale.
+    It also keeps ``record_share`` and ``forget_share`` the only writers of this
+    file, the rule ``library._update_ledger`` had to be written to restore.
+
+    ``present_keys`` MUST be a COMPLETE listing of the drive
+    (:func:`storage.list_object_keys`), because this function concludes ABSENCE
+    from it. There is deliberately no observation-cutoff parameter, unlike
+    ``library.reconcile``: the caller reads the ledger BEFORE the listing is
+    taken, so no row reaching this function can postdate the listing, and the
+    race a cutoff exists to cover cannot arise. Callers must keep that order.
+
+    A row is matched by its own ``section``/``key`` through
+    :func:`storage.section_key` — the one mapper — rather than a second copy of
+    the prefix scheme, which would resolve rows to keys the drive can never have
+    written and mark every one of them missing.
+    """
+    present = set(present_keys)
+    marked: list[dict[str, Any]] = []
+    for entry in entries:
+        section = str(entry.get("section", ""))
+        key = str(entry.get("key", ""))
+        if section in storage.SECTION_PREFIXES and storage.section_key(section, key) in present:
+            marked.append(entry)
+            continue
+        # An unknown section reaches here too, and is marked. It cannot address
+        # an object -- `section_key` has no prefix for it -- so no listing can
+        # ever back it, and saying so is more use than rendering it as fine.
+        marked.append({**entry, "objectMissing": True})
+    return marked

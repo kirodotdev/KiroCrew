@@ -4703,6 +4703,8 @@
         "access_empty": "활성 공유 링크가 없습니다.",
         "access_expires_in": "{{when}} 만료",
         "access_forget": "목록에서 제거",
+        "access_object_missing": "파일 삭제됨",
+        "access_unchecked": "이 링크는 드라이브와 대조하지 않았으므로 삭제된 파일이 여기에 표시되지 않습니다.",
         "access_footer": "목록에서 링크를 제거해도 링크가 취소되지 않습니다. 공유된 링크는 만료될 때까지 계속 작동합니다.",
         "keys_count_other": "키 {{count}}개",
         "connections": "연결",

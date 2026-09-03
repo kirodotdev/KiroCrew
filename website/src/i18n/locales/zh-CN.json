@@ -4703,6 +4703,8 @@
         "access_empty": "没有活动的分享链接。",
         "access_expires_in": "{{when}} 过期",
         "access_forget": "从列表移除",
+        "access_object_missing": "文件已删除",
+        "access_unchecked": "这些链接尚未与云盘核对，因此已删除的文件不会在此标记。",
         "access_footer": "从列表移除链接并不会使其失效——已分享的链接在到期前一直有效。",
         "keys_count_other": "{{count}} 个密钥",
         "connections": "连接",

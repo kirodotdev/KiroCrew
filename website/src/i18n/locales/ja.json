@@ -4703,6 +4703,8 @@
         "access_empty": "有効な共有リンクはありません。",
         "access_expires_in": "有効期限 {{when}}",
         "access_forget": "リストから削除",
+        "access_object_missing": "ファイルは削除済み",
+        "access_unchecked": "これらのリンクはドライブと照合されていないため、削除されたファイルはここに表示されません。",
         "access_footer": "リストからリンクを削除しても無効にはなりません。共有リンクは期限切れまで機能し続けます。",
         "keys_count_other": "キー {{count}} 個",
         "connections": "接続",

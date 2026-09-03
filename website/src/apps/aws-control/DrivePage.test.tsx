@@ -236,6 +236,67 @@ describe('DrivePage sections', () => {
     expect(row.textContent).not.toContain('2030-01-01')
   })
 
+  it('flags a share whose object was deleted, and keeps the row', async () => {
+    // A row that survives its object read as live exposure that is not live.
+    // The row STAYS -- the link is unexpired and would resolve again if the key
+    // were recreated -- and is marked instead.
+    stubDrivePresent()
+    vi.mocked(awsControlApi.shares).mockResolvedValue({
+      checked: true,
+      shares: [
+        {
+          id: 's1', account: ACCOUNT_ID, section: 'drive', key: 'gone.pdf',
+          createdAt: '2026-08-24T05:00:00Z', expiresAt: '2030-01-01T00:00:00Z', note: '',
+          objectMissing: true,
+        },
+        {
+          id: 's2', account: ACCOUNT_ID, section: 'drive', key: 'here.pdf',
+          createdAt: '2026-08-24T05:00:00Z', expiresAt: '2030-01-01T00:00:00Z', note: '',
+        },
+      ],
+    })
+
+    await renderDrive('access')
+
+    const rows = await screen.findAllByTestId('access-row')
+    expect(rows).toHaveLength(2)
+    expect(rows[0]).toHaveTextContent('gone.pdf')
+    expect(screen.getAllByTestId('access-object-missing')).toHaveLength(1)
+    // A checked render says nothing about verification -- the absence of a flag
+    // on the second row IS the answer.
+    expect(screen.queryByTestId('access-unchecked')).toBeNull()
+  })
+
+  it('says so when the objects behind the links were not checked', async () => {
+    // Without this line an unflagged row on an unchecked render would read as
+    // "the object is still there", which is the claim the check exists to make.
+    stubDrivePresent()
+    vi.mocked(awsControlApi.shares).mockResolvedValue({
+      checked: false,
+      shares: [{
+        id: 's1', account: ACCOUNT_ID, section: 'drive', key: 'report.pdf',
+        createdAt: '2026-08-24T05:00:00Z', expiresAt: '2030-01-01T00:00:00Z', note: '',
+      }],
+    })
+
+    await renderDrive('access')
+
+    await screen.findByTestId('access-row')
+    expect(screen.getByTestId('access-unchecked')).toBeTruthy()
+  })
+
+  it('does not qualify an EMPTY ledger as unchecked', async () => {
+    // No rows means no claim to qualify; the note there would be noise on the
+    // empty state.
+    stubDrivePresent()
+    vi.mocked(awsControlApi.shares).mockResolvedValue({ checked: false, shares: [] })
+
+    await renderDrive('access')
+
+    await screen.findByTestId('access-empty')
+    expect(screen.queryByTestId('access-unchecked')).toBeNull()
+  })
+
   it('disables the backup row and spins while a run is in flight', async () => {
     stubDrivePresent()
     // A run that never resolves keeps the row busy from the moment of the click,

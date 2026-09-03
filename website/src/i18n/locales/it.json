@@ -4859,6 +4859,8 @@
         "access_empty": "Nessun link di condivisione attivo.",
         "access_expires_in": "scade {{when}}",
         "access_forget": "Rimuovi dall'elenco",
+        "access_object_missing": "File eliminato",
+        "access_unchecked": "Questi link non sono stati verificati con il drive, quindi un file eliminato non viene segnalato qui.",
         "access_footer": "Rimuovere un link dall'elenco non lo revoca: un link condiviso continua a funzionare fino alla scadenza.",
         "keys_count_one": "{{count}} chiave",
         "keys_count_other": "{{count}} chiavi",

@@ -30,7 +30,7 @@ import { Trans } from 'react-i18next'
 import {
   ChevronDown, RefreshCw, Library, Archive, Share2,
   Download, Trash2, Upload, FolderClosed, FolderPlus, FileText, X,
-  MoreHorizontal, Code, LayoutGrid, List, Search, CloudOff, Plus,
+  MoreHorizontal, Code, LayoutGrid, List, Search, CloudOff, Plus, AlertTriangle,
 } from 'lucide-react'
 import { Btn, Badge, Toggle, Input, ContentSkeleton, IconButton } from '../../components/ui'
 import {
@@ -2352,9 +2352,25 @@ export function AccessSection({ account }: { account: string }) {
           {shares.map((s: Share) => (
             <div key={s.id} className="flex items-center gap-3 px-3 py-2.5 text-[13px]" data-testid="access-row">
               <div className="min-w-0 flex-1">
-                <div className="flex items-center gap-2">
-                  <span className="truncate font-mono text-text">{s.key}</span>
+                {/* WRAPS, and the key keeps a floor. A narrow row puts a
+                  * truncating filename and its badges in one cluster beside a
+                  * fixed-width Remove button: with neither rule the badges win
+                  * the space outright and at 320px the key box measured 0px --
+                  * the row then says a share is dead without saying WHICH, on
+                  * the one surface whose job is naming what is exposed. The
+                  * floor makes the line unable to fit both, so the badges wrap
+                  * beneath instead of consuming the name. Nothing changes on a
+                  * wide row, where all three still fit on one line. */}
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="min-w-[8rem] flex-1 truncate font-mono text-text">{s.key}</span>
                   <Badge variant="muted">{i18nT(SECTION_LABEL_ON_PAGE[s.section])}</Badge>
+                  {/* The object behind this link is gone. The row stays, because
+                    * the link itself is unexpired and would resolve again if the
+                    * key were recreated -- what changed is that this row can no
+                    * longer be read as live exposure. */}
+                  {s.objectMissing && (
+                    <Badge variant="warn" data-testid="access-object-missing">{i18nT('apps.awsControl.console.access_object_missing')}</Badge>
+                  )}
                 </div>
                 <div className="text-[12px] text-muted">
                   {s.note ? `${s.note} · ` : ''}
@@ -2365,6 +2381,22 @@ export function AccessSection({ account }: { account: string }) {
             </div>
           ))}
         </div>
+      )}
+      {/* Only with rows to qualify: an unchecked EMPTY ledger has no claim to
+        * qualify, and saying so would be noise on the empty state. Without this
+        * line a missing badge would read as "every object is still there" on a
+        * render where the drive was never read.
+        *
+        * WARN-toned, unlike the permanent footer directly below it. Rendered in
+        * the same muted 12px as that footer, this line reads as more boilerplate
+        * and gets skimmed -- and a reader who skims it takes the absence of a
+        * "file deleted" badge for "objects verified present", which is the
+        * under-reporting this whole change exists to prevent. */}
+      {shares.length > 0 && sharesQ.data?.checked === false && (
+        <p className="mt-2 flex items-start gap-1.5 text-[12px] text-warn" data-testid="access-unchecked">
+          <AlertTriangle className="lucide-inline" />
+          <span>{i18nT('apps.awsControl.console.access_unchecked')}</span>
+        </p>
       )}
       <p className="mt-2 text-[12px] text-muted">{i18nT('apps.awsControl.console.access_footer')}</p>
     </section>

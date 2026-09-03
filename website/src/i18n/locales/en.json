@@ -3669,6 +3669,8 @@
         "access_empty": "No active share links.",
         "access_expires_in": "expires {{when}}",
         "access_forget": "Remove from list",
+        "access_object_missing": "File deleted",
+        "access_unchecked": "These links were not checked against the drive, so a deleted file is not flagged here.",
         "access_footer": "Removing a link from this list does not revoke it — a shared link keeps working until it expires.",
         "keys_count_one": "{{count}} key",
         "keys_count_other": "{{count}} keys",

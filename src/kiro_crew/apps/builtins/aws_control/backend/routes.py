@@ -15,7 +15,7 @@ READS
 ``GET /costs/{account}``                       cached bill (?refresh=1 re-queries CE)
 ``GET /library/{account}``                     local artifacts + reconciled push state
 ``GET /backup/{account}``                      backup state + remote archive listing
-``GET /shares``                                live share ledger (?account=)
+``GET /shares``                                live share ledger, objects checked (?account=)
 ``GET /iam-policy``                            drive-tier policy JSON (local render)
 
 MUTATIONS (also restricted-session refused + SEL-audited)
@@ -288,7 +288,12 @@ async def _body(request: web.Request) -> dict[str, Any]:
 
 
 async def _account_target(request: web.Request) -> tuple[str, str, str] | web.Response:
-    """Resolve ``{account}`` to (account, profile, region), or an error response.
+    """Resolve the path's ``{account}``. See :func:`_resolve_target`."""
+    return await _resolve_target(request.match_info.get("account", ""))
+
+
+async def _resolve_target(account: str) -> tuple[str, str, str] | web.Response:
+    """Resolve an account id to (account, profile, region), or an error response.
 
     The snapshot maps profiles to accounts with a five-minute TTL, and a
     profile can be repointed at a different account inside that window — so
@@ -297,8 +302,11 @@ async def _account_target(request: web.Request) -> tuple[str, str, str] | web.Re
     resolves to the REQUESTED account, and a mismatch refuses rather than
     executing against whatever the profile now points at. The probe's short
     cache (~30s) bounds the cost without reopening the five-minute window.
+
+    Takes the id rather than the request because ``GET /shares`` scopes by
+    QUERY parameter, not by path segment, and a second copy of this resolution
+    is how one route ends up without the live re-probe.
     """
-    account = request.match_info.get("account", "")
     if not (account.isdigit() and len(account) == 12):
         return _bad_request("account must be a 12-digit id", "invalid_account")
     resolved = await accounts_mod.resolve_account_profile(account)
@@ -909,10 +917,104 @@ async def _handle_drive_share(request: web.Request) -> web.Response:
     return web.json_response({"url": url, "share": record})
 
 
+async def _drive_object_keys(request: web.Request, account: str) -> tuple[set[str] | None, str]:
+    """Every key in one account's drive, or ``(None, reason)`` when unreadable.
+
+    The remote half of the shares render, and NON-FATAL by contract: the Access
+    section must keep listing the ledger for an account that is disconnected,
+    has not confirmed S3, or has no drive yet. Every failure comes back as a
+    reason the caller reports, never as a response and never as an empty set —
+    "the drive holds nothing" would mark every share broken, so a listing that
+    cannot be read must not be able to say it. The same shape
+    :func:`_reconciled_remote_slugs` uses for the Library.
+
+    No lock and no re-authorization, unlike that function, because this one
+    WRITES NOTHING. It has no ledger critical section to close and no post-wait
+    gap to re-check: the consent and identity resolved here are the ones the
+    listing immediately runs under, exactly as ``_handle_drive_list`` lists
+    under ``_require_drive``.
+
+    No publish gate either. That gate governs bytes LEAVING the box; a LIST of
+    key names into the account is the same read class as the Library render,
+    which also passes ``publish=False``.
+    """
+    target = await _resolve_target(account)
+    if isinstance(target, web.Response):
+        # A permission DECISION, even on a route that degrades instead of
+        # failing: the profile became unavailable or now names another account.
+        # `_guarded`'s rule is that such a decision reaches SEL, and degrading
+        # quietly would drop the one event an incident review asks about.
+        #
+        # OFF-LOOP. `_audit` is synchronous, and on a gateway whose SEL has not
+        # been touched yet the first call constructs the log and writes to disk
+        # -- initialization plus a write, on the event loop, from a route the
+        # console renders on every page load. The eleven older `_audit` calls in
+        # this module are on-loop; this is the one this change adds, and issue
+        # #8139 owns the rest.
+        await asyncio.to_thread(
+            _audit, "shares_list", request.path, "denied", error="account_unavailable"
+        )
+        return None, "no working connection for this account"
+    _account, profile, region = target
+    if await _consent(aws_consent.SERVICE_S3, profile, region) is not None:
+        return None, "S3 is not confirmed for the account in use"
+    try:
+        bucket = await _drive_bucket(account, profile, region)
+    except AWSError as exc:
+        return None, _safe_error(exc)
+    if not bucket:
+        return None, "this account has no drive yet"
+    try:
+        keys = await asyncio.to_thread(
+            storage_mod.list_object_keys, profile, region, bucket, account=account
+        )
+    except AWSError as exc:
+        return None, _safe_error(exc)
+    return keys, ""
+
+
 async def _handle_shares_list(request: web.Request) -> web.Response:
+    """The share ledger, with each row checked against the object it names.
+
+    A row survives the object it points at: nothing prunes the ledger on a
+    delete, and until this check existed ``GET /shares`` answered "what have I
+    made reachable from outside this box" with links that resolve to nothing.
+    The row is MARKED (``objectMissing``) rather than dropped —
+    :func:`shares.mark_missing_objects` carries the reasoning, and the short
+    version is that a deleted object does not un-mint an unexpired URL.
+
+    ``checked`` says whether the rows in this payload were actually compared
+    against the drive; a client that cannot tell "the object is there" from "the
+    drive was not read" would render the second as the first. It is vacuously
+    true for an empty ledger: there was no claim to check, and no listing is
+    taken for one.
+
+    WHY the check did not run is LOGGED, not sent. It is a backend-authored
+    English sentence and this surface is rendered in thirteen locales, so the
+    console shows a translated "not checked" line gated on ``checked`` -- the
+    same resolution the Library's ``remoteError`` reaches. Putting the reason in
+    the payload as well only added a field nothing reads.
+
+    ORDER IS LOAD-BEARING: the ledger is read BEFORE the listing. Every row in
+    hand therefore predates the listing, so none of them can be a share minted
+    while it was in flight and wrongly marked for being absent from it. That is
+    the race ``library.reconcile`` needs an ``observed_at`` cutoff for; reading
+    in this order removes it instead of guarding it. Do not reorder these.
+    """
     account = request.rel_url.query.get("account", "")
     entries = await asyncio.to_thread(shares_mod.list_shares, account)
-    return web.json_response({"shares": entries})
+    if not account:
+        # Unscoped, so the rows can span accounts and there is no single drive
+        # to read. The dashboard always scopes; this stays answerable anyway.
+        return web.json_response({"shares": entries, "checked": False})
+    if not entries:
+        return web.json_response({"shares": entries, "checked": True})
+    keys, reason = await _drive_object_keys(request, account)
+    if keys is None:
+        logger.info("aws-control shares: the objects were not checked (%s)", reason)
+        return web.json_response({"shares": entries, "checked": False})
+    marked = await asyncio.to_thread(shares_mod.mark_missing_objects, entries, keys)
+    return web.json_response({"shares": marked, "checked": True})
 
 
 async def _handle_share_forget(request: web.Request) -> web.Response:

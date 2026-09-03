@@ -439,6 +439,56 @@ class TestListLibraryFolders:
                 storage.list_library_folders("prof", "us-west-2", "bkt", account="111122223333")
 
 
+class TestListObjectKeys:
+    def test_lists_the_whole_drive_owner_pinned_and_unpaged(self):
+        # No --prefix and no --delimiter: a share row can name any shareable
+        # section, so one listing answers for all of them. --query pulls Keys,
+        # which the CLI's auto-pagination merges across every page.
+        payload = json.dumps(["drive/a.txt", "artifacts/slug/v1.html", "backup/x.tgz"])
+        with mock.patch.object(storage, "_checked", return_value=payload) as checked:
+            keys = storage.list_object_keys("prof", "us-west-2", "bkt", account="111122223333")
+        assert keys == {"drive/a.txt", "artifacts/slug/v1.html", "backup/x.tgz"}
+        argv = checked.call_args.args[0]
+        assert argv[:2] == ["s3api", "list-objects-v2"]
+        assert argv[argv.index("--query") + 1] == "Contents[].Key"
+        assert "--delimiter" not in argv and "--prefix" not in argv
+        # Owner-pinned like every other call: a bucket name that changed hands
+        # must not answer for this account.
+        assert argv[argv.index("--expected-bucket-owner") + 1] == "111122223333"
+        # NO --max-items: passing one turns the CLI to client-side pagination and
+        # the answer would become a first page read as the whole drive -- which
+        # this caller concludes ABSENCE from.
+        assert "--max-items" not in argv
+        assert checked.call_args.kwargs["action"] == "s3:ListBucket"
+
+    def test_an_empty_drive_is_an_empty_set(self):
+        # No Contents at all: --query renders null, which must read as "no
+        # objects" rather than raising.
+        with mock.patch.object(storage, "_checked", return_value="null"):
+            assert (
+                storage.list_object_keys("prof", "us-west-2", "bkt", account="111122223333")
+                == set()
+            )
+
+    def test_non_string_rows_are_dropped(self):
+        # A row that is not a key cannot be membership-tested against one, and
+        # must not enter the set as something a caller then compares.
+        payload = json.dumps(["drive/a.txt", None, 7, {"Key": "drive/b.txt"}])
+        with mock.patch.object(storage, "_checked", return_value=payload):
+            assert storage.list_object_keys("prof", "us-west-2", "bkt", account="111122223333") == {
+                "drive/a.txt"
+            }
+
+    def test_unreadable_response_raises_instead_of_reading_as_empty(self):
+        # THE case this function exists for. An empty answer means "the drive
+        # holds nothing", and the caller acts on that by marking every share it
+        # holds as pointing at a deleted object -- so a garbled response must
+        # fail loudly, the opposite of usage()'s deliberate degrade-to-empty.
+        with mock.patch.object(storage, "_checked", return_value="{not json"):
+            with pytest.raises(AWSError, match="could not be read as JSON"):
+                storage.list_object_keys("prof", "us-west-2", "bkt", account="111122223333")
+
+
 class TestObjectIO:
     def test_put_file_is_owner_pinned_and_section_scoped(self, tmp_path):
         # s3api put-object, NOT `s3 cp`: no `aws s3` command accepts

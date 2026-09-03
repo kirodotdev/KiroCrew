@@ -225,6 +225,17 @@ export interface Share {
   createdAt: string
   expiresAt: string
   note: string
+  /**
+   * The object this share points at was not in the drive when the row was
+   * rendered. Present ONLY when established: absent means either "the object
+   * is there" or "the drive was not read", which `SharesResponse.checked`
+   * tells apart.
+   *
+   * The row is marked rather than removed because the ledger records that an
+   * unexpired URL was minted, and deleting the object does not un-mint it —
+   * re-creating the key makes the same URL resolve again.
+   */
+  objectMissing?: boolean
 }
 
 /**
@@ -236,9 +247,17 @@ export interface ShareResult {
   share: Share
 }
 
-/** Payload of `GET /shares`. */
+/**
+ * Payload of `GET /shares`. `checked` says whether these rows were actually
+ * compared against the account's drive — without it an absent `objectMissing`
+ * would read as "the object is there" on a render where the drive was never
+ * read. WHY it was not checked is logged server-side, not sent: the reason is a
+ * backend-authored English sentence and this surface is localized, so the note
+ * the console shows is a translated string gated on this flag.
+ */
 export interface SharesResponse {
   shares: Share[]
+  checked?: boolean
 }
 
 /** One line of the cost breakdown by AWS service. */

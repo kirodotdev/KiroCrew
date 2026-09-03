@@ -4859,6 +4859,8 @@
         "access_empty": "Aucun lien de partage actif.",
         "access_expires_in": "expire {{when}}",
         "access_forget": "Retirer de la liste",
+        "access_object_missing": "Fichier supprimé",
+        "access_unchecked": "Ces liens n'ont pas été vérifiés auprès du drive : un fichier supprimé n'est donc pas signalé ici.",
         "access_footer": "Retirer un lien de la liste ne le révoque pas — un lien partagé fonctionne jusqu'à son expiration.",
         "keys_count_one": "{{count}} clé",
         "keys_count_other": "{{count}} clés",

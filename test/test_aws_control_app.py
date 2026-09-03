@@ -834,6 +834,55 @@ class TestShares:
         assert shares.forget_share(live["id"]) is not None
         assert shares.list_shares() == []
 
+    def test_a_row_whose_object_is_gone_is_marked_not_dropped(self, tmp_path):
+        # The defect this fixes: a delete strands the row, and until now the
+        # only exit was the user pressing forget per row. The row STAYS -- the
+        # ledger records that an unexpired URL was minted, which a delete does
+        # not undo -- and gains the flag the Access section renders.
+        from kiro_crew.apps.builtins.aws_control.backend import shares
+
+        shares.record_share(account=ACCOUNT, section="drive", key="gone.txt", expires_secs=3600)
+        shares.record_share(
+            account=ACCOUNT, section="library", key="slug/v1.html", expires_secs=3600
+        )
+        rows = shares.list_shares(ACCOUNT)
+        marked = shares.mark_missing_objects(rows, {"artifacts/slug/v1.html"})
+
+        assert len(marked) == len(rows)
+        by_key = {row["key"]: row for row in marked}
+        assert by_key["gone.txt"]["objectMissing"] is True
+        # A row whose object IS there carries no flag at all, so "absent" and
+        # "present but unchecked" never collapse into one rendering.
+        assert "objectMissing" not in by_key["slug/v1.html"]
+        # And the ledger on disk is untouched: the mark is a render-time fact
+        # about the bucket, which would go stale the moment the key is recreated.
+        assert all("objectMissing" not in row for row in shares._load())
+
+    def test_the_key_a_row_is_matched_by_is_section_prefixed(self):
+        # The row stores a SECTION plus a key; the object is at the section's
+        # prefix. Matching on the bare key would find nothing in a listing of
+        # real keys and mark every row missing.
+        from kiro_crew.apps.builtins.aws_control.backend import shares
+
+        row = {"id": "sh-1", "section": "drive", "key": "a.txt"}
+        # Compared as WHOLE LISTS rather than indexed and subscripted. A
+        # regression that drops the row, or leaves it unmarked, then fails on an
+        # assertion naming the expected rows -- an `[0]["objectMissing"]` reads
+        # the same regression out as IndexError or KeyError, which states
+        # nothing about what the function answered.
+        assert shares.mark_missing_objects([row], {"a.txt"}) == [{**row, "objectMissing": True}]
+        assert shares.mark_missing_objects([row], {"drive/a.txt"}) == [row]
+
+    def test_a_row_naming_no_real_section_is_marked(self):
+        # A section with no prefix cannot address an object, so no listing can
+        # ever back the row. Reporting that beats rendering it as reachable.
+        from kiro_crew.apps.builtins.aws_control.backend import shares
+
+        row = {"id": "sh-1", "section": "nowhere", "key": "a.txt"}
+        assert shares.mark_missing_objects([row], {"nowhere/a.txt"}) == [
+            {**row, "objectMissing": True}
+        ]
+
 
 # ---------------------------------------------------------------------------
 # Costs cache

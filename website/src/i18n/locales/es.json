@@ -4859,6 +4859,8 @@
         "access_empty": "No hay enlaces de uso compartido activos.",
         "access_expires_in": "caduca {{when}}",
         "access_forget": "Quitar de la lista",
+        "access_object_missing": "Archivo eliminado",
+        "access_unchecked": "Estos enlaces no se han comprobado con la unidad, así que un archivo eliminado no se marca aquí.",
         "access_footer": "Quitar un enlace de la lista no lo revoca: un enlace compartido sigue funcionando hasta que caduque.",
         "keys_count_one": "{{count}} clave",
         "keys_count_other": "{{count}} claves",
