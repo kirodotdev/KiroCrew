@@ -2758,10 +2758,11 @@ class TestRunChatRecoveryLadders:
 
     @pytest.mark.asyncio
     async def test_compaction_failure_neither_retries_nor_claims_a_lost_link(self, tmp_path):
-        """A compaction-failed turn is terminal: the reason is in the "error:"
-        family, so without its own branch it lands in pipe-death recovery — a
-        re-queue plus a "Connection lost" card, both false. Compaction retry
-        policy is not this layer's to invent (issue #3583)."""
+        """A PERMANENT compaction failure is terminal: the reason is in the
+        "error:" family, so without its own branch it lands in pipe-death
+        recovery — a re-queue plus a "Connection lost" card, both false. An
+        overflowing conversation fails again identically, so it earns no retry
+        (issue #3583)."""
         state, client = _runner_state(tmp_path)
         slot = _slot()
         _set_stream(
@@ -2808,6 +2809,114 @@ class TestRunChatRecoveryLadders:
         state.sessions.reset.assert_awaited_once()
         assert slot._queue == []
         assert slot._acp_pipe_death_retries == 0
+
+    @pytest.mark.asyncio
+    async def test_a_throttled_compaction_requeues_the_abandoned_message(self, tmp_path):
+        """A summarization call that was throttled has nothing wrong with it, so
+        the turn it abandoned is worth running again. Dropping the message here
+        ended the turn on a backend hiccup the next attempt would clear."""
+        state, client = _runner_state(tmp_path)
+        slot = _slot()
+        client.last_compaction_transient = True
+        _set_stream(client, [_complete(STOP_REASON_COMPACTION_FAILED)])
+
+        await _drive(state, slot, "do the thing")
+
+        assert slot._compaction_failed_retries == 1
+        assert any("Compaction failed — retrying" in err for err in _errors(slot)), _errors(slot)
+        # The requeue is proven by the follow-up turn the finally DISPATCHED
+        # from it. Asserting on slot._queue cannot see it: that dispatch is the
+        # drain, so the entry is already gone by the time the turn returns.
+        assert slot.task is not None
+        # Still not pipe-death: that budget and its card stay untouched.
+        assert slot._acp_pipe_death_retries == 0
+        assert not any("Connection lost" in err for err in _errors(slot))
+
+    @pytest.mark.asyncio
+    async def test_a_stopped_turn_is_not_revived_by_the_throttle_requeue(self, tmp_path):
+        """A requeue lands at queue index 0, so a message the user STOPPED during
+        the turn would come back and run first. The stop completed, so _stopping
+        and _stop_state have both snapped back to idle — only the monotonic
+        generation counter still records that it happened."""
+        state, client = _runner_state(tmp_path)
+        slot = _slot()
+        client.last_compaction_transient = True
+        # The stop has to land DURING the turn: the generation is snapshotted at
+        # turn start, and the branch reads it before the finally block runs.
+        slot._stop_generation = 7
+
+        def _stream(*_a, **_kw):
+            slot._stop_generation = 8
+            return _async_iter([_complete(STOP_REASON_COMPACTION_FAILED)])
+
+        client.stream = MagicMock(side_effect=_stream)
+
+        slot._empty_response_retries = 2
+        with _quiet_sel():
+            await chat_runner._run_chat(state, slot, "do the thing")
+        await _settle(slot)
+
+        assert slot._compaction_failed_retries == 0
+        assert not any("retrying" in err for err in _errors(slot)), _errors(slot)
+
+    @pytest.mark.asyncio
+    async def test_a_user_followup_outranks_the_throttle_requeue(self, tmp_path):
+        """The user typed a correction while the turn was failing. Re-queuing the
+        superseded message at index 0 would run it BEFORE their correction, so the
+        turn stays abandoned and their message is what runs."""
+        state, client = _runner_state(tmp_path)
+        slot = _slot()
+        client.last_compaction_transient = True
+        _set_stream(client, [_complete(STOP_REASON_COMPACTION_FAILED)])
+        slot.queue_insert(0, "actually, do this instead", kind="user", payload="")
+
+        with _quiet_sel():
+            await chat_runner._run_chat(state, slot, "do the thing")
+        await _settle(slot)
+
+        assert slot._compaction_failed_retries == 0
+        assert not any("retrying" in err for err in _errors(slot)), _errors(slot)
+
+    @pytest.mark.asyncio
+    async def test_the_throttle_requeue_is_bounded(self, tmp_path):
+        """A throttle still firing after the budget is not clearing inside this
+        turn, and every attempt pays for the summarization call again."""
+        state, client = _runner_state(tmp_path)
+        slot = _slot()
+        client.last_compaction_transient = True
+        slot._compaction_failed_retries = chat_runner._COMPACTION_FAILED_RETRIES
+        _set_stream(client, [_complete(STOP_REASON_COMPACTION_FAILED)])
+
+        await _drive(state, slot)
+
+        # Unchanged: the budget was already spent, so this failure bought no
+        # further attempt and added no retry notice.
+        assert slot._compaction_failed_retries == chat_runner._COMPACTION_FAILED_RETRIES
+        assert slot._queue == []
+        assert not any("retrying" in err for err in _errors(slot)), _errors(slot)
+
+    @pytest.mark.asyncio
+    async def test_a_transient_failure_after_output_is_not_replayed(self, tmp_path):
+        """Verbatim replay is only safe before anything landed. Once a tool call
+        has been delivered, re-sending the message could repeat its side
+        effect — so an emitted turn keeps the give-up behaviour even for a
+        reason that would otherwise be retried."""
+        state, client = _runner_state(tmp_path)
+        slot = _slot()
+        client.last_compaction_transient = True
+        _set_stream(
+            client,
+            [
+                LLMEvent(kind=EVENT_TEXT_CHUNK, text="partial answer"),
+                _complete(STOP_REASON_COMPACTION_FAILED),
+            ],
+        )
+
+        await _drive(state, slot)
+
+        assert slot._compaction_failed_retries == 0
+        assert slot._queue == []
+        assert not any("retrying" in err for err in _errors(slot)), _errors(slot)
 
     @pytest.mark.asyncio
     async def test_tool_stall_recovery_names_the_stalled_tool(self, tmp_path):

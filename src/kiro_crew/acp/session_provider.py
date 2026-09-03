@@ -718,6 +718,15 @@ class AcpSessionProvider(LLMProvider):
         """Per-turn statistics (context usage, credits, etc.)."""
         return self._handle.last_prompt_stats
 
+    @property
+    def last_compaction_transient(self) -> bool:
+        """Whether that failure is worth retrying (from the live session handle).
+
+        Coerced to a real ``bool`` because the consumer compares against
+        ``True`` — a truthy stand-in must not read as a verdict.
+        """
+        return getattr(self._handle, "last_compaction_transient", False) is True
+
     # ── Streaming (AcpClient-compatible method name) ──
 
     def stream_events(self, message: str) -> AsyncIterator[LLMEvent]:

@@ -1194,6 +1194,14 @@ POISONED_SESSION_CYCLES = 2
 _POISON_CANARY_PROMPT = "Reply with the single word OK."
 _POISON_CANARY_TIMEOUT_SECS = 30.0
 
+# Retries granted to a turn abandoned after a TRANSIENT compaction failure
+# (a throttled or 5xx'd summarization call). Its own budget rather than a share
+# of _acp_pipe_death_retries: charging an unrelated fault to another recovery's
+# budget is what let one false positive burn a whole session's allowance. Two,
+# not three — a throttle still firing after two session resets is not clearing
+# inside this turn, and every attempt costs the summarization call again.
+_COMPACTION_FAILED_RETRIES = 2
+
 # Cap the backend-echoed reason interpolated into the "Compaction failed"
 # notice. The notice is a one-line receipt in the transcript, so an unbounded
 # provider string (a stack trace, an echoed payload) would scroll the
@@ -9355,19 +9363,90 @@ async def _run_chat(
             return
 
         # Automatic compaction failed and the backend then abandoned the turn.
-        # Returning HERE is load-bearing: this reason is in the "error:" family,
-        # and the branch below is pipe-death recovery — it would re-queue the
-        # message and label it "Connection lost", neither of which is true. A
-        # retry would also just hit the same over-threshold context and fail
-        # again. No message to add either: the compaction-status path already
-        # appended the visible notice naming the failure. The session reset IS
-        # needed, though — this completion is synthetic (the client stopped
-        # reading; the backend never sent end_turn), so the backend still
-        # counts the turn as in progress and the next prompt would collide
-        # with "prompt already in progress". The finally's reset tears that
-        # runtime down and session/load-resumes, WITHOUT re-queuing anything.
+        # Not reaching the branch below is load-bearing: this reason is in the
+        # "error:" family, and that branch is pipe-death recovery — it would
+        # label the requeue "Connection lost", which is not what happened. The
+        # session reset IS needed either way: this completion is synthetic (the
+        # client stopped reading; the backend never sent end_turn), so the
+        # backend still counts the turn as in progress and the next prompt
+        # would collide with "prompt already in progress". The finally's reset
+        # tears that runtime down and session/load-resumes.
+        #
+        # Whether the abandoned message is re-queued depends on WHY compaction
+        # failed, which is the whole point of the verdict the ACP layer
+        # records. A compaction that overflowed the window fails again
+        # identically, so replaying it just burns the budget — that is the case
+        # the unconditional return was written for. A compaction whose
+        # summarization call was throttled or 5xx'd has nothing wrong with it,
+        # and dropping the user's message for it silently ends the turn on a
+        # backend hiccup the very next attempt would clear.
         if _stop_reason == STOP_REASON_COMPACTION_FAILED:
-            needs_session_reset = True  # checked in finally block (reset, no re-queue)
+            needs_session_reset = True  # checked in finally block
+            if (
+                # Attribute, not a stop-reason variant: the reason is the ACP
+                # layer's to classify, and both client classes record it.
+                # Compared against True rather than read for truthiness: the
+                # retry must require a real verdict, so a provider that has
+                # never set the attribute (or exposes an auto-created stand-in
+                # for it) cannot be read as "transient" by accident.
+                getattr(client, "last_compaction_transient", False) is True
+                # Verbatim replay is only safe before anything streamed —
+                # exactly the guard the transient-5xx sibling uses. Once output
+                # or a tool call has landed, re-sending the message could
+                # repeat a side effect, so an emitted turn keeps the old
+                # give-up behaviour rather than inventing a continuation.
+                and not _turn_emitted
+                and _prompt_depth == 0
+                and slot._compaction_failed_retries < _COMPACTION_FAILED_RETRIES
+                # The USER'S INTENT WINS over this recovery. A requeue lands at
+                # queue index 0, so without these four checks a message the user
+                # has since stopped or replaced would run BEFORE the correction
+                # they typed. Same hazard and same guard as the promise-only
+                # continuation above: a live stop (`_should_suppress_requeue` /
+                # `_stopping`), a stop that COMPLETED during this turn (both
+                # flags snap back to idle, so only the monotonic generation
+                # counter sees it), a pending steer, or a user-authored queue
+                # entry each mean the turn must stay abandoned.
+                and not _should_suppress_requeue(slot)
+                and not slot._stopping
+                and getattr(slot, "_stop_generation", _stop_gen_turn_start) == _stop_gen_turn_start
+                and not bool(getattr(slot, "_pending_steers", None))
+                and not _has_user_queued_followup(slot)
+            ):
+                slot._compaction_failed_retries += 1
+                # No reason interpolated here: each arming site already logs the
+                # whole frame at WARNING when the failure arrives, so repeating a
+                # truncated copy is the only thing the forwarded reason string
+                # would have bought.
+                logger.info(
+                    "Transient compaction failure in slot %s (attempt %d/%d) — "
+                    "re-queuing the abandoned message",
+                    slot.key,
+                    slot._compaction_failed_retries,
+                    _COMPACTION_FAILED_RETRIES,
+                )
+                # No backoff call here, matching the pipe-death sibling in this
+                # same block: the finally's session teardown + session/load
+                # replay already sits between this queue and the retry.
+                _queue_recovery(
+                    0,
+                    message,
+                    kind=SYNTHETIC_RECOVERY_KIND,
+                    # Verbatim replay, so ORIGINAL only when the incoming text
+                    # was the user's own — on a recovery turn it is the
+                    # runner's continuation.
+                    payload=payload_for_replay(_is_synthetic),
+                )
+                # A recovery IS queued, so this notice is not terminal: the tag
+                # stops the UI offering a retry that re-runs itself. The
+                # compaction-status path already appended the row naming the
+                # reason, so this one only reports the retry.
+                slot.append(
+                    "error",
+                    "⟳ Compaction failed — retrying…",
+                    "msg msg-err",
+                    meta={"kind": TRANSIENT_RETRY_KIND},
+                )
             return
 
         # CC process died mid-turn: re-queue message for automatic retry
@@ -10053,6 +10132,7 @@ async def _run_chat(
             slot._acp_pipe_death_retries = 0
             slot._stale_recovery_retries = 0
             slot._tool_stall_retries = 0
+            slot._compaction_failed_retries = 0
             slot._stale_recovery_exhausted_emitted = False
             slot._tool_stall_exhausted_emitted = False
             slot._transient_5xx_retries = 0

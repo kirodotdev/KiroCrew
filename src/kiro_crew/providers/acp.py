@@ -1585,6 +1585,15 @@ class AcpProvider(LLMProvider):
         """Process exit code, or None if still running."""
         return self._client.exit_code
 
+    @property
+    def last_compaction_transient(self) -> bool:
+        """Whether that failure is worth retrying (from the inner client).
+
+        Coerced to a real ``bool`` because the consumer compares against
+        ``True`` — a truthy stand-in must not read as a verdict.
+        """
+        return getattr(self._client, "last_compaction_transient", False) is True
+
     def touch_activity(self) -> None:
         self._client.touch_activity()
 

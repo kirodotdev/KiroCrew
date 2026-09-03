@@ -144,6 +144,17 @@ class LLMProvider(ABC):
         (safe) truth for them."""
         return None
 
+    @property
+    def last_compaction_transient(self) -> bool:
+        """Whether that failure is worth retrying.
+
+        The default is the SAFE value: False means "treat it as permanent", so a
+        provider that reports no verdict gives up the turn exactly as it did
+        before this capability existed, rather than replaying a message against
+        a compaction that cannot succeed.
+        """
+        return False
+
     def context_window_tokens(self) -> int:
         """Return the real served context window in tokens (0 if unknown).
 

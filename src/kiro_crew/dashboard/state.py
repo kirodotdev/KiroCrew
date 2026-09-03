@@ -3203,6 +3203,7 @@ class _ChatSlot:
         "_promise_only_stop_gen",
         "_compaction_continue_retries",
         "_batch_rejected",
+        "_compaction_failed_retries",
         "_compaction_fail_streak",
         "_compaction_fail_cooldown_until",
         "color_index",
@@ -3642,6 +3643,12 @@ class _ChatSlot:
         # chat_runner, which previously had no backoff at all and could
         # append one near-identical "Compaction failed: unknown error"
         # message per turn indefinitely.
+        # Retry budget for a turn the backend abandoned after a TRANSIENT
+        # compaction failure. Distinct from _compaction_fail_streak above,
+        # which only paces the NOTICE: this one bounds how many times the
+        # abandoned message is re-queued. Reset on a landed turn alongside the
+        # other recovery budgets.
+        self._compaction_failed_retries: int = 0
         self._compaction_fail_streak: int = 0
         self._compaction_fail_cooldown_until: float = 0.0
         self.color_index: int | None = None

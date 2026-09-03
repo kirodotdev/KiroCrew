@@ -51,6 +51,7 @@ from kiro_crew.acp.client import (
     _is_tool_interrupted_marker,
     _raise_acp_error,
     compaction_failure_detail,
+    compaction_failure_is_transient,
     format_command_result,
     parse_slash_command,
     prompt_timeout_for_ceiling,
@@ -559,6 +560,13 @@ class AcpSessionHandle:
         # (None otherwise). Arms the post-failure budget in _dispatch_events,
         # which ends an abandoned turn instead of draining to the ceiling.
         self._compaction_failed_at: float | None = None
+        # Retryability of the LAST failed compaction, read by the dashboard's
+        # STOP_REASON_COMPACTION_FAILED branch to decide between re-queuing the
+        # abandoned message and giving up. Public (no leading underscore)
+        # because that consumer reaches it through getattr on whichever of the
+        # two client classes is serving the slot. Verdict only — see the twin
+        # comment in AcpClient for why the reason text is not forwarded.
+        self.last_compaction_transient: bool = False
         # Consumers that implement the low-fidelity child downgrade (dashboard
         # card / interactive approver) opt IN; for everyone else the handle
         # itself fail-closes low-fidelity child permission requests below, so
@@ -2538,6 +2546,9 @@ class AcpSessionHandle:
                             # reason so the notice stops collapsing to
                             # "unknown error".
                             self._compaction_failed_at = time.monotonic()
+                            self.last_compaction_transient = (
+                                compaction_failure_is_transient(params)
+                            )
                         summary = compaction_failure_detail(params)
                     yield AcpEvent(kind=EVENT_COMPACTION_STATUS, text=status_type, title=summary)
                 elif action == "clear":
@@ -3240,11 +3251,24 @@ class AcpSessionHandle:
                 status_type = "completed"
             elif kind == kas_wire.KIND_SUMMARIZATION_FAILED:
                 status_type = "failed"
+                # Parity with AcpClient._handle_compaction_status: log the WHOLE
+                # frame at WARNING. This branch previously logged nothing at
+                # all, so a KAS summarization failure left the chat row as the
+                # only record of it — and when the row's reason collapsed to a
+                # placeholder there was nothing to grep server-side and no way
+                # to learn which field the reason actually arrived in.
+                # redact_text, not the bare frame: conversationSummary rides in
+                # this payload, so an unredacted dump would persist whatever the
+                # conversation contained -- a pasted credential included -- into
+                # gateway.log. Same scrub the notice below applies, for the same
+                # reason.
+                logger.warning("KAS summarization failed — raw frame: %s", redact_text(str(kiro)))
                 # KAS is the third producer of a failed compaction status and
                 # rides the SAME dispatch loop, so it gets the same bounded
                 # post-failure wait — a KAS turn abandoned after failed
                 # summarization must not drain to the ceiling either.
                 self._compaction_failed_at = time.monotonic()
+                self.last_compaction_transient = compaction_failure_is_transient(kiro)
             else:
                 status_type = "started"
             # conversationSummary is backend-echoed, LLM-influenced text that
