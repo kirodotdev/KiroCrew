@@ -1868,6 +1868,12 @@ file-tree-container{
    visible through the shifted band; the descendant selector out-specifies the
    base hide rule. `block` matches what preflight gives the SVG, so the rule
    stays inert if the button ever stops blockifying its flex children. */
+/* Probe for the metrics rung, read by App.tsx to decide whether clicking the
+   metrics control should toggle the inline readings or open the popover. It
+   carries `.tb-drop-metrics` so every rung above -- base and update-shifted --
+   applies to it unchanged; keeping it out of flow at 0x0 means it can never
+   consume the budget those rungs are measured against. */
+.tb-metrics-probe{position:absolute;width:0;height:0;overflow:hidden;pointer-events:none}
 @container (min-width:531px){ .tb-narrow-only{display:none} }
 @media (min-width:640px){
   @container (min-width:531px) and (max-width:738px){ .tb-has-update .tb-narrow-only{display:block} }

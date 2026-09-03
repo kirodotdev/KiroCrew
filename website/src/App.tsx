@@ -149,7 +149,7 @@ import WindowsTitlebarMenu from './components/WindowsTitlebarMenu'
 import { i18nT } from './i18n/t'
 import { appNavTarget } from './appNav'
 import { resolveSlotOverlays, type SlotOwners } from './apps/overlaySlots'
-import { fmtCompact, fmtPercent } from './i18n/format'
+import { fmtCompact, fmtNumber, fmtPercent, fmtUnit } from './i18n/format'
 // Static on purpose, and the tradeoff is real: the sidebar updates badge
 // needs `registryQueryFn` (its own fetch boundary — a badge that only lights
 // after a store-page visit does not do its job), and importing it pulls the
@@ -2369,6 +2369,21 @@ export default function App() {
     ? 'failed'
     : (kiroUsage ?? null)
   const [metricsOpen, setMetricsOpen] = useState(() => localStorage.getItem('mc-topbar-metrics') === '1')
+  // The inline metric readings are dropped by a CSS container-query rung when
+  // the actions group runs out of room (the ladder in index.css, whose rungs
+  // shift while the update pill is mounted). In that band the open/closed
+  // preference has nothing to render, so the click opens an anchored popover
+  // instead of writing a setting that produces no visible change at all.
+  // Whether the inline form fits is read FROM CSS through a zero-size probe
+  // carrying the rung's own class -- never from a threshold copied out of
+  // index.css, which would drift from the ladder the moment a rung moves.
+  const [metricsInlineFits, setMetricsInlineFits] = useState(true)
+  const [metricsPopoverAnchor, setMetricsPopoverAnchor] = useState<{ top: number; right: number } | null>(null)
+  const metricsPopoverOpen = metricsPopoverAnchor !== null
+  const metricsProbeRef = useRef<HTMLSpanElement>(null)
+  const metricsGroupRef = useRef<HTMLDivElement>(null)
+  const metricsBtnRef = useRef<HTMLButtonElement>(null)
+  const metricsPopoverRef = useRef<HTMLDivElement>(null)
   // Readout capsule collapse: clicking the connection dot folds the capsule
   // down to just the dot; clicking again restores the full readout.
   const [capsuleCollapsed, setCapsuleCollapsed] = usePersistedBool('mc-topbar-capsule-collapsed', false)
@@ -2392,16 +2407,76 @@ export default function App() {
   // separate strip inset to relay to Electron — positionTrafficLights centers on
   // the header height directly. Remote panes get their own inset via `macInset`.
   const macInset = isMacElectron && !macFullscreen
-  const { data: sysMetrics, isError: sysMetricsError, dataUpdatedAt: sysMetricsUpdatedAt } = useQuery({ queryKey: ['system-metrics'], queryFn: () => api.system().then((d): SysMetricsFrame => ({ memUsed: d.mem_used_gb, memTotal: d.mem_total_gb, cpuPct: d.cpu_pct, diskTotal: d.disk_total_gb, diskFree: d.disk_free_gb, posture: d.resource_posture as 'ample' | 'tight' | 'critical' | 'unknown' | undefined, availableGb: d.resource_available_gb as number | undefined, subagentCap: d.subagent_cap as number | undefined })), refetchInterval: metricsOpen ? 30_000 : 60_000, enabled: true })
+  const { data: sysMetrics, isError: sysMetricsError, dataUpdatedAt: sysMetricsUpdatedAt } = useQuery({ queryKey: ['system-metrics'], queryFn: () => api.system().then((d): SysMetricsFrame => ({ memUsed: d.mem_used_gb, memTotal: d.mem_total_gb, cpuPct: d.cpu_pct, diskTotal: d.disk_total_gb, diskFree: d.disk_free_gb, posture: d.resource_posture as 'ample' | 'tight' | 'critical' | 'unknown' | undefined, availableGb: d.resource_available_gb as number | undefined, subagentCap: d.subagent_cap as number | undefined })), refetchInterval: metricsOpen || metricsPopoverOpen ? 30_000 : 60_000, enabled: true })
   // Tick every 10s while widget is open so `sysMetricsStale` re-evaluates even when the query stops refetching (backgrounded tab, network drop).
   const [, setStaleTick] = useState(0)
   useEffect(() => {
-    if (!metricsOpen) return
+    if (!metricsOpen && !metricsPopoverOpen) return
     const id = setInterval(() => setStaleTick(t => t + 1), 10_000)
     return () => clearInterval(id)
-  }, [metricsOpen])
+  }, [metricsOpen, metricsPopoverOpen])
   // Consider metrics stale if last successful fetch was > 90s ago (3x the 30s poll interval) while the widget is open.
-  const sysMetricsStale = metricsOpen && (sysMetricsError || (sysMetricsUpdatedAt > 0 && Date.now() - sysMetricsUpdatedAt > 90_000))
+  const sysMetricsStale = (metricsOpen || metricsPopoverOpen) && (sysMetricsError || (sysMetricsUpdatedAt > 0 && Date.now() - sysMetricsUpdatedAt > 90_000))
+  // Re-read the rung's verdict on any resize of the group -- its width is what
+  // the container query measures -- and whenever the update pill mounts or
+  // unmounts, which moves the rung without resizing anything.
+  useEffect(() => {
+    const probe = metricsProbeRef.current
+    const group = metricsGroupRef.current
+    if (!probe) return
+    const read = () => setMetricsInlineFits(getComputedStyle(probe).display !== 'none')
+    read()
+    if (typeof ResizeObserver === 'undefined' || !group) return
+    const ro = new ResizeObserver(read)
+    ro.observe(group)
+    return () => ro.disconnect()
+  }, [updateAvailable, isMobile])
+  const closeMetricsPopover = useCallback(() => setMetricsPopoverAnchor(null), [])
+  const toggleMetricsPopover = useCallback(() => {
+    setMetricsPopoverAnchor(prev => {
+      if (prev) return null
+      const r = metricsBtnRef.current?.getBoundingClientRect()
+      return r ? { top: r.bottom + 6, right: Math.max(8, window.innerWidth - r.right) } : null
+    })
+  }, [])
+  // The anchor is a snapshot of the trigger's box, so anything that can move
+  // the trigger dismisses the popover rather than leaving it pointing at empty
+  // space. The group growing back to where the readings fit is one of those
+  // moves: the trigger reverts to the inline readout in the same frame.
+  useEffect(() => {
+    if (!metricsPopoverOpen) return
+    // Move focus INTO the dialog on open. Without this the caret stays on the
+    // trigger, and a screen reader reaches the readings only by traversing to
+    // the end of the document -- the portal renders at the body's end. Not a
+    // focus trap: the popover is not modal, and Escape hands focus back.
+    metricsPopoverRef.current?.focus()
+    const onPointerDown = (e: PointerEvent) => {
+      const t = e.target as Node
+      if (metricsBtnRef.current?.contains(t) || metricsPopoverRef.current?.contains(t)) return
+      closeMetricsPopover()
+    }
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return
+      closeMetricsPopover()
+      metricsBtnRef.current?.focus()
+    }
+    document.addEventListener('pointerdown', onPointerDown)
+    document.addEventListener('keydown', onKey)
+    window.addEventListener('resize', closeMetricsPopover)
+    return () => {
+      document.removeEventListener('pointerdown', onPointerDown)
+      document.removeEventListener('keydown', onKey)
+      window.removeEventListener('resize', closeMetricsPopover)
+    }
+  }, [metricsPopoverOpen, closeMetricsPopover])
+  // Two ways the trigger stops existing under an open popover: the group widens
+  // back to where the readings fit, and the capsule collapses to its bare
+  // connection dot (which unmounts every readout, this trigger included).
+  // Either would otherwise leave the portalled dialog on screen anchored to a
+  // box that is gone.
+  useEffect(() => {
+    if (metricsInlineFits || capsuleCollapsed) closeMetricsPopover()
+  }, [metricsInlineFits, capsuleCollapsed, closeMetricsPopover])
 
   // Listen for dev mode changes from Settings > Developer
   useEffect(() => {
@@ -3022,7 +3097,12 @@ export default function App() {
             itself reads, so they move together; during the pill's lazy-chunk
             fetch the class can lead the pill by a moment, which costs readout
             room briefly and harms nothing. */}
-        <div className={`tb-right relative${updateAvailable ? ' tb-has-update' : ''}`}>
+        <div ref={metricsGroupRef} className={`tb-right relative${updateAvailable ? ' tb-has-update' : ''}`}>
+          {/* Zero-footprint probe for the metrics rung. It carries the readings'
+              own class, so JS reads the LADDER's verdict rather than a copy of
+              its thresholds. Out of flow and 0x0, so it costs no ladder budget
+              and adds no flex gap. */}
+          <span ref={metricsProbeRef} className="tb-drop-metrics tb-metrics-probe" aria-hidden="true" />
 
           {/* Theme decoration: extra aside control (e.g. a stardate / clock). */}
           {branding?.topBarAside && !(branding?.topBarHideOnMobile && isMobile) && (
@@ -3088,7 +3168,12 @@ export default function App() {
             }
             if (!capsuleCollapsed) {
             if (!isMobile) {
-              if (!metricsOpen) {
+              if (!metricsInlineFits) {
+                // No room for the inline readings here, so the click opens the
+                // popover and the stored preference is left untouched -- it still
+                // describes what to do once the readings fit again.
+                segments.push(<button key="metrics" ref={metricsBtnRef} className={`${seg} ${metricsPopoverOpen ? 'text-accent' : 'text-muted hover:text-text'}`} title={i18nT('app.system_metrics')} aria-label={i18nT('app.system_metrics')} aria-haspopup="dialog" aria-expanded={metricsPopoverOpen} onClick={toggleMetricsPopover}><AudioWaveform size={12} /></button>)
+              } else if (!metricsOpen) {
                 segments.push(<button key="metrics" className={`${seg} text-muted hover:text-text`} onClick={() => { setMetricsOpen(true); safeSetItem('mc-topbar-metrics', '1') }} title={i18nT('app.system_metrics')} aria-label={i18nT('app.system_metrics')} aria-pressed={false}><AudioWaveform size={12} /></button>)
               } else if (!sysMetrics) {
                 if (sysMetricsError) segments.push(<button key="metrics" className={`${seg} text-danger text-[11px]`} title={i18nT('app.click_to_hide')} onClick={() => { setMetricsOpen(false); safeSetItem('mc-topbar-metrics', '0') }}><AudioWaveform size={11} /> {i18nT('app.metrics_unavailable')}</button>)
@@ -4023,6 +4108,53 @@ export default function App() {
     )}
     </WsContext.Provider>
     {shortcutsOpen && <ShortcutsModal onClose={() => setShortcutsOpen(false)} />}
+    {metricsPopoverAnchor && createPortal(
+      <div
+        ref={metricsPopoverRef}
+        role="dialog"
+        aria-label={i18nT('app.system_metrics')}
+        // Programmatically focusable so the open effect above can move the
+        // caret here; -1 keeps it out of the tab ring, which is right for a
+        // transient readout.
+        tabIndex={-1}
+        className="fixed z-[70] min-w-[176px] rounded-xl bg-card border border-border shadow-xl px-3 py-2.5 flex flex-col gap-1.5"
+        style={{ top: metricsPopoverAnchor.top, right: metricsPopoverAnchor.right }}
+      >
+        <div className="text-[11px] font-semibold text-text-strong">{i18nT('app.system_metrics')}</div>
+        {(() => {
+          // Same derivation as both readouts, from the one helper, so the
+          // popover cannot disagree with the inline form about what a partial
+          // frame means.
+          if (!sysMetrics) return <div className="text-[11px] text-muted">{i18nT('app.metrics_unavailable')}</div>
+          const { cpuValid, memValid, dskValid, m } = readMetricsFrame(sysMetrics)
+          const dskUsed = m.diskTotal - m.diskFree
+          const rows = [
+            { label: i18nT('app.cpu'), valid: cpuValid, pct: cpuValid ? m.cpuPct / 100 : NaN, detail: '' },
+            // used/total carries the unit ONCE, on the total: fmtUnit localizes
+            // the digits and the unit and glues them with a non-breaking space,
+            // while the used side is a bare localized number so the pair reads as
+            // one quantity instead of repeating the unit.
+            { label: i18nT('app.mem'), valid: memValid, pct: memValid ? m.memUsed / m.memTotal : NaN, detail: memValid ? `${fmtNumber(m.memUsed, { maximumFractionDigits: 1 })}/${fmtUnit(m.memTotal, 'gigabyte', { maximumFractionDigits: 1 })}` : '' },
+            { label: i18nT('app.dsk'), valid: dskValid, pct: dskValid ? dskUsed / m.diskTotal : NaN, detail: dskValid ? `${fmtNumber(dskUsed, { maximumFractionDigits: 0 })}/${fmtUnit(m.diskTotal, 'gigabyte', { maximumFractionDigits: 0 })}` : '' },
+          ]
+          return (
+            <>
+              {rows.map(r => (
+                <div key={r.label} className="flex items-baseline justify-between gap-4 text-[11px] font-mono tabular-nums">
+                  <span className="text-muted">{r.label}</span>
+                  <span className="flex items-baseline gap-1.5">
+                    {r.detail && <span className="text-muted text-[10px]">{r.detail}</span>}
+                    <span className={r.valid ? metricColor(r.pct) : 'text-muted'}>{r.valid ? fmtPercent(r.pct) : '\u2014'}</span>
+                  </span>
+                </div>
+              ))}
+              {sysMetricsStale && <div className="text-[10px] text-warn">{i18nT('app.metrics_are_stale_latest_fetch_failed')}</div>}
+            </>
+          )
+        })()}
+      </div>,
+      document.body
+    )}
     <KiroAccountModal open={kiroUsageOpen} onClose={() => setKiroUsageOpen(false)} usage={kiroUsageState} />
     <QuickSearchSurface
       owners={slotOwners}
