@@ -1073,6 +1073,70 @@ def _claim_dir_for_replacement(dest_dir: Path) -> Path | None:
     return claim
 
 
+def _manifest_is_newer(src_file: Path, dest_file: Path) -> bool:
+    """Whether the packaged manifest is newer than the installed one.
+
+    Both stats are guarded because this runs on the gateway's startup path while
+    another process (the CLI syncing the same home) may be claiming the very
+    destination being measured. The two outcomes are deliberately different:
+
+    * an unreadable DESTINATION means it vanished or was claimed mid-sync, so
+      installing the packaged version is the correct answer -- update-due;
+    * an unreadable SOURCE means the package itself cannot be read, and there is
+      nothing to install from, so the destination is left alone.
+
+    Raising instead would abort the whole sync for every remaining skill, which
+    is what an unguarded ``stat`` did once the tree walks widened the window
+    between the destination check and this comparison.
+    """
+    try:
+        dest_mtime = dest_file.stat().st_mtime
+    except OSError:
+        return True
+    try:
+        return src_file.stat().st_mtime > dest_mtime
+    except OSError:
+        return False
+
+
+def _tree_newest_mtime(root: Path) -> float | None:
+    """Newest mtime of any regular file in *root*, or None when unprovable.
+
+    The update gate needs to know whether a PACKAGED skill changed at all, not
+    whether its ``SKILL.md`` did: a skill directory ships scripts, profiles and
+    references alongside the manifest, and those are the files that carry the
+    behaviour. Walking for the newest mtime is what makes a script-only release
+    visible to the gate.
+
+    The provenance marker is excluded for the same reason
+    ``_tree_entries`` excludes it: the sync writes it AFTER copying, so its
+    mtime is install time and would dominate every destination tree, making a
+    later package update read as older than the copy it should replace — the
+    gate would then never fire again.
+
+    Returns None when the tree cannot be measured: an unreadable entry, or more
+    entries than ``_FINGERPRINT_MAX_ENTRIES``. None is not a comparable value,
+    so the caller falls back to the manifest comparison rather than guessing.
+    """
+    newest: float | None = None
+    entries = 0
+    for rel, kind, _value in _tree_entries(root):
+        entries += 1
+        if entries > _FINGERPRINT_MAX_ENTRIES:
+            return None
+        if kind == "unreadable":
+            return None
+        if kind != "file":
+            continue
+        try:
+            mtime = os.lstat(root / rel).st_mtime
+        except OSError:
+            return None
+        if newest is None or mtime > newest:
+            newest = mtime
+    return newest
+
+
 def _tree_has_content(root: Path) -> bool:
     """True when the tree holds anything worth preserving.
 
@@ -1269,17 +1333,47 @@ def _ensure_builtin_skills(base: Path) -> None:
     ``_FINGERPRINT_MAX_BYTES`` / ``_FINGERPRINT_MAX_ENTRIES``.
     """
     source_names: set[str] = set()
+    supplied: set[str] = set()
     for src_root in (_project_skills_dir(), _BUILTIN_SKILLS_DIR):
         if not src_root or not src_root.exists():
             continue
         for name, src_file in _iter_skill_files(src_root):
             source_names.add(name)
+            # First source root to ship a name owns it for this run. Without
+            # this, the second root races the copy the first just made: the
+            # destination is no longer user data but this run's own output, and
+            # which tree ends up installed is decided by comparing mtimes
+            # across two unrelated source trees. The project dir is iterated
+            # first, so a project skill is no longer replaced by a packaged
+            # one that merely carries a newer file.
+            if name in supplied:
+                continue
+            supplied.add(name)
             src_dir = src_file.parent
             dest_dir = base / name
             dest_file = dest_dir / "SKILL.md"
-            update_due = (
-                not dest_file.exists() or src_file.stat().st_mtime > dest_file.stat().st_mtime
-            )
+            # The manifest's own mtime is not a proxy for the skill's: a
+            # release that only changes ``scripts/`` leaves ``SKILL.md``
+            # byte-identical with its packaged mtime, so a manifest-only
+            # comparison reports "up to date" and the installed skill keeps
+            # running superseded code indefinitely. Observed on prepare-pr,
+            # whose extractor was fixed in the package while every install
+            # kept the previous copy and failed against the current workflow.
+            #
+            # Both arms are kept, OR-ed: the tree arm adds the updates the
+            # manifest arm cannot see, and the manifest arm still governs when
+            # the tree is unmeasurable or when a locally edited destination
+            # carries an mtime newer than anything the package ships. Since
+            # ``copytree`` copies with ``copy2``, an unmodified install
+            # fingerprints mtime-equal to its package, so a steady state does
+            # not re-copy on every startup.
+            update_due = not dest_file.exists()
+            if not update_due:
+                src_newest = _tree_newest_mtime(src_dir)
+                dest_newest = _tree_newest_mtime(dest_dir)
+                update_due = (
+                    src_newest is not None and dest_newest is not None and src_newest > dest_newest
+                ) or _manifest_is_newer(src_file, dest_file)
             if not update_due:
                 # First-install migration adoption: an up-to-date destination
                 # with no marker is from a pre-provenance install. Record
