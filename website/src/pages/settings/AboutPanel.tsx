@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Trans } from 'react-i18next'
 import { RefreshCw, Scale, CheckCircle2, AlertCircle, Bug, GitBranch, GitCommitHorizontal, ExternalLink, ArrowUp, History, Package, X, Download, Copy } from 'lucide-react'
-import { Link } from 'react-router-dom'
+import { SettingsLink } from '../../components/SettingsLink'
 import { Progress } from '@/components/ui/progress'
 import { Card, CardTitle, Btn, Toggle } from '../../components/ui'
 import { SettingsToggle } from '../../components/settings'
@@ -1782,13 +1782,13 @@ export function AboutPanel() {
             its own Releases panel and this is the link to it. See
             pages/settings/ReleasesPanel.tsx. */}
         <div className="mt-3 pt-3 border-t border-border">
-          <Link
-            to="/settings/releases"
+          <SettingsLink
+            tab="releases"
             className="text-[13px] text-accent hover:underline inline-flex items-center gap-1.5"
           >
             <History size={13} className="lucide-inline" aria-hidden="true" />
             {i18nT('pages.settings.aboutPanel.view_all_releases')}
-          </Link>
+          </SettingsLink>
         </div>
       </Card>
 

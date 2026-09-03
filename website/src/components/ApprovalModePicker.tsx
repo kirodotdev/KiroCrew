@@ -7,6 +7,7 @@ import { Popover, PopoverAnchor, PopoverContent } from './ui/popover'
 import { useAppDispatch, useAppSelector } from '../store'
 import { changeApprovalMode } from '../store/dashboardSlice'
 import { safeSetItem } from '../utils/safeStorage'
+import { settingsPath } from './settingsPath'
 
 import { i18nT } from '../i18n/t'
 /** Single source of truth for approval-mode presentation.
@@ -260,7 +261,7 @@ export default function ApprovalModePicker({ mode, slotKey, compact, openSignal,
               </div>
               <button
                 className="mt-1.5 text-[11px] text-muted hover:text-text underline bg-transparent border-none cursor-pointer p-0"
-                onClick={() => { onOpenChange(false); navigate('/settings/security/approval') }}
+                onClick={() => { onOpenChange(false); navigate(settingsPath({ tab: 'security', sub: 'approval' })) }}
               >
                 {i18nT('components.approvalModePicker.configure_duration')}
               </button>

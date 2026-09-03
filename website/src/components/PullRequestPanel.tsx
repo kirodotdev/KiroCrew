@@ -1,5 +1,4 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Link } from 'react-router-dom'
 import { withUnifiedPatchHeaders } from './unifiedPatchHeaders'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
@@ -45,7 +44,8 @@ import { Btn } from './ui'
 
 
 import { i18nT } from '../i18n/t'
-import { OWNER_SETTINGS_PATH, pullRequestErrorDetails } from '../utils/pullRequestErrors'
+import { OWNER_SETTINGS_TARGET, pullRequestErrorDetails } from '../utils/pullRequestErrors'
+import { SettingsLink } from './SettingsLink'
 import ErrorNotice from './ErrorNotice'
 const CHECK_POLL_BASE_MS = 10_000
 const CHECK_POLL_MAX_MS = 60_000
@@ -702,12 +702,12 @@ export function PullRequestActions({ source }: { source: PullRequestSource }) {
         confirm state (Cancel + Confirm are already there). */}
     {error && errorDetails.ownerNotConfigured && (
       <div className="mt-1.5">
-        <Link
-          to={OWNER_SETTINGS_PATH}
+        <SettingsLink
+          {...OWNER_SETTINGS_TARGET}
           className="inline-flex items-center gap-1 text-[11px] text-accent hover:underline"
         >
           {i18nT('components.pullRequestPanel.open_slack_settings')} <ArrowRight className="lucide-inline" />
-        </Link>
+        </SettingsLink>
       </div>
     )}
     </>

@@ -8,11 +8,11 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Send } from 'lucide-react'
 import { useEffect, useState } from 'react'
-import { Link } from 'react-router-dom'
 
 import { api } from '../../../api/client'
 import { i18nT } from '../../../i18n/t'
-import { OWNER_SETTINGS_PATH, pullRequestErrorDetails } from '../../../utils/pullRequestErrors'
+import { OWNER_SETTINGS_TARGET, pullRequestErrorDetails } from '../../../utils/pullRequestErrors'
+import { SettingsLink } from '../../../components/SettingsLink'
 
 const PUBLISH_EVENTS = ['COMMENT', 'REQUEST_CHANGES', 'APPROVE'] as const
 type PublishEvent = (typeof PUBLISH_EVENTS)[number]
@@ -282,9 +282,9 @@ export default function DraftReviewActions(
           {errDetails?.ownerNotConfigured && (
             <>
               {' '}
-              <Link to={OWNER_SETTINGS_PATH} className="text-accent hover:underline">
+              <SettingsLink {...OWNER_SETTINGS_TARGET}>
                 {i18nT('components.pullRequestPanel.open_slack_settings')}
-              </Link>
+              </SettingsLink>
             </>
           )}
         </div>

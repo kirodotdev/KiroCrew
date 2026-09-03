@@ -9,7 +9,6 @@
 // Writes go through the gateway's owner-only mutations, which hold the provider
 // credential and re-verify that the thread belongs to this pull request.
 import { useMemo, useState } from 'react'
-import { Link } from 'react-router-dom'
 import {
   Check, ChevronDown, ChevronRight, CornerDownRight, Loader2, MessageSquare,
   MessageSquarePlus, MessagesSquare, RotateCcw,
@@ -20,7 +19,8 @@ import { api } from '../api/client'
 import MarkdownRenderer from './MarkdownRenderer'
 import type { PullRequestComment, PullRequestSource } from '../types'
 import { platformShortcut } from '../utils/platform'
-import { OWNER_SETTINGS_PATH, pullRequestErrorDetails } from '../utils/pullRequestErrors'
+import { OWNER_SETTINGS_TARGET, pullRequestErrorDetails } from '../utils/pullRequestErrors'
+import { SettingsLink } from './SettingsLink'
 import { sourceProviderCapabilities } from '../utils/sourceProviderMeta'
 import { timeAgo } from '../utils/timeAgo'
 
@@ -241,9 +241,9 @@ function ReplyBox({
 /** The owner-not-configured recovery link, shared by every refusal surface here. */
 function OwnerSettingsLink() {
   return (
-    <Link to={OWNER_SETTINGS_PATH} className="text-accent hover:underline">
+    <SettingsLink {...OWNER_SETTINGS_TARGET}>
       {i18nT('components.pullRequestPanel.open_slack_settings')}
-    </Link>
+    </SettingsLink>
   )
 }
 

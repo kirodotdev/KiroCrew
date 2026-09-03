@@ -15,6 +15,7 @@ import type { SchemaEntry } from './resolveSettingRef'
 import { useConfigSchema } from './useConfigSchema'
 import { i18nT } from '../../i18n/t'
 import { toPathSegment } from '../subNavParams'
+import { settingsPath } from '../settingsPath'
 import { CopyCommandButton } from './CopyCommandButton'
 
 export interface SettingRefProps {
@@ -36,24 +37,18 @@ import type { EnvIntent } from './envShellCommands'
 /**
  * Build a safe internal route from a registry entry.
  * Route is constructed ONLY from registry data fields, never from the raw input string.
- * Mirrors tipActionRoute() validation posture. URLSearchParams handles the encoding.
+ * Delegates assembly to the shared settingsPath builder (segment codec + query
+ * encoding in one place); keeps the null contract for an invalid tab so the
+ * caller renders a plain <code> instead of a link to the settings root.
  * Uses highlight=key:<configKey> format so the consumer (useSettingHighlight) can
  * resolve directly via data-setting-key attribute, avoiding the label round-trip.
  */
 function buildSettingsRoute(tab: string, configKey: string): string | null {
-  // Shared codec, not bare encodeURIComponent: toPathSegment additionally
-  // rejects the dot-only values ('.', '..') whose percent-forms the WHATWG
-  // URL parser still resolves as dot-segments — a crafted registry tab must
-  // not mint a route that normalizes outside /settings.
-  const seg = toPathSegment(tab)
-  if (!seg) return null
-  const params = new URLSearchParams({ highlight: `key:${configKey}` })
-  const route = `/settings/${seg}?${params.toString()}`
-  // Final safety: must start with '/', must not be '//' or contain '://'
-  if (!route.startsWith('/') || route.startsWith('//') || route.includes('://')) {
-    return null
-  }
-  return route
+  // toPathSegment rejects the dot-only values ('.', '..') whose percent-forms
+  // the WHATWG URL parser still resolves as dot-segments — a crafted registry
+  // tab must not mint a route that normalizes outside /settings.
+  if (!toPathSegment(tab)) return null
+  return settingsPath({ tab, highlight: `key:${configKey}` })
 }
 
 /**

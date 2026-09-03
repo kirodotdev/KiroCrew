@@ -10,9 +10,12 @@
  * surface that happened to be fixed first.
  */
 import { i18nT } from '../i18n/t'
+import type { SettingsTarget } from '../components/settingsPath'
 
-/** Where the owner-not-configured guidance sends the user. */
-export const OWNER_SETTINGS_PATH = '/settings/channels/slack'
+/** Where the owner-not-configured guidance sends the user — rendered via
+ *  <SettingsLink {...OWNER_SETTINGS_TARGET}> so every refusal surface mints
+ *  the same route through the shared settingsPath builder. */
+export const OWNER_SETTINGS_TARGET: SettingsTarget = { tab: 'channels', sub: 'slack' }
 
 export function pullRequestErrorDetails(error: unknown): {
   message: string
