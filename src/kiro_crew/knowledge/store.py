@@ -409,9 +409,25 @@ class KnowledgeStore:
         # see `_fts_terms_segmented`.
         self._fts_segmented: bool | None = None
         self.graph = SimpleDiGraph()
-        self._init_schema()
-        self._migrate()
-        self._load_graph()
+        # This constructor runs on the event-loop thread by documented design
+        # (see the thread-affinity note above). It is not an edge case:
+        # `setup_knowledge_routes()` reads the gateway's lazy `knowledge_store`
+        # property at route registration, which `start_dashboard` runs BEFORE
+        # the socket binds, so construction happens on the loop on every
+        # launch. The take is deliberate, so the on-loop guard -- which exists
+        # to police reader/writer query paths -- warned spuriously on every
+        # boot (#8231). Deliberate is not free, though: `_migrate()` runs an
+        # unconditional writer-locked orphan sweep and `_load_graph()`
+        # full-scans two tables, both data-scaled (only the FTS rebuild is
+        # deferred to the first off-loop reader). Moving that work off the
+        # boot path is #8329; suppressing the diagnostic for the sanctioned
+        # take is all this block does. The suppression ends with the block:
+        # the six non-constructor `_load_graph()` call sites and every query
+        # path stay fully guarded.
+        with _ON_LOOP_DB_GUARD.allow_on_loop():
+            self._init_schema()
+            self._migrate()
+            self._load_graph()
 
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self._db_path, timeout=30, isolation_level=None)

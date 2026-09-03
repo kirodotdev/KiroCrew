@@ -23,9 +23,12 @@ pipeline that silently does nothing cannot pass.
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import contextvars
 import threading
 import time
 import traceback
+from typing import Iterator
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -42,18 +45,39 @@ class _RecordingGuard:
     Deliberately records-and-proceeds rather than raising: a raise would be
     caught by the pipeline's per-chunk ``except Exception`` and the violation
     would vanish. Off-loop takes are the sanctioned path and are ignored, exactly
-    as the real guard ignores them.
+    as the real guard ignores them -- and so is a take inside an
+    ``allow_on_loop()`` block (the store constructor's vetted schema init,
+    #8231), mirroring the real guard so construction noise cannot masquerade
+    as a pipeline violation.
     """
 
     def __init__(self) -> None:
         self.takes: list[str] = []
+        self._allow: contextvars.ContextVar[bool] = contextvars.ContextVar(
+            "recording_guard_allow_on_loop", default=False
+        )
 
     def check(self) -> None:
         try:
             asyncio.get_running_loop()
         except RuntimeError:
             return  # off-loop: the sanctioned path
+        if self._allow.get():
+            return  # inside a vetted allow_on_loop() block, as the real guard
         self.takes.append("".join(traceback.format_stack(limit=8)))
+
+    @contextlib.contextmanager
+    def allow_on_loop(self) -> Iterator[None]:
+        # Value-based restore, not token reset: semgrep/contextvar-token-reset
+        # bans token-based reset under test/** because pytest-xdist shares the
+        # worker's main-thread Context across tests. (The production guard
+        # keeps the token form -- the rule's own comment calls that canonical.)
+        previous = self._allow.get()
+        self._allow.set(True)
+        try:
+            yield
+        finally:
+            self._allow.set(previous)
 
     def reset_throttle(self) -> None:  # pragma: no cover - API parity only
         pass

@@ -13,15 +13,22 @@ inference. Closing that interprocedural half is what #3057 called remedy A: put
 the check at the store's connection accessor, where it fires for every caller
 regardless of how deep in the stack the call sits.
 
-Adopting the guard in a store is two lines: build one module-level
+Adopting the guard in a store is two lines: build one MODULE-LEVEL
 :class:`OnLoopDBGuard` and call :meth:`OnLoopDBGuard.check` at the top of the
-connection accessor.
+connection accessor. Module-level is load-bearing, not a style preference:
+each guard owns a ``ContextVar``, and CPython never collects a ``ContextVar``
+that any ``Context`` has seen, so building guards per short-lived object
+would leak them.
 
 ``history.py`` keeps its own guard rather than adopting this one. Its
-:class:`~kiro_crew.history.OnLoopPersistError` subclasses ``AssertionError`` and
-it carries a ``ContextVar`` opt-out for the tests that drive its low-level
-``_locked`` primitive on purpose -- semantics this module does not reproduce and
-that PR must not change.
+:class:`~kiro_crew.history.OnLoopPersistError` subclasses ``AssertionError``,
+a semantic this module deliberately does not reproduce (see
+:class:`OnLoopStoreError`), and that PR must not change. History's
+``ContextVar`` opt-out IS mirrored here since #8231 -- as the per-instance
+:meth:`OnLoopDBGuard.allow_on_loop` -- but scoped per guard rather than
+module-wide, so one store's vetted take cannot mute another's diagnostic;
+the two guards stay separate because their error taxonomies and strictness
+switches differ, not because the opt-out does.
 
 A NOTE ON THE STRICTNESS SWITCH, because it is the subtle part. "Strict" means
 "this surface is fully offloaded, so enforce it". That is a property of a
@@ -37,9 +44,12 @@ parser, one spelling of the truthy/falsy rules, one switch per surface.
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import contextvars
 import logging
 import os
 import time
+from typing import Iterator
 
 from kiro_crew.constants import ENV_TRUTHY
 
@@ -110,7 +120,14 @@ class OnLoopDBGuard:
     than the module-level globals the pattern's first copies used.
     """
 
-    __slots__ = ("_label", "_remedy", "_strict_env", "_include_dev_mode", "_warn_last")
+    __slots__ = (
+        "_label",
+        "_remedy",
+        "_strict_env",
+        "_include_dev_mode",
+        "_warn_last",
+        "_allow_on_loop",
+    )
 
     def __init__(
         self,
@@ -147,11 +164,45 @@ class OnLoopDBGuard:
         # the very first warning could fall inside the throttle window and be
         # swallowed -- exactly the diagnostic that matters most.
         self._warn_last: float | None = None
+        # Per-INSTANCE and a ``ContextVar`` rather than a plain flag:
+        # async-safe, thread-safe, and impossible to leave set by accident --
+        # the token reset in :meth:`allow_on_loop` restores the previous value
+        # even on an exception. Mirrors ``history._allow_on_loop_persist``.
+        # CPython documents ContextVars as top-level objects (a ``Context``
+        # holds strong references, so one created per short-lived object is
+        # never collected); that is safe here ONLY because guards are
+        # module-level singletons -- the adoption note in the module docstring
+        # states that requirement. The label is slugified because it is human
+        # prose ("knowledge store") and the var name should stay a readable
+        # identifier in reprs and debuggers.
+        self._allow_on_loop: contextvars.ContextVar[bool] = contextvars.ContextVar(
+            "kirocrew_allow_on_loop_db_" + "_".join(label.split()), default=False
+        )
 
     @property
     def strict(self) -> bool:
         """Whether this guard is currently in raising mode."""
         return strict_enabled(strict_env=self._strict_env, include_dev_mode=self._include_dev_mode)
+
+    @contextlib.contextmanager
+    def allow_on_loop(self) -> Iterator[None]:
+        """Scoped opt-out: suppress THIS guard for the calls inside the block.
+
+        For the rare call-site that touches the connection on the loop
+        *deliberately and by documented design* -- e.g. a store constructor
+        whose init is a vetted, intentionally synchronous take (not a cheap
+        one: the work may be data-scaled, as the knowledge store's is). The
+        suppression is bounded by the ``with`` block and carried by a
+        ``ContextVar``, so it neither leaks to other tasks on the same loop
+        nor to other threads, and the guard stays fully armed on every real
+        reader/writer path. Production code outside a constructor-shaped
+        setup path must offload instead of reaching for this.
+        """
+        token = self._allow_on_loop.set(True)
+        try:
+            yield
+        finally:
+            self._allow_on_loop.reset(token)
 
     def check(self) -> None:
         """Enforce (strict) or diagnose (production) an on-loop connection take.
@@ -164,6 +215,8 @@ class OnLoopDBGuard:
             asyncio.get_running_loop()
         except RuntimeError:
             return  # off-loop: the sanctioned path -- nothing to flag
+        if self._allow_on_loop.get():
+            return  # inside a vetted allow_on_loop() block -- sanctioned
         if self.strict:
             raise OnLoopStoreError(
                 f"{self._label} connection taken on the event loop; a contended "
