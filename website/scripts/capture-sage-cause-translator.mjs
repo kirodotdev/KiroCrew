@@ -96,6 +96,19 @@ const CAUSES = [
     expect: 'repair with `kirocrew setup --agent-only --clean`',
     verbatim: true,
   },
+  {
+    // The reword case. This sentence is NOT one the backend emits -- it is what
+    // any of the cases above becomes the day someone rewords it, and no prose
+    // branch matches it. Before the run payload carried the cause as a token this
+    // card showed exactly this raw string; it now translates, because the token
+    // travels beside the sentence. Keeping it in the scene makes the reword class
+    // visible instead of only unit-tested.
+    id: 'reworded-cause-keyed-by-token',
+    pr: 46,
+    error: 'the reviewer stopped before it finished',
+    reason: 'review_record_incomplete',
+    expect: 'Reviewer wrote a findings record but stopped before completing the review.',
+  },
 ]
 
 const runFor = (cause, index) => {
@@ -113,7 +126,17 @@ const runFor = (cause, index) => {
     started_at: new Date(started).toISOString(),
     finished_at: new Date(started + 30_000).toISOString(),
     error: cause.error,
-    progress: { [changeId]: { phase: 'failed', error: cause.error } },
+    // `reason` is the backend's cause TOKEN, sent beside the sentence. Only the
+    // reword fixture carries one; the rest deliberately omit it, so they keep
+    // proving the prose branches on their own -- which is also the shape of every
+    // run already stored on disk.
+    ...(cause.reason ? { reason: cause.reason } : {}),
+    progress: {
+      [changeId]: {
+        phase: 'failed', error: cause.error,
+        ...(cause.reason ? { reason: cause.reason } : {}),
+      },
+    },
     summary: { red: 0, yellow: 0, green: 0 },
     report_slug: null,
   }
@@ -232,6 +255,22 @@ async function main() {
     const cardText = lines.find(t => t.includes(cause.expect) && t.length < 300) || ''
     if (cardText.includes(cause.error.slice(0, 40))) {
       throw new Error(`${cause.id} card still shows the backend wording: ${cardText}`)
+    }
+  }
+  // The check above finds a card BY its expected sentence, so it cannot see a
+  // regression on a cause whose sentence another fixture also renders: the
+  // `find` returns the sibling's healthy card and the broken one is never
+  // examined. Two fixtures here do share a sentence on purpose (one reaches it
+  // through prose, one through the token), so assert the complement as well --
+  // no cause's raw backend wording may appear ANYWHERE in the list. Untranslated
+  // text is a defect wherever it surfaces, so the weaker per-card form was never
+  // the property worth checking.
+  for (const cause of CAUSES.filter(c => !c.verbatim)) {
+    const fingerprint = cause.error.slice(0, 40)
+    const leaked = lines.find(t => t.includes(fingerprint))
+    if (leaked) {
+      throw new Error(
+        `${cause.id} rendered untranslated backend wording: ${leaked}`)
     }
   }
   console.log(`OK list: ${CAUSES.length} causes render, each with its own sentence`)

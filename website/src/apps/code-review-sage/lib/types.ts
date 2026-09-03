@@ -34,6 +34,12 @@ export interface RunProgressEntry {
   posted?: number
   expected?: number
   error?: string
+  /** The failure cause as a stable backend token (`skipped_reason`), carried
+   *  BESIDE `error` rather than instead of it. `error` is prose, so keying a
+   *  translation off it alone means a backend rewording silently drops the card
+   *  to untranslated pass-through. Absent on runs recorded before the backend
+   *  carried it, and on non-failure phases. */
+  reason?: string
   coverage?: string
 }
 
@@ -81,6 +87,10 @@ export interface Run {
   summary?: RunSummary
   report_slug?: string | null
   error?: string
+  /** The run-level failure cause as a stable backend token, beside `error`.
+   *  Named to mirror `RunProgressEntry.reason` so the token resolves through the
+   *  same per-change-then-run precedence the prose already uses. */
+  reason?: string
   force?: boolean
   skipped_inflight?: number
   /** Set once this run's findings have been published to the pull request. */

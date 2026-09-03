@@ -1094,7 +1094,8 @@ def run_review(changes: list[str], *, dispatch=None, archiver=_default_archiver,
         failed_records: list[dict] = []
         for link in changes:
             change_id = _cid(link)
-            progress(change_id, "failed", {"error": runtime_error})
+            progress(change_id, "failed", {
+                "error": runtime_error, "reason": "runtime_unavailable"})
             failed_records.append({
                 "change": link, "change_id": change_id,
                 "gate_spawn_ok": False, "gate_error": runtime_error,
@@ -1212,7 +1213,8 @@ def run_review(changes: list[str], *, dispatch=None, archiver=_default_archiver,
             review_prompt = build_review_task(link)
         except pipeline.adapters.AdapterError as exc:
             refused = f"refusing to review: {exc}"
-            progress(change_id, "failed", {"error": refused})
+            progress(change_id, "failed", {
+                "error": refused, "reason": "review_failed"})
             return {
                 "change": link, "change_id": change_id,
                 "gate_spawn_ok": False, "gate_error": refused,
@@ -1264,7 +1266,9 @@ def run_review(changes: list[str], *, dispatch=None, archiver=_default_archiver,
         # already-written verdicts/findings.
         if not review_spawn.get("ok", False):
             rec["skipped_reason"] = "review_failed"
-            progress(change_id, "failed", {"error": review_spawn.get("error", "review failed")})
+            progress(change_id, "failed", {
+                "error": review_spawn.get("error", "review failed"),
+                "reason": "review_failed"})
             return rec
         if not rec["deep_reviewed"]:
             if rev_rec is None:
@@ -1274,14 +1278,17 @@ def run_review(changes: list[str], *, dispatch=None, archiver=_default_archiver,
                 # consumers key on; environment failures are discriminated by
                 # the preflight before any dispatch.
                 rec["skipped_reason"] = "no_review_recorded"
-                progress(change_id, "failed", {"error": "review produced no result record"})
+                progress(change_id, "failed", {
+                    "error": "review produced no result record",
+                    "reason": "no_review_recorded"})
             else:
                 # A record landed but never marked the review complete: the
                 # worker got far enough to write, then stopped short. Distinct
                 # from "wrote nothing" so the two can be triaged apart.
                 rec["skipped_reason"] = "review_record_incomplete"
                 progress(change_id, "failed", {
-                    "error": "review wrote a result record but never completed the review"})
+                    "error": "review wrote a result record but never completed the review",
+                    "reason": "review_record_incomplete"})
             return rec
 
         # --- Bounded coverage backstop: AT MOST ONE targeted follow-up, and only

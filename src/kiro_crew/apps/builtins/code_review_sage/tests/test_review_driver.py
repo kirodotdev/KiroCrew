@@ -315,6 +315,97 @@ class TestReviewDriver(unittest.TestCase):
         out = D.run_review([], dispatch=self._fake_dispatch(), root=self.root, post=True)
         self.assertFalse(out["ok"])
 
+    # ── The per-change progress entry must name its cause as a TOKEN ──
+    # Every failure path below already puts the token on its per_change RECORD
+    # (`skipped_reason`), but the record is driver-internal: what the dashboard
+    # reads is the `progress` entry, which carried prose only. So the cause had to
+    # be recognized by its wording, and rewording any message below silently
+    # reverted the card to untranslated pass-through with no test going red.
+    # These assert the token travels with the sentence on the entry itself, and
+    # that it AGREES with the record on the same path.
+
+    def _failed_entry(self, cid: str, **kw) -> dict:
+        """Drive ``run_review`` and return the `failed` progress entry for ``cid``."""
+        entries: dict = {}
+
+        def prog(c, phase, extra=None):
+            if phase == "failed":
+                entries[c] = dict(extra or {})
+
+        out = D.run_review([cid], generate_report=False, root=self.root,
+                           post=True, progress=prog, **kw)
+        self.out = out
+        return entries.get(cid, {})
+
+    def test_progress_entry_names_no_review_recorded(self):
+        entry = self._failed_entry(
+            "CR-7", dispatch=lambda task, timeout=0: {"ok": True, "output": "", "error": ""})
+        self.assertEqual(entry.get("reason"), "no_review_recorded")
+        # The sentence is unchanged -- the token is carried BESIDE it.
+        self.assertEqual(entry.get("error"), "review produced no result record")
+        self.assertEqual(self.out["per_change"][0]["skipped_reason"], entry.get("reason"))
+
+    def test_progress_entry_names_review_record_incomplete(self):
+        def partial(task, timeout=0):
+            results.write_result({
+                "schema": "code-review-sage-result", "version": 1, "change_id": "CR-8",
+                "platform": "github", "repo_identity": "github.com/o/r", "revision": "1",
+                "phase1": {"gate_verdict": "PASS", "design_risk": "low",
+                           "criticality": "low"},
+                "blast_radius": {"rating": "SMALL", "signals": {}},
+                "counts": {"red": 0, "yellow": 0}, "findings": [],
+                "deep_reviewed": False, "title": "CR-8",
+                "files_covered": [], "coverage_complete": True,
+            }, self.root)
+            return {"ok": True, "output": "", "error": ""}
+
+        entry = self._failed_entry("CR-8", dispatch=partial)
+        self.assertEqual(entry.get("reason"), "review_record_incomplete")
+        self.assertIn("never completed", entry.get("error", ""))
+        self.assertEqual(self.out["per_change"][0]["skipped_reason"], entry.get("reason"))
+
+    def test_progress_entry_names_review_failed(self):
+        entry = self._failed_entry(
+            "CR-9",
+            dispatch=lambda task, timeout=0: {"ok": False, "output": "", "error": "boom"})
+        self.assertEqual(entry.get("reason"), "review_failed")
+        # The spawn's own text, which for this cause is the information: it can be
+        # a missing-agent-spec message carrying its own repair command, so the
+        # sentence must survive alongside the (generic) token.
+        self.assertEqual(entry.get("error"), "boom")
+        self.assertEqual(self.out["per_change"][0]["skipped_reason"], entry.get("reason"))
+
+    def test_progress_entry_names_runtime_unavailable(self):
+        entries: dict = {}
+
+        def prog(cid, phase, extra=None):
+            if phase == "failed":
+                entries[cid] = dict(extra or {})
+
+        out = D.run_review(
+            ["CR-1", "CR-2"], dispatch=self._fake_dispatch(),
+            generate_report=False, root=self.root, post=True, progress=prog,
+            preflight=lambda: "the reviewer cannot run: no kiro-cli executable "
+                              "was found on this host")
+        # Every change of a preflight-failed run, not just the first.
+        for cid, rec in zip(("CR-1", "CR-2"), out["per_change"]):
+            self.assertEqual(entries[cid].get("reason"), "runtime_unavailable")
+            self.assertIn("kiro-cli", entries[cid].get("error", ""))
+            self.assertEqual(rec["skipped_reason"], entries[cid].get("reason"))
+
+    def test_progress_entry_names_a_refused_host_as_review_failed(self):
+        # `build_review_task` fails CLOSED when the link's host no longer
+        # revalidates. Patched rather than reached through a crafted URL so the
+        # test pins THIS site's payload, not the host-allowlist rules.
+        def refuse(link):
+            raise D.pipeline.adapters.AdapterError("host is not allowed")
+
+        with mock.patch.object(D, "build_review_task", refuse):
+            entry = self._failed_entry("CR-6", dispatch=self._fake_dispatch())
+        self.assertEqual(entry.get("reason"), "review_failed")
+        self.assertIn("refusing to review", entry.get("error", ""))
+        self.assertEqual(self.out["per_change"][0]["skipped_reason"], entry.get("reason"))
+
     def test_review_task_covers_design_and_is_single_pass(self):
         task = D.build_review_task("https://github.com/o/r/pull/7")
         self.assertIn("ISOLATED", task)
