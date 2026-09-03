@@ -2248,6 +2248,13 @@ restart. An accepted in-flight wake persists its finite completion-evidence
 deadline and resumes that deadline after restart; an older claim with no deadline
 is retained, inactive, and blocked. A persisted `BUSY` claim intentionally has no
 completion deadline and resumes its existing `next_due_ts` retry after restart.
+Before a spent BUSY claim becomes terminal, its settlement path also clears any
+late transport-acceptance marker, so an inactive budget record cannot retain an
+accepted turn that no completion timer owns.
+Terminal dashboard-notification delivery is a separate persisted bit on the
+monitor record. The service marks it only for the exact `(id, outcome, stopped_at)`
+generation still retained, so a delayed delivery acknowledgement cannot mark a
+new terminal generation or replacement monitor as notified.
 Future versions also fail closed, are persisted inactive, and are never armed;
 their opaque monitor payload remains preserved for a newer gateway. Malformed
 current-version payloads load through a valid, inactive
@@ -2268,7 +2275,20 @@ assembles its HTTP application.
 
 `MonitorController` currently accepts only a public GitHub pull request with the
 `review_ready` objective. The typed provider probe runs off the event loop. The
-controller persists canonical allowlisted facts, fingerprint, dedicated latest
+provider observes pull-request lifecycle, mergeability, review decision,
+unresolved review threads, and check conclusions. Generic issue/pull-request
+comments and advisory review findings that are not represented by those typed
+facts remain outside its completion predicate; a babysit objective that depends
+on them routes directly to a finite legacy loop instead of asking the structured
+tool to represent an evidence scope it cannot enforce. The fallback recipe
+sets `gate: false` so provider-fact gating cannot suppress cycles that must inspect
+unobserved comments or advisory feedback. The prepare-pr recipe likewise disables
+provider gating and pairs its 80-cycle poll budget with an explicit 24-hour runtime
+cap, so the four-hour default does not truncate its longer review loop.
+Legacy monitor MCP
+calls require positive cycle and runtime caps; omitted caps default to 24 cycles
+and 14,400 seconds. The controller persists canonical allowlisted facts,
+fingerprint, dedicated latest
 classification/reason fields, error counters, decision, and next deadline
 before returning. `last_observation` remains the GitHub fact snapshot; it never
 contains the typed fingerprint, status, reason, or summary. A provider error updates
@@ -2277,6 +2297,14 @@ fingerprint. `NO_CHANGE`, `RECORD_ONLY`,
 `RETRY_PROVIDER`, and all terminal decisions dispatch zero agent turns. Retryable
 provider errors use bounded exponential backoff; terminal provider, success,
 blocked, and budget outcomes remain inspectable with stable reason codes.
+The gateway emits one dashboard notification when a structured record first
+reaches success, blocked, budget, or target-unavailable. This reports a terminal
+outcome without waking the owning conversation or spending another agent turn.
+Each notice names the target pull request and uses the retained stop reason:
+merged, ready for review, closed unmerged, and provider or delivery problems
+carry different recovery guidance rather than a generic completion claim.
+The complete notification body, including its retained target, is URL- and
+credential-redacted before it reaches dashboard notification persistence.
 An incomplete persisted or cancelled handoff with no typed delivery marker is
 normalized onto the bounded BUSY retry path; an untyped dispatcher result fails
 closed as unavailable instead of orphaning the durable claim. Transient Slack or
@@ -2299,11 +2327,26 @@ Monitor wake instructions are length-checked again after credential and URL
 redaction, so a replacement marker cannot expand a valid input into an invalid
 persisted record. An active record loaded without a wired controller is retained
 as a terminal blocked outcome instead of an inactive nonterminal state.
+The controller's pre-probe budget stop uses the same replacement-first ordering,
+so a failed terminal write leaves the active record armed and restart-consistent
+instead of resurrecting work the live process considered exhausted.
+The shared direct budget helper records `STOP_BUDGET` and retains a finite
+completion timer when a transport already accepted the current wake; it never
+cancels the only remaining owner of that completion evidence.
 Known actionable GitHub facts (failed checks, requested changes, unresolved
 review threads, and merge blockers) take precedence over simultaneous pending or
 unknown facts. For an actionable classification its deduplication fingerprint
 contains the known blockers but excludes unrelated pending/unknown check churn;
 the full allowlisted canonical observation remains available for inspection.
+Before any fresh provider probe or persisted `BUSY` redispatch, the controller
+persists a terminal budget outcome when a positive runtime, completed-turn, or
+reported-token limit is already spent; an exhausted monitor therefore performs
+neither another provider request nor another action attempt. A previously
+accepted `DISPATCHED` wake still waits for its completion evidence or its bounded
+evidence deadline instead of being cancelled by this check. Token enforcement
+uses the usage values the provider reports; the public `token_usage_known` field
+states whether every completed turn supplied them, while runtime and completed-
+turn limits remain hard fallbacks.
 
 A new actionable fingerprint atomically records `last_wake_fingerprint` and
 `wake_in_flight=True` before delivery. Concurrent or restarted ticks cannot
@@ -2514,7 +2557,10 @@ unsupported, refused by authorization, or otherwise not applied records a
 `denied` directive outcome rather than a successful application.
 The same rule covers a structured stop whose authorization or audit-before-stop
 step fails; only an idempotent stop with no structured record is a success.
-`monitor_inspect` alone is a direct read: it requires a
+A create acknowledgement is therefore only pending until the current turn ends; the
+operator may confirm application in the dashboard, while the agent can inspect
+only from a later user/wake turn. `monitor_inspect` alone is a direct read: it
+requires a
 strict authenticated session key and reports unavailable rather than using
 ancestor fallback. Inspect, structured stop, its directive consumer, and the
 strict-internal session read all use the narrower structured binding resolver,
@@ -2669,9 +2715,9 @@ After a successful legacy stop, the chat clears that slot's REST snapshot before
 the Redux record, so reopening the editor while WebSocket delivery is unavailable cannot
 revive the stopped loop from cached state.
 The public monitor projection used by list, slot, WebSocket, and authenticated
-`monitor_inspect` reads includes the canonical `last_observation` plus the dedicated
-`last_observation_status` and `last_observation_reason_code`; persistence-only and raw
-provider fields remain excluded.
+`monitor_inspect` reads includes `token_usage_known`, the canonical `last_observation`,
+and the dedicated `last_observation_status` and `last_observation_reason_code`;
+persistence-only and raw provider fields remain excluded.
 The projection reconstructs GitHub facts from fixed root and check-bucket allowlists
 with a deep copy. Unknown persisted keys are omitted, and an incomplete or malformed
 canonical shape projects as an empty observation; non-string enum fields fail

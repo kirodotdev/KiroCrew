@@ -312,7 +312,8 @@ Probe execution never enters the owning chat session. `WAKE_ACTIONABLE` requests
 one normal turn on the existing session. The monitor marks that fingerprint as
 in-flight before dispatch so another timer cannot enqueue a duplicate.
 Probe decisions are staged and fsynced before changing the live record or timer,
-so persistence failure cannot leave an actionable claim only in memory. The
+and pre-probe budget stops persist their terminal replacement before disarming
+the live record, so persistence failure cannot diverge memory from restart state. The
 claim is revalidated both before transport handoff and at each surface's final,
 yield-free turn-start boundary. Dashboard performs that final check in its runner
 after pre-turn setup, then crosses SessionManager's synchronous shutdown gate
@@ -590,7 +591,8 @@ Primary areas:
 
 - replace the pull-request babysit recipe with `monitor_watch` instructions;
 - remove the prompt-owned sidecar progress protocol;
-- retain legacy guidance only for unsupported targets, clearly marked as costly;
+- retain costly legacy guidance for unsupported targets and objectives whose
+  required evidence the typed provider does not observe;
 - add product documentation and migration notes;
 - evaluate legacy goal-loop deprecation from collected metrics.
 
@@ -605,8 +607,8 @@ Exit criteria:
 - The supported pull-request path contains no repeated polling turns.
 - Completion is controller-owned rather than dependent on the model remembering to
   stop itself.
-- Legacy prompt loops remain functional for unsupported use cases until a separate
-  removal decision is approved.
+- Legacy prompt loops remain functional for unsupported targets and unobserved
+  evidence until a separate removal decision is approved.
 
 ## Backward compatibility and rollout
 

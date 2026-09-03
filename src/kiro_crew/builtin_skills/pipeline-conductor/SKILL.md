@@ -117,15 +117,12 @@ never relabel it success in the friction report.
    provenance entry and for the whole-map write rule.
 3. Open your own status file beside the spec — `conductor-status/v1`, schema
    below. The ledger tracks the items; the status file tracks YOU.
-4. Arm the patrol: `monitor_start` (interval ~90s) with the standing
-   instruction below. **Patrol with `monitor_start`, never `wait`.** Pass
-   `max_cycles` explicitly — the default is 24, so a 90-second patrol expires in
-   well under an hour, long before a fleet drains, and the loop simply stops
-   with no symptom. Size it to the run, raise it mid-run with `monitor_update`,
-   or pass `max_runtime_secs` when a wall-clock bound fits better than a cycle
-   count. Call
-   `autonudge_stop` yourself when the exit condition fires — coasting into the
-   cycle cap is a failure, not a finish.
+4. Arm the patrol with `monitor_start` using an interval near 90 seconds, an
+   explicit `max_cycles=960`, and an explicit `max_runtime_secs=259200`. **Patrol
+   with `monitor_start`, never `wait`.** If live work needs a larger or renewed
+   bound, raise it with `monitor_update` before it expires; `monitor_start` is
+   create-only. Call `autonudge_stop` yourself when the exit condition fires —
+   coasting into the cycle cap is a failure, not a finish.
 
 Standing patrol instruction template (keep it CURRENT — steering edits go here
 via `monitor_update`, see "Live steering"):

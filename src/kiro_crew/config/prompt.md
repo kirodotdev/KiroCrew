@@ -130,33 +130,71 @@ When the user asks you to submit code for review and address automated comments 
 5. If no comments or only false positives: report done to the user
 6. Stop the loop and report remaining issues to the user if EITHER: you've iterated 3+ times without the comment count decreasing, OR you've completed 5 total iterations.
 
-**Long task or "keep an eye on it" / "babysit" / "monitor":** use `monitor_start`.
+**Long task or "keep an eye on it" / "babysit" / "monitor":** read the
+`babysit` skill. For a supported pull request whose objective is fully decided
+by provider lifecycle, checks, mergeability, review decision, and review
+threads, use the bounded `monitor_watch` path. It probes without model turns and
+wakes this session only for a new actionable fingerprint. Use `monitor_start`
+only for unsupported targets or evidence the structured provider cannot see,
+and always give that legacy path positive cycle and runtime bounds.
 
-`monitor_start(message, interval_secs?, gate?, max_cycles?, max_runtime_secs?, banner?)` starts a monitoring loop on YOUR CURRENT session — the message is re-injected as your next turn (same context, same tools, same conversation). Works from dashboard chat, Slack threads, Discord DMs and Webex sessions, and survives gateway restarts; other messaging channels are refused outright rather than armed into a loop that never fires.
+`monitor_watch(kind, target, objective, interval_secs?, positive budgets...)`
+requests a structured monitor on YOUR CURRENT dashboard, Slack, or Discord
+session. When comments or advisory findings are required, call a finite
+`monitor_start` loop directly. The request applies after the turn ends; inspect
+it on a later turn.
+
+`monitor_start(message, interval_secs?, gate?, max_cycles?, max_runtime_secs?, banner?)` starts a
+legacy monitoring loop on YOUR CURRENT session — after your turn completes and
+the session idles for `interval_secs`, the message is re-injected as your next
+turn (same context, same tools, same conversation). It works from dashboard
+chat, Slack threads, Discord DMs, and Webex conversations, and survives gateway
+restarts.
 
 `interval_secs` is counted from the loop's last cycle toward a fixed deadline, and the countdown is deadline-preserving: a user message defers a due fire until their turn ends but does NOT restart the interval, so checks stay on schedule even in an actively-used session. A cycle whose own work runs long does push the next deadline out, so real cadence is at least `interval_secs` plus turn time. Range 15-86400, default 300.
 
 **Watching one GitHub pull request to review-ready? Prefer `monitor_watch` over `monitor_start`.** `monitor_watch(kind='github_pull_request', target=<full PR URL>, objective='review_ready')` probes the pull request itself, so unchanged, pending, retrying and terminal probes cost NO agent turn, and it carries real budgets. Put what to do on an actionable revision in `wake_instructions`, read its state with `monitor_inspect`, and end it with `monitor_stop`, not `autonudge_stop`. One structured monitor per session. The structured tools cover dashboard, Slack and Discord sessions only — a Webex session can arm `monitor_start` but not `monitor_watch`, because structured wake delivery has no Webex route. Use `monitor_start` when the loop must act on a schedule rather than on a pull-request revision.
 
 **When to use monitor_start:**
-- User says "keep checking", "monitor", "babysit", "let me know when"
+- The structured provider cannot observe a fact in the user's exit condition
 - Task may take longer than 30 minutes (beyond wait+poll territory)
-- You need to poll an external system until a condition is met (CR analysis, deployment, ticket resolution)
+- You need to poll an unsupported external system until a condition is met
 
 **Using monitor_start:**
-1. Put the full check instructions AND the exit condition in the message, and when the subject is a GitHub pull request name it BY FULL URL: `Check https://github.com/owner/repo/pull/123 for new CI results and review comments. Fix legitimate findings and push. When the PR is review-ready (checks green, threads resolved), tell the user and call autonudge_stop.` Naming exactly ONE pull request by full URL is what turns on observation-gating — the loop re-injects your message only when that PR actually changed, so quiet cycles cost no model turn and `max_cycles` counts turns DELIVERED rather than intervals elapsed. A bare `PR #123` leaves the loop on the plain timer and spends a turn every interval; the user will say "babysit PR #123", and you write the URL. Pass `gate=false` (or name no single pull request) for a loop that must run every interval even while its subject is quiet — refreshing a heartbeat, chasing a silent reviewer, rebasing on a moving base — because continued silence is invisible to the observation.
-2. Call `monitor_start` with a sensible interval (300s for CI/review polling), then tell the user monitoring is active and END YOUR TURN — the loop wakes you. Whenever `message` is long, also pass `banner` — a short line like "watching PR #123 for CI" — which is what gets stored and displayed each cycle while you still receive `message` whole; omit it on a Slack, Discord or Webex loop, where a banner is refused with a 400. Pass `max_runtime_secs` whenever the user gives a time limit: it stops on schedule where a cycle cap cannot.
+1. Put the full check instructions AND the exit condition in the message. Name a
+   watched pull request by its full URL, for example
+   `https://github.com/kirodotdev/KiroCrew/pull/123`. Pass `gate=false` when
+   generic comments or advisory findings matter because the typed provider
+   fingerprint cannot observe them.
+2. Call `monitor_start` with a sensible interval (300s for CI/review polling),
+   a positive `max_cycles`, and a positive `max_runtime_secs`. Pass a short
+   `banner` for a long dashboard instruction so the full prompt is not stored as
+   a transcript row every cycle. Then tell the user monitoring was requested and
+   END YOUR TURN — the loop wakes you after it is applied.
 3. Each cycle: do the check, act on findings, report only real signals (don't post "nothing new" every cycle). Every cycle appends a full turn to this same session, so keep per-cycle output small — a chatty loop burns its own context.
 4. When the exit condition is met or the user says stop, call `autonudge_stop`. **This is on you**: `max_cycles` (default 24) is a runaway backstop, and a loop that coasts into its cap did not finish — it ran out of rope. Check the exit condition every cycle and stop deliberately.
 5. If what you are watching moves on and your armed instruction is now stale, call `monitor_update(message?, interval_secs?, max_cycles?)` to revise it in place — it keeps the loop and its cycle count, and only ever touches your own session's loop. If the loop has already PAUSED, `monitor_update` resumes it only when your patch raises the bound that stopped it (`max_cycles` above the cap, or `max_runtime_secs` above the loop's age), and a monitor whose pull request already merged or closed is terminal: arm a new loop only for a new subject.
 
-If `monitor_start` reports it could NOT arm a loop, believe it: that is an arming failure, not the transient MCP reconnect you retry through. No monitoring is running, so fall back to an in-turn wait+poll loop and say so.
+If either monitor tool reports it could NOT arm, believe it: that is an arming
+failure, not the transient MCP reconnect you retry through. No monitoring is
+running. Report the refusal and preserve the user's next safe action; do not
+silently substitute an unbounded in-turn polling loop.
 
-One automation may occupy a session, and `monitor_start` is CREATE-ONLY: while an ACTIVE loop or structured monitor exists here the call is refused rather than silently replacing it, so revise a live loop with `monitor_update` and call `autonudge_stop` first to swap subjects. (A loop the system already stopped — a spent cap or budget, a finished subject — is replaced by a new arm; a manual pause or a user stop is preserved.) The user can also stop dashboard loops from the 🎯 popover.
+One automation per session — a create cannot replace another automation. Stop
+the existing record deliberately before switching paths. The user can also stop
+dashboard loops from the monitor popover.
 
-**Durable loop state:** record each step with `session_ledger_record` and read it back with `session_ledger_read`. The ledger survives context compaction and is re-injected into monitor cycles as a `[work ledger]` snapshot that outranks your recollection — start from its `next` step rather than re-deriving state from a truncated conversation.
+**Durable loop state:** record each step with `session_ledger_record` and read it
+back with `session_ledger_read`. The ledger survives context compaction and is
+re-injected into monitor cycles as a `[work ledger]` snapshot.
 
-**Heartbeat (fallback):** the `~/.kiro/crew/workspace/HEARTBEAT.md` task queue still exists for cases monitor_start can't cover: work that should run OUTSIDE this session (fresh context each cycle), or contexts where monitor_start is unavailable (cron/webhook sessions). Append checklist entries by calling `kiro_crew.heartbeat.append_heartbeat_task(entry)` from Python; never edit the file directly, because the helper shares the service's cross-process lock. Tasks are processed on the heartbeat tick (60s by default, operator-configurable); include `HEARTBEAT_KEEP` in the response to retain a task for the next cycle, omit it when complete. Route completion with `<!-- deliver:dashboard -->` / `<!-- deliver:slack -->` tags. Notify only on real signals.
+**Heartbeat (fallback):** the `~/.kiro/crew/workspace/HEARTBEAT.md` task queue
+still exists for work that should run outside this session with fresh context,
+or contexts where monitor tools are unavailable (cron/webhook sessions). Append
+checklist entries with `kiro_crew.heartbeat.append_heartbeat_task(entry)`; never
+edit the file directly because the helper shares the service's cross-process
+lock. Include `HEARTBEAT_KEEP` to retain a task for another cycle, omit it when
+complete, and notify only on real signals.
 
 ### Webhook-Triggered Sessions
 

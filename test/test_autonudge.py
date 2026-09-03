@@ -67,6 +67,37 @@ def _structured_monitor(**changes: object) -> MonitorState:
 
 
 @pytest.mark.asyncio
+async def test_terminal_notification_delivery_is_persisted_for_exact_terminal(svc):
+    loop = NudgeLoop(
+        id="monitor1",
+        slot_key="chat-1-123",
+        message="watch it",
+        active=False,
+        monitor=_structured_monitor(
+            outcome=MonitorOutcome.SUCCESS,
+            stopped_at=1_250.0,
+        ),
+    )
+    svc._loops[loop.id] = loop
+
+    assert await svc.mark_terminal_notification_delivered(
+        loop.id,
+        MonitorOutcome.SUCCESS,
+        1_250.0,
+    )
+
+    restored = AutoNudgeService(base_dir=svc._base_dir)
+    restored._load()
+    assert restored._loops[loop.id].monitor is not None
+    assert restored._loops[loop.id].monitor.terminal_notification_delivered
+    assert not await svc.mark_terminal_notification_delivered(
+        loop.id,
+        MonitorOutcome.BLOCKED,
+        1_250.0,
+    )
+
+
+@pytest.mark.asyncio
 async def test_add_and_fire_on_idle(svc, monkeypatch):
     """Arming a timer and letting it elapse triggers the fire callback."""
     fired: list[NudgeLoop] = []

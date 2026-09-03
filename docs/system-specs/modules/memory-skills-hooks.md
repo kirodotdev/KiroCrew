@@ -2968,6 +2968,22 @@ comprehension over the assembled rows, and an end-to-end test drives two agents 
 real endpoint in both orders to keep that true rather than merely currently-true — a join that
 ever shared the FILTERED result would fail whichever agent asked second.
 
+The bundled `kirocrew-dev/babysit` skill is an on-demand, pointer-on-trigger recipe.
+Its explicit trigger vocabulary covers babysit/watch/monitor phrasing for pull
+requests, so ordinary requests reach the recipe without placing the whole body in
+every prompt. The base prompt points long-lived pull-request readiness requests to
+this skill and prefers the structured path whenever typed provider facts fully
+determine the objective.
+For a public GitHub pull request with the `review_ready` objective it gives the
+agent one exact bounded `monitor_watch` call and makes retained inspection state
+authoritative; its acknowledgement remains pending until the current turn ends,
+so agent inspection happens only at the start of a later user/wake turn. It also
+explains that reported-token enforcement may be incomplete while runtime and
+completed-turn limits remain hard fallbacks. It does not reproduce provider
+polling policy in the prompt. Its legacy `monitor_start` recipe is limited to
+unsupported targets and requires a positive cadence, cycle cap, and runtime
+bound while naming the full-turn/token cost and ordinary approval policy.
+
 **Loading:**
 1. **Always-on**: skills with `always: true` have full content injected every new session
 2. **On-demand**: skill summaries (name + description + dir path) in session context; LLM can `cat` the file when relevant
