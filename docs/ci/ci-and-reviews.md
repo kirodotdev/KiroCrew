@@ -727,6 +727,40 @@ Nothing the fork controls can influence these reviews:
   allowlist, plus short-lived Bedrock-only OIDC credentials, bound the blast radius
   of any prompt injection.
 
+**A fork-review lane that never fired is re-dispatched, so readiness cannot freeze
+pending forever.** Each Stage-2 reviewer starts only on the `workflow_run: completed`
+event of CI, and GitHub does not guarantee delivery of that event -- it is silently
+dropped under Actions load. When it is dropped after CI concludes success on a fork
+head, no fork-review check-run is ever posted, `pr-readiness.yml` reads the lane as
+"(not started)" / "the real review has not posted yet" and counts it pending, and no
+future event can create the missing run -- so the fork PR is frozen pending and can
+never merge. `fork-review-heal.yml` closes that gap: it sweeps open fork PRs on a
+schedule, and for a PR whose latest CI run for the head SHA concluded `success` it
+re-dispatches only the review lanes that never fired, via each reviewer's
+`workflow_dispatch` entrypoint keyed to the head SHA. The reviewer resolves its own PR
+from that SHA with the same open-PR-by-head-SHA match its trigger path uses, so the
+heal adds no new trust surface and never checks out or executes fork code. A lane
+counts as missing only when it has no check-run that is in progress or completed with
+a real (non-`skipped`) conclusion, and each reviewer opens an in-progress check-run
+the instant it starts, so the sweep is self-terminating: a lane that is still running
+or has already completed is never re-dispatched, and each never-fired lane is
+dispatched at most once per sweep (bounded by a dispatch cap). This mirrors
+`pr-readiness-sweep.yml`, which rescues the same dropped-event class for the aggregator
+but can only re-read existing check-runs; it cannot manufacture a never-fired review,
+which is what this sweep supplies.
+
+**A fork PR whose CI has not passed stays pending by design.** Stage 2 is gated on a
+successful CI run, so until CI passes the fork-review lanes are correctly not eligible.
+The heal sweep does not dispatch such a PR and never forces it to a pass; it reports
+the pending as attributed to CI, distinct from a review that is missing though CI
+passed. Two boundaries remain outside the sweep's reach and are handled by attribution
+rather than by a forced pass. A fork run that GitHub holds at `action_required`
+("Approve and run") can be released only by a maintainer, so `pr-readiness.yml` keeps
+that condition in its `awaiting_approval` verdict -- blocking but attributed, and never
+auto-cleared, since re-dispatching a lane whose run awaits approval would only queue
+another approval-gated run. GitHub may also decline to deliver a `workflow_dispatch`;
+the sweep is scheduled, so a dispatch that does not land is retried on the next pass.
+
 **`fork-workflow-guard.yml`** blocks a fork PR that modifies anything under
 `.github/**`, the vector a fork would use to fake basic-CI results (rewrite `ci.yml`
 to pass) or tamper with CODEOWNERS. It is deterministic on purpose: "does the diff

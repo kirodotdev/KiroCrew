@@ -1,0 +1,227 @@
+name: Fork Review Self-Heal Sweep
+
+# Backstop for a Stage-2 fork-review lane that NEVER FIRED.
+#
+# The Stage-2 fork AI reviewers (fork-opus-review.yml, fork-gpt-review.yml,
+# fork-design-review.yml, fork-ux-review.yml, fork-first-principles-review.yml)
+# trigger on `workflow_run` of CI with `conclusion == 'success'` and a fork
+# head. Each opens a check-run named exactly like its same-repo twin ("Opus 4.8
+# Review", "GPT 5.6 Review", "Design Review", "UX Review", "First Principles
+# Review"), keyed to the head SHA. `pr-readiness.yml` reads those check-runs for
+# a fork PR: a lane with NO check-run, or only the same-repo twin's `skipped`
+# one, is "(not started)" / "the real review has not posted yet" and counts as
+# PENDING -- which is the correct verdict rule.
+#
+# The gap this sweep closes: NOTHING makes the real review post when Stage-2
+# never fired. GitHub does not guarantee delivery of `workflow_run` events and
+# silently drops them under Actions load, so a fork head can have CI conclude
+# SUCCESS yet never start any fork reviewer. There is then no fork-review
+# check-run, no future event that can create one (the dropped event is gone),
+# and the fork PR's readiness is frozen `pending` forever -- so it cannot merge
+# and is eventually superseded by a later PR whose fork pipeline ran normally on
+# identical code. pr-readiness-sweep.yml rescues the same dropped-event class for
+# the AGGREGATOR, but it can only re-read EXISTING check-runs; it cannot
+# manufacture a never-fired Stage-2 review. This sweep is the missing rescuer for
+# that lane.
+#
+# WHAT IT DOES: for every OPEN fork PR whose latest CI run for the head SHA
+# concluded `success`, it checks the head SHA's check-runs for each of the five
+# review lanes and re-dispatches ONLY the lanes that never posted -- via each
+# reviewer's `workflow_dispatch` entrypoint, keyed to the head SHA. The reviewer
+# resolves its own PR from that SHA using the SAME open-PR-by-head-SHA resolver
+# its trigger path uses, so this adds NO new trust surface and NEVER checks out
+# or executes fork code -- it only reads and dispatches.
+#
+# SELF-TERMINATING / IDEMPOTENT: a lane counts as missing only when it has NO
+# check-run that is in_progress or completed with a real (non-`skipped`)
+# conclusion. The instant a reviewer starts it opens an `in_progress` check-run
+# keyed to the head SHA, so the very next sweep sees that lane as present and
+# does not dispatch again. A lane that is still running is therefore never
+# re-fired, and a lane that completed (pass, fail or neutral) is never re-fired.
+# Only the genuinely-never-started lane is dispatched, at most once per sweep,
+# bounded overall by MAX_DISPATCH.
+#
+# WHAT IT DELIBERATELY DOES NOT DO:
+#   * A fork PR whose CI has NOT concluded success is NOT dispatched and NOT
+#     forced to pass. Stage 2 is correctly gated off until CI passes, so the
+#     readiness `pending` for that PR is BY DESIGN and attributed to CI, not to a
+#     missing review. This sweep reports that state and leaves it pending.
+#   * A fork run that GitHub holds at `action_required` ("Approve and run") can
+#     only be released by a maintainer; automation cannot grant it. That case
+#     stays blocking-but-attributed in the aggregator (its `awaiting_approval`
+#     path) and is never auto-cleared here -- re-dispatching a lane whose run is
+#     awaiting approval would just queue another approval-gated run. See
+#     docs/ci/ci-and-reviews.md for that boundary.
+on:
+  schedule:
+    # Every 20 minutes. A normal fork fan-out posts its check-runs via the
+    # workflow_run event well inside this window; a lane still missing after a CI
+    # success older than STALE_MINUTES is treated as a dropped-event freeze and
+    # re-dispatched.
+    - cron: "7,27,47 * * * *"
+  workflow_dispatch: {}
+
+permissions:
+  actions: write        # dispatch the fork-*-review.yml workflows (workflow_dispatch)
+  contents: read
+  pull-requests: read   # list open PRs
+  checks: read          # read the head SHA's check-runs
+
+concurrency:
+  # Collapse an overlapping sweep into one. The sweep is idempotent, so
+  # cancelling an in-flight run is safe.
+  group: fork-review-heal
+  cancel-in-progress: true
+
+jobs:
+  heal:
+    name: Re-dispatch never-fired fork reviews
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Re-dispatch missing fork-review lanes
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          # A CI success older than this (minutes) whose lane is still missing is
+          # treated as a dropped-event freeze rather than an in-flight fan-out.
+          STALE_MINUTES: "20"
+          # Runaway backstop only -- one dispatch per missing lane, so five is the
+          # per-PR maximum. Sized to drain a real backlog of frozen fork PRs in
+          # one sweep while bounding a pathological run.
+          MAX_DISPATCH: "200"
+          # Ceiling for the open-PR listing. `gh pr list` returns newest-first and
+          # truncates SILENTLY, dropping the OLDEST PRs -- exactly the ones most
+          # likely to be frozen -- so this must stay well clear of the real count
+          # and a hit is reported as an action item.
+          PR_LIST_LIMIT: "900"
+        run: |
+          set -euo pipefail
+
+          now_epoch="$(date -u +%s)"
+          stale_seconds=$(( STALE_MINUTES * 60 ))
+
+          # The five fork-review lanes: "<check-run name>|<workflow file>". The
+          # check-run name is what pr-readiness.yml reads on the head SHA; the
+          # workflow file is the reviewer this sweep re-dispatches for that lane.
+          lanes=(
+            "Opus 4.8 Review|fork-opus-review.yml"
+            "GPT 5.6 Review|fork-gpt-review.yml"
+            "Design Review|fork-design-review.yml"
+            "UX Review|fork-ux-review.yml"
+            "First Principles Review|fork-first-principles-review.yml"
+          )
+
+          # Open fork PRs with their current head SHA. `isCrossRepository` is
+          # GitHub's own fork flag; a same-repo PR runs the same-repo reviewers
+          # and is out of scope here.
+          prs="$(gh pr list --repo "$REPO" --state open --limit "$PR_LIST_LIMIT" \
+            --json number,headRefOid,isCrossRepository)"
+
+          total="$(jq 'length' <<<"$prs")"
+          echo "Scanning $total open pull request(s) for never-fired fork reviews."
+          if [ "$total" -ge "$PR_LIST_LIMIT" ]; then
+            echo "::warning::Open-PR list hit its ceiling of $PR_LIST_LIMIT;" \
+              "the oldest open PRs were dropped and cannot be rescued." \
+              "Raise PR_LIST_LIMIT in fork-review-heal.yml."
+          fi
+
+          dispatched=0
+          skipped_cap=0
+
+          while read -r row; do
+            [ -n "$row" ] || continue
+            is_fork="$(jq -r '.isCrossRepository' <<<"$row")"
+            [ "$is_fork" = "true" ] || continue
+            number="$(jq -r '.number' <<<"$row")"
+            sha="$(jq -r '.headRefOid' <<<"$row")"
+            [ -n "$sha" ] && [ "$sha" != "null" ] || continue
+
+            # Latest CI run for this exact head SHA. Collapse to the newest by the
+            # monotonic run id (created_at has one-second granularity and can tie),
+            # mirroring pr-readiness.yml's own collapse. The read is captured
+            # before the filter so a transport failure is distinguishable from a
+            # genuinely absent run and never mistaken for "CI has not passed".
+            if ! ci_json="$(gh api --method GET \
+                "repos/$REPO/actions/workflows/ci.yml/runs?event=pull_request&head_sha=$sha&per_page=100" \
+                2>/dev/null)"; then
+              echo "PR #$number: CI runs lookup failed; skipping this sweep."
+              continue
+            fi
+            ci_run="$(jq -c '[.workflow_runs[]?] | max_by(.id) // empty' <<<"$ci_json")"
+
+            if [ -z "$ci_run" ]; then
+              echo "PR #$number: no CI run on $sha yet -> pending by design (CI has not started); not dispatching."
+              continue
+            fi
+            ci_status="$(jq -r '.status // ""' <<<"$ci_run")"
+            ci_conclusion="$(jq -r '.conclusion // ""' <<<"$ci_run")"
+            if [ "$ci_status" != "completed" ] || [ "$ci_conclusion" != "success" ]; then
+              # CI has NOT concluded success, so Stage 2 is correctly gated off.
+              # This is pending BY DESIGN and attributed to CI -- distinct from a
+              # missing review after a CI success. Never forced to a pass.
+              echo "PR #$number: CI is '$ci_status/$ci_conclusion' on $sha -> pending by design (CI has not passed); not dispatching."
+              continue
+            fi
+
+            # CI concluded success. Only treat a missing lane as a dropped-event
+            # freeze once the CI success is older than STALE_MINUTES, so a lane
+            # whose workflow_run event is still in flight is left alone.
+            ci_completed_at="$(jq -r '.updated_at // .created_at // empty' <<<"$ci_run")"
+            ci_epoch="$(date -u -d "$ci_completed_at" +%s 2>/dev/null || echo 0)"
+            if [ "$ci_epoch" -eq 0 ]; then
+              echo "PR #$number: CI success timestamp unreadable on $sha; skipping this sweep."
+              continue
+            fi
+            age=$(( now_epoch - ci_epoch ))
+            if [ "$age" -lt "$stale_seconds" ]; then
+              echo "PR #$number: CI passed ${age}s ago (< ${stale_seconds}s) on $sha -> fork reviews may still be fanning out; not dispatching yet."
+              continue
+            fi
+
+            # Read the head SHA's check-runs once; decide each lane from them. A
+            # lane is MISSING only when it has NO check-run that is in_progress or
+            # completed with a real (non-skipped) conclusion:
+            #   * total 0                       -> never fired
+            #   * only the same-repo twin's
+            #     `skipped` check-run present   -> the real review has not posted
+            # Both are the frozen-pending state. A lane with an in_progress or a
+            # completed non-skipped check-run has fired, so it is left alone --
+            # which is what makes this self-terminating: the reviewer opens an
+            # in_progress check-run immediately, so the next sweep sees the lane
+            # as present and does not re-dispatch.
+            if ! cr_json="$(gh api --method GET \
+                "repos/$REPO/commits/$sha/check-runs?per_page=100" --paginate --slurp \
+                2>/dev/null)"; then
+              echo "PR #$number: check-runs lookup failed; skipping this sweep."
+              continue
+            fi
+
+            for lane in "${lanes[@]}"; do
+              cname="${lane%%|*}"
+              wf="${lane#*|}"
+              # Count check-runs of this name that show the lane actually ran:
+              # any status other than a completed `skipped`. `--slurp` gives an
+              # outer array of pages, each `{"check_runs": [...]}`, so flatten
+              # with `.[].check_runs[]?`.
+              present="$(jq --arg n "$cname" '[.[].check_runs[]?
+                | select(.name == $n)
+                | select((.status != "completed")
+                    or (.conclusion != "skipped"))] | length' <<<"$cr_json")"
+              if [ "$present" -gt 0 ]; then
+                continue
+              fi
+              if [ "$dispatched" -ge "$MAX_DISPATCH" ]; then
+                skipped_cap=$(( skipped_cap + 1 ))
+                continue
+              fi
+              echo "PR #$number: '$cname' never fired though CI passed on $sha -> re-dispatching $wf."
+              if gh workflow run "$wf" --repo "$REPO" -f head_sha="$sha" >/dev/null 2>&1; then
+                dispatched=$(( dispatched + 1 ))
+              else
+                echo "PR #$number: failed to dispatch $wf (will retry next sweep)."
+              fi
+            done
+          done < <(jq -c '.[]' <<<"$prs")
+
+          echo "Re-dispatched $dispatched fork-review lane(s); $skipped_cap deferred to next sweep by MAX_DISPATCH=$MAX_DISPATCH."
