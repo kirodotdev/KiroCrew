@@ -22,8 +22,10 @@ from kiro_crew.pod import provision as prov
 from kiro_crew.pod import runtime as rt
 from kiro_crew.pod.config import PodConfig
 from kiro_crew.sel import sel
+from kiro_crew.tips_text import truncate_summary
 
 logger = logging.getLogger(__name__)
+_SCENARIOS_TABLE_WIDTH = 100
 
 # A verb handler: (config, parsed args) -> None.
 PodHandler = Callable[[PodConfig, argparse.Namespace], None]
@@ -633,7 +635,9 @@ def _prune(cfg: PodConfig, args: argparse.Namespace) -> None:
             threshold = time.time() - _parse_older_than(args.older_than)
         orphans = rt.orphan_homes(cfg)
     except rt.PodError as exc:
-        _audit("pod.prune", "denied", f"older_than={args.older_than or 'all'}", error=str(exc)[:120])
+        _audit(
+            "pod.prune", "denied", f"older_than={args.older_than or 'all'}", error=str(exc)[:120]
+        )
         raise
     dry_run = bool(getattr(args, "dry_run", False))
     results: list[dict[str, str]] = []
@@ -920,6 +924,18 @@ def _cleanup_internal(cfg: PodConfig, args: argparse.Namespace) -> None:
     sys.exit(rc)
 
 
+def _scenario_table_description(description: str, width: int) -> str:
+    """Shorten *description* to *width* for one table row, never cutting mid-word.
+
+    Sentence detection lives in ``truncate_summary`` alone. It prefers the last
+    complete sentence that fits, which on a description whose second sentence
+    does not fit IS the first sentence — so a separate first-sentence pass here
+    would be a second spelling of the same rule that discards a second sentence
+    the row had room for.
+    """
+    return truncate_summary(" ".join(description.split()), width)
+
+
 def _scenarios(cfg: PodConfig, args: argparse.Namespace) -> None:
     """List the named fixtures accepted by ``pod up --seed``."""
     from kiro_crew import seed as seed_mod
@@ -936,10 +952,12 @@ def _scenarios(cfg: PodConfig, args: argparse.Namespace) -> None:
         return
 
     width = max(len("SCENARIO"), *(len(str(row["name"])) for row in rows))
+    description_width = _SCENARIOS_TABLE_WIDTH - width - 2
     print(f"{'SCENARIO':<{width}}  DESCRIPTION")
     for row in rows:
         name = str(row["name"])
         description = str(row["description"] or "(no description)")
+        description = _scenario_table_description(description, description_width)
         print(f"{name:<{width}}  {description}")
     print(f"\nseed one with: kirocrew pod up <worktree> --seed {rows[0]['name']}")
 

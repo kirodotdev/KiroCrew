@@ -72,10 +72,13 @@ kirocrew pod up my-wt --seed ~/.kiro/crew
 ```
 
 `pod scenarios` reads the packaged fixture registry and lists names in sorted
-order with the first description line from each `fixture.yaml`. The default is a
-human-readable table; `--json` emits a stable array of `{name, description}`
-objects. Description extraction uses the fixture manifest's narrow scalar format
-and does not require PyYAML at runtime.
+order. The default human-readable table shortens each description to the last
+complete sentence that fits, falling back to a cut between words with an
+ellipsis. `--json`
+emits a stable array of `{name, description}` objects containing the complete
+description scalar. Literal (`|`) blocks preserve newlines and folded (`>`) blocks
+normalize to one paragraph. Extraction uses the fixture manifest's narrow scalar
+format and does not require PyYAML at runtime.
 
 A bare name selects a fixture shipped under `kiro_crew/tests_fixtures/<name>/`
 and populates the whole isolated home. Anything with a path separator or a

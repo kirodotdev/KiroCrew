@@ -335,7 +335,6 @@ src/kiro_crew/perf_sampler.py
 src/kiro_crew/platform/admission.py
 src/kiro_crew/platform/capability_bound.py
 src/kiro_crew/platform/update_layout.py
-src/kiro_crew/pod/cli.py
 src/kiro_crew/pod/config.py
 src/kiro_crew/pod/launchd.py
 src/kiro_crew/pod/provision.py
