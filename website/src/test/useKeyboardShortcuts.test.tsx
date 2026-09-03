@@ -1031,6 +1031,23 @@ describe('letter jumps reach sessions 10+', () => {
     expect(jumpIndexForCode('Digit1')).toBe(0)
   })
 
+  it('excludes every letter a pre-panel code reserves, so a future panel chord is never shadowed', () => {
+    // The pre-panel exclusions are derived from RESERVED_PANEL_CODES, not
+    // restated, so a single-letter Key* code added there later drops its jump
+    // letter automatically. Today: KeyC/KeyK/KeyN/KeyP/KeyS.
+    const letters = jumpLetters()
+    const reservedLetters = [...RESERVED_PANEL_CODES]
+      .map(code => /^Key([A-Z])$/.exec(code)?.[1].toLowerCase())
+      .filter((letter): letter is string => letter !== undefined)
+    // Pin today's baseline so a shared regex/source bug can't pass by re-deriving
+    // the same wrong answer here and in the code under test.
+    expect([...reservedLetters].sort()).toEqual(['c', 'k', 'n', 'p', 's'])
+    for (const letter of reservedLetters) {
+      expect(letters).not.toContain(letter)
+      expect(jumpIndexForCode('Key' + letter.toUpperCase())).toBe(-1)
+    }
+  })
+
   it('Alt+B picks the 10th displayed row', () => {
     const store = setupMany()
     fireEvent.keyDown(document, { code: 'KeyB', altKey: true })

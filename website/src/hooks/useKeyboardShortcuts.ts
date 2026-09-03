@@ -367,38 +367,53 @@ export const RESERVED_PANEL_CODES: ReadonlySet<string> = new Set<string>([
 ])
 
 /**
- * Letters usable for chat-jumps 10+ (digit 1–9 stay digits; the 10th session
- * onward gets a letter). a–z minus every letter another unshifted chord owns,
- * so a jump letter can never shadow an existing shortcut:
- *  - c/n/p/s — core panel navigation (CORE_PANEL_MAP)
- *  - k       — shortcuts modal (Alt+K)
- *  - g       — agent monitor (Ctrl+G is literal Ctrl on EVERY platform, so it
- *              collides with the Mac Ctrl-jump mode; excluded uniformly rather
- *              than per-platform so the same session always shows the same
- *              letter on every OS)
- *  - runtime — any code a downstream edition registered via
- *              registerPanelShortcut (EXTRA_PANEL_ROUTES); registration
- *              happens at module init, before any keypress or badge render,
- *              and panels always win over jump letters.
- * Computed per call (not a constant) so the runtime exclusions are honored.
+ * Letters a jump chord must avoid for a reason OTHER than pre-panel routing, so
+ * they are absent from RESERVED_PANEL_CODES and cannot be derived from it: global
+ * Ctrl/⌘ chords that reach hasCommandModifier via plain Ctrl on macOS and would
+ * double-fire with the Mac Ctrl-jump branch. Each is an independent document
+ * listener, so an unexcluded letter fires both actions at once; excluded
+ * uniformly across platforms so a session shows the same letter on every OS.
+ *  - a — select-all in a focusable list (Ctrl/⌘+A)
+ *  - d — split the focused pane (Ctrl/⌘+D)
+ *  - f — message search / Markdown find (Ctrl/⌘+F)
+ *  - g — agent monitor (Ctrl+G, literal Ctrl on every platform)
+ *  - t/w — file-explorer new-folder-tab / close-tab (Ctrl/⌘+T, Ctrl/⌘+W)
  */
-// a: Ctrl/⌘+A select-all (knowledge list, pages/knowledge/index.tsx; plus the
-//    OS-level select-all expectation in any focusable list). d: Ctrl/⌘+D splits
-//    the focused pane (ChatPage.tsx + SessionGridView.tsx). Both collide with
-//    the Mac Ctrl jump branch — and since each is an independent document
-//    listener, an unexcluded chord would fire BOTH actions at once. Excluded
-//    uniformly (like g) so letter assignments match across platforms.
-// f: message search + Markdown find (useMessageSearch.ts, MarkdownPanel.tsx).
-// t/w: file-explorer new-folder-tab / close-tab (FileExplorerPage.tsx). All
-//    three listen via hasCommandModifier — an XOR (metaKey !== ctrlKey), so a
-//    plain Ctrl+letter satisfies it on macOS and would double-fire with the
-//    Mac Ctrl-jump branch. Same class and same fix as a/d above.
-const JUMP_LETTER_STATIC_EXCLUDE = new Set(['a', 'c', 'd', 'f', 'g', 'k', 'n', 'p', 's', 't', 'w'])
+const JUMP_LETTER_GLOBAL_EXCLUDE = new Set(['a', 'd', 'f', 'g', 't', 'w'])
+
+/**
+ * Lowercase letters a pre-panel chord owns, read straight from
+ * RESERVED_PANEL_CODES so the two never drift: a panel or pre-panel Alt+<letter>
+ * chord added to that set — which the extension-seams drift test already forces —
+ * drops its jump letter in the same edit instead of being silently shadowed by
+ * one. Only single-letter Key* codes name a jump letter; the Comma, Enter,
+ * Backquote, Arrow, and Digit codes are not letters and contribute nothing here.
+ */
+function reservedPanelLetters(): Set<string> {
+  const out = new Set<string>()
+  for (const code of RESERVED_PANEL_CODES) {
+    const m = /^Key([A-Z])$/.exec(code)
+    if (m) out.add(m[1].toLowerCase())
+  }
+  return out
+}
+
+/**
+ * Letters usable for chat-jumps 10+ (digit 1–9 stay digits; the 10th session
+ * onward gets a letter). a–z minus every letter another unshifted chord owns —
+ * the pre-panel chords (`reservedPanelLetters`), the global editor chords
+ * (`JUMP_LETTER_GLOBAL_EXCLUDE`), and any code a downstream edition registered
+ * via registerPanelShortcut (`EXTRA_PANEL_ROUTES`, resolved at module init before
+ * any keypress or badge render, panels winning over jump letters). Computed per
+ * call, not a constant, so the runtime exclusions are honored.
+ */
 export function jumpLetters(): string[] {
+  const panelLetters = reservedPanelLetters()
   const out: string[] = []
   for (let i = 0; i < 26; i++) {
     const ch = String.fromCharCode(97 + i)
-    if (JUMP_LETTER_STATIC_EXCLUDE.has(ch)) continue
+    if (panelLetters.has(ch)) continue
+    if (JUMP_LETTER_GLOBAL_EXCLUDE.has(ch)) continue
     if (('Key' + ch.toUpperCase()) in EXTRA_PANEL_ROUTES) continue
     out.push(ch)
   }
