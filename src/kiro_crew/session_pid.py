@@ -709,7 +709,7 @@ def _cleanup_orphaned_mcp_servers() -> int:
     return killed
 
 
-def cleanup_orphaned_sessions() -> None:
+def cleanup_orphaned_sessions(*, narrow_with_leaders: bool = True) -> None:
     """Kill leftover kiro-cli processes from a previous gateway run.
 
     Reads ``kiro_session_pids.txt`` (written at spawn time), validates each
@@ -721,6 +721,13 @@ def cleanup_orphaned_sessions() -> None:
 
     Also sweeps orphaned MCP server processes via ``_cleanup_orphaned_mcp_servers``
     which uses the separate ``kiro_pids.txt`` (child:parent format).
+
+    ``narrow_with_leaders`` is forwarded to
+    :func:`_prune_stale_session_pid_files`. The gateway passes ``False`` on its
+    boot path and in its force-exit handler, so both do exactly the work they
+    did before the recycled-pid change; the narrowing applies on the graceful
+    shutdown path, which is not spawning sessions.
+
 
     Additionally cleans up:
     - Stale ``session_pid_*.txt`` files for processes that no longer exist.
@@ -759,29 +766,7 @@ def cleanup_orphaned_sessions() -> None:
         logger.info("Cleaned up %d orphaned MCP server processes", mcp_killed)
 
     # Third pass: remove stale session_pid_*.txt files for dead processes
-    stale_pid_files = 0
-    for pid_file in config_dir().glob("session_pid_*.txt"):
-        try:
-            pid = int(pid_file.stem.removeprefix("session_pid_"))
-        except ValueError:
-            # Malformed filename (e.g. MagicMock leak) -- safe to delete
-            logger.debug("Removing malformed pid file: %s", pid_file.name)
-            try:
-                pid_file.unlink(missing_ok=True)
-                stale_pid_files += 1
-            except OSError:
-                logger.debug("Could not remove malformed pid file: %s", pid_file.name)
-            continue
-        # os.kill(pid, 0) would terminate the process on Windows — probe instead.
-        if not platform_compat.pid_exists(pid):
-            pid_file.unlink(missing_ok=True)
-            # Remove the HMAC sidecar (session_pid_<pid>.sig) alongside its
-            # .txt — a dangling sidecar is harmless (verification requires
-            # both) but would accumulate forever.
-            pid_file.with_suffix(".sig").unlink(missing_ok=True)
-            stale_pid_files += 1
-    if stale_pid_files:
-        logger.info("Cleaned up %d stale session PID files", stale_pid_files)
+    _prune_stale_session_pid_files(narrow_with_leaders=narrow_with_leaders)
 
     # Fourth pass: remove empty session workspace dirs (orphaned subagent dirs)
     sessions_dir = config_dir() / "sessions"
@@ -796,6 +781,86 @@ def cleanup_orphaned_sessions() -> None:
                     pass  # directory became non-empty or was already removed
     if empty_dirs:
         logger.info("Cleaned up %d empty session workspace dirs", empty_dirs)
+
+
+def _prune_stale_session_pid_files(*, narrow_with_leaders: bool = True) -> int:
+    """Remove ``session_pid_<pid>.txt`` mappings whose pid is not that session.
+
+    ``narrow_with_leaders`` decides whether the thread-group-leaders snapshot is
+    taken. It costs one ``/proc`` directory read for the whole pass and is what
+    catches a pid recycled as a THREAD of a live process, but it is work the
+    gateway boot path may not carry: ``no-new-work-on-gateway-boot-path`` names
+    orphan sweeps specifically, so the boot caller passes ``False``. The
+    narrowing is asked for on the graceful shutdown path instead.
+
+    A live session's pid is both signalable and a thread-group leader, so it is
+    retained under either setting, and this pass never touches the shared
+    ``kiro_session_pids.txt`` that pass 1 rewrites.
+
+    Returns the number of mapping files removed.
+    """
+    stale_pid_files = 0
+    pid_files = list(config_dir().glob("session_pid_*.txt"))
+    # Snapshot the host's thread-group leaders ONCE for the whole sweep — one
+    # directory read instead of a synchronous /proc read per mapping.
+    #
+    # Ordering matters: snapshot AFTER globbing. A pid that starts in the window
+    # between the two lands IN the set and is retained; one that exits in that
+    # window is absent and is pruned, which is correct. Snapshotting first would
+    # invert both.
+    leaders = platform_compat.live_thread_group_leaders() if narrow_with_leaders else None
+    for pid_file in pid_files:
+        try:
+            pid = int(pid_file.stem.removeprefix("session_pid_"))
+        except ValueError:
+            # Malformed filename (e.g. MagicMock leak) -- safe to delete
+            logger.debug("Removing malformed pid file: %s", pid_file.name)
+            try:
+                pid_file.unlink(missing_ok=True)
+                stale_pid_files += 1
+            except OSError:
+                logger.debug("Could not remove malformed pid file: %s", pid_file.name)
+            continue
+        # os.kill(pid, 0) would terminate the process on Windows — probe instead.
+        #
+        # The leaders set narrows the liveness test: a dead session's pid can be
+        # recycled as a THREAD of an unrelated live process, and a tid satisfies
+        # ``pid_exists``, so that probe alone would keep the mapping forever.
+        #
+        # Resolution of a TOKEN-BEARING mapping is already safe without this:
+        # ``session_pid_sig._pid_recycled`` compares the live start token and
+        # refuses on a mismatch on both the strict and the lenient path, and a
+        # tid's live start token cannot match the dead process's. What this
+        # sweep adds is (a) pruning LEGACY token-less mappings, where that
+        # guard has no recorded token to compare and callers keep resolving,
+        # and (b) bounding accumulation — observed on a host whose pid counter
+        # had wrapped: 233 mappings, 1 still naming a 6-day-dead session via a
+        # thread of an unrelated process.
+        #
+        # ``leaders is None`` means the question was unanswerable (non-Linux,
+        # unreadable /proc), so it never contributes to a prune.
+        if platform_compat.pid_exists(pid):
+            if leaders is None or pid in leaders:
+                continue
+            # Absence from the snapshot selects a CANDIDATE, never the outcome.
+            # The snapshot was read before this loop, so a pid recycled since --
+            # whose mapping the new owner has already republished at this same
+            # path -- is missing from it while naming a LIVE session. Unlinking
+            # that mapping would lose a live session's identity, so the decision
+            # needs a reading for this pid taken now. Retain on anything but a
+            # definite "not a process", and pay the per-pid read only for the
+            # few candidates rather than for every mapping.
+            if platform_compat.is_thread_group_leader(pid) is not False:
+                continue
+        pid_file.unlink(missing_ok=True)
+        # Remove the HMAC sidecar (session_pid_<pid>.sig) alongside its
+        # .txt — a dangling sidecar is harmless (verification requires
+        # both) but would accumulate forever.
+        pid_file.with_suffix(".sig").unlink(missing_ok=True)
+        stale_pid_files += 1
+    if stale_pid_files:
+        logger.info("Cleaned up %d stale session PID files", stale_pid_files)
+    return stale_pid_files
 
 
 def cleanup_orphaned_session_roots() -> int:

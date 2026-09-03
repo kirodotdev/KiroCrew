@@ -11215,7 +11215,19 @@ class GatewayOrchestrator:
         # Clean up orphaned kiro-cli processes from previous runs
         from kiro_crew.session import cleanup_orphaned_sessions
 
-        cleanup_orphaned_sessions()
+        # Off-loop: the sweep is synchronous filesystem work and this runs
+        # inside the orchestrator coroutine.
+        #
+        # ``narrow_with_leaders=False`` keeps boot doing exactly what it did
+        # before the recycled-pid work: the leaders snapshot is a /proc read this
+        # path may not carry, since no-new-work-on-gateway-boot-path names orphan
+        # sweeps.
+        #
+        # The narrowing is asked for on the graceful-shutdown sweep only, so a
+        # gateway that is hard-killed never runs it and its recycled-pid mappings
+        # wait for a later clean exit. That is the accepted cost of keeping this
+        # path, and the force-exit handler, doing exactly their pre-existing work.
+        await asyncio.to_thread(cleanup_orphaned_sessions, narrow_with_leaders=False)
 
         # Same "previous run left residue" concern as the orphan sweep above, for
         # telemetry rather than processes: any open-session crumb on disk belongs
@@ -11469,7 +11481,16 @@ class GatewayOrchestrator:
             nonlocal _shutting_down
             if _shutting_down:
                 print("\n👻 Force exit!")
-                cleanup_orphaned_sessions()
+                # Synchronous by necessity: a signal handler cannot await.
+                # The process calls os._exit immediately below, so loop latency
+                # does not matter on this path.
+                #
+                # ``narrow_with_leaders=False`` so this handler does exactly the
+                # work it did before the recycled-pid change: killing leftover
+                # processes is what this path is for, and a handler that reaches
+                # for extra work before its os._exit is a handler that may not
+                # get there.
+                cleanup_orphaned_sessions(narrow_with_leaders=False)
                 # os._exit skips atexit, so the log queue's drain hook never
                 # runs — flush the queued gateway.log tail here, bounded so a
                 # wedged disk cannot hang the force exit.
@@ -11700,8 +11721,13 @@ class GatewayOrchestrator:
             logger.warning("Graceful shutdown timed out — force exiting")
 
         print("👻 Goodbye!")
-        # Kill any kiro-cli processes that survived graceful shutdown
-        cleanup_orphaned_sessions()
+        # Kill any kiro-cli processes that survived graceful shutdown.
+        # Off-loop: still inside the orchestrator coroutine here.
+        #
+        # The one call site that asks for the leaders narrowing. Nothing spawns a
+        # session by this point, so the sweep is not racing a mapping publisher --
+        # the same position the sweep already held here before this change.
+        await asyncio.to_thread(cleanup_orphaned_sessions)
         # This is a hard exit too: os._exit skips atexit, so the log queue's
         # drain hook never runs here either. Without this the whole shutdown
         # tail is lost -- including the "Graceful shutdown timed out" warning

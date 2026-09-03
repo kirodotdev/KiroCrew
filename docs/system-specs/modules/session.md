@@ -1467,7 +1467,30 @@ a trust root on its own; publication therefore also writes a
   sidecar; strict resolvers fail closed until the next turn's publish
   re-signs the mapping. Benign and self-healing — no migration step.
 - **Stale cleanup**: the orphan sweep removes `session_pid_<pid>.sig`
-  alongside its `.txt` for dead pids (`session_pid.py`).
+  alongside its `.txt` for dead pids (`session_pid.py`). "Dead" is not
+  `pid_exists` alone: Linux numbers threads from the pid space, so a dead
+  session's pid recycled as a THREAD of an unrelated live process still
+  satisfies that probe and the mapping would survive forever (observed on a
+  host whose pid counter had wrapped: 233 mappings, one naming a 6-day-dead
+  session through a thread). `_prune_stale_session_pid_files` therefore
+  removes a mapping when the pid is unsignalable, OR when it is absent from
+  one `platform_compat.live_thread_group_leaders()` snapshot **and** a
+  per-pid `platform_compat.is_thread_group_leader(pid)` re-read returns
+  `False`. Both helpers answer `None` when the question is unknowable
+  (non-Linux, unreadable `/proc`), and `None` never licenses a removal — so
+  macOS and Windows keep the pre-existing `pid_exists`-only behaviour. Two
+  orderings are load-bearing: the snapshot is taken AFTER the glob (a pid
+  that starts in that window lands IN the set and is retained), and absence
+  from it selects a *candidate* rather than the outcome, so a pid recycled
+  since the snapshot — whose new owner has already republished the mapping at
+  that same path — is retained by the re-read instead of losing a live
+  session's identity. The snapshot costs one `/proc` directory read for the
+  whole pass, which is still work the gateway boot path does not carry:
+  `narrow_with_leaders=False` there per `no-new-work-on-gateway-boot-path`
+  (and on the force-exit handler, which must reach its `os._exit`), while the
+  graceful-shutdown sweep asks for the narrowing. This pass touches only the
+  `session_pid_<pid>` family, never the shared `kiro_session_pids.txt` that
+  pass 1 rewrites.
 - **Threat model** (full version in the `session_pid_sig.py` module
   docstring): file forgery, cross-pid replay, tampering, and symlink
   planting are blocked; deliberate same-uid impersonation via

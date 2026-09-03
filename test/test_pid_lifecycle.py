@@ -7,6 +7,7 @@ import os
 import signal
 import subprocess
 import sys
+import threading
 from collections import deque
 from collections.abc import Iterator
 from pathlib import Path
@@ -365,6 +366,145 @@ class TestCleanupOrphanedSessions:
         # bad!name still exists (unlink failed gracefully), valid one cleaned up
         assert (tmp_path / "session_pid_bad!name.txt").exists()
         assert not (tmp_path / "session_pid_99999.txt").exists()
+
+    @pytest.mark.skipif(sys.platform != "linux", reason="tids share the pid space on Linux only")
+    def test_pid_file_recycled_as_a_thread_is_deleted(
+        self, tmp_path: Path, session_pid_file: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A mapping whose pid now names a THREAD of a live process is stale.
+
+        Linux draws tids from the pid space and lets you signal one, so such a
+        pid passes ``pid_exists`` and such a mapping would survive forever. A
+        token-bearing mapping is already safe to resolve — ``_pid_recycled``
+        refuses on a start-token mismatch, and a tid's token cannot match — so
+        what is pruned here is the legacy token-less form, which has no recorded
+        token for that guard to compare, plus the accumulation itself.
+
+        Uses a real live thread's native tid rather than a fake ``/proc``, so
+        the test exercises the same kernel behaviour that produced the bug.
+        """
+        from kiro_crew.session_pid import cleanup_orphaned_sessions
+
+        monkeypatch.setattr("kiro_crew.session_pid.config_dir", lambda: tmp_path)
+        session_pid_file.write_text("")
+
+        tid_box: dict[str, int] = {}
+        release = threading.Event()
+        captured = threading.Event()
+
+        def _hold() -> None:
+            tid_box["tid"] = threading.get_native_id()
+            captured.set()
+            release.wait(timeout=30)
+
+        holder = threading.Thread(target=_hold, daemon=True)
+        holder.start()
+        assert captured.wait(timeout=30), "helper thread never reported its tid"
+        tid = tid_box["tid"]
+        assert tid != os.getpid(), "native_id must differ from the group leader"
+
+        try:
+            thread_map = tmp_path / f"session_pid_{tid}.txt"
+            leader_map = tmp_path / f"session_pid_{os.getpid()}.txt"
+            thread_map.write_text("sess-recycled-as-thread")
+            leader_map.write_text("sess-live-leader")
+
+            # NOT patching os.kill: both pids are genuinely signalable here,
+            # which is exactly the condition the old predicate could not split.
+            with patch("kiro_crew.session_pid._cleanup_orphaned_mcp_servers", return_value=0):
+                cleanup_orphaned_sessions()
+
+            assert not thread_map.exists(), "a pid that is only a thread must be pruned"
+            assert leader_map.exists(), "a live thread-group leader must be retained"
+        finally:
+            release.set()
+            holder.join(timeout=30)
+
+    def test_boot_setting_reads_no_proc(
+        self, tmp_path: Path, session_pid_file: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """``narrow_with_leaders=False`` must not take the leaders snapshot.
+
+        The gateway boot path passes it so the sweep costs exactly what it cost
+        before this branch: ``no-new-work-on-gateway-boot-path`` names orphan
+        sweeps, so a regression that read the leaders set anyway would put a
+        ``/proc`` scan back on the boot path, where the readiness cost of it is
+        not visible to anyone reading the sweep.
+        """
+        from kiro_crew.session_pid import cleanup_orphaned_sessions
+
+        monkeypatch.setattr("kiro_crew.session_pid.config_dir", lambda: tmp_path)
+        session_pid_file.write_text("")
+
+        def _refuse() -> set[int] | None:
+            raise AssertionError("the boot setting must not read /proc for leaders")
+
+        monkeypatch.setattr(
+            "kiro_crew.session_pid.platform_compat.live_thread_group_leaders", _refuse
+        )
+        with patch("kiro_crew.session_pid._cleanup_orphaned_mcp_servers", return_value=0):
+            cleanup_orphaned_sessions(narrow_with_leaders=False)
+
+    def test_prune_pass_leaves_the_shared_pid_file_alone(
+        self, tmp_path: Path, session_pid_file: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The deferred pass must not rewrite the file the boot sweep owns.
+
+        Deferring the prune past readiness is only sound because this pass touches
+        ``session_pid_<pid>.txt`` mappings and nothing else. If it also rewrote
+        ``kiro_session_pids.txt`` it would race the spawns that append to it once
+        the gateway is serving, and a lost entry is an unkillable orphan.
+        """
+        from kiro_crew.session_pid import _prune_stale_session_pid_files
+
+        monkeypatch.setattr("kiro_crew.session_pid.config_dir", lambda: tmp_path)
+        session_pid_file.write_text("111:222\n")
+        (tmp_path / "session_pid_99999.txt").write_text("sess-dead")
+
+        # The probe is pinned, not assumed: ``pid_max`` is 4194304 here, so 99999
+        # is an ordinary live pid on a host whose counter has passed it, and a live
+        # pid is retained -- which would fail the removal assertion below on a
+        # long-running runner rather than in review. The sibling sweeps above pin
+        # it the same way; ``os.kill`` is what ``platform_compat.pid_exists``
+        # reaches for on POSIX.
+        with patch("os.kill", side_effect=ProcessLookupError):
+            removed = _prune_stale_session_pid_files()
+
+        assert removed == 1
+        assert not (tmp_path / "session_pid_99999.txt").exists()
+        assert session_pid_file.read_text() == "111:222\n"
+
+    def test_stale_snapshot_does_not_delete_a_live_mapping(
+        self, tmp_path: Path, session_pid_file: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A pid recycled after the snapshot keeps the mapping its new owner wrote.
+
+        The leaders snapshot is read once for the whole pass, so a pid that became
+        a live process after it was taken is absent from it while naming a LIVE
+        session whose mapping already sits at that path. Deciding on the snapshot
+        alone unlinks that live mapping, which is a lost session identity, not a
+        tidy-up; the per-pid re-read is what refuses. The shipped call sites do not
+        run this pass beside live sessions, so this is defence in depth rather than
+        load-bearing -- it keeps the guarantee a property of the function instead of
+        of where it happens to be called from.
+        """
+        from kiro_crew.session_pid import _prune_stale_session_pid_files
+
+        monkeypatch.setattr("kiro_crew.session_pid.config_dir", lambda: tmp_path)
+        live = tmp_path / f"session_pid_{os.getpid()}.txt"
+        live.write_text("sess-published-after-the-snapshot")
+
+        # A snapshot from before this process existed: the pid is signalable and
+        # is a real thread-group leader, yet absent from the set.
+        monkeypatch.setattr(
+            "kiro_crew.session_pid.platform_compat.live_thread_group_leaders",
+            lambda: frozenset({1}),
+        )
+
+        removed = _prune_stale_session_pid_files()
+
+        assert removed == 0
+        assert live.exists(), "a live leader absent from a stale snapshot must be retained"
 
 
 class TestResetStateUntracksParentPid:

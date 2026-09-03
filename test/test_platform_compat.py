@@ -4565,3 +4565,122 @@ class TestOpenLockFile:
             "lock files opened truncating before the acquire (GH-9248); "
             "use platform_compat.open_lock_file: " + ", ".join(offenders)
         )
+
+
+class TestLiveThreadGroupLeaders:
+    """``live_thread_group_leaders`` narrows liveness; it must fail OPEN."""
+
+    @pytest.mark.skipif(sys.platform != "linux", reason="/proc lists leaders on Linux only")
+    def test_own_process_is_a_leader(self):
+        leaders = pc.live_thread_group_leaders()
+        assert leaders is not None
+        assert os.getpid() in leaders
+
+    @pytest.mark.skipif(sys.platform != "linux", reason="tids share the pid space on Linux only")
+    def test_a_live_thread_is_not_a_leader(self):
+        """The whole point: a tid is signalable and has /proc, but is not a process.
+
+        Uses a real thread's native id rather than a synthetic ``/proc`` so the
+        assertion rests on kernel behaviour, not on a fixture's idea of it.
+        """
+        box: dict[str, int] = {}
+        captured = threading.Event()
+        release = threading.Event()
+
+        def _hold() -> None:
+            box["tid"] = threading.get_native_id()
+            captured.set()
+            release.wait(timeout=30)
+
+        holder = threading.Thread(target=_hold, daemon=True)
+        holder.start()
+        try:
+            assert captured.wait(timeout=30)
+            tid = box["tid"]
+            assert tid != os.getpid()
+            # Signalable and openable under /proc — the two things a naive check reads.
+            assert pc.pid_exists(tid) is True
+            leaders = pc.live_thread_group_leaders()
+            assert leaders is not None
+            assert tid not in leaders, "a non-leader tid must not appear in the /proc listing"
+            assert os.getpid() in leaders, "its group leader must still appear"
+        finally:
+            release.set()
+            holder.join(timeout=30)
+
+    def test_non_linux_fails_open(self, monkeypatch):
+        """Off Linux the question is unanswerable, so never claim 'thread'."""
+        monkeypatch.setattr(pc, "IS_LINUX", False)
+        assert pc.live_thread_group_leaders() is None
+
+    def test_unreadable_proc_fails_open(self, monkeypatch):
+        """An OSError reading /proc yields None (retain), never an empty set."""
+        monkeypatch.setattr(pc, "IS_LINUX", True)
+
+        def _boom(*_args, **_kwargs):
+            raise OSError("permission denied")
+
+        monkeypatch.setattr(pc.os, "listdir", _boom)
+        assert pc.live_thread_group_leaders() is None
+
+    def test_numberless_proc_fails_open(self, monkeypatch):
+        """A listing with no pids is nonsense, not 'every recorded pid is a thread'."""
+        monkeypatch.setattr(pc, "IS_LINUX", True)
+        monkeypatch.setattr(pc.os, "listdir", lambda *_a, **_k: ["cpuinfo", "meminfo", "self"])
+        assert pc.live_thread_group_leaders() is None
+
+
+class TestIsThreadGroupLeader:
+    """The per-pid re-read, for a pid a host-wide snapshot answers wrongly."""
+
+    @pytest.mark.skipif(sys.platform != "linux", reason="/proc carries Tgid on Linux only")
+    def test_own_process_is_a_leader(self):
+        assert pc.is_thread_group_leader(os.getpid()) is True
+
+    @pytest.mark.skipif(sys.platform != "linux", reason="tids share the pid space on Linux only")
+    def test_a_live_thread_is_not_a_leader(self):
+        """The whole point: a signalable tid must answer False, not None."""
+        box: dict[str, int] = {}
+        captured = threading.Event()
+        release = threading.Event()
+
+        def _hold() -> None:
+            box["tid"] = threading.get_native_id()
+            captured.set()
+            release.wait(timeout=30)
+
+        holder = threading.Thread(target=_hold, daemon=True)
+        holder.start()
+        try:
+            assert captured.wait(timeout=30), "helper thread never reported its tid"
+            tid = box["tid"]
+            assert tid != os.getpid()
+            assert pc.pid_exists(tid) is True, "a tid is signalable -- that is the trap"
+            assert pc.is_thread_group_leader(tid) is False
+        finally:
+            release.set()
+            holder.join(timeout=30)
+
+    def test_non_linux_is_unknowable(self, monkeypatch):
+        monkeypatch.setattr(pc, "IS_LINUX", False)
+        assert pc.is_thread_group_leader(os.getpid()) is None
+
+    def test_missing_status_is_unknowable(self, monkeypatch):
+        """A pid that has gone must not read as 'not a process'."""
+        monkeypatch.setattr(pc, "IS_LINUX", True)
+
+        def _boom(*_a, **_k):
+            raise FileNotFoundError("no such pid")
+
+        monkeypatch.setattr("builtins.open", _boom)
+        assert pc.is_thread_group_leader(4242) is None
+
+    def test_malformed_status_is_unknowable(self, monkeypatch):
+        """A status file with no parsable Tgid answers None, never False."""
+        import io
+
+        monkeypatch.setattr(pc, "IS_LINUX", True)
+        monkeypatch.setattr(
+            "builtins.open", lambda *_a, **_k: io.StringIO("Name:\tx\nTgid:\tnotanumber\n")
+        )
+        assert pc.is_thread_group_leader(4242) is None

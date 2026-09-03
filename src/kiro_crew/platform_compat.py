@@ -2814,6 +2814,79 @@ PID_ALIVE = "alive"  # confirmed running
 PID_UNSIGNALABLE = "unsignalable"  # exists but we cannot signal it (POSIX EPERM)
 
 
+def live_thread_group_leaders() -> frozenset[int] | None:
+    """Every pid on the host that is a PROCESS, or ``None`` when unknowable.
+
+    Linux numbers threads from the same space as processes and exposes
+    ``/proc/<tid>`` for them, and POSIX permits signalling a tid — so a tid
+    satisfies both :func:`pid_exists` and :func:`pid_liveness` while naming no
+    process at all. A caller holding a recorded pid therefore cannot tell "my
+    process is still alive" from "that number now belongs to some unrelated
+    process's thread", which matters once the pid counter wraps
+    (``/proc/sys/kernel/pid_max`` is commonly 4194304 and a busy host cycles it
+    in hours).
+
+    The discriminator is ``/proc`` itself: its top-level listing enumerates
+    ONLY thread-group leaders. A non-leader tid is absent from that listing
+    even though ``/proc/<tid>`` stays directly openable — which is exactly why
+    the cheaper per-pid probes cannot see the difference.
+
+    Deliberately ONE directory read for the whole host rather than a read per
+    pid. A sweep over N recorded mappings costs a single ``os.listdir`` instead
+    of N opens of ``/proc/<pid>/status`` (measured on Linux: 1.5 ms once versus
+    7.8 ms across 233 mappings), so no per-entry synchronous file read happens
+    on the caller's thread at all. Also cheaper than ``process_matches``, which
+    shells out to ``ps`` on macOS and so cannot be used per entry in a sweep.
+
+    Returns ``None`` — never an empty set — whenever the answer is not knowable
+    (non-Linux, unreadable ``/proc``, or a listing with no numeric entries).
+    Callers use this to *narrow* a liveness check, so an inconclusive result
+    must never be the thing that decides a pid is stale: treat ``None`` as
+    "retain everything".
+    """
+    if not IS_LINUX:
+        return None
+    try:
+        entries = os.listdir("/proc")
+    except OSError:
+        return None
+    leaders = {int(name) for name in entries if name.isdigit()}
+    if not leaders:
+        return None
+    return frozenset(leaders)
+
+
+def is_thread_group_leader(pid: int) -> bool | None:
+    """Whether ``pid`` names a PROCESS right now, or ``None`` when unknowable.
+
+    The per-pid counterpart to :func:`live_thread_group_leaders`, for the one
+    question a host-wide snapshot cannot answer. A snapshot is a reading taken at
+    an instant, so a pid recycled AFTER it was taken is absent from it while
+    naming a live process. A caller about to act destructively on "absent from
+    the snapshot" therefore needs a reading taken now, for that pid alone.
+
+    ``/proc/<pid>/status`` carries ``Tgid``, the pid of the thread group's
+    leader, so ``Tgid == pid`` is a process while a non-leader tid reports its
+    leader's pid instead. One file read is the cheap way to ask about one pid,
+    where the top-level ``/proc`` listing is the cheap way to ask about all of
+    them -- which is why this narrows the snapshot rather than replacing it.
+
+    Returns ``None`` -- never ``False`` -- whenever the answer is not knowable
+    (non-Linux, the pid is gone, an unreadable or malformed ``status``), so an
+    inconclusive read can never be the thing that licenses a destructive action.
+    """
+    if not IS_LINUX:
+        return None
+    try:
+        with open(f"/proc/{pid}/status", encoding="utf-8", errors="replace") as handle:
+            for line in handle:
+                if line.startswith("Tgid:"):
+                    return int(line.split()[1]) == pid
+    except (OSError, ValueError, IndexError):
+        return None
+    return None
+
+
 def pid_liveness(pid: int) -> str:
     """Three-way liveness probe: PID_DEAD / PID_ALIVE / PID_UNSIGNALABLE.
 
