@@ -15,7 +15,10 @@ import { formatToken } from '../utils/pasteTokens'
  * (the paste re-collapse) gets exercised through the entry that owns it.
  */
 vi.mock('../components/MarkdownRenderer', () => ({
-  default: ({ content }: { content: string }) => <div data-testid="md">{content}</div>,
+  // `softBreaks` is surfaced because it is part of WHAT an entry hands the leaf.
+  default: ({ content, softBreaks }: { content: string; softBreaks?: boolean }) => (
+    <div data-testid="md" data-soft-breaks={softBreaks ? '1' : '0'}>{content}</div>
+  ),
 }))
 vi.mock('../components/MessageErrorBoundary', () => ({
   default: ({ children }: { children: ReactNode }) => <div data-testid="boundary">{children}</div>,
@@ -325,6 +328,22 @@ describe('messageRenderers — cards, pills and banners', () => {
     renderRow(msg({ role: 'inject', cls: '', content: 'zzq-bare-prose [OPTIONS: Fix | Skip]' }))
     const rendered = screen.getByTestId('md').textContent ?? ''
     expect(rendered).toContain('[OPTIONS: Fix | Skip]')
+  })
+
+  // Preserved whitespace inherits into the markdown blocks, where each stray
+  // newline becomes a line box; jsdom has no layout, so assert the cause.
+  it('does not preserve source whitespace on the markdown-rendering inject bubble', () => {
+    renderRow(msg({ role: 'inject', content: 'zzq-body' }))
+    const bubble = screen.getByTestId('md').closest('.msg-content')
+    expect(bubble).not.toBeNull()
+    expect(bubble!.className).not.toContain('whitespace-pre-wrap')
+  })
+
+  // The other half: with preserved whitespace gone, soft breaks are what keep a
+  // multi-line notification on separate lines.
+  it('asks for soft breaks so a multi-line inject body keeps its line breaks', () => {
+    renderRow(msg({ role: 'inject', content: 'zzq-line-one\nzzq-line-two\nzzq-line-three' }))
+    expect(screen.getByTestId('md').getAttribute('data-soft-breaks')).toBe('1')
   })
 
   it('drops an OAuth banner a Connections card already owns', () => {
