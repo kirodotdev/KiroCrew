@@ -8,6 +8,7 @@ observe the thing you changed.
 | Unit and integration | vitest | `happy-dom`, network mocked by MSW | `integration/**/*.test.tsx`, `src/**/*.test.tsx` |
 | Browser end-to-end | Playwright | real Chromium against a real gateway | `playwright/*.spec.ts` |
 | Desktop shell | node:test | Node, no DOM | `electron/test/` |
+| Component stories | Storybook | real Chromium, no gateway, every shipped theme | `src/**/*.stories.tsx`, config in `.storybook/` |
 
 ## Commands
 
@@ -19,6 +20,8 @@ npm run test:watch        # vitest, watch mode
 npm run test:electron     # the Electron node:test suite
 npm run test:playwright   # playwright test --headed --workers=1
 npm run test:playwright:headless
+npm run storybook         # component stories on http://127.0.0.1:6006 (loopback only)
+npm run build-storybook   # static build into storybook-static/ (gitignored)
 npx tsc -b                # the real type check
 ```
 
@@ -44,6 +47,26 @@ regression in suite speed.
 
 Reach for the **Electron suite** for main-process code: window and menu wiring,
 remote-host token resolution, and the launcher.
+
+Reach for a **story** when the question is how a shared primitive LOOKS or behaves
+in isolation — a variant matrix, a controlled component driven by hand, a Framer
+Motion transition, or the same component under all shipped themes. Stories run in
+a real browser with the real `src/index.css`, so they show what `happy-dom` cannot
+(layout, animation, token resolution); the `theme` toolbar entry paints
+`data-theme` + `data-mode` exactly as `applyTheme` in `useTheme.tsx` does, one
+entry per theme × mode. They are not a test layer on their own yet: nothing in CI
+renders them, so a story is a review surface and a place to reproduce a visual
+bug, not proof of anything. A story file is development-only — it is excluded from
+coverage, jscpd, and the hardcoded-string gate the same way a test file is, and
+the production bundle never imports it.
+
+Stories live in `src/stories/` (one file per component, `title:
+'Primitives/<Name>'`) rather than beside `ui.tsx`, because that file is a barrel of
+two dozen primitives and one story file per barrel would collide on title. Seven
+primitives have a story; the rest do not, and nothing requires one yet. Whether
+every shared primitive must carry a story is decided by the change that makes CI
+render them — a requirement the tree does not meet has no gate behind it, so it is
+not stated here until it can be enforced.
 
 ## MSW mocking
 

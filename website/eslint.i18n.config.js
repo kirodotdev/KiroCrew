@@ -37,6 +37,9 @@ export default [
       // Test files assert on visible English by design.
       'src/**/*.test.{ts,tsx}',
       'src/test/**',
+      // Storybook fixtures are development-only renders of a primitive with
+      // sample copy; nothing in them reaches a user. Same category as tests.
+      'src/**/*.stories.{ts,tsx}',
       // MODEL-FACING PROMPTS, by naming convention. A `*.prompt.ts` module may
       // contain ONLY the text of a message sent to an agent — no UI copy — so the
       // suffix IS the boundary and its sibling module stays fully covered. Same
