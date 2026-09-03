@@ -5503,23 +5503,18 @@ class TestDenyMatchingIsQuoteNormalized:
         assert is_denied(r"$'mkfs\0junk' /dev/sda") is not None
 
     def test_flag_interposition_is_a_catalog_gap_not_a_view_gap(self):
-        """DOCUMENTED GAP, with the evidence that places it outside this change.
+        """DOCUMENTED GAP, closed by the rm flag-variant widening (#8237).
 
         ``$'rm\\0junk' -rf --no-preserve-root /`` normalizes to exactly the command
-        bash runs -- the view is correct -- but the rule ``rm -rf /.*`` requires its
-        text contiguous and does not tolerate an interposed flag, so nothing matches.
-        The PLAIN spelling is allowed too, on base and here alike, which is what
-        shows this is the built-in rule's authoring rather than anything
-        normalization can reach: no view can make a non-matching pattern match.
-
-        Closing it means editing a shipped rule's regex, which changes matching for
-        the whole catalog and is a separate decision.  Pinned so the gap is findable;
-        when it is closed, the first assertion flips.
+        bash runs -- the view is correct -- and the widened rm rule now tolerates
+        the interposed flag, so the catalog refuses it. The contiguous shape the
+        rule was authored for is still refused, and the view for the escaped
+        spelling IS the command bash runs.
         """
         from kiro_crew import security
 
-        # The catalog cannot see the flag-interposed form in ANY spelling...
-        assert is_denied("rm -rf --no-preserve-root /") is None
+        # The catalog now sees the flag-interposed form (#8237 closed the gap)...
+        assert is_denied("rm -rf --no-preserve-root /") is not None
         # ...while the contiguous shape the rule is authored for is refused.
         assert is_denied("rm -rf /") is not None
         # ...and the view for the escaped spelling IS the command bash runs.

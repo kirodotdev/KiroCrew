@@ -1823,6 +1823,9 @@ _LEGACY_RULE_ID_BY_PATTERN: dict[str, str] = {
         "self-protection-cloud"
     ),
     ".*kiro.?crew gateway restart.*": "self-protection-gateway-restart",
+    # Pre-widening rm spellings (#8237): persisted pins keep resolving.
+    "rm -rf /.*": "local-destructive-rm-rf-root",
+    "rm -rf ~.*": "local-destructive-rm-rf-home",
 }
 
 
