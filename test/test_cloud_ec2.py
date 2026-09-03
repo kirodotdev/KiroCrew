@@ -49,6 +49,76 @@ class TestSubTemplateSyntax:
         assert "9e7905fdee722f9650a03ae644b51c4c6effd3b98ac93c588700072ab35c9ddb" in text
         assert "e05a4d65232ae2b27b3d77da2e368522fb46b923335b8e0d5f77624c32484044" in text
 
+    def test_failure_reason_leads_with_the_error_not_the_log_tail(self):
+        # CloudFormation's reason is read PREFIX-first (the CLI's streamed progress
+        # line, a truncated stack event), and `tail -n 25` starts at an uncontrolled
+        # point -- so the tail alone can open on output from a step that SUCCEEDED.
+        # That is what happened on the Q VPC-endpoint DNS failure: the prefix was
+        # dnf RPM names that had installed fine, and the `curl: (6)` error was past
+        # the visible window. The error extract must therefore come FIRST.
+        text = ec2.load_template()
+        assert "err1=$(grep -aiE" in text, "no error-first extract in fail()"
+        # The capture must run BEFORE fail()'s own banner echo. All bootstrap
+        # output is `exec >>`-redirected into $LOG, and "BOOTSTRAP FAILED"
+        # matches the pattern's own `fail` alternative case-insensitively — so
+        # capturing after the echo makes `tail -1` return the banner every time,
+        # which ships a duplicate of $1 instead of the real error. Ordering is
+        # the whole mechanism, so assert it on the SCRIPT, not just the reason.
+        i_capture = text.index("err1=$(grep -aiE")
+        i_banner = text.index('echo "BOOTSTRAP FAILED: $1"')
+        assert i_capture < i_banner, (
+            "err1 must be captured BEFORE the BOOTSTRAP FAILED echo, or it "
+            "deterministically captures that banner instead of the real error"
+        )
+        # And the banner is excluded anyway: the log APPENDS across re-runs of
+        # the unit, so a previous attempt's banner can still be the last match.
+        assert "grep -av 'BOOTSTRAP FAILED'" in text, (
+            "a prior attempt's banner lingers in the appended log; exclude it"
+        )
+        reason = next(
+            line for line in text.splitlines() if line.strip().startswith('reason="')
+        )
+        assert "err1" in reason and "tail_ctx" in reason, reason
+        assert reason.index("err1") < reason.index("tail_ctx"), (
+            "the error line must precede the log tail in the reason, or a "
+            "prefix-truncated reader still sees successful output first"
+        )
+        # The reason stays capped; the tail keeps its budget because the cap
+        # clips from the END, which is now the least valuable part.
+        assert "head -c 1000" in text
+        assert "tail -c 900" in text
+
+    def test_download_failure_is_reported_as_a_download_not_an_install(self):
+        # The curl that fetches the archive is judged on its own, because a host
+        # that will not resolve is a network fault -- calling it "did not install"
+        # points the reader at permissions and glibc/musl instead of at DNS.
+        text = ec2.load_template()
+        assert 'fail "could not DOWNLOAD kiro-cli from $KIRO_URL' in text, (
+            "the download must fail with its own message naming the URL"
+        )
+        # The install keeps its deliberately tolerant path plus the binary check,
+        # so a genuine install failure is still reported as an install failure.
+        assert "install returned nonzero" in text
+        assert 'fail "kiro-cli did not install' in text
+        # And the download must be judged BEFORE the install runs.
+        assert text.index("could not DOWNLOAD kiro-cli") < text.index(
+            "install returned nonzero"
+        )
+
+    def test_source_fetch_failure_is_not_asserted_to_be_an_install_failure(self):
+        # kcfetch.sh runs under `set -e`, so a failing `aws s3 cp`, `git clone`
+        # or `tar` exits the script and lands on the SAME `|| fail` as a genuine
+        # install.sh failure. Claiming "install.sh failed" for a fetch fault
+        # sends the reader to the build instead of to the network. Each of those
+        # tools writes its own error into $LOG, so the error-first extract now
+        # surfaces which one it was — the message must simply stop asserting a
+        # step it cannot know.
+        text = ec2.load_template()
+        assert 'fail "kirocrew source fetch or install failed"' in text
+        assert 'fail "kirocrew install.sh failed"' not in text, (
+            "this message asserts the install step for what may be a fetch fault"
+        )
+
 
 class TestValidation:
     def test_valid_tag(self):
