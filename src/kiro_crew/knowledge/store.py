@@ -22,6 +22,46 @@ from .._sqlite_compat import fts5_cjk_match_groups, fts5_segment_for_index
 
 logger = logging.getLogger(__name__)
 
+# Marker in a source row's properties for a source Kiro Crew created itself rather
+# than the user registering it by hand. Written today by the aggregate row the
+# agent's "add document" tool owns, and carried by legacy rows the removed folder
+# auto-registration paths left behind. Two readers: the ingestion pipeline, which
+# redacts what an auto-added source ingests, and `is_auto_registered` below, which
+# the scan funnel consults before it will walk a directory. Lived in the removed
+# autosource module until those paths were deleted.
+AUTO_ADDED_PROP = "auto_added"
+
+# Marker recording that a row Kiro Crew registered itself has been adopted by the
+# user, the feature that registered it no longer existing. Written by
+# `retire_auto_registered_folder` when the scan funnel refuses such a row, and by the
+# confirm and resume endpoints when the user adopts one; its presence is what keeps a
+# later refusal from undoing that decision.
+AUTO_REGISTRATION_RETIRED_PROP = "auto_registration_retired"
+
+
+def is_auto_registered(props: dict) -> bool:
+    """True when *props* belong to a source Kiro Crew registered itself, unadopted.
+
+    Both markers are compared with ``is True`` rather than tested for truthiness.
+    ``properties`` is user-editable JSON that also arrives through ``import_bundle``,
+    and the string ``"false"`` is truthy: on the retired marker that direction is
+    FAIL-OPEN -- the row would read as already adopted and skip the refusal below --
+    while on the auto-added marker it would retire a folder the user added by hand.
+    Every writer in-tree stores a real boolean, so nothing legitimate is excluded.
+    """
+    return (props.get(AUTO_ADDED_PROP) is True
+            and props.get(AUTO_REGISTRATION_RETIRED_PROP) is not True)
+
+
+# Source types whose scan walks a directory tree, and therefore the only ones
+# retirement applies to. The ``agent`` aggregate also carries AUTO_ADDED_PROP -- it is
+# auto-added in exactly that sense -- and must not be touched: it holds documents
+# handed over one at a time and walks nothing, so gating it would put a Confirm
+# control in front of a source that is not a directory. (The ``artifact`` aggregate is
+# registered with empty properties and never carries the marker at all; it is excluded
+# by type here for the same structural reason.)
+_WALKING_SOURCE_TYPES = ("local_folder", "obsidian_vault")
+
 # Every query in this module funnels through the ``db`` property, so one check
 # there covers every caller at any stack depth -- including the ones a lexical
 # ``async def`` scan cannot see, which is why this guard exists (#7078, the
@@ -1112,89 +1152,10 @@ class KnowledgeStore:
         """
         self._load_graph()
 
-    def dismiss_auto_source(self, uri: str) -> None:
-        """Record that the user deleted an auto-discovered source at ``uri``.
-
-        Survives ``delete_source_cascade`` on purpose -- see the table comment.
-        Idempotent: re-dismissing keeps the original timestamp semantics simple
-        by overwriting, which is fine since only presence is consulted.
-        """
-        self.db.execute(
-            "INSERT OR REPLACE INTO dismissed_auto_sources (uri, dismissed_at) VALUES (?, ?)",
-            (uri, datetime.now().isoformat()),
-        )
-        self.db.commit()
-
-    def is_auto_source_dismissed(self, uri: str) -> bool:
-        """True when ``uri`` was previously dismissed via ``dismiss_auto_source``."""
-        row = self.db.execute(
-            "SELECT 1 FROM dismissed_auto_sources WHERE uri = ?", (uri,)
-        ).fetchone()
-        return row is not None
-
-    def undismiss_auto_source(self, uri: str) -> None:
-        """Clear a dismissal so auto-discovery may register ``uri`` again."""
-        self.db.execute("DELETE FROM dismissed_auto_sources WHERE uri = ?", (uri,))
-        self.db.commit()
-
     def source_count(self) -> int:
         """Total number of registered sources (all types)."""
         row = self.db.execute("SELECT COUNT(*) AS cnt FROM sources").fetchone()
         return int(row["cnt"]) if row else 0
-
-    def create_auto_source_unless_dismissed(
-        self, name: str, source_type: str, uri: str, properties: dict,
-        *, max_sources: int = 0,
-    ) -> tuple[str | None, bool]:
-        """Atomically: reuse, refuse-if-dismissed, or insert an auto source.
-
-        Returns ``(source_id, created)``, or ``(None, False)`` when ``uri`` is
-        tombstoned or the ``max_sources`` cap is reached. The tombstone check,
-        the existing-row check, the cap check and the INSERT all happen inside
-        ONE ``BEGIN IMMEDIATE`` transaction so a concurrent
-        ``delete_source_cascade(..., dismiss_uri=uri)`` cannot interleave: either
-        the delete's tombstone is visible here and nothing is created, or this
-        insert lands first and the delete then removes it and tombstones the URI.
-        Doing the check and the insert as two transactions would leave exactly
-        the window that lets a deleted auto source come back.
-        """
-        self.db.execute("BEGIN IMMEDIATE")
-        try:
-            dismissed = self.db.execute(
-                "SELECT 1 FROM dismissed_auto_sources WHERE uri = ?", (uri,)
-            ).fetchone()
-            if dismissed:
-                self.db.execute("COMMIT")
-                return None, False
-            existing = self.db.execute(
-                "SELECT id FROM sources WHERE uri = ?", (uri,)
-            ).fetchone()
-            if existing:
-                sid = existing["id"]
-                self.db.execute("COMMIT")
-                return sid, False
-            # Enforce max_sources cap (0 = unbounded).
-            if max_sources > 0:
-                count = self.db.execute(
-                    "SELECT COUNT(*) AS cnt FROM sources"
-                ).fetchone()
-                if count and int(count["cnt"]) >= max_sources:
-                    self.db.execute("COMMIT")
-                    return None, False
-            sid = str(uuid4())
-            now = datetime.now().isoformat()
-            stored = _without_sync_status(properties)
-            self.db.execute(
-                "INSERT INTO sources (id, name, source_type, uri, properties, sync_status, "
-                "created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                (sid, name, source_type, uri, json.dumps(stored),
-                 self._initial_sync_status(properties), now, now),
-            )
-            self.db.execute("COMMIT")
-            return sid, True
-        except Exception:
-            self.db.execute("ROLLBACK")
-            raise
 
     def surviving_group_in_txn(self, table: str, source_id: str, key: str) -> list[str]:
         """Items a doc-state row already names and this source still owns.
@@ -1253,24 +1214,18 @@ class KnowledgeStore:
             f"SELECT id FROM items WHERE id IN ({placeholders}) AND source_id = ?",  # noqa: S608,E501
             (*ids, source_id)).fetchall()]
 
-    def delete_source_cascade(self, source_id, dismiss_uri: str | None = None):
+    def delete_source_cascade(self, source_id):
         """Delete a source and all its items in a single transaction (batch SQL).
 
-        ``dismiss_uri`` writes an auto-discovery tombstone for that URI inside
-        the SAME transaction as the delete. That atomicity is required, not a
-        convenience: auto-discovery runs on a recurring watcher sweep, so a
-        tombstone written in a separate transaction after the cascade leaves a
-        window where a sweep observes neither a source row nor a tombstone and
-        re-creates (and re-ingests) the source the user just deleted.
+        No tombstone is written. One used to be, so a recurring discovery sweep could
+        not re-create the auto source a user had just deleted; with both discovery
+        loops removed nothing re-creates a source behind the user, so recording the
+        deletion would be a write nothing reads. The ``dismissed_auto_sources`` table
+        is left in place unused rather than dropped, so no schema migration rides
+        along with a feature removal.
         """
         self.db.execute("BEGIN IMMEDIATE")
         try:
-            if dismiss_uri:
-                self.db.execute(
-                    "INSERT OR REPLACE INTO dismissed_auto_sources (uri, dismissed_at) "
-                    "VALUES (?, ?)",
-                    (dismiss_uri, datetime.now().isoformat()),
-                )
             # A document reachable from another source SURVIVES this deletion. Its
             # ownership moves to one of those sources and only this source's location
             # row is dropped; the item, its text, embedding, FTS row and graph edges
@@ -1409,6 +1364,75 @@ class KnowledgeStore:
                     exc_info=True)
                 return
             self._fts_index_current = True
+
+    def _retire_one_in_txn(self, row, props: dict) -> None:
+        """Retire ONE candidate row. Caller holds the write lock and has vetted props.
+
+        The marker is written for every candidate; the status moves only for a row
+        that could still be scanned, so a paused row keeps the pause the caller read.
+        """
+        retired = dict(props)
+        retired[AUTO_REGISTRATION_RETIRED_PROP] = True
+        if row["sync_status"] == "paused":
+            self.db.execute(
+                "UPDATE sources SET properties = ? "
+                "WHERE id = ? AND properties = ? AND sync_status = 'paused'",
+                (_without_sync_status(json.dumps(retired)), row["id"],
+                 row["properties"]))
+        else:
+            self.db.execute(
+                "UPDATE sources SET sync_status = 'pending_confirmation', "
+                "properties = ? WHERE id = ? AND properties = ? AND sync_status = ?",
+                (_without_sync_status(json.dumps(retired)), row["id"],
+                 row["properties"], row["sync_status"]))
+            logger.info(
+                "Knowledge source %s was registered automatically by a feature that "
+                "no longer exists; it now needs confirmation before it is scanned "
+                "again", row["id"],
+            )
+
+    def retire_auto_registered_folder(self, source_id: str) -> bool:
+        """Retire ONE auto-registered walking source by id. True when it moved.
+
+Called by ``FolderWatcher.scan_source`` when it refuses such a row, which is
+        the one funnel every scan goes through. Retiring at scan time rather than at
+        store open is what makes the coverage complete AND keeps the write off the
+        startup path: a row can arrive at any moment -- :meth:`import_bundle` restores
+        a bundle's source rows verbatim, so a bundle from an install that had
+        auto-registration enabled re-creates one while the gateway is already up --
+        and this takes the write lock, which a constructor-time caller could be
+        holding the event loop for.
+
+        Synchronous and takes the write lock, so callers on the event loop hand it to
+        ``asyncio.to_thread``. False means nothing moved -- not a candidate, or the
+        lock was unavailable -- and the sweep refuses to scan the row either way.
+        """
+        try:
+            self.db.execute("BEGIN IMMEDIATE")
+        except sqlite3.OperationalError:
+            logger.warning(
+                "Could not take the write lock to retire knowledge source %s; the "
+                "sweep skips it and the next sweep retries", source_id, exc_info=True)
+            return False
+        try:
+            row = self.db.execute(
+                "SELECT id, properties, sync_status, source_type FROM sources WHERE id = ?",
+                (source_id,)).fetchone()
+            moved = False
+            if row and row["source_type"] in _WALKING_SOURCE_TYPES:
+                try:
+                    props = json.loads(row["properties"] or "{}")
+                except (ValueError, TypeError, RecursionError):
+                    props = None
+                if (isinstance(props, dict)
+                        and is_auto_registered(props)):
+                    self._retire_one_in_txn(row, props)
+                    moved = True
+            self.db.execute("COMMIT")
+            return moved
+        except Exception:
+            self.db.execute("ROLLBACK")
+            raise
 
     def _migrate_fts_index(self) -> None:
         """Re-index ``items_fts`` when its stored term representation is stale.
@@ -1945,6 +1969,20 @@ class KnowledgeStore:
                 restored = src.get("sync_status")
                 if not isinstance(restored, str) or not restored:
                     restored = json.loads(props_text or "{}").get("sync_status")
+                # A source whose scan WALKS A TREE is never restored as scannable,
+                # whatever the bundle says. The allowlist above admits 'active', and a
+                # bundle is untrusted input that names its own uri -- so restoring the
+                # claimed status would let an imported row point at any readable
+                # directory and have the next sweep walk it and spend extraction calls
+                # on it, with nobody having asked for that folder. The user chose to
+                # import the bundle; they did not thereby choose each directory inside
+                # it. 'pending_confirmation' is the same state the add-source endpoint
+                # uses, so the row keeps its items and its properties and waits behind
+                # the same Confirm control. Aggregate and single-file sources are
+                # unaffected: they walk nothing.
+                if (src.get("source_type") in _WALKING_SOURCE_TYPES
+                        and restored != "paused"):
+                    restored = "pending_confirmation"
                 self.db.execute(
                     "INSERT OR IGNORE INTO sources (id, name, source_type, uri, properties, "
                     "sync_status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",

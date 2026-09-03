@@ -293,12 +293,10 @@ Two families of instruments, all under the `kirocrew.` namespace:
   that is how you tell a broken probe from a host that stopped exporting, since
   both otherwise look like a missing series.
 
-Two thresholds are worth knowing when you set alerts on the counts, because they
-are the product's own limits rather than round numbers: `50` is the
-`knowledge.max_sources` default, so a host above it is past the default source cap,
-and `200` is the point the lesson store starts pruning. The gauges publish the raw
-number and leave the banding to your queries, so you can move those lines without
-a Kiro Crew change.
+One threshold is worth knowing when you set alerts on the counts, because it is
+the product's own limit rather than a round number: `200` is the point the lesson
+store starts pruning. The gauges publish the raw number and leave the banding to
+your queries, so you can move that line without a Kiro Crew change.
 
 Resource attributes identify the sending process and are attached to every
 series, so they are what you group by. `service.name` is always `kirocrew`.

@@ -24,13 +24,11 @@ from kiro_crew.dashboard.handlers._shared import read_bounded_json
 from kiro_crew.dashboard.handlers.files import (
     _ZIP_CONTAINER_EXTS,
     _content_matches_ext,
-    _slot_project_snapshot,
 )
 from kiro_crew.executors import run_in_embed_pool
 from kiro_crew.knowledge.agent_fetch import fetch_url_content
 from kiro_crew.knowledge.agent_source import add_agent_document
 from kiro_crew.knowledge.artifact_ingest import ArtifactKnowledgeSync
-from kiro_crew.knowledge.autosource import AUTO_ADDED_PROP
 from kiro_crew.knowledge.chunker import HeadingAwareChunker
 from kiro_crew.knowledge.connectors.base import BaseConnector
 from kiro_crew.knowledge.connectors.local_folder import LocalFolderConnector
@@ -56,7 +54,10 @@ from kiro_crew.knowledge.llm_pool import DEFAULT_EXTRACTION_EFFORT, LLMPool
 from kiro_crew.knowledge.readers import FileReader
 from kiro_crew.knowledge.retrieval import HybridRetriever
 from kiro_crew.knowledge.spend import source_spend
-from kiro_crew.knowledge.store import KnowledgeBundleError
+from kiro_crew.knowledge.store import (
+    AUTO_REGISTRATION_RETIRED_PROP,
+    KnowledgeBundleError,
+)
 from kiro_crew.knowledge.sync import SyncScheduler
 from kiro_crew.knowledge.watcher import KnowledgeWatcher
 from kiro_crew.security import is_sensitive_path
@@ -188,21 +189,8 @@ async def _start_watcher_async(app: web.Application) -> None:
         await old_watcher.stop()
     pipeline = app["knowledge_pipeline"]
     store = app["state"].knowledge_store
-    state = app["state"]
 
-    def _project_dirs() -> list[str]:
-        """Directories the user is currently working in.
-
-        Live chat-slot project dirs only -- deliberately NOT the recent-projects
-        list, which includes directories the user merely picked once. Registering
-        those would spend LLM extraction on trees they are not working in.
-
-        Called by the watcher ON the event loop, because it copies a dict that
-        other coroutines on the loop mutate; it does no I/O.
-        """
-        return _slot_project_snapshot(state)
-
-    watcher = KnowledgeWatcher(store=store, pipeline=pipeline, project_dirs=_project_dirs)
+    watcher = KnowledgeWatcher(store=store, pipeline=pipeline)
     app["knowledge_watcher"] = watcher
     task = asyncio.create_task(watcher.start())
     app["_knowledge_watcher_task"] = task
@@ -1159,31 +1147,14 @@ async def delete_source(request: web.Request) -> web.Response:
     row = store.db.execute("SELECT * FROM sources WHERE id = ?", (source_id,)).fetchone()
     if not row:
         return web.json_response({"error": "not found"}, status=404)
-    # An auto-discovered source must not come back on the next watcher sweep just
-    # because its folder still exists -- tombstone the URI. This is passed INTO
-    # the cascade so the tombstone and the delete share one transaction: written
-    # afterwards, a sweep landing in between would see neither a source row nor a
-    # tombstone and re-create what was just deleted. Only auto-added rows get a
-    # tombstone; a hand-added source has no discovery loop to resurrect it.
-    dismiss_uri = None
-    try:
-        props = json.loads(row["properties"]) if isinstance(row["properties"], str) else (row["properties"] or {})
-        if isinstance(props, dict) and props.get(AUTO_ADDED_PROP):
-            dismiss_uri = row["uri"]
-    except Exception:
-        logger.warning("Could not read source properties for dismissal", exc_info=True)
     try:
         # BEGIN IMMEDIATE takes the write lock eagerly and the connection's
         # busy_timeout is 10s, so a concurrent ingestion writer could park this
         # call for that long -- never on the event loop.
-        await asyncio.to_thread(
-            store.delete_source_cascade, source_id, dismiss_uri=dismiss_uri
-        )
+        await asyncio.to_thread(store.delete_source_cascade, source_id)
     except Exception:
         logger.exception("delete_source failed: source_id=%s", source_id)
         return web.json_response({"error": "internal server error"}, status=500)
-    if dismiss_uri:
-        _sel_log("source.auto_dismiss", source_id=source_id, uri=dismiss_uri)
     _sel_log("source.delete", source_id=source_id)
     return web.json_response({"status": "deleted"})
 
@@ -1237,6 +1208,11 @@ async def confirm_source(request: web.Request) -> web.Response:
         return web.json_response({"error": "Path is restricted for security reasons"}, status=403)
     props = json.loads(row["properties"]) if isinstance(row["properties"], str) else (row["properties"] or {})
     props.pop("scan_paused", None)
+    # Confirming (or resuming) IS the user adopting this source, so stamp it as
+    # adopted in the same write that activates it. Without this, a row Kiro Crew
+    # registered itself would be refused by the scan funnel's gate immediately after
+    # the user satisfied that very gate, and bounce back to pending_confirmation.
+    props[AUTO_REGISTRATION_RETIRED_PROP] = True
     store.update_source(source_id, properties=props, sync_status="active")
     _sel_log("source.confirm", source_id=source_id)
     # Trigger scan
@@ -1284,6 +1260,11 @@ async def resume_source(request: web.Request) -> web.Response:
         return web.json_response({"error": "Path is restricted for security reasons"}, status=403)
     props = json.loads(row["properties"]) if isinstance(row["properties"], str) else (row["properties"] or {})
     props.pop("scan_paused", None)
+    # Confirming (or resuming) IS the user adopting this source, so stamp it as
+    # adopted in the same write that activates it. Without this, a row Kiro Crew
+    # registered itself would be refused by the scan funnel's gate immediately after
+    # the user satisfied that very gate, and bounce back to pending_confirmation.
+    props[AUTO_REGISTRATION_RETIRED_PROP] = True
     store.update_source(source_id, properties=props, sync_status="active")
     _sel_log("source.resume", source_id=source_id)
     # Trigger scan to pick up remaining files

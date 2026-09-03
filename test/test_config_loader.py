@@ -3871,41 +3871,14 @@ class TestKnowledgeAutoIngest:
         assert data["knowledge"]["auto_add_documents"] is True
         assert "auto_ingest_doc_links" not in data["knowledge"]
 
-    def test_project_docs_defaults_off(self) -> None:
-        assert _load_from_dict({}).knowledge.auto_register_project_docs is False
-
     def test_artifact_ingest_defaults_off(self) -> None:
         assert _load_from_dict({}).knowledge.auto_ingest_artifacts is False
 
     def test_an_empty_knowledge_section_leaves_every_auto_path_off(self) -> None:
-        # All three arrive through different readers (a legacy-aware helper and
-        # two inline .get() calls), so one flipped in isolation is a real risk.
+        # The two arrive through different readers (a legacy-aware helper and an
+        # inline .get() call), so one flipped in isolation is a real risk.
         kc = _load_from_dict({"knowledge": {}}).knowledge
-        assert (kc.auto_add_documents, kc.auto_register_project_docs, kc.auto_ingest_artifacts) == (
-            False,
-            False,
-            False,
-        )
-
-    def test_project_docs_reads_value(self) -> None:
-        cfg = _load_from_dict({"knowledge": {"auto_register_project_docs": False}})
-        assert cfg.knowledge.auto_register_project_docs is False
-
-    def test_chunk_budget_default(self) -> None:
-        assert _load_from_dict({}).knowledge.auto_ingest_chunk_budget == 150
-
-    def test_chunk_budget_reads_value(self) -> None:
-        cfg = _load_from_dict({"knowledge": {"auto_ingest_chunk_budget": 40}})
-        assert cfg.knowledge.auto_ingest_chunk_budget == 40
-
-    def test_chunk_budget_zero_is_allowed(self) -> None:
-        cfg = _load_from_dict({"knowledge": {"auto_ingest_chunk_budget": 0}})
-        assert cfg.knowledge.auto_ingest_chunk_budget == 0
-
-    @pytest.mark.parametrize("bad", [-5, "many", True, None, 1.5])
-    def test_chunk_budget_rejects_junk(self, bad: object) -> None:
-        cfg = _load_from_dict({"knowledge": {"auto_ingest_chunk_budget": bad}})
-        assert cfg.knowledge.auto_ingest_chunk_budget == 150
+        assert (kc.auto_add_documents, kc.auto_ingest_artifacts) == (False, False)
 
     def test_folder_chunk_budget_default(self) -> None:
         assert _load_from_dict({}).knowledge.folder_ingest_chunk_budget == 300
@@ -3942,79 +3915,11 @@ class TestKnowledgeAutoIngest:
 
         for key in (
             "knowledge.auto_add_documents",
-            "knowledge.auto_register_project_docs",
             "knowledge.auto_ingest_artifacts",
-            "knowledge.auto_ingest_chunk_budget",
             "knowledge.folder_ingest_chunk_budget",
             "knowledge.dedup_every_n_sweeps",
         ):
             assert key in _EDITABLE_CONFIG, key
-
-
-class TestKnowledgeAutoDiscover:
-    """``knowledge.auto_discover_folder`` / ``auto_discover_dirname`` parsing."""
-
-    def test_discovery_defaults_off(self) -> None:
-        cfg = _load_from_dict({})
-        assert cfg.knowledge.auto_discover_folder is False
-
-    def test_discovery_reads_value(self) -> None:
-        cfg = _load_from_dict({"knowledge": {"auto_discover_folder": True}})
-        assert cfg.knowledge.auto_discover_folder is True
-
-    def test_dirname_default(self) -> None:
-        cfg = _load_from_dict({})
-        assert cfg.knowledge.auto_discover_dirname == "knowledge-docs"
-
-    def test_dirname_reads_value(self) -> None:
-        cfg = _load_from_dict({"knowledge": {"auto_discover_dirname": "docs"}})
-        assert cfg.knowledge.auto_discover_dirname == "docs"
-
-    def test_dirname_is_stripped(self) -> None:
-        cfg = _load_from_dict({"knowledge": {"auto_discover_dirname": "  docs \n"}})
-        assert cfg.knowledge.auto_discover_dirname == "docs"
-
-    def test_dirname_is_clamped_to_128(self) -> None:
-        cfg = _load_from_dict({"knowledge": {"auto_discover_dirname": "x" * 500}})
-        assert len(cfg.knowledge.auto_discover_dirname) == 128
-
-    def test_dirname_non_string_is_never_used_as_given(self) -> None:
-        """A wrong-typed dirname must not survive as an integer, either way.
-
-        The outcome legitimately DIFFERS by environment, which is why this asserts
-        the invariant rather than one literal: ``jsonschema`` is an optional
-        dependency (``config/validation.py`` guards its import with
-        ``_HAS_JSONSCHEMA``). With it installed the schema's ``type`` branch warns
-        and applies the field default; without it — the shipped configuration, and
-        what CI runs — the schema layer is skipped and the loader's own ``str()``
-        coercion produces ``"42"``.
-
-        Both are acceptable and both are safe: the value is validated again at use
-        time by ``resolve_drop_folder``, which rejects anything containing a path
-        separator. What must hold in every environment is that the result is a
-        non-empty ``str`` and never the raw ``int``. Pinning one literal made this
-        test pass locally and fail in CI.
-        """
-        cfg = _load_from_dict({"knowledge": {"auto_discover_dirname": 42}})
-        value = cfg.knowledge.auto_discover_dirname
-        assert isinstance(value, str) and value
-        assert value in ("42", "knowledge-docs")
-
-    def test_traversal_dirname_is_kept_but_inert(self) -> None:
-        # Validation is deliberately runtime-only: the config retains what the
-        # user typed, and resolve_drop_folder refuses to act on it.
-        cfg = _load_from_dict({"knowledge": {"auto_discover_dirname": "../../etc"}})
-        assert cfg.knowledge.auto_discover_dirname == "../../etc"
-
-    def test_both_keys_round_trip(self) -> None:
-        from dataclasses import asdict
-
-        original = _load_from_dict(
-            {"knowledge": {"auto_discover_folder": True, "auto_discover_dirname": "docs"}}
-        )
-        reloaded = _load_from_dict({"knowledge": asdict(original.knowledge)})
-        assert reloaded.knowledge.auto_discover_folder is True
-        assert reloaded.knowledge.auto_discover_dirname == "docs"
 
 
 class TestKnowledgePoolIdleTtl:

@@ -102,8 +102,6 @@ class TestBudgetIsWiredToHandAddedSources:
         w = KnowledgeWatcher(store, MagicMock())
         w._folder_watcher = MagicMock()
         w._folder_watcher.scan_source = AsyncMock(return_value={})
-        w._discover_drop_folder = AsyncMock()
-        w._discover_project_docs = AsyncMock()
         w._maybe_dedup_sweep = AsyncMock()
         w._maybe_reembed_stale = AsyncMock()
         with patch("kiro_crew.config.loader.KiroCrewConfig.load",

@@ -24,13 +24,12 @@ from kiro_crew.security import (
 )
 from kiro_crew.sel import sel
 
-from .autosource import AUTO_ADDED_PROP
 from .chunker import CHUNK_OVERLAP, CHUNK_TOKEN_SIZE, HeadingAwareChunker
 from .dedup import PERSISTENT_SOURCE_TYPES, dedup_document
 from .embedder import embedder_signature, floats_to_bytes
 from .extractor import EntityExtractor
 from .readers import FileReader
-from .store import KnowledgeStore
+from .store import AUTO_ADDED_PROP, KnowledgeStore
 
 logger = logging.getLogger(__name__)
 
@@ -397,8 +396,7 @@ class IngestionPipeline:
         """True when this source was registered automatically, not chosen by the user.
 
         Read from the source row's own properties rather than passed in, because every
-        auto path (project docs, the agent aggregate, the auto-registered drop folder)
-        already marks itself and a caller-supplied flag would be one more thing each
+        auto path (today the agent aggregate) already marks itself and a caller-supplied flag would be one more thing each
         new path could forget. Failure is treated as NOT auto-added: a missing or
         malformed row must not silently start scrubbing a hand-registered folder.
         """

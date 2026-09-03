@@ -37,8 +37,6 @@ def _watcher(store) -> KnowledgeWatcher:
     watcher = KnowledgeWatcher(store=store, pipeline=pipeline)
     # Discovery registers workspace folders from live config; irrelevant here
     # and it would put rows in the table the assertions do not expect.
-    watcher._discover_drop_folder = AsyncMock()  # type: ignore[method-assign]
-    watcher._discover_project_docs = AsyncMock()  # type: ignore[method-assign]
     watcher._maybe_reembed_stale = AsyncMock()  # type: ignore[method-assign]
     return watcher
 

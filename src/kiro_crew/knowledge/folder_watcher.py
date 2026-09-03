@@ -23,6 +23,7 @@ from .ingestion import run_to_completion
 from .kiroignore import KIROIGNORE_FILENAME
 from .kiroignore import load as load_kiroignore
 from .readers import FileReader
+from .store import is_auto_registered
 
 logger = logging.getLogger(__name__)
 
@@ -213,6 +214,26 @@ def walk_filters(props: dict, source_type: str = "local_folder") -> dict:
     }
 
 
+def _source_props(source: dict) -> dict:
+    """A source row's properties as a dict, whatever shape the caller passed.
+
+    The sweep hands over a parsed dict; the confirm and resume endpoints hand over the
+    JSON text straight from the row. An unreadable or non-object blob reads as ``{}``,
+    which is the safe direction here: it cannot make a row look adopted.
+    """
+    raw = source.get("properties")
+    if isinstance(raw, dict):
+        return raw
+    if isinstance(raw, str) and raw:
+        try:
+            parsed = json.loads(raw)
+        except (ValueError, TypeError, RecursionError):
+            return {}
+        if isinstance(parsed, dict):
+            return parsed
+    return {}
+
+
 def folder_chunk_budget(props: dict) -> int | None:
     """Chunks a hand-added folder source may ingest in one sweep; ``None`` = unbounded.
 
@@ -319,10 +340,45 @@ class FolderWatcher:
 
         ``chunk_budget`` stops the scan once that many chunks have been ingested
         in THIS sweep, leaving the rest for later sweeps. ``None`` is unbounded.
-        Callers resolve the value: :func:`folder_chunk_budget` for a hand-added
-        folder, ``knowledge.auto_ingest_chunk_budget`` for an auto-registered one.
+        Callers resolve the value with :func:`folder_chunk_budget`, capped by the
+        watcher's global ``knowledge.sweep_chunk_budget``.
+
+        **A source Kiro Crew registered itself is refused here, not scanned.** The two
+        paths that registered folders on their own are gone, and with them the
+        containment re-validation that made such a row safe to walk; a row can still
+        exist, from a database written before the removal or from ``import_bundle``
+        restoring a bundle's rows verbatim. The refusal lives in this method because
+        this is the ONE funnel every scan goes through -- the watcher's sweep and both
+        dashboard endpoints -- so no caller can reach a walk without passing it.
+        Retirement moves the row to ``pending_confirmation``, which is what puts the
+        Confirm control in front of the user; the refusal stands even when that write
+        cannot take the lock, and the next attempt retries it.
         """
         source_id = source["id"]
+        props = _source_props(source)
+        if is_auto_registered(props):
+            moved = await asyncio.to_thread(
+                self.store.retire_auto_registered_folder, source_id)
+            logger.info(
+                "Refusing to scan knowledge source %s: it was registered "
+                "automatically by a feature that no longer exists and needs "
+                "confirmation first (retired now: %s)", source_id, moved)
+            # Refusing to walk a tree is a permission decision, so it belongs in the
+            # audit log next to this file's other two refusals -- and the paths this
+            # replaced logged both their auto-add and their auto_scan_denied
+            # decisions. `retired=` records whether the row also moved to
+            # pending_confirmation, because a refusal that could not take the write
+            # lock leaves the row for the next attempt and reads identically here
+            # otherwise.
+            sel().log_tool_invocation(
+                session_key="watcher", agent="folder-watcher",
+                tool_name="knowledge.source.scan_denied",
+                outcome="denied",
+                resources=(f"source_id={source_id} reason=auto_registered_unconfirmed "
+                           f"retired={moved}"),
+            )
+            return {"new": 0, "changed": 0, "deleted": 0, "skipped": 0, "capped": 0,
+                    "failed": 0, "chunks_ingested": 0, "unconfirmed": True}
         if source_id not in self._locks:
             self._locks[source_id] = asyncio.Lock()
         async with self._locks[source_id]:

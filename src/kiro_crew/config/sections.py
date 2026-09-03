@@ -1551,34 +1551,6 @@ class KnowledgeConfig:
             "Renamed from auto_ingest_doc_links, which is still accepted.",
         ),
     )
-    auto_register_project_docs: bool = field(
-        default=False,
-        metadata=_meta(
-            "Auto-Register Project Documents",
-            "Register the documents of each project you work in as a Knowledge "
-            "source automatically, so a project's design docs, specs and READMEs "
-            "become searchable without adding the folder by hand. Only documents "
-            "are taken (.md/.pdf/.docx/.org above a small size floor, excluding "
-            "agent instructions, generated files and repository boilerplate) -- "
-            "never source code. There is no confirmation step once enabled: the "
-            "document filter and the per-sweep chunk budget below bound the cost, "
-            "and deleting the source keeps it deleted. Off by default, because "
-            "registering a repository is a decision to spend extraction calls on "
-            "it -- turning this on opts in every project you open.",
-        ),
-    )
-    auto_ingest_chunk_budget: int = field(
-        default=150,
-        metadata=_meta(
-            "Auto-Ingest Chunk Budget",
-            "Chunks an automatically-registered source may ingest per watcher "
-            "sweep. Each chunk costs one LLM extraction call, so this is what "
-            "actually bounds the cost of auto-registration -- file filters bound "
-            "pollution, not spend. Newest documents land first and the rest "
-            "trickle in on later sweeps, so a new project never arrives as a "
-            "burst. 0 removes the bound.",
-        ),
-    )
     folder_ingest_chunk_budget: int = field(
         default=300,
         metadata=_meta(
@@ -1629,17 +1601,6 @@ class KnowledgeConfig:
             "0 removes the bound.",
         ),
     )
-    max_sources: int = field(
-        default=50,
-        metadata=_meta(
-            "Max Sources",
-            "Maximum number of Knowledge sources that may be registered. "
-            "Prevents unbounded auto-discovery from registering hundreds of "
-            "sources when many projects are open. Registration attempts past "
-            "the cap are skipped (auto) or rejected (manual). 0 removes the "
-            "bound.",
-        ),
-    )
     embed_rate_limit: int = field(
         default=120,
         metadata=_meta(
@@ -1667,30 +1628,6 @@ class KnowledgeConfig:
             "Number of concurrent LLM workers for document extraction. More "
             "workers = faster ingestion but higher peak cost. Each worker holds "
             "a long-lived session. Requires restart to take effect.",
-        ),
-    )
-    auto_discover_folder: bool = field(
-        default=False,
-        metadata=_meta(
-            "Auto-Discover Documents Folder",
-            "Watch for a documents folder inside the active workspace and "
-            "register it as a Knowledge source automatically, so files dropped "
-            "there become searchable without adding the source by hand. The "
-            "folder is never created for you: its absence means you have not "
-            "opted in, and it is picked up within one watcher sweep of being "
-            "created -- no restart needed. Off by default because ingestion "
-            "spends LLM extraction on every supported file in the folder.",
-        ),
-    )
-    auto_discover_dirname: str = field(
-        default="knowledge-docs",
-        metadata=_meta(
-            "Documents Folder Name",
-            "Name of the folder inside the workspace that auto-discovery looks "
-            "for. A single path segment -- separators and traversal are rejected "
-            "so the source cannot be redirected outside the workspace. Avoid "
-            "'knowledge': that is where the Library's own SQLite store lives and "
-            "it always exists, which would defeat discovery.",
         ),
     )
 
@@ -3455,11 +3392,9 @@ EXTRACTION_POOL_SIZE_MAX = 10
 # keeps returning the default for a negative value. Only the missing CEILING is
 # added here, which is where the actual exposure was: an absurd hand-edited
 # budget was loaded verbatim and became real work.
-AUTO_INGEST_CHUNK_BUDGET_MAX = 10000
 FOLDER_INGEST_CHUNK_BUDGET_MAX = 10000
 DEDUP_EVERY_N_SWEEPS_MAX = 288
 SWEEP_CHUNK_BUDGET_MAX = 50000
-KNOWLEDGE_MAX_SOURCES_MAX = 1000
 EMBED_RATE_LIMIT_MAX = 10000
 
 

@@ -132,9 +132,8 @@ def test_a_negative_knowledge_budget_keeps_its_default_instead_of_clamping_to_ze
     never asked to disable, so `_safe_nonnegative_int` keeps returning the default for a
     negative value and only the ceiling is applied.
     """
-    cfg = _loaded(tmp_path, {"knowledge": {"sweep_chunk_budget": -1, "max_sources": -5}})
+    cfg = _loaded(tmp_path, {"knowledge": {"sweep_chunk_budget": -1}})
     assert cfg.knowledge.sweep_chunk_budget == 500
-    assert cfg.knowledge.max_sources == 50
 
 
 def test_the_completion_keep_ceiling_matches_its_owner() -> None:

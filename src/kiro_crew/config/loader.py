@@ -131,7 +131,6 @@ from kiro_crew.config.sections import (  # noqa: F401
     ACTIVATION_OFF,
     ACTIVATION_REVIEW,
     APPROVAL_TURN_MARGIN_SECS,
-    AUTO_INGEST_CHUNK_BUDGET_MAX,
     AUTOCOMPACT_PCT_MAX,
     AUTOCOMPACT_PCT_MIN,
     BACKGROUND_WORKER_AGENTS,
@@ -164,7 +163,6 @@ from kiro_crew.config.sections import (  # noqa: F401
     JAIL_MODE_AUTO,
     JAIL_MODE_OFF,
     JAIL_MODE_ON,
-    KNOWLEDGE_MAX_SOURCES_MAX,
     LOOP_STALL_EXIT_AFTER_DEFAULT,
     LOOP_STALL_EXIT_AFTER_MANAGED_DEFAULT,
     LOOP_STALL_EXIT_AFTER_MAX,
@@ -2867,14 +2865,6 @@ class KiroCrewConfig:
                     300,
                 ),
                 auto_add_documents=_read_auto_add_documents(knowledge_data),
-                auto_register_project_docs=bool(
-                    knowledge_data.get("auto_register_project_docs", False)
-                ),
-                auto_ingest_chunk_budget=_safe_nonnegative_int(
-                    knowledge_data.get("auto_ingest_chunk_budget", 150),
-                    150,
-                    AUTO_INGEST_CHUNK_BUDGET_MAX,
-                ),
                 folder_ingest_chunk_budget=_safe_nonnegative_int(
                     knowledge_data.get("folder_ingest_chunk_budget", 300),
                     300,
@@ -2890,17 +2880,10 @@ class KiroCrewConfig:
                     for h in knowledge_data.get("doc_ingest_hosts", [])
                     if isinstance(h, str) and h.strip()
                 ],
-                auto_discover_folder=bool(knowledge_data.get("auto_discover_folder", False)),
-                auto_discover_dirname=str(
-                    knowledge_data.get("auto_discover_dirname", "knowledge-docs")
-                ).strip()[:128],
                 sweep_chunk_budget=_safe_nonnegative_int(
                     knowledge_data.get("sweep_chunk_budget", 500),
                     500,
                     SWEEP_CHUNK_BUDGET_MAX,
-                ),
-                max_sources=_safe_nonnegative_int(
-                    knowledge_data.get("max_sources", 50), 50, KNOWLEDGE_MAX_SOURCES_MAX
                 ),
                 embed_rate_limit=_safe_nonnegative_int(
                     knowledge_data.get("embed_rate_limit", 120), 120, EMBED_RATE_LIMIT_MAX

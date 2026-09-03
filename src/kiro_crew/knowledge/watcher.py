@@ -5,20 +5,13 @@ import hashlib
 import json
 import logging
 import os
-from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
 
-from kiro_crew.config.loader import KiroCrewConfig, default_project_dir
+from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.security import is_sensitive_path
 from kiro_crew.sel import sel
 
-from .autosource import (
-    AUTO_ADDED_PROP,
-    DEFAULT_DROP_DIRNAME,
-    auto_source_still_contained,
-    discover_and_register,
-)
 from .dedup import dedup_sweep
 from .embedder import embedder_signature
 from .folder_watcher import FolderWatcher, folder_chunk_budget
@@ -28,11 +21,6 @@ from .ingestion import (
     count_stale_items,
     rebuild_embeddings,
     start_rebuild_job,
-)
-from .project_docs import discover_and_register as discover_project_docs
-from .project_docs import (
-    is_project_doc_source,
-    project_source_still_valid,
 )
 from .store import KnowledgeStore
 
@@ -50,25 +38,14 @@ _LARGE_REBUILD_WARN_THRESHOLD = 1000
 class KnowledgeWatcher:
     """Polls registered local_file sources for file changes and re-ingests."""
 
-    def __init__(self, store: KnowledgeStore, pipeline: IngestionPipeline, interval: int = 300,
-                 project_dirs: Callable[[], list[str]] | None = None):
+    def __init__(self, store: KnowledgeStore, pipeline: IngestionPipeline,
+                 interval: int = 300):
         self.store = store
         self.pipeline = pipeline
         self.interval = interval
         self._stop_event = asyncio.Event()
         self._folder_watcher = FolderWatcher(store, pipeline)
         self._reembed_task: asyncio.Task | None = None
-        # Last discovery error signature, for log dedup across sweeps.
-        self._discover_error_sig: str | None = None
-        # Project-docs discovery keeps its OWN error signature: sharing one with
-        # the drop folder would let a failure in either suppress the first log of
-        # a failure in the other.
-        self._project_docs_error_sig: str | None = None
-        # Resolver for the directories the user is working in. Injected by the
-        # dashboard (which owns chat-slot state) rather than importing dashboard
-        # state here. Called ON the event loop -- it reads an in-memory dict the
-        # loop mutates -- so it must not do I/O.
-        self._project_dirs = project_dirs
         # Sweeps completed, for the dedup cadence.
         self._sweep_count = 0
         # False until a scheduled dedup pass has actually applied deletes; the
@@ -91,94 +68,6 @@ class KnowledgeWatcher:
         self._stop_event.set()
         logger.info("Source watcher stopped")
 
-    async def _discover_drop_folder(self) -> None:
-        """Register the workspace drop folder if it has appeared.
-
-        Runs every sweep so a folder created after startup is picked up without
-        a restart (within one ``interval``). Gated on
-        ``knowledge.auto_discover_folder``; re-reads config each sweep so
-        toggling the flag takes effect without a restart, matching KiroCrew's
-        live-config behaviour. Never raises into the sweep: a discovery failure
-        must not stop registered sources from being scanned.
-        """
-        try:
-            cfg = KiroCrewConfig.load()
-            if not cfg.knowledge.auto_discover_folder:
-                return
-            dirname = cfg.knowledge.auto_discover_dirname or DEFAULT_DROP_DIRNAME
-            base = await asyncio.to_thread(default_project_dir)
-            if not base:
-                return
-            source_id = await asyncio.to_thread(
-                discover_and_register, self.store, base, dirname
-            )
-            self._discover_error_sig = None
-            if source_id:
-                # Registering a source that will spend LLM extraction on the
-                # user's files is an auditable mutation -- the manual POST path
-                # SEL-logs it, so the automatic path must too.
-                sel().log_tool_invocation(
-                    session_key="gateway", agent="knowledge-watcher",
-                    tool_name="knowledge.source.auto_add", outcome="completed",
-                    resources=f"source_id={source_id} dirname={dirname}",
-                )
-        except Exception as exc:
-            # Contained so a discovery failure cannot stop the sweep from
-            # scanning already-registered sources. Repeats are deduped: this runs
-            # every interval, and an unanticipated persistent error would
-            # otherwise emit a full traceback forever.
-            sig = f"{type(exc).__name__}:{exc}"
-            if sig != self._discover_error_sig:
-                self._discover_error_sig = sig
-                logger.warning("Knowledge drop-folder discovery failed", exc_info=True)
-            else:
-                logger.debug("Knowledge drop-folder discovery still failing: %s", sig)
-
-    async def _discover_project_docs(self) -> None:
-        """Register the documents of each project the user is working in.
-
-        Runs every sweep so a project opened after startup is picked up without a
-        restart. Gated on ``knowledge.auto_register_project_docs``; re-reads
-        config each sweep so toggling the flag takes effect immediately, matching
-        Kiro Crew's live-config behaviour. Never raises into the sweep: a
-        discovery failure must not stop registered sources from being scanned.
-        """
-        try:
-            cfg = KiroCrewConfig.load()
-            if not cfg.knowledge.auto_register_project_docs:
-                return
-            if self._project_dirs is None:
-                return
-            # Resolved on the loop: it copies a dict that other coroutines on the
-            # loop mutate, so the copy has to happen where those mutations are
-            # serialised against it.
-            dirs = self._project_dirs()
-            if not dirs:
-                return
-            try:
-                max_sources = max(0, int(cfg.knowledge.max_sources))
-            except (TypeError, ValueError):
-                max_sources = 0
-            created = await asyncio.to_thread(
-                discover_project_docs, self.store, dirs, max_sources=max_sources)
-            self._project_docs_error_sig = None
-            for source_id in created:
-                # Registering a source that will spend LLM extraction on the
-                # user's files is an auditable mutation -- the manual POST path
-                # SEL-logs it, so the automatic path must too.
-                sel().log_tool_invocation(
-                    session_key="gateway", agent="knowledge-watcher",
-                    tool_name="knowledge.source.auto_add", outcome="completed",
-                    resources=f"source_id={source_id} kind=project_docs",
-                )
-        except Exception as exc:
-            sig = f"{type(exc).__name__}:{exc}"
-            if sig != self._project_docs_error_sig:
-                self._project_docs_error_sig = sig
-                logger.warning("Knowledge project-docs discovery failed", exc_info=True)
-            else:
-                logger.debug("Knowledge project-docs discovery still failing: %s", sig)
-
     async def _store_rows(self, sql: str, params: tuple = ()) -> list:
         """Run a sweep query off the event loop.
 
@@ -194,11 +83,6 @@ class KnowledgeWatcher:
 
     async def _scan(self):
         """Check all watched sources for changes."""
-        # Pick up a newly-created workspace drop folder before scanning, so a
-        # folder made since the last sweep is ingested in this same pass.
-        await self._discover_drop_folder()
-        await self._discover_project_docs()
-
         # Global sweep budget: caps total extraction calls across ALL sources in
         # one sweep. Read live so the knob takes effect without a restart.
         sweep_budget = self._sweep_chunk_budget()
@@ -212,8 +96,6 @@ class KnowledgeWatcher:
             ),
             tuple(FOLDER_SOURCE_TYPES),
         )
-        ws_base: str | None = None
-        chunk_budget: int | None = None
         for row in folder_rows:
             # Global budget exhausted — defer remaining sources to next sweep.
             if sweep_budget and sweep_chunks_used >= sweep_budget:
@@ -232,46 +114,12 @@ class KnowledgeWatcher:
                 # every sweep.
                 if source.get("sync_status") in ("paused", "pending_confirmation"):
                     continue
-                budget: int | None = None
-                if props.get(AUTO_ADDED_PROP):
-                    # Re-validate containment on EVERY sweep, not just at
-                    # registration: the stored URI is a path that can be swapped
-                    # for a symlink to an external tree after the fact, and
-                    # os.walk would then follow it out of the workspace.
-                    if is_project_doc_source(props):
-                        # A project repo root lives outside the workspace by
-                        # design, so workspace containment is the wrong
-                        # invariant; what must still hold is that the recorded
-                        # path has not been swapped for a link elsewhere.
-                        contained = await asyncio.to_thread(
-                            project_source_still_valid, source["uri"])
-                        if chunk_budget is None:
-                            chunk_budget = self._chunk_budget()
-                        budget = chunk_budget or None
-                    else:
-                        if ws_base is None:
-                            ws_base = await asyncio.to_thread(default_project_dir)
-                        contained = await asyncio.to_thread(
-                            auto_source_still_contained, source["uri"], ws_base or ""
-                        )
-                    if not contained:
-                        logger.warning(
-                            "Skipping auto-added source %s: %s no longer resolves to a "
-                            "permitted directory", source["id"], source["uri"],
-                        )
-                        sel().log_tool_invocation(
-                            session_key="gateway", agent="knowledge-watcher",
-                            tool_name="knowledge.source.auto_scan_denied",
-                            outcome="denied",
-                            resources=f"source_id={source['id']} reason=not_contained",
-                        )
-                        continue
-                else:
-                    # A hand-added folder is paced too. The user asked for the whole
-                    # folder and still gets it -- newest files first, the rest on
-                    # later sweeps -- but pointing the Library at a source repo no
-                    # longer spends the whole bill before anyone can look at it.
-                    budget = folder_chunk_budget(props)
+                # Every folder source is one the user added by hand, and it is
+                # paced: the whole folder still arrives -- newest files first,
+                # the rest on later sweeps -- but pointing the Library at a
+                # source repo no longer spends the whole bill before anyone can
+                # look at it.
+                budget = folder_chunk_budget(props)
 
                 # Apply global budget as an additional cap on the per-source budget.
                 if sweep_budget:
@@ -396,18 +244,6 @@ class KnowledgeWatcher:
         await self._maybe_reembed_stale()
         self._sweep_count += 1
         await self._maybe_dedup_sweep()
-
-    @staticmethod
-    def _chunk_budget() -> int:
-        """Chunks an auto-registered source may ingest in one sweep.
-
-        Read per sweep so the value is live. 0 disables the bound.
-        """
-        try:
-            return max(0, int(KiroCrewConfig.load().knowledge.auto_ingest_chunk_budget))
-        except Exception:
-            logger.debug("Could not read auto_ingest_chunk_budget", exc_info=True)
-            return 0
 
     @staticmethod
     def _sweep_chunk_budget() -> int:

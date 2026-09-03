@@ -107,9 +107,9 @@ drift worth seeing and a band renders it as a flat line; a band attribute is up 
 five series where an integer value is one; and fixing the boundaries at emit time
 is a one-way door once dashboards read them. A backend can band a raw count at
 query time, and cannot recover a count from a band. The product's own thresholds
-are still worth knowing when reading these -- 50 is the ``knowledge.max_sources``
-default and 200 the lesson-store prune ceiling -- so the operator guide names them
-instead of the wire format hard-coding them.
+are still worth knowing when reading these -- 200 is the lesson-store prune
+ceiling -- so the operator guide names them instead of the wire format
+hard-coding them.
 
 **Cost is the whole design constraint here.** A callback runs on every export
 interval (60s by default) and, with an OTLP destination configured, once per

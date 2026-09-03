@@ -80,7 +80,7 @@ class TestAggregateSource:
         # switch: the feature already has a visible toggle. A tombstone here left
         # the user with no way back while that toggle still read on.
         sid, _ = ensure_agent_source(kstore)
-        kstore.delete_source_cascade(sid, dismiss_uri=AGENT_SOURCE_URI)
+        kstore.delete_source_cascade(sid)
         again, created = ensure_agent_source(kstore)
         assert created is True and again
 
@@ -219,7 +219,7 @@ class TestAddDocument:
         # knowledge.auto_add_documents toggle is the only off switch, so a later
         # add recreates the row and lands.
         sid, _ = ensure_agent_source(kstore)
-        kstore.delete_source_cascade(sid, dismiss_uri=AGENT_SOURCE_URI)
+        kstore.delete_source_cascade(sid)
         res = await add_agent_document(pipeline, title="Doc", content="body", source_uri="test://Doc")
         assert res["status"] == "added"
 

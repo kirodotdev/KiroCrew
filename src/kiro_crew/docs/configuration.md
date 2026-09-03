@@ -163,9 +163,7 @@ Set via `kirocrew config set agent.acp_backend kas`.
   "knowledge": {
     "auto_ingest_artifacts": false,
     "auto_add_documents": false,
-    "auto_register_project_docs": false,
     "auto_ingest_artifact_kinds": ["markdown", "text", "html", "json"],
-    "auto_ingest_chunk_budget": 150,
     "folder_ingest_chunk_budget": 300,
     "dedup_every_n_sweeps": 12
   },
@@ -403,15 +401,11 @@ them, so there is no enable switch here: only knobs for *which* model runs.
 | `knowledge.auto_ingest_artifact_kinds` | Artifact kinds eligible for auto-ingest. `widget` is excluded as UI rather than a document; `svg` is excluded because the file reader has no support for it | `["markdown", "text", "html", "json"]` |
 | `knowledge.max_ingest_file_mb` | Per-file Knowledge Library ingestion size cap; oversized files are skipped. `0` disables the cap | `100.0` |
 | `knowledge.auto_add_documents` | Let the agent add documents it reads while working to the Knowledge Library (one aggregate "Auto-added" source). The agent fetches the content with its own tools under your approval; Kiro Crew fetches nothing, so `doc_ingest_hosts` does not apply. Renamed from `auto_ingest_doc_links`, which is still accepted on read | `false` |
-| `knowledge.auto_register_project_docs` | Register the documents of each project you work in as a Knowledge source automatically. Documents only (`.md`/`.pdf`/`.docx`/`.org` above a size floor, excluding agent instructions, generated files and repository boilerplate) — never source code. Opt-in: once on it applies to every project you open, with no per-project confirmation | `false` |
-| `knowledge.auto_ingest_chunk_budget` | Chunks an automatically-registered source may ingest per watcher sweep. Each chunk is one LLM extraction call, so this bounds the cost; newest documents land first and the rest follow on later sweeps. 0 removes the bound | `150` |
-| `knowledge.folder_ingest_chunk_budget` | Chunks a folder you add by hand may ingest per watcher sweep, including the first scan started by confirming the source. Nothing is skipped — newest files land first and the rest continue on later sweeps — so this paces spend rather than limiting what is ingested. Higher than the auto-ingest budget because you asked for the folder explicitly. 0 removes the bound; a per-source `chunk_budget` property overrides it for one folder | `300` |
+| `knowledge.folder_ingest_chunk_budget` | Chunks a folder you add by hand may ingest per watcher sweep, including the first scan started by confirming the source. Nothing is skipped — newest files land first and the rest continue on later sweeps — so this paces spend rather than limiting what is ingested. 0 removes the bound; a per-source `chunk_budget` property overrides it for one folder | `300` |
 | `knowledge.dedup_every_n_sweeps` | Run a full duplicate-collapsing pass every Nth watcher sweep (the per-write gate only catches byte-identical documents). 0 disables | `12` |
 | `knowledge.extraction_pool_size` | Concurrent LLM workers for document extraction; requires restart | `3` |
 | `knowledge.embed_rate_limit` | Maximum embedding generations per minute across all sources. `0` removes the bound | `120` |
 | `knowledge.sweep_chunk_budget` | Maximum chunks ingested across all sources in one watcher sweep. `0` removes the bound | `500` |
-| `knowledge.auto_discover_folder` | Watch for a documents folder inside the active workspace and register it as a Knowledge source automatically, so files dropped there become searchable without adding the source by hand. The folder is never created for you, and deleting or pausing the auto-added source persists so it does not reappear on the next sweep. Off by default because ingestion spends LLM extraction on every supported file | `false` |
-| `knowledge.auto_discover_dirname` | Folder name inside the workspace that auto-discovery looks for. A single path segment: separators and traversal are rejected so the source cannot be redirected outside the workspace. Avoid `knowledge`, which is where the Library's own store lives and always exists | `"knowledge-docs"` |
 
 ### Top level
 

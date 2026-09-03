@@ -11,7 +11,7 @@ import re
 import sys
 import threading
 from datetime import datetime, timedelta
-from unittest.mock import patch
+from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
 import pytest
@@ -146,7 +146,11 @@ class TestKnowledgeStore:
             "SELECT id, sync_status FROM sources").fetchall()}
         assert restored[paused] == "paused"
         assert restored[unconfirmed] == "pending_confirmation"
-        assert restored[errored] == "pending"
+        # The refused 'error' does not survive. It lands 'pending_confirmation' rather
+        # than the allowlist's 'pending' because this source walks a tree and 'pending'
+        # is not skipped by the sweep -- so an imported folder would be walked on
+        # arrival. Either way the outcome state the bundle claimed is gone.
+        assert restored[errored] == "pending_confirmation"
 
     def test_export_import_restores_a_legacy_bundle_from_the_blob(self, store_factory):
         """A bundle written before the column travelled still restores."""
@@ -165,10 +169,16 @@ class TestKnowledgeStore:
     def test_import_does_not_leave_a_refused_status_for_the_migration(self, tmp_path):
         """A refused bundle status cannot come back at the next store open.
 
-        A bundle is untrusted input, so an outcome state in it is refused and the
-        row lands 'pending'. Storing the blob verbatim would leave that refused
-        value inside the row for the every-open error-lift to read, applying it
-        one reopen later and quiescing a source the allowlist had just protected.
+        A bundle is untrusted input, so an outcome state in it is refused. Storing the
+        blob verbatim would leave that refused value inside the row for the every-open
+        error-lift to read, applying it one reopen later and quiescing a source the
+        allowlist had just protected.
+
+        The row lands 'pending_confirmation' rather than the allowlist's 'pending'
+        because this source WALKS A TREE: 'pending' is not skipped by the sweep, so a
+        bundle naming any readable directory would have it walked on arrival. What this
+        test pins either way is that the refused value does not survive -- checked here
+        and again after a reopen.
         """
         db = str(tmp_path / "import-refused.db")
         s1 = KnowledgeStore(db)
@@ -179,8 +189,11 @@ class TestKnowledgeStore:
                 "properties": json.dumps({"sync_status": "error"}),
             }]})
             row = s1.db.execute(
-                "SELECT sync_status FROM sources WHERE id = ?", ("refused-1",)).fetchone()
-            assert row["sync_status"] == "pending"
+                "SELECT sync_status, properties FROM sources WHERE id = ?",
+                ("refused-1",)).fetchone()
+            assert row["sync_status"] == "pending_confirmation"
+            # The refused value is gone from the blob too, so nothing can lift it later.
+            assert "sync_status" not in json.loads(row["properties"] or "{}")
         finally:
             s1.close()
 
@@ -188,7 +201,7 @@ class TestKnowledgeStore:
         try:
             row = s2.db.execute(
                 "SELECT sync_status FROM sources WHERE id = ?", ("refused-1",)).fetchone()
-            assert row["sync_status"] == "pending"
+            assert row["sync_status"] == "pending_confirmation"
         finally:
             s2.close()
 
@@ -1132,17 +1145,18 @@ class TestKnowledgeStoreExtended:
             "SELECT sync_status FROM sources WHERE id = ?", (sid,)).fetchone()
         assert row["sync_status"] == "paused"
 
-    def test_auto_source_persists_sync_status_column(self, store):
-        """The auto-source insert path keeps the same single-store invariant.
+    def test_auto_added_source_persists_sync_status_column(self, store):
+        """An auto-added source keeps the same single-store invariant.
 
-        Drop-folder and project-docs auto sources seed sync_status='active' in
-        properties; the column must carry it or the dashboard renders the stale
-        'pending' control for a source the watcher is actively scanning.
+        The aggregate source the agent's add-document tool creates seeds
+        sync_status='active' in properties; the column must carry it or the
+        dashboard renders the stale 'pending' control for a source that is
+        already active.
         """
-        sid, created = store.create_auto_source_unless_dismissed(
-            "drop", "local_folder", "/tmp/auto-drop",
-            {"sync_status": "active", "auto_added": True})
-        assert created and sid is not None
+        sid = store.add_source(
+            "agent-added", "agent", "agent://",
+            properties={"sync_status": "active", "auto_added": True})
+        assert sid is not None
         row = store.db.execute(
             "SELECT sync_status, properties FROM sources WHERE id = ?", (sid,)).fetchone()
         assert row["sync_status"] == "active"
@@ -1619,6 +1633,490 @@ class TestKnowledgeStoreExtended:
         assert s2.graph.has_node(e1)
         assert s2.graph.has_edge(e1, e2)
         s2.close()
+
+
+# ---------------------------------------------------------------------------
+# 7b. Retirement of folders Kiro Crew registered itself
+# ---------------------------------------------------------------------------
+
+
+class TestRetireAutoRegisteredFolders:
+    """A folder row left behind by the removed auto-registration paths.
+
+    Those paths registered a directory nobody named, and the sweep re-validated its
+    containment before every scan. Both are gone, so such a row must not be walked at
+    all until the user adopts it. The refusal lives in ``FolderWatcher.scan_source``
+    because that is the single funnel every scan goes through -- the watcher's sweep
+    and both dashboard endpoints -- and deliberately NOT in the store constructor,
+    where taking the write lock would stall the event loop at startup.
+    """
+
+    @staticmethod
+    def _add(store, props, status="active", uri="/tmp/legacy", stype="local_folder"):
+        sid = store.add_source("s", stype, uri, properties={**props, "sync_status": status})
+        return sid
+
+    @staticmethod
+    def _row(store, sid):
+        r = store.db.execute(
+            "SELECT sync_status, properties FROM sources WHERE id = ?", (sid,)).fetchone()
+        return r["sync_status"], json.loads(r["properties"] or "{}")
+
+    @staticmethod
+    def _watcher(store):
+        from kiro_crew.knowledge.watcher import KnowledgeWatcher
+        return KnowledgeWatcher(store=store, pipeline=object(), interval=1)
+
+    # -- the funnel ---------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_a_scan_of_an_auto_registered_source_is_refused_and_retires_it(
+            self, store, tmp_path):
+        """The gate is in scan_source, so every caller is covered by construction.
+
+        A database written before the removal holds such a row, and ``import_bundle``
+        restores one verbatim into a running gateway, so the row can appear at any
+        time -- not only at startup.
+        """
+        folder = tmp_path / "legacy"
+        folder.mkdir()
+        (folder / "note.md").write_text("# legacy\n\nbody\n" * 40)
+        sid = self._add(store, {"auto_added": True}, uri=str(folder))
+        fw = self._watcher(store)._folder_watcher
+        fw._do_scan = AsyncMock()  # type: ignore[method-assign]
+
+        stats = await fw.scan_source({"id": sid, "uri": str(folder),
+                                      "source_type": "local_folder",
+                                      "properties": json.dumps({"auto_added": True})})
+
+        fw._do_scan.assert_not_awaited()
+        assert stats["unconfirmed"] is True
+        status, props = self._row(store, sid)
+        assert status == "pending_confirmation"
+        assert props["auto_registration_retired"] is True
+        assert props["auto_added"] is True  # redaction + the gate still read it
+
+    @pytest.mark.asyncio
+    async def test_the_refusal_is_audited(self, store, tmp_path):
+        """A refusal to walk a tree is a permission decision, so it is auditable.
+
+        The paths this replaced logged both their auto-add and their scan-denied
+        decisions, and this file's two TOCTOU refusals log theirs, so a silent refusal
+        would be the one permission outcome with no record.
+        """
+        folder = tmp_path / "audited"
+        folder.mkdir()
+        sid = self._add(store, {"auto_added": True}, uri=str(folder))
+        fw = self._watcher(store)._folder_watcher
+        fw._do_scan = AsyncMock()  # type: ignore[method-assign]
+        events: list[dict] = []
+
+        class _Sel:
+            @staticmethod
+            def log_tool_invocation(**kw):
+                events.append(kw)
+
+        with patch("kiro_crew.knowledge.folder_watcher.sel", lambda: _Sel()):
+            await fw.scan_source({"id": sid, "uri": str(folder),
+                                  "source_type": "local_folder",
+                                  "properties": json.dumps({"auto_added": True})})
+
+        denied = [e for e in events
+                  if e.get("tool_name") == "knowledge.source.scan_denied"]
+        assert len(denied) == 1, events
+        assert denied[0]["outcome"] == "denied"
+        assert f"source_id={sid}" in denied[0]["resources"]
+        assert "reason=auto_registered_unconfirmed" in denied[0]["resources"]
+        # Records whether the row also moved, so a refusal that could not take the
+        # write lock is distinguishable in the log from one that retired the row.
+        assert "retired=True" in denied[0]["resources"]
+
+    @pytest.mark.asyncio
+    async def test_a_folder_the_user_added_scans_normally(self, store, tmp_path):
+        folder = tmp_path / "mine"
+        folder.mkdir()
+        sid = self._add(store, {}, uri=str(folder))
+        fw = self._watcher(store)._folder_watcher
+        fw._do_scan = AsyncMock(return_value={"new": 0})  # type: ignore[method-assign]
+
+        await fw.scan_source({"id": sid, "uri": str(folder),
+                              "source_type": "local_folder", "properties": "{}"})
+
+        fw._do_scan.assert_awaited_once()
+        assert self._row(store, sid)[0] == "active"
+
+    @pytest.mark.asyncio
+    async def test_an_adopted_source_scans_normally(self, store, tmp_path):
+        """Once the marker is on the row, the gate lets it through."""
+        folder = tmp_path / "adopted"
+        folder.mkdir()
+        props = {"auto_added": True, "auto_registration_retired": True}
+        sid = self._add(store, props, uri=str(folder))
+        fw = self._watcher(store)._folder_watcher
+        fw._do_scan = AsyncMock(return_value={"new": 0})  # type: ignore[method-assign]
+
+        await fw.scan_source({"id": sid, "uri": str(folder),
+                              "source_type": "local_folder",
+                              "properties": json.dumps(props)})
+
+        fw._do_scan.assert_awaited_once()
+        assert self._row(store, sid)[0] == "active"
+
+    @pytest.mark.asyncio
+    async def test_the_sweep_refuses_it_too(self, store, tmp_path):
+        """The sweep reaches the same gate rather than carrying its own copy."""
+        folder = tmp_path / "swept"
+        folder.mkdir()
+        sid = self._add(store, {"auto_added": True}, uri=str(folder))
+        watcher = self._watcher(store)
+        watcher._folder_watcher._do_scan = AsyncMock()  # type: ignore[method-assign]
+
+        await watcher._scan()
+
+        watcher._folder_watcher._do_scan.assert_not_awaited()
+        assert self._row(store, sid)[0] == "pending_confirmation"
+
+    # -- the marker contract ------------------------------------------------
+
+    @pytest.mark.parametrize("props", [
+        {"auto_added": "false"},       # truthy string: must NOT look auto-added
+        {"auto_added": 1},             # not a real boolean
+        {"auto_added": True, "auto_registration_retired": "false"},  # fail-OPEN if truthy
+        {"auto_added": True, "auto_registration_retired": 0},
+    ])
+    def test_markers_are_compared_strictly(self, props):
+        """``properties`` is user-editable JSON and arrives through import_bundle.
+
+        ``"false"`` is truthy, and on the retired marker that direction is fail-open:
+        the row would read as adopted and skip the refusal entirely.
+        """
+        from kiro_crew.knowledge.store import is_auto_registered
+
+        expected = (props.get("auto_added") is True
+                    and props.get("auto_registration_retired") is not True)
+        assert is_auto_registered(props) is expected
+
+    def test_a_real_legacy_row_is_recognised(self):
+        from kiro_crew.knowledge.store import is_auto_registered
+
+        assert is_auto_registered({"auto_added": True}) is True
+        assert is_auto_registered({"auto_added": True,
+                                   "auto_registration_retired": True}) is False
+
+    # -- the store primitive ------------------------------------------------
+
+    def test_a_paused_row_keeps_its_pause_and_is_still_marked(self, store):
+        """Pausing already stops the scan; overwriting it would lose user state."""
+        sid = self._add(store, {"auto_added": True}, status="paused", uri="/tmp/paused")
+        assert store.retire_auto_registered_folder(sid) is True
+        status, props = self._row(store, sid)
+        assert status == "paused"
+        assert props["auto_registration_retired"] is True
+
+    def test_the_aggregate_sources_are_out_of_scope(self, store):
+        """They carry the marker and walk nothing, so they must not be gated."""
+        agent = self._add(store, {"auto_added": True}, uri="agent://", stype="agent")
+        artifact = self._add(store, {"auto_added": True}, uri="artifact://",
+                             stype="artifact")
+        for sid in (agent, artifact):
+            assert store.retire_auto_registered_folder(sid) is False
+            status, props = self._row(store, sid)
+            assert status == "active", sid
+            assert "auto_registration_retired" not in props, sid
+
+    def test_retiring_is_idempotent(self, store):
+        sid = self._add(store, {"auto_added": True}, uri="/tmp/once")
+        assert store.retire_auto_registered_folder(sid) is True
+        # Adopted by the user in between; a second call must not undo that.
+        store.db.execute("UPDATE sources SET sync_status = 'active' WHERE id = ?", (sid,))
+        store.db.commit()
+        assert store.retire_auto_registered_folder(sid) is False
+        assert self._row(store, sid)[0] == "active"
+
+    def test_an_unreadable_properties_blob_is_not_retired_and_does_not_raise(self, store):
+        sid = self._add(store, {}, uri="/tmp/broken")
+        store.db.execute("UPDATE sources SET properties = ? WHERE id = ?",
+                         ("{not json", sid))
+        store.db.commit()
+        assert store.retire_auto_registered_folder(sid) is False
+
+    def test_an_ingestion_write_cannot_land_inside_the_retirement(self, store, tmp_path):
+        """The retirement holds the write lock across its read and its write.
+
+        Ingestion writes ``sync_status = 'synced'`` straight onto the row, so without
+        the lock that write lands in between and the paused branch stamps the retired
+        marker onto a row that has just become scannable again -- permanently, since
+        the marker is what stops a later retirement.
+
+        The racer opens through ``store.sqlite3`` -- the module the store itself bound
+        -- because that is the library the real writer uses. A stdlib ``sqlite3``
+        connection does not contend with a ``pysqlite3`` one on this database
+        (measured: both sides took BEGIN IMMEDIATE at once), so a racer opened that way
+        would land whether or not a lock is held, and the test would prove nothing.
+        """
+        from kiro_crew.knowledge import store as store_mod
+        sqlite = store_mod.sqlite3
+
+        db_path = str(tmp_path / "test.db")
+        sid = self._add(store, {"auto_added": True}, status="paused", uri="/tmp/raced")
+        real_loads = json.loads
+        outcome: list[str] = []
+
+        def ingestion_writes_mid_pass(raw):
+            parsed = real_loads(raw)
+            if not outcome and isinstance(parsed, dict) and parsed.get("auto_added"):
+                conn = sqlite.connect(db_path, timeout=0.2, isolation_level=None)
+                try:
+                    conn.execute(
+                        "UPDATE sources SET sync_status = 'synced' WHERE id = ?", (sid,))
+                    outcome.append("landed")
+                except sqlite.OperationalError as exc:
+                    outcome.append(f"refused: {exc}")
+                finally:
+                    conn.close()
+            return parsed
+
+        with patch("kiro_crew.knowledge.store.json.loads", ingestion_writes_mid_pass):
+            store.retire_auto_registered_folder(sid)
+
+        assert outcome, "the mid-pass write never ran; the test proves nothing"
+        assert outcome[0].startswith("refused"), outcome[0]
+        status, props = self._row(store, sid)
+        assert status == "paused"
+        assert props["auto_registration_retired"] is True
+
+    def test_a_lock_it_cannot_take_defers_instead_of_raising(self, store, tmp_path):
+        """A busy database must not turn a refusal into an exception.
+
+        The scan is refused either way -- the funnel's ``continue`` does not depend on
+        this returning True -- so deferring costs nothing and raising would surface as
+        a failed scan the user cannot act on.
+        """
+        from kiro_crew.knowledge import store as store_mod
+        sqlite = store_mod.sqlite3
+
+        db_path = str(tmp_path / "test.db")
+        sid = self._add(store, {"auto_added": True}, uri="/tmp/busy")
+        holder = sqlite.connect(db_path, timeout=30, isolation_level=None)
+        try:
+            holder.execute("BEGIN IMMEDIATE")
+            store.db.execute("PRAGMA busy_timeout=50")
+            assert store.retire_auto_registered_folder(sid) is False
+            status, props = self._row(store, sid)
+            assert status == "active"
+            assert "auto_registration_retired" not in props
+        finally:
+            store.db.execute("PRAGMA busy_timeout=10000")
+            holder.execute("ROLLBACK")
+            holder.close()
+
+
+class TestImportedFolderSourcesWaitForConfirmation:
+    """``import_bundle`` may not hand the Library a directory that scans on arrival.
+
+    The status allowlist admits ``active``, and a bundle is untrusted input that names
+    its own ``uri``, so trusting the claimed status would let an imported row point at
+    any readable directory and have the next sweep walk it and spend extraction calls
+    on it. Importing a bundle is one decision; each directory inside it is not.
+    """
+
+    @staticmethod
+    def _bundle(source):
+        return {"version": 1, "sources": [source], "items": [], "entities": [],
+                "relations": []}
+
+    @staticmethod
+    def _status(store, sid):
+        return store.db.execute(
+            "SELECT sync_status FROM sources WHERE id = ?", (sid,)).fetchone()[0]
+
+    @pytest.mark.parametrize("claimed", ["active", "synced", "pending", "error", None])
+    @pytest.mark.parametrize("stype", ["local_folder", "obsidian_vault"])
+    def test_a_restored_walking_source_waits(self, store, tmp_path, claimed, stype):
+        """Every status the sweep would scan is narrowed, including 'pending'."""
+        sid = str(uuid4())
+        src = {"id": sid, "name": "imported", "source_type": stype,
+               "uri": str(tmp_path / "anywhere"), "properties": "{}"}
+        if claimed is not None:
+            src["sync_status"] = claimed
+        store.import_bundle(self._bundle(src))
+        assert self._status(store, sid) == "pending_confirmation"
+
+    @pytest.mark.parametrize("stype", ["local_folder", "obsidian_vault"])
+    def test_a_restored_paused_source_keeps_its_pause(self, store, tmp_path, stype):
+        """Pausing already stops the scan, and it is the user's own decision.
+
+        Overwriting it with a confirmation prompt would lose that state to protect
+        against nothing -- the same reasoning the retirement path uses for a paused
+        row.
+        """
+        sid = str(uuid4())
+        store.import_bundle(self._bundle({
+            "id": sid, "name": "paused", "source_type": stype,
+            "uri": str(tmp_path / "paused"), "sync_status": "paused",
+            "properties": "{}",
+        }))
+        assert self._status(store, sid) == "paused"
+
+    def test_the_markers_do_not_change_that(self, store, tmp_path):
+        """Not even a bundle claiming the source was already adopted.
+
+        This is the shape the review raised: both markers true and an active status.
+        The status is refused on the source TYPE, so the markers never get a say.
+        """
+        sid = str(uuid4())
+        store.import_bundle(self._bundle({
+            "id": sid, "name": "adopted?", "source_type": "local_folder",
+            "uri": str(tmp_path / "claimed"), "sync_status": "active",
+            "properties": json.dumps({"auto_added": True,
+                                      "auto_registration_retired": True}),
+        }))
+        assert self._status(store, sid) == "pending_confirmation"
+
+    @pytest.mark.parametrize("stype", ["local_file", "agent", "artifact", "wiki"])
+    def test_a_source_that_walks_nothing_keeps_its_restored_status(self, store, stype):
+        """The narrowing is scoped to walking sources, not to imports in general.
+
+        An aggregate or single-file source has no tree to descend, so restoring it as
+        active costs nothing and forcing confirmation on it would strand content the
+        bundle legitimately carries.
+        """
+        sid = str(uuid4())
+        store.import_bundle(self._bundle({
+            "id": sid, "name": "agg", "source_type": stype, "uri": f"{stype}://x",
+            "sync_status": "active", "properties": "{}",
+        }))
+        assert self._status(store, sid) == "active"
+
+
+class TestWatcherRunLoop:
+    """``KnowledgeWatcher.start`` / ``stop``: the background loop's own contract."""
+
+    @staticmethod
+    def _watcher(store, interval=0.01):
+        from kiro_crew.knowledge.watcher import KnowledgeWatcher
+        return KnowledgeWatcher(store=store, pipeline=object(), interval=interval)
+
+    @pytest.mark.asyncio
+    async def test_a_failing_sweep_does_not_kill_the_loop(self, store):
+        """One bad sweep must cost one interval, not the whole watcher.
+
+        The loop is the only thing that ever scans, so an exception escaping it leaves
+        every source unscanned until the gateway restarts -- with nothing reporting
+        that it stopped.
+        """
+        w = self._watcher(store)
+        calls = []
+
+        async def _scan():
+            calls.append(1)
+            if len(calls) == 1:
+                raise RuntimeError("first sweep exploded")
+            await w.stop()
+
+        w._scan = _scan  # type: ignore[method-assign]
+        await asyncio.wait_for(w.start(), timeout=5)
+        assert len(calls) >= 2, "the loop did not survive the failing sweep"
+
+    @pytest.mark.asyncio
+    async def test_stop_ends_the_loop_without_waiting_out_the_interval(self, store):
+        """``stop`` sets the event the interval wait is racing, so it returns at once."""
+        w = self._watcher(store, interval=3600)
+        w._scan = AsyncMock()  # type: ignore[method-assign]
+        task = asyncio.create_task(w.start())
+        await asyncio.sleep(0)  # let the first sweep run and enter the wait
+        await w.stop()
+        await asyncio.wait_for(task, timeout=5)
+        w._scan.assert_awaited()
+
+
+class TestScheduledDedupCadence:
+    """``KnowledgeWatcher._maybe_dedup_sweep``: when it runs, and what it may delete.
+
+    A scheduled pass differs in kind from a human-invoked one -- it deletes
+    unattended -- so the first one in a process is a dry run whose findings are only
+    logged. These pin the cadence gate and that preview-then-apply rule; a regression
+    in either deletes documents on the first sweep after a restart.
+    """
+
+    @staticmethod
+    def _watcher(store):
+        from kiro_crew.knowledge.watcher import KnowledgeWatcher
+        return KnowledgeWatcher(store=store, pipeline=object(), interval=1)
+
+    @staticmethod
+    def _cfg(every: int):
+        cfg = MagicMock()
+        cfg.knowledge.dedup_every_n_sweeps = every
+        return cfg
+
+    @pytest.mark.asyncio
+    async def test_zero_disables_the_scheduled_pass(self, store):
+        w = self._watcher(store)
+        with patch("kiro_crew.knowledge.watcher.KiroCrewConfig") as cfg, \
+                patch("kiro_crew.knowledge.watcher.dedup_sweep") as sweep:
+            cfg.load.return_value = self._cfg(0)
+            await w._maybe_dedup_sweep()
+        sweep.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_it_only_runs_on_the_cadence(self, store):
+        w = self._watcher(store)
+        w._sweep_count = 5  # 5 % 4 != 0
+        with patch("kiro_crew.knowledge.watcher.KiroCrewConfig") as cfg, \
+                patch("kiro_crew.knowledge.watcher.dedup_sweep") as sweep:
+            cfg.load.return_value = self._cfg(4)
+            await w._maybe_dedup_sweep()
+        sweep.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_the_first_pass_previews_and_the_next_one_applies(self, store):
+        """apply=False first, then apply=True -- and only exact matches either way.
+
+        ``certain_only`` is not a tuning knob here: an unattended fuzzy collapse
+        deletes the loser's copy, so a wrong match (same filename, cosine over the
+        threshold, different facts) would cost a document its only text with nobody
+        watching.
+        """
+        w = self._watcher(store)
+        w._sweep_count = 4
+        calls = []
+
+        def _sweep(store_arg, apply, certain_only):
+            calls.append({"apply": apply, "certain_only": certain_only})
+            return [{"loser": "a", "winner": "b", "reason": "exact"}]
+
+        with patch("kiro_crew.knowledge.watcher.KiroCrewConfig") as cfg, \
+                patch("kiro_crew.knowledge.watcher.dedup_sweep", _sweep):
+            cfg.load.return_value = self._cfg(4)
+            await w._maybe_dedup_sweep()
+            assert w._dedup_applied_once is True
+            await w._maybe_dedup_sweep()
+
+        assert [c["apply"] for c in calls] == [False, True]
+        assert all(c["certain_only"] for c in calls)
+
+    @pytest.mark.asyncio
+    async def test_a_failed_pass_does_not_arm_the_applying_one(self, store):
+        """A raised sweep must not consume the preview: the next pass would delete
+        without anything ever having been logged."""
+        w = self._watcher(store)
+        w._sweep_count = 4
+        with patch("kiro_crew.knowledge.watcher.KiroCrewConfig") as cfg, \
+                patch("kiro_crew.knowledge.watcher.dedup_sweep",
+                      side_effect=RuntimeError("locked")):
+            cfg.load.return_value = self._cfg(4)
+            await w._maybe_dedup_sweep()  # contained, must not raise
+        assert w._dedup_applied_once is False
+
+    @pytest.mark.asyncio
+    async def test_an_unreadable_cadence_setting_skips_the_pass(self, store):
+        w = self._watcher(store)
+        with patch("kiro_crew.knowledge.watcher.KiroCrewConfig") as cfg, \
+                patch("kiro_crew.knowledge.watcher.dedup_sweep") as sweep:
+            cfg.load.side_effect = RuntimeError("no config")
+            await w._maybe_dedup_sweep()
+        sweep.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
