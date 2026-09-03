@@ -17,6 +17,7 @@ import {
   Loader,
   RefreshCw,
   SkipForward,
+  TriangleAlert,
   XCircle,
 } from 'lucide-react'
 import { api } from '../api/client'
@@ -378,16 +379,25 @@ const CI_META: Record<NonNullable<PullRequestStatus['ci']>, { icon: typeof Check
 }
 
 /** State markers for one pull-request tab in the source strip: lifecycle glyph
- * plus, while the pull request is still live, its CI rollup. CI is suppressed
- * once merged or closed — the lifecycle glyph is the terminal signal there.
- * `ChatSidebar.tsx::showsChipCi` applies the same rule to the sidebar chip; the
- * two render the same pull request and must not disagree about its lifecycle. */
+ * plus one health glyph while the pull request is live. Failed CI wins; a merge
+ * conflict otherwise replaces pending/passed CI so an unmergeable branch never
+ * reads as ready. Merged/closed suppress both CI and conflict because lifecycle
+ * is the terminal signal there. `ChatSidebar.tsx::chipStatusGlyph` applies the
+ * same precedence to the sidebar chip. */
 function SourceTabState({ status }: { status: PullRequestStatus | undefined }) {
   const lifecycle = status?.state
-  const ci = lifecycle === 'merged' || lifecycle === 'closed' ? undefined : status?.ci
-  if (!lifecycle && !ci) return null
+  const terminal = lifecycle === 'merged' || lifecycle === 'closed'
+  const ci = terminal ? undefined : status?.ci
+  const conflicting = !terminal && (
+    status?.mergeable === 'conflicting' || status?.mergeStateStatus === 'dirty'
+  )
+  // Failed CI is already a red, actionable stop signal. Otherwise a settled
+  // conflict outranks a pending/passing rollup, matching the sidebar chip.
+  const showConflict = conflicting && ci !== 'failed'
+  const shownCi = showConflict ? undefined : ci
+  if (!lifecycle && !shownCi && !showConflict) return null
   const life = lifecycle ? LIFECYCLE_META[lifecycle] : null
-  const check = ci ? CI_META[ci] : null
+  const check = shownCi ? CI_META[shownCi] : null
   const LifeIcon = life?.icon
   const CheckIcon = check?.icon
   // Resolved here, in the component body, so a language switch re-renders into
@@ -396,12 +406,18 @@ function SourceTabState({ status }: { status: PullRequestStatus | undefined }) {
   // through a looked-up object is a shape `scripts/check-i18n-keys.mjs` cannot
   // resolve, which would exempt these sites from every catalog check.
   const lifeLabel = lifecycle ? i18nT(LIFECYCLE_LABEL_KEY[lifecycle]) : ''
-  const checkLabel = ci ? i18nT(CI_LABEL_KEY[ci]) : ''
+  const checkLabel = shownCi ? i18nT(CI_LABEL_KEY[shownCi]) : ''
+  const conflictLabel = showConflict ? i18nT('components.pullRequestPanel.merge_conflicts') : ''
   return (
     <>
       {LifeIcon && life && (
         <span className={`inline-flex shrink-0 ${life.tone}`} aria-label={lifeLabel} title={lifeLabel}>
           <LifeIcon className="lucide-inline" aria-hidden="true" />
+        </span>
+      )}
+      {showConflict && (
+        <span className="inline-flex shrink-0 text-danger" aria-label={conflictLabel} title={conflictLabel}>
+          <TriangleAlert className="lucide-inline" aria-hidden="true" />
         </span>
       )}
       {CheckIcon && check && (
