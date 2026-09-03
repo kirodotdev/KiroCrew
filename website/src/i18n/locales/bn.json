@@ -14393,7 +14393,16 @@
         "allow_system_notifications": "সিস্টেম বিজ্ঞপ্তির অনুমতি দাও",
         "system_notifications_blocked": "তোমার ব্রাউজার এটি আটকে দিয়েছে। সাইটের অনুমতি সেটিংসে আবার চালু করো।",
         "show_banner_for_new_notifications": "নতুন বিজ্ঞপ্তির জন্য ব্যানার দেখাও",
-        "show_banner_for_new_notifications_description": "বিজ্ঞপ্তি এলে একটি কার্ড উপরের বারের নিচ থেকে ঢুকে আসে, তারপর ঘণ্টায় গুটিয়ে যায়।"
+        "show_banner_for_new_notifications_description": "বিজ্ঞপ্তি এলে একটি কার্ড উপরের বারের নিচ থেকে ঢুকে আসে, তারপর ঘণ্টায় গুটিয়ে যায়।",
+        "push_section": "পুশ বিজ্ঞপ্তি",
+        "push_toggle_label": "এই ডিভাইসে বিজ্ঞপ্তি পাঠান",
+        "push_toggle_description": "অ্যাপ বন্ধ থাকলেও ওয়েব পুশের মাধ্যমে OS বিজ্ঞপ্তি পান।",
+        "push_install_hint": "iOS-এ পুশ চালু করতে প্রথমে {{productName}} হোম স্ক্রিনে যোগ করো।",
+        "push_unsupported": "এই ব্রাউজার ওয়েব পুশ বিজ্ঞপ্তি সমর্থন করে না।",
+        "push_error_blocked": "ব্রাউজারে বিজ্ঞপ্তি ব্লক করা আছে।",
+        "push_error_permission": "অনুমতি দেওয়া হয়নি।",
+        "push_error_subscribe": "সাবস্ক্রাইব ব্যর্থ হয়েছে।",
+        "push_error_unsubscribe": "আনসাবস্ক্রাইব ব্যর্থ হয়েছে।"
       },
       "privacyPanel": {
         "recordMetricsLabel": "মেট্রিক রেকর্ড করো",

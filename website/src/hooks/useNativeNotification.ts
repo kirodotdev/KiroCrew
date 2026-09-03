@@ -74,27 +74,42 @@ export function useNativeNotification(botName: string, avatar: string) {
           const body =
             noteBody ||
             (delta > 1 ? `${delta} new notifications` : 'New notification')
-          // Android Chrome throws "Illegal constructor" here even with
-          // permission granted (page-context Notification is desktop-only);
-          // the in-app notification center still shows the event, so the
-          // native toast is best-effort.
-          try {
-            new Notification(title, {
-              body,
-              icon: avatar,
-              // Always silent: WebAudio (useNotificationSound) is the single
-              // source of notification sound. Without this the OS toast plays
-              // its own system chime on top of the WebAudio tone — a double
-              // sound. Browsers that ignore `silent` are no worse than before.
-              silent: true,
-              tag:
-                latestNotif?.approval_id ||
-                latestNotif?.job_id ||
-                latestNotif?.task_id ||
-                'kirocrew-notif',
-            })
-          } catch {
-            /* unsupported platform */
+          const tag =
+            latestNotif?.approval_id ||
+            latestNotif?.job_id ||
+            latestNotif?.task_id ||
+            'kirocrew-notif'
+          // Deliver through the service worker registration rather than the
+          // `new Notification(...)` constructor: the constructor throws
+          // "Illegal constructor" in an installed iOS PWA (and on Android
+          // Chrome, #1828), where notifications are only permitted via
+          // ServiceWorkerRegistration.showNotification(). Fall back to the
+          // constructor on desktop browsers without an active SW registration.
+          // Always silent: WebAudio (useNotificationSound) is the single
+          // source of notification sound. Without this the OS toast plays its
+          // own system chime on top of the WebAudio tone (a double sound).
+          const options: NotificationOptions = {
+            body,
+            icon: avatar,
+            silent: true,
+            tag,
+          }
+          if ('serviceWorker' in navigator) {
+            navigator.serviceWorker.ready
+              .then((reg) => reg.showNotification(title, options))
+              .catch(() => {
+                try {
+                  new Notification(title, options)
+                } catch {
+                  /* unsupported platform */
+                }
+              })
+          } else {
+            try {
+              new Notification(title, options)
+            } catch {
+              /* unsupported platform */
+            }
           }
         } else if (Notification.permission === 'default') {
           // Best-effort only: browsers refuse a prompt with no user gesture

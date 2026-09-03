@@ -14592,7 +14592,16 @@
         "allow_system_notifications": "Consenti le notifiche di sistema",
         "system_notifications_blocked": "Bloccate nel browser. Riattivale nelle autorizzazioni del sito.",
         "show_banner_for_new_notifications": "Mostra un banner per le nuove notifiche",
-        "show_banner_for_new_notifications_description": "Quando arriva una notifica, una scheda scivola sotto la barra superiore e poi si ritira nella campanella."
+        "show_banner_for_new_notifications_description": "Quando arriva una notifica, una scheda scivola sotto la barra superiore e poi si ritira nella campanella.",
+        "push_section": "Notifiche push",
+        "push_toggle_label": "Invia notifiche a questo dispositivo",
+        "push_toggle_description": "Ricevi notifiche del sistema anche ad app chiusa, tramite Web Push.",
+        "push_install_hint": "Su iOS, aggiungi {{productName}} alla schermata Home per abilitare le notifiche push.",
+        "push_unsupported": "Questo browser non supporta le notifiche Web Push.",
+        "push_error_blocked": "Le notifiche sono bloccate nel browser.",
+        "push_error_permission": "Autorizzazione non concessa.",
+        "push_error_subscribe": "Iscrizione non riuscita.",
+        "push_error_unsubscribe": "Annullamento iscrizione non riuscito."
       },
       "privacyPanel": {
         "recordMetricsLabel": "Registra le metriche",

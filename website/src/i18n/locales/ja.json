@@ -14194,7 +14194,16 @@
         "allow_system_notifications": "システム通知を許可",
         "system_notifications_blocked": "ブラウザーでブロックされています。サイトの権限設定で再度オンにしてください。",
         "show_banner_for_new_notifications": "新しい通知をバナーで表示",
-        "show_banner_for_new_notifications_description": "通知が届くとカードがトップバーの下にスライドして表示され、その後ベルに収まります。"
+        "show_banner_for_new_notifications_description": "通知が届くとカードがトップバーの下にスライドして表示され、その後ベルに収まります。",
+        "push_section": "プッシュ通知",
+        "push_toggle_label": "この端末に通知を送信",
+        "push_toggle_description": "アプリを閉じていても Web Push で OS 通知を受け取れます。",
+        "push_install_hint": "iOS では、プッシュ通知を有効にするにはまず {{productName}} をホーム画面に追加してください。",
+        "push_unsupported": "このブラウザーは Web Push 通知に対応していません。",
+        "push_error_blocked": "通知はブラウザーでブロックされています。",
+        "push_error_permission": "許可が与えられませんでした。",
+        "push_error_subscribe": "購読に失敗しました。",
+        "push_error_unsubscribe": "購読解除に失敗しました。"
       },
       "privacyPanel": {
         "recordMetricsDescription": "このマシンでパフォーマンスメトリクスを収集します。",

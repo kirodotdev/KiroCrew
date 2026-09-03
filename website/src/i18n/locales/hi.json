@@ -14393,7 +14393,16 @@
         "allow_system_notifications": "सिस्टम सूचनाओं की अनुमति दो",
         "system_notifications_blocked": "तुम्हारे ब्राउज़र ने इसे रोक दिया है। साइट की अनुमति सेटिंग में इसे फिर से चालू करो।",
         "show_banner_for_new_notifications": "नई सूचनाओं के लिए बैनर दिखाओ",
-        "show_banner_for_new_notifications_description": "सूचना आने पर एक कार्ड टॉप बार के नीचे से आता है, फिर घंटी में समा जाता है।"
+        "show_banner_for_new_notifications_description": "सूचना आने पर एक कार्ड टॉप बार के नीचे से आता है, फिर घंटी में समा जाता है।",
+        "push_section": "पुश सूचनाएं",
+        "push_toggle_label": "इस डिवाइस पर सूचनाएं भेजें",
+        "push_toggle_description": "ऐप बंद होने पर भी वेब पुश के जरिए OS सूचनाएं प्राप्त करें।",
+        "push_install_hint": "iOS पर, पुश सूचनाएं सक्षम करने के लिए पहले {{productName}} को होम स्क्रीन पर जोड़ें।",
+        "push_unsupported": "यह ब्राउज़र वेब पुश सूचनाओं का समर्थन नहीं करता।",
+        "push_error_blocked": "ब्राउज़र में सूचनाएं अवरुद्ध हैं।",
+        "push_error_permission": "अनुमति नहीं दी गई।",
+        "push_error_subscribe": "सदस्यता विफल।",
+        "push_error_unsubscribe": "सदस्यता समाप्त करना विफल।"
       },
       "privacyPanel": {
         "recordMetricsDescription": "इस मशीन पर परफ़ॉर्मेंस मेट्रिक इकट्ठा करो।",
