@@ -5471,7 +5471,8 @@
     },
     "offline": {
       "disabled_gateway_offline": "{{label}} disabled — gateway offline",
-      "gateway_offline_reconnect": "Gateway offline — reconnect to {{action}}"
+      "gateway_offline_reconnect": "Gateway offline — reconnect to {{action}}",
+      "submit_comments": "submit comments"
     },
     "popoutController": {
       "your_browser_blocked_the_pop_out_window_allow_po": "Your browser blocked the pop-out window. Allow pop-ups for this site and try again."

@@ -13708,7 +13708,8 @@
     },
     "offline": {
       "disabled_gateway_offline": "[{{label}} ðìşàƀĺèð — ğàţèẁàý øƒƒĺìñè ···················]",
-      "gateway_offline_reconnect": "[Ğàţèẁàý øƒƒĺìñè — ŕèçøññèçţ ţø {{action}} ················]"
+      "gateway_offline_reconnect": "[Ğàţèẁàý øƒƒĺìñè — ŕèçøññèçţ ţø {{action}} ················]",
+      "submit_comments": "[şùƀɱìţ çøɱɱèñţş ··············]"
     },
     "popoutController": {
       "your_browser_blocked_the_pop_out_window_allow_po": "[Ýøùŕ ƀŕøẁşèŕ ƀĺøçķèð ţĥè þøþ-øùţ ẁìñðøẁ. Àĺĺøẁ þøþ-ùþş ƒøŕ ţĥìş şìţè àñð ţŕý àğàìñ. ·························]"

@@ -13988,7 +13988,8 @@
     },
     "offline": {
       "disabled_gateway_offline": "{{label}} desactivado — gateway sin conexión",
-      "gateway_offline_reconnect": "Gateway sin conexión — reconéctate para {{action}}"
+      "gateway_offline_reconnect": "Gateway sin conexión — reconéctate para {{action}}",
+      "submit_comments": "enviar comentarios"
     },
     "popoutController": {
       "your_browser_blocked_the_pop_out_window_allow_po": "Tu navegador bloqueó la ventana desacoplada. Permite las ventanas emergentes para este sitio e inténtalo de nuevo."

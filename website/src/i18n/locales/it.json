@@ -13987,7 +13987,8 @@
     },
     "offline": {
       "disabled_gateway_offline": "{{label}} disattivato — gateway offline",
-      "gateway_offline_reconnect": "Gateway offline — riconnettiti per {{action}}"
+      "gateway_offline_reconnect": "Gateway offline — riconnettiti per {{action}}",
+      "submit_comments": "inviare i commenti"
     },
     "popoutController": {
       "your_browser_blocked_the_pop_out_window_allow_po": "Il browser ha bloccato la finestra pop-out. Consenti i pop-up per questo sito e riprova."

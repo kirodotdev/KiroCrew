@@ -13988,7 +13988,8 @@
     },
     "offline": {
       "disabled_gateway_offline": "{{label}} désactivé — passerelle hors ligne",
-      "gateway_offline_reconnect": "Passerelle hors ligne — reconnecte-toi pour {{action}}"
+      "gateway_offline_reconnect": "Passerelle hors ligne — reconnecte-toi pour {{action}}",
+      "submit_comments": "envoyer les commentaires"
     },
     "popoutController": {
       "your_browser_blocked_the_pop_out_window_allow_po": "Votre navigateur a bloqué la fenêtre détachée. Autorisez les fenêtres pop-up pour ce site et réessayez."

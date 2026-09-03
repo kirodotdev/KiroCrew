@@ -13631,7 +13631,8 @@
     },
     "offline": {
       "disabled_gateway_offline": "{{label}} 已禁用 — 网关离线",
-      "gateway_offline_reconnect": "网关离线 — 重新连接后才能 {{action}}"
+      "gateway_offline_reconnect": "网关离线 — 重新连接后才能 {{action}}",
+      "submit_comments": "提交评论"
     },
     "popoutController": {
       "your_browser_blocked_the_pop_out_window_allow_po": "浏览器阻止了弹出窗口。允许此站点的弹出窗口后重试。"

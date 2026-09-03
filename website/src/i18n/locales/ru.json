@@ -14166,7 +14166,8 @@
     },
     "offline": {
       "disabled_gateway_offline": "{{label}}: недоступно — шлюз не в сети",
-      "gateway_offline_reconnect": "Шлюз не в сети — подключись снова, чтобы {{action}}"
+      "gateway_offline_reconnect": "Шлюз не в сети — подключись снова, чтобы {{action}}",
+      "submit_comments": "отправить комментарии"
     },
     "popoutController": {
       "your_browser_blocked_the_pop_out_window_allow_po": "Браузер заблокировал отдельное окно. Разреши всплывающие окна для этого сайта и попробуй снова."

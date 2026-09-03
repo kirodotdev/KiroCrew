@@ -13810,7 +13810,8 @@
     },
     "offline": {
       "disabled_gateway_offline": "{{label}} बंद — गेटवे ऑफ़लाइन",
-      "gateway_offline_reconnect": "गेटवे ऑफ़लाइन — {{action}} के लिए फिर से कनेक्ट करो"
+      "gateway_offline_reconnect": "गेटवे ऑफ़लाइन — {{action}} के लिए फिर से कनेक्ट करो",
+      "submit_comments": "टिप्पणियाँ सबमिट करने"
     },
     "popoutController": {
       "your_browser_blocked_the_pop_out_window_allow_po": "तुम्हारे ब्राउज़र ने पॉप-आउट विंडो ब्लॉक कर दी। इस साइट के लिए पॉप-अप की अनुमति दें और फिर कोशिश करें।"

@@ -13631,7 +13631,8 @@
     },
     "offline": {
       "disabled_gateway_offline": "{{label}} は無効です — ゲートウェイがオフラインです",
-      "gateway_offline_reconnect": "ゲートウェイがオフラインです — {{action}}するには再接続してください"
+      "gateway_offline_reconnect": "ゲートウェイがオフラインです — {{action}}するには再接続してください",
+      "submit_comments": "コメントを送信"
     },
     "popoutController": {
       "your_browser_blocked_the_pop_out_window_allow_po": "ブラウザーがポップアップウィンドウをブロックしました。このサイトのポップアップを許可して、もう一度お試しください。"

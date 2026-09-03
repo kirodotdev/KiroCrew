@@ -13631,7 +13631,8 @@
     },
     "offline": {
       "disabled_gateway_offline": "{{label}}이(가) 비활성화되었습니다 — 게이트웨이가 오프라인입니다",
-      "gateway_offline_reconnect": "게이트웨이가 오프라인입니다 — {{action}}하려면 다시 연결하세요"
+      "gateway_offline_reconnect": "게이트웨이가 오프라인입니다 — {{action}}하려면 다시 연결하세요",
+      "submit_comments": "댓글 제출"
     },
     "popoutController": {
       "your_browser_blocked_the_pop_out_window_allow_po": "브라우저가 팝아웃 창을 차단했습니다. 이 사이트의 팝업을 허용한 다음 다시 시도하세요."
