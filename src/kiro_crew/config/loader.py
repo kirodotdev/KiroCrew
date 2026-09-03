@@ -2532,6 +2532,9 @@ class KiroCrewConfig:
                     agent_data.get("mcp_quarantine_after_failures", 3), 3
                 ),
                 acp_backend=_normalize_acp_backend(agent_data.get("acp_backend")),
+                member_acp_backend=_normalize_acp_backend(
+                    agent_data.get("member_acp_backend", "kas")
+                ),
                 default_agent=agent_data.get("default_agent", ""),
                 sweep_agents_backups=_safe_bool(
                     agent_data.get("sweep_agents_backups", False), False
@@ -4025,6 +4028,7 @@ class KiroCrewConfig:
             extra_env: dict[str, str] | None = None,
             reasoning_effort_override: str | None = None,
             crew_agent: str | None = None,
+            acp_backend: str | None = None,
             **_kwargs: object,
         ) -> AcpProvider:
             wdir = Path(cwd) if cwd else _session_work_dir(session_key)
@@ -4102,6 +4106,24 @@ class KiroCrewConfig:
                         session_key or "?",
                         m or "auto",
                     )
+            # Per-session backend selection — ONE call to the selection gate's
+            # per-session half (members.select_provider_backend: explicit
+            # caller pick > member-DM auto-route > configured default). The
+            # factory body carries no branching of its own, so the kiro
+            # construction path gains no second check (harness-parity H3/H13);
+            # resolve_selected_backend inside the helper applies the same
+            # governance/selectability gate as the persisted field, so a
+            # denied or unknown value degrades to kiro — the member thread
+            # then runs as plain chat and the mount step logs why.
+            # circular import: members sits above config in the layering.
+            from kiro_crew.members import select_provider_backend
+
+            _backend = select_provider_backend(
+                acp_backend,
+                session_key,
+                self.agent.member_acp_backend,
+                self.agent.acp_backend,
+            )
             return AcpProvider(
                 work_dir=wdir,
                 model=m,
@@ -4111,7 +4133,7 @@ class KiroCrewConfig:
                 session_key=session_key,
                 channel_id=channel_id,
                 extra_env=extra_env,
-                acp_backend=self.agent.acp_backend,
+                acp_backend=_backend,
                 effort_per_model=_eff_per_model,
                 tool_search=tool_search,
                 tool_search_min_pct=tool_search_min_pct,

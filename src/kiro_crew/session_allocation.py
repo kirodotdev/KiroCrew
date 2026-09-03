@@ -1013,6 +1013,18 @@ class SessionAllocationService:
         cache[agent] = (model, directory_mtime, now)
         return model
 
+    @staticmethod
+    def _is_member_key(key: str) -> bool:
+        """Whether *key* addresses a crew member's pinned DM session.
+
+        Wrapper so the pool-bypass arm stays readable and the import stays off
+        module top level (circular import: members' module graph is heavy and
+        imports config, which sits below this module).
+        """
+        from kiro_crew.members import is_member_session_key
+
+        return is_member_session_key(key)
+
     async def _crew_pins_effort(self, agent: str | None, crew_agent: object) -> bool:
         """True when the crew this session runs as pins its own reasoning effort.
 
@@ -1200,6 +1212,14 @@ class SessionAllocationService:
             pool_decision = "bypass_resume"
         elif is_stateless:
             pool_decision = "bypass_stateless"
+        elif self._is_member_key(key):
+            # A pooled child was spawned with no session key, so it runs the
+            # factory's DEFAULT backend and none of the member construction
+            # route (per-session dispatch-tool mount, member backend). A warm
+            # hit would silently hand a member DM a session that cannot mount
+            # its tools; cold-starting through the factory is what makes the
+            # member route real. String check — as cheap as the arms above.
+            pool_decision = "bypass_member"
         elif cwd_blocks_pool:
             pool_decision = "bypass_cwd"
         elif extra_factory_kwargs.get("reasoning_effort_override"):

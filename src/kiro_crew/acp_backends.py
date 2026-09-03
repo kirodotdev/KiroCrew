@@ -303,6 +303,20 @@ def resolve_selected_backend(value: object) -> str:
 # adapter process serves one session, so there is nothing to share.
 ACP_BACKENDS_SESSION_SHARING = frozenset({ACP_BACKEND_KIRO})
 
+# Backends that can mount a DIFFERENT MCP tool set on one session than the
+# on-disk agent template declares — the capability crew-member dispatch rides
+# on. claude-agent-acp takes the whole server list as a per-session
+# ``session/new`` ``mcpServers`` array; the KAS engine takes the full agent
+# definition over the wire (``_meta.kiro.customAgents``). kiro-cli v2 reads
+# the template from disk at spawn and exposes no wire channel, so a member
+# session on it stays a plain chat: the dispatch tools are simply not
+# mounted, never mounted-and-refused. codex-acp is DELIBERATELY excluded
+# too: its session MCP array is still unimplemented (``[]`` — see
+# ``_codex_session_mcp_servers``), so it has no per-session mount to ride;
+# exclusion withholds only the extra auto-approve grant, the fail-safe
+# direction.
+ACP_BACKENDS_MEMBER_DISPATCH = frozenset({ACP_BACKEND_CLAUDE, ACP_BACKEND_KAS})
+
 # Backends implementing the ``_session/steer`` extension (mid-turn steer). Neither
 # claude-agent-acp nor codex-acp implements it, so a steer sent to either would be
 # answered with method-not-found rather than reaching the turn.

@@ -6744,6 +6744,31 @@ _WRITE_PROTECTED_HOME_PATHS += [
     for prefix in _CREW_HOME_PREFIXES
 ]
 _WRITE_PROTECTED_HOME_PATHS += [
+    # The dashboard session-history store, fourth instance of the
+    # input-to-an-authorization-decision class (rotation.yaml, the alias
+    # ownership record, the OMC index). Each slot's persisted metadata carries
+    # ``created_by`` — the creator attribution that chat_persistence restores
+    # on gateway restart and that ``authorize_target`` then trusts as the
+    # member ownership boundary. An agent that could rewrite a victim
+    # transcript's metadata to name a member's caller key would, after one
+    # restart, hand that member send/read/stop over the victim session. The
+    # same file also carries the companion-artifact binding and the slot mode,
+    # both re-validated on restore for exactly this reason.
+    #
+    # WRITE-protected, not read+write sensitive: transcripts are the user's
+    # own conversations, and reading them (grep for an old error message, a
+    # path, a decision) is routine and legitimate. There is NO legitimate
+    # agent WRITE — the gateway persists turns through direct Python calls,
+    # which do not route through this gate, so persistence keeps working.
+    # Deliberately NOT paired in _WRITE_PROTECTED_BASH_LEAVES: that matcher
+    # blocks a command NAMING the path, which would deny the routine bash
+    # reads above (same reasoning as the app-source entry) — the file-edit
+    # tool gate is the enforcement point, and shell writes sit on the same
+    # footing as config.json's.
+    f"{prefix}/sessions"
+    for prefix in _CREW_HOME_PREFIXES
+]
+_WRITE_PROTECTED_HOME_PATHS += [
     # The Connections tool-alias OWNERSHIP RECORD, third instance of the same class as the
     # two above and with the same read/write asymmetry. It holds no secret and the rebuild
     # reads it on every run, so classifying it sensitive would break the feature — but it is

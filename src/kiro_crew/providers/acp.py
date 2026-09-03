@@ -640,6 +640,27 @@ class AcpProvider(LLMProvider):
         except Exception:  # never let telemetry break session startup
             logger.debug("kiro startup metric emit failed", exc_info=True)
 
+    def _member_session_key(self) -> str:
+        """This session's key when it is a member DM on a dispatch-capable backend.
+
+        Empty for every other session. One resolution rule for BOTH session
+        establishment paths (session/new and session/load) — the mount must
+        ride whichever one runs, or a gateway restart silently strips a member
+        thread of its dispatch tools mid-conversation.
+        """
+        # circular import: members sits above the provider layer.
+        from kiro_crew.acp_backends import ACP_BACKENDS_MEMBER_DISPATCH
+        from kiro_crew.members import is_member_session_key
+
+        skey = getattr(self._client, "_session_key", None)
+        if (
+            isinstance(skey, str)
+            and self._client.backend in ACP_BACKENDS_MEMBER_DISPATCH
+            and is_member_session_key(skey)
+        ):
+            return skey
+        return ""
+
     async def _load_session_with_retry(
         self,
         runtime: AcpRuntime,
@@ -647,6 +668,7 @@ class AcpProvider(LLMProvider):
         resume_sid: str,
         work_dir: str | Path | None,
         agent: str | None,
+        member_session_key: str = "",
     ) -> AcpSessionHandle | None:
         """Resume via session/load, retrying past a stale native session lock.
 
@@ -671,6 +693,7 @@ class AcpProvider(LLMProvider):
                     resume_sid,
                     cwd=work_dir,
                     agent=agent or None,
+                    member_session_key=member_session_key,
                 )
                 if attempt:
                     logger.info(
@@ -822,6 +845,7 @@ class AcpProvider(LLMProvider):
                             resume_sid,
                             work_dir,
                             agent,
+                            member_session_key=self._member_session_key(),
                         )
                     finally:
                         phases["session_load"] = (time.monotonic() - _t_load) * 1000.0
@@ -872,6 +896,7 @@ class AcpProvider(LLMProvider):
                     handle = await runtime.create_session(
                         cwd=work_dir,
                         agent=agent or None,
+                        member_session_key=self._member_session_key(),
                     )
                 except AcpRuntimeError as exc:
                     if runtime.saw_not_logged_in():

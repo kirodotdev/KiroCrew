@@ -2726,7 +2726,9 @@ class AcpRuntime:
             return True
         return agent in ids
 
-    async def _kas_custom_agents(self, agent: str) -> list[dict[str, Any]] | None:
+    async def _kas_custom_agents(
+        self, agent: str, *, member_dispatch: bool = False
+    ) -> list[dict[str, Any]] | None:
         """Agent definitions to carry on ``session/new``, or None for kiro-cli.
 
         kiro-cli takes its agent from the ``--agent`` spawn flag and reads the
@@ -2768,8 +2770,22 @@ class AcpRuntime:
                         exc_info=True,
                     )
                     stubbed = frozenset()
+                if member_dispatch:
+                    # The member's dashboard server arrives as a session-level
+                    # entry, exactly like a broker stub — so it must join the
+                    # subtraction set for the same reason: an agent spec that
+                    # already declares it (the opt-in assignable set) would
+                    # otherwise be projected alongside the injection, and the
+                    # identity-less spec declaration could shadow the
+                    # member-keyed entry (#927 class).
+                    from kiro_crew.members import MEMBER_DISPATCH_SERVER
+
+                    stubbed = frozenset(stubbed) | {MEMBER_DISPATCH_SERVER}
                 return build_kas_custom_agents(
-                    kiro_agents_dir(), agent, stub_server_names=stubbed
+                    kiro_agents_dir(),
+                    agent,
+                    stub_server_names=stubbed,
+                    member_dispatch=member_dispatch,
                 )
 
             try:
@@ -2805,11 +2821,18 @@ class AcpRuntime:
         agent: str | None = None,
         mcp_servers: list[dict[str, Any]] | None = None,
         crew_agent: str | None = None,
+        member_session_key: str = "",
     ) -> AcpSessionHandle:
         """Create a new ACP session on this runtime. Returns a session handle.
 
         ``crew_agent`` is the canonical Kiro Crew identity for THIS session;
         None falls back to the runtime's own (spawn-time or rekeyed) identity.
+
+        ``member_session_key`` marks a crew member's DM session and carries its
+        session key: the dashboard session-control server is mounted as a
+        session-level entry (identity via ``KIROCREW_SESSION_KEY``), and the
+        KAS wire agent's projection widens to grant its tools. Empty — every
+        non-member session — leaves both paths byte-identical to before.
         """
         if not self._initialized:
             raise AcpRuntimeError("Runtime not initialized — call spawn() first")
@@ -2824,6 +2847,26 @@ class AcpRuntime:
             mcp_servers = await asyncio.to_thread(
                 pooled_session_servers, self._mcp_gateway_overlay, agent or self._agent
             )
+        if member_session_key:
+            # circular import: members' module graph is heavy; resolved at call
+            # time like the projection seams below.
+            from kiro_crew.members import member_dispatch_session_server
+
+            member_entry = await asyncio.to_thread(
+                member_dispatch_session_server, member_session_key
+            )
+            if member_entry is not None:
+                # Session-level entries outrank same-named spec entries, so drop
+                # any stub for the same server rather than registering it twice.
+                mcp_servers = [
+                    e for e in mcp_servers if e.get("name") != member_entry["name"]
+                ] + [member_entry]
+            else:
+                logger.warning(
+                    "member session %s: dashboard server unresolved — the DM "
+                    "thread runs as plain chat this session",
+                    member_session_key,
+                )
         # The agent to run: an explicit request, else the runtime default. KAS
         # has no --agent spawn flag, so its default must be BOTH injected (below)
         # and activated (via set_mode after session/new); the kiro default is
@@ -2832,7 +2875,9 @@ class AcpRuntime:
         # Adapter-only seam: _kas_custom_agents returns None on the kiro backend,
         # so the kiro construction path gains no conditional, no new required
         # argument, and no new failure mode (harness-parity H13).
-        kas_agents = await self._kas_custom_agents(active_agent)
+        kas_agents = await self._kas_custom_agents(
+            active_agent, member_dispatch=bool(member_session_key)
+        )
         session_work_dir = await self._session_work_dir(cwd)
         params = build_session_new_params(
             session_work_dir,
@@ -3029,6 +3074,7 @@ class AcpRuntime:
         cwd: str | Path | None = None,
         agent: str | None = None,
         crew_agent: str | None = None,
+        member_session_key: str = "",
     ) -> AcpSessionHandle:
         """Resume a prior session via session/load — mirrors AcpClient.
 
@@ -3039,6 +3085,12 @@ class AcpRuntime:
         double-session footgun (fresh session/new context replayed on top of
         the loaded transcript) that produced stopReason='refusal'. Raises on
         failure so the caller can fall back to create_session().
+
+        ``member_session_key`` mirrors create_session(): session/load
+        re-initializes the session's MCP servers and re-registers the wire
+        agent, so a member session resumed WITHOUT the same injection loses
+        its dispatch tools mid-conversation — the mount must ride every path
+        that (re)establishes the session's tool set, not just the first one.
         """
         if not self._initialized:
             raise AcpRuntimeError("Runtime not initialized — call spawn() first")
@@ -3058,6 +3110,24 @@ class AcpRuntime:
         mcp_servers = await asyncio.to_thread(
             pooled_session_servers, self._mcp_gateway_overlay, active_agent
         )
+        if member_session_key:
+            # circular import: members' module graph is heavy; resolved at call
+            # time, same as create_session().
+            from kiro_crew.members import member_dispatch_session_server
+
+            member_entry = await asyncio.to_thread(
+                member_dispatch_session_server, member_session_key
+            )
+            if member_entry is not None:
+                mcp_servers = [
+                    e for e in mcp_servers if e.get("name") != member_entry["name"]
+                ] + [member_entry]
+            else:
+                logger.warning(
+                    "member session %s: dashboard server unresolved on resume — "
+                    "the DM thread runs as plain chat this session",
+                    member_session_key,
+                )
         load_params: dict[str, Any] = {
             "sessionId": resume_sid,
             "cwd": str(await self._session_work_dir(cwd)),
@@ -3090,7 +3160,12 @@ class AcpRuntime:
         # per-request dispatch inside the runtime; a reading that reached here
         # would forbid those seven shipped call sites too.
         if self._acp_backend == ACP_BACKEND_KAS:
-            attach_kas_custom_agents(load_params, await self._kas_custom_agents(active_agent))
+            attach_kas_custom_agents(
+                load_params,
+                await self._kas_custom_agents(
+                    active_agent, member_dispatch=bool(member_session_key)
+                ),
+            )
         budget = await self._session_start_budget()
         self._session_inits_in_flight += 1
         loaded_session_id = ""

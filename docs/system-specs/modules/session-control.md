@@ -88,7 +88,7 @@ that is out of bounds is visible after the fact even though nothing happened.
 
 | Refusal | Status | Why |
 |---------|--------|-----|
-| Config switch off (`agent.session_control`) | 403 | Operator opted out |
+| Config switch off (`agent.session_control`) | 403 | Operator opted out. **Exception:** a crew-member DM slot (`member-*` caller key) bypasses this switch — see "Member callers" below |
 | Caller session cannot be identified | 403 | An unidentifiable caller makes the self-target guard blind |
 | Caller is an unattended session (`cron-*`, `workflow-*`) | 403 | A scheduled job acting on live conversations is not a handoff |
 | Caller is itself incognito, temporary, or app-scoped | 403 | Caller-side isolation — the direction the target-side checks cannot see |
@@ -106,6 +106,54 @@ that is out of bounds is visible after the fact even though nothing happened.
 | Target is in another workspace | 403 | Workspaces are the memory boundary |
 | Target names no open session | 404 | A mistake, not an authorization failure |
 | Title matches more than one session | 409 | Guessing means acting on the wrong conversation |
+
+### Member callers: switch bypass, bounded by creator ownership
+
+A crew member's pinned DM slot (caller key prefixed `member-`, created only by
+`POST /api/members/{slug}/thread`) is a **conductor by design**: it dispatches
+work into worker sessions it creates, patrols them, and reports back, with no
+operator configuration. Two rules give it that shape:
+
+- **The `agent.session_control` switch does not gate a member caller.** Members
+  work out of the box — this is the zero-configuration contract, and it is a
+  deliberate trade-off: an operator who turned session control off has NOT
+  thereby disabled member dispatch. There is currently no separate switch for
+  it; disabling a member disables its dispatch.
+- **A member caller may only act on sessions it created.** Slot creation records
+  `created_by` (the creator's caller key) in the slot's birth metadata; it is
+  persisted with the session and rehydrated on restart (both restore paths).
+  `authorize_target` refuses a member caller whose key does not match the
+  target's `created_by` (`not_creator`, 403) — and this ownership boundary binds
+  **even when the global switch is enabled**, so a member never widens to the
+  ordinary caller's reach. Every other refusal in the table above still applies
+  to member callers unchanged.
+
+Ordinary (non-member) callers are untouched: they still require the switch.
+The member-facing tool surface is the ordinary `kirocrew-dashboard` `session_*`
+tool set, mounted **per session** rather than through the on-disk agent
+template: a member DM session's ACP `session/new` **and `session/load`** carry
+the dashboard server as a session-level `mcpServers` entry (built by
+`members.member_dispatch_session_server`, identity via `KIROCREW_SESSION_KEY`
+in the entry's env) — both establishment paths, because `session/load`
+re-initializes the session's MCP servers, so a resume that skipped the
+injection would strip a member thread of its tools mid-conversation. On the
+KAS backend the wire agent projection additionally grants the server in
+`tools` plus the member's approval-free dashboard verbs in `allowedTools`
+(ceiling-filtered like every other grant): `_MEMBER_DASHBOARD_GRANTS`, the
+conductor's read/create set plus `session_send` and `session_stop` — the
+write verbs are safe to auto-approve for a member *specifically* because the
+`created_by` ownership fence above bounds them to worker sessions the member
+itself opened. Member sessions also bypass the provider warm pool
+(`bypass_member`): a pooled child was spawned with no session key on the
+default backend, so a warm hit would skip both the member backend route and
+the mount. The member backend is `agent.member_acp_backend` (default `kas`),
+and requires a wire-capable backend (`ACP_BACKENDS_MEMBER_DISPATCH`: the
+claude seam and KAS); kiro-cli v2 reads its template from disk and exposes no
+per-session channel, so a member session on it runs as plain chat — the tools
+are simply not mounted, never mounted-and-refused. Because the mount is
+session-scoped, no other session on the same agent template gains the tools,
+preserving the two-part grant for ordinary agents (the switch AND the
+per-agent server assignment).
 
 Two notes on scope:
 

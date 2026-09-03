@@ -4070,7 +4070,7 @@ class TestAcpRuntimeLoadSession:
                 return {"modes": {"currentModeId": "kirocrew"}, "models": []}
             return {}
 
-        async def _fake_agents(agent):
+        async def _fake_agents(agent, *, member_dispatch=False):
             return [{"id": agent, "prompt": "p", "tools": []}]
 
         monkeypatch.setattr(rt, "_send_and_await", _fake_send)
@@ -4112,7 +4112,7 @@ class TestAcpRuntimeLoadSession:
                 return {"modes": {"currentModeId": "kirocrew"}, "models": []}
             return {}
 
-        async def _fake_agents(agent):
+        async def _fake_agents(agent, *, member_dispatch=False):
             return [{"id": agent, "prompt": "p", "tools": []}]
 
         monkeypatch.setattr(rt, "_send_and_await", _fake_send)
@@ -4145,7 +4145,7 @@ class TestAcpRuntimeLoadSession:
                 return {"modes": {"currentModeId": "kirocrew"}, "models": []}
             return {}
 
-        async def _fake_agents(agent):
+        async def _fake_agents(agent, *, member_dispatch=False):
             calls.append(agent)
             return [{"id": agent, "prompt": "p", "tools": []}]
 

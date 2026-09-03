@@ -5036,6 +5036,22 @@ _CONDUCTOR_DASHBOARD_GRANTS: tuple[str, ...] = (
     "@kirocrew-dashboard/session_read_message",
 )
 
+#: The dashboard verbs a CREW MEMBER's DM session may call without an approval
+#: prompt. Superset of the conductor's: the write verbs (``session_send``,
+#: ``session_stop``) join because a member's reach is SERVER-bounded in a way
+#: the conductor's is not — ``authorize_target`` refuses a member caller on any
+#: session it did not itself create (``created_by`` ownership, 403), so the
+#: worst case of an auto-approved write is confined to worker sessions the
+#: member opened, never the person's own conversations. The conductor has no
+#: such ownership fence, which is why its list withholds the writes. Without
+#: these two the dispatch loop this feature exists for (create → seed → patrol
+#: → stop) stalls on an approval prompt at its second step with nobody at the
+#: keyboard.
+_MEMBER_DASHBOARD_GRANTS: tuple[str, ...] = _CONDUCTOR_DASHBOARD_GRANTS + (
+    "@kirocrew-dashboard/session_send",
+    "@kirocrew-dashboard/session_stop",
+)
+
 
 def _install_conductor_agent() -> None:
     """Generate and install the kirocrew-conductor agent config.

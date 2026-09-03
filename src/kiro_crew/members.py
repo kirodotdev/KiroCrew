@@ -90,6 +90,102 @@ DM_SLOT_MODE = "member"
 #: existing ``<kind>-<id>`` key convention (``chat-<N>-<ts>``, ``cron-<id>``).
 DM_SLOT_KEY_PREFIX = "member-"
 
+
+def is_member_session_key(session_key: str | None) -> bool:
+    """Whether *session_key* addresses a crew member's pinned DM session.
+
+    Member slots are created only by the members thread endpoint with keys of
+    the form ``member-<slug>``. That slot name travels under several prefixes
+    depending on the layer: ``dashboard_member-<slug>`` (the chat session key)
+    and ``dashboard:member-<slug>`` (the canonical session-map alias, which is
+    what reaches the provider factory). Accepts all three spellings so the
+    predicate works at every layer a key travels through.
+    """
+    if not session_key:
+        return False
+    key = session_key
+    for prefix in ("dashboard_", "dashboard:"):
+        if key.startswith(prefix):
+            key = key[len(prefix) :]
+            break
+    return key.startswith(DM_SLOT_KEY_PREFIX)
+
+
+def select_provider_backend(
+    explicit: str | None,
+    session_key: str | None,
+    member_backend: str,
+    configured_default: str,
+) -> str:
+    """The per-session half of the ONE backend-selection gate (H3/H13).
+
+    Precedence: an explicit caller pick, then the member-DM auto-route, then
+    the configured default. Both non-default arms go through
+    :func:`resolve_selected_backend` — the same governance/selectability gate
+    the persisted field crosses, so a denied or unknown value degrades to kiro
+    and the member thread runs as plain chat.
+
+    Lives here rather than inline in ``create_provider_factory`` so the
+    factory body stays a single selection CALL with no branching of its own:
+    harness-parity H3/H13 allow exactly one selection gate on the construction
+    path, and this function is an input to that gate, not a second one.
+    """
+    from kiro_crew.acp_backends import resolve_selected_backend
+
+    if explicit:
+        return resolve_selected_backend(explicit)
+    if is_member_session_key(session_key):
+        backend = resolve_selected_backend(member_backend)
+        logger.info(
+            "member session %s: routing to acp_backend=%r " "(agent.member_acp_backend=%r)",
+            session_key,
+            backend,
+            member_backend,
+        )
+        return backend
+    return configured_default
+
+
+#: MCP server mounted per session into member DM threads — the delivery vehicle
+#: for the member operating model (dispatch work into worker sessions, patrol
+#: them). Session-level, so the on-disk agent template is untouched and every
+#: other session on the same template keeps its ordinary tool set.
+MEMBER_DISPATCH_SERVER = "kirocrew-dashboard"
+
+
+def member_dispatch_session_server(session_key: str) -> dict[str, object] | None:
+    """ACP ``session/new`` ``mcpServers`` element mounting session control.
+
+    The entry carries ``KIROCREW_SESSION_KEY`` so the server's strict identity
+    resolution names this member session — the same per-process trust channel
+    the Claude backend's ``AcpClient`` uses. It rides the session-level param,
+    which the KAS projection's credential stripping never touches (that filter
+    applies to the agent-declared ``mcpServers`` block, not to what the host
+    itself injects per session).
+
+    ``None`` when the server command cannot be resolved — the member thread
+    then runs as plain chat and the caller logs the degradation.
+    """
+    # circular import: agent's module graph is heavy and imports config, which
+    # sits below this module for the thread-endpoint path.
+    from kiro_crew.agent import _kirocrew_mcp_invocation
+
+    try:
+        command, args = _kirocrew_mcp_invocation("mcp-dashboard")
+    except Exception:  # pragma: no cover - defensive; resolver logs its own reason
+        logger.warning("member dispatch: could not resolve the dashboard server command")
+        return None
+    if not command:
+        return None
+    return {
+        "name": MEMBER_DISPATCH_SERVER,
+        "command": command,
+        "args": list(args),
+        "env": [{"name": "KIROCREW_SESSION_KEY", "value": session_key}],
+        "type": "stdio",
+    }
+
+
 # Same shape the artifact store enforces for its slugs: lowercase letters,
 # digits and hyphens, 1-80 chars, no leading or trailing hyphen. Kept here as a
 # local constant rather than imported because it is a private name there; the

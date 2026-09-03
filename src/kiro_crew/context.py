@@ -312,6 +312,38 @@ _MULTIBYTE_TABLE = str.maketrans(
 # skills+steering pushed the total over. Independent caps (per the design) are
 # what make usage-ranked top-K meaningful; the cost is a larger startup
 # context (the sum), NOT a smaller memory budget.
+def _member_backend_can_dispatch(cfg: "KiroCrewConfig | None" = None) -> bool:
+    """Whether the configured member backend can mount the dispatch tools.
+
+    The member operating-mode block teaches ``session_*`` tools that arrive as
+    a per-session mount — a capability only wire-capable backends have. When
+    ``agent.member_acp_backend`` resolves outside that set (governance refusal,
+    unknown value degrading to kiro), the tools are simply not mounted, and
+    injecting instructions for tools the session does not hold would send the
+    member chasing refusals. Fail-safe both ways: on any resolution error the
+    block is withheld, which degrades to plain chat rather than to a lie.
+
+    ``cfg`` lets a caller that already loaded the config share the handle —
+    the context builder calls this once per member turn, so a second disk
+    read would be pure waste.
+    """
+    try:
+        from kiro_crew.acp_backends import (
+            ACP_BACKENDS_MEMBER_DISPATCH,
+            resolve_selected_backend,
+        )
+
+        if cfg is None:
+            from kiro_crew.config import KiroCrewConfig
+
+            cfg = KiroCrewConfig.load()
+        backend = resolve_selected_backend(cfg.agent.member_acp_backend)
+        return backend in ACP_BACKENDS_MEMBER_DISPATCH
+    except Exception:
+        logger.debug("member backend capability check failed", exc_info=True)
+        return False
+
+
 def _budget(fraction: float) -> int:
     """A section char cap as a percentage of the budget base."""
     return int(_CONTEXT_BUDGET_BASE * fraction)
@@ -2307,12 +2339,50 @@ class ContextBuilder:
                 f"or the task requires it.\n\n"
             )
 
+        # Crew-member operating mode — injected only for a member's pinned DM
+        # session (mode carries the slot's mode; "member" slots are born only
+        # through the members thread route). The member is a CONTROLLER: its
+        # DM thread stays the identity/management loop while real work runs in
+        # worker sessions it dispatches and patrols. The session_* tools this
+        # block names arrive as a per-session mount of the dashboard
+        # session-control server (members.member_dispatch_session_server), and
+        # the server authorizes member callers automatically
+        # (dashboard/session_control.py), bounded to sessions the member
+        # created itself — so the instructions hold with zero configuration.
+        #
+        # circular import: members' module graph is heavy and this file
+        # sits below it in the layering (the same cycle-break
+        # chat_persistence uses for the members module).
+        from kiro_crew.members import DM_SLOT_MODE as _member_mode
+
+        # User-profile / skills config, loaded once and ALSO consulted by the
+        # member capability gate below — one read per context build.
+        _cfg = KiroCrewConfig.load()
+
+        if mode == _member_mode and _member_backend_can_dispatch(_cfg):
+            parts.append(
+                f"[CREW MEMBER OPERATING MODE]\n"
+                f'You are the crew member "{agent_label}". This pinned conversation is '
+                f"your DM thread with the user — your identity, your inbox, and your "
+                f"ledger. Keep it for decisions, reports, and escalations; do NOT run "
+                f"long or heavy work inline here.\n"
+                f"When real work arrives (a task to implement, an investigation to "
+                f"run), DISPATCH it: open a worker session with session_create, seed "
+                f"it with a self-contained brief via session_send (the worker has "
+                f"none of this thread's context), then PATROL your workers with "
+                f"session_read_message on a monitor_start loop — you own noticing a "
+                f"worker that stalled or died, restarting it, or escalating. Stop a "
+                f"runaway with session_stop. You can only control sessions you "
+                f"created.\n"
+                f"Report outcomes back in this thread when work completes or needs "
+                f"a decision only the user can make.\n\n"
+            )
+
         # User profile — onboarding answers (role + technical comfort).
         # Injected for ALL agents like date/agent identity: it describes the
         # person, not the project or workspace. Empty (no block at all) when
-        # the user skipped the questions. The load below is mtime-cached and
-        # shared with the skills lazy-load gate further down.
-        _cfg = KiroCrewConfig.load()
+        # the user skipped the questions. Uses the ``_cfg`` loaded above the
+        # member block, shared with the skills lazy-load gate further down.
 
         # UI language — a rendering contract like [RUNTIME] above, not a
         # communication-style hint: it tells the model which language the

@@ -589,6 +589,20 @@ class AgentConfig:
             # renders. See harness-parity H4.
         ),
     )
+    member_acp_backend: str = field(
+        default="kas",
+        metadata=_meta(
+            "Crew member ACP backend",
+            "Backend for crew-member DM sessions: 'kas' (default) or 'claude'. "
+            "Members dispatch work into worker sessions through session-control "
+            "tools mounted per session over the wire, which the kiro-cli v2 "
+            "backend cannot carry — a value resolving to kiro leaves member "
+            "threads as plain chat (no dispatch tools), logged at session start.",
+            # Same no-enum reasoning as acp_backend above: the live selectable
+            # set comes from the registry via resolve_selected_backend, never a
+            # frozen literal.
+        ),
+    )
     default_agent: str = field(
         default="",
         metadata=_meta("Default Agent", "Default agent name for new sessions."),

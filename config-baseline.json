@@ -25,6 +25,7 @@
         "mcp_registry_mode": false,
         "mcp_quarantine_after_failures": 3,
         "acp_backend": "",
+        "member_acp_backend": "kas",
         "default_agent": "",
         "sweep_agents_backups": false,
         "sandbox": "auto",
@@ -271,6 +272,20 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": ""
+    },
+    {
+      "path": "agent.member_acp_backend",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Crew member ACP backend",
+      "help": "Backend for crew-member DM sessions: 'kas' (default) or 'claude'. Members dispatch work into worker sessions through session-control tools mounted per session over the wire, which the kiro-cli v2 backend cannot carry — a value resolving to kiro leaves member threads as plain chat (no dispatch tools), logged at session start.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": "kas"
     },
     {
       "path": "agent.default_agent",

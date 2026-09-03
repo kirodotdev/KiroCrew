@@ -965,6 +965,12 @@ def _rehydrate_slot_from_history(
             slot.project = meta["project"]
         if meta.get("mode") and _member_identity is None:
             slot.mode = meta["mode"]
+        if meta.get("created_by"):
+            # Creator attribution restored so the member ownership boundary in
+            # session-control authorization survives a restart: without it every
+            # worker a member dispatched would come back unowned and the
+            # fail-closed `not_creator` check would strand them.
+            slot._created_by = str(meta["created_by"])
         if meta.get("folder_id"):
             slot.folder_id = meta["folder_id"]
         if meta.get("channel_folder_filed"):
@@ -1445,6 +1451,12 @@ def _apply_recent_session(
         slot.project = meta["project"]
     if meta.get("mode") and _member_identity is None:
         slot.mode = meta["mode"]
+    if meta.get("created_by"):
+        # Same rehydration as _rehydrate_slot_from_history: without it a
+        # member-created worker restored through the recent-session path
+        # loses its creator binding and authorize_target refuses the
+        # legitimate member with not_creator.
+        slot._created_by = str(meta["created_by"])
     if meta.get("folder_id"):
         slot.folder_id = meta["folder_id"]
     if meta.get("channel_folder_filed"):
@@ -2692,6 +2704,11 @@ def _save_slot_to_history(
                     fields["app"] = slot._app
                 if slot._origin:
                     fields["origin"] = slot._origin
+                if getattr(slot, "_created_by", ""):
+                    # Creator attribution: the member ownership boundary in
+                    # session-control authorization reads it, so dropping it here
+                    # would orphan a member's workers on the next restart.
+                    fields["created_by"] = slot._created_by
                 if slot.linked_session_key:
                     fields["linked_session_key"] = slot.linked_session_key
                 if getattr(slot, "channel_origin", False):
@@ -2983,6 +3000,10 @@ def _save_slot_to_history(
             # slot would lose the CRON tag that keeps it out of ``slots:user``.
             if slot._origin:
                 meta_line["origin"] = slot._origin
+            if getattr(slot, "_created_by", ""):
+                # Creator attribution — read by the member ownership boundary in
+                # session-control authorization; see the partial-save mirror above.
+                meta_line["created_by"] = slot._created_by
             # Artifact companion binding — persisted so a bound
             # session restored after a gateway restart (or resumed from the
             # History page) comes back as the artifact's active bound session.

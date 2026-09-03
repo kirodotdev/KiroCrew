@@ -71,6 +71,7 @@ from kiro_crew.acp.types import (
     ACP_BACKEND_CODEX,
     ACP_BACKEND_KIRO,
     ACP_BACKENDS_INTERNAL_SANDBOX,
+    ACP_BACKENDS_MEMBER_DISPATCH,
     ACP_BACKENDS_MODEL_VIA_CONFIG_OPTION,
     ACP_BACKENDS_SESSION_MCP_ARRAY,
     ACP_BACKENDS_STEER,
@@ -2726,7 +2727,47 @@ class AcpClient:
             work_dir=self._work_dir,
         )
         servers = params.get("mcpServers") or []
-        return list(servers) if isinstance(servers, list) else []
+        out = list(servers) if isinstance(servers, list) else []
+        return self._append_member_dispatch_server(out)
+
+    def _append_member_dispatch_server(self, servers: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Mount the dashboard session-control server into a member DM session.
+
+        Session-level and additive: the on-disk agent spec is untouched, so every
+        other session on the same agent keeps its ordinary tool set. The entry
+        carries ``KIROCREW_SESSION_KEY`` for strict identity — the same value this
+        client already exports to the child process env.
+
+        Honors the same permission-surface precondition the mirror translation
+        just applied: when Crew does not own the session's native permission
+        file, the whole array was withheld, and quietly appending a
+        session-control server there would hand a pre-approvable surface exactly
+        the tools the withhold exists to keep off it.
+        """
+        if self.backend not in ACP_BACKENDS_MEMBER_DISPATCH:
+            return servers
+        # circular import: members' module graph is heavy; resolved at call time.
+        from kiro_crew.members import is_member_session_key, member_dispatch_session_server
+
+        if not is_member_session_key(self._session_key):
+            return servers
+        session_key = self._session_key or ""
+        if not getattr(self, "_claude_settings_authored", False):
+            logger.warning(
+                "member session %s: permission surface not Crew-owned — session "
+                "control is not mounted; the DM thread runs as plain chat",
+                self._session_key,
+            )
+            return servers
+        entry = member_dispatch_session_server(session_key)
+        if entry is None:
+            logger.warning(
+                "member session %s: dashboard server unresolved — the DM thread "
+                "runs as plain chat this session",
+                self._session_key,
+            )
+            return servers
+        return [e for e in servers if e.get("name") != entry["name"]] + [entry]
 
     def _session_mcp_servers(self) -> list[dict[str, Any]]:
         """MCP server array passed to this session's ``session/new`` / ``session/load``.

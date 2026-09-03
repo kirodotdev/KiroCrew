@@ -437,6 +437,7 @@ def to_client_custom_agent(
     prompt: str,
     *,
     stub_server_names: frozenset[str] = frozenset(),
+    member_dispatch: bool = False,
 ) -> dict[str, Any]:
     """Project one Crew agent spec onto a KAS ``ClientCustomAgent`` descriptor.
 
@@ -446,6 +447,14 @@ def to_client_custom_agent(
     ``mcpServers`` param and must not also be declared here — see
     :func:`_project_mcp_servers`. The default is empty, which is correct for a
     caller with no shared gateway: nothing is stubbed, so nothing is subtracted.
+
+    *member_dispatch* widens the projection for a crew member's DM session:
+    ``@kirocrew-dashboard`` joins ``tools`` (the server itself arrives as a
+    session-level entry, but KAS grants only what ``tools`` names), and the
+    member's approval-free dashboard verbs join the ``allowedTools`` input
+    BEFORE the governance ceiling filter — the conductor grant set plus the
+    write verbs the server-side ``created_by`` ownership fence bounds, passed
+    through the same ceiling every other grant crosses.
     """
     if not agent_id:
         raise KasAgentTranslationError("agent id must be non-empty")
@@ -471,6 +480,22 @@ def to_client_custom_agent(
         "prompt": prompt,
         "tools": _project_tools(spec, agent_id),
     }
+    allowed_tools_input = spec.get("allowedTools")
+    if member_dispatch:
+        # The dashboard server arrives as a session-level entry; naming it in
+        # ``tools`` is what grants its tools (KAS resolves ``tools ?? []``).
+        # ``"*"`` already covers it.
+        tools = out["tools"]
+        if isinstance(tools, list) and "@kirocrew-dashboard" not in tools:
+            out["tools"] = [*tools, "@kirocrew-dashboard"]
+        # circular import: agent imports the config loader, which sits below
+        # this module; resolved at call time like the other heavy seams here.
+        from kiro_crew.agent import _MEMBER_DASHBOARD_GRANTS
+
+        base_allowed = allowed_tools_input if isinstance(allowed_tools_input, list) else []
+        merged = list(base_allowed)
+        merged.extend(g for g in _MEMBER_DASHBOARD_GRANTS if g not in merged)
+        allowed_tools_input = merged
 
     # Derived from `allowedTools` and from nothing else. A `permissions` block
     # sitting in the spec is deliberately NOT forwarded, even though it is already
@@ -484,7 +509,7 @@ def to_client_custom_agent(
     # the profile on disk, which the backend reads itself when Crew is not
     # injecting an agent over the wire.
     permissions = allowed_tools_to_permissions(
-        _ceiling_permitted(spec.get("allowedTools"), agent_id), agent_id=agent_id
+        _ceiling_permitted(allowed_tools_input, agent_id), agent_id=agent_id
     )
     if permissions:
         out["permissions"] = permissions
@@ -540,6 +565,7 @@ def build_kas_custom_agents(
     agent_id: str,
     *,
     stub_server_names: frozenset[str] = frozenset(),
+    member_dispatch: bool = False,
 ) -> list[dict[str, Any]]:
     """Build the ``_meta.kiro.customAgents`` batch that binds *agent_id* on KAS.
 
@@ -558,4 +584,12 @@ def build_kas_custom_agents(
     """
     spec = load_agent_spec(agents_dir, agent_id)
     prompt = resolve_prompt(spec, agent_id=agent_id, agents_dir=agents_dir)
-    return [to_client_custom_agent(agent_id, spec, prompt, stub_server_names=stub_server_names)]
+    return [
+        to_client_custom_agent(
+            agent_id,
+            spec,
+            prompt,
+            stub_server_names=stub_server_names,
+            member_dispatch=member_dispatch,
+        )
+    ]
