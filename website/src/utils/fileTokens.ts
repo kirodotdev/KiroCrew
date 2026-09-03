@@ -26,7 +26,7 @@ export const VIDEO_EXT = /\.(mp4|m4v|mov|webm)$/i
  *  report a file "already mentioned" from that substring and skip inserting a
  *  clean token, and prepareSendPayload would splice `[attached_file N] ...`
  *  into the middle of that word at send time. */
-function tokenRegex(token: string, flags = ''): RegExp {
+export function tokenRegex(token: string, flags = ''): RegExp {
   const escaped = token.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
   return new RegExp(`(^|\\s)@${escaped}(?=\\s|$)`, flags)
 }
@@ -256,6 +256,16 @@ const WIN_PRODUCER_PATH_RE = /^(?:[A-Za-z]:|\\\\[^\\/]+)[\\/]/
  *  real name (`weird\name.txt`) into a nonexistent nested path. */
 export function normalizeWindowsPath(p: string): string {
   return WIN_PRODUCER_PATH_RE.test(p) ? p.replace(/\\/g, '/') : p
+}
+
+/** Whether `p` carries a drive-letter or UNC prefix, checked directly against
+ *  the path itself rather than via `normalizeWindowsPath(p) !== p` (fork GPT
+ *  review) -- that comparison is false for a Windows-shaped path already
+ *  spelled with forward slashes (`C:/repo` has nothing for the backslash
+ *  rewrite to change), silently misclassifying it as POSIX and disabling
+ *  every separator-fold gated on it. */
+export function isWindowsShapedPath(p: string): boolean {
+  return WIN_PRODUCER_PATH_RE.test(p)
 }
 
 /** Append a picked file to the pending-attachment list, deduped by canonical
