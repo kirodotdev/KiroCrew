@@ -16,8 +16,10 @@
  * apart. Kind-first ordering also keeps the check cheap — only edit rows pay
  * for the line scan.
  *
- * EVERY edit diff gets a visible trace. Small diffs render the full DiffBlock
- * card; diffs over the size cap degrade to a summary chip (filename, −N +M,
+ * EVERY edit diff gets a visible trace. Small diffs render a DiffBlock card,
+ * folded to its chip until the reader opens it (see ToolCallLine's
+ * `openedDiffCards`); diffs over the size cap degrade to a summary chip
+ * (filename, −N +M,
  * expands the details panel) rather than to nothing — under the relaxed
  * prompt the model no longer restates tool edits, so a silently-dropped card
  * would leave a large edit with zero transcript trace.

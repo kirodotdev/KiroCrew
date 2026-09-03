@@ -51,9 +51,17 @@ const EMPTY_TOOL_LOG: ToolActivity[] = []
 // don't re-fire.)
 const revealedToolIds = new Set<string>()
 
-// Diff cards the reader folded, by tool_call_id — survives virtualizer
-// unmounts for the page lifetime so folds persist across scrolling.
-const foldedDiffCards = new Set<string>()
+// Diff cards the reader OPENED, by tool_call_id — survives virtualizer
+// unmounts for the page lifetime so an opened card does not snap shut on
+// scroll. Cards start folded, so the remembered state is the expansion (the
+// same inversion `FoldableDiffBlock.expandedDiffFences` makes for prose
+// fences); session-scoped by intent, a reload starts folded again.
+const openedDiffCards = new Set<string>()
+
+/** Exported for tests: forget every remembered card expansion. */
+export function resetOpenedDiffCards(): void {
+  openedDiffCards.clear()
+}
 
 // ── Row slide (height easing) ──
 // The transcript is pinned to the bottom, and the virtualizer's pin is
@@ -511,9 +519,10 @@ export default memo(function ToolCallLine({ message, running: _running, slot, on
   const filePath = useMemo(() => extractToolFilePath(input), [input])
   // Inline diff presentation: an edit tool's input IS a unified diff
   // (backend-derived from the ACP diff content block, see acp/_dispatch.py).
-  // Small diffs promote to an always-visible DiffBlock card below the pill;
-  // over-cap diffs degrade to a summary chip (filename, −N +M) that expands
-  // the details panel — never to nothing, because under the relaxed prompt
+  // Small diffs promote to a DiffBlock card below the pill, folded to its chip
+  // until the reader opens it; over-cap diffs degrade to a summary chip
+  // (filename, −N +M) that expands the details panel — never to nothing,
+  // because under the relaxed prompt
   // the model no longer restates tool edits as ```diff blocks. Null for every
   // non-edit tool and for rows predating meta.kind — those keep the
   // collapsed-details rendering.
@@ -533,22 +542,23 @@ export default memo(function ToolCallLine({ message, running: _running, slot, on
     () => (denied ? null : presentToolDiff(toolKind, input)),
     [denied, toolKind, input],
   )
-  // Per-card density control: a promoted card can be folded back to its chip
-  // after reading (multi-edit turns stack several large cards otherwise, and
-  // the only other relief is the GLOBAL collapse-all preference). Folds are
+  // Per-card density control, FOLDED by default: a turn that edits several
+  // files stacks a full patch per file, so the answer the reader came for
+  // scrolls off. The chip still states the three facts that decide whether to
+  // look (file, +N, −M) and one click opens the patch. Expansions are
   // remembered at module scope by tool_call_id (same lifetime pattern as
-  // revealedToolIds above) so a virtualizer unmount does not silently reopen
-  // every card the reader closed.
+  // revealedToolIds above) so a virtualizer unmount does not silently re-fold
+  // a card the reader opened.
   const [cardFolded, setCardFolded] = useState(
-    () => !!(toolCallId && foldedDiffCards.has(toolCallId)),
+    () => !(toolCallId && openedDiffCards.has(toolCallId)),
   )
   const diffTogglePendingFocus = useRef(false)
   const toggleCardFolded = useCallback(() => {
     setCardFolded(prev => {
       const next = !prev
       if (toolCallId) {
-        if (next) foldedDiffCards.add(toolCallId)
-        else foldedDiffCards.delete(toolCallId)
+        if (next) openedDiffCards.delete(toolCallId)
+        else openedDiffCards.add(toolCallId)
       }
       return next
     })
@@ -888,7 +898,10 @@ export default memo(function ToolCallLine({ message, running: _running, slot, on
           pathname row it expands the details panel. Full path in the native
           tooltip — the visible basename alone cannot tell two same-named
           files apart. Truncated transports prefix counts with ≥ (lower
-          bounds) next to a visible localized note. */}
+          bounds) next to a visible localized note. The two testids name which
+          of those two roles the chip is playing; both are distinct from
+          FoldableDiffBlock's `prose-diff-chip`, which carries the same
+          data-diff-toggle and can sit in the very same transcript. */}
       {chipView && (
         <button
           type="button"
@@ -896,6 +909,7 @@ export default memo(function ToolCallLine({ message, running: _running, slot, on
           title={chipView.path ?? undefined}
           aria-expanded={chipView.opensCard ? showCard : effectivelyExpanded}
           data-diff-toggle={chipView.opensCard ? true : undefined}
+          data-testid={chipView.opensCard ? 'tool-diff-chip' : 'tool-diff-summary-chip'}
           onClick={e => {
             e.stopPropagation()
             if (chipView.opensCard) toggleCardFolded()

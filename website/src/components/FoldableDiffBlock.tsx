@@ -15,11 +15,10 @@ import { useLanguageGeneration } from '../i18n/useLanguageGeneration'
  * decide whether to look (which file, how much added, how much removed) in one
  * row, and the patch is one click away.
  *
- * Deliberately NOT the same control as `ToolCallLine`'s card fold: that one
- * governs a diff the dashboard itself rendered from a tool call and defaults
- * OPEN, because it is the only record of that edit. This governs text the model
- * typed into its own message, which is a duplicate of a tool card whenever the
- * edit went through a built-in tool — so closed is the right default here.
+ * A separate control from `ToolCallLine`'s card fold, which governs a diff the
+ * dashboard itself rendered from a tool call. Both default CLOSED, but each
+ * remembers its expansions in its own module-scope set, because the two are
+ * keyed differently (a fence's `foldKey` vs a `tool_call_id`).
  *
  * Applied ONLY where the fence is a retelling: `MarkdownRenderer` opts in with
  * `collapseDiffs`, which the chat transcript sets and no other surface does. On
@@ -30,7 +29,7 @@ import { useLanguageGeneration } from '../i18n/useLanguageGeneration'
 
 /**
  * Fences the user has opened, keyed by `foldKey`. Module-level for the same
- * reason `ToolCallLine.foldedDiffCards` is: the transcript re-mounts messages
+ * reason `ToolCallLine.openedDiffCards` is: the transcript re-mounts messages
  * (load-earlier, variant switch, tab return), and an expansion that evaporates
  * on re-mount reads as the UI closing the patch while it is being read.
  * Session-scoped by intent — a reload starts collapsed again.
