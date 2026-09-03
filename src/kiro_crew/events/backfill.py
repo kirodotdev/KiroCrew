@@ -344,7 +344,13 @@ def backfill_subagents(home: Path, limit: int | None = None) -> SourceReport:
         outcome: str | None = None
         died_ms: int | None = None
         readable = False
-        if tombstone.exists():
+        # Stat the tombstone once and let both decisions below read the answer.
+        # The terminal branch decides from ``readable`` / ``cause`` / ``died_ms``,
+        # which this block's parse is the only source of, so a second stat that
+        # answered differently would judge the terminal against a file no other
+        # line here ever saw.
+        has_tombstone = tombstone.exists()
+        if has_tombstone:
             try:
                 t = _read_json_no_follow(tombstone)
                 if isinstance(t, dict):
@@ -377,7 +383,7 @@ def backfill_subagents(home: Path, limit: int | None = None) -> SourceReport:
         # subagent is still STREAMING its answer, so its presence alone proves
         # nothing — a run dir with state but no tombstone is in-flight (or was
         # orphaned) and gets only the spawned event.
-        if tombstone.exists():
+        if has_tombstone:
             # A tombstone does NOT mean failure: successful delivery writes a
             # ``cause="delivered"`` tombstone instead of deleting the folder
             # (deferred-TTL cleanup). Only a non-delivered cause is abnormal —
