@@ -43,6 +43,8 @@ from kiro_crew.messaging.attachments import IngestLimits, append_attachment_cont
 from kiro_crew.messaging.attachments import cleanup as cleanup_attachments
 from kiro_crew.messaging.commands import (
     YOLO_PHRASING_PLAIN,
+    compact_unsupported_backend,
+    compact_unsupported_reply,
     cron_command_reply,
     format_ttl,
     lists_host_state,
@@ -2849,6 +2851,11 @@ class TelegramDispatcher:
         """
         pct = self.sessions.check_context_usage(session_key, provider)
         soft_pct = self.cfg.telegram.soft_threshold_pct
+        if pct >= soft_pct and compact_unsupported_backend(provider):
+            # Capability gate (#8156): the nudge advises /compact, which this
+            # backend refuses — it compacts on its own as context fills, so
+            # there is nothing for the user to act on.
+            return
         if pct >= soft_pct and not self._conv.is_awaiting(route):
             self._conv.set_awaiting(route)
             assert self.client is not None
@@ -2888,6 +2895,15 @@ class TelegramDispatcher:
             provider = self.sessions.get_provider(session_key)
             if provider is None:
                 await self._reply(chat_id, "No active session to compact.", thread=thread)
+                return
+
+            # Capability gate (#8156, mirroring the dashboard's #7800 gate): a
+            # backend that cannot serve a manual /compact treats the prompt as
+            # ordinary text and never answers, so dispatching would strand the
+            # 120s wait below. Informational, never an error.
+            unsupported = compact_unsupported_backend(provider)
+            if unsupported:
+                await self._reply(chat_id, compact_unsupported_reply(unsupported), thread=thread)
                 return
 
             status_id = await self._reply(chat_id, "🔄 Compacting context…", thread=thread)

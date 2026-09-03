@@ -318,6 +318,39 @@ def format_ttl(ttl_secs: int) -> str:
     return f"{mins}m"
 
 
+def compact_unsupported_backend(provider: Any) -> str | None:
+    """Backend id when *provider* cannot serve a manual ``/compact``, else ``None``.
+
+    The channel half of the dashboard's manual-``/compact`` capability gate
+    (#7800): a backend outside ``ACP_BACKENDS_COMPACT`` treats the ``/compact``
+    prompt as ordinary text and never emits a compaction status, so dispatching
+    it strands ``wait_for_compaction()`` for its whole deadline. The capability
+    is read off the LIVE provider — ``manual_compact_unsupported_backend`` is
+    declared on the ``LLMProvider`` ABC with a ``None`` (supported) default per
+    harness-parity H14 — and only a non-empty ``str`` (the ABC's stated
+    contract) reads as a refusal, so a mocked or duck-typed provider's truthy
+    attribute never blocks a compaction.
+    """
+    value = getattr(provider, "manual_compact_unsupported_backend", None)
+    if isinstance(value, str) and value:
+        return value
+    return None
+
+
+def compact_unsupported_reply(backend: str) -> str:
+    """Informational reply for a manual ``/compact`` on an unsupported *backend*.
+
+    Mirrors the dashboard's wording: the backend manages compaction
+    automatically (the same relationship the ``cc_managed`` decline encodes),
+    so the refusal is information, never an error.
+    """
+    return (
+        f"ℹ️ The `{backend}` backend manages compaction automatically — it "
+        "summarizes the conversation on its own as context fills, so manual "
+        "`/compact` isn't needed (and isn't supported) here."
+    )
+
+
 #: How much of a cron job's message body a list row shows.
 _CRON_MESSAGE_PREVIEW_CHARS = 50
 #: How much of a subagent's task a list row shows.

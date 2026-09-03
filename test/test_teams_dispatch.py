@@ -332,6 +332,39 @@ class TestTurn:
         assert provider.compacted is True
         assert any("compacted" in content for (_, content, _) in client.sent)
 
+    @pytest.mark.asyncio
+    async def test_hard_threshold_declines_silently_on_auto_managed_backend(self) -> None:
+        # No /compact to dispatch and no notice: the backend compacts on its
+        # own as context fills (#8156).
+        provider = FakeProvider(
+            [AcpEvent(kind=EVENT_TEXT_CHUNK, text="answer"), AcpEvent(kind=EVENT_COMPLETE)]
+        )
+        provider.manual_compact_unsupported_backend = "kas"
+        sessions = FakeSessions(provider, ctx_pct=96.0)
+        client = FakeClient()
+        d = _dispatcher(sessions, FakeCtx(), client)
+
+        await d.handle_message(_inbound("hello"))
+
+        assert provider.compacted is False
+        assert not any("compacted" in content for (_, content, _) in client.sent)
+
+    @pytest.mark.asyncio
+    async def test_soft_nudge_suppressed_on_auto_managed_backend(self) -> None:
+        # The nudge advises /compact, which this backend refuses — it compacts
+        # on its own, so there is nothing for the user to act on (#8156).
+        provider = FakeProvider(
+            [AcpEvent(kind=EVENT_TEXT_CHUNK, text="answer"), AcpEvent(kind=EVENT_COMPLETE)]
+        )
+        provider.manual_compact_unsupported_backend = "kas"
+        sessions = FakeSessions(provider, ctx_pct=85.0)
+        client = FakeClient()
+        d = _dispatcher(sessions, FakeCtx(), client)
+
+        await d.handle_message(_inbound("hello"))
+
+        assert not any("/compact" in content for (_, content, _) in client.sent)
+
 
 class TestCommands:
     @pytest.mark.asyncio
@@ -372,6 +405,36 @@ class TestCommands:
         assert sessions.acquired == [key]
         assert sessions.released == [key]
         assert client.sent == [("CONV", "🗜️ Context compacted.", _SVC)]
+
+    @pytest.mark.asyncio
+    async def test_compact_declined_on_auto_managed_backend(self) -> None:
+        # A backend that cannot serve /compact gets the informational reply and
+        # compact() is NEVER dispatched (#8156).
+        provider = FakeProvider([])
+        provider.manual_compact_unsupported_backend = "kas"
+        sessions = FakeSessions(provider)
+        client = FakeClient()
+        d = _dispatcher(sessions, FakeCtx(), client)
+
+        await d.handle_message(_inbound("/compact"))
+
+        key = d._session_key(_EMAIL)
+        assert provider.compacted is False
+        assert sessions.released == [key]  # the acquired semaphore is handed back
+        assert any("manages compaction automatically" in content for (_, content, _) in client.sent)
+
+    @pytest.mark.asyncio
+    async def test_compact_none_capability_preserves_dispatch(self) -> None:
+        # The ABC's None (supported) default keeps the existing dispatch.
+        provider = FakeProvider([])
+        provider.manual_compact_unsupported_backend = None
+        sessions = FakeSessions(provider)
+        client = FakeClient()
+        d = _dispatcher(sessions, FakeCtx(), client)
+
+        await d.handle_message(_inbound("/compact"))
+
+        assert provider.compacted is True
 
     @pytest.mark.asyncio
     async def test_stable_session_key_per_user(self) -> None:

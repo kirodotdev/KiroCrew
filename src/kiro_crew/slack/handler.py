@@ -81,6 +81,8 @@ from kiro_crew.llm_helpers import (
 )
 from kiro_crew.messaging import auto_title, privacy_mode
 from kiro_crew.messaging.commands import (
+    compact_unsupported_backend,
+    compact_unsupported_reply,
     cron_command_reply,
     spawn_command_reply,
     task_command_reply,
@@ -2220,6 +2222,23 @@ async def _handle_compact_command(
                 tool_name="compact",
                 tool_kind="command",
                 outcome="no_session",
+            )
+            return
+
+        # Capability gate (#8156, mirroring the dashboard's #7800 gate): a
+        # backend that cannot serve a manual /compact treats the prompt as
+        # ordinary text and never answers, so dispatching would strand the
+        # 120s wait below. Informational, never an error.
+        unsupported = compact_unsupported_backend(provider)
+        if unsupported:
+            await slack.post_message(channel, compact_unsupported_reply(unsupported), reply_ts)
+            sel().log_tool_invocation(
+                session_key=session_key,
+                source="slack",
+                tool_name="compact",
+                tool_kind="command",
+                outcome="auto_managed_backend",
+                metadata={"backend": unsupported},
             )
             return
 

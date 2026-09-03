@@ -61,7 +61,11 @@ from kiro_crew.history import mint_row_mid
 from kiro_crew.hooks import TOOL_AUTO_APPROVE, TOOL_DENY
 from kiro_crew.messaging.attachments import IngestLimits
 from kiro_crew.messaging.attachments import cleanup as cleanup_attachments
-from kiro_crew.messaging.commands import stop_running_turn
+from kiro_crew.messaging.commands import (
+    compact_unsupported_backend,
+    compact_unsupported_reply,
+    stop_running_turn,
+)
 from kiro_crew.messaging.dispatch import (
     build_auto_approve,
     build_directive_consumer,
@@ -1646,6 +1650,11 @@ class DiscordDispatcher:
         """
         pct = self.sessions.check_context_usage(session_key, provider)
         soft_pct = self.cfg.discord.soft_threshold_pct
+        if pct >= soft_pct and compact_unsupported_backend(provider):
+            # Capability gate (#8156): the nudge advises !compact, which this
+            # backend refuses — it compacts on its own as context fills, so
+            # there is nothing for the user to act on.
+            return
         if pct >= soft_pct and not self._conv.is_awaiting(scope_id):
             self._conv.set_awaiting(scope_id)
             assert self.client is not None
@@ -1678,6 +1687,15 @@ class DiscordDispatcher:
             provider = self.sessions.get_provider(session_key)
             if provider is None:
                 await self.client.send_message(channel_id, "No active session to compact.")
+                return
+
+            # Capability gate (#8156, mirroring the dashboard's #7800 gate): a
+            # backend that cannot serve a manual /compact treats the prompt as
+            # ordinary text and never answers, so dispatching would strand the
+            # 120s wait below. Informational, never an error.
+            unsupported = compact_unsupported_backend(provider)
+            if unsupported:
+                await self.client.send_message(channel_id, compact_unsupported_reply(unsupported))
                 return
 
             status_id = await self.client.send_message(channel_id, "🔄 Compacting context…")

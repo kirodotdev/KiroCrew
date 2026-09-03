@@ -2740,6 +2740,42 @@ class TestCompactCommand:
         assert any("No active session" in t for t in texts)
 
     @pytest.mark.asyncio
+    async def test_compact_declined_on_auto_managed_backend(self):
+        # A backend that cannot serve /compact (the provider names it via
+        # manual_compact_unsupported_backend) gets the informational reply and
+        # compact() is NEVER dispatched (#8156).
+        provider = self._make_provider_with_compact()
+        calls = []
+
+        async def _compact(context=""):
+            calls.append(1)
+
+        provider.compact = _compact
+        provider.manual_compact_unsupported_backend = "kas"
+        sessions = self._make_sessions_with_active(provider)
+        slack = MockSlackClient()
+
+        await handle_message(slack, sessions, "C1", "!compact", "thread1", "msg1", "U_OWNER")
+
+        texts = self._posted_texts(slack)
+        assert any("manages compaction automatically" in t for t in texts)
+        assert not any("Compacting context" in t for t in texts)
+        assert calls == []
+
+    @pytest.mark.asyncio
+    async def test_compact_none_capability_preserves_dispatch(self):
+        # The ABC's None (supported) default keeps the existing dispatch.
+        provider = self._make_provider_with_compact()
+        provider.manual_compact_unsupported_backend = None
+        sessions = self._make_sessions_with_active(provider)
+        slack = MockSlackClient()
+
+        await handle_message(slack, sessions, "C1", "!compact", "thread1", "msg1", "U_OWNER")
+
+        texts = self._posted_texts(slack)
+        assert any("✅" in t for t in texts)
+
+    @pytest.mark.asyncio
     async def test_compact_failed_reports_error(self):
         provider = self._make_provider_with_compact(
             [

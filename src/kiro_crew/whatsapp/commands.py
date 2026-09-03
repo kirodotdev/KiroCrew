@@ -156,6 +156,14 @@ COMPACTED_TEXT = "Context compacted."
 COMPACT_BUSY_TEXT = "Still working on the last message; try /compact again shortly."
 COMPACT_NOTHING_TEXT = "There's no conversation to compact yet."
 COMPACT_FAILED_TEXT = "Couldn't compact the context; please try again."
+#: The capability refusal (#8156): informational, never an error. This surface
+#: keeps its plain-text voice; the wording tracks
+#: ``messaging.commands.compact_unsupported_reply``.
+COMPACT_AUTO_MANAGED_TEXT = (
+    "This backend manages compaction automatically; it summarizes the "
+    "conversation on its own as context fills, so manual /compact isn't "
+    "needed (and isn't supported) here."
+)
 #: The hard-threshold notice, sent AFTER the automatic compaction it reports.
 COMPACT_AUTO_TEXT = "Context was near its limit, so it was compacted automatically."
 #: The soft-threshold nudge, sent once per conversation until a compaction or a

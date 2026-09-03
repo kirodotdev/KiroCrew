@@ -1055,3 +1055,37 @@ class TestListsHostState:
         out = commands.spawn_task_reply("list", manager, "telegram:kirocrew:direct:7")
         assert out is not None
         assert "mine" in out and "somebody elses" in out
+
+
+# ── the manual-/compact capability gate (#8156) ───────────────────────────────
+
+
+class TestCompactUnsupportedBackend:
+    """The channel half of the dashboard's manual-/compact capability gate."""
+
+    def test_a_named_unsupported_backend_is_returned(self) -> None:
+        provider = SimpleNamespace(manual_compact_unsupported_backend="kas")
+        assert commands.compact_unsupported_backend(provider) == "kas"
+
+    def test_an_absent_property_reads_as_supported(self) -> None:
+        assert commands.compact_unsupported_backend(SimpleNamespace()) is None
+
+    def test_a_none_value_reads_as_supported(self) -> None:
+        provider = SimpleNamespace(manual_compact_unsupported_backend=None)
+        assert commands.compact_unsupported_backend(provider) is None
+
+    def test_an_empty_string_reads_as_supported(self) -> None:
+        provider = SimpleNamespace(manual_compact_unsupported_backend="")
+        assert commands.compact_unsupported_backend(provider) is None
+
+    def test_a_mocked_truthy_non_str_never_reads_as_a_refusal(self) -> None:
+        # A MagicMock answers every attribute with a truthy mock; the ABC's
+        # contract is a non-empty str, so anything else must pass through.
+        assert commands.compact_unsupported_backend(MagicMock()) is None
+
+    def test_the_reply_names_the_backend_and_reads_as_information(self) -> None:
+        reply = commands.compact_unsupported_reply("kas")
+        assert "kas" in reply
+        assert "automatically" in reply
+        # Informational, never an error.
+        assert "❌" not in reply and "⚠️" not in reply

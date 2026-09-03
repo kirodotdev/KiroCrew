@@ -33,6 +33,7 @@ from typing import TYPE_CHECKING, Any
 from kiro_crew.history import mint_row_mid
 from kiro_crew.messaging.attachments import append_attachment_context
 from kiro_crew.messaging.attachments import cleanup as cleanup_attachments
+from kiro_crew.messaging.commands import compact_unsupported_backend
 from kiro_crew.messaging.dispatch import (
     ChannelTurn,
     build_directive_consumer,
@@ -421,6 +422,14 @@ class WeComDispatcher:
         """
         userid = inbound.userid
         pct = self.sessions.check_context_usage(session_key, provider)
+        if pct >= self.cfg.wecom.soft_threshold_pct:
+            # Capability gate (#8156): no forced compaction to run and the
+            # soft nudge's /compact advice cannot work — the backend compacts
+            # on its own as context fills.
+            unsupported = compact_unsupported_backend(provider)
+            if unsupported:
+                logger.debug("WeCom: context notice skipped — %s compacts itself", unsupported)
+                return
         if pct >= self.cfg.wecom.hard_threshold_pct:
             self._conv.clear_awaiting(userid)
             try:
@@ -633,6 +642,17 @@ class WeComDispatcher:
             provider = self.sessions.get_provider(session_key)
             if provider is None:
                 await self.client.say(inbound, "ℹ️ 当前没有可压缩的对话。")
+                return
+            # Capability gate (#8156, mirroring the dashboard's #7800 gate): a
+            # backend that cannot serve a manual /compact treats the prompt as
+            # ordinary text and never answers, so dispatching would strand the
+            # unbounded wait below. Informational (this surface speaks Chinese;
+            # the wording translates ``compact_unsupported_reply``), never an
+            # error.
+            unsupported = compact_unsupported_backend(provider)
+            if unsupported:
+                logger.debug("WeCom: manual /compact declined — %s compacts itself", unsupported)
+                await self.client.say(inbound, "ℹ️ 当前后端会自动压缩上下文，无需手动 /compact。")
                 return
             await provider.compact()
             await provider.wait_for_compaction()

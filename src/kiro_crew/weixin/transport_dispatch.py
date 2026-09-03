@@ -37,6 +37,7 @@ from typing import TYPE_CHECKING, Any
 from kiro_crew.history import mint_row_mid
 from kiro_crew.messaging.attachments import append_attachment_context
 from kiro_crew.messaging.attachments import cleanup as cleanup_attachments
+from kiro_crew.messaging.commands import compact_unsupported_backend
 from kiro_crew.messaging.dispatch import (
     ChannelTurn,
     build_directive_consumer,
@@ -90,6 +91,9 @@ _COMPACT_BUSY = "⏳ 正在处理上一条消息，请稍后再试 /compact。"
 _COMPACT_NOTHING = "ℹ️ 当前没有可压缩的对话。"
 _COMPACT_DONE = "🗜️ 已压缩上下文。"
 _COMPACT_FAILED = "⚠️ 压缩失败，请重试。"
+#: This surface speaks Chinese; the wording translates
+#: ``messaging.commands.compact_unsupported_reply`` (#8156).
+_COMPACT_AUTO_MANAGED = "ℹ️ 当前后端会自动压缩上下文，无需手动 /compact。"
 
 
 class WeixinDispatcher:
@@ -473,6 +477,14 @@ class WeixinDispatcher:
         pct = self.sessions.check_context_usage(session_key, provider)
         hard = getattr(self.cfg.weixin, "hard_threshold_pct", 95)
         soft = getattr(self.cfg.weixin, "soft_threshold_pct", 80)
+        if pct >= soft:
+            # Capability gate (#8156): no forced compaction to run and the
+            # soft nudge's /compact advice cannot work — the backend compacts
+            # on its own as context fills.
+            unsupported = compact_unsupported_backend(provider)
+            if unsupported:
+                logger.debug("weixin: context notice skipped — %s compacts itself", unsupported)
+                return
         if pct >= hard:
             self._conv.clear_awaiting(user_id)
             try:
@@ -500,6 +512,15 @@ class WeixinDispatcher:
             provider = self.sessions.get_provider(session_key)
             if provider is None:
                 await self._say(user_id, _COMPACT_NOTHING)
+                return
+            # Capability gate (#8156, mirroring the dashboard's #7800 gate): a
+            # backend that cannot serve a manual /compact treats the prompt as
+            # ordinary text and never answers, so dispatching would strand the
+            # unbounded wait below. Informational, never an error.
+            unsupported = compact_unsupported_backend(provider)
+            if unsupported:
+                logger.debug("weixin: manual /compact declined — %s compacts itself", unsupported)
+                await self._say(user_id, _COMPACT_AUTO_MANAGED)
                 return
             await provider.compact()
             await provider.wait_for_compaction()

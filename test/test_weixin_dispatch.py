@@ -399,6 +399,50 @@ def test_compact_command_compacts_without_a_turn(tmp_path):
     assert sessions.released == 1  # acquired for compaction, then released
 
 
+def test_compact_command_declined_on_auto_managed_backend(tmp_path):
+    # A backend that cannot serve /compact gets the informational reply and
+    # compact() is NEVER dispatched (#8156).
+    provider = FakeProvider()
+    provider.manual_compact_unsupported_backend = "kas"
+    d, client, sessions = _make(tmp_path, provider=provider)
+    asyncio.run(d.handle_message(_msg("/compact")))
+    assert provider.compacted is False
+    assert sessions.released == 1  # the acquired semaphore is handed back
+    assert any("自动压缩上下文" in s["text"] for s in client.sent)
+
+
+def test_compact_none_capability_preserves_dispatch(tmp_path):
+    # The ABC's None (supported) default keeps the existing dispatch.
+    provider = FakeProvider()
+    provider.manual_compact_unsupported_backend = None
+    d, client, sessions = _make(tmp_path, provider=provider)
+    asyncio.run(d.handle_message(_msg("/compact")))
+    assert provider.compacted is True
+
+
+def test_hard_threshold_declines_silently_on_auto_managed_backend(tmp_path):
+    # No /compact to dispatch and no notice: the backend compacts on its own
+    # as context fills (#8156).
+    provider = FakeProvider()
+    provider.manual_compact_unsupported_backend = "kas"
+    d, client, sessions = _make(tmp_path, provider=provider)
+    sessions.check_context_usage = lambda k, p: 99.0  # type: ignore[assignment]
+    asyncio.run(d.handle_message(_msg("long convo")))
+    assert provider.compacted is False
+    assert not any("已自动压缩" in s["text"] for s in client.sent)
+
+
+def test_soft_nudge_suppressed_on_auto_managed_backend(tmp_path):
+    # The nudge advises /compact, which this backend refuses — it compacts on
+    # its own, so there is nothing for the user to act on (#8156).
+    provider = FakeProvider()
+    provider.manual_compact_unsupported_backend = "kas"
+    d, client, sessions = _make(tmp_path, provider=provider)
+    sessions.check_context_usage = lambda k, p: 85.0  # type: ignore[assignment]
+    asyncio.run(d.handle_message(_msg("one")))
+    assert not any("上下文已较长" in s["text"] for s in client.sent)
+
+
 def test_busy_session_does_not_start_a_second_turn(tmp_path):
     provider = FakeProvider()
     d, client, _ = _make(tmp_path, provider=provider, busy=True)

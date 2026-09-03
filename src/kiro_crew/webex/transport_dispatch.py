@@ -57,6 +57,7 @@ from kiro_crew.history import mint_row_mid, transcript_stem
 from kiro_crew.messaging.approval import PendingApprovals, SessionApprovalDecider
 from kiro_crew.messaging.attachments import append_attachment_context
 from kiro_crew.messaging.attachments import cleanup as cleanup_attachments
+from kiro_crew.messaging.commands import compact_unsupported_backend, compact_unsupported_reply
 from kiro_crew.messaging.dispatch import (
     ChannelTurn,
     build_directive_consumer,
@@ -1532,6 +1533,14 @@ class WebexDispatcher:
         """
         route = _route_of(inbound)
         pct = self.sessions.check_context_usage(session_key, provider)
+        if pct >= self.cfg.webex.soft_threshold_pct:
+            # Capability gate (#8156): no forced compaction to run and the
+            # soft nudge's /compact advice cannot work — the backend compacts
+            # on its own as context fills.
+            unsupported = compact_unsupported_backend(provider)
+            if unsupported:
+                logger.debug("Webex: context notice skipped — %s compacts itself", unsupported)
+                return
         if pct >= self.cfg.webex.hard_threshold_pct:
             self._conv.clear_awaiting(route)
             ok, detail = await self._compact_provider(provider)
@@ -1601,6 +1610,14 @@ class WebexDispatcher:
             provider = self.sessions.get_provider(session_key)
             if provider is None:
                 await self._reply(inbound, "ℹ️ There's no conversation to compact yet.")
+                return
+            # Capability gate (#8156, mirroring the dashboard's #7800 gate): a
+            # backend that cannot serve a manual /compact treats the prompt as
+            # ordinary text and never answers, so dispatching would strand the
+            # bounded wait. Informational, never an error.
+            unsupported = compact_unsupported_backend(provider)
+            if unsupported:
+                await self._reply(inbound, compact_unsupported_reply(unsupported))
                 return
             ok, detail = await self._compact_provider(provider)
             await self._reply(

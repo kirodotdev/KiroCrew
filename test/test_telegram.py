@@ -2887,6 +2887,47 @@ class TestDispatcher:
         assert sess.released == ["telegram:kirocrew:direct:7"]  # and released it in finally
         assert any("Compact" in s[0] for s in cli.sent) or any("Compact" in e[1] for e in cli.edits)
 
+    def test_compact_declined_on_auto_managed_backend(self) -> None:
+        # A backend that cannot serve /compact gets the informational reply and
+        # compact() is NEVER dispatched (#8156).
+        d, cli, sess = _dispatcher({7})
+        calls: list[int] = []
+
+        async def _compact(context: str = "") -> None:
+            calls.append(1)
+
+        sess._gp.compact = _compact
+        sess._gp.manual_compact_unsupported_backend = "kas"
+
+        async def _go() -> None:
+            await d.handle_message(
+                InboundMessage(
+                    channel_type="telegram", user_id="7", conversation_id="7", text="/compact"
+                )
+            )
+
+        asyncio.run(_go())
+        visible = " ".join([text for text, _ in cli.sent] + [text for _, text, _ in cli.edits])
+        assert "manages compaction automatically" in visible
+        assert calls == []
+        assert sess.released == ["telegram:kirocrew:direct:7"]  # semaphore still handed back
+
+    def test_compact_none_capability_preserves_dispatch(self) -> None:
+        # The ABC's None (supported) default keeps the existing dispatch.
+        d, cli, sess = _dispatcher({7})
+        sess._gp.manual_compact_unsupported_backend = None
+
+        async def _go() -> None:
+            await d.handle_message(
+                InboundMessage(
+                    channel_type="telegram", user_id="7", conversation_id="7", text="/compact"
+                )
+            )
+
+        asyncio.run(_go())
+        visible = " ".join([text for text, _ in cli.sent] + [text for _, text, _ in cli.edits])
+        assert "Context compacted" in visible
+
     def test_compact_summary_body_is_not_sent(self) -> None:
         d, cli, sess = _dispatcher({7})
 
@@ -5140,6 +5181,17 @@ class TestContextThresholdNotices:
         asyncio.run(d._maybe_notice(7, ("direct", "7"), "key", object()))
 
         assert any("/compact" in s[0] for s in cli.sent)
+
+    def test_soft_nudge_suppressed_on_auto_managed_backend(self) -> None:
+        # The nudge advises /compact, which this backend refuses — it compacts
+        # on its own, so there is nothing for the user to act on (#8156).
+        d, cli, sess = _dispatcher({7})
+        sess.check_context_usage = lambda key, provider: 85.0
+        provider = SimpleNamespace(manual_compact_unsupported_backend="kas")
+
+        asyncio.run(d._maybe_notice(7, ("direct", "7"), "key", provider))
+
+        assert cli.sent == []
 
     def test_below_soft_threshold_stays_silent(self) -> None:
         d, cli, sess = _dispatcher({7})

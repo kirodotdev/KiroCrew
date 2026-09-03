@@ -2549,6 +2549,32 @@ class TestDispatcher:
         assert "Context compacted" in visible
 
     @pytest.mark.asyncio
+    async def test_compact_declined_on_auto_managed_backend(self) -> None:
+        # A backend that cannot serve /compact gets the informational reply and
+        # compact() is NEVER dispatched (#8156).
+        d, cli, sess = _dispatcher({"u1"})
+        calls: list[int] = []
+
+        async def _compact(context: str = "") -> None:
+            calls.append(1)
+
+        sess._gp.compact = _compact
+        sess._gp.manual_compact_unsupported_backend = "kas"
+        await d.handle_message(self._msg("!compact"))
+        visible = " ".join([text for text, _ in cli.sent] + [text for _, text, _ in cli.edits])
+        assert "manages compaction automatically" in visible
+        assert calls == []
+
+    @pytest.mark.asyncio
+    async def test_compact_none_capability_preserves_dispatch(self) -> None:
+        # The ABC's None (supported) default keeps the existing dispatch.
+        d, cli, sess = _dispatcher({"u1"})
+        sess._gp.manual_compact_unsupported_backend = None
+        await d.handle_message(self._msg("!compact"))
+        visible = " ".join([text for text, _ in cli.sent] + [text for _, text, _ in cli.edits])
+        assert "Context compacted" in visible
+
+    @pytest.mark.asyncio
     async def test_compact_summary_body_is_not_sent(self) -> None:
         d, cli, sess = _dispatcher({"u1"})
 
@@ -3141,6 +3167,18 @@ class TestContextThresholdNotices:
         await d._maybe_notice("chan1", "scope1", "key", object())
 
         assert any("!compact" in s[0] for s in cli.sent)
+
+    @pytest.mark.asyncio
+    async def test_soft_nudge_suppressed_on_auto_managed_backend(self) -> None:
+        # The nudge advises !compact, which this backend refuses — it compacts
+        # on its own, so there is nothing for the user to act on (#8156).
+        d, cli, sess = _dispatcher({"u1"})
+        sess.check_context_usage = lambda key, provider: 85.0
+        provider = SimpleNamespace(manual_compact_unsupported_backend="kas")
+
+        await d._maybe_notice("chan1", "scope1", "key", provider)
+
+        assert cli.sent == []
 
     @pytest.mark.asyncio
     async def test_below_soft_threshold_stays_silent(self) -> None:

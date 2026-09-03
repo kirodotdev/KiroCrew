@@ -1025,3 +1025,61 @@ class TestSharedSessionContext:
         )
 
         assert ctx.minimal == [False], ctx.minimal
+
+
+# ------------------------------------------------------------------
+# Tests: the /compact capability gate (#8156)
+# ------------------------------------------------------------------
+
+
+class TestCompactCapabilityGate:
+    @pytest.mark.asyncio
+    async def test_compact_declined_on_auto_managed_backend(self) -> None:
+        # A backend that cannot serve /compact gets the informational reply and
+        # compact() is NEVER dispatched (#8156).
+        provider = FakeProvider([])
+        provider.manual_compact_unsupported_backend = "kas"
+        sessions = FakeSessions(provider)
+        client = FakeClient()
+        d = _dispatcher(sessions, FakeCtx(), client)
+
+        await d.handle_message(_inbound("/compact"))
+
+        assert provider.compacted is False
+        assert any("自动压缩上下文" in c for _, c in client.replies)
+
+    @pytest.mark.asyncio
+    async def test_compact_none_capability_preserves_dispatch(self) -> None:
+        # The ABC's None (supported) default keeps the existing dispatch.
+        provider = FakeProvider([])
+        provider.manual_compact_unsupported_backend = None
+        sessions = FakeSessions(provider)
+        client = FakeClient()
+        d = _dispatcher(sessions, FakeCtx(), client)
+
+        await d.handle_message(_inbound("/compact"))
+
+        assert provider.compacted is True
+
+    @pytest.mark.asyncio
+    async def test_thresholds_decline_silently_on_auto_managed_backend(self) -> None:
+        # Hard: no forced compaction; soft: no /compact nudge — the backend
+        # compacts on its own as context fills (#8156).
+        provider = FakeProvider(
+            [
+                AcpEvent(kind=EVENT_TEXT_CHUNK, text="answer"),
+                AcpEvent(kind=EVENT_COMPLETE),
+            ]
+        )
+        provider.manual_compact_unsupported_backend = "kas"
+        sessions = FakeSessions(provider, ctx_pct=96.0)
+        client = FakeClient()
+        d = _dispatcher(sessions, FakeCtx(), client)
+
+        await d.handle_message(_inbound("one", message_id="m1"))
+        assert provider.compacted is False
+
+        sessions._ctx_pct = 85.0
+        await d.handle_message(_inbound("two", message_id="m2"))
+        assert not any("已自动压缩" in c for _, c in client.replies)
+        assert not any("对话上下文已较长" in c for _, c in client.replies)
