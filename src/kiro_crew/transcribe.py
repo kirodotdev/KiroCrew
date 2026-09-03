@@ -134,6 +134,10 @@ _PACKAGED_FFMPEG_ARTIFACTS: dict[str, tuple[int, str]] = {
         49_368_728,
         "6d175a4743ca50256e89a8cdd731100f9cee33bd79aeea46894d209410dc6617",
     ),
+    "ffmpeg-macos-x86_64-v7.1": (
+        75_991_688,
+        "4a4a968b98859588e98500ae25973d80a5ca5eed0724222b9f76360dcb72a001",
+    ),
     "ffmpeg-linux-aarch64-v7.0.2": (
         51_134_160,
         "6bb182d0d75d23028db82e9e4f723ca69b853d055698486e6984ddb2c06fb8ce",
@@ -164,7 +168,9 @@ _PACKAGED_FFMPEG_ARTIFACTS: dict[str, tuple[int, str]] = {
 #   - a valid Developer ID signature from our own team on the exact bytes staged
 #     for execution, which is what a released app carries.
 # Neither anchor is a path or a filesystem-permission claim.
-_SIGNER_REWRITTEN_FFMPEG_ARTIFACTS: frozenset[str] = frozenset({"ffmpeg-macos-aarch64-v7.1"})
+_SIGNER_REWRITTEN_FFMPEG_ARTIFACTS: frozenset[str] = frozenset(
+    {"ffmpeg-macos-aarch64-v7.1", "ffmpeg-macos-x86_64-v7.1"}
+)
 
 # Upper bound on a signer-rewritten payload, whose exact size is unknowable in
 # source. Signing appends a code-signature superblob to a ~50 MB executable, so
