@@ -1,0 +1,45 @@
+{
+  "auto_registered": false,
+  "created_at": "2026-01-15T09:00:00.000000+00:00",
+  "description": "Pre-release gate checklist, one row per gate.",
+  "events": [
+    {
+      "by": "agent",
+      "ts": "2026-01-15T09:00:00.000000+00:00",
+      "type": "created",
+      "version": 1
+    },
+    {
+      "by": "agent",
+      "ts": "2026-01-15T09:05:00.000000+00:00",
+      "type": "iterated",
+      "version": 2
+    }
+  ],
+  "events_backfilled": true,
+  "folder_id": "",
+  "fork_metadata": null,
+  "image": null,
+  "kind": "widget",
+  "kind_auto": false,
+  "name": "Release checklist",
+  "pinned": false,
+  "publication": null,
+  "session_key": "",
+  "slug": "release-checklist",
+  "source": "chat",
+  "source_copy_only": false,
+  "source_path": "",
+  "source_root": "",
+  "tags": [
+    "release",
+    "wip"
+  ],
+  "updated_at": "2026-01-15T09:05:00.000000+00:00",
+  "version": 2,
+  "version_kinds": {
+    "1": "widget",
+    "2": "widget"
+  },
+  "webapp_metadata": null
+}

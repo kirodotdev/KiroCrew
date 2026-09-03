@@ -1,0 +1,37 @@
+{
+  "auto_registered": false,
+  "created_at": "2026-01-15T09:00:00.000000+00:00",
+  "description": "Small status badge used in the queue widget.",
+  "events": [
+    {
+      "by": "agent",
+      "ts": "2026-01-15T09:00:00.000000+00:00",
+      "type": "created",
+      "version": 1
+    }
+  ],
+  "events_backfilled": true,
+  "folder_id": "",
+  "fork_metadata": null,
+  "image": null,
+  "kind": "svg",
+  "kind_auto": false,
+  "name": "Queue badge",
+  "pinned": false,
+  "publication": null,
+  "session_key": "",
+  "slug": "queue-badge",
+  "source": "chat",
+  "source_copy_only": false,
+  "source_path": "",
+  "source_root": "",
+  "tags": [
+    "ui"
+  ],
+  "updated_at": "2026-01-15T09:00:00.000000+00:00",
+  "version": 1,
+  "version_kinds": {
+    "1": "svg"
+  },
+  "webapp_metadata": null
+}
