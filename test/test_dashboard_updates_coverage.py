@@ -1132,6 +1132,53 @@ class TestLogsStream:
         assert b": keepalive\n\n" in writes
 
 
+def test_neither_chat_message_door_builds_the_frame_by_hand() -> None:
+    """Both delivery doors must route through the shared serialiser.
+
+    `_broadcast()` feeds ONE note to two doors — the WS arm in `state.py` and
+    the SSE arm in `handlers/updates.py`. While each built the frame by hand
+    they could disagree silently, which is exactly how `meta` stayed missing on
+    the SSE side after #7981 fixed the WS one (#8045).
+
+    Asserted on the SOURCE, not on a payload, because that is the only form
+    that catches the regression this guards: a payload comparison calling
+    `chat_message_frame` directly still passes after a door is re-inlined, since
+    it never exercises that door's own construction.
+
+    Scoped to each door's own `chat_message` BRANCH rather than the whole file.
+    A file-wide scan cannot work here: `chat_message_frame` is *defined* in
+    `state.py`, so its own `"slot": note[...]` body reads as a hand-built frame
+    and its `def` line satisfies a naive "calls the helper" check.
+    """
+    from pathlib import Path
+
+    import kiro_crew
+
+    def _branch(src: str) -> str:
+        """The `chat_message` arm's body, up to the next sibling arm."""
+        start = src.index('elif msg_type == "chat_message":')
+        rest = src[start + 1 :]
+        ends = [
+            i
+            for i in (rest.find("\n            elif "), rest.find("\n                    elif "))
+            if i != -1
+        ]
+        return rest[: min(ends)] if ends else rest
+
+    root = Path(kiro_crew.__file__).parent
+    for rel in ("dashboard/state.py", "dashboard/handlers/updates.py"):
+        branch = _branch((root / rel).read_text(encoding="utf-8"))
+        assert "chat_message_frame(" in branch, (
+            f"{rel}'s chat_message arm no longer calls chat_message_frame — a "
+            f"door that builds the frame itself is how the two transports "
+            f"drifted apart in #8045"
+        )
+        assert '"slot":' not in branch, (
+            f"{rel}'s chat_message arm names the frame's keys inline instead of "
+            f"delegating to chat_message_frame"
+        )
+
+
 class TestDashboardStream:
     """The dashboard SSE endpoint — one event name per queued note type."""
 
@@ -1141,8 +1188,16 @@ class TestDashboardStream:
         monkeypatch.setattr(updates, "shutdown_event", event)
         return event
 
-    def _request_with_queue(self, notes: list[dict]) -> MagicMock:
+    def _request_with_queue(
+        self, notes: list[dict], *, is_dashboard_user: bool = True
+    ) -> MagicMock:
         req = _request()
+        # `api_stream` reads `request["is_dashboard_user"]` — the auth
+        # middleware's POSITIVE signal — to decide whether row metadata may go
+        # on this unfiltered queue. A bare MagicMock returns a truthy Mock from
+        # `.get()`, which would make the app-token assertion below pass on mock
+        # truthiness rather than on the flag, so wire it to a real mapping.
+        req.get = {"is_dashboard_user": is_dashboard_user}.get
         queue: asyncio.Queue[dict] = asyncio.Queue()
         for note in notes:
             queue.put_nowait(note)
@@ -1195,6 +1250,129 @@ class TestDashboardStream:
         assert payload["version"] == updates._local_version
         # The per-client queue is always handed back, disconnect or not.
         req.app["state"].unregister_sse.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_the_sse_chat_message_frame_carries_the_rows_identity(self, monkeypatch):
+        """`meta` (and `cls`) survive the SSE relay, as they do on the WebSocket.
+
+        `meta.mid` is the row identity a client dedups on, so a relay that
+        rebuilds a four-field subset publishes frames no consumer can recognise
+        as a redelivery. Both doors read the SAME producer note, so they must
+        not disagree about what a `chat_message` frame contains.
+        """
+        writes = _stub_stream(monkeypatch)
+        req = self._request_with_queue(
+            [
+                {
+                    "_type": "chat_message",
+                    "slot": "s1",
+                    "role": "assistant",
+                    "content": "hi",
+                    "ts": "2026-09-03T00:00:00Z",
+                    "cls": '{"mid": "m-1"}',
+                    "meta": {"mid": "m-1", "kind": "compaction"},
+                }
+            ]
+        )
+
+        task = asyncio.ensure_future(updates.api_stream(req))
+        for _ in range(200):
+            await asyncio.sleep(0.005)
+            if any(w.startswith(b"event: chat_message") for w in writes):
+                break
+        updates.shutdown_event.set()
+        await asyncio.wait_for(task, timeout=5)
+
+        frames = [w.decode() for w in writes if w.startswith(b"event: chat_message")]
+        assert frames, "no chat_message frame was written"
+        payload = json.loads(frames[0].split("data: ", 1)[1].strip())
+        assert payload["meta"] == {"mid": "m-1", "kind": "compaction"}
+        assert payload["cls"] == '{"mid": "m-1"}'
+        # The pre-existing fields are unchanged — this widens the frame, it does
+        # not reshape it.
+        assert payload["slot"] == "s1"
+        assert payload["role"] == "assistant"
+        assert payload["content"] == "hi"
+        assert payload["ts"] == "2026-09-03T00:00:00Z"
+
+    @pytest.mark.asyncio
+    async def test_a_chat_message_without_meta_gains_no_empty_keys(self, monkeypatch):
+        """A note carrying no `cls`/`meta` still serialises to the bare frame.
+
+        Guards the other direction of the passthrough: absent metadata must not
+        become `null`/`{}` keys a consumer would have to special-case.
+        """
+        writes = _stub_stream(monkeypatch)
+        req = self._request_with_queue(
+            [{"_type": "chat_message", "slot": "s1", "role": "user", "content": "hi"}]
+        )
+
+        task = asyncio.ensure_future(updates.api_stream(req))
+        for _ in range(200):
+            await asyncio.sleep(0.005)
+            if any(w.startswith(b"event: chat_message") for w in writes):
+                break
+        updates.shutdown_event.set()
+        await asyncio.wait_for(task, timeout=5)
+
+        frames = [w.decode() for w in writes if w.startswith(b"event: chat_message")]
+        assert frames, "no chat_message frame was written"
+        payload = json.loads(frames[0].split("data: ", 1)[1].strip())
+        assert "meta" not in payload
+        assert "cls" not in payload
+        assert payload == {"slot": "s1", "role": "user", "content": "hi", "ts": ""}
+
+    @pytest.mark.asyncio
+    async def test_an_app_token_stream_never_receives_row_metadata(self, monkeypatch):
+        """An app token on `/api/stream` gets no `cls`/`meta`, whatever its scope.
+
+        `_broadcast()` fans the raw note out to EVERY registered SSE queue with
+        no per-app filtering, so unlike the WS door there is no downstream gate
+        to drop a row an app may not see. `meta` carries tool/LLM content
+        (`tool_input`, a live `oauth_url`, `approval_id`), so including it here
+        would expose it to any app token granted this route regardless of its
+        `slots:*` scope — the class of GPT #6789, which leaked public-repo status
+        onto this same endpoint. The metadata therefore rides only the door that
+        filters.
+        """
+        writes = _stub_stream(monkeypatch)
+        req = self._request_with_queue(
+            [
+                {
+                    "_type": "chat_message",
+                    "slot": "s1",
+                    "role": "assistant",
+                    "content": "hi",
+                    "ts": "2026-09-03T00:00:00Z",
+                    "cls": '{"mid": "m-3", "tool_input": "secret"}',
+                    "meta": {"mid": "m-3", "tool_input": "secret"},
+                }
+            ],
+            is_dashboard_user=False,
+        )
+
+        task = asyncio.ensure_future(updates.api_stream(req))
+        for _ in range(200):
+            await asyncio.sleep(0.005)
+            if any(w.startswith(b"event: chat_message") for w in writes):
+                break
+        updates.shutdown_event.set()
+        await asyncio.wait_for(task, timeout=5)
+
+        frames = [w.decode() for w in writes if w.startswith(b"event: chat_message")]
+        assert frames, "no chat_message frame was written"
+        payload = json.loads(frames[0].split("data: ", 1)[1].strip())
+        assert "meta" not in payload
+        assert "cls" not in payload
+        assert "secret" not in frames[0]
+        # The pre-existing four-field projection is unchanged for an app token —
+        # this withholds the new metadata, it does not newly restrict the frame.
+        assert payload == {
+            "slot": "s1",
+            "role": "assistant",
+            "content": "hi",
+            "ts": "2026-09-03T00:00:00Z",
+        }
 
     @pytest.mark.asyncio
     async def test_a_disconnect_mid_stream_unregisters_the_queue(self, monkeypatch):

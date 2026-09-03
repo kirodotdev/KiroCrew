@@ -1931,6 +1931,55 @@ def parse_cls_meta(cls_val: str) -> dict | None:
     return meta
 
 
+def chat_message_frame(note: dict, *, include_metadata: bool) -> dict[str, Any]:
+    """Serialise a broadcast note into the wire ``chat_message`` frame.
+
+    ONE serialiser for both delivery doors — the WebSocket arm in
+    ``_broadcast_note`` and the SSE arm in ``handlers/updates.py:api_stream``.
+    They are fed the same note by ``_broadcast()``, so a field added here
+    reaches both; building the frame twice is how the SSE door kept dropping
+    ``meta`` after #7981 fixed the WS one (#8045).
+
+    ``include_metadata`` is a REQUIRED keyword and names a property of the
+    TRANSPORT, not a preference: whether that door has per-client authorization
+    downstream of this call.
+
+    * The WS door does (``_send_ws_all`` -> ``_ws_client_allowed``, a
+      deny-by-default event-scope gate, then ``_serialize_for_client``), so it
+      passes ``True`` and lets the gate decide per socket.
+    * The SSE queue does NOT. ``_broadcast()`` fans the raw note out to every
+      registered queue with no per-app filtering, so ``api_stream`` must make
+      the decision itself and passes ``include_metadata`` only for a
+      dashboard-user token.
+
+    That asymmetry is load-bearing. ``meta`` carries tool/LLM content
+    (``tool_input``, a live ``oauth_url``, ``approval_id``), so putting it on an
+    unfiltered queue exposes it to any app token granted that route regardless
+    of its ``slots:*`` scope — the same class as GPT #6789, which leaked
+    public-repo status onto ``/api/stream`` by enriching a payload that feeds
+    both doors. Keep enrichment on the door that filters.
+
+    ``cls``/``meta`` are conditional in BOTH directions when included: carried
+    when the note has them (``meta.mid`` is the per-row delivery identity a
+    client dedups on, so a frame without it cannot be recognised as a
+    redelivery), and omitted entirely when it does not — an absent value must
+    not arrive as a ``null`` or ``{}`` key a consumer has to special-case.
+    """
+    frame: dict[str, Any] = {
+        "slot": note["slot"],
+        "role": note["role"],
+        "content": note["content"],
+        "ts": note.get("ts", ""),
+    }
+    if not include_metadata:
+        return frame
+    if note.get("cls"):
+        frame["cls"] = note["cls"]
+    if note.get("meta"):
+        frame["meta"] = note["meta"]
+    return frame
+
+
 def is_stop_event_row(m: dict) -> bool:
     """True when *m* is the card recorded because the user pressed Stop.
 
@@ -7758,17 +7807,13 @@ class DashboardState:
                 ws_data = {"key": note["key"]}
                 ws_msg = json.dumps({"type": "session_summary", "data": ws_data})
             elif msg_type == "chat_message":
-                chat_data: dict[str, Any] = {
-                    "slot": note["slot"],
-                    "role": note["role"],
-                    "content": note["content"],
-                    "ts": note.get("ts", ""),
-                }
-                # Include cls for messages with metadata (e.g. permission with tool_input)
-                if note.get("cls"):
-                    chat_data["cls"] = note["cls"]
-                if note.get("meta"):
-                    chat_data["meta"] = note["meta"]
+                # One serialiser, both doors — see chat_message_frame().
+                # include_metadata=True because THIS door filters downstream:
+                # _send_ws_all -> _ws_client_allowed (deny-by-default event
+                # scope) decides per socket whether an app token may see this
+                # slot at all. The SSE door has no such gate and decides for
+                # itself; do not copy this True over there.
+                chat_data = chat_message_frame(note, include_metadata=True)
                 ws_data = chat_data
                 ws_msg = json.dumps({"type": "chat_message", "data": chat_data})
             else:

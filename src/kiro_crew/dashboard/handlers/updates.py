@@ -27,7 +27,7 @@ from kiro_crew.config.loader import (
     update_config_locked,
 )
 from kiro_crew.dashboard.handlers._shared import read_capped_response
-from kiro_crew.dashboard.state import DashboardState
+from kiro_crew.dashboard.state import DashboardState, chat_message_frame
 from kiro_crew.executors import subprocess_executor
 from kiro_crew.git_divergence import (
     UNREADABLE_TIMEOUT,
@@ -1951,6 +1951,13 @@ async def api_stream(request: web.Request) -> web.StreamResponse:
     and avoids future leaks from asyncio.wait().
     """
     state: DashboardState = request.app["state"]
+    # POSITIVE signal from the auth middleware, read once per connection (the
+    # token cannot change mid-stream). Never inferred from the absence of an app
+    # name, and defaulting to False keeps this deny-by-default: a refactor that
+    # reaches this handler without the middleware withholds `meta` rather than
+    # publishing it to an unscoped client. Mirrors `api_ws`'s
+    # `ws["_is_dashboard_user"]`. Consumed by the chat_message arm below.
+    is_dashboard_user: bool = bool(request.get("is_dashboard_user", False))
     resp = web.StreamResponse()
     resp.content_type = "text/event-stream"
     resp.headers["Cache-Control"] = "no-cache"
@@ -1978,13 +1985,24 @@ async def api_stream(request: web.Request) -> web.StreamResponse:
                     elif msg_type == "refresh":
                         await resp.write(f"event: refresh\ndata: {note['kinds']}\n\n".encode())
                     elif msg_type == "chat_message":
+                        # Built by the SHARED serialiser, not by hand: this door
+                        # and the WebSocket arm in state.py are fed the same
+                        # note by `_broadcast()`, and rebuilding the frame here
+                        # is how `meta` (the row's `meta.mid` dedup identity)
+                        # went missing on this transport after #7981 fixed the
+                        # other one (#8045).
+                        #
+                        # `include_metadata` is NOT True unconditionally. This
+                        # queue has no per-app filtering — `_broadcast()` fans
+                        # the raw note to every registered SSE client — so
+                        # `meta` (tool_input, a live oauth_url, approval_id)
+                        # would reach any app token granted this route whatever
+                        # its `slots:*` scope. Same class as GPT #6789, which
+                        # leaked public-repo status onto this endpoint. The WS
+                        # door may pass True because it filters downstream; this
+                        # one must decide here.
                         payload = json.dumps(
-                            {
-                                "slot": note["slot"],
-                                "role": note["role"],
-                                "content": note["content"],
-                                "ts": note.get("ts", ""),
-                            }
+                            chat_message_frame(note, include_metadata=is_dashboard_user)
                         )
                         await resp.write(f"event: chat_message\ndata: {payload}\n\n".encode())
                     else:
