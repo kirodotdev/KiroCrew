@@ -33,7 +33,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { AlertTriangle, Loader2, RefreshCw } from 'lucide-react'
+import { Trans } from 'react-i18next'
 import { api } from '../api/client'
+import { SettingsLink } from './SettingsLink'
 import { useAppDispatch, useAppSelector } from '../store'
 import { clearPaneReady, removeWarm, setActiveId, setPaneReady, setUnread, setWarm } from '../store/instancesSlice'
 import InstanceTabBar, { visibleInstanceTabs, useCrewPins, toggleCrewPin, useCrewSwitcherStableOrder, setStableOrder } from './InstanceTabBar'
@@ -834,8 +836,19 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
                   onHandoff={() => dispatch(setActiveId(null))}
                 />
               )}
+              {/* Same overlay rule as the hand-off above: the link soft-navigates
+                  the LOCAL SPA, which is underneath this panel while a remote tab
+                  is active, so a click that is going to navigate returns to Local
+                  first or the navigation is invisible. SettingsLink only fires this
+                  for an unmodified click the page's leave guard allowed -- a
+                  modified click (new tab) and a vetoed one leave the panel alone. */}
               <div className="text-[11px] text-muted">
-                {i18nT('components.instancesViewport.this_tab_stays_until_you_disconnect_the_instance')}
+                <Trans
+                  i18nKey="components.instancesViewport.this_tab_stays_until_you_disconnect_the_instance"
+                  components={[
+                    <SettingsLink key="l" tab="instances" onPlainClick={() => dispatch(setActiveId(null))} />,
+                  ]}
+                />
               </div>
             </div>
           </div>

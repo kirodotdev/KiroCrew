@@ -2758,7 +2758,7 @@
         "view_rendered": "Renderizado"
       },
       "knowledge": {
-        "connectHelp": "Añade esta bóveda a la biblioteca de Conocimiento para que los agentes puedan buscar tus notas. Puedes cambiarlo después en Ajustes.",
+        "connectHelp": "Añade esta bóveda a la biblioteca de Conocimiento para que los agentes puedan buscar tus notas. Puedes cambiarlo después en {{capabilities}} → {{tab}}.",
         "label": "Sincronizar con el conocimiento de {{productName}}"
       },
       "manifest": {
@@ -3489,12 +3489,12 @@
         "mcp_available": "Disponibles para agregar",
         "mcp_desc": "Estos son los servidores MCP instalados en {{productName}}. {{name}} solo puede llamar a los que se agreguen aquí — presiona Agregar para conceder uno, Quitar para retirarlo. Los servidores integrados siempre están disponibles y no se pueden quitar.",
         "mcp_disabled": "Desactivado",
-        "mcp_empty": "Aún no hay servidores MCP configurados. Agrega uno en Configuración de {{productName}} → MCP y luego vuelve a abrir este panel.",
-        "mcp_error_disabled": "Este servidor está deshabilitado. Habilítalo primero en Ajustes de {{productName}} → MCP.",
+        "mcp_empty": "Aún no hay servidores MCP configurados. Agrega uno en {{capabilities}} de {{productName}} → {{tab}} y luego vuelve a abrir este panel.",
+        "mcp_error_disabled": "Este servidor está deshabilitado. Habilítalo primero en {{capabilities}} de {{productName}} → {{tab}}.",
         "mcp_error_generic": "No se pudieron cargar las herramientas: inténtalo de nuevo.",
         "mcp_error_in_progress": "Ya se están detectando herramientas: espera un momento.",
         "mcp_error_not_found": "Este servidor ya no está configurado.",
-        "mcp_error_probe_failed": "Este servidor no respondió. Revisa su comando en Ajustes de {{productName}} → MCP.",
+        "mcp_error_probe_failed": "Este servidor no respondió. Revisa su comando en {{capabilities}} de {{productName}} → {{tab}}.",
         "mcp_from_cache": "(en caché — puede estar desactualizado)",
         "mcp_loading": "Cargando servidores…",
         "mcp_needs_approval": "Necesita aprobación",
@@ -6062,7 +6062,7 @@
       "pane_failed_to_load": "No se pudo cargar el panel",
       "retry": "Reintentar",
       "the_tunnel_looks_connected_but_the_remote_dashbo": "El túnel parece conectado, pero el panel remoto no llegó a cargarse. Puede que se esté\n                  reiniciando: reinténtalo o cambia de pestaña arriba.",
-      "this_tab_stays_until_you_disconnect_the_instance": "Esta pestaña permanece hasta que desconectes la instancia en Configuración → Instancias remotas."
+      "this_tab_stays_until_you_disconnect_the_instance": "Esta pestaña permanece hasta que desconectes la instancia en <0>Configuración → Instancias remotas</0>."
     },
     "issuePanel": {
       "add_to_chat": "Añadir al chat",
@@ -7172,7 +7172,7 @@
       "decline_consequence": "Si rechazas, no se carga nada y tu mensaje queda tal como lo escribiste.",
       "grant_failed": "No se pudo registrar la confianza en esta carpeta.",
       "title": "¿Confiar en las habilidades de este proyecto?",
-      "withdraw_hint": "Puedes retirar esto más adelante desde la página de ajustes Habilidades.",
+      "withdraw_hint": "Puedes retirar esto más adelante desde {{capabilities}} → {{tab}}.",
       "working": "Confiando…"
     },
     "projectSkillsTrustList": {
@@ -13011,7 +13011,7 @@
         "system_default": "Predeterminado del sistema",
         "ffmpeg_is_missing_voice_recordings_from_the_brow": "Falta ffmpeg — las grabaciones de voz del navegador no se pueden transcribir hasta que se instale.",
         "the_bundled_audio_decoder_is_missing_or_damaged": "Falta el decodificador de audio incluido o está dañado. Reinstala la aplicación de escritorio {{productName}}; no instales FFmpeg por separado.",
-        "then_restart_the_gateway_so_it_can_import_the_ne": "Luego reinicia el gateway (Ajustes → Acerca de → Reiniciar gateway) para que pueda importar los paquetes nuevos.",
+        "then_restart_the_gateway_so_it_can_import_the_ne": "Luego reinicia el gateway para que pueda importar los paquetes nuevos.",
         "the_desktop_app_can_t_add_transcribe_support_ins": "La aplicación de escritorio no puede añadir compatibilidad con Transcribe: su Python integrado no puede instalar paquetes adicionales. Instala {{productName}} con pip y ejecuta el gateway desde ese entorno.",
         "this_gateway_s_python_can_t_install_extra_packag": "El Python de este gateway no puede instalar paquetes adicionales, así que Transcribe no se puede habilitar aquí. Ejecuta el gateway desde un entorno de Python donde pip pueda instalar boto3 + amazon-transcribe.",
         "transcribe_voice_into_the_message_box_when_you_c": "Transcribe la voz en el cuadro de mensaje al hacer clic en el micrófono",

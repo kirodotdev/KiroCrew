@@ -45,6 +45,7 @@ import { formatThinkingTime, getTopMoods, shouldShowStat, formatDate, formatComp
 
 import { api } from '../mochiApi'
 import { i18nT } from '../../../../i18n/t'
+import { capabilitiesVars } from '../../../../components/destinationVars'
 import { SUPPORTED_LANGUAGES } from '../../../../i18n/languages'
 import { moodLabel } from '../../i18nKeys'
 import { fmtNumber, fmtPercent } from '../../../../i18n/format'
@@ -845,7 +846,9 @@ const MCP_ERROR_KEY_FALLBACK = 'apps.mochi.settingsPanel.mcp_error_generic'
 function mcpErrorText(code: string): string {
   const key =
     (MCP_ERROR_KEYS as Record<string, string>)[code] ?? MCP_ERROR_KEY_FALLBACK
-  return i18nT(key)
+  // The disabled / probe-failed sentences name the Connections tab; the vars
+  // are harmless for the keys that do not interpolate them.
+  return i18nT(key, capabilitiesVars('connections'))
 }
 
 function moodColor(mood: string): string {
@@ -1071,7 +1074,7 @@ const McpSection: React.FC<{
         <div style={{ fontSize: 10, color: 'var(--text-muted)' }}>
           {loading
             ? i18nT('apps.mochi.settingsPanel.mcp_loading')
-            : i18nT('apps.mochi.settingsPanel.mcp_empty')}
+            : i18nT('apps.mochi.settingsPanel.mcp_empty', capabilitiesVars('connections'))}
         </div>
       </Section>
     )

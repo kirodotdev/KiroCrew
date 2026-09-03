@@ -3,6 +3,7 @@ import { useState } from 'react'
 import type { CSSProperties } from 'react'
 import { FolderOpen } from 'lucide-react'
 import { i18nT } from '../../i18n/t'
+import { capabilitiesVars } from '../../components/destinationVars'
 import { ACCENT, ACCENT_FG, FONT_BODY } from './constants'
 import { ApiError, knowledgeRegister, notesApi } from './api'
 import { Switch } from './bits'
@@ -275,7 +276,7 @@ export function ConnectVault({
               {i18nT('apps.mdNotebook.knowledge.label')}
             </div>
             <div style={{ fontSize: '11px', color: 'var(--muted)', marginTop: '2px' }}>
-              {i18nT('apps.mdNotebook.knowledge.connectHelp')}
+              {i18nT('apps.mdNotebook.knowledge.connectHelp', capabilitiesVars('knowledge'))}
             </div>
           </div>
           <Switch

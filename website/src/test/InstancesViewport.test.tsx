@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { act, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { renderWithProviders, createTestStore } from './helpers'
 import InstancesViewport from '../components/InstancesViewport'
@@ -256,6 +256,43 @@ describe('InstancesViewport', () => {
     // underneath it. Without returning to Local the user keeps staring at this same
     // error panel and reads the button as dead, while every further click stacks
     // another copy of the prompt onto the hand-off queue.
+    expect(store.getState().instances.activeId).toBeNull()
+  })
+
+  it('the Settings → Remote Instances link returns to Local before navigating (same overlay rule as the hand-off)', async () => {
+    // The link soft-navigates the LOCAL SPA, which sits underneath this panel's
+    // opaque root overlay while a remote tab is active. Without leaving the
+    // remote tab the click looks dead. A modified click opens a new tab and
+    // must leave this tab's panel alone.
+    vi.mocked(api.listInstances).mockResolvedValue({
+      instances: [
+        {
+          id: 'cd-1',
+          name: 'Cloud One',
+          ssh_host: 'cd-1-alias',
+          remote_port: 7777,
+          local_port: 0,
+          ttl: '20h',
+          remote_bin: '',
+          was_connected: true,
+          status: { instance_id: 'cd-1', state: 'error', error: 'ssh unreachable', remote_port: 7777 },
+        },
+      ],
+      warm_set_cap: 5,
+    })
+    const store = createTestStore({
+      instances: { warm: {}, activeId: 'cd-1', mru: ['cd-1'], unread: {} },
+    })
+    renderWithProviders(<InstancesViewport />, { store })
+    expect(await screen.findByText(/Connection error/i)).toBeInTheDocument()
+
+    const link = screen.getByRole('link', { name: /Settings → Remote Instances/ }) as HTMLAnchorElement
+    expect(link.getAttribute('href')).toBe('/settings/instances')
+
+    fireEvent.click(link, { metaKey: true })
+    expect(store.getState().instances.activeId).toBe('cd-1')
+
+    fireEvent.click(link)
     expect(store.getState().instances.activeId).toBeNull()
   })
 

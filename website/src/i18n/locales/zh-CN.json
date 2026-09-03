@@ -2646,7 +2646,7 @@
         "view_rendered": "渲染视图"
       },
       "knowledge": {
-        "connectHelp": "将此仓库加入知识库，使智能体可以搜索你的笔记。稍后可在设置中更改。",
+        "connectHelp": "将此仓库加入知识库，使智能体可以搜索你的笔记。稍后可在“{{capabilities}} → {{tab}}”中更改。",
         "label": "同步到 {{productName}} 知识库"
       },
       "manifest": {
@@ -3369,12 +3369,12 @@
         "mcp_available": "可添加",
         "mcp_desc": "这些是 {{productName}} 里已安装的 MCP 服务器。{{name}} 只能调用在这里添加过的——点 Add 授予，点 Remove 收回。内置服务器始终可用，不可移除。",
         "mcp_disabled": "已禁用",
-        "mcp_empty": "还没有配置任何 MCP 服务器。先在 {{productName}} 设置 → MCP 里添加，然后重新打开本面板。",
-        "mcp_error_disabled": "此服务器已禁用。请先在 {{productName}} 设置 → MCP 中启用它。",
+        "mcp_empty": "还没有配置任何 MCP 服务器。先在 {{productName}} {{capabilities}} → {{tab}}里添加，然后重新打开本面板。",
+        "mcp_error_disabled": "此服务器已禁用。请先在 {{productName}} {{capabilities}} → {{tab}}中启用它。",
         "mcp_error_generic": "无法加载工具，请重试。",
         "mcp_error_in_progress": "正在发现工具，请稍候。",
         "mcp_error_not_found": "此服务器已不在配置中。",
-        "mcp_error_probe_failed": "此服务器未响应。请在 {{productName}} 设置 → MCP 中检查它的命令。",
+        "mcp_error_probe_failed": "此服务器未响应。请在 {{productName}} {{capabilities}} → {{tab}}中检查它的命令。",
         "mcp_from_cache": "（缓存 — 可能已过期）",
         "mcp_loading": "正在加载服务器…",
         "mcp_needs_approval": "需要审批",
@@ -5866,7 +5866,7 @@
       "pane_failed_to_load": "窗格加载失败",
       "retry": "重试",
       "the_tunnel_looks_connected_but_the_remote_dashbo": "隧道看起来已连接，但远程仪表板始终未加载。它可能正在\n                  重启 — 请重试，或切换上方的标签页。",
-      "this_tab_stays_until_you_disconnect_the_instance": "此标签页会一直保留，直到你在“设置 → 远程实例”中断开此实例。"
+      "this_tab_stays_until_you_disconnect_the_instance": "此标签页会一直保留，直到你在“<0>设置 → 远程实例</0>”中断开此实例。"
     },
     "issuePanel": {
       "add_to_chat": "添加到对话",
@@ -6962,7 +6962,7 @@
       "decline_consequence": "如果拒绝，不会加载任何内容，消息保持你输入的原样。",
       "grant_failed": "无法记录对此文件夹的信任。",
       "title": "信任此项目的技能？",
-      "withdraw_hint": "以后可以在技能设置页面撤销。",
+      "withdraw_hint": "以后可以在“{{capabilities}} → {{tab}}”中撤销。",
       "working": "正在信任…"
     },
     "projectSkillsTrustList": {
@@ -12674,7 +12674,7 @@
         "system_default": "系统默认",
         "ffmpeg_is_missing_voice_recordings_from_the_brow": "ffmpeg 缺失 — 在安装它之前，无法转写来自浏览器的语音录音。",
         "the_bundled_audio_decoder_is_missing_or_damaged": "内置的音频解码器缺失或已损坏。请重新安装 {{productName}} 桌面应用；无需单独安装 FFmpeg。",
-        "then_restart_the_gateway_so_it_can_import_the_ne": "然后重启 gateway（设置 → 关于 → 重启 gateway），以便加载新安装的包。",
+        "then_restart_the_gateway_so_it_can_import_the_ne": "然后重启 gateway，以便加载新安装的包。",
         "the_desktop_app_can_t_add_transcribe_support_ins": "桌面应用无法添加 Transcribe 支持——其内置的 Python 无法安装额外的包。请改用 pip 安装 {{productName}}，并从该环境运行 gateway。",
         "this_gateway_s_python_can_t_install_extra_packag": "此 gateway 的 Python 无法安装额外的包，因此无法在这里启用 Transcribe。请在 pip 能够安装 boto3 + amazon-transcribe 的 Python 环境中运行 gateway。",
         "transcribe_voice_into_the_message_box_when_you_c": "点击麦克风时将语音转写到消息框",

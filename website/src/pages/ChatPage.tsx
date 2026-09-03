@@ -9483,7 +9483,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               onClose={() => setVoiceSetupOpen(false)}
               onOpenSettings={() => {
                 setVoiceSetupOpen(false)
-                navigate(embedded ? '/embed/settings' : '/settings/voice')
+                navigate(embedded ? '/embed/settings' : settingsPath({ tab: 'voice' }))
               }}
             />
             {/* Agent dropdown portal — triggered from input bar */}

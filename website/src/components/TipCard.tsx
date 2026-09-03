@@ -2,14 +2,13 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { ArrowRight, ExternalLink, Lightbulb, Settings, X } from 'lucide-react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { motion } from 'framer-motion'
-import { Link, useNavigate } from 'react-router-dom'
+import { useNavigate } from 'react-router-dom'
 import { api } from '../api/client'
 import { safeGetItem, safeSetItem } from '../utils/safeStorage'
 import MarkdownRenderer from './MarkdownRenderer'
 
 import { i18nT } from '../i18n/t'
-// The Feature Tips toggle lives in Settings → Chat.
-export const TIPS_SETTINGS_PATH = '/settings/chat'
+import { SettingsLink } from './SettingsLink'
 
 // Tip docs live in the repo at src/kiro_crew/docs/ (same base the Security and
 // Discord settings panels link to).
@@ -189,15 +188,17 @@ export function TipCard({ tip, onDismiss }: TipCardProps) {
             >
               {i18nT('components.tipCard.turn_off_tips')}
             </button>
-            <Link
-              to={TIPS_SETTINGS_PATH}
+            {/* The Feature Tips toggle lives in Settings → Chat. No `highlight`
+                yet: that toggle has no setting anchor to flash. */}
+            <SettingsLink
+              tab="chat"
               className="inline-flex items-center rounded p-0.5 transition-colors hover:bg-[var(--bg-hover)]"
               style={{ color: 'var(--muted)' }}
               aria-label={i18nT('components.tipCard.tip_settings')}
               title={i18nT('components.tipCard.tip_settings')}
             >
               <Settings size={12} aria-hidden="true" />
-            </Link>
+            </SettingsLink>
           </div>
         </div>
       </div>

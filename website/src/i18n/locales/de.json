@@ -2753,7 +2753,7 @@
         "view_rendered": "Gerendert"
       },
       "knowledge": {
-        "connectHelp": "Fügt diesen Vault der Wissensbibliothek hinzu, damit Agenten deine Notizen durchsuchen können. Später in den Einstellungen änderbar.",
+        "connectHelp": "Fügt diesen Vault der Wissensbibliothek hinzu, damit Agenten deine Notizen durchsuchen können. Später unter {{capabilities}} → {{tab}} änderbar.",
         "label": "Mit {{productName}} Wissen synchronisieren"
       },
       "manifest": {
@@ -3480,12 +3480,12 @@
         "mcp_available": "Zum Hinzufügen verfügbar",
         "mcp_desc": "Dies sind die in {{productName}} installierten MCP-Server. {{name}} kann nur die hier hinzugefügten aufrufen — drücke Hinzufügen, um einen zu gewähren, Entfernen, um ihn zurückzunehmen. Integrierte Server sind immer verfügbar und können nicht entfernt werden.",
         "mcp_disabled": "Deaktiviert",
-        "mcp_empty": "Es sind noch keine MCP-Server konfiguriert. Füge einen in den {{productName}}-Einstellungen → MCP hinzu und öffne dann dieses Panel erneut.",
-        "mcp_error_disabled": "Dieser Server ist deaktiviert. Aktiviere ihn zuerst in den {{productName}}-Einstellungen → MCP.",
+        "mcp_empty": "Es sind noch keine MCP-Server konfiguriert. Füge einen in den {{productName}}-{{capabilities}} → {{tab}} hinzu und öffne dann dieses Panel erneut.",
+        "mcp_error_disabled": "Dieser Server ist deaktiviert. Aktiviere ihn zuerst in den {{productName}}-{{capabilities}} → {{tab}}.",
         "mcp_error_generic": "Tools konnten nicht geladen werden – bitte erneut versuchen.",
         "mcp_error_in_progress": "Tools werden bereits gesucht – einen Moment.",
         "mcp_error_not_found": "Dieser Server ist nicht mehr konfiguriert.",
-        "mcp_error_probe_failed": "Dieser Server hat nicht geantwortet. Prüfe seinen Befehl in den {{productName}}-Einstellungen → MCP.",
+        "mcp_error_probe_failed": "Dieser Server hat nicht geantwortet. Prüfe seinen Befehl in den {{productName}}-{{capabilities}} → {{tab}}.",
         "mcp_from_cache": "(zwischengespeichert — möglicherweise veraltet)",
         "mcp_loading": "Server werden geladen…",
         "mcp_needs_approval": "Benötigt Genehmigung",
@@ -5964,7 +5964,7 @@
       "pane_failed_to_load": "Bereich konnte nicht geladen werden",
       "retry": "Wiederholen",
       "the_tunnel_looks_connected_but_the_remote_dashbo": "Der Tunnel scheint verbunden zu sein, aber das Remote-Dashboard wurde nie geladen. Es startet möglicherweise\n                  neu — versuchen Sie es erneut oder wechseln Sie oben die Tabs.",
-      "this_tab_stays_until_you_disconnect_the_instance": "Dieser Tab bleibt, bis Sie die Instanz unter Einstellungen → Remote-Instanzen trennen."
+      "this_tab_stays_until_you_disconnect_the_instance": "Dieser Tab bleibt, bis Sie die Instanz unter <0>Einstellungen → Remote-Instanzen</0> trennen."
     },
     "issuePanel": {
       "add_to_chat": "Zum Chat hinzufügen",
@@ -7067,7 +7067,7 @@
       "decline_consequence": "Wenn du ablehnst, wird nichts geladen und deine Nachricht bleibt, wie du sie eingegeben hast.",
       "grant_failed": "Vertrauen für diesen Ordner konnte nicht gespeichert werden.",
       "title": "Den Skills dieses Projekts vertrauen?",
-      "withdraw_hint": "Du kannst das später auf der Einstellungsseite Skills widerrufen.",
+      "withdraw_hint": "Du kannst das später unter {{capabilities}} → {{tab}} widerrufen.",
       "working": "Vertrauen wird erteilt…"
     },
     "projectSkillsTrustList": {
@@ -12842,7 +12842,7 @@
         "system_default": "System-Standard",
         "ffmpeg_is_missing_voice_recordings_from_the_brow": "ffmpeg fehlt — Sprachaufnahmen aus dem Browser können erst transkribiert werden, wenn es installiert ist.",
         "the_bundled_audio_decoder_is_missing_or_damaged": "Der gebündelte Audiodecoder fehlt oder ist beschädigt. Installiere die {{productName}}-Desktop-App neu; installiere FFmpeg nicht separat.",
-        "then_restart_the_gateway_so_it_can_import_the_ne": "Starte anschließend das Gateway neu (Einstellungen → Über → Gateway neu starten), damit es die neuen Pakete importieren kann.",
+        "then_restart_the_gateway_so_it_can_import_the_ne": "Starte anschließend das Gateway neu, damit es die neuen Pakete importieren kann.",
         "the_desktop_app_can_t_add_transcribe_support_ins": "Die Desktop-App kann keine Transcribe-Unterstützung hinzufügen — ihr gebündeltes Python kann keine zusätzlichen Pakete installieren. Installiere {{productName}} stattdessen mit pip und starte das Gateway aus dieser Umgebung.",
         "this_gateway_s_python_can_t_install_extra_packag": "Das Python dieses Gateways kann keine zusätzlichen Pakete installieren, daher lässt sich Transcribe hier nicht aktivieren. Führe das Gateway in einer Python-Umgebung aus, in der pip boto3 + amazon-transcribe installieren kann.",
         "transcribe_voice_into_the_message_box_when_you_c": "Stimme in das Nachrichtenfeld transkribieren, wenn Sie auf das Mikrofon klicken",

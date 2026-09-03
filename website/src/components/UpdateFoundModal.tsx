@@ -10,6 +10,7 @@ import { useAppSelector } from '../store'
 import { i18nT } from '../i18n/t'
 import { copyToClipboard } from '../utils/clipboard'
 import { updateAffordance } from '../utils/updateAffordance'
+import { settingsPath } from './settingsPath'
 import { shouldNudge, snoozeRecord, skipRecord, type UpdateNudgeRecord } from '../utils/updateNudge'
 import { foldStableStamp } from '../utils/displayVersion'
 import type { UpdateState } from '../hooks/useUpdateSubscription'
@@ -296,7 +297,7 @@ export default function UpdateFoundModal() {
 
   const goToAbout = () => {
     dismiss()
-    navigate('/settings/about')
+    navigate(settingsPath({ tab: 'about' }))
   }
 
   return (

@@ -40,7 +40,9 @@ const NavigationLeaveGuardContext = React.createContext<Channel | null>(null)
  *
  * The exits wired to that answer are this layout's rail and mobile back bar, the
  * global sidebar's `NavItem`, the command palette's `usePaletteActions`
- * delegate, every notification-panel jump (through `useGuardedLeave`), and the
+ * delegate, every notification-panel jump (through `useGuardedLeave`),
+ * `SettingsLink` — the one declarative Settings deep link, which asks once for
+ * every prose link built on it (also through `useGuardedLeave`) — and the
  * browser's own Back/Forward button (through `NavigationBackGuard`, which needs
  * the page to publish a stake — see `usePublishNavigationStake`).
  *
