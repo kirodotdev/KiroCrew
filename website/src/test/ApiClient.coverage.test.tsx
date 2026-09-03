@@ -493,40 +493,76 @@ describe('session-expired banner', () => {
     })
   })
 
-  it('hands recovery to the hub instead of bannering when embedded in the Instances pane', () => {
-    // Inside the hub's iframe the user cannot fetch the REMOTE token, so the
-    // parent is signalled and re-mints instead. The message carries no secret.
-    const post = vi.fn()
+  function withMockedParent(post: (...args: unknown[]) => unknown, body: () => Promise<void>) {
     const original = Object.getOwnPropertyDescriptor(window, 'parent')
     Object.defineProperty(window, 'parent', {
       value: { postMessage: post },
       writable: true,
       configurable: true,
     })
-    try {
-      checkSessionExpired(res(403, '', { headers: { 'X-Auth-Required': 'true' } }))
-      expect(post).toHaveBeenCalledWith({ type: 'mc-auth-expired' }, '*')
-      expect(banner()).toBeNull()
-      expect(fetchMock).not.toHaveBeenCalled()
-    } finally {
+    return body().finally(() => {
       if (original) Object.defineProperty(window, 'parent', original)
-    }
+    })
+  }
+
+  const embedded403 = () =>
+    checkSessionExpired(res(403, '', { headers: { 'X-Auth-Required': 'true' } }))
+
+  it('recovers an embedded pane with its OWN silent refresh before troubling the hub', async () => {
+    // The pane holds the same 30-day refresh cookie as the top-level path. A
+    // lapsed access cookie (laptop slept through the proactive refresh) is fixed
+    // by one refresh call — no SSH mint, no iframe reload, no lost pane state.
+    const post = vi.fn()
+    fetchMock.mockResolvedValue(okJson({ ok: true }))
+    await withMockedParent(post, async () => {
+      embedded403()
+      await vi.waitFor(() => expect(fetchMock).toHaveBeenCalled())
+      expect(post).not.toHaveBeenCalled()
+      expect(banner()).toBeNull()
+    })
+  })
+
+  it('hands recovery to the hub — ONCE — when the pane cannot refresh itself', async () => {
+    // A terminal 401 means the refresh chain is gone, so the hub must re-mint.
+    // Every later 403 in this document is the SAME unrepaired session: the hub
+    // answers each ask with an SSH mint, so asking once is the whole budget.
+    const post = vi.fn()
+    fetchMock.mockResolvedValue(res(401, 'revoked'))
+    await withMockedParent(post, async () => {
+      embedded403()
+      await vi.waitFor(() => expect(post).toHaveBeenCalledWith({ type: 'mc-auth-expired' }, '*'))
+      for (let i = 0; i < 5; i++) embedded403()
+      await Promise.resolve()
+      expect(post).toHaveBeenCalledTimes(1)
+      // Still no banner: the hub owns recovery inside a pane.
+      expect(banner()).toBeNull()
+    })
+  })
+
+  it('re-opens the hub hand-off after auth is restored', async () => {
+    // The latch is about one UNREPAIRED session, not the lifetime of the
+    // document: a 2xx proves recovery, so a later genuine lapse may ask again.
+    const post = vi.fn()
+    fetchMock.mockResolvedValue(res(401, 'revoked'))
+    await withMockedParent(post, async () => {
+      embedded403()
+      await vi.waitFor(() => expect(post).toHaveBeenCalledTimes(1))
+      removeAuthBanner() // what a successful response does
+      embedded403()
+      await vi.waitFor(() => expect(post).toHaveBeenCalledTimes(2))
+    })
   })
 
   it('falls through to the banner path when the parent frame is unreachable', async () => {
-    const original = Object.getOwnPropertyDescriptor(window, 'parent')
-    Object.defineProperty(window, 'parent', {
-      value: { postMessage: () => { throw new Error('cross-origin') } },
-      writable: true,
-      configurable: true,
+    fetchMock.mockResolvedValue(res(401, 'revoked'))
+    // Exhaust the pane's own refresh first (terminal 401), so the 403 below goes
+    // straight to the hand-off — which throws. The throw is swallowed and the
+    // banner is the documented fallback.
+    await expect(attemptSilentRefresh()).resolves.toBe(false)
+    await withMockedParent(() => { throw new Error('cross-origin') }, async () => {
+      expect(() => embedded403()).not.toThrow()
+      await vi.waitFor(() => expect(banner()).not.toBeNull())
     })
-    try {
-      // The postMessage throw is swallowed; the call still returns the response.
-      expect(() => checkSessionExpired(res(403, '', { headers: { 'X-Auth-Required': 'true' } }))).not.toThrow()
-    } finally {
-      if (original) Object.defineProperty(window, 'parent', original)
-      await Promise.resolve()
-    }
   })
 
   it('attemptSilentRefresh reports false on a terminal 401 and true on a rotation', async () => {

@@ -35,7 +35,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { AlertTriangle, Loader2, RefreshCw } from 'lucide-react'
 import { api } from '../api/client'
 import { useAppDispatch, useAppSelector } from '../store'
-import { removeWarm, setActiveId, setPaneReady, setUnread, setWarm } from '../store/instancesSlice'
+import { clearPaneReady, removeWarm, setActiveId, setPaneReady, setUnread, setWarm } from '../store/instancesSlice'
 import InstanceTabBar, { visibleInstanceTabs, useCrewPins, toggleCrewPin, useCrewSwitcherStableOrder, setStableOrder } from './InstanceTabBar'
 import { resolveTunnelOrigin } from '../lib/tunnelOrigin'
 import { LINUX_CAPTION_CONTROLS_WIDTH, TRAFFIC_LIGHT_INSET_PX, WIN_CAPTION_OVERLAY_WIDTH } from '../lib/electron'
@@ -62,7 +62,28 @@ const REFRESH_MIN_INTERVAL_MS = 10_000
 // Iframes report no load errors to the parent, and the backend can say
 // "connected" while the browser-side load is dead (tunnel half-up, token
 // rejected, remote gateway mid-restart) — this watchdog is the only signal.
+// NOTE: this is deliberately LONGER than REFRESH_MIN_INTERVAL_MS, so the two
+// cannot be compared to decide whether the watchdog can fire. The countdown is
+// per LOAD, not per iframe src: the token is absent from the watchdog effect's
+// deps below precisely so that a re-mint arriving inside the window cannot
+// postpone it.
 const PANE_LOAD_TIMEOUT_MS = 15_000
+// How many reactive re-mints one pane may ask for before the parent stops
+// answering. The child posts `mc-auth-expired` on EVERY 403 it sees
+// (api/client.ts hands recovery to the hub before it latches its own banner),
+// so a pane whose session cannot be repaired by a fresh token asks forever —
+// one SSH mint per REFRESH_MIN_INTERVAL_MS, for as long as the window stays
+// open. Past this count the reactive path goes quiet and the pane is failed to
+// the error panel, so the user gets Retry (which re-mints on demand) instead of
+// an invisible mint storm.
+//
+// Only Retry resets the count. `mc-embedded-ready` deliberately does NOT:
+// EmbeddedHostBridge posts it from a mount effect, BEFORE the pane's first
+// authenticated request, so it proves the SPA mounted — not that the new token
+// worked. A pane whose shell mounts fine and whose API then 403s posts it on
+// every reload, so resetting there would clear the count once per re-mint and
+// leave the very loop this cap exists to bound running unbounded.
+const MAX_REACTIVE_REMINTS = 3
 
 /** Parse a ``<int>[hm]`` TTL (e.g. "20h", "30m") to seconds; 0 if unparseable. */
 function ttlToSeconds(ttl: string): number {
@@ -136,6 +157,9 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
   const paneChromeRef = useRef<Record<string, boolean>>({})
   const refreshingRef = useRef<Set<string>>(new Set())
   const lastRefreshRef = useRef<Map<string, number>>(new Map())
+  // Reactive (mc-auth-expired) re-mints answered per pane since its last Retry
+  // — see MAX_REACTIVE_REMINTS.
+  const reactiveMintsRef = useRef<Map<string, number>>(new Map())
   // Live iframe elements by id, so the parent can postMessage the switcher model
   // into each embedded pane. Set/cleared by the iframe ref cb.
   const iframeRefs = useRef<Map<string, HTMLIFrameElement>>(new Map())
@@ -144,15 +168,23 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
   const postModelToRef = useRef<(id: string) => void>(() => {})
   const instancesRef = useRef<Array<{ id: string }>>([])
 
+  // Whether `refreshToken` would actually mint for this id right now: no mint
+  // already in flight, and outside the rate window. Split out of refreshToken so
+  // the reactive path can tell a declined call from an answered one BEFORE it
+  // charges the pane's budget — a call the guards drop mints nothing, so
+  // charging for it would fail the pane early (see MAX_REACTIVE_REMINTS).
+  const canRefreshNow = useCallback((id: string) => {
+    if (refreshingRef.current.has(id)) return false
+    return Date.now() - (lastRefreshRef.current.get(id) || 0) >= REFRESH_MIN_INTERVAL_MS
+  }, [])
+
   // Force a fresh token mint for one instance and reload its iframe by updating
   // warm[id].token (srcFor re-derives the ?token= URL, so changing the token
   // reloads the iframe). Mirrors the gateway's mint-and-load. Concurrency- and
   // rate-guarded so the reactive path can't loop.
   const refreshToken = useCallback(
     async (id: string) => {
-      if (refreshingRef.current.has(id)) return
-      const last = lastRefreshRef.current.get(id) || 0
-      if (Date.now() - last < REFRESH_MIN_INTERVAL_MS) return
+      if (!canRefreshNow(id)) return
       refreshingRef.current.add(id)
       try {
         const res = await api.refreshInstanceToken(id)
@@ -167,7 +199,7 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
         lastRefreshRef.current.set(id, Date.now())
       }
     },
-    [dispatch],
+    [dispatch, canRefreshNow],
   )
 
   // Pre-mint + warm one connected instance without surfacing it. Cheap when the
@@ -225,6 +257,35 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
         // Force a fresh mint and reload its iframe rather than letting it show
         // the in-pane paste-token banner. No foreground guard here — the active
         // pane is exactly the one the user wants restored.
+        //
+        // Bounded, though: a session a fresh token cannot repair re-asks on
+        // every 403 forever (the child hands off before latching its own
+        // banner), which is one SSH mint every REFRESH_MIN_INTERVAL_MS with
+        // nothing to show for it. Count the mints actually issued and go quiet
+        // once a pane has burned MAX_REACTIVE_REMINTS of them.
+        const spent = reactiveMintsRef.current.get(id) || 0
+        if (spent >= MAX_REACTIVE_REMINTS) {
+          // Going quiet is not enough on its own: this ask can arrive while the
+          // pane is READY (its shell mounted, only its API is 403ing), and both
+          // affordances are off in that state — the load watchdog below skips a
+          // ready pane, and the child has already latched its own hand-off so it
+          // shows no banner either. Dropping the ask silently would leave a
+          // live-looking pane serving stale content with no way out, the same
+          // dead end this fix is about. Retract readiness and record the verdict
+          // so the error panel carrying Retry surfaces instead.
+          dispatch(clearPaneReady(id))
+          setTimedOut(prev => (prev[id] ? prev : { ...prev, [id]: true }))
+          return
+        }
+        // Charge the budget only for asks that are actually answered with a mint.
+        // A pane can post several asks inside one rate window — a 200 landing
+        // mid-reload re-arms the child's hand-off latch, so a 403 from a poll
+        // that started before the reload posts again seconds later — and
+        // refreshToken drops those. Counting them anyway would spend the budget
+        // on mints that never happened and show the panel after one real retry
+        // instead of MAX_REACTIVE_REMINTS.
+        if (!canRefreshNow(id)) return
+        reactiveMintsRef.current.set(id, spent + 1)
         void refreshToken(id)
       } else if (data.type === 'mc-switch-instance') {
         // The embedded pane's inline switcher asks the parent to flip
@@ -284,6 +345,9 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
         // rather than waiting for the next input-driven broadcast. Also record
         // readiness: this is the parent's only proof the pane actually loaded
         // (drives the loading overlay + load watchdog below).
+        // NOTE: deliberately does NOT clear reactiveMintsRef — this fires on
+        // mount, before the pane's first authenticated request, so it is no
+        // evidence the token works. See MAX_REACTIVE_REMINTS.
         dispatch(setPaneReady(id))
         postModelToRef.current(id)
       } else if (data.type === 'mc-drag-gaps') {
@@ -308,7 +372,7 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
     }
     window.addEventListener('message', onMessage)
     return () => window.removeEventListener('message', onMessage)
-  }, [dispatch, refreshToken])
+  }, [dispatch, refreshToken, canRefreshNow])
 
   // Proactive refresh: when an embedded token passes REFRESH_AT_ELAPSED_FRAC of
   // its TTL, re-mint and reload that iframe ahead of the cap. Skips the active
@@ -372,11 +436,24 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
     setFocusChromeVisible(paneChromeRef.current[activeId] ?? true)
   }, [activeId, focusMode])
   // Primitive deps for the watchdog effect (a fresh conn object identity on
-  // every setWarm would defeat the dep comparison; the src only depends on these).
+  // every setWarm would defeat the dep comparison).
   const activeWarmPort = activeWarmConn?.port
-  const activeWarmToken = activeWarmConn?.token
   const activeReady = activeId ? !!ready[activeId] : true
   const activeSeq = activeId ? reloadSeq[activeId] || 0 : 0
+  // The watchdog's countdown is anchored to the identity of the LOAD — (id, port,
+  // reloadSeq) — and NOT to the iframe src. A token re-mint also changes the src,
+  // but the token is deliberately ABSENT from the deps below, so a re-mint neither
+  // clears nor restarts the pending timer: it keeps ticking against the deadline
+  // the load began with. That absence is the fix. Refreshes are rate-limited to
+  // REFRESH_MIN_INTERVAL_MS, which is SHORTER than PANE_LOAD_TIMEOUT_MS, so while
+  // the token WAS a dep a pane stuck in an `mc-auth-expired` -> re-mint loop
+  // restarted a countdown-from-scratch every 10s and could never reach 15s.
+  // Symptom: the loading overlay spun forever and the error panel — the only
+  // affordance carrying Retry and the tab strip — could never surface, stranding
+  // the user on a pane that looked merely slow. An explicit Retry or a real port
+  // change is what legitimately restarts the clock. A re-mint that DOES load still
+  // clears the verdict, because `activeTimedOut` additionally requires
+  // `!activeReady`.
   useEffect(() => {
     if (!activeId || activeWarmPort === undefined || activeReady) return
     const id = activeId
@@ -384,9 +461,7 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
       setTimedOut(prev => (prev[id] ? prev : { ...prev, [id]: true }))
     }, PANE_LOAD_TIMEOUT_MS)
     return () => window.clearTimeout(t)
-    // Restart the countdown whenever the pane's src (port/token) or forced
-    // reload sequence changes — each of those reloads the iframe.
-  }, [activeId, activeWarmPort, activeWarmToken, activeSeq, activeReady])
+  }, [activeId, activeWarmPort, activeSeq, activeReady])
 
   const retry = useCallback(
     (id: string) => {
@@ -394,6 +469,9 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
       // an identical token (setWarm would be a no-op for the iframe src).
       setTimedOut(prev => ({ ...prev, [id]: false }))
       setReloadSeq(prev => ({ ...prev, [id]: (prev[id] || 0) + 1 }))
+      // An explicit user press is a fresh start: re-open the reactive budget so
+      // a pane that recovers on the next token can still self-heal afterwards.
+      reactiveMintsRef.current.delete(id)
       connectMutation.mutate(id)
     },
     [connectMutation],
@@ -409,6 +487,30 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
     const victim = [...mru].reverse().find(id => id !== activeId && warm[id])
     if (victim) dispatch(removeWarm(victim))
   }, [warm, warmCap, mru, activeId, dispatch])
+
+  // Drop the per-pane load facts of a pane that is no longer warm. Both the
+  // reactive budget and the timed-out verdict describe ONE load of ONE
+  // connection; the connection they describe is gone (K-cap eviction above, an
+  // explicit disconnect from InstancesPanel, a crew deleted), and the next
+  // warm is a new load rather than a continuation of the dead one. Retry was
+  // the only thing clearing either, and a re-warm is precisely the path that
+  // does not go through Retry — so without this an exhausted-then-evicted pane
+  // comes back with its budget already spent and its verdict already latched,
+  // and renders "Pane failed to load" before its fresh iframe has had a chance
+  // to load at all, having minted nothing. Keyed on `warm` because that is the
+  // one signal every teardown path shares, whoever dispatched it.
+  useEffect(() => {
+    for (const id of reactiveMintsRef.current.keys()) {
+      if (!warm[id]) reactiveMintsRef.current.delete(id)
+    }
+    setTimedOut(prev => {
+      const stale = Object.keys(prev).filter(id => prev[id] && !warm[id])
+      if (stale.length === 0) return prev
+      const next = { ...prev }
+      for (const id of stale) delete next[id]
+      return next
+    })
+  }, [warm])
 
   // Auto-warm on load: after the first instances poll, pre-mount every
   // currently-connected instance's iframe (up to the warm cap) so panes are

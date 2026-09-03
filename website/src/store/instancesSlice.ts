@@ -183,6 +183,15 @@ const instancesSlice = createSlice({
       if (!state.ready) state.ready = {}
       state.ready[action.payload] = true
     },
+    /**
+     * The parent no longer believes this pane is loaded, without a src change.
+     * `mc-embedded-ready` fires on mount, so a pane whose shell mounted but
+     * whose session is unrecoverable counts as ready while showing nothing
+     * usable; retracting that is what lets the load verdict surface.
+     */
+    clearPaneReady(state, action: PayloadAction<string>) {
+      if (state.ready) delete state.ready[action.payload]
+    },
     setUnread(state, action: PayloadAction<{ id: string; count: number }>) {
       state.unread[action.payload.id] = action.payload.count
     },
@@ -220,6 +229,7 @@ export const {
   setActiveId,
   removeWarm,
   setPaneReady,
+  clearPaneReady,
   setUnread,
   setHostModel,
   setCrewAddForm,
