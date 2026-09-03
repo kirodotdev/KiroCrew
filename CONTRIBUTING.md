@@ -33,6 +33,19 @@ issue first and get a reaction to the approach. Nobody enjoys declining a
 finished pull request that went the wrong direction, and a maintainer can usually
 tell you in a paragraph.
 
+This rule binds automated and agent-assisted contributions exactly as it binds
+humans (see [Using AI Tools](#using-ai-tools)); an agent should check for prior
+work before it starts, and if you point one at an issue, hold it to the same
+heads-up. An open pull request that references the same issue is the
+machine-readable version of "someone is already on it", and the automated on-open
+duplicate-detection lane reads exactly that signal: when a new PR references the
+same issue and touches the same files as an earlier open PR, it posts a
+non-accusatory heads-up naming the overlap so the second effort is not spent
+twice. It is advisory and never blocks a merge, and companion PRs that split one
+issue across different files are expected. See
+[Duplicate and overlap detection](docs/ci/ci-and-reviews.md#duplicate-and-overlap-detection)
+for what the lane checks and surfaces.
+
 ## Prerequisites
 
 - macOS, Linux, or Windows — Windows builds and runs natively from source, with
