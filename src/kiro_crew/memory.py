@@ -290,7 +290,22 @@ class MemoryStore:
     def read_preferences(self) -> str:
         """Read user preferences markdown file."""
         if self._preferences_file.exists():
-            return self._preferences_file.read_text(encoding="utf-8")
+            try:
+                return self._preferences_file.read_text(encoding="utf-8")
+            except UnicodeDecodeError:
+                # One bad byte (crash mid-write, editor slip, synced file)
+                # must degrade, not kill the dashboard tab, prompt assembly,
+                # or the repair path (#8247). Decode lossy rather than
+                # returning "": an empty baseline would pass the
+                # compare-and-swap check in write_preferences and let a
+                # consolidation overwrite the surviving valid content.
+                logger.warning(
+                    "preferences file is not valid UTF-8: %s",
+                    self._preferences_file,
+                )
+                return self._preferences_file.read_text(
+                    encoding="utf-8", errors="replace"
+                )
         return ""
 
     def write_preferences(self, content: str, *, expected_baseline: str | None = None) -> bool:
@@ -346,7 +361,17 @@ class MemoryStore:
     def read_projects(self) -> str:
         """Read active projects markdown file."""
         if self._projects_file.exists():
-            return self._projects_file.read_text(encoding="utf-8")
+            try:
+                return self._projects_file.read_text(encoding="utf-8")
+            except UnicodeDecodeError:
+                # Same lossy fallback as read_preferences (#8247).
+                logger.warning(
+                    "projects file is not valid UTF-8: %s",
+                    self._projects_file,
+                )
+                return self._projects_file.read_text(
+                    encoding="utf-8", errors="replace"
+                )
         return ""
 
     def write_projects(self, content: str, *, expected_baseline: str | None = None) -> bool:

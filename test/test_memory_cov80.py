@@ -105,6 +105,48 @@ class TestLegacyCombinedReadWrite:
         assert "wxyv" in combined
         assert combined.index("qqzz") < combined.index("wxyv")
 
+    def test_non_utf8_preferences_decode_lossy(self, tmp_path):
+        # One bad byte must not kill the dashboard tab, prompt assembly,
+        # or the repair path (#8247). Decode lossy so the surviving valid
+        # content stays in the read baseline: an empty baseline would pass
+        # the write_preferences CAS check and let a consolidation wipe it.
+        store = MemoryStore(workspace=tmp_path)
+        store.init()
+        prefs = tmp_path / "memory" / "preferences.md"
+        prefs.write_bytes(b"# prefs\n\xff\xfe bad bytes\n")
+
+        content = store.read_preferences()
+        assert "# prefs" in content
+        assert "bad bytes" in content
+        # The repair path reads first: it must work, not crash.
+        store.add_preference("dark mode")
+        assert "dark mode" in store.read_preferences()
+
+    def test_non_utf8_projects_decode_lossy(self, tmp_path):
+        store = MemoryStore(workspace=tmp_path)
+        store.init()
+        projects = tmp_path / "memory" / "projects.md"
+        projects.write_bytes(b"# projects\n\xff bad\n")
+
+        content = store.read_projects()
+        assert "# projects" in content
+        assert "bad" in content
+
+    def test_consolidation_roundtrip_keeps_valid_content(self, tmp_path):
+        # A read-merge-write computed from a corrupt file must keep the
+        # surviving valid content: the lossy baseline matches on re-read,
+        # so CAS passes, and only the bad byte is lost.
+        store = MemoryStore(workspace=tmp_path)
+        store.init()
+        prefs = tmp_path / "memory" / "preferences.md"
+        prefs.write_bytes(b"# prefs\n\xff bad\n")
+
+        baseline = store.read_preferences()
+        assert store.write_preferences(
+            baseline + "\n- extra", expected_baseline=baseline
+        ) is True
+        assert "# prefs" in store.read_preferences()
+
 
 class TestPruneHistory:
     def test_returns_zero_when_history_dir_absent(self, tmp_path):
