@@ -128,7 +128,7 @@ class TestFolderCrud:
 
     def test_rename(self, folders: ArtifactFolderStore) -> None:
         f = folders.create("Reports")
-        renamed = folders.rename(f["id"], "Archive")
+        renamed, _epoch = folders.rename(f["id"], "Archive")
         assert renamed["name"] == "Archive"
         assert folders.get(f["id"])["name"] == "Archive"
 

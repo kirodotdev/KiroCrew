@@ -3577,7 +3577,61 @@ class ArtifactFolderStore:
         self._path = (path or (config_dir() / self._FILE)).expanduser()
         self._lock = threading.Lock()
         self._folders: _List[dict[str, Any]] = []
+        #: Per-folder icon epoch, bumped under ``self._lock`` by every
+        #: user-visible mutation a generated icon must not outlive: a manual
+        #: icon set, an icon clear, and a rename. An in-flight generation task
+        #: captures the epoch at scheduling time and its write-back
+        #: (:meth:`set_icon_if_epoch`) is dropped unless the epoch is
+        #: unchanged. One invariant closes all three races that a bare
+        #: existence check leaves open and that a value-pin cannot catch: a
+        #: clear (absent -> absent) and a rename (icon untouched) both leave
+        #: the icon VALUE unchanged, so only a counter distinguishes them.
+        #: Deliberately per-folder rather than a store-wide generation
+        #: counter, which would cancel a legitimate icon delivery whenever an
+        #: unrelated folder changed mid-generation. Held per store INSTANCE
+        #: (not module-level as in the chat-folder original, whose folders
+        #: live on DashboardState rather than in a store object) so two stores
+        #: over different JSON paths cannot alias each other's folder ids. In
+        #: memory on purpose -- in-flight tasks die with the process, so the
+        #: epoch has nothing to survive a restart for. Entries are dropped on
+        #: a confirmed folder delete. Ported from the chat-folder guard
+        #: ``_CHAT_FOLDER_ICON_EPOCHS`` (issue #7991).
+        self._icon_epochs: dict[str, int] = {}
         self._load()
+
+    def _bump_icon_epoch_locked(self, folder_id: str) -> None:
+        """Invalidate any in-flight icon generation for this folder.
+
+        Must be called with ``self._lock`` held -- holding the lock is what
+        orders the bump against :meth:`set_icon_if_epoch`'s check, so a
+        mutation can never interleave between that check and its write.
+        """
+        self._icon_epochs[folder_id] = self._icon_epochs.get(folder_id, 0) + 1
+
+    def set_icon_if_epoch(
+        self, folder_id: str, icon: str, expected_epoch: int
+    ) -> dict[str, Any] | None:
+        """Apply a generated icon only while the folder's epoch is unchanged.
+
+        The re-find, the epoch check and the write share one critical section,
+        so a manual icon set, an icon clear, or a rename that lands while
+        generation was in flight wins over the stale generated result. Returns
+        the updated folder, or ``None`` when the write was dropped (folder
+        deleted mid-generation, or the epoch moved).
+
+        Does NOT bump the epoch: this is the generated result landing, not a
+        user-visible mutation that later generations must lose to.
+        """
+        with self._lock:
+            folder = self._by_id().get(folder_id)
+            if folder is None:
+                return None  # deleted mid-generation; drop the icon
+            if self._icon_epochs.get(folder_id, 0) != expected_epoch:
+                # Icon or name changed while generation ran -- drop the result.
+                return None
+            folder["icon"] = str(icon or "")[:16]
+            self._save()
+            return dict(folder)
 
     # ── persistence ───────────────────────────────────────────────────────
 
@@ -3709,15 +3763,32 @@ class ArtifactFolderStore:
             )
             return dict(folder)
 
-    def rename(self, folder_id: str, name: str) -> dict[str, Any]:
+    def rename(self, folder_id: str, name: str) -> tuple[dict[str, Any], int]:
+        """Rename, returning the folder AND the icon epoch this rename produced.
+
+        The epoch comes back from inside the same critical section as the bump,
+        which is the only way a caller can arm background icon generation
+        safely. Renaming and then READING the epoch back would be two lock
+        acquisitions: a competing manual icon set landing between them bumps the
+        epoch again, the later read would capture THAT epoch, and the generated
+        icon would then satisfy :meth:`set_icon_if_epoch` and clobber the manual
+        pick -- the very race the epoch exists to prevent. Returning it closes
+        that window by construction, because there is no read to lose.
+
+        The tuple is deliberately the ONLY spelling of this mutation: a
+        dict-returning ``rename`` alongside it would be a second spelling of one
+        write, and the two would drift.
+        """
         name = self._clean_name(name)
         with self._lock:
             folder = self._by_id().get(folder_id)
             if folder is None:
                 raise ArtifactNotFoundError(f"folder not found: {folder_id}")
             folder["name"] = name
+            # An in-flight icon was derived from the OLD name -- invalidate it.
+            self._bump_icon_epoch_locked(folder_id)
             self._save()
-            return dict(folder)
+            return dict(folder), self._icon_epochs[folder_id]
 
     def reparent(self, folder_id: str, new_parent: str = "") -> dict[str, Any]:
         """Move a folder under ``new_parent`` (``""`` = root). Cycle-guarded."""
@@ -3756,6 +3827,9 @@ class ArtifactFolderStore:
             if folder is None:
                 raise ArtifactNotFoundError(f"folder not found: {folder_id}")
             folder["icon"] = str(icon or "")[:16]
+            # A manual set OR a clear (icon == "") invalidates any in-flight
+            # generation: its result was derived before the user's choice.
+            self._bump_icon_epoch_locked(folder_id)
             self._save()
             return dict(folder)
 
@@ -3930,6 +4004,20 @@ class ArtifactFolderStore:
                         f["parent_id"] = parent
             self._folders = [f for f in self._folders if f.get("id") not in affected_ids]
             self._save()
+            # Release the icon-epoch guards only after the removal is
+            # CONFIRMED persisted. _save() raising propagates out of this
+            # block, so the pop is skipped and the guard stays armed. Note
+            # what a failed _save() actually leaves behind: self._folders was
+            # already filtered above, so the folder is gone from memory but
+            # SURVIVES on disk, and any later reload brings it back. Keeping
+            # its epoch is the conservative side of that split -- resetting it
+            # to 0 would let a stale in-flight generation clobber a manual
+            # icon on the record that comes back. After a confirmed delete the
+            # entries have nothing left to guard (set_icon_if_epoch already
+            # drops a folder it cannot re-find); popping keeps the registry
+            # from growing with every deleted id.
+            for _gone in affected_ids:
+                self._icon_epochs.pop(_gone, None)
 
         # Phase 2: artifacts. ``affected_ids`` is the subtree for cascade, or
         # just the single folder for the safe path.
