@@ -30,6 +30,7 @@ stays green.
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 from skill_script_helpers import load_skill_script
@@ -80,6 +81,50 @@ class TestTranscriptShapeRoundTrip:
         assert "s-real-writer" in out and "GREEN" in out
         assert "GONE" not in out
         assert "OK 1 watched, 1 fired" in out
+
+
+class TestDeliveryPatternRoundTrip:
+    """Format 4: the phrases the delivery counters look for.
+
+    ``DEFAULT_WATCHDOG_RES`` and ``DEFAULT_INIT_TIMEOUT_RES`` are regexes over
+    text OTHER modules emit. A fixture that hand-copies the phrase cannot notice
+    the emitter rewording it: every fixture test stays green, the counters
+    silently read zero, and a fleet that cannot deliver reports as healthy --
+    which is the one failure these counters exist to make visible. So the
+    patterns are matched against the real constants.
+    """
+
+    def test_watchdog_patterns_match_the_constants_the_gateway_emits(self):
+        from kiro_crew.acp.types import STOP_REASON_TOOL_STALL
+        from kiro_crew.dashboard.state import (
+            STALE_RECOVERY_PREFIX,
+            TOOL_STALL_RECOVERY_PREFIX,
+        )
+
+        mod = load_skill_script("fleet_probe", SKILL_DIR / "scripts" / "fleet_probe.py")
+        patterns = [re.compile(rx) for rx in mod.DEFAULT_WATCHDOG_RES]
+        for emitted in (
+            f"{TOOL_STALL_RECOVERY_PREFIX} resume from your last committed step",
+            f"{STALE_RECOVERY_PREFIX} resume from your last committed step",
+            f"turn ended: {STOP_REASON_TOOL_STALL}",
+        ):
+            assert any(rx.search(emitted) for rx in patterns), emitted
+
+    def test_the_index_needle_matches_what_the_real_writer_emits(self, tmp_path, monkeypatch):
+        """The tail index counts session-produced rows with a BYTE needle over the
+        whole file, so it depends on how the writer spells the role field. Drive
+        the real writer and count what the script would count: a reworded
+        separator would understate the index and make a talking session read as
+        deadlocked."""
+        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "crew"))
+        mod = load_skill_script("fleet_probe", SKILL_DIR / "scripts" / "fleet_probe.py")
+        log = ConversationLog(base_dir=tmp_path / "crew" / "sessions")
+        log.append("s-needle", "user", "seed")  # inbound: must NOT count
+        log.append("s-needle", "assistant", "WORKING: one")
+        log.append("s-needle", "assistant", "WORKING: two")
+        path = tmp_path / "crew" / "sessions" / "s-needle.jsonl"
+        _, index = mod._tail_entries(path, 200_000)
+        assert index == 1, "two assistant rows, zero-based, and the user row excluded"
 
 
 class TestFilenamePrefixRoundTrip:
