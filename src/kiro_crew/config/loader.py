@@ -3256,6 +3256,7 @@ class KiroCrewConfig:
                 ),
                 gitlab_hosts=_coerce_gitlab_hosts(dashboard_data.get("gitlab_hosts")),
                 jira_hosts=_coerce_jira_hosts(dashboard_data.get("jira_hosts")),
+                link_patterns=_sections._coerce_link_patterns(dashboard_data.get("link_patterns")),
                 jira_auth=[
                     JiraAuthEntry(
                         host=str(entry.get("host", "")),

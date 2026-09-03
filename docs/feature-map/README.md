@@ -186,7 +186,7 @@ is `/settings/<key>`. Panels live in `pages/settings/`.
 |---|---|---|---|---|
 | `overview` | Health hero, stat cards, memory and usage drill-ins | `OverviewPanel.tsx` → `pages/OverviewPage.tsx` | `handlers_system.py` | `GET /api/status`, `GET /api/system` |
 | `imports` | Import config and history from another tool | `ImportPanel.tsx` | `handlers/onboarding_import.py`, `handlers/portability.py` | `GET /api/onboarding/import/scan`, `POST /api/onboarding/import/apply` |
-| `chat` | Chat behavior preferences, plain vs highlighted diffs | `ChatPanel.tsx` | `handlers/core.py` | `GET,PUT,PATCH /api/config/kirocrew` |
+| `chat` | Chat behavior preferences, plain vs highlighted diffs | `ChatPanel.tsx` | `handlers/core.py`, `handlers/files.py` | `GET,PUT,PATCH /api/config/kirocrew`, `GET,PUT /api/dashboard/config` |
 | `display` | Theme, density, language | `DisplayPanel.tsx` | `handlers/themes.py`, `handlers/core.py` | `GET,POST /api/themes`, `GET,PUT /api/config/theme` |
 | `voice` | TTS voice and dictation engine | `VoicePanel.tsx`, `SttSettings.tsx` | `chat_voice.py`, `handlers/core.py` | `GET,PUT /api/voice/config`, `GET /api/voice/voices`, `GET,PUT /api/config/stt`, `GET /api/stt/status`, `POST /api/stt/ffmpeg/download` |
 | `notifications` | Which events notify, and on which channel | `NotificationsPanel.tsx` | `handlers/messaging.py` | `GET /api/notifications/channels`, `PUT /api/notifications/channels/settings` |

@@ -252,8 +252,7 @@ class TestFileRead:
                 assert resp.status == 500
                 assert (await resp.json())["error"] == "failed to read file"
         assert any(
-            kw.get("outcome") == "failure"
-            for _, kw in mock_sel.log_tool_invocation.call_args_list
+            kw.get("outcome") == "failure" for _, kw in mock_sel.log_tool_invocation.call_args_list
         )
 
 
@@ -298,9 +297,7 @@ class TestFileWrite:
     @pytest.mark.asyncio
     async def test_schema_violation_is_400(self, mock_sel):
         async with TestClient(TestServer(self._client_app())) as client:
-            resp = await client.post(
-                "/api/file-write", json={"path": "/tmp/$evil", "content": "x"}
-            )
+            resp = await client.post("/api/file-write", json={"path": "/tmp/$evil", "content": "x"})
             assert resp.status == 400
             assert (await resp.json())["error"] == "invalid input"
 
@@ -310,9 +307,7 @@ class TestFileWrite:
         f.write_text("x", encoding="utf-8")
         with patch.object(files_mod, "_validate_dashboard_path", return_value=None):
             async with TestClient(TestServer(self._client_app())) as client:
-                resp = await client.post(
-                    "/api/file-write", json={"path": str(f), "content": "y"}
-                )
+                resp = await client.post("/api/file-write", json={"path": str(f), "content": "y"})
                 assert resp.status == 400
                 assert (await resp.json())["error"] == "invalid or forbidden path"
 
@@ -368,14 +363,13 @@ class TestFileWrite:
         f = tmp_path / "doomed.md"
         f.write_text("original", encoding="utf-8")
         doomed = "rename" if pinned else "replace"
-        with patch.object(
-            files_mod, "pinned_parent_replace_supported", lambda: pinned
-        ), patch.object(
-            atomic_write_mod, "pinned_parent_replace_supported", lambda: pinned
-        ), patch.object(
-            atomic_write_mod, "_mkstemp_at", wraps=atomic_write_mod._mkstemp_at
-        ) as staged_at, patch.object(
-            os, doomed, side_effect=OSError(f"{doomed} failed")
+        with (
+            patch.object(files_mod, "pinned_parent_replace_supported", lambda: pinned),
+            patch.object(atomic_write_mod, "pinned_parent_replace_supported", lambda: pinned),
+            patch.object(
+                atomic_write_mod, "_mkstemp_at", wraps=atomic_write_mod._mkstemp_at
+            ) as staged_at,
+            patch.object(os, doomed, side_effect=OSError(f"{doomed} failed")),
         ):
             async with TestClient(TestServer(self._client_app())) as client:
                 resp = await client.post(
@@ -401,16 +395,14 @@ class TestFileWrite:
         f = tmp_path / "twice.md"
         f.write_text("original", encoding="utf-8")
         doomed = "rename" if pinned else "replace"
-        with patch.object(
-            files_mod, "pinned_parent_replace_supported", lambda: pinned
-        ), patch.object(
-            atomic_write_mod, "pinned_parent_replace_supported", lambda: pinned
-        ), patch.object(
-            atomic_write_mod, "_mkstemp_at", wraps=atomic_write_mod._mkstemp_at
-        ) as staged_at, patch.object(
-            os, doomed, side_effect=OSError(f"{doomed} failed")
-        ), patch.object(
-            os, "unlink", side_effect=OSError("unlink failed")
+        with (
+            patch.object(files_mod, "pinned_parent_replace_supported", lambda: pinned),
+            patch.object(atomic_write_mod, "pinned_parent_replace_supported", lambda: pinned),
+            patch.object(
+                atomic_write_mod, "_mkstemp_at", wraps=atomic_write_mod._mkstemp_at
+            ) as staged_at,
+            patch.object(os, doomed, side_effect=OSError(f"{doomed} failed")),
+            patch.object(os, "unlink", side_effect=OSError("unlink failed")),
         ):
             async with TestClient(TestServer(self._client_app())) as client:
                 resp = await client.post(
@@ -550,9 +542,7 @@ class TestFileRaw:
         os.symlink(target, link)
         # Hand the handler the link itself: the real validator would have
         # realpath'd it away, and O_NOFOLLOW is what must catch it.
-        with patch(
-            "kiro_crew.dashboard.handlers._validate_dashboard_path", return_value=str(link)
-        ):
+        with patch("kiro_crew.dashboard.handlers._validate_dashboard_path", return_value=str(link)):
             async with TestClient(TestServer(self._client_app())) as client:
                 resp = await client.get(f"/api/file-raw?path={link}")
                 assert resp.status == 403
@@ -624,8 +614,10 @@ class TestFileWatch:
                 return target if len(seen) == 1 else target + ".elsewhere"
             return real_realpath(p, *a, **kw)
 
-        with patch.object(files_mod, "_validate_dashboard_path", return_value=target), \
-             patch.object(os.path, "realpath", fake_realpath):
+        with (
+            patch.object(files_mod, "_validate_dashboard_path", return_value=target),
+            patch.object(os.path, "realpath", fake_realpath),
+        ):
             async with TestClient(TestServer(self._client_app())) as client:
                 resp = await client.get(f"/api/file-watch?path={f}")
                 assert resp.status == 200
@@ -815,17 +807,18 @@ class TestRevealPath:
             assert (await resp.json())["error"] == "not a regular file"
 
     @pytest.mark.asyncio
-    async def test_open_action_hands_the_file_itself_to_the_launcher(
-        self, tmp_path, mock_sel
-    ):
+    async def test_open_action_hands_the_file_itself_to_the_launcher(self, tmp_path, mock_sel):
         f = tmp_path / "doc.pdf"
         f.write_text("x", encoding="utf-8")
-        with patch("sys.platform", "linux"), \
-             patch("kiro_crew.dashboard.handlers.files.platform_compat.open_with_default_app", return_value=True) as launch:
+        with (
+            patch("sys.platform", "linux"),
+            patch(
+                "kiro_crew.dashboard.handlers.files.platform_compat.open_with_default_app",
+                return_value=True,
+            ) as launch,
+        ):
             async with TestClient(TestServer(self._client_app())) as client:
-                resp = await client.post(
-                    "/api/reveal", json={"path": str(f), "action": "open"}
-                )
+                resp = await client.post("/api/reveal", json={"path": str(f), "action": "open"})
                 assert resp.status == 200
                 assert await resp.json() == {"ok": True}
         # A distinct verb: this one deliberately RUNS the file, so it must not be
@@ -833,31 +826,30 @@ class TestRevealPath:
         launch.assert_called_once_with(str(f))
 
     @pytest.mark.asyncio
-    async def test_open_action_on_windows_keeps_the_clipboard_answer(
-        self, tmp_path, mock_sel
-    ):
+    async def test_open_action_on_windows_keeps_the_clipboard_answer(self, tmp_path, mock_sel):
         # Launching a request-supplied path by its file association is an
         # execution sink, so Windows deliberately has no launcher for this action.
         f = tmp_path / "doc.pdf"
         f.write_text("x", encoding="utf-8")
         async with TestClient(TestServer(self._client_app())) as client:
             with patch.object(platform_compat, "IS_WINDOWS", True):
-                resp = await client.post(
-                    "/api/reveal", json={"path": str(f), "action": "open"}
-                )
+                resp = await client.post("/api/reveal", json={"path": str(f), "action": "open"})
                 assert resp.status == 200
                 # Windows has no launch-by-association verb, so the local grant
                 # degrades to the clipboard: `copy` carries the path to write.
                 assert await resp.json() == {"ok": True, "copy": str(f)}
 
     @pytest.mark.asyncio
-    async def test_reveal_hands_the_file_itself_to_the_helper(
-        self, tmp_path, mock_sel
-    ):
+    async def test_reveal_hands_the_file_itself_to_the_helper(self, tmp_path, mock_sel):
         f = tmp_path / "doc.pdf"
         f.write_text("x", encoding="utf-8")
-        with patch("sys.platform", "darwin"), \
-             patch("kiro_crew.dashboard.handlers.files.platform_compat.reveal_in_file_manager", return_value=True) as reveal:
+        with (
+            patch("sys.platform", "darwin"),
+            patch(
+                "kiro_crew.dashboard.handlers.files.platform_compat.reveal_in_file_manager",
+                return_value=True,
+            ) as reveal,
+        ):
             async with TestClient(TestServer(self._client_app())) as client:
                 resp = await client.post("/api/reveal", json={"path": str(f)})
                 assert resp.status == 200
@@ -871,15 +863,25 @@ class TestRevealPath:
         # run" — a click in the file viewer must not become a 500 either way.
         f = tmp_path / "doc.pdf"
         f.write_text("x", encoding="utf-8")
-        for platform, action in (("darwin", "reveal"), ("linux", "reveal"),
-                                 ("win32", "reveal"), ("linux", "open")):
-            with patch("sys.platform", platform), \
-                 patch("kiro_crew.dashboard.handlers.files.platform_compat.reveal_in_file_manager", return_value=False), \
-                 patch("kiro_crew.dashboard.handlers.files.platform_compat.open_with_default_app", return_value=False):
+        for platform, action in (
+            ("darwin", "reveal"),
+            ("linux", "reveal"),
+            ("win32", "reveal"),
+            ("linux", "open"),
+        ):
+            with (
+                patch("sys.platform", platform),
+                patch(
+                    "kiro_crew.dashboard.handlers.files.platform_compat.reveal_in_file_manager",
+                    return_value=False,
+                ),
+                patch(
+                    "kiro_crew.dashboard.handlers.files.platform_compat.open_with_default_app",
+                    return_value=False,
+                ),
+            ):
                 async with TestClient(TestServer(self._client_app())) as client:
-                    resp = await client.post(
-                        "/api/reveal", json={"path": str(f), "action": action}
-                    )
+                    resp = await client.post("/api/reveal", json={"path": str(f), "action": action})
                     assert resp.status == 200, f"{platform}/{action} should not 500"
                     # A local grant whose host had no working file manager
                     # degrades to the clipboard: `copy` carries the path to write.
@@ -894,18 +896,28 @@ class TestRevealPath:
         f.write_text("x", encoding="utf-8")
         for action in ("reveal", "open"):
             mock_sel.log_tool_invocation.reset_mock()
-            with patch("sys.platform", "linux"), \
-                 patch("kiro_crew.dashboard.handlers.files.platform_compat.reveal_in_file_manager", return_value=False), \
-                 patch("kiro_crew.dashboard.handlers.files.platform_compat.open_with_default_app", return_value=False):
+            with (
+                patch("sys.platform", "linux"),
+                patch(
+                    "kiro_crew.dashboard.handlers.files.platform_compat.reveal_in_file_manager",
+                    return_value=False,
+                ),
+                patch(
+                    "kiro_crew.dashboard.handlers.files.platform_compat.open_with_default_app",
+                    return_value=False,
+                ),
+            ):
                 async with TestClient(TestServer(self._client_app())) as client:
-                    resp = await client.post(
-                        "/api/reveal", json={"path": str(f), "action": action}
-                    )
+                    resp = await client.post("/api/reveal", json={"path": str(f), "action": action})
                     assert resp.status == 200
                     assert await resp.json() == {"ok": True, "copy": str(f)}
             mock_sel.log_tool_invocation.assert_called_once_with(
-                session_key="api", source="api", tool_name="reveal_path",
-                outcome="success", resources=str(f), metadata={"action": action},
+                session_key="api",
+                source="api",
+                tool_name="reveal_path",
+                outcome="success",
+                resources=str(f),
+                metadata={"action": action},
             )
 
 
@@ -918,8 +930,9 @@ class _FakeProc:
     branch of the cleanup.
     """
 
-    def __init__(self, stdout: bytes = b"", *, fail_first: bool = False,
-                 kill_raises: bool = False) -> None:
+    def __init__(
+        self, stdout: bytes = b"", *, fail_first: bool = False, kill_raises: bool = False
+    ) -> None:
         self._stdout = stdout
         self._fail_first = fail_first
         self._kill_raises = kill_raises
@@ -958,8 +971,10 @@ class TestNativePickers:
     @pytest.mark.asyncio
     async def test_upload_returns_selected_paths(self, mock_sel):
         proc = _FakeProc(stdout=b"/Users/x/a.png\n\n/Users/x/b.txt\n")
-        with patch("sys.platform", "darwin"), \
-             patch("asyncio.create_subprocess_exec", AsyncMock(return_value=proc)) as spawn:
+        with (
+            patch("sys.platform", "darwin"),
+            patch("asyncio.create_subprocess_exec", AsyncMock(return_value=proc)) as spawn,
+        ):
             async with TestClient(
                 TestServer(_app("POST", "/api/upload", files_mod.api_upload))
             ) as client:
@@ -971,8 +986,10 @@ class TestNativePickers:
     @pytest.mark.asyncio
     async def test_upload_cancelled_dialog_returns_no_paths(self, mock_sel):
         proc = _FakeProc(stdout=b"\n  \n")
-        with patch("sys.platform", "darwin"), \
-             patch("asyncio.create_subprocess_exec", AsyncMock(return_value=proc)):
+        with (
+            patch("sys.platform", "darwin"),
+            patch("asyncio.create_subprocess_exec", AsyncMock(return_value=proc)),
+        ):
             async with TestClient(
                 TestServer(_app("POST", "/api/upload", files_mod.api_upload))
             ) as client:
@@ -982,8 +999,10 @@ class TestNativePickers:
     @pytest.mark.asyncio
     async def test_upload_timeout_kills_dialog_and_returns_504(self, mock_sel):
         proc = _FakeProc(fail_first=True, kill_raises=True)
-        with patch("sys.platform", "darwin"), \
-             patch("asyncio.create_subprocess_exec", AsyncMock(return_value=proc)):
+        with (
+            patch("sys.platform", "darwin"),
+            patch("asyncio.create_subprocess_exec", AsyncMock(return_value=proc)),
+        ):
             async with TestClient(
                 TestServer(_app("POST", "/api/upload", files_mod.api_upload))
             ) as client:
@@ -1014,8 +1033,7 @@ class TestNativePickers:
             Path(argv[2]).write_bytes(b"\x89PNG\r\n\x1a\n")
             return _FakeProc()
 
-        with patch("sys.platform", "darwin"), \
-             patch("asyncio.create_subprocess_exec", fake_exec):
+        with patch("sys.platform", "darwin"), patch("asyncio.create_subprocess_exec", fake_exec):
             async with TestClient(
                 TestServer(_app("POST", "/api/screenshot", files_mod.api_screenshot))
             ) as client:
@@ -1027,11 +1045,12 @@ class TestNativePickers:
         assert Path(path).read_bytes().startswith(b"\x89PNG")
 
     @pytest.mark.asyncio
-    async def test_screenshot_user_cancel_returns_empty_path(self, tmp_path, mock_sel,
-                                                             monkeypatch):
+    async def test_screenshot_user_cancel_returns_empty_path(self, tmp_path, mock_sel, monkeypatch):
         monkeypatch.setattr(files_mod, "_SCREENSHOT_DIR", tmp_path / "shots")
-        with patch("sys.platform", "darwin"), \
-             patch("asyncio.create_subprocess_exec", AsyncMock(return_value=_FakeProc())):
+        with (
+            patch("sys.platform", "darwin"),
+            patch("asyncio.create_subprocess_exec", AsyncMock(return_value=_FakeProc())),
+        ):
             async with TestClient(
                 TestServer(_app("POST", "/api/screenshot", files_mod.api_screenshot))
             ) as client:
@@ -1043,8 +1062,10 @@ class TestNativePickers:
     async def test_screenshot_timeout_returns_504(self, tmp_path, mock_sel, monkeypatch):
         monkeypatch.setattr(files_mod, "_SCREENSHOT_DIR", tmp_path / "shots")
         proc = _FakeProc(fail_first=True)
-        with patch("sys.platform", "darwin"), \
-             patch("asyncio.create_subprocess_exec", AsyncMock(return_value=proc)):
+        with (
+            patch("sys.platform", "darwin"),
+            patch("asyncio.create_subprocess_exec", AsyncMock(return_value=proc)),
+        ):
             async with TestClient(
                 TestServer(_app("POST", "/api/screenshot", files_mod.api_screenshot))
             ) as client:
@@ -1164,9 +1185,7 @@ class TestDashboardConfigPut:
             assert "Unknown fields" in (await resp.json())["error"]
 
     @pytest.mark.asyncio
-    async def test_deprecated_and_read_only_keys_are_dropped_not_rejected(
-        self, config_client_app
-    ):
+    async def test_deprecated_and_read_only_keys_are_dropped_not_rejected(self, config_client_app):
         """The settings UI PUTs back everything the GET returned, so a removed
         key and a read-only key must be ignored rather than 400 the whole save."""
         async with TestClient(TestServer(config_client_app)) as client:
@@ -1185,6 +1204,75 @@ class TestDashboardConfigPut:
         # Read-only fields were not persisted from the PUT body.
         assert got["gitlab_hosts"] == []
         assert got["jira_hosts"] == []
+
+    @pytest.mark.asyncio
+    async def test_link_patterns_round_trip(self, config_client_app):
+        rules = [{"pattern": r"\bPROJ-\d+\b", "url": "https://tracker.example.com/browse/{match}"}]
+        async with TestClient(TestServer(config_client_app)) as client:
+            resp = await client.put("/api/dashboard/config", json={"link_patterns": rules})
+            assert resp.status == 200
+            got = await (await client.get("/api/dashboard/config")).json()
+        assert got["link_patterns"] == rules
+
+    @pytest.mark.asyncio
+    async def test_link_patterns_preserve_pattern_whitespace_exactly(self, config_client_app):
+        # Whitespace in a regex is load-bearing: `PROJ-\d+ ` (trailing space)
+        # matches different text than `PROJ-\d+`. Neither the PUT handler nor
+        # the load-time coercer may strip it -- trimming is for blank-DETECTION
+        # only. Silent stripping broadened the stored pattern (mints links the
+        # operator never wrote); the two edge-space twins below are DIFFERENT
+        # regexes and must both survive, not collapse into the dedup 400.
+        rules = [
+            {"pattern": r"PROJ-\d+ ", "url": "https://one.example/{match}"},
+            {"pattern": r"PROJ-\d+", "url": "https://two.example/{match}"},
+            {"pattern": r" ID-\d+", "url": "https://three.example/{match}"},
+        ]
+        async with TestClient(TestServer(config_client_app)) as client:
+            resp = await client.put("/api/dashboard/config", json={"link_patterns": rules})
+            assert resp.status == 200
+            got = await (await client.get("/api/dashboard/config")).json()
+        # Byte-exact round trip through PUT -> disk -> coercer -> GET.
+        assert got["link_patterns"] == rules
+
+    @pytest.mark.asyncio
+    async def test_link_patterns_rejects_malformed(self, config_client_app):
+        bad_bodies = [
+            {"link_patterns": "not-a-list"},
+            {"link_patterns": ["not-a-dict"]},
+            {"link_patterns": [{"pattern": "", "url": "https://x.example/{match}"}]},
+            {"link_patterns": [{"pattern": "ok", "url": "javascript:alert(1)"}]},
+            {"link_patterns": [{"pattern": "ok", "url": "https://x.example/no-placeholder"}]},
+            {"link_patterns": [{"pattern": "ok", "url": "https://x.example/{match}"}] * 51},
+            {"link_patterns": [{"pattern": "a" * 301, "url": "https://x.example/{match}"}]},
+            # Duplicate patterns: the load-time coercer keeps only the first,
+            # so accepting both would persist a rule that GET then omits and a
+            # later editor save would silently drop from disk. Distinct urls
+            # under the same pattern are still one duplicate.
+            {
+                "link_patterns": [
+                    {"pattern": r"\bDUP-\d+\b", "url": "https://one.example/{match}"},
+                    {"pattern": r"\bDUP-\d+\b", "url": "https://two.example/{match}"},
+                ]
+            },
+            # Renderer parity: normaliseHref refuses userinfo and a '{match}'
+            # in the authority (the token could steer the host), so accepting
+            # these would store rules that never linkify and show no warning.
+            {"link_patterns": [{"pattern": "ok", "url": "https://{match}.example.com/x"}]},
+            {"link_patterns": [{"pattern": "ok", "url": "https://user:pw@x.example/{match}"}]},
+            {"link_patterns": [{"pattern": "ok", "url": "https://x.example:{match}/t"}]},
+            # Whitespace in the authority: Python's urlsplit tolerates it but
+            # the browser's URL parser refuses it, so the rule would store
+            # fine and silently never linkify.
+            {"link_patterns": [{"pattern": "ok", "url": "https://exa mple.com/{match}"}]},
+        ]
+        async with TestClient(TestServer(config_client_app)) as client:
+            for body in bad_bodies:
+                resp = await client.put("/api/dashboard/config", json=body)
+                assert resp.status == 400, body
+                assert (await resp.json())["code"] == "invalid_link_patterns"
+            # A malformed save persisted nothing.
+            got = await (await client.get("/api/dashboard/config")).json()
+        assert got["link_patterns"] == []
 
     @pytest.mark.asyncio
     async def test_boolean_fields_reject_non_booleans(self, config_client_app):
@@ -1227,9 +1315,7 @@ class TestDashboardConfigPut:
                 "restore_window_minutes"
             ] == 1440
 
-            resp = await client.put(
-                "/api/dashboard/config", json={"restore_window_minutes": -5}
-            )
+            resp = await client.put("/api/dashboard/config", json={"restore_window_minutes": -5})
             assert resp.status == 200
             assert (await (await client.get("/api/dashboard/config")).json())[
                 "restore_window_minutes"
@@ -1281,8 +1367,7 @@ class TestDashboardConfigPut:
     async def test_cancellation_mid_load_is_still_audited(self, mock_sel):
         """A client disconnect while the config load is off-loop must not leave
         the authorized access absent from the SEL chain."""
-        for method, tool in (("PUT", "dashboard_config_write"),
-                             ("GET", "dashboard_config_read")):
+        for method, tool in (("PUT", "dashboard_config_write"), ("GET", "dashboard_config_read")):
             mock_sel.reset_mock()
             req = MagicMock()
             req.method = method
@@ -1292,8 +1377,7 @@ class TestDashboardConfigPut:
             # TestDashboardConfigPutOwnerGate. Without this the MagicMock request
             # reads as a non-owner and the gate answers before the load runs.
             with patch(
-                "kiro_crew.dashboard.handlers.source_providers."
-                "is_owner_dashboard_request",
+                "kiro_crew.dashboard.handlers.source_providers." "is_owner_dashboard_request",
                 return_value=True,
             ):
                 with patch("asyncio.to_thread", side_effect=asyncio.CancelledError):
@@ -1382,6 +1466,7 @@ class TestFuzzyScore:
 
     def test_shorter_names_get_the_brevity_bonus(self):
         short = files_mod._fuzzy_score("log", "log.txt", "log.txt")
-        long = files_mod._fuzzy_score("log", "log_with_a_very_long_name.txt",
-                                      "log_with_a_very_long_name.txt")
+        long = files_mod._fuzzy_score(
+            "log", "log_with_a_very_long_name.txt", "log_with_a_very_long_name.txt"
+        )
         assert short > long

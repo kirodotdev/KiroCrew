@@ -173,6 +173,9 @@ const PRIMITIVE_MAP: Record<string, SettingPrimitiveType> = {
   // type values.
   SecretField: 'input',
   TagListEditor: 'input',
+  // Regex -> URL rule-pair editor (ChatPanel). Same composite contract: `label`
+  // prop, `data-setting-label` on its frame, 'input' to every registry reader.
+  LinkPatternsEditor: 'input',
 }
 
 const PRIMITIVES = Object.keys(PRIMITIVE_MAP)

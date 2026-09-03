@@ -113,6 +113,7 @@ export interface DashboardConfig {
   session_grid: boolean
   tail_fork_enabled: boolean
   link_previews: boolean
+  link_patterns: { pattern: string; url: string }[]
   mcp_app_panel: boolean
   auto_open_git_panel: boolean
   session_card_source_links: boolean

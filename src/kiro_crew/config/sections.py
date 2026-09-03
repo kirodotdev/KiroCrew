@@ -2249,6 +2249,47 @@ class JiraAuthEntry:
     )
 
 
+@dataclass
+class LinkPatternRule:
+    """One text-to-link rewrite rule for chat transcripts.
+
+    Rendering-only: the dashboard rewrites matching plain text into links at
+    display time; stored messages are never modified. The pattern is compiled
+    by the BROWSER (JavaScript regex dialect), so the backend validates only
+    shape and size, never regex semantics.
+    """
+
+    pattern: str = field(
+        default="",
+        metadata=_meta(
+            "Pattern",
+            "JavaScript regular expression matched against transcript text "
+            "(e.g. '\\\\bPROJ-\\\\d+\\\\b'). A rule that matches the empty string is "
+            "ignored.",
+        ),
+    )
+    url: str = field(
+        default="",
+        metadata=_meta(
+            "URL Template",
+            "Link target for each match: an absolute http(s) URL in which "
+            "'{match}' inserts the matched text, percent-encoded (e.g. "
+            "'https://tracker.example.com/browse/{match}'). The renderer "
+            "additionally requires the placeholder outside the host and "
+            "refuses userinfo.",
+        ),
+    )
+
+
+# dashboard.link_patterns -- bounds on operator-supplied transcript link rules.
+# The count cap bounds per-message scan work (each rule is one regex pass over
+# every rendered markdown block); the length caps bound pathological patterns
+# and keep the config API payload small.
+LINK_PATTERNS_MAX = 50
+LINK_PATTERN_PATTERN_MAX_LEN = 300
+LINK_PATTERN_URL_MAX_LEN = 2000
+
+
 # dashboard.loop_stall_exit_after_secs -- event-loop silence tolerated before
 # the gateway dumps all thread stacks and hard-exits. ``None`` is the
 # serializable "automatic" sentinel: launch class selects the desktop or
@@ -2828,6 +2869,19 @@ class DashboardConfig:
             "token (Basic auth); Jira Server/Data Center uses a Personal "
             "Access Token (Bearer). When no entry matches the issue host, the "
             "panel falls back to the link-out 'Open in Jira' behavior.",
+        ),
+    )
+    link_patterns: list[LinkPatternRule] = field(
+        default_factory=list,
+        metadata=_meta(
+            "Transcript Link Patterns",
+            "Rewrite matching plain text in chat transcripts into clickable "
+            "links at display time (e.g. ticket ids like PROJ-123 to your "
+            "tracker). Each rule pairs a JavaScript regex with an absolute "
+            "http(s) URL template in which '{match}' inserts the matched "
+            "text, percent-encoded. Rendering-only: stored messages never change. Text "
+            "inside code blocks, existing links, and raw HTML is not rewritten; "
+            "an inline code span whose whole text matches becomes a link chip.",
         ),
     )
 
@@ -5403,6 +5457,88 @@ def _coerce_jira_hosts(raw: object) -> list[str]:
             continue
         out.append(host)
     return out
+
+
+def _coerce_link_patterns(raw: object) -> list[LinkPatternRule]:
+    """Coerce the transcript link rules, skipping malformed entries.
+
+    Same fail-open-per-entry discipline as the host allowlists: a hand-edited
+    bad entry is dropped rather than failing the whole config load. Regex
+    VALIDITY is deliberately not checked here -- the pattern is compiled by the
+    browser in the JavaScript dialect, and Python's ``re`` accepts/rejects a
+    different language; the frontend skips rules that fail to compile.
+    """
+    if not isinstance(raw, list):
+        return []
+    out: list[LinkPatternRule] = []
+    seen: set[str] = set()
+    for entry in raw:
+        if len(out) >= LINK_PATTERNS_MAX:
+            break
+        if not isinstance(entry, dict):
+            continue
+        pattern = entry.get("pattern")
+        url = entry.get("url")
+        if not isinstance(pattern, str) or not isinstance(url, str):
+            continue
+        # Whitespace in a regex is load-bearing (`PROJ-\d+ ` and `PROJ-\d+`
+        # match different text), so the pattern is stored EXACTLY as authored;
+        # strip() decides only whether it is blank. URLs are the opposite:
+        # the validator below refuses whitespace in the authority and the
+        # template is expanded, not matched, so edge-trimming cannot change
+        # meaning.
+        url = url.strip()
+        if not pattern.strip() or len(pattern) > LINK_PATTERN_PATTERN_MAX_LEN:
+            continue
+        if len(url) > LINK_PATTERN_URL_MAX_LEN:
+            continue
+        # http(s) only: the rewrite mints anchors into every transcript, so a
+        # javascript:/file: template must never survive to the renderer even
+        # though the frontend re-checks. link_pattern_url_ok also mirrors the
+        # renderer's origin-stability rule (no userinfo, no '{match}' in the
+        # authority) so what the config stores is what actually renders.
+        if not link_pattern_url_ok(url):
+            continue
+        # First-wins on duplicate patterns. The settings PUT rejects
+        # duplicates outright, so this only meets hand-edited config files —
+        # where dropping the shadowed twin beats dropping the whole list.
+        if pattern in seen:
+            continue
+        seen.add(pattern)
+        out.append(LinkPatternRule(pattern=pattern, url=url))
+    return out
+
+
+def link_pattern_url_ok(url: str) -> bool:
+    """True when *url* is a link-pattern template the renderer will accept.
+
+    Mirrors the frontend's ``normaliseHref``: beyond the http(s) + ``{match}``
+    floor, the renderer substitutes two DIFFERENT canary tokens and requires
+    the same origin both times, which rejects a ``{match}`` sitting in the
+    authority (where the token could steer the host) and any userinfo (which
+    ``safeHttpUrl`` refuses outright). Enforcing the same rules here keeps the
+    save honest: without them a template like ``https://{match}.example/x`` or
+    ``https://u:p@host/{match}`` stores fine, renders nothing, and shows no
+    warning anywhere.
+    """
+    if not url.startswith(("https://", "http://")) or "{match}" not in url:
+        return False
+    try:
+        origins = set()
+        for canary in ("aaa", "bbb"):
+            parts = _urlsplit(url.replace("{match}", canary))
+            # Userinfo never survives the renderer's safeHttpUrl, and the
+            # browser's URL parser refuses whitespace in the authority that
+            # Python's urlsplit tolerates — either way the rule would store
+            # fine and silently never linkify.
+            if "@" in parts.netloc or not parts.hostname:
+                return False
+            if any(ch.isspace() for ch in parts.netloc):
+                return False
+            origins.add((parts.scheme, parts.hostname, parts.port))
+        return len(origins) == 1
+    except ValueError:
+        return False
 
 
 def _coerce_int(raw: object, default: int) -> int:
