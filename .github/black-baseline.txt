@@ -1057,7 +1057,6 @@ test/test_slack_thread_sync.py
 test/test_slack_transport_integration.py
 test/test_slack_upload_binary.py
 test/test_slash_task_tracking.py
-test/test_slot_close_nudge_race.py
 test/test_slot_detail_offload.py
 test/test_slot_needs_input_status.py
 test/test_slot_sync_on_create.py

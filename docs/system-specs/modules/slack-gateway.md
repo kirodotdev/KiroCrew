@@ -420,6 +420,26 @@ in-flight claim, and calls the Slack/Discord or dashboard adapter only for
 not add the legacy cycle tag. Every non-actionable, retry, and terminal decision
 dispatches zero turns.
 
+Terminal observer notifications are deduplicated for structured monitors within
+one gateway process. The retained monitor record also stores whether the dashboard
+accepted its terminal notice. Startup replays every terminal notice without that
+delivery marker and persists the marker only after acceptance, giving the
+persist-then-notify boundary at-least-once crash semantics: a crash can repeat a
+notice, but cannot suppress the only notice permanently. Gated
+legacy loops use only their existing `expired` notification; the following `fired`
+event must not deliver the same terminal notification again.
+Terminal notices identify the watched pull request by its stored target URL,
+including channel-bound watches with no dashboard jump link. The completed body,
+including the retained target, passes through shared URL and credential redaction
+before dashboard notification persistence. The stored stop
+reason distinguishes a merged pull request from one ready for review: only a
+merge says no action is needed. A `pull_request_closed` blocker states that the
+pull request was closed unmerged and offers reopen-or-abandon recovery. Other
+known blockers name the credentials, permission, setup, approval, completion,
+conversation, or saved-record problem; unknown reasons point to retained details
+without guessing that the pull request closed. An unavailable-session notice
+directs the operator to start a new watch from an active conversation.
+
 Slack's structured inline nudge runs through `TurnDriver` with the shared,
 session-bound directive consumer. Genuine core-MCP `monitor_update`,
 `monitor_stop`, and structured `autonudge_stop` tool results therefore mutate

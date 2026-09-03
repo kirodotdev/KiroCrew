@@ -395,7 +395,9 @@ re-runs them on the new head.
                "Exit 0 -> go to Phase 4 (which arms auto-merge on an explicit ship request), "
                "and only once no unanswered concern remains, tell the user and call autonudge_stop.",
        interval_secs=300,
-       max_cycles=80)
+       max_cycles=80,
+       max_runtime_secs=86400,
+       gate=False)
      ```
 
      **Did it arm? VERIFY — the reply text is not evidence.** `monitor_start` is a
@@ -421,11 +423,10 @@ re-runs them on the new head.
        the PR sits with nothing polling it.
      - **2** → the store could not be read; treat exactly like 20.
 
-     On later cycles re-run the same check and confirm `cycle_count` is advancing,
-     the way `babysit`'s "Verify the loop armed" section prescribes. A loop that is
-     present but frozen at the same count is also a fallback case.
+     On later cycles re-run the same check and confirm `cycle_count` is advancing.
+     A loop that is present but frozen at the same count is also a fallback case.
 
-     **`max_cycles` is a poll budget, not a round budget.** One 20–40 minute round costs several 5-minute cycles, so the default expires after two or three rounds — silently. `max_cycles=80` is roughly ten rounds; raise it via `monitor_update` if the work is still live near the cap. See `babysit` for the loop's own semantics.
+     **`max_cycles` is a poll budget, not a round budget.** One 20–40 minute round costs several 5-minute cycles. The recipe pairs `max_cycles=80` (roughly ten rounds) with an explicit 24-hour runtime cap, allowing time for agent work between polls; an omitted runtime defaults to four hours and can stop it before the cycle cap. Both bounds remain finite: inspect elapsed runtime as well as cycles and raise the relevant bound via `monitor_update` if the work is still live near either cap. `gate=False` keeps comment/advisory checks running even when typed provider facts are unchanged. See `babysit` for the loop's own semantics.
 
      **`interval_secs=300` is FIXED for the whole run — raise `max_cycles`, never
      the interval.** Lengthening it is the wrong lever for every state this loop
@@ -551,11 +552,10 @@ owning slot, so its tool calls hit a deny-by-default approval path and time out,
 while a denied tool inside a completed turn still records `last_status: ok`;
 heartbeat runs under a name allowlist with no shell and no `git push`.
 
-**One narrow exception.** `babysit`'s `pr_watch` script cron costs zero tokens per
-quiet cycle, so it is the better driver during a *pure-watch* stretch — but only
-when you have **nothing to answer**: no open concern, and no bot post still
-expected. `pr_watch` reads no comment bodies, so it cannot see the "every bot has
-posted" half of round completion. Any doubt → `monitor_start`.
+`monitor_watch` is the zero-turn choice for a provider-fact-only watch, but this
+fix-and-push loop depends on generic reviewer posts and must stay on the bounded
+`monitor_start` path. Do not register the compatibility `pr_watch` script cron for
+new work.
 
 Cron *is* correct for post-merge cleanup, as a `script` cron at roughly a 5-minute
 interval — an hourly one loses the merge-to-teardown race.

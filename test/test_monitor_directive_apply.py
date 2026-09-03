@@ -291,9 +291,11 @@ async def test_legacy_autonudge_stop_retains_only_structured_records(tmp_path):
     state = SimpleNamespace(_slots={}, sessions=None, channel_transports={})
     slot = SimpleNamespace(key="chat-1", _app="")
     with patch("kiro_crew.autonudge.get_instance", return_value=service):
-        await apply_session_directive(
+        result = await apply_session_directive(
             state, slot, "dashboard:chat-1", "autonudge_stop", {"reason": "legacy caller"}
         )
+    assert result.startswith(f"Structured monitor {structured.id} stopped and retained")
+    assert "No further monitor wakes" in result
     assert service.get_by_slot("chat-1") is structured
     assert structured.monitor is not None
     assert structured.monitor.outcome is MonitorOutcome.USER_STOP

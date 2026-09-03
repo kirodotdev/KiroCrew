@@ -27,7 +27,10 @@ from urllib.parse import urlparse
 
 from kiro_crew import autonudge, mcp_core, platform_compat, session_directive
 from kiro_crew.mcp_shared import ToolCancelled, is_tool_cancelled
-from kiro_crew.mcp_tools._limits import _MONITOR_DEFAULT_MAX_CYCLES
+from kiro_crew.mcp_tools._limits import (
+    _MONITOR_DEFAULT_MAX_CYCLES,
+    _MONITOR_DEFAULT_MAX_RUNTIME_SECS,
+)
 from kiro_crew.monitoring.github_pull_request import parse_github_pull_request_target
 from kiro_crew.monitoring.models import (
     DEFAULT_MONITOR_AGENT_TURNS,
@@ -176,9 +179,9 @@ def schemas() -> list[dict[str, Any]]:
                 "Stop the auto-nudge loop driving your current session. Call this "
                 "when you determine the loop should halt (e.g. goal complete, "
                 "blocked on user input, or a STOP sentinel file indicates shutdown). "
-                "Removes the loop from the AutoNudgeService so no further nudges "
-                "fire into this session. Safe to call even if no loop is active — "
-                "returns a no-op message."
+                "Legacy loops are removed. For a structured monitor, this compatibility "
+                "alias records a durable user-stop outcome and retains the record for "
+                "inspection. Safe to call even if no loop is active."
             ),
             "inputSchema": {
                 "type": "object",
@@ -271,7 +274,8 @@ def schemas() -> list[dict[str, Any]]:
             "description": (
                 "Watch a GitHub pull request with cheap provider probes. The owning session "
                 "is woken only when a new revision needs action; unchanged, pending, retry, "
-                "and terminal probes use no agent turn. One structured monitor per session."
+                "and terminal probes use no agent turn. Available from dashboard, Slack, and "
+                "Discord sessions. One structured monitor per session."
             ),
             "inputSchema": {
                 "type": "object",
@@ -335,22 +339,30 @@ def schemas() -> list[dict[str, Any]]:
         {
             "name": "monitor_start",
             "description": (
-                "Start a monitoring loop on YOUR CURRENT session: every "
+                "Start a finite prompt loop for repeated work on YOUR CURRENT session, "
+                "including first-class self-session patrol by conductor agents. For "
+                "monitoring targets, this is also the legacy fallback for targets, "
+                "objectives, or required evidence unsupported by monitor_watch. "
+                "Use monitor_watch for public GitHub pull-request review readiness only when "
+                "the objective is fully determined by typed provider facts. Use the prompt "
+                "loop when comments or advisory review evidence must be interpreted. "
+                "Start a prompt loop on YOUR CURRENT session: every "
                 "interval_secs the given message is re-injected into this same "
                 "session as your next turn — same context, same tools, same "
                 "conversation. The countdown is deadline-preserving: user "
                 "messages defer a due fire until their turn ends but do NOT "
                 "restart the interval, so checks stay on schedule even in an "
                 "actively-used session. Works from dashboard chat, Slack "
-                "threads, and Discord DMs. Use when the user asks to babysit / "
-                "monitor / keep checking something (a PR, CI run, ticket, "
-                "deployment): put the check instructions and the exit condition "
-                "in the message, then END YOUR TURN — the loop wakes you on the "
+                "threads, Discord DMs, and Webex conversations. Put the check instructions and "
+                "the exit "
+                "condition in the message, then END YOUR TURN — the loop wakes you on the "
                 "interval. When the exit condition is met (or the user says "
                 "stop), call autonudge_stop — reaching max_cycles is a runaway "
-                "backstop, NOT a successful finish. Use monitor_update to "
-                "revise or re-arm the instruction if what you are watching "
-                "changes. One automation may occupy a session; monitor_start "
+                "backstop, NOT a successful finish. From dashboard, Slack, or "
+                "Discord, use monitor_update to revise or re-arm the instruction "
+                "if what you are watching changes. On Webex, stop the loop and "
+                "create a new finite one instead. One automation may occupy a "
+                "session; monitor_start "
                 "is create-only and refuses while an ACTIVE one exists (a "
                 "system-stopped or expired automation — an approval stall, a "
                 "spent cap or budget, a finished subject — is replaced by the "
@@ -413,20 +425,23 @@ def schemas() -> list[dict[str, Any]]:
                     },
                     "max_cycles": {
                         "type": "integer",
+                        "minimum": 1,
+                        "maximum": 1000,
                         "description": (
                             "Safety cap on delivered cycles (default "
-                            f"{_MONITOR_DEFAULT_MAX_CYCLES}). Pass 0 for "
-                            "unlimited only when the user explicitly wants an "
-                            "unbounded loop — an unbounded loop whose exit "
-                            "condition is never recognised runs forever"
+                            f"{_MONITOR_DEFAULT_MAX_CYCLES}). Use a larger finite "
+                            "value for a longer watch"
                         ),
                     },
                     "max_runtime_secs": {
                         "type": "integer",
+                        "minimum": 1,
+                        "maximum": 604800,
                         "description": (
                             "Wall-clock budget in seconds, measured from when "
-                            "the loop is armed (0 = unlimited, the default; "
-                            "max 604800 = 7 days). Unlike max_cycles this "
+                            "the loop is armed (default "
+                            f"{_MONITOR_DEFAULT_MAX_RUNTIME_SECS}; max 604800 = 7 days). "
+                            "Unlike max_cycles this "
                             "bounds elapsed TIME, so a loop with slow turns or "
                             "a long interval still stops on schedule. The "
                             "budget gates when turns START and re-checks the "
@@ -491,6 +506,8 @@ def schemas() -> list[dict[str, Any]]:
                     },
                     "max_cycles": {
                         "type": "integer",
+                        "minimum": 1,
+                        "maximum": 1000,
                         "description": (
                             "New cap on delivered cycles; raise it when a loop "
                             "is close to its cap but the work is still live. "
@@ -499,10 +516,12 @@ def schemas() -> list[dict[str, Any]]:
                     },
                     "max_runtime_secs": {
                         "type": "integer",
+                        "minimum": 1,
+                        "maximum": 604800,
                         "description": (
                             "New wall-clock budget in seconds, measured from "
-                            "when the loop was first armed (0 = unlimited, max "
-                            "604800 = 7 days). Omit to leave unchanged"
+                            "when the loop was first armed (max 604800 = 7 days). "
+                            "Omit to leave unchanged"
                         ),
                     },
                     "target": {
@@ -986,7 +1005,7 @@ def autonudge_stop(name: str, args: dict[str, Any]) -> str:
     if mcp_core._autonudge_binding_key(sk) is None and sk:
         return (
             "No auto-nudge loop to stop: this tool only works from within "
-            "a dashboard, Slack, or Discord session "
+            "a dashboard, Slack, Discord, or Webex session "
             f"(current session_key={sk!r})."
         )
     return _emit_directive(
@@ -1063,25 +1082,22 @@ def monitor_start(name: str, args: dict[str, Any]) -> str:
     # (chat_runner) supplies the binding key and arms the loop.
     if mcp_core._autonudge_binding_key(sk) is None and sk:
         return (
-            "monitor_start only works from within a dashboard, Slack, or "
-            f"Discord session (current session_key={sk!r}). For other "
+            "monitor_start only works from within a dashboard, Slack, Discord, "
+            f"or Webex session (current session_key={sk!r}). For other "
             "contexts use cron_add or a HEARTBEAT.md task."
         )
     message = args["message"].strip()
     if not message:
         return "monitor_start: message must not be empty."
     interval_secs = int(args.get("interval_secs") or 300)
-    # Default to a BOUNDED cap. An unbounded loop only ever stops when the
-    # model volunteers an autonudge_stop, and observed loop stores show that
-    # is not reliable: real babysit loops ran to 24/24 and 20/20 cycles and
-    # terminated solely because a cap happened to be set. ``max_cycles=0``
-    # (explicit unlimited) is still honoured for callers that mean it.
+    # Default to bounded cycle and runtime caps. A loop without either bound
+    # only ever stops when the model volunteers an autonudge_stop, and observed
+    # loop stores show that is not reliable.
     raw_max = args.get("max_cycles")
     max_cycles = _MONITOR_DEFAULT_MAX_CYCLES if raw_max is None else int(raw_max)
-    # Wall-clock budget: opt-in (0 = unlimited). The cycle-cap default is
-    # the runaway backstop; the runtime budget is for callers that need a
-    # hard TIME bound (e.g. "babysit this for at most 2 hours").
-    max_runtime_secs = int(args.get("max_runtime_secs") or 0)
+    # The runtime budget is bounded by default alongside the cycle cap, so a
+    # quiet or slow loop cannot survive indefinitely without a fresh decision.
+    max_runtime_secs = int(args.get("max_runtime_secs") or _MONITOR_DEFAULT_MAX_RUNTIME_SECS)
     # The one escape from gating, and deliberately an opt-OUT. An opt-IN is what
     # this change exists to stop shipping: five consecutive opt-in mechanisms
     # measured zero adoption, because the default never moved. An opt-out does
@@ -1142,22 +1158,30 @@ def monitor_start(name: str, args: dict[str, Any]) -> str:
             + (f", wall-clock budget {max_runtime_secs}s" if max_runtime_secs else "")
             + ". End your turn now; once the loop is armed it wakes you on "
             "that interval — but arming happens when this turn's result is "
-            "processed, and only a live dashboard/Slack/Discord session can "
+            "processed, and only a live dashboard/Slack/Discord/Webex session can "
             "host a loop, so do NOT assume it armed. Call autonudge_stop when "
             "the exit condition is met; hitting the cap is a runaway backstop, "
-            "not a finish. Use monitor_update if the instruction goes stale."
+            "not a finish. From dashboard, Slack, or Discord, use monitor_update "
+            "if the instruction goes stale; on Webex, stop this loop and create "
+            "a new finite one instead."
         ),
     )
 
 
-def _monitor_context_refusal(tool_name: str, session_key: str, message: str) -> str:
+def _monitor_context_refusal(
+    tool_name: str,
+    session_key: str,
+    message: str,
+    *,
+    error: str = "unsupported_session_binding",
+) -> str:
     """Return a failed tool result and retain the security-relevant refusal."""
     mcp_core.sel().log_tool_invocation(
         session_key=session_key or "mcp_core",
         source="mcp",
         tool_name=tool_name,
         outcome="denied",
-        error="unsupported_session_binding",
+        error=error,
     )
     return f"Error: {message}"
 
@@ -1215,8 +1239,10 @@ def monitor_watch(name: str, args: dict[str, Any]) -> str:
     return _emit_directive(
         "monitor_watch",
         payload,
-        "Structured monitor requested for this session. End your turn; inspect the monitor "
-        "to confirm the authoritative consumer armed it.",
+        "Structured monitor requested for this session; application is still pending. "
+        "End your turn so the owning session can apply it. The operator can confirm it in "
+        "the dashboard; the agent can call monitor_inspect only at the start of a later "
+        "turn or in response to a later wake.",
     )
 
 
@@ -1265,6 +1291,7 @@ def _compact_monitor_inspection(result: dict[str, Any]) -> dict[str, Any]:
         "last_wake_fingerprint",
         "wake_in_flight",
         "wake_count",
+        "token_usage_known",
         "agent_turns",
         "input_tokens",
         "output_tokens",

@@ -2046,7 +2046,7 @@ class TestNotifyNudgeExpired:
         monitor's recorded outcome rather than lumping both under a finish.
         """
         import kiro_crew.autonudge as _an
-        from kiro_crew.monitoring.models import MonitorOutcome
+        from kiro_crew.monitoring.models import MonitorOutcome, MonitorState
 
         for outcome, expect_no_action in ((MonitorOutcome.SUCCESS, True), (MonitorOutcome.BLOCKED, False)):
             loop = self._loop()
@@ -2054,7 +2054,15 @@ class TestNotifyNudgeExpired:
             # loop would exercise the wrong case entirely.
             loop.cycle_count = 3
             loop.stopped_reason = _an.MONITOR_TERMINAL_REASON
-            loop.monitor = SimpleNamespace(outcome=outcome)
+            loop.monitor = MonitorState(
+                kind="github_pull_request",
+                target="https://github.com/acme/widgets/pull/7",
+                objective="review_ready",
+                created_ts=1.0,
+                outcome=outcome,
+                stopped_at=2.0,
+                stopped_reason="pull_request_merged" if expect_no_action else "pull_request_closed",
+            )
             state = MagicMock()
             GatewayOrchestrator._notify_nudge_expired(self._orch(state), loop)
             _args, _kwargs = state.notify.call_args

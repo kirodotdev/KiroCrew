@@ -1237,16 +1237,16 @@ MONITOR_STOP_SCHEMA = ToolSchema(
 # monitor_start creates an AutoNudge loop bound to the calling session (the
 # agent-facing "babysit this PR" primitive). message caps match the REST
 # endpoint's 8000-char limit; interval bounds mirror autonudge's
-# _MIN_IDLE_SECS/_MAX_IDLE_SECS clamp. max_runtime_secs is the wall-clock
-# budget (0 = unlimited); the 7-day ceiling keeps a typo like 6e9 from arming
-# an effectively-unbounded loop while still covering week-long babysits.
+# _MIN_IDLE_SECS/_MAX_IDLE_SECS clamp. Both caps must be positive; the 7-day
+# runtime ceiling keeps a typo like 6e9 from arming an effectively unbounded
+# loop while still covering week-long babysits.
 MONITOR_START_SCHEMA = ToolSchema(
     tool_name="monitor_start",
     fields=[
         FieldSpec("message", str, required=True, max_len=8000),
         FieldSpec("interval_secs", int, min_val=15, max_val=86400),
-        FieldSpec("max_cycles", int, min_val=0, max_val=1000),
-        FieldSpec("max_runtime_secs", int, min_val=0, max_val=604800),
+        FieldSpec("max_cycles", int, min_val=1, max_val=1000),
+        FieldSpec("max_runtime_secs", int, min_val=1, max_val=604800),
         # Opt-OUT of observation gating. Absent means gated, matching the tool's
         # default, so a caller written before this field existed keeps the
         # default behaviour rather than silently escaping it.
@@ -1268,8 +1268,8 @@ MONITOR_UPDATE_SCHEMA = ToolSchema(
     fields=[
         FieldSpec("message", str, max_len=8000),
         FieldSpec("interval_secs", int, min_val=15, max_val=86400),
-        FieldSpec("max_cycles", int, min_val=0, max_val=1000),
-        FieldSpec("max_runtime_secs", int, min_val=0, max_val=604800),
+        FieldSpec("max_cycles", int, min_val=1, max_val=1000),
+        FieldSpec("max_runtime_secs", int, min_val=1, max_val=604800),
         FieldSpec("target", str, max_len=MAX_SHORT_STRING),
         FieldSpec("objective", str, allowed=frozenset({"review_ready"})),
         FieldSpec("max_agent_turns", int, min_val=1, max_val=MAX_MONITOR_AGENT_TURNS),

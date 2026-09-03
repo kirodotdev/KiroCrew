@@ -1100,7 +1100,18 @@ unavailable when strict identity is absent; it never falls back to the
 process-ancestor resolver. Every structured-monitor tool refusal caused by a
 missing or unsupported session binding returns an `Error:` result and writes an
 explicit `denied` SEL event; the shared MCP wrapper therefore records the call as
-failed rather than completed.
+failed rather than completed. The structured tool exposes no caller-declared
+evidence scope: requests that need comments or advisory findings route directly
+to the finite legacy tool whose agent turn can inspect them.
+Structured creation is admitted only from dashboard, Slack, and Discord sessions,
+the surfaces with typed wake dispatch and completion correlation. Webex retains
+finite legacy prompt loops but refuses `monitor_watch` at both the stateless tool
+and authoritative consumer boundaries.
+The legacy `monitor_start` descriptor routes public GitHub pull-request readiness
+through `monitor_watch` only when typed provider facts fully determine the
+objective. Objectives that require interpreting comments or advisory review
+evidence keep a finite legacy loop instead of claiming the structured probe
+observes those facts.
 
 ### The one allowed exception: caller-agnostic process caches
 

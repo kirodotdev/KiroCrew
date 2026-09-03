@@ -47,6 +47,7 @@ import pytest
 
 from kiro_crew.autonudge import APPROVAL_STALL_REASON, NudgeLoop
 from kiro_crew.config.loader import KiroCrewConfig
+from kiro_crew.monitoring.models import MonitorOutcome, MonitorState
 from kiro_crew.slack import gateway as gw
 
 # ─── Helpers ─────────────────────────────────────────────────────────────
@@ -834,6 +835,139 @@ class TestNotifyNudgeExpired:
         assert title == "Monitoring loop spent its time budget"
         assert "60s wall-clock budget" in body
 
+    @pytest.mark.parametrize(
+        ("outcome", "title"),
+        [
+            (
+                MonitorOutcome.SUCCESS,
+                "Pull request monitor finished — review readiness reached",
+            ),
+            (MonitorOutcome.BUDGET, "Pull request monitor spent its budget"),
+            (MonitorOutcome.BLOCKED, "Pull request monitor stopped on a terminal blocker"),
+            (
+                MonitorOutcome.TARGET_UNAVAILABLE,
+                "Pull request monitor could not deliver an action",
+            ),
+        ],
+    )
+    def test_structured_terminal_wording(self, outcome: MonitorOutcome, title: str):
+        orch = _make_orchestrator()
+        ds = _mock_dashboard_state()
+        orch.dashboard_state = ds
+        loop = NudgeLoop(id="monitor-1", slot_key="chat-1", message="")
+        loop.active = False
+        loop.monitor = MonitorState(
+            kind="github_pull_request",
+            target="https://github.com/acme/widgets/pull/7",
+            objective="review_ready",
+            created_ts=1.0,
+            outcome=outcome,
+            stopped_at=2.0,
+        )
+
+        orch._notify_nudge_expired(loop)
+
+        assert ds.notify.call_args.args[1] == title
+        assert loop.monitor.target in ds.notify.call_args.args[2]
+
+    @pytest.mark.parametrize(
+        ("outcome", "reason", "expected", "forbidden"),
+        [
+            (MonitorOutcome.BLOCKED, "pull_request_closed", "was closed without merging", "If"),
+            (MonitorOutcome.BLOCKED, "provider_authentication", "credentials", "reopen"),
+            (MonitorOutcome.BLOCKED, "provider_authorization", "permission", "reopen"),
+            (MonitorOutcome.BLOCKED, "provider_setup", "setup", "reopen"),
+            (MonitorOutcome.BLOCKED, "approval_stall", "approval", "reopen"),
+            (MonitorOutcome.BLOCKED, "completion_evidence_unavailable", "completion", "reopen"),
+            (MonitorOutcome.BLOCKED, "session_unavailable", "conversation", "reopen"),
+            (
+                MonitorOutcome.BLOCKED,
+                "unsupported_monitor_version",
+                "Update Kiro Crew",
+                "reopen",
+            ),
+            (MonitorOutcome.BLOCKED, "invalid_monitor_record", "record", "reopen"),
+            (MonitorOutcome.BLOCKED, "future_reason", "details", "reopen"),
+            (MonitorOutcome.SUCCESS, "pull_request_merged", "was merged", "review-ready"),
+            (MonitorOutcome.SUCCESS, "review_ready", "ready for review", "decide the next step"),
+        ],
+    )
+    def test_structured_notice_uses_the_recorded_reason(self, outcome, reason, expected, forbidden):
+        orch = _make_orchestrator()
+        ds = _mock_dashboard_state()
+        orch.dashboard_state = ds
+        loop = NudgeLoop(id="monitor-1", slot_key="discord:kirocrew:direct:42", message="")
+        loop.active = False
+        loop.monitor = MonitorState(
+            kind="github_pull_request",
+            target="https://github.com/acme/widgets/pull/7",
+            objective="review_ready",
+            created_ts=1.0,
+            outcome=outcome,
+            stopped_at=2.0,
+            stopped_reason=reason,
+        )
+
+        orch._notify_nudge_expired(loop)
+
+        ds.notify.assert_called_once()
+        body = ds.notify.call_args.args[2]
+        assert expected in body
+        assert forbidden not in body
+        assert loop.monitor.target in body
+        assert ds.notify.call_args.kwargs["meta"] is None
+
+    def test_budget_notice_explains_how_to_continue(self):
+        orch = _make_orchestrator()
+        ds = _mock_dashboard_state()
+        orch.dashboard_state = ds
+        loop = NudgeLoop(id="monitor-1", slot_key="chat-1", message="")
+        loop.active = False
+        loop.monitor = MonitorState(
+            kind="github_pull_request",
+            target="https://github.com/acme/widgets/pull/7",
+            objective="review_ready",
+            created_ts=1.0,
+            outcome=MonitorOutcome.BUDGET,
+            stopped_at=2.0,
+        )
+
+        orch._notify_nudge_expired(loop)
+
+        assert "Start a new watch with a larger budget" in ds.notify.call_args.args[2]
+
+    @pytest.mark.parametrize(
+        "target",
+        [
+            "https://github.com/acme/ghp_" + "a" * 36 + "/pull/7",
+            "https://example.com/?data=%67%68%70%5F" + "a" * 36,
+            "ghp_" + "a" * 36,
+        ],
+    )
+    def test_structured_notice_redacts_unsafe_retained_target(self, target):
+        orch = _make_orchestrator()
+        ds = _mock_dashboard_state()
+        orch.dashboard_state = ds
+        loop = NudgeLoop(id="monitor-1", slot_key="chat-1", message="")
+        loop.active = False
+        loop.monitor = MonitorState(
+            kind="github_pull_request",
+            target=target,
+            objective="review_ready",
+            created_ts=1.0,
+            outcome=MonitorOutcome.SUCCESS,
+            stopped_at=2.0,
+            stopped_reason="pull_request_merged",
+        )
+
+        orch._notify_nudge_expired(loop)
+
+        body = ds.notify.call_args.args[2]
+        assert "was merged" in body
+        assert target not in body
+        assert "ghp_" not in body
+        assert "REDACTED" in body
+
     def test_cycle_cap_wording(self):
         orch = _make_orchestrator()
         ds = _mock_dashboard_state()
@@ -858,7 +992,6 @@ class TestNotifyNudgeExpired:
         flag the earlier branches defer to.
         """
         from kiro_crew.autonudge import MONITOR_TERMINAL_REASON
-        from kiro_crew.monitoring.models import MonitorOutcome, MonitorState
 
         orch = _make_orchestrator()
         ds = _mock_dashboard_state()
@@ -872,18 +1005,11 @@ class TestNotifyNudgeExpired:
             max_runtime_secs=60,
             created_ts=time.time() - 600,
             stopped_reason=MONITOR_TERMINAL_REASON,
-            monitor=MonitorState(
-                kind="gh-pr",
-                target="acme/widgets#42",
-                objective="watch until green",
-                created_ts=0.0,
-                outcome=MonitorOutcome.SUCCESS,
-            ),
         )
         orch._notify_nudge_expired(loop)
         title = ds.notify.call_args.args[1]
         assert "time budget" not in title, "a finished subject is not a spent budget"
-        assert "finished" in title
+        assert title == "Monitoring loop finished — it reported done"
 
     def test_a_terminal_subject_outranks_the_cycle_cap(self):
         """A merge that lands ON the capping delivery must not read as an unmet goal.
@@ -896,7 +1022,6 @@ class TestNotifyNudgeExpired:
         a watch whose subject had merged.
         """
         from kiro_crew.autonudge import MONITOR_TERMINAL_REASON
-        from kiro_crew.monitoring.models import MonitorOutcome, MonitorState
 
         orch = _make_orchestrator()
         ds = _mock_dashboard_state()
@@ -908,114 +1033,49 @@ class TestNotifyNudgeExpired:
             max_cycles=4,
             cycle_count=4,
             stopped_reason=MONITOR_TERMINAL_REASON,
-            monitor=MonitorState(
-                kind="gh-pr",
-                target="acme/widgets#42",
-                objective="watch until green",
-                created_ts=0.0,
-                outcome=MonitorOutcome.SUCCESS,
-            ),
         )
         orch._notify_nudge_expired(loop)
         title = ds.notify.call_args.args[1]
         assert "cycle cap" not in title, "a finished subject is terminal, cap or no cap"
-        assert "finished" in title, "and a merged one is reported as done"
+        assert title == "Monitoring loop finished — it reported done"
 
-    def test_an_owed_terminal_turn_outranks_the_cycle_cap(self):
-        """A channel loop's UNSETTLED terminal subject must not read as a spent cap.
-
-        The third instance of the class the two tests above closed, and the one they
-        cannot cover: both of those settle first, so ``stopped_reason`` already carries
-        ``MONITOR_TERMINAL_REASON``. A CHANNEL-bound loop deliberately does NOT settle
-        on observation -- it learns its watch finished from a delivered turn, so the
-        probe records the OWED turn in ``monitor.terminal_pending`` and leaves the loop
-        active with no outcome. If that final turn is refused (a busy thread, the
-        ordinary case) and the retry finds the cap spent, ``_timer`` deactivates with
-        ``stopped_reason="cycle_cap"`` before the settlement that would have promoted
-        the debt ever runs.
-
-        So the truth is already durably persisted on disk and the notice contradicts
-        it: a watch whose subject MERGED reports the same signal as one that ran out of
-        cycles with its goal unmet. ``terminal`` therefore cannot be read from
-        ``stopped_reason`` alone -- an owed terminal turn is terminal news too.
-        """
-        from kiro_crew.monitoring.models import MonitorState
-
+    @pytest.mark.parametrize(
+        ("pending", "expected_title", "expected_body"),
+        [
+            ("success", "Monitoring loop finished — what it was watching is done", "merged"),
+            ("blocked", "Monitoring loop stopped — its subject was closed unmerged", "WITHOUT"),
+        ],
+    )
+    def test_an_owed_legacy_terminal_turn_outranks_the_cycle_cap(
+        self, pending, expected_title, expected_body
+    ):
+        """A gated legacy loop keeps terminal truth even when its cap wins the race."""
         orch = _make_orchestrator()
         ds = _mock_dashboard_state()
         orch.dashboard_state = ds
         loop = NudgeLoop(
-            id="loop-owed-terminal-at-cap",
+            id=f"loop-owed-{pending}",
             slot_key="slack:C123:456.789",
             message="watch https://github.com/acme/widgets/pull/42 until green",
             max_cycles=4,
             cycle_count=4,
             stopped_reason="cycle_cap",
+            gate=True,
             monitor=MonitorState(
                 kind="gh-pr",
                 target="acme/widgets#42",
                 objective="watch until green",
                 created_ts=0.0,
-                # The settlement never ran, so there is no ``outcome`` and no
-                # ``MONITOR_TERMINAL_REASON`` -- only the owed turn, on disk.
-                terminal_pending="success",
+                terminal_pending=pending,
             ),
         )
+
         orch._notify_nudge_expired(loop)
-        title = ds.notify.call_args.args[1]
-        body = ds.notify.call_args.args[2]
-        assert "cycle cap" not in title, (
-            "the subject merged and the debt says so on disk -- reporting a spent cap "
-            "is a false status report"
-        )
-        assert "finished" in title
-        assert "merged" in body
 
-    def test_an_owed_blocked_turn_is_not_reported_as_a_merge(self):
-        """The debt carries SUCCESS vs BLOCKED, and the wording must follow it.
+        assert ds.notify.call_args.args[1] == expected_title
+        assert expected_body in ds.notify.call_args.args[2]
 
-        ``terminal_pending`` is set to ``"success" if merged else "blocked"``, the same
-        vocabulary as ``MonitorOutcome``. Treating any owed turn as a finish would tell
-        the operator "no action needed" about a pull request that was closed UNMERGED --
-        which stopped on a question only they can answer.
-        """
-        from kiro_crew.monitoring.models import MonitorState
-
-        orch = _make_orchestrator()
-        ds = _mock_dashboard_state()
-        orch.dashboard_state = ds
-        loop = NudgeLoop(
-            id="loop-owed-blocked-at-cap",
-            slot_key="slack:C123:456.790",
-            message="watch https://github.com/acme/widgets/pull/43 until green",
-            max_cycles=4,
-            cycle_count=4,
-            stopped_reason="cycle_cap",
-            monitor=MonitorState(
-                kind="gh-pr",
-                target="acme/widgets#43",
-                objective="watch until green",
-                created_ts=0.0,
-                terminal_pending="blocked",
-            ),
-        )
-        orch._notify_nudge_expired(loop)
-        title = ds.notify.call_args.args[1]
-        body = ds.notify.call_args.args[2]
-        assert "cycle cap" not in title
-        assert "closed unmerged" in title
-        assert "WITHOUT being" in body
-
-    def test_a_spent_cap_with_no_owed_turn_still_reports_the_cap(self):
-        """The control: the carve-out must not swallow a genuine cap.
-
-        A loop that really did run out of cycles has an empty ``terminal_pending``, and
-        must keep the cap wording -- otherwise the fix for a misleading finish would
-        manufacture a finish that never happened, which is the same defect pointing the
-        other way.
-        """
-        from kiro_crew.monitoring.models import MonitorState
-
+    def test_a_legacy_cap_with_no_owed_turn_still_reports_the_cap(self):
         orch = _make_orchestrator()
         ds = _mock_dashboard_state()
         orch.dashboard_state = ds
@@ -1026,6 +1086,7 @@ class TestNotifyNudgeExpired:
             max_cycles=4,
             cycle_count=4,
             stopped_reason="cycle_cap",
+            gate=True,
             monitor=MonitorState(
                 kind="gh-pr",
                 target="acme/widgets#44",
@@ -1034,7 +1095,9 @@ class TestNotifyNudgeExpired:
                 terminal_pending="",
             ),
         )
+
         orch._notify_nudge_expired(loop)
+
         assert ds.notify.call_args.args[1] == "Monitoring loop hit its cycle cap"
 
     def test_approval_stall_names_its_own_remedy(self):

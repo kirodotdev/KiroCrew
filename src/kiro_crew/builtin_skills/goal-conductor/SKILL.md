@@ -133,7 +133,11 @@ says "running" for a session that never got its seed is the worse failure.
 ### Patrol
 
 After dispatching, arm a loop on your own session with `monitor_start`. Put the
-check AND the exit condition in the message. Then end your turn.
+check AND the exit condition in the message and pass explicit positive
+`max_cycles` and `max_runtime_secs` from the operator's round/time budget. When
+no tighter budget exists, use 240 cycles and 86,400 seconds. If live work needs a
+larger bound, re-arm it with `monitor_update`; `monitor_start` is create-only.
+Then end your turn.
 
 Each cycle:
 

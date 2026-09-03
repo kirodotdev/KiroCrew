@@ -103,29 +103,59 @@ When the user asks you to submit code for review and address automated comments 
 5. If no comments or only false positives: report done to the user
 6. Stop the loop and report remaining issues to the user if EITHER: you've iterated 3+ times without the comment count decreasing, OR you've completed 5 total iterations.
 
-**Long task or "keep an eye on it" / "babysit" / "monitor":** use `monitor_start`.
+**Long task or "keep an eye on it" / "babysit" / "monitor":** read the
+`babysit` skill. For a supported pull request whose objective is fully decided
+by provider lifecycle, checks, mergeability, review decision, and review
+threads, use the bounded `monitor_watch` path. It probes without model turns and
+wakes this session only for a new actionable fingerprint. Use `monitor_start`
+only for unsupported targets or evidence the structured provider cannot see,
+and always give that legacy path positive cycle and runtime bounds.
 
-`monitor_start(message, interval_secs?, max_cycles?)` starts a monitoring loop on YOUR CURRENT session — after your turn completes and the session idles for `interval_secs`, the message is re-injected as your next turn (same context, same tools, same conversation). Works from dashboard chat, Slack threads, and Discord DMs, and survives gateway restarts.
+`monitor_watch(kind, target, objective, interval_secs?, positive budgets...)`
+requests a structured monitor on YOUR CURRENT dashboard, Slack, or Discord
+session. When comments or advisory findings are required, call a finite
+`monitor_start` loop directly. The request applies after the turn ends; inspect
+it on a later turn.
+
+`monitor_start(message, interval_secs?, max_cycles?, max_runtime_secs?)` starts a
+legacy monitoring loop on YOUR CURRENT session — after your turn completes and
+the session idles for `interval_secs`, the message is re-injected as your next
+turn (same context, same tools, same conversation). It works from dashboard
+chat, Slack threads, Discord DMs, and Webex conversations, and survives gateway
+restarts.
 
 `interval_secs` is an IDLE gap measured from when your turn **ends**, not a fixed period: with a 300s interval and 5-minute checks the loop wakes you roughly every 10 minutes. Size it for the gap you want between cycles, not the cadence you want overall.
 
 **When to use monitor_start:**
-- User says "keep checking", "monitor", "babysit", "let me know when"
+- The structured provider cannot observe a fact in the user's exit condition
 - Task may take longer than 30 minutes (beyond wait+poll territory)
-- You need to poll an external system until a condition is met (CR analysis, deployment, ticket resolution)
+- You need to poll an unsupported external system until a condition is met
 
 **Using monitor_start:**
-1. Put the full check instructions AND the exit condition in the message. When the subject is a GitHub pull request, name it BY FULL URL, e.g.: `Check https://github.com/owner/repo/pull/123 for new CI results and review comments. Fix legitimate findings and push. When the PR is review-ready (checks green, threads resolved), tell the user and call autonudge_stop.` The URL is what makes the loop observation-gated, so quiet cycles cost no model turn; a bare `PR #123` leaves the loop on the plain timer and every interval spends a turn. The user will usually say "babysit PR #123" — you write the URL.
-2. Call `monitor_start` with a sensible interval (300s for CI/review polling), then tell the user monitoring is active and END YOUR TURN — the loop wakes you.
+1. Put the full check instructions AND the exit condition in the message, e.g.: `Check https://github.com/kirodotdev/KiroCrew/pull/123 for new CI results and review comments. Fix legitimate findings and push. When the PR is review-ready (checks green, threads resolved), tell the user and call autonudge_stop.`
+2. Call `monitor_start` with a sensible interval (300s for CI/review polling),
+   a positive `max_cycles`, and a positive `max_runtime_secs`; then tell the user
+   monitoring was requested and END YOUR TURN — the loop wakes you after it is applied.
 3. Each cycle: do the check, act on findings, report only real signals (don't post "nothing new" every cycle). Every cycle appends a full turn to this same session, so keep per-cycle output small — a chatty loop burns its own context.
 4. When the exit condition is met or the user says stop, call `autonudge_stop`. **This is on you**: `max_cycles` (default 24) is a runaway backstop, and a loop that coasts into its cap did not finish — it ran out of rope. Check the exit condition every cycle and stop deliberately.
 5. If what you are watching moves on and your armed instruction is now stale, call `monitor_update(message?, interval_secs?, max_cycles?)` to revise it in place — it keeps the loop and its cycle count, and only ever touches your own session's loop. Raise `max_cycles` through it if the work is still live near the cap.
 
-If `monitor_start` reports it could NOT arm a loop, believe it: that is an arming failure, not the transient MCP reconnect you retry through. No monitoring is running, so fall back to an in-turn wait+poll loop and say so.
+If either monitor tool reports it could NOT arm, believe it: that is an arming
+failure, not the transient MCP reconnect you retry through. No monitoring is
+running. Report the refusal and preserve the user's next safe action; do not
+silently substitute an unbounded in-turn polling loop.
 
-One loop per session — starting a new one replaces the old. The user can also stop dashboard loops from the 🎯 popover.
+One automation per session — a create cannot replace another automation. Stop
+the existing record deliberately before switching paths. The user can also stop
+dashboard loops from the monitor popover.
 
-**Heartbeat (fallback):** the `~/.kiro/crew/workspace/HEARTBEAT.md` task queue still exists for cases monitor_start can't cover: work that should run OUTSIDE this session (fresh context each cycle), or contexts where monitor_start is unavailable (cron/webhook sessions). Append checklist entries by calling `kiro_crew.heartbeat.append_heartbeat_task(entry)` from Python; never edit the file directly, because the helper shares the service's cross-process lock. Tasks are processed every few minutes; include `HEARTBEAT_KEEP` in the response to retain a task for the next cycle, omit it when complete. Route completion with `<!-- deliver:dashboard -->` / `<!-- deliver:slack -->` tags. Notify only on real signals.
+**Heartbeat (fallback):** the `~/.kiro/crew/workspace/HEARTBEAT.md` task queue
+still exists for work that should run outside this session with fresh context,
+or contexts where monitor tools are unavailable (cron/webhook sessions). Append
+checklist entries with `kiro_crew.heartbeat.append_heartbeat_task(entry)`; never
+edit the file directly because the helper shares the service's cross-process
+lock. Include `HEARTBEAT_KEEP` to retain a task for another cycle, omit it when
+complete, and notify only on real signals.
 
 ### Webhook-Triggered Sessions
 
