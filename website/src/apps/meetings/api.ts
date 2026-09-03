@@ -111,6 +111,24 @@ export interface ProviderRow {
   requires_source?: boolean
 }
 
+/** One provider's credential form, as the backend's allowlist describes it. */
+export interface CredentialSchema {
+  fields: string[]
+  /** True when the provider signs in through OAuth (`client_id` + browser consent) rather than a stored password. */
+  oauth: boolean
+}
+
+/** Field NAMES only — no route ever returns a stored value. */
+export interface CredentialStatus {
+  configured: boolean
+  fields: string[]
+}
+
+export interface CalendarCredentialsResponse {
+  status: Record<string, CredentialStatus>
+  providers: Record<string, CredentialSchema>
+}
+
 export interface ConfigResponse {
   config: MeetingsConfig
   task_providers: ProviderRow[]
@@ -285,6 +303,19 @@ export const meetingsApi = {
   // calendar
   calendar: () =>
     request<{ events: CalendarEvent[]; provider: string; configured: boolean }>('/calendar'),
+  calendarCredentials: () => request<CalendarCredentialsResponse>('/calendar/credentials'),
+  /** `null` clears a field; a string replaces it; an absent field is left alone. */
+  saveCalendarCredentials: (provider: string, values: Record<string, string | null>) =>
+    request<{ ok: boolean; status: Record<string, CredentialStatus> }>('/calendar/credentials', {
+      method: 'PUT',
+      body: JSON.stringify({ provider, values }),
+    }),
+  forgetCalendarCredentials: (provider: string) =>
+    post<{ ok: boolean; status: Record<string, CredentialStatus> }>('/calendar/credentials/forget', {
+      provider,
+    }),
+  startCalendarOAuth: (provider: string) =>
+    post<{ ok: boolean; authorize_url: string }>('/calendar/oauth/start', { provider }),
   syncCalendar: () =>
     post<{ ok: boolean; count: number; events: CalendarEvent[] }>('/calendar/sync'),
 

@@ -30,6 +30,7 @@ import {
   type MeetingsConfig,
 } from './api'
 import { useImeGuard } from '../../hooks/useImeGuard'
+import CalendarCredentials from './components/CalendarCredentials'
 
 interface Props {
   onBack: () => void
@@ -263,6 +264,15 @@ export default function SettingsView({ onBack, notify }: Props) {
             <p className="text-[12px] text-muted mt-2">
               {i18nT('apps.meetings.settings.calendarSourceHint')}
             </p>
+          )}
+          {activeCalendar && (
+            // Renders nothing for a provider that takes no credentials (`none`,
+            // `ics`): the component reads the form shape from the backend.
+            <CalendarCredentials
+              provider={activeCalendar.id}
+              providerLabel={activeCalendar.label}
+              notify={notify}
+            />
           )}
         </Card>
 

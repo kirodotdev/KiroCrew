@@ -23,7 +23,7 @@ action items.
 | `.../backend/routes/` | `_common` (gate + validation), `meeting_lifecycle`, `agents`, `tasks`, `calendar`, `settings` |
 | `.../agents/*.json` | the three shipped agent specs |
 | `src/kiro_crew/builtin_skills/meetings/SKILL.md` | the bundled skill (data layout, lifecycle, provider config) |
-| `website/src/apps/meetings/` | `MeetingsPage` (list) → `MeetingView` → `TaskReviewView`, `SettingsView` |
+| `website/src/apps/meetings/` | `MeetingsPage` (list) → `MeetingView` → `TaskReviewView`, `SettingsView` (+ `components/CalendarCredentials`) |
 | `website/public/app-assets/meetings/` | icon + hero art |
 
 ## Routes
@@ -45,6 +45,11 @@ POST   /dictionary/reload           re-read from disk
 GET    /calendar                    cached events + provider + configured flag
 POST   /calendar/sync[?days=N]      fetch from the provider, replace the cache
 GET    /calendar/providers          registered calendar providers
+GET    /calendar/credentials        which providers have credentials (field NAMES + booleans, never a value) + each provider's form shape
+PUT    /calendar/credentials        {provider, values{field: string|null}} — store / replace / clear (null) one provider's fields, allowlisted per provider
+POST   /calendar/credentials/forget {provider} — drop a provider's credentials and any pending OAuth flow
+POST   /calendar/oauth/start        {provider} — begin the OAuth flow; answers the consent URL to open
+GET    /calendar/oauth/callback     where the provider's browser redirect lands (HTML, always 200)
 
 GET    /agents                      configured meeting agents
 GET    /status                       live dispatcher status (or an all-idle shape)
@@ -393,6 +398,25 @@ Fetch safety:
 * a local path is read on the executor, size-capped, and refused when
   `is_sensitive_path` matches.
 
+### Credentials in Settings (`components/CalendarCredentials.tsx`)
+
+Settings → Calendar renders, under the provider picker, the credential form for
+the active provider. The form's shape comes from the backend: `GET
+/calendar/credentials` carries `providers`, built from the same allowlist
+(`_CREDENTIAL_FIELDS`) and OAuth table (`_OAUTH_CLIENTS`) the PUT enforces, so
+the fields shown are exactly the fields that can be written and a provider that
+takes none (`none`, `ics`) renders nothing. Every field is write-only: a stored
+value never reaches the browser, so a set field shows a mask with Replace /
+Remove (`SecretField`), a typed value is sent as a string, a removed one as
+`null`, and an untouched one is not sent at all. "Connected" is derived from
+field names — a refresh token for an OAuth provider, every field for a password
+provider — and the status re-reads on window focus because the OAuth consent
+finishes in another tab. Sign-in stays disabled until a client id is stored;
+clicking it POSTs `/calendar/oauth/start` and opens the consent URL with
+`window.open(…, 'noopener,noreferrer')` (the Electron shell forwards that to the
+OS browser); when a popup blocker answers null the same URL is offered as a
+link. Disconnect POSTs `/calendar/credentials/forget`.
+
 ## Transcript UI and speech-to-text
 
 Kiro Crew's own `/api/ws/stt` (`dashboard/stt_stream.py`).
@@ -536,7 +560,9 @@ These live in the repo-level `test/` tree, not an in-package `tests/`:
 `src/kiro_crew/apps/builtins/...` is never collected by CI.
 
 Frontend: `website/src/test/MeetingsApiClient.test.ts` (fetch-boundary
-translation), `MeetingsSessionLogic.test.ts` (dedup, preset resolution, the
+translation), `MeetingsCalendarCredentials.test.tsx` (write-only fields, the
+allowlist-shaped form, connected-by-field-names, the OAuth open and its
+popup-blocked fallback), `MeetingsSessionLogic.test.ts` (dedup, preset resolution, the
 transition table), `MeetingsAgentPillBar.test.tsx`, `MeetingsBroadcastBar.test.tsx`,
 `MeetingsAgentPanel.test.tsx` (including the iframe sandbox),
 `MeetingsTranslation.test.tsx`, and
