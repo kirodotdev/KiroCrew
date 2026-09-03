@@ -224,11 +224,13 @@ if [ "$1" = "api" ]; then
   method="GET"
   target=""
   jqexpr=""
+  body=""
   for ((i=1; i<=$#; i++)); do
     a="${!i}"
     case "$a" in
       --method) j=$((i+1)); method="${!j}" ;;
       --jq) j=$((i+1)); jqexpr="${!j}" ;;
+      -f) j=$((i+1)); v="${!j}"; case "$v" in body=*) body="${v#body=}" ;; esac ;;
       graphql) target="graphql" ;;
       repos/*) target="$a" ;;
     esac
@@ -260,9 +262,11 @@ if [ "$1" = "api" ]; then
       emit "$FIXTURES/comments.json"
       exit 0 ;;
     POST:repos/*/comments*|POST:repos/*/issues/*/comments)
-      printf 'POST %s\n' "$target" >> "$FIXTURES/comment_write.txt" ;;
+      printf 'POST %s\n' "$target" >> "$FIXTURES/comment_write.txt"
+      printf '%s' "$body" > "$FIXTURES/note_body.txt" ;;
     PATCH:repos/*/comments*)
-      printf 'PATCH %s\n' "$target" >> "$FIXTURES/comment_write.txt" ;;
+      printf 'PATCH %s\n' "$target" >> "$FIXTURES/comment_write.txt"
+      printf '%s' "$body" > "$FIXTURES/note_body.txt" ;;
     DELETE:repos/*/comments*)
       printf 'DELETE %s\n' "$target" >> "$FIXTURES/comment_write.txt" ;;
     *)
@@ -421,7 +425,7 @@ class Harness:
         comments = ([{"id": existing_comment_id, "body": "<!-- pr-duplicate-coauthor --> old"}]
                     if existing_comment_id is not None else [])
         (self.fixtures / "comments.json").write_text(json.dumps(comments))
-        for f in ("comment_write.txt", "pr_comment.txt", "pr_close.txt"):
+        for f in ("comment_write.txt", "pr_comment.txt", "pr_close.txt", "note_body.txt"):
             (self.fixtures / f).unlink(missing_ok=True)
         env = {**self._env(), "PR_NUMBER": str(subject["number"]),
                "COAUTHOR_MARKER": "<!-- pr-duplicate-coauthor -->",
@@ -439,6 +443,11 @@ class Harness:
     def reads(self, name: str) -> list[str]:
         f = self.fixtures / name
         return f.read_text().splitlines() if f.exists() else []
+
+    def note_body(self) -> str:
+        """The body of the last co-authorship note written to the merged PR."""
+        f = self.fixtures / "note_body.txt"
+        return f.read_text() if f.exists() else ""
 
 
 # ── on-open: overlap -> exactly one comment naming the earlier PR ─────────────
@@ -508,8 +517,12 @@ def test_on_merge_closes_overlapping_open_pr(tmp_path: Path) -> None:
     assert proc.returncode == 0, proc.stderr
     assert h.reads("pr_close.txt") == ["close 5"]
     assert h.reads("pr_comment.txt") == ["comment 5"]
-    # Co-authorship recorded on the merged PR.
+    # Co-authorship recorded on the merged PR, and it accurately reports the
+    # close (PR #5 was actually closed) with no left-open claim.
     assert any(w.startswith("POST") for w in h.reads("comment_write.txt"))
+    note = h.note_body()
+    assert "Closed as superseded: #5." in note
+    assert "Left open" not in note
 
 
 def test_on_merge_leaves_weakly_overlapping_pr_open(tmp_path: Path) -> None:
@@ -541,6 +554,11 @@ def test_on_merge_opt_out_label_points_but_does_not_close(tmp_path: Path) -> Non
     assert proc.returncode == 0, proc.stderr
     assert h.reads("pr_comment.txt") == ["comment 5"]  # still pointed at
     assert h.reads("pr_close.txt") == []               # but not closed
+    # The co-authorship note must NOT claim the opted-out PR was closed: it is
+    # recorded under "Left open", never under "Closed as superseded".
+    note = h.note_body()
+    assert "Left open" in note and "#5" in note
+    assert "Closed as superseded" not in note
 
 
 def test_on_merge_leaves_non_overlapping_prs_untouched(tmp_path: Path) -> None:
@@ -665,6 +683,9 @@ if __name__ == "__main__":
         check("on_merge_closes_earlier",
               p.returncode == 0 and h.reads("pr_close.txt") == ["close 5"]
               and h.reads("pr_comment.txt") == ["comment 5"])
+        check("on_merge_note_reports_close",
+              "Closed as superseded: #5." in h.note_body()
+              and "Left open" not in h.note_body())
 
         h = Harness(Path(td) / "f")
         p = h.run_on_merge(on_merge, {"number": 10, "body": "Fixes #1", "state": "MERGED",
@@ -695,6 +716,9 @@ if __name__ == "__main__":
         check("on_merge_opt_out_points_only",
               p.returncode == 0 and h.reads("pr_close.txt") == []
               and h.reads("pr_comment.txt") == ["comment 5"])
+        check("on_merge_note_opt_out_not_closed",
+              "Left open" in h.note_body() and "#5" in h.note_body()
+              and "Closed as superseded" not in h.note_body())
 
     if failures:
         print(f"\n{len(failures)} check(s) FAILED: {failures}")

@@ -827,9 +827,11 @@ PR title as the commit message, and GitHub composes that commit at merge time, s
 workflow -- which runs after the merge -- cannot rewrite it to add a `Co-authored-by:`
 trailer. The trailer would have to be present in the message GitHub builds, which only
 the merging maintainer or the PR title controls. What the workflow can place, and does,
-is a durable co-authorship-recording comment on the merged PR naming the superseded
+is a durable co-authorship-recording comment on the merged PR naming the overlapping
 author's PRs, so the shared work is attributed where a human and the daily contributor
-sweep can see it. The workflow records the overlap; it does not adjudicate credit.
+sweep can see it. That comment lists the PRs it closed and the PRs it left open under the
+opt-out label separately, so it never reports a close that did not happen. The workflow
+records the overlap; it does not adjudicate credit.
 
 Both lanes run from the trusted base context via `pull_request_target`, so they hold the
 write token even for a fork PR, and neither checks out or executes PR head code -- they

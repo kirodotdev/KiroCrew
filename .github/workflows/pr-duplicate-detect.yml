@@ -183,9 +183,13 @@ jobs:
           # For each STRONG overlap: post the pointer comment FIRST (so the
           # overlap is recorded before any close), then close as superseded --
           # unless the PR carries the opt-out label, in which case leave it open
-          # and let a human close it. Collect the number for the co-authorship
-          # record regardless, so the shared work is still attributed.
-          superseded=""
+          # and let a human close it. Track closed vs. left-open separately so
+          # the co-authorship record below can word each accurately: an opted-out
+          # PR is attributed for the shared work but was NOT closed, so it must
+          # not be reported as "closed as superseded". Every overlapping PR is
+          # still recorded, so the shared work is attributed either way.
+          closed=""
+          left_open=""
           while read -r overlap; do
             [ -n "$overlap" ] || continue
             [ "$(jq -r '.strong' <<<"$overlap")" = "true" ] || continue
@@ -196,23 +200,33 @@ jobs:
               pointer="This PR overlaps #$PR_NUMBER, which has now merged and covers the same file(s) for the same issue: $files. It carries the \`$OPT_OUT_LABEL\` label, so it is being left open rather than auto-closed -- please close it yourself if the merged PR fully supersedes it, or carry on if not. This is an automated heads-up, not a judgement on the work."
               gh pr comment "$num" --repo "$REPO" --body "$pointer" >/dev/null
               echo "PR #$num: strongly overlaps merged #$PR_NUMBER but opted out of auto-close -> pointed only"
+              left_open="$left_open #$num"
             else
               pointer="This PR overlaps #$PR_NUMBER, which has now merged and covers the same file(s) for the same issue: $files. Closing it as superseded so review effort is not spent twice. If your change is not fully covered by the merged PR, please reopen or open a follow-up -- this is an automated heads-up, not a judgement on the work. To keep a future overlapping PR open, add the \`$OPT_OUT_LABEL\` label."
               gh pr comment "$num" --repo "$REPO" --body "$pointer" >/dev/null
               gh pr close "$num" --repo "$REPO" >/dev/null || true
               echo "PR #$num: strongly overlaps merged #$PR_NUMBER -> pointed and closed"
+              closed="$closed #$num"
             fi
-            superseded="$superseded #$num"
           done < <(jq -c '.overlaps[]' <<<"$result")
 
           # Record co-authorship on the MERGED PR. A workflow cannot rewrite the
           # squash-merge commit GitHub already composed from the PR title to add
           # a `Co-authored-by:` trailer, so attribution that a workflow CAN place
           # -- a durable comment naming the superseded author(s)' PRs -- is left
-          # here instead. Marker-keyed so a re-run updates in place.
-          if [ -n "$superseded" ]; then
+          # here instead. Marker-keyed so a re-run updates in place. Closed and
+          # left-open PRs are worded separately so the note never claims a close
+          # that did not happen for an opted-out PR.
+          if [ -n "$closed" ] || [ -n "$left_open" ]; then
             note="$COAUTHOR_MARKER
-          This PR merged work that also appeared in open PR(s) for the same issue, now closed as superseded:$superseded. Recording the overlap here so the earlier author(s)' effort is attributed. A workflow cannot edit the already-composed squash-merge commit to add a \`Co-authored-by:\` trailer, so this note is the durable record; a maintainer may add the trailer to the merge message by hand if warranted."
+          This PR merged work that also appeared in open PR(s) for the same issue. Recording the overlap here so the earlier author(s)' effort is attributed."
+            if [ -n "$closed" ]; then
+              note="$note Closed as superseded:$closed."
+            fi
+            if [ -n "$left_open" ]; then
+              note="$note Left open (opted out of auto-close via the \`$OPT_OUT_LABEL\` label):$left_open."
+            fi
+            note="$note A workflow cannot edit the already-composed squash-merge commit to add a \`Co-authored-by:\` trailer, so this note is the durable record; a maintainer may add the trailer to the merge message by hand if warranted."
             existing="$(gh api "repos/$REPO/issues/$PR_NUMBER/comments" --paginate \
               --jq "map(select(.body | contains(\"$COAUTHOR_MARKER\"))) | .[0].id // empty")"
             if [ -n "$existing" ]; then
@@ -222,5 +236,5 @@ jobs:
               gh api --method POST "repos/$REPO/issues/$PR_NUMBER/comments" \
                 -f body="$note" >/dev/null
             fi
-            echo "PR #$PR_NUMBER: recorded co-authorship for superseded PR(s):$superseded"
+            echo "PR #$PR_NUMBER: recorded co-authorship for overlapping PR(s) -- closed:${closed:- none} left-open:${left_open:- none}"
           fi
