@@ -1797,7 +1797,6 @@ async def handle_open_app(request: web.Request) -> web.Response:
         return web.json_response({"error": denied, "code": "app_execution_denied"}, status=403)
 
     # Detect cloud/remote — no DISPLAY and not macOS desktop
-    import os
     import platform
 
     is_local = (
@@ -2713,11 +2712,7 @@ def _open_ui_file(name: str, file_path: str) -> tuple[int, os.stat_result] | str
         # has no link to refuse. Checked on the DESCRIPTOR, which is what makes
         # it race-free. Inline rather than `pinned_fs.refuse_hardlink_alias`
         # for the same double-close reason `_read_declared_art` documents.
-        if (
-            not stat.S_ISREG(st.st_mode)
-            or st.st_nlink != 1
-            or st.st_size > _UI_MAX_BYTES
-        ):
+        if not stat.S_ISREG(st.st_mode) or st.st_nlink != 1 or st.st_size > _UI_MAX_BYTES:
             os.close(fd)
             return "not_found"
     except OSError:

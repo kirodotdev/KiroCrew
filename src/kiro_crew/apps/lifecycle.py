@@ -234,7 +234,13 @@ class LifecycleDispatcher:
         if not tasks:
             return True
 
-        wait_timeout = timeout if timeout is not None else (_HOOK_TIMEOUT_SEC if bounded else None)
+        wait_timeout: float | None
+        if timeout is not None:
+            wait_timeout = timeout
+        elif bounded:
+            wait_timeout = _HOOK_TIMEOUT_SEC
+        else:
+            wait_timeout = None
         done, pending = await asyncio.wait(tasks, timeout=wait_timeout)
         if done:
             # Do not rely on done-callback scheduling order: asyncio.wait may
