@@ -344,14 +344,15 @@ export default function MembersPage() {
   )
 
   return (
-    // No padding on the root: the detail drawer docks FLUSH to the window's
-    // right edge and spans the full content height, exactly like the chat
-    // page's side panel. The card columns' right/bottom insets move onto the
-    // inner wrapper below, so they keep today's geometry while the drawer
-    // sits outside them.
-    <div className="flex h-full min-h-0" data-testid="members-page">
+    // pb-2 on the root is the one shared bottom inset: the card columns and
+    // the detail drawer all end 8px above the window edge (the chat SidePanel's
+    // mb-2). No right padding here — the drawer docks FLUSH to the window's
+    // right edge; the card columns' pr-2 lives on the inner wrapper below. The
+    // drawer must stay a DIRECT child of this row: DetailPanel measures its
+    // parent to cap the drag width against roster + thread.
+    <div className="flex h-full min-h-0 pb-2" data-testid="members-page">
       {/* Card columns (roster + thread) keep the page's original insets. */}
-      <div className="flex flex-1 min-w-0 gap-2 pr-2 pb-2">
+      <div className="flex flex-1 min-w-0 gap-2 pr-2">
       {/* Member list. Below md the page is single-pane: the roster IS the
           page until a member is picked, then the thread takes over and the
           header's back button returns here. Two fixed rails (264+300px)
@@ -571,10 +572,10 @@ export default function MembersPage() {
       </div>
 
       {/* Detail drawer — read-only observation; writes live in the crew manager.
-          The shell is the shared DetailPanel with its stock chrome (border-l,
-          bg-bg, no rounding): it docks FLUSH to the window's right edge and
-          spans the full content height, reading as the same right-dock family
-          as the chat page's side panel rather than a floating card. Same
+          The shell is the shared DetailPanel wearing the chat SidePanel's
+          frame: a left-rounded card docked FLUSH to the window's right edge,
+          top/bottom/left borders, an 8px bottom inset, and an elevated header
+          band — so the two right panels read as one family. Same
           header idiom (close + identity + title), same body padding, and the
           same drag-to-resize handle with a persisted width. On md+
           DetailPanel's own width spring is the one mount animation. Below md
@@ -770,13 +771,20 @@ export default function MembersPage() {
               </DetailPanel>
             </motion.div>
           ) : (
-            /* reserveWidth keeps the live roster width plus a usable thread
-               minimum clear, so dragging the panel wide can never collapse the
-               DM thread to zero (same contract as ChatPage's panelReserve). */
+            /* The frame is the chat SidePanel's exact recipe (SidePanel.tsx
+               root + strip): left-rounded card with top/bottom/left borders,
+               flush against the window's right edge, 8px bottom inset, and an
+               elevated header band that carries the top-left corner; the 8px
+               bottom inset comes from the page root's pb-2. reserveWidth keeps
+               the live roster width plus a usable thread minimum clear, so
+               dragging the panel wide can never collapse the DM thread to zero
+               (same contract as ChatPage's panelReserve). */
             <DetailPanel
               key="member-drawer-panel"
               {...panelProps}
               reserveWidth={roster.width + THREAD_MIN_RESERVE}
+              frameClassName="border-l border-t border-b border-border rounded-l-xl bg-bg"
+              headerClassName="border-border bg-bg-elevated rounded-tl-xl"
             >
               {body}
             </DetailPanel>
