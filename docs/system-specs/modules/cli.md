@@ -1113,9 +1113,12 @@ on crash, and starts on boot. Implemented in `src/kiro_crew/service/`.
     ship no `sudo` binary — and a non-root caller with no `sudo` fails
     with a clear `ServiceInstallError` rather than an uncaught
     `FileNotFoundError`.
-  - The gateway runs as `User=$USER Group=$(id -gn)` — kirocrew
-    code never runs under sudo. Only `install` and `systemctl` invocations
-    are elevated.
+  - The gateway runs as `User=$USER Group=$(id -gn)`. Every elevated
+    executable is a stock system program, not a kirocrew one; the module
+    docstring in `service/linux.py` sits next to the call sites, names the
+    current set, and records what escalating the AppArmor step's
+    interpreter does and does not guarantee. [security](security.md)
+    carries the reasoning behind that step's four tools.
   - **Environment**: values are captured from the installer's environment
     into the unit's `Environment=` lines at install time
     (`service_environment()` in `service/common.py`) — this is how

@@ -12,9 +12,39 @@ per-user systemd manager — ``systemctl --user`` fails with
 uniformly across any distro shipping systemd >= 219, which is
 everything since 2015.
 
-Sudo scope: only the systemctl/tee invocations in this file run under
-sudo. The Python interpreter that imports MCP / LLM / agent code never
-runs as root. The actual gateway runs as ``User=$USER`` once started.
+Sudo scope: this file escalates ``systemctl``, ``install``, ``mkdir``,
+``rm``, ``rmdir`` and ``test`` directly, and lends its privileged helpers
+to ``service/apparmor.py``, which adds ``apparmor_parser``, ``aa-exec``,
+and — inside ``aa-exec`` — ``setpriv`` plus a trusted system ``python3``.
+
+What each mechanism here buys is narrower than it reads, and for ``setpriv`` it
+depends on which install path is running — that gap is where an audit of this
+module goes wrong.
+
+Trusted resolution buys one thing, on both paths: the interpreter is root-owned,
+resolved from a fixed list of trusted system directories, and never
+``sys.executable`` — which rules out escalating the venv python, the one that is
+user-writable. It says nothing about what that interpreter then loads. Invoked
+without ``-I``/``-S``, CPython prepends the caller's working directory to
+``sys.path`` and imports ``site``, so code from that working directory,
+``PYTHONPATH``, a user-site ``.pth`` line, ``sitecustomize`` or ``usercustomize``
+runs before or during the payload's own first import — ``ctypes``, which a planted
+module on any of those paths shadows.
+
+WHOSE privileges that loaded code gets is what ``setpriv`` decides, and both
+install paths are live. It reuids to the account the INSTALLER was invoked as
+(``os.getuid()``): started as an ordinary user — the default, where this module
+escalates individual commands through ``sudo`` — it reuids from sudo's root back
+to that user, so the probe and anything it loads stay unprivileged; started as
+``sudo kirocrew service install`` it reuids to 0, which is a no-op, and only on
+that path does the loaded code run as root.
+
+What IS bounded on both paths is the PAYLOAD: a constant stdlib snippet importing
+no ``kiro_crew``, so no MCP / LLM / agent code is reached deliberately.
+
+``docs/system-specs/modules/security.md`` carries the reasoning behind the
+AppArmor step's four tools. The actual gateway runs as ``User=$USER`` once
+started.
 """
 
 from __future__ import annotations
@@ -150,8 +180,8 @@ def render_unit() -> str:
     systemd instance is also wired up explicitly — see the ``XDG_RUNTIME_DIR`` /
     ``DBUS_SESSION_BUS_ADDRESS`` lines below.
 
-    The unit deliberately carries no ``AppArmorProfile=`` directive (#3463):
-    the profile is attached by PATH to the resolved launcher script instead
+    The unit deliberately carries no ``AppArmorProfile=`` directive: the
+    profile is attached by PATH to the resolved launcher script instead
     (:func:`install_apparmor_profile`), and when both mechanisms are present
     systemd's ``change_onexec`` transition silently wins over the kernel's
     automatic path attachment, defeating it.
@@ -287,9 +317,10 @@ def _require_privilege() -> None:
     """
     if not sys.platform.startswith("linux"):
         return
-    geteuid = getattr(os, "geteuid", None)
-    is_root = geteuid is not None and geteuid() == 0
-    if not is_root and shutil.which("sudo") is None:
+    # Ask :func:`_privilege_prefix` rather than re-reading ``os.geteuid``: a
+    # non-empty prefix IS "this call will shell out through sudo", so the two
+    # functions cannot drift into disagreeing about whether escalation is needed.
+    if _privilege_prefix() and shutil.which("sudo") is None:
         raise ServiceInstallError(
             "This action needs root to manage the system service at "
             f"{UNIT_PATH}, but 'sudo' was not found. Re-run as root, or install "
@@ -463,8 +494,10 @@ def install() -> apparmor.ProfileOutcome:
     Calls ``sudo`` to write the unit and to invoke ``systemctl``. Sudo
     will prompt for a password the first time (or when the cached
     ticket has expired) — that prompt appears on the user's terminal.
-    No kirocrew / LLM / agent code runs under sudo: only ``tee`` and
-    ``systemctl`` are invoked.
+    No kirocrew / LLM / agent code runs under sudo deliberately — see the module
+    docstring's sudo scope for the full set of escalated programs, including
+    the ones the AppArmor step adds, and for what the escalated interpreter can
+    still load on its own.
 
     Raises :class:`ServiceInstallError` with a human-readable message if
     a step fails. The CLI catches this and prints the message instead
@@ -558,7 +591,7 @@ def install_apparmor_profile(expected_uid: int | None) -> apparmor.ProfileOutcom
 
     Attaches the profile to ``kirocrew_bin()`` — the same resolved path
     ``render_unit()`` uses for ``ExecStart`` — instead of relying on
-    ``AppArmorProfile=`` (#3463; see the module docstring in ``apparmor.py``).
+    ``AppArmorProfile=`` (see the module docstring in ``apparmor.py``).
 
     ``expected_uid`` is the numeric uid of the account the SERVICE runs as
     (``_current_uid(_current_user())``, resolved once by the caller): the
@@ -635,8 +668,12 @@ def remove_launcher_profile() -> apparmor.ProfileOutcome:
 
 def uninstall() -> None:
     """Stop, disable, and remove the unit. Idempotent."""
-    # Use a non-sudo `test -e` so we don't prompt for a password
-    # when the unit isn't even present.
+    # Probe unprivileged so we don't prompt for a password when the unit isn't
+    # even present: a stock `/etc/systemd/system` is traversable by every user,
+    # so a plain stat answers this. Unlike `_seed_env_file`'s probe, this one
+    # does not need the privileged `test -e` — that path targets a directory an
+    # operator may have locked down, where an unprivileged stat cannot answer
+    # trustworthily (see that function's own docstring for the failure it takes).
     if not UNIT_PATH.exists():
         return
     _require_privilege()
