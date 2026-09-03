@@ -2557,6 +2557,20 @@ _UI_STREAM_CHUNK = 256 * 1024
 #: microseconds; 8 comfortably covers a dashboard loading assets in parallel.
 _UI_STREAM_SEMAPHORE = asyncio.Semaphore(8)
 
+#: Wall-clock ceiling on the body-writing phase of one UI-file response, and
+#: therefore on how long one client can hold a `_UI_STREAM_SEMAPHORE` permit
+#: while paced by its own read speed. Without it the 8 permits are a
+#: head-of-line queue an UNAUTHENTICATED caller controls: 8 sockets that
+#: connect, receive one chunk and then stop reading pin every permit (and
+#: descriptor) indefinitely, and every app UI on the host stops loading. The
+#: value matches `_BLOB_FETCH_TIMEOUT` / `_PROXY_TIMEOUT` in this file — 30s is
+#: the ceiling this module already treats as "no longer a live client", and it
+#: is ~100x the budget a real transfer needs (`_UI_MAX_BYTES` is 8 MiB, so even
+#: the largest servable file only needs ~280 KB/s to finish, over a loopback
+#: connection to the dashboard). Expiry cancels the write loop; the enclosing
+#: `finally` still closes the descriptor and the permit is released.
+_UI_STREAM_TIMEOUT = 30  # seconds
+
 
 def _open_ui_file(name: str, file_path: str) -> tuple[int, os.stat_result] | str:
     """An OPEN validated descriptor for *file_path* under *name*'s ui/ root
@@ -2819,13 +2833,21 @@ async def handle_app_ui_file(request: web.Request) -> web.StreamResponse:
             # `to_thread` hops on the shared default executor — no second
             # acquisition here: a nested acquire under the same semaphore
             # would deadlock once 8 holders each waited for a 9th permit.
-            while remaining > 0:
-                chunk = await asyncio.to_thread(os.read, fd, min(_UI_STREAM_CHUNK, remaining))
-                if not chunk:
-                    break
-                remaining -= len(chunk)
-                await resp.write(chunk)
-            await resp.write_eof()
+            # Bounded by wall clock as well as by `remaining`: the permit is
+            # held across this loop, so a client that stops reading would
+            # otherwise hold it (and its fd) forever — 8 such clients wedge the
+            # route for everyone. On expiry the `TimeoutError` propagates, the
+            # `finally` below closes the descriptor, the permit is released, and
+            # aiohttp drops a connection whose announced `content_length` can no
+            # longer be honoured.
+            async with asyncio.timeout(_UI_STREAM_TIMEOUT):
+                while remaining > 0:
+                    chunk = await asyncio.to_thread(os.read, fd, min(_UI_STREAM_CHUNK, remaining))
+                    if not chunk:
+                        break
+                    remaining -= len(chunk)
+                    await resp.write(chunk)
+                await resp.write_eof()
             return resp
         finally:
             # Off the loop: `os.close` is on the no-blocking-call-on-event-loop

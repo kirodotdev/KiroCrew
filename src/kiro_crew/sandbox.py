@@ -5594,15 +5594,21 @@ def wrap_argv(
     # KiroCrew's sandbox stays on for everything else and whenever kiro's is off.
     # Windows has no Kiro Crew OS sandbox backend. Official Kiro ACP spawns are
     # positively classified by their reviewed callers and delegate to Kiro's
-    # built-in sandbox by default; basename inference is deliberately
-    # insufficient to grant this exception. All other Windows spawns retain the
-    # no-backend fail-closed path. Checked before backend detection so this is a
+    # built-in sandbox; basename inference is deliberately insufficient to grant
+    # this exception, and neither is classification ALONE: the delegation hands
+    # isolation to a layer that only exists when kiro's internal sandbox is
+    # actually enabled, so the capability is VERIFIED here rather than assumed.
+    # Without that read, a Windows install with kiro's sandbox off got an
+    # unwrapped argv on the strength of a trust label, i.e. no isolation while
+    # the audit trail recorded a delegated one. All other Windows spawns — and a
+    # classified spawn whose capability is absent — retain the no-backend
+    # fail-closed path. Checked before backend detection so this is a
     # deterministic capability decision, never a fallback after a probe failure.
     # Linux namespace isolation is unaffected.
     kiro_spawn = _spawns_kiro_cli(argv) if is_kiro_cli is None else is_kiro_cli
     delegate_to_kiro = (
         sys.platform == "darwin" and kiro_spawn and kiro_internal_sandbox_enabled()
-    ) or (sys.platform == "win32" and is_kiro_cli is True)
+    ) or (sys.platform == "win32" and is_kiro_cli is True and kiro_internal_sandbox_enabled())
     if delegate_to_kiro:
         if extra_hidden_dirs or extra_visible_dirs:
             # A delegated sandbox cannot enforce KiroCrew-specific path hides.
