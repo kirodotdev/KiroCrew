@@ -5339,7 +5339,9 @@
       "auto_compact_threshold": "自动压缩阈值",
       "auto_compact_load_failed": "无法加载自动压缩设置",
       "reset_to_global": "重置为全局设置（{{pct}}%）",
-      "following_global": "跟随全局设置（{{pct}}%）"
+      "following_global": "跟随全局设置（{{pct}}%）",
+      "sketch": "草图",
+      "sketch_desc": "画个草图；会附上图片和可编辑源文件"
     },
     "chatPane": {
       "agent_list": "代理列表",
@@ -7538,6 +7540,18 @@
       "path_copied": "路径已复制",
       "reveal_blocked": "此路径受保护，无法打开。",
       "reveal_failed": "无法在运行 {{productName}} 的计算机上打开此路径。"
+    },
+    "sketchDialog": {
+      "title": "草图板",
+      "draw_something_first": "先画点什么吧",
+      "loading": "正在加载草图板…",
+      "export_failed": "草图导出失败，请重试",
+      "insert_hint": "同时附上图片和可编辑源文件，crew 可将其作为结构化数据读取",
+      "attach_to_message": "附加到消息",
+      "new_sketch": "新建草图",
+      "confirm_discard": "丢弃画作",
+      "already_attached": "已附加——继续编辑画布可再次草图",
+      "load_failed": "草图板加载失败——请检查网络后重新打开"
     }
   },
   "hooks": {

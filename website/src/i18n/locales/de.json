@@ -5428,7 +5428,9 @@
       "auto_compact_threshold": "Schwellenwert für automatische Verdichtung",
       "auto_compact_load_failed": "Einstellung für die automatische Verdichtung konnte nicht geladen werden",
       "reset_to_global": "Auf global zurücksetzen ({{pct}} %)",
-      "following_global": "Folgt global ({{pct}} %)"
+      "following_global": "Folgt global ({{pct}} %)",
+      "sketch": "Skizze",
+      "sketch_desc": "Skizze zeichnen; hängt ein Bild plus bearbeitbare Quelle an"
     },
     "chatPane": {
       "agent_list": "Agenten-Liste",
@@ -7644,6 +7646,18 @@
       "path_copied": "Pfad kopiert",
       "reveal_blocked": "Dieser Pfad ist geschützt und kann nicht geöffnet werden.",
       "reveal_failed": "Dieser Pfad konnte auf dem Computer, auf dem {{productName}} läuft, nicht geöffnet werden."
+    },
+    "sketchDialog": {
+      "title": "Skizzenblock",
+      "draw_something_first": "Zeichne zuerst etwas",
+      "loading": "Skizzenblock wird geladen…",
+      "export_failed": "Skizze konnte nicht exportiert werden – bitte erneut versuchen",
+      "insert_hint": "Fügt das Bild plus eine bearbeitbare Quelldatei an, die deine Crew als Daten lesen kann",
+      "attach_to_message": "An Nachricht anhängen",
+      "new_sketch": "Neue Skizze",
+      "confirm_discard": "Zeichnung verwerfen",
+      "already_attached": "Angehängt — Canvas bearbeiten, um erneut zu skizzieren",
+      "load_failed": "Skizzenblock konnte nicht geladen werden – Verbindung prüfen und erneut öffnen"
     }
   },
   "hooks": {

@@ -5517,7 +5517,9 @@
       "auto_compact_threshold": "Seuil de compactage automatique",
       "auto_compact_load_failed": "Impossible de charger le réglage de compactage automatique",
       "reset_to_global": "Rétablir la valeur globale ({{pct}} %)",
-      "following_global": "Suit la valeur globale ({{pct}} %)"
+      "following_global": "Suit la valeur globale ({{pct}} %)",
+      "sketch": "Croquis",
+      "sketch_desc": "Dessinez un croquis ; joint une image et sa source modifiable"
     },
     "chatPane": {
       "agent_list": "Liste des agents",
@@ -7750,6 +7752,18 @@
       "path_copied": "Chemin copié",
       "reveal_blocked": "Ce chemin est protégé et ne peut pas être ouvert.",
       "reveal_failed": "Impossible d'ouvrir ce chemin sur la machine qui exécute {{productName}}."
+    },
+    "sketchDialog": {
+      "title": "Bloc de croquis",
+      "draw_something_first": "Dessinez d’abord quelque chose",
+      "loading": "Chargement du bloc de croquis…",
+      "export_failed": "Impossible d’exporter le croquis — réessayez",
+      "insert_hint": "Joint l’image et un fichier source modifiable que votre crew peut lire comme des données",
+      "attach_to_message": "Joindre au message",
+      "new_sketch": "Nouveau croquis",
+      "confirm_discard": "Abandonner le dessin",
+      "already_attached": "Joint — modifiez le canevas pour dessiner à nouveau",
+      "load_failed": "Impossible de charger le bloc de croquis — vérifiez votre connexion et rouvrez-le"
     }
   },
   "hooks": {

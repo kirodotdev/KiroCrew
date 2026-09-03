@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect, useLayoutEffect, useCallback, useMemo, useId, memo } from 'react'
-import { ArrowUpFromLine, ArrowUp, Loader2, RotateCw, Plus, Crop, Bot, Mic, Keyboard, Square, BookOpen, X, ClipboardList, CheckCircle, Ban, Sparkles, Target, Lock, Folder, FolderOpen, FileText, FileDiff } from 'lucide-react'
+import { ArrowUpFromLine, ArrowUp, Loader2, RotateCw, Plus, Crop, Bot, Mic, Keyboard, Square, BookOpen, X, ClipboardList, CheckCircle, Ban, Sparkles, Target, Lock, Folder, FolderOpen, FileText, FileDiff, PenLine } from 'lucide-react'
+import SketchDialog from './SketchDialog'
 import CopyBranchButton from './CopyBranchButton'
 import RejectDropdown from './RejectDropdown'
 import { usePointerDrag } from '../hooks/usePointerDrag'
@@ -71,7 +72,7 @@ const IMAGE_ACCEPT = 'image/png,image/jpeg,image/gif,image/webp,image/bmp,image/
 // test_accept_list_covers_every_accepted_extension pins this set against the
 // server's, from the Python side, since a vitest cannot read the Python constant.
 const VIDEO_ACCEPT = 'video/mp4,video/x-m4v,video/quicktime,video/webm'
-const FILE_ACCEPT = IMAGE_ACCEPT + ',' + VIDEO_ACCEPT + ',.txt,.md,.json,.har,.yaml,.yml,.xml,.csv,.log,.py,.js,.ts,.tsx,.jsx,.html,.css,.sh,.bash,.rb,.go,.rs,.java,.c,.cpp,.h,.hpp,.pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.odt,.ods,.odp,.rtf,.zip,.tar,.gz'
+const FILE_ACCEPT = IMAGE_ACCEPT + ',' + VIDEO_ACCEPT + ',.txt,.md,.json,.excalidraw,.har,.yaml,.yml,.xml,.csv,.log,.py,.js,.ts,.tsx,.jsx,.html,.css,.sh,.bash,.rb,.go,.rs,.java,.c,.cpp,.h,.hpp,.pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.odt,.ods,.odp,.rtf,.zip,.tar,.gz'
 
 // Extension per image MIME type, mirroring IMAGE_ACCEPT. Used to synthesize a
 // filename for clipboard-pasted images (see nameClipboardImage).
@@ -1109,6 +1110,7 @@ function ChatInput({
   const fileInputId = useId()
   // "+" drop-up menu (upload file / image + browse toggle).
   const [plusOpen, setPlusOpen] = useState(false)
+  const [sketchOpen, setSketchOpen] = useState(false)
   const [ctxPopoverOpen, setCtxPopoverOpen] = useState(false)
   // Per-session auto-compact threshold (slider in the context popover). The
   // debounce timer collapses a slider drag into one POST; the fetch itself is
@@ -3142,6 +3144,9 @@ function ChatInput({
       )}
 
       <input id={fileInputId} ref={fileInputRef} type="file" aria-label={i18nT('components.chatInput.attach_files')} multiple accept={FILE_ACCEPT} className="sr-only" onChange={handleFileInputChange} />
+      {onUploadFiles && (
+        <SketchDialog open={sketchOpen} onOpenChange={setSketchOpen} onInsert={onUploadFiles} returnFocusRef={inputRef} />
+      )}
 
       {typedCommandMenus && <SlashCommandMenu input={value} anchorRef={inputRef as React.RefObject<HTMLElement>} open={slashMenuOpen} sendOnEnter={sendOnEnter} onSelect={cmd => { onChange(cmd); setSlashMenuOpen(false) }} onClose={() => setSlashMenuOpen(false)} />}
 
@@ -3444,6 +3449,26 @@ function ChatInput({
                         </button>
                       )}
                     </div>
+                    {/* Sketch is a full-width menu ROW, not a third tile: the
+                        tile group above is capped at two peer actions by the
+                        max-two-buttons-per-row rule, and wrapping a third onto
+                        a second grid line is the remedy that rule explicitly
+                        rejects. A stacked row (the same shape as the trigger
+                        shortcuts below) is its own row by construction. */}
+                    <div className="mt-2 flex flex-col gap-0.5">
+                      <button
+                        type="button"
+                        onClick={() => { setPlusOpen(false); setSketchOpen(true) }}
+                        title={i18nT('components.chatInput.sketch')}
+                        className="w-full flex items-center gap-2.5 px-2 py-1.5 rounded-lg bg-transparent hover:bg-bg-hover transition-colors cursor-pointer text-left"
+                      >
+                        <PenLine size={14} className="w-4 shrink-0 text-muted lucide-inline" />
+                        <div className="min-w-0">
+                          <div className="text-[12px] font-medium text-text">{i18nT('components.chatInput.sketch')}</div>
+                          <div className="text-[11px] text-muted leading-snug">{i18nT('components.chatInput.sketch_desc')}</div>
+                        </div>
+                      </button>
+                    </div>
                     {/* In-input trigger shortcuts: clicking inserts the sigil
                      *  and opens the matching picker (same as typing /, @, $). */}
                     <div className="mt-2 pt-2 border-t border-border flex flex-col gap-0.5">
@@ -3490,6 +3515,24 @@ function ChatInput({
                   document.body
                 )}
               </div>
+            )}
+            {/* Touch path: directFilePicker replaces the "+" drop-up with a
+                bare file-input label, so the menu's Sketch row never mounts
+                there. A pencil button restores the entry on exactly the
+                devices where finger/stylus drawing works best. Two peer
+                actions (label + pencil) — at the max-two-buttons-per-row cap,
+                not over it; the non-touch branch keeps Sketch in the menu. */}
+            {onUploadFiles && directFilePicker && (
+              <button
+                className="w-8 h-8 rounded-lg flex items-center justify-center cursor-pointer transition-all disabled:opacity-30 bg-transparent border-none text-muted hover:text-text hover:bg-bg-hover shrink-0"
+                onClick={() => setSketchOpen(true)}
+                disabled={uploading}
+                aria-haspopup="dialog"
+                aria-label={i18nT('components.chatInput.sketch')}
+                title={i18nT('components.chatInput.sketch')}
+              >
+                <PenLine size={17} />
+              </button>
             )}
             {/* The wrapper exists for the edge cues: absolutely-positioned
                 children of the scroller itself would travel with the scrolled

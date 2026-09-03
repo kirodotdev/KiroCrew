@@ -923,6 +923,11 @@ _ALLOWED_TEXT_EXT = {
     ".txt",
     ".md",
     ".json",
+    # Excalidraw scene JSON — the composer's sketch pad attaches one per
+    # sketch, and the dashboard has a dedicated read-only renderer for it
+    # (FileRenderers routes on this exact extension). Content-wise it is
+    # ordinary JSON text.
+    ".excalidraw",
     ".har",
     ".yaml",
     ".yml",

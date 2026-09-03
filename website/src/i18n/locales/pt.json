@@ -5517,7 +5517,9 @@
       "auto_compact_threshold": "Limite de compactação automática",
       "auto_compact_load_failed": "Não foi possível carregar a configuração de compactação automática",
       "reset_to_global": "Redefinir para o global ({{pct}}%)",
-      "following_global": "Seguindo o global ({{pct}}%)"
+      "following_global": "Seguindo o global ({{pct}}%)",
+      "sketch": "Esboço",
+      "sketch_desc": "Desenhe um esboço; anexa uma imagem e sua fonte editável"
     },
     "chatPane": {
       "agent_list": "Lista de agentes",
@@ -7750,6 +7752,18 @@
       "path_copied": "Caminho copiado",
       "reveal_blocked": "Este caminho está protegido e não pode ser aberto.",
       "reveal_failed": "Não foi possível abrir este caminho na máquina que executa o {{productName}}."
+    },
+    "sketchDialog": {
+      "title": "Bloco de esboços",
+      "draw_something_first": "Desenhe algo primeiro",
+      "loading": "Carregando o bloco de esboços…",
+      "export_failed": "Não foi possível exportar o esboço — tente novamente",
+      "insert_hint": "Anexa a imagem e um arquivo-fonte editável que sua crew pode ler como dados",
+      "attach_to_message": "Anexar à mensagem",
+      "new_sketch": "Novo esboço",
+      "confirm_discard": "Descartar desenho",
+      "already_attached": "Anexado — edite a tela para esboçar novamente",
+      "load_failed": "Não foi possível carregar o bloco de esboços — verifique sua conexão e reabra"
     }
   },
   "hooks": {

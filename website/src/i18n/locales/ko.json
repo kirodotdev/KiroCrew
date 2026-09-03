@@ -5339,7 +5339,9 @@
       "auto_compact_threshold": "자동 압축 임계값",
       "auto_compact_load_failed": "자동 압축 설정을 불러오지 못했습니다",
       "reset_to_global": "전역 설정으로 재설정 ({{pct}}%)",
-      "following_global": "전역 설정 따름 ({{pct}}%)"
+      "following_global": "전역 설정 따름 ({{pct}}%)",
+      "sketch": "스케치",
+      "sketch_desc": "스케치를 그리기. 이미지와 편집 가능한 원본을 첨부합니다"
     },
     "chatPane": {
       "agent_list": "에이전트 목록",
@@ -7538,6 +7540,18 @@
       "path_copied": "경로 복사됨",
       "reveal_blocked": "이 경로는 보호되어 있어 열 수 없습니다.",
       "reveal_failed": "{{productName}}이(가) 실행 중인 컴퓨터에서 이 경로를 열 수 없습니다."
+    },
+    "sketchDialog": {
+      "title": "스케치 패드",
+      "draw_something_first": "먼저 무언가를 그려 보세요",
+      "loading": "스케치 패드 불러오는 중…",
+      "export_failed": "스케치를 내보내지 못했습니다. 다시 시도해 주세요",
+      "insert_hint": "이미지와 함께 크루가 데이터로 읽을 수 있는 편집 가능한 원본 파일을 첨부합니다",
+      "attach_to_message": "메시지에 첨부",
+      "new_sketch": "새 스케치",
+      "confirm_discard": "그림 삭제",
+      "already_attached": "첨부됨 — 캔버스를 편집하면 다시 스케치할 수 있습니다",
+      "load_failed": "스케치 패드를 불러오지 못했습니다. 연결을 확인하고 다시 열어 주세요"
     }
   },
   "hooks": {

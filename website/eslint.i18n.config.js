@@ -343,6 +343,14 @@ export default [
               // real copy ('Preview (', 'Rotate the image') is still reported.
               String.raw`^(?:(?:translate|translateX|translateY|rotate|scale|scaleX|scaleY|matrix)\(|px|deg|[-\d.%,\s()])+$`,
 
+              // A region-qualified BCP-47 language tag (`zh-CN`, `pt-PT`). These are
+              // protocol identifiers handed to libraries that ship their own
+              // translations (Excalidraw's `langCode`, Intl APIs), never rendered
+              // copy — translating one would break the lookup it exists to perform.
+              // FULL-STRING and region-qualified on purpose: a bare two-letter word
+              // (`is`, `to`, `it`) stays reportable prose.
+              String.raw`^[a-z]{2}-[A-Z]{2}$`,
+
               // A URL query built from an already-encoded value, e.g.
               // `${PATH}?id=${encodeURIComponent(x)}`. A request path is a server
               // contract; translating it would 404. Full-string for the same reason as
