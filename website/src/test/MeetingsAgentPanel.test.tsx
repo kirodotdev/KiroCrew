@@ -109,6 +109,24 @@ describe('AgentPanel — html output', () => {
     expect(container.querySelector('iframe')!.getAttribute('title')).toContain('Sketch Artist')
   })
 
+  it('gives the frame its own compositing layer so a skipped first paint cannot blank it', () => {
+    // Same mechanism and remedy as the dashboard's sandbox-doc frames (#7931):
+    // without layer promotion an engine can lay the document out, run its
+    // scripts and report a correct height while rasterizing nothing — a
+    // correctly sized, visible frame painting an empty box, silent by
+    // construction. This frame builds its document inline via srcDoc and never
+    // reaches the sandbox-doc mint, so it sat outside that PR's scope (#8037).
+    // Chromium in this DOM paints fine either way, so removing the property
+    // looks completely harmless here: this assertion is the whole guard.
+    const { container } = mount(HTML, { output: '<h1>promoted</h1>' })
+    const frame = container.querySelector('iframe') as HTMLIFrameElement
+    expect(frame.style.transform).toBe('translateZ(0)')
+    // The promotion is additive: the fixed sizing that reserves the panel's
+    // box must survive alongside it.
+    expect(frame.style.height).toBe('340px')
+    expect(frame.style.minHeight).toBe('340px')
+  })
+
   it('never hands the model document to srcDoc raw — it goes through buildSketchSrcdoc', () => {
     // This is the BLOCKING finding, as a test. The vulnerable version set
     // srcDoc={output} directly, so the srcdoc equalled the model HTML exactly

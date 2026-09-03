@@ -267,7 +267,14 @@ export default function AgentPanel({
             // boundary; the CSP above is the egress control the sandbox lacks.
             sandbox="allow-scripts"
             className="w-full border border-border rounded-md bg-white"
-            style={{ minHeight: 340, height: 340 }}
+            // The transform is the same compositing promotion every sandbox-doc
+            // frame carries: a laid-out document whose first paint is skipped
+            // shows an empty box (silent — correct height, no error state), and
+            // promoting the frame to its own layer is the remedy that needs no
+            // post-load timing. This frame builds its document inline (srcDoc,
+            // outside the sandbox-doc mint), so it was left out when the mint's
+            // consumers were promoted.
+            style={{ minHeight: 340, height: 340, transform: 'translateZ(0)' }}
           />
         ) : (
           <p className="text-[13px] text-muted">
