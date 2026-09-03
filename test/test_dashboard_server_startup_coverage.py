@@ -431,6 +431,7 @@ class TestStartDashboardWiring:
 
         later_hooks = (
             "_instances_shutdown",
+            "_connections_warm_shutdown",
             "_prevent_sleep_shutdown",
             "_status_sink_shutdown",
             "_contrib_shutdown",
@@ -443,8 +444,16 @@ class TestStartDashboardWiring:
         tunnel_at = cleanup.index("_tunnel_shutdown")
         for name in later_hooks:
             assert tunnel_at < cleanup.index(name), f"{name} would starve the tunnel teardown"
-        for name in ("_instances_startup", "_contrib_startup", "_hooks_startup"):
+        for name in (
+            "_instances_startup",
+            "_contrib_startup",
+            "_hooks_startup",
+        ):
             assert name in startup, f"missing on_startup hook: {name}"
+        # The warm scavenge is deliberately ABSENT from on_startup: those hooks run
+        # inside runner.setup(), before the listener binds, so the scavenge is kicked
+        # explicitly after _start_site instead (no-new-work-on-gateway-boot-path).
+        assert "_connections_warm_startup" not in startup
 
     @pytest.mark.asyncio
     async def test_a_cross_origin_post_is_refused(self, tmp_path, monkeypatch) -> None:

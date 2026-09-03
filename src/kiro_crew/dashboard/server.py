@@ -2317,6 +2317,59 @@ def _dispatch_owner_dm(state: DashboardState, text: str) -> None:
     task.add_done_callback(state._background_tasks.discard)
 
 
+def _register_connections_warm_lifecycle(app: web.Application, state: DashboardState) -> None:
+    """Retire warm generations on cleanup; startup scavenging is kicked post-bind.
+
+    The import sits inside the hook deliberately, against ``top-level-imports``, because
+    ``no-new-work-on-gateway-boot-path`` governs this file and wins: importing
+    ``connections.warm`` at module scope would pull its whole dependency graph -- the mint
+    table, the provider registry, tool aliases, MCP discovery -- onto the one ordered thread
+    between process start and the socket accepting requests. Startup scavenging is NOT an
+    ``on_startup`` hook for the same reason: aiohttp runs those inside ``runner.setup()``,
+    BEFORE the listener binds, so even a hook that only created the scavenge task put the
+    synchronous import in front of the bind. Both entrypoints instead call
+    ``_kick_connections_warm_scavenge`` strictly after ``_start_site`` returns.
+
+    The cleanup hook is registered here, before ``runner.setup()`` freezes aiohttp's signal
+    lists; it resolves the import only when a gateway is already stopping.
+    """
+
+    async def _connections_warm_shutdown(_app: web.Application) -> None:
+        try:
+            from kiro_crew.connections.warm import shutdown_warm_mint
+
+            await shutdown_warm_mint()
+        except Exception:  # noqa: BLE001 — one cleanup hook must not suppress later hooks
+            logger.warning("Connections warm shutdown failed", exc_info=True)
+
+    app.on_cleanup.append(_connections_warm_shutdown)
+
+
+def _kick_connections_warm_scavenge(state: DashboardState) -> None:
+    """Start the crash-residue scavenge as a tracked background task, post-bind.
+
+    Called by both gateway entrypoints only after ``_start_site`` has returned, so the
+    listener is already accepting requests. The deferred ``connections.warm`` import
+    happens INSIDE the worker thread: resolving that dependency graph on the event loop
+    would stall in-flight requests just as it would have stalled the bind.
+    """
+
+    def _scavenge_in_thread() -> None:
+        from kiro_crew.connections.warm import scavenge_warm_mint_artifacts
+
+        scavenge_warm_mint_artifacts()
+
+    async def _connections_warm_scavenge() -> None:
+        try:
+            await asyncio.to_thread(_scavenge_in_thread)
+        except Exception:  # noqa: BLE001 — fail closed by retaining unproved residue
+            logger.warning("Connections warm artifact scavenging failed", exc_info=True)
+
+    task = asyncio.create_task(_connections_warm_scavenge())
+    state._background_tasks.add(task)
+    task.add_done_callback(state._background_tasks.discard)
+
+
 def _register_browser_view_cleanup(app: web.Application) -> None:
     """Stop the CLI dashboard process when the gateway shuts down.
 
@@ -3641,6 +3694,7 @@ async def start_dashboard(
     # ``_register_instances_hooks`` for why ordering matters.
     _register_instances_hooks(app, state, port)
     _register_browser_view_cleanup(app)
+    _register_connections_warm_lifecycle(app, state)
 
     # Unix-socket cleanup hook — registered before runner.setup freezes the
     # signal lists; the path itself only becomes known after the site starts
@@ -3681,6 +3735,13 @@ async def start_dashboard(
     except OSError:
         await runner.cleanup()
         raise
+
+    # Listener is bound and credentials are published — now kick the warm
+    # crash-residue scavenge. Deliberately NOT an on_startup hook: those run
+    # inside runner.setup(), before the bind, and the scavenge's deferred
+    # import must never sit in front of the listener
+    # (no-new-work-on-gateway-boot-path).
+    _kick_connections_warm_scavenge(state)
 
     # Event-loop heartbeat: proves the asyncio loop is live (the off-loop /proc
     # sampler can't — it runs in a subprocess). Sleeps 10s, then logs actual
@@ -4398,6 +4459,7 @@ async def start_api_server(
     # is what makes headless --slack-only keep the host awake during a long
     # Slack task, identically to the full dashboard.
     _register_prevent_sleep_shutdown(app, state)
+    _register_connections_warm_lifecycle(app, state)
 
     # Unix-socket cleanup hook — same holder pattern as start_dashboard,
     # registered before runner.setup freezes the signal lists.
@@ -4442,6 +4504,11 @@ async def start_api_server(
     except OSError:
         await runner.cleanup()
         raise
+
+    # Listener is bound — kick the warm crash-residue scavenge (parity with
+    # start_dashboard: never an on_startup hook, which would run the deferred
+    # import before the bind).
+    _kick_connections_warm_scavenge(state)
 
     logger.info("API-only server listening on %s:%d", bind_addr, port)
 

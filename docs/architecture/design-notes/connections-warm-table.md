@@ -4,10 +4,13 @@ Cold mint (`kiro_crew.connections.mint`) spawns one kiro-cli process per provide
 approval URL: ~7.5s per card. `kiro_crew.connections.warm` serves the whole gallery from one
 process, and every rule below answers an observed failure.
 
-**Placement.** All warm code is in `src/kiro_crew/connections/warm.py`; the dashboard handler
-adds only endpoint wiring and function-local engine imports -- `expire_dead_mints` on the status
-path, `mintable_providers` plus `warm_mint_all` on the premint path, and `adopt_shared_mint` on
-the mint path -- keeping the mint engine off the gateway's boot path.
+**Placement.** Warm engine code remains in `src/kiro_crew/connections/warm.py`; the dashboard
+handler adds only endpoint wiring -- `expire_dead_mints` on the status path,
+`mintable_providers` plus `warm_mint_all` on the premint path, and `adopt_shared_mint` on the
+mint path. The dashboard server registers two lifecycle hooks in both full and headless modes:
+a tracked startup task that scavenges dead private generations off-loop without delaying the
+listener bind, and a cleanup hook that retires the live runtime. Those hooks import the warm
+module lazily, so importing the server alone still does not construct or spawn the engine.
 
 ## The handoff: how a premint reaches the click it was minted for
 
@@ -147,41 +150,33 @@ what is genuinely per-process. Three adaptations:
 - `_mint_holder_alive` is deliberately **not** reused -- it reads the row's own `client`, which
   a shared row does not own, so it answers False for every warm row. `_warm_row_alive` asks the
   generation/activation pair instead.
-- Warm spec names are fixed (`kirocrew-mint-warm-*`), with no `-<pid>-<8hex>` suffix, keeping
-  them out of the cold engine's manifest sweep. That shared prefix is a hazard in reverse -- a
-  *cold* spec for a server named `warm-*` matches the warm glob -- so `_is_stale_warm_spec`
-  refuses anything matching the cold name shape, and both patterns must share one **character
-  class**: while warm accepted `[A-Za-z]` and cold only `[a-z]`, a mixed-case alias produced a
-  live cold spec the warm sweep read as its own and unlinked.
-- **A name is not ownership.** Those fixed names are predictable and they live in the user's own
-  agents directory, next to the agents they hand-write, so a name says where a spec of ours
-  would *go* and never that the file already there is one. Trusting the name shape alone was a
-  defect in both directions: the write-time sweep unlinked a user's own agent spec sitting at
-  such a path, and the write then clobbered one at a path the current plan wanted.
-  `_warm_spec_is_foreign` proves ownership from the file's CONTENTS, and it takes two halves.
-  The fields the spec body fixes (`model`, `includeMcpJson`, `prompt`, `allowedTools`) are read
-  off `_mint_spec_body` so a change to the body cannot leave the module unable to recognise its
-  own files -- but they are also **stock defaults** a hand-written or scaffolded agent plausibly
-  carries, so on their own they still read a wholly user-authored spec as ours. The
-  discriminating half is `_WARM_SPEC_SENTINEL`, stamped as the description prefix of every spec
-  written here. `description` is the only field free enough to carry a marker while staying
-  schema-legal: kiro-cli rejects an unknown spec key, and the agent-spec migration sweep strips
-  bookkeeping keys. Requiring it orphans nothing, since no warm-spec writer has ever shipped --
-  and a hypothetical unsentinelled file of ours would read as foreign, which means refused and
-  left in place. It fails closed, because the mistakes are not symmetric: reading our own file
-  as foreign leaves one stale spec as clutter, while reading a user's file as ours destroys it.
-  A refusal is audited and skipped -- never raised -- so an occupied path costs one unwarmed
-  provider, not a failed spawn.
-- **The ownership checks guard one directory; kiro-cli reads two.** Everything above protects
-  the user's agents directory, but kiro-cli also resolves PROJECT-LOCAL specs from
-  `<cwd>/.kiro/agents`, and the process is activated BY NAME -- so a spec planted under the
-  warm process's own working directory shadows the guarded one, and its `mcpServers` is what
-  gets initialized and authorized against. No ownership check looks there. The working
-  directory is therefore `<data home>/run/connections-warm`: `run/` is already on
-  `security._SENSITIVE_HOME_DIRS` (it holds the sandbox launchers and run markers the gateway
-  execs outside the sandbox), while `connections/` carries no entry and an agent file tool
-  could write it. The property is asserted through `security.is_sensitive_write_path` rather
-  than a path literal, so a later rename cannot silently leave the fence.
+- Warm mode names remain fixed (`kirocrew-mint-warm-*`) because one process must switch among
+  a known set after spawn. The files do **not** live in `~/.kiro/agents`: every process owns a
+  random direct child under `<data home>/run/connections-warm/generations/`, and its modes are
+  written to `<generation>/.kiro/agents` before spawn. The generation root is the runtime cwd,
+  so kiro-cli resolves the private base mode for the initial `--agent` and the private all-mode
+  for the later `session/set_mode`. The sensitive `run/` boundary also makes the root ineligible
+  for project-agent discovery, keeping both names out of the picker and spawn roster.
+- **A name is not ownership.** `_WARM_SPEC_SENTINEL` remains the content discriminator for every
+  file the writer touches. Inside a new generation it protects against a same-user race; at
+  startup it licenses deletion of sentinel-owned files left in the old global location. The
+  fields the spec body fixes (`model`, `includeMcpJson`, `prompt`, `allowedTools`) are stock
+  defaults a user agent can plausibly carry, so they are necessary but insufficient. An
+  unreadable, linked, oversized, malformed, or unsentinelled file is retained and logged.
+- **Directory lifetime follows process lifetime.** A provisional marker is written before spawn
+  and atomically completed with the runtime PID plus process-start token after spawn. Parking,
+  an interrupted teardown, or a kill timeout retains both the runtime reference and directory.
+  A confirmed kill releases only that runtime's directory. Gateway cleanup retires every live
+  and parked generation; the next startup removes a crash leftover only when both its recorded
+  gateway and runtime identities are provably dead. Missing or ambiguous evidence fails closed
+  to retained clutter, preventing PID reuse or a second live gateway sharing the data home from
+  losing a directory it may still use.
+- **Legacy manual cleanup.** An old global
+  `~/.kiro/agents/kirocrew-mint-warm-*.json` carrying `_WARM_SPEC_SENTINEL` is removed
+  automatically at startup. A file without that sentinel is never auto-deleted because its name
+  cannot prove ownership. The operator must inspect its `name`, `description`, and `mcpServers`
+  and remove it manually only when they recognize it as obsolete generated warm-mint residue;
+  ordinary warm operation no longer reads or writes that global path.
 
 ## Tool-alias key shape
 
@@ -196,13 +191,14 @@ the pre-#3260 rule and those assertions were not carried forward.
 
 ## Filesystem work never runs on the loop
 
-Every flow reads the user's config, the shared agents directory, or kiro-cli's OAuth cache, any
-of which can sit on a network mount where a stat is unbounded, so all of that work lives in
-SYNCHRONOUS helpers and a coroutine reaches them through `asyncio.to_thread` -- enforced by a
-fixed-point drift guard in `test/test_connections_warm.py` that reuses the mint engine's own
-primitive sets so the two cannot drift apart. What the guard pins today is the exact set of
-helpers doing filesystem work, so the lifecycle slice can neither call one from a coroutine nor
-quietly drop the filesystem work the guard's coverage rests on without failing it.
+Every flow reads the user's config, a private generation tree, the old global agents directory,
+or kiro-cli's OAuth cache, any of which can sit on a network mount where a stat is unbounded, so
+all of that work lives in SYNCHRONOUS helpers and a coroutine reaches them through
+`asyncio.to_thread` -- enforced by a fixed-point drift guard in `test/test_connections_warm.py`
+that reuses the mint engine's own primitive sets so the two cannot drift apart. What the guard
+pins today is the exact set of helpers doing filesystem work, so the lifecycle slice can neither
+call one from a coroutine nor quietly drop the filesystem work the guard's coverage rests on
+without failing it.
 
 ## Seams and residuals
 
@@ -280,16 +276,13 @@ generation** rather than anything else:
 
 And one the second review round found, which is not a cancellation bug at all:
 
-- **A refused spec was still activated by name.** The writer declines to overwrite a file at
-  a planned spec path whose contents this module did not write — which protects the file and
-  nothing else, because the spawn is handed `agent=<fixed name>` and kiro-cli resolves that
-  name off the same agents directory. A hand-written agent parked at
-  `kirocrew-mint-warm-base.json` would therefore have been executed, with its own
-  `mcpServers` commands initialized, by the very code that had just refused to own it.
-  `_unowned_plan_specs` now re-verifies, off the loop, that every planned spec exists *and*
-  is sentinel-owned before the runtime is constructed; any refusal aborts warming entirely
-  and is audited. Aborting is safe because the cold path still serves every Connect — it
-  just spawns per provider.
+- **A refused spec must never be activated by name.** Even in the private generation scope,
+  the writer can race a same-user file at a planned path. Refusing to overwrite protects the
+  file but not the spawn: the runtime is handed `agent=<fixed name>` and kiro-cli resolves that
+  name from the same project-local agents directory. `_unowned_plan_specs` therefore re-verifies,
+  off the loop, that every planned spec exists *and* is sentinel-owned before the runtime is
+  constructed; any refusal aborts warming and is audited. Aborting is safe because the cold
+  path still serves every Connect — it just spawns per provider.
 
 One residual remains:
 
@@ -340,9 +333,13 @@ session timeout, which is the right trade: correctness over a warm-cache hit. Cl
 residual entirely would need the backend to expose a session id at request time rather than at
 response time.
 
-- **A hard gateway kill strands warm spec files.** They carry no manifest row, so the cold
-  engine's aged-row sweep cannot see them. The next spawn's write-time sweep removes them, so
-  the exposure is bounded, but it is not a clean teardown.
+**Generation-owned spec cleanup closes the file-lifetime residual.** A hard gateway kill may
+leave a private generation tree, but it no longer publishes agent modes globally. Its owner
+marker carries gateway and runtime PID/start identities; the next gateway removes the tree only
+when both are provably dead. Graceful shutdown removes each tree immediately after its process
+kill succeeds, while a parked or unkillable process retains its own tree. Sentinel-owned files
+from the former global location are cleaned at startup; unsentinelled files remain a documented
+manual decision rather than being deleted on a name match.
 
 ## The one bug class, and the uniform shape that closes it
 

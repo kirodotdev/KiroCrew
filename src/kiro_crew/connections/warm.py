@@ -85,19 +85,25 @@ which protects the SPAWN. Without the second check the refusal would hand kiro-c
 stranger's spec at our fixed name and initialize its ``mcpServers``. A refusal aborts
 warming entirely, audited: the cold path still serves every Connect.
 
-OWNERSHIP: these specs carry FIXED, predictable names in the user's own agents directory,
-so a name is where a spec of ours would GO and never proof that the file there is one.
-Every spec written here is stamped with :data:`_WARM_SPEC_SENTINEL` on its description --
-the stock defaults a spec body also fixes are values a user's own agent plausibly carries,
-so the sentinel is what actually discriminates. Neither :func:`_write_warm_mint_specs` nor
-:func:`_remove_warm_mint_specs` unlinks or overwrites a path whose contents this module did
-not write -- see :func:`_warm_spec_is_foreign`.
+OWNERSHIP: mode names remain fixed, but their files live only in one random, owner-only
+PROJECT scope under ``<data home>/run/connections-warm/generations``. That generation root is
+the runtime cwd, so both the initial ``--agent`` and later ``session/set_mode`` resolve the
+private ``.kiro/agents`` files before the user's global scope; the picker refuses the sensitive
+run tree. Every spec is still stamped with :data:`_WARM_SPEC_SENTINEL`, because content proof
+protects same-user races and licenses one-time cleanup of sentinel-owned global leftovers.
+An unsentinelled global file is never auto-deleted: a name cannot prove ownership.
+
+GENERATION LIFETIME follows the process. Its PID-reuse-resistant owner marker is written
+before spawn and completed with the child identity after spawn. Parking or a failed kill keeps
+the directory attached; a confirmed kill releases it. Gateway startup scavenges only roots
+whose gateway and runtime identities are both provably dead, while graceful cleanup retires the
+live singleton. Missing, malformed or unreadable evidence fails closed to retained clutter.
 
 INVARIANT: no coroutine here touches the filesystem directly. The spec helpers read the
-user's config, the shared agents dir, or kiro-cli's OAuth cache, and the credential gate
-reads the operator's OAuth-endpoint extension -- any of which can sit on a network mount
-where a stat is unbounded -- so they are synchronous, and a coroutine reaches them through
-``asyncio.to_thread``. Enforced by a fixed-point drift guard in
+user's config, private generation tree, global legacy agents dir, or kiro-cli's OAuth cache,
+and the credential gate reads the operator's OAuth-endpoint extension -- any of which can sit
+on a network mount where a stat is unbounded -- so they are synchronous, and a coroutine
+reaches them through ``asyncio.to_thread``. Enforced by a fixed-point drift guard in
 ``test/test_connections_warm.py``, not merely described here.
 
 REQUEST PATH: :func:`warm_mint_all` is driven by ``POST /api/connections/premint``, which the
@@ -130,17 +136,22 @@ import asyncio
 import hashlib
 import json
 import logging
+import os
 import re
+import shutil
+import stat
 import time
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from kiro_crew import agent as _agent
-from kiro_crew import hooks
+from kiro_crew import hooks, platform_compat
 from kiro_crew.agent_discovery import _read_agent_spec
 from kiro_crew.agent_files import AGENT_FILENAME
 from kiro_crew.config.loader import data_home
+from kiro_crew.config.paths import project_agents_dir
 from kiro_crew.connections.mint import (
     _MINT_AGENT_PREFIX,
     _MINT_GRANT_POLL_SECONDS,
@@ -185,6 +196,15 @@ _WARM_ALL_AGENT = f"{_WARM_AGENT_PREFIX}all"
 #: ``description`` is the only schema-legal field free enough to carry a marker: kiro-cli
 #: rejects an unknown spec key, and the agent-spec migration sweep strips bookkeeping keys.
 _WARM_SPEC_SENTINEL = "Kiro Crew warm mint spec (machine-written; safe to delete)"
+#: Each helper process resolves its internal modes from one private project scope. The
+#: directory name is random rather than a provider or agent name, so no stable internal
+#: mode appears under the user's global ``~/.kiro/agents`` scope.
+_WARM_GENERATION_PREFIX = "generation-"
+_WARM_GENERATION_MARKER = ".owner.json"
+_WARM_GENERATION_SENTINEL = "kirocrew.connections.warm.generation"
+_WARM_GENERATION_MARKER_VERSION = 1
+_WARM_GENERATION_MARKER_MAX_BYTES = 4096
+_WARM_RUNTIME_DIR_ATTR = "_kirocrew_warm_generation_dir"
 _WARM_SPAWN_TIMEOUT_SECONDS = 90.0
 _WARM_SESSION_TIMEOUT_SECONDS = 90.0
 _WARM_SESSION_DESTROY_TIMEOUT_SECONDS = 10.0
@@ -642,31 +662,62 @@ def _warm_ownership_marks(name: str) -> dict[str, Any]:
     return {key: probe[key] for key in ("model", "includeMcpJson", "prompt", "allowedTools")}
 
 
+def _private_warm_spec_work_dir(path: Path) -> Path | None:
+    """Return the owned generation root for a project-local spec, or ``None``.
+
+    The ordinary agent reader rejects ``data_home/run`` by design. These files live there
+    deliberately, so a separate reader is allowed only after the path is proved to be a
+    direct child of a sentinel-owned generation scope.
+    """
+    agents_dir = path.parent
+    if agents_dir.name != "agents" or agents_dir.parent.name != ".kiro":
+        return None
+    work_dir = agents_dir.parent.parent
+    if not _is_plain_warm_generation_dir(work_dir):
+        return None
+    return work_dir if _read_warm_generation_owner(work_dir) is not None else None
+
+
+def _read_warm_spec_body(path: Path) -> dict[str, Any] | None:
+    """Read one spec through the correct trust boundary for its scope."""
+    if _private_warm_spec_work_dir(path) is None:
+        return _read_agent_spec(
+            path,
+            operation="connections_warm_mint",
+            source="dashboard",
+        )
+    try:
+        if platform_compat.is_link_or_junction(path):
+            return None
+        info = path.lstat()
+        if not stat.S_ISREG(info.st_mode) or info.st_size > hooks.MAX_FILE_BYTES:
+            return None
+        body = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        return None
+    return body if isinstance(body, dict) else None
+
+
 def _warm_spec_is_foreign(path: Path) -> bool:
     """True when ``path`` exists but no warm plan wrote it, so this module must not touch it.
 
-    Warm spec names are FIXED and predictable and they sit in the user's OWN agents
-    directory, so the name shape :func:`_is_stale_warm_spec` checks says where a spec of
-    ours would GO -- never that the file already there is one. Ownership is proved from the
-    contents instead, and it takes BOTH halves: the declared ``name`` matches the file with
-    every field the writer fixes still holding, AND the description carries the sentinel.
-    The marks alone are generic defaults, so a wholly user-authored spec that happens to
-    carry them was read as ours and clobbered; the sentinel is the half that discriminates.
+    Warm mode names are FIXED and predictable, so the name shape
+    :func:`_is_stale_warm_spec` checks says where a spec of ours would GO -- never that the
+    file already there is one. Production writes them inside a private generation, while
+    startup also applies this predicate to old global paths. Ownership is proved from the
+    contents in both scopes: the declared ``name`` matches the file with every field the
+    writer fixes still holding, AND the description carries the sentinel. The marks alone
+    are generic defaults, so the sentinel is the half that discriminates.
 
     Fails closed, because the two mistakes are not symmetric. Reading a file of ours as
     foreign costs one stale spec left as clutter; reading a user's hand-written agent as
     ours deletes it, or overwrites it with a spec they never asked for. So a file that is
     unreadable, not a JSON object, or shaped like anything but our own is foreign.
     """
-    # Through the hardened reader, like the planner read: a raw ``_load_json`` FOLLOWS a
-    # symlink planted at this warm path and parses whatever it lands on, so a link aimed at
-    # a sensitive file was read uncapped and unaudited -- and the ownership verdict this
-    # function returns is what decides whether that path gets unlinked or overwritten.
-    body = _read_agent_spec(
-        path,
-        operation="connections_warm_mint",
-        source="dashboard",
-    )
+    # Global/user files go through the hardened discovery reader. Private generation files
+    # use the equally bounded non-link reader above only after their sentinel-owned run root
+    # is proved; the general reader correctly rejects that sensitive path.
+    body = _read_warm_spec_body(path)
     if not body:
         # A refusal reads as an empty body: absent, unreadable, non-object, oversized and a
         # sensitive-target symlink all land here, and only the ABSENT one is a path we may
@@ -680,20 +731,290 @@ def _warm_spec_is_foreign(path: Path) -> bool:
     marks = _warm_ownership_marks(path.stem)
     if body.get("name") != path.stem or any(body.get(key) != value for key, value in marks.items()):
         return True
-    # No legacy exposure: no warm-spec writer has ever shipped, so no unsentinelled file of
-    # ours exists anywhere to be orphaned by requiring this. Were one to exist it would read
-    # as foreign, which means refused and left in place -- the safe direction.
+    # An unsentinelled global file remains foreign even if an early/dev build produced it.
+    # Startup logs and retains that path because its name cannot prove ownership; the design
+    # note gives the operator the manual inspection/removal rule. Private generation specs
+    # always carry the sentinel before their process starts.
     return not str(body.get("description") or "").startswith(_WARM_SPEC_SENTINEL)
 
 
-def _write_warm_mint_specs(plan: _WarmSpecPlan) -> None:
-    """Write the whole spec set, removing warm specs no longer in it.
+def _warm_work_dir() -> Path:
+    """Managed root for private warm generations, inside the protected run tree.
 
-    Every unlink and every write is gated on ownership, so a file this module did not write
-    survives both. A refusal is audited and skipped, never raised: a provider whose spec
-    path is occupied is a provider that goes unwarmed, not a failed spawn.
+    Specs never live directly here. Each process gets one direct child under
+    :func:`_warm_generations_dir`, and that child becomes its cwd so kiro-cli resolves
+    ``<cwd>/.kiro/agents`` before the user's global agent directory.
     """
-    agents_dir = _agent.kiro_agents_dir_path()
+    return data_home() / "run" / "connections-warm"
+
+
+def _warm_generations_dir() -> Path:
+    """Root whose direct children are independently owned helper generations."""
+    return _warm_work_dir() / "generations"
+
+
+def _warm_generation_agents_dir(work_dir: Path) -> Path:
+    """The project-local agent scope kiro-cli resolves for one helper process."""
+    return project_agents_dir(work_dir)
+
+
+def _warm_generation_marker_path(work_dir: Path) -> Path:
+    return work_dir / _WARM_GENERATION_MARKER
+
+
+def _warm_generation_owner(runtime: Any | None = None) -> dict[str, Any]:
+    """Ownership record for one generation, with PID-reuse-resistant identities.
+
+    Both identities are taken from ``process_start_time`` because that is the helper
+    ``_process_identity_live`` compares them against on read. The neighbouring
+    ``own_process_start_time`` answers a deliberately different, reboot-unique format --
+    start ticks joined to the boot UUID on Linux, a ``proc_pidinfo`` microtime on macOS --
+    so a gateway token taken from it could never equal what the reader recomputes, and the
+    live gateway would read as dead. Scavenging removes a generation only once BOTH
+    identities are proven dead, so that mismatch would not merely lose a signal: it would
+    forfeit the gateway's veto and delete a directory still in use the moment its
+    short-lived runtime exited.
+    """
+    gateway_pid = os.getpid()
+    runtime_pid = int(getattr(runtime, "pid", 0) or 0)
+    runtime_started = platform_compat.process_start_time(runtime_pid) if runtime_pid > 0 else None
+    return {
+        "sentinel": _WARM_GENERATION_SENTINEL,
+        "version": _WARM_GENERATION_MARKER_VERSION,
+        "gateway_pid": gateway_pid,
+        "gateway_started": platform_compat.process_start_time(gateway_pid) or "",
+        "runtime_pid": runtime_pid,
+        "runtime_started": runtime_started or "",
+    }
+
+
+def _write_warm_generation_owner(work_dir: Path, runtime: Any | None = None) -> None:
+    """Atomically publish the process identities that make boot scavenging safe."""
+    _agent._atomic_json_write(
+        _warm_generation_marker_path(work_dir), _warm_generation_owner(runtime)
+    )
+
+
+def _read_warm_generation_owner(work_dir: Path) -> dict[str, Any] | None:
+    """Read a small plain ownership marker; malformed or linked input is unowned."""
+    marker = _warm_generation_marker_path(work_dir)
+    try:
+        if platform_compat.is_link_or_junction(marker):
+            return None
+        info = marker.lstat()
+        if not stat.S_ISREG(info.st_mode) or info.st_size > _WARM_GENERATION_MARKER_MAX_BYTES:
+            return None
+        body = json.loads(marker.read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        return None
+    if not isinstance(body, dict):
+        return None
+    if body.get("sentinel") != _WARM_GENERATION_SENTINEL:
+        return None
+    if body.get("version") != _WARM_GENERATION_MARKER_VERSION:
+        return None
+    return body
+
+
+def _is_plain_warm_generation_dir(work_dir: Path) -> bool:
+    """Whether *work_dir* is one direct, non-link child of the managed root."""
+    if work_dir.parent != _warm_generations_dir() or not work_dir.name.startswith(
+        _WARM_GENERATION_PREFIX
+    ):
+        return False
+    try:
+        if platform_compat.is_link_or_junction(work_dir):
+            return False
+        return stat.S_ISDIR(work_dir.lstat().st_mode)
+    except OSError:
+        return False
+
+
+def _remove_warm_generation_dir(work_dir: Path) -> bool:
+    """Remove one sentinel-owned generation tree without following a link.
+
+    ``False`` means ownership or removal could not be proved. That direction leaves clutter
+    but never deletes an arbitrary run-tree entry.
+    """
+    try:
+        work_dir.lstat()
+    except FileNotFoundError:
+        return True
+    except OSError:
+        return False
+    if not _is_plain_warm_generation_dir(work_dir):
+        return False
+    if _read_warm_generation_owner(work_dir) is None:
+        return False
+    try:
+        shutil.rmtree(work_dir)
+    except OSError:
+        logger.debug("warm generation removal failed for %s", work_dir.name, exc_info=True)
+        return False
+    return True
+
+
+def _create_warm_generation_dir() -> Path:
+    """Create one owner-only project root and its private ``.kiro/agents`` scope.
+
+    ``make_owner_only_dir``'s tighten step is best-effort by contract, so it alone cannot
+    carry this module's owner-only guarantee: on a filesystem where the ACL write fails the
+    directory would exist but be open to other local users, and the agent specs written into
+    it are injectable. Each level is therefore re-tightened with the fail-loud
+    :func:`platform_compat.restrict_dir_to_owner` — a refused ACL raises, the cleanup below
+    removes the loose directory, and the caller gets an error instead of a false private
+    scope.
+    """
+    generations = _warm_generations_dir()
+    platform_compat.make_owner_only_dir(generations)
+    platform_compat.restrict_dir_to_owner(generations)
+    work_dir = generations / f"{_WARM_GENERATION_PREFIX}{uuid.uuid4().hex}"
+    try:
+        platform_compat.make_owner_only_dir(work_dir)
+        platform_compat.restrict_dir_to_owner(work_dir)
+        platform_compat.make_owner_only_dir(work_dir / ".kiro")
+        platform_compat.restrict_dir_to_owner(work_dir / ".kiro")
+        agents_dir = _warm_generation_agents_dir(work_dir)
+        platform_compat.make_owner_only_dir(agents_dir)
+        platform_compat.restrict_dir_to_owner(agents_dir)
+        _write_warm_generation_owner(work_dir)
+    except BaseException:
+        # The path was generated in this call and has not been handed to a process. Cleanup
+        # may therefore remove it without the marker proof normal retirement requires.
+        shutil.rmtree(work_dir, ignore_errors=True)
+        raise
+    return work_dir
+
+
+def _bind_warm_generation(runtime: Any, work_dir: Path) -> None:
+    """Attach a spawned process to its directory and publish its runtime identity."""
+    setattr(runtime, _WARM_RUNTIME_DIR_ATTR, str(work_dir))
+    _write_warm_generation_owner(work_dir, runtime)
+
+
+def _runtime_generation_dir(runtime: Any) -> Path | None:
+    raw = getattr(runtime, _WARM_RUNTIME_DIR_ATTR, "")
+    return Path(raw) if raw else None
+
+
+def _recorded_runtime_is_dead(work_dir: Path) -> bool:
+    """Whether the marker positively proves its runtime is gone.
+
+    Mirrors the scavenger's ``is not False`` test, so only proof of death releases a tree and
+    both "still running" and "cannot tell" keep it. An absent or unreadable marker answers
+    ``True`` here only because :func:`_remove_warm_generation_dir` independently refuses an
+    unowned directory, which keeps the ownership refusal in one place. A marker still
+    carrying ``runtime_pid: 0`` is the PROVISIONAL write from
+    :func:`_create_warm_generation_dir` whose post-spawn rewrite in
+    :func:`_bind_warm_generation` never landed -- the spawned process may be alive with no
+    recorded identity to check, so pid 0 answers ``False`` (unproved keeps the tree), exactly
+    as :func:`_process_identity_live` answers ``None`` for the same marker on the scavenge
+    path.
+    """
+    owner = _read_warm_generation_owner(work_dir)
+    if owner is None:
+        return True
+    try:
+        pid = int(owner.get("runtime_pid") or 0)
+    except (TypeError, ValueError):
+        return False
+    if pid <= 0:
+        return False
+    return _process_identity_live(pid, str(owner.get("runtime_started") or "")) is False
+
+
+def _release_runtime_generation(runtime: Any) -> bool:
+    """Release a killed process's generation tree, once that death is actually proven.
+
+    ``_kill_quietly`` answering ``True`` is not that proof. ``AcpRuntime`` reports a survivor
+    by LOGGING one and returning normally -- both of its ``kill_process_tree`` calls swallow
+    ``OSError`` by design, so a signal-delivery failure (EPERM through a launcher wrapper,
+    pgid drift) is indistinguishable from success at that layer, and it deliberately leaves
+    the PID tracked for a sweep rather than raising. Removing on the caller's word alone
+    would therefore ``rmtree`` the cwd and private agent scope of a process still reading
+    them, which is the one loss this whole ownership marker exists to prevent.
+
+    ``False`` leaves the tree attached. Startup scavenging reclaims it once both recorded
+    identities are dead, so an unkillable child costs clutter until the next gateway start
+    instead of costing the running process its specs.
+    """
+    work_dir = _runtime_generation_dir(runtime)
+    if work_dir is None:
+        return True
+    if not _recorded_runtime_is_dead(work_dir):
+        return False
+    removed = _remove_warm_generation_dir(work_dir)
+    if removed:
+        try:
+            delattr(runtime, _WARM_RUNTIME_DIR_ATTR)
+        except AttributeError:
+            pass
+    return removed
+
+
+def _process_identity_live(pid: int, started: str) -> bool | None:
+    """Tri-state PID identity: live, dead/reused, or unprovable."""
+    if pid <= 0 or not started:
+        return None
+    liveness = platform_compat.pid_liveness(pid)
+    if liveness == platform_compat.PID_DEAD:
+        return False
+    current = platform_compat.process_start_time(pid)
+    if current is None:
+        return None
+    if current != started:
+        return False
+    if liveness in (platform_compat.PID_ALIVE, platform_compat.PID_UNSIGNALABLE):
+        return True
+    return None
+
+
+def _scavenge_warm_generation_dirs() -> int:
+    """Remove crash leftovers only when both recorded process identities are dead."""
+    root = _warm_generations_dir()
+    try:
+        candidates = list(root.iterdir())
+    except FileNotFoundError:
+        return 0
+    except OSError:
+        logger.debug("warm generation startup scan failed", exc_info=True)
+        return 0
+    removed = 0
+    for work_dir in candidates:
+        if not _is_plain_warm_generation_dir(work_dir):
+            continue
+        owner = _read_warm_generation_owner(work_dir)
+        if owner is None:
+            logger.warning(
+                "Keeping unproved warm generation directory %s; inspect it manually",
+                work_dir.name,
+            )
+            continue
+        try:
+            gateway_live = _process_identity_live(
+                int(owner.get("gateway_pid") or 0), str(owner.get("gateway_started") or "")
+            )
+            runtime_live = _process_identity_live(
+                int(owner.get("runtime_pid") or 0), str(owner.get("runtime_started") or "")
+            )
+        except (TypeError, ValueError):
+            gateway_live = runtime_live = None
+        if gateway_live is not False or runtime_live is not False:
+            continue
+        if _remove_warm_generation_dir(work_dir):
+            removed += 1
+    if removed:
+        logger.info("Removed %d stale private warm generation directorie(s)", removed)
+    return removed
+
+
+def _write_warm_mint_specs(plan: _WarmSpecPlan, agents_dir: Path) -> None:
+    """Write the complete plan into one private project-local agent scope.
+
+    Every unlink and write is still ownership-gated. The directory is generation-private,
+    but preserving the content proof closes same-user races and keeps the legacy cleanup
+    predicate identical to the writer predicate.
+    """
     agents_dir.mkdir(parents=True, exist_ok=True)
     plan_names = frozenset(plan.specs)
     try:
@@ -714,19 +1035,8 @@ def _write_warm_mint_specs(plan: _WarmSpecPlan) -> None:
         _agent._atomic_json_write(path, spec)
 
 
-def _unowned_plan_specs(plan: _WarmSpecPlan) -> list[str]:
-    """The planned spec names whose file is missing, or is not one this module wrote.
-
-    Activation happens BY NAME: the runtime is handed ``agent=<fixed name>`` and kiro-cli
-    resolves that name off this same agents directory. So the write's refusal protects the
-    FILE and nothing else -- a hand-written agent sitting at a name we declined to
-    overwrite would be spawned, and its ``mcpServers`` commands would initialize. This is
-    what protects the SPAWN.
-
-    Existence is tested as well as ownership, because :func:`_warm_spec_is_foreign` answers
-    False for an absent path: a spec that is not there is equally not ours to activate.
-    """
-    agents_dir = _agent.kiro_agents_dir_path()
+def _unowned_plan_specs(plan: _WarmSpecPlan, agents_dir: Path) -> list[str]:
+    """Planned names missing from, or foreign to, this generation's private scope."""
     unowned: list[str] = []
     for name in plan.specs:
         path = agents_dir / f"{name}.json"
@@ -735,40 +1045,33 @@ def _unowned_plan_specs(plan: _WarmSpecPlan) -> list[str]:
     return unowned
 
 
-def _remove_warm_mint_specs() -> None:
-    """Unlink every warm spec THIS module wrote. Called when the process is retired."""
+def _remove_warm_mint_specs(agents_dir: Path) -> int:
+    """Unlink every sentinel-owned warm spec from one explicit agent scope."""
+    removed = 0
     try:
-        for path in _agent.kiro_agents_dir_path().glob(f"{_WARM_AGENT_PREFIX}*.json"):
+        for path in agents_dir.glob(f"{_WARM_AGENT_PREFIX}*.json"):
             if not _is_stale_warm_spec(path.stem, frozenset()):
                 continue
             if _warm_spec_is_foreign(path):
                 _log_warm_event("warm_mint_spec_removal", path.name, outcome="refused")
                 continue
             path.unlink(missing_ok=True)
-    except Exception:  # noqa: BLE001 — spec files; the write-time sweep catches leftovers
+            removed += 1
+    except Exception:  # noqa: BLE001 — startup cleanup is best-effort and fail-closed
         logger.debug("warm mint spec removal failed", exc_info=True)
+    return removed
 
 
-def _warm_work_dir() -> Path:
-    """The shared process's working directory, inside the agent-write-protected run tree.
+def scavenge_warm_mint_artifacts() -> int:
+    """Boot cleanup for private crash leftovers and sentinel-owned global legacy specs.
 
-    NOT under ``connections/``, and the reason is the spawn. kiro-cli resolves PROJECT-LOCAL
-    agent specs from ``<cwd>/.kiro/agents`` as well as the user's agents dir, and this module
-    activates BY NAME -- so a spec planted at ``<cwd>/.kiro/agents/<mode>.json`` shadows the
-    warm spec :func:`_write_warm_mint_specs` wrote, on a path every ownership check here
-    (:func:`_warm_spec_is_foreign`, :func:`_unowned_plan_specs`) looks straight past. The
-    injected body's ``mcpServers`` would then be what the process initializes and authorizes
-    against.
-
-    ``connections/`` carries no entry in ``security._SENSITIVE_HOME_DIRS``, so an agent file
-    tool could write that tree; ``run/`` is already fenced read+write for precisely this
-    class of reason -- it holds the sandbox launchers and run markers the gateway execs
-    outside the sandbox. Putting the cwd there makes the injection unwritable through any
-    Kiro Crew-mediated channel instead of merely unlikely.
-
-    No ``mkdir`` here: the runtime creates its work dir at spawn.
+    An unsentinelled global file is deliberately retained: its name does not prove Kiro Crew
+    owns it. The design note documents the manual inspection/removal path for that legacy
+    residue.
     """
-    return data_home() / "run" / "connections-warm"
+    removed = _scavenge_warm_generation_dirs()
+    removed += _remove_warm_mint_specs(_agent.kiro_agents_dir_path())
+    return removed
 
 
 def _runtime_alive(runtime: Any) -> bool:
@@ -1124,14 +1427,17 @@ class _WarmMintRuntime:
         await self._park_or_kill_locked()
 
         runtime: Any = None
+        work_dir: Path | None = None
         handed_over = False
         try:
-            await asyncio.to_thread(_write_warm_mint_specs, plan)
+            work_dir = await asyncio.to_thread(_create_warm_generation_dir)
+            agents_dir = _warm_generation_agents_dir(work_dir)
+            await asyncio.to_thread(_write_warm_mint_specs, plan, agents_dir)
             # The write REFUSES a path it does not own rather than clobbering it, and the
             # spawn below activates by NAME -- so without this the refusal would hand
             # kiro-cli a stranger's spec to execute. Aborting is safe and honest: the cold
             # path still serves every Connect, it just spawns per provider.
-            unowned = await asyncio.to_thread(_unowned_plan_specs, plan)
+            unowned = await asyncio.to_thread(_unowned_plan_specs, plan, agents_dir)
             if unowned:
                 logger.warning(
                     "Not warming: %d planned mint spec(s) are not ours to activate", len(unowned)
@@ -1144,14 +1450,17 @@ class _WarmMintRuntime:
                 )
                 return None
             runtime = _acp_runtime_factory()(
-                work_dir=await asyncio.to_thread(_warm_work_dir),
+                work_dir=work_dir,
                 agent=_WARM_BASE_AGENT,
                 sandbox_mode="auto",
             )
+            # Attach before spawn so a cancelled/failed spawn still carries the only path its
+            # cleanup may remove. The marker remains provisional until spawn returns a PID.
+            setattr(runtime, _WARM_RUNTIME_DIR_ATTR, str(work_dir))
             await asyncio.wait_for(runtime.spawn(), timeout=_WARM_SPAWN_TIMEOUT_SECONDS)
-            # No await between the spawn returning and the flag: the handover is a run of
-            # plain assignments plus a synchronous ``create_task``, so there is no window
-            # in which the process is ours but the ``finally`` would still tear it down.
+            await asyncio.to_thread(_bind_warm_generation, runtime, work_dir)
+            # No await between the ownership marker landing and the handover: the runtime,
+            # plan and reaper become visible as one event-loop-atomic state transition.
             self._runtime, self._plan, self._digest = runtime, plan, plan.digest
             self._generation += 1
             self._reaper = asyncio.get_running_loop().create_task(
@@ -1166,9 +1475,9 @@ class _WarmMintRuntime:
             # parked the old generation AND cancelled its reaper, so a CancelledError in the
             # spec write or the spawn would otherwise leave that process with nothing that
             # will ever sweep it -- the parked-generation leak by a third route -- plus a
-            # forked child and a set of specs nobody owns.
+            # forked child and a private spec tree nobody owns.
             if not handed_over:
-                await self._abandon_spawn_locked(runtime)
+                await self._abandon_spawn_locked(runtime, work_dir)
         await asyncio.to_thread(
             _log_warm_event,
             "connections_warm_mint_spawn",
@@ -1176,24 +1485,35 @@ class _WarmMintRuntime:
         )
         return plan
 
-    async def _abandon_spawn_locked(self, runtime: Any) -> None:
+    async def _abandon_spawn_locked(
+        self,
+        runtime: Any,
+        work_dir: Path | None = None,
+    ) -> None:
         """Undo a spawn attempt that never became this object's process.
 
-        Reached from a ``finally``, so it covers cancellation as well as failure.
+        Reached from a ``finally``, so it covers cancellation as well as failure. A process
+        that may still live keeps its directory attached while the parked-generation drain
+        retries the kill; a directory created before any runtime existed can be released
+        immediately.
         """
         if self._retiring:
             # Armed BEFORE any await, because ``create_task`` is synchronous: the parked
             # generation then has its sweeper even if the teardown below is interrupted.
             # Stored as the reaper so a later spawn's own reaper replaces it.
             self._reaper = asyncio.get_running_loop().create_task(_drain_parked_generations())
-        if runtime is not None and not await _kill_quietly(runtime):
+        if runtime is None:
+            if work_dir is not None:
+                await asyncio.to_thread(_remove_warm_generation_dir, work_dir)
+            return
+        if not await _kill_quietly(runtime):
             # This attempt never became ``self._runtime``, so it owns no generation and no
             # rows. Tracked under a key no row can carry, which makes every sweep read it as
             # needed by nobody and retry the kill until it takes -- rather than dropping the
             # last reference to a child that outlived the spawn we gave up on.
             self._retain_unkilled_locked(_WARM_UNKEYED_GENERATION, runtime)
-        if not self._retiring:
-            await asyncio.to_thread(_remove_warm_mint_specs)
+            return
+        await asyncio.to_thread(_release_runtime_generation, runtime)
 
     async def _abandon_session_creation_locked(self, create: Any) -> None:
         """Reap a session the backend may have created after we stopped waiting for it.
@@ -1420,19 +1740,18 @@ class _WarmMintRuntime:
             raise
 
     async def _kill_generation(self, generation: int, runtime: Any) -> bool:
-        """Kill one process and expire the links only it could have redeemed.
+        """Kill one process, expire its links, then release its private spec tree.
 
         ``False`` when the kill did not take, and the caller must keep the pair tracked. The
         rows are expired either way -- this generation is being retired, so its URLs must
-        stop being served -- but the spec sweep is WITHHELD: a spec removed under a process
-        that is still running strands it without the file it was spawned on, which is the
-        same rule the parked path follows.
+        stop being served -- while the generation directory stays attached until a confirmed
+        kill. A parked or unkillable process therefore never loses the modes it still owns.
         """
         killed = await _kill_quietly(runtime)
         self._drop_generation_sessions(generation)
         await _expire_shared_mints("mint_process_gone", generation=generation)
-        if killed and self._runtime is None and not self._retiring:
-            await asyncio.to_thread(_remove_warm_mint_specs)
+        if killed:
+            await asyncio.to_thread(_release_runtime_generation, runtime)
         return killed
 
     def _retain_unkilled_locked(self, generation: int, runtime: Any) -> None:
@@ -1454,7 +1773,6 @@ class _WarmMintRuntime:
         pending = list(self._retiring)
         if runtime is not None:
             pending.append((generation, runtime))
-        had_work = bool(pending)
         self._retiring = []
         self._reaper = self._runtime = None
         self._plan, self._digest = None, ""
@@ -1468,9 +1786,11 @@ class _WarmMintRuntime:
                 await _expire_shared_mints("mint_process_gone", generation=doomed_generation)
                 if not killed:
                     # A hard teardown that could not kill a child must not report it retired:
-                    # left in ``pending`` for the ``finally`` below to re-track.
+                    # left in ``pending`` for the ``finally`` below to re-track, with its
+                    # private agent scope still attached.
                     break
-                # Popped only once this generation is fully retired.
+                await asyncio.to_thread(_release_runtime_generation, doomed_runtime)
+                # Popped only once this generation and its private scope are fully retired.
                 pending.pop(0)
         finally:
             if pending:
@@ -1479,10 +1799,6 @@ class _WarmMintRuntime:
                 # lists above were emptied synchronously, so this is the only reference left.
                 self._retiring = pending
                 self._reaper = asyncio.get_running_loop().create_task(_drain_parked_generations())
-        if had_work and not self._retiring:
-            # Only once nothing is left: a spec removed under a still-running parked process
-            # strands it without the file it was spawned on.
-            await asyncio.to_thread(_remove_warm_mint_specs)
 
 
 async def _destroy_session_quietly(handle: Any) -> bool:
@@ -1532,6 +1848,11 @@ async def _kill_quietly(runtime: Any) -> bool:
 
 
 _warm_mint = _WarmMintRuntime()
+
+
+async def shutdown_warm_mint() -> None:
+    """Gateway cleanup hook: retire every live or parked warm generation."""
+    await _warm_mint.shutdown()
 
 
 def _warm_row_alive(entry: MintState) -> bool:
