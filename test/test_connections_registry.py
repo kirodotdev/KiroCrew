@@ -29,8 +29,13 @@ EXPECTED_LAUNCH_REGISTRY = {
     "linear",
     "notion",
     "stripe",
+    "superhuman",
     "vercel",
 }
+# Registered so the OAuth banner allowlist stays registry-derived, but held back
+# from the Connect grid: GitHub until the Kiro app is registered, Superhuman until
+# a logged-in check records its revoke surface and walks the consent flow.
+LAUNCH_GATED = {"github", "superhuman"}
 
 
 def test_registry_contains_only_the_agreed_launch_set():
@@ -40,14 +45,32 @@ def test_registry_contains_only_the_agreed_launch_set():
 def test_probe_accessor_includes_every_entry_even_when_launch_gated():
     providers = get_all_registry_providers()
     assert {provider["slug"] for provider in providers} == EXPECTED_LAUNCH_REGISTRY
-    github = next(provider for provider in providers if provider["slug"] == "github")
-    assert github["launch_gate_passed"] is False
+    gated = {p["slug"] for p in providers if p["launch_gate_passed"] is False}
+    assert gated == LAUNCH_GATED
 
 
 def test_only_gated_launch_services_are_visible():
     assert {provider["slug"] for provider in get_visible_providers()} == (
-        EXPECTED_LAUNCH_REGISTRY - {"github"}
+        EXPECTED_LAUNCH_REGISTRY - LAUNCH_GATED
     )
+
+
+def test_every_registry_mcp_authorization_server_is_banner_allowlisted():
+    """A registry entry whose consent URL the banner gate rejects cannot be connected.
+
+    The gate exempts OAuth entropy only at an exact ``(host, path)`` in the
+    builtin set, so every provider's advertised authorization server must have
+    an entry there -- gated providers included, because the gate is what a
+    hand-configured MCP server for the same provider hits today.
+    """
+    from urllib.parse import urlsplit
+
+    from kiro_crew.security import _OAUTH_AUTHORIZATION_ENDPOINTS
+
+    allowlisted_hosts = {host for host, _path in _OAUTH_AUTHORIZATION_ENDPOINTS}
+    for provider in get_all_registry_providers():
+        issuer_host = urlsplit(provider["l0_expectations"]["authorization_server"]).hostname
+        assert issuer_host in allowlisted_hosts, provider["slug"]
 
 
 def test_linear_installs_its_read_only_endpoint():
