@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useLayoutEffect, memo, useMemo, useCallback, useId, Fragment } from 'react'
+import { useState, useRef, useReducer, useEffect, useLayoutEffect, memo, useMemo, useCallback, useId, Fragment } from 'react'
 import { createPortal } from 'react-dom'
 import { LayoutGroup, AnimatePresence, motion } from 'framer-motion'
 import { Plus, X, Pin, Monitor, Eye, EyeOff, VenetianMask, Ghost, Droplet, FolderPlus, MessageSquare, MessageSquarePlus, MessagesSquare, Folder, ChevronRight, ChevronDown, ChevronUp, Clock, Pencil, BrushCleaning, Link2, Circle, MoreVertical, Tag as TagIcon, Columns3, GripVertical, Zap, Check, Copy, ListFilter, List, Loader, Loader2, Settings, RotateCcw, Bot, ExternalLink, Cpu, GitMerge, Workflow, CircleDot, Users, TriangleAlert, Goal, MessageCircleQuestionMark, ShieldCheck, Repeat, Server } from 'lucide-react'
@@ -82,7 +82,8 @@ import {
   isWithinRecentWindow,
 } from './recentWindow'
 import { loadChatConfig, saveChatConfig } from './chat/ChatSettings'
-import { focusSiblingSessionRow, SESSION_ROW_SELECTOR } from './chat/sessionRowNav'
+import { focusSiblingSessionRow, sessionRowsInScope, SESSION_ROW_SELECTOR } from './chat/sessionRowNav'
+import { heldSeat, type HoverPin } from './chat/hoverHold'
 import { focusComposer } from './chat/composerFocus'
 import { compareBySort, comparePinnedThenSort, fmtRelativeTime, lastActivityEpoch, slotActivityTs } from './chat/sessionOrder'
 import { DEFAULT_STALE_COLLAPSE_MS, STALE_COLLAPSE_PRESETS_MS, STALE_COLLAPSE_TICK_MS, splitStaleSlots } from './staleCollapse'
@@ -92,6 +93,16 @@ import { useLanguageGeneration } from '../i18n/useLanguageGeneration'
 
 import { i18nT } from '../i18n/t'
 import { compareText, fmtDateFields, fmtList } from '../i18n/format'
+
+/** Date-segment header between rows. Marks the geometry a row's own rect cannot
+ *  see, so the hover hold can anchor on a pixel offset headers contribute to. */
+const DATE_HEADER_SELECTOR = '[data-date-header]'
+/** Marks a dormant-collapse region, so the hold can tell which side of the
+ *  expander the pointer found a row on. */
+const STALE_REGION_SELECTOR = '[data-stale-region]'
+// One rendered lane container. Narrower than data-session-scope, which a folder
+// tree shares across every folder body and the root rows (see chat/hoverHold).
+const SESSION_CONTAINER_SELECTOR = '[data-session-container]'
 
 /** Max height (px) of the inline session-rename <textarea> before it scrolls.
  *  ~6 lines at the row's `ROW_TITLE_CLS` type. Shared by the auto-grow hook
@@ -1375,6 +1386,7 @@ interface SessionRowProps {
   showDivider: boolean
   scope: string
   navScope: string
+  holdContainer: string
   isActive: boolean
   connected: boolean
   isOut: boolean
@@ -1428,7 +1440,7 @@ interface SessionRowProps {
  *  is subscribed to HERE, slot-scoped, so a background event re-renders only
  *  the row it belongs to. */
 const SessionRow = memo(function SessionRow({
-  slot: s, showDivider, scope, navScope, isActive, connected, isOut, isPinned, isUnread, isRunning,
+  slot: s, showDivider, scope, navScope, holdContainer, isActive, connected, isOut, isPinned, isUnread, isRunning,
   recent, recentTintCount, subagentCount, subagentApprovalCount, digitBadge,
   isRenaming, renamingHere, renameValue, revealFlash, dragInFlight, rowAnimEnabled,
   defaultAgent, mode, isMobile, colorMode, installedAgents, tagById, paletteColors, boost, boostFor,
@@ -1811,6 +1823,7 @@ const SessionRow = memo(function SessionRow({
           tabIndex={0}
           data-session-row={s.key}
           data-session-scope={navScope}
+          data-session-container={holdContainer}
           aria-current={isActive ? 'true' : undefined}
           aria-disabled={!connected}
           onKeyDown={e => {
@@ -3082,6 +3095,32 @@ function ChatSidebar({
     // (the timer is gated on the feature being on; the writer is not).
     || (staleRecentlyMoved.get(s.key) ?? 0) > Date.now() - STALE_COLLAPSE_TICK_MS,
   [pinned, activeSlot, runningSet, subagentCounts, unreadSet, staleRecentlyMoved])
+  // The two halves render either side of the expander, so a held row crossing it
+  // leaves the sub-list the anchor was measured against. Freeze the side instead.
+  const holdStaleSide = (split: StaleSplit<Slot>): StaleSplit<Slot> => {
+    const pin = hoverPinRef.current
+    if (!pin || pin.scope !== 'list') return split
+    const from = pin.staleSide ? split.fresh : split.stale
+    const at = from.findIndex(s => s.key === pin.key)
+    // Absent from the side it does not belong on is the normal case, in every
+    // container that does not hold the row as well as before it migrates.
+    if (at < 0) return split
+    const rank = new Map(pin.seenOrder.map((k, i) => [k, i]))
+    const mine = rank.get(pin.key)
+    if (mine == null) return split
+    const to = pin.staleSide ? split.stale : split.fresh
+    // Reseat by the CAPTURED order, so it returns to the position it was read at
+    // rather than to the end of the half it is going back to.
+    const seat = to.reduce((n, s) => {
+      const r = rank.get(s.key)
+      return n + (r != null && r < mine ? 1 : 0)
+    }, 0)
+    const seated = to.slice()
+    seated.splice(Math.min(seat, seated.length), 0, from[at])
+    const rest = from.filter(s => s.key !== pin.key)
+    return pin.staleSide ? { fresh: rest, stale: seated } : { fresh: seated, stale: rest }
+  }
+
   const splitStale = (list: Slot[]): StaleSplit<Slot> => {
     // Inert while the list is narrowed: a search or status chip must reach
     // every match (the same invariant that sends the folder filter inert
@@ -3091,13 +3130,13 @@ function ChatSidebar({
     // tail, so an expander under name/created sort would hide rows from the
     // middle of the visible ordering.
     const active = !listNarrowed && sortKey === 'date-desc'
-    return splitStaleSlots(
+    return holdStaleSide(splitStaleSlots(
       list,
       active ? staleCollapseMs : 0,
       Date.now(),
       s => lastActivityEpoch(s) * 1000,
       isStaleExempt,
-    )
+    ))
   }
   const renderStaleSection = (containerId: string, staleSlots: Slot[], depth: number, containerName?: string): React.ReactNode => {
     if (staleSlots.length === 0) return null
@@ -3133,7 +3172,7 @@ function ChatSidebar({
         </button>
         {/* The controlled region always exists so aria-controls never dangles
             in the collapsed state; only the rows are conditionally mounted. */}
-        <div id={regionId} hidden={!open}>{open && staleSlots.map(s => renderSessionRow(s, depth, false))}</div>
+        <div id={regionId} data-stale-region={containerId} hidden={!open}>{open && staleSlots.map(s => renderSessionRow(s, depth, false))}</div>
       </Fragment>
     )
   }
@@ -3752,6 +3791,121 @@ function ChatSidebar({
     [slots, filterDimensions, searchRanked, pinned, sortKey, dragFrozen]
   )
 
+  // Hold the row under the pointer in place. Under a last-activity sort,
+  // background agent events (touchSlotActivity recency bumps) re-sort the list
+  // at any moment, so a row can move out from under the cursor between the user
+  // reading it and pressing — the click then lands on whatever row REPLACED it.
+  // The close button makes that expensive: the mis-click closes a session.
+  //
+  // This holds ONE row rather than freezing the list (the drag freeze above) for
+  // two reasons. Everything else keeps sorting live, so a long hover never
+  // leaves a stale list — only the hovered row is out of place, and only by its
+  // own displacement. And on release just that row animates to its true index,
+  // where a whole-list thaw moves every row at once, including the one the
+  // cursor is now travelling toward.
+  //
+  // Scoped by (key, lane) because a multi-tag session renders in EVERY matching
+  // board column: keyed on the slot alone, hovering one column's copy would
+  // hold the row in all of them. `data-session-scope` is the lane identity the
+  // rows already stamp, which is also what the arrow rove is scoped to.
+  // `seenOrder` is the lane's keys as the POINTER FOUND THEM, so the held slot is
+  // derived from row identities rather than a number later rows can shift under.
+  // In a REF, not state: hover itself is pure CSS, so arming the hold must not
+  // commit the whole sidebar on every row boundary the cursor crosses.
+  // headerPxAbove/headerH carry DATE-HEADER geometry: a lane that renders segment
+  // headers moves the row when one collapses, so row heights alone under-measure it.
+  // staleSide is which side of the DORMANT expander the pointer found the row on,
+  // frozen so a bump cannot carry it across into a lane the anchor cannot address.
+  const hoverPinRef = useRef<HoverPin | null>(null)
+  // Whether the last render actually MOVED the row. Releasing only needs a commit
+  // in that case, and the flat lane's header rule reads this same flag.
+  const heldDisplacedRef = useRef(false)
+  const [, bumpHold] = useReducer((c: number) => c + 1, 0)
+
+  const releaseHoverPin = useCallback(() => {
+    if (!hoverPinRef.current) return
+    hoverPinRef.current = null
+    // Commit whenever a pin existed: heldDisplacedRef is written during render and
+    // read here from an event, so a discarded or concurrent render desyncs it.
+    heldDisplacedRef.current = false
+    bumpHold()
+  }, [])
+
+  const holdHovered = (list: Slot[], scope: string, container: string, segmentOf?: (s: Slot) => string): Slot[] => {
+    const pin = hoverPinRef.current
+    // Container, not just scope: sibling containers share a nav lane, so a scope-only
+    // match would seat the row against a frame spanning rows this list never renders.
+    if (!pin || pin.scope !== scope || pin.container !== container) return list
+    const at = list.findIndex(s => s.key === pin.key)
+    // -1 is the normal case for every lane that does not contain the hovered
+    // row, including a sibling list sharing this scope, so it is not an error.
+    if (at < 0) return list
+    const held = heldSeat(pin, list, segmentOf)
+    if (held == null || held === at) { heldDisplacedRef.current = false; return list }
+    heldDisplacedRef.current = true
+    const rest = list.filter(s => s.key !== pin.key)
+    // Clamp: the list can shrink under the hold (a session closes, a filter
+    // narrows), and splice past the end would silently append instead.
+    rest.splice(Math.min(held, rest.length), 0, list[at])
+    return rest
+  }
+
+  // The ONE place a lane's hold identity is named: holdHovered's scope and the
+  // navScope the rows stamp must match, and so must the container, so all come from here.
+  const heldLane = (list: Slot[], navScope: string, container: string, segmentOf?: (s: Slot) => string) =>
+    ({ rows: holdHovered(list, navScope, container, segmentOf), navScope, container })
+
+  // Delegated on the sidebar root so the rows stay memo-clean (a per-row
+  // handler prop would be a new identity every render). pointerover fires on
+  // entering any descendant, so this covers row→row travel, row→chrome, and
+  // row→gap in one handler; pointerleave on the root is the exit backstop.
+  const onRootPointerOver = useCallback((e: React.PointerEvent) => {
+    // Hovering pointers only: a pen hovers and so reveals the same group-hover
+    // action bar (Close included), while a touch tap has no hover state to protect.
+    if (e.pointerType !== 'mouse' && e.pointerType !== 'pen') return
+    const row = ((e.target as HTMLElement | null)?.closest?.('[data-session-row]') ?? null) as HTMLElement | null
+    const key = row?.getAttribute('data-session-row') || ''
+    if (!row || !key) { releaseHoverPin(); return }
+    const scope = row.getAttribute('data-session-scope') || 'list'
+    const prev = hoverPinRef.current
+    if (prev && prev.key === key && prev.scope === scope) return
+    // Order AND heights read HERE, from the committed DOM the pointer arrived over.
+    // A ref write is synchronous, so no re-sort can hand us a post-sort frame.
+    // Confined to the row's own CONTAINER: sibling containers share the nav scope, and
+    // counting their rows would overshoot the height of the list this row renders in.
+    const container = row.closest<HTMLElement>(SESSION_CONTAINER_SELECTOR)?.dataset.sessionContainer ?? ''
+    const seenOrder: string[] = []
+    const heights: Record<string, number> = {}
+    for (const el of sessionRowsInScope(row)) {
+      const k = el.getAttribute('data-session-row') || ''
+      if (!k) continue
+      if ((el.closest<HTMLElement>(SESSION_CONTAINER_SELECTOR)?.dataset.sessionContainer ?? '') !== container) continue
+      seenOrder.push(k)
+      heights[k] = el.getBoundingClientRect().height
+    }
+    // Headers are the rows' siblings in the lane, but a row sits inside its own
+    // menu wrappers, so climb to the nearest ancestor that actually holds them.
+    let headerEls: HTMLElement[] = []
+    for (let el = row.parentElement, hop = 0; el && hop < 6 && headerEls.length === 0; el = el.parentElement, hop++) {
+      headerEls = Array.from(el.querySelectorAll<HTMLElement>(DATE_HEADER_SELECTOR))
+    }
+    let headerPxAbove = 0
+    let headerH = 0
+    for (const h of headerEls) {
+      const hh = h.getBoundingClientRect().height
+      if (hh > headerH) headerH = hh
+      if (h.compareDocumentPosition(row) & Node.DOCUMENT_POSITION_FOLLOWING) headerPxAbove += hh
+    }
+    hoverPinRef.current = { key, scope, container, seenOrder, heights, headerPxAbove, headerH, staleSide: !!row.closest(STALE_REGION_SELECTOR) }
+  }, [releaseHoverPin])
+
+  // Two releases pointerleave cannot cover: the window losing focus over a row, and
+  // the row leaving the RENDERED set — a filter hides it while it is still in slots.
+  useEffect(() => {
+    window.addEventListener('blur', releaseHoverPin)
+    return () => window.removeEventListener('blur', releaseHoverPin)
+  }, [releaseHoverPin])
+
   // Which lane the sidebar is actually rendering. Mirrors the render branches
   // below exactly: the tag-column board wins when columns exist — flat view
   // does not replace it, it applies INSIDE each lane (folders skipped, the
@@ -3760,6 +3914,18 @@ function ChatSidebar({
   // filter applies to the flat lane and the tree, NOT to the board.
   const boardLaneActive = orderedColumns.length > 0
   const flatLaneActive = !boardLaneActive && flatView && folders.length > 0
+
+  // A pin survives only while its row is still rendered IN THE PINNED SCOPE. Slot
+  // membership is key-only, so a lane switch unmounts the scope with the key intact.
+  useEffect(() => {
+    const pin = hoverPinRef.current
+    if (!pin) return
+    const live = Array.from(document.querySelectorAll<HTMLElement>(SESSION_ROW_SELECTOR)).some(el =>
+      el.dataset.sessionRow === pin.key
+      && (el.dataset.sessionScope ?? '') === pin.scope
+      && el.closest('[inert]') === null)
+    if (!live) releaseHoverPin()
+  }, [filteredSlots, boardLaneActive, flatLaneActive, orderedColumns, releaseHoverPin])
 
   // The folder filter goes inert while searching, in BOTH views: a query must
   // reach every match, so an unchecked folder can never become a search dead
@@ -4401,11 +4567,14 @@ function ChatSidebar({
   // (draggable rows + droppable folder/root targets); the active item's
   // data.type routes the drop.
   const handleSidebarDragStart = useCallback((e: DragStartEvent) => {
+    // Drop the hold FIRST: the freeze below pins the list dnd-kit's drop math is
+    // computed against, and a displaced row would make the render disagree with it.
+    releaseHoverPin()
     setDragFrozen(true)
     const d = e.active.data.current as { type?: string; key?: string } | undefined
     if (d?.type === 'session' && d.key) setActiveDrag({ type: 'session', id: d.key })
     else if (d?.type === 'folder') setActiveDrag({ type: 'folder', id: e.active.id as string })
-  }, [])
+  }, [releaseHoverPin])
   const handleSidebarDragEnd = useCallback((event: DragEndEvent) => {
     setActiveDrag(null)
     setDragFrozen(false)
@@ -4704,7 +4873,7 @@ function ChatSidebar({
   // Always render the folder header (even with 0 matches) so users can see + drop into it.
   const renderColumnFolder = (folder: ChatFolder, columnId: string, colSlotKeys: Set<string>, dragHandleProps?: React.HTMLAttributes<HTMLElement>, forceCollapsed?: boolean): React.ReactNode => {
     const childFolders = folders.filter(f => f.parent_id === folder.id)
-    const childSlots = filteredSlots.filter(s => colSlotKeys.has(s.key) && slotFolders[s.key] === folder.id)
+    const { rows: childSlots, navScope: folderLaneScope, container: folderHoldContainer } = heldLane(filteredSlots.filter(s => colSlotKeys.has(s.key) && slotFolders[s.key] === folder.id), columnId, `board:${columnId}:folder:${folder.id}`)
     const deepChildren = childFolders
     // Valid "Move folder to" destinations: everything outside this folder's
     // own subtree (cycle guard). One O(1) lookup, computed once per row.
@@ -4831,7 +5000,7 @@ function ChatSidebar({
               // rename target remain unique, but the arrow rove is scoped to the
               // COLUMN: a board column's foldered and ungrouped rows are one
               // visible list, so ArrowDown has to cross the folder boundary.
-              return renderSessionRow(s, 1, showDivider, `${columnId}:${folder.id}`, columnId)
+              return renderSessionRow(s, 1, showDivider, `${folderLaneScope}:${folder.id}`, folderLaneScope, folderHoldContainer)
             })}
           </div>
         </FolderBody>
@@ -4847,11 +5016,11 @@ function ChatSidebar({
   // Paint-order stamp threaded through every row this render — see
   // SessionRowProps.orderStamp for why the memo boundary needs it.
   let sessionRowOrderStamp = 0
-  const renderSessionRow = (s: Slot, _indent: number, showDivider: boolean, scope = 'list', navScope = scope) => {
+  const renderSessionRow = (s: Slot, _indent: number, showDivider: boolean, scope = 'list', navScope = scope, holdContainer = navScope) => {
     const renamingHere = renamingSlot === s.key && renameScope === scope
     return (
       <SessionRow key={s.key} slot={s} orderStamp={sessionRowOrderStamp++}
-        showDivider={showDivider} scope={scope} navScope={navScope}
+        showDivider={showDivider} scope={scope} navScope={navScope} holdContainer={holdContainer}
         isActive={activeSlot === s.key} connected={connected} isOut={poppedOut.has(s.key)}
         isPinned={pinned.has(s.key)} isUnread={unreadSet.has(s.key)} isRunning={runningSet.has(s.key)}
         recent={recentRank.get(s.key)} recentTintCount={recentTintCount}
@@ -5119,12 +5288,15 @@ function ChatSidebar({
     // new-subfolder input, so it reads as part of the folder list.
     const hiddenHere = hiddenByContainer.get(folder.id)
     if (hiddenHere?.length) childNodes.push(renderHiddenReveal(folder.id, hiddenHere, depth + 1))
-    const { fresh: freshChildSlots, stale: staleChildSlots } = splitStale(childSlots)
+    const { fresh: freshChildSlotsRaw, stale: staleChildSlots } = splitStale(childSlots)
+    // Stale rows are collapsed into their own section and are stale precisely
+    // because nothing is bumping them, so only the live list needs the hold.
+    const { rows: freshChildSlots, navScope: treeChildScope, container: treeChildContainer } = heldLane(freshChildSlotsRaw, 'list', `tree:folder:${folder.id}`)
     freshChildSlots.forEach((s, i) => {
       const isActive = activeSlot === s.key
       const nextIsActive = i < freshChildSlots.length - 1 && activeSlot === freshChildSlots[i + 1].key
       const showDivider = i < freshChildSlots.length - 1 && !isActive && !nextIsActive
-      childNodes.push(renderSessionRow(s, depth + 1, showDivider))
+      childNodes.push(renderSessionRow(s, depth + 1, showDivider, treeChildScope, treeChildScope, treeChildContainer))
     })
     const staleSection = renderStaleSection(folder.id, staleChildSlots, depth + 1, folder.name)
     if (staleSection) childNodes.push(staleSection)
@@ -5232,7 +5404,7 @@ function ChatSidebar({
 
   return (
     // stable theming hook 'sidebar' — see website/docs/theming-contract.md
-    <div ref={sidebarRootRef} className="sidebar sidebar-inner bg-bg-elevated border border-border rounded-xl shadow-sm flex flex-col shrink-0 relative h-full" style={{ width: sidebarWidth }}>
+    <div ref={sidebarRootRef} onPointerOver={onRootPointerOver} onPointerLeave={releaseHoverPin} className="sidebar sidebar-inner bg-bg-elevated border border-border rounded-xl shadow-sm flex flex-col shrink-0 relative h-full" style={{ width: sidebarWidth }}>
       {/* Drag handle — Pointer-Events column resize (mouse + touch + pen).
           role="separator" gives it correct ARIA; touch-action:none so a touch
           drag resizes the panel instead of scrolling the page. Pointer capture
@@ -6207,13 +6379,24 @@ function ChatSidebar({
                 // guard as the history pane), and pinned rows render first
                 // without segments since pinning overrides date order.
                 const isDateSort = sortKey === 'date-desc' || sortKey === 'date-asc'
-                const segOf = (s: Slot) => isDateSort && !pinned.has(s.key) ? dateSegment(slotActivityTs(s)) : ''
+                // Hoisted above the hold so the pixel anchor can count header heights.
+                const baseSeg = (s: Slot) => (isDateSort && !pinned.has(s.key) ? dateSegment(slotActivityTs(s)) : '')
+                const { rows: flatRows, navScope: flatLaneScope, container: flatHoldContainer } = heldLane(flatSlots, 'flat', 'flat', baseSeg)
+                // Reads the flag holdHovered just set for THIS lane, so the header
+                // rule and the hold cannot disagree about the row being displaced.
+                const heldKey = heldDisplacedRef.current ? hoverPinRef.current?.key : undefined
+                // Unconditional exclusion would drop the header of a bucket whose
+                // sole row — or the lane's top row — is merely being hovered.
+                const segOf = (s: Slot) => {
+                  const seg = baseSeg(s)
+                  return seg && s.key === heldKey ? '' : seg
+                }
                 let prevSeg = ''
-                return flatSlots.map((s, i) => {
+                return flatRows.map((s, i) => {
                   const seg = segOf(s)
                   const showHeader = seg !== '' && seg !== prevSeg
                   if (seg) prevSeg = seg
-                  const next = i < flatSlots.length - 1 ? flatSlots[i + 1] : null
+                  const next = i < flatRows.length - 1 ? flatRows[i + 1] : null
                   const nextIsActive = next != null && activeSlot === next.key
                   const isActive = activeSlot === s.key
                   // No divider before a segment header — the header separates.
@@ -6222,9 +6405,9 @@ function ChatSidebar({
                   return (
                     <Fragment key={s.key}>
                       {showHeader && (
-                        <div data-testid="date-segment-header" className="px-3 pt-3 pb-1 text-[11px] font-semibold text-muted uppercase tracking-[.06em] select-none first:pt-1">{seg}</div>
+                        <div data-date-header data-testid="date-segment-header" className="px-3 pt-3 pb-1 text-[11px] font-semibold text-muted uppercase tracking-[.06em] select-none first:pt-1">{seg}</div>
                       )}
-                      {renderSessionRow(s, 0, showDivider, 'flat')}
+                      {renderSessionRow(s, 0, showDivider, flatLaneScope, flatLaneScope, flatHoldContainer)}
                     </Fragment>
                   )
                 })
@@ -6297,14 +6480,15 @@ function ChatSidebar({
                              *  no empty space. */}
                             {draggingNestedFolder && <RootDropHint />}
                             {(() => {
-                              const { fresh: freshRoot, stale: staleRoot } = splitStale(ungroupedSlots)
+                              const { fresh: freshRootRaw, stale: staleRoot } = splitStale(ungroupedSlots)
+                              const { rows: freshRoot, navScope: treeRootScope, container: treeRootContainer } = heldLane(freshRootRaw, 'list', 'tree:root')
                               return (
                                 <>
                                   {freshRoot.map((s, i) => {
                                     const nextIsActive = i < freshRoot.length - 1 && activeSlot === freshRoot[i + 1].key
                                     const isActive = activeSlot === s.key
                                     const showDivider = i < freshRoot.length - 1 && !isActive && !nextIsActive
-                                    return renderSessionRow(s, 0, showDivider)
+                                    return renderSessionRow(s, 0, showDivider, treeRootScope, treeRootScope, treeRootContainer)
                                   })}
                                   {renderStaleSection('root', staleRoot, 0)}
                                 </>
@@ -6525,9 +6709,9 @@ function ChatSidebar({
                       // untouched; only folder rendering (and with it folder
                       // reorder/drop, which need folder headers) goes away.
                       const relevantFolders = flatView ? [] : rootFolders
-                      const ungrouped = flatView
+                      const { rows: ungrouped, navScope: colLaneScope, container: colHoldContainer } = heldLane(flatView
                         ? colSlots
-                        : colSlots.filter(s => !slotFolders[s.key] || !folders.find(f => f.id === slotFolders[s.key]))
+                        : colSlots.filter(s => !slotFolders[s.key] || !folders.find(f => f.id === slotFolders[s.key])), col.id, `board:${col.id}:ungrouped`)
                       // In flat view folders never render, so an empty lane is
                       // empty — folder structure alone must not suppress the
                       // "no sessions" notice.
@@ -6571,7 +6755,7 @@ function ChatSidebar({
                             const isActive = activeSlot === s.key
                             const nextIsActive = i < ungrouped.length - 1 && activeSlot === ungrouped[i + 1].key
                             const showDivider = i < ungrouped.length - 1 && !isActive && !nextIsActive
-                            return renderSessionRow(s, 0, showDivider, col.id)
+                            return renderSessionRow(s, 0, showDivider, colLaneScope, colLaneScope, colHoldContainer)
                           })}
                           {!hasAny && <div className="text-muted text-[12px] text-center py-4">{i18nT('pages.chatSidebar.no_sessions')}</div>}
                         </>

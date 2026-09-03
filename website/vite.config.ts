@@ -850,6 +850,11 @@ export default defineConfig({
           if (/[\\/]node_modules[\\/]yaml[\\/]/.test(id)) {
             return 'vendor-yaml'
           }
+          // Routed out because this change's sidebar growth pushed the App chunk past the
+          // ceiling the `yaml` note above names; eager at every use site, no lazy boundary to defeat.
+          if (/[\\/]node_modules[\\/]dompurify[\\/]/.test(id)) {
+            return 'vendor-dompurify'
+          }
         },
       },
     },
