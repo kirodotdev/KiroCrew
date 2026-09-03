@@ -27,8 +27,8 @@ For each remote MCP server with an `https://...` URL, kiro-cli writes
 **two paired files** keyed by SHA-256 of the URL:
 
 ```
-{sha256(server_url)}.token.json          ← the OAuth bearer + refresh token
-{sha256(server_url)}.registration.json   ← the DCR client metadata
+{sha256(origin+path)}.token.json          ← the OAuth bearer + refresh token
+{sha256(origin+path)}.registration.json   ← the DCR client metadata
 ```
 
 Both files use lowercase + dot-suffixed filenames. The hash is computed by
