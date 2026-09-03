@@ -45,8 +45,9 @@ from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
 
+from kiro_crew import platform_compat
 from kiro_crew.config.paths import config_dir
-from kiro_crew.platform_compat import pid_exists, process_start_time
+from kiro_crew.platform_compat import pid_exists
 
 logger = logging.getLogger(__name__)
 
@@ -279,31 +280,83 @@ def _pid_start_id(pid: int) -> str | None:
 
     A PID probing alive is necessary but not sufficient for ownership: the
     recorded gateway may have exited and the kernel may have handed its PID to
-    an unrelated process. The starttime field (22nd in ``/proc/<pid>/stat``,
-    clock ticks since boot) is fixed for a process's lifetime, so a recorded
-    start ID that no longer matches means the owner is GONE even though the
-    PID is live. Where procfs is absent it falls back to
-    :func:`platform_compat.process_start_time` (``ps`` on macOS/BSD), and
-    returns ``None`` only where neither is readable —
-    callers must then fall back to plain PID liveness (conservative: protects a
-    possibly-reused PID's file rather than risking deletion of a live owner's
-    fd target).
+    an unrelated process. A start identity is fixed for a process's lifetime,
+    so a recorded value that no longer matches means the owner is GONE even
+    though the PID is live.
+
+    The identity comes from :func:`platform_compat.get_process_start_id`, the
+    routine this repository already uses wherever a start identity is WRITTEN
+    DOWN and compared back later (``mcp_gateway.claim``, ``session_pid``,
+    ``metrics.sessions``). It answers in-process on every platform it covers —
+    procfs field 22 on Linux, ``libproc`` microsecond start on macOS — and
+    never emits whitespace or ``:``, so the recorded value stays one ``# PID:``
+    header token.
+
+    It declines on Windows, and there :func:`platform_compat.process_start_time`
+    still answers: the process creation ``FILETIME`` read through a query-only
+    handle — a machine integer at 100-ns resolution with no locale or timezone
+    in it. That leg is kept exactly as it is.
+
+    What is NOT consulted is that routine's remaining POSIX leg, ``ps
+    -o lstart=``: 1-second, locale- and TZ-rendered, and documented as safe
+    precisely because "a format or resolution drift can only make the guard
+    decline to act". That is a KILL-guard contract, where a mismatch means do
+    nothing. Both readers of this value act ON a mismatch instead —
+    :func:`sweep_stale_dumps` UNLINKS the dump while faulthandler still holds
+    its fd, and ``cron_inflight.RunningMarker.owner_alive`` reads the same
+    identity to conclude a run was abandoned — so a drifted render destroys a
+    live gateway's evidence rather than declining to act. Two gateways sharing
+    one data home need only differ in ``TZ`` or ``LC_TIME`` to render the same
+    instant differently, and 1-second granularity cannot separate two processes
+    that started in the same second.
+
+    Returns ``None`` where the identity is unknown — a platform neither leg
+    covers, or a process this one may not introspect. Per those routines' own
+    contract a ``None`` must NOT be read as a mismatch: callers fall back to
+    plain PID liveness (conservative — protects a possibly-reused PID's file
+    rather than risking deletion of a live owner's fd target).
     """
+    start_id = platform_compat.get_process_start_id(pid)
+    if start_id is not None:
+        return start_id
+    if not platform_compat.IS_WINDOWS:
+        return None  # every remaining POSIX leg below is the ``ps`` render
     try:
-        with open(f"/proc/{pid}/stat", "rb") as f:
-            stat = f.read(4096)
-        # Field 2 (comm) may contain spaces/parens; fields after the LAST ')'
-        # are unambiguous. starttime is field 22 overall -> index 19 after it.
-        tail = stat.rsplit(b")", 1)[1].split()
-        return tail[19].decode("ascii")
-    except (OSError, IndexError, UnicodeDecodeError):
-        pass
-    try:
-        started = process_start_time(pid)
+        started = platform_compat.process_start_time(pid)
     except Exception:
         return None
     # One whitespace-free token: the header line is parsed by token.
     return re.sub(r"\s+", "_", started) if started else None
+
+
+#: Shape of a start identity in the CURRENT representation: the digits of a
+#: Linux jiffy count or a Windows creation ``FILETIME``, or macOS's
+#: ``"<seconds>.<microseconds>"``. Deliberately an ALLOWLIST of what this build
+#: writes rather than a denylist of what older ones did: the retired
+#: representation was ``ps -o lstart=`` with whitespace collapsed, whose exact
+#: text is locale- and TZ-dependent, so no property of it can be relied on.
+_CURRENT_START_ID_RE = re.compile(r"\A\d+(?:\.\d+)?\Z")
+
+
+def _start_ids_comparable(recorded: str, current: str) -> bool:
+    """May *recorded* and *current* be compared as the same kind of identity?
+
+    A start identity is only evidence of PID reuse when both sides were
+    produced by the same representation. A gateway that wrote its header
+    before this build recorded a ``ps``-rendered token, which can never equal
+    the value :func:`_pid_start_id` reads now — and every caller acts on a
+    mismatch DESTRUCTIVELY (:func:`sweep_stale_dumps` unlinks the dump whose
+    fd faulthandler still holds; ``cron_inflight`` declares a run abandoned).
+    An overlapping restart across that upgrade is exactly the case
+    :func:`sweep_stale_dumps` documents a live PID as protecting.
+
+    So a value that is not in the current representation is "unknown", not
+    "different", and the caller falls back to plain PID liveness. It is NOT
+    converted: the timezone and locale its writer rendered it under are not
+    recoverable, and guessing them would re-introduce the misjudgement this
+    exists to prevent.
+    """
+    return bool(_CURRENT_START_ID_RE.match(recorded) and _CURRENT_START_ID_RE.match(current))
 
 
 def _dump_owner(dump_path: Path) -> tuple[int, str | None, str | None] | None:
@@ -347,6 +400,12 @@ def _owner_alive(dump_path: Path, is_pid_alive: Callable[[int], bool]) -> bool |
     differs, the owner is confirmed dead (``False``) despite the live PID.
     When either side lacks a start ID (legacy header, no procfs), plain PID
     liveness stands — conservative, since ``True`` only ever protects a file.
+
+    The same conservative stand applies when the two values are not the same
+    KIND of identity: a header written before this build recorded a
+    ``ps``-rendered token that can never equal what is read now, and treating
+    that as a mismatch would unlink the dump of a gateway that is still alive
+    across the upgrade. See :func:`_start_ids_comparable`.
     """
     owner = _dump_owner(dump_path)
     if owner is None:
@@ -360,7 +419,11 @@ def _owner_alive(dump_path: Path, is_pid_alive: Callable[[int], bool]) -> bool |
         return False
     if recorded_start is not None:
         current_start = _pid_start_id(pid)
-        if current_start is not None and current_start != recorded_start:
+        if (
+            current_start is not None
+            and _start_ids_comparable(recorded_start, current_start)
+            and current_start != recorded_start
+        ):
             return False  # PID recycled: live process is not the owner
     return True
 
@@ -713,6 +776,11 @@ def pid_identity_alive(pid: int, pid_domain: str | None, start_id: str | None) -
     this process or a live PID whose start id matches (or is unknowable on
     either side, the conservative direction). A record without a domain is
     probed locally like a pre-domain header.
+
+    "Unknowable" includes a recorded value that is not the same KIND of
+    identity as the one read now — a marker written before this build carries
+    a ``ps``-rendered token, and calling that a mismatch would report a run
+    that is still executing as abandoned. See :func:`_start_ids_comparable`.
     """
     if pid_domain is not None and pid_domain != _pid_domain():
         return None
@@ -720,7 +788,11 @@ def pid_identity_alive(pid: int, pid_domain: str | None, start_id: str | None) -
         # Before the own-PID shortcut: a restarted gateway can be handed the
         # crashed one's PID, and then "this process" is NOT the writer.
         current = _pid_start_id(pid)
-        if current is not None and current != start_id:
+        if (
+            current is not None
+            and _start_ids_comparable(start_id, current)
+            and current != start_id
+        ):
             return False
     if pid == os.getpid():
         return True
