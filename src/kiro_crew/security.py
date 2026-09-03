@@ -12973,13 +12973,26 @@ def _deny_segment_views(segment: str, emit_self: bool = True) -> tuple[str, ...]
     one, so it cannot turn a denied command into an allowed one.
 
     ── Residual ──
-    Two shapes stay outside every view.  A token split by BOTH quoting and a
+    Three shapes stay outside every view.  A token split by BOTH quoting and a
     separator-shaped glue construct (``"rm"$(echo ' ')-rf /``) is in none of them:
     the raw text is not contiguous and the glue lands on its own segment — the
     whole-string raw pass covers the glue-ONLY spelling (``git$(echo ' ')push``),
     and closing the combination needs a normalizer that models substitution,
-    which a re-join is not.  And a variable spelling of a path operand
+    which a re-join is not.  A variable spelling of a path operand
     (``rm -rf $HOME``) is by construction not expanded here, per the note above.
+    And a quoted WHITESPACE-ONLY word (``rm -rf " " /home/x``) still renders an
+    extra separator.  Adding a render without it would be additive like the one
+    above and so could not lose a denial, but it is not the same claim: an empty
+    element carries no characters, so a view without it is still the argv the
+    shell hands over; a whitespace-only element is a real operand naming a file
+    that can exist, so a view without it is an argv ONE OPERAND SHORT of the one
+    that runs.  Widening the render to elements that do carry characters changes
+    what a view is permitted to assert -- and ``is_denied``'s exception machinery
+    (present, and ``_DENY_EXCEPTIONS`` empty today) is matched against views, so
+    the direction it would open is ALLOW, not deny.  Recognizing this shape wants
+    rules matched against argv STRUCTURE rather than against a rendered line,
+    which is what ``_SELF_PROTECTION_FLOOR_PATTERNS`` already does for the six
+    self-protection rules — and is why those are not fooled by either shape.
     """
     views: list[str] = [segment.lower()] if emit_self else []
     seen_views: set[str] = set(views)
@@ -13012,10 +13025,43 @@ def _deny_segment_views(segment: str, emit_self: bool = True) -> tuple[str, ...]
                 continue
             # No expansion happens above, so an already-lowercased source stays
             # lowercased through the re-join and needs no second fold.
+            #
+            # The empty-elided re-join is a THIRD view, ADDED beside the plain one
+            # rather than replacing it -- this helper only ever adds views, and
+            # substituting here broke that invariant in a measurable way.  An
+            # empty-quoted word (``""``, ``''``, ``$''``, or any concatenation of
+            # them) is a real argv element the shell does hand over, so
+            # ``_shell_tokens`` is right to keep it and the payload walk below
+            # still sees argv as it was.  What it cannot survive is the RENDER: a
+            # single-space join turns a zero-width element into a spurious extra
+            # separator, and every rule authored as a command shape with single
+            # separators (``rm -rf /``, ``dd if=``) then stops matching its own
+            # target -- ``rm -rf "" /home/x`` rendered as ``rm -rf  /home/x``.
+            # The element contributes no text to the shape and cannot name a file
+            # or carry a flag, so a view without it renders what the command does
+            # rather than fabricating something it does not.
+            #
+            # Keeping the plain join is not defensive tidiness.  A rule that
+            # REQUIRES an intervening token (``rm -rf .* ./data``) matched the
+            # double-spaced view and matches neither the elided one nor the
+            # command's canonical spelling, so dropping it removed a denial that
+            # existed before: ``r""m -rf "" ./data`` was refused and became
+            # allowed (found by the GPT 5.6 review lane, reproduced against the
+            # merge-base).  Emitting both means a rule authored against either
+            # whitespace shape still fires, which is the only reading that cannot
+            # lose a denial.  Rules whose own pattern already tolerated the extra
+            # separator (``chmod.*/etc/.*``) were denying via the plain view all
+            # along, which is why the escape was pattern-dependent rather than
+            # uniform, and why this belongs here and not in individual rules.
             view = " ".join(tokens)
-            if not (is_root and not emit_self) and view not in seen_views:
-                seen_views.add(view)
-                views.append(view)
+            candidates = [view]
+            elided = " ".join(token for token in tokens if token)
+            if elided and elided != view:
+                candidates.append(elided)
+            for candidate in candidates:
+                if not (is_root and not emit_self) and candidate not in seen_views:
+                    seen_views.add(candidate)
+                    views.append(candidate)
             joined_here: set[str] = set()
             payloads = _nested_shell_payloads(
                 tokens, allow_join=allow_join, joined_out=joined_here
