@@ -462,3 +462,33 @@ custom-rules:
       here or in semgrep/). Sentinel-return misuse (str.find/rfind -1 in a
       boolean context) is deliberately NOT listed: semgrep owns it
       (semgrep/find-sentinel-truthiness.yaml).
+
+  - id: no-new-builtin-apps
+    blocking: true
+    file-patterns:
+      - "src/kiro_crew/apps/builtins/**"
+    rule: |
+      The set of built-in apps is CLOSED. A new app ships as an EXTERNAL app
+      published through the KiroCrewApps registry (what the App Store's
+      Discover page lists), never as a new built-in in this repo. A built-in
+      rides the wheel: it grows every user's install footprint, cannot be
+      uninstalled (only disabled), and couples the app's release and fix
+      cadence to Kiro Crew releases — the registry exists precisely so an app
+      can be listed, updated, and corrected with a catalog publish instead of
+      a client ship.
+
+      - FLAG any PR that adds a new app directory under
+        src/kiro_crew/apps/builtins/ (a new app.json). The publishing path is
+        the KiroCrewApps registry; point the author there. An explicit
+        maintainer decision recorded on the PR (the /ai-review override flow)
+        is the only exception — the default is closed.
+      - FLAG restoring a withdrawn built-in (the Board app) or un-hiding the
+        Channels app from the App Store (flipping "hidden": true in
+        src/kiro_crew/apps/builtins/channels/app.json). Both are deliberate
+        fork divergences an upstream sync must not undo.
+
+      Allowed (do NOT flag):
+      - Changes inside an EXISTING built-in app directory: fixes, features,
+        tests, i18n, refactors.
+      - Deleting an existing built-in, or moving one OUT of the repo to the
+        registry — that is the direction this rule pushes.

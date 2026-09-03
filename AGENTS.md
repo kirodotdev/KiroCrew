@@ -97,7 +97,10 @@ This repo is the de-Amazoned public fork of an internal package. Never re-add:
 - **OSS-flipped defaults:** always-on in-process embeddings, Piper TTS by default,
   a default-open Slack enterprise gate, lazy STT extras.
 - **Fork UX divergences:** the Channels app is hidden from the App Store and the
-  Board app is removed. An upstream sync must not restore them.
+  Board app is removed. An upstream sync must not restore them. The
+  `no-new-builtin-apps` rule in `AUTOSDE.yaml` blocks this in review — and
+  blocks any NEW built-in app: the built-in set is closed, and new apps ship
+  as external apps through the KiroCrewApps registry.
 
 `scripts/scrub-lint.sh` gates `src/`, `website/src/`, `scripts/`, `config/`,
 `packaging/`, and the top level; keep `docs/` clean by convention. Rationale for
