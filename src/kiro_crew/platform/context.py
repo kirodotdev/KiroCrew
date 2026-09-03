@@ -482,6 +482,16 @@ PEEK_CALLERS: "dict[str, str]" = {
         "its policy failed to compose — is handled separately by withholding "
         "the line's text (LOG_WITHHELD_PLACEHOLDER)."
     ),
+    "platform/policy_distribution.py::break_glass_local_policy": (
+        "no-context answer is the empty string, i.e. NO tier holds a live "
+        "break-glass grant. That is the conservative answer because the grant is "
+        "the only thing that lets a LOCAL document outrank the fleet's ceiling: "
+        "answering 'no grant' keeps the central source authoritative and lets the "
+        "refresh proceed, so an absent context can never be the reason a local "
+        "override takes effect. Resolving a context to learn it would make merely "
+        "asking the question compose a ceiling, on a path the background refresher "
+        "runs every cycle."
+    ),
     "platform/governance.py::active_policy_distribution": (
         "no-context answer is an unconfigured PolicyDistribution, i.e. no "
         "central fetch. It is reached only when boot never installed a context, "

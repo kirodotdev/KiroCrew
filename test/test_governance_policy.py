@@ -11,6 +11,7 @@ Covers:
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import hmac
 import json
@@ -28,6 +29,7 @@ from kiro_crew.platform.governance import (
     SIGNATURE_UNSIGNED,
     SIGNATURE_UNVERIFIED,
     SIGNATURE_VERIFIED,
+    TIER_ENV,
     Bind,
     CapabilityGate,
     GovernanceCeiling,
@@ -374,12 +376,38 @@ class TestLoader:
         assert "commands" in ceiling.controls
 
     def test_env_beats_bundled(self, monkeypatch, tmp_path):
+        """Env still outranks the bundled resource — but bundled IS now resolved.
+
+        The bundled loader used to be skipped entirely when the env tier was set,
+        and this test asserted that by failing if it ran.  It is resolved
+        unconditionally now, deliberately: the CENTRAL tier outranks env, and the
+        source it fetches from may be DECLARED by a lower tier's ``distribution``
+        block, so the bundled document has to be read for its declaration to be
+        seen even when env will win the subordinate slot.
+
+        The contract that still holds — and the one this pins — is the precedence
+        itself: tiers 3–5 are mutually exclusive with env first, so the env
+        document is the one that becomes the ceiling.  Asserted on identity rather
+        than on whether the loader ran, because "who won" is the invariant; "was
+        bundled consulted" is an implementation detail that just changed.
+        """
+        monkeypatch.delenv("KIROCREW_POLICY_URL", raising=False)
         p = tmp_path / "policy.json"
-        p.write_text(json.dumps(_policy_body()))
+        p.write_text(json.dumps(_policy_body(identity={"issuer": "env-tier"})))
         monkeypatch.setenv("KIROCREW_SECURITY_POLICY", str(p))
-        # bundled_loader must NOT be consulted when env wins.
-        ceiling = load_security_policy(bundled_loader=lambda: pytest.fail("should not call"))
+        resolved = {}
+
+        def bundled():
+            resolved["yes"] = True
+            return _policy_body(identity={"issuer": "bundled-tier"})
+
+        ceiling = load_security_policy(bundled_loader=bundled)
         assert ceiling is not None
+        # Resolved, so a ``distribution`` block declared here would be seen…
+        assert resolved.get("yes")
+        # …but it does not win: env is the first present subordinate tier.
+        assert ceiling.identity_issuer == "env-tier"
+        assert ceiling.tier == TIER_ENV
 
     def test_wrong_version_fails_closed(self):
         with pytest.raises(PlatformCompositionError):
@@ -1753,3 +1781,341 @@ class TestValidateReportsUngovernedCapabilities:
         ceiling = parse_policy(_policy_body(commands={"mode": MODE_DENY, "deny": ["nc *"]}))
         out = self._validate(capsys, ceiling)
         assert "UNGOVERNED" not in out
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Asymmetric (Ed25519) policy signatures — checked BEFORE the shared secret
+# ──────────────────────────────────────────────────────────────────────────
+def _ed25519_pair():
+    """A real Ed25519 key pair as ``(private_key, base64_public_key)``.
+
+    The base64 form of the raw 32-byte point is exactly what an operator pastes
+    into the admission policy's ``trust_public_keys``.
+    """
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric import ed25519
+
+    private = ed25519.Ed25519PrivateKey.generate()
+    raw_public = private.public_key().public_bytes(
+        encoding=serialization.Encoding.Raw,
+        format=serialization.PublicFormat.Raw,
+    )
+    return private, base64.b64encode(raw_public).decode("ascii")
+
+
+def _sign_policy_ed25519(body: dict, private_key) -> dict:
+    """Return *body* with a valid Ed25519 ``identity.signature`` over its payload."""
+    signed = json.loads(json.dumps(body))  # deep copy; body may be reused
+    signature = private_key.sign(policy_signing_payload(signed))
+    signed.setdefault("identity", {})["signature"] = base64.b64encode(signature).decode("ascii")
+    return signed
+
+
+def _patch_asymmetric(monkeypatch, *, public_keys: dict, require: bool = False):
+    """Point the loader's asymmetric trust settings at fixed values (no file I/O)."""
+    monkeypatch.setattr(
+        "kiro_crew.platform.governance._policy_asymmetric_settings",
+        lambda: (dict(public_keys), require),
+    )
+
+
+class TestAsymmetricPolicySignatureState:
+    """``_policy_signature_state`` — the pure classifier, asymmetric-first.
+
+    Why asymmetric wins the ordering: with a shared secret the verifier holds the
+    same key the signer does, so anyone who can read the trust root can mint a
+    ceiling that verifies.  An Ed25519 public key cannot be used to re-sign, so a
+    fleet migrating to it must not have the weaker proof accepted as a
+    consolation prize when the strong one fails.
+    """
+
+    def test_public_key_verifies_and_the_detail_names_ed25519(self):
+        from kiro_crew.platform.governance import _policy_signature_state
+
+        private, public = _ed25519_pair()
+        body = _sign_policy_ed25519(_policy_body(identity={"issuer": "fleet-control"}), private)
+        state, detail = _policy_signature_state(
+            body, {}, public_keys={"fleet-control": public}
+        )
+        assert state == SIGNATURE_VERIFIED
+        # The verdict alone cannot tell an operator WHICH proof held; the detail is
+        # what lands in the SEL record, so it has to distinguish the two.
+        assert "ed25519" in detail
+        assert "fleet-control" in detail
+
+    def test_hex_public_key_form_also_verifies(self):
+        # ``openssl`` and several MDM consoles emit keys as hex, not base64.
+        from kiro_crew.platform.governance import _policy_signature_state
+
+        private, public = _ed25519_pair()
+        hex_public = base64.b64decode(public).hex()
+        body = _sign_policy_ed25519(_policy_body(identity={"issuer": "fleet-control"}), private)
+        state, _ = _policy_signature_state(body, {}, public_keys={"fleet-control": hex_public})
+        assert state == SIGNATURE_VERIFIED
+
+    def test_hmac_still_verifies_when_the_issuer_has_no_public_key(self):
+        # Back-compat: a fleet that already signs with a shared secret keeps
+        # verifying byte-for-byte, and the HMAC success detail is deliberately
+        # UNCHANGED so nothing parsing it has to be updated.
+        from kiro_crew.platform.governance import _policy_signature_state
+
+        secret = "trust-key"
+        body = _sign_policy(_policy_body(identity={"issuer": "fleet-control"}), secret)
+        state, detail = _policy_signature_state(
+            body, {"fleet-control": secret}, public_keys={"someone-else": _ed25519_pair()[1]}
+        )
+        assert state == SIGNATURE_VERIFIED
+        assert detail == "issuer 'fleet-control'"
+
+    def test_hmac_detail_is_identical_with_and_without_the_new_arguments(self):
+        # The keyword-only additions are inert by default: a two-argument caller
+        # must get byte-identical behaviour, state AND detail.
+        from kiro_crew.platform.governance import _policy_signature_state
+
+        secret = "trust-key"
+        body = _sign_policy(_policy_body(identity={"issuer": "fleet-control"}), secret)
+        assert _policy_signature_state(body, {"fleet-control": secret}) == _policy_signature_state(
+            body, {"fleet-control": secret}, public_keys={}, require_asymmetric=False
+        )
+
+    def test_require_asymmetric_refuses_a_correct_hmac(self):
+        # The document really is correctly signed. It is refused anyway, because a
+        # symmetric proof is re-mintable by anyone who can read the verifying key —
+        # exactly what this flag says is not good enough.
+        from kiro_crew.platform.governance import _policy_signature_state
+
+        secret = "trust-key"
+        body = _sign_policy(_policy_body(identity={"issuer": "fleet-control"}), secret)
+        # Same document, same key: verified without the flag…
+        assert (
+            _policy_signature_state(body, {"fleet-control": secret})[0] == SIGNATURE_VERIFIED
+        )
+        # …and unverified with it, so the refusal is about the PROOF TYPE and not a
+        # broken signature.
+        state, detail = _policy_signature_state(
+            body, {"fleet-control": secret}, require_asymmetric=True
+        )
+        assert state == SIGNATURE_UNVERIFIED
+        assert "symmetric" in detail
+
+    def test_require_asymmetric_still_accepts_an_ed25519_signature(self):
+        from kiro_crew.platform.governance import _policy_signature_state
+
+        private, public = _ed25519_pair()
+        body = _sign_policy_ed25519(_policy_body(identity={"issuer": "fleet-control"}), private)
+        state, _ = _policy_signature_state(
+            body,
+            {},
+            public_keys={"fleet-control": public},
+            require_asymmetric=True,
+        )
+        assert state == SIGNATURE_VERIFIED
+
+    def test_failed_asymmetric_check_does_not_fall_back_to_the_hmac_key(self):
+        """The migration invariant: a public key is a COMMITMENT, not a preference.
+
+        The document carries a signature that is a perfectly correct HMAC for the
+        issuer's shared secret, and that secret is present in ``trust_keys``.  Because
+        the issuer ALSO has a public key, the asymmetric check runs and fails, and the
+        verdict must stay UNVERIFIED — falling through to the symmetric key would make
+        an in-progress migration meaningless, since an insider who can read
+        ``trust_keys`` could keep minting ceilings for an issuer that had supposedly
+        moved to asymmetric signing.
+        """
+        from kiro_crew.platform.governance import _policy_signature_state
+
+        secret = "trust-key"
+        _private, public = _ed25519_pair()
+        body = _sign_policy(_policy_body(identity={"issuer": "fleet-control"}), secret)
+
+        # Control: with no public key for this issuer the same document verifies, so
+        # the HMAC really is correct and the test is not vacuous.
+        assert (
+            _policy_signature_state(body, {"fleet-control": secret})[0] == SIGNATURE_VERIFIED
+        )
+
+        state, detail = _policy_signature_state(
+            body, {"fleet-control": secret}, public_keys={"fleet-control": public}
+        )
+        assert state == SIGNATURE_UNVERIFIED
+        assert "asymmetric" in detail
+        assert "fleet-control" in detail
+
+    def test_wrong_ed25519_signature_is_unverified_not_a_crash(self):
+        # A signature minted by a DIFFERENT Ed25519 key is well-formed, so this
+        # exercises the real verify path rather than the malformed-input shortcut.
+        from kiro_crew.platform.governance import _policy_signature_state
+
+        _private, public = _ed25519_pair()
+        attacker, _attacker_public = _ed25519_pair()
+        body = _sign_policy_ed25519(_policy_body(identity={"issuer": "fleet-control"}), attacker)
+        state, _ = _policy_signature_state(body, {}, public_keys={"fleet-control": public})
+        assert state == SIGNATURE_UNVERIFIED
+
+    def test_tampered_document_invalidates_an_ed25519_signature(self):
+        # The core threat, on the asymmetric path: WIDEN a governed scope after
+        # signing and the signature no longer covers the bytes.
+        from kiro_crew.platform.governance import _policy_signature_state
+
+        private, public = _ed25519_pair()
+        body = _sign_policy_ed25519(
+            _policy_body(
+                identity={"issuer": "fleet-control"},
+                commands={"mode": "deny", "deny": ["git push*"]},
+            ),
+            private,
+        )
+        body["commands"] = {"mode": "deny", "deny": []}  # ceiling widened
+        state, _ = _policy_signature_state(body, {}, public_keys={"fleet-control": public})
+        assert state == SIGNATURE_UNVERIFIED
+
+    def test_malformed_public_key_is_unverified_and_never_falls_back(self):
+        # A junk key must not degrade into "no public key for this issuer" and hand
+        # the verdict to the shared secret; ``ed25519_verify`` returns False and the
+        # asymmetric branch owns the outcome.
+        from kiro_crew.platform.governance import _policy_signature_state
+
+        secret = "trust-key"
+        body = _sign_policy(_policy_body(identity={"issuer": "fleet-control"}), secret)
+        state, detail = _policy_signature_state(
+            body, {"fleet-control": secret}, public_keys={"fleet-control": "not-a-key"}
+        )
+        assert state == SIGNATURE_UNVERIFIED
+        assert "asymmetric" in detail
+
+    def test_unsigned_and_issuerless_verdicts_are_unchanged(self):
+        from kiro_crew.platform.governance import _policy_signature_state
+
+        _private, public = _ed25519_pair()
+        keys = {"fleet-control": public}
+        assert (
+            _policy_signature_state(_policy_body(), {}, public_keys=keys)[0]
+            == SIGNATURE_UNSIGNED
+        )
+        state, _ = _policy_signature_state(
+            _policy_body(identity={"signature": "abc"}), {}, public_keys=keys
+        )
+        assert state == SIGNATURE_UNVERIFIED
+
+
+class TestAsymmetricPolicySignatureThroughTheLoader:
+    """The same behaviour end to end, where a real host reads it off the ceiling."""
+
+    def test_ed25519_signed_env_policy_loads_verified(self, monkeypatch, tmp_path):
+        private, public = _ed25519_pair()
+        body = _sign_policy_ed25519(_policy_body(identity={"issuer": "fleet-control"}), private)
+        p = tmp_path / "policy.json"
+        p.write_text(json.dumps(body))
+        monkeypatch.setenv("KIROCREW_SECURITY_POLICY", str(p))
+        _patch_trust(monkeypatch, require=False, keys={})
+        _patch_asymmetric(monkeypatch, public_keys={"fleet-control": public})
+        ceiling = load_security_policy()
+        assert ceiling is not None
+        assert ceiling.signature_state == SIGNATURE_VERIFIED
+
+    def test_ed25519_signature_survives_reserialization(self, monkeypatch, tmp_path):
+        # Coverage is byte-canonical over the PARSED json, so re-indenting or
+        # reordering the file does not invalidate the signature.
+        private, public = _ed25519_pair()
+        body = _sign_policy_ed25519(_policy_body(identity={"issuer": "fleet-control"}), private)
+        p = tmp_path / "policy.json"
+        p.write_text(json.dumps(body, indent=4, sort_keys=True) + "\n")
+        monkeypatch.setenv("KIROCREW_SECURITY_POLICY", str(p))
+        _patch_trust(monkeypatch, require=False, keys={})
+        _patch_asymmetric(monkeypatch, public_keys={"fleet-control": public})
+        assert load_security_policy().signature_state == SIGNATURE_VERIFIED
+
+    def test_hmac_only_fleet_is_unaffected_by_the_new_settings(self, monkeypatch, tmp_path):
+        # The upgrade contract: a fleet with no public keys and the flag off sees
+        # exactly its previous verdict.
+        secret = "trust-key"
+        body = _sign_policy(_policy_body(identity={"issuer": "fleet-control"}), secret)
+        p = tmp_path / "policy.json"
+        p.write_text(json.dumps(body))
+        monkeypatch.setenv("KIROCREW_SECURITY_POLICY", str(p))
+        _patch_trust(monkeypatch, require=False, keys={"fleet-control": secret})
+        _patch_asymmetric(monkeypatch, public_keys={}, require=False)
+        assert load_security_policy().signature_state == SIGNATURE_VERIFIED
+
+    def test_require_asymmetric_downgrades_an_hmac_only_ceiling(self, monkeypatch, tmp_path):
+        secret = "trust-key"
+        body = _sign_policy(_policy_body(identity={"issuer": "fleet-control"}), secret)
+        p = tmp_path / "policy.json"
+        p.write_text(json.dumps(body))
+        monkeypatch.setenv("KIROCREW_SECURITY_POLICY", str(p))
+        _patch_trust(monkeypatch, require=False, keys={"fleet-control": secret})
+        _patch_asymmetric(monkeypatch, public_keys={}, require=True)
+        ceiling = load_security_policy()
+        assert ceiling is not None
+        assert ceiling.signature_state == SIGNATURE_UNVERIFIED
+
+    def test_require_asymmetric_with_the_opt_in_aborts_boot(self, monkeypatch, tmp_path):
+        # An HMAC-only ceiling under both flags must FAIL CLOSED at the boot gate
+        # rather than degrade to an unauthenticated (and therefore ungoverned) host.
+        secret = "trust-key"
+        body = _sign_policy(_policy_body(identity={"issuer": "fleet-control"}), secret)
+        p = tmp_path / "policy.json"
+        p.write_text(json.dumps(body))
+        monkeypatch.setenv("KIROCREW_SECURITY_POLICY", str(p))
+        _real_trust_file(monkeypatch, tmp_path, require=True, keys={"fleet-control": secret})
+        _patch_asymmetric(monkeypatch, public_keys={}, require=True)
+        with pytest.raises(PlatformCompositionError):
+            _load_and_enforce()
+
+    def test_ed25519_signature_satisfies_the_opt_in(self, monkeypatch, tmp_path):
+        # The other half: the strong proof passes the same gate.
+        private, public = _ed25519_pair()
+        body = _sign_policy_ed25519(_policy_body(identity={"issuer": "fleet-control"}), private)
+        p = tmp_path / "policy.json"
+        p.write_text(json.dumps(body))
+        monkeypatch.setenv("KIROCREW_SECURITY_POLICY", str(p))
+        _real_trust_file(monkeypatch, tmp_path, require=True, keys={})
+        _patch_asymmetric(monkeypatch, public_keys={"fleet-control": public}, require=True)
+        ceiling = _load_and_enforce()
+        assert ceiling is not None
+        assert ceiling.signature_state == SIGNATURE_VERIFIED
+
+    def test_public_key_issuer_does_not_fall_back_to_its_hmac_key(self, monkeypatch, tmp_path):
+        # End-to-end form of the migration invariant: both key maps are populated
+        # for this issuer and the HMAC is correct, but the asymmetric check owns the
+        # verdict, so the ceiling loads UNVERIFIED.
+        secret = "trust-key"
+        _private, public = _ed25519_pair()
+        body = _sign_policy(_policy_body(identity={"issuer": "fleet-control"}), secret)
+        p = tmp_path / "policy.json"
+        p.write_text(json.dumps(body))
+        monkeypatch.setenv("KIROCREW_SECURITY_POLICY", str(p))
+        _patch_trust(monkeypatch, require=False, keys={"fleet-control": secret})
+        _patch_asymmetric(monkeypatch, public_keys={"fleet-control": public})
+        ceiling = load_security_policy()
+        assert ceiling is not None
+        assert ceiling.signature_state == SIGNATURE_UNVERIFIED
+
+    def test_asymmetric_settings_reader_never_raises(self, monkeypatch, tmp_path):
+        # Contract mirror of ``_policy_trust_settings``: an unreadable admission
+        # policy yields no keys and no opt-in, so an admission-domain problem cannot
+        # make the security ceiling unloadable through a second path.
+        from kiro_crew.platform.governance import _policy_asymmetric_settings
+
+        bad = tmp_path / "admission_policy.json"
+        bad.write_text("{ not json")
+        monkeypatch.setenv("KIROCREW_ADMISSION_POLICY", str(bad))
+        assert _policy_asymmetric_settings() == ({}, False)
+
+    def test_asymmetric_settings_read_from_a_real_admission_file(self, monkeypatch, tmp_path):
+        # The keys live in the admission policy (already keystone-fenced, already the
+        # fleet-controlled trust root) rather than in a second key store.
+        from kiro_crew.platform.governance import _policy_asymmetric_settings
+
+        _private, public = _ed25519_pair()
+        adm = tmp_path / "admission_policy.json"
+        adm.write_text(
+            json.dumps(
+                {
+                    "trust_public_keys": {"fleet-control": public},
+                    "require_asymmetric_policy_signature": True,
+                }
+            )
+        )
+        monkeypatch.setenv("KIROCREW_ADMISSION_POLICY", str(adm))
+        assert _policy_asymmetric_settings() == ({"fleet-control": public}, True)

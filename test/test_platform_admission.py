@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import logging as _logging
 
 import pytest
 
@@ -685,3 +686,431 @@ class TestReadPolicyTrustRoot:
         assert governance_health.governance_status() == "unknown"
         assert governance_health.last_incident() is None
         governance_health.reset()
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Asymmetric (Ed25519) policy signatures — the strong half of the trust root
+# ──────────────────────────────────────────────────────────────────────────
+def _ed25519_pair():
+    """A real Ed25519 key pair as ``(private_key, raw_public_bytes)``.
+
+    Raw/Raw serialization is what an operator pastes into ``trust_public_keys``:
+    the bare 32-byte point, base64- or hex-encoded, with no PEM/DER wrapper.
+    """
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric import ed25519
+
+    private = ed25519.Ed25519PrivateKey.generate()
+    raw_public = private.public_key().public_bytes(
+        encoding=serialization.Encoding.Raw,
+        format=serialization.PublicFormat.Raw,
+    )
+    assert len(raw_public) == 32
+    return private, raw_public
+
+
+def _b64(raw: bytes) -> str:
+    import base64
+
+    return base64.b64encode(raw).decode("ascii")
+
+
+class TestEd25519Verify:
+    """``ed25519_verify`` — the primitive ``trust_public_keys`` is checked with.
+
+    Its whole point over :func:`hmac_signature` is that the trust root holds only
+    the VERIFYING half, so reading the file no longer confers the ability to forge
+    a ceiling.  Its second contract is that it never raises: the caller's only safe
+    reading of "could not prove it" is "not proven", and an exception escaping here
+    would leave ``load_security_policy`` raising something the boot handler does not
+    treat as fatal — degrading the host to UNGOVERNED and inverting the very flag
+    that demanded a signature.
+    """
+
+    def test_verifies_a_real_signature(self):
+        from kiro_crew.platform.admission import ed25519_verify
+
+        private, raw_public = _ed25519_pair()
+        payload = b"the canonical policy bytes"
+        assert ed25519_verify(_b64(raw_public), payload, _b64(private.sign(payload)))
+
+    def test_accepts_padded_unpadded_base64_and_hex_key_forms(self):
+        # An operator pastes whatever their tooling emitted: base64 with padding,
+        # base64 stripped of its trailing '=', or hex from ``openssl`` / an MDM
+        # console. All three name the SAME key, so all three must verify.
+        from kiro_crew.platform.admission import ed25519_verify
+
+        private, raw_public = _ed25519_pair()
+        payload = b"policy"
+        signature = _b64(private.sign(payload))
+
+        padded = _b64(raw_public)
+        assert padded.endswith("=")  # 32 bytes → 44 chars, one pad char
+        unpadded = padded.rstrip("=")
+        hex_form = raw_public.hex()
+
+        for key_form in (padded, unpadded, hex_form):
+            assert ed25519_verify(key_form, payload, signature), key_form
+
+    def test_hex_key_is_not_misread_as_base64(self):
+        # ``_decode_key_material`` tries hex FIRST on purpose: a 64-char hex key is
+        # also syntactically valid base64 (length is a multiple of 4), so a
+        # base64-first order would silently decode it to 48 wrong bytes and the key
+        # would never verify.
+        from kiro_crew.platform.admission import _decode_key_material
+
+        _, raw_public = _ed25519_pair()
+        assert _decode_key_material(raw_public.hex()) == raw_public
+
+    def test_hex_signature_form_also_verifies(self):
+        from kiro_crew.platform.admission import ed25519_verify
+
+        private, raw_public = _ed25519_pair()
+        payload = b"policy"
+        assert ed25519_verify(raw_public.hex(), payload, private.sign(payload).hex())
+
+    def test_whitespace_in_pasted_material_is_tolerated(self):
+        # Copying a key out of a console or a wrapped JSON string picks up newlines.
+        from kiro_crew.platform.admission import ed25519_verify
+
+        private, raw_public = _ed25519_pair()
+        payload = b"policy"
+        wrapped = " " + "\n".join([_b64(raw_public)[:20], _b64(raw_public)[20:]]) + "\n"
+        assert ed25519_verify(wrapped, payload, _b64(private.sign(payload)))
+
+    def test_tampered_payload_fails(self):
+        # The core threat: an attacker WIDENS a governed scope but cannot re-sign.
+        from kiro_crew.platform.admission import ed25519_verify
+
+        private, raw_public = _ed25519_pair()
+        signature = _b64(private.sign(b"mode=deny"))
+        assert not ed25519_verify(_b64(raw_public), b"mode=allow", signature)
+
+    def test_signature_from_a_different_key_fails(self):
+        # A valid signature is not enough — it must be valid under the key the trust
+        # root names, or any holder of any Ed25519 key could mint a ceiling.
+        from kiro_crew.platform.admission import ed25519_verify
+
+        _, raw_public = _ed25519_pair()
+        attacker, _attacker_public = _ed25519_pair()
+        payload = b"policy"
+        assert not ed25519_verify(_b64(raw_public), payload, _b64(attacker.sign(payload)))
+
+    def test_signature_valid_under_its_own_key_confirms_the_test_is_not_vacuous(self):
+        # Mutation guard for the test above: prove the attacker's signature is a
+        # genuinely well-formed signature, so its rejection is about key identity
+        # rather than a malformed blob taking the generic False path.
+        from cryptography.hazmat.primitives import serialization
+
+        from kiro_crew.platform.admission import ed25519_verify
+
+        attacker, _ = _ed25519_pair()
+        attacker_public = attacker.public_key().public_bytes(
+            encoding=serialization.Encoding.Raw,
+            format=serialization.PublicFormat.Raw,
+        )
+        payload = b"policy"
+        assert ed25519_verify(_b64(attacker_public), payload, _b64(attacker.sign(payload)))
+
+    @pytest.mark.parametrize(
+        "key",
+        [
+            "",
+            "   ",
+            "not base64 or hex!!",
+            "aa",  # decodes, but one byte — far short of 32
+            "deadbeef",
+            "A" * 43,  # right length, wrong point material
+            "\u00e9\u00e9\u00e9",  # non-ASCII paste damage
+        ],
+    )
+    def test_junk_key_returns_false_without_raising(self, key):
+        from kiro_crew.platform.admission import ed25519_verify
+
+        private, _ = _ed25519_pair()
+        payload = b"policy"
+        assert ed25519_verify(key, payload, _b64(private.sign(payload))) is False
+
+    @pytest.mark.parametrize(
+        "signature",
+        [
+            "",
+            "   ",
+            "not base64 or hex!!",
+            "deadbeef",  # decodes, but 4 bytes — not 64
+            "A" * 86,  # right length, wrong bytes
+            "\u2013" * 64,  # smart dashes: non-ASCII, undecodable
+        ],
+    )
+    def test_junk_signature_returns_false_without_raising(self, signature):
+        from kiro_crew.platform.admission import ed25519_verify
+
+        _, raw_public = _ed25519_pair()
+        assert ed25519_verify(_b64(raw_public), b"policy", signature) is False
+
+    def test_truncated_key_and_signature_are_length_rejected(self):
+        # Length is checked BEFORE the primitive so a truncated paste reads as a
+        # plain False rather than a ValueError surfacing from the backend.
+        from kiro_crew.platform.admission import ed25519_verify
+
+        private, raw_public = _ed25519_pair()
+        payload = b"policy"
+        signature = private.sign(payload)
+        assert ed25519_verify(raw_public[:31].hex(), payload, signature.hex()) is False
+        assert ed25519_verify(raw_public.hex(), payload, signature[:63].hex()) is False
+        assert ed25519_verify(raw_public.hex(), payload, (signature + b"\x00").hex()) is False
+
+    def test_empty_payload_is_still_a_real_verification(self):
+        from kiro_crew.platform.admission import ed25519_verify
+
+        private, raw_public = _ed25519_pair()
+        assert ed25519_verify(_b64(raw_public), b"", _b64(private.sign(b"")))
+        assert not ed25519_verify(_b64(raw_public), b"x", _b64(private.sign(b"")))
+
+
+class TestAsymmetricTrustRootParsing:
+    """``trust_public_keys`` / ``require_asymmetric_policy_signature`` in the policy."""
+
+    def test_defaults_are_inert_so_existing_fleets_are_unchanged(self):
+        assert AdmissionPolicy().trust_public_keys == {}
+        assert AdmissionPolicy().require_asymmetric_policy_signature is False
+        assert AdmissionPolicy.open_default().trust_public_keys == {}
+        assert AdmissionPolicy.open_default().require_asymmetric_policy_signature is False
+
+    def test_parsed_from_policy_document(self):
+        _, raw_public = _ed25519_pair()
+        policy = AdmissionPolicy.from_dict(
+            {
+                "trust_public_keys": {"fleet-control": _b64(raw_public)},
+                "require_asymmetric_policy_signature": True,
+            }
+        )
+        assert policy.trust_public_keys == {"fleet-control": _b64(raw_public)}
+        assert policy.require_asymmetric_policy_signature is True
+
+    def test_both_key_maps_coexist_during_a_migration(self):
+        # A fleet mid-rollout carries the legacy secret and the new public key at
+        # once; parsing must keep them separate rather than merging or dropping one.
+        _, raw_public = _ed25519_pair()
+        policy = AdmissionPolicy.from_dict(
+            {
+                "trust_keys": {"fleet-control": "legacy-secret"},
+                "trust_public_keys": {"fleet-control": _b64(raw_public)},
+            }
+        )
+        assert policy.trust_keys == {"fleet-control": "legacy-secret"}
+        assert policy.trust_public_keys == {"fleet-control": _b64(raw_public)}
+
+    def test_require_asymmetric_is_independent_of_require_policy_signature(self):
+        # They ask different questions — "must it be signed?" vs "must the proof be
+        # one an insider who can read this file cannot forge?" — so neither implies
+        # the other.
+        assert (
+            AdmissionPolicy.from_dict(
+                {"require_policy_signature": True}
+            ).require_asymmetric_policy_signature
+            is False
+        )
+        assert (
+            AdmissionPolicy.from_dict(
+                {"require_asymmetric_policy_signature": True}
+            ).require_policy_signature
+            is False
+        )
+
+    def test_malformed_public_key_entries_are_dropped_not_stringified(self):
+        # Same hazard ``trust_keys`` has: a blanket ``str(v)`` would turn
+        # ``{"fleet": null}`` into the literal key ``"None"`` — a PREDICTABLE value
+        # an attacker can guess and sign against. Dropping the entry leaves the
+        # issuer with NO key, so nothing verifies and the caller fails closed.
+        _, raw_public = _ed25519_pair()
+        policy = AdmissionPolicy.from_dict(
+            {
+                "trust_public_keys": {
+                    "null-entry": None,
+                    "number-entry": 12,
+                    "empty-entry": "",
+                    "list-entry": ["x"],
+                    "dict-entry": {"k": "v"},
+                    "bool-entry": False,
+                    "ok": _b64(raw_public),
+                }
+            }
+        )
+        assert policy.trust_public_keys == {"ok": _b64(raw_public)}
+
+    def test_dropped_entry_cannot_be_verified_against_its_coerced_form(self):
+        # The consequence the drop exists to prevent, pinned end to end: had the
+        # null been coerced to "None", that string would be the issuer's key.
+        from kiro_crew.platform.admission import ed25519_verify
+
+        policy = AdmissionPolicy.from_dict({"trust_public_keys": {"fleet-control": None}})
+        assert "fleet-control" not in policy.trust_public_keys
+        assert ed25519_verify("None", b"policy", "deadbeef") is False
+
+    def test_malformed_public_key_container_is_ignored(self):
+        assert AdmissionPolicy.from_dict({"trust_public_keys": "not-a-dict"}).trust_public_keys == {}
+        assert AdmissionPolicy.from_dict({"trust_public_keys": None}).trust_public_keys == {}
+        assert AdmissionPolicy.from_dict({"trust_public_keys": []}).trust_public_keys == {}
+
+    def test_seeded_default_body_documents_the_asymmetric_option(self):
+        # The seeded file is the only documentation most operators read, so the
+        # recommended (asymmetric) path has to be named in it.
+        import kiro_crew.platform.admission as adm
+
+        comment = str(adm._DEFAULT_POLICY_BODY["_comment"])
+        assert "trust_public_keys" in comment
+        assert "require_asymmetric_policy_signature" in comment
+
+    def test_read_policy_trust_root_surfaces_the_asymmetric_settings(
+        self, monkeypatch, tmp_path
+    ):
+        # governance._policy_asymmetric_settings reads through this side-effect-free
+        # reader, so the fields have to survive the file round trip.
+        from kiro_crew.platform.admission import read_policy_trust_root
+
+        _, raw_public = _ed25519_pair()
+        adm = tmp_path / "admission_policy.json"
+        adm.write_text(
+            json.dumps(
+                {
+                    "trust_public_keys": {"fleet-control": _b64(raw_public)},
+                    "require_asymmetric_policy_signature": True,
+                }
+            )
+        )
+        monkeypatch.setenv("KIROCREW_ADMISSION_POLICY", str(adm))
+        policy = read_policy_trust_root()
+        assert policy.trust_public_keys == {"fleet-control": _b64(raw_public)}
+        assert policy.require_asymmetric_policy_signature is True
+
+
+class TestStrictBooleanFlagCoercion:
+    """``_coerce_flag`` reads a JSON boolean and refuses to guess at anything else.
+
+    ``bool("false")`` is ``True``, so a trust root written as
+    ``{"require_asymmetric_policy_signature": "false"}`` -- valid JSON, and the natural
+    mistake in a hand-edited or template-generated file -- silently turned the
+    requirement ON and then rejected every correctly HMAC-signed ceiling the fleet
+    published. A fleet reading its own file would see the word "false" and have no way
+    to explain the refusals. Dropping the value and warning is the same rule
+    ``_coerce_trust_keys`` already applies to a malformed key: a value that is not of
+    the declared type is not a value.
+    """
+
+    #: Everything a hand-edited trust root plausibly carries instead of a boolean. The
+    #: two lowercase STRINGS are the whole reason this helper exists -- both are truthy
+    #: under ``bool()``, so before the fix ``"false"`` and ``"true"`` were
+    #: indistinguishable, and the one an operator writes to mean OFF was the worse of
+    #: the two.
+    MALFORMED = ("false", "true", "False", 1, 0, 1.5, [], ["true"], {}, {"v": True}, "")
+
+    def test_a_real_boolean_is_honoured_in_both_directions(self):
+        from kiro_crew.platform.admission import _coerce_flag
+
+        assert _coerce_flag(True, "flag") is True
+        assert _coerce_flag(False, "flag", default=True) is False
+
+    def test_absent_falls_back_to_the_declared_default(self):
+        from kiro_crew.platform.admission import _coerce_flag
+
+        assert _coerce_flag(None, "flag") is False
+        assert _coerce_flag(None, "flag", default=True) is True
+
+    @pytest.mark.parametrize("raw", MALFORMED)
+    def test_a_non_boolean_falls_back_rather_than_being_coerced(self, raw):
+        from kiro_crew.platform.admission import _coerce_flag
+
+        # Both defaults, because "falls back to the default" is the contract -- a helper
+        # that always answered False would pass a False-default-only test while quietly
+        # dropping a fleet's opt-in.
+        assert _coerce_flag(raw, "flag") is False
+        assert _coerce_flag(raw, "flag", default=True) is True
+
+    @pytest.mark.parametrize("raw", MALFORMED)
+    def test_a_non_boolean_is_reported_loudly(self, raw, caplog):
+        from kiro_crew.platform.admission import _coerce_flag
+
+        # Silence would leave a fleet with a flag that reads one way in the file and
+        # behaves another, which is the failure mode this replaced: the refusals were
+        # real and the file looked correct.
+        with caplog.at_level(_logging.WARNING, logger="kiro_crew.platform.admission"):
+            _coerce_flag(raw, "require_asymmetric_policy_signature")
+        messages = [r.getMessage() for r in caplog.records]
+        assert any("require_asymmetric_policy_signature" in m for m in messages), messages
+        assert any("not a boolean" in m for m in messages), messages
+
+    def test_an_absent_flag_is_not_reported(self, caplog):
+        """A file that simply does not set the flag is the normal case, not an error."""
+        from kiro_crew.platform.admission import _coerce_flag
+
+        with caplog.at_level(_logging.WARNING, logger="kiro_crew.platform.admission"):
+            _coerce_flag(None, "require_asymmetric_policy_signature")
+        assert caplog.records == []
+
+    def test_the_string_false_no_longer_switches_the_requirement_on(self):
+        """The exact document that broke: the flag must read as the operator wrote it."""
+        policy = AdmissionPolicy.from_dict({"require_asymmetric_policy_signature": "false"})
+        assert policy.require_asymmetric_policy_signature is False
+
+    @pytest.mark.parametrize("raw", MALFORMED)
+    def test_a_malformed_asymmetric_flag_leaves_the_default_in_place(self, raw):
+        policy = AdmissionPolicy.from_dict({"require_asymmetric_policy_signature": raw})
+        assert policy.require_asymmetric_policy_signature is False
+
+    def test_a_real_boolean_still_opts_the_fleet_in(self):
+        """The fix must not have made the flag unsettable."""
+        assert (
+            AdmissionPolicy.from_dict(
+                {"require_asymmetric_policy_signature": True}
+            ).require_asymmetric_policy_signature
+            is True
+        )
+        assert (
+            AdmissionPolicy.from_dict(
+                {"require_asymmetric_policy_signature": False}
+            ).require_asymmetric_policy_signature
+            is False
+        )
+
+    @pytest.mark.parametrize("sibling", ["require_signature", "require_policy_signature"])
+    def test_the_sibling_flags_keep_their_existing_bare_bool_behaviour(self, sibling):
+        """The scope of this fix is deliberately ONE flag, and that is asserted, not assumed.
+
+        The siblings still go through ``bool()``, so a JSON string turns them ON. Pinning
+        it rather than leaving it implicit cuts both ways: an accidental widening of the
+        fix would change how existing trust roots parse, and a deliberate future decision
+        to tighten them has to break this test rather than slip through as a silent
+        behaviour change.
+        """
+        assert getattr(AdmissionPolicy.from_dict({sibling: "false"}), sibling) is True
+        assert getattr(AdmissionPolicy.from_dict({sibling: 1}), sibling) is True
+        assert getattr(AdmissionPolicy.from_dict({sibling: 0}), sibling) is False
+        assert getattr(AdmissionPolicy.from_dict({sibling: True}), sibling) is True
+        assert getattr(AdmissionPolicy.from_dict({sibling: False}), sibling) is False
+
+    def test_a_malformed_flag_in_a_real_trust_root_file_leaves_hmac_signing_usable(
+        self, monkeypatch, tmp_path
+    ):
+        """The consequence, end to end: the string used to reject valid signed ceilings.
+
+        ``require_asymmetric_policy_signature`` is what makes a symmetric HMAC verdict
+        insufficient, so a trust root carrying the string ``"false"`` refused exactly the
+        documents the fleet was signing correctly -- while still advertising its shared
+        secret as the key to sign them with.
+        """
+        from kiro_crew.platform.admission import read_policy_trust_root
+
+        adm = tmp_path / "admission_policy.json"
+        adm.write_text(
+            json.dumps(
+                {
+                    "trust_keys": {"fleet-control": "shared-secret"},
+                    "require_asymmetric_policy_signature": "false",
+                }
+            )
+        )
+        monkeypatch.setenv("KIROCREW_ADMISSION_POLICY", str(adm))
+        policy = read_policy_trust_root()
+        assert policy.require_asymmetric_policy_signature is False
+        assert policy.trust_keys == {"fleet-control": "shared-secret"}

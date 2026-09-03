@@ -875,6 +875,15 @@ class TestChannelTransportStartGate:
         sel_mod.SecurityEventLog._instance = None
         sel_mod.SecurityEventLog._initialized = False
 
+        # Built BEFORE the os.open patch below. ``sel_mod.os`` is the os module
+        # itself, so that setattr is process-wide, not scoped to the SEL module --
+        # and the managed-policy read deliberately has no ``exists()`` pre-check
+        # (an unreadable managed ceiling must fail closed rather than be treated as
+        # absent), so it would take the fake OSError as a present-but-unreadable
+        # fleet policy and abort the build. Context assembly is not what this test
+        # exercises; the audit append is.
+        base = build_default_context(KiroCrewConfig.load())
+
         # Force the audit FILE APPEND to fail (a genuine persistence failure that
         # only surfaces because critical=True makes _flush_batch raise).
         def _boom_open(*_a, **_k):
@@ -884,7 +893,6 @@ class TestChannelTransportStartGate:
         monkeypatch.setattr(gw, "sel", lambda: real_sel)
 
         # Governed ceiling that permits telegram → the gate audits critical=True.
-        base = build_default_context(KiroCrewConfig.load())
         ceiling = parse_policy(
             {
                 "version": 1,
