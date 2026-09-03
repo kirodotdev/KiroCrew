@@ -1121,14 +1121,43 @@ def update_config_locked(
 ) -> dict:
     """Perform an atomic read-modify-write of a config file under an advisory lock.
 
-    The locked primitive for the converted config.json writers and the required
-    path for new config.json mutations.  Legacy writers that pre-date this
-    function (dashboard agents endpoint, updates.py, security.py,
-    messaging.py, mcp.py, core.py STT) still use
-    :func:`write_config_atomically` directly and rely on the in-process asyncio
-    ``_get_config_lock()`` only.  ``memory.py`` was in that list and has been
-    converted; it now reaches this function through
+    The locked primitive for every DIRECT
+    ``write_config_atomically(config_path())`` caller outside this module, and
+    the required path for new ``config.json`` mutations.  **No such caller
+    remains** -- the dashboard agents endpoint, ``security.py``, the apps manager
+    and the CLI setup wizard were the last of them and are converted (#8032);
+    ``memory.py`` was converted earlier and reaches this function through
     ``dashboard/chat_utils.run_config_write``.
+    ``TestEveryConfigWriterIsLocked`` in
+    ``test/test_config_rmw_preserves_settings.py`` is the ratchet that keeps the
+    list from regrowing.
+
+    Read "direct caller outside this module" strictly: it is the exact set the
+    ratchet checks, and it is NOT the same as "every writer that reaches
+    ``config.json``".  :meth:`KiroCrewConfig.save` calls
+    :func:`write_config_atomically` and does NOT come through here -- see the
+    second family below.
+
+    A SECOND family of writers still bypasses this lock, and the ratchet does
+    NOT reach it -- for two different reasons, neither of which is visible from a
+    call site:
+
+    * Writers that reach ``config_path()`` through
+      ``kiro_crew.agent._atomic_json_write`` (``messaging.py``'s per-channel
+      savers, ``core.py``'s STT PUT, ``mcp.py``'s gateway-enable). The ratchet
+      matches calls to :func:`write_config_atomically`, and these make none.
+    * Writers that go through :meth:`KiroCrewConfig.save` (``updates.py``'s
+      log-level PUT, ``core.py``'s theme PUT, several ``agents.py`` agent CRUD
+      endpoints). ``save`` DOES call :func:`write_config_atomically` directly,
+      but it does so from inside this module, which the ratchet exempts -- so the
+      write is invisible to it at every caller.
+
+    Both rely on the in-process asyncio ``_get_config_lock()`` only, which
+    serializes same-loop callers and nothing else, so they can still interleave
+    with a holder of this lock.  Converting them is follow-up work; do not read
+    the ratchet's green as covering them, and note that an ALIASED import of
+    :func:`write_config_atomically` would evade it for the same matching reason
+    as the first bullet.
 
     Contract:
 

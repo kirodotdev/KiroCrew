@@ -19,8 +19,7 @@ from kiro_crew.config.loader import (
     ConfigReadError,
     build_provider_factory,
     config_path,
-    read_config_for_update,
-    write_config_atomically,
+    update_config_locked,
 )
 from kiro_crew.constants import BANNER, DATA_WARNING
 from kiro_crew.hooks import (
@@ -1007,14 +1006,21 @@ async def _interactive(
 
 
 def _ensure_default_agent_in_config() -> None:
-    """Ensure config.json includes a default KiroCrew agent for fresh installs."""
-    p = config_path()
-    try:
-        data = read_config_for_update(p)
-    except ConfigReadError:
-        logger.warning("Skipping default-agent seed: config unreadable")
-        return
-    if not data.get("agents"):
+    """Ensure config.json includes a default Kiro Crew agent for fresh installs.
+
+    Through :func:`update_config_locked` so the seed shares the advisory
+    ``<path>.lock`` with every other config writer. The read that decides
+    whether to seed has to happen INSIDE that lock: a dashboard or
+    ``kirocrew config set`` write landing between an outside read and this
+    write would be replaced by a document that never saw it.
+    """
+
+    def _seed(data: dict) -> dict | None:
+        if data.get("agents"):
+            # Another writer already seeded, or the operator has agents of
+            # their own: returning None skips the write entirely rather than
+            # rewriting the file with identical bytes.
+            return None
         data["agents"] = {
             "default": {
                 "kiro_agent": "kirocrew",
@@ -1023,4 +1029,14 @@ def _ensure_default_agent_in_config() -> None:
             }
         }
         data["default_agent"] = "default"
-        write_config_atomically(p, data)
+        return data
+
+    try:
+        # stamp_meta=False: this seed is a delta, and the writer it replaced
+        # stamped nothing. Adding a meta block here would make a fresh install's
+        # first chat rewrite a key this function does not own.
+        update_config_locked(config_path(), mutate=_seed, stamp_meta=False)
+    except ConfigReadError:
+        # Unchanged semantics: fail closed. Seeding over an unreadable config
+        # would drop every other setting it holds.
+        logger.warning("Skipping default-agent seed: config unreadable")

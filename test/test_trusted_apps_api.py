@@ -2577,22 +2577,23 @@ def test_restore_postcheck_withdraws_grant_if_installed_occupant_changes(
     def _delete_failure(*args, **kwargs):
         raise OSError("device busy")
 
-    real_write = appmanager.write_config_atomically
+    real_write = appmanager.update_config_locked
     writes = 0
 
-    def _write_then_replace(path, raw):
+    def _write_then_replace(path, **kwargs):
         nonlocal writes
         writes += 1
-        real_write(path, raw)
+        result = real_write(path, **kwargs)
         if writes == 2:  # pre-delete drop is first; restore write is second
             changed = appmanager._read_installed(_APP)
             assert changed is not None
             changed.version = "9.9.9"
             appmanager._write_installed(_APP, changed)
+        return result
 
     with (
         patch.object(appmanager.shutil, "rmtree", _delete_failure),
-        patch.object(appmanager, "write_config_atomically", _write_then_replace),
+        patch.object(appmanager, "update_config_locked", _write_then_replace),
     ):
         result = appmanager.uninstall_app(_APP)
 
@@ -2697,7 +2698,7 @@ def test_uninstall_writes_no_config_at_all_when_there_is_no_grant(
     )
     _install(tmp_path, _APP, enabled=False)
 
-    with patch.object(appmanager, "write_config_atomically") as writes:
+    with patch.object(appmanager, "update_config_locked") as writes:
         result = appmanager.uninstall_app(_APP)
 
     assert result.ok is True, result.error

@@ -619,3 +619,164 @@ class TestAutoUpdateToggleKeepsSettings:
         # The unreadable file is left exactly as it was — not replaced by a
         # one-key config that silently drops every real setting.
         assert path.read_text(encoding="utf-8") == torn
+
+
+class TestEveryConfigWriterIsLocked:
+    """No direct ``write_config_atomically(config_path())`` caller may reappear (#8032).
+
+    ``update_config_locked`` holds an advisory lock on a ``<path>.lock`` sidecar
+    for its whole read-modify-write. Its guarantee is only as strong as the set
+    of writers that participate: a writer that renames ``config.json`` without
+    taking that lock can land between a participant's read and write, and the
+    second rename wins with a document that never saw the other's change. The
+    loss is silent and the lost data is user configuration.
+
+    That list was drained once by hand (the dashboard agents endpoint,
+    ``security.py``, the apps manager, the CLI setup wizard). Without a ratchet
+    it regrows: the write is one obvious line and nothing about it announces the
+    lock it is missing. So this walks the AST rather than asserting on a
+    hand-maintained list, in the shape ``TestNoFailOpenConfigWriters`` above
+    established.
+
+    **What it does NOT cover.** Only calls to ``write_config_atomically``. A
+    second family of writers reaches ``config.json`` through
+    ``kiro_crew.agent._atomic_json_write`` or :meth:`KiroCrewConfig.save`
+    (``messaging.py``'s channel savers, ``core.py``'s STT and theme PUTs,
+    ``mcp.py``'s gateway-enable, ``updates.py``'s log-level PUT, several
+    ``agents.py`` CRUD endpoints) and still bypasses the lock. Green here does
+    not mean every config writer is locked -- it means this class of them is.
+    """
+
+    #: The primitive itself writes through ``write_config_atomically`` by
+    #: definition, and ``KiroCrewConfig.save`` is the head of the second family
+    #: above. Both live here, so the module is exempt as a whole.
+    _ALLOWED_FILES = {"loader.py"}
+
+    #: Resolvers whose return value IS a config document path.
+    _CONFIG_PATH_FUNCS = {"config_path", "config_local_path"}
+
+    def test_no_unlocked_config_write_outside_the_primitive(self):
+        import ast
+        import pathlib
+
+        root = pathlib.Path(__file__).resolve().parents[1] / "src" / "kiro_crew"
+        offenders: list[str] = []
+
+        def _is_config_path_call(node: ast.AST) -> bool:
+            if not isinstance(node, ast.Call):
+                return False
+            name = getattr(node.func, "attr", None) or getattr(node.func, "id", None)
+            return name in self._CONFIG_PATH_FUNCS
+
+        for path in root.rglob("*.py"):
+            if "_vendor" in path.parts or path.name in self._ALLOWED_FILES:
+                continue
+            src = path.read_text(encoding="utf-8", errors="replace")
+            if "write_config_atomically" not in src:
+                continue
+            try:
+                tree = ast.parse(src)
+            except SyntaxError:
+                continue
+            # Scope per function: the same local name (``path``, ``cfg_file``) is
+            # reused across unrelated functions, so a file-wide binding map
+            # reports false positives -- and, worse, would let a genuine offender
+            # hide behind an unrelated function's rebinding of the same name.
+            funcs = [
+                n
+                for n in ast.walk(tree)
+                if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
+            ]
+            for func in funcs:
+                config_names: set[str] = set()
+                for node in ast.walk(func):
+                    if not isinstance(node, ast.Assign) or not _is_config_path_call(node.value):
+                        continue
+                    for tgt in node.targets:
+                        if isinstance(tgt, ast.Name):
+                            config_names.add(tgt.id)
+                for node in ast.walk(func):
+                    if not isinstance(node, ast.Call):
+                        continue
+                    called = getattr(node.func, "attr", None) or getattr(node.func, "id", None)
+                    if called != "write_config_atomically" or not node.args:
+                        continue
+                    target = node.args[0]
+                    hit = _is_config_path_call(target) or (
+                        isinstance(target, ast.Name) and target.id in config_names
+                    )
+                    if hit:
+                        offenders.append(f"{path.name}:{node.lineno} ({func.name})")
+
+        assert not offenders, (
+            "config.json / config.local.json must be written through "
+            "update_config_locked(), which holds the <path>.lock sidecar across "
+            "the whole read-modify-write. A direct write_config_atomically() "
+            "here takes no advisory lock, so it can land between another "
+            "writer's read and write and silently revert it (#8032). For an "
+            "async handler, go through dashboard/chat_utils.run_config_write or "
+            "the module's own shielded offload.\n  " + "\n  ".join(sorted(set(offenders)))
+        )
+
+    def test_the_ratchet_would_catch_a_reintroduced_writer(self, tmp_path):
+        """The scan is not vacuous: the shape it forbids is actually detected.
+
+        A ratchet asserting an empty list is indistinguishable from a ratchet
+        whose matcher is broken, and this one has to see through a local variable
+        to work at all. So the detector is exercised on both spellings a
+        regression would take.
+        """
+        import ast
+
+        source = (
+            "def handler():\n"
+            "    path = config_path()\n"
+            "    data = read_config_for_update(path)\n"
+            "    data['k'] = 1\n"
+            "    write_config_atomically(path, data)\n"
+            "\n"
+            "def inline():\n"
+            "    write_config_atomically(config_local_path(), {})\n"
+            "\n"
+            "def innocent(path):\n"
+            "    write_config_atomically(path, {})\n"
+        )
+        tree = ast.parse(source)
+
+        def _is_config_path_call(node):
+            if not isinstance(node, ast.Call):
+                return False
+            name = getattr(node.func, "attr", None) or getattr(node.func, "id", None)
+            return name in self._CONFIG_PATH_FUNCS
+
+        flagged: set[str] = set()
+        for func in [
+            n
+            for n in ast.walk(tree)
+            if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
+        ]:
+            config_names = {
+                tgt.id
+                for node in ast.walk(func)
+                if isinstance(node, ast.Assign) and _is_config_path_call(node.value)
+                for tgt in node.targets
+                if isinstance(tgt, ast.Name)
+            }
+            for node in ast.walk(func):
+                if not isinstance(node, ast.Call) or not node.args:
+                    continue
+                called = getattr(node.func, "attr", None) or getattr(node.func, "id", None)
+                if called != "write_config_atomically":
+                    continue
+                target = node.args[0]
+                if _is_config_path_call(target) or (
+                    isinstance(target, ast.Name) and target.id in config_names
+                ):
+                    flagged.add(func.name)
+
+        assert flagged == {"handler", "inline"}, (
+            "the ratchet's matcher does not see the shape it exists to forbid "
+            f"(flagged: {sorted(flagged)}). ``innocent`` writes a CALLER-SUPPLIED "
+            "path -- the agent-spec write in agents.py is that shape -- and must "
+            "not be flagged."
+        )

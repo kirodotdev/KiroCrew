@@ -65,12 +65,13 @@ from kiro_crew.apps.registry import (
 from kiro_crew.apps.routes import app_lifecycle_lock
 from kiro_crew.apps.teardown import teardown_app_runtime
 from kiro_crew.config.loader import (
+    ConfigReadError,
     KiroCrewConfig,
     _invalidate_config_cache,
     config_local_path,
     config_path,
     denied_commands_path,
-    write_config_atomically,
+    update_config_locked,
 )
 from kiro_crew.dashboard.handlers.agents import _get_config_lock
 from kiro_crew.executors import governance_executor
@@ -1064,26 +1065,32 @@ async def _mutate_agent_config(mutate) -> None:
     """
     def _read_modify_write() -> None:
         path = config_path()
-        raw: dict = {}
-        if path.is_file():
-            try:
-                loaded = json.loads(path.read_text(encoding="utf-8"))
-            except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-                raise ConfigCorruptError(f"{path} is unreadable: {exc}") from exc
-            if not isinstance(loaded, dict):
-                raise ConfigCorruptError(f"{path} is not a JSON object")
-            raw = loaded
-        # Inside the lock, so a concurrent writer cannot add an overlay between the
-        # check and the write.
-        owned = _overlay_owned_trust_settings()
-        if owned:
-            raise TrustSettingOverlayOwned(owned)
-        agent_raw = raw.get("agent")
-        if not isinstance(agent_raw, dict):
-            agent_raw = {}
-            raw["agent"] = agent_raw
-        mutate(agent_raw)
-        write_config_atomically(path, raw)
+
+        def _apply(raw: dict) -> dict:
+            # Runs inside ``update_config_locked``'s hold on the
+            # ``<config>.json.lock`` sidecar, so neither the overlay check nor
+            # the grant edit can be separated from the write by ANY other
+            # writer -- including the CLI and other processes, which the
+            # surrounding asyncio lock cannot reach.
+            owned = _overlay_owned_trust_settings()
+            if owned:
+                raise TrustSettingOverlayOwned(owned)
+            agent_raw = raw.get("agent")
+            if not isinstance(agent_raw, dict):
+                agent_raw = {}
+                raw["agent"] = agent_raw
+            mutate(agent_raw)
+            return raw
+
+        try:
+            update_config_locked(path, mutate=_apply, stamp_meta=False)
+        except ConfigReadError as exc:
+            # Same refusal as before, reported through this module's own error
+            # type so callers keep turning it into a coded 409. The locked read
+            # fails closed by default (``on_corrupt="fail"``), so the existing
+            # file is never replaced with defaults -- an absent file is still a
+            # genuine empty starting point and proceeds.
+            raise ConfigCorruptError(f"{path} is unreadable: {exc}") from exc
         # save() would have done this; a raw write must do it explicitly or the
         # grant does not take effect until a restart — and a REVOKE that does not
         # take effect is the exact failure this feature exists to prevent.
