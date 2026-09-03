@@ -208,6 +208,57 @@ describe('nativeNotify', () => {
     })
   })
 
+  describe('postNativeNotification service-worker delivery', () => {
+    // An installed iOS PWA (and Android Chrome, #1828) only permits an OS
+    // banner through ServiceWorkerRegistration.showNotification(); the page
+    // constructor throws "Illegal constructor". These cover the SW branch and
+    // its constructor fallback, which the constructor-only tests above (no
+    // navigator.serviceWorker) never exercise.
+    function stubServiceWorker(ready: Promise<{ showNotification: ReturnType<typeof vi.fn> }>) {
+      Object.defineProperty(navigator, 'serviceWorker', {
+        configurable: true,
+        value: { ready },
+      })
+    }
+    afterEach(() => {
+      // remove the stub so the constructor-path tests keep their env
+      // (deleting a non-configurable prop is a no-op; ours is configurable)
+      try {
+        delete (navigator as unknown as { serviceWorker?: unknown }).serviceWorker
+      } catch {
+        /* jsdom may define it read-only; harmless */
+      }
+    })
+
+    it('top-level: delivers via the service worker registration, not the constructor', async () => {
+      stubNotification('granted')
+      const showNotification = vi.fn().mockResolvedValue(undefined)
+      stubServiceWorker(Promise.resolve({ showNotification }))
+      postNativeNotification('Approval required', { body: 'Bash', tag: 'kirocrew-approval', silent: true })
+      // ready is a microtask; let it resolve
+      await Promise.resolve()
+      await Promise.resolve()
+      expect(showNotification).toHaveBeenCalledWith('Approval required', {
+        body: 'Bash',
+        tag: 'kirocrew-approval',
+        silent: true,
+      })
+      expect(CONSTRUCTED).toHaveLength(0)
+    })
+
+    it('top-level: falls back to the constructor when the SW registration rejects', async () => {
+      stubNotification('granted')
+      stubServiceWorker(Promise.reject(new Error('no active worker')))
+      postNativeNotification('T', { body: 'b', tag: 't', silent: true })
+      await Promise.resolve()
+      await Promise.resolve()
+      await Promise.resolve()
+      expect(CONSTRUCTED).toEqual([
+        { title: 'T', options: { body: 'b', tag: 't', silent: true } },
+      ])
+    })
+  })
+
   describe('parseNativeNotifyEnvelope', () => {
     const valid = { type: 'mc-native-notify', v: 1, title: 'T', body: 'B', tag: 'tag', silent: true }
 

@@ -15092,7 +15092,16 @@
         "allow_system_notifications": "Autoriser les notifications système",
         "system_notifications_blocked": "Bloquées par votre navigateur. Réactivez-les dans les autorisations du site.",
         "show_banner_for_new_notifications": "Afficher une bannière pour les nouvelles notifications",
-        "show_banner_for_new_notifications_description": "À l’arrivée d’une notification, une carte glisse sous la barre supérieure puis se range dans la cloche."
+        "show_banner_for_new_notifications_description": "À l’arrivée d’une notification, une carte glisse sous la barre supérieure puis se range dans la cloche.",
+        "push_section": "Notifications push",
+        "push_toggle_label": "Envoyer les notifications à cet appareil",
+        "push_toggle_description": "Recevez les notifications du système même app fermée, via Web Push.",
+        "push_install_hint": "Sur iOS, ajoute {{productName}} à l’écran d’accueil pour activer les notifications push.",
+        "push_unsupported": "Ce navigateur ne prend pas en charge les notifications Web Push.",
+        "push_error_blocked": "Les notifications sont bloquées dans le navigateur.",
+        "push_error_permission": "Autorisation non accordée.",
+        "push_error_subscribe": "Échec de l’abonnement.",
+        "push_error_unsubscribe": "Échec de la désinscription."
       },
       "privacyPanel": {
         "recordMetricsDescription": "Collecter les métriques de performance sur cette machine.",
