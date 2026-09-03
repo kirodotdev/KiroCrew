@@ -47,6 +47,8 @@ from kiro_crew.dashboard.state import (
 )
 from kiro_crew.effort import EFFORT_LEVELS, EFFORT_VALUES
 from kiro_crew.history import (
+    ROWS_ONLY_DEFERRED_META_KEYS,
+    ROWS_ONLY_OWNED_META_KEYS,
     SLOT_OWNED_META_KEYS,
     ConversationLog,
     _archive_lines,
@@ -2482,6 +2484,7 @@ def _save_slot_to_history(
     force: bool = False,
     rewrite: bool = False,
     expected_history_key: str | None = None,
+    rows_only: bool = False,
 ) -> bool:
     """Persist slot messages to JSONL history (append-safe).
 
@@ -2517,6 +2520,28 @@ def _save_slot_to_history(
     tab_id chaining is 1:1 (a slot's tab_id maps to exactly one file — fork makes
     a fresh slot with its own file), so this never reads/writes a sibling and
     legacy no-tab_id sessions stay isolated.
+
+    ``rows_only``: persist the window but leave the metadata line's slot-owned
+    fields as they are on disk, keeping authority over only
+    :data:`~kiro_crew.history.ROWS_ONLY_OWNED_META_KEYS`. It exists for the one
+    caller whose slot is not the transcript's only writer: the close/cleanup
+    hand-over drain, which writes a popped slot's unsaved rows onto a transcript a
+    concurrent same-key replacement now holds. The default rebuild would revert
+    whatever that replacement had already published (a folder or a pinned title
+    from ``POST /api/chat/slots``, a tag, a pin), so the rows move and the line does
+    not. The deferred set is
+    :data:`~kiro_crew.history.ROWS_ONLY_DEFERRED_META_KEYS`, which is wider than the
+    owned fields alone: a title's provenance and refresh budget describe the title
+    and travel with it. It includes ``closed``/``closed_at``, so an open-shaped
+    rows-only write does not erase a dismissal the replacement committed while this
+    one was in flight.
+
+    The deferral is conditional on there being another writer to defer to, decided
+    from the line's ``tab_id``: a line this slot published itself, or no line at
+    all, gets the ordinary rebuild. Otherwise the flag would cost the popped slot
+    its own uncommitted metadata — an edit is acknowledged when it lands in memory
+    and persists on a later flush, and after the pop no flush ever visits that slot
+    again.
 
     Returns ``False`` only when the delete-won guard aborted the save because
     the session was permanently deleted while this save awaited the lock — the
@@ -3083,7 +3108,45 @@ def _save_slot_to_history(
                 meta_line["rotation_generation"] = (
                     int(existing_meta.get("rotation_generation", 0) or 0) + 1
                 )
-            carry_unowned_metadata(meta_line, existing_meta, SLOT_OWNED_META_KEYS)
+            # ``rows_only`` DEFERS to the line on disk, so it owes evidence that the
+            # line is somebody ELSE's. ``tab_id`` is that evidence and the only
+            # per-writer mark the line carries: it is minted per slot OBJECT
+            # (``get_or_create_slot`` assigns a fresh uuid; a rehydrate adopts the
+            # file's), and every save stamps the writer's own onto the line. A line
+            # still carrying THIS slot's id was published by this slot and describes
+            # nothing that needs protecting, so the ordinary rebuild must run —
+            # metadata edits are acknowledged to the user the instant they land in
+            # memory (``_dirty``, persisted by a later flush), and the slot a
+            # rows-only write carries has been popped, so deferring here would drop
+            # a title, folder, tag set or pin the user already saw applied with
+            # nothing left to retry it.
+            #
+            # Unprovable ownership defers, because the two errors cost differently.
+            # Deferring this slot's own edit loses fields that were never committed;
+            # rebuilding over a live holder's committed line reverts fields it
+            # already published, and for a replacement nobody types in again nothing
+            # rewrites them, so that loss is permanent.
+            own_tab_id = getattr(slot, "_tab_id", "") or ""
+            line_is_this_slots = bool(own_tab_id) and existing_meta.get("tab_id") == own_tab_id
+            if rows_only and existing_meta and not line_is_this_slots:
+                # A rows-only write does not own the slot-owned fields: the line
+                # describes whichever OTHER live slot published it, and this one is
+                # only here to get its messages down. Drop the rebuild for every
+                # field outside the file-identity subset and let the carry below
+                # restore the on-disk value verbatim, so a title, folder, tag set or
+                # pin another holder acknowledged is not reverted by a write that was
+                # never about it. ``closed``/``closed_at`` are deferred with the
+                # rest: on this line they are the other holder's own dismissal, and
+                # an open-shaped write that erased them would resurface a tab the
+                # user put away with that holder already popped. Gated on an existing
+                # line because with none there is no other writer to defer to and
+                # the slot's own state is all there is — and that is the branch below,
+                # where the open-shaped write still clears a stale ``closed``.
+                for meta_key in ROWS_ONLY_DEFERRED_META_KEYS:
+                    meta_line.pop(meta_key, None)
+                carry_unowned_metadata(meta_line, existing_meta, ROWS_ONLY_OWNED_META_KEYS)
+            else:
+                carry_unowned_metadata(meta_line, existing_meta, SLOT_OWNED_META_KEYS)
             meta_str = json.dumps(meta_line) + "\n"
 
             # ── Frozen prefix (never rewritten) + freshly serialized window ──
@@ -3372,6 +3435,7 @@ async def save_slot_off_loop(
     rewrite: bool = False,
     best_effort: bool = True,
     expected_history_key: str | None = None,
+    rows_only: bool = False,
 ) -> bool:
     """Persist a slot from the event loop without blocking or dropping the save.
 
@@ -3406,6 +3470,12 @@ async def save_slot_off_loop(
     the worker's routing snapshot, and without this pin the durable write
     would target a transcript the caller never authorized.
 
+    ``rows_only``: write the window but leave the metadata line's slot-owned
+    fields as they stand on disk when the line was published by ANOTHER slot --
+    for a caller persisting a slot's rows onto a transcript another live slot now
+    holds. See :func:`_save_slot_to_history` for the full contract, including the
+    ``tab_id`` test that keeps the flag from deferring to the caller's own line.
+
     Returns ``False`` only when the save was skipped WITHOUT writing: the
     session was permanently deleted while the save awaited the lock (the
     delete-won guard in :func:`_save_slot_to_history`), or the routing moved
@@ -3426,6 +3496,7 @@ async def save_slot_off_loop(
             force=force,
             rewrite=rewrite,
             expected_history_key=expected_history_key,
+            rows_only=rows_only,
         )
 
     def _begin_guarded_metadata_write() -> None:

@@ -484,6 +484,200 @@ compaction cooldown clears it too (`reset`, `remove`,
 `close_all`), because slot keys ARE reused and a leaked flag would starve the
 NEXT holder of that key of its re-anchor.
 
+Slot-key reuse is also why the dashboard close/teardown path re-checks identity
+after it pops the slot. Both `close_slot` (shared by `api_chat_slot_delete` and
+session-control's `close_target`) and `api_chat_slots_cleanup` pop `name` out of
+`state._slots` and then run several AWAITS — cancel the task,
+`save_slot_off_loop(..., closed=True)`, `sessions.remove(_history_key_for(name))`.
+Across that window a concurrent same-key recreate (a `POST /api/chat`, or the
+`session_close` MCP verb) can mint a REPLACEMENT slot under the same key, reusing
+the same history key and the same session. Because both sites still hold the
+popped object (`slot` / `removed`), a synchronous, race-free discriminator is
+available, and there are TWO of them because the destructive steps do not all
+answer to the same owner.
+
+`_slot_still_ours(state, name, <popped>)` is the KEY-scoped one. It asks whether a
+DIFFERENT object now owns the key — an absent key is the ordinary post-pop state of
+every close, so `None` counts as still ours; reading it as "our object owns the key"
+would make the guard fire on every close and skip the very teardown it guards. It
+governs the two steps whose resource IS the key: `sessions.remove` (whose argument
+is `_history_key_for(name)`, the session an unbound replacement runs on) and the
+failure arms' restores (`state._slots[name] = slot` / `= removed`), which run only
+when the key is still free or still the popped object and so never clobber a live
+replacement. Cleanup's `archived` report is key-scoped too, and stays key-scoped:
+it names slot keys, so a key with a live holder is never listed however its
+transcript ended up.
+
+`_replacement_shares_transcript(state, name, <popped>)` is the TRANSCRIPT-scoped
+one, and it is what governs the `closed=True` save — because that save's argument
+is not the key. It targets `slot_history_key(slot)`, so a slot carrying a
+`linked_session_key` (channel-, cron- or workflow-born) writes the LINKED
+transcript while a replacement minted by a plain `get_or_create_slot(name)` — what
+`POST /api/chat` and the `session_close` verb take — is unbound and writes
+`dashboard:{name}`. Same key, two files, so key identity cannot decide this step:
+yielding the archive to a replacement that shares nothing would leave the
+original's own transcript with no `closed` flag, and `channel_slots._close_stands`
+reads an absent flag as "the user never dismissed this", so the reconcile pass
+resurfaces the tab that was closed. The predicate therefore compares FILE identity
+(`transcript_stems` on both sides) rather than key strings: `history._safe_key`
+folds `slack:<ts>` and the `slack_<ts>` stem onto one `.jsonl` and a pre-migration
+thread still resolves to its bare `thread_ts` stem, and the two errors are not
+symmetric — over-reporting "shared" merely declines an archive the next close will
+make, while under-reporting stamps `closed` on a file a live slot is writing.
+
+When the replacement DOES share the transcript, the archive and the session
+teardown are both skipped. The original was already popped and cancelled, so the
+close is effectively complete for it: `close_slot` RETURNS rather than raising
+`SlotCloseError`, which is what makes both its callers report success, and cleanup
+takes its `continue` without counting the key archived. When it does NOT share the
+transcript the archive runs normally on the original's own file and only the
+key-scoped steps yield.
+
+The `note_slot_closed` tombstone (below) still fires before these awaits for the
+reconcile reader; it is NOT the vehicle for either guard, which are pure post-pop
+re-checks confined to the two teardown paths.
+
+What both guards cover is the WIDE window, not the durable write. `save_slot_off_loop`
+reaches its commit through the process-wide default executor, so a recreate can
+still land between the last synchronous check and the in-lock write, leaving
+`closed=True` on a key a live replacement holds. That residual is what an unguarded
+close carries as well, and the row is the same one a plain sequential
+close-then-reopen of a reused key produces: `closed`/`closed_at` are in
+`SLOT_OWNED_META_KEYS`, so the replacement's next full save drops them, and
+`api_chat_slot_resume` compensates a stale flag with an in-lock compare-and-clear
+(`clear_closed(..., only_if_closed_before=...)`). Closing it AT the commit needs an
+ownership predicate evaluated inside `_locked(history_key)` on the write AND on the
+resume's read-then-clear — a durable-metadata contract change rather than a
+loop-side ordering one, so it is deliberately not what these two teardown paths do.
+
+Yielding to a replacement carries four obligations, and they exist because the
+state a close compensates is not all scoped the same way.
+
+- **Key-scoped state moves with the key.** `state._restricted_keys` holds
+  `dashboard:{name}` — a SESSION KEY, not a slot identity — and
+  `_is_restricted_session` tests that set BEFORE it looks at the slot. So every exit
+  of either teardown owes one postcondition, which is what
+  `_resettle_restricted_key(state, name)` IS: the key is marked iff the slot
+  currently AT `name` is restricted, an absent key counting as unrestricted. All six
+  exits go through it rather than through a bare `discard` — the ordinary close
+  (where the key is gone, so the marker drops and the next holder is not starved),
+  and every exit that hands the key to a replacement (where it is re-derived from
+  the REPLACEMENT). Re-derived, never blindly discarded: a replacement that is
+  itself restricted keeps the marker, since dropping it is the fail-OPEN direction.
+  Skipping it on a hand-over gives a persistent replacement an incognito original's
+  403 on every memory, artifact and mcp-apps call for as long as that tab lives.
+- **Slot-scoped compensation is coupled to the restore.** The failure arms owe the
+  ORIGINAL two rollbacks, and both are conditional on the original getting its key
+  back — not on the original merely existing. The nudge loop already is, through
+  `_restore_slot_nudge_loop`'s own `state.get_slot(name) is slot` admission check.
+  `notify_slot_close_undone` is coupled the same way rather than gated on
+  `slot._app` alone: with a replacement on the key there is no tab to put back, so
+  the dismissal DID happen for the original, and resuming the app's worker re-arms
+  an autonomous crew whose `slot_key` its watchdog resolves with a bare
+  `state.get_slot(...)` and no ownership test — handing the auto-approve grant, and
+  then an unbounded nudge clock, to the user-owned replacement. Leaving the pause is
+  the same answer the pre-save guard gives from the identical state, and it is a
+  first-class visible one (a `paused_reason` row with a resume control). The bulk
+  archive has no sibling here: it deliberately never calls `notify_slot_closed`, so
+  it has no app dismissal to take back.
+- **The original's unpersisted content is owed to its transcript, not to the
+  original's slot object.** A hand-over exit stops referencing the popped
+  slot, and `_flush_dirty_slots` iterates exactly `state._slots`, so an
+  unreferenced slot has NO retry path: anything past its last commit —
+  `messages[_disk_window_len:]`, plus a note the bulk path is still holding in the
+  in-memory-only `_deferred_notes` — would simply cease to exist. The pre-save
+  exits need no store failure to reach it either; they return before the save is
+  attempted, in a window that opens while a turn is in flight. So every hand-over
+  exit routes through `_persist_handover_tail(state, name, slot)`, which flushes
+  held notes into the window and writes it with **`closed=False`**. Those rows
+  belong on the ORIGINAL's own transcript whether or not the replacement shares it;
+  what must not happen is the archive flag and the session teardown, not the write.
+  The
+  target is `slot_history_key(slot)` and never a derived `dashboard:<slot>` — the
+  forced save resolves its own target the same way and REFUSES a write whose
+  `expected_history_key` names a different transcript, so the derived form would
+  make the drain a silent no-op for every cron-, channel- or workflow-linked slot
+  and would name a row-less file in the failure log. The write is non-destructive
+  against the replacement's rows in both directions: `_save_slot_to_history`'s
+  foreign-append scan carries through every on-disk line the saved window does not
+  represent, so rows a replacement already committed survive. The METADATA line is
+  a different matter and is not the drain's to move, so the write is `rows_only`.
+  `_save_slot_to_history` is otherwise authoritative for `SLOT_OWNED_META_KEYS` and
+  REBUILDS that line from whichever slot it is handed, so a default save here would
+  revert a title, folder, tag set or pin the replacement had already published onto
+  the shared transcript (`POST /api/chat/slots` persists a folder and a pinned title
+  at birth) — silently undoing an acknowledged edit, and for a tab nobody types in
+  again undoing it for good, so the next restart resurrects the dismissed tab's name
+  and filing. `rows_only` keeps the on-disk value for every one of those fields and
+  narrows this write's ownership to `ROWS_ONLY_OWNED_META_KEYS`: the file's identity
+  and accounting, which every writer maintains and which the save carries forward
+  from disk anyway. The set it defers,
+  `ROWS_ONLY_DEFERRED_META_KEYS`, is named in full rather than derived as
+  `SLOT_OWNED_META_KEYS - ROWS_ONLY_OWNED_META_KEYS`, because that difference
+  under-approximates: the slot save also writes fields that DESCRIBE an owned one
+  without being owned themselves, and a title's provenance and refresh budget
+  (`title_origin`, `title_refresh_mark`) travel WITH the title rather than with the
+  writer. Deferring the title while keeping those commits a line matching neither
+  slot — read back beside another slot's title they either unlock the background
+  refresh on a name the user typed by hand or lock a generated name out of refresh
+  permanently — so they are deferred with it. `created_by` and `origin` are the same
+  shape with AUTHORIZATION rather than presentation behind them, so they are deferred
+  too: `created_by` is what session-control's member ownership boundary reads and is
+  meaningless without the `mode` deferred beside it, and `origin` must round-trip with
+  the deferred `app` because the pair decides `slots:user` visibility and the
+  unattended approval window. Both describe the SLOT, so on a transcript with a live
+  holder the holder's are the true ones — and deferring them fails CLOSED on a line
+  that carries neither, since an absent `created_by` denies and an absent `origin`
+  restores to the sentinel the rehydrate paths already treat as unattributed. The
+  conversation's own MONOTONE once-flags (`auto_tagged`, `human_seen`,
+  `channel_origin`, `channel_folder_filed`) are set and never cleared, so two writers
+  on one transcript cannot disagree about them in a way that outlives the pair; they
+  stay as written. Deferring to disk is deliberately not
+  the same as deriving the line from the replacement — a recreate that published
+  nothing has no metadata to protect, and re-deriving from it would ERASE a real
+  title and filing the two slots' shared conversation has; leaving the line alone is
+  what gets both directions right with one write. **The deferral is conditional on
+  there actually being another writer to defer to**, and the line's `tab_id` — minted
+  per slot object, stamped by every save — is the evidence: the flag holds fields
+  back only on a line ANOTHER slot published, and a line this slot published itself
+  (or no line at all) takes the ordinary rebuild. Without that test the flag would
+  cost the original its own uncommitted metadata: a rename, re-file, tag or pin is
+  acknowledged the instant it lands in memory and persists on a later `_dirty`
+  flush, and the drain runs past the pop, where no flush will ever visit that slot
+  again. The two errors are not symmetric, so unprovable ownership defers: a
+  deferred edit of this slot's was never committed, while a rebuild over a live
+  holder's line reverts what it already published and nothing rewrites that for a
+  replacement nobody types in again. `closed`/`closed_at` are deferred on the same
+  asymmetry, and the drain is open-shaped without being un-closing: on another
+  holder's line a `closed` flag is that holder's own DISMISSAL, so erasing it would
+  resurface a tab the user put away — permanently, since the holder that wrote it is
+  popped too — and re-arm the channel reconciler on it, while leaving a stale flag
+  costs nothing durable, because the live holder owns those keys on its next full
+  save. The only path that clears a stale flag from outside the holder is the resume
+  route, and it clears one only when it can prove the close predates its own
+  boundary (`clear_closed(..., only_if_closed_before=...)`, compared inside the
+  store's lock), for exactly this reason: an unconditional clear reopens a
+  replacement the user closed. A rows-only save carries no such boundary, so
+  clearing a stale flag is instead the job of the `tab_id` fallback above: on a line THIS slot
+  published there is no other holder's dismissal to lose, so the ordinary rebuild
+  runs and the open-shaped write erases it. The failure arms take the same route in place of the
+  restore they skip: a store that rejected the `closed=True` write can still
+  accept the next one, and a lock lost to the recreate is exactly that case.
+- **A drain that fails is reported, not swallowed.** `_persist_handover_tail`
+  returns whether rows were owed and reached disk, and every caller honours it —
+  because this frame is the last reference to those rows, so nothing will retry and
+  nothing else will ever report them. Both PRE-SAVE hand-over exits therefore turn
+  a False into their path's own failure: `close_slot` raises
+  `SlotCloseError(code="history_save_failed")` (the same code as an ordinary failed
+  archive — from the caller's side it is one thing, a close whose history write did
+  not land) and cleanup adds the key to `failed`. There is nothing to roll back on
+  either exit, so the report IS the whole remedy; a 200 there would claim durability
+  the close does not have. The two FAILURE-arm drains need no branch of their own:
+  those arms already end in `SlotCloseError` / `failed.append(name)`, so a lost tail
+  reaches the caller regardless, and the drain only decides whether the rows
+  survived. Every failure is also logged with the exact row count, which is the only
+  report anything in the process can still make about the rows themselves.
+
 Three properties the route holds, each of which fails silently if broken:
 
 - The key comes from `effective_session_key(slot)`, never a derived
