@@ -5998,6 +5998,56 @@ class TestEmptyArgvElementDoesNotBreakTheDenyView:
             assert is_denied(cmd) is not None, cmd
 
 
+class TestRmFlagVariantsStayDenied:
+    """The rm-rf-root/home rules must not depend on the exact ``-rf`` spelling.
+
+    Packed reorder (``-fr``), combos (``-rfv``), split pairs (``-r -f``), and
+    long options (``--recursive``/``--force``/``--no-preserve-root``) are the
+    same recursive-force deletion. Tracked by issue #8237.
+    """
+
+    def test_flag_variants_on_root_are_denied(self):
+        for cmd in (
+            "rm -rf /",
+            "rm -fr /",
+            "rm -rfv /tmp/x",
+            "rm -r -f /",
+            "rm -f -r /",
+            "rm --recursive --force /",
+            "rm --force --recursive /",
+            "rm -rf --no-preserve-root /",
+            "rm -r --force /",
+            "rm --recursive -f /",
+            "rm -RF /",
+            "rm -rf /tmp/x",
+        ):
+            assert is_denied(cmd) is not None, cmd
+
+    def test_flag_variants_on_home_are_denied(self):
+        for cmd in (
+            "rm -rf ~",
+            "rm -fr ~",
+            "rm -rfv ~/x",
+            "rm -r -f ~",
+            "rm --recursive --force ~",
+        ):
+            assert is_denied(cmd) is not None, cmd
+
+    def test_non_recursive_force_spellings_stay_allowed(self):
+        """Only the recursive+force combination is gated: ``-f`` without
+        ``-r``, ``-r`` without ``-f``, and flagless ``rm`` keep passing, and
+        so does a lone ``--recursive`` (it still prompts)."""
+        for cmd in (
+            "rm -f /tmp/x",
+            "rm -r /tmp/x",
+            "rm /tmp/x",
+            "rm -v /tmp/x",
+            "rm --recursive /tmp/x",
+            "rm -rf",
+        ):
+            assert is_denied(cmd) is None, cmd
+
+
 class TestPolynomialBacktrackingStaysBounded:
     """The unbounded full-input path must not accept polynomial-backtracking regexes.
 
