@@ -441,6 +441,10 @@ _STRICT_INTERNAL_API_PATHS = frozenset(
         "/api/session-control/close",
         "/api/session-control/send",
         "/api/session-control/read",
+        # MCP-only structured monitor inspection. The caller selects its
+        # session identity through X-Session-Key, so cookie authentication can
+        # never authorize this leaf.
+        "/api/autonudge/session-monitor",
     }
 )
 
@@ -1459,13 +1463,27 @@ def _register_mcp_routes(app: web.Application) -> None:
         api_autonudge_list,
         api_autonudge_start,
         api_autonudge_update,
+        api_monitor_create,
+        api_monitor_restart,
+        api_monitor_slot_get,
+        api_monitor_stop,
+        api_monitor_update,
+        api_monitors_list,
+        api_session_monitor_get,
     )
 
     app.router.add_get("/api/autonudge", api_autonudge_list)
+    app.router.add_get("/api/autonudge/session-monitor", api_session_monitor_get)
     app.router.add_post("/api/autonudge", api_autonudge_start)
     app.router.add_get("/api/autonudge/slot/{slot_key}", api_autonudge_get)
     app.router.add_patch("/api/autonudge/{loop_id}", api_autonudge_update)
     app.router.add_delete("/api/autonudge/{loop_id}", api_autonudge_delete)
+    app.router.add_get("/api/monitors", api_monitors_list)
+    app.router.add_post("/api/monitors", api_monitor_create)
+    app.router.add_get("/api/monitors/slot/{slot_key}", api_monitor_slot_get)
+    app.router.add_patch("/api/monitors/{monitor_id}", api_monitor_update)
+    app.router.add_post("/api/monitors/{monitor_id}/stop", api_monitor_stop)
+    app.router.add_post("/api/monitors/{monitor_id}/restart", api_monitor_restart)
 
     # Agent questions. The MCP ask_question tool no longer posts here: it returns
     # a session directive and the dashboard posts a NON-BLOCKING card (see

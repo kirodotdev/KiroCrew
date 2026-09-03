@@ -71,6 +71,11 @@ Provider-agnostic event dataclass (aliased from `AcpEvent`):
 | `mcp_server_initialized` | MCP server ready after OAuth (has `server_name`) |
 | `mcp_server_init_failure` | MCP server OAuth/init failed (has `server_name`, `text`) |
 
+Terminal events also carry `synthetic_completion`. It is false for a provider's
+raw result frame and true when Kiro Crew fabricates a compatibility terminal
+because the result frame never arrived; consumers that account completed work
+must require the raw form.
+
 ### AcpProvider (`providers/acp.py`)
 
 The sole provider. Spawns a long-lived `kiro-cli acp --agent <name>` subprocess

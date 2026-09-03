@@ -111,7 +111,9 @@ def _write_cli_overlay(work_dir: Path, model: str, effort: str) -> None:
             model_cfg.pop(other_key, None)
     model_defaults[model] = model_cfg
     existing["chat.modelDefaults"] = model_defaults
-    atomic_write(cli_json, json.dumps(existing, indent=2))  # atomic: readers never see a partial file (#426)
+    atomic_write(
+        cli_json, json.dumps(existing, indent=2)
+    )  # atomic: readers never see a partial file (#426)
 
 
 #: kiro-cli's own Tool Search activation thresholds. Mirrored as the defaults of
@@ -195,7 +197,9 @@ def _write_tool_search_overlay(
         # would take effect if a later build flips the global default on.
         existing.pop("toolSearch.minPct", None)
         existing.pop("toolSearch.minTokens", None)
-    atomic_write(cli_json, json.dumps(existing, indent=2))  # atomic: readers never see a partial file (#426)
+    atomic_write(
+        cli_json, json.dumps(existing, indent=2)
+    )  # atomic: readers never see a partial file (#426)
 
 
 def _clear_cli_overlay_effort(work_dir: Path, model: str) -> None:
@@ -1301,6 +1305,7 @@ class AcpProvider(LLMProvider):
             tool_purpose=e.tool_purpose,
             context_usage_pct=e.context_usage_pct,
             stop_reason=e.stop_reason,
+            synthetic_completion=e.synthetic_completion,
             request_id=e.request_id,
             options=e.options,
             tool_input=e.tool_input,

@@ -3502,9 +3502,11 @@ async def _retire_slot_nudge_loop(name: str) -> "NudgeLoop | None":
     either lands first and is removed or runs after the synchronous slot pop.
     Its uncontended acquire does not yield, so the initial retirement also
     cancels a scheduled timer before the fire callback gets another turn.
+    Legacy loops are removed. Structured monitors instead retain their durable
+    outcome and clear their timer, so terminal history remains inspectable.
 
-    The returned loop is the only remaining record of it — the persist-failure
-    path uses it to put the clock back (see :func:`_restore_slot_nudge_loop`).
+    The returned loop lets the persist-failure path put the clock back (see
+    :func:`_restore_slot_nudge_loop`).
 
     A removal that FAILS raises :exc:`_NudgeRetireFailed` rather than logging and
     carrying on. Removal drops the loop from memory first and only then writes
@@ -3553,7 +3555,33 @@ async def _restore_slot_nudge_loop(
     restored at all (it was one tick from terminal), and neither is a paused one
     — reviving that would override an explicit stop.
     """
-    if loop is None or not loop.active:
+    if loop is None:
+        return
+    monitor = getattr(loop, "monitor", None)
+    if monitor is not None:
+        if (
+            not loop.active
+            and monitor.outcome is not None
+            and monitor.outcome.value == "session_close"
+        ):
+            try:
+                from kiro_crew.autonudge import (
+                    get_instance as _autonudge_get,  # circular: autonudge -> dashboard
+                )
+
+                svc = _autonudge_get()
+                if svc is not None:
+                    await svc.restore_monitor_after_failed_session_close(
+                        loop.id,
+                        admission_check=admission_check,
+                    )
+            except Exception:
+                logger.warning(
+                    "structured monitor restore after failed slot close failed",
+                    exc_info=True,
+                )
+        return
+    if not loop.active:
         return
     try:
         from kiro_crew import autonudge  # circular: autonudge -> dashboard.chat -> chat_handlers

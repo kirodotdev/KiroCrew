@@ -629,6 +629,13 @@ _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
         "Workflow progress summaries injected back into a session.",
     ),
     (
+        "Structured monitor wakes",
+        "monitoring/controller.py",
+        "Provider-controlled canonical facts and operator-authored wake instructions "
+        "before they are injected into an agent session. The complete bounded envelope "
+        "passes the exfiltration-URL and credential scanners before dispatch.",
+    ),
+    (
         "Crew Mode delivery",
         "crew_chat.py",
         "Every crew-slot post (`_post`): forwarded subagent summaries/errors, "

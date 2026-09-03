@@ -632,8 +632,11 @@ answers `tools/list` from):
     deliver into the parent's chat window. An unresolvable identity refuses the
     call rather than guessing.
 - **Session-bound directives** (`session_directive.DIRECTIVE_TOOLS`):
-  `ask_question`, `suggest_followup`, `monitor_start`, `monitor_update`,
-  `autonudge_stop`, `set_project`, `reset_conversation`
+  `ask_question`, `suggest_followup`, `monitor_start`, `monitor_watch`,
+  `monitor_update`, `monitor_stop`, `autonudge_stop`, `set_project`,
+  `reset_conversation`
+- **Structured monitor read:** `monitor_inspect` (strict authenticated session
+  identity only; no ancestor fallback)
 - **Crew routing:** `select_crew`
 - **Sessions and history:** `list_sessions`, `get_chat_session`,
   `search_chat_history`
@@ -943,9 +946,9 @@ and let a sub-agent's card land in its parent's slot.
 
 **Return a session directive and let the session-aware consumer apply it.** This
 is what the `ask_question` MCP tool itself now does, along with `monitor_start`,
-`monitor_update`, `autonudge_stop`, `set_project`, `suggest_followup` and
-`reset_conversation` (`session_directive.DIRECTIVE_TOOLS`). The tool validates
-its arguments and
+`monitor_watch`, `monitor_update`, `monitor_stop`, `autonudge_stop`, `set_project`
+and `suggest_followup`, and `reset_conversation`
+(`session_directive.DIRECTIVE_TOOLS`). The tool validates its arguments and
 returns a human-readable confirmation plus a marker line carrying the validated
 payload and **no session key**. `dashboard/chat_runner`'s tool-result handler
 decodes the marker, applies the effect against **its own** `slot.key`, then
@@ -970,6 +973,21 @@ framing token must not depend on characters that sanitizers and normalizers
 legitimately rewrite. `encode()` refuses above `MAX_DIRECTIVE_CHARS` (3800), under
 the ACP tool-result truncation bound, so an oversized payload fails loudly
 instead of losing its trailing marker.
+
+Structured monitoring deliberately splits mutation from inspection.
+`monitor_watch`, `monitor_update`, and `monitor_stop` are directives: the
+consumer applies them to its authoritative session, so their payloads contain
+neither a session key nor a loop id. `monitor_inspect` needs a result in the same
+turn and therefore calls the session-bound read route only after
+`_resolve_session_key_strict()` succeeds, passing that exact key to `_get`.
+It projects that response into bounded agent-oriented state (check counts and
+accepted wake count, plus only a small failed/pending/unknown name sample),
+omitting wake instructions and browser/persistence internals. Inspection reports
+unavailable when strict identity is absent; it never falls back to the
+process-ancestor resolver. Every structured-monitor tool refusal caused by a
+missing or unsupported session binding returns an `Error:` result and writes an
+explicit `denied` SEL event; the shared MCP wrapper therefore records the call as
+failed rather than completed.
 
 ### The one allowed exception: caller-agnostic process caches
 

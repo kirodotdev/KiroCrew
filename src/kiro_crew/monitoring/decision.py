@@ -5,6 +5,7 @@ from __future__ import annotations
 from kiro_crew.monitoring.models import (
     MONITOR_STATE_VERSION,
     MONITOR_STOP_AGENT_TURN_BUDGET,
+    MONITOR_STOP_PROVIDER_ERROR_BUDGET,
     MONITOR_STOP_RUNTIME_BUDGET,
     MONITOR_STOP_TOKEN_BUDGET,
     MonitorBudgets,
@@ -81,6 +82,8 @@ def monitor_budget_reason(state: MonitorState, *, now: float) -> str:
         return MONITOR_STOP_AGENT_TURN_BUDGET
     if state.total_tokens >= budgets.max_tokens:
         return MONITOR_STOP_TOKEN_BUDGET
+    if state.provider_error_count >= budgets.max_provider_errors:
+        return MONITOR_STOP_PROVIDER_ERROR_BUDGET
     return ""
 
 

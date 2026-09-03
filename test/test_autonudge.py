@@ -11,9 +11,9 @@ import pytest
 
 from kiro_crew import autonudge as _an
 from kiro_crew import autonudge_authz as _autonudge_mod
-from kiro_crew.autonudge import AutoNudgeService, NudgeLoop
+from kiro_crew.autonudge import AutoNudgeService, MonitorUpdateConflict, NudgeLoop
 from kiro_crew.dashboard.handlers.autonudge import render_nudge_message
-from kiro_crew.monitoring.models import MonitorOutcome, MonitorState
+from kiro_crew.monitoring.models import MonitorBudgets, MonitorOutcome, MonitorState
 
 
 @pytest.fixture(autouse=True)
@@ -2518,6 +2518,7 @@ async def test_a_monitor_whose_kind_has_no_probe_fires_exactly_as_before(tmp_pat
         slot_key="chat-1-123",
         message="watch something we have no probe for",
         monitor=_structured_monitor(),
+        gate=True,
     )
     service._loops[loop.id] = loop
 
@@ -2953,6 +2954,187 @@ async def test_one_loop_per_slot_replaces(svc):
     all_loops = svc.list_all()
     assert len(all_loops) == 1
     assert all_loops[0].message == "second"
+
+
+@pytest.mark.asyncio
+async def test_add_monitor_refuses_to_replace_an_inflight_wake(svc):
+    await svc.start()
+    existing = await svc.add_monitor(
+        slot_key="chat-1-123",
+        kind="github_pull_request",
+        target="owner/repo#123",
+        objective="review_ready",
+        cadence_secs=60,
+        budgets=MonitorBudgets(),
+    )
+    assert existing.monitor is not None
+    existing.monitor.wake_in_flight = True
+    existing.monitor.last_wake_fingerprint = "actionable-1"
+
+    with pytest.raises(MonitorUpdateConflict, match="wake is in flight"):
+        await svc.add_monitor(
+            slot_key="chat-1-123",
+            kind="github_pull_request",
+            target="owner/repo#456",
+            objective="review_ready",
+            cadence_secs=60,
+            budgets=MonitorBudgets(),
+        )
+
+    assert svc.get_by_slot("chat-1-123") is existing
+    assert existing.monitor.wake_in_flight
+    assert existing.monitor.last_wake_fingerprint == "actionable-1"
+
+
+@pytest.mark.asyncio
+async def test_add_monitor_can_atomically_refuse_an_occupied_slot(svc):
+    existing = await svc.add_monitor(
+        slot_key="chat-1-123",
+        kind="github_pull_request",
+        target="owner/repo#123",
+        objective="review_ready",
+        cadence_secs=60,
+        budgets=MonitorBudgets(),
+    )
+    persisted_before = svc._path.read_bytes()
+
+    with pytest.raises(MonitorUpdateConflict, match="already has an automation"):
+        await svc.add_monitor(
+            slot_key="chat-1-123",
+            kind="github_pull_request",
+            target="owner/repo#456",
+            objective="review_ready",
+            cadence_secs=60,
+            budgets=MonitorBudgets(),
+            replace_existing=False,
+        )
+
+    assert svc.get_by_slot("chat-1-123") is existing
+    assert svc._path.read_bytes() == persisted_before
+
+
+@pytest.mark.asyncio
+async def test_add_monitor_conditionally_replaces_one_terminal_generation(svc):
+    existing = await svc.add_monitor(
+        slot_key="chat-1-123",
+        kind="github_pull_request",
+        target="owner/repo#123",
+        objective="review_ready",
+        cadence_secs=60,
+        budgets=MonitorBudgets(),
+    )
+    assert existing.monitor is not None
+    existing.active = False
+    existing.monitor.outcome = MonitorOutcome.USER_STOP
+    expected_generation = existing.monitor.config_generation
+
+    async def restart() -> NudgeLoop:
+        return await svc.add_monitor(
+            slot_key="chat-1-123",
+            kind="github_pull_request",
+            target="owner/repo#123",
+            objective="review_ready",
+            cadence_secs=60,
+            budgets=MonitorBudgets(),
+            expected_existing_monitor_id=existing.id,
+            expected_existing_config_generation=expected_generation,
+        )
+
+    results = await asyncio.gather(restart(), restart(), return_exceptions=True)
+    winners = [result for result in results if isinstance(result, NudgeLoop)]
+    conflicts = [result for result in results if isinstance(result, MonitorUpdateConflict)]
+
+    assert len(winners) == 1
+    assert len(conflicts) == 1
+    assert "monitor changed before restart" in str(conflicts[0])
+    assert svc.get_by_slot("chat-1-123") is winners[0]
+
+
+@pytest.mark.asyncio
+async def test_add_monitor_persistence_failure_keeps_existing_monitor_running(svc, monkeypatch):
+    async def on_monitor_tick(_loop):
+        return None
+
+    svc._on_monitor_tick = on_monitor_tick
+    await svc.start()
+    existing = await svc.add_monitor(
+        slot_key="chat-1-123",
+        kind="github_pull_request",
+        target="owner/repo#123",
+        objective="review_ready",
+        cadence_secs=60,
+        budgets=MonitorBudgets(),
+    )
+    persisted_before = svc._path.read_bytes()
+
+    async def fail_snapshot(_payload):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(svc, "_write_monitor_snapshot_locked", fail_snapshot)
+
+    with pytest.raises(OSError, match="disk full"):
+        await svc.add_monitor(
+            slot_key="chat-1-123",
+            kind="github_pull_request",
+            target="owner/repo#456",
+            objective="review_ready",
+            cadence_secs=60,
+            budgets=MonitorBudgets(),
+        )
+
+    assert svc.get_by_slot("chat-1-123") is existing
+    assert existing.id in svc._timers
+    assert not svc._timers[existing.id].done()
+    assert svc._path.read_bytes() == persisted_before
+
+
+@pytest.mark.asyncio
+async def test_add_legacy_loop_refuses_to_replace_an_inflight_monitor(svc):
+    await svc.start()
+    existing = await svc.add_monitor(
+        slot_key="chat-1-123",
+        kind="github_pull_request",
+        target="owner/repo#123",
+        objective="review_ready",
+        cadence_secs=60,
+        budgets=MonitorBudgets(),
+    )
+    assert existing.monitor is not None
+    existing.monitor.wake_in_flight = True
+    existing.monitor.last_wake_fingerprint = "actionable-1"
+
+    with pytest.raises(MonitorUpdateConflict, match="wake is in flight"):
+        await svc.add(slot_key="chat-1-123", message="legacy replacement", idle_secs=60)
+
+    assert svc.get_by_slot("chat-1-123") is existing
+    assert existing.monitor.wake_in_flight
+    assert existing.monitor.last_wake_fingerprint == "actionable-1"
+
+
+@pytest.mark.asyncio
+async def test_add_legacy_loop_create_only_preserves_an_existing_monitor(svc):
+    """A browser legacy create racing a monitor arm cannot replace the winner."""
+    await svc.start()
+    existing = await svc.add_monitor(
+        slot_key="chat-1-123",
+        kind="github_pull_request",
+        target="owner/repo#123",
+        objective="review_ready",
+        cadence_secs=60,
+        budgets=MonitorBudgets(),
+    )
+    persisted_before = svc._path.read_bytes()
+
+    with pytest.raises(MonitorUpdateConflict, match="session already has an automation"):
+        await svc.add(
+            slot_key="chat-1-123",
+            message="legacy replacement",
+            idle_secs=60,
+            replace_existing=False,
+        )
+
+    assert svc.get_by_slot("chat-1-123") is existing
+    assert svc._path.read_bytes() == persisted_before
 
 
 @pytest.mark.asyncio
@@ -3661,7 +3843,11 @@ class TestAutonudgeStartIntCoercion:
 
         monkeypatch.setattr(_handler, "_autonudge_get", lambda: fake_svc)
         state = MagicMock()
-        state._slots = {"chat-1-123": MagicMock(workspace="default")}
+        state._slots = {
+            "chat-1-123": MagicMock(
+                workspace="default", mode="", memory_mode="persistent", _closing=False
+            )
+        }
         app = web.Application()
         app["state"] = state
         app.router.add_post("/api/autonudge", _handler.api_autonudge_start)

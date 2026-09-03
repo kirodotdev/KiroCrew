@@ -52,9 +52,9 @@ from kiro_crew.validation import ValidationError
 @pytest.fixture()
 def default_install(monkeypatch):
     """Default install: the strict resolver has no accepted identity source and
-    returns ``""``, so the stateless tools RETURN a directive rather than
-    short-circuiting. (Pooling off, unsandboxed, kiro-cli backend.)"""
-    monkeypatch.setattr(mcp_core, "_resolve_session_key_strict", lambda: "")
+    returns a dashboard identity, so the monitor tools can emit a directive.
+    (Pooling off, unsandboxed, kiro-cli backend.)"""
+    monkeypatch.setattr(mcp_core, "_resolve_session_key_strict", lambda: "dashboard:chat-1-1")
     return monkeypatch
 
 

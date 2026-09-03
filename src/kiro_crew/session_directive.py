@@ -56,7 +56,9 @@ from typing import Any
 DIRECTIVE_TOOLS: frozenset[str] = frozenset(
     {
         "monitor_start",
+        "monitor_watch",
         "monitor_update",
+        "monitor_stop",
         "autonudge_stop",
         "set_project",
         "suggest_followup",

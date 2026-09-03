@@ -268,6 +268,20 @@ class TestToLlmEventFieldPropagation:
         assert ev.usage.cache_creation_tokens == 33
         assert ev.usage.cache_read_tokens == 44
 
+    @pytest.mark.asyncio
+    async def test_stream_propagates_synthetic_completion_provenance(self):
+        provider = _build_provider(backend=ACP_BACKEND_CLAUDE)
+        src = AcpEvent(
+            kind="complete",
+            stop_reason="end_turn",
+            synthetic_completion=True,
+        )
+        provider._client.stream_events = MagicMock(return_value=_async_iter([src]))
+
+        events = await _drain(provider.stream("hi"))
+
+        assert events[0].synthetic_completion is True
+
 
 class TestToLlmEventFieldParity:
     """Structural guard: every field on AcpEvent must either be explicitly

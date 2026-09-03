@@ -41,6 +41,10 @@ class SessionClosingError(RuntimeError):
     """A turn was requested after manager shutdown began."""
 
 
+class SessionBusyError(RuntimeError):
+    """A caller requested an immediate turn claim while the session was held."""
+
+
 class SpeculativeResumeRefused(RuntimeError):
     """A speculative allocation may not consume an unrequested native resume."""
 
@@ -153,7 +157,13 @@ class _AllocationOwner(Protocol):
         cwd: str | None = None,
     ) -> Any: ...
 
-    async def _reacquire_and_validate(self, key: str, session: Any) -> bool: ...
+    async def _reacquire_and_validate(
+        self,
+        key: str,
+        session: Any,
+        *,
+        wait_if_busy: bool = True,
+    ) -> bool: ...
 
     async def _evict_stale_session(self, key: str, session: Any) -> None: ...
 
@@ -472,8 +482,18 @@ class SessionAllocationService:
                 )
         return await owner.get_subagent_runtime(parent_session_key, agent=agent)
 
-    async def _reacquire_and_validate(self, key: str, session: Any) -> bool:
+    async def _reacquire_and_validate(
+        self,
+        key: str,
+        session: Any,
+        *,
+        wait_if_busy: bool = True,
+    ) -> bool:
         """Acquire with the global lock released, then validate exact identity."""
+        if not wait_if_busy and session.semaphore.locked():
+            raise SessionBusyError(key)
+        # An idle Semaphore(1) acquires without suspension, so this is the
+        # authoritative non-waiting claim boundary after the locked check.
         await session.semaphore.acquire()
         try:
             async with self._lock:
@@ -1063,6 +1083,7 @@ class SessionAllocationService:
         extra_env: dict[str, str] | None = None,
         speculative: bool = False,
         speculative_resume: bool = False,
+        wait_if_busy: bool = True,
         _won_race_retries: int = 0,
         **extra_factory_kwargs: Any,
     ) -> tuple[LLMProvider, bool, bool]:
@@ -1151,7 +1172,11 @@ class SessionAllocationService:
 
         if claimed is not None:
             session = claimed
-            if await owner._reacquire_and_validate(key, session):
+            if await owner._reacquire_and_validate(
+                key,
+                session,
+                wait_if_busy=wait_if_busy,
+            ):
                 first_turn = session.first_turn
                 if not speculative:
                     session.first_turn = self._deps.first_turn_nothing_armed
@@ -1475,7 +1500,11 @@ class SessionAllocationService:
                         key,
                         exc_info=True,
                     )
-            if await owner._reacquire_and_validate(key, won_race_session):
+            if await owner._reacquire_and_validate(
+                key,
+                won_race_session,
+                wait_if_busy=wait_if_busy,
+            ):
                 first_turn = won_race_session.first_turn
                 if not speculative:
                     won_race_session.first_turn = self._deps.first_turn_nothing_armed
@@ -1500,6 +1529,7 @@ class SessionAllocationService:
                 extra_env=extra_env,
                 speculative=speculative,
                 speculative_resume=speculative_resume,
+                wait_if_busy=wait_if_busy,
                 _won_race_retries=_won_race_retries + 1,
                 **extra_factory_kwargs,
             )

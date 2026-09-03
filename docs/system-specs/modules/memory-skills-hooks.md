@@ -147,6 +147,11 @@ through `run_in_embed_pool` (the bounded `mc-embed` bulkhead) because
 `_consolidate` runs on the gateway event loop, and a slow or hung embed inline
 would stall heartbeats, Slack, and the dashboard.
 
+Structured `[Monitor wake]` turns never call `maybe_consolidate()`: their prompt
+and resulting action are automation evidence, not user-authored memory. Monitor
+admission also refuses restricted dashboard sessions, so a persisted loop cannot
+outlive the incognito or temporary boundary that prohibits derived memory.
+
 ### Lesson Extraction from Chat
 
 The history consolidation prompt includes a `"lessons"` key that extracts only implicit correction patterns — corrections the user made without explicitly saying "remember" (those are already saved immediately via `learn_add`). All lesson writes go through `write_lesson()` which provides substring dedup and topic-overlap dedup (>50% keyword overlap → newer replaces older). When vector memory is not active, falls back to `lessons.jsonl` via `LessonStore.save()`.

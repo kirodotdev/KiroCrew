@@ -147,7 +147,7 @@ Consumes a provider's `AcpEvent` stream and emits abstract `OutputEvent`s to a p
 
 The dashboard does **not** flow through `TurnDriver`; it remains unchanged as the authoritative transcript surface. Direct channel paths that bypass the driver are sanitized at source: Discord's explicit five-message resume replay strips legacy steering frames and summary-bearing compaction notices, shortens each entry to the shared splitter's first (sealed) chunk so a replayed code block cannot arrive with its fence cut in half, and puts the role icon on its own line so the body's first line still starts where the fence grammar needs it; direct compact commands publish only terse receipts. Stored transcripts remain intact for audit.
 
-**Session-directive consumption** — an optional `directive_consumer` callback (`(kind, args) -> awaitable`) makes the driver the channel-side consumer of the stateless session-directive protocol (`session_directive.py`): the trusted `_meta.kiro` identity is resolved by the shared forgery-gate predicate (`session_directive.directive_tool_for(mcp_server_name, tool_name)`, the same single spelling the dashboard consumer uses) and recorded at `EVENT_TOOL_CALL`, and the matching `EVENT_TOOL_RESULT`'s marker is decoded and handed to the consumer — single-consume across result frames, forged markers under any other tool ignored, `encode()` refusals logged, a lost marker on the final frame logged at WARNING. A tool call announced as a NATIVE sub-agent's (`EVENT_SUBAGENT_ACTIVITY` with a `tool_call_id`) is refused with a SEL `denied` audit rather than applied — a child session must never arm/mutate its parent, mirroring the dashboard consumer's isolation. Dispatchers inject `messaging.dispatch.build_directive_consumer(session_key=…, sessions=…, dispatcher=…)`, which funnels into the same `apply_session_directive` core the dashboard consumer uses with `slot=None` (so card-producing dashboard-only directives stay refused for channel turns). Channel `set_project` writes the durable per-conversation project/CWD override; because its tool result arrives while the current provider still owns the turn semaphore, the provider is not killed in place. The next claimant acquires the old semaphore, replaces that provider, and cold-starts in the new CWD before sending its prompt. The monitor trio takes effect where the session is nudge-able (`slack:`/`discord:`/`webex:`); on the other five transports (Telegram, iMessage, Teams, WeCom, Weixin) the applier answers "not supported from this session type" — logged and SEL-audited instead of the old silent drop, but no loop is armed there until `autonudge.binding_key_for` admits those keys. Being on that list takes BOTH a `binding_key_for` prefix and a fire adapter: listing a channel with only one arms a loop that is then denied or deleted on its first cycle while reporting itself healthy, which is why the roster is narrow and pinned (`test_autonudge.py::test_the_channels_without_a_fire_adapter_stay_excluded`). Without a consumer, directive markers are inert exactly as before.
+**Session-directive consumption** — an optional `directive_consumer` callback (`(kind, args) -> awaitable`) makes the driver the channel-side consumer of the stateless session-directive protocol (`session_directive.py`): the trusted `_meta.kiro` identity is resolved by the shared forgery-gate predicate (`session_directive.directive_tool_for(mcp_server_name, tool_name)`, the same single spelling the dashboard consumer uses) and recorded at `EVENT_TOOL_CALL`, and the matching `EVENT_TOOL_RESULT`'s marker is decoded and handed to the consumer — single-consume across result frames, forged markers under any other tool ignored, `encode()` refusals logged, a lost marker on the final frame logged at WARNING. A tool call announced as a NATIVE sub-agent's (`EVENT_SUBAGENT_ACTIVITY` with a `tool_call_id`) is refused with a SEL `denied` audit rather than applied — a child session must never arm/mutate its parent, mirroring the dashboard consumer's isolation. Dispatchers inject `messaging.dispatch.build_directive_consumer(session_key=…, sessions=…, dispatcher=…)`, which funnels into the same `apply_session_directive` core the dashboard consumer uses with `slot=None` (so card-producing dashboard-only directives stay refused for channel turns). Channel `set_project` writes the durable per-conversation project/CWD override; because its tool result arrives while the current provider still owns the turn semaphore, the provider is not killed in place. The next claimant acquires the old semaphore, replaces that provider, and cold-starts in the new CWD before sending its prompt. Legacy prompt loops take effect where the session is nudge-able (`slack:`/`discord:`/`webex:`). Structured monitor creation is narrower: dashboard, Slack, and Discord have typed dispatch plus completion correlation, while Webex is refused before a structured record is armed. On the other five transports (Telegram, iMessage, Teams, WeCom, Weixin) the applier likewise answers "not supported from this session type" — logged and SEL-audited instead of the old silent drop. Being on either list takes both an admitted binding and the matching fire contract; otherwise a loop can report itself healthy before dying on its first cycle. Without a consumer, directive markers are inert exactly as before.
 
 **`run(message) -> str`** — calls `renderer.on_turn_start()`, then translates each provider event into a dispatched `OutputEvent` and returns the accumulated (redacted) assistant text:
 
@@ -163,19 +163,97 @@ The dashboard does **not** flow through `TurnDriver`; it remains unchanged as th
 | `EVENT_COMPLETE` | `DONE` |
 
 An optional structured-monitor completion hook is orthogonal to rendering. It
-is invoked exactly from the `EVENT_COMPLETE` branch when its reason is safe
-completion evidence, before buffered output, steering, redaction, or `DONE` is
-flushed to the renderer, with the event's `TurnUsage` and a disposition derived
-from its stop reason. ACP's stale-stream compatibility completion reuses
-`end_turn`, so that reason remains uncharged until the event carries provenance
-that distinguishes it from a provider result. Completion accounting therefore
-survives failure or cancellation during renderer finalization. A normal handler
-return, command intercept, stream exception, or ACP-synthesized terminal does not
-manufacture completion evidence. Callback failure is logged and cannot
+revalidates the persisted `(monitor_id, fingerprint)` claim after
+`renderer.on_turn_start()` and immediately before the provider stream begins.
+Channel monitor adapters also inject the synchronous SessionManager
+`begin_turn` gate after that authorization and before marking the hook accepted;
+the gate and stream entry have no intervening await, so a gateway shutdown that
+began after the session lease was claimed refuses the wake instead of opening a
+turn outside the shutdown drain snapshot. The checks and stream entry have no
+intervening await; refusal returns without
+entering the provider, recording a successful turn, or persisting/mirroring the
+revoked wake, and does not mark the hook accepted. If channel context building,
+conversation lookup, or dashboard rehydration observes that the structured claim
+has already been stopped and therefore cannot construct its completion hook, the
+adapter returns `UNAVAILABLE` before dispatch rather than falling through to the
+ordinary/legacy turn path. Dashboard performs the
+equivalent final check after any unattended background-turn permit and before
+appending the wake or entering its runner. The hook is invoked exactly from the
+`EVENT_COMPLETE` branch when its reason is safe completion evidence, before
+buffered output, steering, redaction, or `DONE` is flushed to the renderer, with
+the event's `TurnUsage` and a disposition derived from its stop reason. ACP's
+stale-stream compatibility completion reuses `end_turn`, so that reason remains
+uncharged until the event carries provenance that distinguishes it from a provider
+result. Completion accounting therefore survives failure or cancellation during
+renderer finalization. A normal handler return, command intercept, stream exception,
+or ACP-synthesized terminal does not manufacture completion evidence. Callback
+failure is logged and cannot
 change the channel turn's output or error behavior. The hook is absent from ordinary inbound turns
 and legacy AutoNudge turns. Slack reports a raw completion before its cancellable,
-best-effort analytics usage-row write, so cancellation after `EVENT_COMPLETE` cannot
-leave an accepted monitor wake in flight.
+best-effort analytics usage-row write. If shutdown cancellation lands after the
+raw event but before the driver returns, the adapter reports the captured
+completion once before propagating cancellation, so an accepted wake cannot remain
+in flight. A shutdown refusal before stream entry is transient `BUSY`, not terminal
+`UNAVAILABLE`, and retries the durable claim after restart. Directive consumption
+occurs before a later raw `EVENT_COMPLETE`, so an action that calls `monitor_stop`
+or the structured `autonudge_stop` alias first makes its monitor inactive with a
+durable `user_stop` outcome while retaining only the current wake correlation. The
+turn-start hook records that acceptance synchronously in runtime state because the
+outer dispatcher cannot persist `DISPATCHED` until the channel turn returns; this
+marker distinguishes an accepted turn from a `BUSY` claim with the same unset
+durable delivery field.
+The completion hook then charges and clears that claim exactly once. Without safe
+completion evidence the terminal record remains uncharged and cannot probe, re-arm,
+or redispatch.
+
+The structured monitor controller probes before entering any channel turn.
+No-change, record-only, provider-retry, and terminal decisions therefore call
+no messaging dispatcher and consume no model turn. For a newly actionable
+fingerprint it persists the in-flight claim first, then supplies one redacted,
+4,096-character-bounded `[Monitor wake]` envelope to the dashboard, Slack, or
+Discord adapter without legacy cycle decoration. Each adapter returns the same
+typed handoff: `DISPATCHED` starts the durable bounded completion-evidence
+deadline, `BUSY` retries the already-claimed wake without another probe or model
+turn, and `UNAVAILABLE` becomes a retained terminal outcome. A stream that ends
+without raw `EVENT_COMPLETE` remains dispatched until its evidence deadline; it
+never fabricates completion or immediately retries the same fingerprint.
+Discord decides the structured result at its own dispatch boundary, not from the
+scheduler's earlier advisory busy check: a concurrently busy session returns
+`BUSY` without steering or queueing the wake, a refusal before the turn returns
+`UNAVAILABLE`, and `DISPATCHED` is returned only after the claimed session has a
+started `TurnDriver` carrying the matching completion hook. After its advisory
+acceptance marker is set, a later Discord cleanup or dispatch exception remains
+`DISPATCHED`; the durable completion-evidence deadline, rather than a contradictory
+terminal-unavailable handoff, owns recovery for that accepted turn. After its advisory
+check, Discord takes the SessionManager's non-waiting semaphore lease before
+renderer setup, upload-policy lookup, typing, attachment work, or any other
+pre-turn await. If a user turn wins that authoritative claim boundary, the
+monitor returns `BUSY` immediately and creates no steer, queue entry, or
+completion evidence. A structured wake also skips idle and daily generation
+rotation after the gateway validates its session key, so the dispatcher claims
+the exact generation that authorization approved. The gateway passes that key
+through to the dispatcher, which rechecks it immediately before the non-waiting
+session claim and refuses a generation changed by a concurrent `!new`. The
+scheduler propagates that typed result unchanged. Discord repeats the same positive
+generation check in the driver's closing gate after claim authorization and all
+pre-stream awaits, so a later `!new` cannot send the wake into the abandoned session.
+Slack rechecks the runtime inbound-channel policy before every structured wake,
+because the policy can become stricter after monitor creation. After its advisory
+busy check, Slack also takes the SessionManager's non-waiting semaphore claim; a
+user turn that wins that boundary returns `BUSY` without waiting, starting a turn,
+or creating completion evidence. A claimed Slack structured wake runs through
+the same `TurnDriver` directive consumer as ordinary channel turns, so an
+authenticated `monitor_update`, `monitor_stop`, or structured
+`autonudge_stop` result is applied to that Slack session before a later raw
+completion is accounted; legacy nudges retain their existing collector path.
+If Slack's bounded timeout fires before the structured completion hook is
+accepted, the claim is retryable and returns `BUSY`; after acceptance it remains
+`DISPATCHED`, and the durable completion-evidence deadline owns recovery.
+Discord applies the same bounded outer turn timeout to legacy nudges and
+structured wakes, so a wedged dispatcher cannot hold the scheduler forever. A
+timeout before the structured completion hook is accepted returns
+`UNAVAILABLE`; a timeout after acceptance remains `DISPATCHED`, and the durable
+completion-evidence deadline owns recovery for the correlated turn.
 
 ### Approval ladder
 

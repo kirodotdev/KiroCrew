@@ -4020,6 +4020,7 @@ class TestSendPipeErrors:
 
         assert [e.kind for e in events] == [EVENT_TEXT_CHUNK, EVENT_COMPLETE]
         assert events[1].stop_reason == STOP_REASON_END_TURN
+        assert events[1].synthetic_completion is True
 
     @pytest.mark.asyncio
     async def test_stale_eligible_cleared_by_tool_call(self):
@@ -4180,6 +4181,7 @@ class TestSendPipeErrors:
         assert EVENT_TOOL_CALL in kinds
         assert kinds[-1] == EVENT_COMPLETE
         assert events[-1].stop_reason == STOP_REASON_END_TURN
+        assert events[-1].synthetic_completion is True
 
     @pytest.mark.asyncio
     async def test_passive_update_does_not_clear_stale_eligible(self):
@@ -4244,6 +4246,7 @@ class TestSendPipeErrors:
             EVENT_COMPLETE,
         ], f"Expected stale detection to synthesize complete after passive update, got {kinds}"
         assert events[-1].stop_reason == STOP_REASON_END_TURN
+        assert events[-1].synthetic_completion is True
 
 
 # ── Coverage push: process lifecycle ──

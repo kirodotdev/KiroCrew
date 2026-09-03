@@ -34,7 +34,7 @@ from typing import Any
 
 from kiro_crew import platform_compat
 from kiro_crew.agent_discovery import list_agents
-from kiro_crew.autonudge import binding_key_for
+from kiro_crew.autonudge import binding_key_for, structured_monitor_binding_key_for
 from kiro_crew.config.loader import (
     KiroCrewConfig,
     config_dir,
@@ -1607,6 +1607,11 @@ def _autonudge_binding_key(sk: str) -> str | None:
     ``ctx.nudge`` port share one definition of "nudge-able".
     """
     return binding_key_for(sk)
+
+
+def _structured_monitor_binding_key(sk: str) -> str | None:
+    """Map a session key only when structured wake delivery is supported."""
+    return structured_monitor_binding_key_for(sk)
 
 
 def _artifact_ref_link(slug: str, name: str) -> str:

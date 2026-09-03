@@ -28,13 +28,36 @@ from urllib.parse import urlparse
 from kiro_crew import autonudge, mcp_core, platform_compat, session_directive
 from kiro_crew.mcp_shared import ToolCancelled, is_tool_cancelled
 from kiro_crew.mcp_tools._limits import _MONITOR_DEFAULT_MAX_CYCLES
-from kiro_crew.security import redact_and_truncate, redact_credentials, redact_exfiltration_urls
+from kiro_crew.monitoring.github_pull_request import parse_github_pull_request_target
+from kiro_crew.monitoring.models import (
+    DEFAULT_MONITOR_AGENT_TURNS,
+    DEFAULT_MONITOR_CADENCE_SECS,
+    DEFAULT_MONITOR_PROVIDER_ERRORS,
+    DEFAULT_MONITOR_RUNTIME_SECS,
+    DEFAULT_MONITOR_TOKENS,
+    MAX_MONITOR_AGENT_TURNS,
+    MAX_MONITOR_CADENCE_SECS,
+    MAX_MONITOR_CHECK_NAMES,
+    MAX_MONITOR_PROVIDER_ERRORS,
+    MAX_MONITOR_RUNTIME_SECS,
+    MAX_MONITOR_TOKENS,
+    MAX_MONITOR_WAKE_INSTRUCTIONS_CHARS,
+    MIN_MONITOR_CADENCE_SECS,
+)
+from kiro_crew.security import (
+    redact_and_truncate,
+    redact_credentials,
+    redact_exfiltration_urls,
+)
 from kiro_crew.session_surface import has_dashboard_surface
 from kiro_crew.validation import (
     ASK_QUESTION_SCHEMA,
     AUTONUDGE_STOP_SCHEMA,
+    MONITOR_INSPECT_SCHEMA,
     MONITOR_START_SCHEMA,
+    MONITOR_STOP_SCHEMA,
     MONITOR_UPDATE_SCHEMA,
+    MONITOR_WATCH_SCHEMA,
     REGISTER_HOOK_SCHEMA,
     RESET_CONVERSATION_SCHEMA,
     SELECT_CREW_SCHEMA,
@@ -243,6 +266,72 @@ def schemas() -> list[dict[str, Any]]:
             },
         },
         {
+            "name": "monitor_watch",
+            "description": (
+                "Watch a GitHub pull request with cheap provider probes. The owning session "
+                "is woken only when a new revision needs action; unchanged, pending, retry, "
+                "and terminal probes use no agent turn. One structured monitor per session."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "kind": {"type": "string", "enum": ["github_pull_request"]},
+                    "target": {"type": "string", "description": "Public GitHub PR URL"},
+                    "objective": {"type": "string", "enum": ["review_ready"]},
+                    "interval_secs": {
+                        "type": "integer",
+                        "minimum": MIN_MONITOR_CADENCE_SECS,
+                        "maximum": MAX_MONITOR_CADENCE_SECS,
+                    },
+                    "max_runtime_secs": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": MAX_MONITOR_RUNTIME_SECS,
+                    },
+                    "max_agent_turns": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": MAX_MONITOR_AGENT_TURNS,
+                    },
+                    "max_tokens": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": MAX_MONITOR_TOKENS,
+                    },
+                    "max_provider_errors": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": MAX_MONITOR_PROVIDER_ERRORS,
+                    },
+                    "wake_instructions": {
+                        "type": "string",
+                        "maxLength": MAX_MONITOR_WAKE_INSTRUCTIONS_CHARS,
+                        "description": "Compact instructions used only on an actionable wake",
+                    },
+                },
+                "required": ["kind", "target", "objective"],
+            },
+        },
+        {
+            "name": "monitor_inspect",
+            "description": (
+                "Inspect the structured monitor bound to your authenticated current session. "
+                "Takes no session key or monitor id."
+            ),
+            "inputSchema": {"type": "object", "properties": {}},
+        },
+        {
+            "name": "monitor_stop",
+            "description": (
+                "Durably stop the structured monitor on your current session while retaining "
+                "its terminal outcome for inspection."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {"reason": {"type": "string"}},
+            },
+        },
+        {
             "name": "monitor_start",
             "description": (
                 "Start a monitoring loop on YOUR CURRENT session: every "
@@ -259,8 +348,9 @@ def schemas() -> list[dict[str, Any]]:
                 "interval. When the exit condition is met (or the user says "
                 "stop), call autonudge_stop — reaching max_cycles is a runaway "
                 "backstop, NOT a successful finish. Use monitor_update to "
-                "revise the instruction if what you are watching changes. One "
-                "loop per session; starting a new one replaces the old. "
+                "revise or re-arm the instruction if what you are watching "
+                "changes. One automation may occupy a session; monitor_start "
+                "is create-only and refuses while one already exists. "
                 "Survives gateway restarts. Every cycle appends a full turn to "
                 "this same session, so keep per-cycle output small and report "
                 "only real signals. "
@@ -391,6 +481,31 @@ def schemas() -> list[dict[str, Any]]:
                             "when the loop was first armed (0 = unlimited, max "
                             "604800 = 7 days). Omit to leave unchanged"
                         ),
+                    },
+                    "target": {
+                        "type": "string",
+                        "description": "New GitHub PR URL for a structured monitor",
+                    },
+                    "objective": {"type": "string", "enum": ["review_ready"]},
+                    "max_agent_turns": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": MAX_MONITOR_AGENT_TURNS,
+                    },
+                    "max_tokens": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": MAX_MONITOR_TOKENS,
+                    },
+                    "max_provider_errors": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": MAX_MONITOR_PROVIDER_ERRORS,
+                    },
+                    "wake_instructions": {
+                        "type": "string",
+                        "maxLength": MAX_MONITOR_WAKE_INSTRUCTIONS_CHARS,
+                        "description": "Replacement actionable-wake instructions",
                     },
                 },
             },
@@ -977,6 +1092,176 @@ def monitor_start(name: str, args: dict[str, Any]) -> str:
     )
 
 
+def _monitor_context_refusal(tool_name: str, session_key: str, message: str) -> str:
+    """Return a failed tool result and retain the security-relevant refusal."""
+    mcp_core.sel().log_tool_invocation(
+        session_key=session_key or "mcp_core",
+        source="mcp",
+        tool_name=tool_name,
+        outcome="denied",
+        error="unsupported_session_binding",
+    )
+    return f"Error: {message}"
+
+
+def monitor_watch(name: str, args: dict[str, Any]) -> str:
+    """Validate and emit a session-bound structured monitor directive."""
+    args = validate_tool_args(args, MONITOR_WATCH_SCHEMA)
+    sk = mcp_core._resolve_session_key_strict()
+    if not sk:
+        return _monitor_context_refusal(
+            "monitor_watch",
+            sk,
+            "monitor_watch requires an authenticated strict session binding. "
+            "No process-ancestor fallback is used.",
+        )
+    if mcp_core._structured_monitor_binding_key(sk) is None:
+        return _monitor_context_refusal(
+            "monitor_watch",
+            sk,
+            "monitor_watch only works from within a dashboard, Slack, or "
+            f"Discord session (current session_key={sk!r}).",
+        )
+    target = parse_github_pull_request_target(args["target"]).url
+    payload = {
+        "kind": args["kind"],
+        "target": target,
+        "objective": args["objective"],
+        "cadence_secs": int(args.get("interval_secs") or DEFAULT_MONITOR_CADENCE_SECS),
+        "max_runtime_secs": int(args.get("max_runtime_secs") or DEFAULT_MONITOR_RUNTIME_SECS),
+        "max_agent_turns": int(args.get("max_agent_turns") or DEFAULT_MONITOR_AGENT_TURNS),
+        "max_tokens": int(args.get("max_tokens") or DEFAULT_MONITOR_TOKENS),
+        "max_provider_errors": int(
+            args.get("max_provider_errors") or DEFAULT_MONITOR_PROVIDER_ERRORS
+        ),
+        "wake_instructions": str(args.get("wake_instructions") or "").strip(),
+    }
+    return _emit_directive(
+        "monitor_watch",
+        payload,
+        "Structured monitor requested for this session. End your turn; inspect the monitor "
+        "to confirm the authoritative consumer armed it.",
+    )
+
+
+def monitor_inspect(name: str, args: dict[str, Any]) -> str:
+    """Read only the monitor bound to a verified strict session identity."""
+    validate_tool_args(args, MONITOR_INSPECT_SCHEMA)
+    sk = mcp_core._resolve_session_key_strict()
+    if not sk:
+        return _monitor_context_refusal(
+            "monitor_inspect",
+            sk,
+            "Monitor inspection unavailable without an authenticated strict session binding. "
+            "No process-ancestor fallback is used.",
+        )
+    if mcp_core._structured_monitor_binding_key(sk) is None:
+        return _monitor_context_refusal(
+            "monitor_inspect",
+            sk,
+            f"monitor_inspect is unavailable for this session type ({sk!r}).",
+        )
+    result = mcp_core._get("/api/autonudge/session-monitor", session_key=sk)
+    if result.get("error"):
+        return f"Error: Monitor inspection failed: {result['error']}"
+    return json.dumps(
+        _compact_monitor_inspection(result),
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    )
+
+
+def _compact_monitor_inspection(result: dict[str, Any]) -> dict[str, Any]:
+    """Project the browser record into a bounded, agent-oriented status."""
+    compact = {key: result.get(key) for key in ("enabled", "active", "monitor_id") if key in result}
+    raw = result.get("monitor")
+    if not isinstance(raw, dict):
+        compact["monitor"] = None
+        return compact
+    fields = (
+        "kind",
+        "target",
+        "objective",
+        "budgets",
+        "cadence_secs",
+        "last_fingerprint",
+        "last_wake_fingerprint",
+        "wake_in_flight",
+        "wake_count",
+        "agent_turns",
+        "input_tokens",
+        "output_tokens",
+        "probe_count",
+        "provider_error_count",
+        "consecutive_provider_errors",
+        "last_probe_at",
+        "created_ts",
+        "last_decision",
+        "last_wake_reason_code",
+        "last_provider_error",
+        "next_probe_at",
+        "outcome",
+        "stopped_reason",
+        "user_stop_reason",
+        "stopped_at",
+    )
+    monitor = {key: raw.get(key) for key in fields}
+    observation = raw.get("last_observation")
+    if isinstance(observation, dict):
+        observation_fields = (
+            "state",
+            "draft",
+            "head_revision",
+            "mergeability",
+            "review_decision",
+            "blocking_review",
+            "unresolved_review_threads",
+            "review_threads_complete",
+        )
+        summary = {key: observation.get(key) for key in observation_fields}
+        checks = observation.get("checks")
+        if isinstance(checks, dict):
+            check_summary: dict[str, Any] = {}
+            for status in ("failed", "pending", "unknown"):
+                values = checks.get(status)
+                if isinstance(values, list):
+                    check_summary[status] = values[:MAX_MONITOR_CHECK_NAMES]
+                    check_summary[f"{status}_count"] = len(values)
+            passed = checks.get("passed")
+            if isinstance(passed, list):
+                check_summary["passed_count"] = len(passed)
+            summary["checks"] = check_summary
+        monitor["observation"] = summary
+    compact["monitor"] = monitor
+    return compact
+
+
+def monitor_stop(name: str, args: dict[str, Any]) -> str:
+    """Emit a durable structured-stop directive without caller identity."""
+    args = validate_tool_args(args, MONITOR_STOP_SCHEMA)
+    sk = mcp_core._resolve_session_key_strict()
+    if not sk:
+        return _monitor_context_refusal(
+            "monitor_stop",
+            sk,
+            "monitor_stop requires an authenticated strict session binding. "
+            "No process-ancestor fallback is used.",
+        )
+    if mcp_core._structured_monitor_binding_key(sk) is None:
+        return _monitor_context_refusal(
+            "monitor_stop",
+            sk,
+            "monitor_stop only works from within a dashboard, Slack, or "
+            f"Discord session (current session_key={sk!r}).",
+        )
+    return _emit_directive(
+        "monitor_stop",
+        {"reason": str(args.get("reason") or "").strip()},
+        "Structured monitor stop requested for this session.",
+    )
+
+
 def monitor_update(name: str, args: dict[str, Any]) -> str:
     args = validate_tool_args(args, MONITOR_UPDATE_SCHEMA)
     # STRICT resolution, same rationale as monitor_start/autonudge_stop:
@@ -986,10 +1271,19 @@ def monitor_update(name: str, args: dict[str, Any]) -> str:
     sk = mcp_core._resolve_session_key_strict()
     # Stateless: short-circuit only un-appliable contexts; the
     # consumer resolves the loop by its own session and patches it.
-    if mcp_core._autonudge_binding_key(sk) is None and sk:
-        return (
+    if not sk:
+        return _monitor_context_refusal(
+            "monitor_update",
+            sk,
+            "monitor_update requires an authenticated strict session binding. "
+            "No process-ancestor fallback is used.",
+        )
+    if mcp_core._structured_monitor_binding_key(sk) is None:
+        return _monitor_context_refusal(
+            "monitor_update",
+            sk,
             "monitor_update only works from within a dashboard, Slack, or "
-            f"Discord session (current session_key={sk!r})."
+            f"Discord session (current session_key={sk!r}).",
         )
     patch: dict[str, Any] = {}
     if args.get("message") is not None:
@@ -1003,6 +1297,15 @@ def monitor_update(name: str, args: dict[str, Any]) -> str:
         patch["max_cycles"] = int(args["max_cycles"])
     if args.get("max_runtime_secs") is not None:
         patch["max_runtime_secs"] = int(args["max_runtime_secs"])
+    if args.get("target") is not None:
+        patch["target"] = parse_github_pull_request_target(str(args["target"])).url
+    if args.get("objective") is not None:
+        patch["objective"] = str(args["objective"])
+    for field in ("max_agent_turns", "max_tokens", "max_provider_errors"):
+        if args.get(field) is not None:
+            patch[field] = int(args[field])
+    if args.get("wake_instructions") is not None:
+        patch["wake_instructions"] = str(args["wake_instructions"]).strip()
     if not patch:
         mcp_core.sel().log_tool_invocation(
             session_key=sk, source="mcp", tool_name="monitor_update", outcome="noop"
@@ -1076,6 +1379,9 @@ HANDLERS: dict[str, Callable[[str, dict[str, Any]], str]] = {
     "autonudge_stop": autonudge_stop,
     "ask_question": ask_question,
     "monitor_start": monitor_start,
+    "monitor_watch": monitor_watch,
+    "monitor_inspect": monitor_inspect,
+    "monitor_stop": monitor_stop,
     "monitor_update": monitor_update,
     "set_project": set_project,
     "reset_conversation": reset_conversation,

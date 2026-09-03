@@ -187,7 +187,8 @@ without judgement, so they are labelled in extraction rather than left to the
 prompt:
 
 - **Automation posting under `role: "user"`** — cron notifications, subagent
-  completion events, auto-nudge cycles, tool refusals, restored webhook context.
+  completion events, auto-nudge cycles, structured monitor wakes, tool refusals,
+  restored webhook context.
   These are flagged `injected`, excluded from the user-turn count, and rendered
   as `[automation, not the user]`. Counting one invents a goal the person never
   had.

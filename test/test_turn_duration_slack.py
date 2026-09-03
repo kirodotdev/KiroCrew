@@ -269,7 +269,13 @@ def test_structured_monitor_fans_out_usage_only_from_raw_completion(
 
     async def _stream_ok(*_a, on_complete=None, **_k):
         assert on_complete is not None
-        on_complete(LLMEvent(kind=EVENT_COMPLETE, stop_reason=stop_reason))
+        on_complete(
+            LLMEvent(
+                kind=EVENT_COMPLETE,
+                stop_reason=stop_reason,
+                synthetic_completion=stop_reason == STOP_REASON_END_TURN,
+            )
+        )
         return "done"
 
     monkeypatch.setattr(gw, "stream_and_collect", _stream_ok)

@@ -38,6 +38,16 @@ from kiro_crew.constants import AWS_PROFILE_NAME_RE, WINDOWS_DEVICE_STEMS
 # the role pin / provider default"). Import-safe: ``effort`` pulls in only
 # ``model_registry`` (stdlib-only), so no cycle back into validation.
 from kiro_crew.effort import EFFORT_VALUES
+from kiro_crew.monitoring.models import (
+    MAX_MONITOR_AGENT_TURNS,
+    MAX_MONITOR_CADENCE_SECS,
+    MAX_MONITOR_PROVIDER_ERRORS,
+    MAX_MONITOR_RUNTIME_SECS,
+    MAX_MONITOR_STOP_REASON_CHARS,
+    MAX_MONITOR_TOKENS,
+    MAX_MONITOR_WAKE_INSTRUCTIONS_CHARS,
+    MIN_MONITOR_CADENCE_SECS,
+)
 from kiro_crew.project_scope import SCOPE_FRAGMENT_RE
 
 # ── Constants ──
@@ -1131,6 +1141,32 @@ AUTONUDGE_STOP_SCHEMA = ToolSchema(
     ],
 )
 
+MONITOR_WATCH_SCHEMA = ToolSchema(
+    tool_name="monitor_watch",
+    fields=[
+        FieldSpec("kind", str, required=True, allowed=frozenset({"github_pull_request"})),
+        FieldSpec("target", str, required=True, max_len=MAX_SHORT_STRING),
+        FieldSpec("objective", str, required=True, allowed=frozenset({"review_ready"})),
+        FieldSpec(
+            "interval_secs",
+            int,
+            min_val=MIN_MONITOR_CADENCE_SECS,
+            max_val=MAX_MONITOR_CADENCE_SECS,
+        ),
+        FieldSpec("max_runtime_secs", int, min_val=1, max_val=MAX_MONITOR_RUNTIME_SECS),
+        FieldSpec("max_agent_turns", int, min_val=1, max_val=MAX_MONITOR_AGENT_TURNS),
+        FieldSpec("max_tokens", int, min_val=1, max_val=MAX_MONITOR_TOKENS),
+        FieldSpec("max_provider_errors", int, min_val=1, max_val=MAX_MONITOR_PROVIDER_ERRORS),
+        FieldSpec("wake_instructions", str, max_len=MAX_MONITOR_WAKE_INSTRUCTIONS_CHARS),
+    ],
+)
+
+MONITOR_INSPECT_SCHEMA = ToolSchema(tool_name="monitor_inspect")
+MONITOR_STOP_SCHEMA = ToolSchema(
+    tool_name="monitor_stop",
+    fields=[FieldSpec("reason", str, max_len=MAX_MONITOR_STOP_REASON_CHARS)],
+)
+
 # monitor_start creates an AutoNudge loop bound to the calling session (the
 # agent-facing "babysit this PR" primitive). message caps match the REST
 # endpoint's 8000-char limit; interval bounds mirror autonudge's
@@ -1162,6 +1198,12 @@ MONITOR_UPDATE_SCHEMA = ToolSchema(
         FieldSpec("interval_secs", int, min_val=15, max_val=86400),
         FieldSpec("max_cycles", int, min_val=0, max_val=1000),
         FieldSpec("max_runtime_secs", int, min_val=0, max_val=604800),
+        FieldSpec("target", str, max_len=MAX_SHORT_STRING),
+        FieldSpec("objective", str, allowed=frozenset({"review_ready"})),
+        FieldSpec("max_agent_turns", int, min_val=1, max_val=MAX_MONITOR_AGENT_TURNS),
+        FieldSpec("max_tokens", int, min_val=1, max_val=MAX_MONITOR_TOKENS),
+        FieldSpec("max_provider_errors", int, min_val=1, max_val=MAX_MONITOR_PROVIDER_ERRORS),
+        FieldSpec("wake_instructions", str, max_len=MAX_MONITOR_WAKE_INSTRUCTIONS_CHARS),
     ],
 )
 
@@ -2735,6 +2777,9 @@ MCP_CORE_SCHEMAS: dict[str, ToolSchema] = {
     "register_hook": REGISTER_HOOK_SCHEMA,
     "file_send": FILE_SEND_SCHEMA,
     "autonudge_stop": AUTONUDGE_STOP_SCHEMA,
+    "monitor_watch": MONITOR_WATCH_SCHEMA,
+    "monitor_inspect": MONITOR_INSPECT_SCHEMA,
+    "monitor_stop": MONITOR_STOP_SCHEMA,
     "monitor_start": MONITOR_START_SCHEMA,
     "monitor_update": MONITOR_UPDATE_SCHEMA,
     "ask_question": ASK_QUESTION_SCHEMA,

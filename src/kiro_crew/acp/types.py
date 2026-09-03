@@ -459,6 +459,10 @@ class AcpEvent:
     tool_purpose: str = ""
     context_usage_pct: float = 0.0
     stop_reason: str = ""
+    #: True when Kiro Crew fabricated this terminal event because the provider
+    #: omitted its result frame. Consumers must not treat it as raw completion
+    #: evidence even when compatibility requires ``stop_reason=end_turn``.
+    synthetic_completion: bool = False
     request_id: str | int = ""
     options: list[dict[str, str]] = field(default_factory=list)
     tool_input: str = ""

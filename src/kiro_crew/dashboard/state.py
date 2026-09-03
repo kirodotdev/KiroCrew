@@ -232,6 +232,10 @@ MAX_LIVE_SLOTS = 500
 #: alone.
 MAX_SLOTS_PER_CREATOR = 50
 
+# Structured monitor wakeups are automation, not user speech. The controller
+# owns the complete envelope; every delivery surface passes it through unchanged.
+MONITOR_WAKE_PREFIX = "[Monitor wake]"
+
 #: Return type of a mutate_folders callback.
 _T = TypeVar("_T")
 

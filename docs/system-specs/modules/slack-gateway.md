@@ -412,26 +412,43 @@ A parent session born on any other channel (Telegram, Discord, `unified:` DM buc
 The AutoNudge router keeps its historical `on_fire -> bool`, `cycle_count`,
 `fired`, and rearm contracts. A separate runtime-only hook is supplied only when
 a structured monitor already has an actionable fingerprint marked in-flight;
-legacy loops and ordinary channel messages receive none. The structured probe
-dispatcher that creates those live actions lands separately.
+legacy loops and ordinary channel messages receive none. `MonitorController`
+runs the typed GitHub probe off the event loop, persists the decision and
+in-flight claim, and calls the Slack/Discord or dashboard adapter only for
+`WAKE_ACTIONABLE`. The adapter receives the already formatted envelope and does
+not add the legacy cycle tag. Every non-actionable, retry, and terminal decision
+dispatches zero turns.
 
-Slack's inline nudge turn consumes `provider_last_turn_usage(client)` exactly
-once. That one `TurnUsage` object is fanned out to the existing usage-row writer
-and, when the stream observed safe completion evidence, the monitor completion
-hook, because the provider accessor destructively consumes retry-accumulated
-usage. ACP-synthesized terminals are excluded. Because stale-stream synthesis
-reuses `end_turn`, that reason remains uncharged until ACP events expose the
-completion's provenance; other safe reasons determine cancellation or failure.
+Slack's structured inline nudge runs through `TurnDriver` with the shared,
+session-bound directive consumer. Genuine core-MCP `monitor_update`,
+`monitor_stop`, and structured `autonudge_stop` tool results therefore mutate
+the authoritative Slack monitor before any later raw completion; forged or
+sub-agent results retain the driver's fail-closed behavior. Legacy nudges keep
+their collector path. Both paths consume `provider_last_turn_usage(client)`
+exactly once. That one `TurnUsage` object is fanned out to the existing usage-row
+writer and, when the stream observed safe completion evidence, the monitor hook.
+ACP-synthesized terminals are excluded. Because stale-stream synthesis reuses
+`end_turn`, that reason remains uncharged until ACP events expose provenance;
+other safe reasons determine cancellation or failure.
 Stream exhaustion and timeout before that event still write the existing usage
 row but do not report monitor completion or charge the monitor budget. Callback
-or usage-row persistence failure does not change the Slack delivery result.
+or usage-row persistence failure does not change the Slack delivery result. A
+structured stream that started reports `DISPATCHED` even if it exhausts or raises
+before `EVENT_COMPLETE`; the controller's persisted evidence deadline resolves
+the missing callback. Legacy callers retain their historical boolean result.
 
 Discord synthetic nudge injection passes the same hook through
 `DiscordDispatcher` to `TurnDriver`. Only a safe `EVENT_COMPLETE` reason reports
 completion; a command return, dispatch exception, or renderer
 `close()` is not completion evidence. Thus dashboard, Slack, and Discord all
 reach the same typed controller callback even though their transport lifecycles
-remain different.
+remain different. A queued dashboard turn revalidates its claim after background
+admission and before entering `_run_chat`, so a stopped monitor cannot run
+prompt-submit hooks; `_run_chat` revalidates again immediately before provider
+entry to cover revocation during turn setup. Their pre-completion delivery
+contract is also shared:
+`DISPATCHED`, `BUSY`, or `UNAVAILABLE`; BUSY is an ordinary durable retry of the
+same claimed wake, while only UNAVAILABLE terminates the monitor.
 
 Background task approvals (subagent, cron, task runner, and AutoNudge) post approval buttons to Slack DM via `_interactive_approval()`, racing with dashboard approval:
 

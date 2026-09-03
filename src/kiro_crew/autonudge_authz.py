@@ -25,8 +25,9 @@ import logging
 from pathlib import Path
 from typing import Any, Callable, Protocol, runtime_checkable
 
-from kiro_crew.autonudge import NudgeAdmissionRefused, is_channel_key
+from kiro_crew.autonudge import MonitorUpdateConflict, NudgeAdmissionRefused, is_channel_key
 from kiro_crew.config.loader import workspace_dir_for
+from kiro_crew.monitoring.models import MAX_MONITOR_WAKE_INSTRUCTIONS_CHARS, MonitorState
 from kiro_crew.security import (
     is_sensitive_path,
     redact_credentials,
@@ -48,6 +49,113 @@ class NudgeAuthzState(Protocol):
     _slots: dict
     sessions: Any
     channel_transports: Any
+
+
+async def authorize_and_update_monitor(
+    *,
+    svc: Any,
+    state: NudgeAuthzState,
+    loop_id: str,
+    session_key: str,
+    patch: dict[str, Any],
+    source: str,
+    caller: str = "",
+) -> tuple[Any | None, str | None, int]:
+    """Audit-or-deny one ownership-resolved structured monitor patch."""
+    safe_patch = dict(patch)
+    wake_instructions = safe_patch.get("wake_instructions")
+    if isinstance(wake_instructions, str):
+        wake_instructions, _ = redact_exfiltration_urls(wake_instructions)
+        wake_instructions, _ = redact_credentials(wake_instructions)
+        safe_patch["wake_instructions"] = wake_instructions
+
+    async def _audit(outcome: str, error: str = "") -> bool:
+        try:
+            await asyncio.to_thread(
+                lambda: sel().log_tool_invocation(
+                    session_key=session_key,
+                    source=source,
+                    tool_name="monitor_update",
+                    outcome=outcome,
+                    error=error,
+                    critical=True,
+                    metadata={"fields": sorted(safe_patch), "caller": caller},
+                )
+            )
+        except Exception:
+            logger.error("monitor update SEL audit unavailable", exc_info=True)
+            return False
+        return True
+
+    if (
+        isinstance(wake_instructions, str)
+        and len(wake_instructions) > MAX_MONITOR_WAKE_INSTRUCTIONS_CHARS
+    ):
+        error = (
+            "wake_instructions too long after redaction "
+            f"(max {MAX_MONITOR_WAKE_INSTRUCTIONS_CHARS} chars)"
+        )
+        await _audit("denied", error)
+        return None, error, 400
+
+    if not await _audit("invoked"):
+        return None, "audit log unavailable — monitor not updated", 503
+    if not is_channel_key(session_key):
+        current = state._slots.get(session_key)
+        if current is None:
+            error = "owning dashboard session is no longer available"
+            await _audit("denied", error)
+            return None, error, 404
+        mode = str(getattr(current, "mode", ""))
+        if mode in {"crew", "member"}:
+            error = f"{mode}-mode sessions do not accept direct automation turns"
+            await _audit("denied", error)
+            return None, error, 409
+        if str(getattr(current, "memory_mode", "persistent")) != "persistent":
+            error = "incognito and temporary sessions cannot host automation loops"
+            await _audit("denied", error)
+            return None, error, 403
+    try:
+        loop = await svc.update_monitor(loop_id, **safe_patch)
+    except MonitorUpdateConflict as exc:
+        error = str(exc)
+        await _audit("denied", error)
+        return None, error, 409
+    if loop is None:
+        error = "structured monitor not found or already terminal"
+        await _audit("denied", error)
+        return None, error, 404
+    return loop, None, 200
+
+
+async def authorize_and_stop_monitor(
+    *,
+    svc: Any,
+    loop_id: str,
+    session_key: str,
+    source: str,
+    caller: str = "",
+    user_reason: str = "",
+) -> tuple[Any | None, str | None, int]:
+    """Audit before retaining one ownership-resolved user-stop outcome."""
+    try:
+        await asyncio.to_thread(
+            lambda: sel().log_tool_invocation(
+                session_key=session_key,
+                source=source,
+                tool_name="monitor_stop",
+                outcome="invoked",
+                critical=True,
+                metadata={"caller": caller},
+            )
+        )
+    except Exception:
+        logger.error("monitor stop denied: SEL audit unavailable", exc_info=True)
+        return None, "audit log unavailable — monitor not stopped", 503
+    loop = await svc.stop_monitor(loop_id, user_reason=user_reason)
+    if loop is None:
+        return None, "structured monitor not found", 404
+    return loop, None, 200
 
 
 def resolve_stop_sentinel(slot_key: str, workspace: str = "default") -> str:
@@ -223,6 +331,10 @@ async def authorize_and_add_nudge(
     # a message that merely mentions one PR throttles those and can deactivate them
     # outright. The monitor_start surfaces pass ``gate=True`` themselves.
     gate: bool = False,
+    monitor: MonitorState | None = None,
+    replace_existing: bool = True,
+    expected_existing_monitor_id: str | None = None,
+    expected_existing_config_generation: int | None = None,
 ) -> tuple[Any | None, str | None, int]:
     """Validate + authorize + arm a nudge loop; return ``(loop, error, status)``.
 
@@ -256,13 +368,14 @@ async def authorize_and_add_nudge(
     if message:
         message, _ = redact_exfiltration_urls(message)
         message, _ = redact_credentials(message)
+    audit_tool = "monitor_watch" if monitor is not None else "autonudge_start"
 
     def _audit(outcome: str, err: str | None = None) -> None:
         try:
             sel().log_tool_invocation(
                 session_key=slot_key,
                 source=source,
-                tool_name="autonudge_start",
+                tool_name=audit_tool,
                 outcome=outcome,
                 error=err or "",
                 metadata={
@@ -283,6 +396,22 @@ async def authorize_and_add_nudge(
     if svc is None:
         _audit("error", "autonudge disabled")
         return None, "auto-nudge disabled (KIROCREW_AUTONUDGE not set)", 503
+    monitor_wake_instructions = ""
+    if monitor is not None:
+        monitor_wake_instructions = monitor.wake_instructions
+        if len(monitor_wake_instructions) > MAX_MONITOR_WAKE_INSTRUCTIONS_CHARS:
+            return _deny(
+                "wake_instructions too long " f"(max {MAX_MONITOR_WAKE_INSTRUCTIONS_CHARS} chars)",
+                400,
+            )
+        monitor_wake_instructions, _ = redact_exfiltration_urls(monitor_wake_instructions)
+        monitor_wake_instructions, _ = redact_credentials(monitor_wake_instructions)
+        if len(monitor_wake_instructions) > MAX_MONITOR_WAKE_INSTRUCTIONS_CHARS:
+            return _deny(
+                "wake_instructions too long after redaction "
+                f"(max {MAX_MONITOR_WAKE_INSTRUCTIONS_CHARS} chars)",
+                400,
+            )
     if not slot_key or not message:
         return _deny("session_key (or slot_key) and message required", 400)
     try:
@@ -391,34 +520,54 @@ async def authorize_and_add_nudge(
         if slot_key not in state._slots:
             return _deny(f"unknown slot {slot_key}", 404)
         authorized_slot = state._slots.get(slot_key)
+        slot_mode = str(getattr(authorized_slot, "mode", ""))
+        if slot_mode in {"crew", "member"}:
+            return _deny(f"{slot_mode}-mode sessions do not accept direct automation turns", 409)
+        if str(getattr(authorized_slot, "memory_mode", "persistent")) != "persistent":
+            return _deny("incognito and temporary sessions cannot host automation loops", 403)
 
         def _dashboard_admission() -> bool:
-            return slot_key in state._slots and state._slots.get(slot_key) is authorized_slot
+            current = state._slots.get(slot_key)
+            return (
+                current is authorized_slot
+                and str(getattr(current, "mode", "")) not in {"crew", "member"}
+                and str(getattr(current, "memory_mode", "persistent")) == "persistent"
+            )
 
         admission_check = _dashboard_admission
     if len(message) > 8000:
         return _deny("message too long (max 8000 chars)", 400)
-    stop_sentinel_path = (stop_sentinel_path or "").strip()
-    if stop_sentinel_path and is_sensitive_path(stop_sentinel_path):
-        return _deny("stop_sentinel_path points to a sensitive location", 400)
-    # Auto-default: per-session sentinel so multiple loops don't clash. The
-    # unlink is filesystem I/O — offloaded (no-blocking-call-on-event-loop).
-    if not stop_sentinel_path:
-        if is_channel_key(slot_key):
-            stop_sentinel_path = resolve_stop_sentinel(slot_key)
-        else:
-            slot = state._slots.get(slot_key)
-            if slot:
-                stop_sentinel_path = resolve_stop_sentinel(
-                    slot_key, getattr(slot, "workspace", "default")
-                )
-        if stop_sentinel_path:
-            sentinel = Path(stop_sentinel_path)
+    if monitor is None:
+        get_by_slot = getattr(svc, "get_by_slot", None)
+        existing = get_by_slot(slot_key) if callable(get_by_slot) else None
+        existing_monitor = getattr(existing, "monitor", None)
+        if isinstance(existing_monitor, MonitorState) and existing_monitor.wake_in_flight:
+            return _deny(
+                "existing monitor cannot be replaced while a wake is in flight",
+                409,
+            )
+    if monitor is None:
+        stop_sentinel_path = (stop_sentinel_path or "").strip()
+        if stop_sentinel_path and is_sensitive_path(stop_sentinel_path):
+            return _deny("stop_sentinel_path points to a sensitive location", 400)
+        # Auto-default: per-session sentinel so multiple loops don't clash. The
+        # unlink is filesystem I/O — offloaded (no-blocking-call-on-event-loop).
+        if not stop_sentinel_path:
+            if is_channel_key(slot_key):
+                stop_sentinel_path = resolve_stop_sentinel(slot_key)
+            else:
+                slot = state._slots.get(slot_key)
+                if slot:
+                    stop_sentinel_path = resolve_stop_sentinel(
+                        slot_key, getattr(slot, "workspace", "default")
+                    )
+            if stop_sentinel_path:
+                sentinel = Path(stop_sentinel_path)
 
-            def _unlink_sentinel() -> None:
-                sentinel.unlink(missing_ok=True)
+                def _unlink_sentinel() -> None:
+                    sentinel.unlink(missing_ok=True)
 
-            await asyncio.get_running_loop().run_in_executor(None, _unlink_sentinel)
+                await asyncio.get_running_loop().run_in_executor(None, _unlink_sentinel)
 
     # AUDIT-OR-DENY: the loop must never be armed unaudited. Emit a CRITICAL
     # ``invoked`` event BEFORE svc.add — ``critical=True`` writes synchronously
@@ -429,20 +578,35 @@ async def authorize_and_add_nudge(
     # ordering and exception propagation. The terminal success event below is
     # then best-effort: if it fails, the armed loop is still covered by this
     # invoked record.
+    def _audit_metadata() -> dict[str, Any]:
+        if monitor is not None:
+            return {
+                "slot_key": slot_key,
+                "kind": monitor.kind,
+                "objective": monitor.objective,
+                "cadence_secs": monitor.cadence_secs,
+                "max_runtime_secs": monitor.budgets.max_runtime_secs,
+                "max_agent_turns": monitor.budgets.max_agent_turns,
+                "max_tokens": monitor.budgets.max_tokens,
+                "max_provider_errors": monitor.budgets.max_provider_errors,
+                "caller": caller,
+            }
+        return {
+            "slot_key": slot_key,
+            "idle_secs": int(idle_secs),
+            "max_cycles": int(max_cycles),
+            "max_runtime_secs": int(max_runtime_secs),
+            "caller": caller,
+        }
+
     def _critical_invoked_audit() -> None:
         sel().log_tool_invocation(
             session_key=slot_key,
             source=source,
-            tool_name="autonudge_start",
+            tool_name=audit_tool,
             outcome="invoked",
             critical=True,
-            metadata={
-                "slot_key": slot_key,
-                "idle_secs": int(idle_secs),
-                "max_cycles": int(max_cycles),
-                "max_runtime_secs": int(max_runtime_secs),
-                "caller": caller,
-            },
+            metadata=_audit_metadata(),
         )
 
     try:
@@ -451,33 +615,67 @@ async def authorize_and_add_nudge(
         logger.error("autonudge arm denied: SEL audit unavailable", exc_info=True)
         return None, "audit log unavailable — nudge loop not armed", 503
     try:
-        loop = await svc.add(
-            slot_key=slot_key,
-            message=message,
-            idle_secs=int(idle_secs),
-            max_cycles=int(max_cycles),
-            stop_sentinel_path=stop_sentinel_path,
-            max_runtime_secs=int(max_runtime_secs),
-            admission_check=admission_check,
-            gate=gate,
-        )
+        if monitor is None:
+            add_kwargs: dict[str, Any] = {
+                "slot_key": slot_key,
+                "message": message,
+                "idle_secs": int(idle_secs),
+                "max_cycles": int(max_cycles),
+                "stop_sentinel_path": stop_sentinel_path,
+                "max_runtime_secs": int(max_runtime_secs),
+                "admission_check": admission_check,
+                "gate": gate,
+            }
+            if not replace_existing:
+                add_kwargs["replace_existing"] = False
+            loop = await svc.add(
+                **add_kwargs,
+            )
+        else:
+            add_monitor_kwargs: dict[str, Any] = {
+                "slot_key": slot_key,
+                "kind": monitor.kind,
+                "target": monitor.target,
+                "objective": monitor.objective,
+                "cadence_secs": monitor.cadence_secs,
+                "budgets": monitor.budgets,
+                "wake_instructions": monitor_wake_instructions,
+                "admission_check": admission_check,
+            }
+            if not replace_existing:
+                add_monitor_kwargs["replace_existing"] = False
+            if expected_existing_monitor_id is not None:
+                add_monitor_kwargs["expected_existing_monitor_id"] = expected_existing_monitor_id
+                add_monitor_kwargs["expected_existing_config_generation"] = (
+                    expected_existing_config_generation
+                )
+            loop = await svc.add_monitor(
+                **add_monitor_kwargs,
+            )
     except NudgeAdmissionRefused:
         return _deny("session changed before nudge arm committed", 409)
+    except MonitorUpdateConflict as exc:
+        return _deny(str(exc), 409)
     except Exception as exc:  # noqa: BLE001 - audit the failure, then propagate
         _audit("error", f"svc.add failed: {type(exc).__name__}")
         raise
     try:
-        sel().log_tool_invocation(
-            session_key=slot_key,
-            source=source,
-            tool_name="autonudge_start",
-            outcome="success",
-            metadata={
+        success_metadata = (
+            {"loop_id": loop.id, **_audit_metadata()}
+            if monitor is not None
+            else {
                 "loop_id": loop.id,
                 "idle_secs": loop.idle_secs,
                 "max_cycles": loop.max_cycles,
                 "caller": caller,
-            },
+            }
+        )
+        sel().log_tool_invocation(
+            session_key=slot_key,
+            source=source,
+            tool_name=audit_tool,
+            outcome="success",
+            metadata=success_metadata,
         )
     except Exception:  # noqa: BLE001 - armed loop already covered by ``invoked``
         logger.warning(

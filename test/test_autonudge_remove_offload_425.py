@@ -10,10 +10,12 @@ from __future__ import annotations
 import asyncio
 import json
 import threading
+from unittest.mock import AsyncMock
 
 import pytest
 
 from kiro_crew.autonudge import AutoNudgeService, NudgeAdmissionRefused
+from kiro_crew.monitoring.models import MonitorBudgets
 
 
 @pytest.fixture(autouse=True)
@@ -337,3 +339,35 @@ async def test_maintenance_quiesce_wakes_a_firing_remove_waiter(tmp_path, monkey
         if not timer.done():
             timer.cancel()
             await asyncio.gather(timer, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_offline_maintenance_does_not_deactivate_an_active_monitor(tmp_path):
+    writer = AutoNudgeService(base_dir=tmp_path)
+    runtime = None
+    try:
+        legacy = await writer.add(slot_key="chat-legacy", message="old", idle_secs=15)
+        monitor = await writer.add_monitor(
+            slot_key="chat-monitor",
+            kind="github_pull_request",
+            target="https://github.com/acme/widgets/pull/7",
+            objective="review_ready",
+            cadence_secs=60,
+            budgets=MonitorBudgets(max_runtime_secs=600),
+            now=100.0,
+        )
+
+        async with AutoNudgeService.maintenance_service(base_dir=tmp_path) as view:
+            await view.remove(legacy.id)
+
+        runtime = AutoNudgeService(base_dir=tmp_path, on_monitor_tick=AsyncMock())
+        runtime._load()
+        restored = runtime._loops[monitor.id]
+
+        assert restored.active
+        assert restored.monitor is not None
+        assert restored.monitor.outcome is None
+    finally:
+        writer.stop()
+        if runtime is not None:
+            runtime.stop()

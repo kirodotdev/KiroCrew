@@ -7,6 +7,7 @@ import asyncio
 import json
 import logging
 import os
+import subprocess
 import sys
 import threading
 import time
@@ -2417,6 +2418,36 @@ class TestInitAutonudge:
         with patch("kiro_crew.slack.gateway.autonudge_enabled", return_value=False):
             await orch._init_autonudge()
         assert not hasattr(orch, "autonudge_svc") or orch.autonudge_svc is None  # noqa: E501
+
+    def test_disabled_gateway_import_does_not_load_monitor_runtime(self, tmp_path):
+        env = os.environ.copy()
+        env["KIROCREW_AUTONUDGE"] = "0"
+        env["KIROCREW_HOME"] = str(tmp_path / "crew")
+        env["KIRO_HOME"] = str(tmp_path / "kiro")
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                (
+                    "import sys; import kiro_crew.slack.gateway; "
+                    "print(sorted(name for name in sys.modules if name in {"
+                    "'kiro_crew.monitoring.controller',"
+                    "'kiro_crew.monitoring.github_pull_request',"
+                    "'kiro_crew.monitoring.gitlab_merge_request',"
+                    "'kiro_crew.monitoring.azure_devops_pull_request',"
+                    "'kiro_crew.monitoring.bitbucket_pull_request'}))"
+                ),
+            ],
+            cwd=tmp_path,
+            env=env,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=120,
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.strip() == "[]"
 
     @pytest.mark.asyncio
     async def test_enabled_creates_service(self):

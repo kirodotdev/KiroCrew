@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from kiro_crew.monitoring.decision import decide_monitor
+from kiro_crew.monitoring.decision import decide_monitor, monitor_budget_reason
 from kiro_crew.monitoring.models import (
     MonitorBudgets,
     MonitorDecision,
@@ -106,6 +106,16 @@ def test_success_after_a_changed_head_can_reach_terminal_success() -> None:
         )
         is MonitorDecision.STOP_SUCCESS
     )
+
+
+def test_cumulative_provider_error_budget_is_a_hard_bound() -> None:
+    state = _state(
+        provider_error_count=3,
+        consecutive_provider_errors=0,
+        budgets=MonitorBudgets(max_provider_errors=3),
+    )
+
+    assert monitor_budget_reason(state, now=1_100.0) == "provider_error_budget"
 
 
 @pytest.mark.parametrize(
