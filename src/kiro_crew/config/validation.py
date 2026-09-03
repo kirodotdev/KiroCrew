@@ -398,7 +398,15 @@ def validate_config_data(data: dict) -> dict:
         if "provider" in stt:
             stt["provider"] = _validated_stt_provider(stt["provider"])
         if "model" in stt:
-            stt["model"] = _validated_stt_model(stt["model"])
+            # The sibling pair travels with the name: ``custom`` is only a usable
+            # selection when both halves are set, and validating it without them
+            # rewrites a correctly configured custom model back to the default here,
+            # before the parse site ever sees it.
+            stt["model"] = _validated_stt_model(
+                stt["model"],
+                custom_url=stt.get("custom_model_url", ""),
+                custom_sha256=stt.get("custom_model_sha256", ""),
+            )
 
     # 4. Preserve numeric values written by older config writers.
     _coerce_legacy_numeric_values(data, JSON_SCHEMA)

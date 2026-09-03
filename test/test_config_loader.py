@@ -2539,10 +2539,36 @@ class TestSttModelCatalog:
     def test_every_target_is_downloadable(self) -> None:
         assert set(_SUPERSEDED_STT_MODELS.values()) <= {m.name for m in stt_models.CATALOG}
 
-    def test_the_advertised_menu_is_the_catalog(self) -> None:
+    def test_the_advertised_menu_is_the_catalog_plus_the_custom_sentinel(self) -> None:
         """The enum the schema publishes drives the dashboard picker. Anything it
-        offers beyond the catalog is a model the downloader cannot fetch."""
-        assert set(loader_module._VALID_STT_MODELS) == {m.name for m in stt_models.CATALOG}
+        offers beyond the catalog is a model the downloader cannot fetch.
+
+        ``custom`` is the one exception and is asserted exactly rather than
+        excluded: it names no artifact, so what makes it fetchable is the
+        ``custom_model_url`` / ``custom_model_sha256`` pair, and the loader
+        degrades it to the default when they are not both usable. Pinning the set
+        in both directions keeps a second sentinel from being added without a
+        download path behind it."""
+        assert set(loader_module._VALID_STT_MODELS) == {m.name for m in stt_models.CATALOG} | {
+            stt_models.CUSTOM_MODEL
+        }
+
+    def test_custom_is_accepted_only_with_a_usable_url_and_digest(self, caplog) -> None:
+        """The sentinel is a selection, not a model: without the pair there is
+        nothing to fetch and nothing to verify it against, so it must degrade the
+        way an unknown name does rather than reach a download."""
+        digest = "a" * 64
+        assert (
+            _validated_stt_model(
+                stt_models.CUSTOM_MODEL,
+                custom_url="https://models.example/ggml-x.bin",
+                custom_sha256=digest,
+            )
+            == stt_models.CUSTOM_MODEL
+        )
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.config.loader"):
+            assert _validated_stt_model(stt_models.CUSTOM_MODEL) == stt_models.DEFAULT_MODEL
+        assert stt_models.CUSTOM_MODEL in caplog.text
 
     def test_an_unknown_name_degrades_to_the_default(self, caplog) -> None:
         with caplog.at_level(logging.WARNING, logger="kiro_crew.stt.models"):

@@ -855,6 +855,8 @@ class SttConfig:
     timeout_secs: int = 300
     transcribe_region: str = "us-east-1"   # transcribe provider only
     transcribe_profile: str = ""           # transcribe provider only; empty = default credential chain
+    custom_model_url: str = ""             # https ggml model to run when model == "custom"
+    custom_model_sha256: str = ""          # its 64-hex sha256; without both, "custom" degrades to the default
 
 @dataclass
 class ComputerUseConfig:

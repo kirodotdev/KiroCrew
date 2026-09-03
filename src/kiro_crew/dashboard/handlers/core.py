@@ -713,9 +713,26 @@ async def api_stt_config(request: web.Request) -> web.Response:
             if (
                 "model" in body
                 and isinstance(body["model"], str)
-                and body["model"] in _STT_MODEL_SIZES
+                and (body["model"] in _STT_MODEL_SIZES or body["model"] == stt_models.CUSTOM_MODEL)
             ):
                 stt_section["model"] = body["model"]
+            # Accepted independently of `model` so the pair can be filled in BEFORE
+            # `custom` is selected: the config loader degrades a `custom` selection
+            # with no usable pair back to the default model, so writing the two in
+            # the other order would store a selection that reads back as `base`.
+            # Validated with the same helpers the loader uses, so a value this
+            # endpoint accepts is one the loader will keep.
+            if "custom_model_url" in body:
+                custom_url = stt_models.valid_custom_url(body["custom_model_url"])
+                # An explicit empty string clears the setting, which is how a user
+                # goes back to a catalog model. A malformed non-empty value is
+                # skipped like any other wrong-typed field rather than clearing it.
+                if custom_url or body["custom_model_url"] == "":
+                    stt_section["custom_model_url"] = custom_url
+            if "custom_model_sha256" in body:
+                custom_digest = stt_models.valid_custom_sha256(body["custom_model_sha256"])
+                if custom_digest or body["custom_model_sha256"] == "":
+                    stt_section["custom_model_sha256"] = custom_digest
             if "transcribe_region" in body and isinstance(body["transcribe_region"], str):
                 stt_section["transcribe_region"] = body["transcribe_region"]
             if "transcribe_profile" in body and isinstance(body["transcribe_profile"], str):
@@ -795,6 +812,11 @@ async def api_stt_config(request: web.Request) -> web.Response:
             "enabled": cfg.stt.enabled,
             "provider": provider,
             "model": cfg.stt.model,
+            # The custom-model pair, so the panel can show what is configured and
+            # edit it. Neither is a secret: a model URL is a public download and a
+            # sha256 is a digest the user is expected to have checked themselves.
+            "custom_model_url": cfg.stt.custom_model_url,
+            "custom_model_sha256": cfg.stt.custom_model_sha256,
             "available": available,
             "streaming": cfg.stt.streaming,
             "endpointing": cfg.stt.endpointing,
@@ -866,6 +888,20 @@ async def api_stt_status(request: web.Request) -> web.Response:
             {"name": m.name, "size_bytes": m.size_bytes, "present": stt_models.is_present(m)}
             for m in stt_models.CATALOG
         ]
+        if model.name == stt_models.CUSTOM_MODEL:
+            # Appended rather than being a catalog row, because a custom model is
+            # configuration and not a published artifact. It still has to appear
+            # here: this list is what renders the picker's presence line and its
+            # "download it now" button, and without a row the panel would report the
+            # selected model as absent forever. Last, because the list is ordered by
+            # download size and this one has none to sort by.
+            catalog.append(
+                {
+                    "name": model.name,
+                    "size_bytes": model.size_bytes,
+                    "present": stt_models.is_present(model),
+                }
+            )
         ensure_ffmpeg_in_path()
         # Resolved on the same thread as the rest: it lists a store directory and,
         # when a candidate is there, hashes up to 80 MB to authenticate it.
@@ -925,8 +961,10 @@ async def api_stt_prepare(request: web.Request) -> web.Response:
 
     An optional ``{"model": name}`` body fetches a model the operator has not
     saved yet, so the picker can offer the weights BEFORE the selection is
-    committed. Only catalog names reach the network: an unknown one resolves to
-    the default with a logged reason, the same as the configured value does.
+    committed. Only a catalog name or the configured custom model reaches the
+    network: an unknown one resolves to the default with a logged reason, the same
+    as the configured value does, and ``custom`` resolves to the URL and digest
+    already in config rather than to anything in this request.
     """
     denied = _deny_app_token(request, "stt.prepare")
     if denied is not None:

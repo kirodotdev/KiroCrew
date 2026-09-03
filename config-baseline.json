@@ -2479,6 +2479,8 @@
         "enabled": true,
         "provider": "local",
         "model": "base",
+        "custom_model_url": "",
+        "custom_model_sha256": "",
         "language_code": "en-US",
         "streaming": true,
         "silence_ms": 700,
@@ -2532,15 +2534,44 @@
       "sensitive": false,
       "tags": [],
       "label": "Model",
-      "help": "Which speech model the local provider downloads and runs. Bigger is more accurate and a longer first-time download: `tiny` on a machine short of memory, `base` for everyone, `small` when accents or jargon are being misheard, `large-v3-turbo` for the best accuracy available.",
+      "help": "Which speech model the local provider downloads and runs. Bigger is more accurate and a longer first-time download: `tiny` on a machine short of memory, `base` for everyone, `small` when accents or jargon are being misheard, `large-v3-turbo` for the best accuracy available. `custom` runs the whisper.cpp model at `custom_model_url` instead, verified against `custom_model_sha256`.",
       "hasChildren": false,
       "enumValues": [
         "tiny",
         "base",
         "small",
-        "large-v3-turbo"
+        "large-v3-turbo",
+        "custom"
       ],
       "defaultValue": "base"
+    },
+    {
+      "path": "stt.custom_model_url",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Custom Model URL",
+      "help": "HTTPS URL of a whisper.cpp ggml model to run INSTEAD of a catalog model, used when `model` is `custom`. The download is verified against `custom_model_sha256` before anything is stored, and re-verified on every load, so a mirror can serve the bytes but cannot substitute them. Both this and the digest must be set; otherwise `custom` degrades to the default model with a warning.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": ""
+    },
+    {
+      "path": "stt.custom_model_sha256",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Custom Model SHA-256",
+      "help": "The 64-character hex sha256 of the file at `custom_model_url`. This is the whole trust anchor for a custom model: nothing is written to the models directory unless the digest computed while downloading matches it. Get it with `shasum -a 256 <file>` (or `Get-FileHash` on Windows) from a copy you trust.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": ""
     },
     {
       "path": "stt.language_code",
