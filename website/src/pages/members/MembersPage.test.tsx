@@ -223,6 +223,19 @@ describe('MembersPage drawer and edit jump', () => {
     await waitFor(() => expect(screen.queryByTestId('member-drawer')).toBeNull())
   })
 
+  it('the drawer is hosted in the shared DetailPanel: drag-resize handle present, header close works', async () => {
+    await renderPage([row({ bound: true, slot_key: 'member-oncall' })])
+    fireEvent.click(await screen.findByText('oncall'))
+    await screen.findByTestId('member-drawer')
+    // DetailPanel's resize splitter — the affordance the hand-rolled aside
+    // never had. Its presence pins that the drawer went through the shared
+    // component rather than a lookalike.
+    expect(screen.getByRole('separator', { name: /resize/i })).toBeInTheDocument()
+    // DetailPanel's own header close button (replaces the old mobile-only X).
+    fireEvent.click(screen.getByRole('button', { name: /close panel/i }))
+    await waitFor(() => expect(screen.queryByTestId('member-drawer')).toBeNull())
+  })
+
   it('the edit affordance lives in the drawer only and navigates to the crew manager crews tab', async () => {
     await renderPage([row({ bound: true, slot_key: 'member-oncall' })])
     fireEvent.click(await screen.findByText('oncall'))

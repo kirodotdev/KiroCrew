@@ -21,7 +21,7 @@
  */
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { ArrowLeft, Clock, ExternalLink, Pencil, UserPlus, Users, Webhook, X } from 'lucide-react'
+import { ArrowLeft, Clock, ExternalLink, Pencil, UserPlus, Users, Webhook } from 'lucide-react'
 import { PanelRightSolid } from '../../components/icons/panels'
 import { useTranslation } from 'react-i18next'
 import { api, type MemberActivityEntry, type MemberRosterRow, type WebhookTokenEntry } from '../../api/client'
@@ -32,10 +32,13 @@ import { useAppDispatch, useAppSelector } from '../../store'
 import { markSlotRead } from '../../store/dashboardSlice'
 import CrewAvatar from '../../components/CrewAvatar'
 import ChatPane from '../../components/ChatPane'
+import DetailPanel from '../../components/DetailPanel'
 import ErrorBoundary from '../../components/ErrorBoundary'
+import { useIsMobile } from '../../hooks/useIsMobile'
 import { SearchInput } from '../../components/ui'
 import { AnimatePresence, motion } from 'framer-motion'
 import { sidePanelDockMotion } from '../chat/sidePanelMount'
+import { CHAT_PANE_MIN_W } from '../chat/SidePanel'
 import ResizeHandle from '../../components/ResizeHandle'
 import { useColumnResize } from '../../hooks/useColumnResize'
 import { loadColumnWidth } from '../../lib/columnWidth'
@@ -50,6 +53,18 @@ const ROSTER_MIN = 200
 const ROSTER_MAX = 420
 const ROSTER_DEFAULT = 264
 const ROSTER_WIDTH_KEY = 'mc-members-roster-width'
+/** Detail drawer width bounds. The default matches the pre-DetailPanel fixed
+ *  300px so the migration changes capability (drag-to-resize), not the resting
+ *  look. Width persists under its own key, independent of the roster's. */
+const DRAWER_MIN = 240
+const DRAWER_DEFAULT = 300
+const DRAWER_WIDTH_KEY = 'mc-members-drawer-width'
+/** Space DetailPanel must keep clear for its left-side siblings when dragged
+ *  wide: the live roster width is added at the call site. The thread minimum
+ *  is chat's own CHAT_PANE_MIN_W (the members thread IS a ChatPane), plus this
+ *  page's three inter-column gap-2s (24px), so one constant owns the
+ *  usable-pane floor and a future change there carries over. */
+const THREAD_MIN_RESERVE = CHAT_PANE_MIN_W + 24
 /** Punctuation, not prose: joins an activity label to its project name. */
 const PROJECT_SEPARATOR = ' \u00b7 '
 // Module-level so the resize hook's memoised resolver isn't invalidated every render.
@@ -132,6 +147,10 @@ export default function MembersPage() {
   // The chat side panel's right-dock mount preset — module-pure, so one
   // constant serves every render.
   const drawerMotion = sidePanelDockMotion('right')
+  // Drives the drawer's two shells: fixed overlay + dock motion below md,
+  // DetailPanel's own docked width animation on md+ (same breakpoint as the
+  // width-gated drawerOpen initializer above).
+  const isMobile = useIsMobile()
   const sortedMembers = useMemo(() => {
     const ordered = [...members].sort(
       (a, b) =>
@@ -325,12 +344,14 @@ export default function MembersPage() {
   )
 
   return (
-    // pr-2/pb-2 only: the top and left insets are NOT this page's to add. The
-    // nav rail (App.tsx) sits flush under the 42px topbar (mt-0) and carries
-    // its own mr-2, and the Sessions page's card family aligns to those same
-    // edges — a p-2 here pushed this page's cards 8px down and 8px right of
-    // every sibling surface (visible as mismatched card tops beside the rail).
-    <div className="flex h-full min-h-0 gap-2 pr-2 pb-2" data-testid="members-page">
+    // No padding on the root: the detail drawer docks FLUSH to the window's
+    // right edge and spans the full content height, exactly like the chat
+    // page's side panel. The card columns' right/bottom insets move onto the
+    // inner wrapper below, so they keep today's geometry while the drawer
+    // sits outside them.
+    <div className="flex h-full min-h-0" data-testid="members-page">
+      {/* Card columns (roster + thread) keep the page's original insets. */}
+      <div className="flex flex-1 min-w-0 gap-2 pr-2 pb-2">
       {/* Member list. Below md the page is single-pane: the roster IS the
           page until a member is picked, then the thread takes over and the
           header's back button returns here. Two fixed rails (264+300px)
@@ -547,60 +568,37 @@ export default function MembersPage() {
           </>
         )}
       </section>
+      </div>
 
       {/* Detail drawer — read-only observation; writes live in the crew manager.
-          Below md it overlays the thread instead of claiming 300px of row
-          width, and it starts closed there (the width-gated useState above).
-          Mount/unmount reuses the chat page's side-panel motion preset
-          (sidePanelDockMotion + the same 0.18s ease), so the two right panels
-          open with one gesture AND one animation. On mobile the aside is
-          position:fixed (out of flow), so the width tween is inert there and
-          only the opacity fade applies — acceptable, not a defect. */}
+          The shell is the shared DetailPanel with its stock chrome (border-l,
+          bg-bg, no rounding): it docks FLUSH to the window's right edge and
+          spans the full content height, reading as the same right-dock family
+          as the chat page's side panel rather than a floating card. Same
+          header idiom (close + identity + title), same body padding, and the
+          same drag-to-resize handle with a persisted width. On md+
+          DetailPanel's own width spring is the one mount animation. Below md
+          the drawer overlays the thread instead of claiming row width (and
+          starts closed there — the width-gated useState above); that branch
+          keeps the side-panel dock motion on a fixed-position wrapper, where
+          drag-resize is moot because the overlay spans a fixed 300px. */}
       <AnimatePresence>
-        {active && drawerOpen && (
-          <motion.div
-            key="member-drawer-motion"
-            initial={drawerMotion.initial}
-            animate={drawerMotion.animate}
-            exit={drawerMotion.exit}
-            transition={{ duration: 0.18, ease: [0.2, 0, 0, 1] }}
-            className="h-full overflow-visible flex justify-end md:shrink-0"
-          >
-            <aside
-              id="member-drawer"
-              className="fixed top-safe bottom-safe right-safe z-40 w-[300px] max-w-full bg-bg-elevated border-l border-border p-4 overflow-y-auto md:static md:z-auto md:shrink-0 md:border md:rounded-xl md:shadow-sm"
-              data-testid="member-drawer"
-              aria-label={t('pages.membersPage.details')}
-            >
-          {/* Member header — who this drawer is about, mirroring the detail
-              mock: avatar, name, and a live status line (working now, or the
-              last time anything happened on the thread). */}
-          <div className="flex items-center gap-3 mb-3">
-            <CrewAvatar seed={active.name} size={40} />
-            <div className="min-w-0 flex-1">
-              <div className="text-sm font-semibold truncate">{active.name}</div>
-              <div className="text-[11px] truncate" data-testid="member-drawer-status">
-                {isRunning(active) ? (
-                  <span className="text-ok">{t('pages.membersPage.drawer_working')}</span>
-                ) : active.last_active_ts ? (
-                  <span className="text-muted">{timeAgo(active.last_active_ts)}</span>
-                ) : (
-                  <span className="text-muted">{'\u00a0'}</span>
-                )}
-              </div>
-            </div>
-            {/* Drawer-local close, MOBILE ONLY: below md the overlay covers
-                the header's toggle, so without this the drawer cannot be
-                closed there. On md+ the header toggle is the one close
-                gesture, same as the chat page's side panel. */}
-            <button
-              onClick={() => setDrawerOpen(false)}
-              className="md:hidden inline-flex items-center p-1 -mr-1 rounded hover:bg-accent/40"
-              aria-label={t('app.close')}
-              data-testid="member-drawer-close"
-            >
-              <X size={14} className="lucide-inline" />
-            </button>
+        {active && drawerOpen && (() => {
+          const body = (
+            /* Keeps the old aside's id: the roster header's Details toggle
+               points here via aria-controls. */
+            <div id="member-drawer" data-testid="member-drawer" aria-label={t('pages.membersPage.details')}>
+          {/* Live status line — working now, or the last time anything
+              happened on the thread. Identity (avatar + name) moved into the
+              DetailPanel header, so the body opens with the status alone. */}
+          <div className="text-[11px] truncate mb-3" data-testid="member-drawer-status">
+            {isRunning(active) ? (
+              <span className="text-ok">{t('pages.membersPage.drawer_working')}</span>
+            ) : active.last_active_ts ? (
+              <span className="text-muted">{timeAgo(active.last_active_ts)}</span>
+            ) : (
+              <span className="text-muted">{'\u00a0'}</span>
+            )}
           </div>
           {/* Honest counters only — both derive from the recorded activity
               log. Semantic stats the backend cannot attest (PRs, triages,
@@ -743,9 +741,47 @@ export default function MembersPage() {
             <Pencil size={12} className="lucide-inline" />
             {t('pages.membersPage.edit_in_crew_manager')}
           </button>
-        </aside>
-          </motion.div>
-        )}
+            </div>
+          )
+          const panelProps = {
+            icon: <CrewAvatar seed={active.name} size={22} />,
+            title: active.name,
+            onClose: () => setDrawerOpen(false),
+            initialWidth: DRAWER_DEFAULT,
+            minWidth: DRAWER_MIN,
+            storageKey: DRAWER_WIDTH_KEY,
+          }
+          return isMobile ? (
+            <motion.div
+              key="member-drawer-motion"
+              initial={drawerMotion.initial}
+              animate={drawerMotion.animate}
+              exit={drawerMotion.exit}
+              transition={{ duration: 0.18, ease: [0.2, 0, 0, 1] }}
+              className="fixed top-safe bottom-safe right-safe z-40 w-[300px] max-w-full bg-bg-elevated border-l border-border"
+            >
+              {/* `embedded`: fill the fixed wrapper AND drop the resize
+                  handle — the overlay spans a fixed 300px, and a live handle
+                  here would persist a mobile-clamped width over the user's
+                  chosen desktop width. Edge chrome (left border, elevated bg)
+                  lives on the wrapper above. */}
+              <DetailPanel {...panelProps} embedded>
+                {body}
+              </DetailPanel>
+            </motion.div>
+          ) : (
+            /* reserveWidth keeps the live roster width plus a usable thread
+               minimum clear, so dragging the panel wide can never collapse the
+               DM thread to zero (same contract as ChatPage's panelReserve). */
+            <DetailPanel
+              key="member-drawer-panel"
+              {...panelProps}
+              reserveWidth={roster.width + THREAD_MIN_RESERVE}
+            >
+              {body}
+            </DetailPanel>
+          )
+        })()}
       </AnimatePresence>
     </div>
   )
