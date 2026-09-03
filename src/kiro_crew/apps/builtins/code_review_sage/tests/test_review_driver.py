@@ -510,8 +510,14 @@ class TestWorkerPromptInterpreter(unittest.TestCase):
         return [D.build_review_task(self.LINK), D.build_review_followup_task(self.LINK)]
 
     def test_no_prompt_names_a_bare_interpreter(self):
+        # Both needles are anchored on the opening backtick of an inline code
+        # span: python_command() legitimately embeds the absolute
+        # sys.executable, which can itself end in "python3" (issue #8205), so
+        # an unanchored needle would fire on the correct path. Unbackticked
+        # prose is covered only by the span test below
+        # (test_every_script_command_carries_the_resolved_interpreter).
         for p in self._prompts():
-            self.assertNotIn("python3 ", p)
+            self.assertNotIn("`python3 ", p)
             self.assertNotIn("`python ", p)
 
     def test_every_script_command_carries_the_resolved_interpreter(self):
