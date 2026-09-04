@@ -10777,6 +10777,7 @@
         "read_only_failed": "无法加载此提示词，因此无法在此编辑。",
         "read_only_lossy": "此提示词不是有效的 UTF-8，因此无法在此编辑。",
         "read_only_redacted": "此副本已因安全原因被过滤，因此无法在此编辑。",
+        "retry_read": "重试",
         "save": "保存",
         "saved_prompts_from": "来自 {{registry}} 和 ~/.kiro/prompts/ 的已保存提示词。在聊天中用 @name 调用，或用 /prompts get name。",
         "scope_global": "全局",

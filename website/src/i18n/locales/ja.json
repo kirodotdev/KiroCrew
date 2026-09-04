@@ -10777,6 +10777,7 @@
         "read_only_failed": "このプロンプトを読み込めなかったため、ここでは編集できません。",
         "read_only_lossy": "このプロンプトは有効な UTF-8 ではないため、ここでは編集できません。",
         "read_only_redacted": "このコピーは安全のためフィルタリングされているため、ここでは編集できません。",
+        "retry_read": "再試行",
         "save": "保存",
         "saved_prompts_from": "{{registry}} と ~/.kiro/prompts/ に保存されたプロンプトです。チャットで @name、または /prompts get name で呼び出します。",
         "scope_global": "グローバル",

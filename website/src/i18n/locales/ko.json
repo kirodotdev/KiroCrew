@@ -10777,6 +10777,7 @@
         "read_only_failed": "이 프롬프트를 불러오지 못했으므로 여기서 편집할 수 없습니다.",
         "read_only_lossy": "이 프롬프트는 올바른 UTF-8이 아니므로 여기서 편집할 수 없습니다.",
         "read_only_redacted": "이 사본은 보안을 위해 필터링되었으므로 여기서 편집할 수 없습니다.",
+        "retry_read": "다시 시도",
         "save": "저장",
         "saved_prompts_from": "{{registry}}와(과) ~/.kiro/prompts/에 저장된 프롬프트입니다. 채팅에서 @name 또는 /prompts get name으로 호출하세요.",
         "scope_global": "전역",

@@ -11093,6 +11093,7 @@
         "read_only_failed": "Ce prompt n’a pas pu être chargé ; il n’est donc pas modifiable ici.",
         "read_only_lossy": "Ce prompt n’est pas de l’UTF-8 valide ; il n’est donc pas modifiable ici.",
         "read_only_redacted": "Cette copie a été filtrée pour des raisons de sécurité ; elle n’est donc pas modifiable ici.",
+        "retry_read": "Réessayer",
         "save": "Enregistrer",
         "saved_prompts_from": "Prompts enregistrés depuis {{registry}} et ~/.kiro/prompts/. Invoque-les avec @name dans le chat ou /prompts get name.",
         "scope_global": "Global",

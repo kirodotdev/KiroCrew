@@ -9,9 +9,10 @@ import { Card, CardTitle, Btn, Badge, SearchInput, EmptyState } from '../../comp
 import Modal from '../../components/Modal'
 import PromptForm, { PROMPT_FILENAME_MAX_BYTES, assemblePromptContent, parsePromptContent, promptNameProblem, type PromptFormData, type PromptScope } from '../../components/PromptForm'
 import InfoTip from '../../components/InfoTip'
+import ErrorNotice from '../../components/ErrorNotice'
 import ListDetailBack from '../../components/ListDetailBack'
 import { useSidePanelLeaveGuard } from '../../components/SidePanelLayout'
-import { parseErrorCode } from '../../utils/errorReport'
+import { parseErrorCode, findReport, type ErrorReport } from '../../utils/errorReport'
 import { useListDetailView } from '../../hooks/useListDetailView'
 import { useProvider } from '../../providers'
 
@@ -103,6 +104,13 @@ export default function PromptsTab() {
   // both would tell a user recovering from a network blip that their prompt
   // looks like it contains a secret.
   const [readOnlyReason, setReadOnlyReason] = useState<'redacted' | 'lossy' | 'failed' | null>(null)
+  // The failed read's journal report, captured in `load()`'s catch by the
+  // error's OWN message. The pane displays localized copy, and a localized
+  // string cannot match the journal (it keys on the server's English text),
+  // so without carrying the report here the Ask-agent hand-off would lose the
+  // structured context — endpoint, HTTP status, backend code — that is the
+  // hand-off's whole value.
+  const [failedReadReport, setFailedReadReport] = useState<ErrorReport | undefined>(undefined)
   // True from selection until that prompt's own detail response settles. Gates
   // the Edit/Delete row and the content box: neither can say anything honest
   // about a file whose read hasn't answered yet.
@@ -242,6 +250,7 @@ export default function PromptsTab() {
     setContent('')
     setContentEditable(false)
     setReadOnlyReason(null)
+    setFailedReadReport(undefined)
     // Named loading state, not inferred from empty content: without it the
     // header renders a disabled "Edit unavailable" for the whole fetch — a
     // label asserting a fact the system doesn't hold yet — and the content
@@ -284,11 +293,12 @@ export default function PromptsTab() {
       setContentEditable(!d.redacted && !d.lossy)
       setReadOnlyReason(d.redacted ? 'redacted' : d.lossy ? 'lossy' : null)
       setDetailLoading(false)
-    } catch {
+    } catch (e) {
       if (pendingRef.current !== key) return
       setContent('')
       setContentEditable(false)
       setReadOnlyReason('failed')
+      setFailedReadReport(e instanceof Error ? findReport(e.message) : undefined)
       setDetailLoading(false)
     }
   }, [queryClient])
@@ -576,15 +586,45 @@ export default function PromptsTab() {
                        fetch. */
                     <p className="text-muted text-[12px] italic">{i18nT('pages.overview.promptsTab.loading_content')}</p>
                   ) : (<>
-                    {readOnlyReason && (
+                    {(readOnlyReason === 'redacted' || readOnlyReason === 'lossy') && (
                       <p className="text-muted text-[11px] mb-1 italic">
                         {readOnlyReason === 'redacted'
                           ? i18nT('pages.overview.promptsTab.read_only_redacted')
-                          : readOnlyReason === 'lossy'
-                            ? i18nT('pages.overview.promptsTab.read_only_lossy')
-                            : i18nT('pages.overview.promptsTab.read_only_failed')}
+                          : i18nT('pages.overview.promptsTab.read_only_lossy')}
                       </p>
                     )}
+                    {/* `failed` is the one reason that IS an error — its value
+                        comes from `load()`'s catch — so it renders through
+                        ErrorNotice per errors-use-error-notice, keeping the
+                        journal's structured context and the agent hand-off.
+                        `redacted`/`lossy` stay a caption: they arrive on the
+                        SUCCESS path and describe the file's content, not a
+                        failure. askAgent is safe here: this block renders only
+                        while `detailEditing` is false, so no editor draft
+                        lives in the subtree the hand-off unmounts, and the
+                        create modal's backdrop covers the pane while it holds
+                        typed work.
+
+                        Only `failed` gets Retry, too: a redacted or lossy copy
+                        is the server's answer about the file's CONTENT and
+                        asking again returns the same answer, but a failed
+                        fetch is an answer about the NETWORK, and the recovery
+                        path already exists — re-clicking the selected row
+                        re-invokes the load. Nothing taught that, so the pane
+                        dead-ended until the user re-clicked by accident. The
+                        button calls the same `load` the row re-click calls;
+                        no new fetch path. */}
+                    {readOnlyReason === 'failed' && (<>
+                      <ErrorNotice
+                        message={i18nT('pages.overview.promptsTab.read_only_failed')}
+                        report={failedReadReport}
+                        askAgent
+                        className="mb-2"
+                      />
+                      <Btn className="mb-2 text-[12px]" onClick={() => void load(selected)}>
+                        {i18nT('pages.overview.promptsTab.retry_read')}
+                      </Btn>
+                    </>)}
                     <pre className="bg-bg-elevated border border-border rounded-md p-3 font-mono text-[13px] text-text overflow-x-auto whitespace-pre-wrap leading-normal">{content}</pre>
                   </>)}
                 </div>

@@ -10935,6 +10935,7 @@
         "read_only_failed": "Dieser Prompt konnte nicht geladen werden und kann hier nicht bearbeitet werden.",
         "read_only_lossy": "Dieser Prompt ist kein gültiges UTF-8 und kann hier nicht bearbeitet werden.",
         "read_only_redacted": "Diese Kopie wurde aus Sicherheitsgründen gefiltert und kann hier nicht bearbeitet werden.",
+        "retry_read": "Erneut versuchen",
         "save": "Speichern",
         "saved_prompts_from": "Gespeicherte Prompts aus {{registry}} und ~/.kiro/prompts/. Aufrufen mit @name im Chat oder /prompts get name.",
         "scope_global": "Global",
