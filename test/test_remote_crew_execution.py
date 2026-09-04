@@ -245,6 +245,63 @@ class TestVersionParity:
         assert "0.5.9" in str(excinfo.value)
         assert kiro_crew.__version__ in str(excinfo.value)
 
+    async def test_a_patch_skew_in_the_same_series_passes(self):
+        """0.6.0 and 0.6.3 share the frame vocabulary, so a patch skew is allowed.
+
+        The gate fences the ``major.minor`` SERIES, not the full string: a patch
+        release does not move the wire contract, so refusing it only forced a
+        lockstep upgrade with no safety it bought.
+        """
+        from kiro_crew.apps.version import parse_version
+
+        major, minor = parse_version(kiro_crew.__version__)[:2]
+        peer = f"{major}.{minor}.{minor + 999}"  # same major.minor, far-off patch
+        mgr = MagicMock()
+        mgr.peer_version = AsyncMock(return_value=(True, peer))
+        await ensure_version_parity(mgr, "nobita")  # does not raise
+
+    async def test_a_different_minor_is_refused(self):
+        """A feature release (minor bump on 0.x) moves the vocabulary — refuse it."""
+        from kiro_crew.apps.version import parse_version
+
+        major, minor = parse_version(kiro_crew.__version__)[:2]
+        peer = f"{major}.{minor + 1}.0"
+        mgr = MagicMock()
+        mgr.peer_version = AsyncMock(return_value=(True, peer))
+        with pytest.raises(RemoteTurnError) as excinfo:
+            await ensure_version_parity(mgr, "nobita")
+        assert "major.minor" in str(excinfo.value)
+
+    async def test_a_non_semver_build_id_falls_back_to_strict_equality(self, monkeypatch):
+        """When a side is a packaging build id, series parity is unprovable.
+
+        ``parse_version`` raises ``ValueError`` on a non-semver build id, so the
+        gate falls back to full-string equality rather than optimistically pass —
+        an equal build id runs, any difference is refused.
+        """
+        monkeypatch.setattr(kiro_crew, "__version__", "build-2026.09.04-abc123", raising=False)
+        mgr = MagicMock()
+        mgr.peer_version = AsyncMock(return_value=(True, "build-2026.09.04-abc123"))
+        await ensure_version_parity(mgr, "nobita")  # identical build id → passes
+
+        mgr.peer_version = AsyncMock(return_value=(True, "build-2026.09.03-def456"))
+        with pytest.raises(RemoteTurnError):
+            await ensure_version_parity(mgr, "nobita")
+
+    async def test_an_oversized_numeric_version_is_refused_not_crashed(self):
+        """A peer-controlled version of thousands of digits must not 500 the create.
+
+        CPython caps ``int(str)`` at 4300 digits, so parsing a version with a
+        longer numeric run raises ``ValueError``. That must be caught and turned
+        into the ordinary refusal (an unprovable series → strict equality →
+        mismatch), never propagate out of ``ensure_version_parity`` as an HTTP 500
+        (GPT/opus #8543).
+        """
+        mgr = MagicMock()
+        mgr.peer_version = AsyncMock(return_value=(True, "9" * 5000 + ".0.0"))
+        with pytest.raises(RemoteTurnError):
+            await ensure_version_parity(mgr, "nobita")
+
     async def test_an_unknown_version_is_a_mismatch_not_a_pass(self):
         """A peer too old to report its version cannot be proven equal.
 

@@ -61,6 +61,7 @@ from typing import TYPE_CHECKING, Any, AsyncIterator, Iterator
 from aiohttp import web
 
 import kiro_crew
+from kiro_crew.apps.version import parse_version
 from kiro_crew.dashboard.chat_persistence import save_slot_off_loop
 from kiro_crew.dashboard.chat_utils import _redact_deep
 from kiro_crew.dashboard.remote_mirror import MIRROR_CLS_PREFIX
@@ -109,18 +110,22 @@ class RemoteTurnError(Exception):
 
 
 async def ensure_version_parity(mgr: Any, instance_id: str) -> None:
-    """Raise :class:`RemoteTurnError` unless the peer runs THIS exact build.
+    """Raise :class:`RemoteTurnError` unless the peer runs a compatible build.
 
-    Remote execution is fenced by version equality, not compatibility. The two
-    ends exchange a frame vocabulary that carries no version of its own, so a
-    peer one release ahead can emit a frame this relay silently drops, and a peer
-    one release behind can lack a route this relay depends on — both surface to
-    the user as a session that mostly works, which is worse than one that
-    plainly refuses.
+    Remote execution is fenced by ``major.minor`` version parity, not full-string
+    equality. The two ends exchange a frame vocabulary that carries no version of
+    its own, so a peer a FEATURE release ahead can emit a frame this relay
+    silently drops, and one a feature release behind can lack a route this relay
+    depends on — both surface to the user as a session that mostly works, which is
+    worse than one that plainly refuses. A PATCH-level skew within the same
+    ``major.minor`` series does not move that vocabulary, so it is allowed: 0.6.0
+    and 0.6.3 interoperate, while 0.6.x vs 0.7.x is refused.
 
     An *unknown* peer version is a mismatch, not a pass: a peer too old to serve
-    ``/api/version`` cannot be proven equal, so it is refused with an actionable
-    message rather than optimistically attempted.
+    ``/api/version`` cannot be proven compatible, so it is refused with an
+    actionable message rather than optimistically attempted. A version string
+    that is not semver-shaped on EITHER end (a packaging build id) also cannot be
+    proven compatible by series, so it falls back to strict full-string equality.
     """
     ok, value = await mgr.peer_version(instance_id)
     local = kiro_crew.__version__
@@ -135,7 +140,18 @@ async def ensure_version_parity(mgr: Any, instance_id: str) -> None:
             "Could not confirm this crew's Kiro Crew version, so the session was "
             "not dispatched to it. Reconnect the crew and try again."
         )
-    if value != local:
+    # Compare the major.minor SERIES via the shared parser rather than a second
+    # hand-rolled regex. ``parse_version`` raises ``ValueError`` both on a
+    # non-semver string (a packaging build id) AND on an oversized numeric segment
+    # — CPython caps ``int(str)`` at 4300 digits, so a peer returning thousands of
+    # leading digits would otherwise raise OUTSIDE the RemoteTurnError handler and
+    # 500 the create (GPT/opus #8543). Either way we cannot prove series
+    # compatibility, so fall back to strict full-string equality.
+    try:
+        mismatch = parse_version(local)[:2] != parse_version(value)[:2]
+    except ValueError:
+        mismatch = value != local
+    if mismatch:
         # The peer's reported version is an ARBITRARY string: the transport proves
         # only that ``/api/version`` answered with a non-empty str. Redact BEFORE
         # bounding — truncating first could split a credential across the cut and
@@ -144,8 +160,8 @@ async def ensure_version_parity(mgr: Any, instance_id: str) -> None:
         shown = redact_peer_text(value)[:64]
         raise RemoteTurnError(
             f"This crew runs Kiro Crew {shown} but this machine runs {local}. "
-            f"A session only runs on a crew at the identical version — update "
-            f"whichever end is behind."
+            f"A session only runs on a crew at the same major.minor version — "
+            f"update whichever end is behind."
         )
 
 

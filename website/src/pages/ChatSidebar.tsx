@@ -5,6 +5,7 @@ import { Plus, X, Pin, Monitor, Eye, EyeOff, VenetianMask, Ghost, Droplet, Folde
 import GithubLogo from '../components/icons/GithubLogo'
 import GitlabLogo from '../components/icons/GitlabLogo'
 import { FolderBody } from '../components/FolderBody'
+import ErrorNotice from '../components/ErrorNotice'
 import JiraLogo from '../components/icons/JiraLogo'
 import { sourceProviderMeta } from '../utils/sourceProviderMeta'
 import FolderGlyph from '../components/FolderGlyph'
@@ -2411,6 +2412,13 @@ function ChatSidebar({
 
   // Sidebar-only state
   const [seedError, setSeedError] = useState('')
+  // Inline failure reason for "New chat on crew" — a crew create can 502 and
+  // leave nothing behind, so its reason is shown in the submenu rather than lost.
+  const [remoteCrewError, setRemoteCrewError] = useState('')
+  // Controlled open for the New-chat menu, so a successful crew create can close
+  // it (the crew rows preventDefault to stay open on failure) and closing clears
+  // any stale remoteCrewError.
+  const [newChatMenuOpen, setNewChatMenuOpen] = useState(false)
   const [slotFilter, setSlotFilter] = useState('')
   const [historyFilter, setHistoryFilter] = useState('')
   // A resumed history row whose surface ChatPage cannot display used to succeed
@@ -4619,9 +4627,46 @@ function ChatSidebar({
   // there or bind a different crew than the name implies. Omitting it lets the
   // peer apply its own default — which is the point of the session running on it,
   // and what the header then reads back from the peer's `default_agent`.
+  // A crew create fails more often than a local one — the backend opens the
+  // peer's session BEFORE creating the local one, and refuses on a version-series
+  // mismatch or an unreachable tunnel — and on failure leaves NOTHING behind (no
+  // local row, no peer session). Without an onError the react-query rejection is
+  // swallowed and the click reads as a silent no-op, so surface the backend's
+  // reason inline in the submenu instead. `err.message` carries it: apiFailure
+  // builds the ApiError message from the 502 body's `error` field, and the thunk's
+  // `.unwrap()` rethrows that message.
   const createRemoteChatMutation = useMutation({
-    mutationFn: (instanceId: string) => dispatch(createSlot({ instanceId })).unwrap(),
-    onSuccess: focusComposer,
+    mutationFn: (instanceId: string) => {
+      setRemoteCrewError('')
+      return dispatch(createSlot({ instanceId })).unwrap()
+    },
+    onSuccess: () => {
+      // Close the menu explicitly: the crew rows use `onSelect preventDefault`
+      // (so a FAILED create keeps the menu open long enough to read the error),
+      // which also removed the auto-close on SUCCESS — a modal Radix menu is not
+      // dismissed by `focusComposer` alone, so without this the session is created
+      // behind the still-open menu and a second pick makes a duplicate (opus #8543).
+      // `mutationFn` already cleared remoteCrewError, and onOpenChange clears it on
+      // close, so no reset is needed here.
+      setNewChatMenuOpen(false)
+      focusComposer()
+    },
+    onError: (err: unknown) => {
+      // `createSlot(...).unwrap()` rejects with RTK's SerializedError — a PLAIN
+      // object carrying `message`, NOT an Error instance — so read `.message`
+      // off the object rather than gating on `instanceof Error` (which would be
+      // false here and drop the backend's reason). apiFailure already localizes
+      // and puts the 502 body's `error` text into that message, so it is shown
+      // verbatim; the errRow below is gated on truthiness, so the unreachable
+      // empty-message case simply renders nothing rather than a bare fallback.
+      const msg =
+        err instanceof Error
+          ? err.message
+          : err && typeof err === 'object' && typeof (err as { message?: unknown }).message === 'string'
+            ? (err as { message: string }).message
+            : ''
+      setRemoteCrewError(msg)
+    },
   })
 
   const createPlainChatMutation = useMutation({
@@ -5296,7 +5341,7 @@ function ChatSidebar({
               aria-busy={creatingSlot}
             >{creatingSlot ? <Loader2 size={15} className="animate-spin" /> : <Plus size={15} />}{!compactHeader && <span className="whitespace-nowrap">{creatingSlot ? i18nT('pages.chatSidebar.creating') : i18nT('pages.chatSidebar.new')}</span>}</button>
             <span className="w-px h-4 bg-accent-fg opacity-30" aria-hidden="true" />
-            <DropdownMenu>
+            <DropdownMenu open={newChatMenuOpen} onOpenChange={o => { setNewChatMenuOpen(o); if (!o) setRemoteCrewError('') }}>
               <DropdownMenuTrigger asChild>
                 <button
                   className="flex items-center justify-center w-6 h-7 cursor-pointer bg-transparent border-none text-accent-fg hover:bg-black/10 active:scale-95 transition-all"
@@ -5470,17 +5515,32 @@ function ChatSidebar({
                   const crewRows = warmCrews.map(c => (
                     <DropdownMenuItem key={c.id} data-testid={`new-chat-on-crew-${c.id}`}
                       disabled={createRemoteChatMutation.isPending}
-                      onClick={() => { createRemoteChatMutation.mutate(c.id) }}>
+                      onSelect={e => { e.preventDefault(); createRemoteChatMutation.mutate(c.id) }}>
                       <Server size={14} className="text-info" /> {c.name}
                     </DropdownMenuItem>
                   ))
+                  // Inline failure reason (version mismatch, tunnel down), shown
+                  // through the shared ErrorNotice (website AGENTS.md forbids a
+                  // hand-written text-danger div for a rejected mutation). Kept in
+                  // the menu because the create leaves nothing behind on failure —
+                  // closing would erase the only signal; `onSelect preventDefault`
+                  // on the rows keeps a failed create from auto-closing over it, and
+                  // `askAgent` is on because there is nothing to lose. ErrorNotice
+                  // renders nothing for a falsy message, so this needs no guard.
+                  const errRow = remoteCrewError
+                    ? (
+                      <div className="px-2 py-1.5">
+                        <ErrorNotice message={remoteCrewError} variant="inline" askAgent testId="new-chat-on-crew-error" />
+                      </div>
+                    )
+                    : null
                   if (isMobile) {
                     return (
                       <>
                         <DropdownMenuLabel className="text-[11px] uppercase tracking-[.04em] flex items-center gap-2">
                           <Server size={13} className="text-info" /> {i18nT('pages.chatSidebar.new_chat_on_crew')}
                         </DropdownMenuLabel>
-                        <div className="max-h-[240px] overflow-y-auto">{crewRows}</div>
+                        <div className="max-h-[240px] overflow-y-auto">{crewRows}{errRow}</div>
                       </>
                     )
                   }
@@ -5497,7 +5557,7 @@ function ChatSidebar({
                           primitive, since cn()'s tailwind-merge dedupes max-h-*).
                           overflow is left to the primitive. */}
                       <DropdownMenuSubContent className="max-h-[min(300px,var(--radix-dropdown-menu-content-available-height))]">
-                        {crewRows}
+                        {crewRows}{errRow}
                       </DropdownMenuSubContent>
                     </DropdownMenuSub>
                   )
