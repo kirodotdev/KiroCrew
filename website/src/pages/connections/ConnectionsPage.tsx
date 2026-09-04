@@ -292,6 +292,19 @@ export function connectionStateFor(
   // A completed OAuth flow in THIS session outranks a possibly-lagging status
   // poll: the grant was just written, the feed may not have re-read yet.
   if (oauth?.completed) return 'connected'
+  // A pending attempt THIS TAB is holding, or the backend's own mint table
+  // saying a flow is in flight right now, outranks the cached probe verdicts
+  // below. The mint side of this fix validates an existing grant before ever
+  // reporting a mint `granted`, so a live `awaitingConsent`/`locallyWaiting`
+  // here means either a genuinely fresh consent flow (the old grant did not
+  // hold up) or a not-yet-decided reconnect -- never a flow the backend itself
+  // already knows is stale. Reading `server.status === 'ok'` first, as this
+  // branch used to, is exactly what let Connect flip Stripe and Vercel to
+  // Connected on a cached probe the instant the click landed, well before the
+  // mint had validated anything: the card claimed an authorization no fresher
+  // fact yet backed. `oauth?.oauthUrl` is kept alongside the mint signal for
+  // the chat-message delivery path, which never sets `awaitingConsent`.
+  if (locallyWaiting || awaitingConsent || oauth?.oauthUrl) return 'waiting-for-approval'
   if (server.status === 'ok') {
     // The reachability probe is cached, so `ok` outlives a revoked grant. A
     // CONFIRMED absent grant (grantPresent === false, never the indeterminate
@@ -300,7 +313,6 @@ export function connectionStateFor(
     // authorization that no longer exists.
     return probeIndicatesConnected(server.status, grantPresent) ? 'connected' : 'not-verified'
   }
-  if (locallyWaiting || awaitingConsent || oauth?.oauthUrl) return 'waiting-for-approval'
   // The status probe carries no OAuth token — kiro-cli owns token custody and
   // Kiro Crew stores no credential — so a remote OAuth server answers it with 401
   // and the gateway reports `needs_auth`. Two very different situations produce

@@ -62,8 +62,9 @@ from kiro_crew.acp.client import AcpClient
 from kiro_crew.agent_discovery import _read_agent_spec
 from kiro_crew.agent_files import AGENT_FILENAME, OWNED_KIRO_AGENT_FILES
 from kiro_crew.config.loader import data_home
+from kiro_crew.connections.tool_test import _classify as _classify_tool_inventory
 from kiro_crew.loop_lock import LoopBoundLock
-from kiro_crew.mcp_grant import grant_observed
+from kiro_crew.mcp_grant import grant_fingerprint, grant_observed
 from kiro_crew.mcp_utils import mcp_server_alias
 from kiro_crew.security import oauth_url_contains_credential
 from kiro_crew.sel import sel
@@ -74,6 +75,10 @@ logger = logging.getLogger(__name__)
 _MINT_READY_TIMEOUT_SECONDS = 90.0
 _MINT_TTL_SECONDS = 600.0
 _MINT_GRANT_POLL_SECONDS = 5.0
+# How often the watcher's no-baseline fallback may spawn a revalidation. Bounds a
+# rare degraded path (the disproof's capture stat failed) to at most one process
+# per interval across the mint's TTL, instead of one per grant poll.
+_GRANT_REVALIDATION_INTERVAL_SECONDS = 60.0
 # Tight, because the window it closes is the one where the orphan sweep can kill a
 # still-initializing mint. Cheap: an attribute read, no I/O.
 _MINT_PID_CLAIM_POLL_SECONDS = 0.05
@@ -473,31 +478,100 @@ async def _dispose_mint(entry: MintState) -> None:
         await asyncio.shield(asyncio.to_thread(_remove_mint_agent_spec, spec_path))
 
 
-async def _mint_watcher(slug: str, mcp_url: str, token: str) -> None:
+async def _grant_change_proven(
+    slug: str,
+    mcp_url: str,
+    baseline: tuple[int, int] | None,
+    last_revalidation: list[float],
+) -> bool:
+    """Whether the credential can be POSITIVELY proven to work now. Fail-closed.
+
+    Reached only for an attempt whose pre-existing grant a validation already
+    disproved, so presence carries no information: the disproven pair is still on
+    disk and answers "present" exactly as a fresh one would.
+
+    Two admissible proofs, and nothing else:
+
+    * the token artifact CHANGED against the baseline captured at disproof time --
+      completing the exchange makes kiro-cli rewrite it, so a different
+      ``(mtime_ns, size)`` is observable evidence of a new credential;
+    * a fresh authenticated validation returns a proven verdict, used only when no
+      baseline exists (the capture stat failed), because change cannot be observed
+      without one.
+
+    The revalidation fallback is RATE-LIMITED rather than tried once, and the
+    difference matters: the disproven pair is on disk from the start, so presence
+    is true on the first tick and a once-only attempt would always land before the
+    user could finish consenting -- spending the one spawn and then degrading to
+    never-grant for the rest of the TTL. ``last_revalidation`` is a one-slot ledger
+    the caller owns, so at most one spawn per
+    ``_GRANT_REVALIDATION_INTERVAL_SECONDS`` occurs on this rare degraded path
+    while a consent completed later can still resolve.
+
+    An unreadable current stat is False, and so is an unproven revalidation:
+    "could not look" is not proof, and this predicate is the last thing standing
+    between a stale pair and a Connected badge.
+    """
+    current = await asyncio.to_thread(grant_fingerprint, mcp_url)
+    if baseline is not None:
+        return current is not None and current != baseline
+    now = time.monotonic()
+    if last_revalidation and now - last_revalidation[-1] < _GRANT_REVALIDATION_INTERVAL_SECONDS:
+        return False
+    last_revalidation.append(now)
+    logger.info("OAuth mint for %r has no grant baseline; revalidating before granting", slug)
+    return await _validate_existing_grant(slug, mcp_url)
+
+
+async def _mint_watcher(
+    slug: str,
+    mcp_url: str,
+    token: str,
+    require_proof: bool = False,
+    baseline: tuple[int, int] | None = None,
+) -> None:
     """Hold the mint until consent completes or the TTL expires.
 
     ``token`` identifies the row this watcher belongs to. A superseding mint
     replaces the row, so every write re-checks the token rather than trusting
     that the slug still names the same flow.
+
+    ``require_proof`` says a validation DISPROVED the grant that was on disk when
+    this attempt started, and ``baseline`` is that artifact's fingerprint if it
+    could be read. Presence alone cannot answer this watcher's question once that
+    is known: nothing deletes a credential on the strength of one failed check, so
+    the disproven pair is still on disk and a bare ``grant_observed`` would see it
+    on the FIRST tick, five seconds in, flip the row to ``granted`` and dispose the
+    process holding the PKCE verifier and the loopback listener. That is the very
+    lie this flow exists to prevent, plus a consent URL that can no longer be
+    redeemed. ``require_proof`` is carried SEPARATELY from ``baseline`` on purpose:
+    an unreadable capture stat yields no baseline, and inferring "no disproof" from
+    that absence is what let the resurrection path reopen.
     """
+    revalidation: list[float] = []
     try:
         deadline = time.monotonic() + _MINT_TTL_SECONDS
         while time.monotonic() < deadline:
             await asyncio.sleep(_MINT_GRANT_POLL_SECONDS)
-            if await grant_observed(mcp_url):
-                doomed: MintState | None = None
-                async with _mints_lock:
-                    entry = _mints.get(slug)
-                    if entry is not None and entry.get("token") == token:
-                        entry["state"] = "granted"
-                        # Captured under the lock, released after it: a wedged
-                        # teardown waits on a process shutdown, and holding the
-                        # table that long stalls Connect for every provider.
-                        doomed = entry
-                if doomed is not None:
-                    await _dispose_mint(doomed)
-                logger.info("OAuth mint for %r completed (grant present)", slug)
-                return
+            if not await grant_observed(mcp_url):
+                continue
+            if require_proof and not await _grant_change_proven(
+                slug, mcp_url, baseline, revalidation
+            ):
+                continue
+            doomed: MintState | None = None
+            async with _mints_lock:
+                entry = _mints.get(slug)
+                if entry is not None and entry.get("token") == token:
+                    entry["state"] = "granted"
+                    # Captured under the lock, released after it: a wedged
+                    # teardown waits on a process shutdown, and holding the
+                    # table that long stalls Connect for every provider.
+                    doomed = entry
+            if doomed is not None:
+                await _dispose_mint(doomed)
+            logger.info("OAuth mint for %r completed (grant present)", slug)
+            return
         doomed = None
         async with _mints_lock:
             entry = _mints.get(slug)
@@ -610,6 +684,100 @@ async def _claim_mint_pid_when_spawned(client: Any, holdings: MintState) -> None
 
 _MINT_URL_REJECTION_ATTEMPTS = 2
 
+# The two native commands the validation asks. Bounded together with readiness by
+# ONE ``_MINT_READY_TIMEOUT_SECONDS`` deadline: each command carries its own
+# independent transport timeout, so bounding only readiness would let a provider
+# that answers slowly three times over hold Connect in ``minting`` for the sum of
+# all three waits rather than the one budget the card is told to expect.
+_GRANT_VALIDATION_COMMANDS = ("/mcp", "/tools")
+
+#: Verdicts that PROVE kiro-cli's stored grant still works. ``no_tools`` belongs
+#: here with ``usable``: it is reported only when the MCP server reached status
+#: ``running``, which for an OAuth provider means kiro-cli authenticated and
+#: completed ``tools/list`` with the stored bearer. A server that exposes no tools
+#: is a provider-prerequisite or agent-exposure question, NOT a dead credential,
+#: and treating it as unproven would send a user with a perfectly good grant to a
+#: consent page that cannot fix what they actually have.
+_GRANT_PROVEN_VERDICTS = frozenset({"usable", "no_tools"})
+
+
+async def _validate_existing_grant(slug: str, mcp_url: str) -> bool:
+    """Prove an on-disk grant is actually usable before a mint reports ``granted``.
+
+    ``grant_observed`` answers only "does the artifact PAIR exist" -- true for a
+    stale or provider-revoked pair as much as a live one, because a remote revoke
+    never touches the local file kiro-cli wrote. Reporting the card connected on
+    that alone is how a Connect click on Stripe or Vercel flipped instantly to
+    Connected, then fell to "not authorized" once the expensive Test action forced
+    kiro-cli's own refresh and the pair turned out to be dead.
+
+    This spawns the SAME single-server ephemeral session a fresh mint would spawn
+    (see :func:`_write_mint_agent_spec`) and reads kiro-cli's native ``/mcp`` and
+    ``/tools`` results the way :func:`kiro_crew.connections.tool_test.test_connection_tools`
+    does for the explicit Test button -- promptless, no model call, one process.
+    Unlike Test, this call owns its OWN process rather than reaching for the
+    shared ``kirocrew`` agent: mounting every configured server to check one
+    would turn a bounded reconnect into the cost of a cold start elsewhere, and a
+    single-server spec is exactly what a fresh mint attempt would spawn anyway if
+    this validation finds the grant unusable.
+
+    Returns True only for a verdict in :data:`_GRANT_PROVEN_VERDICTS`. A False here
+    does not assert the grant is GONE -- it asserts it could not be proven to work
+    right now -- which is why the caller's answer is a fresh consent mint rather
+    than deleting the credential: a transient provider outage or an unreachable
+    kiro-cli would otherwise destroy a live refresh token that is not recoverable
+    locally.
+
+    Bounded to one attempt inside one deadline: this is a reconnect confirming a
+    grant that is supposed to already work, not a retry loop.
+
+    Never raises. EVERY step lives inside the guarded block, including the client
+    factory and the spec write -- ``_write_mint_agent_spec`` raises ``OSError`` on
+    an unusable main spec or an unrecordable manifest row, and this runs on a
+    fire-and-forget task BEFORE the caller's own try, so an escape would kill the
+    flow and strand the row at ``minting`` with no terminal state for the card to
+    read. ``holdings`` is therefore initialized before the try, so the ``finally``
+    can release whatever had been taken when the raise landed.
+    """
+    holdings: MintState = {}
+    try:
+        acp_client_cls = _acp_client_factory()
+        mint_work_dir = await asyncio.to_thread(data_home)
+        agent_name, spec_path = await asyncio.to_thread(_write_mint_agent_spec, slug)
+        holdings["agent"] = agent_name
+        holdings["spec_path"] = spec_path
+        client = acp_client_cls(
+            work_dir=mint_work_dir / "connections" / "mint",
+            model="auto",
+            agent=agent_name,
+            sandbox_mode="auto",
+            session_key=f"connections-mint-validate-{slug}",
+        )
+        holdings["client"] = client
+        claim = asyncio.get_running_loop().create_task(
+            _claim_mint_pid_when_spawned(client, holdings)
+        )
+
+        async def _ready_and_read() -> tuple[dict[str, Any], ...]:
+            await client.ensure_ready()
+            return tuple([await client.command_result(cmd) for cmd in _GRANT_VALIDATION_COMMANDS])
+
+        try:
+            # ONE deadline over readiness AND both commands, so the whole
+            # validation costs at most what a cold mint spawn is already allowed.
+            results = await asyncio.wait_for(_ready_and_read(), timeout=_MINT_READY_TIMEOUT_SECONDS)
+        finally:
+            claim.cancel()
+            _claim_mint_pid(client, holdings)
+    except Exception:  # noqa: BLE001 — validation must never raise into the mint flow
+        logger.debug("Grant validation for %r could not complete", slug, exc_info=True)
+        return False
+    finally:
+        await _dispose_mint(holdings)
+
+    verdict = _classify_tool_inventory(results, slug, mcp_server_alias(slug))
+    return verdict["verdict"] in _GRANT_PROVEN_VERDICTS
+
 
 async def start_oauth_mint(
     slug: str,
@@ -639,24 +807,54 @@ async def start_oauth_mint(
     # aged orphans. Off-loop: it reads and rewrites the manifest, and may unlink.
     await asyncio.to_thread(_sweep_mint_specs)
 
+    # Whether a validation DISPROVED the pair that was on disk when this attempt
+    # started, tracked SEPARATELY from the fingerprint below. The fingerprint can
+    # legitimately be ``None`` (the capture stat failed), and inferring "no
+    # disproof" from that absence is what would let the pair reassert itself: the
+    # watcher's proof requirement keys on this flag, never on the fingerprint's
+    # presence.
+    validation_failed = False
+    # The disproven artifact's identity when it could be read. ``None`` means the
+    # stat failed, NOT that nothing was disproved -- the watcher then demands a
+    # positive revalidation instead of a change it cannot observe.
+    disproven_grant: tuple[int, int] | None = None
+
     if await grant_observed(mcp_url):
-        # Consent already exists (a reconnect): no URL is needed.
-        async with _mints_lock:
-            if _mints.get(slug, {}).get("token") == my_token:
-                _mints[slug] = {
-                    "state": "granted",
-                    "started": time.monotonic(),
-                    "token": my_token,
-                }
-        # Every POST logs outcome=started, so every path has to log a completion or
-        # the audit trail shows starts that never finished.
-        await asyncio.to_thread(
-            _log_mint_outcome,
-            slug,
-            "ok",
-            "reason=already_granted",
-        )
-        return
+        # An artifact PAIR on disk is not proof the grant still works: it survives
+        # a provider-side revoke and a stale refresh token exactly as it survives
+        # a live one, because nothing here has asked kiro-cli to actually use it
+        # yet. Reporting `granted` on presence alone is what let Connect flip a
+        # dead pair to Connected and then fall to "not authorized" once the
+        # explicit Test action forced the real check. Validate BEFORE claiming
+        # anything, and fall through to a fresh mint on anything short of a
+        # proven-working verdict -- the spawn loop below is exactly what a
+        # user expects Connect to do when consent still needs proving.
+        if await _validate_existing_grant(slug, mcp_url):
+            async with _mints_lock:
+                if _mints.get(slug, {}).get("token") == my_token:
+                    _mints[slug] = {
+                        "state": "granted",
+                        "started": time.monotonic(),
+                        "token": my_token,
+                    }
+            # Every POST logs outcome=started, so every path has to log a
+            # completion or the audit trail shows starts that never finished.
+            await asyncio.to_thread(
+                _log_mint_outcome,
+                slug,
+                "ok",
+                "reason=validated_grant",
+            )
+            return
+        # Set BEFORE the stat, so a failing stat cannot erase the disproof.
+        validation_failed = True
+        # Read AFTER the verdict, so it fingerprints the artifact the validation
+        # actually disproved. Nothing is deleted: one failed check can be a
+        # provider outage or an unreachable runtime, and a refresh token destroyed
+        # on that evidence is not recoverable locally. The fingerprint is what lets
+        # the flow distrust the pair without removing it.
+        disproven_grant = await asyncio.to_thread(grant_fingerprint, mcp_url)
+        logger.info("OAuth mint for %r found an unproven grant on disk; minting fresh", slug)
 
     # Accumulates what this flow owns, so every exit path releases all of it.
     holdings: MintState = {}
@@ -751,21 +949,34 @@ async def start_oauth_mint(
                         "state": "waiting",
                         "oauth_url": oauth_url,
                         "watcher": asyncio.get_running_loop().create_task(
-                            _mint_watcher(slug, mcp_url, my_token)
+                            _mint_watcher(
+                                slug,
+                                mcp_url,
+                                my_token,
+                                validation_failed,
+                                disproven_grant,
+                            )
                         ),
                     }
                 )
                 holdings = {}
             else:
-                # No challenge means one of two things, and they are not the same
+                # No challenge means one of THREE things, and they are not the same
                 # outcome. An open endpoint (or a grant that landed concurrently)
                 # is genuinely granted. A slug with no entry left to initialize
                 # produced no challenge because there was nothing to challenge --
                 # reporting THAT as granted shows a connected card with no server
                 # behind it and no way back, so it has to be a retryable failure.
+                # And when a validation already DISPROVED the stored grant, an
+                # absence of challenge is not proof either: publishing `granted`
+                # from it would republish the exact authorization this attempt just
+                # refuted, so it is the same retryable failure rather than a claim.
                 if entry_missing:
                     entry["state"] = "failed"
                     entry["reason"] = "mint_server_absent"
+                elif validation_failed:
+                    entry["state"] = "failed"
+                    entry["reason"] = "mint_grant_unproven"
                 else:
                     entry["state"] = "granted"
 
@@ -779,6 +990,10 @@ async def start_oauth_mint(
             return
         if entry_missing:
             await asyncio.to_thread(_log_mint_outcome, slug, "error", "reason=mint_server_absent")
+        elif validation_failed and not oauth_url:
+            # The refuted-grant no-challenge branch above: a failure, so it audits
+            # as one rather than riding the ok/url_minted line.
+            await asyncio.to_thread(_log_mint_outcome, slug, "error", "reason=mint_grant_unproven")
         else:
             # ``url_minted`` records whether the spawn produced an approval URL
             # or found no challenge (an open endpoint, or a grant that landed
