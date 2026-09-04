@@ -147,6 +147,12 @@ def _module_state_is_restored(monkeypatch, tmp_path):
     monkeypatch.setattr(cron_script, "_RUNNING_PROCS", {})
     monkeypatch.setattr(cron_script, "_CANCELLED_PROC_JOBS", set())
     monkeypatch.setattr(cron_script, "_POSIX_STRICT_CACHE", {})
+    # The shell-form record travels with the usability cache: leaving it behind
+    # would let one test's resolved invocation form decide another's argv.
+    # ``raising=False`` so this fixture reports on the module as it is rather than
+    # erroring every test in the file when the attribute is absent — a fixture
+    # error masks which assertions actually depend on the behaviour.
+    monkeypatch.setattr(cron_script, "_BRACE_OFF_SHELLS", {}, raising=False)
     monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
     _resolve_mcp_server.cache_clear()
     yield
@@ -1191,6 +1197,79 @@ class TestShellIsPosixStrict:
         monkeypatch.setattr(cron_script, "run_limited", _run)
         assert _shell_is_posix_strict("/bin/sh") is False
 
+    def test_a_brace_expanding_trusted_shell_is_accepted_with_expansion_off(
+        self, monkeypatch
+    ):
+        """The Linux default (`/bin/sh -> bash`) must not cost the whole feature.
+
+        bash expands `x.{a,a}`, so the plain form fails the probe; invoked `+B`
+        the same shell preserves the literal the probe demands. Refusing it
+        outright made every command cron unavailable on AL2023 / RHEL / Fedora,
+        where no dash exists and the resolver never looks past `/bin/sh` and
+        `/usr/bin/sh` — so there was no host-side workaround either.
+        """
+        calls: list[list[str]] = []
+
+        def _run(argv, **kw):
+            calls.append(list(argv))
+            out = "x.{a,a}\n" if "+B" in argv else "x.a x.a\n"
+            return SimpleNamespace(returncode=0, stdout=out, stderr="")
+
+        monkeypatch.setattr(cron_script, "run_limited", _run)
+
+        assert _shell_is_posix_strict("/bin/sh") is True
+        # Plain form FIRST, brace-off form second: a genuinely POSIX-strict shell
+        # must never be handed a flag it would reject as an unknown option.
+        assert calls == [
+            ["/bin/sh", "-c", "echo x.{a,a}"],
+            ["/bin/sh", "+B", "-c", "echo x.{a,a}"],
+        ]
+        # The form that PASSED is the form the executor must use. Before one
+        # shared builder existed the probe and the executor spelled argv
+        # separately, so accepting a form here would have left the real command
+        # running with expansion on while the probe still reported strict.
+        assert cron_script._command_argv("/bin/sh", "echo hi") == [
+            "/bin/sh",
+            "+B",
+            "-c",
+            "echo hi",
+        ]
+
+    def test_a_posix_strict_shell_keeps_its_exact_argv(self, monkeypatch):
+        """dash / ash / a real POSIX sh stay byte-for-byte unchanged."""
+        monkeypatch.setattr(
+            cron_script,
+            "run_limited",
+            lambda argv, **kw: SimpleNamespace(returncode=0, stdout="x.{a,a}\n", stderr=""),
+        )
+
+        assert _shell_is_posix_strict("/bin/dash") is True
+        assert cron_script._command_argv("/bin/dash", "echo hi") == [
+            "/bin/dash",
+            "-c",
+            "echo hi",
+        ]
+
+    def test_a_shell_that_expands_in_every_form_records_no_form(self, monkeypatch):
+        """A refused shell must leave no brace-off record behind.
+
+        Recording the last form TRIED rather than the form that PASSED would hand
+        the executor a `+B` invocation for a shell the resolver rejected.
+        """
+        monkeypatch.setattr(
+            cron_script,
+            "run_limited",
+            lambda argv, **kw: SimpleNamespace(returncode=0, stdout="x.a x.a\n", stderr=""),
+        )
+
+        assert _shell_is_posix_strict("/bin/sh") is False
+        assert "/bin/sh" not in cron_script._BRACE_OFF_SHELLS
+        assert cron_script._command_argv("/bin/sh", "echo hi") == [
+            "/bin/sh",
+            "-c",
+            "echo hi",
+        ]
+
     def test_sandbox_profile_is_unlinked_even_when_gone(self, monkeypatch, tmp_path):
         cleanup = tmp_path / "profile.sb"
         cleanup.write_text("(deny default)", newline="\n")
@@ -1249,6 +1328,22 @@ class TestRunCommandSandboxed:
         assert result == {"status": "ok", "output": "hello\n", "exit_code": 0}
         assert command_run.argv == ["/bin/sh", "-c", "echo hello"]
         assert "KIROCREW_INTERNAL_SECRET" not in command_run.env
+
+    def test_the_spawn_uses_the_form_the_probe_proved(self, command_run):
+        """The executor must inherit the resolved invocation form, not re-derive it.
+
+        This is the gate on the two-literals defect: with the probe and the
+        executor building argv separately, a shell accepted as strict-under-`+B`
+        would have been spawned WITHOUT `+B`, i.e. running the vetted string
+        under the very expansion the probe refused.
+        """
+        command_run.proc = _FakeProc(comm_results=[("hello\n", "")])
+        cron_script._BRACE_OFF_SHELLS["/bin/sh"] = True
+
+        result = run_command_sandboxed("echo hello")
+
+        assert result["status"] == "ok"
+        assert command_run.argv == ["/bin/sh", "+B", "-c", "echo hello"]
 
     def test_nonzero_exit_annotates_output_and_appends_stderr(self, command_run):
         command_run.proc = _FakeProc(comm_results=[("partial\n", "boom")], returncode=42)

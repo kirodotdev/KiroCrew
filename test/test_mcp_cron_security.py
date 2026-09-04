@@ -187,6 +187,27 @@ MALICIOUS_COMMANDS = [
     "cat ~/.$@/id_rsa",
     "echo $*",
     "echo ${1}",
+    # BASH BRACE EXPANSION composes words at run time, so the path this gate sees
+    # is not the path that is opened. It was the one composition form with no
+    # storage-time refusal, left to a runtime shell probe — which meant the shell
+    # decided whether the gate held. Refused here so the guarantee is the same on
+    # every host. Verified against real bash: `echo x.{a,a}` -> `x.a x.a`.
+    "cat ~/.a{w,w}s/credentials",
+    "cp ~/.ss{h,h}/id_rsa /tmp/key",
+    # The re-enable route is closed by the same refusal rather than by naming it:
+    # with no braces left in the command, `set -B` has nothing to expand.
+    "set -B; cat ~/.a{w,w}s/credentials",
+    # Sequence form carries the same hazard with no comma in it. Verified against
+    # real bash: `echo .s{s..s}h` -> `.ssh`, and the literal text carries no
+    # credential path for the static scan to anchor on.
+    "cat ~/.s{s..s}h/id_rsa",
+    # NESTED comma form. The outer braces contain an inner `{`, so an inner class
+    # that excluded `{` would read straight past this while real bash still expands
+    # it: `echo .a{w,{w}}s` -> `.aws .a{w}s`, i.e. the first word IS the credential
+    # directory. This shape is reachable precisely because of the `+B` shell probe
+    # shipped alongside, which admits a brace-expanding bash as the cron executor.
+    "cp ~/.a{w,{w}}s/credentials /tmp/x",
+    "set -B; cat ~/.ss{h,{h}x}/id_rsa",
 ]
 
 # Shapes that LOOK like the smuggling patterns above but cannot actually reach a
@@ -251,6 +272,13 @@ BENIGN_COMMANDS = [
     # trip the loop gate — it is only refused in command-word position.
     "git log --format=for",
     "echo 'while you were out'",
+    # Braces that are NOT a brace expansion must stay usable. bash expands only a
+    # whitespace-free `{a,b}` / `{1..9}` — verified: `echo {a b,c}` prints
+    # `{a b,c}` and `echo {print}` prints `{print}` — so the refusal requires that
+    # exact shape and these remain allowed.
+    "find /tmp -name '*.log' -exec rm {} ;",
+    "echo {print}",
+    "awk '{print x, y}' /tmp/f",
 ]
 
 

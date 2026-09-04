@@ -965,14 +965,17 @@ def _resolve_command_shell() -> str | None:
     the command language. Returns ``None`` when no POSIX-strict shell can be
     found, which makes the caller refuse the job with a legible error.
 
-    Windows always returns ``None``: neither shipped option preserves the
-    language the vet gate assumed. Verified on a Git-for-Windows install —
-    ``sh.exe -c 'echo test.a{w,w}s'`` prints ``test.aws test.aws``, i.e. it IS
-    bash and performs brace expansion, which is exactly how
-    ``cat ~/.a{w,w}s/credentials`` hides a credential path from a gate that
-    tokenizes the stored string once. Command crons are therefore unavailable on
-    Windows by design; ``script`` crons (whose body is scanned in full) are the
-    supported path there.
+    Windows always returns ``None``, and that is unchanged and deliberate:
+    cmd.exe is not POSIX at all, and the Windows shell layout (Git-for-Windows's
+    ``sh.exe``, its PATH, its trusted-path story) has none of the fixed
+    system-shell guarantees the POSIX branch below relies on. ``script`` crons,
+    whose body is scanned in full, remain the supported path there.
+
+    On POSIX the candidate is probed rather than assumed, because a trusted
+    ``sh`` may be bash: ``/bin/sh -> bash`` is the default on AL2023, RHEL and
+    Fedora, and macOS's ``/bin/sh`` is bash-in-POSIX-mode. Such a shell is
+    accepted when invoked so it refuses brace expansion — see
+    ``_shell_is_posix_strict`` for the two forms and the order they are tried in.
     """
 
     # On Windows there is no shipped shell whose language matches what
@@ -987,11 +990,13 @@ def _resolve_command_shell() -> str | None:
     # test, then does something different when called with the real cron. Even
     # inside `cc`-mode isolation the agent-planted binary runs, and `cc` leaves
     # ``.ssh`` reachable, so this is a private-key-exposure vector. Instead,
-    # walk a small fixed list of trusted system shell paths (never a bash
-    # fallback: bash brace expansion hides `cat ~/.a{w,w}s/credentials` from
-    # the tokenizer). Some hosts (macOS /bin/sh is bash-in-POSIX-mode) still
-    # perform brace expansion under the `sh` name, so PROBE the candidate:
-    # dash / ash / a real POSIX sh preserve the literal; bash-in-any-mode fails.
+    # walk a small fixed list of trusted system shell paths. Some hosts perform
+    # brace expansion under the `sh` name (Linux `/bin/sh -> bash` is the default
+    # on AL2023 / RHEL / Fedora; macOS /bin/sh is bash-in-POSIX-mode), so PROBE
+    # the candidate: dash / ash / a real POSIX sh preserve the literal as
+    # invoked, and a bash-as-sh preserves it once brace expansion is switched
+    # off. The probe tries the plain form FIRST, so a genuinely POSIX-strict
+    # shell resolves exactly as it always has and its argv is unchanged.
     for candidate in ("/bin/sh", "/usr/bin/sh"):
         if os.path.isfile(candidate) and _shell_is_posix_strict(candidate):
             return candidate
@@ -1003,18 +1008,62 @@ def _resolve_command_shell() -> str | None:
 # once per gateway process; a subsequent command cron with the same resolved
 # shell does no extra work.
 _POSIX_STRICT_CACHE: dict[str, bool] = {}
+# Shells that need `+B` to stop brace-expanding, recorded BY THE PROBE so the
+# executor runs the form the probe proved. Separate from the boolean cache above
+# because "is this shell usable" and "how must it be invoked" are two answers,
+# and collapsing them is what let the probe and the executor drift apart.
+_BRACE_OFF_SHELLS: dict[str, bool] = {}
+# bash's command-line spelling of `set +B` (brace expansion off). dash/ash reject
+# it, which is exactly why it is never tried first: an unknown-option refusal
+# would look like a failing shell.
+_BRACE_OFF_FLAG = "+B"
+
+
+def _argv_for_form(shell: str, command: str, brace_off: bool) -> list[str]:
+    """Build the argv for one invocation form. The only place the form is spelled."""
+
+    if brace_off:
+        return [shell, _BRACE_OFF_FLAG, "-c", command]
+    return [shell, "-c", command]
+
+
+def _command_argv(shell: str, command: str) -> list[str]:
+    """Build the argv that runs *command* under *shell*, in the PROVEN form.
+
+    The single builder both ``_shell_is_posix_strict`` and
+    ``run_command_sandboxed`` go through. Before this existed each wrote its own
+    ``[shell, "-c", ...]`` literal, so a resolver that accepted a new invocation
+    form would have left the probe proving a form the executor never used — the
+    probe would still pass while the command ran under brace expansion.
+
+    A shell absent from ``_BRACE_OFF_SHELLS`` gets the plain form, which is both
+    the historical behaviour and the right default for a caller that resolved a
+    shell without probing it (tests monkeypatch ``_resolve_command_shell``).
+    """
+
+    return _argv_for_form(shell, command, _BRACE_OFF_SHELLS.get(shell, False))
 
 
 def _shell_is_posix_strict(shell: str) -> bool:
-    """Return True iff *shell* refuses brace expansion (POSIX-sh semantics).
+    """Return True iff *shell* can be invoked so it refuses brace expansion.
 
-    Runs ``<shell> -c 'echo x.{a,a}'`` in an OS sandbox (strict tier, cron env)
-    and requires the OUTPUT to be the literal ``x.{a,a}``. dash / ash / a real
-    POSIX sh preserve it; bash (including macOS's ``/bin/sh`` which is
-    bash-in-POSIX-mode) expands to ``x.a x.a``. Refusing an expanding shell is
-    the only reliable defense: the vet gate (``mcp_cron._vet_shell_command``)
-    tokenizes the stored string once, so any downstream re-expansion silently
-    widens what a legitimate deny-list can see.
+    Runs ``echo x.{a,a}`` under *shell* in an OS sandbox (strict tier, cron env)
+    and requires the OUTPUT to be the literal ``x.{a,a}``. Two forms are tried,
+    in this order, and the one that passes is recorded for the executor:
+
+    1. ``<shell> -c ...`` — dash / ash / a real POSIX sh preserve the literal.
+       Tried first so a POSIX-strict shell keeps its exact current argv.
+    2. ``<shell> +B -c ...`` — bash's brace expansion switched off at the
+       command line. A trusted-path bash-as-``sh`` (the Linux default) then
+       satisfies the same property, instead of the whole feature being refused
+       on the most common Linux configuration.
+
+    Requiring the literal is what protects the vet gate
+    (``mcp_cron._vet_shell_command``), which tokenizes the stored string once:
+    a runtime re-expansion would widen what a deny-list can see. The gate also
+    refuses brace-expansion SYNTAX at storage time, so a command cannot switch
+    expansion back on and have anything left to expand — that refusal is what
+    makes accepting form 2 safe, and removing either half re-opens the hole.
 
     The probe is SANDBOX-ROUTED as a defense-in-depth belt on the fixed
     trusted-path lookup in ``_resolve_command_shell``. If a future change ever
@@ -1025,10 +1074,28 @@ def _shell_is_posix_strict(shell: str) -> bool:
     cached = _POSIX_STRICT_CACHE.get(shell)
     if cached is not None:
         return cached
+    for brace_off in (False, True):
+        if _probe_one_form(shell, brace_off):
+            # Record the form only once it has PASSED, and record nothing on the
+            # way there: the executor reads this map, so a form written while
+            # still being tested would be visible to a concurrent command cron.
+            _BRACE_OFF_SHELLS[shell] = brace_off
+            _POSIX_STRICT_CACHE[shell] = True
+            return True
+    # No form worked: leave no brace-off record behind for a shell this resolver
+    # refuses, so a later caller cannot inherit the last form tried.
+    _BRACE_OFF_SHELLS.pop(shell, None)
+    _POSIX_STRICT_CACHE[shell] = False
+    return False
+
+
+def _probe_one_form(shell: str, brace_off: bool) -> bool:
+    """Run the brace-expansion probe once, in the requested invocation form."""
+
     sandbox_cleanup: str | None = None
     try:
         argv, sandbox_cleanup = wrap_argv(
-            [shell, "-c", "echo x.{a,a}"], mode="strict"
+            _argv_for_form(shell, "echo x.{a,a}", brace_off), mode="strict"
         )
         # Same discipline as every other sandbox-routed spawn in this module
         # (test_every_routed_spawn_applies_resource_limits / _cgroup_scope): the
@@ -1052,7 +1119,6 @@ def _shell_is_posix_strict(shell: str) -> bool:
                 os.unlink(sandbox_cleanup)
             except OSError:
                 pass
-    _POSIX_STRICT_CACHE[shell] = result
     return result
 
 
@@ -1075,7 +1141,7 @@ def run_command_sandboxed(command: str, timeout: int = 300, job_id: str | None =
             ),
             "exit_code": -1,
         }
-    argv = [shell, "-c", command]
+    argv = _command_argv(shell, command)
     # mode="cc" (not "standard"): the command string is fully model-supplied via
     # cron_add and executes outside the kiro-cli ACP permission/hook flow, so this
     # is a low-trust exec path. "cc" hides the credential dirs/files (.aws, .kube,

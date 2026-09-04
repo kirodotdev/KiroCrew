@@ -151,6 +151,27 @@ _CRON_CMD_SUBST_RE = re.compile(
 # rather than enumerating the operators means a form nobody listed is refused by
 # default instead of admitted.
 _CRON_BRACE_EXPANSION_RE = re.compile(r"\$\{(?![A-Za-z_][A-Za-z0-9_]*\})")
+# BASH BRACE EXPANSION — the one composition form on this surface that carried no
+# storage-time refusal, and so was left entirely to a runtime shell probe
+# (``cron_script._shell_is_posix_strict``). It composes exactly like the forms
+# above and is equally invisible to a static path scan:
+#   cat ~/.a{w,w}s/creds   expands to a path whose literal text never contains it
+#   {1..9}                 sequence form, same hazard with no comma
+# Refusing it here makes the guarantee independent of WHICH shell runs the
+# command, which is what lets the resolver accept a trusted shell that would
+# otherwise expand. Enumerating a re-enable denylist instead (`set -B`,
+# `shopt -s braceexpand`) leaks — `eval "set -B"` reaches the same state — so the
+# refusal targets the braces, not the switch.
+# Braces must be whitespace-free: bash does not brace-expand `{a b,c}` (verified),
+# so requiring that keeps `awk '{print x, y}'`-shaped arguments out of scope. A
+# comma-free `{}` (the `find -exec` placeholder) is not an expansion and stays
+# allowed.
+# The inner classes exclude `}` but NOT `{`, so a NESTED comma form is refused too:
+# `.a{w,{w}}s` is a real bash expansion (-> `.aws .a{w}s`) whose outer braces do
+# contain an inner `{`. Excluding `{` here would let that shape through, and it
+# becomes reachable precisely under this change, since the `+B` probe this ships
+# alongside is what admits a brace-expanding bash as the cron executor.
+_CRON_BASH_BRACE_EXPAND_RE = re.compile(r"\{[^}\s]*(?:,|\.\.)[^}\s]*\}")
 # Any `$NAME` / `${NAME}` variable reference. Used AFTER local assignment
 # resolution to catch the last composition class: an UNRESOLVED reference. sh
 # expands an unset variable to the empty string, so `cat ~/.ss${UNSET}h/id_rsa`
@@ -618,6 +639,13 @@ def _vet_shell_command(command: str) -> str | None:
             "(`${X:-default}`, `${X#prefix}`, `${X/a/b}`, `${#X}`) assemble "
             "strings a static check cannot see. If your job needs runtime "
             "composition, ship it as a `script` job — the body is scanned in full."
+        )
+    if _CRON_BASH_BRACE_EXPAND_RE.search(command):
+        return (
+            "Error: cron command blocked: bash brace expansion (`{a,b}`, `{1..9}`) "
+            "is not permitted in a cron `command`. It composes words at run time, "
+            "so the path a deny-list sees is not the path that is opened. Write the "
+            "words out, or ship a `script` job — the body is scanned in full."
         )
     if _CRON_POSITIONAL_PARAM_RE.search(command):
         return (
