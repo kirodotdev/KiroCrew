@@ -263,25 +263,30 @@ def test_sensitive_path_verdicts_unchanged_by_anchor_rewrite(path: str, expected
 
 
 def test_sensitive_anchor_has_no_leading_wildcard() -> None:
-    """Source guard: the redundant ``.*`` must not come back.
+    """Source guard: a quadratic anchor must not come back.
 
     ``_build_sensitive_regex`` is the only place these anchors are written. The
     check is on the source text rather than the compiled pattern because the
     compiled form interpolates the path alternations and is impractical to
-    assert against.
+    assert against. Comment lines are excluded so prose that QUOTES a banned
+    spelling (e.g. the LINEARITY INVARIANT comment explaining the history) does
+    not trip the guard -- only code counts.
     """
     from kiro_crew import security as security_mod
 
     source = inspect_source(security_mod._build_sensitive_regex)
-    assert r"""(?:^|.*[\s'\"=:,;])""" not in source, (
+    code = "\n".join(line for line in source.splitlines() if not line.lstrip().startswith("#"))
+    assert r"""(?:^|.*[\s'\"=:,;])""" not in code, (
         "a leading `.*` is back in the sensitive-path anchor -- it is redundant "
         "under re.search and makes matching quadratic in the longest line"
     )
-    # And the fixed form is still there, on every branch it was applied to.
-    # Count the BRANCH spelling (``rf"|`` prefix) so the explanatory comment in
-    # `_build_sensitive_regex`, which quotes the anchor in prose, is not counted.
-    branch_anchor = r"""rf"|(?:^|[\s'\"=:,;])"""
-    assert source.count(branch_anchor) == 11
+    # The anchor is now a width-1 negative lookbehind: it accepts exactly the
+    # same positions as the old `(?:^|[sep])` alternation -- start-of-string, or
+    # preceded by one separator -- at O(1) per offset, with no alternation
+    # re-entry. Count the BRANCH spelling (``rf"|`` prefix) on every branch the
+    # token anchor was applied to.
+    branch_anchor = r"""rf"|(?<![^\s'\"=:,;])"""
+    assert code.count(branch_anchor) == 11
 
 
 def inspect_source(func: object) -> str:
