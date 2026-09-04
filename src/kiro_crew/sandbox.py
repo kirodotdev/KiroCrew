@@ -1435,16 +1435,26 @@ _SENSITIVE_ENV_PREFIXES: list[str] = [
 #    a fresh path-keyed mirror, so the cache grows without bound (multi-GB per
 #    day under heavy subagent use). ``pycache_gc.prune_pycache`` bounds what
 #    the gateway's own tree still writes there.
+#  - PYTHONDONTWRITEBYTECODE: the packaged macOS app exports it instead of the
+#    prefix (its tree ships fully precompiled, see gateway-env.js), so the
+#    bundled interpreter never writes into the sealed .app. It is a statement
+#    about OUR bundle, not about the user's Python: inherited by a foreign
+#    interpreter it silently disables bytecode caching for the user's own
+#    projects -- pytest's assertion rewriter falls back to rewriting in memory
+#    on every run, for one -- which is a slowdown nobody asked for and would
+#    struggle to attribute to the desktop app.
 # Stripped ONLY when the caller passes ``strip_python_env=True`` (the
 # kiro-cli / agent spawn path). It is deliberately NOT part of
 # ``_SENSITIVE_ENV_PREFIXES`` because KiroCrew's OWN sandboxed Python
 # subprocesses (cron scripts, app backends, code-review workers) import
-# ``kiro_crew`` via PYTHONPATH — and on the packaged app must keep writing
-# bytecode outside the signed bundle — so both would break if stripped.
+# ``kiro_crew`` via PYTHONPATH -- and on the packaged app run the BUNDLED
+# interpreter, which must keep the bytecode settings so it never writes into
+# the signed bundle -- so both would break if stripped.
 _PYTHON_ENV_PREFIXES: list[str] = [
     "PYTHONPATH",
     "PYTHONHOME",
     "PYTHONPYCACHEPREFIX",
+    "PYTHONDONTWRITEBYTECODE",
 ]
 
 # Gateway-owned credentials must never reach agent-influenced subprocesses.

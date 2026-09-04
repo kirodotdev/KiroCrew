@@ -165,6 +165,24 @@ def test_strip_python_env_covers_pycache_prefix(monkeypatch):
     assert "PYTHONPYCACHEPREFIX" not in kept
 
 
+def test_strip_python_env_covers_dont_write_bytecode(monkeypatch):
+    """PYTHONDONTWRITEBYTECODE follows the same rule as the cache prefix.
+
+    The packaged macOS app exports it so the BUNDLED interpreter never writes
+    into the sealed .app. Inherited by a foreign interpreter in the agent
+    subtree it disables bytecode caching for the user's own projects -- pytest
+    rewrites assertions in memory on every run, for one -- a slowdown nobody
+    asked for and cannot easily attribute. The keep-side matters equally: the
+    gateway's own sandboxed Python children run the bundled interpreter and
+    must keep the ban, or they become the next writer into the bundle.
+    """
+    monkeypatch.setenv("PYTHONDONTWRITEBYTECODE", "1")
+    stripped = sb._sandbox_env_scrub_keys("standard", True)
+    kept = sb._sandbox_env_scrub_keys("standard", False)
+    assert "PYTHONDONTWRITEBYTECODE" in stripped
+    assert "PYTHONDONTWRITEBYTECODE" not in kept
+
+
 def test_strip_python_env_holds_on_fail_open_path(monkeypatch):
     """On the opted-in no-backend path wrap_argv returns argv unmodified (no
     launcher strips PYTHONPATH), so sandboxed_spawn_argv MUST strip the Python
