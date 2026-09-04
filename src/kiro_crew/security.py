@@ -5577,7 +5577,9 @@ def _is_git_push_via_normalizer(text_lower: str) -> bool:
 
     Tokenizes the command via ``normalize_shell_command``, then checks if
     any token sequence resolves to ``git`` followed by ``push`` as the
-    subcommand (skipping flags and their arguments).
+    subcommand (skipping flags and their arguments, and skipping empty or
+    whitespace-only words in the subcommand seek, which git never resolves
+    a command name from -- issue #8115).
 
     Avoids false positives on ``git stash push`` by requiring ``push`` to
     be the FIRST non-flag token after ``git`` (the subcommand position).
@@ -5615,10 +5617,35 @@ def _is_git_push_via_normalizer(text_lower: str) -> bool:
         token = tokens[i]
         # Check if this token resolves to "git"
         if _resolves_to(token, "git"):
-            # Skip global flags and their arguments to find the subcommand
+            # Skip global flags and their arguments to find the subcommand.
+            #
+            # A zero-width or whitespace-only word is also skipped (issue
+            # #8115).  It is a real argv element the shell hands over, and git
+            # does NOT ignore it -- git takes it as its command name and
+            # exits.  Skipping it is deliberate fail-closed OVER-detection: it
+            # widens only DETECTION, and a spelling it newly reaches either
+            # fails to run at all (git rejects the zero-width command name) or
+            # was already reached in its adjacent spelling, so no runnable
+            # push gains an escape.  What the floor DOES with a newly-detected
+            # spelling is the ungated anti-obfuscation branch, not the
+            # protected-branch rule: ``_git_push_args`` anchors on the raw
+            # split and does not skip the empty word, so the parse fails and
+            # ``_git_publish_floor_tags`` denies unconditionally
+            # (``_GIT_PUBLISH_UNGATED``) -- the right treatment for a spelling
+            # git itself cannot run.  ``str.strip()``'s whitespace set is
+            # wider than POSIX IFS (NBSP, U+2000..200A, ...) and deliberately
+            # so: every extra character it treats as skippable is still a word
+            # git takes as its command name and rejects, and a skipped token
+            # can never be the subcommand token, so the breadth only ever ADDS
+            # detection -- do not narrow it to a literal space/tab set.  No
+            # matching guard is needed in program position: a zero-width word
+            # never resolves to the program word (``_resolves_to`` cannot
+            # yield ``git`` from it), so the outer loop already steps past it.
             j = i + 1
             while j < len(tokens):
-                if tokens[j] in _GIT_ARG_FLAGS:
+                if not tokens[j].strip():
+                    j += 1  # zero-width/whitespace-only word (issue #8115)
+                elif tokens[j] in _GIT_ARG_FLAGS:
                     j += 2  # skip flag + its argument
                 elif tokens[j].startswith("-"):
                     j += 1  # skip simple flag

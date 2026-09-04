@@ -5603,8 +5603,9 @@ class TestEmptyArgvElementDoesNotBreakTheDenyView:
     EMPTY_WORDS = ('""', "''", "$''", '$""', "\"\"''", '""""')
 
     # Single-segment commands, one per rule shape.  ``git push origin main`` is
-    # here for the VIEW property but not for the deny property -- see
-    # ``test_the_git_publish_detector_is_a_separate_pre_existing_gap``.
+    # here for the VIEW property; its deny property is enforced by the argv
+    # floor rather than the tiers -- see
+    # ``test_the_git_publish_detector_skips_an_empty_word``.
     PROPERTY_BASES = (
         "rm -rf /home/x",
         "dd if=/dev/zero of=/dev/sda",
@@ -5647,43 +5648,85 @@ class TestEmptyArgvElementDoesNotBreakTheDenyView:
 
     def test_the_deny_decision_follows_the_view_for_every_boundary(self):
         """The view property above, carried through to the decision the gate
-        actually returns -- for the rules the deny TIERS evaluate."""
+        actually returns.  The non-git bases are decided by the deny TIERS;
+        the git base is enforced by the argv floor, swept here since issue
+        #8115 closed its empty-word gap (an interposed word now denies at
+        every boundary -- via the protected-branch rule where the parse holds,
+        via the ungated anti-obfuscation branch where it does not)."""
         from kiro_crew import security
 
         for base in self.PROPERTY_BASES:
-            if base.startswith("git "):
-                continue  # enforced by an argv floor, not the tiers -- see below
             expected_denied = security.is_denied(base) is not None
             for _at, _word, variant in self._empty_word_variants(base):
                 assert (security.is_denied(variant) is not None) == expected_denied, (
                     f"{variant!r} decided differently from {base!r}"
                 )
 
-    def test_the_git_publish_detector_is_a_separate_pre_existing_gap(self):
-        """DOCUMENTED GAP, pinned rather than claimed.
+    def test_the_git_publish_detector_skips_an_empty_word(self):
+        """GAP CLOSED by issue #8115 -- this is the flipped form of the
+        ``test_the_git_publish_detector_is_a_separate_pre_existing_gap`` pin
+        that #8114 left, and it now pins the closure.
 
-        ``git "" push origin main`` is allowed, and it is NOT this fix's mechanism.
-        Every git-publish rule is stripped from the regex tier and enforced solely
-        by an argv floor (``_git_publish_floor_tags``), whose entry detector
-        ``_is_git_publish`` reads the RAW command text and requires ``git`` and
-        ``push`` adjacent -- so an interposed empty word means the floor is never
-        consulted and the normalized view, which this change does fix, is never
-        reached.  Measured at this branch's merge-base ``a9769ebb1``: allowed there
-        too, so the delta from this change is zero.
-
-        Closing it means widening the sole enforcement path for pushes, whose
-        false-negative direction is "publish to a protected branch" -- a separate
-        change with its own review surface.  Tracked by issue #8115; when it
-        lands, this test is the one that must flip.
+        Every git-publish rule is stripped from the regex tier and enforced
+        solely by an argv floor (``_git_publish_floor_tags``).  Its entry
+        detector's raw-text pass still requires the program and subcommand
+        adjacent, but the normalizer second pass
+        (``_is_git_push_via_normalizer``) now skips empty and whitespace-only
+        argv words when seeking the subcommand, so an interposed empty word no
+        longer hides the push from the floor.  The widening is deliberate
+        fail-closed OVER-detection: git does not ignore a zero-width word (it
+        takes it as its command name and exits), so a spelling this newly
+        reaches either fails to run a push at all or was already reached in
+        its adjacent spelling -- no runnable push gains an escape.  For the
+        newly-reached spellings the floor's ``_git_push_args`` parse fails on
+        the interposed word, so the deny comes from the UNGATED
+        anti-obfuscation branch (``_GIT_PUBLISH_UNGATED``), not from
+        ``_is_push_to_protected_branch`` -- the right treatment for a spelling
+        git itself cannot run.
         """
+        from kiro_crew import security
+
         assert is_denied("git push origin main") is not None, (
             "the protected-branch floor no longer fires on the plain spelling -- this "
             "pin is measuring nothing"
         )
-        assert is_denied('git "" push origin main') is None, (
-            "the git-publish detector now tolerates an empty word -- the gap this pins "
-            "is closed, so update the security spec and flip this assertion"
-        )
+        # Every empty-word spelling the view property enumerates, interposed
+        # at the exact boundary the entry detector used to bail on, plus the
+        # whitespace-only shapes from issue #8115.
+        base = "git push origin main".split(" ")
+        for word in self.EMPTY_WORDS + ('" "', "$'\\t'"):
+            cmd = " ".join([base[0], word] + base[1:])
+            assert is_denied(cmd) is not None, (
+                f"an interposed word escaped the git-publish floor: {cmd!r}"
+            )
+        # The DISCRIMINATING pin for the seek-loop closure is the predicate
+        # itself: the end-to-end deny above can also arrive via the ungated
+        # parse-failure branch, and the flag spellings below already match the
+        # pass-1 raw regex, so only a direct call proves the normalizer seek
+        # now steps over the empty word (and, for the flag rows, that a global
+        # flag still consumes its empty argument without drifting off the
+        # subcommand position).
+        for cmd in (
+            'git "" push origin main',
+            "git '' -c x=y push origin main",
+            "git -c '' push origin main",
+        ):
+            assert security._is_git_push_via_normalizer(cmd) is True, (
+                f"the normalizer seek did not resolve the subcommand: {cmd!r}"
+            )
+        # ...and the end-to-end deny for the flag spellings holds too.
+        for cmd in (
+            "git -c '' push origin main",
+            "git -C '' push origin main",
+            "git '' -c x=y push origin main",
+        ):
+            assert is_denied(cmd) is not None, cmd
+        # A post-subcommand empty word was always tolerated (argv parsing has
+        # begun by then) and stays unchanged.
+        assert is_denied('git push "" origin main') is not None
+        # The subcommand-position requirement is intact: ``stash push`` with an
+        # interposed empty word is still not a publish.
+        assert is_denied('git "" stash push') is None
 
     def test_a_whitespace_only_word_is_a_documented_residual(self):
         """DOCUMENTED GAP, pinned rather than claimed.
