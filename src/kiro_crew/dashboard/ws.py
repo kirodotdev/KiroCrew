@@ -519,6 +519,7 @@ async def api_ws(request: web.Request) -> web.WebSocketResponse:
         schedule_check_refresh,
         schedule_visibility_refresh,
     )
+    from kiro_crew.platform.context import governance_generation
 
     owner_request = is_owner_dashboard_request(request)
     ws = web.WebSocketResponse(heartbeat=30)
@@ -589,6 +590,12 @@ async def api_ws(request: web.Request) -> web.WebSocketResponse:
 
     # Push current slots immediately so sidebar populates without waiting.
     # App tokens get only the slots their manifest scope allows.
+    # Read the ceiling generation ONCE here and seed both the initial frame and
+    # the refresh loop's baseline from it. Two independent reads would leave a
+    # gap: a ceiling swapped between them is already the loop's baseline, so the
+    # loop never pushes, while the client still holds the number the frame sent —
+    # the change would be missed until an unrelated slot mutation.
+    initial_ceiling_generation = governance_generation()
     try:
         is_dashboard_user = ws.get("_is_dashboard_user", False)
         all_slots = state.serialize_slots(
@@ -645,6 +652,7 @@ async def api_ws(request: web.Request) -> web.WebSocketResponse:
                 # Seed the client's generation baseline so a later change is
                 # detectable as a change rather than as a first sighting.
                 "gitlabHostsGeneration": gitlab_hosts_generation(),
+                "governanceGeneration": initial_ceiling_generation,
             }
         )
         if owner_request or is_dashboard_user:
@@ -679,6 +687,11 @@ async def api_ws(request: web.Request) -> web.WebSocketResponse:
 
     # Background task: push dashboard status periodically
     async def _push_status() -> None:
+        # Governance-ceiling watch rides this tick rather than a task of its own.
+        # Seeded from the value the initial slots frame carried, not a fresh read:
+        # the client's baseline IS that value, so a swap since then must register
+        # here as a change or the two sides disagree with no push to reconcile.
+        ceiling_generation = initial_ceiling_generation
         try:
             while not ws.closed and not shutdown_event.is_set():
                 # Gateway-wide cache: one store touch per TTL across ALL
@@ -712,6 +725,23 @@ async def api_ws(request: web.Request) -> web.WebSocketResponse:
                     await ws.send_json({"type": "dashboard", "data": data})
                 except Exception:
                     break
+                # A centrally pushed policy (``policy_distribution.apply_ceiling``)
+                # swaps the ceiling between slot mutations, and the dashboard-config
+                # fields derived from it (``social_share_enabled``) would otherwise
+                # keep their cached answer until an unrelated message carried the
+                # new generation. Every dashboard-user socket watches — owner or
+                # not — so a fleet that tightened policy while only a non-owner
+                # window was open still reaches that window. Not folded into the
+                # owner-only credential driver below: this compares one counter and
+                # asks for a (coalesced) slots push, which every dashboard
+                # connection may do, and spends no credentials.
+                if ws.get("_is_dashboard_user", False):
+                    try:
+                        if governance_generation() != ceiling_generation:
+                            ceiling_generation = governance_generation()
+                            state.push_slots_update()
+                    except Exception:
+                        logger.warning("governance watch tick failed; continuing", exc_info=True)
                 await asyncio.sleep(_WS_STATUS_INTERVAL)
         except (asyncio.CancelledError, Exception):
             pass

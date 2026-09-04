@@ -9228,7 +9228,12 @@
         "kind_internal_url": "অভ্যন্তরীণ URL",
         "card_wordmark": "{{productName}}",
         "sensitive_in_card": "শেয়ার করার আগে — কার্ডে রয়েছে: {{kinds}}",
-        "sensitive_in_caption": "শেয়ার করার আগে — পোস্টের লেখায় রয়েছে: {{kinds}}"
+        "sensitive_in_caption": "শেয়ার করার আগে — পোস্টের লেখায় রয়েছে: {{kinds}}",
+        "withdrawn_by_policy": "নীতির কারণে শেয়ার করা বন্ধ করা হয়েছে। লেখাটা রাখতে চাইলে এখনই কপি করো — এই ডায়ালগ বন্ধ করলে তা সেভ হবে না।",
+        "copy_text_only": "লেখা কপি করো",
+        "copied_text": "কপি হয়েছে",
+        "copy_text_failed": "কপি করা যায়নি",
+        "copy_text_unavailable": "এখানে ক্লিপবোর্ড ব্লক করা আছে। তোমার পোস্টের লেখাটা সিলেক্ট করা আছে — Ctrl+C / ⌘C চাপো। কার্ডের যে লেখা তুমি বদলেছ, সেটা কার্ড থেকেই কপি করো।"
       }
     },
     "chatPage": {
@@ -12608,6 +12613,7 @@
         "gov_scope_sandbox_level": "স্যান্ডবক্স স্তর",
         "gov_scope_script_hooks": "স্ক্রিপ্ট হুক",
         "gov_scope_spawn": "স্পন",
+        "gov_scope_social_share": "ছবি হিসেবে শেয়ার করুন",
         "gov_scope_telemetry": "নামহীন টেলিমেট্রি",
         "gov_scope_theme_install": "থিম ইনস্টল",
         "gov_scope_theme_persona": "থিম পার্সোনা",

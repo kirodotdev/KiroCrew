@@ -275,6 +275,7 @@ def _slots_ws_frame(
     gitlab_hosts_gen: object,
     folders: object,
     folders_gen: object,
+    governance_gen: object,
 ) -> str:
     """Serialize the dashboard-user ``slots`` WS frame.
 
@@ -306,6 +307,13 @@ def _slots_ws_frame(
             "gitlabHostsGeneration": gitlab_hosts_gen,
             "folders": folders,
             "foldersGeneration": folders_gen,
+            # Which governance ceiling is installed. A centrally pushed policy
+            # (``policy_distribution.apply_ceiling``) swaps the ceiling mid-session
+            # and bumps this counter; the client invalidates its cached
+            # ``dashboardConfig`` on a change, so a governance-derived field there
+            # (``social_share_enabled``) follows the ceiling instead of waiting out
+            # its stale window. Process-local, like the two counters above.
+            "governanceGeneration": governance_gen,
         }
     )
 
@@ -7698,6 +7706,7 @@ class DashboardState:
         from kiro_crew.dashboard.handlers.source_providers import (
             gitlab_hosts_generation,
         )
+        from kiro_crew.platform.context import governance_generation
 
         yolo_active = self.is_yolo_active()  # expire first if needed
         # PUBLIC-repo chip status rides the general frame so any authenticated
@@ -7763,6 +7772,7 @@ class DashboardState:
                 # blinked": this frame fires on routine slot activity, so the
                 # tree alone is not a change signal.
                 "foldersGeneration": self.folders_generation(),
+                "governanceGeneration": governance_generation(),
             }
         )
         # The owner frame is the owner's ONLY slots frame — `_send_ws_all` skips
@@ -7784,6 +7794,7 @@ class DashboardState:
                     gitlab_hosts_gen=gitlab_hosts_generation(),
                     folders=_safe_folder_tree(getattr(self, "_folders", None)),
                     folders_gen=self.folders_generation(),
+                    governance_gen=governance_generation(),
                 )
             )
 
@@ -7906,6 +7917,7 @@ class DashboardState:
                     gitlab_hosts_gen=note.get("gitlabHostsGeneration"),
                     folders=note.get("folders"),
                     folders_gen=note.get("foldersGeneration"),
+                    governance_gen=note.get("governanceGeneration"),
                 )
             elif msg_type == "slot_title":
                 ws_data = {"key": note["key"], "title": note["title"]}

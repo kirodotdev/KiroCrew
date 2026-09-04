@@ -9228,7 +9228,12 @@
         "kind_internal_url": "आंतरिक URL",
         "card_wordmark": "{{productName}}",
         "sensitive_in_card": "साझा करने से पहले — कार्ड में है: {{kinds}}",
-        "sensitive_in_caption": "साझा करने से पहले — पोस्ट के टेक्स्ट में है: {{kinds}}"
+        "sensitive_in_caption": "साझा करने से पहले — पोस्ट के टेक्स्ट में है: {{kinds}}",
+        "withdrawn_by_policy": "नीति के कारण साझा करना बंद कर दिया गया है। टेक्स्ट रखना हो तो अभी कॉपी कर लो — यह डायलॉग बंद करने पर वह सेव नहीं होता।",
+        "copy_text_only": "टेक्स्ट कॉपी करो",
+        "copied_text": "कॉपी हो गया",
+        "copy_text_failed": "कॉपी नहीं हो सका",
+        "copy_text_unavailable": "यहाँ क्लिपबोर्ड ब्लॉक है। तुम्हारे पोस्ट का टेक्स्ट चुना हुआ है — Ctrl+C / ⌘C दबाओ। कार्ड का जो टेक्स्ट तुमने बदला है, उसे कार्ड से ही कॉपी कर लो।"
       }
     },
     "chatPage": {
@@ -12608,6 +12613,7 @@
         "gov_scope_sandbox_level": "सैंडबॉक्स स्तर",
         "gov_scope_script_hooks": "स्क्रिप्ट हुक",
         "gov_scope_spawn": "स्पॉन",
+        "gov_scope_social_share": "छवि के रूप में साझा करें",
         "gov_scope_telemetry": "अनाम टेलीमेट्री",
         "gov_scope_theme_install": "थीम इंस्टॉल",
         "gov_scope_theme_persona": "थीम पर्सोना",

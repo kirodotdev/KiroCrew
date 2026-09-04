@@ -3808,7 +3808,7 @@ async def api_dashboard_config(request: web.Request) -> web.Response:
         # PUT body. Drop them here instead of listing them in _allowed -- they
         # stay unwritable, but a round-tripped read-only field must not 400 an
         # unrelated toggle save.
-        read_only_ignored_keys = {"gitlab_hosts", "jira_hosts"}
+        read_only_ignored_keys = {"gitlab_hosts", "jira_hosts", "social_share_enabled"}
         body = {
             k: v
             for k, v in body.items()
@@ -4104,6 +4104,14 @@ async def api_dashboard_config(request: web.Request) -> web.Response:
     _sel().log_tool_invocation(
         session_key="dashboard", tool_name="dashboard_config_read", outcome="success"
     )
+    # Governance-derived, not a config value: the dashboard draws the "Share as
+    # image" entry only when this is true, and it has no other way to know — the
+    # share card has no server-side action to refuse, so this read IS the
+    # enforcement point. Resolved off-thread (profile resolution may read from
+    # disk); every decision is SEL-audited by the probe itself.
+    from kiro_crew.dashboard import social_share
+
+    social_share_denied = await asyncio.to_thread(social_share.is_share_denied)
     return web.json_response(
         {
             "restore_sessions": cfg.dashboard.restore_sessions,
@@ -4128,6 +4136,10 @@ async def api_dashboard_config(request: web.Request) -> web.Response:
             # Same discipline for Jira: Atlassian Cloud (*.atlassian.net) is
             # auto-recognized; self-hosted instances need explicit allowlisting.
             "jira_hosts": list(cfg.dashboard.jira_hosts),
+            # Read-only: the `capabilities.social_share` governance answer. False
+            # withdraws the "Share as image" menu entry; there is no toggle behind
+            # it, so nothing here is writable.
+            "social_share_enabled": not social_share_denied,
         }
     )
 

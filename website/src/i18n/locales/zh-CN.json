@@ -9095,7 +9095,12 @@
         "kind_internal_url": "内部链接",
         "card_wordmark": "{{productName}}",
         "sensitive_in_card": "分享前请注意——卡片中检测到：{{kinds}}",
-        "sensitive_in_caption": "分享前请注意——帖子文案中检测到：{{kinds}}"
+        "sensitive_in_caption": "分享前请注意——帖子文案中检测到：{{kinds}}",
+        "withdrawn_by_policy": "分享功能已被策略关闭。想保留文案就先复制——关闭此对话框后不会保存。",
+        "copy_text_only": "复制文案",
+        "copied_text": "已复制",
+        "copy_text_failed": "复制失败",
+        "copy_text_unavailable": "当前环境禁止写入剪贴板。文案已选中——按 Ctrl+C / ⌘C 复制。你改过的卡片文字请直接从卡片上复制。"
       }
     },
     "chatPage": {
@@ -12439,6 +12444,7 @@
         "gov_scope_sandbox_level": "沙箱级别",
         "gov_scope_script_hooks": "脚本钩子",
         "gov_scope_spawn": "派生",
+        "gov_scope_social_share": "分享为图片",
         "gov_scope_telemetry": "匿名遥测",
         "gov_scope_theme_install": "主题安装",
         "gov_scope_theme_persona": "主题人格",

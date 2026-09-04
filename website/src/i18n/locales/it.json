@@ -9361,7 +9361,12 @@
         "kind_internal_url": "un URL interno",
         "card_wordmark": "{{productName}}",
         "sensitive_in_card": "Prima di condividere — la card contiene: {{kinds}}",
-        "sensitive_in_caption": "Prima di condividere — il testo del post contiene: {{kinds}}"
+        "sensitive_in_caption": "Prima di condividere — il testo del post contiene: {{kinds}}",
+        "withdrawn_by_policy": "La condivisione è stata disattivata da una politica. Copia il tuo testo adesso se vuoi conservarlo — alla chiusura di questa finestra non viene salvato.",
+        "copy_text_only": "Copia testo",
+        "copied_text": "Copiato",
+        "copy_text_failed": "Copia non riuscita",
+        "copy_text_unavailable": "Gli appunti sono bloccati qui. Il testo del tuo post è selezionato: premi Ctrl+C / ⌘C. Il testo della card che hai modificato va copiato dalla card stessa."
       }
     },
     "chatPage": {
@@ -12775,6 +12780,7 @@
         "gov_scope_sandbox_level": "Livello della sandbox",
         "gov_scope_script_hooks": "Hook di script",
         "gov_scope_spawn": "Avvio di subagenti",
+        "gov_scope_social_share": "Condividi come immagine",
         "gov_scope_telemetry": "Telemetria anonima",
         "gov_scope_theme_install": "Installazione dei temi",
         "gov_scope_theme_persona": "Persona del tema",

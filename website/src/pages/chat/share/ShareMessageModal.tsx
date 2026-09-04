@@ -6,6 +6,7 @@ import {
 import { Btn } from '../../../components/ui'
 import { i18nT } from '../../../i18n/t'
 import { fmtNumber } from '../../../i18n/format'
+import { copyToClipboard } from '../../../utils/clipboard'
 import ShareCard, { CARD_W } from './ShareCard'
 import {
   SHARE_REPO_URL, X_POST_LIMIT, buildIntentUrl, clampExcerpt, copyImageWithText,
@@ -37,9 +38,13 @@ export interface ShareMessageModalProps {
   messageText: string
   /** The user question this reply answered, when the host can supply it. */
   prevUserText?: string
+  /** The `capabilities.social_share` governance answer. When it flips to false
+   *  while this dialog is open, the dialog stays mounted so the user's edits are
+   *  not destroyed: the actions are withdrawn and a notice says why. */
+  shareEnabled: boolean
 }
 
-export default function ShareMessageModal({ onClose, messageText, prevUserText }: ShareMessageModalProps) {
+export default function ShareMessageModal({ onClose, messageText, prevUserText, shareEnabled }: ShareMessageModalProps) {
   const initialExcerpt = useMemo(() => clampExcerpt(messageText), [messageText])
   // Q&A pairs travel best on social feeds, so the question defaults IN.
   const [includeQuestion, setIncludeQuestion] = useState(!!prevUserText)
@@ -50,6 +55,12 @@ export default function ShareMessageModal({ onClose, messageText, prevUserText }
   const [busy, setBusy] = useState<'download' | 'copy' | 'intent' | null>(null)
   const [feedback, setFeedback] = useState<'copied' | 'copy_unavailable' | null>(null)
   const wrapRef = useRef<HTMLDivElement>(null)
+  // Latest permission for the async handlers: a click captures the closure's
+  // value at click time, but the answer can change while the export awaits.
+  const shareEnabledRef = useRef(shareEnabled)
+  shareEnabledRef.current = shareEnabled
+  const [textCopy, setTextCopy] = useState<'idle' | 'copied' | 'failed'>('idle')
+  const captionRef = useRef<HTMLTextAreaElement>(null)
 
   // The preview scales DOWN to fit narrow viewports (the card itself keeps its
   // fixed export width — the transform sits on a wrapper, which html-to-image
@@ -75,6 +86,22 @@ export default function ShareMessageModal({ onClose, messageText, prevUserText }
 
   const initialQuestion = includeQuestion && prevUserText ? clampExcerpt(prevUserText, 180) : undefined
   const question = initialQuestion !== undefined && questionEdit !== null ? questionEdit : initialQuestion
+  // The withdrawn state's one salvage path: a plain-text copy of EVERYTHING the
+  // user could have edited here — the caption and the card's text (question,
+  // excerpt), which live in a contentEditable and vanish on close just like the
+  // caption does. Local only (clipboard, no image, no site), so it stays
+  // available when sharing is not. The clipboard can refuse (plain-HTTP hosts
+  // return false; the legacy fallback can throw): the notice points the user at
+  // THIS button, so a refusal must not look like success or leave the button
+  // inert — it says so, and selects the caption so a manual copy is one
+  // keystroke away.
+  const copyTextOnly = async () => {
+    const salvage = [caption, question, excerpt].filter((s) => s && s.trim()).join('\n\n')
+    let ok = false
+    try { ok = await copyToClipboard(salvage) } catch { ok = false }
+    if (!ok) { captionRef.current?.focus(); captionRef.current?.select() }
+    setTextCopy(ok ? 'copied' : 'failed')
+  }
   // Card and caption are scanned SEPARATELY so the warning can assert where
   // the match sits. A combined scan labelled "the card" misdirects the check:
   // a credential in the caption sends the user hunting through a clean card,
@@ -142,6 +169,14 @@ export default function ShareMessageModal({ onClose, messageText, prevUserText }
         }
       }
     } finally { setBusy(null) }
+    // The permission is re-read AFTER the awaits, from the ref rather than the
+    // closure: a policy swap during the export must not be followed by the
+    // navigation that hands the caption to the third-party site. The tab that
+    // was pre-opened to dodge the popup blocker is closed instead of left blank.
+    if (!shareEnabledRef.current) {
+      tab?.close()
+      return
+    }
     if (tab) tab.location.href = url
     else window.open(url, '_blank', 'noopener,noreferrer')
   }
@@ -178,6 +213,7 @@ export default function ShareMessageModal({ onClose, messageText, prevUserText }
                 <label htmlFor="share-caption" className="block text-[11px] leading-4 text-muted mb-1.5 tracking-wide">{i18nT('pages.chat.share.caption_label')}</label>
                 <textarea
                   id="share-caption"
+                  ref={captionRef}
                   aria-label={i18nT('pages.chat.share.caption_label')}
                   className="w-full h-28 rounded-lg bg-bg ring-1 ring-inset ring-border focus:ring-accent outline-none px-3 py-2 text-[13px] leading-5 text-text resize-none"
                   value={caption}
@@ -198,23 +234,46 @@ export default function ShareMessageModal({ onClose, messageText, prevUserText }
                 </div>
               )}
 
+              {/* A policy swap while composing: say what happened instead of
+                  making the dialog vanish with the user's edits in it. The
+                  share actions below are withdrawn; the caption text keeps one
+                  local salvage path so Close never means silent loss. */}
+              {!shareEnabled && (
+                <div>
+                  <div role="alert" data-testid="share-withdrawn" className="flex items-start gap-2 rounded-lg bg-warn-subtle ring-1 ring-inset ring-warn/30 px-3 py-2 text-[12px] leading-5 text-text">
+                    <AlertTriangle size={14} className="shrink-0 mt-0.5 text-warn" aria-hidden="true" />
+                    <span className="flex-1">{i18nT('pages.chat.share.withdrawn_by_policy')}</span>
+                    <Btn onClick={copyTextOnly} data-testid="share-copy-text" aria-label={i18nT('pages.chat.share.copy_text_only')}>
+                      {textCopy === 'copied' ? <Check size={14} className="lucide-inline text-ok" /> : textCopy === 'failed' ? <AlertTriangle size={14} className="lucide-inline text-warn" /> : <Copy size={14} className="lucide-inline" />}
+                      {' '}
+                      {textCopy === 'copied' ? i18nT('pages.chat.share.copied_text') : textCopy === 'failed' ? i18nT('pages.chat.share.copy_text_failed') : i18nT('pages.chat.share.copy_text_only')}
+                    </Btn>
+                  </div>
+                  {textCopy === 'failed' && (
+                    <p role="status" data-testid="share-copy-text-unavailable" className="text-[12px] leading-5 text-muted m-0 mt-1.5">{i18nT('pages.chat.share.copy_text_unavailable')}</p>
+                  )}
+                </div>
+              )}
+
               {/* Two actions per row (dialog action-row convention). */}
               <div className="grid grid-cols-2 gap-2">
-                <Btn primary disabled={busy !== null} onClick={handleDownload} data-testid="share-download">
+                <Btn primary disabled={busy !== null || !shareEnabled} onClick={handleDownload} data-testid="share-download">
                   {busy === 'download' ? <Loader2 size={14} className="animate-spin lucide-inline" /> : <Download size={14} className="lucide-inline" />} {i18nT('pages.chat.share.download_png')}
                 </Btn>
-                <Btn disabled={busy !== null} onClick={handleCopy} data-testid="share-copy">
+                <Btn disabled={busy !== null || !shareEnabled} onClick={handleCopy} data-testid="share-copy">
                   {busy === 'copy' ? <Loader2 size={14} className="animate-spin lucide-inline" /> : feedback === 'copied' ? <Check size={14} className="lucide-inline text-ok" /> : <Copy size={14} className="lucide-inline" />} {i18nT('pages.chat.share.copy_image_text')}
                 </Btn>
-                <Btn disabled={busy !== null} onClick={() => openIntent('x')} data-testid="share-x">{i18nT('pages.chat.share.share_on_x')}</Btn>
-                <Btn disabled={busy !== null} onClick={() => openIntent('linkedin')} data-testid="share-linkedin">{i18nT('pages.chat.share.share_on_linkedin')}</Btn>
+                <Btn disabled={busy !== null || !shareEnabled} onClick={() => openIntent('x')} data-testid="share-x">{i18nT('pages.chat.share.share_on_x')}</Btn>
+                <Btn disabled={busy !== null || !shareEnabled} onClick={() => openIntent('linkedin')} data-testid="share-linkedin">{i18nT('pages.chat.share.share_on_linkedin')}</Btn>
               </div>
 
+              {shareEnabled && (
               <p className="text-[12px] leading-5 text-muted m-0" role={feedback ? 'status' : undefined}>
                 {feedback === 'copied' ? i18nT('pages.chat.share.copied')
                   : feedback === 'copy_unavailable' ? i18nT('pages.chat.share.copy_unavailable')
                   : i18nT('pages.chat.share.intent_hint')}
               </p>
+              )}
             </div>
           </div>
         </DialogBody>

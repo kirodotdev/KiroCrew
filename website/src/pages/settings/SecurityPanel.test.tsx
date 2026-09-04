@@ -648,6 +648,29 @@ describe('SecurityPanel — governance policy viewer', () => {  beforeEach(() =>
     expect(screen.queryByText('External_access')).not.toBeInTheDocument()
   })
 
+  it('names a pinned social-share ceiling after the menu entry it withdraws', async () => {
+    // A user whose "Share as image" entry vanished reads THIS row to learn why;
+    // the humanised leaf ("Social Share") would not connect to the feature they
+    // lost, and would render in English in every locale.
+    ;(api.governancePolicy as ReturnType<typeof vi.fn>).mockResolvedValue(
+      govGoverned({
+        scopes: [
+          {
+            scope: 'capabilities.social_share',
+            archetype: 'capability',
+            governed: true,
+            source: 'policy',
+            detail: { enabled: false, inner: {} },
+          },
+        ],
+      }),
+    )
+    renderWithProviders(<SecurityPanel />, { route: '/?section=governance' })
+
+    expect(await screen.findByText('Share as image')).toBeInTheDocument()
+    expect(screen.queryByText('Social Share')).not.toBeInTheDocument()
+  })
+
   it('renders governed + ungoverned rows with effective state and source', async () => {
     ;(api.governancePolicy as ReturnType<typeof vi.fn>).mockResolvedValue(govGoverned())
     renderWithProviders(<SecurityPanel />, { route: '/?section=governance' })

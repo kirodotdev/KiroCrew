@@ -123,4 +123,41 @@ describe('useWebSocket GitLab allowlist invalidation', () => {
 
     expect(configInvalidations()).toBe(2)
   })
+
+  // The governance ceiling rides the same frame with the same contract: the
+  // config endpoint derives `social_share_enabled` from the ceiling, and a
+  // centrally pushed policy swaps the ceiling mid-session, so the cached answer
+  // must be dropped the moment the frame reports a new generation.
+  it('invalidates on a governance-ceiling generation change within a connection', () => {
+    renderHook(() => useWebSocket(), { wrapper })
+    const ws = WS_INSTANCES[0]
+    act(() => { ws.simulateOpen() })
+
+    act(() => { ws.simulateMessage({ type: 'slots', data: [], governanceGeneration: 1 }) })
+    expect(configInvalidations()).toBe(1)
+    act(() => { ws.simulateMessage({ type: 'slots', data: [], governanceGeneration: 1 }) })
+    expect(configInvalidations()).toBe(1)
+    // The fleet pushed a new ceiling: refetch, so a withdrawn Share entry disappears.
+    act(() => { ws.simulateMessage({ type: 'slots', data: [], governanceGeneration: 2 }) })
+    expect(configInvalidations()).toBe(2)
+  })
+
+  it('treats the first governance generation of a reconnect as unknown', () => {
+    vi.useFakeTimers()
+    renderHook(() => useWebSocket(), { wrapper })
+    const ws1 = WS_INSTANCES[0]
+    act(() => { ws1.simulateOpen() })
+    act(() => { ws1.simulateMessage({ type: 'slots', data: [], governanceGeneration: 1 }) })
+    expect(configInvalidations()).toBe(1)
+
+    // Gateway restarts with a new policy file: the counter restarts too, so an
+    // equal number after a reconnect must still refetch.
+    act(() => { ws1.onclose?.(new CloseEvent('close')) })
+    act(() => { vi.advanceTimersByTime(2000) })
+    const ws2 = WS_INSTANCES[1]
+    act(() => { ws2.simulateOpen() })
+    act(() => { ws2.simulateMessage({ type: 'slots', data: [], governanceGeneration: 1 }) })
+
+    expect(configInvalidations()).toBe(2)
+  })
 })

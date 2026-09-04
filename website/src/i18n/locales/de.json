@@ -9228,7 +9228,12 @@
         "kind_internal_url": "eine interne URL",
         "card_wordmark": "{{productName}}",
         "sensitive_in_card": "Vor dem Teilen — die Karte enthält: {{kinds}}",
-        "sensitive_in_caption": "Vor dem Teilen — der Beitragstext enthält: {{kinds}}"
+        "sensitive_in_caption": "Vor dem Teilen — der Beitragstext enthält: {{kinds}}",
+        "withdrawn_by_policy": "Das Teilen wurde per Richtlinie deaktiviert. Kopiere deinen Text jetzt, wenn du ihn behalten willst — beim Schließen dieses Dialogs wird er nicht gespeichert.",
+        "copy_text_only": "Text kopieren",
+        "copied_text": "Kopiert",
+        "copy_text_failed": "Kopieren fehlgeschlagen",
+        "copy_text_unavailable": "Die Zwischenablage ist hier blockiert. Dein Beitragstext ist markiert — drücke Strg+C / ⌘C. Bearbeiteten Kartentext kopierst du direkt aus der Karte."
       }
     },
     "chatPage": {
@@ -12607,6 +12612,7 @@
         "gov_scope_sandbox_level": "Sandbox-Stufe",
         "gov_scope_script_hooks": "Skript-Hooks",
         "gov_scope_spawn": "Subagenten-Start",
+        "gov_scope_social_share": "Als Bild teilen",
         "gov_scope_telemetry": "Anonyme Telemetrie",
         "gov_scope_theme_install": "Theme-Installation",
         "gov_scope_theme_persona": "Theme-Persona",

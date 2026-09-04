@@ -9095,7 +9095,12 @@
         "kind_internal_url": "내부 URL",
         "card_wordmark": "{{productName}}",
         "sensitive_in_card": "공유 전 확인하세요 — 카드에 다음이 포함되어 있습니다: {{kinds}}",
-        "sensitive_in_caption": "공유 전 확인하세요 — 게시물 텍스트에 다음이 포함되어 있습니다: {{kinds}}"
+        "sensitive_in_caption": "공유 전 확인하세요 — 게시물 텍스트에 다음이 포함되어 있습니다: {{kinds}}",
+        "withdrawn_by_policy": "정책에 따라 공유가 꺼졌습니다. 텍스트를 남기려면 지금 복사하세요 — 이 대화 상자를 닫으면 저장되지 않습니다.",
+        "copy_text_only": "텍스트 복사",
+        "copied_text": "복사되었습니다",
+        "copy_text_failed": "복사하지 못했습니다",
+        "copy_text_unavailable": "이 환경에서는 클립보드가 차단되어 있습니다. 게시글 텍스트가 선택되어 있으니 Ctrl+C / ⌘C를 누르세요. 편집한 카드 텍스트는 카드에서 직접 복사하세요."
       }
     },
     "chatPage": {
@@ -12439,6 +12444,7 @@
         "gov_scope_sandbox_level": "샌드박스 수준",
         "gov_scope_script_hooks": "스크립트 훅",
         "gov_scope_spawn": "생성",
+        "gov_scope_social_share": "이미지로 공유",
         "gov_scope_telemetry": "익명 텔레메트리",
         "gov_scope_theme_install": "테마 설치",
         "gov_scope_theme_persona": "테마 페르소나",

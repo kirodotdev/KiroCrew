@@ -9494,7 +9494,12 @@
         "kind_internal_url": "внутренний URL",
         "card_wordmark": "{{productName}}",
         "sensitive_in_card": "Перед публикацией — карточка содержит: {{kinds}}",
-        "sensitive_in_caption": "Перед публикацией — текст поста содержит: {{kinds}}"
+        "sensitive_in_caption": "Перед публикацией — текст поста содержит: {{kinds}}",
+        "withdrawn_by_policy": "Функция «Поделиться» отключена политикой. Если хочешь сохранить текст, скопируй его сейчас — при закрытии этого окна он не сохраняется.",
+        "copy_text_only": "Скопировать текст",
+        "copied_text": "Скопировано",
+        "copy_text_failed": "Не удалось скопировать",
+        "copy_text_unavailable": "Буфер обмена здесь заблокирован. Текст твоего поста выделен — нажми Ctrl+C / ⌘C. Отредактированный текст карточки скопируй из самой карточки."
       }
     },
     "chatPage": {
@@ -12944,6 +12949,7 @@
         "gov_scope_sandbox_level": "Уровень песочницы",
         "gov_scope_script_hooks": "Скриптовые хуки",
         "gov_scope_spawn": "Запуск субагентов",
+        "gov_scope_social_share": "Поделиться картинкой",
         "gov_scope_telemetry": "Анонимная телеметрия",
         "gov_scope_theme_install": "Установка тем",
         "gov_scope_theme_persona": "Персона темы",

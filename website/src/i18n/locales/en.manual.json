@@ -3353,7 +3353,12 @@
         "kind_internal_url": "an internal URL",
         "card_wordmark": "{{productName}}",
         "sensitive_in_card": "Before you share — the card contains: {{kinds}}",
-        "sensitive_in_caption": "Before you share — the post text contains: {{kinds}}"
+        "sensitive_in_caption": "Before you share — the post text contains: {{kinds}}",
+        "withdrawn_by_policy": "Sharing was turned off by policy. Copy your text now if you want to keep it — it is not saved when you close this dialog.",
+        "copy_text_only": "Copy text",
+        "copied_text": "Copied",
+        "copy_text_failed": "Copy failed",
+        "copy_text_unavailable": "Clipboard is blocked here. Your post text is selected — press Ctrl+C / ⌘C. Copy card edits from the card itself."
       }
     },
     "chatPage": {
@@ -4926,6 +4931,7 @@
         "gov_scope_sandbox_level": "Sandbox level",
         "gov_scope_script_hooks": "Script hooks",
         "gov_scope_spawn": "Spawn",
+        "gov_scope_social_share": "Share as image",
         "gov_scope_telemetry": "Anonymous telemetry",
         "gov_scope_theme_install": "Theme install",
         "gov_scope_theme_persona": "Theme persona",

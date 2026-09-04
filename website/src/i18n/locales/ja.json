@@ -9095,7 +9095,12 @@
         "kind_internal_url": "内部 URL",
         "card_wordmark": "{{productName}}",
         "sensitive_in_card": "共有前にご確認ください — カードに次が含まれています：{{kinds}}",
-        "sensitive_in_caption": "共有前にご確認ください — 投稿テキストに次が含まれています：{{kinds}}"
+        "sensitive_in_caption": "共有前にご確認ください — 投稿テキストに次が含まれています：{{kinds}}",
+        "withdrawn_by_policy": "ポリシーにより共有が無効になりました。テキストを残したい場合は今コピーしてください — このダイアログを閉じると保存されません。",
+        "copy_text_only": "テキストをコピー",
+        "copied_text": "コピーしました",
+        "copy_text_failed": "コピーできませんでした",
+        "copy_text_unavailable": "この環境ではクリップボードがブロックされています。投稿テキストは選択済みです — Ctrl+C / ⌘C を押してください。編集したカードのテキストはカードから直接コピーしてください。"
       }
     },
     "chatPage": {
@@ -12439,6 +12444,7 @@
         "gov_scope_sandbox_level": "サンドボックスレベル",
         "gov_scope_script_hooks": "スクリプトフック",
         "gov_scope_spawn": "生成",
+        "gov_scope_social_share": "画像として共有",
         "gov_scope_telemetry": "匿名テレメトリ",
         "gov_scope_theme_install": "テーマのインストール",
         "gov_scope_theme_persona": "テーマペルソナ",

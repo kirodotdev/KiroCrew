@@ -2098,7 +2098,10 @@ descriptor. Every decision, list and mint alike, is SEL-audited through
 entry; the method rows themselves come from the `mobile_connect` CPP seam —
 see `platform-context.md`), and
 `capabilities.telemetry` (the anonymous beacon: send gate + both write
-chokepoints — **policy layer only**, see below). Only the live `approval_mode`
+chokepoints — **policy layer only**, see below), and
+`capabilities.social_share` (the dashboard's "Share as image" entry — read
+through `GET /api/dashboard/config`, every layer honoured, every decision
+audited; see below). Only the live `approval_mode`
 clamp remains reserved.
 
 The `commands` scope now **doubles as the enterprise force-pin** for built-in
@@ -2468,6 +2471,80 @@ distinct `pinned` state — the card must separate "off because the operator lef
 switch off" (flippable) from "off because an administrator pinned it" (a config
 write returns 403), since offering a working-looking toggle for the second is the
 half-control this row exists to avoid.
+
+### "Share as image" — `capabilities.social_share`
+
+The chat's *More actions → Share as image* turns an assistant reply into a branded
+PNG card with a prefilled caption and offers to post it to X or LinkedIn
+(`website/src/pages/chat/share/`). The card is rendered and exported **in the
+browser** — copy and download never leave the machine, and there is no upload — but
+the intent buttons hand the caption text to a third-party site inside a URL. That
+makes the entry an egress path for agent output, which a managed fleet may forbid
+wholesale. Governed by the `capabilities.social_share` `SCOPE_CATALOG` capability
+row (`capability_default=True`, data-only shape — no `CONTRACT_VERSION` or evaluator
+change, mirroring the rows above).
+
+**Why the chokepoint is a read.** There is no server-side share action to refuse:
+nothing is rendered, stored or posted by the gateway. The control is the dashboard
+entry itself, and the only way the dashboard can learn the ceiling's answer is the
+endpoint it already fetches — `GET /api/dashboard/config` reports a read-only
+`social_share_enabled` (`dashboard/social_share.py`), and the frontend draws the
+menu item only when it is `true`. The entry stays hidden until the server has
+answered — the endpoint is the authority, the frontend never guesses (the same
+posture as the mobile-connect rail row). When Share was the menu's only item (a
+loaded window keeps fork/plan as row buttons), the trigger is withdrawn with it
+rather than opening an empty menu. A swap that lands while the share dialog is
+already open does **not** unmount it: the dialog stays with the user's edited
+caption in place, its four share actions are disabled, a notice names the cause and
+tells the user to copy their text now (it is not saved on close), and a plain-text
+Copy affordance — the caption plus the card's editable text, local clipboard, no
+image, no site — stays available so closing
+never means silent loss; when the clipboard refuses, the button says so and
+selects the caption for a keyboard copy rather than looking like success. The
+notice does not name who set the policy (a fleet ceiling and an operator's own
+profile pin both land here). In the Security panel's ceiling viewer the scope's row
+is labelled after the menu entry it withdraws ("Share as image", translated), so a
+user who lost the entry can connect the row to the feature. The field is dropped
+from the `PUT` body (both settings surfaces round-trip the whole `GET`), so it can
+never be written: governance, not config, owns the answer.
+
+**Shape: the mobile-connect listing, not the startup probes.** The evaluation runs
+through `vet_and_audit` on the pinned `dashboard:ui` surface key — never a
+caller-controlled header, which would let a request dodge a profile bound to the
+dashboard surface — and **every denied decision is honoured**, whichever layer
+produced it. This is a per-request dashboard question, so unlike `telemetry` and
+`tailnet_origin` (process-wide, session-less, evaluated once at boot) there is no
+policy-layer-only carve-out: a Level-2 profile narrowing the dashboard can withdraw
+the entry.
+
+**Fails CLOSED** (`fail_closed=True`), joining `capabilities.publish` /
+`theme_install` / `telemetry` / `tailnet_origin`: a wrong-DENY hides a convenience
+menu item, a wrong-PERMIT offers a "post this to a third-party site" button on a
+fleet that forbade it. An unevaluable ceiling is recorded as `denied` with a
+`fail-closed` reason.
+
+**Every decision is audited.** Each evaluation the dashboard acts on leaves a
+`governance_decision` SEL row (tool `dashboard_config_social_share`), grant and
+denial alike, through the shared seam — the read *is* the enforcement here, so it
+is not an inspection to leave unrecorded. The endpoint is not polled: the client
+fetches it on mount, focus and after its stale window, and otherwise only when the
+WS `slots` frame reports a generation change (below).
+
+**Follows a mid-session ceiling swap.** `policy_distribution.apply_ceiling` can
+replace the ceiling without a restart. The WS `slots` frame carries the process-local
+`governanceGeneration` alongside `gitlabHostsGeneration`; every dashboard-user
+socket's existing 5-second status pusher (`ws.py`, `_push_status`) compares the
+counter on each tick and asks for a coalesced slots push when it moves — no task of
+its own, and deliberately separate from the owner-only credential-refresh driver, so
+a fleet that tightened policy while only a non-owner window was open still reaches
+that window; the initial frame and the tick's baseline come from one read, so a swap
+during connection setup registers as a change. The client invalidates its cached
+`dashboardConfig` on a change (and on each connection's first frame, since the
+counter restarts with the process) — so a withdrawn entry disappears within one
+status tick rather than waiting out the cache's stale window.
+
+The Security panel picks the row up automatically (`api_governance_policy` iterates
+`SCOPE_CATALOG`; its label is the humanised leaf, "Social share").
 
 ### Which ACP harness a deployment may select — `agent_backend`
 

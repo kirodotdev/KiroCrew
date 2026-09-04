@@ -262,6 +262,7 @@ export function useWebSocket() {
   const lastBundleIdRef = useRef<string | null>(null)
   const lastGitlabHostsGenRef = useRef<number | null>(null)
   const lastFoldersGenRef = useRef<number | null>(null)
+  const lastGovernanceGenRef = useRef<number | null>(null)
   const lastSlotsRawRef = useRef<string | null>(null)
   const lastSlotsArrayRef = useRef<ChatSlot[] | null>(null)
   const voiceQueueRef = useRef<string[]>([])
@@ -771,6 +772,8 @@ export function useWebSocket() {
       lastGitlabHostsGenRef.current = null
       // Same process-local reasoning for the folder-tree generation.
       lastFoldersGenRef.current = null
+      // …and for the governance-ceiling generation.
+      lastGovernanceGenRef.current = null
       // Forget the last raw slots frame too, so a reconnect whose first frame
       // repeats the last one before it cannot swallow that first frame.
       lastSlotsRawRef.current = null
@@ -1053,6 +1056,18 @@ export function useWebSocket() {
               const prevGen = lastGitlabHostsGenRef.current
               lastGitlabHostsGenRef.current = msg.gitlabHostsGeneration
               if (prevGen === null || prevGen !== msg.gitlabHostsGeneration) {
+                queryClient.invalidateQueries({ queryKey: ['dashboardConfig'] })
+              }
+            }
+            // Same contract for the governance ceiling: a centrally pushed policy
+            // swaps it mid-session and bumps this generation, and the config
+            // endpoint derives `social_share_enabled` from that ceiling. Without
+            // this the cached answer would keep offering the Share entry for the
+            // rest of its stale window after the fleet withdrew it.
+            if (typeof msg.governanceGeneration === 'number') {
+              const prevGovGen = lastGovernanceGenRef.current
+              lastGovernanceGenRef.current = msg.governanceGeneration
+              if (prevGovGen === null || prevGovGen !== msg.governanceGeneration) {
                 queryClient.invalidateQueries({ queryKey: ['dashboardConfig'] })
               }
             }

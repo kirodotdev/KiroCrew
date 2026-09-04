@@ -9361,7 +9361,12 @@
         "kind_internal_url": "une URL interne",
         "card_wordmark": "{{productName}}",
         "sensitive_in_card": "Avant de partager — la carte contient : {{kinds}}",
-        "sensitive_in_caption": "Avant de partager — le texte de la publication contient : {{kinds}}"
+        "sensitive_in_caption": "Avant de partager — le texte de la publication contient : {{kinds}}",
+        "withdrawn_by_policy": "Le partage a été désactivé par la politique. Copie ton texte maintenant si tu veux le garder — il n'est pas enregistré à la fermeture de cette boîte de dialogue.",
+        "copy_text_only": "Copier le texte",
+        "copied_text": "Copié",
+        "copy_text_failed": "Échec de la copie",
+        "copy_text_unavailable": "Le presse-papiers est bloqué ici. Le texte de ta publication est sélectionné — appuie sur Ctrl+C / ⌘C. Le texte de la carte que tu as modifié se copie depuis la carte elle-même."
       }
     },
     "chatPage": {
@@ -12776,6 +12781,7 @@
         "gov_scope_sandbox_level": "Niveau du bac à sable",
         "gov_scope_script_hooks": "Hooks de script",
         "gov_scope_spawn": "Lancement d’agents",
+        "gov_scope_social_share": "Partager en image",
         "gov_scope_telemetry": "Télémétrie anonyme",
         "gov_scope_theme_install": "Installation de thèmes",
         "gov_scope_theme_persona": "Persona de thème",

@@ -178,6 +178,9 @@ export async function stubDashboardApi(page, opts = {}) {
       return json(route, {
         restore_sessions: false, restore_window_minutes: 30,
         merge_queued_messages: false, widget_density: 'more',
+        // The gateway's default answer for `capabilities.social_share`; a
+        // capture that wants the pinned-off state overrides this route.
+        social_share_enabled: true,
       })
     }
     if (path === '/api/agents' || path === '/api/chat/agents') {

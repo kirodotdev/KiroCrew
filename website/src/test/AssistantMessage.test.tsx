@@ -236,11 +236,12 @@ describe('AssistantMessage', () => {
     expect(screen.queryAllByTitle('Fork conversation from here')).toHaveLength(0)
     expect(screen.getAllByTitle('More actions').length).toBeGreaterThan(0)
     cleanup()
-    const { container: full } = render(<AssistantMessage content={'x'.repeat(80)} isStreaming={false} slotRunning={false} onFork={onFork} onPlanFromHere={vi.fn()} onSpeak={vi.fn()} onRegenerate={vi.fn()} forkIndex={0} />)
+    const { container: full } = render(<AssistantMessage content={'x'.repeat(80)} isStreaming={false} slotRunning={false} onFork={onFork} onPlanFromHere={vi.fn()} onSpeak={vi.fn()} onRegenerate={vi.fn()} forkIndex={0} shareEnabled />)
     const loaded = full.querySelectorAll('button').length
     expect(bounded).toBeLessThanOrEqual(loaded)
     // A loaded row restores fork/plan in place, exactly as the base branch had them.
-    // The overflow trigger stays: it is Share's permanent home, in its own row.
+    // The overflow trigger stays: it is Share's permanent home, in its own row
+    // (while governance permits Share -- see the social_share block below).
     expect(screen.getByTitle('Fork conversation from here').tagName).toBe('BUTTON')
     expect(screen.getByTitle('Plan from here').tagName).toBe('BUTTON')
     expect(screen.queryAllByTitle('More actions')).toHaveLength(1)
@@ -432,7 +433,7 @@ describe('AssistantMessage', () => {
     // controls through it taxed every fully-loaded chat with an extra open.
     const onFork = vi.fn()
     const onPlanFromHere = vi.fn()
-    render(<AssistantMessage content={'x'.repeat(80)} isStreaming={false} slotRunning={false} onFork={onFork} onPlanFromHere={onPlanFromHere} forkIndex={4} />)
+    render(<AssistantMessage content={'x'.repeat(80)} isStreaming={false} slotRunning={false} onFork={onFork} onPlanFromHere={onPlanFromHere} forkIndex={4} shareEnabled />)
     // Reachable WITHOUT opening anything, and as a row button rather than a menu item.
     const fork = screen.getByTitle('Fork conversation from here')
     expect(fork.tagName).toBe('BUTTON')
@@ -487,7 +488,7 @@ describe('AssistantMessage', () => {
     expect(screen.getAllByTitle('More actions').length).toBeGreaterThan(0)
     b.unmount()
     // 3. Actionable fork: the control returns to the row; the trigger stays for Share.
-    const c = render(<AssistantMessage content={short} isStreaming={false} slotRunning={false} onFork={vi.fn()} forkIndex={0} variants={variants} />)
+    const c = render(<AssistantMessage content={short} isStreaming={false} slotRunning={false} onFork={vi.fn()} forkIndex={0} variants={variants} shareEnabled />)
     expect(screen.getAllByTitle('More actions')).toHaveLength(1)
     expect(screen.getByTitle('Fork conversation from here').tagName).toBe('BUTTON')
     c.unmount()
@@ -582,6 +583,48 @@ describe('AssistantMessage', () => {
 
     await act(async () => { resolveFork(); await Promise.resolve() })
     expect(screen.getByTitle('Fork conversation from here')).not.toBeDisabled()
+  })
+
+  describe('capabilities.social_share governance gate', () => {
+    // `shareEnabled` is the server's answer from /api/dashboard/config
+    // (`social_share_enabled`). The entry is an egress path for agent output
+    // (the intent buttons hand the caption to X / LinkedIn in a URL), so a fleet
+    // ceiling must be able to withdraw it, and the frontend must never guess.
+    const menuProps = { content: 'x'.repeat(80), isStreaming: false, slotRunning: false }
+
+    it('offers Share in the menu only while governance permits it', () => {
+      render(<AssistantMessage {...menuProps} onFork={vi.fn()} onPlanFromHere={vi.fn()} shareEnabled />)
+      openOverflow()
+      expect(screen.getByTestId('share-message')).toBeInTheDocument()
+      cleanup()
+      render(<AssistantMessage {...menuProps} onFork={vi.fn()} onPlanFromHere={vi.fn()} shareEnabled={false} />)
+      openOverflow()
+      // The menu still exists for the unavailable fork/plan items; only Share is gone.
+      expect(screen.queryByTestId('share-message')).not.toBeInTheDocument()
+      expect(screen.getByTestId('fork-from-here')).toBeInTheDocument()
+    })
+
+    it('fails closed: an absent prop hides Share, so a host that forgets the wire cannot leak it', () => {
+      render(<AssistantMessage {...menuProps} onFork={vi.fn()} onPlanFromHere={vi.fn()} />)
+      openOverflow()
+      expect(screen.queryByTestId('share-message')).not.toBeInTheDocument()
+    })
+
+    it('withdraws the whole trigger when Share was the only item left (loaded window, fork/plan as row buttons)', () => {
+      // Loaded state keeps fork/plan in the row, so the menu held Share alone; a
+      // pinned-off Share would leave a trigger that opens an empty menu.
+      render(<AssistantMessage {...menuProps} onFork={vi.fn()} onPlanFromHere={vi.fn()} forkIndex={4} shareEnabled={false} />)
+      expect(screen.queryByTitle('More actions')).toBeNull()
+      // The everyday controls are untouched by the pin.
+      expect(screen.getByTitle('Fork conversation from here').tagName).toBe('BUTTON')
+      expect(screen.getByTitle('Plan from here').tagName).toBe('BUTTON')
+      cleanup()
+      // …and it returns the moment governance permits again.
+      render(<AssistantMessage {...menuProps} onFork={vi.fn()} onPlanFromHere={vi.fn()} forkIndex={4} shareEnabled />)
+      expect(screen.getAllByTitle('More actions')).toHaveLength(1)
+      openOverflow()
+      expect(screen.getByTestId('share-message')).toBeInTheDocument()
+    })
   })
 
 })

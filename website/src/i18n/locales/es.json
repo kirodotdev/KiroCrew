@@ -9361,7 +9361,12 @@
         "kind_internal_url": "una URL interna",
         "card_wordmark": "{{productName}}",
         "sensitive_in_card": "Antes de compartir: la tarjeta contiene {{kinds}}",
-        "sensitive_in_caption": "Antes de compartir: el texto de la publicación contiene {{kinds}}"
+        "sensitive_in_caption": "Antes de compartir: el texto de la publicación contiene {{kinds}}",
+        "withdrawn_by_policy": "El uso compartido se desactivó por política. Copia tu texto ahora si quieres conservarlo: no se guarda al cerrar este diálogo.",
+        "copy_text_only": "Copiar texto",
+        "copied_text": "Copiado",
+        "copy_text_failed": "No se pudo copiar",
+        "copy_text_unavailable": "El portapapeles está bloqueado aquí. El texto de tu publicación está seleccionado: pulsa Ctrl+C / ⌘C. El texto de la tarjeta que hayas editado, cópialo desde la propia tarjeta."
       }
     },
     "chatPage": {
@@ -12776,6 +12781,7 @@
         "gov_scope_sandbox_level": "Nivel de sandbox",
         "gov_scope_script_hooks": "Hooks de script",
         "gov_scope_spawn": "Lanzamiento de subagentes",
+        "gov_scope_social_share": "Compartir como imagen",
         "gov_scope_telemetry": "Telemetría anónima",
         "gov_scope_theme_install": "Instalación de temas",
         "gov_scope_theme_persona": "Personalidad del tema",
