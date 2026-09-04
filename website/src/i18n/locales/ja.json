@@ -7746,7 +7746,11 @@
       "xhigh": "特に高い"
     },
     "sttProviders": {
-      "downloading_speech_model": "音声モデルをダウンロード中: {{pct}}（{{total}} 中 {{done}}）"
+      "downloading_speech_model": "音声モデルをダウンロード中: {{pct}}（{{total}} 中 {{done}}）",
+      "stream_error_decode_failed": "音声認識はこの書き起こしを完了できませんでした。もう一度口述してください。",
+      "stream_error_max_duration": "口述が長さの上限に達しました。続けるには新しい録音を開始してください。",
+      "stream_error_model_missing": "音声モデルの準備がまだできていません。音声入力の設定でダウンロードしてから、もう一度お試しください。",
+      "stream_error_session_failed": "口述セッションが失敗しました。もう一度録音してみてください。"
     }
   },
   "nav": {

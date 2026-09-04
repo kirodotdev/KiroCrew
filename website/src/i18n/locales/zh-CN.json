@@ -7746,7 +7746,11 @@
       "xhigh": "超高"
     },
     "sttProviders": {
-      "downloading_speech_model": "正在下载语音模型：{{pct}}（{{total}} 中的 {{done}}）"
+      "downloading_speech_model": "正在下载语音模型：{{pct}}（{{total}} 中的 {{done}}）",
+      "stream_error_decode_failed": "语音识别未能完成这段转写。请重新口述一次。",
+      "stream_error_max_duration": "口述已达到时长上限。重新开始录制即可继续。",
+      "stream_error_model_missing": "语音模型还没准备好。请在语音转文字设置中下载它，然后重试。",
+      "stream_error_session_failed": "口述会话失败。请重新录制。"
     }
   },
   "nav": {

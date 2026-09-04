@@ -63,6 +63,10 @@ class _FakeEngine:
         #: model prepared for it rather than one another session swapped in.
         self.loaded_key = engine_mod.LoadedKey("/stub/ggml-base.bin", "en", 4)
         self.expected: list[object] = []
+        #: Set to a `DecodeFailed` to make every decode fail. Assigned per test rather
+        #: than fixed at construction because the interesting cases are transitions:
+        #: a session that keeps working after a failed partial, and one that recovers.
+        self.fail_with: Exception | None = None
 
     async def ensure_loaded(self, model_name: str, language: str):
         self.loaded_with.append((model_name, language))
@@ -73,6 +77,8 @@ class _FakeEngine:
     async def decode(self, pcm, *, superseding: bool = False, expect=None) -> str:
         self.decodes.append((len(pcm), superseding))
         self.expected.append(expect)
+        if self.fail_with is not None:
+            raise self.fail_with
         return self._text
 
     async def maybe_evict(self) -> bool:
@@ -238,6 +244,81 @@ async def test_the_partial_cadence_bounds_how_often_a_decode_runs(fake, monkeypa
     # settled regardless of how long ago the last partial was.
     assert eager_interim > throttled_interim
     assert throttled_interim == 1, "only the immediate first partial should get through"
+
+
+@pytest.mark.asyncio
+async def test_a_failed_final_decode_becomes_an_error_event_not_an_empty_final(fake):
+    """The transport DROPS an empty final, so returning one loses the utterance.
+
+    This is the whole failure: whisper.cpp reported a failed encode, the engine
+    answered "", the session called that silence, the empty final was dropped, and the
+    dictation the user had just finished speaking vanished with nothing on screen.
+    """
+    session = await _started()
+    fake.fail_with = engine_mod.DecodeFailed("whisper.cpp decode returned -6")
+    await session.feed(_int16(1.5))
+    event = await session.finish()
+    assert event.kind == session_mod.KIND_ERROR
+    assert event.code == engine_mod.CODE_DECODE_FAILED
+    assert event.text, "an error event with no advisory text is untranslatable and blank"
+
+
+@pytest.mark.asyncio
+async def test_a_failed_partial_decode_keeps_the_session_alive(fake):
+    """One bad partial must not end a session the speaker is still talking into.
+
+    A partial is cosmetic and the next one is moments away, so the trade runs the
+    other way from the final's: skip it, log it, keep listening. Ending the session
+    here would stop transcribing mid-sentence over a decode nobody would have kept.
+    """
+    session = await _started()
+    fake.fail_with = engine_mod.DecodeFailed("whisper.cpp decode returned -6")
+    events = await _feed(session, _int16(1.5))
+    assert fake.decodes, "no partial decode was attempted, so nothing was skipped"
+    assert events == [], "a failed partial was surfaced instead of skipped"
+    assert not session.ended
+
+    # And the session still delivers once decoding recovers.
+    fake.fail_with = None
+    final = await session.finish()
+    assert final.kind == session_mod.KIND_FINAL
+    assert final.text == "spoken words"
+
+
+@pytest.mark.asyncio
+async def test_a_failed_phrase_commit_loses_no_text_from_the_final(fake, monkeypatch):
+    """Committed text is display-only, so a failed commit is skipped, not surfaced.
+
+    The phrase audio stays in the full buffer either way, so the final still decodes
+    everything that was said.
+    """
+    monkeypatch.setattr(session_mod, "MIN_COMMIT_SECS", 0.2)
+    session = await _started()
+    fake.fail_with = engine_mod.DecodeFailed("whisper.cpp decode returned -6")
+    await _feed(session, _int16(1.0) + _silence_int16(0.2) + _int16(0.5))
+    assert fake.decodes, "no commit decode was attempted, so nothing was skipped"
+    assert not session.ended
+    fake.fail_with = None
+    final = await session.finish()
+    assert final.kind == session_mod.KIND_FINAL
+    assert final.text == "spoken words"
+    # The whole utterance, not just the phrase that survived: the commit's audio was
+    # never removed from the full buffer.
+    assert fake.decodes[-1][0] >= int(1.5 * SR)
+
+
+@pytest.mark.asyncio
+async def test_the_batch_path_reports_a_failed_decode_as_unavailable(fake):
+    """`transcribe_pcm` answers an Availability, and its caller already reads it.
+
+    Raising out of it would take a Slack voice memo's whole message with it, while
+    returning ("", ok) would report a memo the recogniser could not hear.
+    """
+    fake.fail_with = engine_mod.DecodeFailed("whisper.cpp decode returned -6")
+    text, result = await session_mod.transcribe_pcm(np.zeros(SR, dtype=np.float32))
+    assert text == ""
+    assert not result.ok
+    assert result.code == engine_mod.CODE_DECODE_FAILED
 
 
 @pytest.mark.asyncio

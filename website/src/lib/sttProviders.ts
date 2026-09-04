@@ -5,7 +5,9 @@
  * answers: the settings panel names providers in a picker, ChatPage names the
  * configured one when the mic cannot start, and the backend's availability
  * `code` has to become a sentence in both. One table means they cannot disagree
- * about what `local` is called or about what a missing wheel means.
+ * about what `local` is called or about what a missing wheel means. The live
+ * dictation socket reports its own failures by `code` too, so its vocabulary
+ * is here beside the availability one rather than inlined in the hook.
  */
 import { fmtBytes, fmtPercent } from '../i18n/format'
 import { i18nT } from '../i18n/t'
@@ -104,6 +106,42 @@ export function unavailableMessage(code: string, detail = ''): string {
   return Object.prototype.hasOwnProperty.call(UNAVAILABLE_CODE_KEY, code)
     ? i18nT(UNAVAILABLE_CODE_KEY[code])
     : detail
+}
+
+/**
+ * Catalog KEY for each machine-readable reason a live dictation STREAM failed.
+ *
+ * The `error` frame's `code` is the contract and its `message` is advisory English,
+ * so a surface that renders the message shows English in a 12-language UI. These are
+ * the codes only the streaming path can produce, plus `stt_model_missing`, which
+ * reaches the socket too and needs different words there: the settings panel's
+ * version says "Download it below", and below the composer there is no "below".
+ *
+ * Keys, not resolved strings, for the same reason as `PROVIDER_LABEL_KEY` — the
+ * table is evaluated at module load, so an `i18nT()` here would freeze the boot
+ * language.
+ */
+export const STREAM_ERROR_CODE_KEY: Record<string, string> = {
+  stt_decode_failed: 'lib.sttProviders.stream_error_decode_failed',
+  stt_session_failed: 'lib.sttProviders.stream_error_session_failed',
+  stt_max_duration_exceeded: 'lib.sttProviders.stream_error_max_duration',
+  stt_model_missing: 'lib.sttProviders.stream_error_model_missing',
+}
+
+/**
+ * Localised text for a streaming `error` frame, or `''` when nothing is known.
+ *
+ * Three tiers, narrowest first: a stream-specific key, then the availability
+ * vocabulary (a missing extra, no wheel, an import failure and the Apple codes all
+ * travel through the socket unchanged, and their remedy is the same sentence the
+ * settings panel already shows), then the server's own `detail`. An unrecognised
+ * code with a server sentence beside it is still actionable; the caller supplies
+ * the generic last resort when even that is empty.
+ */
+export function streamErrorMessage(code: string, detail = ''): string {
+  return Object.prototype.hasOwnProperty.call(STREAM_ERROR_CODE_KEY, code)
+    ? i18nT(STREAM_ERROR_CODE_KEY[code])
+    : unavailableMessage(code, detail)
 }
 
 /**

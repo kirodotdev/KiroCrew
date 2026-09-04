@@ -7852,7 +7852,11 @@
       "xhigh": "Sehr hoch"
     },
     "sttProviders": {
-      "downloading_speech_model": "Sprachmodell wird heruntergeladen: {{pct}} ({{done}} von {{total}})"
+      "downloading_speech_model": "Sprachmodell wird heruntergeladen: {{pct}} ({{done}} von {{total}})",
+      "stream_error_decode_failed": "Die Spracherkennung konnte diese Transkription nicht abschließen. Diktiere sie noch einmal.",
+      "stream_error_max_duration": "Das Diktat hat seine Längenbegrenzung erreicht. Starte eine neue Aufnahme, um weiterzumachen.",
+      "stream_error_model_missing": "Das Sprachmodell ist noch nicht bereit. Lade es in den Spracherkennungseinstellungen herunter und versuche es dann noch einmal.",
+      "stream_error_session_failed": "Die Diktiersitzung ist fehlgeschlagen. Nimm es noch einmal auf."
     }
   },
   "nav": {

@@ -68,6 +68,13 @@ MIN_COMMIT_SECS = 1.0
 #: first.
 MAX_SESSION_SECS = 600
 
+#: Advisory English for a final decode that failed. Advisory because the machine
+#: readable ``code`` beside it is the contract the dashboard renders from; this text
+#: is what a client with no catalog entry for that code shows instead, and what the
+#: log carries. Names retrying as the action because the fault is per-decode: the
+#: model stays resident and the next utterance normally succeeds.
+DECODE_FAILED_ADVISORY = "the speech recogniser could not finish this transcript"
+
 
 def _padded(audio: np.ndarray) -> np.ndarray:
     """Extend *audio* with silence up to the recogniser's minimum length.
@@ -336,7 +343,15 @@ class LocalSession:
         if phrase.size == 0:
             return []
         self._last_partial = now
-        text = await self._engine.decode(_padded(phrase), superseding=True, expect=self._key)
+        try:
+            text = await self._engine.decode(_padded(phrase), superseding=True, expect=self._key)
+        except engine_mod.DecodeFailed as exc:
+            # A partial is cosmetic and the next one is moments away, so one failed
+            # decode must not end a session the speaker is still talking into. Logged
+            # rather than surfaced: only the FINAL is text the user keeps, so that is
+            # the one whose failure they have to be told about.
+            logger.warning("Partial decode failed: %s", exc.detail)
+            return []
         if not text:
             # An empty result here is a superseded decode, not silence: newer
             # audio arrived and aborted it. Emitting an empty partial would blank
@@ -379,6 +394,11 @@ class LocalSession:
         This is a full-buffer decode rather than the committed partials joined
         together, so the model sees the whole utterance and the text the user
         keeps is not a concatenation of context-free fragments.
+
+        Answers a ``final`` -- possibly an empty one, which means nothing was heard --
+        or an ``error`` when the decode itself failed. Those are different outcomes
+        with different remedies, and reporting the second as the first is what made a
+        failed decode look like a silent room.
         """
         if self._cancelled:
             return SttEvent(KIND_FINAL, text="")
@@ -397,23 +417,31 @@ class LocalSession:
             # whereas a dropped sentence leaves no trace at all.
             return SttEvent(KIND_FINAL, text="")
         padded = _padded(audio)
-        text = await self._engine.decode(padded, expect=self._key)
-        if not text:
-            # The engine refuses a decode whose model was replaced by a concurrent
-            # session (an operator changing `stt.model` mid-meeting is enough), and
-            # that refusal is indistinguishable here from silence: it returns "", the
-            # transport drops an empty final, and the utterance the user just spoke
-            # leaves no trace at all.
-            #
-            # So re-prepare and try once, which is the same bounded retry
-            # `transcribe_pcm` already applies for the same reason. Bounded
-            # deliberately: looping would let two sessions with different settings
-            # starve each other indefinitely, and a genuinely empty transcript must
-            # still be allowed to be empty.
-            result = await self._engine.ensure_loaded(self._model_name, self._language)
-            if result.ok:
-                self._key = self._engine.loaded_key
-                text = await self._engine.decode(padded, expect=self._key)
+        try:
+            text = await self._engine.decode(padded, expect=self._key)
+            if not text:
+                # The engine refuses a decode whose model was replaced by a concurrent
+                # session (an operator changing `stt.model` mid-meeting is enough), and
+                # that refusal is indistinguishable here from silence: it returns "",
+                # the transport drops an empty final, and the utterance the user just
+                # spoke leaves no trace at all.
+                #
+                # So re-prepare and try once, which is the same bounded retry
+                # `transcribe_pcm` already applies for the same reason. Bounded
+                # deliberately: looping would let two sessions with different settings
+                # starve each other indefinitely, and a genuinely empty transcript must
+                # still be allowed to be empty.
+                result = await self._engine.ensure_loaded(self._model_name, self._language)
+                if result.ok:
+                    self._key = self._engine.loaded_key
+                    text = await self._engine.decode(padded, expect=self._key)
+        except engine_mod.DecodeFailed as exc:
+            # The one decode whose failure the user has to be told about: this is the
+            # text they keep. Reported as an `error` event rather than an empty final
+            # because the transport drops an empty final, so returning one is exactly
+            # how a failed decode became a dictation that vanished with no feedback.
+            logger.warning("Final transcript decode failed: %s", exc.detail)
+            return SttEvent(KIND_ERROR, text=DECODE_FAILED_ADVISORY, code=exc.code)
         # Only the final is filtered. A partial is a prefix of speech still in
         # progress, so collapsing a repetition there could delete one the speaker
         # had only begun.
@@ -435,7 +463,15 @@ class LocalSession:
         phrase = self._joined(self._buffers.take_phrase())
         if not _is_audible(phrase):
             return False
-        text = await self._engine.decode(_padded(phrase), expect=self._key)
+        try:
+            text = await self._engine.decode(_padded(phrase), expect=self._key)
+        except engine_mod.DecodeFailed as exc:
+            # Display-only text, so the same trade as a partial: skip this phrase and
+            # keep the session alive. The phrase audio is still in the full buffer, so
+            # the final decodes it with everything else and nothing is lost from the
+            # text the user keeps.
+            logger.warning("Phrase commit decode failed: %s", exc.detail)
+            return False
         if not text:
             return False
         self._committed = f"{self._committed} {text}".strip()
@@ -480,12 +516,21 @@ async def transcribe_pcm(
     # covers that; looping would let two sessions with different settings starve
     # each other indefinitely.
     padded = _padded(pcm)
-    text = await eng.decode(padded, expect=eng.loaded_key)
-    if not text:
-        result = await eng.ensure_loaded(model_name, language)
-        if not result.ok:
-            return "", result
+    try:
         text = await eng.decode(padded, expect=eng.loaded_key)
+        if not text:
+            result = await eng.ensure_loaded(model_name, language)
+            if not result.ok:
+                return "", result
+            text = await eng.decode(padded, expect=eng.loaded_key)
+    except engine_mod.DecodeFailed as exc:
+        # Reported through the Availability this function already returns, so the batch
+        # caller's existing "unavailable" branch names the real reason instead of
+        # reporting a memo it could not hear. Returned rather than raised for the same
+        # reason every other failure here is: the caller is a channel handler, and an
+        # exception out of a voice memo would take the message with it.
+        logger.warning("Batch transcript decode failed: %s", exc.detail)
+        return "", engine_mod.Availability(False, exc.code, exc.detail)
     await eng.maybe_evict()
     return filter_hallucinations(text), result
 
@@ -512,6 +557,7 @@ async def ensure_model(model_name: str) -> bool:
 
 
 __all__ = [
+    "DECODE_FAILED_ADVISORY",
     "KIND_ERROR",
     "KIND_FINAL",
     "KIND_PARTIAL",

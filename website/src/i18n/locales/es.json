@@ -7958,7 +7958,11 @@
       "xhigh": "Muy alto"
     },
     "sttProviders": {
-      "downloading_speech_model": "Descargando el modelo de voz: {{pct}} ({{done}} de {{total}})"
+      "downloading_speech_model": "Descargando el modelo de voz: {{pct}} ({{done}} de {{total}})",
+      "stream_error_decode_failed": "El reconocimiento de voz no pudo terminar esta transcripción. Vuelve a dictarla.",
+      "stream_error_max_duration": "El dictado alcanzó su límite de duración. Empieza una grabación nueva para continuar.",
+      "stream_error_model_missing": "El modelo de voz aún no está listo. Descárgalo en los ajustes de voz a texto y vuelve a intentarlo.",
+      "stream_error_session_failed": "La sesión de dictado falló. Vuelve a grabar."
     }
   },
   "nav": {

@@ -7958,7 +7958,11 @@
       "xhigh": "Molto alto"
     },
     "sttProviders": {
-      "downloading_speech_model": "Download del modello vocale: {{pct}} ({{done}} di {{total}})"
+      "downloading_speech_model": "Download del modello vocale: {{pct}} ({{done}} di {{total}})",
+      "stream_error_decode_failed": "Il riconoscimento vocale non è riuscito a completare questa trascrizione. Dettala di nuovo.",
+      "stream_error_max_duration": "La dettatura ha raggiunto il limite di durata. Avvia una nuova registrazione per continuare.",
+      "stream_error_model_missing": "Il modello vocale non è ancora pronto. Scaricalo nelle impostazioni di riconoscimento vocale, poi riprova.",
+      "stream_error_session_failed": "La sessione di dettatura non è riuscita. Prova a registrare di nuovo."
     }
   },
   "nav": {

@@ -7746,7 +7746,11 @@
       "xhigh": "매우 높음"
     },
     "sttProviders": {
-      "downloading_speech_model": "음성 모델 다운로드 중: {{pct}} ({{total}} 중 {{done}})"
+      "downloading_speech_model": "음성 모델 다운로드 중: {{pct}} ({{total}} 중 {{done}})",
+      "stream_error_decode_failed": "음성 인식이 이 전사를 완료하지 못했습니다. 다시 구술하세요.",
+      "stream_error_max_duration": "구술이 길이 제한에 도달했습니다. 계속하려면 새로 녹음하세요.",
+      "stream_error_model_missing": "음성 모델이 아직 준비되지 않았습니다. 음성 텍스트 변환 설정에서 내려받은 후 다시 시도하세요.",
+      "stream_error_session_failed": "구술 세션이 실패했습니다. 다시 녹음하세요."
     }
   },
   "nav": {

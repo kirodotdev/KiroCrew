@@ -7958,7 +7958,11 @@
       "xhigh": "Très élevé"
     },
     "sttProviders": {
-      "downloading_speech_model": "Téléchargement du modèle vocal : {{pct}} ({{done}} sur {{total}})"
+      "downloading_speech_model": "Téléchargement du modèle vocal : {{pct}} ({{done}} sur {{total}})",
+      "stream_error_decode_failed": "La reconnaissance vocale n'a pas pu terminer cette transcription. Dicte-la à nouveau.",
+      "stream_error_max_duration": "La dictée a atteint sa durée maximale. Lance un nouvel enregistrement pour continuer.",
+      "stream_error_model_missing": "Le modèle vocal n'est pas encore prêt. Télécharge-le dans les paramètres de reconnaissance vocale, puis réessaie.",
+      "stream_error_session_failed": "La session de dictée a échoué. Réessaie d'enregistrer."
     }
   },
   "nav": {

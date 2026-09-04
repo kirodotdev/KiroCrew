@@ -121,7 +121,10 @@ Server to client, JSON. `stt.session.SttEvent.kind` supplies the local provider'
   conditions only it can see. Only the FIRST fatal claimant sends a frame
   (`_claim_fatal`): otherwise the duration cap and a concurrent failure each emit
   one in the window before the other's close lands, and the client shows two
-  contradictory errors for a single failure.
+  contradictory errors for a single failure. `useStreamingStt` resolves the code
+  through `sttProviders.streamErrorMessage`, which prefers a stream-specific
+  catalog key, falls back to the availability vocabulary the settings panel
+  already renders, and only then to `message`.
 
 Partials and finals both pass `security.redact_credentials` and
 `security.redact_exfiltration_urls` before emit. A partial is ephemeral and never
@@ -194,6 +197,29 @@ utterance on every partial makes each update grow with the recording and can fal
 message box has the full context the model would have had if it had never been
 streamed, followed by `filter_hallucinations`. Partials are fast and approximate
 on purpose; the final is the accurate one.
+
+**A failed decode is not silence, and the engine no longer says it is.** whisper.cpp
+reports a failure through `whisper_full`'s return code and pywhispercpp discards it:
+`Model._transcribe` calls the binding as a bare statement, then reads
+`whisper_full_n_segments`, which is 0 after a failed encode — so `transcribe` answers
+the empty list for a failure and the empty list for a quiet room, with the difference
+visible only in whisper.cpp's own stderr (`whisper_full_with_state: failed to encode`).
+`stt.engine` therefore reads that status itself, from the same extension module the
+library calls, and `WhisperEngine.decode` RAISES `engine.DecodeFailed` carrying
+`stt_decode_failed` for a native failure, an exception out of the call, or a decode
+that outran `DEFAULT_TIMEOUT_SECS`. It still returns `""` for the three non-events a
+caller already handles — no resident model, a superseded partial, and an `expect`
+mismatch — so an empty transcript means nothing was heard and nothing else.
+
+`LocalSession` splits the two failure classes by what the user keeps. A FINAL decode
+failure becomes an `error` event carrying that code, which the transport relays as an
+`error` frame before closing; a partial or a phrase-commit failure is logged and
+skipped, because the next partial is moments away and one bad decode must not end a
+session the speaker is still talking into. Returning an empty final instead is what
+made this invisible: the transport drops an empty final, so a failed decode after the
+user pressed stop discarded the whole utterance with nothing on screen to say why.
+`transcribe_pcm` reports the same code through the `Availability` it already returns,
+so the batch path names the reason rather than reporting a memo it could not hear.
 
 The detector, not the client, normally ends an UTTERANCE: `feed()` returns the
 final, drops that utterance's audio and committed text, and installs a fresh

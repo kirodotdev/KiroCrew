@@ -11,6 +11,10 @@
  * the NORMAL case for a short push-to-talk tap (press, say "yes", release), not
  * an edge case, so these tests assert the ORDER of what reaches the wire rather
  * than merely that stop was called.
+ *
+ * The socket/worklet harness below is also what the second block uses, for the
+ * other way a stop loses the dictation: a backend `error` frame that has to reach
+ * the user before the close.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { renderHook, act, waitFor } from '@testing-library/react'
@@ -228,5 +232,82 @@ describe('streaming stop before the server is ready', () => {
     // resurrect the pending stop and ship audio the user discarded.
     await act(async () => { ws.becomeReady() })
     expect(ws.kinds()).not.toContain('stop')
+  })
+})
+
+/**
+ * A failed decode after the user presses stop must SAY so.
+ *
+ * The backend answers a failed whole-buffer decode with an `error` frame carrying
+ * `stt_decode_failed` and then closes. Before that code existed the socket simply
+ * closed with no frame at all, so the hook cleared the partial and the dictation
+ * disappeared with nothing on screen — indistinguishable from a silent room.
+ */
+describe('streaming errors reach the user', () => {
+  async function startWithHandlers () {
+    const { useStreamingStt } = await import('../hooks/useStreamingStt')
+    const onError = vi.fn()
+    const onPartial = vi.fn()
+    const onFinal = vi.fn()
+    const hook = renderHook(() => useStreamingStt({ onPartial, onFinal, onError }))
+    await act(async () => { hook.result.current.start() })
+    await waitFor(() => expect(lastNode()).toBeTruthy())
+    return { hook, onError, onPartial, onFinal }
+  }
+
+  it('renders localised text keyed off `code`, not the English `message`', async () => {
+    const { unavailableMessage } = await import('../lib/sttProviders')
+    const { onError } = await startWithHandlers()
+    const ws = lastSocket()
+    await act(async () => { ws.becomeReady() })
+
+    await act(async () => {
+      ws.onmessage?.({
+        data: JSON.stringify({
+          type: 'error',
+          message: 'the speech recogniser could not finish this transcript',
+          code: 'stt_decode_failed',
+        }),
+      })
+    })
+
+    expect(onError).toHaveBeenCalledTimes(1)
+    const shown = onError.mock.calls[0][0]
+    // The backend's own sentence is advisory; a 12-language UI cannot render it.
+    expect(shown).not.toBe('the speech recogniser could not finish this transcript')
+    // And it is the DECODE reason, not a generic failure or the settings panel's
+    // model-download copy.
+    expect(shown).not.toBe(unavailableMessage('stt_model_missing'))
+    expect(shown.length).toBeGreaterThan(0)
+  })
+
+  it('keeps the error visible when the backend closes right after it', async () => {
+    const { onError, onFinal } = await startWithHandlers()
+    const ws = lastSocket()
+    await act(async () => { ws.becomeReady() })
+    await act(async () => {
+      ws.onmessage?.({ data: JSON.stringify({ type: 'error', message: 'x', code: 'stt_decode_failed' }) })
+    })
+    const shown = onError.mock.calls[0][0]
+
+    // The close carries no finals, which is the state the hook used to treat as
+    // "nothing was said". It may clear the partial; it must not retract the error or
+    // commit a transcript that does not exist.
+    await act(async () => { ws.close() })
+    expect(onError).toHaveBeenCalledTimes(1)
+    expect(onError.mock.calls[0][0]).toBe(shown)
+    expect(onFinal).not.toHaveBeenCalled()
+  })
+
+  it('falls back to a generic message when the frame carries no known code', async () => {
+    const { onError } = await startWithHandlers()
+    const ws = lastSocket()
+    await act(async () => { ws.becomeReady() })
+    await act(async () => {
+      ws.onmessage?.({ data: JSON.stringify({ type: 'error' }) })
+    })
+    // No code and no message: the user still gets a sentence rather than silence.
+    expect(onError).toHaveBeenCalledTimes(1)
+    expect(onError.mock.calls[0][0]).toBeTruthy()
   })
 })
