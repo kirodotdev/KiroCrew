@@ -14,6 +14,7 @@ someone regenerates the icons with a converter that reintroduces
 generation to electron-builder again). Pure byte parsing — no macOS-only tools,
 so it runs on Linux CI too.
 """
+
 from __future__ import annotations
 
 import json
@@ -44,8 +45,7 @@ def _slots(icns: Path) -> dict[str, bytes]:
     magic, declared_len = struct.unpack(">4sI", data[:8])
     assert magic == b"icns", f"{icns.name}: not an icns file (magic={magic!r})"
     assert declared_len == len(data), (
-        f"{icns.name}: truncated — header declares {declared_len} bytes, "
-        f"file is {len(data)}"
+        f"{icns.name}: truncated — header declares {declared_len} bytes, " f"file is {len(data)}"
     )
     out: dict[str, bytes] = {}
     offset = 8
@@ -61,9 +61,7 @@ def _slots(icns: Path) -> dict[str, bytes]:
 @pytest.mark.parametrize("filename", _ICNS_FILES)
 def test_icns_exists_and_parses(filename: str) -> None:
     icns = _ELECTRON_DIR / filename
-    assert icns.is_file(), (
-        f"{filename} is missing — regenerate it with packaging/make-icns.sh"
-    )
+    assert icns.is_file(), f"{filename} is missing — regenerate it with packaging/make-icns.sh"
     assert _slots(icns), f"{filename}: no icon representations found"
 
 
@@ -132,9 +130,7 @@ def test_nightly_icon_override_points_at_icns() -> None:
     """The nightly variant overrides mac.icon on the CLI — keep it an .icns."""
     # encoding is explicit: the script contains non-ASCII (em dashes), which
     # Windows' default cp1252 locale cannot decode.
-    script = (_REPO_ROOT / "packaging" / "build-desktop.sh").read_text(
-        encoding="utf-8"
-    )
+    script = (_REPO_ROOT / "packaging" / "build-desktop.sh").read_text(encoding="utf-8")
     assert "-c.mac.icon=icon-nightly.icns" in script, (
         "packaging/build-desktop.sh must override the nightly icon with "
         "icon-nightly.icns, not a .png"

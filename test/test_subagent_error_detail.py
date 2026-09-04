@@ -37,9 +37,7 @@ class TestDescribeException:
         SQLITE_MISUSE. Rendered without its class it reads as an unspecified
         argument bug and sends a reader looking in the wrong subsystem.
         """
-        rendered = _describe_exception(
-            sqlite3.InterfaceError("bad parameter or other API misuse")
-        )
+        rendered = _describe_exception(sqlite3.InterfaceError("bad parameter or other API misuse"))
         assert rendered == "sqlite3.InterfaceError: bad parameter or other API misuse"
 
     def test_builtins_are_not_module_qualified(self):
@@ -105,9 +103,7 @@ class TestDescribeException:
 
 class TestTombstoneCarriesTheReason:
     def _tombstone(self, agent_root, agent_id):
-        return json.loads(
-            (agent_root / agent_id / "tombstone.json").read_text(encoding="utf-8")
-        )
+        return json.loads((agent_root / agent_id / "tombstone.json").read_text(encoding="utf-8"))
 
     def test_records_the_specific_reason_not_just_the_bucket(self, agent_root):
         """``cause`` is a bucket; without ``detail`` the reason dies with the process."""
@@ -166,11 +162,13 @@ class TestTerminalArmUsesTheDescription:
         async def _raise_sqlite_misuse(*_a, **_kw):
             raise sqlite3.InterfaceError("bad parameter or other API misuse")
 
-        with patch.object(manager, "_run_inner", _raise_sqlite_misuse), \
-             patch("kiro_crew.subagent.Stats"), \
-             patch("kiro_crew.subagent.sel"), \
-             patch.object(manager, "_fire_event", new_callable=AsyncMock), \
-             patch.object(manager, "_on_done", new_callable=AsyncMock):
+        with (
+            patch.object(manager, "_run_inner", _raise_sqlite_misuse),
+            patch("kiro_crew.subagent.Stats"),
+            patch("kiro_crew.subagent.sel"),
+            patch.object(manager, "_fire_event", new_callable=AsyncMock),
+            patch.object(manager, "_on_done", new_callable=AsyncMock),
+        ):
             await asyncio.wait_for(manager._run(info), timeout=10)
 
         assert info.error == "sqlite3.InterfaceError: bad parameter or other API misuse"

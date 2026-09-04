@@ -322,8 +322,7 @@ def test_a_non_python_production_file_is_still_reverted(tmp_path: Path) -> None:
     _git(repo, "config", "user.name", "prove")
     (repo / "limits.json").write_text('{"max": 1}\n')
     (repo / "mod.py").write_text(
-        "import json\n\n\ndef limit():\n"
-        "    return json.load(open('limits.json'))['max']\n"
+        "import json\n\n\ndef limit():\n" "    return json.load(open('limits.json'))['max']\n"
     )
     (repo / "test_mod.py").write_text(
         "from mod import limit\n\n\ndef test_one():\n    assert limit() == 1\n"

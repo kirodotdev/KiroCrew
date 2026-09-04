@@ -750,14 +750,12 @@ async def test_non_loopback_mixed_denial_names_which_credential_was_wrong(
     assert resp.status == 403
 
     denials = [
-        c
-        for c in calls
-        if c.get("operation") == "internal_auth" and c.get("outcome") == "denied"
+        c for c in calls if c.get("operation") == "internal_auth" and c.get("outcome") == "denied"
     ]
     assert len(denials) == 1
     err = denials[0]["error"]
     assert "non-loopback mixed" in err, err
-    assert "received=absent" in err, (
-        "the mixed arm still cannot say an absent credential from a wrong one"
-    )
+    assert (
+        "received=absent" in err
+    ), "the mixed arm still cannot say an absent credential from a wrong one"
     assert f"expected={ta._credential_fingerprint(SECRET)}" in err, err
