@@ -7574,12 +7574,14 @@ class TestBareTokenProtectedLeaves:
 
     Every other leaf branch needs a home anchor plus a crew prefix, so one ``cd`` walks
     around all of them: after ``cd ~/.kiro/crew`` a relative ``echo forged >
-    connections-tool-aliases.json`` names no home, no prefix and no separator. For the
-    alias ownership record that is not a residual limit to accept the way it is for
+    connections-tool-aliases.json`` names no home, no prefix and no separator. For an
+    ownership record that is not a residual limit to accept the way it is for
     credential paths -- the file IS the deletion grant (``alias_record.load_claimed``
-    returns the pairs the rebuild may strip from the spec), so the contract is about the
-    FILENAME: any command naming it as a path segment is refused, and anchoring is not
-    part of the contract.
+    returns the pairs the rebuild may strip from the spec;
+    ``seed_provenance.recorded`` returns the digest a re-seed of
+    ``settings.local.json`` proceeds on), so the contract is about the FILENAME: any
+    command naming it as a path segment is refused, and anchoring is not part of the
+    contract.
     """
 
     def test_relative_redirect_after_cd_is_blocked(self) -> None:

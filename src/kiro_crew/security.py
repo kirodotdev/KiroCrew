@@ -8287,6 +8287,30 @@ _WRITE_PROTECTED_HOME_PATHS += [
     for prefix in _CREW_HOME_PREFIXES
 ]
 _WRITE_PROTECTED_HOME_PATHS += [
+    # The settings-seed PROVENANCE RECORD (``acp.seed_provenance``), the alias
+    # record's twin one seam over: it is what authorizes Kiro Crew to OVERWRITE and
+    # then DELETE ``<work_dir>/.claude/settings.local.json``. The ACP client seeds
+    # that file for a claude-agent-acp session and touches only the seed it owns;
+    # ownership is this record plus the file on disk still hashing to the digest in
+    # it. So an agent that can write this file can enter ``<path>: {size, sha256}``
+    # for a settings file the USER hand-wrote — the file is readable, so both values
+    # are computable — and the next session adopts it: the user's project settings
+    # are overwritten with Crew's seed and unlinked on reset. As with the alias
+    # record, the damage is done by Crew's own trusted writer, and the digest check
+    # cannot defend it because the forger reads the same bytes it does.
+    #
+    # WRITE-protected, not read+write sensitive: the record holds no secret (it
+    # names work dirs and digests), so the file-READ tools keep working and an
+    # operator can still see why a seed was or was not adopted. There is no
+    # legitimate agent WRITE at all — ``seed_provenance.record`` writes
+    # the path directly through ``atomic_write``, which does not route through this
+    # gate. Paired with the same leaf in _WRITE_PROTECTED_BASH_LEAVES and in
+    # _BARE_TOKEN_PROTECTED_LEAVES below: protected on one path only is not
+    # protected, and for a DELETION grant a ``cd`` must not be the whole bypass.
+    f"{prefix}/settings_seeds.json"
+    for prefix in _CREW_HOME_PREFIXES
+]
+_WRITE_PROTECTED_HOME_PATHS += [
     # The app-sources checkout root — the persistent tree every installed app
     # EXECUTES from (``apps.registry.app_source_dir``). This is a whole DIRECTORY
     # rather than a leaf, which the shared matcher already supports: it compares a
@@ -8434,6 +8458,14 @@ _WRITE_PROTECTED_BASH_LEAVES: tuple[str, ...] = (
     "apps/ops-mission-control/data/rotation.yaml",
     "apps/ops-mission-control/data/incidents/index.json",
     "connections-tool-aliases.json",
+    # The settings-seed provenance record, on the same reasoning as the alias record
+    # above and paired with its entry in _WRITE_PROTECTED_HOME_PATHS: a forged entry
+    # makes Crew's own writer overwrite and then delete a user-authored
+    # ``.claude/settings.local.json``. ``seed_provenance`` writes it through
+    # ``atomic_write`` in Python, so the record's own writes are unaffected; bash
+    # reads are incidentally denied, which is harmless here (no secret, and the only
+    # readers are Python).
+    "settings_seeds.json",
     # The browse launch config (browser_cli/launch.py), paired with the same leaf
     # in _WRITE_PROTECTED_HOME_PATHS so the file-edit and shell paths agree — a
     # leaf on only one of the two is reachable through the other.
@@ -8473,15 +8505,28 @@ _WRITE_PROTECTED_BASH_LEAVES: tuple[str, ...] = (
 # of the contract — relative, ``cd``-prefixed, subdir-relative, either
 # separator, quoted or not, all refused identically.
 #
-# SCOPE: bare-token matching is for THIS filename ONLY, because it is globally
-# distinctive — a long hyphenated name that occurs nowhere in ordinary command
-# lines, so the false-positive cost is confined to commands that genuinely mean
-# this record. A generic leaf must NEVER be added here: unanchored
-# ``index.json`` or ``config.json`` would refuse a large fraction of routine
-# commands in any repository. The other write-protected leaves are not
-# distinctive at all (their distinguishing part is the ``apps/.../data/``
+# The settings-seed provenance record (``acp.seed_provenance``) is here for the
+# identical reason, one seam over: an entry in it IS the grant to OVERWRITE and
+# then DELETE ``<work_dir>/.claude/settings.local.json``. ``recorded()`` returns
+# the ``(size, sha256)`` the re-seed compares the file against, and a match is the
+# only thing that moves the writer off its leave-it-alone branch — so an entry
+# naming a settings file the USER hand-wrote makes Kiro Crew's own trusted writer
+# replace it and unlink it on reset. Same conclusion, same shape: the invariant is
+# the filename, not the spelling of the way to it.
+#
+# SCOPE: bare-token matching is for filenames of THIS kind ONLY — an ownership
+# record whose contents ARE a deletion grant, spelled distinctively enough that
+# the name occurs nowhere in ordinary command lines (a long hyphenated name, or a
+# ``_``-joined one that is not a word anyone types), so the false-positive cost is
+# confined to commands that genuinely mean that record. A generic leaf must NEVER
+# be added here: unanchored ``index.json`` or ``config.json`` would refuse a large
+# fraction of routine commands in any repository. The other write-protected leaves
+# are not distinctive at all (their distinguishing part is the ``apps/.../data/``
 # subpath) and must stay anchored.
-_BARE_TOKEN_PROTECTED_LEAVES: tuple[str, ...] = ("connections-tool-aliases.json",)
+_BARE_TOKEN_PROTECTED_LEAVES: tuple[str, ...] = (
+    "connections-tool-aliases.json",
+    "settings_seeds.json",
+)
 
 # Whisper weight files, matched as a NAME with no anchor, for the same reason as the
 # alias record above: the filename IS the grant. `stt.models` verifies a file's sha256

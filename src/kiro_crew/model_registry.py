@@ -435,21 +435,28 @@ def _dedup_window_siblings(ids: Sequence[str]) -> list[str]:
 def seed_available_models(provider: str) -> list[str]:
     """The ``availableModels`` allowlist to seed for ``provider``.
 
-    Provider-first: the ids ``provider`` actually advertised (cached from a live
-    session) when the cache is warm, so the seed reflects what the account is
-    served rather than the static Anthropic-only registry. Falls back to
-    :func:`available_models` on a cold cache (first-ever session, before any
-    ``session/new`` has been captured) — the static registry list, which is then
-    window-deduplicated below just like the warm list.
+    Provider-advertised ONLY: the ids ``provider`` actually served on a real
+    ``session/new`` (cached by :func:`refresh_advertised_models`). A cold cache
+    returns ``[]``, which callers must read as "seed no allowlist at all" —
+    NOT as "fall back to the static registry".
+
+    That fallback used to live here and was actively harmful. The adapter merges
+    ``availableModels`` union+dedup across every settings source, so seeding the
+    hand-maintained registry list POISONS the merge for anything the registry has
+    not caught up on: a model the account is served but the registry never listed
+    (a fresh flagship) contributes no ``[1m]`` id, so the merged list has only
+    base-window spellings and the pick resolves to 200K. Seeding nothing instead
+    leaves the adapter with its own provider-derived list, which already carries
+    the correct versioned ids — the registry is a display/window table, not the
+    authority on what the account can run, and keeping it out of this path is
+    what stops every new model from needing a registry edit per provider.
 
     The result is passed through :func:`_dedup_window_siblings` so a base-window
     id never rides alongside its 1M sibling: seeding both is what lets the adapter
-    collapse a versioned pick (e.g. Opus 4.8 ``[1m]``) back to 200K. Applied to
-    the advertised list too, since a backend can advertise both spellings.
+    collapse a versioned pick (e.g. Opus 4.8 ``[1m]``) back to 200K. A backend can
+    advertise both spellings, so this applies to the advertised list too.
     """
-    cached = advertised_models(provider)
-    base = cached if cached else available_models(provider)
-    return _dedup_window_siblings(base)
+    return _dedup_window_siblings(advertised_models(provider))
 
 
 def resolve_wire_model_id(model_id: str, provider: str) -> str:
