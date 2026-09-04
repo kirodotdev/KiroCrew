@@ -48,6 +48,7 @@
     "verify:steering-inclusion": "node scripts/capture-steering-inclusion.mjs",
     "verify:tool-row-narrow-stack": "node scripts/capture-tool-row-narrow-stack.mjs",
     "verify:tool-blocked-cause": "node scripts/capture-tool-blocked-cause.mjs",
+    "verify:theme-overlay-topbar": "node scripts/capture-theme-overlay-topbar.mjs",
     "verify:topbar-badge-overhang": "node scripts/capture-topbar-badge-overhang.mjs",
     "verify:user-bubble-mobile-overflow": "node scripts/capture-user-bubble-mobile-overflow.mjs",
     "pretest": "npm run jscpd",

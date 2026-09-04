@@ -15,6 +15,7 @@ vi.mock('../api/client', () => ({
 
 import SubagentProgressBar from '../pages/chat/SubagentProgressBar'
 import { api } from '../api/client'
+import { OVERLAY_Z_MAX } from '../lib/themeDecorLayer'
 
 const SLOT = 'test-slot'
 
@@ -137,14 +138,18 @@ describe('SubagentProgressBar — queued / waiting count', () => {
 describe('SubagentProgressBar — overlay stacking', () => {
   beforeEach(() => vi.clearAllMocks())
 
-  // Theme-experience overlays are clamped to OVERLAY_Z_MAX=45 (ThemeExperienceLayer).
-  // The chip wrapper must sit strictly above that band so no theme can paint over
-  // an active wave; z-[46] is the minimal clearance (below mute z=50 / consent z=120).
+  // Theme-experience overlays portal into the shell's decor slot, pinned at
+  // OVERLAY_Z_MAX (lib/themeDecorLayer.ts) — the chip shares that stacking
+  // context, so its z must sit strictly above the ceiling for no theme to paint
+  // over an active wave. Read the constant rather than restating it: a restated
+  // number is exactly the drift #7377 was about.
   it('elevates the wave chip above the theme-overlay ceiling (relative + z-[46])', () => {
     const { container } = renderBar(makeStore(['a1']))
     const wrapper = container.firstChild as HTMLElement
     expect(wrapper).toHaveClass('relative')
-    expect(wrapper).toHaveClass('z-[46]')
+    const z = Number(/\bz-\[(\d+)\]/.exec(wrapper.className)?.[1])
+    expect(z).toBe(46)
+    expect(z).toBeGreaterThan(OVERLAY_Z_MAX)
   })
 })
 

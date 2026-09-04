@@ -211,10 +211,13 @@ const SubagentProgressBar = memo(function SubagentProgressBar({ slot }: { slot: 
   if (!hasActive) return null
   return (
     // `relative z-[46]` lifts the wave chip above every theme-experience
-    // overlay: those are clamped to OVERLAY_Z_MAX=45 in ThemeExperienceLayer,
-    // so 46 is the minimal value that no theme (built-in or custom, present or
-    // future) can paint over — while staying below the mute button (z=50) and
-    // consent modal (z=120), and under modal backdrops (z-[46], later in DOM).
+    // overlay. Overlays portal into the shell's decor slot, which is pinned at
+    // OVERLAY_Z_MAX (lib/themeDecorLayer.ts — do not restate the number here);
+    // the chip renders in the same shell stacking context, so 46 is a real
+    // in-context comparison against that ceiling (the test pins 46 >
+    // OVERLAY_Z_MAX). The mute button (z=50) and consent modal (z=120) live at
+    // the document root and outrank the whole shell regardless; the chip also
+    // stays under modal backdrops (z-[46], later in DOM).
     // Without this the chip sits at auto z-index and a fullscreen overlay (e.g.
     // an activate-time transition wipe) covers it for the overlay's lifetime.
     <div className="px-4 mx-auto w-full relative z-[46]" style={{ maxWidth: 'var(--mc-content-width, 900px)' }}>

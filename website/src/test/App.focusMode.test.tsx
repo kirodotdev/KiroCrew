@@ -17,6 +17,7 @@ import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 import { renderWithProviders } from './helpers'
 import { FOCUS_INSET, focusModeEnabled, setFocusModeEnabled, __resetFocusMode } from '../hooks/useFocusMode'
+import { OVERLAY_Z_MAX, THEME_DECOR_SLOT_ID, TOPBAR_FOCUS_Z, TOPBAR_Z, useThemeDecorSlot } from '../lib/themeDecorLayer'
 
 vi.mock('../lib/embedded', () => ({ isEmbeddedPane: vi.fn(() => false) }))
 import { isEmbeddedPane } from '../lib/embedded'
@@ -136,6 +137,44 @@ describe('focus mode — shell layout', () => {
     expect(screen.queryByTestId('focus-peek-rail')).toBeNull()
     const content = document.querySelector('[style*="grid-area: content"]') as HTMLElement
     expect(content.style.paddingLeft).toBe('')
+  })
+
+  // #7377: a theme pack's decorative overlay painted over the top bar. The shell
+  // is its own stacking context (`z-[1]`), so an overlay rendered outside it
+  // outranks the header at ANY z-index; the fix is a slot INSIDE the shell that
+  // the overlays portal into, pinned strictly below the header in both layouts.
+  it('keeps the theme decoration slot inside the shell and strictly below the header', async () => {
+    expect(OVERLAY_Z_MAX).toBeLessThan(TOPBAR_Z)
+    expect(OVERLAY_Z_MAX).toBeLessThan(TOPBAR_FOCUS_Z)
+
+    let seen: HTMLElement | null = null
+    function SlotProbe() { seen = useThemeDecorSlot(); return null }
+    renderWithProviders(<><SlotProbe /><App /></>, { route: '/chat' })
+    const toggle = await screen.findByTestId('focus-mode-toggle')
+
+    const shell = screen.getByTestId('dashboard-shell')
+    const slot = screen.getByTestId('theme-decor-slot')
+    const header = document.querySelector('header.topbar') as HTMLElement
+    expect(slot.id).toBe(THEME_DECOR_SLOT_ID)
+    // Same stacking context as the header, and published to the layer that
+    // portals into it (mounted outside the router, so it cannot take a prop).
+    expect(shell.contains(slot)).toBe(true)
+    expect(shell.contains(header)).toBe(true)
+    expect(seen).toBe(slot)
+    // Earlier in DOM order too, so even an equal z-index could not flip the win.
+    expect(slot.compareDocumentPosition(header) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    // Click-through, and a stacking context whose own z-index is the ceiling.
+    expect(slot.className).toContain('pointer-events-none')
+    expect(slot.className).toContain('fixed')
+    expect(slot.style.zIndex).toBe(String(OVERLAY_Z_MAX))
+
+    // Docked header: z from the shared constant, above the slot.
+    expect(header.style.zIndex).toBe(String(TOPBAR_Z))
+    // Focus mode (the absolute-overlay path that stands in for the native
+    // fullscreen stacking change reported on macOS): still above the slot.
+    await act(async () => { fireEvent.click(toggle) })
+    expect(header.style.zIndex).toBe(String(TOPBAR_FOCUS_Z))
+    expect(Number(header.style.zIndex)).toBeGreaterThan(Number(slot.style.zIndex))
   })
 
   it('collapses both chrome tracks and mounts the peek strips when on', async () => {

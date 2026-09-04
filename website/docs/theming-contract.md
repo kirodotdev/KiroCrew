@@ -92,6 +92,16 @@ Out of contract: app structure/routing, functional-control behavior, security
 chrome, and anything outside the CSS-var set + the `overrides.css` selector
 allowlist.
 
+**L2 overlay stacking.** A pack's `assets.overlays` render inside the dashboard
+shell's own stacking context, strictly below the top bar (`OVERLAY_Z_MAX` in
+`src/lib/themeDecorLayer.ts`, derived from the header's z-indexes), whatever
+`zIndex` the manifest asks for — so a `fullscreen` overlay decorates the chat
+surface but never paints over the header's controls (#7377). The `topbar` asset
+is the opposite by design: it is branding laid OVER the header strip and stays
+above it. The `body::before` / `body::after` idiom in `overrides.css` is not
+covered by this rule: it paints at the document root and therefore over the
+whole shell, header included.
+
 ## Brand identity
 
 An installed L1/L2 theme can brand the main left command palette without CSS or
