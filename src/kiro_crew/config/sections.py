@@ -3484,6 +3484,16 @@ _VALID_CHANNEL_PREFIXES = ("C", "D", "G")
 _WARNED_STT_PROVIDERS: set[str] = set()
 
 
+def stt_provider_is_coerced(value: object) -> bool:
+    """True when a stored ``stt.provider`` cannot take effect and is replaced.
+
+    The single source of truth for "this stored value is inert", so the surface that
+    offers to remove it (``kirocrew config defaults``) cannot come to disagree with
+    the loader about which providers are dispatchable.
+    """
+    return value not in _VALID_STT_PROVIDERS
+
+
 def _validated_stt_provider(value: object) -> str:
     """Return *value* if it is selectable, else degrade to ``local`` with a reason.
 
@@ -3491,6 +3501,11 @@ def _validated_stt_provider(value: object) -> str:
     an unusable one must leave voice input working the way
     :func:`_normalize_acp_backend` degrades an unusable persisted backend, rather
     than failing the load that read it.
+
+    The notice names the command that removes the dead value. A load never writes,
+    so without that pointer the line repeats on every invocation forever -- and
+    unlike a superseded default there is nothing here to preserve, since the stored
+    value cannot take effect either way.
     """
     if value in _VALID_STT_PROVIDERS:
         return str(value)
@@ -3502,13 +3517,15 @@ def _validated_stt_provider(value: object) -> str:
         logger.warning(
             "STT provider %r is retired; using %r instead. It needed a separate "
             "out-of-band install, which the bundled local engine removes while "
-            "recognising the same speech.",
+            "recognising the same speech. Run 'kirocrew config defaults --adopt' "
+            "to drop the stored value and this notice.",
             value,
             STT_PROVIDER_LOCAL,
         )
     else:
         logger.warning(
-            "Unknown STT provider %r; using %r instead. Selectable providers: %s",
+            "Unknown STT provider %r; using %r instead. Selectable providers: %s. "
+            "Run 'kirocrew config defaults --adopt' to drop the stored value.",
             value,
             STT_PROVIDER_LOCAL,
             ", ".join(_VALID_STT_PROVIDERS),

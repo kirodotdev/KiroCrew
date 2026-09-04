@@ -2455,6 +2455,9 @@ Examples:
   kirocrew config get agent.provider    # Get a specific value
   kirocrew config set dashboard.url http://localhost:5476
   kirocrew config edit                  # Open in $EDITOR
+  kirocrew config defaults              # Stored values holding a superseded default
+  kirocrew config defaults --adopt      # Take the current defaults for all of them
+  kirocrew config defaults --keep session.autocompact_pct   # Affirm one as intentional
 
 The dashboard port is set with the KIROCREW_PORT env var, not a config key.
 """,
@@ -2473,6 +2476,26 @@ The dashboard port is set with the KIROCREW_PORT env var, not a config key.
         help="Save to config.local.json (persists across upgrades)",
     )
     cfg_sub.add_parser("edit", help="Open config in $EDITOR")
+    cfg_defaults = cfg_sub.add_parser(
+        "defaults",
+        help="Review stored values that still hold a superseded default",
+    )
+    cfg_defaults.add_argument(
+        "keys",
+        nargs="*",
+        help="Limit to these dotted keys (default: every drifted key)",
+    )
+    _cfg_def_mode = cfg_defaults.add_mutually_exclusive_group()
+    _cfg_def_mode.add_argument(
+        "--adopt",
+        action="store_true",
+        help="Remove the stored keys so the current defaults apply",
+    )
+    _cfg_def_mode.add_argument(
+        "--keep",
+        action="store_true",
+        help="Record the stored values as intentional and stop reporting them",
+    )
 
     # Last registration done: stop argparse from answering an unknown command
     # with the internal mcp-* server names. Must come after every add_parser,

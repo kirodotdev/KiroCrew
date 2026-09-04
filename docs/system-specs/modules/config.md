@@ -219,11 +219,15 @@ stored `0` is not read as `False`.
 
 Registered so far: `mcp_gateway.forward_declared_env` (False -> True, #4566),
 `session.autocompact_pct` (90.0 -> 70.0, #4388), `stt.streaming` (False -> True,
-0.5.0) and `stt.model` ("turbo" -> "base", 0.5.0).
+0.5.0), `stt.model` ("turbo" -> "base", 0.5.0),
+`dashboard.loop_stall_exit_after_secs` (25 -> unset, #6651) and
+`instances.warm_set_cap` (5 -> 0, #7248).
 
-`stt.provider` is deliberately absent even though its default moved to `local`:
-`_validated_stt_provider` coerces a retired value at parse time, so the stored
-value never wins and there is no drift for an operator to adopt.
+`stt.provider` is deliberately absent from `SUPERSEDED_DEFAULTS` even though its
+default moved to `local`: `_validated_stt_provider` coerces a retired value at
+parse time, so the stored value never wins and there is no *default* for an
+operator to adopt. It is instead a **coerced value**, tracked separately in
+`COERCED_VALUES` — see below.
 
 Both sides of an entry are **history**, so both are literals: a later change to
 the same key APPENDS a new entry rather than editing an existing one, which keeps
@@ -236,14 +240,110 @@ value that no longer exists.
 
 Two surfaces render it, and neither writes:
 
-- The load path warns once per key per process, evaluated on the **stored base
-  document before the `config.local.json` merge** -- an overlay value is the
-  operator's live choice and says nothing about what the base materialized, so a
-  base drift is still reported when an overlay masks it, and an overlay-only value
-  is not reported at all.
+- The load path emits **one** warning naming every drifted key plus the command to
+  resolve it, evaluated on the **stored base document before the
+  `config.local.json` merge** -- an overlay value is the operator's live choice and
+  says nothing about what the base materialized, so a base drift is still reported
+  when an overlay masks it, and an overlay-only value is not reported at all. One
+  line rather than one per key: the registry is append-only, so a per-key line
+  grows without bound on exactly the long-lived installs with the most real drift,
+  and it lands on every short-lived `kirocrew` invocation, where the
+  once-per-process guard buys nothing because there the process IS the invocation.
+  The per-key text is still emitted at debug, so `-vv` keeps it in the log.
 - `kirocrew doctor` prints a `Stored Defaults` section reading `config.json`
   directly. Drift is informational and does NOT become an issue; an unreadable or
   malformed config does.
+
+## Acknowledging a superseded default
+
+Value equality alone cannot falsify a report, so before #7559 an operator who
+deliberately chose a value equal to a superseded default was told about it on every
+load forever, with no way to answer -- and that unanswerable line competed for
+attention with the genuine drift on the same install.
+
+`kirocrew config defaults` is the surface that resolves the ambiguity the load path
+must not resolve for anyone:
+
+- no flag lists each drifted key with its stored value, the current default, and
+  the release that changed it, marking anything already affirmed;
+- `--adopt [KEY...]` REMOVES the stored keys, so `data.get(key, DEFAULT)` resolves
+  the current default from the next load and the next full rewrite materializes it.
+  Rewriting is safe here where it is not on the load path because the operator
+  asked by name, and only a key whose stored value IS the superseded default is
+  ever removed. Detection runs again inside the write lock, so a value changed
+  since it was listed is left alone;
+- `--keep [KEY...]` records the stored values as intentional, which suppresses the
+  load-path line for exactly those values.
+
+An acknowledgment records `<dotted key> -> the acked VALUE`, not the key alone, so
+it covers the choice rather than the key: change the value later and the report
+returns. Acks live in `~/.kiro/crew/superseded_acked.json` (`{"acked": {...}}`),
+**not** in `config.json` -- a `to_dict()` rewrite carries only schema fields, so
+the same materialization behaviour this whole mechanism reports on would silently
+drop an ack stored in the config document. Three properties of that file matter:
+
+- **Reads cannot block indefinitely.** The read runs on the config-load path, which
+  is an event-loop path, and the file sits at a path the agent can name -- where
+  `open()` on a FIFO waits for a writer forever and would wedge the gateway rather
+  than merely delay it. `_read_ack_document` therefore `lstat`s and refuses anything
+  that is not a REGULAR file (links included) or is over `ACK_MAX_BYTES` (64 KiB),
+  opens with `O_NONBLOCK | O_NOFOLLOW` where the platform has them so a leaf swapped
+  after the `lstat` fails instead of waiting, re-checks the OPENED object with
+  `fstat`, then finishes with one capped `os.read`.
+- **Every refusal fails soft.** Missing, non-regular, oversized, unreadable,
+  malformed, not an object, a non-string key: an ack suppresses one line and changes
+  no runtime behaviour, so the worst consequence of ignoring a broken file is being
+  told again. That soft read is also why the file carries no schema version -- any
+  shape it cannot understand is already handled, so the field would have no reader.
+- **Writes never RESOLVE the leaf.** The config writers deliberately FOLLOW a link,
+  because symlinking `config.json` into a dotfiles repo is a supported setup; here
+  that would let a link planted at this path redirect the write onto an arbitrary
+  file. `_update_acked` refuses a link it can see AND writes through `atomic_write`,
+  which renames a fresh temp file OVER the leaf -- so a link swapped in after the
+  check is replaced rather than followed. The check reports the condition; the rename
+  is what makes it unexploitable.
+- **Every mutation is a locked read-modify-write.** `_update_acked` holds the ack
+  file's own lock across read, merge and write, so two concurrent `--keep` calls
+  cannot both read the same map and have the second replacement drop the first
+  operator's acknowledgment.
+- **`record_acks` re-reads the config under its lock**, rather than trusting the
+  caller's snapshot, and re-checks that each key is still drifted. A value changed
+  between the listing and the call would otherwise be acknowledged at its superseded
+  snapshot, which then suppresses the report for a value the operator never affirmed.
+  The ack write happens inside that same config lock hold; lock order is
+  config-then-ack at the only site that nests them.
+
+`--adopt` also drops the ack for a key it removed, since the acked value is no
+longer stored and keeping it would silence a genuinely deliberate choice made
+later. When `config.local.json` also carries an adopted key the report says the
+overlay still overrides it, because the EFFECTIVE value did not change. Every
+filesystem refusal on these paths surfaces as a controlled non-zero CLI error,
+never a traceback.
+
+`doctor` LISTS an acknowledged entry rather than hiding it: an ack answers the
+unsolicited load-path line, while `doctor` answers "what does this install still
+hold?", and hiding an affirmed value would make that answer wrong.
+
+## Coerced values (removable, never affirmable)
+
+`COERCED_VALUES` in the same module tracks a second, distinct kind: a stored value
+the loader **replaces** at parse time rather than merely overriding. The difference
+decides what an operator may do about it. A superseded default still wins, so it
+may be a deliberate choice and must not be rewritten. A coerced value cannot win,
+so there is nothing to preserve — which makes removing it unambiguously safe and
+makes affirming it meaningless, and `--keep` refuses it by name rather than
+promising a setting that never takes effect. Left in place it is inert bytes that
+cost a warning on every load, forever, because a load never writes.
+
+One entry today: `stt.provider`, whose retired and unknown values degrade to
+`local`. The `is_coerced` predicate rides on the ENTRY, not in the detector's loop,
+so appending a retirement is genuinely sufficient — a detector switching on
+`dotted_key` would leave an appended entry silently unreported, with no test red and
+an operator stuck with a warning nothing can clear. That predicate delegates to
+`sections.stt_provider_is_coerced()` rather than restating a provider list, so the
+surface offering to remove a value cannot come to disagree with the loader about
+which ones are dispatchable. The retirement notice in `_validated_stt_provider`
+names the command, for the same reason the drift line does.
 
 **Why nothing is corrected automatically.** At least one registered key also has a
 documented escape hatch (`mcp_gateway.forward_declared_env`, whose stored `false`

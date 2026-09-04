@@ -1269,7 +1269,7 @@ _REPORTED_SUPERSEDED_KEYS: set[str] = set()
 
 
 def _report_superseded_defaults(base_data: dict) -> None:
-    """Warn once per key when a stored base value still holds a superseded default.
+    """Warn once when stored base values still hold a superseded default.
 
     *base_data* is the ``config.json`` document as read, BEFORE the
     ``config.local.json`` overlay is merged over it. Reporting on the base is the
@@ -1281,15 +1281,37 @@ def _report_superseded_defaults(base_data: dict) -> None:
     are the same bytes on disk, so a rewrite cannot correct one without overriding
     the other. Telling the operator is the part that can be done without guessing.
 
-    Warned at most once per key per process. The gateway loads config repeatedly,
-    and a line the operator has already read is noise that trains them to ignore
-    the next one; the durable, re-readable rendering lives in ``doctor``.
+    ONE line naming every drifted key, not one line per key. The registry is
+    append-only, so a per-key line means the terminal noise on a long-lived install
+    grows with every default the project ever changes -- and it lands on every
+    short-lived ``kirocrew`` invocation, where the once-per-process guard below
+    buys nothing because there the process IS the invocation. The per-key detail
+    belongs on the surface the operator asked for: ``kirocrew config defaults``,
+    and ``doctor``. It is also emitted at debug here, so a gateway run with
+    ``-vv`` still carries the full text in its own log.
+
+    Keys already named in this process are not repeated, so a gateway that loads
+    config many times says it once. An acknowledged key is not reported at all --
+    ``superseded_default_drift`` filters it -- which is what makes this line
+    answerable instead of permanent.
     """
-    for entry in superseded_default_drift(base_data):
-        if entry.dotted_key in _REPORTED_SUPERSEDED_KEYS:
-            continue
+    drifted = [
+        e
+        for e in superseded_default_drift(base_data)
+        if e.dotted_key not in _REPORTED_SUPERSEDED_KEYS
+    ]
+    if not drifted:
+        return
+    for entry in drifted:
         _REPORTED_SUPERSEDED_KEYS.add(entry.dotted_key)
-        logger.warning("Superseded default in stored config: %s", drift_summary(entry))
+        logger.debug("Superseded default in stored config: %s", drift_summary(entry))
+    logger.warning(
+        "%d stored config value(s) still hold a superseded default: %s. "
+        "Run 'kirocrew config defaults' to see each one, '--adopt' to take the "
+        "current defaults, or '--keep' to affirm yours and stop this notice.",
+        len(drifted),
+        ", ".join(e.dotted_key for e in drifted),
+    )
 
 
 def stamp_config_meta(data: dict) -> dict:
