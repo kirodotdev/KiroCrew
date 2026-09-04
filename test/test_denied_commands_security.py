@@ -711,6 +711,143 @@ class TestIsDeniedDualMatching:
         assert is_denied("git push origin ma$(echo)in", denied_regexes=[]) is not None
 
 
+class TestGitPublishEmptyTokenBypass:
+    """An empty/blank argv element before the ``push`` subcommand must not skip
+    the git-publish floor.
+
+    Regression (#8115): the normalizer detector's subcommand walk skipped flag
+    tokens but broke on an empty/blank token (``""``, ``''``, ``$''``, a
+    whitespace-only token), so ``git "" push origin main`` was ALLOWED while
+    ``git push origin main`` was denied. The publish floor is the sole
+    enforcement for publish (every git-publish rule is stripped from the regex
+    tier), so the empty word defeated the only protected-branch check.
+
+    The fix skips empty/blank tokens the same way the walk already skips flags,
+    in LOCKSTEP across the two parsers that must agree: the detector
+    (``_is_git_push_via_normalizer``) and the refspec parser
+    (``_git_push_args``). Skipping in both means the empty-token form parses to
+    a clean refspec, so the normal protected-branch gate decides -- a protected
+    or bare push is denied by its gated ``git-publish-push-*`` rule (opt-out-able
+    exactly like the plain form), while a feature-branch push stays ALLOWED. It
+    is NOT routed into the ungated "unverifiable" backstop. Fail-closed: the
+    change only ADDS denials for the protected/bare shapes and never denies a
+    legitimate feature-branch publish.
+    """
+
+    def test_empty_double_quote_before_push_is_denied(self):
+        reason = is_denied('git "" push origin main')
+        assert reason is not None
+        # Denied by the gated protected-branch rule, not the ungated backstop.
+        assert "git-publish-push-protected-branch-name" in reason
+
+    def test_empty_single_quote_before_push_is_denied(self):
+        assert is_denied("git '' push origin main") is not None
+
+    def test_ansi_c_empty_quote_before_push_is_denied(self):
+        # $'' decodes to an empty token via _decode_shell_quoted_literals in
+        # BOTH parsers (the detector's normalize_shell_command and _git_push_args,
+        # which now decodes before splitting), so it is in true lockstep: the
+        # protected form denies via the GATED rule (not the ungated backstop)...
+        reason = is_denied("git $'' push origin main")
+        assert reason is not None
+        assert "git-publish-push-protected-branch-name" in reason
+
+    def test_ansi_c_empty_quote_feature_branch_push_is_allowed(self):
+        # ...and the feature-branch $'' form is ALLOWED, exactly like the "" and
+        # clean forms. This guards the fail-closed direction: the empty-token skip
+        # plus the _git_push_args ANSI-C decode must not turn a legitimate feature
+        # publish into a deny. (The bypass #8115 fixes is the PROTECTED/bare form
+        # above; this case pins that the feature form stays allowed.)
+        assert is_denied("git push origin feature-x") is None
+        assert is_denied("git $'' push origin feature-x") is None
+
+    def test_ansi_c_hex_protected_branch_push_denied_via_gated_rule(self):
+        # The _git_push_args ANSI-C decode also governs NON-empty $'...' refspecs,
+        # not just the empty $'' token. A hex-encoded protected branch
+        # ($'\x6d\x61\x69\x6e' -> "main") must resolve to the GATED
+        # git-publish-push-protected-branch-name rule (opt-out-able), NOT the
+        # ungated unverifiable-substitution backstop. Without the decode this
+        # regresses to the ungated backstop (denies even when opted out), so this
+        # pins the decode's non-empty reach against a future narrowing that the
+        # empty-token cases alone would not catch (#8115).
+        reason = is_denied(r"git push origin $'\x6d\x61\x69\x6e'")
+        assert reason is not None
+        assert "git-publish-push-protected-branch-name" in reason
+        assert is_denied(r"git push origin $'\x6d\x61\x69\x6e'", denied_regexes=[]) is None
+
+    def test_ansi_c_literal_feature_branch_push_is_allowed(self):
+        # A non-empty ANSI-C literal that decodes to a feature branch stays
+        # allowed -- the decode must not over-match a legitimate publish.
+        assert is_denied(r"git push origin $'feature-x'") is None
+
+    def test_multiple_empty_tokens_before_push_are_denied(self):
+        assert is_denied("git \"\" '' push origin main") is not None
+
+    def test_whitespace_only_token_before_push_is_denied(self):
+        # The skip is keyed on ``.strip() == ""``, not ``== ""`` -- a quoted
+        # single space is a real blank argv element and must be skipped too, or
+        # ``git " " push origin main`` reopens the bypass. This pins ``.strip()``
+        # as load-bearing (``== ""`` alone would let this through).
+        assert is_denied('git " " push origin main') is not None
+
+    def test_quoted_tab_token_before_push_is_denied(self):
+        assert is_denied('git "\t" push origin main') is not None
+
+    def test_empty_token_bare_push_is_denied(self):
+        # A bare push (no explicit refspec) may resolve to a protected branch,
+        # so it is denied just like ``git push`` with no target.
+        assert is_denied('git "" push') is not None
+
+    def test_empty_token_via_bash_c_is_denied(self):
+        # NOTE: this case is caught by the nested-payload floor
+        # (``_shell_payload_sources`` re-lexes the -c payload) and denies even
+        # WITHOUT the empty-token fix -- it does not exercise the fix's code
+        # path. Kept as a defense-in-depth regression guard, not a proof of the
+        # fix; the fix-exercising cases are the direct-argv ones above.
+        assert is_denied("bash -c 'git \"\" push origin main'") is not None
+
+    def test_empty_token_with_git_arg_flag_before_push_is_denied(self):
+        # A ``-C <dir>`` global flag followed by an empty token must still
+        # resolve to the push subcommand (the trailing "" is skipped by the
+        # empty-token branch, exercising the fix).
+        assert is_denied('git -C /repo "" push origin main') is not None
+
+    def test_empty_token_as_config_flag_argument_before_push_is_denied(self):
+        # Here the "" is the ARGUMENT of ``-c`` (consumed by the flag's j+=2
+        # skip), a different branch than a standalone empty token; the push is
+        # still detected and denied.
+        assert is_denied('git -c "" push origin main') is not None
+
+    def test_empty_token_protected_push_matches_plain_push_optout(self):
+        # The deny goes through the GATED protected-branch rule (not the ungated
+        # backstop), so its opt-out semantics match the plain form exactly:
+        # disabling the built-ins allows both, and the default denies both. This
+        # is the two parsers agreeing -- the empty token changes nothing about
+        # which rule fires.
+        assert is_denied("git push origin main", denied_regexes=[]) is None
+        assert is_denied('git "" push origin main', denied_regexes=[]) is None
+        assert is_denied("git push origin main") is not None
+        assert is_denied('git "" push origin main') is not None
+
+    def test_empty_token_feature_branch_push_is_allowed(self):
+        # A legitimate feature-branch push with an interposed empty token must
+        # stay ALLOWED, exactly like the clean form -- the fix must not route it
+        # into the ungated "unverifiable" deny (the parser-divergence bug this
+        # fix also closes). Both parsers now skip the empty token, so the
+        # refspec parses to origin/feature-x and the floor allows it.
+        assert is_denied("git push origin feature-x") is None
+        assert is_denied('git "" push origin feature-x') is None
+
+    def test_empty_token_before_stash_push_is_not_a_publish(self):
+        # ``git "" stash push`` is NOT a publish: push is not the subcommand
+        # position, so skipping the empty token must not misclassify it. Guards
+        # against a too-greedy skip that leaks past the resolved subcommand.
+        assert is_denied('git "" stash push') is None
+
+    def test_empty_token_before_a_benign_subcommand_is_allowed(self):
+        assert is_denied('git "" status') is None
+
+
 class TestLazyPossessiveGapSplit:
     """A top-level ``.*`` gap with a lazy/possessive modifier must split, not
     silently disable the rule.

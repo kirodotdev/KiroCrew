@@ -5667,6 +5667,16 @@ def _is_git_push_via_normalizer(text_lower: str) -> bool:
                     j += 2  # skip flag + its argument
                 elif tokens[j].startswith("-"):
                     j += 1  # skip simple flag
+                elif tokens[j].strip() == "":
+                    # An empty/blank argv element (``git "" push``, ``git '' push``,
+                    # ``$''``) is a real token the shell hands to the program but is
+                    # neither a flag nor the subcommand. Skip it like a flag so the
+                    # walk still reaches the true subcommand -- otherwise it breaks
+                    # here and the publish floor is never consulted, so
+                    # ``git "" push origin main`` bypasses the protected-branch
+                    # check. Fail-closed: this only routes more commands INTO the
+                    # floor, never fewer.
+                    j += 1
                 else:
                     break
             if j < len(tokens) and _resolves_to(tokens[j], "push"):
@@ -5860,6 +5870,17 @@ def _git_push_args(segment: str) -> list[str] | None:
     """
     # Strip glued shell operators for the same reason as ``_dequote_token``:
     # ``(git`` IS the git program to bash, and ``main)&`` IS the ref ``main``.
+    #
+    # Decode ANSI-C quoting FIRST (``$''`` -> ``''``) so the empty-token skip
+    # below sees an empty token for that spelling too, in lockstep with the
+    # detector: ``_is_git_push_via_normalizer`` tokenizes via
+    # ``normalize_shell_command`` which runs the same ``_decode_shell_quoted_literals``
+    # pass, so ``git $'' push`` decodes to an empty token there. Without decoding
+    # here, ``$''`` dequotes to a non-empty ``$`` in this raw path, the walk
+    # breaks, and the two parsers disagree -- which would drop a ``$''``
+    # feature-branch push into the ungated backstop and deny it (a false deny of
+    # a legitimate publish). Decoding keeps both parsers in agreement (#8115).
+    segment = _decode_shell_quoted_literals(segment)
     raw_tokens = segment.split()
     tokens = [_cut_at_operator(t) for t in raw_tokens]
     # Anchoring compares against a DEQUOTED view, because a quoted ``"git"`` is
@@ -5899,7 +5920,22 @@ def _git_push_args(segment: str) -> list[str] | None:
     if start is None:
         return None
     i = start + 1
-    while i < len(anchors) and anchors[i].startswith("-"):
+    while i < len(anchors) and (anchors[i].startswith("-") or anchors[i].strip() == ""):
+        # Skip leading flags AND empty/blank argv elements (``git "" push``,
+        # ``git '' push``). The dequoted view of an empty-quoted or
+        # whitespace-only token is blank, and it is neither a flag nor the
+        # subcommand -- so it must be skipped in LOCKSTEP with the detector's
+        # own empty-token skip (``_is_git_push_via_normalizer``). Without this,
+        # the detector recognizes ``git "" push origin <branch>`` as a push but
+        # this parser returns None, dropping it into the ungated "unverifiable"
+        # backstop that denies unconditionally -- so a legitimate FEATURE-branch
+        # empty-token push was denied while the clean and ``-c ""`` forms were
+        # allowed. Skipping blanks here makes the refspec parse cleanly, so the
+        # protected-branch gate (not the ungated backstop) decides, matching the
+        # plain-push semantics (#8115).
+        if anchors[i].strip() == "":
+            i += 1
+            continue
         i += 1  # skip the flag
         # A flag may take one separate non-flag value (e.g. ``-C <path>``);
         # never consume the ``push`` subcommand as a flag value.
