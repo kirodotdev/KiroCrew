@@ -12,6 +12,18 @@ per-user systemd manager — ``systemctl --user`` fails with
 uniformly across any distro shipping systemd >= 219, which is
 everything since 2015.
 
+One host class this choice does NOT work on, and cannot be made to work by
+anything the installer writes: an SELinux-enforcing host whose kirocrew lives
+under ``$HOME`` (the default on Bazzite, Fedora Silverblue/Kinoite and other
+atomic desktops). PID 1's domain is denied ``execute`` on a home-labelled file,
+so the unit fails every start with ``203/EXEC`` (#7165). :mod:`kiro_crew.service
+.selinux` detects exactly that case by querying the loaded policy, and
+:func:`install` refuses up front with a rendered user-scope unit as the remedy
+rather than writing a unit that provably cannot start. A per-user install mode is
+the real fix and is deliberately NOT implemented here — it is an install-model
+change (scope-aware status/restart/uninstall, where the AppArmor profile and the
+root-owned overrides file live) rather than a mechanical one.
+
 Sudo scope: this file escalates ``systemctl``, ``install``, ``mkdir``,
 ``rm``, ``rmdir`` and ``test`` directly, and lends its privileged helpers
 to ``service/apparmor.py``, which adds ``apparmor_parser``, ``aa-exec``,
@@ -51,6 +63,7 @@ from __future__ import annotations
 
 import logging
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -58,7 +71,7 @@ import tempfile
 from pathlib import Path
 
 from kiro_crew.gateway_shutdown_budget import TOTAL_SHUTDOWN_BUDGET_SECS
-from kiro_crew.service import apparmor
+from kiro_crew.service import apparmor, selinux
 from kiro_crew.service.common import (
     SERVICE_NAME,
     kirocrew_bin,
@@ -69,6 +82,14 @@ from kiro_crew.service.common import systemd_quote as _sd_quote
 log = logging.getLogger(__name__)
 
 UNIT_PATH = Path(f"/etc/systemd/system/{SERVICE_NAME}.service")
+
+# Where a user-scope unit belongs, per systemd.unit(5) — RELATIVE to the service
+# account's home, deliberately. Referenced only in the printed remedy; nothing in
+# this module writes here. It is not spelled "~/.config/..." because "~" resolves
+# against whoever pastes the command, and `service install` is documented to run
+# under sudo — so a tilde would silently name root's home in the one shell the
+# operator is most likely to be sitting in.
+USER_UNIT_SUBDIR = Path(".config/systemd/user")
 
 # Operator-editable environment overrides, read by the unit via
 # ``EnvironmentFile=``. Placed AFTER the baked ``Environment=`` lines in the
@@ -168,8 +189,8 @@ def _home_for_user(user: str) -> str:
         return str(Path.home())
 
 
-def render_unit() -> str:
-    """Render the systemd system-unit file contents.
+def render_unit(*, user_scope: bool = False) -> str:
+    """Render the systemd unit file contents.
 
     Runs the gateway as the invoking user (``User=``, ``Group=``) so it
     has access to ``$HOME/.kiro/crew``, the user's config, etc. The PATH
@@ -185,10 +206,23 @@ def render_unit() -> str:
     (:func:`install_apparmor_profile`), and when both mechanisms are present
     systemd's ``change_onexec`` transition silently wins over the kernel's
     automatic path attachment, defeating it.
+
+    ``user_scope`` renders the ``systemctl --user`` variant this module only ever
+    PRINTS (see :func:`selinux_refusal`) — rendered here rather than hand-written
+    so the copy-pasteable remedy cannot drift from the unit we actually install.
+    Two directives differ, and both are hard requirements of the per-user manager
+    rather than style choices: ``User=``/``Group=`` are rejected outright in a
+    user unit (the manager already runs as that account), and the install target
+    is ``default.target`` because ``multi-user.target`` is a system target the
+    user manager does not have.
     """
     bin_path = kirocrew_bin()
     user = _current_user()
-    group = _current_group(user) if user else ""
+    # Only the system unit carries Group=, and resolving it costs an `id -gn`
+    # subprocess — skipped for the user scope both because the value is unused
+    # and because this render happens on the refusal path, which must not shell
+    # out on a host it is declining to touch.
+    group = _current_group(user) if user and not user_scope else ""
     # Tie HOME / WorkingDirectory to the SAME account as User= (see
     # _home_for_user): under `sudo -H` the process HOME is /root while User= is
     # the sudo-selected human, and baking /root in would break service start.
@@ -238,9 +272,10 @@ def render_unit() -> str:
         "\n"
         "[Service]\n"
         "Type=simple\n"
-        f"User={user}\n"
-        f"Group={group}\n"
-        f"WorkingDirectory={home}\n"
+        # Omitted for the user scope: the per-user manager already runs as this
+        # account, and it REJECTS User=/Group= outright ("Unknown key name"),
+        # which would make the whole unit unloadable rather than merely noisy.
+        + ("" if user_scope else f"User={user}\nGroup={group}\n") + f"WorkingDirectory={home}\n"
         f"ExecStart={exec_start}\n"
         # `always`, not `on-failure`: the gateway deliberately exits on its own
         # to be relaunched — the stale-asset watchdog shuts down cleanly when a
@@ -270,7 +305,10 @@ def render_unit() -> str:
         f"{env_lines}"
         "\n"
         "[Install]\n"
-        "WantedBy=multi-user.target\n"
+        # multi-user.target is a SYSTEM target; the per-user manager has no such
+        # unit, so a user-scope install must want default.target instead or
+        # `systemctl --user enable` fails.
+        + ("WantedBy=default.target\n" if user_scope else "WantedBy=multi-user.target\n")
     )
 
 
@@ -488,6 +526,147 @@ def _env_file_is_untouched_seed() -> bool:
         return False
 
 
+def _user_scope_remedy() -> str:
+    """The commands that stand up a working per-user unit on this host.
+
+    Shared by :func:`selinux_refusal` (pre-flight proved the system unit cannot
+    start) and :func:`selinux_start_failure_hint` (it started nothing and SELinux
+    is enforcing), so the operator is handed the same verified sequence either
+    way and the two cannot drift.
+
+    **Every path and account is spelled out, and none is taken from the pasting
+    shell.** A user unit has no ``User=`` — the account it runs as is whichever
+    manager loads it — so ``~`` and ``$USER`` would decide who runs the agent.
+    ``service install`` is documented to run under ``sudo``, so the shell reading
+    this is usually root's: a tilde would name ``/root``, ``$USER`` would expand to
+    ``root``, and the remedy would hand an operator a unit that runs untrusted
+    agent tools as root — defeating the same invariant :func:`install` enforces by
+    refusing a ``User=root`` unit. Hence the absolute home, the explicit account
+    name, and the warning.
+
+    Both generated paths go through :func:`shlex.quote`, like the ``.env`` remedy
+    in :mod:`kiro_crew.service.common`: these lines are copy-pasted verbatim, and
+    an account home containing a space would word-split, so ``mkdir`` would create
+    the wrong directories and the redirect would put the unit somewhere systemd
+    never reads. Ordinary paths come back unquoted, so the common case is
+    unchanged.
+    """
+    unit_body = render_unit(user_scope=True)
+    user = _current_user()
+    home = _home_for_user(user) if user else str(Path.home())
+    account = user or "<the service account>"
+    unit_dir = shlex.quote(str(Path(home) / USER_UNIT_SUBDIR))
+    unit_file = shlex.quote(str(Path(home) / USER_UNIT_SUBDIR / UNIT_PATH.name))
+    return (
+        f"   Run the next four commands AS {account} — a user unit carries no\n"
+        f"   User=, so it runs as whichever account's manager loads it. Loading it\n"
+        f"   from a root shell (the shell you are probably in, since `service\n"
+        f"   install` needs sudo) would run the agent as ROOT, which this installer\n"
+        f"   otherwise refuses outright. `sudo -u {account}` is NOT enough — it\n"
+        f"   creates no session, so `systemctl --user` cannot reach that account's\n"
+        f"   manager. Get a real session first, e.g. `machinectl shell {account}@`,\n"
+        f"   or just log in as {account}.\n"
+        f"\n"
+        f"     mkdir -p {unit_dir}\n"
+        f"     cat > {unit_file} <<'KIROCREW_UNIT'\n"
+        f"{unit_body}"
+        f"KIROCREW_UNIT\n"
+        f"     systemctl --user daemon-reload\n"
+        f"     systemctl --user enable --now {SERVICE_NAME}.service\n"
+        f"\n"
+        f"   Then, back in a root shell — this one step needs privilege, and takes\n"
+        f"   the account name explicitly so it cannot land on the wrong user:\n"
+        f"\n"
+        f"     loginctl enable-linger {shlex.quote(account)}\n"
+        f"\n"
+        f"   Manage it with `systemctl --user status|restart {SERVICE_NAME}` and\n"
+        f"   `journalctl --user -u {SERVICE_NAME} -f`. `kirocrew service "
+        f"status|uninstall`\n"
+        f"   only looks at the system unit, so it will not see this one."
+    )
+
+
+def selinux_refusal(reason: str) -> str:
+    """Operator-facing refusal for a system unit SELinux proves cannot start.
+
+    A refusal rather than a warning because everything after this point is
+    destructive to no purpose: install would write the unit, ``enable`` it, fail
+    at the first ``systemctl restart``, and leave a unit enabled that crash-loops
+    at every boot until it exhausts ``StartLimitBurst``. Stopping before the
+    first write leaves the host exactly as it was found.
+
+    The remedy embeds a ready-to-paste user unit rendered by :func:`render_unit`,
+    not prose describing one: the operator's working unit then carries the same
+    ``ExecStart`` and the same baked environment as the unit we would have
+    installed, and cannot drift from it as this module changes.
+    """
+    return (
+        f"Refusing to install a system service that cannot start on this host.\n"
+        f"   {reason}.\n"
+        f"\n"
+        f"   This is SELinux type enforcement, not a broken file. The binary is\n"
+        f"   perfectly ordinary — it exists, it is executable, and `test -x` on\n"
+        f"   it succeeds; the policy's execute check is the only thing that\n"
+        f"   fails, and nothing short of asking the policy reveals it. A unit at\n"
+        f"   {UNIT_PATH} would fail every start with\n"
+        f"   status=203/EXEC until it hit its restart limit.\n"
+        f"\n"
+        f"   A per-user unit is not subject to this: the per-user systemd manager\n"
+        f"   does not run in PID 1's domain, so it is allowed to execute a binary\n"
+        f"   under $HOME.\n"
+        f"\n"
+        f"{_user_scope_remedy()}\n"
+        f"\n"
+        f"   Installing kirocrew outside $HOME (onto a system-labelled path such\n"
+        f"   as /usr/local/bin) also resolves it. Relocating only the LAUNCHER\n"
+        f"   does not: whatever systemd execs still runs in PID 1's domain, so\n"
+        f"   the next execve of the binary under $HOME is denied identically."
+    )
+
+
+def selinux_start_failure_hint() -> str:
+    """SELinux context to append when the unit was written but would not start.
+
+    Covers the residue the pre-flight cannot prove. That check asks only whether
+    PID 1's domain may execute the file systemd itself ``execve``s; it cannot
+    follow what that file execs at runtime, so a ``KIROCREW_SERVICE_BIN`` override
+    naming a system-labelled wrapper that later runs a binary under ``$HOME``
+    passes the gate and still fails — as the shell's exit 126 rather than
+    ``203/EXEC``, since the wrapper itself execs fine. Rather than guess at a
+    wrapper's contents (see the boundary discussion in
+    :mod:`kiro_crew.service.selinux`), name SELinux here, where the unit has
+    actually failed, so the operator is never left with only "run journalctl".
+
+    Deliberately the HYPOTHESIS and the command that settles it — NOT the
+    user-scope remedy :func:`selinux_refusal` prints. This fires on every failed
+    restart on every enforcing host, which is all of RHEL/Fedora, including the
+    ones the pre-flight positively proved ALLOW for; a port conflict on a stock
+    RHEL box would otherwise be answered with a wall of SELinux text and a
+    pasteable unit for a denial nobody has observed. A remedy belongs behind a
+    proven denial, so this points at the documented one and stops.
+
+    Empty on any host that is not enforcing, so nothing changes on the
+    overwhelming majority of installs.
+    """
+    if not selinux.is_enforcing():
+        return ""
+    return (
+        f"\n\nSELinux is enforcing here, which is one common cause of a unit that\n"
+        f"   installs and then will not start. This is a hypothesis, not a finding:\n"
+        f"   the pre-flight found no proven denial for {kirocrew_bin()}, but it only\n"
+        f"   checks the file systemd execs and the interpreter its shebang names, so\n"
+        f"   if that file is a wrapper, whatever IT runs is not covered. Settle it\n"
+        f"   with:\n"
+        f"\n"
+        f"     sudo ausearch -m avc -ts recent\n"
+        f"\n"
+        f"   An `avc: denied {{ execute }}` naming the gateway binary means no system\n"
+        f"   unit can work on this host. The per-user remedy is in\n"
+        f"   docs/guides/install.md, \"SELinux-enforcing hosts with kirocrew under\n"
+        f"   $HOME\". No such denial means this failure is something else."
+    )
+
+
 def install() -> apparmor.ProfileOutcome:
     """Write the unit file and enable+start the service. Idempotent.
 
@@ -533,6 +712,17 @@ def install() -> apparmor.ProfileOutcome:
             "service install`), or set $USER to a non-root account."
         )
 
+    # Last gate before anything is written: on an SELinux-enforcing host whose
+    # kirocrew lives under $HOME, PID 1's domain is denied execute on the binary
+    # this unit would name, so the unit can never start (#7165). Everything below
+    # would still "succeed" up to the first `systemctl restart`, leaving an
+    # enabled unit crash-looping at 203/EXEC on every boot. Fires only on a
+    # proven policy denial and fails open on every indeterminate answer, so a
+    # host without SELinux, or in permissive mode, is unaffected.
+    blocked, selinux_reason = selinux.blocks_system_unit(kirocrew_bin())
+    if blocked:
+        raise ServiceInstallError(selinux_refusal(selinux_reason))
+
     needs_profile, profile_reason = apparmor.should_install()
     write_res = _write_unit_via_sudo(render_unit())
     if write_res.returncode != 0:
@@ -577,6 +767,11 @@ def install() -> apparmor.ProfileOutcome:
             f"`sudo systemctl restart` failed: "
             f"{(restart_res.stderr or restart_res.stdout).strip()}\n"
             f"Run `sudo journalctl -u {SERVICE_NAME}.service -n 50` for details."
+            # The pre-flight only proves denials for the file systemd itself
+            # execs, so a wrapper's delegated binary can still be denied and land
+            # here. Name SELinux where the unit has actually failed rather than
+            # leave the operator with only a journalctl command.
+            + selinux_start_failure_hint()
         )
 
     return profile_outcome
