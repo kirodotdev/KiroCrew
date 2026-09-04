@@ -2487,7 +2487,14 @@ class TestAgentsSliceLimits:
                 patch("kiro_crew.sandbox._cpu_controller_delegated", return_value=False),
             ):
                 out = sb.cgroup_scope_argv(["kiro-cli", "chat"])
-            assert f"--slice={sb._CGROUP_AGENTS_SLICE}" in out
+            # Still placed under the aggregate boundary, now via a per-instance
+            # child of it (see _agents_slice_name) — cgroup v2 bounds a
+            # descendant by the minimum effective limit along its ancestor
+            # chain, so the aggregate layer of the two-level model is intact.
+            parent_stem = sb._CGROUP_AGENTS_SLICE[: -len(".slice")]
+            assert any(
+                a.startswith(f"--slice={parent_stem}") and a.endswith(".slice") for a in out
+            ), out
             assert "MemoryMax=4096M" in out
             assert "TasksMax=8192" in out
         finally:
@@ -3497,7 +3504,13 @@ class TestAgentSliceMemoryHigh:
             ):
                 out = sb.cgroup_scope_argv(["kiro-cli", "chat"])
             ensure.assert_called_once_with()
-            assert "--slice=kirocrew-agents.slice" in out
+            # The slice is a per-instance child of the aggregate parent (see
+            # _agents_slice_name), so match the parent stem rather than an exact
+            # name: the reconciliation this test is about still targets the
+            # parent, which is what the ceiling is applied to.
+            assert any(
+                a.startswith("--slice=kirocrew-agents") and a.endswith(".slice") for a in out
+            ), out
         finally:
             sb._CGROUP_SCOPE_PROBE = None
 

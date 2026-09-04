@@ -25,6 +25,7 @@ import ctypes
 import ctypes.util
 import errno
 import functools
+import hashlib
 import json
 import logging
 import os
@@ -6258,6 +6259,59 @@ _CGROUP_FALLBACK_MAX_MEMORY_MB = 8192
 _CGROUP_AGENTS_SLICE = "kirocrew-agents.slice"
 
 
+def _instance_slice_token() -> str:
+    """A short, systemd-safe token identifying THIS instance's data home.
+
+    Hex only, and specifically NO dashes: systemd reads a dash in a slice name
+    as a hierarchy separator, so a token containing one would silently insert
+    another slice level (and two tokens could collide on a shared prefix).
+
+    Keyed on the resolved data home because that is already the ownership key
+    the rest of the codebase uses — ``cleanup_orphaned_session_roots`` reaps
+    from a per-data-home account book, which is exactly why it cannot reach a
+    co-resident instance's children. Deriving the slice from the same key keeps
+    one notion of "whose process is this" instead of adding a second.
+    """
+    return hashlib.sha256(str(config_dir()).encode("utf-8")).hexdigest()[:12]
+
+
+def _agents_slice_name() -> str:
+    """The slice new agent scopes are placed in: one child per instance.
+
+    Every gateway on a host shared ONE slice, because the name was a module
+    constant with no per-instance component. Nothing downstream could then tell
+    one instance's scopes from another's, since a scope's identity is its slice
+    plus a timestamp and neither names an owner. That is a correctness floor
+    for anything operating on scopes as a population: a host routinely runs
+    several gateways at once — ``kirocrew pod up`` creates one per pod by
+    design — so "every scope in the agents slice" is not "my scopes", and a
+    sweep that assumes it is reaches into a live co-resident session.
+
+    Returns a dash-nested CHILD of :data:`_CGROUP_AGENTS_SLICE`, so the parent
+    stays the aggregate enforcement boundary: cgroup v2 bounds a descendant by
+    the minimum effective limit along its ancestor chain, so the MemoryHigh /
+    MemoryMax on the parent keep applying to every instance's scopes exactly as
+    before. Callers that match on the parent's name in a cgroup path (it is a
+    path component of every scope either way) are likewise unaffected.
+
+    Degrades to the bare parent slice if the data home cannot be resolved: a
+    missing ownership component must not fail the spawn, matching how an
+    unavailable cgroup backend is handled.
+    """
+    try:
+        token = _instance_slice_token()
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.warning(
+            "could not derive a per-instance agent slice (%s); falling back to "
+            "the shared %s — scopes from this instance will not be "
+            "distinguishable from a co-resident gateway's",
+            exc,
+            _CGROUP_AGENTS_SLICE,
+        )
+        return _CGROUP_AGENTS_SLICE
+    return f"{_CGROUP_AGENTS_SLICE[: -len('.slice')]}-{token}.slice"
+
+
 def _default_max_memory_mb() -> int:
     """Return the default cgroup ``memory.max`` in MB: a fixed fraction
     (:data:`_CGROUP_MEMORY_FRACTION`) of physical RAM, so the ceiling scales
@@ -6718,12 +6772,15 @@ def cgroup_scope_argv(argv: list[str]) -> list[str]:
     the returned argv's eventual PID is the real child — parent PID tracking,
     ``killpg``, and descendant scans are unaffected.
 
-    Every scope is parented under :data:`_CGROUP_AGENTS_SLICE`, and the
-    slice-level soft ceiling (``MemoryHigh``, see
-    :func:`_ensure_agent_slice_memory_high`) — a host-derived constant (75%
-    of RAM) — is ensured before each wrap, throttling the SUM of all
-    concurrent agent trees before the slice's hard ``MemoryMax``
-    (:func:`ensure_agents_slice_limits`) OOM-kills a scope.
+    Every scope is parented under a per-instance child of
+    :data:`_CGROUP_AGENTS_SLICE` (see :func:`_agents_slice_name`, which explains
+    why the owner has to be expressible), and the slice-level soft ceiling
+    (``MemoryHigh``, see :func:`_ensure_agent_slice_memory_high`) — a
+    host-derived constant (75% of RAM) — is ensured before each wrap on the
+    PARENT, throttling the SUM of all concurrent agent trees before the slice's
+    hard ``MemoryMax`` (:func:`ensure_agents_slice_limits`) OOM-kills a scope.
+    cgroup v2 bounds a descendant by the minimum effective limit along its
+    ancestor chain, so nesting one level deeper does not loosen either ceiling.
 
     Layers OUTSIDE the OS-level sandbox: callers pass the already-``wrap_argv``-ed
     argv here so the child is filesystem-isolated AND cgroup-bounded.
@@ -6785,7 +6842,7 @@ def cgroup_scope_argv(argv: list[str]) -> list[str]:
         "--user",
         "--scope",
         "-q",
-        f"--slice={_CGROUP_AGENTS_SLICE}",
+        f"--slice={_agents_slice_name()}",
         *props,
         "--",
         *argv,
@@ -7056,12 +7113,29 @@ def check_agents_slice_pressure() -> str | None:
     if new_kills <= 0:
         return None
     victims: list[str] = []
+
+    def _record_if_killed(scope_dir: Path) -> None:
+        scope_local = _read_cgroup_counters(scope_dir / "memory.events.local")
+        if scope_local.get("oom_kill", 0) > 0:
+            victims.append(scope_dir.name)
+
     try:
+        # Scopes sit one level deeper than they used to: each instance places
+        # its own under a per-instance child slice (_agents_slice_name), so
+        # scanning only direct children would report "(already reaped)" for
+        # every real victim. Both shapes are walked rather than just the nested
+        # one, because the aggregate slice is shared host-wide: a co-resident
+        # gateway still on an older build keeps putting scopes directly here,
+        # and its OOM kills are still worth naming.
         for child in slice_dir.iterdir():
-            if child.suffix == ".scope" and child.is_dir():
-                child_local = _read_cgroup_counters(child / "memory.events.local")
-                if child_local.get("oom_kill", 0) > 0:
-                    victims.append(child.name)
+            if not child.is_dir():
+                continue
+            if child.suffix == ".scope":
+                _record_if_killed(child)
+            elif child.suffix == ".slice":
+                for grandchild in child.iterdir():
+                    if grandchild.suffix == ".scope" and grandchild.is_dir():
+                        _record_if_killed(grandchild)
     except OSError:
         pass
     mem_current = -1
