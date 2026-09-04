@@ -57,6 +57,13 @@ export default [
         }],
       }],
       'no-console': 'warn',
+      // `no-eval` is not part of eslint:recommended, so without this line eval
+      // is unlinted across the application tree. The tree is at zero eval sites
+      // in .ts/.tsx (every `eval` match under src/ is prose in comments), so
+      // like the native-<select> gate below this is a hard-zero 'error', not a
+      // 'warn' riding the ratchet. The one deliberate eval lives in the .mjs
+      // generator block below, guarded by its own reviewed directive.
+      'no-eval': 'error',
       // A native <select> renders an OS-drawn popup: it ignores every theme
       // token, cannot be styled per row, and looks nothing like the rest of the
       // dashboard. Every dropdown goes through the shared Radix components —
