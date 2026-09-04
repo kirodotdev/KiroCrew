@@ -34,6 +34,7 @@ from kiro_crew.config.loader import (
     KiroCrewConfig,
     config_path,
 )
+from kiro_crew.constants import CHANNEL_SEND_NAMESPACES
 from kiro_crew.cron import CronStoreBusy, CronStoreUnreadable
 from kiro_crew.dashboard.channel_folders import (
     LIVE_RELOAD_FIELDS,
@@ -63,7 +64,7 @@ from kiro_crew.dashboard.state import (
 )
 from kiro_crew.dashboard.token_auth import caller_names_a_missing_slot
 from kiro_crew.messaging.display_safety import redact_for_display
-from kiro_crew.messaging.link import CHANNEL_SESSION_NAMESPACES, SLACK_NAMESPACE, ChannelLink
+from kiro_crew.messaging.link import SLACK_NAMESPACE, ChannelLink
 from kiro_crew.messaging.renderer import (
     chunk_for_transport,
     chunk_text,
@@ -125,20 +126,16 @@ _SLACK_SECRET_FIELDS = {
     "app_token": "SLACK_APP_TOKEN",
 }
 
-#: Transports ``send_message``'s ``channel_type`` may name. Derived from the
-#: channel namespaces rather than hand-listed so a new transport is covered by
-#: adding it in one place, minus two members that cannot be a send target:
-#:
-#: * ``slack`` has its own client and streaming path and is deliberately absent
-#:   from ``state.channel_transports``, so ``_resolve_channel_target`` skips it —
-#:   accepting it here would fail every such send closed with no useful reason.
-#:   ``session="slack"`` is the Slack spelling.
-#: * ``unified`` is the session-key bucket ``dm_scope="unified"`` collapses DMs
-#:   into, not a transport; no ``ChannelLink`` ever carries it as a channel type.
-_SEND_MESSAGE_CHANNEL_TYPES: frozenset[str] = frozenset(CHANNEL_SESSION_NAMESPACES) - {
-    SLACK_NAMESPACE,
-    "unified",
-}
+#: Transports ``send_message``'s ``channel_type`` may name, which is also the set
+#: its channel ``session`` values may name. Reads the shared
+#: ``CHANNEL_SEND_NAMESPACES`` rather than subtracting the two non-targets here:
+#: that subtraction was spelled at three separate readers, which is the same drift
+#: shape that left a Webex owner DM unreachable while this module's own leg already
+#: served it (#6514). The exclusions and their reasons are documented at the
+#: definition — ``slack`` has its own client and streaming path and is deliberately
+#: absent from ``state.channel_transports`` (``session="slack"`` is its spelling),
+#: and ``unified`` is a session-key bucket rather than a transport.
+_SEND_MESSAGE_CHANNEL_TYPES: frozenset[str] = frozenset(CHANNEL_SEND_NAMESPACES)
 logger = logging.getLogger(__name__)
 
 
@@ -2297,9 +2294,27 @@ async def api_send_message(request: web.Request) -> web.Response:
                     state,
                     channel_target,
                     channel_text,
-                    # Only a well-formed cron key is trusted as a governance
-                    # identity; anything else is an out-of-band host action.
-                    caller_session=caller_session if is_cron_caller else "",
+                    # Vet on the CALLER's real identity so the fail-closed
+                    # ``channels`` re-vet inside the leg resolves that caller's own
+                    # profile rather than the permissive ``HOST_SESSION_KEY``
+                    # default. Filtering to ``cron:`` here discarded every non-cron
+                    # caller's identity, and the MCP-side channel vet fails OPEN on
+                    # an evaluation error, so a non-cron session whose own profile
+                    # denies the transport could reach a host-permitted target --
+                    # the same hole the ``channel_type``/``target_id`` leg above
+                    # already closed, on the leg that was not migrated with it.
+                    #
+                    # The two arms take their identity from where each is trustworthy,
+                    # matching ``_channel_delivery_key`` on this same path: a cron's
+                    # body key is format-validated above before it may escalate
+                    # routing, and a non-cron caller is identified by the
+                    # ``X-Session-Key`` header, which ``token_auth._verify_unix_peer``
+                    # kernel-attests against the peer's own process ancestry -- never
+                    # the body, which a tool arg could name. So the governance vet and
+                    # the delivery key resolve the SAME principal. Absent (a direct
+                    # operator send naming no session) still degrades to the host
+                    # sentinel inside the leg, unchanged.
+                    caller_session=caller_session if is_cron_caller else declared_session,
                 )
             if channel_type:
                 sent_channel = await _deliver_to_channel(

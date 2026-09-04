@@ -16,6 +16,24 @@ import time
 from dataclasses import dataclass
 from typing import Any
 
+# ``SLACK_NAMESPACE`` and ``CHANNEL_SESSION_NAMESPACES`` are RE-EXPORTED from
+# ``kiro_crew.constants``, which is their canonical home, because the roster has
+# readers on both sides of an import cycle. This module is itself stdlib-only, but
+# importing a name FROM it executes ``messaging/__init__.py`` first, which pulls in
+# ``driver`` -> ``acp`` -> ``hooks``; since ``hooks`` -> ``webhooks`` ->
+# ``validation`` is already an edge, a reader like ``validation`` would get a
+# partially-initialized ``hooks``. Readers inside ``messaging`` and its dependents
+# keep importing from here; readers outside it read ``constants`` directly.
+#
+# The semantics are documented at the definition. Summary: every session-key prefix
+# a conversation started OUTSIDE the dashboard can carry, excluding the non-channel
+# namespaces (``dashboard:``, ``cron:``, ``hook:``, ``subagent:``, ``channel:``).
+# ``autonudge._CHANNEL_KEY_PREFIXES`` is a SEPARATE hand-kept copy, not a narrower
+# one -- both hold the same 11 namespaces today. It answers a different question
+# (does this key SHAPE belong to a channel rather than a dashboard slot), so do not
+# assume the two have diverged, and do not assume they are kept in step either.
+from kiro_crew.constants import CHANNEL_SESSION_NAMESPACES, SLACK_NAMESPACE
+
 logger = logging.getLogger(__name__)
 
 #: Slack ts format: ``"{epoch_seconds}.{microseconds}"`` -- pure digits + one dot.
@@ -26,35 +44,6 @@ logger = logging.getLogger(__name__)
 #: conversation), so the input is not guaranteed to be a real timestamp. A real
 #: ts is 10 digits + 6; 20 each leaves an order of magnitude of headroom.
 _SLACK_TS_RE = re.compile(r"\d{1,20}\.\d{1,20}")
-
-SLACK_NAMESPACE = "slack"
-
-#: Session-key namespaces owned by a messaging channel, i.e. every prefix a
-#: conversation started OUTSIDE the dashboard can carry. Slack keys are
-#: ``slack:<thread_ts>``; every other transport uses
-#: ``{channel}:{agent}:{chatType}:{user}[:genN]`` (see
-#: :func:`build_dm_session_key`), plus the ``unified:`` bucket that
-#: ``dm_scope="unified"`` collapses direct DMs into.
-#:
-#: Deliberately excludes the non-channel namespaces that also contain a colon
-#: (``dashboard:``, ``cron:``, ``hook:``, ``subagent:``, ``channel:``) — those
-#: are surfaced by their own owners, not by the channel-session reconciler.
-#:
-#: NOTE: ``autonudge._CHANNEL_KEY_PREFIXES`` is a deliberately NARROWER set —
-#: only the transports that support unattended nudge fires. Do not merge them.
-CHANNEL_SESSION_NAMESPACES: tuple[str, ...] = (
-    SLACK_NAMESPACE,
-    "discord",
-    "telegram",
-    "whatsapp",
-    "webex",
-    "wecom",
-    "teams",
-    "weixin",
-    "imessage",
-    "feishu",
-    "unified",
-)
 
 #: Both separators a namespace can be followed by. A live session key uses ``:``;
 #: ``ConversationLog.list_sessions()`` reports the persisted FILENAME STEM, where

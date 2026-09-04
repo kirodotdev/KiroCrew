@@ -600,6 +600,105 @@ named, and the caller cannot tell which one it lost:
 |---|---|---|
 | Slack | `session="slack"`, `channel`, `user`, `thread_ts`, `reply_broadcast` | the Slack client's own path |
 | every other channel | `channel_type` | the conversation the calling session already belongs to |
+| every other channel | `session="<channel>"` | that channel's own configured owner, wherever the call came from |
+
+The two non-Slack rows answer different questions and neither substitutes for the
+other. `channel_type` rides the calling session's `ChannelLink` and **fails closed
+when there is none**, so it serves a session that is already talking on the
+channel; a cron whose origin is the dashboard, or which has no origin at all, has
+no link for it to ride. `session="<channel>"` needs no link — it resolves the
+destination from the transport's own `configured_targets()` through
+`_deliver_channel_dm` — which is what makes it the route for a proactive notice
+raised somewhere other than the channel itself.
+
+**One roster, three views.** The channels a proactive send may name are derived
+ONCE, as `constants.CHANNEL_SEND_NAMESPACES` — `CHANNEL_SESSION_NAMESPACES` minus
+`slack` (its own client, spelled `session="slack"`) and `unified` (a session-key
+bucket, not a transport). The MCP tool's advertised enum
+(`mcp_tools.messaging._CHANNEL_SESSIONS`), the pre-handler validator's pattern
+(`validation._SEND_MESSAGE_SESSION_RE`) and the gateway's accepted `channel_type`
+set (`_SEND_MESSAGE_CHANNEL_TYPES`) all read that one constant, because each is a
+gate the value passes in turn and a narrower one in front silently withholds a
+destination the wider ones behind it would serve. That is not hypothetical: the
+first two were hand-kept and stood at `discord` alone for months after eight more
+transports were registered, so `session="webex"` was refused as malformed by a
+validator while the gateway leg behind it could already resolve and deliver a
+Webex owner DM (#6514). The subtraction itself was then respelled at each of the
+three readers, which is the same shape one level up, so it is derived at the
+definition and the readers name it rather than recompute it.
+
+The roster lives in `constants` (`os` + `re` only) rather than `messaging.link`
+because it has readers on both sides of an import cycle: `messaging.link` is
+itself stdlib-only, but importing a name FROM it executes `messaging/__init__.py`,
+which pulls in `driver` → `acp` → `hooks`, and `hooks` → `webhooks` →
+`validation` is already an edge. `messaging.link` re-exports both names, so its
+own readers are unchanged. One sibling hand-kept copy remains and is NOT derived:
+`autonudge._CHANNEL_KEY_PREFIXES`, which answers a key-SHAPE question rather than
+a send-capability one. Its membership is currently identical to the roster's, so
+the older claim that it is deliberately narrower does not hold; deriving it is
+sound and deliberately out of scope here.
+
+**A channel `session` needs an owner; `channel_type` does not, so the rosters
+differ by one.** `channel_type` names a conversation -- the calling session's, or an
+explicit `target_id` -- and infers no recipient. A channel `session` infers one via
+`_owner_dm_target`, whose safety claim is that the agent can only reach somebody the
+USER configured. `constants.CHANNEL_OWNER_DM_NAMESPACES` is therefore
+`CHANNEL_SEND_NAMESPACES` minus the channels that cannot answer that question, and
+today that is `weixin` and `wecom`. Each folds identities LEARNED from inbound
+traffic into `configured_targets()` — Weixin's `_known_users` (`_allowed |
+_known_users`), WeCom's `_warm_chats`, which under `allow_all_users` become the list
+outright ("there is no configured list to draw on, so the warm peers ARE the list").
+So a peer who messaged the bot once can be the single available direct target, which
+is exactly what `_owner_dm_target` reads as the owner. Nothing downstream catches
+it: both `may_send_to` implementations return True unconditionally under their open
+policy (Weixin's promise to consult `_allowed` alone holds only on its `allowlist`
+branch), and `resolve_configured_target` accepts the learned set too.
+`channel_type` is unaffected for both and stays available.
+
+The exclusion is not hand-kept:
+`test_no_owner_dm_channel_advertises_learned_identities` derives the check from the
+transports, so a channel that starts mixing learned identities into
+`configured_targets()` fails that gate instead of silently becoming an owner-DM
+target. A channel graduates by separating configured recipients from learned peers,
+at which point deleting it from the subtraction is the whole change.
+
+**Widening the roster does not widen the audience.** Whether a channel can take a
+proactive DM is answered per send by `_owner_dm_target`, at the side-effect
+boundary against live config, which is where a runtime question has to be answered
+— a static roster cannot. A transport needing prior inbound state (Teams, WeCom)
+or unable to DM proactively at all (Feishu) marks its targets unavailable; an
+allow-list with several people is refused rather than guessed at. Both degrade to
+the dashboard notification, and the tool says which channel missed rather than
+reporting success.
+
+**Both channel legs require a strictly-resolved caller.** `channel_type` and a
+channel `session` each resolve identity through `mcp_core.require_strict_session_key`
+and refuse when it is absent. The refusal is the control, not a formality:
+`gov_session` otherwise falls back to the lenient resolver, which walks process
+ancestors, so an unidentified sub-agent resolves to its PARENT — and the
+channel-agent containment check (`_deny_channel_agent_messaging`, which fires only
+on an identity starting `channel:`) then does not fire for a contained agent,
+putting the owner-DM egress surface inside its confinement boundary. The gateway's
+fail-closed `channels` re-vet does not backstop that: it covers the transport
+scope, not channel-agent containment. Refusing costs no legitimate caller, because
+the gateway injects `KIROCREW_SESSION_KEY` into every agent/ACP subprocess and a
+cron run carries `cron:<job_id>` in it, with the HMAC-verified host-pid sidecar
+covering PID-namespace-sandboxed sessions; it is absent only where there is no
+session key to inject.
+
+**And the gateway vets that identity rather than the host sentinel.**
+`_deliver_channel_dm` resolves `caller_session or HOST_SESSION_KEY`, and the host
+sentinel is the PERMISSIVE default, so dropping a caller's identity there lets a
+session whose own profile denies the transport reach a host-permitted owner DM —
+the MCP-side channel vet degrades open on an evaluation error, so it is not a
+second guard. Each arm takes its identity from where that arm is trustworthy,
+matching `_channel_delivery_key` on the same path: a cron's body key is
+format-validated before it may escalate routing, and a non-cron caller is
+identified by the `X-Session-Key` header, which `token_auth._verify_unix_peer`
+kernel-attests against the peer's own process ancestry — never the body, which a
+tool argument could name. The governance vet and the delivery key therefore
+resolve the same principal. The `channel_type`/`target_id` leg already worked this
+way; the channel-`session` leg was not migrated with it.
 
 `"slack"` is deliberately **not** a legal `channel_type`: Slack is absent from
 `state.channel_transports` on purpose, so the shared ladder skips it and accepting
@@ -1529,7 +1628,7 @@ answer is not permission: a raised evaluation and a `Decision` without
 - **Runtime identity follows the current turn**: every channel dispatcher passes its trusted transport name as `runtime_source` to `ContextBuilder.build_message`; the shared `drive_turn` pipeline uses `ChannelTurn.channel_type`. A cross-surface resume keeps its original stable session key for conversation continuity, but `[RUNTIME]` names the interface carrying the current message. Follow-up turns refresh the marker because the one-time session context may describe an earlier surface.
 - **Channel dashboard visibility is immediate**: after the first successful turn of a Discord, Telegram, Webex, Teams, WeCom, Weixin, or Feishu-owned session is persisted, the dispatcher triggers the channel-slot reconciler immediately when `dashboard.surface_channel_sessions` is enabled. `DashboardState.register_channel_transport` injects the dashboard state into the bound dispatcher; the lifetime 30-second reconciler remains the recovery path, but the normal first-turn path does not wait for it. Turns that resume an existing `dashboard:` session skip this step because that session already owns a slot.
 - **An owner notification is not Slack-only**: `dashboard/server.py::_dm_owner` prefers the owner's Slack DM and falls back to registered channel transports (`_notify_owner_channels`). It used to no-op entirely without Slack, so an expiring unattended grant was invisible on a Teams-only, Discord-only or Telegram-only install — silence about a security grant lapsing is exactly what the notice exists to prevent. Fallback, not addition: an operator with Slack gets one notice, not one per channel. Reachability is the transport's OWN answer, so this can only reach a destination that channel already authorized. **And a channel must be able to NAME the owner: exactly one configured target, or nothing.** The notice carries the operator's own security state, while an allow-list is a list of people permitted to talk to the agent — not a claim that any one of them is the operator. With several configured targets there is no unambiguous owner, and sending to the first reachable one hands one allow-listed human another's auto-approve state; the count is over ALL configured targets, because a three-person allow-list with one learned route is still a guess. Same premise as `/sessions`' owner-only rule. Per-identity authority within an allow-list would let this deliver on a multi-person install; it does not exist yet on any channel.
-- **The proactive PRODUCERS are still Slack-shaped, and the parity claim says so**: `api_send_message` (the LLM-facing `send_message` tool) has exactly two legs — the origin dashboard slot and `state.slack_client` — and `file_send` posts to the Slack upload route. Neither consults `state.channel_transports`. A cron result still reaches a non-Slack channel when its origin slot is MIRRORED there (`/link`), which is the normal path; what is missing is the tool's own explicit channel/user addressing, whose allow-list, threading and unfurl semantics are Slack concepts. This is the largest remaining outbound gap and it hurts Discord and Telegram identically — routing it through the transport ladder is a change to that handler's contract, not to a channel.
+- **The proactive PRODUCERS started Slack-shaped, and the parity claim tracks how far that has moved**: `api_send_message` (the LLM-facing `send_message` tool) began with exactly two legs — the origin dashboard slot and `state.slack_client` — and `file_send` still posts to the Slack upload route. The tool's own explicit addressing now exists for every registered channel and does consult `state.channel_transports`: `channel_type` (+ optional `target_id`) for the conversation the session belongs to, and `session="<channel>"` for that channel's configured owner. See § Proactive sends. What remains Slack-only is the shape of `channel`/`user`/`thread_ts`/`unfurl_*`, whose allow-list, threading and unfurl semantics are Slack concepts, and `file_send`'s upload route. A cron result also still reaches a non-Slack channel when its origin slot is MIRRORED there (`/link`).
 - **Configured outbound targets are transport-owned**: `MessagingTransport.configured_targets()` returns opaque `ConfiguredChannelTarget` records for the user-configured destinations a dashboard session may link to, including an explicit unavailable reason when a protocol needs prior inbound state or cannot send proactively. `resolve_configured_target()` revalidates the selected opaque id at the side-effect boundary and resolves it to `(conversation_id, thread_id)`; the browser never supplies an unchecked platform conversation id. Discord exposes configured users and threads, and fail-closes thread resolution unless Discord still reports the allow-listed id as an actual thread rather than a normal shared guild channel; Telegram exposes configured DMs; Webex exposes configured DMs plus, when `webex.allow_group_rooms` is on, each space in `webex.allowed_room_ids` as a `room:` target — and `resolve_configured_target` re-validates a `room:` id against BOTH the switch and the list, because an advertised target id travels through the browser and the LLM (it is the `target_id` an MCP send may name) and the config can narrow after one was minted; Weixin exposes allow-listed DMs plus authorized peers learned under its open policy; Teams destinations become available after an authorized inbound activity supplies a conversation/service URL; and WeCom advertises its allow-listed userids plus, under its allow-all policy, the peers it has learned — each either offered or listed with a reason, because `aibot_send_msg` needs no token but the platform only delivers into a conversation the user has already written to. Feishu destinations are visible but unavailable because replies are anchored to an inbound message (no proactive DM in v1).
 - **Configured-target egress is governed at every yield boundary**: the dashboard mirror-link endpoint enters the shared fail-closed `channels` governance ladder before resolving an opaque target (resolution may itself open a remote DM), rechecks before the initial link message, and rechecks before each historical-context message. A profile that narrows after transport startup therefore stops both target resolution and all subsequent sends.
 - **`/link` and `/unlink` are one pair with one location**: `rebind_conversation_location` claims what `release_conversation_location` frees, and both take the channel's single `_origin_mirror_link()` value — the release matches an occupied location by VALUE, so a second spelling of "this conversation" lets it miss the binding the bind wrote. Inside the rebind the **claim goes first**: `batched_save` writes on the way out even when the block raises, so an opt-out withdrawal ordered ahead of a refused claim would persist for a link that never happened and silently turn mirroring back on.

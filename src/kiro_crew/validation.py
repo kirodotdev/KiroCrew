@@ -31,7 +31,13 @@ from typing import Any
 # no native library is loaded on any platform. Aliased so the schema block below
 # reads as "the computer-use vocabulary" rather than bare names.
 from kiro_crew.computer_use import types as _cu_types
-from kiro_crew.constants import AWS_PROFILE_NAME_RE, MAX_BANNER_CHARS, WINDOWS_DEVICE_STEMS
+from kiro_crew.constants import (
+    AWS_PROFILE_NAME_RE,
+    CHANNEL_OWNER_DM_NAMESPACES,
+    MAX_BANNER_CHARS,
+    SLACK_NAMESPACE,
+    WINDOWS_DEVICE_STEMS,
+)
 
 # Reasoning-effort vocabulary: ``effort.py`` is the single source of truth for
 # the valid levels; EFFORT_VALUES additionally admits ``""`` ("unset — defer to
@@ -2493,6 +2499,21 @@ FILE_WRITE_SCHEMA = ToolSchema(
 # is what actually authorizes it.
 _TARGET_ID_RE = re.compile(r"^[\x21-\x7e]{1,512}$")
 
+# Every legal ``send_message`` ``session`` value: the delivery MODES plus every
+# channel a proactive send may name. Built from the shared
+# ``CHANNEL_SEND_NAMESPACES`` so this, the tool's advertised enum and the gateway's
+# accepted ``channel_type`` set are three views of ONE roster rather than three
+# lists that drift -- which is the #6514 defect, where this pattern and the tool's
+# enum both still read "discord" alone months after eight more transports were
+# registered and made serviceable by the gateway's channel-neutral owner-DM leg.
+#
+# ``origin`` is added because it is a delivery MODE rather than a transport, and
+# ``slack`` because it routes through its own client instead of the channel ladder;
+# both are outside the send roster for those reasons, not by omission.
+_SEND_MESSAGE_SESSION_RE = re.compile(
+    "^(origin|" + "|".join((SLACK_NAMESPACE, *CHANNEL_OWNER_DM_NAMESPACES)) + ")$"
+)
+
 
 # Fields that select or shape a SLACK delivery. Combined with the
 # ``channel_type``/``target_id`` pair — which addresses a non-Slack destination
@@ -2568,13 +2589,23 @@ SEND_MESSAGE_SCHEMA = ToolSchema(
         # Must accept every value ``mcp_tools.messaging._SESSION_TARGETS``
         # advertises: this pattern runs BEFORE the handler, so a value missing
         # here is rejected as malformed even though the tool's own enum offers
-        # it. Spelled out rather than imported because ``mcp_tools`` imports this
-        # module; ``test_mcp_messaging_discord`` pins the two together.
+        # it. That is what happened to the eight non-Discord channels in #6514.
+        #
+        # DERIVED from the same roster the tool's enum and the gateway's accepted
+        # ``channel_type`` set are built from, so the three cannot disagree.
+        # Importing it costs no cycle: the roster is homed in ``kiro_crew.constants``,
+        # which imports only ``os`` and ``re``. It is deliberately NOT read from
+        # ``messaging.link`` (which re-exports it): importing a name from there
+        # executes ``messaging/__init__.py``, pulling in ``driver`` -> ``acp`` ->
+        # ``hooks``, and ``hooks`` -> ``webhooks`` -> ``validation`` is already an
+        # edge, so reading it from this module that way closes a startup cycle.
+        # ``unified`` is excluded because it is a session-key bucket, not a
+        # transport; ``origin`` is added because it is a delivery MODE.
         FieldSpec(
             "session",
             str,
             max_len=MAX_SHORT_STRING,
-            pattern=re.compile(r"^(origin|slack|discord)$"),
+            pattern=_SEND_MESSAGE_SESSION_RE,
         ),
         FieldSpec("caller_session", str, max_len=MAX_SHORT_STRING, pattern=CRON_SESSION_RE),
     ],
