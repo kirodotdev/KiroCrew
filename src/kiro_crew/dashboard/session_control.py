@@ -1461,22 +1461,17 @@ def authorize_target(
         # silently widens to the user's own sessions because of an unrelated
         # opt-in.
         #
-        # For a cron caller this is the whole of what replaced the old
-        # `unattended_caller` refusal: a scheduled job reaches the sessions it
-        # dispatched and nothing else. Fail-closed on an unowned slot, which is
-        # what an ownerless rehydrate looks like.
-        raise deny(
-            (
-                "a scheduled run can only control sessions it created itself"
-                if _cron_caller(caller_key)
-                else (
-                    "a crew member can only control worker sessions it created itself"
-                    if _member_caller(caller_key)
-                    else "an agent-created session can only control sessions it " "created itself"
-                )
-            ),
-            "not_creator",
-        )
+        # For a cron caller this fence stands in place of the `unattended_caller`
+        # refusal every other unattended caller gets: a scheduled job reaches the
+        # sessions it dispatched and nothing else. Fail-closed on an unowned slot,
+        # which is what an ownerless rehydrate looks like.
+        if _cron_caller(caller_key):
+            fence_reason = "a scheduled run can only control sessions it created itself"
+        elif _member_caller(caller_key):
+            fence_reason = "a crew member can only control worker sessions it created itself"
+        else:
+            fence_reason = "an agent-created session can only control sessions it created itself"
+        raise deny(fence_reason, "not_creator")
 
     return slot
 
