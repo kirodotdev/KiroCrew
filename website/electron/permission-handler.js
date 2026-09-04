@@ -86,6 +86,33 @@
 const TRUSTED_PAGE_PERMISSIONS = new Set(["fullscreen", "notifications"]);
 
 /**
+ * Trusted-page permissions that are additionally restricted to the MAIN frame.
+ *
+ * The trust/origin gate above identifies the dashboard's webContents, but a
+ * subframe shares its parent's webContents — and `isAppOrigin` treats any
+ * localhost origin as the app. Without a frame check, an iframe the dashboard
+ * embeds (a scripted localhost preview, a widget) would inherit the grant and
+ * could post OS notifications wearing this app's identity. `notifications` is
+ * therefore granted only when `details.isMainFrame` is exactly true —
+ * fail-closed when the field is absent, since only Electron's real permission
+ * callbacks (which always carry it) should ever be granted.
+ *
+ * `fullscreen` stays frame-agnostic deliberately: an inline <video> inside an
+ * embedded player frame legitimately requests fullscreen, that was the
+ * pre-existing granted behavior this change must not regress, and a fullscreen
+ * takeover is visible and user-initiated where a forged notification is not.
+ */
+const MAIN_FRAME_ONLY_PERMISSIONS = new Set(["notifications"]);
+
+/** Frame gate for MAIN_FRAME_ONLY_PERMISSIONS; true for everything else. */
+function frameOk(permission, details) {
+  return (
+    !MAIN_FRAME_ONLY_PERMISSIONS.has(permission) ||
+    details?.isMainFrame === true
+  );
+}
+
+/**
  * True when the request belongs to the app's own dashboard.
  *
  * Checks TWO sources because neither is always present:
@@ -247,7 +274,8 @@ function createPermissionRequestHandler(deps = {}) {
     // Notification.requestPermission()), never on Chromium's per-navigation
     // re-checks, so it cannot become console noise.
     if (TRUSTED_PAGE_PERMISSIONS.has(permission)) {
-      const allowed = !isUntrusted(wc) && originOk(wc, origin);
+      const allowed =
+        frameOk(permission, details) && !isUntrusted(wc) && originOk(wc, origin);
       if (!allowed) audit("request", permission, wc, origin, details);
       return callback(allowed);
     }
@@ -337,7 +365,9 @@ function createPermissionCheckHandler(deps = {}) {
     // the renderer reads `Notification.permission` (this handler's verdict)
     // and never constructs a toast unless it says 'granted'.
     if (TRUSTED_PAGE_PERMISSIONS.has(permission)) {
-      return !isUntrusted(wc) && originOk(wc, origin);
+      return (
+        frameOk(permission, details) && !isUntrusted(wc) && originOk(wc, origin)
+      );
     }
     const granted =
       !isUntrusted(wc) &&

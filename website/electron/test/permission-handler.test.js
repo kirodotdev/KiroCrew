@@ -470,6 +470,9 @@ describe("HTML fullscreen — the dead fullscreen button", () => {
 });
 
 describe("notifications — the silent desktop-notification gap", () => {
+  // Electron's real permission callbacks always carry isMainFrame; the grant
+  // is fail-closed without it (see MAIN_FRAME_ONLY_PERMISSIONS).
+  const MAIN = { isMainFrame: true };
   // The dashboard fires page-context `new Notification()` (useNativeNotification,
   // useWebSocket approval toasts). Chromium prompts and grants in a plain
   // browser, so Chrome-tab users got native OS toasts; the blanket deny here
@@ -477,9 +480,9 @@ describe("notifications — the silent desktop-notification gap", () => {
   // same code no-oped silently. Issue #8308.
   it("GRANTS notifications to the dashboard", () => {
     const req = createPermissionRequestHandler(quiet);
-    assert.equal(grant(req, APP, "notifications", {}), true);
+    assert.equal(grant(req, APP, "notifications", MAIN), true);
     const check = createPermissionCheckHandler(quiet);
-    assert.equal(check(APP, "notifications", ORIGIN, {}), true);
+    assert.equal(check(APP, "notifications", ORIGIN, MAIN), true);
   });
 
   it("the CHECK verdict alone unblocks the renderer hook", () => {
@@ -487,7 +490,7 @@ describe("notifications — the silent desktop-notification gap", () => {
     // which reflects THIS handler's synchronous check — a request-side grant
     // with a denying check would leave the hook dead. Pin the check directly.
     const check = createPermissionCheckHandler(quiet);
-    assert.equal(check(null, "notifications", ORIGIN, {}), true, "null-wc check must pass on origin");
+    assert.equal(check(null, "notifications", ORIGIN, MAIN), true, "null-wc check must pass on origin");
   });
 
   it("DENIES notifications to the untrusted embedded browser view", () => {
@@ -495,16 +498,16 @@ describe("notifications — the silent desktop-notification gap", () => {
     // an OS notification is trusted chrome, ideal phishing surface.
     const untrusted = { isUntrusted: (wc) => wc === APP, onDeny: () => {} };
     const req = createPermissionRequestHandler(untrusted);
-    assert.equal(grant(req, APP, "notifications", {}), false);
+    assert.equal(grant(req, APP, "notifications", MAIN), false);
     const check = createPermissionCheckHandler(untrusted);
-    assert.equal(check(APP, "notifications", ORIGIN, {}), false);
+    assert.equal(check(APP, "notifications", ORIGIN, MAIN), false);
   });
 
   it("DENIES notifications to a foreign origin", () => {
     const foreign = wcAt("https://evil.example/");
-    assert.equal(grant(createPermissionRequestHandler(quiet), foreign, "notifications", {}), false);
+    assert.equal(grant(createPermissionRequestHandler(quiet), foreign, "notifications", MAIN), false);
     assert.equal(
-      createPermissionCheckHandler(quiet)(foreign, "notifications", "https://evil.example", {}),
+      createPermissionCheckHandler(quiet)(foreign, "notifications", "https://evil.example", MAIN),
       false,
     );
   });
@@ -519,14 +522,43 @@ describe("notifications — the silent desktop-notification gap", () => {
       askForMicAccess: boom,
       onMicBlocked: boom,
     });
-    assert.equal(grant(req, APP, "notifications", {}), true);
+    assert.equal(grant(req, APP, "notifications", MAIN), true);
+  });
+
+  it("DENIES notifications to a SUBFRAME of the dashboard", () => {
+    // A subframe shares the dashboard's webContents and isAppOrigin treats any
+    // localhost origin as the app — without the frame gate, an embedded
+    // localhost iframe would inherit the grant and could post OS toasts
+    // wearing this app's identity. GPT review finding on #8312.
+    const sub = { isMainFrame: false };
+    const req = createPermissionRequestHandler(quiet);
+    assert.equal(grant(req, APP, "notifications", sub), false);
+    const check = createPermissionCheckHandler(quiet);
+    assert.equal(check(APP, "notifications", ORIGIN, sub), false);
+  });
+
+  it("FAILS CLOSED when isMainFrame is absent", () => {
+    const req = createPermissionRequestHandler(quiet);
+    assert.equal(grant(req, APP, "notifications", {}), false);
+    assert.equal(grant(req, APP, "notifications", undefined), false);
+    const check = createPermissionCheckHandler(quiet);
+    assert.equal(check(APP, "notifications", ORIGIN, {}), false);
+  });
+
+  it("fullscreen stays FRAME-AGNOSTIC (pre-existing behavior preserved)", () => {
+    // An inline <video> in an embedded player frame legitimately requests
+    // fullscreen; the main-frame gate is scoped to notifications only.
+    const req = createPermissionRequestHandler(quiet);
+    assert.equal(grant(req, APP, "fullscreen", { isMainFrame: false }), true);
+    const check = createPermissionCheckHandler(quiet);
+    assert.equal(check(APP, "fullscreen", ORIGIN, { isMainFrame: false }), true);
   });
 
   it("request and check handlers AGREE on notifications", () => {
     for (const isUntrusted of [() => false, () => true]) {
       const deps = { ...quiet, isUntrusted };
-      const fromRequest = grant(createPermissionRequestHandler(deps), APP, "notifications", {});
-      const fromCheck = createPermissionCheckHandler(deps)(APP, "notifications", ORIGIN, {});
+      const fromRequest = grant(createPermissionRequestHandler(deps), APP, "notifications", MAIN);
+      const fromCheck = createPermissionCheckHandler(deps)(APP, "notifications", ORIGIN, MAIN);
       assert.equal(fromRequest, fromCheck);
     }
   });
