@@ -175,3 +175,28 @@ class TestCreatedByRecentSessionRestore:
         )
         assert restore_recent_sessions(state, window_minutes=60) == 1
         assert state._slots["chat-1-worker"]._created_by == "member-autofix"
+
+
+class TestCreatedByProjection:
+    """``created_by`` rides the slot payload the WS ``slots`` frames carry.
+
+    The Crew Members drawer lists the sessions a member is driving by filtering
+    the live slots on this field, so a payload that dropped it would render the
+    empty state for a member with ten workers in flight. Because a member caller
+    is ownership-fenced to the slots it created (``authorize_target``), the
+    created set IS the driven set -- no separate provenance field is needed.
+    """
+
+    def test_to_dict_carries_the_creator_slot_key(self):
+        from kiro_crew.dashboard.state import _ChatSlot
+
+        slot = _ChatSlot("chat-1-worker")
+        slot._created_by = DM_SLOT_KEY_PREFIX + "autofix"
+        assert slot.to_dict()["created_by"] == "member-autofix"
+
+    def test_unattributed_slot_reports_empty_string_not_absent(self):
+        from kiro_crew.dashboard.state import _ChatSlot
+
+        # "" rather than a missing key: the frontend must be able to tell "a
+        # person's own tab" from "an older gateway that never sent the field".
+        assert _ChatSlot("chat-1-own").to_dict()["created_by"] == ""

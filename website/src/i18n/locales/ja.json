@@ -13487,7 +13487,12 @@
       "wake_error": "このメンバーの起動ソースを読み込めませんでした。",
       "wake_paused": "一時停止中",
       "wake_webhook": "Webhook",
-      "activity_error": "このメンバーのアクティビティを読み込めませんでした。"
+      "activity_error": "このメンバーのアクティビティを読み込めませんでした。",
+      "driving_sessions": "このメンバーが操作中のセッション",
+      "driving_none": "現在操作中のセッションはありません。",
+      "driving_idle": "アイドル",
+      "driving_show_all": "すべて表示（{{count}}）",
+      "driving_show_less": "折りたたむ"
     }
   },
   "privacyDisclosure": {

@@ -13666,7 +13666,12 @@
       "wake_error": "इस सदस्य के वेक स्रोत लोड नहीं हो सके।",
       "wake_paused": "रुका हुआ",
       "wake_webhook": "वेबहुक",
-      "activity_error": "इस सदस्य की गतिविधि लोड नहीं हो सकी।"
+      "activity_error": "इस सदस्य की गतिविधि लोड नहीं हो सकी।",
+      "driving_sessions": "सेशन जिन्हें यह संचालित कर रहा है",
+      "driving_none": "अभी कोई सेशन संचालित नहीं कर रहा है।",
+      "driving_idle": "निष्क्रिय",
+      "driving_show_all": "सभी दिखाएँ ({{count}})",
+      "driving_show_less": "कम दिखाएँ"
     }
   },
   "privacyDisclosure": {

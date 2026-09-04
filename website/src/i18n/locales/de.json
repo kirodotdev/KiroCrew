@@ -13665,7 +13665,12 @@
       "wake_error": "Aufweckquellen dieses Mitglieds konnten nicht geladen werden.",
       "wake_paused": "pausiert",
       "wake_webhook": "Webhook",
-      "activity_error": "Aktivität dieses Mitglieds konnte nicht geladen werden."
+      "activity_error": "Aktivität dieses Mitglieds konnte nicht geladen werden.",
+      "driving_sessions": "Sitzungen, die es steuert",
+      "driving_none": "Steuert derzeit keine Sitzungen.",
+      "driving_idle": "Inaktiv",
+      "driving_show_all": "Alle anzeigen ({{count}})",
+      "driving_show_less": "Weniger anzeigen"
     }
   },
   "privacyDisclosure": {

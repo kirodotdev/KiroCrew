@@ -9,6 +9,8 @@
  *                    pin chip + detail drawer with the shared-memory note
  *   03-mobile        390px viewport, list column
  *   04-roster-light  light theme parity
+ *   06-driving       drawer "Driving sessions": radar's workers by
+ *                    created_by, status dots, fold/expand, empty state (fixer)
  *
  * Usage:
  *   npx vite --host 127.0.0.1 --port 6831 --strictPort   # in another shell
@@ -178,6 +180,49 @@ async function newPage(theme, viewport = { width: 1280, height: 820 }) {
   await page.getByText('radar', { exact: true }).first().click()
   await page.getByTestId('member-drawer').waitFor()
   await page.screenshot({ path: `${OUT}/04-thread-light.png` })
+  await page.close()
+}
+
+// 06 — "Driving sessions": the worker sessions this member opened and steers,
+// read off the live slots frame by `created_by`. The entry seeds seven radar
+// workers (one per status the dot distinguishes, plus overflow) and one
+// scribe worker that must stay out. Folded at five, Show all expands; a row
+// is a jump into that session (MemoryRouter here, so we assert the intent by
+// the row being a button, not by navigation).
+{
+  const page = await newPage('dark')
+  await page.getByText('radar', { exact: true }).first().click()
+  await page.getByTestId('member-driving-sessions').waitFor()
+  const rows = page.getByTestId('member-driving-row')
+  check('06-driving folded at five', (await rows.count()) === 5, `rows=${await rows.count()}`)
+  const statuses = await rows.evaluateAll((els) => els.map((e) => e.getAttribute('data-status')))
+  check(
+    '06-driving status order newest-first',
+    statuses.join(',') === 'permission,running,question,idle,idle',
+    `statuses=${statuses.join(',')}`,
+  )
+  const text = await page.getByTestId('member-driving-sessions').textContent()
+  check('06-driving excludes other members', !/release notes/.test(text || ''), 'scribe worker absent')
+  check('06-driving titles present', /sidebar drop/.test(text || '') && /seven fresh/.test(text || ''), 'worker titles rendered')
+  const toggle = page.getByTestId('member-driving-toggle')
+  check('06-driving toggle label', /Show all \(7\)/.test((await toggle.textContent()) || ''), `toggle=${await toggle.textContent()}`)
+  await page.screenshot({ path: `${OUT}/06-driving-sessions-dark.png` })
+  await toggle.click()
+  check('06b-driving expanded', (await rows.count()) === 7, `rows=${await rows.count()}`)
+  check('06b-driving toggle collapses', /Show less/.test((await toggle.textContent()) || ''), 'toggle flipped')
+  await page.screenshot({ path: `${OUT}/06b-driving-sessions-expanded-dark.png` })
+  await page.close()
+}
+
+// 06c — the empty state: a member with no workers reads one honest sentence.
+{
+  const page = await newPage('dark')
+  await page.getByText('fixer', { exact: true }).first().click()
+  await page.getByTestId('member-drawer').waitFor()
+  await page.getByTestId('member-driving-empty').waitFor()
+  const empty = await page.getByTestId('member-driving-empty').textContent()
+  check('06c-driving empty state', /Not driving any sessions/.test(empty || ''), `empty=${(empty || '').trim()}`)
+  await page.screenshot({ path: `${OUT}/06c-driving-sessions-empty-dark.png` })
   await page.close()
 }
 

@@ -282,4 +282,12 @@ class SlotProjection:
             "linked_session_key": slot.linked_session_key,
             "app": slot._app,
             "origin": slot._origin,
+            # Creator attribution: the slot key of the session that asked for
+            # this one via the session-control create verb ("" for a person's
+            # own tab, a fork, a restore). Written at birth and rehydrated, so
+            # it is the one durable link from a crew member's DM thread to the
+            # workers it drives -- the Crew Members drawer filters the live
+            # ``slots`` frames on it. A member caller is ownership-fenced to the
+            # slots it created (``authorize_target``), so created == driven.
+            "created_by": getattr(slot, "_created_by", ""),
         }

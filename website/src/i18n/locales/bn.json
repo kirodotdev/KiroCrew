@@ -13666,7 +13666,12 @@
       "wake_error": "এই সদস্যের ওয়েক উৎস লোড করা যায়নি।",
       "wake_paused": "বিরতিতে",
       "wake_webhook": "ওয়েবহুক",
-      "activity_error": "এই সদস্যের কার্যকলাপ লোড করা যায়নি।"
+      "activity_error": "এই সদস্যের কার্যকলাপ লোড করা যায়নি।",
+      "driving_sessions": "যে সেশনগুলি এটি পরিচালনা করছে",
+      "driving_none": "এই মুহূর্তে কোনো সেশন পরিচালনা করছে না।",
+      "driving_idle": "নিষ্ক্রিয়",
+      "driving_show_all": "সব দেখুন ({{count}})",
+      "driving_show_less": "কম দেখুন"
     }
   },
   "privacyDisclosure": {

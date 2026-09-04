@@ -13843,7 +13843,12 @@
       "wake_error": "Não foi possível carregar as fontes de ativação deste membro.",
       "wake_paused": "pausado",
       "wake_webhook": "webhook",
-      "activity_error": "Não foi possível carregar a atividade deste membro."
+      "activity_error": "Não foi possível carregar a atividade deste membro.",
+      "driving_sessions": "Sessões que conduz",
+      "driving_none": "Não está conduzindo nenhuma sessão no momento.",
+      "driving_idle": "Inativo",
+      "driving_show_all": "Mostrar todas ({{count}})",
+      "driving_show_less": "Mostrar menos"
     }
   },
   "privacyDisclosure": {

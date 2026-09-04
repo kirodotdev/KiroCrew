@@ -6827,7 +6827,12 @@
       "wake_error": "Couldn't load this member's wake sources.",
       "wake_paused": "paused",
       "wake_webhook": "webhook",
-      "activity_error": "Couldn't load this member's activity."
+      "activity_error": "Couldn't load this member's activity.",
+      "driving_sessions": "Sessions it's driving",
+      "driving_none": "Not driving any sessions right now.",
+      "driving_idle": "Idle",
+      "driving_show_all": "Show all ({{count}})",
+      "driving_show_less": "Show less"
     },
     "migrationPage": {
       "app_migration": "App Migration",

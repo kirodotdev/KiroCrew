@@ -13487,7 +13487,12 @@
       "wake_error": "이 멤버의 웨이크 소스를 불러오지 못했습니다.",
       "wake_paused": "일시 중지됨",
       "wake_webhook": "웹훅",
-      "activity_error": "이 멤버의 활동을 불러오지 못했습니다."
+      "activity_error": "이 멤버의 활동을 불러오지 못했습니다.",
+      "driving_sessions": "이 멤버가 구동 중인 세션",
+      "driving_none": "현재 구동 중인 세션이 없습니다.",
+      "driving_idle": "유휴",
+      "driving_show_all": "모두 보기({{count}})",
+      "driving_show_less": "접기"
     }
   },
   "privacyDisclosure": {

@@ -13843,7 +13843,12 @@
       "wake_error": "Impossibile caricare le origini di attivazione di questo membro.",
       "wake_paused": "in pausa",
       "wake_webhook": "webhook",
-      "activity_error": "Impossibile caricare l'attività di questo membro."
+      "activity_error": "Impossibile caricare l'attività di questo membro.",
+      "driving_sessions": "Sessioni che guida",
+      "driving_none": "Al momento non guida nessuna sessione.",
+      "driving_idle": "Inattivo",
+      "driving_show_all": "Mostra tutte ({{count}})",
+      "driving_show_less": "Mostra meno"
     }
   },
   "privacyDisclosure": {

@@ -13844,7 +13844,12 @@
       "wake_error": "Impossible de charger les sources de réveil de ce membre.",
       "wake_paused": "en pause",
       "wake_webhook": "webhook",
-      "activity_error": "Impossible de charger l'activité de ce membre."
+      "activity_error": "Impossible de charger l'activité de ce membre.",
+      "driving_sessions": "Sessions qu'il pilote",
+      "driving_none": "Ne pilote aucune session pour le moment.",
+      "driving_idle": "Inactif",
+      "driving_show_all": "Tout afficher ({{count}})",
+      "driving_show_less": "Afficher moins"
     }
   },
   "privacyDisclosure": {

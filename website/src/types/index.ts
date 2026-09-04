@@ -879,6 +879,12 @@ export interface ChatSlot {
    * task-runner slot, or an app/cron-minted session (which can share the
    * `chat-<n>-<ts>` key shape) never triggers it. */
   origin?: string
+  /** Slot key of the session that asked for this one via the session-control
+   * create verb; "" / absent for a person's own tab, a fork, a restore. Durable
+   * (written at birth, rehydrated), so it is the one link from a crew member's
+   * DM thread to the worker sessions it drives — the Crew Members drawer
+   * filters the live slots on it. */
+  created_by?: string
   /** Artifact companion binding: slug of the artifact this slot is a companion
    * chat for. Set at slot create and persisted in the history meta line, so the
    * binding survives a gateway restart and a History-page resume. */
