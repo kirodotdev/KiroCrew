@@ -14,6 +14,7 @@ import logging
 import re
 import time
 import uuid
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import Enum
 from typing import TYPE_CHECKING, Any
@@ -1574,6 +1575,23 @@ _EMPTY_AUTO_CONTINUE_MSG = (
     "conversation above and respond now — do NOT restart from scratch and do "
     "NOT re-run steps or tools that already completed successfully."
 )
+_ACTIVITY_NO_REPLY_CONTINUE_MSG = (
+    f"{EMPTY_RESPONSE_RECOVERY_PREFIX}\n"
+    "Your previous turn did work — it streamed text, called tools, or reasoned "
+    "— but ended without a closing reply, so the request looks unanswered. "
+    "Everything above already happened and its results are in the conversation: "
+    "answer now from what is there. Do NOT restart the request, and do NOT "
+    "re-run any tool or step that already completed."
+)
+#: Shares :data:`EMPTY_RESPONSE_RECOVERY_PREFIX` with
+#: :data:`_EMPTY_AUTO_CONTINUE_MSG` rather than minting a marker of its own. The
+#: marker is what ``RecoveryCard.tsx`` classifies a transcript row by, and both
+#: bodies are the same event to a reader ("the turn ended without an answer, and
+#: the runner continued it once"); a second marker would need a card row and a
+#: locale pair in twelve catalogs to say nothing new. The BODIES must differ,
+#: because this one is read by the MODEL: telling a turn that ran tools that it
+#: "produced no output" invites it to redo work whose side effects already
+#: landed, which is the failure this whole path exists to prevent.
 _PROMISE_ONLY_CONTINUE_MSG = (
     f"{PROMISE_ONLY_RECOVERY_PREFIX}\n"
     "Your previous turn ended right after you said you would perform an action "
@@ -1601,6 +1619,7 @@ _SYNTHETIC_RECOVERY_MSGS = (
     _BUSY_RECOVER_MSG,
     _POSTTOKEN_RECOVER_MSG,
     _EMPTY_AUTO_CONTINUE_MSG,
+    _ACTIVITY_NO_REPLY_CONTINUE_MSG,
     _PROMISE_ONLY_CONTINUE_MSG,
     _COMPACTION_CONTINUE_MSG,
 )
@@ -2040,6 +2059,165 @@ def should_notice_mixed_turn_leak(
     if prompt_depth != 0:
         return False
     return has_leaked_tool_call(final_segment_text)
+
+
+#: Normalised, CLOSED stop-reason vocabulary for the empty-turn diagnostic. The
+#: raw wire value is never logged: a backend is free to invent a reason string,
+#: and an unbounded value in a diagnostic is both a cardinality hazard and a
+#: place model- or user-derived text could appear.
+#:
+#: The three literals are spelled here rather than imported from
+#: ``kiro_crew.acp.types``, following the precedent in ``metrics/turns.py``:
+#: ``scripts/check_agent_sdk_boundary.py`` baselines this file at ONE ACP edge
+#: and a baselined file may not grow its count. Duplicating a wire constant is
+#: only safe with a guard, so ``test_dashboard_chat.py`` pins each against the
+#: ACP constant it mirrors — the test tree is outside the gate's scope, so the
+#: pin can import what this module may not.
+_STOP_END_TURN = "end_turn"
+_STOP_CANCELLED_REASON = "cancelled"
+_STOP_REFUSAL = "refusal"
+
+#: A terminal event arrived carrying NO stop reason at all. Deliberately its own
+#: value rather than folded onto ``end_turn``: ``metrics.turns.turn_outcome``
+#: reads absence as a clean turn (correct for latency accounting, where the acp
+#: path leaves it unset on every normal completion), but here the two are the
+#: whole question — "the provider said the turn ended and produced nothing" is a
+#: model-side event, while "the provider never said why it stopped" is a
+#: transport-side one, and the incident that motivated these diagnostics could
+#: not tell them apart.
+STOP_REASON_ABSENT = "absent"
+#: A terminal stop reason outside the closed set above.
+STOP_REASON_OTHER = "other"
+
+#: Causes for a turn that reached the empty-response verdict. Closed set,
+#: low-cardinality, content-free — safe for a log line and for a metric
+#: attribute if one is ever added.
+EMPTY_CAUSE_NO_TERMINAL = "no_terminal_event"
+EMPTY_CAUSE_SYNTHETIC = "synthetic_completion"
+EMPTY_CAUSE_VISIBLE_PARTIAL = "visible_partial"
+EMPTY_CAUSE_TOOL_ONLY = "tool_only"
+EMPTY_CAUSE_THINKING_ONLY = "thinking_only"
+EMPTY_CAUSE_PROVIDER_EMPTY = "provider_empty"
+EMPTY_CAUSE_OTHER = "other"
+
+#: Which rung of the empty-response ladder claimed the turn.
+EMPTY_RUNG_REPLAY = "replay"
+EMPTY_RUNG_CONTINUE = "continue"
+EMPTY_RUNG_GIVE_UP = "give_up"
+
+
+def normalize_stop_reason(stop_reason: str | None) -> str:
+    """Map a raw terminal stop reason onto the closed diagnostic vocabulary.
+
+    ``None`` and ``""`` both answer :data:`STOP_REASON_ABSENT` — an omitted
+    reason, which is a distinct observation from a clean ``end_turn`` and must
+    not be laundered into one. Anything unrecognised answers
+    :data:`STOP_REASON_OTHER`, so no raw backend string is ever logged.
+    """
+    raw = stop_reason or ""
+    if not raw:
+        return STOP_REASON_ABSENT
+    if raw in (_STOP_END_TURN, _STOP_CANCELLED_REASON, _STOP_REFUSAL):
+        return raw
+    if raw.startswith("error:"):
+        return "error"
+    return STOP_REASON_OTHER
+
+
+@dataclass(frozen=True)
+class EmptyTurnActivity:
+    """What a turn DID, in booleans only, as observed at the empty-response verdict.
+
+    Every field is a bool or a value from a closed set. There are deliberately no
+    counts, no durations, no token or credit numbers, no paths, no ids, and no
+    text: this object exists to be written to a log line, and the incident it was
+    built for is one where the interesting facts (did a tool run? did the user
+    already read something?) are exactly the facts a privacy-safe diagnostic can
+    carry. A count would answer no question the bool does not, and token counts
+    and costs are billing data that has no business in a warning.
+
+    ``billed`` is likewise a bool: whether the provider reported ANY billing
+    dimension for the turn (``llm_helpers.usage_has_billing``). It separates the
+    two shapes of "nothing came back" that look identical from the runner — a
+    turn the provider generated and charged for, versus one it never ran.
+    """
+
+    #: A terminal ``EVENT_COMPLETE`` arrived. False means the stream ended
+    #: without one, and every other field describes a turn nobody closed.
+    saw_terminal: bool = False
+    #: The terminal was SYNTHESIZED by the provider layer (watchdog, timeout,
+    #: cancel-unacked) rather than reported by the backend. Retained past the
+    #: event arm because the verdict below is reached long after it.
+    terminal_synthetic: bool = False
+    #: Normalised terminal stop reason — see :func:`normalize_stop_reason`.
+    stop_reason: str = STOP_REASON_ABSENT
+    #: At least one assistant text chunk streamed this turn.
+    saw_text: bool = False
+    #: A visible assistant segment was FLUSHED and persisted at a tool boundary,
+    #: so the user has already read text this turn even though the final segment
+    #: is empty. This is the incident's own shape.
+    flushed_visible: bool = False
+    #: At least one tool call was dispatched.
+    had_tools: bool = False
+    #: At least one thinking chunk arrived.
+    had_thinking: bool = False
+    #: The provider reported some billing dimension for the turn.
+    billed: bool = False
+
+    @property
+    def productive(self) -> bool:
+        """True when the turn did work that can carry state or side effects.
+
+        This is the load-bearing predicate: a turn that is productive must NEVER
+        have its originating message replayed verbatim, because the replay
+        re-executes tool calls that already completed and re-derives an answer
+        the user has already read. Text that merely STREAMED is not enough on its
+        own — an un-flushed partial segment is still in ``assistant_text`` and is
+        handled by the answer branch — so the three triggers are a flushed
+        visible segment, a dispatched tool call, and thinking, each of which
+        leaves the conversation in a state a replay would corrupt or duplicate.
+        """
+        return self.flushed_visible or self.had_tools or self.had_thinking
+
+
+def classify_empty_turn(activity: EmptyTurnActivity) -> str:
+    """Name the cause of an empty-response verdict, from the closed cause set.
+
+    Ordered most-specific first, and the order is the point: the causes overlap
+    (a synthesized terminal usually also has tool activity), so a flat set of
+    predicates would report whichever the code happened to check first. The
+    ranking is by what an operator must act on.
+
+    1. :data:`EMPTY_CAUSE_NO_TERMINAL` — nobody closed the turn, so no other
+       field can be trusted to describe a complete picture.
+    2. :data:`EMPTY_CAUSE_SYNTHETIC` — the provider layer closed it, so the
+       emptiness is ours, not the model's.
+    3. :data:`EMPTY_CAUSE_VISIBLE_PARTIAL` — the user read an answer that a tool
+       boundary flushed away; the turn is not empty in any sense the user would
+       recognise.
+    4. :data:`EMPTY_CAUSE_TOOL_ONLY` / :data:`EMPTY_CAUSE_THINKING_ONLY` — work
+       happened with nothing said.
+    5. :data:`EMPTY_CAUSE_PROVIDER_EMPTY` — a clean ``end_turn`` with no
+       activity at all. The genuine provider-side empty, and the only cause for
+       which replaying the original message is the right recovery.
+    6. :data:`EMPTY_CAUSE_OTHER` — a closed terminal with no activity and no
+       clean ``end_turn``, most importantly an OMITTED stop reason. Distinct
+       from ``provider_empty`` on purpose: the incident's third attempt looked
+       identical to a provider empty in the log and was not diagnosable.
+    """
+    if not activity.saw_terminal:
+        return EMPTY_CAUSE_NO_TERMINAL
+    if activity.terminal_synthetic:
+        return EMPTY_CAUSE_SYNTHETIC
+    if activity.flushed_visible:
+        return EMPTY_CAUSE_VISIBLE_PARTIAL
+    if activity.had_tools:
+        return EMPTY_CAUSE_TOOL_ONLY
+    if activity.had_thinking:
+        return EMPTY_CAUSE_THINKING_ONLY
+    if activity.stop_reason == _STOP_END_TURN:
+        return EMPTY_CAUSE_PROVIDER_EMPTY
+    return EMPTY_CAUSE_OTHER
 
 
 def should_recover_promise_only(

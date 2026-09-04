@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import re
 import threading
@@ -16101,6 +16102,22 @@ class TestEmptyResponseRetry:
         mock_client.stream = _stream
         mock_client.stream_command = _stream
 
+    @staticmethod
+    async def _cancel_background_tasks(state) -> None:
+        """Cancel AND await every task this isolated state spawned.
+
+        `_run_chat` starts title/summary work that is irrelevant to these
+        recovery assertions. A bare `task.cancel()` leaves the coroutine pending
+        until the loop gets another tick, which surfaces as unawaited-coroutine
+        and destroyed-pending-task warnings under xdist. Await the cancellation
+        exactly; never sleep and never let one test's teardown spill into another.
+        """
+        tasks = list(state._background_tasks)
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+
     @pytest.mark.asyncio
     async def test_first_empty_response_requeues_message(self, tmp_path: Path) -> None:
         """First empty response at depth 0 → message re-queued silently."""
@@ -16215,8 +16232,7 @@ class TestEmptyResponseRetry:
 
         with patch.object(_ChatSlot, "queue_insert", spy):
             await _run_chat(state, slot, "test message")
-            for _bg_task in list(state._background_tasks):
-                _bg_task.cancel()
+            await self._cancel_background_tasks(state)
 
         # The nudge (NOT the original message) is queued at the front.
         assert (0, _EMPTY_AUTO_CONTINUE_MSG) in calls
@@ -16373,6 +16389,472 @@ class TestEmptyResponseRetry:
 
         notice_msgs = [m for m in slot.messages if m.get("role") == "notice"]
         assert not any("returned nothing this turn" in m.get("content", "") for m in notice_msgs)
+
+
+class TestProductiveTurnNeverReplaysVerbatim:
+    """A turn that DID work must never have the user's message replayed verbatim.
+
+    ``assistant_text`` is reset at every tool boundary, so a turn that streamed a
+    preamble and then called a tool arrives at the terminal chain with an empty
+    final segment and takes the empty-response branch. Rung 1 of that ladder
+    re-queues the ORIGINAL message, which re-runs every tool call that already
+    completed — a second ``send_message``, a second write, a second PR — and
+    re-derives an answer the user has already read.
+
+    The field incident these tests pin: two consecutive billed turns, each with an
+    assistant preamble and successful tool calls and each ending on a clean
+    ``end_turn``, were both classified empty; the first verbatim-replayed the
+    user's message.
+
+    Reuses ``TestEmptyResponseRetry``'s harness rather than a second one, so a
+    change to how a slot is built cannot leave these tests driving a different
+    runner than the ladder tests beside them.
+    """
+
+    _make_state_and_slot = TestEmptyResponseRetry._make_state_and_slot
+
+    @staticmethod
+    def _spy_queue(monkeypatch=None):
+        """Record ``(index, content)`` for every queue insert."""
+        calls: list[tuple] = []
+        orig = _ChatSlot.queue_insert
+
+        def spy(self_slot, *a, **kw):
+            calls.append(a)
+            return orig(self_slot, *a, **kw)
+
+        return calls, spy
+
+    _cancel_background_tasks = staticmethod(TestEmptyResponseRetry._cancel_background_tasks)
+
+    @staticmethod
+    def _text_then_tool_stream(client, executed):
+        """TEXT -> TOOL_CALL -> TOOL_RESULT -> COMPLETE(end_turn).
+
+        ``executed`` counts dispatches so a replay of the original message would
+        be observable as a second execution rather than only as a queue entry.
+        """
+        from kiro_crew.acp.types import STOP_REASON_END_TURN
+        from kiro_crew.providers.base import (
+            EVENT_COMPLETE,
+            EVENT_TEXT_CHUNK,
+            EVENT_TOOL_CALL,
+            EVENT_TOOL_RESULT,
+            LLMEvent,
+        )
+
+        async def _stream(msg):
+            yield LLMEvent(kind=EVENT_TEXT_CHUNK, text="checking")
+            executed.append(msg)
+            yield LLMEvent(
+                kind=EVENT_TOOL_CALL,
+                tool_call_id="tc-1",
+                title="send_message",
+            )
+            yield LLMEvent(kind=EVENT_TOOL_RESULT, tool_call_id="tc-1", text="sent")
+            yield LLMEvent(kind=EVENT_COMPLETE, stop_reason=STOP_REASON_END_TURN)
+
+        client.stream = _stream
+        client.stream_command = _stream
+
+    @staticmethod
+    def _tool_only_stream(client):
+        from kiro_crew.acp.types import STOP_REASON_END_TURN
+        from kiro_crew.providers.base import (
+            EVENT_COMPLETE,
+            EVENT_TOOL_CALL,
+            EVENT_TOOL_RESULT,
+            LLMEvent,
+        )
+
+        async def _stream(msg):
+            yield LLMEvent(kind=EVENT_TOOL_CALL, tool_call_id="tc-1", title="send_message")
+            yield LLMEvent(kind=EVENT_TOOL_RESULT, tool_call_id="tc-1", text="sent")
+            yield LLMEvent(kind=EVENT_COMPLETE, stop_reason=STOP_REASON_END_TURN)
+
+        client.stream = _stream
+        client.stream_command = _stream
+
+    @staticmethod
+    def _thinking_only_stream(client):
+        from kiro_crew.acp.types import STOP_REASON_END_TURN
+        from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_THINKING_CHUNK, LLMEvent
+
+        async def _stream(msg):
+            yield LLMEvent(kind=EVENT_THINKING_CHUNK, text="hmm")
+            yield LLMEvent(kind=EVENT_COMPLETE, stop_reason=STOP_REASON_END_TURN)
+
+        client.stream = _stream
+        client.stream_command = _stream
+
+    @pytest.mark.asyncio
+    async def test_text_then_tool_turn_continues_instead_of_replaying(self, tmp_path: Path) -> None:
+        """The incident's own shape: preamble + a completed tool call, clean
+        end_turn. The original message must NOT be re-queued; exactly one
+        synthetic continuation may be, and the completed tool must not re-run."""
+        from kiro_crew.dashboard.chat_utils import (
+            _ACTIVITY_NO_REPLY_CONTINUE_MSG,
+            _EMPTY_AUTO_CONTINUE_MSG,
+        )
+
+        state, slot, client, _run_chat = self._make_state_and_slot(tmp_path)
+        executed: list[str] = []
+        self._text_then_tool_stream(client, executed)
+        calls, spy = self._spy_queue()
+
+        with patch.object(_ChatSlot, "queue_insert", spy):
+            await _run_chat(state, slot, "send the summary")
+            await self._cancel_background_tasks(state)
+
+        # The verbatim replay is the defect. It must be absent.
+        assert (0, "send the summary") not in calls, (
+            "the ORIGINAL user message was re-queued after a turn that already "
+            "ran a tool — the replay re-executes completed side effects"
+        )
+        # Exactly one continuation, and it is the one whose body does not claim
+        # the turn produced nothing (which would invite the model to redo the
+        # completed call).
+        _continuations = [c for c in calls if c and c[1] == _ACTIVITY_NO_REPLY_CONTINUE_MSG]
+        assert len(_continuations) == 1, f"expected one continuation, got {calls}"
+        # The productive turn skipped rung 1 (verbatim replay), so this one
+        # continuation consumes the whole bounded ladder. If the continuation
+        # itself returns empty, it gives up rather than enqueueing a SECOND
+        # continuation whose wording would again invite rework.
+        assert slot._empty_response_retries == 2
+        assert (0, _EMPTY_AUTO_CONTINUE_MSG) not in calls, (
+            "the empty-response body tells the model its turn produced no "
+            "output, which is false for a turn that ran a tool"
+        )
+        # The tool ran once. The queue was not drained in this test, so a second
+        # execution could only come from a replay dispatched inside this turn.
+        assert executed == ["send the summary"], f"tool dispatched more than once: {executed}"
+
+    @pytest.mark.asyncio
+    async def test_tool_only_turn_does_not_replay_verbatim(self, tmp_path: Path) -> None:
+        """A turn with tool calls and no text at all still counts as productive."""
+        from kiro_crew.dashboard.chat_utils import _ACTIVITY_NO_REPLY_CONTINUE_MSG
+
+        state, slot, client, _run_chat = self._make_state_and_slot(tmp_path)
+        self._tool_only_stream(client)
+        calls, spy = self._spy_queue()
+
+        with patch.object(_ChatSlot, "queue_insert", spy):
+            await _run_chat(state, slot, "post it")
+            await self._cancel_background_tasks(state)
+
+        assert (0, "post it") not in calls, "tool-only turn verbatim-replayed the prompt"
+        assert (0, _ACTIVITY_NO_REPLY_CONTINUE_MSG) in calls
+
+    @pytest.mark.asyncio
+    async def test_thinking_only_turn_does_not_replay_verbatim(self, tmp_path: Path) -> None:
+        """Thinking is work the replay would discard and re-charge for."""
+        from kiro_crew.dashboard.chat_utils import _ACTIVITY_NO_REPLY_CONTINUE_MSG
+
+        state, slot, client, _run_chat = self._make_state_and_slot(tmp_path)
+        self._thinking_only_stream(client)
+        calls, spy = self._spy_queue()
+
+        with patch.object(_ChatSlot, "queue_insert", spy):
+            await _run_chat(state, slot, "think about it")
+            await self._cancel_background_tasks(state)
+
+        assert (0, "think about it") not in calls, "thinking-only turn verbatim-replayed the prompt"
+        assert (0, _ACTIVITY_NO_REPLY_CONTINUE_MSG) in calls
+
+    @pytest.mark.asyncio
+    async def test_activity_free_turn_keeps_the_verbatim_replay_rung(self, tmp_path: Path) -> None:
+        """The guard is scoped: a GENUINELY activity-free empty turn keeps rung 1.
+
+        Without this, the fix could be 'never replay', which would silently
+        remove the self-heal that a real provider-side empty depends on.
+        """
+        state, slot, client, _run_chat = self._make_state_and_slot(tmp_path)
+        TestEmptyResponseRetry._make_empty_stream(self, client)
+        calls, spy = self._spy_queue()
+
+        with (
+            patch.object(_ChatSlot, "queue_insert", spy),
+            patch(
+                "kiro_crew.dashboard.chat_runner._start_next_queued_turn",
+                new=AsyncMock(return_value=False),
+            ),
+        ):
+            await _run_chat(state, slot, "test message")
+            await self._cancel_background_tasks(state)
+
+        assert (0, "test message") in calls, "the activity-free replay rung was removed"
+        assert slot._empty_response_retries == 1
+
+
+class TestEmptyTurnDiagnostics:
+    """The empty-response WARNING must name a CLOSED cause, and carry no content.
+
+    The incident it exists for had three attempts with three different causes and
+    one log line that could not tell them apart. These tests assert on the closed
+    vocabulary only — never on a prompt, a response, a tool argument, a path, an
+    identity, a token count or a cost, because asserting on those would pin
+    exactly the leak the diagnostics are designed to avoid.
+    """
+
+    _make_state_and_slot = TestEmptyResponseRetry._make_state_and_slot
+    _cancel_background_tasks = staticmethod(TestEmptyResponseRetry._cancel_background_tasks)
+
+    @staticmethod
+    def _causes(caplog):
+        """The ``cause=`` values of every empty-response warning captured."""
+        out = []
+        for rec in caplog.records:
+            msg = rec.getMessage()
+            if "Empty model response" not in msg:
+                continue
+            for field in msg.split():
+                if field.startswith("cause="):
+                    out.append(field.split("=", 1)[1])
+        return out
+
+    @staticmethod
+    def _fields(caplog):
+        """``key=value`` pairs of the first empty-response warning captured."""
+        for rec in caplog.records:
+            msg = rec.getMessage()
+            if "Empty model response" not in msg:
+                continue
+            return dict(
+                tuple(f.split("=", 1)) for f in msg.split() if "=" in f and not f.startswith("%")
+            )
+        return {}
+
+    def test_the_cause_and_rung_vocabularies_are_closed(self) -> None:
+        """Pure-unit: every cause the classifier can return, from its own inputs.
+
+        Kept as a unit test over ``classify_empty_turn`` rather than seven
+        ``_run_chat`` drives: the ranking between overlapping causes is the part
+        that can regress silently, and a stream fixture cannot express
+        'synthesized terminal AND tool activity' as cleanly as the snapshot can.
+        """
+        from kiro_crew.dashboard.chat_utils import (
+            EMPTY_CAUSE_NO_TERMINAL,
+            EMPTY_CAUSE_OTHER,
+            EMPTY_CAUSE_PROVIDER_EMPTY,
+            EMPTY_CAUSE_SYNTHETIC,
+            EMPTY_CAUSE_THINKING_ONLY,
+            EMPTY_CAUSE_TOOL_ONLY,
+            EMPTY_CAUSE_VISIBLE_PARTIAL,
+            STOP_REASON_ABSENT,
+            EmptyTurnActivity,
+            classify_empty_turn,
+        )
+
+        # No terminal outranks everything, including activity.
+        assert (
+            classify_empty_turn(EmptyTurnActivity(saw_terminal=False, had_tools=True))
+            == EMPTY_CAUSE_NO_TERMINAL
+        )
+        # A synthesized terminal outranks activity: the emptiness is ours.
+        assert (
+            classify_empty_turn(
+                EmptyTurnActivity(saw_terminal=True, terminal_synthetic=True, had_tools=True)
+            )
+            == EMPTY_CAUSE_SYNTHETIC
+        )
+        # A flushed visible segment outranks tools: the user read an answer.
+        assert (
+            classify_empty_turn(
+                EmptyTurnActivity(saw_terminal=True, flushed_visible=True, had_tools=True)
+            )
+            == EMPTY_CAUSE_VISIBLE_PARTIAL
+        )
+        assert (
+            classify_empty_turn(EmptyTurnActivity(saw_terminal=True, had_tools=True))
+            == EMPTY_CAUSE_TOOL_ONLY
+        )
+        assert (
+            classify_empty_turn(EmptyTurnActivity(saw_terminal=True, had_thinking=True))
+            == EMPTY_CAUSE_THINKING_ONLY
+        )
+        # A clean end_turn with nothing at all is the only genuine provider empty.
+        assert (
+            classify_empty_turn(EmptyTurnActivity(saw_terminal=True, stop_reason="end_turn"))
+            == EMPTY_CAUSE_PROVIDER_EMPTY
+        )
+        # An OMITTED stop reason is NOT a provider empty — the distinction the
+        # incident's third attempt needed and did not have.
+        assert (
+            classify_empty_turn(
+                EmptyTurnActivity(saw_terminal=True, stop_reason=STOP_REASON_ABSENT)
+            )
+            == EMPTY_CAUSE_OTHER
+        )
+
+    def test_normalize_stop_reason_never_returns_a_raw_backend_string(self) -> None:
+        """Closed output set, and the ACP spellings it mirrors are pinned.
+
+        ``chat_utils`` may not import ``kiro_crew.acp.types`` (the agent-SDK
+        boundary gate baselines it at one edge and a baselined file may not grow),
+        so it spells the three stop reasons as literals. The test tree is outside
+        that gate, so the pin lives here — a change to the backend's vocabulary
+        reddens here instead of silently reclassifying every turn as ``other``.
+        """
+        from kiro_crew.acp.types import (
+            STOP_REASON_CANCELLED,
+            STOP_REASON_END_TURN,
+            STOP_REASON_REFUSAL,
+        )
+        from kiro_crew.dashboard.chat_utils import (
+            _STOP_CANCELLED_REASON,
+            _STOP_END_TURN,
+            _STOP_REFUSAL,
+            STOP_REASON_ABSENT,
+            STOP_REASON_OTHER,
+            normalize_stop_reason,
+        )
+
+        assert _STOP_END_TURN == STOP_REASON_END_TURN
+        assert _STOP_CANCELLED_REASON == STOP_REASON_CANCELLED
+        assert _STOP_REFUSAL == STOP_REASON_REFUSAL
+
+        assert normalize_stop_reason(None) == STOP_REASON_ABSENT
+        assert normalize_stop_reason("") == STOP_REASON_ABSENT
+        assert normalize_stop_reason(STOP_REASON_END_TURN) == STOP_REASON_END_TURN
+        assert normalize_stop_reason("error: tool stall") == "error"
+        # An invented backend reason is folded, never echoed.
+        _invented = "the model said stop because of /home/someone/secret.txt"
+        assert normalize_stop_reason(_invented) == STOP_REASON_OTHER
+
+    @pytest.mark.asyncio
+    async def test_provider_empty_and_no_terminal_event_report_distinct_causes(
+        self, tmp_path: Path, caplog
+    ) -> None:
+        """Two turns that look identical to the old log line must not any more."""
+        from kiro_crew.acp.types import STOP_REASON_END_TURN
+        from kiro_crew.dashboard.chat_utils import (
+            EMPTY_CAUSE_NO_TERMINAL,
+            EMPTY_CAUSE_PROVIDER_EMPTY,
+        )
+        from kiro_crew.providers.base import EVENT_COMPLETE, LLMEvent
+
+        # A clean end_turn with nothing in it.
+        state, slot, client, _run_chat = self._make_state_and_slot(tmp_path)
+
+        async def _clean(msg):
+            yield LLMEvent(kind=EVENT_COMPLETE, stop_reason=STOP_REASON_END_TURN)
+
+        client.stream = _clean
+        client.stream_command = _clean
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.dashboard.chat_runner"):
+            await _run_chat(state, slot, "a", _prompt_depth=1)
+        await self._cancel_background_tasks(state)
+        assert self._causes(caplog) == [EMPTY_CAUSE_PROVIDER_EMPTY]
+
+        # A stream that ends without any terminal event at all.
+        caplog.clear()
+        state2, slot2, client2, _run_chat2 = self._make_state_and_slot(tmp_path)
+
+        async def _no_terminal(msg):
+            return
+            yield  # pragma: no cover -- makes this an async generator
+
+        client2.stream = _no_terminal
+        client2.stream_command = _no_terminal
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.dashboard.chat_runner"):
+            await _run_chat2(state2, slot2, "a", _prompt_depth=1)
+        await self._cancel_background_tasks(state2)
+        assert self._causes(caplog) == [EMPTY_CAUSE_NO_TERMINAL]
+
+    @pytest.mark.asyncio
+    async def test_omitted_stop_reason_is_not_reported_as_provider_empty(
+        self, tmp_path: Path, caplog
+    ) -> None:
+        """A terminal with no stopReason is its own observation."""
+        from kiro_crew.dashboard.chat_utils import (
+            EMPTY_CAUSE_OTHER,
+            STOP_REASON_ABSENT,
+        )
+        from kiro_crew.providers.base import EVENT_COMPLETE, LLMEvent
+
+        state, slot, client, _run_chat = self._make_state_and_slot(tmp_path)
+
+        async def _stream(msg):
+            yield LLMEvent(kind=EVENT_COMPLETE)  # no stop_reason
+
+        client.stream = _stream
+        client.stream_command = _stream
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.dashboard.chat_runner"):
+            await _run_chat(state, slot, "a", _prompt_depth=1)
+        await self._cancel_background_tasks(state)
+
+        assert self._causes(caplog) == [EMPTY_CAUSE_OTHER]
+        assert self._fields(caplog).get("stop_reason") == STOP_REASON_ABSENT
+
+    @pytest.mark.asyncio
+    async def test_productive_turn_reports_visible_partial_and_the_continue_rung(
+        self, tmp_path: Path, caplog
+    ) -> None:
+        """The incident's shape gets its own cause AND the rung it took.
+
+        Asserting the rung is what makes the diagnostic answer 'what did the
+        runner DO', not only 'what did it see'.
+        """
+        from kiro_crew.dashboard.chat_utils import (
+            EMPTY_CAUSE_VISIBLE_PARTIAL,
+            EMPTY_RUNG_CONTINUE,
+        )
+
+        state, slot, client, _run_chat = self._make_state_and_slot(tmp_path)
+        TestProductiveTurnNeverReplaysVerbatim._text_then_tool_stream(client, [])
+
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.dashboard.chat_runner"):
+            await _run_chat(state, slot, "send the summary")
+            await self._cancel_background_tasks(state)
+
+        assert self._causes(caplog) == [EMPTY_CAUSE_VISIBLE_PARTIAL]
+        _fields = self._fields(caplog)
+        assert _fields.get("rung") == EMPTY_RUNG_CONTINUE
+        assert _fields.get("flushed_visible") == "True"
+        assert _fields.get("tools") == "True"
+
+    @pytest.mark.asyncio
+    async def test_the_warning_carries_no_content_and_no_billing_amounts(
+        self, tmp_path: Path, caplog
+    ) -> None:
+        """The privacy floor, asserted against the rendered line.
+
+        Every diagnostic value is a bool or a closed constant, so the prompt text,
+        the streamed text, the tool title and the billed amounts must be absent
+        from the line even though the turn carried all of them.
+        """
+        from kiro_crew.acp.types import STOP_REASON_END_TURN, TurnUsage
+        from kiro_crew.providers.base import (
+            EVENT_COMPLETE,
+            EVENT_TEXT_CHUNK,
+            EVENT_TOOL_CALL,
+            LLMEvent,
+        )
+
+        state, slot, client, _run_chat = self._make_state_and_slot(tmp_path)
+
+        async def _stream(msg):
+            yield LLMEvent(kind=EVENT_TEXT_CHUNK, text="SECRETPREAMBLE")
+            yield LLMEvent(kind=EVENT_TOOL_CALL, tool_call_id="tc-1", title="SECRETTOOL")
+            yield LLMEvent(
+                kind=EVENT_COMPLETE,
+                stop_reason=STOP_REASON_END_TURN,
+                usage=TurnUsage(credits=4.25, input_tokens=1234, output_tokens=99),
+            )
+
+        client.stream = _stream
+        client.stream_command = _stream
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.dashboard.chat_runner"):
+            await _run_chat(state, slot, "SECRETPROMPT")
+            await self._cancel_background_tasks(state)
+
+        _line = next(
+            rec.getMessage() for rec in caplog.records if "Empty model response" in rec.getMessage()
+        )
+        for forbidden in ("SECRETPROMPT", "SECRETPREAMBLE", "SECRETTOOL", "4.25", "1234", "99"):
+            assert forbidden not in _line, f"{forbidden!r} leaked into {_line!r}"
+        # Billing presence IS reported — as a bool, which is the point.
+        assert "billed=True" in _line
 
 
 class TestExpandDollarSkills:

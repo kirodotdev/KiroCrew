@@ -142,7 +142,8 @@ send time.
   cancellation is treated as a transient provider failure and recovered
   through a bounded three-rung ladder driven by `slot._empty_response_retries`:
   1. **first empty** → the ORIGINAL message is silently re-queued at the
-     front of the slot queue (no visible card);
+     front of the slot queue (no visible card). Reached ONLY by a turn with no
+     activity — see the productive-turn exclusion below;
   2. **second empty** (the same-message retry also produced nothing) → ONE
      synthetic continue nudge (`_EMPTY_AUTO_CONTINUE_MSG` — a DIFFERENT
      message, since re-sending the identical prompt tends to reproduce the
@@ -153,6 +154,51 @@ send time.
   3. **third empty** (the nudge also produced nothing) → terminal notice card
      asking the user to send a message; the counter resets so the next
      genuine user turn gets a fresh budget.
+
+  **A PRODUCTIVE turn never reaches rung 1.** "Empty" at this branch means only
+  that the FINAL assistant segment is empty, which is not the same as "the turn
+  did nothing": `assistant_text` is reset at every tool boundary, so a turn that
+  streamed an answer and then called a tool arrives here with its answer already
+  flushed, persisted and on screen, and a tool-only turn arrives here having run
+  real side effects. Rung 1 re-queues the user's own message, so for either shape
+  it re-executes completed tool calls (a second `send_message`, a second write, a
+  second PR) and re-derives an answer the user has already read — observed in the
+  field as two consecutive billed `end_turn` turns, each with a preamble and
+  successful tool calls, both classified empty and the first verbatim-replayed.
+  `chat_utils.EmptyTurnActivity.productive` is the guard: a flushed visible
+  segment, a dispatched tool call, or thinking. A productive turn skips to rung 2,
+  which carries `_ACTIVITY_NO_REPLY_CONTINUE_MSG` instead — the same
+  `EMPTY_RESPONSE_RECOVERY_PREFIX` marker (so no new recovery card or locale pair
+  is needed) with a body that does NOT claim the turn produced nothing, because
+  that body is read by the model and would invite it to redo work whose side
+  effects already landed. Its notice card differs for the same reason. The ladder
+  bound is unchanged: a productive turn spends the same budget, it simply never
+  spends it on a replay. `_produced_visible_output` deliberately does NOT cover
+  this case — its narrow meaning (only the mid-turn resets that are not tool
+  boundaries: steer cut, compaction, clear, agent switch) is load-bearing for the
+  promise-only guard.
+
+  **Turn-end diagnostics.** The branch emits ONE privacy-safe WARNING per empty
+  verdict, after the rung is chosen, naming a closed `cause` and `rung` plus
+  booleans: `provider_empty`, `tool_only`, `thinking_only`, `visible_partial`,
+  `no_terminal_event`, `synthetic_completion` or `other`
+  (`chat_utils.classify_empty_turn`, ranked most-specific first), and `replay` /
+  `continue` / `give_up`. `EmptyTurnActivity` carries whether a terminal
+  `EVENT_COMPLETE` arrived, whether the provider SYNTHESIZED it, the terminal stop
+  reason normalised onto a closed set (`chat_utils.normalize_stop_reason` — an
+  omitted reason answers `absent`, which is a distinct observation from a clean
+  `end_turn` and must not be laundered into one, and an unrecognised backend
+  string answers `other` rather than being echoed), whether text streamed, whether
+  a visible segment was flushed at a tool boundary, whether tools ran, whether
+  thinking ran, and whether the provider reported ANY billing dimension. Every
+  field is a bool or a closed constant by contract: no prompts, responses,
+  thinking, tool arguments or results, paths, identities, token counts or costs.
+  The predecessor logged only `Empty model response (attempt N)`, which could not
+  separate a provider that generated nothing from a turn whose answer a tool
+  boundary flushed away from a turn no terminal event ever closed — three faults
+  with three different owners, and one field incident hit all three in three
+  consecutive attempts.
+
   Recovery rungs 1–2 skip persistence/consolidation/success-recording (the
   empty turn is never saved) and preserve all other retry budgets. Synthetic
   recovery messages (`_SYNTHETIC_RECOVERY_MSGS`: the post-transient CONTINUE

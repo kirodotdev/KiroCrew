@@ -285,20 +285,27 @@ logger = logging.getLogger(__name__)
 # classify them identically to the turn logic here). Re-exported under their
 # historical names so existing imports keep working.
 from kiro_crew.dashboard.chat_utils import (  # noqa: E402
+    _ACTIVITY_NO_REPLY_CONTINUE_MSG,
     _COMPACTION_CONTINUE_MSG,
     _EMPTY_AUTO_CONTINUE_MSG,
     _POSTTOKEN_RECOVER_MSG,
     _PROMISE_ONLY_CONTINUE_MSG,
     _SYNTHETIC_RECOVERY_MSGS,
     CRON_NOTIFICATION_KIND,
+    EMPTY_RUNG_CONTINUE,
+    EMPTY_RUNG_GIVE_UP,
+    EMPTY_RUNG_REPLAY,
     SUBAGENT_COMPLETION_KIND,
     SYNTHETIC_RECOVERY_KIND,
     TRANSIENT_RETRY_KIND,
+    EmptyTurnActivity,
     RecoveryPayload,
+    classify_empty_turn,
     is_promise_only_terminal,
     is_synthetic_payload_item,
     is_synthetic_recovery_item,
     mint_options_token,
+    normalize_stop_reason,
     payload_for_replay,
     should_continue_after_compaction,
     should_notice_leaked_tool_call,
@@ -5551,6 +5558,25 @@ async def _run_chat(
     # reset the buffer WITHOUT a tool boundary — steer cut, compaction, clear,
     # agent switch) is load-bearing for the promise-only guard below.
     _turn_flushed_visible_text = False
+    # ── Content-free turn-end diagnostics (empty-response verdict) ──
+    # Booleans only, by contract. The empty-response branch below reaches its
+    # verdict from these, and a WARNING names the cause it derived; every field
+    # is safe to log because none of them can carry a prompt, a response, a tool
+    # argument, a path, an identity, a token count or a cost. What the incident
+    # they exist for needed was exactly this: whether a terminal event arrived at
+    # all, whether the provider or the backend closed the turn, and whether the
+    # turn had done work — none of which the single "Empty model response"
+    # warning could say.
+    #
+    # `_turn_flushed_visible_text` above and `_turn_tool_calls` / `_turn_thought`
+    # below already carry three of the observations, so only what nothing else
+    # records is added here.
+    _saw_terminal_event = False
+    # Retained past the EVENT_COMPLETE arm on purpose: the verdict is reached in
+    # the post-stream chain, which no longer has the event.
+    _terminal_synthetic = False
+    _saw_text_chunk = False
+    _turn_billed = False
     # Was this turn's prompt CONSUMED by the model? Reported to whoever armed the
     # turn (a queued sub-agent completion's retention clock -- see
     # ``_arm_queued_delivery_settlement``), because every handled-failure path
@@ -7038,6 +7064,11 @@ async def _run_chat(
                 # reset of assistant_text above (planning turn only).
                 if _orch_planning:
                     _orch_plan_buf += safe_chunk
+                # Set BEFORE the `_turn_emitted` flip: the consumption report
+                # below must stay adjacent to that flip (pinned by
+                # test_subagent_delivery_ttl_anchor), so a diagnostic flag goes
+                # above it rather than between the two.
+                _saw_text_chunk = True
                 _turn_emitted = True  # tokens delivered — transient retry now unsafe
                 await _report_consumed(irreversible=True)
                 # Stream to the wire through the rolling buffer so a credential
@@ -9103,6 +9134,15 @@ async def _run_chat(
                 # is asymmetric (a duplicate re-announce versus a pruned result).
                 if event.stop_reason == STOP_REASON_END_TURN:
                     await _report_consumed()
+                # Turn-end diagnostics. Read only from `event`, which nothing in
+                # this arm mutates, so the position is free — kept below the
+                # consumption gate because that gate's adjacency to the arm's start
+                # is pinned by test_subagent_delivery_ttl_anchor.
+                # `synthetic_completion` is readable ONLY here, and the
+                # empty-response verdict that needs it runs after the stream loop.
+                _saw_terminal_event = True
+                _terminal_synthetic = bool(event.synthetic_completion)
+                _turn_billed = usage_has_billing(event.usage)
                 # Hang-attribution snapshot BEFORE the close-all safety net
                 # below force-marks every card done: only children still
                 # unfinished at the cut may count toward timeout attribution
@@ -9868,12 +9908,40 @@ async def _run_chat(
             # the same message just re-hits the same gate. The `not _refusal_reasons`
             # guard lets it fall through to the refusal-recovery path below, which
             # hands the model the reason so it can adapt instead of looping.
-            logger.warning(
-                "Empty model response for slot %s (attempt %d)",
-                slot.key,
-                slot._empty_response_retries + 1,
+            #
+            # "Empty" here means only "the final assistant segment is empty", and
+            # that is NOT the same as "the turn did nothing". `assistant_text` is
+            # reset at every tool boundary, so a turn that answered and then called
+            # a tool arrives here with its answer already flushed, persisted and
+            # read — and `_produced_visible_output` does not cover that, by design
+            # (its narrow meaning is load-bearing for the promise-only guard).
+            # A tool-only turn arrives here too. The activity snapshot below is what
+            # separates those from a provider that genuinely returned nothing.
+            _empty_activity = EmptyTurnActivity(
+                saw_terminal=_saw_terminal_event,
+                terminal_synthetic=_terminal_synthetic,
+                stop_reason=normalize_stop_reason(_stop_reason),
+                saw_text=_saw_text_chunk,
+                flushed_visible=_turn_flushed_visible_text,
+                had_tools=_turn_tool_calls > 0,
+                had_thinking=_turn_thought,
+                billed=_turn_billed,
             )
-            if _prompt_depth == 0 and slot._empty_response_retries < 1:
+            _empty_cause = classify_empty_turn(_empty_activity)
+            # Snapshot BEFORE the rungs, each of which may increment the counter.
+            # This is the ordinal of the turn just observed, which is what the
+            # predecessor warning reported.
+            _empty_attempt = slot._empty_response_retries + 1
+            # THE load-bearing guard. A productive turn must never have its
+            # originating message replayed verbatim: rung 1 below re-queues
+            # `message` itself, which on such a turn re-runs tool calls that
+            # already completed (a second `send_message`, a second write, a second
+            # PR) and re-derives an answer the user has already read. A productive
+            # turn skips to the continuation rung, which tells the model the work
+            # above already happened.
+            _may_replay_verbatim = not _empty_activity.productive
+            if _prompt_depth == 0 and slot._empty_response_retries < 1 and _may_replay_verbatim:
+                _empty_rung = EMPTY_RUNG_REPLAY
                 # Seamless self-heal: silently re-queue on the first empty
                 # response. An ephemeral status indicator is not used here — it
                 # is emitted at turn-teardown and the frontend drops it once the
@@ -9909,20 +9977,48 @@ async def _run_chat(
                 # session, with a transcript-visible notice so the recovery is
                 # never invisible. Third empty falls through to the give-up
                 # notice below — bounded, no loop.
-                slot._empty_response_retries += 1
-                slot.append(
-                    "notice",
-                    "ℹ️ The model returned nothing twice — auto-continuing once.",
-                    "msg msg-info",
-                )
+                # A productive turn skipped the verbatim-replay rung entirely.
+                # Its ONE continuation consumes the remaining recovery budget:
+                # if that continuation is itself empty, the next turn must give
+                # up rather than enqueue a second continuation. Leaving the
+                # counter at 1 here would run `_EMPTY_AUTO_CONTINUE_MSG` next,
+                # contradicting both the notice ("continuing once") and the
+                # side-effect boundary this branch protects.
+                if _empty_activity.productive:
+                    slot._empty_response_retries = 2
+                else:
+                    slot._empty_response_retries += 1
+                _empty_rung = EMPTY_RUNG_CONTINUE
+                if _empty_activity.productive:
+                    # Same rung, different words, because the words are read by
+                    # the MODEL and by the user. "returned nothing twice" is
+                    # false for a turn that streamed an answer or ran tools, and
+                    # telling a model its completed work produced no output is an
+                    # invitation to redo it — the side-effect duplication this
+                    # path exists to avoid.
+                    slot.append(
+                        "notice",
+                        "ℹ️ The turn ended without a closing reply — continuing "
+                        "once from what already ran.",
+                        "msg msg-info",
+                    )
+                    _empty_continue_msg = _ACTIVITY_NO_REPLY_CONTINUE_MSG
+                else:
+                    slot.append(
+                        "notice",
+                        "ℹ️ The model returned nothing twice — auto-continuing once.",
+                        "msg msg-info",
+                    )
+                    _empty_continue_msg = _EMPTY_AUTO_CONTINUE_MSG
                 _queue_recovery(
                     0,
-                    _EMPTY_AUTO_CONTINUE_MSG,
+                    _empty_continue_msg,
                     kind=SYNTHETIC_RECOVERY_KIND,
                     payload=RecoveryPayload.CONTINUATION,
                 )
                 _retrying_empty = True
             else:
+                _empty_rung = EMPTY_RUNG_GIVE_UP
                 # Recoverable, usually-transient: the runner already silently
                 # self-retried once (first empty = silent re-queue). Surface a
                 # soft "notice" card (not a red "error" card) so a self-healing
@@ -9936,6 +10032,34 @@ async def _run_chat(
                     "again to continue."
                 )
                 slot.append("notice", _empty_msg, "msg msg-info")
+            # ONE warning per empty verdict, emitted AFTER the rung is chosen so
+            # the log line carries the decision rather than only the symptom. The
+            # predecessor logged just "Empty model response (attempt N)", which
+            # could not distinguish a provider that generated nothing from a turn
+            # whose answer a tool boundary flushed away, from a turn no terminal
+            # event ever closed — three different faults with three different
+            # owners, and the field incident hit all three in three consecutive
+            # attempts. Every field here is a closed value or a bool by
+            # construction (see EmptyTurnActivity): no prompt, no response, no
+            # thinking, no tool arguments or results, no paths, no identities, no
+            # token counts and no costs.
+            logger.warning(
+                "Empty model response for slot %s (attempt %d) cause=%s rung=%s "
+                "stop_reason=%s terminal=%s synthetic=%s text=%s flushed_visible=%s "
+                "tools=%s thinking=%s billed=%s",
+                slot.key,
+                _empty_attempt,
+                _empty_cause,
+                _empty_rung,
+                _empty_activity.stop_reason,
+                _empty_activity.saw_terminal,
+                _empty_activity.terminal_synthetic,
+                _empty_activity.saw_text,
+                _empty_activity.flushed_visible,
+                _empty_activity.had_tools,
+                _empty_activity.had_thinking,
+                _empty_activity.billed,
+            )
         # Fallback arm: a plan emitted BEFORE further tool calls was flushed out
         # of `assistant_text` (reset on each tool boundary), so the final-segment
         # detector above missed it and no [OPTION] gate would register — the
