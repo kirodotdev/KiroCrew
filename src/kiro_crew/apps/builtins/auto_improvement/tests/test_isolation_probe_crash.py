@@ -11,6 +11,10 @@ remotes were never read. These tests pin the distinction:
 * an unambiguous launcher signature on stderr + nonzero exit →
   :class:`IsolationProbeError` naming the sandbox failure (still refuses to
   start — the surfaced REASON is what changes);
+* the same classification applies to ``_repository_is_safe``'s unsafe-keys
+  probe (issue #8493): its ``returncode == 1`` tail meant "no unsafe keys"
+  and a crashed launcher also exits 1, so this was the one probe in the
+  isolation chain that failed OPEN during a launcher outage;
 * every other nonzero exit keeps its existing fail-closed meaning — git's own
   exit 1 for an absent config key, a launcher WARNING that coexists with a
   genuine git exit code, an ambiguous fatal, and (the Opus finding on this
@@ -52,6 +56,15 @@ def _proc(returncode: int, stderr: str = "", stdout: str = "") -> subprocess.Com
     return subprocess.CompletedProcess(
         args=["git"], returncode=returncode, stdout=stdout, stderr=stderr
     )
+
+
+def _metadata_safe_clone(tmp_path: Path) -> Path:
+    """A clone dir whose filesystem shape passes ``_repository_is_safe``'s
+    metadata scan, so the verdict comes down to the config probe alone."""
+    clone = tmp_path / "clone"
+    for sub in ("objects/info", "info", "refs"):
+        (clone / ".git" / sub).mkdir(parents=True)
+    return clone
 
 
 @pytest.fixture
@@ -148,6 +161,76 @@ class TestProbeCrashShape:
         assert issubclass(clone_setup.IsolationProbeError, RuntimeError)
 
 
+class TestRepositoryIsSafeCrashShape:
+    """The unsafe-keys probe must classify a crashed launcher, not read it as
+    "no unsafe keys" (issue #8493 — the one probe that failed OPEN)."""
+
+    def test_launcher_traceback_raises_probe_error(
+        self, probe_result: dict, tmp_path: Path
+    ) -> None:
+        clone = _metadata_safe_clone(tmp_path)
+        probe_result["proc"] = _proc(1, stderr=_LAUNCHER_TRACEBACK)
+        with pytest.raises(clone_setup.IsolationProbeError) as excinfo:
+            clone_setup._repository_is_safe(clone)
+        message = str(excinfo.value)
+        assert "sandbox launcher" in message
+        assert "ModuleNotFoundError: No module named 'platform'" in message
+
+    def test_launcher_blocked_message_raises_probe_error(
+        self, probe_result: dict, tmp_path: Path
+    ) -> None:
+        clone = _metadata_safe_clone(tmp_path)
+        probe_result["proc"] = _proc(
+            1, stderr="sandbox: BLOCKED — failed to install seccomp-BPF filter (prctl returned -1)"
+        )
+        with pytest.raises(clone_setup.IsolationProbeError):
+            clone_setup._repository_is_safe(clone)
+
+    def test_genuine_exit_1_still_means_safe(self, probe_result: dict, tmp_path: Path) -> None:
+        """git's own exit 1 (no unsafe key matched, empty stderr) keeps meaning safe."""
+        clone = _metadata_safe_clone(tmp_path)
+        probe_result["proc"] = _proc(1)
+        assert clone_setup._repository_is_safe(clone) is True
+
+    def test_launcher_warning_does_not_reclassify_git_exit(
+        self, probe_result: dict, tmp_path: Path
+    ) -> None:
+        clone = _metadata_safe_clone(tmp_path)
+        probe_result["proc"] = _proc(
+            1, stderr="sandbox: WARNING — cannot read /home/user/.aws/config (denied)"
+        )
+        assert clone_setup._repository_is_safe(clone) is True
+
+    def test_ambiguous_git_error_stays_fail_closed(
+        self, probe_result: dict, tmp_path: Path
+    ) -> None:
+        clone = _metadata_safe_clone(tmp_path)
+        probe_result["proc"] = _proc(128, stderr="fatal: not a git repository")
+        assert clone_setup._repository_is_safe(clone) is False
+
+    def test_unsafe_key_found_stays_unsafe(self, probe_result: dict, tmp_path: Path) -> None:
+        """Exit 0 (an unsafe key matched) keeps its fail-closed meaning."""
+        clone = _metadata_safe_clone(tmp_path)
+        probe_result["proc"] = _proc(0, stdout="core.hookspath\n")
+        assert clone_setup._repository_is_safe(clone) is False
+
+    def test_a_repo_named_like_the_launcher_cannot_spoof_the_signature(
+        self, probe_result: dict, tmp_path: Path
+    ) -> None:
+        """An echoed clone path holding the launcher filename must stay an
+        ambiguous git error (fail closed) — this probe's ``False`` is what
+        drives clone retirement, so a repository NAME must not be able to turn
+        the retire-worthy verdict into "the probe could not run"."""
+        clone = _metadata_safe_clone(tmp_path)
+        probe_result["proc"] = _proc(
+            128,
+            stderr=(
+                "fatal: bad config line 1 in file " "/scratch/owner--kirocrew_sandbox_x/.git/config"
+            ),
+        )
+        assert clone_setup._repository_is_safe(clone) is False
+
+
 class TestTupleEntryPointsStaySoft:
     """(result, err) / (ok, note) surfaces must not leak the raise."""
 
@@ -181,3 +264,26 @@ class TestTupleEntryPointsStaySoft:
         ok, note = clone_setup.checkout_branch(tmp_path, "main")
         assert ok is False
         assert "sandbox launcher" in note
+
+    def test_list_clone_branches_converts_metadata_probe_crash(
+        self, probe_result: dict, tmp_path: Path
+    ) -> None:
+        """The raise from ``_repository_is_safe`` itself (issue #8493) is
+        converted, not leaked — the safety probe runs FIRST, so on a crashed
+        launcher it is the one that surfaces."""
+        clone = _metadata_safe_clone(tmp_path)
+        probe_result["proc"] = _proc(1, stderr=_LAUNCHER_TRACEBACK)
+        branches, err = clone_setup.list_clone_branches(clone)
+        assert branches == []
+        assert "sandbox launcher" in err
+        assert _PUSH_ISOLATION_MESSAGE not in err
+
+    def test_checkout_branch_converts_metadata_probe_crash(
+        self, probe_result: dict, tmp_path: Path
+    ) -> None:
+        clone = _metadata_safe_clone(tmp_path)
+        probe_result["proc"] = _proc(1, stderr=_LAUNCHER_TRACEBACK)
+        ok, note = clone_setup.checkout_branch(clone, "main")
+        assert ok is False
+        assert "sandbox launcher" in note
+        assert _PUSH_ISOLATION_MESSAGE not in note

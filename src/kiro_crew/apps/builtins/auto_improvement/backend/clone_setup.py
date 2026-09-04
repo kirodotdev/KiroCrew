@@ -230,6 +230,15 @@ def _origin_urls(repo: Path, *, push: bool) -> list[str] | None:
 
 
 def _repository_is_safe(repo: Path) -> bool:
+    """True iff the clone's Git metadata and local config are safe to reuse.
+
+    Fails CLOSED (``False``) for ambiguous git errors and for any unsafe
+    filesystem shape, but raises :class:`IsolationProbeError` when the
+    unsafe-keys probe's sandbox launcher died before git executed — a crashed
+    launcher exits 1, indistinguishable from git's own "no unsafe keys", so
+    reading the exit code alone would report an unscanned config as safe (the
+    one probe in the isolation chain that failed OPEN, issue #8493).
+    """
     git_dir = repo / ".git"
     if first_linked_ancestor(git_dir) or is_link_or_junction(git_dir):
         return False
@@ -310,6 +319,18 @@ def _repository_is_safe(repo: Path) -> bool:
         )
     except (OSError, subprocess.SubprocessError):
         return False
+    if proc.returncode != 0:
+        # Exit 1 means "no unsafe keys" only when git itself ran. A sandbox
+        # launcher that dies before git executes also exits 1, so reading the
+        # exit code alone makes this the one probe in the isolation chain that
+        # fails OPEN during a launcher outage (issue #8493): metadata unsafety
+        # becomes invisible exactly when the host cannot run the probes. Same
+        # classifier as :func:`_origin_urls` — the structural stderr match is
+        # what keeps git's own output unable to satisfy it, and the raise says
+        # "the probe could not run" instead of an isolation verdict (#8151).
+        detail = _launcher_failure_detail(proc.stderr or "")
+        if detail is not None:
+            raise IsolationProbeError(detail)
     return proc.returncode == 1
 
 
@@ -612,7 +633,15 @@ def _setup_safe_clone(url: str, scratch_root: Path, *, timeout_s: int = 300) -> 
         # can cut a credential in the echoed remote URL mid-match, leaving a fragment
         # no downstream redaction pass recognises.
         return {}, f"git clone failed: {redact_via_context(tail[0])[:200]}"
-    if not _repository_is_safe(dest):
+    try:
+        safe = _repository_is_safe(dest)
+    except IsolationProbeError:
+        # This attempt created `dest` and has not disabled push yet, so unlike
+        # the reuse path there is no good clone to preserve — remove it rather
+        # than leaving a live origin url at the canonical location.
+        rmtree_force(dest)
+        raise
+    if not safe:
         rmtree_force(dest)
         return {}, "cloned repository failed Git metadata safety verification"
 
@@ -650,9 +679,9 @@ def list_clone_branches(clone: Path, *, timeout_s: int = 30) -> tuple[list[str],
     clone = Path(clone)
     if not (clone / ".git").is_dir():
         return [], f"Not a git clone: {clone}"
-    if not _repository_is_safe(clone):
-        return [], "clone Git metadata failed safety verification"
     try:
+        if not _repository_is_safe(clone):
+            return [], "clone Git metadata failed safety verification"
         disabled = _push_disabled(clone)
     except IsolationProbeError as exc:
         return [], str(exc)
@@ -925,9 +954,9 @@ def checkout_branch(clone: Path, branch: str, *, timeout_s: int = 120) -> tuple[
     bare = branch.split("/", 1)[1] if branch.startswith("origin/") else branch
     if not bare or not is_valid_branch_name(bare):
         return False, f"invalid branch name: {branch!r}"
-    if not _repository_is_safe(clone):
-        return False, "clone Git metadata failed safety verification"
     try:
+        if not _repository_is_safe(clone):
+            return False, "clone Git metadata failed safety verification"
         disabled = _push_disabled(clone)
     except IsolationProbeError as exc:
         return False, str(exc)

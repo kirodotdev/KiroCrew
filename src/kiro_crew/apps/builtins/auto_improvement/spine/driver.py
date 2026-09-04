@@ -356,7 +356,11 @@ class Driver:
         case this needs to additionally allow is a clone whose push is somehow live AND a
         valid direct-commit authorization; a protected/blank branch is refused by
         :func:`.push_policy.authorize_direct_push` regardless. We fail CLOSED: any
-        ambiguity → the original refusal stands."""
+        ambiguity → the original refusal stands. Both probes below propagate
+        ``clone_setup.IsolationProbeError`` when their sandbox launcher crashed
+        before git executed — a stricter refusal (the run still does not start),
+        never a relaxation, surfacing the sandbox failure instead of a
+        misleading isolation verdict."""
         from ..backend.clone_setup import _repository_is_safe
 
         if not _repository_is_safe(self.clone):
