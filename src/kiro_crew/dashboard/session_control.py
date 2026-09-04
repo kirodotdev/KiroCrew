@@ -845,6 +845,15 @@ async def create_session(
     matter because a caller refusal missing here, or a workspace not inherited,
     would hand back a session outside the boundary the other verbs enforce.
 
+    The caller's session POSTURE (``_trust`` / ``_trust_reads``) transfers to the
+    child, so a trusted operator's dispatched worker does not stall on a prompt
+    nobody is watching -- the posture ``parent_trusted`` already gives a
+    ``spawn_run`` subagent. Per-command grants (``_trusted_patterns``) and a
+    ``SafetyOverride`` scoped grant (``_trust_scope``) are both deliberately
+    excluded, and the transferred value is the one held at allocation time rather
+    than at entry, so revoking mid call yields an untrusted child. See the block
+    around the assignment.
+
     ``folder_id`` files the slot as part of creation (#6118): it is assigned in
     the same synchronous window that configures the slot, the whole
     allocation-to-persist span runs under ``suspend_slots_push`` so the slot's
@@ -1140,6 +1149,60 @@ async def create_session(
         # unattributed, so ordinary human use never consumes an automated caller's
         # share.
         slot._created_by = caller_key
+        # The creator's interactive auto-approve grant follows the work it is
+        # handing off. Without this a trusted operator dispatches a worker that
+        # then blocks on an approval prompt nobody is watching -- the same failure
+        # `parent_trusted` already closes for `spawn_run` subagents, which read the
+        # parent's stored policy and start auto-approved. A dispatched session is
+        # the same delegation with a sidebar tab, so it takes the same posture.
+        #
+        # Read off `live_caller`, not the entry-time `caller_slot`: the two are
+        # identity-checked to be the same object above, but the grant itself is
+        # mutable state the operator can revoke inside any of the suspensions this
+        # coroutine took, so the value that transfers is the one held NOW, in the
+        # synchronous window that follows the last gate. Revoking before the create
+        # lands means the child is born untrusted, which is the direction that
+        # fails safe.
+        #
+        # What transfers is SESSION POSTURE, and only that. Two fields carry, two
+        # deliberately do not, and the exclusions are the load-bearing part:
+        #
+        # * `_trust` -- the human's "trust this session" click. It does not expire,
+        #   the click is its own audit record, and copying it changes no property
+        #   of the grant. The session-store half needs no write here: the child has
+        #   no ACP session yet (`set_approval_policy` would silently no-op on a
+        #   missing session), and `chat_runner` already assigns the persistable
+        #   policy from `_trust` on every session create/resume, so the subagent
+        #   spawn gate sees it from the child's first turn.
+        # * `_trust_reads` -- the same posture, narrowed to read-only bash. It has
+        #   to carry too, or the setting a CAUTIOUS operator picks is the one whose
+        #   own workers still stall. Bounded by construction: what it admits has no
+        #   side effects, which is what separates it from the command grants below.
+        #
+        # * `_trusted_patterns` -- NOT inherited. These are per-command grants
+        #   ("`npm test` is fine"), not a posture, and the distinction decides it:
+        #   a pattern is judged against the session the operator was LOOKING at,
+        #   while a dispatched worker runs model-authored work they have not seen,
+        #   so the same glob can admit a command the grant was never asked about.
+        #   Inheriting them also buys nothing where it would be safe -- with
+        #   `_trust` set the child already auto-approves via `_slot_is_trusted`, so
+        #   the pattern list is dead weight; it changes the outcome ONLY when the
+        #   operator withheld session trust and granted single commands instead,
+        #   which is exactly the case that must keep asking. So the child starts
+        #   with `_ChatSlot.__init__`'s empty set and earns its own grants.
+        # * `_trust_scope` -- NOT inherited. It names a TTL-bounded, SEL-audited
+        #   `SafetyOverride` grant that is re-checked on every approval; forking
+        #   the key would hand a second session a credential whose revocation
+        #   nothing here can observe. An unattended worker that needs one gets its
+        #   own, armed by whatever owns its lifecycle.
+        #
+        # Not persisted at birth, matching every other slot: trust is in-memory by
+        # construction, so a restart returns the child to interactive along with
+        # its creator.
+        inherited_trust = bool(getattr(live_caller, "_trust", False))
+        inherited_trust_reads = bool(getattr(live_caller, "_trust_reads", False))
+        slot._trust = inherited_trust
+        slot._trust_reads = inherited_trust_reads
         # cwd must follow the workspace too, or file search and project-scoped agents
         # resolve against a directory the slot does not claim -- the same
         # authorization-vs-execution split as the agent binding, one layer down.
@@ -1251,7 +1314,15 @@ async def create_session(
         operation="create",
         slot_key=slot.key,
         outcome="allowed",
-        detail={"agent": slot.agent or "", "folder_id": slot.folder_id or ""},
+        detail={
+            "agent": slot.agent or "",
+            "folder_id": slot.folder_id or "",
+            # What the child was BORN with, so an auto-approved tool call in it is
+            # traceable to the creator's grant rather than appearing unexplained.
+            # Always present: "false" is the record that the grant did not transfer.
+            "inherited_trust": "true" if inherited_trust else "false",
+            "inherited_trust_reads": "true" if inherited_trust_reads else "false",
+        },
     )
     return {
         "ok": True,
