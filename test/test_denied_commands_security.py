@@ -3295,6 +3295,24 @@ class TestCredentialMintSegmentScoping:
     @pytest.mark.parametrize(
         "cmd",
         [
+            f"bash -c'{_NAME} {_TOK}'",  # glued single-quoted
+            f'bash -c"{_NAME} {_TOK}"',  # glued double-quoted
+            f"sh -ec'{_NAME} {_TOK}'",  # letters before the c in the cluster
+            f"bash -lc'{_NAME} {_TOK}'",
+            f"sh -c'{_NAME} >/tmp/o {_TOK}'",  # redirect form needs the descent
+        ],
+    )
+    def test_glued_shell_flag_payload_still_blocked(self, cmd):
+        # With NO space after the `-c`, the payload rides INSIDE the flag token
+        # once shlex strips the quotes (`-c'<mint>'` -> one token).  The bare-flag
+        # pattern rejects a token carrying the payload's own characters, so the
+        # glued spelling was examined by NO consumer of the shared extractor --
+        # this floor included (#8197).
+        assert _denied_by(cmd) == _RULE_MINT
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
             f"{_NAME}>/tmp/out {_TOK}",
             f"{_NAME}>>/tmp/out {_TOK}",
             f"{_NAME} {_TOK}>/tmp/out",
@@ -4601,10 +4619,30 @@ class TestNestedPayloadExtractionIsLinear:
         tokens its handler knows how to process."""
         from kiro_crew import security
 
-        for token in ("-c", "<<<", "<<<glued"):
-            assert security._is_shell_command_flag_or_herestring(token), token
-        for token in ("x", "--", "bash", ""):
-            assert not security._is_shell_command_flag_or_herestring(token), token
+        for token in ("-c", "-lc", "--command"):
+            assert security._is_shell_command_flag(token), token
+        # `-Cc` is deliberately NOT a flag stop: widening the class made it eat
+        # the stop through which a later `--command`'s payload was found.  The
+        # uppercase-clustered spellings belong to the every-carrier sweep
+        # (spaced) and the glued pattern (glued) instead.
+        for token in ("x", "--", "bash", "", "<<<", "-Cc"):
+            assert not security._is_shell_command_flag(token), token
+
+        for token in ("<<<", "<<<glued"):
+            assert security._is_herestring_token(token), token
+        for token in ("x", "--", "bash", "", "-c"):
+            assert not security._is_herestring_token(token), token
+
+        for token in ("-cx.sh", "-ecrg . /root", "-Ccrg . /root"):
+            assert security._is_glued_shell_command_token(token), token
+        for token in ("-c", "-lc", "-Cc", "x", "--", "bash", "", "<<<x"):
+            assert not security._is_glued_shell_command_token(token), token
+
+        # The sweep's loose carrier recognition covers what neither table does.
+        assert security._shell_c_carrier_glued("-Cc") == ""
+        assert security._shell_c_carrier_glued("-1c") == ""
+        assert security._shell_c_carrier_glued("-1cx.sh") == "x.sh"
+        assert security._shell_c_carrier_glued("--command") is None
 
         for token in ("-s", "--split-string", "-Sx", "--split-string=x"):
             assert security._is_env_split_flag(token), token

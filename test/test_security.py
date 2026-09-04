@@ -9176,6 +9176,23 @@ class TestPublishFloorNestedPayloads:
         for cmd in self.WRAPPED_PROTECTED:
             assert is_denied(cmd) is not None, cmd
 
+    def test_glued_command_flag_spelling_denied(self) -> None:
+        """``-c'<push>'`` (no space) is one token; the payload must still surface.
+
+        The bare-flag pattern rejects a token carrying the payload's own
+        characters, so the glued spelling was never yielded and the publish
+        floor -- whose ONLY enforcement is this walk -- never judged it (#8197).
+        """
+        from kiro_crew.security import is_denied
+
+        for cmd in (
+            "bash -c'git push origin main'",
+            'sh -c"git push origin main"',
+            "bash -lc'git push --force origin main'",
+            "bash -ec'git push origin mainline'",
+        ):
+            assert is_denied(cmd) is not None, cmd
+
     def test_end_of_options_terminator_does_not_hide_the_payload(self) -> None:
         """``--`` ends option parsing, so the script is the token AFTER it.
 
@@ -9532,6 +9549,243 @@ class TestPublishFloorNestedPayloads:
         assert len(_shell_payload_sources(cmd)) == len(_self_token_frames(cmd))
         assert cmd in _shell_payload_sources(cmd)
         assert "git push origin main" in _shell_payload_sources(cmd)
+
+
+class TestGluedShellCommandPayloadExtraction:
+    """A payload GLUED to a ``-c`` short-option cluster is extracted (#8197).
+
+    ``sh -c'rg . /fenced/root'`` reaches the walk as ONE token
+    (``-crg . /fenced/root``) once shlex strips the quotes.
+    ``_SHELL_COMMAND_FLAG_RE`` anchors the whole token as a bare flag cluster, so
+    a token carrying the payload's own characters was rejected -- and a payload
+    the extractor does not return is a command NONE of its consumers look
+    inside, the self-protection floor included.  The companion pattern
+    ``_SHELL_COMMAND_GLUED_RE`` captures the glued remainder instead of
+    weakening the flag pattern where it is used for pure flag detection.
+    """
+
+    def test_every_glued_spelling_yields_the_spaced_payload(self) -> None:
+        """Glued single-quoted, double-quoted, and clustered spellings agree."""
+        from kiro_crew.security import _nested_shell_payloads, _shell_tokens
+
+        spaced = _nested_shell_payloads(_shell_tokens("sh -c 'rg . /fenced/root'"))
+        assert spaced == ["rg . /fenced/root"], spaced
+        for cmd in (
+            "sh -c'rg . /fenced/root'",  # glued single-quoted
+            'sh -c"rg . /fenced/root"',  # glued double-quoted
+            "sh -ec'rg . /fenced/root'",  # letters BEFORE the c in the cluster
+            "sh -xc'rg . /fenced/root'",
+        ):
+            payloads = _nested_shell_payloads(_shell_tokens(cmd))
+            assert payloads == spaced, (cmd, payloads)
+
+    def test_glued_unquoted_payload_is_extracted(self) -> None:
+        """No quotes at all: ``-cwhoami`` runs ``whoami`` in a real shell."""
+        from kiro_crew.security import _nested_shell_payloads, _shell_tokens
+
+        payloads = _nested_shell_payloads(_shell_tokens("bash -cwhoami"))
+        assert "whoami" in payloads, payloads
+
+    def test_bare_cluster_is_not_read_as_glued(self) -> None:
+        """Negative: ``-lc`` and ``-c`` carry no payload of their own.
+
+        The script is the NEXT token, exactly as before -- the glued reading must
+        not invent a second payload out of a bare flag cluster.
+        """
+        from kiro_crew.security import _nested_shell_payloads, _shell_tokens
+
+        payloads = _nested_shell_payloads(_shell_tokens("bash -lc 'git status'"))
+        assert payloads == ["git status"], payloads
+        assert _nested_shell_payloads(_shell_tokens("bash -c")) == []
+
+    def test_all_alpha_cluster_yields_both_readings(self) -> None:
+        """``-ecfoo`` is ambiguous post-tokenization, so BOTH readings surface.
+
+        It matches the bare-flag pattern (the next token is the script, the
+        reading this extractor always had) AND a real shell ends option parsing
+        at the ``c`` and runs ``foo``.  Picking one interpretation would make the
+        other a bypass; extraction over-approximates instead, which this module
+        documents as the safe direction.
+        """
+        from kiro_crew.security import _nested_shell_payloads, _shell_tokens
+
+        payloads = _nested_shell_payloads(_shell_tokens("bash -ecfoo bar"))
+        assert "foo" in payloads, payloads
+        assert "bar" in payloads, payloads
+
+    def test_a_glued_decoy_does_not_eat_a_later_spaced_payload(self) -> None:
+        """The two spellings are scanned independently, so both yield.
+
+        Folding the glued spelling into the shared stop table would let a glued
+        decoy consume the stop through which a later spaced ``-c``'s payload was
+        found, turning the fix itself into a bypass.
+        """
+        from kiro_crew.security import _nested_shell_payloads, _shell_tokens
+
+        payloads = _nested_shell_payloads(_shell_tokens("bash -cx.sh -c 'rg . /fenced/root'"))
+        assert "x.sh" in payloads, payloads
+        assert "rg . /fenced/root" in payloads, payloads
+
+    def test_a_herestring_does_not_eat_a_later_command_flag_payload(self) -> None:
+        """The herestring stop is independent of the ``-c`` stop for the same
+        reason: sharing one table let ``bash <<<'x' -c '<script>'`` yield only
+        ``x`` while a real shell runs the script."""
+        from kiro_crew.security import _nested_shell_payloads, _shell_tokens
+
+        payloads = _nested_shell_payloads(_shell_tokens("bash <<<'x' -c 'rg . /fenced/root'"))
+        assert "x" in payloads, payloads
+        assert "rg . /fenced/root" in payloads, payloads
+
+    def test_uppercase_cluster_letters_still_carry_the_payload(self) -> None:
+        """``-C`` (noclobber) clusters like any other flag, and the alt pass
+        feeds case-PRESERVING tokens -- a lowercase-only class dropped these."""
+        from kiro_crew.security import _nested_shell_payloads, _shell_tokens
+
+        for cmd in (
+            "bash -Cc'rg . /fenced/root'",
+            "bash -Cc 'rg . /fenced/root'",
+        ):
+            payloads = _nested_shell_payloads(_shell_tokens(cmd))
+            assert "rg . /fenced/root" in payloads, (cmd, payloads)
+
+    def test_case_folded_cluster_splits_are_all_examined(self) -> None:
+        """Which ``c`` took the argument is unrecoverable after the case fold.
+
+        The deny tiers lowercase input before the walk, so ``-Cc'<script>'``
+        (``-C`` noclobber + ``-c`` script, a real zsh/ksh spelling) folds to
+        ``-cc<script>`` and the first-``c`` split reads the payload as
+        ``c<script>`` -- one junk letter hid a protected push from the publish
+        floor, and the attacker can also write the folded spelling directly
+        (found by the GPT 5.6 CI lane).  Every plausible split is yielded
+        instead: the run's last ``c`` (all flags) and second-to-last (a payload
+        whose program starts with one ``c``, like ``cat``).
+        """
+        from kiro_crew.security import (
+            _nested_shell_payloads,
+            _shell_c_carrier_payloads,
+            _shell_tokens,
+            is_denied,
+        )
+
+        for cmd in (
+            "zsh -Cc'git push origin main'",
+            "bash -Cc'git push origin main'",
+            "zsh -cc'git push origin main'",  # folded spelling written directly
+            "bash -Cc'git push --force origin main'",
+        ):
+            assert is_denied(cmd) is not None, cmd
+        # The correct boundary is among the yielded candidates.
+        payloads = _nested_shell_payloads(_shell_tokens("zsh -cc'git push origin main'"))
+        assert "git push origin main" in payloads, payloads
+        # A payload whose program name itself starts with ``c``.
+        assert "cat /fenced/file" in _shell_c_carrier_payloads("-cccat /fenced/file")
+        # A ``c`` past the first non-letter belongs to the payload's own text:
+        # splitting there would shred the payload, so it is not a candidate.
+        assert _shell_c_carrier_payloads("-crg . /fenced/root") == ["rg . /fenced/root"]
+        # Split positions are bounded to the window: an alternating-``c``
+        # cluster of any length yields a bounded candidate set instead of a
+        # quadratic one (a ~3 KB such token outlived the loop watchdog), and
+        # the bound is not a padding bypass -- the true split sits within a
+        # first-word length of the region's end, and padding only adds fake
+        # splits farther out.
+        flooded = _shell_c_carrier_payloads("-" + "ac" * 1600 + "c'git push origin main'")
+        assert len(flooded) <= 70, len(flooded)
+        # Feature-branch pushes and benign scripts stay allowed.
+        assert is_denied("bash -Cc'git push origin my-feature'") is None
+        assert is_denied("bash -cc'ls -la'") is None
+
+    def test_an_uppercase_cluster_does_not_eat_the_command_flag_stop(self) -> None:
+        """The flag pattern stays lowercase-only ON PURPOSE.
+
+        Widening it to ``[A-Za-z]`` made ``-Cc`` the first flag stop, which ate
+        the stop through which a following ``--command``'s payload was found --
+        the one old-stop class neither the glued table nor the sweep reaches.
+        Uppercase clusters are covered by the sweep and the glued pattern
+        instead, so BOTH payloads surface for the CASE-PRESERVING callers (the
+        alt-traversal pass, pinned here by calling the extractor directly).
+        The deny tiers lowercase first, where ``-Cc`` folds to ``-cc`` and the
+        ``--command`` residual remains -- pre-existing there, and out of this
+        pattern's reach.
+        """
+        from kiro_crew.security import _nested_shell_payloads, _shell_tokens
+
+        payloads = _nested_shell_payloads(_shell_tokens("bash -Cc --command 'rg . /fenced/root'"))
+        assert "rg . /fenced/root" in payloads, payloads
+
+    def test_every_carrier_is_swept_not_only_the_first_stop(self) -> None:
+        """Each stop table reads ONE token per shell, so a decoy that satisfies
+        the same predicate eats the stop through which a later carrier's payload
+        was found.  The every-carrier sweep restores what the alt pass's deleted
+        local extractor yielded: a payload for EVERY ``-c`` carrier, under the
+        loose recognition (any prefix before the first lowercase ``c``).
+        """
+        from kiro_crew.security import _nested_shell_payloads, _shell_tokens
+
+        # A glued decoy before a glued carrier (both satisfy the glued predicate).
+        payloads = _nested_shell_payloads(_shell_tokens("ksh -onoclobber -c'rg . /fenced/root'"))
+        assert "rg . /fenced/root" in payloads, payloads
+        # A flag decoy before a spaced carrier (both satisfy the flag predicate).
+        payloads = _nested_shell_payloads(
+            _shell_tokens("bash -Cc benign -c 'git push origin main'")
+        )
+        assert "git push origin main" in payloads, payloads
+        # Two spaced carriers: the second used to collapse into the first.
+        payloads = _nested_shell_payloads(_shell_tokens("bash -c 'true' -c 'rg . /fenced/root'"))
+        assert "true" in payloads, payloads
+        assert "rg . /fenced/root" in payloads, payloads
+        # A glued decoy before a glued carrier of the publish floor's payload.
+        payloads = _nested_shell_payloads(_shell_tokens("bash -cx.sh -c'git push origin main'"))
+        assert "git push origin main" in payloads, payloads
+
+    def test_non_alpha_cluster_prefixes_still_carry_the_payload(self) -> None:
+        """The deleted local extractor tolerated ANY prefix before the first
+        lowercase ``c`` (``-1c``); the loose sweep preserves that recognition."""
+        from kiro_crew.security import _nested_shell_payloads, _shell_tokens
+
+        payloads = _nested_shell_payloads(_shell_tokens("bash -1c 'rg . /fenced/root'"))
+        assert "rg . /fenced/root" in payloads, payloads
+        payloads = _nested_shell_payloads(_shell_tokens("bash -1c'rg . /fenced/root'"))
+        assert "rg . /fenced/root" in payloads, payloads
+
+    def test_many_shells_sharing_one_long_glued_payload_stay_linear(self) -> None:
+        """N shell tokens all stop at ONE glued token carrying a length-N payload.
+
+        Extracting at the stop index per shell token copies the same length-N
+        substring N times -- O(N^2) time and memory for an O(N)-sized input,
+        inside the synchronous permission gate (found by the GPT 5.6 review
+        lane).  The payload is extracted once per TOKEN up front and later
+        appends reuse the cached string, so the walk stays linear.  Measured
+        across an 8x size gap with a 20x bound, the same methodology the
+        eval-join linearity test above documents.
+        """
+        import time
+
+        from kiro_crew.security import _nested_shell_payloads
+
+        def elapsed(n: int) -> float:
+            tokens = ["bash"] * n + ["-c" + "x" * n]
+            start = time.perf_counter()
+            _nested_shell_payloads(tokens)
+            return time.perf_counter() - start
+
+        def best(n: int, samples: int = 3) -> float:
+            return min(elapsed(n) for _ in range(samples))
+
+        elapsed(500)
+        small, large = best(2000), best(16000)
+        assert large < small * 20, f"{small:.4f}s -> {large:.4f}s looks super-linear"
+        # No absolute cap, matching the eval-join test above: under the backend
+        # jobs' coverage tracing wall time prices line events, not algorithmic
+        # cost (#8641); the same-run ratio is the regression guard.
+
+    def test_glued_payload_reaches_the_regex_tier_views(self) -> None:
+        """Consumer: the deny-view pass judges the glued payload's own text."""
+        from kiro_crew.security import is_denied
+
+        spaced = "bash -c 'dd \"if=/dev/zero\" of=/dev/sda'"
+        glued = "bash -c'dd \"if=/dev/zero\" of=/dev/sda'"
+        assert is_denied(spaced) is not None
+        assert is_denied(glued) is not None
 
 
 class TestImdsMixedBaseEncodings:
