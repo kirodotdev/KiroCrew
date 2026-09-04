@@ -8055,6 +8055,7 @@
       "xhigh": "Très élevé"
     },
     "sttProviders": {
+      "downloading_decoder": "Téléchargement du décodeur audio : {{pct}} ({{done}} sur {{total}})",
       "downloading_speech_model": "Téléchargement du modèle vocal : {{pct}} ({{done}} sur {{total}})",
       "stream_error_decode_failed": "La reconnaissance vocale n'a pas pu terminer cette transcription. Dicte-la à nouveau.",
       "stream_error_max_duration": "La dictée a atteint sa durée maximale. Lance un nouvel enregistrement pour continuer.",
@@ -13158,7 +13159,13 @@
         "unavailable_import_failed": "Le moteur de reconnaissance vocale est installé mais n’a pas pu être chargé sur cette machine.",
         "unavailable_model_missing": "Le modèle vocal n’est pas encore sur cette machine. Téléchargez-le ci-dessous.",
         "unavailable_apple_unsupported": "Apple Speech nécessite macOS 26 ou une version plus récente. Choisissez plutôt le fournisseur local.",
-        "unavailable_apple_needs_toolchain": "Apple Speech nécessite les outils en ligne de commande Xcode. Installez-les, puis rechargez cette page."
+        "unavailable_apple_needs_toolchain": "Apple Speech nécessite les outils en ligne de commande Xcode. Installez-les, puis rechargez cette page.",
+        "decoder_fetch_prompt": "{{productName}} peut récupérer une copie vérifiée par empreinte pour cette machine, sans rien installer à la main.",
+        "download_decoder": "Télécharger le décodeur",
+        "decoder_download_failed_reason": "Le téléchargement du décodeur a échoué : {{error}}",
+        "let_the_agent_fix_it": "Laisser {{productName}} le réparer",
+        "decoder_failure_unknown": "non communiqué",
+        "decoder_agent_prompt": "Le décodeur audio (ffmpeg) dont {{productName}} a besoin pour transcrire les enregistrements vocaux n'a pas pu être installé. Merci de le faire fonctionner sur cet hôte.\n\nCe qui a échoué : {{code}} — {{detail}}\nHôte : {{os}} {{arch}}\n\n{{productName}} n'exécute qu'un ffmpeg dont les octets correspondent à une empreinte SHA-256 épinglée, et il cherche exactement à ces endroits : /usr/local/bin, /opt/homebrew/bin, les répertoires de programmes propres à ce système d'exploitation, et son propre magasin de décodeurs vérifié par empreinte, dans <data home>/models/ffmpeg/. Le chemin n'est jamais l'ancre de confiance : ~/.local/bin n'est donc délibérément PAS fiable et une copie laissée là est ignorée.\n\nDétermine ce dont cet hôte a réellement besoin — un gestionnaire de paquets, une compilation depuis les sources, ou une nouvelle tentative de téléchargement du décodeur — et juge par toi-même si des privilèges élevés se justifient avant d'y recourir. Une fois terminé, revérifie GET /api/stt/status et confirme que la page de réglages Voix ne signale plus de décodeur manquant."
       },
       "teamsPanel": {
         "above_unlike_slack_the_bot_framework_has_no_outb": "ci-dessus. Contrairement à Slack, le Bot Framework n'a pas de\n              mode sortant uniquement.",

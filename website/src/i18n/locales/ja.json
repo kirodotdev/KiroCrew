@@ -7843,6 +7843,7 @@
       "xhigh": "特に高い"
     },
     "sttProviders": {
+      "downloading_decoder": "オーディオデコーダーをダウンロード中: {{pct}}（{{total}} 中 {{done}}）",
       "downloading_speech_model": "音声モデルをダウンロード中: {{pct}}（{{total}} 中 {{done}}）",
       "stream_error_decode_failed": "音声認識はこの書き起こしを完了できませんでした。もう一度口述してください。",
       "stream_error_max_duration": "口述が長さの上限に達しました。続けるには新しい録音を開始してください。",
@@ -12821,7 +12822,13 @@
         "unavailable_import_failed": "音声認識エンジンはインストールされていますが、このマシンでは読み込めませんでした。",
         "unavailable_model_missing": "音声モデルはまだこのマシンにありません。下からダウンロードしてください。",
         "unavailable_apple_unsupported": "Apple Speech には macOS 26 以降が必要です。代わりにローカルのプロバイダーを選んでください。",
-        "unavailable_apple_needs_toolchain": "Apple Speech には Xcode コマンドラインツールが必要です。インストールしてからこのページを再読み込みしてください。"
+        "unavailable_apple_needs_toolchain": "Apple Speech には Xcode コマンドラインツールが必要です。インストールしてからこのページを再読み込みしてください。",
+        "decoder_fetch_prompt": "{{productName}} がこのマシン用にダイジェスト検証済みのコピーを取得できるので、手動でインストールする必要はありません。",
+        "download_decoder": "デコーダーをダウンロード",
+        "decoder_download_failed_reason": "デコーダーのダウンロードに失敗しました: {{error}}",
+        "let_the_agent_fix_it": "{{productName}} に任せる",
+        "decoder_failure_unknown": "報告なし",
+        "decoder_agent_prompt": "{{productName}} が音声録音を文字起こしするために必要なオーディオデコーダー（ffmpeg）をインストールできませんでした。このホストで動作するようにしてください。\n\n失敗した内容: {{code}} — {{detail}}\nホスト: {{os}} {{arch}}\n\n{{productName}} は、バイト列が固定された SHA-256 ダイジェストと一致する ffmpeg のみを実行し、探す場所はこれだけです: /usr/local/bin、/opt/homebrew/bin、この OS 自身のプログラムディレクトリ、そして <data home>/models/ffmpeg/ にあるダイジェスト検証済みのデコーダーストア。パスは決して信頼の根拠にならないため、~/.local/bin は意図的に信頼されず、そこに置いたコピーは無視されます。\n\nこのホストに実際に必要なもの——パッケージマネージャー、ソースからのビルド、あるいはデコーダーのダウンロードの再試行——を見極め、権限昇格が適切かどうかは自分で判断してから使ってください。終わったら GET /api/stt/status を再確認し、音声設定ページがデコーダーの不足を報告しなくなったことを確かめてください。"
       },
       "teamsPanel": {
         "above_unlike_slack_the_bot_framework_has_no_outb": "上記。Slack とは異なり、Bot Framework には\n              送信専用モードがありません。",

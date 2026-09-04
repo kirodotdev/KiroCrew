@@ -27,8 +27,35 @@ Compressed files are decoded by the FFmpeg executable in the pinned
 system prerequisite. The release gate resolves that exact packaged resource and
 executes `ffmpeg -version`; a supported artifact cannot publish with only
 dependency metadata or an ambient PATH copy satisfying the check. Source
-environments use the fixed system-decoder search instead, because a project venv
-is agent-writable executable storage.
+environments do not read their own site-packages, because a project venv is
+agent-writable executable storage; they resolve a system FFmpeg from the fixed
+platform paths, and failing that the digest-verified decoder store below.
+
+**The store is a third location, not a third rule.** A source or Toolbox install on
+a distribution that packages no FFmpeg (Amazon Linux, RHEL without EPEL) previously
+had no decoder it could ever reach, so batch voice was permanently broken with a
+shell command as the only remedy — and on such a host that command was an `echo`
+of the ffmpeg.org URL. `stt.decoder` closes that: it downloads the platform's
+pinned `imageio-ffmpeg==0.6.0` **wheel** from PyPI (filename, URL, size and sha256
+pinned per platform), verifies the wheel's own digest before opening it, extracts
+only `imageio_ffmpeg/binaries/<artifact>` by exact member name through a descriptor
+it opened itself (never `ZipFile.extract`, whose destination is attacker-controlled
+name data), re-verifies the extracted bytes against the SAME
+`transcribe._PACKAGED_FFMPEG_ARTIFACTS` pin, and renames it atomically into
+`<data home>/models/ffmpeg/`. Both digest tables are one table, derived in
+`stt.decoder`: two copies would fail as a decoder that downloads successfully and
+is then refused at exec, with nothing to say which copy was wrong.
+
+Resolution order is bundled site-packages → the trusted system directories → the
+store. The store adds no directory to `transcribe._ffmpeg_candidate_dirs`, and that
+distinction is the whole point: that list is searched by NAME, so an entry there is
+a claim that a path is trustworthy, while the store is reached only as a pinned
+FILENAME whose bytes match its pinned digest, re-verified on every open and kept
+bound to the descriptor that is spawned. A store file that fails is ignored and
+logged. The directory is user-writable and vouches for nothing; it is also inside
+the `models/` tree the agent's file and shell gates already write-protect.
+Platforms with no pinned artifact (32-bit ARM Linux, Windows on ARM, win32) report
+`unsupported` and start no download.
 
 That gate reports **two independent verdicts** and the build treats them
 differently (`transcribe.PackagedDecoderProbe`). Whether the resolved bytes
@@ -270,7 +297,7 @@ stderr is not quiet, so no test may assert it empty.
 ## Model download
 
 `stt.models` holds the catalog: name, byte size and a sha256 digest per entry.
-Three endpoints expose it, all three refused to an app token by `_deny_app_token`
+Four endpoints expose it, all four refused to an app token by `_deny_app_token`
 because they start a download and warm a resident model inside the gateway, which
 is operator setup rather than something an app earns by naming a path (the
 transcription surfaces are deliberately open to an app token):
@@ -278,8 +305,25 @@ transcription surfaces are deliberately open to an app token):
 - `GET /api/stt/status`: the availability code and prose, the resolved model with
   `model_present` and its size, whether a model is resident right now, and the
   live transfer state. Separate from `GET /api/config/stt`, which serves settings.
+  It also carries `ffmpeg: {present, source, auto_fetch, os, arch, download}`.
+  `source` is `bundled` | `system` | `store` | `null` and names WHICH decoder the
+  transcode path would run, because each one is repaired differently — reinstall
+  the app, the host's package manager, or the fetch below. `auto_fetch` is
+  `available` | `unsupported` | `bundled`, so the panel offers a button rather than
+  a shell command, and `unsupported` is not a failure: no retry can make a pinned
+  artifact exist. `os`/`arch` are the GATEWAY's, since a dashboard may be open
+  against another machine and the agent hand-off has to name the host that needs
+  fixing. `ffmpeg_missing` on `GET /api/config/stt` is kept for compatibility.
 - `POST /api/stt/prepare`: starts or joins the transfer and returns its current state. Concurrent callers share one transfer behind the store's lock.
 - `POST /api/stt/prewarm`: starts local-provider preparation without waiting for completion. `useVoiceInput` calls it while the user reaches for the microphone so local initialization can overlap capture.
+- `POST /api/stt/ffmpeg/download`: starts or joins the decoder fetch, 202 then
+  poll, the same contract as `prepare`. Refused 409 on a bundled interpreter
+  (`stt_decoder_bundled`) and on a platform with no pinned artifact
+  (`decoder_unsupported_platform`) rather than answering 202 for work that can
+  never help. A completed whisper-model download also starts this in the
+  background when the interpreter is not bundled and no decoder resolves — that is
+  the one moment a second transfer reads as part of the same setup, instead of
+  surfacing as a hang during a first voice memo.
 
 Desktop installers intentionally contain no speech-model weights. Settings shows
 the selected model's exact size and a **Download now** action; that is the only

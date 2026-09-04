@@ -7949,6 +7949,7 @@
       "xhigh": "Sehr hoch"
     },
     "sttProviders": {
+      "downloading_decoder": "Audio-Decoder wird heruntergeladen: {{pct}} ({{done}} von {{total}})",
       "downloading_speech_model": "Sprachmodell wird heruntergeladen: {{pct}} ({{done}} von {{total}})",
       "stream_error_decode_failed": "Die Spracherkennung konnte diese Transkription nicht abschließen. Diktiere sie noch einmal.",
       "stream_error_max_duration": "Das Diktat hat seine Längenbegrenzung erreicht. Starte eine neue Aufnahme, um weiterzumachen.",
@@ -12989,7 +12990,13 @@
         "unavailable_import_failed": "Die Spracherkennung ist installiert, konnte auf diesem Rechner aber nicht geladen werden.",
         "unavailable_model_missing": "Das Sprachmodell liegt noch nicht auf diesem Rechner. Laden Sie es unten herunter.",
         "unavailable_apple_unsupported": "Apple Speech benötigt macOS 26 oder neuer. Wählen Sie stattdessen den lokalen Anbieter.",
-        "unavailable_apple_needs_toolchain": "Apple Speech benötigt die Xcode-Befehlszeilentools. Installieren Sie sie und laden Sie diese Seite neu."
+        "unavailable_apple_needs_toolchain": "Apple Speech benötigt die Xcode-Befehlszeilentools. Installieren Sie sie und laden Sie diese Seite neu.",
+        "decoder_fetch_prompt": "{{productName}} kann eine Digest-geprüfte Kopie für diesen Rechner holen, sodass nichts von Hand installiert werden muss.",
+        "download_decoder": "Decoder herunterladen",
+        "decoder_download_failed_reason": "Der Decoder-Download ist fehlgeschlagen: {{error}}",
+        "let_the_agent_fix_it": "{{productName}} das beheben lassen",
+        "decoder_failure_unknown": "nicht gemeldet",
+        "decoder_agent_prompt": "Der Audio-Decoder (ffmpeg), den {{productName}} zum Transkribieren von Sprachaufnahmen braucht, konnte nicht installiert werden. Bitte bring ihn auf diesem Host zum Laufen.\n\nWas fehlgeschlagen ist: {{code}} — {{detail}}\nHost: {{os}} {{arch}}\n\n{{productName}} führt nur ein ffmpeg aus, dessen Bytes zu einem festgelegten SHA-256-Digest passen, und sucht genau an diesen Stellen: /usr/local/bin, /opt/homebrew/bin, den eigenen Programmverzeichnissen dieses Betriebssystems und seinem eigenen Digest-geprüften Decoder-Speicher unter <data home>/models/ffmpeg/. Der Pfad ist nie der Vertrauensanker, deshalb gilt ~/.local/bin absichtlich NICHT als vertrauenswürdig, und eine dort abgelegte Kopie wird ignoriert.\n\nFinde heraus, was dieser Host wirklich braucht — einen Paketmanager, einen Build aus den Quellen oder einen weiteren Versuch beim Decoder-Download — und entscheide selbst, ob erhöhte Rechte angebracht sind, bevor du sie einsetzt. Prüfe danach erneut GET /api/stt/status und bestätige, dass die Voice-Einstellungsseite keinen fehlenden Decoder mehr meldet."
       },
       "teamsPanel": {
         "above_unlike_slack_the_bot_framework_has_no_outb": "oben. Im Gegensatz zu Slack hat das Bot Framework keinen\n              rein ausgehenden Modus.",

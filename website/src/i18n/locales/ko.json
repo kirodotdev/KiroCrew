@@ -7843,6 +7843,7 @@
       "xhigh": "매우 높음"
     },
     "sttProviders": {
+      "downloading_decoder": "오디오 디코더 다운로드 중: {{pct}}({{total}} 중 {{done}})",
       "downloading_speech_model": "음성 모델 다운로드 중: {{pct}} ({{total}} 중 {{done}})",
       "stream_error_decode_failed": "음성 인식이 이 전사를 완료하지 못했습니다. 다시 구술하세요.",
       "stream_error_max_duration": "구술이 길이 제한에 도달했습니다. 계속하려면 새로 녹음하세요.",
@@ -12821,7 +12822,13 @@
         "unavailable_import_failed": "음성 인식기가 설치되어 있지만 이 컴퓨터에서 불러올 수 없었습니다.",
         "unavailable_model_missing": "음성 모델이 아직 이 컴퓨터에 없습니다. 아래에서 다운로드하세요.",
         "unavailable_apple_unsupported": "Apple Speech에는 macOS 26 이상이 필요합니다. 대신 로컬 제공자를 선택하세요.",
-        "unavailable_apple_needs_toolchain": "Apple Speech에는 Xcode 명령줄 도구가 필요합니다. 설치한 뒤 이 페이지를 다시 불러오세요."
+        "unavailable_apple_needs_toolchain": "Apple Speech에는 Xcode 명령줄 도구가 필요합니다. 설치한 뒤 이 페이지를 다시 불러오세요.",
+        "decoder_fetch_prompt": "{{productName}}이(가) 이 컴퓨터용으로 다이제스트가 검증된 사본을 받아올 수 있어 손으로 설치할 것이 없습니다.",
+        "download_decoder": "디코더 다운로드",
+        "decoder_download_failed_reason": "디코더 다운로드에 실패했습니다: {{error}}",
+        "let_the_agent_fix_it": "{{productName}}에게 맡기기",
+        "decoder_failure_unknown": "보고되지 않음",
+        "decoder_agent_prompt": "{{productName}}이(가) 음성 녹음을 전사하는 데 필요한 오디오 디코더(ffmpeg)를 설치하지 못했습니다. 이 호스트에서 동작하도록 해 주세요.\n\n실패한 내용: {{code}} — {{detail}}\n호스트: {{os}} {{arch}}\n\n{{productName}}은(는) 바이트가 고정된 SHA-256 다이제스트와 일치하는 ffmpeg만 실행하며, 찾는 위치는 정확히 다음뿐입니다: /usr/local/bin, /opt/homebrew/bin, 이 운영체제 자체의 프로그램 디렉터리, 그리고 <data home>/models/ffmpeg/에 있는 다이제스트 검증 디코더 저장소. 경로는 결코 신뢰의 근거가 아니므로 ~/.local/bin은 의도적으로 신뢰하지 않으며 거기에 둔 복사본은 무시됩니다.\n\n이 호스트에 실제로 필요한 것 — 패키지 관리자, 소스에서 빌드, 또는 디코더 다운로드 재시도 — 을 파악하고, 권한 상승이 적절한지는 사용하기 전에 직접 판단하세요. 끝나면 GET /api/stt/status를 다시 확인하고 음성 설정 페이지가 더 이상 디코더 누락을 보고하지 않는지 확인하세요."
       },
       "teamsPanel": {
         "above_unlike_slack_the_bot_framework_has_no_outb": "위. Slack과 달리 Bot Framework에는\n 발신 전용 모드가 없습니다.",

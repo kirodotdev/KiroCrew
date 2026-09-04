@@ -653,6 +653,7 @@ from kiro_crew.dashboard.handlers.core import (  # noqa: E402, F401
     api_session_agents_list,
     api_shutdown,
     api_stt_config,
+    api_stt_ffmpeg_download,
     api_stt_prepare,
     api_stt_prewarm,
     api_stt_status,

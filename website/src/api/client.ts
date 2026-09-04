@@ -2933,6 +2933,10 @@ export const api = {
   // than in the middle of their first dictation. Returns as soon as the transfer
   // is under way; progress is read from `sttStatus`.
   sttPrepare: (model: string) => post('/api/stt/prepare', { model }).then(j),
+  // Fetch the audio decoder (ffmpeg) into the gateway's digest-verified store,
+  // for a source install whose OS ships no ffmpeg package. Same 202-then-poll
+  // shape as `sttPrepare`; progress arrives on `sttStatus().ffmpeg.download`.
+  sttFfmpegDownload: () => post('/api/stt/ffmpeg/download', {}).then(j),
   // Load the model and run one throwaway decode so the first real utterance does
   // not pay for the graph allocation. Fire-and-forget at every call site: a
   // failure only costs the latency it was meant to hide.

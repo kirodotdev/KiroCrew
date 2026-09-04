@@ -331,8 +331,14 @@ AWS client are the optional `voice` extra, installed as its own dependencies
 - Compressed audio still passes through ffmpeg internally: a voice note arrives
   as ogg/Opus and a browser recording as webm. Desktop releases bundle and verify
   a pinned decoder, so there is no separate FFmpeg installation step. Source
-  environments use a system FFmpeg from the fixed platform paths instead of an
-  executable inside an agent-writable project venv.
+  environments use a system FFmpeg from the fixed platform paths — never an
+  executable inside an agent-writable project venv — and where the host packages
+  none, **Settings > Voice offers a one-click decoder download** that fetches the
+  same pinned upstream bytes into `<data home>/models/ffmpeg/` and verifies them
+  against a built-in SHA-256 digest before anything is executed. The digest is the
+  trust anchor, so `~/.local/bin` is still not a place a decoder can be installed
+  for Kiro Crew's use. If that download fails, the page offers to hand the failure
+  to a chat session, which is given the host details and the trusted locations.
 
 #### Retired providers
 

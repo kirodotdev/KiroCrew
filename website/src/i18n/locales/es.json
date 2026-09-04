@@ -8055,6 +8055,7 @@
       "xhigh": "Muy alto"
     },
     "sttProviders": {
+      "downloading_decoder": "Descargando el decodificador de audio: {{pct}} ({{done}} de {{total}})",
       "downloading_speech_model": "Descargando el modelo de voz: {{pct}} ({{done}} de {{total}})",
       "stream_error_decode_failed": "El reconocimiento de voz no pudo terminar esta transcripción. Vuelve a dictarla.",
       "stream_error_max_duration": "El dictado alcanzó su límite de duración. Empieza una grabación nueva para continuar.",
@@ -13158,7 +13159,13 @@
         "unavailable_import_failed": "El reconocedor de voz está instalado, pero no se pudo cargar en este equipo.",
         "unavailable_model_missing": "El modelo de voz todavía no está en este equipo. Descárgalo abajo.",
         "unavailable_apple_unsupported": "Apple Speech necesita macOS 26 o posterior. Elige el proveedor local en su lugar.",
-        "unavailable_apple_needs_toolchain": "Apple Speech necesita las herramientas de línea de comandos de Xcode. Instálalas y vuelve a cargar esta página."
+        "unavailable_apple_needs_toolchain": "Apple Speech necesita las herramientas de línea de comandos de Xcode. Instálalas y vuelve a cargar esta página.",
+        "decoder_fetch_prompt": "{{productName}} puede descargar una copia verificada por resumen para esta máquina, así no hay que instalar nada a mano.",
+        "download_decoder": "Descargar decodificador",
+        "decoder_download_failed_reason": "La descarga del decodificador falló: {{error}}",
+        "let_the_agent_fix_it": "Que lo arregle {{productName}}",
+        "decoder_failure_unknown": "no informado",
+        "decoder_agent_prompt": "No se pudo instalar el decodificador de audio (ffmpeg) que {{productName}} necesita para transcribir grabaciones de voz. Haz que funcione en este host.\n\nQué falló: {{code}} — {{detail}}\nHost: {{os}} {{arch}}\n\n{{productName}} solo ejecuta un ffmpeg cuyos bytes coincidan con un resumen SHA-256 fijado, y busca exactamente en estos sitios: /usr/local/bin, /opt/homebrew/bin, los directorios de programas propios de este sistema operativo y su propio almacén de decodificadores verificado por resumen en <data home>/models/ffmpeg/. La ruta nunca es el ancla de confianza, así que ~/.local/bin NO es de confianza a propósito y se ignora cualquier copia que quede ahí.\n\nAverigua qué necesita realmente este host —un gestor de paquetes, una compilación desde el código fuente u otro intento de descarga del decodificador— y decide por tu cuenta si conviene usar privilegios elevados antes de hacerlo. Cuando termines, vuelve a comprobar GET /api/stt/status y confirma que la página de ajustes de Voz ya no informa de un decodificador ausente."
       },
       "teamsPanel": {
         "above_unlike_slack_the_bot_framework_has_no_outb": "más arriba. A diferencia de Slack, el Bot Framework no tiene un modo solo de salida.",

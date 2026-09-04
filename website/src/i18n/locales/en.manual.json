@@ -5132,7 +5132,13 @@
         "unavailable_import_failed": "The speech recogniser is installed but could not be loaded on this machine.",
         "unavailable_model_missing": "The speech model is not on this machine yet. Download it below.",
         "unavailable_apple_unsupported": "Apple Speech needs macOS 26 or newer. Choose the local provider instead.",
-        "unavailable_apple_needs_toolchain": "Apple Speech needs the Xcode command line tools. Install them, then reload this page."
+        "unavailable_apple_needs_toolchain": "Apple Speech needs the Xcode command line tools. Install them, then reload this page.",
+        "decoder_fetch_prompt": "{{productName}} can fetch a digest-verified copy for this machine, so nothing has to be installed by hand.",
+        "download_decoder": "Download decoder",
+        "decoder_download_failed_reason": "The decoder download failed: {{error}}",
+        "let_the_agent_fix_it": "Let {{productName}} fix it",
+        "decoder_failure_unknown": "not reported",
+        "decoder_agent_prompt": "The audio decoder (ffmpeg) that {{productName}} needs in order to transcribe voice recordings could not be installed. Please get it working on this host.\n\nWhat failed: {{code}} — {{detail}}\nHost: {{os}} {{arch}}\n\n{{productName}} only executes an ffmpeg whose bytes match a pinned SHA-256 digest, and it looks in exactly these places: /usr/local/bin, /opt/homebrew/bin, this operating system's own program directories, and its own digest-verified decoder store at <data home>/models/ffmpeg/. The path is never the trust anchor, so ~/.local/bin is deliberately NOT trusted and a copy left there is ignored.\n\nWork out what this host actually needs — a package manager, a build from source, or another attempt at the decoder download — and decide for yourself whether elevated privileges are appropriate before using any. When you are done, re-check GET /api/stt/status and confirm that the Voice settings page no longer reports a missing decoder."
       },
       "teamsPanel": {
         "active": "Active",
@@ -5692,6 +5698,7 @@
       "xhigh": "Extra High"
     },
     "sttProviders": {
+      "downloading_decoder": "Downloading the audio decoder: {{pct}} ({{done}} of {{total}})",
       "downloading_speech_model": "Downloading the speech model: {{pct}} ({{done}} of {{total}})",
       "stream_error_decode_failed": "Speech recognition could not finish this transcript. Dictate it again.",
       "stream_error_max_duration": "Dictation reached its length limit. Start a new recording to continue.",

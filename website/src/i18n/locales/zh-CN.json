@@ -7843,6 +7843,7 @@
       "xhigh": "超高"
     },
     "sttProviders": {
+      "downloading_decoder": "正在下载音频解码器：{{pct}}（{{done}} / {{total}}）",
       "downloading_speech_model": "正在下载语音模型：{{pct}}（{{total}} 中的 {{done}}）",
       "stream_error_decode_failed": "语音识别未能完成这段转写。请重新口述一次。",
       "stream_error_max_duration": "口述已达到时长上限。重新开始录制即可继续。",
@@ -12821,7 +12822,13 @@
         "unavailable_import_failed": "语音识别组件已安装，但在本机上无法加载。",
         "unavailable_model_missing": "本机上还没有语音模型。请在下方下载。",
         "unavailable_apple_unsupported": "Apple 语音需要 macOS 26 或更高版本。请改用本地提供方。",
-        "unavailable_apple_needs_toolchain": "Apple 语音需要 Xcode 命令行工具。请先安装，然后重新加载此页面。"
+        "unavailable_apple_needs_toolchain": "Apple 语音需要 Xcode 命令行工具。请先安装，然后重新加载此页面。",
+        "decoder_fetch_prompt": "{{productName}} 可以为这台机器获取一份经摘要校验的副本，无需手动安装。",
+        "download_decoder": "下载解码器",
+        "decoder_download_failed_reason": "解码器下载失败：{{error}}",
+        "let_the_agent_fix_it": "交给 {{productName}} 处理",
+        "decoder_failure_unknown": "未报告",
+        "decoder_agent_prompt": "{{productName}} 转写语音录音所需的音频解码器（ffmpeg）安装失败。请在这台主机上把它修好。\n\n失败原因：{{code}} — {{detail}}\n主机：{{os}} {{arch}}\n\n{{productName}} 只执行 SHA-256 摘要验证通过的 ffmpeg。查找范围限于以下位置：/usr/local/bin、/opt/homebrew/bin、系统默认程序目录，以及数据目录 <data home>/models/ffmpeg/。路径从不作为信任凭据，因此 ~/.local/bin 被有意排除在信任之外，放在那里的副本会被忽略。\n\n请判断这台主机真正需要什么——包管理器、从源码构建，或者再试一次解码器下载——并自行判断是否确有必要使用提权。完成后，重新检查 GET /api/stt/status，并确认语音设置页不再报告解码器缺失。"
       },
       "teamsPanel": {
         "above_unlike_slack_the_bot_framework_has_no_outb": "。与 Slack 不同，Bot Framework 没有\n              仅出站模式。",
