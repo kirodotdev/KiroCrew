@@ -54,27 +54,39 @@ A model outside this catalog is reachable through ``stt.model = "custom"`` plus
 ``stt.custom_model_url`` and ``stt.custom_model_sha256``, mirroring
 ``memory.embed_model_path``. It is NOT a weaker path: the caller supplies the
 digest instead of this module pinning it, and everything downstream is identical
--- https only, verified while streaming, written to the write-protected models
-directory only after the digest matches, and re-hashed on every load. What a
-custom model lacks is a published SIZE, so the pre-check that bounds a transfer
-falls back to an absolute ceiling (:data:`_CUSTOM_MAX_BYTES`) rather than being
-dropped.
+-- https only, digested while streaming, PUBLISHED at the path a loader reads only
+after the digest matches, and re-hashed on every load. Unverified bytes are staged
+inside the models directory in a ``.part`` file no loader looks at (see
+:data:`_STAGING_SUFFIX`), and the final path appears in one atomic rename once the
+digest has matched, so what a reader can open has always passed the pin.
+
+Two things a custom model does differently, both forced by having no published
+artifact behind it: it has no SIZE, so the pre-check that bounds a transfer falls
+back to an absolute ceiling (:data:`_CUSTOM_MAX_BYTES`) rather than being dropped;
+and its digest is part of its FILENAME (:attr:`WhisperModel.filename`), because a
+constant name over changing bytes is the one thing that would break this module's
+invariant that a path holds bytes which passed the pin.
 """
 
 from __future__ import annotations
 
 import asyncio
 import hashlib
+import http.client
 import logging
 import os
+import re
 import tempfile
+import urllib.error
+import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable
+from typing import IO, Callable
 
 from kiro_crew.atomic_write import replace_with_retry
 from kiro_crew.config.paths import config_dir
+from kiro_crew.url_redaction import redact_model_url
 
 logger = logging.getLogger(__name__)
 
@@ -154,6 +166,41 @@ class WhisperModel:
 
     @property
     def filename(self) -> str:
+        """The on-disk name. A custom model's carries its digest.
+
+        This module's invariant is that a PATH holds bytes which passed that
+        model's sha256. A catalog row upholds it for free: ``base`` names one fixed
+        artifact forever, so ``ggml-base.bin`` is an identity. ``custom`` names
+        whatever the operator's URL serves today, so the NAME is a constant while
+        the bytes behind it are not — and a constant path broke the invariant three
+        ways at once, all of them on the "operator corrects the pin" path:
+
+        - ``WhisperEngine.ensure_loaded`` keys residency on this path, so the OLD
+          weights stayed resident and the store was never asked to verify the new
+          ones. The correction took effect only after a restart.
+        - :func:`is_present` has no pinned size to check a custom model against, so
+          any non-empty file at the shared path reported the NEW model as already
+          downloaded.
+        - ``ModelStore._verified_on_disk`` deletes a file whose digest does not
+          match. One mistyped-but-well-formed digest therefore destroyed weights
+          that were fine, which on a machine that is offline is unrecoverable.
+
+        Putting the digest in the name fixes all three at the source rather than
+        patching each: a different pin is a different path, so it is a different
+        LoadedKey, it is correctly absent, and it cannot delete the file the
+        previous pin still names.
+
+        The WHOLE digest, not a prefix. A prefix is ample against collision, but
+        collision is not the risk being managed here — a typo is, and a prefix
+        leaves a typo in any character past it landing back on the good file's path
+        and deleting it. 64 characters make the mapping one-to-one, so no
+        single-character error can reach another pin's file.
+
+        Stays inside ``security._WHISPER_WEIGHT_NAME``, the shell fence over these
+        files, which admits any ``ggml-<alnum>[alnum._-]*.bin``.
+        """
+        if self.name == CUSTOM_MODEL:
+            return f"ggml-{CUSTOM_MODEL}-{self.sha256}.bin"
         return f"ggml-{self.name}.bin"
 
 
@@ -228,6 +275,14 @@ _ALIASES: dict[str, str] = {
 }
 
 
+#: Characters that make a URL unusable as an HTTP request target. ``http.client``
+#: refuses exactly this set (its ``_contains_disallowed_url_pchar_re``) — and its
+#: refusal is an ``InvalidURL`` whose message QUOTES the whole URL, which is how a
+#: signed query reached a log and a status field. Refused here instead, before the
+#: value is ever stored, so that exception cannot be raised at all.
+_DISALLOWED_URL_CHARS = re.compile(r"[\x00-\x20\x7f]")
+
+
 def valid_custom_url(value: object) -> str:
     """Return *value* if it is a usable custom model URL, else ``""``.
 
@@ -235,11 +290,45 @@ def valid_custom_url(value: object) -> str:
     what we accept, but plaintext would still leak which model an operator runs
     and let a network attacker waste the transfer. Empty is the normal "not
     configured" answer and is not an error.
+
+    Validated structurally rather than by prefix. ``startswith("https://")`` alone
+    accepted values no HTTP request can carry — an embedded space, a tab, a NUL, a
+    port that is not a number — and the refusal then came from ``http.client``,
+    whose ``InvalidURL`` message quotes the URL VERBATIM. That text is an exception
+    string, not one of this module's redacted messages, so it travelled unredacted
+    into the log and into ``ModelStore.status["error"]``, which Settings > Voice
+    reads back over ``GET /api/stt/status`` — carrying a pre-signed signature with
+    it. A URL rejected here never reaches :func:`_urlopen`, so that exception has no
+    way to be raised.
+
+    Surrounding whitespace is trimmed rather than refused, because a pasted value
+    carries it, but the trimmed value must contain none. The order matters:
+    ``urlsplit`` silently DELETES ASCII newlines and tabs, so the same check made
+    after parsing would pass a string ``urlopen`` still refuses.
     """
     if not isinstance(value, str):
         return ""
     url = value.strip()
-    return url if url.startswith("https://") and len(url) > len("https://") else ""
+    # A lower-case literal, not ``urlsplit().scheme == "https"``: ``urlsplit``
+    # lower-cases the scheme it reports, so accepting ``HTTPS://…`` here would store
+    # a value that ``_download_blocking``'s own prefix check then refuses.
+    if not url.startswith("https://"):
+        return ""
+    if _DISALLOWED_URL_CHARS.search(url) or any(ch.isspace() for ch in url):
+        return ""
+    try:
+        parts = urllib.parse.urlsplit(url)
+        host = parts.hostname or ""
+        # Read inside the guard: both attributes parse the authority lazily, so an
+        # unclosed IPv6 literal or a non-numeric port raises HERE, not above.
+        port = parts.port
+    except ValueError:
+        return ""
+    # The prefix above already pinned the scheme, so what is left to require is an
+    # authority: a host to connect to, and a port that is a usable number if given.
+    if not host or port == 0:
+        return ""
+    return url
 
 
 def valid_custom_sha256(value: object) -> str:
@@ -359,9 +448,12 @@ def is_present(model: WhisperModel) -> bool:
     file, and treating it as absent lets the next download overwrite it.
 
     A custom model has no pinned size, so presence is only "a non-empty file is
-    here". Nothing is lost: this question is "must this be downloaded", and what
-    decides whether the file is the RIGHT one is ``ModelStore._verified_on_disk``,
-    which hashes it on every load and deletes it when it does not match.
+    here". That is not the weaker check it reads as: a custom model's path carries
+    its digest (see :attr:`WhisperModel.filename`), so the file being AT this path
+    is already the statement that it was fetched for this pin. A different pin
+    asks about a different path and is correctly absent. What still guarantees the
+    bytes is ``ModelStore._verified_on_disk``, which hashes the file on every load
+    and deletes it when it does not match.
     """
     try:
         size = model_path(model).stat().st_size
@@ -387,6 +479,93 @@ ProgressFn = Callable[[int, int], None]
 
 class ModelDownloadError(RuntimeError):
     """A download did not produce a verified model file."""
+
+
+class _HttpsOnlyRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Follows a redirect only while it stays on https.
+
+    urllib's default handler admits an ``http``, ``https`` or ``ftp`` ``Location``
+    without distinction, so an https address that answers 30x with an ``http://``
+    one is followed silently and the weights then cross the network in cleartext.
+    The https check on the address we were GIVEN cannot see that: it inspects the
+    FIRST hop, and every hop after it is chosen by whoever answered. The sha256 pin
+    is no help either — it establishes that the BYTES are the pinned ones, which is
+    a different claim from the transfer having been private, and it is only settled
+    once the last plaintext byte has already arrived.
+
+    Raises rather than returning ``None``. Both stop the redirect, but a ``None``
+    falls through to urllib's default error handler and surfaces an opaque
+    ``HTTP Error 302: Found``, which reads like a broken server instead of a
+    refusal made on purpose.
+    """
+
+    def redirect_request(
+        self,
+        req: urllib.request.Request,
+        fp: IO[bytes],
+        code: int,
+        msg: str,
+        headers: http.client.HTTPMessage,
+        newurl: str,
+    ) -> urllib.request.Request | None:
+        # Scheme-parsed rather than a `startswith`, because this string is the
+        # server's to choose: a scheme is case-insensitive, so `HTTPS://` is a
+        # legitimate hop that a literal prefix test would refuse.
+        if urllib.parse.urlsplit(newurl).scheme.lower() != "https":
+            # Redacted, not interpolated: a `Location` is the far end's to spell, so
+            # it can put a credential in the userinfo, the path or the query of the
+            # address it sends us to and have this refusal write it to the log.
+            raise ModelDownloadError(
+                f"refusing a non-https redirect to: {redact_model_url(newurl)}"
+            )
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+def _urlopen(url: str, timeout: float) -> IO[bytes]:
+    """Open *url* for reading, refusing any redirect that leaves https.
+
+    A private opener rather than :func:`urllib.request.urlopen`, whose process-wide
+    one carries the permissive redirect handler above and accepts no policy
+    argument. Built per call: instantiating a handful of handlers is nothing beside
+    a transfer measured in hundreds of megabytes, and it leaves no opener shared
+    between two concurrent downloads.
+
+    This is the module's one network seam, so the redirect policy covers the
+    catalog download as well as a custom one. The catalog needs it just as much:
+    :data:`MODEL_URL_ENV` points that path at an arbitrary mirror, and the
+    publisher's own address redirects to a CDN, which is why the answer here is
+    "https only" and not "no redirects".
+
+    It is also the one place a transport exception can quote the URL, so every one
+    is re-raised with the address REDACTED. ``valid_custom_url`` already refuses the
+    values that make ``http.client`` raise an ``InvalidURL`` naming the whole URL,
+    but that check guards one of three ways an address arrives here (a config value;
+    :data:`MODEL_URL_ENV`; a value stored before the validator existed), and an
+    exception's own text is not one of this module's redacted messages — it travels
+    verbatim into the log and into ``ModelStore.status["error"]``. Re-raising is what
+    makes the redaction a property of the seam rather than of the caller.
+    """
+    opener = urllib.request.build_opener(_HttpsOnlyRedirectHandler)
+    try:
+        # nosemgrep: python.lang.security.audit.dynamic-urllib-use-detected.dynamic-urllib-use-detected -- https enforced by the caller and by the handler above, and the payload is sha256-pinned
+        return opener.open(url, timeout=timeout)
+    except ModelDownloadError:
+        # The redirect handler's own refusal, raised from inside `open`. Already
+        # redacted, and re-wrapping it would replace the reason with "download
+        # failed (ModelDownloadError)".
+        raise
+    except urllib.error.HTTPError as exc:
+        # The status code is the diagnostic here and it is an integer, so it is kept
+        # while `str(exc)` — which an error page or a proxy can shape — is not.
+        raise ModelDownloadError(
+            f"download failed (HTTP {exc.code}) from {redact_model_url(url)}"
+        ) from exc
+    except Exception as exc:
+        # The class name, never `str(exc)`: `InvalidURL` quotes the whole URL, and
+        # what another transport error interpolates is not this module's to predict.
+        raise ModelDownloadError(
+            f"download failed ({type(exc).__name__}) from {redact_model_url(url)}"
+        ) from exc
 
 
 def _sha256_file(path: Path) -> str:
@@ -435,8 +614,9 @@ def stream_pinned_payload(
     length check is skipped -- but the transfer is still bounded, because the
     digest is the trust anchor and a digest is only known to be wrong once the
     last byte has arrived, far too late to stop a mirror from filling the disk.
-    An empty body is refused either way. Passing neither is a programming error
-    and raises, so no call can produce an unbounded transfer.
+    A short or empty unpinned body is then caught by the digest rather than by a
+    length check. Passing neither bound is a programming error and raises, so no
+    call can produce an unbounded transfer.
 
     Raises :class:`ModelDownloadError` on a refusal; the transport's own errors
     (an unreachable host, an HTTP status, the stall timeout) propagate unchanged
@@ -445,7 +625,10 @@ def stream_pinned_payload(
     if not url.startswith("https://"):
         # The pin bounds what we accept, but plaintext would still leak which
         # artifact an operator uses and let a network attacker waste the transfer.
-        raise ModelDownloadError(f"{label}: refusing a non-https URL: {url}")
+        # Redacted, not interpolated: for a custom model this address is an
+        # operator-supplied config value, so it can carry a credential in its
+        # userinfo, path or query, and this refusal is written to the log.
+        raise ModelDownloadError(f"{label}: refusing a non-https URL: {redact_model_url(url)}")
     ceiling = expected_size or max_bytes
     if ceiling <= 0:
         # Raised rather than defaulted: a silent fallback ceiling here would be a
@@ -453,12 +636,12 @@ def stream_pinned_payload(
         raise ValueError(f"{label}: expected_size or max_bytes must bound the transfer")
     digest = hashlib.sha256()
     written = 0
-    with (
-        # Inside the parentheses, immediately above the call: `nosemgrep` only
-        # covers its own line and the next one.
-        # nosemgrep: python.lang.security.audit.dynamic-urllib-use-detected.dynamic-urllib-use-detected -- https enforced above and the payload is sha256-pinned
-        urllib.request.urlopen(url, timeout=_NETWORK_STALL_TIMEOUT_SECS) as response,
-    ):
+    # `_urlopen`, never `urllib.request.urlopen`: the module-wide opener follows a
+    # redirect OFF https and quotes the URL verbatim in transport errors. Both
+    # matter to every caller of this helper, not just the whisper one -- the
+    # decoder wheel is fetched from a mirror that redirects too -- so the seam
+    # belongs here rather than around one call site.
+    with _urlopen(url, timeout=_NETWORK_STALL_TIMEOUT_SECS) as response:
         while True:
             if should_cancel is not None and should_cancel():
                 raise ModelDownloadError("cancelled")
@@ -489,12 +672,12 @@ def stream_pinned_payload(
     # Only a SHORT response can reach this now; the oversized case fails inside the
     # loop. Kept as a distinct check because a truncated transfer is the common
     # failure (a dropped connection) and deserves its own message. With no pinned
-    # length there is nothing to compare against, so an empty body is the only
-    # truncation detectable before the digest -- which catches every other one.
+    # length there is nothing to compare against, so a truncated custom download --
+    # an empty body included -- is left to the digest below, which catches every
+    # one of them. A separate emptiness check here would be a second way to say
+    # "the bytes are not the pinned artifact".
     if expected_size and written != expected_size:
         raise ModelDownloadError(f"{label}: expected {expected_size} bytes, received {written}")
-    if not written:
-        raise ModelDownloadError(f"{label}: the response carried no bytes")
     actual = digest.hexdigest()
     if actual != expected_sha256:
         raise ModelDownloadError(

@@ -58,6 +58,7 @@ from kiro_crew.stt.models import DEFAULT_MODEL as _STT_DEFAULT_MODEL
 from kiro_crew.stt.models import resolve as _resolve_stt_model
 from kiro_crew.stt.models import valid_custom_sha256 as _valid_stt_custom_sha256
 from kiro_crew.stt.models import valid_custom_url as _valid_stt_custom_url
+from kiro_crew.url_redaction import redact_model_url as _redact_stt_url
 
 logger = logging.getLogger("kiro_crew.config.loader")
 
@@ -3737,11 +3738,21 @@ def _validated_stt_custom_url(value: object) -> str:
 
     Stored as validated rather than raw so what is read back is what is in force —
     the same contract the millisecond bounds keep. A rejected value is dropped, not
-    corrected: there is no near-miss reading of a model URL.
+    corrected: there is no near-miss reading of a model URL, and a value that is not
+    a well-formed https address is refused HERE so it can never reach a request (see
+    :func:`kiro_crew.stt.models.valid_custom_url`).
+
+    The rejected value is REDACTED before it is named. A `%r` here published a
+    credential-bearing URL — userinfo, a tokenised path, or a pre-signed query —
+    into the log, and rejection is precisely when that happened, so the diagnostic
+    was the leak. See :func:`kiro_crew.url_redaction.redact_model_url`.
     """
     url = _valid_stt_custom_url(value)
     if not url and value:
-        logger.warning("Ignoring stt.custom_model_url %r: it must be an https:// URL", value)
+        logger.warning(
+            "Ignoring stt.custom_model_url %s: it must be a well-formed https:// URL",
+            _redact_stt_url(value),
+        )
     return url
 
 
@@ -4095,6 +4106,14 @@ class SttConfig:
             "every load, so a mirror can serve the bytes but cannot substitute "
             "them. Both this and the digest must be set; otherwise `custom` "
             "degrades to the default model with a warning.",
+            # A model URL is a CREDENTIAL-BEARING field: `https://user:token@host/x`
+            # and a pre-signed `…?X-Amz-Signature=…` are both legitimate ways to
+            # serve a private model, and both survive `valid_custom_url`. Without
+            # this flag `_masked_config_dict` returns it verbatim from the
+            # un-owner-gated `GET /api/config/kirocrew`, which is exactly the leak
+            # the owner gate on the STT routes and `redact_model_url` exist to stop.
+            # The owner still reads the real value via owner-gated `GET /api/stt/status`.
+            sensitive=True,
         ),
     )
     custom_model_sha256: str = field(

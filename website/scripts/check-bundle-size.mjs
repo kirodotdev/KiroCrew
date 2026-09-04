@@ -88,14 +88,20 @@ export const CHUNK_BUDGETS = {
   // The app-core chunk: the dashboard shell plus everything eagerly imported
   // from it. The vendor split in vite.config.ts already extracts the heaviest
   // libraries; what remains is first-party code with no clean lazy boundary.
-  // Re-measured 2026-09-04: main drifted to 3201 KB (3,277,346 B, 546 B over
-  // the previous 3200 KB ceiling), so the gate began failing on the merge ref
-  // of every open PR rather than on a new library or surface — the same
-  // recurrence the `t` entry above documents. Attribution was measured, not
-  // assumed: main's tip alone, with no PR code, reproduces the failure.
-  // 5% headroom, matching the `all` and `t` entries' convention, so ordinary
-  // first-party growth does not re-trip this within days.
-  App: 3360 * KB, // measured 3201 KB on main @ 701f8f981 (~5% headroom)
+  // Re-measured 2026-09-04 at 3203 KB, and the 3121 KB note below was ~82 KB
+  // stale -- the same recurrence the `t` entry above describes, and for the same
+  // reason: this ceiling carried only ~2.5% headroom where this block's stated
+  // convention is ~5%, so main's own accumulated first-party code ate it.
+  // Attribution was measured, not assumed: main's tip alone, with none of this
+  // branch's code, builds a 3,278,163 B `App` and is therefore already 1,363 B
+  // OVER the 3,276,800 B ceiling, so the gate had begun failing on the merge ref
+  // of every open PR rather than on the new library or surface it exists to
+  // catch. This branch's Settings > Voice custom-model fields, their catalog
+  // keys across the 13 shipped locales and the generated settings-registry rows
+  // add 1,361 B on top of that, for 3,279,524 B measured here. Raised to ~5%
+  // headroom, matching the `all` and `t` entries' convention above, so the next
+  // eagerly-imported string does not re-trip this for the third time.
+  App: 3360 * KB, // measured 3203 KB on the merge ref @ 1e5cb9c74 (~5% headroom)
 
   // Markdown/math/syntax rendering stack (katex, highlight.js, remark/rehype)
   // -- one deliberate `manualChunks` bucket, see vite.config.ts.

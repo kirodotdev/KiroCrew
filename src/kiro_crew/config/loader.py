@@ -63,12 +63,6 @@ from kiro_crew.computer_use.types import MAX_TREE_DEPTH_LIMIT as _CU_MAX_TREE_DE
 from kiro_crew.computer_use.types import MAX_TREE_NODES_LIMIT as _CU_MAX_TREE_NODES
 from kiro_crew.computer_use.types import MIN_SCREENSHOT_MAX_PX as _CU_MIN_SCREENSHOT_MAX_PX
 
-# Post-split section internals are reached through the module: the name-level
-# `from kiro_crew.config.sections import (...)` block below is a FROZEN
-# pre-split snapshot (test_config_module_boundaries pins it), so a coercer added
-# after the split must not join it.
-from kiro_crew.config import sections as _sections
-
 # Pure path primitives live in the leaf module ``config.paths`` (stdlib-only,
 # no ``kiro_crew`` imports) so the modules that only need ``config_dir()`` can
 # import them from there without transitively pulling in the full loader (DTOs,
