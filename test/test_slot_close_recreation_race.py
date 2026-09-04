@@ -78,11 +78,24 @@ class _Req:
     def __init__(self, state, slot: str = NAME, body: dict | None = None) -> None:
         self.app = {"state": state}
         self.match_info = {"slot": slot}
+        self._has_body = body is not None
         self._body = body if body is not None else {}
 
     def get(self, key: str, default: str = "") -> str:
         del key
         return default
+
+    @property
+    def can_read_body(self) -> bool:
+        """Mirror ``aiohttp.web.BaseRequest.can_read_body``: unread body pending.
+
+        Every caller in this file omits ``body``, so the double must report the
+        same "nothing to read" outcome the real request would for a bodyless
+        request — that is what lets ``read_bounded_json(..., allow_absent=True)``
+        take its empty-object path instead of raising on a stand-in that never
+        modeled this property.
+        """
+        return self._has_body
 
     async def json(self) -> dict:
         return self._body
