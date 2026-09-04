@@ -1497,9 +1497,12 @@ class TestUploadGate:
 
         dispatcher, _, _ = _dispatcher({1})
         dispatcher.dashboard_state = SimpleNamespace(get_slot=lambda _name: None)
-        # Two args now: the gate takes the persisted probe as a PARAMETER rather
-        # than importing it, so `messaging` keeps its one-way dependency.
-        monkeypatch.setattr(ug, "_persisted_mode_is_restricted", lambda key, probe: True)
+        # The persisted probe is a PARAMETER rather than an import, so `messaging`
+        # keeps its one-way dependency; the third argument is the unknown-mode
+        # posture, which the upload ceiling leaves fail-closed.
+        monkeypatch.setattr(
+            ug, "_persisted_mode_is_restricted", lambda key, probe, unknown_denies=True: True
+        )
         assert await dispatcher._uploads_restricted("dashboard:ghost") is True
 
     @pytest.mark.asyncio
@@ -2982,8 +2985,11 @@ class TestARestrictedSessionWritesNothingAtAll:
                 if node.name not in functions:
                     continue
                 # Both shapes count: an early return (``_persist_turn``) and a
-                # guarded branch that answers the user (``_handle_title``).
-                if "is_restricted" not in ast.dump(node):
+                # guarded branch that answers the user (``_handle_title``). The
+                # dashboard-aware helper is named ``_session_restricted`` rather
+                # than ``privacy_mode.is_restricted``; both are explicit gates.
+                dump = ast.dump(node)
+                if "is_restricted" not in dump and "session_restricted" not in dump:
                     ungated.append(f"{channel}.{node.name}")
         assert not ungated, (
             "these write a durable title without checking the privacy mode, so a "

@@ -108,7 +108,9 @@ At startup the bot publishes the menu commands from `COMMAND_SPEC` through `setM
   refuses when `allowed_user_ids` contains several people, because the bot cannot
   tell which one owns the host-wide history.
 - `/title <text>` — rename this conversation, so its dashboard sidebar row reads
-  as something other than the first forty characters you happened to type.
+  as something other than the first forty characters you happened to type. On a
+  resumed dashboard session the live sidebar row and durable metadata change
+  together, so a later dashboard save cannot restore the old name.
 - `/cron` (or `/crons`) `list | pause <id> | resume <id> | remove <id>|all` — manage scheduled
   jobs. The same jobs the dashboard and Slack see.
 - `/spawn <task>` (or `/bg`) — run a task in a background subagent.
@@ -118,7 +120,11 @@ At startup the bot publishes the menu commands from `COMMAND_SPEC` through `setM
 - `/temporary` — this conversation reads and saves no memory: no memories or
   lessons are added to the prompt, and nothing is written to the transcript. A bare
   `/temporary` just marks the conversation; `/temporary <question>` marks it and
-  answers, the same as Slack's `!temporary`.
+  answers, the same as Slack's `!temporary`. While a dashboard session is resumed,
+  `/temporary` and `/incognito` are refused and any attached question is **not
+  processed**: the dashboard slot owns its memory mode, so changing only Telegram's
+  channel state would claim privacy while the persistent slot kept recording. Use
+  `/unlink` or `/new` first.
 - `/incognito` — this conversation MAY read memory but saves nothing. That is the
   whole difference from `/temporary`, and it is the reason for two commands:
   incognito keeps the context you have built up and leaves no trace, temporary does

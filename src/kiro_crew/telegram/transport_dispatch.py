@@ -84,7 +84,11 @@ from kiro_crew.messaging.session_resume import (
 )
 from kiro_crew.messaging.session_trust import add_trusted_session, is_session_trusted
 from kiro_crew.messaging.transport import InboundMessage
-from kiro_crew.messaging.upload_gate import uploads_restricted
+from kiro_crew.messaging.upload_gate import (
+    session_blocks_reads,
+    session_is_restricted,
+    uploads_restricted,
+)
 from kiro_crew.safety_override import safety_override
 from kiro_crew.security import redact, redact_local_paths
 from kiro_crew.sel import sel
@@ -535,8 +539,16 @@ class TelegramDispatcher:
             else None
         )
         decision = RoutingDecision()
-        wants_routing = (interpret_commands or bool(origin_tag)) and (
-            cmd not in _DETACH_EXEMPT_COMMANDS
+        # A HOST-scoped listing is not conversation work: `/spawn list` and
+        # `/task status` report on the whole box, so routing them through a resumed
+        # binding lets a stale or refused one withhold output that has nothing to do
+        # with that session. Asked of the argument, not the command name, because
+        # the same verb is conversation-scoped with a different argument.
+        lists_host = cmd is not None and lists_host_state(cmd, parse_command_argument(text))
+        wants_routing = (
+            (interpret_commands or bool(origin_tag))
+            and (cmd not in _DETACH_EXEMPT_COMMANDS)
+            and not lists_host
         )
         if wants_routing:
             async with self._routing_turn(routing_id) as queued:
@@ -611,6 +623,20 @@ class TelegramDispatcher:
         # apply below is the one place that can still honour it.
 
         if cmd in (privacy_mode.MODE_TEMPORARY, privacy_mode.MODE_INCOGNITO):
+            if resumed_key is not None:
+                # A dashboard slot owns its memory_mode. Marking only Telegram's
+                # process-local tracker would announce privacy while the persistent
+                # live slot kept recording the next turn. Runtime mode switching is
+                # not a dashboard capability, so fail visibly instead of inventing
+                # a second authority. This covers both a bare modifier and
+                # `/temporary <message>`: the message is NOT processed.
+                await self._reply(
+                    chat_id,
+                    "🔒 Privacy mode can't be changed while a dashboard session is "
+                    "resumed. Your message was NOT processed. Use /unlink or /new first.",
+                    thread=reply_thread,
+                )
+                return
             rest = parse_command_argument(text)
             if not rest:
                 applied = await privacy_mode.apply_mode(
@@ -838,7 +864,14 @@ class TelegramDispatcher:
                 # means "as if never picked". get_or_create gates its own model
                 # resolution on `model is None`, so passing "" would skip that
                 # and land on the provider factory's narrower fallback instead.
-                model=self._model_pref.get(route) or None,
+                #
+                # Scoped to a NATIVE turn. ``_model_pref`` is this Telegram route's
+                # own choice, and a resumed dashboard session already has a model of
+                # its own; handing the route's preference to a cold start would run
+                # that conversation under a model its owner never picked, silently
+                # and for every later turn. A resumed session therefore passes None
+                # and lets its own persisted model resolve.
+                model=(None if resumed_key is not None else self._model_pref.get(route) or None),
             )
             _acquired = True
             # Extraction's approved root is the provider's OWN resolved cwd, so a
@@ -882,7 +915,9 @@ class TelegramDispatcher:
                 # gate cannot cover: refusing to WRITE still leaves yesterday's
                 # memories and lessons in today's prompt. Incognito deliberately
                 # still reads — that is the documented difference between the two.
-                blocks_reads=privacy_mode.is_temporary(session_key),
+                # Resolved dashboard-aware, because a RESUMED session carries its
+                # mode on the slot rather than in this channel's tracker.
+                blocks_reads=await self._blocks_memory_reads(session_key),
                 # Who is speaking. Slack has always passed this; without it the
                 # model cannot address the user or tell two participants of a
                 # forum Topic apart. Already narrowed to Telegram's own username
@@ -996,24 +1031,37 @@ class TelegramDispatcher:
                     exc_info=True,
                 )
             try:
+                # Circular import: the dashboard package imports the channel
+                # transports on its boot path, so this edge only exists at call
+                # time. Same reason as the ``surface_dispatcher_session`` import
+                # below.
                 from kiro_crew.dashboard.channel_slots import project_channel_turn_live
 
-                mirror_mids = project_channel_turn_live(
-                    self.dashboard_state,
-                    session_key,
-                    text,
-                    accumulated,
-                    broadcast_user=True,
-                )
-                await asyncio.to_thread(
-                    self._persist_turn,
-                    session_key,
-                    text,
-                    accumulated,
-                    is_new_own_session,
-                    agent=agent,
-                    mirror_mids=mirror_mids,
-                )
+                # Decided HERE, on the loop, because a resumed dashboard session's
+                # restriction lives on its live slot (or, with the tab closed, in
+                # the persisted transcript) — neither is reachable from the worker
+                # thread the write runs in. BOTH paths below must be gated: the
+                # projection appends to a dashboard slot and marks it dirty, so a
+                # later slot flush would persist those rows even if this direct
+                # writer were skipped.
+                dashboard_restricted = await self._session_restricted(session_key)
+                if not dashboard_restricted:
+                    mirror_mids = project_channel_turn_live(
+                        self.dashboard_state,
+                        session_key,
+                        text,
+                        accumulated,
+                        broadcast_user=True,
+                    )
+                    await asyncio.to_thread(
+                        self._persist_turn,
+                        session_key,
+                        text,
+                        accumulated,
+                        is_new_own_session,
+                        agent=agent,
+                        mirror_mids=mirror_mids,
+                    )
             except Exception:
                 logger.warning(
                     "Telegram: persist_turn failed session=%s", session_key, exc_info=True
@@ -2009,6 +2057,58 @@ class TelegramDispatcher:
             return None
         return getattr(msg, "message_id", 0) or None
 
+    async def _blocks_memory_reads(self, session_key: str) -> bool:
+        """True when this session must take NO memory or lessons into its prompt.
+
+        The read counterpart of :meth:`_session_restricted`. ``temporary`` is the
+        only mode that blocks reads, and for a RESUMED ``dashboard:`` key that fact
+        lives on the slot, not in this channel's tracker — so
+        ``privacy_mode.is_temporary`` alone would let stored memories into the
+        model for a temporary dashboard session.
+        """
+        from kiro_crew.dashboard.handlers._shared import _probe_persisted_session
+
+        return await session_blocks_reads(
+            self.dashboard_state,
+            session_key,
+            persisted_probe=_probe_persisted_session,
+        )
+
+    async def _session_restricted(self, session_key: str) -> bool:
+        """True when this session is incognito or temporary, so nothing may persist.
+
+        The same predicate the upload ceiling reads
+        (:func:`kiro_crew.messaging.upload_gate.session_is_restricted`), asked here
+        before the durable history write. A resumed Telegram turn can carry a
+        ``dashboard:`` key whose restriction lives on its live slot rather than in
+        this process's channel trackers, which is exactly the case
+        ``privacy_mode.is_restricted`` cannot see.
+
+        The LIVE slot is the authoritative rung and the one the exposure needs: a
+        restricted tab that is open is exactly the case that would otherwise write.
+        With the tab closed this falls back to the persisted ``memory_mode``, which
+        restricts on an incognito/temporary marker AND on an unreadable mode whose
+        transcript EXISTS — an ambiguous stem or a header no normal session wrote,
+        where an incognito session can hide. ``unknown_denies`` is off here, unlike
+        the upload ceiling, only so a truly ABSENT record still records: nothing on
+        disk claims that session is restricted, and denying there would stop
+        recording every conversation not yet written. A legacy header missing the
+        field reads ``persistent``, so it never reaches the unknown case.
+
+        The persisted-transcript probe is passed IN for the same reason as in
+        :meth:`_uploads_restricted`: ``messaging`` may not import ``dashboard``, so
+        the import lives here and stays function-local because the dashboard
+        gateway imports the channel transports.
+        """
+        from kiro_crew.dashboard.handlers._shared import _probe_persisted_session
+
+        return await session_is_restricted(
+            self.dashboard_state,
+            session_key,
+            persisted_probe=_probe_persisted_session,
+            unknown_denies=False,
+        )
+
     async def _uploads_restricted(self, session_key: str) -> bool:
         """True when this session must not ship local file bytes to Telegram.
 
@@ -2166,14 +2266,15 @@ class TelegramDispatcher:
         # metadata write CREATES the transcript file, so on a `/temporary` or
         # `/incognito` conversation this one command would persist user-authored
         # content for a mode that promised not to. `_persist_turn` gates the same
-        # way, and so does Slack's own `/title`; this is the third write on the same
+        # way, and so does Slack's own `/title`; this is another write on the same
         # promise rather than a new rule.
         #
-        # The predicate is the channel's in-process tracker, NOT the transcript's
-        # `memory_mode` header: the dashboard deliberately writes an incognito
-        # transcript and marks it, discarding on close, so a gate down in
-        # `ConversationLog` would refuse a write that path is entitled to make.
-        if privacy_mode.is_restricted(titled_key):
+        # The shared predicate is required here because *titled_key* may be a
+        # RESUMED ``dashboard:`` key. ``privacy_mode.is_restricted`` is only the
+        # answer for Telegram-native conversations; it reads a channel-local
+        # process tracker that a dashboard slot never populates and therefore
+        # fails open for an incognito dashboard session.
+        if await self._session_restricted(titled_key):
             await self._reply(
                 chat_id,
                 "🔒 This conversation is private, so its name isn't saved.",
@@ -2181,7 +2282,17 @@ class TelegramDispatcher:
             )
             return
         try:
-            await asyncio.to_thread(self.conv_log.set_title, titled_key, title)
+            # Circular dependency: dashboard boot imports channel transports, so
+            # the channel-to-slot bridge stays local like the turn projection.
+            from kiro_crew.dashboard.channel_slots import rename_channel_title_live
+
+            renamed_live = await rename_channel_title_live(
+                self.dashboard_state,
+                titled_key,
+                title,
+            )
+            if not renamed_live:
+                await asyncio.to_thread(self.conv_log.set_title, titled_key, title)
         except Exception:
             logger.warning("telegram /title: set_title failed", exc_info=True)
             await self._reply(chat_id, "⚠️ Couldn't rename this conversation.", thread=thread)
@@ -2333,7 +2444,28 @@ class TelegramDispatcher:
             return
 
         if data.startswith("s:"):
-            await self._session_resume.choose(self.client, cb)
+            # The native session key is supplied by the DISPATCHER because only it
+            # knows this DM's dm_scope. Under ``dm_scope="unified"`` the native
+            # bucket is a ``unified:`` key, not a ``telegram:`` one, so the resume
+            # adapter cannot recognise its own outbound mirror by namespace and
+            # would demand a preparatory /unlink for one-click takeover.
+            press_route = self._route_key(
+                chat_type=cb.chat_type,
+                user_id=cb.user_id,
+                chat_id=cb.chat_id,
+                thread=cb.message_thread_id,
+            )
+            # Under the SAME per-route lock a message takes for its routing
+            # decision. A press and the message that follows it are independent
+            # Telegram tasks, so without this the message can resolve its session
+            # before the press has committed the binding — and its turn, with its
+            # transcript, lands in the native session the user just left.
+            async with self._routing_turn(
+                self._session_resume.expectation_id(cb.chat_id, self._route_thread(press_route))
+            ):
+                await self._session_resume.choose(
+                    self.client, cb, native_key=self._session_key(press_route)
+                )
             return
 
         # Route the callback to the same conversation identity its turn used so
@@ -2924,7 +3056,21 @@ class TelegramDispatcher:
         agent: str | None = None,
         mirror_mids: tuple[str, str] | None = None,
     ) -> None:
-        """Persist one atomic turn, deduplicating rows already projected live."""
+        """Persist one atomic turn, deduplicating rows already projected live.
+
+        ``privacy_mode.is_restricted`` is this channel's OWN privacy gate and is
+        checked here, at the only writer, so it covers the turn, the drained queue
+        and the steered continuation alike.
+
+        It is NOT the whole ceiling for a RESUMED dashboard session. That
+        predicate reads a process-local tracker which only an inbound CHANNEL
+        message populates, so it answers ``False`` for an incognito dashboard slot
+        and fails open. That rung is decided by the CALLER, through
+        :meth:`_session_restricted`, which skips this call entirely — it needs the
+        live slot registry and, failing that, an await on the persisted transcript,
+        neither reachable from the worker thread this runs in. A second caller must
+        make the same check before calling.
+        """
         if self.conv_log is None or privacy_mode.is_restricted(session_key):
             return
         with self.conv_log.atomic_appends(session_key):

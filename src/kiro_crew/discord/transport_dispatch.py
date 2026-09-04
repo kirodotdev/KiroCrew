@@ -83,7 +83,7 @@ from kiro_crew.messaging.link import (
 from kiro_crew.messaging.renderer import Renderer, SilentRenderer
 from kiro_crew.messaging.session_resume import persisted_session_agent
 from kiro_crew.messaging.transport import InboundMessage
-from kiro_crew.messaging.upload_gate import uploads_restricted
+from kiro_crew.messaging.upload_gate import session_is_restricted, uploads_restricted
 from kiro_crew.monitoring.completion import MonitorCompletionHook
 from kiro_crew.monitoring.models import MonitorDispatchResult
 from kiro_crew.safety_override import describe_grant_lifetime, safety_override
@@ -829,23 +829,33 @@ class DiscordDispatcher:
                 # Loop-side: put the turn in the live dashboard window FIRST so
                 # the dashboard's own save serializes it in chronological
                 # position instead of appending it to the foreign tail.
+                #
+                # Circular import: the dashboard package imports the channel
+                # transports on its boot path, so this edge only exists at call time.
                 from kiro_crew.dashboard.channel_slots import project_channel_turn_live
 
-                mirror_mids = project_channel_turn_live(
-                    getattr(self._session_resume, "dashboard_state", None),
-                    session_key,
-                    text,
-                    accumulated,
-                )
-                await asyncio.to_thread(
-                    self._persist_turn,
-                    session_key,
-                    text,
-                    accumulated,
-                    is_new_own_session,
-                    agent=agent,
-                    mirror_mids=mirror_mids,
-                )
+                # A resumed ``dashboard:`` key carries the dashboard slot's privacy
+                # mode, not a Discord-local one. Decide on the loop before either
+                # writer: project_channel_turn_live marks the slot dirty, so even
+                # skipping the direct append would let a later slot flush persist
+                # the restricted rows.
+                dashboard_restricted = await self._session_restricted(session_key)
+                if not dashboard_restricted:
+                    mirror_mids = project_channel_turn_live(
+                        getattr(self._session_resume, "dashboard_state", None),
+                        session_key,
+                        text,
+                        accumulated,
+                    )
+                    await asyncio.to_thread(
+                        self._persist_turn,
+                        session_key,
+                        text,
+                        accumulated,
+                        is_new_own_session,
+                        agent=agent,
+                        mirror_mids=mirror_mids,
+                    )
             except Exception:
                 logger.warning(
                     "Discord: persist_turn failed session=%s",
@@ -1569,6 +1579,36 @@ class DiscordDispatcher:
             # binding mutation does.
             self._session_resume._push_slots()
         await self.client.send_message(channel_id, reply)
+
+    async def _session_restricted(self, session_key: str) -> bool:
+        """True when this resumed session must leave no durable transcript.
+
+        Discord can carry a ``dashboard:`` key, whose restriction lives on the
+        dashboard slot rather than in a channel-local tracker. The shared
+        predicate is also the upload ceiling's answer, so a conversation cannot
+        refuse the file and then persist the text.
+
+        With the tab closed, history restricts on an incognito/temporary marker and
+        on an unreadable mode whose transcript EXISTS (an ambiguous stem, or a
+        header no normal session wrote) — that is where an incognito session hides.
+        ``unknown_denies`` is deliberately false here (and true for uploads) only
+        so a truly ABSENT record still records: nothing on disk claims that session
+        is restricted, and denying there would stop recording every conversation
+        whose transcript is not yet written. A legacy header missing the field
+        reads ``persistent``, so it never reaches the unknown case.
+
+        The persisted probe is injected to keep ``messaging`` from importing
+        ``dashboard``. This import stays local because dashboard boot imports the
+        channel transports.
+        """
+        from kiro_crew.dashboard.handlers._shared import _probe_persisted_session
+
+        return await session_is_restricted(
+            getattr(self._session_resume, "dashboard_state", None),
+            session_key,
+            persisted_probe=_probe_persisted_session,
+            unknown_denies=False,
+        )
 
     async def _uploads_restricted(self, session_key: str) -> bool:
         """True when this session must not ship local file bytes to Discord.

@@ -60,7 +60,7 @@ Slack's transport path is gated behind the `messaging.use_transport` config flag
 | `messaging/sessions_view.py` | The channel-neutral recent-sessions collector (`_collect_recent_sessions` + its off-loop form). Takes an explicit `sessions_dir` so a surface owning its own data-home override threads it in rather than shadowing this module's; `slack/sessions_view.py` does exactly that and keeps the Block Kit rendering |
 | `messaging/privacy_mode.py` | The `!temporary` / `!incognito` session privacy modes, keyed by **session key** — two bounded LRUs, the durable `SessionMap` flag, one `is_restricted` predicate, the token strippers, and the SEL audit with the channel as a parameter. See [Session privacy modes](#session-privacy-modes-privacy_modepy) |
 | `messaging/auto_title.py` | Conversation auto-titling — the claim-early LRU, the tool-free bounded background turn, the prompt, and the title-cleaning rules. Renaming the platform conversation is a caller-supplied callback. See [Auto-titling](#auto-titling-auto_titlepy) |
-| `messaging/upload_gate.py` | `uploads_restricted(dashboard_state, session_key, channel_type=)` — the restricted-session ceiling on outbound file uploads, plus `live_dashboard_slot`. Three-state ladder (non-`dashboard:` key allows, a LIVE slot answers off `is_restricted`, otherwise the PERSISTED transcript mode answers and an unreadable one DENIES), audited per channel. Discord and Telegram both route here |
+| `messaging/upload_gate.py` | `session_is_restricted(dashboard_state, session_key, persisted_probe=, unknown_denies=True)` — the shared incognito/temporary decision, `session_blocks_reads(...)` — its READ counterpart (only `temporary` blocks reads; `incognito` still reads), plus `uploads_restricted(...)` which adds the per-channel upload audit, plus `live_dashboard_slot`. Three-state ladder (non-`dashboard:` key answers off `privacy_mode`, a LIVE slot answers off `is_restricted`/`blocks_reads`, otherwise the PERSISTED transcript mode answers). `unknown_denies` decides an unreadable mode: uploads DENY it outright (bytes cannot be recalled), while the durable-history gate denies only when a transcript EXISTS but its mode cannot be resolved (an ambiguous stem, a header no normal session wrote) — that is where an incognito session can hide. A legacy header with no `memory_mode` reads `persistent` rather than unknown, so the only unknown history allows is a truly ABSENT record, where nothing on disk claims the session is restricted. Discord and Telegram both route uploads here; both resumed-turn paths also use it to gate live projection and durable history, and Telegram uses it for `/title` |
 | `messaging/session_trust.py` | The per-session tool-Trust grant store: `is_session_trusted`, `add_trusted_session(key, sessions=)`, `clear_trusted_sessions`. In memory only, so an ad-hoc auto-approve grant dies with the process. The grant has TWO halves and both are load-bearing: the in-memory mapping the driver reads, and the session's approval policy set to `auto`, because a spawned subagent reads its parent's policy and never this mapping. So it is a `key -> SessionManager` MAPPING rather than a set, which is what lets `clear_trusted_sessions` undo the policy half too (back to `""`, the same value the dashboard's untrust toggle writes) without its caller having to hand a manager back. **Every mutation goes through the API**: reaching the container directly is how a revoke came to drop one half and leave subagents trusted, and a mapping has no `.add`, so a half-grant is not expressible either. Named `session_trust`, not `trust`, so it cannot be confused with a connection-admission roster: this grant is about what ONE session's tools may skip, not about which principals may attach. Consumed only through `TurnDriver`'s `auto_approve_session` predicate, which runs BEHIND the keystone, governance and deny-list gates, so a hard DENY still refuses |
 | `messaging/link.py` | **Layer 3** — session-key namespacing (`session_key`/`canonical_key`/`legacy_key`/`is_legacy_slack_key`) + `ChannelLink` + DM-scope key derivation / `should_rotate_generation`, plus the in-channel `/link` ⇄ `/unlink` pair (`rebind_conversation_location` / `release_conversation_location`) |
 | `messaging/conversation.py` | `ConversationState` — per-conversation rotating *generation* bookkeeping (advanced by `/new` and idle/daily reset), seeded from the persisted session map |
@@ -895,8 +895,68 @@ opening the dashboard:
   `may_resume_from`: with several allowed users they remain outbound-only. The
   dispatcher rechecks ownership on every inbound route and callback, so a binding
   written under an earlier single-owner configuration cannot survive a roster
-  change as an authorization bypass. Forum Topics cannot enumerate or resume
+  change as an authorization bypass. The gate covers the durable expectation store
+  as well as the live map: a detached binding whose expectation survives resolves
+  no key and no ambiguity, yet the binder still builds a notice from the dashboard
+  session's TITLE, so for a non-owner ANY non-empty `RoutingDecision` becomes the
+  generic refusal, which names nothing. Its settlement is deliberately left OWED
+  rather than acknowledged by a message never delivered, so the real owner still
+  receives the notice. Forum Topics cannot enumerate or resume
   dashboard history.
+- **A restricted dashboard session resumed here writes no transcript.** The turn's
+  durable write is skipped when `upload_gate.session_is_restricted` reports the
+  resumed session incognito or temporary — the same predicate the upload ceiling
+  reads, so one conversation cannot refuse the file and then record the text.
+  `privacy_mode.is_restricted` is **not** sufficient on this path: it answers off a
+  process-local tracker that only an inbound CHANNEL message populates, so for a
+  `dashboard:` key it reports unrestricted and fails open. It remains the gate
+  inside `_persist_turn` for Telegram's own native conversations. The decision is
+  made on the loop, before either writer, because the live slot registry and the
+  persisted-transcript fallback are not reachable from the worker thread. A
+  restricted turn skips BOTH direct persistence and `project_channel_turn_live`:
+  projection marks the dashboard slot dirty, and a later dirty-slot flush would
+  otherwise persist the rows the direct writer refused. `/title` uses the same
+  dashboard-aware predicate because its metadata write creates the transcript. On
+  an unrestricted LIVE slot it updates `slot.title`, `_titled`, `_title_origin`
+  and `_title_epoch`, persists through the dashboard's epoch-aware title writer,
+  and broadcasts `slot_title`; writing only transcript metadata would let the
+  slot's next save restore its old title. `/temporary` and `/incognito` are
+  refused while resumed (including a modifier carrying a message, which is NOT
+  processed): runtime memory-mode switching is not a dashboard capability, and
+  marking only Telegram's channel tracker would promise privacy while the live
+  persistent slot kept recording. The user must `/unlink` or `/new` first.
+  The two ceilings deliberately differ on an UNREADABLE persisted mode
+  (`unknown_denies`): an upload denies every unknown, because shipping bytes
+  cannot be taken back, while history denies only an unknown whose transcript
+  EXISTS — an ambiguous stem matching several transcripts, or a header no normal
+  session wrote, which is exactly where an incognito session can hide. A legacy
+  header missing `memory_mode` reads `persistent`, not unknown, so the sole
+  unknown history allows is a truly absent record: nothing on disk claims the
+  session is restricted, and denying there would stop recording every
+  conversation whose transcript has not been written yet.
+- **Dashboard link claims BEFORE it announces.** `POST .../mirror-link` writes the
+  binding first, then sends "Session linked from dashboard" and the catch-up
+  transcript. The old order announced first and claimed last, which left a window
+  as long as the backfill takes — delivery is inline and one message per unit
+  against the transport's rate limit, roughly a second each on Telegram — during
+  which an inbound reply resolved no binding and ran in the channel's NATIVE
+  session, the one the notice had just said the user left. Claiming first follows
+  the endpoint's own reasoning that a binding can be unwound while posted messages
+  cannot: every failure path after the claim (a governance narrowing at the send
+  boundary or mid-backfill, a failed announcement) releases it, restoring the prior
+  link and opt-out rather than unlinking a session that was merely being rebound.
+  The claim and its release run in a worker thread, like the resume binder's, since
+  `batched_save` rewrites the whole map file on exit. A `ConversationOwnershipConflict`
+  now surfaces before anything is posted.
+- **A temporary resumed session reads no memory either.** `temporary` blocks memory
+  and lesson READS as well as writes, while `incognito` deliberately still reads —
+  that is the whole difference between the modes. `upload_gate.session_blocks_reads`
+  answers on the same three rungs (the channel tracker for a native key, the live
+  slot's `blocks_reads`, else the persisted mode, with unknown-on-an-existing-record
+  failing closed). `privacy_mode.is_temporary` cannot answer alone: it reads a
+  process tracker a dashboard slot never populates, so a resumed temporary session
+  would take yesterday's memories into today's prompt. The write ceiling does not
+  cover this — the leak is inbound, into the model, not outbound to disk.
 
 ## Telegram forum topics (per-Topic sessions)
 
@@ -1941,6 +2001,41 @@ An inbound resume binding lives on the bound session's `session_map.json` row. A
 **Store.** `$KIROCREW_HOME/trust/discord_resume_expectations.json` holds channel-id → `{key, title, version, retired}` rows under agent-blocked `trust/`, with an owner-only directory and `restrict_to_owner` file write because modes do not protect files on Windows. `retired` defaults false when loading an older row. Every filesystem step, including `config_dir()`, runs in a worker; an `asyncio.Lock` serializes read-modify-write without spanning Discord I/O.
 
 **Refuse before route.** `DiscordSessionResume.route` returns one `RoutingDecision` containing either the session key or a refusal. Plain turns and session-targeting commands use that decision once; drained turns keep their enqueue-time native decision. `!new`/`!unlink` release every exact-channel binding, `!sessions`/`!help` remain reachable for recovery, and tool approval dispatches no turn while retaining its nonce-keyed visible failure path. Four states run: no owner/no record; no owner/retired record; one owner/no record (bootstrap); one matching owner/active record. Four refuse: active record without owner (lost link, retire after notice), any owner different from the active record or present beside a retired record (announce and adopt after delivery), multiple owners, or a resolution that keeps changing.
+
+**Restricted resumed sessions.** Discord uses the same
+`upload_gate.session_is_restricted` decision as Telegram before both post-turn
+writers. A restricted dashboard turn skips the direct history append AND
+`project_channel_turn_live`; projection is a writer too because it marks the live
+slot dirty for a later flush. The LIVE slot is authoritative. With no open tab, a
+persisted incognito/temporary marker restricts, and so does an unknown mode whose
+transcript EXISTS (an ambiguous stem, or a header no normal session wrote) — that
+is where an incognito session hides. Unlike uploads, which deny every unknown,
+history allows only a truly ABSENT record, since a legacy header with no marker
+reads `persistent` and an absent one claims nothing. Discord offers no rename
+command, so there is no separate title writer to gate.
+
+**A failed pick restores what it displaced.** `SessionResumeController.choose`
+snapshots the channel's expectation before `record` overwrites it, and every
+failed bind path (settlement failure, a conflict re-check, a batch-write failure)
+compare-and-sets that snapshot back on the replacement's own version. Retiring the
+replacement instead would leave a DETACHED marker where an ACTIVE record used to
+be, and that record is the evidence a lost link still owes the user a notice — so
+the next message would route natively and the notice would never arrive. With no
+prior record, or an already-retired one, retiring remains the faithful undo.
+
+**The binding transaction runs off the event loop, and decides under the lock.**
+`batched_save` holds `session_map._MAP_LOCK` across its block and rewrites the whole
+map file on the way out, so both the commit and its rollback go through
+`asyncio.to_thread` — on the loop that write stalls every task, including the
+gateway and heartbeat. Each closure is await-free, because the lock is per-thread
+reentrant and an await inside a batch would let another coroutine into the critical
+section; `binder.lock` still serializes concurrent pickers. Because the dashboard
+and other channels bind WITHOUT that lock, the conflict/displaced decision and both
+restore snapshots are re-derived INSIDE the batch rather than reused from the loop:
+a rebind landing in the hand-off window would otherwise clear a key whose newer
+mirror the pick never saw. The rollback is conditional for the same reason — it runs
+in a second critical section, so it undoes a row only while that row still looks
+like this transaction's own work.
 
 **Versioned acknowledgement.** Settlement follows a confirmed send and compare-and-sets the quoted version, so a newer picker/dashboard record wins and failed delivery settles nothing. A delivered detach replaces the active record with a durable retired marker in one write: no owner may route natively, while an owner racing the write still meets retained evidence and is refused before adoption. This avoids a clear-then-restore transaction whose compensating write could fail after evidence was deleted. **Persistence is fail-closed.** Memory publishes only after a durable write; only an absent file means empty, while I/O, UTF-8, JSON, shape, non-integer version, or non-boolean retired errors refuse routing. A pick records before binding. `!unlink`/`!new` serialize map removal, forced off-loop write, and versioned expectation retirement against pickers. Failed forced writes remain owed, keep the active expectation, and visibly fail the command; a later retirement failure costs one self-retiring notice rather than a silent resume.
 

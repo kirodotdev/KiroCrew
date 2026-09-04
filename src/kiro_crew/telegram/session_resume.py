@@ -11,6 +11,7 @@ from kiro_crew.messaging.renderer import display_safe
 from kiro_crew.messaging.session_resume import ResumeReleaseError  # noqa: F401  (re-export)
 from kiro_crew.messaging.session_resume import (
     PICKER_LIMIT,
+    SETTLE_NOTHING,
     InboundResolution,
     ResumeCopy,
     RoutingDecision,
@@ -175,8 +176,26 @@ class _TelegramResumeSurface:
         )
 
 
+def _decision_says_anything(decision: RoutingDecision) -> bool:
+    """Whether the binder produced anything beyond "run natively, nothing owed".
+
+    Enumerated rather than compared against a pristine ``RoutingDecision``, so a
+    field added later is a visible edit here instead of silently reading as empty.
+    ``observed`` is excluded on purpose: it is the live map state this side already
+    holds, not something the binder disclosed.
+    """
+    return bool(
+        decision.resumed_key is not None
+        or decision.refusal is not None
+        or decision.settle != SETTLE_NOTHING
+        or decision.described is not None
+        or decision.adopt_key
+        or decision.adopt_title
+    )
+
+
 class TelegramSessionResume:
-    """List dashboard sessions and bind one to a Telegram chat or Topic."""
+    """List dashboard sessions and bind one to the single operator's private DM."""
 
     def __init__(
         self,
@@ -240,15 +259,29 @@ class TelegramSessionResume:
     ) -> RoutingDecision:
         link = self.link_for(chat_id, thread_id)
         resolution = self._binder.resolve_inbound(link)
-        if (resolution.key is not None or resolution.ambiguous) and not self.is_owner(
-            user_id, chat_id, chat_type
-        ):
+        owner = self.is_owner(user_id, chat_id, chat_type)
+        if (resolution.key is not None or resolution.ambiguous) and not owner:
             return RoutingDecision(refusal=_ROUTE_OWNER_REFUSAL, observed=resolution)
-        return await self._binder.route(
+        decision = await self._binder.route(
             self.expectation_id(chat_id, thread_id),
             link,
             self._title_of,
         )
+        # The live-binding check above cannot stand alone: the binder ALSO answers
+        # from the durable expectation store, so a binding that was detached while
+        # its expectation survives resolves no key and no ambiguity, yet still
+        # produces a notice built from the dashboard session's TITLE. Reached by a
+        # non-owner — a single-owner binding detached, then a multi-user allow-list
+        # configured — that notice discloses host-wide history to someone the
+        # single-owner rule exists to exclude.
+        #
+        # So a non-owner gets the generic refusal for ANY non-empty decision, which
+        # names nothing. Deliberately including a settlement obligation: it stays
+        # OWED rather than being acknowledged by a message that was never
+        # delivered, so the owner still receives it.
+        if not owner and _decision_says_anything(decision):
+            return RoutingDecision(refusal=_ROUTE_OWNER_REFUSAL, observed=resolution)
+        return decision
 
     async def settle(
         self,
@@ -282,16 +315,26 @@ class TelegramSessionResume:
                 logger.debug("Telegram resume: title lookup failed", exc_info=True)
         return title or session_key.removeprefix("dashboard:")
 
-    def _native_origin_keys(self, link: ChannelLink) -> frozenset[str]:
+    def _native_origin_keys(self, link: ChannelLink, native_key: str = "") -> frozenset[str]:
         """Outbound occupants that are native generations of this Telegram DM.
 
         A dashboard session explicitly mirrored to the same DM is not an origin
         mirror and must remain protected. Legacy origin rows are resolved through
         ``channel_key_for_stem`` before applying the same canonical-key test.
+
+        *native_key* is the dispatcher's own key for this chat and is matched
+        DIRECTLY, because the namespace test below cannot recognise every scope: with
+        ``dm_scope="unified"`` the native bucket is a ``unified:`` key, so without
+        this a one-click takeover would refuse and demand a preparatory ``/unlink``.
+        Only an occupant of THIS link qualifies, so supplying a key that is not
+        bound here grants nothing.
         """
         keys: set[str] = set()
         stem_resolver = getattr(self.sessions, "channel_key_for_stem", None)
         for stored_key in self.sessions.find_mirror_sessions(link):
+            if native_key and stored_key == native_key:
+                keys.add(stored_key)
+                continue
             candidate = stored_key
             parsed = parse_session_key(candidate)
             if parsed is None and stored_key.startswith("dashboard:") and callable(stem_resolver):
@@ -323,7 +366,21 @@ class TelegramSessionResume:
             query=query,
         )
 
-    async def choose(self, client: "TelegramClient", callback: "TelegramCallback") -> None:
+    async def choose(
+        self,
+        client: "TelegramClient",
+        callback: "TelegramCallback",
+        *,
+        native_key: str = "",
+    ) -> None:
+        """Bind the pressed session, replacing this DM's own native mirror.
+
+        *native_key* is the dispatcher's own session key for this chat. It is
+        supplied rather than derived because only the dispatcher knows the
+        configured ``dm_scope``: under ``unified`` the native bucket is a
+        ``unified:`` key, which no amount of namespace matching here would
+        recognise as this DM's own outbound mirror.
+        """
         nonce, index = self._parse_choice(callback.data)
         link = self.link_for(callback.chat_id, callback.message_thread_id)
         await self._controller.choose(
@@ -339,7 +396,7 @@ class TelegramSessionResume:
             nonce=nonce,
             index=index,
             link=link,
-            replace_outbound_keys=self._native_origin_keys(link),
+            replace_outbound_keys=self._native_origin_keys(link, native_key),
         )
 
     @staticmethod
