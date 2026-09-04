@@ -7488,6 +7488,129 @@ class TestChatPermissionRequest:
         assert sels[0]["error"] == "unverified_shell"
 
     @pytest.mark.asyncio
+    async def test_kindless_mcp_tool_reaches_the_prompt_instead_of_auto_denying(self, monkeypatch):
+        """A backend that omits `kind` on an MCP tool_call must not cost the user
+        the tool. The frame's `_meta.kiro` transport identity earns the
+        _unverifiable_shell escape -- WITHOUT minting a shell classification, so
+        the low-fidelity gates elsewhere keep treating the title as unverified --
+        and the request reaches the normal approval prompt.
+
+        Drives the shared-runtime parser rather than hand-building the event: the
+        auto-deny came from the cache write being skipped, which an event built
+        with trusted identity fields would hide.
+        """
+        from kiro_crew.acp._dispatch import _build_tool_call_event, build_permission_event
+        from kiro_crew.acp.types import JsonRpcMessage
+
+        shell_cache: dict[str, bool] = {}
+        raw_cache: dict[str, dict] = {}
+        server_cache: dict[str, str] = {}
+        name_cache: dict[str, str] = {}
+        _build_tool_call_event(
+            {
+                "sessionUpdate": "tool_call",
+                "toolCallId": "tc-kindless",
+                "title": "Asking the knowledge service",
+                "rawInput": {"question": "why"},
+                "_meta": {"kiro": {"mcpServerName": "kb", "toolName": "ask"}},
+            },
+            None,
+            shell_cache=shell_cache,
+            raw_params_cache=raw_cache,
+            mcp_server_name_cache=server_cache,
+            tool_name_cache=name_cache,
+        )
+        event, _ = build_permission_event(
+            JsonRpcMessage(
+                id="req-kindless",
+                method="session/request_permission",
+                params={
+                    "toolCall": {
+                        "toolCallId": "tc-kindless",
+                        "title": "Asking the knowledge service",
+                    },
+                    "options": [
+                        {"optionId": "allow", "name": "Allow once", "kind": "allow_once"},
+                        {"optionId": "reject", "name": "Deny", "kind": "reject_once"},
+                    ],
+                },
+            ),
+            shell_cache=shell_cache,
+            raw_params_cache=raw_cache,
+            mcp_server_name_cache=server_cache,
+            tool_name_cache=name_cache,
+        )
+
+        assert event.shell_classified is False  # no classification was minted
+        assert event.is_shell is False
+        assert event.mcp_identity_trusted is True  # the escape's actual carrier
+        provider, sels, reads = await self._drive(monkeypatch, event=event, answer="a")
+        assert provider.calls == [("approve", "req-kindless", False)]
+        assert reads["n"] == 1
+        assert [s["outcome"] for s in sels] == ["allowed"]
+
+    @pytest.mark.asyncio
+    async def test_low_fidelity_child_without_identity_is_rejected_not_prompted(
+        self, monkeypatch, capsys
+    ):
+        """The admission boundary of the child-fidelity opt-in: a child event
+        whose params never reached the cache AND whose MCP identity is
+        unverified must be rejected before any prompt. The prompt for such an
+        event would carry only the agent-authored title -- for an edit, no Path
+        line -- so approval would consent to an undisclosed write."""
+        from kiro_crew.acp.types import EVENT_PERMISSION_REQUEST, AcpEvent
+
+        event = AcpEvent(
+            kind=EVENT_PERMISSION_REQUEST,
+            request_id=9,
+            title="Tidying up the notes file",
+            sub_session_id="child-a",
+            tool_kind="edit",
+            is_shell=False,
+            shell_classified=False,
+            raw_params_trusted=False,
+            options=[{"id": "allow", "label": "Allow Once"}],
+        )
+        assert event.child_low_fidelity is True
+        assert event.child_mcp_identity_trusted is False
+        provider, sels, reads = await self._drive(monkeypatch, event=event, answer="a")
+        assert provider.calls == [("reject", 9, False)]
+        assert reads["n"] == 0  # the human was never asked
+        assert sels[0]["error"] == "child_unverified_context"
+        assert "without verifiable security context" in capsys.readouterr().err
+
+    @pytest.mark.asyncio
+    async def test_identity_trusted_low_fidelity_child_still_reaches_the_prompt(
+        self, monkeypatch, capsys
+    ):
+        """The one admission through that boundary: a child MCP call whose
+        `_meta.kiro` identity survived the cache is presented -- the prompt
+        shows the non-forgeable server/tool pair, the same args-blind consent
+        contract the dashboard's interactive card provides."""
+        from kiro_crew.acp.types import EVENT_PERMISSION_REQUEST, AcpEvent
+
+        event = AcpEvent(
+            kind=EVENT_PERMISSION_REQUEST,
+            request_id=10,
+            title="Asking the knowledge service",
+            sub_session_id="child-a",
+            tool_kind="fetch",
+            is_shell=False,
+            shell_classified=False,
+            raw_params_trusted=False,
+            mcp_server_name="kb",
+            tool_name="ask",
+            mcp_identity_trusted=True,
+            options=[{"id": "allow", "label": "Allow Once"}],
+        )
+        assert event.child_low_fidelity is True
+        assert event.child_mcp_identity_trusted is True
+        provider, sels, reads = await self._drive(monkeypatch, event=event, answer="a")
+        assert provider.calls == [("approve", 10, False)]
+        assert reads["n"] == 1
+        assert "MCP tool: kb / ask" in capsys.readouterr().out
+
+    @pytest.mark.asyncio
     async def test_ordinary_title_and_command_display_unchanged(self, monkeypatch, capsys):
         # The control-stripping must not disturb ordinary text: this is the
         # control for the three cases above.
@@ -7760,9 +7883,14 @@ class TestChatProviderShutdown:
         def __init__(self):
             self.started = 0
             self.shutdowns = 0
+            self.child_fidelity_aware = False
+            self.fidelity_aware_at_start: bool | None = None
 
         async def start(self):
             self.started += 1
+            # Record the flag as start() sees it: the opt-in must precede the
+            # backend spawn, or an early child permission frame races the gate.
+            self.fidelity_aware_at_start = self.child_fidelity_aware
 
         async def shutdown(self):
             self.shutdowns += 1
@@ -7812,6 +7940,25 @@ class TestChatProviderShutdown:
         with pytest.raises(RuntimeError, match="backend died"):
             await cli_chat._chat("hello", None)
         assert provider.shutdowns == 1
+
+    @pytest.mark.asyncio
+    async def test_chat_opts_into_the_child_fidelity_contract_before_start(self, monkeypatch):
+        """The CLI implements the low-fidelity child downgrade (hook gate ->
+        _unverifiable_shell fail-close -> trusted-fields-only human prompt), so
+        _chat must opt in -- and BEFORE start(), or an early child permission
+        frame races the handle's fail-close gate and is rejected as
+        `child_low_fidelity_unaware_consumer`, the auto-deny this fix ends."""
+        import kiro_crew.cli_chat as cli_chat
+
+        provider = self._FakeProvider()
+        self._patch(monkeypatch, provider)
+
+        async def done(*a, **k):
+            return None
+
+        monkeypatch.setattr(cli_chat, "_send_and_print", done)
+        await cli_chat._chat("hello", None)
+        assert provider.fidelity_aware_at_start is True
 
     @pytest.mark.asyncio
     async def test_shutdown_runs_exactly_once_on_the_normal_path(self, monkeypatch):

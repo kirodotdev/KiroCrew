@@ -685,22 +685,31 @@ class AcpEvent:
         satisfy them.
 
         Requirements, each fail-closed on its cache: a child origin
-        (``sub_session_id``), a RESOLVED non-shell classification
-        (``shell_classified`` and not ``is_shell`` — an unclassified event
-        defaults to non-shell and must not pass as one; a shell tool's deny
-        gates need the command bytes this event lacks), the canonical
+        (``sub_session_id``), no RESOLVED shell classification to the contrary
+        (``not is_shell`` — a frame whose ``kind`` resolved to execute cached
+        True, and its deny gates need the command bytes this event lacks; the
+        transport identity must never waive that), the canonical
         ``mcp_server_name`` + ``tool_name`` pair recovered from the tool_call
         cache (empty on a miss, and populated only for genuinely MCP-served
         tools — a host shell/builtin can never carry a server name), and the
         explicit ``mcp_identity_trusted`` provenance flag set by the trusted
         population sites — non-emptiness alone is NOT proof of provenance, so
         an identity pair written by any future inline/agent-authored fallback
-        stays untrusted until that site earns the flag. A
-        non-child event returns False: parents never need the split.
+        stays untrusted until that site earns the flag.
+
+        ``shell_classified`` is deliberately NOT required: a backend may omit
+        ``kind`` on its MCP tool_call frames, leaving the shell cache
+        unwritten. The trusted transport identity is itself proof the call is
+        MCP-served and therefore not a host shell command — but that proof
+        stays confined to THIS identity-only property. Minting a resolved
+        ``shell_classified`` from it instead would flip ``child_low_fidelity``
+        to False and un-gate the content-matching auto-approve paths, letting
+        a kindless mutating call with a read-looking, agent-authored title
+        auto-approve without a prompt. A non-child event returns False:
+        parents never need the split.
         """
         return bool(
             self.sub_session_id
-            and self.shell_classified
             and not self.is_shell
             and self.mcp_identity_trusted
             and self.mcp_server_name

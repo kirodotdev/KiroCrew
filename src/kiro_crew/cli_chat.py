@@ -72,6 +72,12 @@ _USER_DENY_CODE = "user_denied"
 #: command could be recovered to gate on. Distinct from ``hook_deny``: the gate
 #: did not reject it, we refused to ASK about it.
 _UNVERIFIED_SHELL_CODE = "unverified_shell"
+#: A child permission request whose structured security context never reached
+#: the caches AND whose MCP identity is unverified. The prompt would show an
+#: agent-authored title with no trusted line under it — no command, no
+#: ``_meta.kiro`` identity, and (for an edit) no target path — so approval
+#: would consent to a description of the call rather than to the call.
+_CHILD_UNVERIFIED_CODE = "child_unverified_context"
 #: The authorization gate itself could not produce a verdict. A broken gate is
 #: not permission to run, so the request is refused and answered under its own
 #: code rather than being left pending.
@@ -272,6 +278,20 @@ async def _chat(message: str | None, model: str | None, agent: str | None = None
     provider: LLMProvider = build_provider_factory(cfg)(
         _CLI_SESSION_KEY, agent=agent_name, channel_id=channel_id
     )
+    # This consumer implements the low-fidelity child downgrade, so opt in:
+    # without this the handle-level fail-close gate rejects every low-fidelity
+    # child permission request before it reaches `_answer_permission`, audited
+    # as `child_low_fidelity_unaware_consumer` -- the auto-deny this file's
+    # `_unverifiable_shell` escape exists to end. The contract this assertion
+    # makes: no content-matching auto-approve runs here. `_answer_permission`
+    # is child-context fail-close (rejecting a low-fidelity child request
+    # without a verified identity) -> hook gate -> `_unverifiable_shell`
+    # fail-close -> interactive human prompt, and `_prompt_allows` shows the
+    # human only non-model-authored context (the cached command, the
+    # `_meta.kiro` MCP identity, the target path) -- a forged title has nothing
+    # to satisfy. The non-interactive `-m` path stays fail-closed too: it
+    # denies rather than prompts.
+    provider.child_fidelity_aware = True
     # Built once per process, not per request: a permission request must not
     # depend on a config read succeeding while the turn is parked.
     gate = _build_tool_gate(agent_name or "")
@@ -491,6 +511,19 @@ def _unverifiable_shell(event: LLMEvent) -> bool:
     # behind it. An absent classification is not a negative one -- the same
     # distinction ``child_low_fidelity`` already draws on this flag.
     if not event.shell_classified:
+        # One narrow escape: a trusted MCP transport identity. When the
+        # preceding ``tool_call``'s cache write recovered a non-empty
+        # ``_meta.kiro`` server/tool pair (``mcp_identity_trusted`` is set only
+        # by that cache-hit path, never from the permission payload), the call
+        # is proven MCP-served -- and an MCP-served tool is not a host shell
+        # command, so there are no command bytes for this gate to verify. A
+        # backend that omits ``kind`` on its MCP frames would otherwise have
+        # every such tool auto-denied here. This waives nothing shell-shaped:
+        # a frame whose ``kind`` resolved to execute cached ``is_shell`` True
+        # and took the trusted-signal branch above, where the shell gate's own
+        # deny-by-default backstop governs.
+        if event.mcp_identity_trusted and event.mcp_server_name and event.tool_name:
+            return False
         return True
     # Normalised before the shared check so a cosmetic variant still denies --
     # widening a fail-closed test is safe in a way widening an allow is not.
@@ -725,6 +758,33 @@ async def _answer_permission(
     """
     gate = gate or _build_tool_gate()
     title = event.title or "tool call"
+
+    # Fail-close FIRST for a child event with unverified context: opting into
+    # the child-fidelity contract (``child_fidelity_aware`` in ``_chat``) makes
+    # the session handle deliver EVERY low-fidelity child permission request
+    # here, not just the MCP-served ones this consumer can present honestly. A
+    # child edit whose parameters never reached the cache would render a prompt
+    # with no Path line -- an approval that executes an undisclosed write. The
+    # trusted-transport identity is the one context that survives an empty
+    # params cache (the ``_meta.kiro`` pair is backend-authored and shown to
+    # the human), so it is the admission boundary: everything else keeps the
+    # rejection semantics the handle itself applies to fidelity-unaware
+    # consumers. This is exactly the boundary
+    # ``AcpEvent.child_unconditional_grant_eligible`` hoists for the grant
+    # paths, so consume the property rather than re-spelling it.
+    if not event.child_unconditional_grant_eligible:
+        await _audit_refusal(gate, event, error=_CHILD_UNVERIFIED_CODE)
+        await provider.reject_tool(event.request_id)
+        try:
+            safe_title = _for_consent(title, stream=sys.stderr)
+            _print_permission_notice(
+                f"\nDenied automatically: {safe_title} came from a subagent "
+                "without verifiable security context.\n"
+                "   Ask the agent to retry the tool call."
+            )
+        except Exception:
+            logger.warning("Could not prepare the CLI child-denial notice", exc_info=True)
+        return
 
     # Off-loop: the gate resolves the active governance profile, which stats and
     # reads ``profiles/`` on the way to a verdict. That is a filesystem walk, not
