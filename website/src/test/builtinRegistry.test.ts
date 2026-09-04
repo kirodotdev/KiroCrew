@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { hasBuiltinComponent, getBuiltinComponent, BUILTIN_COMPONENT_REGISTRY } from '../apps/builtinRegistry'
+import { hasBuiltinComponent, getBuiltinApp, BUILTIN_COMPONENT_REGISTRY } from '../apps/builtinRegistry'
 
 
 describe('builtinRegistry', () => {
@@ -17,17 +17,18 @@ describe('builtinRegistry', () => {
     })
   })
 
-  describe('getBuiltinComponent', () => {
-    it('returns a lazy component for registered routes', () => {
-      const component = getBuiltinComponent('/channels')
-      expect(component).toBeDefined()
+  describe('getBuiltinApp', () => {
+    it('returns the component and owning app for registered routes', () => {
+      const entry = getBuiltinApp('/channels')
+      expect(entry).toBeDefined()
       // Lazy components have $$typeof and _payload
-      expect(component).toHaveProperty('$$typeof')
+      expect(entry!.component).toHaveProperty('$$typeof')
+      expect(entry!.appId).toBe('channels')
     })
 
     it('returns undefined for unregistered routes', () => {
-      expect(getBuiltinComponent('/nonexistent')).toBeUndefined()
-      expect(getBuiltinComponent('/chat')).toBeUndefined()
+      expect(getBuiltinApp('/nonexistent')).toBeUndefined()
+      expect(getBuiltinApp('/chat')).toBeUndefined()
     })
   })
 
@@ -39,9 +40,10 @@ describe('builtinRegistry', () => {
       }
     })
 
-    it('all values are lazy components', () => {
-      for (const component of Object.values(BUILTIN_COMPONENT_REGISTRY)) {
-        expect(component).toHaveProperty('$$typeof', Symbol.for('react.lazy'))
+    it('all values carry a lazy component and an appId', () => {
+      for (const entry of Object.values(BUILTIN_COMPONENT_REGISTRY)) {
+        expect(entry.component).toHaveProperty('$$typeof', Symbol.for('react.lazy'))
+        expect(typeof entry.appId).toBe('string')
       }
     })
   })

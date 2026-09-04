@@ -9,8 +9,10 @@
  *
  * This is a BUILTIN dashboard page (rendered by BuiltinAppRoute inside the main
  * React tree), so it uses same-origin `fetch` with the dashboard's session
- * cookie — NOT the app-sdk hooks, which require <AppApiProvider> and only wrap
- * standalone/installed apps via AppHost.
+ * cookie. The app-sdk data hooks need the SDK's scoped-API layer, which a builtin
+ * page has to mount for itself (`AppScopedApiProvider`, as `IncidentChat` in this
+ * app does for its embed); app IDENTITY is published for every builtin page by
+ * BuiltinAppRoute and needs no provider here.
  *
  * Backend contract: kiro_crew/apps/builtins/ops_mission_control/backend/routes.py
  * Design: docs/system-specs/modules/ops-mission-control.md
