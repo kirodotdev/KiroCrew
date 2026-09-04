@@ -116,10 +116,6 @@ class _Req:
         self.content = _Stream(self._raw)
 
     @property
-    def can_read_body(self) -> bool:
-        return bool(self._raw)
-
-    @property
     def content_length(self) -> int | None:
         return len(self._raw) or None
 
