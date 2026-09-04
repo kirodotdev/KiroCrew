@@ -226,6 +226,20 @@ class LLMProvider(ABC):
         return self.is_alive()
 
     @property
+    def process_instance(self) -> str:
+        """Identity of the provider's CURRENT child process instance.
+
+        ``""`` for providers not backed by a child process, and for a
+        process-backed provider whose child is gone. Process-backed providers
+        override this with a per-spawn token so a resource minted by one child
+        (an MCP OAuth authorize link, whose loopback listener and PKCE verifier
+        live in that process) can be recognized as dead once the child is —
+        equality across spawns must be impossible, which is why the ACP session
+        id (reused by resume on a new process) can never serve here.
+        """
+        return ""
+
+    @property
     def exit_code(self) -> int | None:
         """Last child-process exit code, or None if no process or still running."""
         return None

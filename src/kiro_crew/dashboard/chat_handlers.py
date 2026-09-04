@@ -62,8 +62,6 @@ from kiro_crew.dashboard.chat_persistence import (
 )
 from kiro_crew.dashboard.chat_runner import (
     _context_usage_payload,
-    _expire_mcp_oauth_banners,
-    _open_mcp_oauth_banner_mids,
     _run_chat,
     _start_next_queued_turn,
     context_entry_expired,
@@ -76,11 +74,13 @@ from kiro_crew.dashboard.chat_utils import (
     _MANUAL_CONTINUE_MSG,
     _MANUAL_RESUME_MSG,
     SYNTHETIC_RECOVERY_KIND,
+    _broadcast_expired_oauth_banners,
     _build_stream_chunk,
     _collapse_wire_rows,
     _edit_queued_by_id,
     _emit_agent_assignment,
     _history_key_for,
+    _live_child_instance,
     _normalize_model,
     _prepare_messages,
     _redact_for_display,
@@ -1951,13 +1951,13 @@ async def api_chat_slot_detail(request: web.Request) -> web.Response:
     queue_snapshot = [{"id": q["id"], "content": q["content"]} for q in slot._queue]
     context_fields = await _context_snapshot_fields(state, slot)
 
-    def _render() -> str:
+    def _render(live_child: str) -> str:
         # Off-loop on purpose. _prepare_messages applies a regex-heavy
         # redaction battery to the ENTIRE history; on a multi-MB session that
         # blocked the event loop past the loop-stall watchdog's exit budget
         # and hard-exited the gateway. json.dumps of the same payload is a
         # second loop-blocking cost, so it lives in the thread too.
-        prepared = _prepare_messages(messages, running)
+        prepared = _prepare_messages(messages, running, live_child=live_child)
         return json.dumps(
             {
                 "key": key,
@@ -1988,7 +1988,13 @@ async def api_chat_slot_detail(request: web.Request) -> web.Response:
     # reconnect + switchSlot + chat_done all refetch) queue here instead of
     # each burning a worker thread on the same multi-MB redaction pass.
     async with slot._detail_render_lock:
-        body = await asyncio.to_thread(_render)
+        # Resolved INSIDE the lock, immediately before the render: the wait
+        # behind another render can outlive a child, and a verdict sampled
+        # before it would serve the dead child's link one more time. On the
+        # event loop on purpose — the session pool is loop-owned and the probe
+        # is two dict lookups plus a returncode read.
+        live_child = _live_child_instance(state, slot)
+        body = await asyncio.to_thread(_render, live_child)
     return web.Response(text=body, content_type="application/json")
 
 
@@ -2443,10 +2449,6 @@ async def _reset_slot_session(
     stale-evidence failure that report exists to remove.
     """
     _unblock_pending_waits(state, slot)
-    # Snapshot the open OAuth banners BEFORE the teardown: a successor session can
-    # start and emit its own request while this one is shutting down, and a sweep
-    # taken afterwards would withdraw that live URL too.
-    doomed_oauth_banners = _open_mcp_oauth_banner_mids(slot)
     try:
         reloaded = await state.sessions.reset(session_key, skip_if_busy=skip_if_busy)
     except BaseException:
@@ -2479,19 +2481,12 @@ async def _reset_slot_session(
         # serialize_slots -- so it only fires when something was recorded.
         if slot.clear_mcp_report():
             state.broadcast_ws("mcp_report_update", {"slot": slot.key, "mcp_report": None})
-        # An open MCP OAuth banner rides the same gate for the same reason, and it
-        # is the widest of the three: every caller of this funnel destroys the child
-        # that owns the loopback listener and the PKCE verifier an open banner's
-        # Authorize link is redeemable against, so the link is dead the moment the
-        # teardown completes. The gateway generation does NOT change here, so the
-        # read-time gate in `_prepare_messages` cannot infer it (issue #7654).
-        #
-        # Gating on `reloaded` is load-bearing in the OTHER direction from the two
-        # above: a `skip_if_busy` decline leaves the session, its child, and its
-        # listener alive, so retiring here would take away a button that still
-        # works -- the one outcome worse than the dead link this fixes. Limited to
-        # the pre-teardown snapshot so a successor's banner is never swept.
-        _expire_mcp_oauth_banners(state, slot, doomed_oauth_banners)
+    # Freshness push for open tabs, OUTSIDE the `reloaded` gate on purpose: the
+    # helper is verdict-driven (it re-resolves the live child and applies the
+    # read gate's own predicate), so after a declined or failed teardown the
+    # still-live child's banners match and nothing is broadcast. See
+    # `_broadcast_expired_oauth_banners` for why no snapshot is needed.
+    _broadcast_expired_oauth_banners(state, slot)
     return reloaded
 
 
@@ -5931,7 +5926,9 @@ async def _live_slot_resume_response(
         window = _collapse_wire_rows(existing.messages)
         total = len(window)
         recent = window[-200:] if total > 200 else window
-        prepared = _prepare_messages(recent, existing.running)
+        prepared = _prepare_messages(
+            recent, existing.running, live_child=_live_child_instance(state, existing)
+        )
         # Raw index this window starts at: the frozen on-disk prefix plus the
         # in-memory rows it skipped. has_more is derived from the same number so
         # the flag cannot contradict the cursor -- counting only the in-memory
@@ -6533,7 +6530,9 @@ async def api_chat_slot_resume(request: web.Request) -> web.Response:
             # `total` is the full on-disk length here, so this already is the
             # raw index the next older page starts from.
             "next_before": total - len(recent),
-            "messages": _prepare_messages(recent, slot.running),
+            "messages": _prepare_messages(
+                recent, slot.running, live_child=_live_child_instance(state, slot)
+            ),
             "queue": [
                 {"id": q["id"], "content": _redact_for_display(q["content"])} for q in slot._queue
             ],

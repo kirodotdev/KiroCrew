@@ -3559,7 +3559,7 @@ class TestPrepareMessages:
             {"role": "done", "content": ""},
             {"role": "assistant", "content": "hi"},
         ]
-        out = _prepare_messages(msgs, running=False)
+        out = _prepare_messages(msgs, running=False, live_child="")
         roles = [m["role"] for m in out]
         assert "queued" in roles, "queued must be preserved for tab-switch indicator"
         assert "done" not in roles, "done must be stripped"
@@ -3573,7 +3573,7 @@ class TestPrepareMessages:
             {"role": "chunk", "content": "Hel"},
             {"role": "chunk", "content": "lo"},
         ]
-        out = _prepare_messages(msgs, running=True)
+        out = _prepare_messages(msgs, running=True, live_child="")
         assert out[-1]["role"] == "streaming"
         assert "Hel" in out[-1]["content"]
 
@@ -7376,7 +7376,7 @@ class TestPrepareMessagesInterleaved:
             {"role": "chunk", "content": "streaming"},
         ]
 
-        result = _prepare_messages(messages, running=True)
+        result = _prepare_messages(messages, running=True, live_child="")
 
         # user, assistant, tool, assistant, streaming (collapsed chunks)
         assert len(result) == 5
@@ -7400,7 +7400,7 @@ class TestPrepareMessagesInterleaved:
             {"role": "assistant", "content": "Segment 2", "cls": "msg msg-a"},
         ]
 
-        result = _prepare_messages(messages, running=False)
+        result = _prepare_messages(messages, running=False, live_child="")
 
         assert len(result) == 4
         roles = [m["role"] for m in result]
@@ -13382,7 +13382,7 @@ class TestRegenerateAndVariants:
         ]
         from kiro_crew.dashboard.chat import _prepare_messages
 
-        prepared = _prepare_messages(slot.messages, False)
+        prepared = _prepare_messages(slot.messages, False, live_child="")
         ai = [m for m in prepared if m.get("role") == "assistant"][0]
         for v in ai["variants"]:
             assert "AKIAIOSFODNN7EXAMPLE" not in v.get("content", "")

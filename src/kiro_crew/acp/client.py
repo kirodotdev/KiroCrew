@@ -28,6 +28,7 @@ import stat
 import subprocess as subprocess_mod
 import sys
 import time
+import uuid
 from collections import deque
 from contextlib import aclosing
 from pathlib import Path
@@ -2605,6 +2606,12 @@ class AcpClient:
         self._process: asyncio.subprocess.Process | None = None
         self._pid: int | None = None
         self._start_time: int | None = None  # process start time for PID recycling detection
+        # Names THIS spawn of the child, not the session it serves: a resume
+        # re-uses the session id on a brand-new process (see ensure_ready's
+        # session/load path), so the session id cannot distinguish the process
+        # that minted a resource from a successor that cannot honor it. Fresh
+        # per spawn, cleared with the process. See ``process_instance``.
+        self._process_instance: str = ""
         self._session_id: str | None = None
         self._next_id = 1
         self._buffer: deque[JsonRpcMessage] = deque(maxlen=100)
@@ -3246,6 +3253,20 @@ class AcpClient:
     def is_process_alive(self) -> bool:
         """True if the underlying process exists and has not exited."""
         return self._is_process_alive()
+
+    @property
+    def process_instance(self) -> str:
+        """Identity of the CURRENT child process instance (``""`` when none).
+
+        A fresh random id per spawn. This — not the ACP session id — is what a
+        resource minted by the child must be compared against later: a resume
+        carries the SAME session id onto a NEW process (``ensure_ready``'s
+        session/load path re-sets ``_session_id`` from ``resume_sid``), so a
+        session-id comparison fails open exactly when the minting process is
+        gone. Liveness is a separate question: this names which spawn, while
+        :meth:`is_process_alive` answers whether it still runs.
+        """
+        return self._process_instance if self._process is not None else ""
 
     @property
     def exit_code(self) -> int | None:
@@ -3995,6 +4016,11 @@ class AcpClient:
             self._discard_sandbox_cleanup()
             raise
         self._pid = self._process.pid
+        # Minted with the process it names, random rather than pid-derived: a
+        # pid can be reused by the OS, and the start-time disambiguator is not
+        # readable on every platform, so equality on a fresh random id is the
+        # comparison that cannot false-match across spawns.
+        self._process_instance = uuid.uuid4().hex[:16]
         _spawn_label = (
             CLAUDE_ACP_BIN
             if self._is_claude
@@ -4316,6 +4342,9 @@ class AcpClient:
         saved_child_pids = self._child_pids
         self._process = None
         self._pid = None
+        # The instance id names the process that just ended; a replacement spawn
+        # mints its own, so nothing may keep answering with this one in between.
+        self._process_instance = ""
         # A walk wedged on the dead PID's /proc entry can never speak for the
         # replacement process, so release it with the oracle it sampled into.
         self._retire_liveness_state()

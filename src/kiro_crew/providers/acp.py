@@ -1581,6 +1581,16 @@ class AcpProvider(LLMProvider):
         """True if the underlying OS process has not exited (ignores I/O staleness)."""
         return self._client.is_process_alive()
 
+    @property
+    def process_instance(self) -> str:
+        """Per-spawn identity of the client's current child process (see base).
+
+        A direct read on purpose: a `getattr` hedge would convert a future
+        wiring break into "no banner is ever live", indistinguishable from
+        correct expiry.
+        """
+        return self._client.process_instance
+
     def has_active_turn(self) -> bool:
         """True if a prompt is in flight (and not yet cancelled) on the client."""
         return bool(self._client) and self._client.has_active_turn()

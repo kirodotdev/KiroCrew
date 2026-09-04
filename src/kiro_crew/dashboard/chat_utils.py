@@ -2488,48 +2488,148 @@ def _collapse_wire_rows(messages: list[dict]) -> list[dict]:
 # provably gone. Every ACP child is a subprocess of the gateway, so the loopback
 # listener and the PKCE verifier that made the banner's URL redeemable died with it.
 #
-# In-memory ON PURPOSE, and random rather than sequential. `connections.warm`
-# documents where a counter leads: its generation restarts at 0 every boot, so a
-# stored `generation=1` compares equal to a different boot's `generation=1` and the
-# row is judged live when it is dead -- that bug already withdrew a URL whose
-# process and session were both alive. A fresh random id cannot collide with a
-# previous boot's, so the comparison stays correct with no bookkeeping and no
-# persisted state to migrate.
-_GATEWAY_GENERATION = uuid.uuid4().hex[:16]
+def _live_child_instance(state: "DashboardState", slot: "_ChatSlot") -> str:
+    """Process-instance identity of the live ACP child serving *slot*, or ``""``.
+
+    The verdict `_prepare_messages` needs to judge an open MCP OAuth banner: a
+    banner's Authorize link is redeemable only while the child process that
+    minted it is alive, because that process holds the loopback callback
+    listener and the PKCE verifier (see `_expire_dead_child_oauth_meta`).
+    Resolved here — on the event loop, where the session pool is in scope —
+    because `_prepare_messages` itself is synchronous, may run in a worker
+    thread, and has no ACP access.
+
+    Resolves the ACTIVE TURN's session key first and the slot's routing only
+    as a fallback, for the reason `_cancel_target` documents: a running turn
+    owns a stable identity, while ``linked_session_key`` is mutable underneath
+    it (a cron injection can rebind a live slot mid-turn). A banner minted
+    during that turn belongs to the turn's own child; re-deriving the key from
+    the routing would compare it against a different or absent provider and
+    withdraw a link that still works.
+
+    ``""`` covers every no-live-child case in one answer: no session in the
+    pool (idle sweep, RSS recycle, reset, gateway restart), a session whose
+    process has exited on its own, and a provider not backed by a process at
+    all. Never raises: a probe failure answers ``""``, which withdraws a
+    possibly-dead button rather than failing the read it rides on.
+    """
+    try:
+        key = getattr(slot, "_active_turn_session_key", "") or effective_session_key(slot)
+        provider = state.sessions.get_provider(key)
+        if provider is None or not provider.is_process_alive():
+            return ""
+        return str(getattr(provider, "process_instance", "") or "")
+    except Exception:
+        logger.debug("live-child probe failed for slot %s", slot.key, exc_info=True)
+        return ""
 
 
-def gateway_generation() -> str:
-    """The generation id of the running gateway process."""
-    return _GATEWAY_GENERATION
+def _broadcast_expired_oauth_banners(state: "DashboardState", slot: "_ChatSlot") -> None:
+    """Push the read-time gate's current verdict on *slot*'s OAuth banners to open tabs.
+
+    The gate in `_prepare_messages` runs only when a client FETCHES, so an
+    already-open tab keeps rendering a dead Authorize link until its next
+    refetch. This closes that window for the teardowns the dashboard can see:
+    call it after any step that may have ended the slot's child (a session
+    reset, an agent switch, a conversation discard, a watchdog recycle) and it
+    re-broadcasts the withdrawal frame for every open banner the gate now
+    judges dead.
+
+    Verdict-driven, not ordering-driven: it resolves the live child at call
+    time and applies the SAME predicate as the read gate, so it needs no
+    pre-teardown snapshot and no outcome gating. Called after a teardown that
+    failed or was declined, the child is still alive, the stamps still match,
+    and nothing is broadcast; a successor session's banner names the successor
+    child and is never swept. That is what lets a caller invoke it
+    unconditionally where the old write-time retirement needed a doomed-set
+    snapshot and a confirmed-teardown gate.
+
+    Deliberately does NOT rewrite the stored rows — the read gate remains the
+    one liveness mechanism and this is presentation freshness only. The frame
+    carries ``oauth_url: ""`` (not an absent key) because the client merges
+    incoming meta over the row it already has, and pre-upgrade JS keeps
+    rendering a link whose key was merely omitted. Best-effort: teardowns the
+    dashboard never observes (the idle sweep, a child exiting on its own) are
+    still caught by the read gate on the tab's next refetch.
+    """
+    # Candidates first, pool second: almost every slot holds no open banner,
+    # and the live-child probe reads the session pool — a side effect the
+    # common case must not pay (and one that would burn a pool read at every
+    # teardown site this helper rides).
+    candidates = [
+        message
+        for message in slot.messages
+        if message.get("role") == "mcp_oauth"
+        for meta in (message.get("meta") or {},)
+        if meta.get("oauth_url")
+        and not (meta.get("completed") or meta.get("failed") or meta.get("superseded"))
+    ]
+    if not candidates:
+        return
+    live_child = _live_child_instance(state, slot)
+    for message in candidates:
+        meta = message.get("meta") or {}
+        verdict = _expire_dead_child_oauth_meta("mcp_oauth", meta, live_child)
+        if verdict is meta:
+            # The gate returns the input unchanged when nothing applies — the
+            # banner is live, already terminal, or has no link to withdraw.
+            continue
+        new_meta = _redact_meta_for_role("mcp_oauth", verdict)
+        new_meta.pop("oauth_url", None)
+        # Meta only, no content override: the read gate rewrites nothing but
+        # meta, so a refetch serves the stored content with `expired` set and
+        # the client renders the expired branch from the meta alone. A content
+        # override here would diverge from what the next fetch says.
+        state.broadcast_ws(
+            "chat_message_update",
+            {
+                "slot": slot.key,
+                "ts": message.get("ts", ""),
+                "mid": str(meta.get("mid") or ""),
+                "meta": {**new_meta, "oauth_url": ""},
+            },
+        )
 
 
-def _expire_stale_generation_oauth_meta(role: str, meta: dict) -> dict:
-    """Present an `mcp_oauth` banner minted by a dead generation as terminal.
+def _expire_dead_child_oauth_meta(role: str, meta: dict, live_child: str) -> dict:
+    """Present an ``mcp_oauth`` banner whose minting child is gone as terminal.
 
-    A read-time gate, and it has to be read-time. The case it exists for is a hard
-    gateway restart: no code of ours runs at the moment the flow dies, so nothing
-    can write the terminal state when it becomes true. Revalidating on every read
-    is the same discipline `connections.mint.expire_dead_holder` already applies to
-    the mint feed, instead of trying to catch every way a flow can end.
+    A read-time gate, and it has to be read-time. The entity whose death
+    invalidates an Authorize link is the ACP child process that minted it — that
+    process holds the loopback callback listener and the PKCE verifier the code
+    is exchanged with. A child can die without any code of ours running at a
+    site that knows about banners: a hard gateway restart, the idle sweep, the
+    RSS recycle, or the child simply exiting. Revalidating on every read is the
+    same discipline ``connections.mint.expire_dead_holder`` already applies to
+    the mint feed, instead of trying to enumerate every way a flow can end.
+
+    ``live_child`` is the process-instance identity of the child CURRENTLY
+    serving the slot, resolved by the caller (empty when there is no live
+    child). It is a per-spawn token, never the ACP session id: a resume carries
+    the same session id onto a NEW process, so a session-id comparison would
+    fail open exactly when the minting process is gone.
 
     Withdraws the link only when ALL of these hold:
 
-    * the row still carries an `oauth_url` -- there is a live-looking button to take
-      away. A row without one has nothing to withdraw and is left untouched, which
-      is what keeps the two rejected-URL banners and an already-retired row alone.
-    * the row is not already terminal. `completed` / `failed` / `superseded` are
-      authoritative outcomes recorded by the process that observed them, and a
-      later read must not reinterpret them.
-    * the row's `gen` is not this process's.
+    * the row still carries an ``oauth_url`` — there is a live-looking button to
+      take away. A row without one has nothing to withdraw and is left
+      untouched, which is what keeps the two rejected-URL banners and an
+      already-retired row alone.
+    * the row is not already terminal. ``completed`` / ``failed`` /
+      ``superseded`` are authoritative outcomes recorded by the process that
+      observed them, and a later read must not reinterpret them.
+    * the row's ``child`` stamp does not name the live child.
 
-    A row carrying NO `gen` is treated as stale, and that is a deduction rather than
-    a guess: the stamp is written by the same build that reads it, so an unstamped
-    row was persisted by an older build -- and running this build means this process
-    replaced the one that wrote that row. Its child cannot still be alive. The
-    effect is that the fix also retires banners that went stale before it shipped.
+    A row carrying NO ``child`` stamp is treated as stale, and that is a
+    deduction rather than a guess: the stamp is written by the same build that
+    reads it, so an unstamped row was persisted by an older build — and running
+    this build means this process replaced the one that hosted that row's
+    child. The effect is that the fix also retires banners that went stale
+    before it shipped, including rows carrying only the older gateway-``gen``
+    stamp.
 
-    Returns the input dict unchanged when nothing applies, so the caller can use the
-    result unconditionally; only the withdrawing path copies.
+    Returns the input dict unchanged when nothing applies, so the caller can use
+    the result unconditionally; only the withdrawing path copies.
     """
     if role != "mcp_oauth":
         return meta
@@ -2537,7 +2637,8 @@ def _expire_stale_generation_oauth_meta(role: str, meta: dict) -> dict:
         return meta
     if meta.get("completed") or meta.get("failed") or meta.get("superseded"):
         return meta
-    if meta.get("gen") == gateway_generation():
+    child = meta.get("child")
+    if child and live_child and child == live_child:
         return meta
     out = dict(meta)
     out.pop("oauth_url", None)
@@ -2545,8 +2646,18 @@ def _expire_stale_generation_oauth_meta(role: str, meta: dict) -> dict:
     return out
 
 
-def _prepare_messages(messages: list[dict], running: bool) -> list[dict]:
-    """Prepare messages for API response."""
+def _prepare_messages(messages: list[dict], running: bool, *, live_child: str) -> list[dict]:
+    """Prepare messages for API response.
+
+    ``live_child`` is the process-instance identity of the ACP child currently
+    serving the slot ("" when none is alive) — see
+    :func:`_expire_dead_child_oauth_meta`. REQUIRED and keyword-only on
+    purpose: a caller that forgot it would silently withdraw every live OAuth
+    banner it renders, and no test would see the omission. Resolve it with
+    :func:`_live_child_instance` on the event loop, as close to the render as
+    possible (a verdict sampled long before use can name a child that has
+    since died, serving one stale read).
+    """
     out: list[dict] = []
     for m in _collapse_wire_rows(messages):
         role = m.get("role", "")
@@ -2588,8 +2699,8 @@ def _prepare_messages(messages: list[dict], running: bool) -> list[dict]:
             ]
         meta = parse_cls_meta(m.get("cls", ""))
         if meta is not None:
-            msg_out["meta"] = _expire_stale_generation_oauth_meta(
-                role, _redact_meta_for_role(role, meta)
+            msg_out["meta"] = _expire_dead_child_oauth_meta(
+                role, _redact_meta_for_role(role, meta), live_child
             )
         elif isinstance(msg_out.get("meta"), dict):
             # Redact the STORED meta too. Without this branch the stored dict
@@ -2597,8 +2708,8 @@ def _prepare_messages(messages: list[dict], running: bool) -> list[dict]:
             # reach the client exactly as loaded. This is the only guard on
             # meta for the slot-detail response (the load path does not
             # redact meta).
-            msg_out["meta"] = _expire_stale_generation_oauth_meta(
-                role, _redact_meta_for_role(role, msg_out["meta"])
+            msg_out["meta"] = _expire_dead_child_oauth_meta(
+                role, _redact_meta_for_role(role, msg_out["meta"]), live_child
             )
         out.append(msg_out)
     return out

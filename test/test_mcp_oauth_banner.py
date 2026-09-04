@@ -17,7 +17,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 import threading
 from unittest.mock import MagicMock, patch
@@ -32,16 +31,15 @@ from kiro_crew.dashboard.chat_runner import (
     _connections_managed_mcp_names,
     _drain_session_init_oauth_requests,
     _emit_mcp_oauth_request,
-    _expire_mcp_oauth_banners,
     _is_safe_oauth_url,
     _mark_mcp_oauth_completed,
-    _open_mcp_oauth_banner_mids,
     _supersede_open_mcp_oauth_banners,
 )
 from kiro_crew.dashboard.chat_utils import (
+    _broadcast_expired_oauth_banners,
+    _live_child_instance,
     _prepare_messages,
     _redact_meta_for_role,
-    gateway_generation,
 )
 from kiro_crew.dashboard.state import _ChatSlot
 from kiro_crew.mcp_utils import mcp_server_alias
@@ -703,70 +701,81 @@ class TestSupersededOAuthBanners:
         _emit_mcp_oauth_request(MagicMock(), slot, "miro", "https://mcp.miro.com/a")
         _emit_mcp_oauth_request(MagicMock(), slot, "miro", "https://mcp.miro.com/b")
 
-        prepared = _prepare_messages(list(slot.messages), running=False)
+        prepared = _prepare_messages(list(slot.messages), running=False, live_child="")
         stale = prepared[0]
         assert stale["meta"]["superseded"] is True
         assert not stale["meta"].get("oauth_url")
 
 
-# ── read-time generation gate (issue #7654) ──
+# ── read-time minting-child liveness gate (issues #7654, #8149) ──
 
 
-class TestExpiredByDeadGeneration:
+class TestExpiredByDeadChild:
     """A banner outlives the process whose listener made its URL redeemable.
 
-    The two reachable ways for that to happen announce nothing, so #7639's
-    supersede-on-a-newer-request path never fires: a gateway restart (every ACP
-    child is its subprocess and dies with it) and a session reset (the child is
-    killed and replaced). The banner is on disk with its `oauth_url` intact and
-    the render layer's only gate is a scheme check, so it keeps offering a live
-    "Authorize" button onto a dead loopback port, indefinitely (issue #7654).
+    The entity whose death invalidates the Authorize link is the ACP child that
+    minted it: that process holds the loopback callback listener and the PKCE
+    verifier. Every way it can die is silent to the banner — a gateway restart,
+    a session reset, the idle sweep, the RSS recycle, or the child exiting on
+    its own — so no write-time site can enumerate them. The read-time gate
+    compares the process-instance identity stamped at mint against the child
+    CURRENTLY serving the slot, resolved by the caller of `_prepare_messages`.
     """
 
-    def _stale_slot(self, gen="a-previous-generation"):
-        """A slot holding one open banner stamped with some OTHER generation."""
+    def _slot_with_banner(self, minted_by="child-a"):
+        """A slot holding one open banner stamped with *minted_by*."""
         slot = _ChatSlot("s1")
-        slot.append(
-            "mcp_oauth",
-            "🔐 miro requires authentication.",
-            "msg msg-info",
-            ts="t1",
-            meta={
-                "server_name": "miro",
-                "oauth_url": "https://mcp.miro.com/a?port=55089",
-                "gen": gen,
-            },
+        _emit_mcp_oauth_request(
+            MagicMock(),
+            slot,
+            "miro",
+            "https://mcp.miro.com/a?port=55089",
+            minted_by=minted_by,
         )
         return slot
 
-    def test_banner_from_a_dead_generation_is_presented_as_expired(self):
-        prepared = _prepare_messages(list(self._stale_slot().messages), running=False)
+    def test_banner_is_expired_once_its_child_is_gone(self):
+        """live_child='' is what every teardown looks like from here: the idle
+        sweep, the RSS recycle, a session reset, a gateway restart, and a child
+        that exited on its own all leave no live provider for the slot."""
+        slot = self._slot_with_banner()
+        prepared = _prepare_messages(list(slot.messages), running=False, live_child="")
         assert prepared[0]["meta"]["expired"] is True
 
     def test_the_dead_link_is_withdrawn_not_merely_flagged(self):
         """A client that has never heard of `expired` must still not render it."""
-        prepared = _prepare_messages(list(self._stale_slot().messages), running=False)
+        slot = self._slot_with_banner()
+        prepared = _prepare_messages(list(slot.messages), running=False, live_child="")
         assert not prepared[0]["meta"].get("oauth_url")
 
-    def test_a_banner_from_this_generation_keeps_its_live_link(self):
+    def test_a_banner_from_the_live_child_keeps_its_link(self):
         """The false-positive direction: never take away a working button."""
-        slot = _ChatSlot("s1")
-        _emit_mcp_oauth_request(MagicMock(), slot, "miro", "https://mcp.miro.com/a")
-        prepared = _prepare_messages(list(slot.messages), running=False)
-        assert prepared[0]["meta"]["oauth_url"] == "https://mcp.miro.com/a"
+        slot = self._slot_with_banner(minted_by="child-a")
+        prepared = _prepare_messages(list(slot.messages), running=False, live_child="child-a")
+        assert prepared[0]["meta"]["oauth_url"] == "https://mcp.miro.com/a?port=55089"
         assert "expired" not in prepared[0]["meta"]
 
-    def test_emit_stamps_the_minting_generation(self):
-        slot = _ChatSlot("s1")
-        _emit_mcp_oauth_request(MagicMock(), slot, "miro", "https://mcp.miro.com/a")
-        assert slot.messages[0]["meta"]["gen"] == gateway_generation()
+    def test_a_replacement_child_does_not_keep_the_banner_alive(self):
+        """The resume trap. A resumed session carries the SAME ACP session id on
+        a NEW process (client.py re-sets `_session_id` from `resume_sid`), which
+        is why the stamp is a per-spawn process-instance identity and never the
+        session id: the new child holds neither the loopback listener nor the
+        PKCE verifier of the flow the old one started."""
+        slot = self._slot_with_banner(minted_by="child-a")
+        prepared = _prepare_messages(list(slot.messages), running=False, live_child="child-b")
+        assert prepared[0]["meta"]["expired"] is True
+        assert not prepared[0]["meta"].get("oauth_url")
+
+    def test_emit_stamps_the_minting_child(self):
+        slot = self._slot_with_banner(minted_by="child-a")
+        assert slot.messages[0]["meta"]["child"] == "child-a"
 
     def test_an_unstamped_legacy_banner_is_expired(self):
-        """A row with no `gen` was written by an older build.
+        """A row with no `child` stamp was written by an older build.
 
-        Running this build means this process replaced the one that wrote it, so
-        its child is provably gone. That deduction is what lets the fix also
-        retire banners that went stale before it shipped.
+        Running this build means this process replaced the one that hosted that
+        row's child, so the child is provably gone. That deduction is what lets
+        the fix also retire banners that went stale before it shipped.
         """
         slot = _ChatSlot("s1")
         slot.append(
@@ -776,13 +785,40 @@ class TestExpiredByDeadGeneration:
             ts="t1",
             meta={"server_name": "miro", "oauth_url": "https://mcp.miro.com/a"},
         )
-        prepared = _prepare_messages(list(slot.messages), running=False)
+        prepared = _prepare_messages(list(slot.messages), running=False, live_child="child-a")
         assert prepared[0]["meta"]["expired"] is True
         assert not prepared[0]["meta"].get("oauth_url")
 
+    def test_a_gen_only_legacy_banner_is_expired(self):
+        """A row stamped only with the older gateway-generation key is a
+        pre-upgrade row; its child cannot be the live one."""
+        slot = _ChatSlot("s1")
+        slot.append(
+            "mcp_oauth",
+            "🔐 miro requires authentication.",
+            "msg msg-info",
+            ts="t1",
+            meta={
+                "server_name": "miro",
+                "oauth_url": "https://mcp.miro.com/a",
+                "gen": "some-generation",
+            },
+        )
+        prepared = _prepare_messages(list(slot.messages), running=False, live_child="child-a")
+        assert prepared[0]["meta"]["expired"] is True
+
+    def test_an_empty_stamp_never_matches_an_empty_live_child(self):
+        """Both sides empty is two unknowns, not a match: a banner whose minting
+        child could not be identified must not be kept alive by a slot that has
+        no live child either. Pins the non-empty requirement on BOTH sides of
+        the comparison (flipping either `and` to accept empties fails here)."""
+        slot = self._slot_with_banner(minted_by="")
+        prepared = _prepare_messages(list(slot.messages), running=False, live_child="")
+        assert prepared[0]["meta"]["expired"] is True
+
     def test_a_recorded_outcome_is_never_reinterpreted_by_a_later_read(self):
         """`completed`/`failed`/`superseded` were written by the process that
-        observed them; a stale generation does not overrule them."""
+        observed them; a dead minting child does not overrule them."""
         for flag in ("completed", "failed", "superseded"):
             slot = _ChatSlot("s1")
             slot.append(
@@ -793,11 +829,11 @@ class TestExpiredByDeadGeneration:
                 meta={
                     "server_name": "miro",
                     "oauth_url": "https://mcp.miro.com/a",
-                    "gen": "dead",
+                    "child": "dead-child",
                     flag: True,
                 },
             )
-            prepared = _prepare_messages(list(slot.messages), running=False)
+            prepared = _prepare_messages(list(slot.messages), running=False, live_child="")
             assert "expired" not in prepared[0]["meta"], flag
             assert prepared[0]["meta"][flag] is True
 
@@ -806,21 +842,21 @@ class TestExpiredByDeadGeneration:
         their own `failed` reason must survive."""
         slot = _ChatSlot("s1")
         _emit_mcp_oauth_request(MagicMock(), slot, "miro", "javascript:alert(1)")
-        prepared = _prepare_messages(list(slot.messages), running=False)
+        prepared = _prepare_messages(list(slot.messages), running=False, live_child="")
         assert "expired" not in prepared[0]["meta"]
         assert prepared[0]["meta"]["failed"] is True
 
     def test_a_non_oauth_row_is_untouched(self):
         slot = _ChatSlot("s1")
         slot.append("assistant", "hello", "msg msg-a", ts="t1", meta={"oauth_url": "x"})
-        prepared = _prepare_messages(list(slot.messages), running=False)
+        prepared = _prepare_messages(list(slot.messages), running=False, live_child="")
         assert "expired" not in (prepared[0].get("meta") or {})
 
     def test_the_gate_does_not_rewrite_the_stored_row(self):
         """It is a presentation verdict. The transcript keeps saying what happened,
         and re-reading the same slot must not accumulate edits."""
-        slot = self._stale_slot()
-        _prepare_messages(list(slot.messages), running=False)
+        slot = self._slot_with_banner()
+        _prepare_messages(list(slot.messages), running=False, live_child="")
         assert slot.messages[0]["meta"]["oauth_url"] == "https://mcp.miro.com/a?port=55089"
         assert "expired" not in slot.messages[0]["meta"]
 
@@ -838,54 +874,166 @@ class TestExpiredByDeadGeneration:
         assert "completed" not in slot.messages[0]["meta"]
 
 
-class TestExpireOpenBannersOnReset:
-    """The session-reset half of #7654.
+class TestLiveChildInstance:
+    """`_live_child_instance` is the caller-side half of the read-time gate.
 
-    A reset kills the ACP child and cold-starts a replacement, but it does NOT
-    change the gateway generation, so the read-time gate cannot infer it. The
-    teardown is a code path we execute, so the terminal state is written there.
+    `_prepare_messages` is synchronous, may run in a worker thread, and has no
+    ACP access, so its three async callers resolve the live child's identity on
+    the event loop — where the session pool is in scope — and pass the verdict
+    in. `""` is the one answer for every no-live-child case, which is exactly
+    what makes the idle sweep and the RSS recycle covered without either path
+    knowing banners exist: both end in the session being popped from the pool.
     """
 
-    def _slot_with_live_banner(self):
-        slot = _ChatSlot("s1")
-        _emit_mcp_oauth_request(MagicMock(), slot, "miro", "https://mcp.miro.com/a?port=55089")
-        return slot
+    def _state_with_provider(self, provider):
+        state = MagicMock()
+        state.sessions.get_provider.return_value = provider
+        return state
 
-    def test_reset_retires_the_open_banner(self):
-        slot = self._slot_with_live_banner()
-        _expire_mcp_oauth_banners(MagicMock(), slot, _open_mcp_oauth_banner_mids(slot))
-        assert slot.messages[0]["meta"]["expired"] is True
-        assert "oauth_url" not in slot.messages[0]["meta"]
+    def test_no_session_in_the_pool_answers_empty(self):
+        """The idle-sweep / RSS-recycle / reset / restart shape: the session is
+        gone from the pool, so there is nothing whose identity could match."""
+        state = self._state_with_provider(None)
+        assert _live_child_instance(state, _ChatSlot("s1")) == ""
 
-    def test_the_dead_port_is_not_left_in_the_content(self):
-        slot = self._slot_with_live_banner()
-        _expire_mcp_oauth_banners(MagicMock(), slot, _open_mcp_oauth_banner_mids(slot))
-        assert "55089" not in slot.messages[0]["content"]
+    def test_a_live_provider_answers_its_process_instance(self):
+        provider = MagicMock()
+        provider.is_process_alive.return_value = True
+        provider.process_instance = "child-a"
+        state = self._state_with_provider(provider)
+        assert _live_child_instance(state, _ChatSlot("s1")) == "child-a"
 
-    def test_it_retires_every_server_not_just_one(self):
-        """The reset destroys the whole child, so every flow it hosted dies."""
-        slot = _ChatSlot("s1")
-        _emit_mcp_oauth_request(MagicMock(), slot, "miro", "https://mcp.miro.com/a")
-        _emit_mcp_oauth_request(MagicMock(), slot, "linear", "https://mcp.linear.app/b")
-        _expire_mcp_oauth_banners(MagicMock(), slot, _open_mcp_oauth_banner_mids(slot))
-        assert all(m["meta"]["expired"] is True for m in slot.messages)
+    def test_a_dead_process_answers_empty_even_while_registered(self):
+        """The self-exit case: the session is still in the pool but its child
+        exited on its own. The identity of a dead process must not keep its
+        banner's button clickable."""
+        provider = MagicMock()
+        provider.is_process_alive.return_value = False
+        provider.process_instance = "child-a"
+        state = self._state_with_provider(provider)
+        assert _live_child_instance(state, _ChatSlot("s1")) == ""
 
-    def test_a_credential_shaped_server_name_is_still_retired(self):
-        """Unlike the supersede path, this never has to match a redacted name, so
-        #7639's known limitation does not apply here."""
+    def test_a_probe_failure_answers_empty_not_raises(self):
+        """The verdict rides slot-detail reads; a probe failure must degrade to
+        withdrawing a possibly-dead button, never fail the read."""
+        state = MagicMock()
+        state.sessions.get_provider.side_effect = RuntimeError("pool exploded")
+        assert _live_child_instance(state, _ChatSlot("s1")) == ""
+
+    def test_a_provider_without_the_property_answers_empty(self):
+        """A provider not backed by a child process mints no OAuth flows, so an
+        empty identity (expiring any stamped banner) is the correct verdict."""
+        provider = MagicMock(spec=["is_process_alive"])
+        provider.is_process_alive.return_value = True
+        state = self._state_with_provider(provider)
+        assert _live_child_instance(state, _ChatSlot("s1")) == ""
+
+    def test_end_to_end_a_swept_sessions_banner_is_withdrawn_on_read(self):
+        """The whole #8149 defect in one path: mint under child A, sweep the
+        session (pool answers None), and the next read withdraws the link."""
         slot = _ChatSlot("s1")
         _emit_mcp_oauth_request(
-            MagicMock(), slot, "ghp_" + "a" * 36, "https://mcp.example.com/a"
+            MagicMock(), slot, "miro", "https://mcp.miro.com/a?port=55089", minted_by="child-a"
         )
-        _expire_mcp_oauth_banners(MagicMock(), slot, _open_mcp_oauth_banner_mids(slot))
-        assert slot.messages[0]["meta"]["expired"] is True
-        assert "oauth_url" not in slot.messages[0]["meta"]
+        state = self._state_with_provider(None)
+        prepared = _prepare_messages(
+            list(slot.messages), running=False, live_child=_live_child_instance(state, slot)
+        )
+        assert prepared[0]["meta"]["expired"] is True
+        assert not prepared[0]["meta"].get("oauth_url")
 
-    def test_a_recorded_outcome_is_left_alone(self):
-        """`completed`/`failed` can still carry an `oauth_url` -- the completion
-        matcher sets the flag without popping it -- so they must be named in the
-        predicate rather than inferred from the url being gone."""
-        for flag in ("completed", "failed"):
+
+class TestBroadcastExpiredOauthBanners:
+    """The freshness push for already-open tabs.
+
+    The read-time gate runs only when a client fetches, so a tab left open
+    across a teardown keeps rendering the dead Authorize link it already has.
+    `_broadcast_expired_oauth_banners` closes that window at the teardowns the
+    dashboard can see. It is verdict-driven — it re-resolves the live child and
+    applies the read gate's own predicate — so callers invoke it
+    unconditionally: no pre-teardown snapshot, no outcome gating.
+    """
+
+    def _state(self, provider):
+        state = MagicMock()
+        state.sessions.get_provider.return_value = provider
+        return state
+
+    def _live_provider(self, token="child-a"):
+        provider = MagicMock()
+        provider.is_process_alive.return_value = True
+        provider.process_instance = token
+        return provider
+
+    def test_a_dead_childs_banner_is_broadcast_as_expired(self):
+        slot = _ChatSlot("s1")
+        _emit_mcp_oauth_request(
+            MagicMock(), slot, "miro", "https://mcp.miro.com/a?port=55089", minted_by="child-a"
+        )
+        state = self._state(None)  # session swept from the pool
+        _broadcast_expired_oauth_banners(state, slot)
+        state.broadcast_ws.assert_called_once()
+        kind, payload = state.broadcast_ws.call_args[0]
+        assert kind == "chat_message_update"
+        assert payload["meta"]["expired"] is True
+        assert payload["mid"] == slot.messages[0]["meta"]["mid"]
+
+    def test_the_frame_blanks_the_url_for_a_pre_upgrade_client(self):
+        """The client MERGES incoming meta, so omitting the key would leave the
+        dead URL on a tab whose JS does not know `expired`."""
+        slot = _ChatSlot("s1")
+        _emit_mcp_oauth_request(
+            MagicMock(), slot, "miro", "https://mcp.miro.com/a", minted_by="child-a"
+        )
+        state = self._state(None)
+        _broadcast_expired_oauth_banners(state, slot)
+        payload = state.broadcast_ws.call_args[0][1]
+        assert payload["meta"]["oauth_url"] == ""
+
+    def test_the_stored_row_is_not_rewritten(self):
+        """Presentation only: the read gate stays the one liveness mechanism,
+        and the transcript keeps saying what happened."""
+        slot = _ChatSlot("s1")
+        _emit_mcp_oauth_request(
+            MagicMock(), slot, "miro", "https://mcp.miro.com/a", minted_by="child-a"
+        )
+        _broadcast_expired_oauth_banners(self._state(None), slot)
+        assert slot.messages[0]["meta"]["oauth_url"] == "https://mcp.miro.com/a"
+        assert "expired" not in slot.messages[0]["meta"]
+
+    def test_a_live_childs_banner_is_not_broadcast(self):
+        """The declined/failed-teardown shape: the child is still alive, so the
+        stamps match and the button keeps working. This is what lets callers
+        skip the old outcome gate."""
+        slot = _ChatSlot("s1")
+        _emit_mcp_oauth_request(
+            MagicMock(), slot, "miro", "https://mcp.miro.com/a", minted_by="child-a"
+        )
+        state = self._state(self._live_provider("child-a"))
+        _broadcast_expired_oauth_banners(state, slot)
+        state.broadcast_ws.assert_not_called()
+
+    def test_a_successors_banner_is_not_swept_with_the_dead_ones(self):
+        """The race the old snapshot protected against, now answered by
+        identity: the successor's banner names the live child and survives,
+        while the dead child's banner is withdrawn."""
+        slot = _ChatSlot("s1")
+        _emit_mcp_oauth_request(
+            MagicMock(), slot, "miro", "https://mcp.miro.com/old?port=1", minted_by="child-a"
+        )
+        _emit_mcp_oauth_request(
+            MagicMock(), slot, "linear", "https://mcp.linear.app/new?port=2", minted_by="child-b"
+        )
+        state = self._state(self._live_provider("child-b"))
+        _broadcast_expired_oauth_banners(state, slot)
+        state.broadcast_ws.assert_called_once()
+        payload = state.broadcast_ws.call_args[0][1]
+        assert payload["mid"] == slot.messages[0]["meta"]["mid"]
+
+    def test_a_recorded_outcome_is_not_broadcast(self):
+        """`completed`/`failed`/`superseded` rows and the rejected-URL banners
+        are the gate's own exclusions, and the helper inherits them."""
+        for flag in ("completed", "failed", "superseded"):
             slot = _ChatSlot("s1")
             slot.append(
                 "mcp_oauth",
@@ -895,324 +1043,70 @@ class TestExpireOpenBannersOnReset:
                 meta={
                     "server_name": "miro",
                     "oauth_url": "https://mcp.miro.com/a",
+                    "child": "dead-child",
                     flag: True,
                 },
             )
-            _expire_mcp_oauth_banners(MagicMock(), slot, _open_mcp_oauth_banner_mids(slot))
-            assert "expired" not in slot.messages[0]["meta"], flag
+            state = self._state(None)
+            _broadcast_expired_oauth_banners(state, slot)
+            state.broadcast_ws.assert_not_called()
 
-    def test_an_already_superseded_banner_is_left_alone(self):
-        """The supersede path pops `oauth_url`, which is the state this sees."""
+    def test_no_banner_is_a_noop(self):
         slot = _ChatSlot("s1")
-        _emit_mcp_oauth_request(MagicMock(), slot, "miro", "https://mcp.miro.com/a")
-        _emit_mcp_oauth_request(MagicMock(), slot, "miro", "https://mcp.miro.com/b")
-        assert slot.messages[0]["meta"]["superseded"] is True
-        _expire_mcp_oauth_banners(MagicMock(), slot, _open_mcp_oauth_banner_mids(slot))
-        assert "expired" not in slot.messages[0]["meta"]
-        # The newest banner was live, so it IS retired.
-        assert slot.messages[1]["meta"]["expired"] is True
-
-    def test_a_rejected_url_banner_is_left_alone(self):
-        slot = _ChatSlot("s1")
-        _emit_mcp_oauth_request(MagicMock(), slot, "miro", "javascript:alert(1)")
-        _expire_mcp_oauth_banners(MagicMock(), slot, _open_mcp_oauth_banner_mids(slot))
-        assert "expired" not in slot.messages[0]["meta"]
-
-    def test_retirement_is_broadcast_so_an_open_tab_repaints(self):
-        slot = self._slot_with_live_banner()
-        state = MagicMock()
-        _expire_mcp_oauth_banners(state, slot, _open_mcp_oauth_banner_mids(slot))
-        state.broadcast_ws.assert_called_once()
-        kind, payload = state.broadcast_ws.call_args[0]
-        assert kind == "chat_message_update"
-        assert payload["meta"]["expired"] is True
-
-    def test_the_broadcast_blanks_the_url_for_a_pre_upgrade_client(self):
-        """The client MERGES incoming meta, so omitting the key would leave the
-        dead URL on a tab whose JS does not know `expired`."""
-        slot = self._slot_with_live_banner()
-        state = MagicMock()
-        _expire_mcp_oauth_banners(state, slot, _open_mcp_oauth_banner_mids(slot))
-        payload = state.broadcast_ws.call_args[0][1]
-        assert payload["meta"]["oauth_url"] == ""
-        assert "oauth_url" not in slot.messages[0]["meta"]
-
-    def test_the_broadcast_names_the_row_by_mid(self):
-        slot = self._slot_with_live_banner()
-        state = MagicMock()
-        _expire_mcp_oauth_banners(state, slot, _open_mcp_oauth_banner_mids(slot))
-        payload = state.broadcast_ws.call_args[0][1]
-        assert payload["mid"] == slot.messages[0]["meta"]["mid"]
-
-    def test_retirement_marks_the_slot_dirty_so_it_reaches_disk(self):
-        slot = self._slot_with_live_banner()
-        slot._dirty = False
-        _expire_mcp_oauth_banners(MagicMock(), slot, _open_mcp_oauth_banner_mids(slot))
-        assert slot._dirty is True
-
-    def test_no_open_banner_is_a_noop(self):
-        slot = _ChatSlot("s1")
-        state = MagicMock()
-        _expire_mcp_oauth_banners(state, slot, _open_mcp_oauth_banner_mids(slot))
+        slot.append("assistant", "hello", "msg msg-a", ts="t1")
+        state = self._state(None)
+        _broadcast_expired_oauth_banners(state, slot)
         state.broadcast_ws.assert_not_called()
 
-    def test_retiring_twice_broadcasts_once(self):
-        slot = self._slot_with_live_banner()
-        _expire_mcp_oauth_banners(MagicMock(), slot, _open_mcp_oauth_banner_mids(slot))
-        state = MagicMock()
-        _expire_mcp_oauth_banners(state, slot, _open_mcp_oauth_banner_mids(slot))
-        state.broadcast_ws.assert_not_called()
 
-    def test_retirement_survives_the_display_time_meta_gate(self):
-        slot = self._slot_with_live_banner()
-        _expire_mcp_oauth_banners(MagicMock(), slot, _open_mcp_oauth_banner_mids(slot))
-        prepared = _prepare_messages(list(slot.messages), running=False)
-        assert prepared[0]["meta"]["expired"] is True
-        assert not prepared[0]["meta"].get("oauth_url")
+# ── per-spawn process-instance identity (the stamp's provider side) ──
 
 
-class TestResetFunnelRetiresBanners:
-    """The switch/reload funnel is the widest reachable reset path.
+class TestProcessInstanceContract:
+    """The identity the banner stamp and the read gate both stand on.
 
-    `_reset_slot_session` is what the agent, model, bulk-model, reasoning-effort
-    and workspace switches plus the reload endpoint all route through, and every
-    one of them destroys the child that owns an open banner's loopback listener.
-    The gateway generation does not change, so the read-time gate cannot see it.
+    A token names ONE spawn of a child process: minted with the process,
+    masked the moment the process object is gone. The property must never
+    answer with a previous spawn's token — that equality is exactly the
+    fail-open the design removes (a resumed session id surviving onto a new
+    process).
     """
 
-    @pytest.mark.asyncio
-    async def test_a_completed_reset_retires_the_open_banner(self):
-        from kiro_crew.dashboard.chat_handlers import _reset_slot_session
+    def _bare_client(self):
+        from kiro_crew.acp.client import AcpClient
 
-        state = MagicMock()
+        client = object.__new__(AcpClient)
+        return client
 
-        async def _reset(_key, *, skip_if_busy=False):
-            return True
+    def _bare_runtime(self):
+        from kiro_crew.acp.runtime import AcpRuntime
 
-        state.sessions.reset = _reset
-        slot = _ChatSlot("s1")
-        _emit_mcp_oauth_request(MagicMock(), slot, "miro", "https://mcp.miro.com/a?port=55089")
+        runtime = object.__new__(AcpRuntime)
+        return runtime
 
-        with patch("kiro_crew.dashboard.chat_handlers._unblock_pending_waits"):
-            assert await _reset_slot_session(state, slot, "dashboard:s1") is True
+    def test_client_answers_empty_without_a_process(self):
+        client = self._bare_client()
+        client._process = None
+        client._process_instance = "left-over-token"
+        assert client.process_instance == ""
 
-        assert slot.messages[0]["meta"]["expired"] is True
-        assert "oauth_url" not in slot.messages[0]["meta"]
+    def test_client_answers_the_current_processes_token(self):
+        client = self._bare_client()
+        client._process = object()
+        client._process_instance = "tok-a"
+        assert client.process_instance == "tok-a"
 
-    @pytest.mark.asyncio
-    async def test_a_declined_reset_keeps_the_live_link(self):
-        """`skip_if_busy` declining leaves the session, its child and its listener
-        alive, so the button still works -- taking it away would be worse than the
-        dead link this fix exists to remove."""
-        from kiro_crew.dashboard.chat_handlers import _reset_slot_session
+    def test_runtime_answers_empty_without_a_process(self):
+        runtime = self._bare_runtime()
+        runtime._process = None
+        runtime._process_instance = "left-over-token"
+        assert runtime.process_instance == ""
 
-        state = MagicMock()
-
-        async def _reset(_key, *, skip_if_busy=False):
-            return False
-
-        state.sessions.reset = _reset
-        slot = _ChatSlot("s1")
-        _emit_mcp_oauth_request(MagicMock(), slot, "miro", "https://mcp.miro.com/a?port=55089")
-
-        with patch("kiro_crew.dashboard.chat_handlers._unblock_pending_waits"):
-            assert await _reset_slot_session(state, slot, "dashboard:s1", skip_if_busy=True) is False
-
-        assert "expired" not in slot.messages[0]["meta"]
-        assert slot.messages[0]["meta"]["oauth_url"] == "https://mcp.miro.com/a?port=55089"
-
-
-class TestPendingResetRetirementIsGatedOnTeardown:
-    """A teardown that RAISED may have left the child alive.
-
-    Retiring then would remove a button that still works, and the user could not
-    recover: `pop_pending_oauth_requests` already drained the request, so a live
-    child never re-announces it. A dead link surviving one more turn is the cheaper
-    error, and the read-time generation gate catches it after a restart.
-    """
-
-    def _slot_with_pending_reset(self):
-        slot = _ChatSlot("s1")
-        _emit_mcp_oauth_request(MagicMock(), slot, "miro", "https://mcp.miro.com/a?port=55089")
-        slot._pending_reset_history_key = "dashboard:s1"
-        return slot
-
-    @pytest.mark.asyncio
-    async def test_a_completed_reset_retires_the_banner(self):
-        state = MagicMock()
-
-        async def _reset(_key, **_kw):
-            return True
-
-        state.sessions.reset = _reset
-        slot = self._slot_with_pending_reset()
-        await chat_runner._consume_pending_reset(state, slot, allow_discard=False)
-        assert slot.messages[0]["meta"]["expired"] is True
-
-    @pytest.mark.asyncio
-    async def test_a_raising_reset_leaves_the_link_alone(self):
-        state = MagicMock()
-
-        async def _reset(_key, **_kw):
-            raise RuntimeError("teardown blew up")
-
-        state.sessions.reset = _reset
-        slot = self._slot_with_pending_reset()
-        await chat_runner._consume_pending_reset(state, slot, allow_discard=False)
-        assert "expired" not in slot.messages[0]["meta"]
-        assert slot.messages[0]["meta"]["oauth_url"] == "https://mcp.miro.com/a?port=55089"
-
-    @pytest.mark.asyncio
-    async def test_a_cancelled_reset_leaves_the_link_alone(self):
-        """CancelledError is a BaseException, so it is not swallowed -- but it must
-        not have retired the banner on its way out either."""
-        state = MagicMock()
-
-        async def _reset(_key, **_kw):
-            raise asyncio.CancelledError()
-
-        state.sessions.reset = _reset
-        slot = self._slot_with_pending_reset()
-        with pytest.raises(asyncio.CancelledError):
-            await chat_runner._consume_pending_reset(state, slot, allow_discard=False)
-        assert "expired" not in slot.messages[0]["meta"]
-        assert slot.messages[0]["meta"]["oauth_url"] == "https://mcp.miro.com/a?port=55089"
-
-    @pytest.mark.asyncio
-    async def test_a_confirmed_discard_also_retires_the_banner(self):
-        """The discard branch of the same function kills the child too.
-
-        `discard_conversation` shuts the provider down, so the listener behind an
-        open banner's link is gone. Covering the reset branch and not its sibling
-        would leave the function asymmetric for no reason a reader could infer.
-        """
-        state = MagicMock()
-
-        async def _discard(_key, **_kw):
-            return True
-
-        state.sessions.discard_conversation = _discard
-        slot = _ChatSlot("s1")
-        _emit_mcp_oauth_request(MagicMock(), slot, "miro", "https://mcp.miro.com/a?port=55089")
-        slot._pending_discard_conversation_key = "dashboard:s1"
-
-        with patch("kiro_crew.dashboard.chat_runner.subagents_attached", return_value=False):
-            await chat_runner._consume_pending_reset(state, slot, allow_discard=True)
-
-        assert slot.messages[0]["meta"]["expired"] is True
-        assert "oauth_url" not in slot.messages[0]["meta"]
-
-    @pytest.mark.asyncio
-    async def test_a_refused_discard_keeps_the_live_link(self):
-        """`skip_if_busy` refusing leaves the session and its listener alive."""
-        state = MagicMock()
-
-        async def _discard(_key, **_kw):
-            return False
-
-        state.sessions.discard_conversation = _discard
-        slot = _ChatSlot("s1")
-        _emit_mcp_oauth_request(MagicMock(), slot, "miro", "https://mcp.miro.com/a?port=55089")
-        slot._pending_discard_conversation_key = "dashboard:s1"
-
-        with patch("kiro_crew.dashboard.chat_runner.subagents_attached", return_value=False):
-            await chat_runner._consume_pending_reset(state, slot, allow_discard=True)
-
-        assert "expired" not in slot.messages[0]["meta"]
-        assert slot.messages[0]["meta"]["oauth_url"] == "https://mcp.miro.com/a?port=55089"
-
-    def test_no_call_site_retires_before_its_teardown(self):
-        """Pinned structurally, because the agent-switch site lives inside the turn
-        coroutine and cannot be reached from a unit test.
-
-        The invariant: a retirement must never PRECEDE the teardown it describes. A
-        teardown can raise or be cancelled, leaving the child and its loopback
-        listener alive, and a banner retired first would then have removed a working
-        button for good. Same shape as
-        test_every_session_teardown_drops_the_verdict: the rule is pinned here rather
-        than trusting each future author to remember which side of the await to be on.
-        """
-        from pathlib import Path
-
-        from kiro_crew.dashboard import chat_handlers, chat_runner
-
-        teardowns = ("sessions.reset(", "sessions.discard_conversation(")
-        for module in (chat_runner, chat_handlers):
-            lines = Path(module.__file__).read_text(encoding="utf-8").splitlines()
-            for i, line in enumerate(lines):
-                if "_expire_mcp_oauth_banners(" not in line or "def " in line:
-                    continue
-                # Nothing in the following window may be a teardown call: that would
-                # mean this retirement runs before it.
-                window = lines[i + 1 : i + 20]
-                offenders = [w.strip() for w in window if any(t in w for t in teardowns)]
-                assert not offenders, (
-                    f"{module.__name__}:{i + 1} retires OAuth banners before a teardown "
-                    f"that may fail or be cancelled -> {offenders}"
-                )
-
-    def test_the_agent_switch_site_is_gated_on_its_teardown_outcome(self):
-        """The one site no unit test can reach, pinned by name.
-
-        It sits in the turn coroutine's cleanup tail, so it is only reachable through
-        a full turn. Being AFTER the await is not sufficient there: the surrounding
-        `except Exception` swallows a failed teardown and execution continues, so
-        without a gate on the outcome the retirement would still run on the path
-        where the child may be alive. Asserted on the source because the alternative
-        is no coverage at all.
-        """
-        from pathlib import Path
-
-        from kiro_crew.dashboard import chat_runner
-
-        src = Path(chat_runner.__file__).read_text(encoding="utf-8")
-        assert "if oauth_flow_ended:\n" in src, (
-            "the agent-switch retirement lost its teardown-outcome gate; a swallowed "
-            "teardown failure would now retire a banner whose child may still be live"
-        )
-        gated = src.split("if oauth_flow_ended:\n", 1)[1][:1200]
-        guarded = "_expire_mcp_oauth_banners(state, slot, doomed_banners)" in gated
-        assert guarded, "`if oauth_flow_ended:` no longer guards the retirement call"
-
-    def test_a_successor_banner_minted_during_teardown_is_not_swept(self):
-        """The race GPT caught. The retirement runs AFTER the await, so a failed
-        teardown cannot strand the user -- but that means a successor session can
-        emit its own OAuth request in between, and sweeping the whole slot then
-        would withdraw a URL that is perfectly live.
-        """
-        slot = _ChatSlot("s1")
-        _emit_mcp_oauth_request(MagicMock(), slot, "miro", "https://mcp.miro.com/old?port=1")
-        # Snapshot as a caller does, BEFORE the teardown.
-        doomed = _open_mcp_oauth_banner_mids(slot)
-        # Successor session starts mid-teardown and announces its own flow.
-        _emit_mcp_oauth_request(MagicMock(), slot, "linear", "https://mcp.linear.app/new?port=2")
-
-        _expire_mcp_oauth_banners(MagicMock(), slot, doomed)
-
-        old, new = slot.messages
-        assert old["meta"]["expired"] is True, "the pre-teardown banner should be retired"
-        assert "expired" not in new["meta"], "the successor's live banner was swept"
-        assert new["meta"]["oauth_url"] == "https://mcp.linear.app/new?port=2"
-
-    def test_an_empty_snapshot_retires_nothing(self):
-        """A teardown with nothing open beforehand must not touch a later banner."""
-        slot = _ChatSlot("s1")
-        doomed = _open_mcp_oauth_banner_mids(slot)
-        assert doomed == frozenset()
-        _emit_mcp_oauth_request(MagicMock(), slot, "miro", "https://mcp.miro.com/a")
-        state = MagicMock()
-        _expire_mcp_oauth_banners(state, slot, doomed)
-        assert "expired" not in slot.messages[0]["meta"]
-        state.broadcast_ws.assert_not_called()
-
-    def test_the_snapshot_names_only_open_banners(self):
-        """A superseded row carries no url, so it is not in the snapshot."""
-        slot = _ChatSlot("s1")
-        _emit_mcp_oauth_request(MagicMock(), slot, "miro", "https://mcp.miro.com/a")
-        _emit_mcp_oauth_request(MagicMock(), slot, "miro", "https://mcp.miro.com/b")
-        assert slot.messages[0]["meta"]["superseded"] is True
-        doomed = _open_mcp_oauth_banner_mids(slot)
-        assert doomed == {slot.messages[1]["meta"]["mid"]}
+    def test_runtime_answers_the_current_processes_token(self):
+        runtime = self._bare_runtime()
+        runtime._process = object()
+        runtime._process_instance = "tok-b"
+        assert runtime.process_instance == "tok-b"
 
 
 # ── _ChatSlot.update_message ──

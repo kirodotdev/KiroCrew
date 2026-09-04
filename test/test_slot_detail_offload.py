@@ -53,9 +53,9 @@ class TestRenderRunsOffTheEventLoop:
         seen: list[int] = []
         real = chat_handlers._prepare_messages
 
-        def _spy(messages: list[dict], running: bool) -> list[dict]:
+        def _spy(messages: list[dict], running: bool, *, live_child: str) -> list[dict]:
             seen.append(threading.get_ident())
-            return real(messages, running)
+            return real(messages, running, live_child=live_child)
 
         monkeypatch.setattr(chat_handlers, "_prepare_messages", _spy)
         async with TestClient(TestServer(_make_app(state))) as client:
@@ -78,7 +78,7 @@ class TestRenderRunsOffTheEventLoop:
         active = 0
         max_active = 0
 
-        def _slow(messages: list[dict], running: bool) -> list[dict]:
+        def _slow(messages: list[dict], running: bool, *, live_child: str) -> list[dict]:
             nonlocal active, max_active
             with gauge_lock:
                 active += 1
@@ -88,7 +88,7 @@ class TestRenderRunsOffTheEventLoop:
             time.sleep(0.05)
             with gauge_lock:
                 active -= 1
-            return real(messages, running)
+            return real(messages, running, live_child=live_child)
 
         monkeypatch.setattr(chat_handlers, "_prepare_messages", _slow)
         async with TestClient(TestServer(_make_app(state))) as client:

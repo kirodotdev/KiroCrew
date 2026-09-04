@@ -387,7 +387,7 @@ class TestRestoreRecentSessions:
         # The credential is gone from what the slot-detail endpoint returns...
         from kiro_crew.dashboard.chat_utils import _prepare_messages
 
-        emitted = _prepare_messages(slot.messages, False)
+        emitted = _prepare_messages(slot.messages, False, live_child="")
         rendered = " ".join(m.get("content", "") for m in emitted)
         assert "AKIAIOSFODNN7EXAMPLE" not in rendered
         assert "[REDACTED" in rendered

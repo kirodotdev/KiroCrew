@@ -142,14 +142,14 @@ class TestPrepareMessages:
 
         monkeypatch.setattr(chat_utils, "_collapse_wire_rows", record_collapse)
 
-        result = _prepare_messages(messages, running=True)
+        result = _prepare_messages(messages, running=True, live_child="")
 
         assert calls == [messages]
         assert result == [{"role": "streaming", "content": "hello", "cls": "msg msg-a"}]
 
     def test_strips_done(self):
         msgs = [{"role": "user", "content": "hi"}, {"role": "done", "content": ""}]
-        result = _prepare_messages(msgs, running=False)
+        result = _prepare_messages(msgs, running=False, live_child="")
         assert len(result) == 1
         assert result[0]["role"] == "user"
 
@@ -159,14 +159,14 @@ class TestPrepareMessages:
             {"role": "chunk", "content": "lo"},
             {"role": "user", "content": "next"},
         ]
-        result = _prepare_messages(msgs, running=False)
+        result = _prepare_messages(msgs, running=False, live_child="")
         assert result[0]["role"] == "streaming"
         assert "hel" in result[0]["content"]
         assert result[1]["role"] == "user"
 
     def test_trailing_chunks(self):
         msgs = [{"role": "chunk", "content": "partial"}]
-        result = _prepare_messages(msgs, running=True)
+        result = _prepare_messages(msgs, running=True, live_child="")
         assert len(result) == 1
         assert result[0]["role"] == "streaming"
 

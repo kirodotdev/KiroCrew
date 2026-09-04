@@ -23,6 +23,7 @@ import subprocess
 import sys
 import threading
 import time
+import uuid
 import weakref
 from collections import deque
 from pathlib import Path
@@ -764,6 +765,11 @@ class AcpRuntime:
         self._start_time: int | None = None
         self._spawn_monotonic: float | None = None
         self._child_pids: dict[int, int | None] = {}
+        # Names THIS spawn of the shared child process (fresh per spawn, cleared
+        # with the process) — the identity a resource minted by the child is
+        # compared against later. See AcpClient.process_instance for why the
+        # session id cannot serve: a resume reuses it on a new process.
+        self._process_instance: str = ""
 
         # Single reader task — the ONLY coroutine that reads stdout
         self._reader_task: asyncio.Task | None = None  # type: ignore[type-arg]
@@ -870,6 +876,16 @@ class AcpRuntime:
     @property
     def pid(self) -> int | None:
         return self._pid
+
+    @property
+    def process_instance(self) -> str:
+        """Identity of the CURRENT child process instance (``""`` when none).
+
+        Fresh per spawn, so equality distinguishes the process that minted a
+        resource from any successor — including one that resumed the same ACP
+        session id. Liveness is asked separately (:meth:`is_alive`).
+        """
+        return self._process_instance if self._process is not None else ""
 
     @property
     def acp_backend(self) -> str:
@@ -1354,6 +1370,9 @@ class AcpRuntime:
             self._discard_sandbox_cleanup()
             raise
         self._pid = self._process.pid
+        # Minted with the process it names — random, not pid-derived, so it
+        # cannot false-match a later spawn that the OS handed a recycled pid.
+        self._process_instance = uuid.uuid4().hex[:16]
         # The subprocess is LIVE from here on but nothing has recorded it yet, so
         # this window needs the same guard AcpClient._spawn has. finish_suspended_spawn
         # documents its own resume failure as FATAL, and _get_start_time can raise;
@@ -1598,6 +1617,9 @@ class AcpRuntime:
                 except asyncio.TimeoutError:
                     pass
             self._process = None
+            # The id names the process that just ended; the next spawn mints its
+            # own, and nothing may answer with this one in between.
+            self._process_instance = ""
             if platform_compat.pid_exists(pid):
                 # Both kill_process_tree calls above swallow OSError by design
                 # (racing a normal exit), which makes a signal-delivery failure

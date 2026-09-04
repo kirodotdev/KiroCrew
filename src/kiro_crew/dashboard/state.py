@@ -5356,7 +5356,10 @@ class DashboardState:
         """
 
         async def _on_recycled(key: str, *, reason: str) -> None:
-            from kiro_crew.dashboard.chat_utils import dashboard_slot_key
+            from kiro_crew.dashboard.chat_utils import (
+                _broadcast_expired_oauth_banners,
+                dashboard_slot_key,
+            )
 
             # A channel-born session's key is the channel's own even while its
             # tab is open, so ask which tab displays it rather than reading the
@@ -5376,6 +5379,16 @@ class DashboardState:
             except Exception:
                 logging.getLogger(__name__).exception(
                     "Failed to append recycle notice to slot %s", slot_key
+                )
+            # The recycle ended the child that owned any open MCP OAuth
+            # banner's loopback listener; push the read gate's verdict so an
+            # open tab withdraws the dead Authorize link without waiting for
+            # its next refetch (issue #8149's RSS-recycle path).
+            try:
+                _broadcast_expired_oauth_banners(self, slot)
+            except Exception:
+                logging.getLogger(__name__).exception(
+                    "Failed to broadcast OAuth banner expiry for slot %s", slot_key
                 )
 
         self.sessions.set_recycle_callback(_on_recycled)

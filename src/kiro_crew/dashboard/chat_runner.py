@@ -81,6 +81,7 @@ from kiro_crew.dashboard.chat_utils import (
     _apply_incognito_prefix,
     _broadcast_auto_tool,
     _broadcast_compaction_result,
+    _broadcast_expired_oauth_banners,
     _dequeue_next_message,
     _dequeue_next_system_message,
     _maybe_consolidate,
@@ -94,7 +95,6 @@ from kiro_crew.dashboard.chat_utils import (
     build_recovery_requeue,
     effective_session_key,
     expire_slack_options,
-    gateway_generation,
     is_harness_slash_command,
     is_system_injection_item,
     mirror_is_paused,
@@ -1628,6 +1628,7 @@ def _emit_mcp_oauth_request(
     server_name: str,
     oauth_url: str,
     card_owned: bool = False,
+    minted_by: str = "",
 ) -> None:
     """Append an mcp_oauth banner so the user can authorize an MCP server.
 
@@ -1635,6 +1636,16 @@ def _emit_mcp_oauth_request(
     pattern, surface a *rejected* banner explaining why instead of silently
     dropping.  Otherwise the user has no idea their MCP server failed to
     authenticate, and they can't escalate to whoever owns that server.
+
+    ``minted_by`` is the process-instance identity of the ACP child asking for
+    authorization — the process whose loopback listener and PKCE verifier the
+    URL is redeemable against. It is stamped into the banner meta so the
+    read-time gate (`_expire_dead_child_oauth_meta`) can withdraw the link the
+    moment that child is no longer the live one serving the slot, HOWEVER it
+    ended: gateway restart, session reset, idle sweep, RSS recycle, or the
+    child exiting on its own. An empty value stamps nothing, and an unstamped
+    banner is judged dead on first read — the fail direction that removes a
+    dead button rather than preserving it.
 
     ``card_owned`` records that some other surface owns this request's consent
     flow end to end — see :func:`_connections_managed_mcp_names`. It is an
@@ -1715,14 +1726,15 @@ def _emit_mcp_oauth_request(
     meta: dict[str, Any] = {
         "server_name": safe_name,
         "oauth_url": oauth_url,
-        # The generation that owns the listener and the PKCE verifier this URL is
-        # redeemable against. Read back by `_expire_stale_generation_oauth_meta`,
-        # which withdraws the link once this is no longer the running generation --
-        # the only way to cover a hard restart, where no code of ours runs to
-        # observe the flow dying. Stamped ONLY on this branch: the rejected-URL
-        # branches carry no `oauth_url`, so they have no link whose liveness this
-        # could describe.
-        "gen": gateway_generation(),
+        # The process instance that owns the listener and the PKCE verifier this
+        # URL is redeemable against. Read back by `_expire_dead_child_oauth_meta`,
+        # which withdraws the link once this is no longer the live child serving
+        # the slot — covering every way the flow can die (hard restart, session
+        # reset, idle sweep, RSS recycle, self-exit) with one comparison, because
+        # no code of ours has to run at the moment of death. Stamped ONLY on this
+        # branch: the rejected-URL branches carry no `oauth_url`, so they have no
+        # link whose liveness this could describe.
+        "child": minted_by,
     }
     if card_owned:
         meta["card_owned"] = True
@@ -1836,126 +1848,6 @@ def _supersede_open_mcp_oauth_banners(
         )
 
 
-def _open_mcp_oauth_banner_mids(slot: "_ChatSlot") -> frozenset[str]:
-    """Row identities of the `mcp_oauth` banners that are open RIGHT NOW.
-
-    Taken BEFORE a teardown so the retirement afterwards can name exactly the flows
-    that teardown ends. Without it, a sweep over `slot.messages` after the await also
-    catches a banner the SUCCESSOR session emitted while the old one was shutting
-    down -- an agent switch racing a concurrent send is enough -- and would withdraw
-    a URL that is perfectly live.
-
-    A row with no `mid` cannot be named and so is never retired. That fails in the
-    safe direction: it leaves a possibly-dead link for the read-time gate to catch
-    after the next restart, rather than removing a working button.
-    """
-    return frozenset(
-        mid
-        for message in slot.messages
-        if message.get("role") == "mcp_oauth"
-        for meta in (message.get("meta") or {},)
-        if meta.get("oauth_url")
-        and not (meta.get("completed") or meta.get("failed") or meta.get("superseded"))
-        for mid in (meta.get("mid"),)
-        if isinstance(mid, str) and mid
-    )
-
-
-def _expire_mcp_oauth_banners(
-    state: "DashboardState", slot: "_ChatSlot", doomed: frozenset[str]
-) -> None:
-    """Retire the `mcp_oauth` banners named by ``doomed`` because their child is gone.
-
-    The companion to `_expire_stale_generation_oauth_meta`, for the one case that gate
-    cannot see. A session reset kills the ACP child and cold-starts a replacement, but
-    it does NOT change the gateway generation, so a read-time comparison against `gen`
-    would keep calling these banners live. Here the teardown is a code path we execute,
-    so the terminal state can be written at the moment it becomes true.
-
-    ``doomed`` is REQUIRED rather than optional, and comes from
-    `_open_mcp_oauth_banner_mids` called before the teardown. Making it a parameter
-    instead of re-deriving the set here is the whole safety property: a caller cannot
-    accidentally sweep a successor session's live banner, because a row minted after
-    the snapshot is not in it.
-
-    Not keyed on a server name, unlike `_supersede_open_mcp_oauth_banners`. The reset
-    destroys the whole child, so every flow it was hosting dies at once regardless of
-    which server asked -- and that also means this is not subject to that function's
-    credential-shaped-name limitation, since it never has to match a redacted name
-    against anything.
-
-    Sync, and every caller invokes it only AFTER its teardown is confirmed. That
-    direction matters: an exception or a cancellation during teardown can leave the
-    child, and the loopback listener its authorize link is redeemable against, alive.
-    Retiring then would remove a button that still works, and the user would have no
-    way back -- `pop_pending_oauth_requests` has already drained the request, so a
-    live child does not re-announce it. A dead link that survives one more turn is
-    the cheaper error, and the read-time generation gate catches it after a restart.
-    """
-    if not doomed:
-        return
-    for message in slot.messages:
-        if message.get("role") != "mcp_oauth":
-            continue
-        meta = message.get("meta") or {}
-        row_mid_pre = meta.get("mid")
-        if not isinstance(row_mid_pre, str) or row_mid_pre not in doomed:
-            # Either unnamed, or minted after the snapshot -- i.e. possibly the
-            # successor session's own live banner. Not ours to withdraw.
-            continue
-        if not meta.get("oauth_url"):
-            # No link to withdraw: the rejected-URL banners, and any row already
-            # retired by this function or by the supersede path -- both of those
-            # drop `oauth_url`, so this guard is also what makes a second call a
-            # no-op. Leaving them alone keeps this from overwriting a recorded
-            # outcome.
-            continue
-        if meta.get("completed") or meta.get("failed"):
-            # A recorded outcome. Unlike `superseded`/`expired` these can still
-            # carry an `oauth_url` -- `_mark_mcp_oauth_completed` sets the flag
-            # without popping the url, since the render layer stops at those
-            # branches -- so they have to be named here rather than relying on
-            # the guard above.
-            continue
-        # Same reason as the supersede path: this copies a stored dict into both
-        # slot.messages and a broadcast that bypasses _prepare_messages. Safe despite
-        # that gate being stricter than the emit-path one because `oauth_url` is dead
-        # data here -- dropped below, and the expired branch renders no link.
-        new_meta = _redact_meta_for_role("mcp_oauth", dict(meta))
-        new_meta.pop("oauth_url", None)
-        new_meta["expired"] = True
-        label = new_meta.get("server_name") or "MCP server"
-        new_content = f"↻ {label} sign-in is no longer active — the session that started it ended."
-        row_mid = new_meta.get("mid")
-        # Resolve by `mid`, not `ts`, for the reason spelled out in
-        # _supersede_open_mcp_oauth_banners: `ts` is not a row identity.
-        if (
-            slot.update_message(
-                message.get("ts", ""),
-                content=new_content,
-                meta=new_meta,
-                mid=row_mid if isinstance(row_mid, str) else None,
-            )
-            is None
-        ):
-            continue
-        # `oauth_url` goes on the wire as an empty string though it is ABSENT from the
-        # persisted meta, because the client merges an incoming meta over the row it
-        # already has. Omitting the key would leave the dead URL on a tab running
-        # pre-upgrade JS, which would keep rendering the link; an empty string fails
-        # that client's own isSafeOAuthUrl check so the banner withdraws instead.
-        state.broadcast_ws(
-            "chat_message_update",
-            {
-                "slot": slot.key,
-                "ts": message.get("ts", ""),
-                "mid": row_mid or "",
-                "meta": {**new_meta, "oauth_url": ""},
-                "content": new_content,
-            },
-        )
-
-
 def _connections_managed_mcp_names() -> frozenset[str]:
     """Servers whose OAuth consent a rendered Connections card owns end to end.
 
@@ -2031,6 +1923,10 @@ async def _drain_session_init_oauth_requests(
         # every session init and the common case is zero requests.
         return
     managed = await asyncio.to_thread(_connections_managed_mcp_names)
+    # The requests were buffered by the child `client` fronts, so that child's
+    # process instance is the identity every one of these banners is stamped
+    # with — the flow's loopback listener and verifier live in it.
+    minted_by = str(getattr(client, "process_instance", "") or "")
     for req in pending:
         if not isinstance(req, dict):
             continue
@@ -2044,6 +1940,7 @@ async def _drain_session_init_oauth_requests(
             server_name,
             req.get("oauthUrl") or "",
             card_owned=bool(server_name) and server_name in managed,
+            minted_by=minted_by,
         )
 
 
@@ -3611,25 +3508,15 @@ async def _consume_pending_reset(
         # failed leaves the session in a state this slot cannot vouch for, and
         # "unknown" is the direction that fails open.
         slot.record_model_withheld(None)
-        # Snapshot before the await, so a banner the successor session emits during
-        # the teardown is not swept along with the ones this reset actually ends.
-        doomed_banners = _open_mcp_oauth_banner_mids(slot)
         try:
             await state.sessions.reset(pending_key)
             torn_down = True
-            # Retire open MCP OAuth banners only AFTER the reset returns, so a
-            # raise skips it. Unlike the withhold verdict above, "unknown" does
-            # NOT fail open here: this reset destroys the child that owns an open
-            # banner's loopback listener, but if it raised instead, that child --
-            # and its still-redeemable link -- may be alive, and retiring the
-            # banner would remove a working button with no way back (the pending
-            # request was already drained, so a live child does not re-announce).
-            # Reaching here without raising is sufficient: a False return means
-            # there was no live session to tear down, in which case the flow is
-            # already dead and the banner is stale either way.
-            _expire_mcp_oauth_banners(state, slot, doomed_banners)
             if slot._pending_reset_history_key == pending_key:
                 slot._pending_reset_history_key = None
+            # Freshness push for open tabs; verdict-driven, so a teardown that
+            # raised above never reaches it and a declined one broadcasts
+            # nothing (see _broadcast_expired_oauth_banners).
+            _broadcast_expired_oauth_banners(state, slot)
         except Exception:
             logger.warning(
                 "Failed to consume pending project-change reset for slot %s",
@@ -3658,10 +3545,6 @@ async def _consume_pending_reset(
             # the transcript into the fresh conversation returns most of what the
             # reset reclaimed. The flag exists on the manager for the HTTP route,
             # which does let a caller choose.
-            # Snapshot before the await, for the same reason as the reset branch:
-            # a banner the successor session emits during this teardown must not be
-            # swept along with the ones the discard actually ends.
-            doomed_discard_banners = _open_mcp_oauth_banner_mids(slot)
             discarded = await state.sessions.discard_conversation(
                 discard_key, replay=False, skip_if_busy=True
             )
@@ -3684,15 +3567,9 @@ async def _consume_pending_reset(
             # longer exists; the fresh one will report for itself.
             if slot.clear_mcp_report():
                 state.broadcast_ws("mcp_report_update", {"slot": slot.key, "mcp_report": None})
-            # An open MCP OAuth banner describes that session too, and more
-            # sharply: `discard_conversation` shuts the child down
-            # (session_lifecycle `await session.provider.shutdown()`), so the
-            # loopback listener and PKCE verifier its Authorize link is
-            # redeemable against are gone. Gated on `discarded` for the same
-            # reason as everything else in this block -- a refusal leaves the
-            # session, and its still-working button, alive -- and limited to the
-            # pre-teardown snapshot so a successor's banner is not swept.
-            _expire_mcp_oauth_banners(state, slot, doomed_discard_banners)
+            # Freshness push for open tabs (verdict-driven — see
+            # _broadcast_expired_oauth_banners).
+            _broadcast_expired_oauth_banners(state, slot)
         except Exception:
             logger.warning(
                 "Failed to consume pending conversation discard for slot %s",
@@ -8908,7 +8785,13 @@ async def _run_chat(
                 # kiro-cli emits this notification when an MCP server's token
                 # has expired or never existed. Surface as an inline banner —
                 # kiro-cli's local callback handles the rest of the OAuth flow.
-                _emit_mcp_oauth_request(state, slot, event.server_name, event.oauth_url)
+                _emit_mcp_oauth_request(
+                    state,
+                    slot,
+                    event.server_name,
+                    event.oauth_url,
+                    minted_by=str(getattr(client, "process_instance", "") or ""),
+                )
                 _record_session_mcp_event(
                     state,
                     slot,
@@ -11314,14 +11197,6 @@ async def _run_chat(
                 except Exception:
                     logger.debug("Stream cleanup failed", exc_info=True)
             if _acquired and (needs_session_reset or needs_conversation_discard):
-                # Snapshot the open OAuth banners BEFORE the await. A successor
-                # session can start and emit its own request while this one is
-                # shutting down (an agent switch racing a concurrent send), and a
-                # sweep taken afterwards would withdraw that live URL too. Placed
-                # above the withhold drop so that drop stays adjacent to the teardown
-                # it describes -- test_every_session_teardown_drops_the_verdict pins
-                # their distance.
-                doomed_banners = _open_mcp_oauth_banner_mids(slot)
                 # Neither branch below goes through `_reset_slot_session`, so the
                 # withhold verdict is dropped here: both replace the session that
                 # advertised the model list (an agent switch can even change the
@@ -11330,7 +11205,6 @@ async def _run_chat(
                 # the slot at "unknown" rather than carrying a verdict it can no
                 # longer vouch for.
                 slot.record_model_withheld(None)
-                oauth_flow_ended = False
                 try:
                     if needs_conversation_discard:
                         # Poisoned-conversation escalation: clear ONLY the
@@ -11339,23 +11213,18 @@ async def _run_chat(
                         # recovery turn cold-starts a fresh native
                         # conversation instead of session/load-ing the same
                         # rejected one (which reset() would do).
-                        oauth_flow_ended = await state.sessions.discard_conversation(session_key)
+                        await state.sessions.discard_conversation(session_key)
                     else:
-                        oauth_flow_ended = await state.sessions.reset(session_key)
+                        await state.sessions.reset(session_key)
                 except Exception:
                     logger.warning("Failed to reset session %s after agent switch", session_key)
-                if oauth_flow_ended:
-                    # Retire open MCP OAuth banners only once the teardown is
-                    # CONFIRMED, and only the ones open BEFORE it. Both calls return
-                    # whether a session was actually torn down, and the unhappy paths
-                    # matter: an exception or a cancellation here can leave the child
-                    # -- and the loopback listener its authorize link is redeemable
-                    # against -- alive. Retiring then would take away a button that
-                    # still works, and the user could not recover, because the pending
-                    # request was already drained by `pop_pending_oauth_requests` and a
-                    # live child does not re-announce it. Same gate, and the same
-                    # reason, as `_reset_slot_session`.
-                    _expire_mcp_oauth_banners(state, slot, doomed_banners)
+                # Freshness push for open tabs. Unconditional where the old
+                # write-time retirement needed an outcome gate: the helper
+                # re-resolves the live child at call time, so a swallowed
+                # teardown failure leaves the child alive, the stamps still
+                # match, and nothing is broadcast (see
+                # _broadcast_expired_oauth_banners).
+                _broadcast_expired_oauth_banners(state, slot)
         finally:
             if _acquired:
                 # A successful reset() above already popped the key under its
