@@ -220,6 +220,27 @@ class TestRedact:
             assert r._redact("plain text") == r._UNSCRUBBABLE
 
 
+class TestRedactTruncated:
+    """The slice-safe sibling: redaction over the FULL text, then the cut."""
+
+    def test_a_credential_straddling_the_boundary_is_scrubbed(self):
+        # Truncating first would cut the key so no regex matched the fragment
+        # that survived; redacting first removes it entirely.
+        text = "x" * 60 + CRED_NAME + " tail"
+        out = r._redact_and_truncate(text, 64)
+        assert len(out) <= 64
+        assert CRED_NAME not in out
+        assert "AKIA" not in out
+
+    def test_it_fails_closed_when_the_security_module_is_missing(self):
+        with mock.patch.object(r, "_HAS_SECURITY", False):
+            assert r._redact_and_truncate("plain text", 64) == r._UNSCRUBBABLE
+
+    def test_non_strings_and_empties_come_back_as_empty_strings(self):
+        assert r._redact_and_truncate(None, 64) == ""  # type: ignore[arg-type]
+        assert r._redact_and_truncate("", 64) == ""
+
+
 class TestOptedIn:
     def test_only_the_json_true_opts_in(self):
         assert r._opted_in({"use_worktree": True}, "use_worktree")
@@ -2342,7 +2363,7 @@ class TestSerializeMessages:
 
     @pytest.mark.asyncio
     async def test_a_plain_tool_line_truncation_unchanged(self):
-        """Ordinary path is result-preserving: no secret ⇒ the same 200-char slice."""
+        """Ordinary path is result-preserving: no secret -> the same 200-char slice."""
         slot = _Slot("spec-builder-demo")
         slot.messages = [{"role": "tool", "content": "t" * 250 + "\nmore", "ts": "1"}]
         state = _State(**{"spec-builder-demo": slot})

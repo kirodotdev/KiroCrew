@@ -51,7 +51,7 @@ from kiro_crew.sandbox import (
     run_limited,
     wrap_argv,
 )
-from kiro_crew.security import is_sensitive_path, redact
+from kiro_crew.security import is_sensitive_path, redact, redact_and_truncate
 from kiro_crew.sel import sel
 
 # Env vars stripped from EVERY cron subprocess (command and script), regardless
@@ -236,6 +236,12 @@ if TYPE_CHECKING:
     from kiro_crew.cron import CronJob
 
 logger = logging.getLogger(__name__)
+
+# Whole-file ceiling for a captured stderr. Crash stderr is small in practice;
+# up to this bound the full capture is redacted in a single pass then the tail
+# is sliced; beyond it the tail is withheld behind a fixed marker (see
+# _stderr_tail) rather than partially redacted.
+_STDERR_FULL_REDACT_MAX = 4 * 1024 * 1024
 
 
 class SkipError(Exception):
@@ -519,12 +525,15 @@ class McpToolClient:
                 return json.loads(line)
 
     def _stderr_tail(self, limit: int = 1024) -> str:
-        """Return the last `limit` bytes of the subprocess's captured stderr.
+        """Return the last `limit` characters of the subprocess's captured stderr.
 
-        Credentials and exfiltration URLs are redacted before the tail is
-        surfaced in an error so a failing spawn (e.g. an auth dump or an
-        attacker-controlled MCP server) can't leak secrets or beacon URLs
-        into logs, Slack, or the dashboard.
+        Credentials and exfiltration URLs are redacted BEFORE the tail is cut,
+        so a secret straddling the cut cannot survive as an unredacted
+        fragment: the full capture (up to ``_STDERR_FULL_REDACT_MAX`` bytes)
+        is redacted in a single bounded pass, then only the tail is kept.
+        Beyond ``_STDERR_FULL_REDACT_MAX`` bytes the tail is withheld behind
+        a fixed marker instead: a pathological log is not worth serving even
+        a windowed slice of.
         """
         path = getattr(self, "_stderr_file", None)
         if path is None:
@@ -533,8 +542,20 @@ class McpToolClient:
             with open(path.name, errors="replace") as fh:
                 fh.seek(0, os.SEEK_END)
                 size = fh.tell()
-                fh.seek(max(0, size - limit))
-                return redact(fh.read().strip())
+                if size > _STDERR_FULL_REDACT_MAX:
+                    return "[stderr omitted: too large to redact in full]"
+                fh.seek(0)
+                # Read at most one byte past the ceiling so a concurrent
+                # writer that pushes the file past the limit is caught even
+                # if it grows between the seek-end and the read.
+                chunk = fh.read(_STDERR_FULL_REDACT_MAX + 1)
+                if len(chunk) > _STDERR_FULL_REDACT_MAX:
+                    return "[stderr omitted: too large to redact in full]"
+                # Redact the full capture, THEN take the tail — this is
+                # ``redact_and_truncate``'s ordering: scrub first so that
+                # no credential fragment survives the slice boundary, then
+                # keep only the last ``limit`` characters.
+                return redact(chunk.strip())[-limit:]
         except Exception as exc:
             # Defensive — _stderr_tail runs inside error reporting itself, so we
             # never raise here. We DO log the exception type at debug so that a
@@ -928,10 +949,7 @@ def run_script_sandboxed(
         except (json.JSONDecodeError, IndexError):
             return {
                 "status": "error",
-                # Redact the complete stdout BEFORE truncating: slicing first
-                # could cut a credential at the boundary, leaving its unredacted
-                # head in the diagnostic.
-                "error": f"Bad output: {redact(stdout)[:200]}",
+                "error": f"Bad output: {redact_and_truncate(stdout, 200)}",
             }
     except subprocess.TimeoutExpired:
         return {"status": "error", "error": f"Script timed out after {timeout}s"}
