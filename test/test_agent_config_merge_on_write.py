@@ -1440,3 +1440,106 @@ async def test_an_unreadable_spec_still_persists_a_namespaced_entry(tmp_path):
         "an unreadable spec deleted what the client submitted: this axis must be "
         "best-effort so the raw editor stays the repair path for a corrupt spec"
     )
+
+
+# ── (g) the region's axis matrix, and the one cell still open (#7470) ──────────
+
+
+@pytest.mark.asyncio
+async def test_the_app_namespace_region_decides_every_axis_it_claims_to(tmp_path):
+    """Every axis of the app-namespace region in ONE table, so a missing one shows.
+
+    THE FAILURE THIS EXISTS TO CATCH is a rule set that reads as complete and is
+    not. #6975 shipped the ABSENT axis; the PRESENT axis was not missing from that
+    review's conclusions so much as never enumerated, and it survived review to
+    become #7089 months later. A per-axis test cannot prevent that on its own --
+    each one passes in isolation -- so the axes are gathered here, and a region
+    whose behaviour changes on any axis has to come through this table.
+
+    The three cells and who decides each:
+
+    * EXISTENCE, name ABSENT from the submission -> ON DISK decides
+      (``_merge_unowned_servers``, #6664): an owned bridge is kept.
+    * EXISTENCE, name PRESENT in the submission with no row on disk -> ON DISK
+      decides (``_drop_unbacked_app_entries``, #7089): the addition is dropped.
+    * CONTENT, name on BOTH sides -> the SUBMISSION decides. **This cell is
+      OPEN** (#7470): a stale editor snapshot reverts a definition the platform
+      had already corrected. It is asserted here as it BEHAVES, not as it should,
+      because reversing it reverses the editor-snapshot-wins contract kept in
+      #5899 and re-affirmed for #6664 -- a maintainer ruling, not a review-time
+      call. When that ruling lands, this is the assertion that changes.
+    """
+    submitted_only = {"name": "kirocrew", "mcpServers": {"demo:ghost": {"command": "ghost"}}}
+    matrix = [
+        (
+            "existence / absent from the submission -> on disk decides",
+            {"demo:notes": {"command": "live"}},
+            {"name": "kirocrew", "mcpServers": {}},
+            {"demo:notes": {"command": "live"}},
+            "an owned bridge the submission omits was not preserved",
+        ),
+        (
+            "existence / present in the submission, absent from disk -> on disk decides",
+            {},
+            submitted_only,
+            {},
+            "a namespaced name with no row on disk was created through this PUT",
+        ),
+        (
+            "content / on both sides -> the submission decides (OPEN, #7470)",
+            {"demo:notes": {"command": "live"}},
+            {"name": "kirocrew", "mcpServers": {"demo:notes": {"command": "stale"}}},
+            {"demo:notes": {"command": "stale"}},
+            "the content axis changed verdict without the ruling #7470 is waiting on",
+        ),
+    ]
+
+    for axis, on_disk, submitted, expected, why in matrix:
+        response, written = await _put(
+            tmp_path,
+            on_disk={"name": "kirocrew", "mcpServers": on_disk},
+            submitted=submitted,
+        )
+
+        assert response.status == 200, f"{axis}: PUT failed"
+        assert written["mcpServers"] == expected, f"{axis}: {why}"
+
+
+@pytest.mark.asyncio
+async def test_a_stale_snapshot_reverts_a_live_http_bridge_to_a_dead_url(tmp_path):
+    """What the open content cell costs, in the instance that makes it load-bearing.
+
+    A ``backend.port:"auto"`` app gets a free port at spawn time and
+    ``_register_mcp_servers`` rewrites its manifest url to that live port
+    (``_resolve_live_mcp_url``). An editor tab opened before that rewrite still
+    holds the manifest's ILLUSTRATIVE port, and saving it writes that port back.
+
+    The reverted value is therefore the exact artefact the registration path
+    refuses to write and scrubs on sight -- a reachable-LOOKING dead URL -- whose
+    cost ``_drop_unbacked_app_entries`` states as breaking every kiro session,
+    not just this app's. Two things narrow it and neither removes it: the PUT's
+    own tail drains every session and the warm pool, so the next cold start reads
+    the reverted row; and the only writer that restores the live port is
+    ``reconcile_enabled_app_resources``, whose single call site is the gateway
+    boot path -- so the window is until the next restart.
+
+    Asserted as it BEHAVES. This is the same open cell as the content row of
+    :func:`test_the_app_namespace_region_decides_every_axis_it_claims_to`, kept
+    separate because the severity, not the verdict, is what it records.
+    """
+    live = "http://127.0.0.1:9137/mcp"  # the port the backend actually got
+    illustrative = "http://127.0.0.1:9100/mcp"  # what the manifest, and the tab, hold
+
+    response, written = await _put(
+        tmp_path,
+        on_disk={"name": "kirocrew", "mcpServers": {"demo:notes": {"url": live}}},
+        submitted={"name": "kirocrew", "mcpServers": {"demo:notes": {"url": illustrative}}},
+    )
+
+    assert response.status == 200
+    assert written["mcpServers"]["demo:notes"]["url"] == illustrative, (
+        "the live url survived a stale snapshot: the content axis now decides from "
+        "on-disk state, which is the reversal #7470 is waiting on a ruling for -- "
+        "update this test and the decision table in "
+        "docs/system-specs/modules/app-kit-platform.md together with it"
+    )
