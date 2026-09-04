@@ -129,13 +129,13 @@ function formatWhen(row: Row): string {
 /**
  * The notifier for this page.
  *
- * NOT the App SDK's `useNotify()`: that hook reads `AppSdkContext`, which only
- * exists inside `AppApiProvider` — the wrapper the host mounts around an
- * EXTERNALLY-loaded app bundle. An in-tree builtin page renders directly in the
- * core React tree with no such provider, so calling it throws
- * "useAppApi() must be used inside <AppApiProvider>" and the whole page renders
- * as an error boundary. `DevFleetPage` hit this first and carries the same
- * workaround; this dispatches to the notification store the header already reads.
+ * NOT the App SDK's `useNotify()`: that hook reads `AppSdkContext`, which exists
+ * only inside the SDK's scoped-API layer. A builtin page now HAS app identity
+ * (published by `BuiltinAppRoute`) but not that layer, so calling the hook still
+ * throws and the whole page renders as an error boundary. Mounting
+ * `AppScopedApiProvider` would supply it — `spec-builder` does exactly that — but
+ * this page needs no scoped client, and dispatching to the notification store the
+ * header already reads costs it nothing. `DevFleetPage` carries the same workaround.
  */
 function useNotifier(): (message: string, opts?: { type?: 'info' | 'success' | 'error' }) => void {
   const dispatch = useDispatch()

@@ -105,49 +105,49 @@ export const BUILTIN_COMPONENT_REGISTRY: Record<string, BuiltinAppEntry> = {
 const _BUILTIN_ROUTE_RE = /^\/[A-Za-z0-9][A-Za-z0-9._~-]*$/
 
 /**
- * Why a bad entry must be refused, or `null` when it is fine.
+ * Report and refuse a registration that could never work, or return false.
  *
- * One predicate for both the core table above and the runtime seam below, so a
- * rule can never be enforced on one and not the other. The route rule and the
- * appId rule are deliberately different charsets: a route is a URL path segment
- * (`/Reports`, `/my_app` and `/a.b` all resolve), while an appId is a storage
- * key and is held to `[a-z0-9-]` — see `appIdentity.ts` for why.
+ * Applied at the runtime seam only. The core table above is developer-authored
+ * code whose appIds `builtinRegistry.identity.test.tsx` already holds to
+ * `isValidAppId`, so checking it again at import time would be a second
+ * enforcement point over compile-time constants; this guards the one caller that
+ * takes input the compiler never saw.
+ *
+ * It REPORTS rather than returning a reason, which keeps the refusal and its
+ * diagnostic together — a caller cannot refuse an entry and forget to say why —
+ * and keeps each message inside the `reportSeamCollision(` call it belongs to,
+ * where the i18n gate already recognises it as a developer diagnostic rather
+ * than user copy.
+ *
+ * The route rule and the appId rule are deliberately different charsets: a route
+ * is a URL path segment (`/Reports`, `/my_app` and `/a.b` all resolve), while an
+ * appId is a storage key and is held to `[a-z0-9-]` — see `appIdentity.ts` for why.
  */
-function entryRefusal(route: string, entry: BuiltinAppEntry | undefined): string | null {
+function refuseBadEntry(route: string, entry: BuiltinAppEntry | undefined): boolean {
   if (!_BUILTIN_ROUTE_RE.test(route)) {
-    return (
+    reportSeamCollision(
+      'builtinRegistry',
       `route ${route} is not a single plain path segment ` +
-      `(/^\\/[A-Za-z0-9][A-Za-z0-9._~-]*$/); BuiltinAppRoute can never ` +
-      `resolve it — ignoring`
+        `(/^\\/[A-Za-z0-9][A-Za-z0-9._~-]*$/); BuiltinAppRoute can never ` +
+        `resolve it — ignoring`,
     )
+    return true
   }
   if (!isValidAppId(entry?.appId)) {
-    return (
+    reportSeamCollision(
+      'builtinRegistry',
       `route ${route} declares appId ${JSON.stringify(entry?.appId)}, which is not a ` +
-      `valid app id (non-empty, /^[a-z0-9-]+$/). The appId becomes a storage key and a ` +
-      `query-key prefix, so it cannot be taken on trust — ignoring`
+        `valid app id (non-empty, /^[a-z0-9-]+$/). The appId becomes a storage key and a ` +
+        `query-key prefix, so it cannot be taken on trust — ignoring`,
     )
+    return true
   }
-  return null
-}
-
-// The core table is developer-authored code, so a bad entry there is a bug to
-// fix before release, not input to reject: report it through the same policy as
-// the seam (throws in dev/test, warns in production) and leave the page
-// routable. `builtinRegistry.identity.test.ts` is what keeps a bad appId out of
-// a production build, since it fails CI on any entry this predicate rejects.
-for (const [route, entry] of Object.entries(BUILTIN_COMPONENT_REGISTRY)) {
-  const refusal = entryRefusal(route, entry)
-  if (refusal) reportSeamCollision('builtinRegistry', refusal)
+  return false
 }
 
 export function registerBuiltinComponents(entries: Record<string, BuiltinAppEntry>): void {
   for (const [route, entry] of Object.entries(entries)) {
-    const refusal = entryRefusal(route, entry)
-    if (refusal) {
-      reportSeamCollision('builtinRegistry', refusal)
-      continue
-    }
+    if (refuseBadEntry(route, entry)) continue
     if (route in BUILTIN_COMPONENT_REGISTRY) {
       reportSeamCollision('builtinRegistry', `route ${route} already registered; ignoring duplicate`)
       continue
