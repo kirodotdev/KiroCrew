@@ -946,19 +946,21 @@ class TestBuildLauncherScript:
         assert "unknown arch" not in script
 
         # Execute the arch-dispatch block itself, so this proves the refusal
-        # FIRES rather than that its message is present as text.
+        # FIRES rather than that its message is present as text. The block
+        # starts at the machine read: ``import platform`` no longer sits here —
+        # it is hoisted to the preamble so no first-time stdlib import runs
+        # after namespace/mount isolation (#8151).
         lines = script.splitlines()
         start = -1
         end = -1
         for index, line in enumerate(lines):
-            if start < 0 and line.strip() == "import platform as _plat":
+            if start < 0 and line.strip() == "_machine = _plat.machine()":
                 start = index
             elif start >= 0 and "if _DENY_SYSCALLS:" in line:
                 end = index
                 break
         assert start >= 0 and end > start, "arch-dispatch block not found"
         block = textwrap.dedent("\n".join(lines[start:end]))
-        block = block.replace("import platform as _plat", "")
 
         class _FakePlat:
             def __init__(self, machine):

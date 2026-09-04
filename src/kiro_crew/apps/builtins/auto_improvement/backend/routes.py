@@ -798,7 +798,12 @@ async def _handle_draft_pr(request: web.Request) -> web.StreamResponse:
         clone = str(config.get("clone") or "").strip()
         if not clone:
             return {"ok": False, "error": "no repository configured"}
-        if not clone_setup._repository_is_isolated(Path(clone)):
+        try:
+            isolated = clone_setup._repository_is_isolated(Path(clone))
+        except clone_setup.IsolationProbeError as exc:
+            # Sandbox failure, not an isolation verdict — name it (#8151).
+            return {"ok": False, "error": str(exc)}
+        if not isolated:
             return {"ok": False, "error": "repository isolation check failed — re-run setup"}
 
         body = body_path.read_text(encoding="utf-8")
@@ -956,7 +961,14 @@ async def _handle_draft_pr(request: web.Request) -> web.StreamResponse:
     if result.get("ok"):
         return web.json_response(result, status=200)
     return web.json_response(
-        {"code": "draft_pr_failed", "error": str(result.get("detail") or "")},
+        {
+            "code": "draft_pr_failed",
+            # `_draft()`'s failure dicts carry `error`; `detail` is kept as the
+            # legacy fallback. Reading only `detail` serialized every failure —
+            # including the sandbox-launcher diagnosis this route now surfaces —
+            # as an empty string. Raised by the GPT review of this branch.
+            "error": _redact_for_display(str(result.get("error") or result.get("detail") or "")),
+        },
         status=400,
     )
 
@@ -1374,6 +1386,14 @@ async def _handle_run_start(_request: web.Request) -> web.StreamResponse:
 
     try:
         result = await asyncio.to_thread(_start)
+    except clone_setup.IsolationProbeError as exc:
+        # Before the generic clause: this subclasses RuntimeError, but it is a
+        # sandbox-launcher failure, not a config/state conflict — a distinct
+        # `code` so a UI branching on it does not render the misleading
+        # push-isolation guidance (#8151). The message is the actionable part.
+        return web.json_response(
+            {"code": "sandbox_launcher_failed", "error": str(exc)}, status=409
+        )
     except (RuntimeError, ValueError, PermissionError) as exc:
         # Already running / no repository configured / push not disabled — all three are
         # "the request conflicts with current state", all three are user-fixable, and the

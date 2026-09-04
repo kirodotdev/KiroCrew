@@ -283,12 +283,43 @@ class Driver:
         )
         self._stop = False
         self._repository_retired = False
+        # Terminal latch for a probe whose sandbox launcher crashed: set (then
+        # re-raised) by `_retire_if_unsafe`. Some intermediate layers catch
+        # broadly to keep a run alive (per-candidate error containment), so
+        # `run()` re-raises this before returning stats — otherwise a run
+        # aborted by a safety-probe failure would be recorded as STATUS_DONE.
+        # Raised by the GPT review of this branch.
+        self._probe_failure: Exception | None = None
 
     def _retire_if_unsafe(self, stage: str) -> bool:
         """Stop and atomically retire the clone if post-agent validation fails."""
-        from ..backend.clone_setup import _repository_is_isolated, _retire_unsafe_clone
+        from ..backend.clone_setup import (
+            IsolationProbeError,
+            _repository_is_isolated,
+            _retire_unsafe_clone,
+        )
 
-        if _repository_is_isolated(self.clone):
+        try:
+            isolated = _repository_is_isolated(self.clone)
+        except IsolationProbeError as exc:
+            # The probe could not RUN — its sandbox launcher died before git
+            # executed, which says nothing about the clone. Do NOT retire:
+            # retiring renames away a clone whose remotes were never read,
+            # destroying good state over an unrelated sandbox failure (#8151).
+            # The tightened signature match in `_launcher_failure_detail` is
+            # what keeps this branch unreachable for ambiguous or
+            # repository-influenced errors — those still return False below
+            # and retire as before. Re-raise after recording: swallowing here
+            # let `driver.run()` return normally, so the supervisor recorded
+            # STATUS_DONE for a run aborted by a safety-probe failure (raised
+            # by the GPT review of this branch); the run-loop's catch-all
+            # records STATUS_ERROR with this message instead.
+            self._stop = True
+            self._probe_failure = exc
+            self.log.error("isolation probe could not run after %s: %s", stage, exc)
+            self._progress(stage="isolation_probe_failed", error=str(exc))
+            raise
+        if isolated:
             return False
         retained = _retire_unsafe_clone(self.clone)
         self._repository_retired = True
@@ -2077,6 +2108,12 @@ class Driver:
                 self.stats.filed,
                 self.stats.errors,
             )
+        if self._probe_failure is not None:
+            # A safety probe that could not run aborted this run; per-candidate
+            # error containment may have swallowed the in-flight raise, so
+            # re-raise here where the supervisor's catch-all records
+            # STATUS_ERROR instead of reading the early stop as DONE.
+            raise self._probe_failure
         return self.stats
 
     def request_stop(self) -> None:

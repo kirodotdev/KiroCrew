@@ -386,9 +386,15 @@ class GitHubPRRecipe:
 
     def _push_fix_branch(self, *, branch: str) -> tuple[bool, str]:
         """Push HEAD to ``branch`` on the fetch url. Returns (ok, note)."""
-        from ...backend.clone_setup import _repository_is_isolated
+        from ...backend.clone_setup import IsolationProbeError, _repository_is_isolated
 
-        if not _repository_is_isolated(self.clone_path):
+        try:
+            isolated = _repository_is_isolated(self.clone_path)
+        except IsolationProbeError as exc:
+            # Sandbox failure, not an isolation verdict — the note must not
+            # read as if the repository changed under review (#8151).
+            return False, str(exc)
+        if not isolated:
             return False, "repository isolation changed after review"
         url = self._resolve_fetch_url()
         if not url:

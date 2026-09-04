@@ -107,7 +107,95 @@ def _git_env(*, network_protocol: str = "") -> dict[str, str]:
     return env
 
 
+class IsolationProbeError(RuntimeError):
+    """The push-isolation probe COULD NOT RUN — its sandbox launcher failed.
+
+    Raised instead of the fail-closed ``False`` because the two nonzero exits
+    mean opposite things: a probe that RAN and found a live url is a repository
+    problem ("re-run repository setup" fixes it), while a probe whose launcher
+    died before ``git`` executed says nothing about the remotes and setup
+    cannot fix it. Subclasses ``RuntimeError`` so the run-start route's
+    existing handler surfaces the message verbatim instead of a 500.
+    """
+
+    def __init__(self, detail: str) -> None:
+        super().__init__(
+            "the push-isolation probe could not run: the sandbox launcher "
+            "failed before git executed"
+            + (f" ({detail})" if detail else "")
+            + " — the clone's remote urls were never read, so this is a "
+            "sandbox failure, not a live push url; fix the sandbox (see the "
+            "gateway log) rather than re-running repository setup"
+        )
+        self.detail = detail
+
+
+#: Signatures only the namespace-sandbox launcher emits on stderr, matched
+#: STRUCTURALLY so repository-influenced text cannot satisfy them (raised by
+#: the Opus review of this branch): a repo may legally be NAMED
+#: ``kirocrew_sandbox_x`` (``_GITHUB_RE`` admits ``_``), which puts that
+#: substring into the clone PATH that git echoes on path-printing fatals — so
+#: the script-filename marker only counts inside a real Python traceback frame
+#: (``File "…kirocrew_sandbox_….py"`` plus the ``Traceback`` banner, a shape
+#: git never prints), and the launcher's deliberate refusal prefixes must
+#: START a stderr line (owner/repo names cannot contain a space or colon, so
+#: no echoed path can begin a line with ``sandbox: ``). ``sandbox: WARNING``
+#: is deliberately NOT classified: the launcher warns and then still runs the
+#: command, so a warning can coexist with git's own exit code and must not
+#: reclassify it. The prefixes are pinned against the generated launcher by a
+#: round-trip test so this list cannot drift silently.
+_LAUNCHER_EXIT_PREFIXES = (
+    "sandbox: BLOCKED",
+    "sandbox: FATAL",
+    "sandbox: unshare(",
+    "sandbox_launcher:",
+)
+_LAUNCHER_TRACEBACK_RE = re.compile(r'^\s*File "[^"\n]*kirocrew_sandbox_[^"\n]*\.py"', re.MULTILINE)
+
+
+def _launcher_failure_detail(stderr: str) -> str | None:
+    """The bounded, redacted detail line when *stderr* shows the sandbox
+    launcher itself failed, else ``None`` (the exit code is git's own)."""
+    lines = [line.strip() for line in stderr.strip().splitlines() if line.strip()]
+    launcher_failed = any(line.startswith(_LAUNCHER_EXIT_PREFIXES) for line in lines) or (
+        "Traceback (most recent call last)" in stderr
+        and _LAUNCHER_TRACEBACK_RE.search(stderr) is not None
+    )
+    if not launcher_failed:
+        return None
+    # The surfaced message carries only a bounded tail; the full (redacted,
+    # bounded) stderr goes to the log here, at the one classification site, so
+    # "see the gateway log" in the raised message is a promise that is kept.
+    logger.error(
+        "push-isolation probe could not run — sandbox launcher stderr (redacted): %s",
+        redact_via_context(stderr.strip())[:2000],
+    )
+    # The last line is the significant one for both failure shapes: a Python
+    # traceback ends with the exception ("ModuleNotFoundError: ..."), and the
+    # launcher's own sys.exit messages lead with their prefix.
+    tail = lines[-1] if lines else ""
+    # Redact BEFORE the bound, same as every stderr surface in this module.
+    return redact_via_context(tail)[:200]
+
+
 def _origin_urls(repo: Path, *, push: bool) -> list[str] | None:
+    """Read origin's fetch/push urls from the clone's local config, as data.
+
+    Returns the url list, ``[]`` when the key is absent, or ``None`` for an
+    ambiguous git failure (callers fail closed on ``None``). Raises
+    :class:`IsolationProbeError` for the one nonzero exit that is NOT evidence
+    about the remotes at all: a namespace-sandbox launcher dying before git
+    executed, identified by the launcher's own stderr signature. This module
+    spawns git directly, so no launcher exists in this probe's chain on a
+    stock install — the signature appears only on deployments that route the
+    gateway's subprocesses through the sandbox (the issue #8151 host, where
+    every ``git remote get-url`` probe carried the launcher's traceback), and
+    the classification is inert everywhere else because the structural
+    matching in :func:`_launcher_failure_detail` cannot be satisfied by git's
+    own output. Collapsing that crash into the fail-closed path reported
+    "push is not disabled" for a clone whose remotes were never read — the
+    misleading 409 in issue #8151.
+    """
     key = "remote.origin.pushurl" if push else "remote.origin.url"
     try:
         proc = subprocess.run(
@@ -130,6 +218,10 @@ def _origin_urls(repo: Path, *, push: bool) -> list[str] | None:
         )
     except (OSError, subprocess.SubprocessError):
         return None
+    if proc.returncode != 0:
+        detail = _launcher_failure_detail(proc.stderr or "")
+        if detail is not None:
+            raise IsolationProbeError(detail)
     if proc.returncode == 1:
         return []
     if proc.returncode != 0:
@@ -308,7 +400,14 @@ def _push_disabled(repo: Path) -> bool:
 
 
 def _repository_is_isolated(repo: Path) -> bool:
-    """True only when metadata/config is safe and every origin URL is disabled."""
+    """True only when metadata/config is safe and every origin URL is disabled.
+
+    Fails CLOSED (``False``) for ambiguous git errors, but raises
+    :class:`IsolationProbeError` when the probe's sandbox launcher crashed
+    before git executed — that exit is not evidence about the remotes, and
+    reporting it as "push is not disabled" hid the real failure (#8151). Both
+    outcomes refuse to start; only the surfaced reason differs.
+    """
     return _repository_is_safe(repo) and _push_disabled(repo)
 
 
@@ -416,6 +515,23 @@ def validate_target_url(url: str) -> tuple[CloneSpec | None, str]:
 
 
 def setup_safe_clone(url: str, scratch_root: Path, *, timeout_s: int = 300) -> tuple[dict, str]:
+    """Public entry: clone (or reuse) with push disabled. Returns ``(result, err)``.
+
+    A probe whose sandbox launcher crashed surfaces as the error string, not as
+    an exception: this function's callers consume ``(result, err)`` tuples off
+    a worker thread, and a raise here would turn a diagnosable sandbox failure
+    into a 500. The clone (when one exists) is deliberately left in place —
+    its remotes were never read, so there is no isolation verdict to act on,
+    and deleting a good clone over an unrelated sandbox failure only forces a
+    re-download after the sandbox is fixed.
+    """
+    try:
+        return _setup_safe_clone(url, scratch_root, timeout_s=timeout_s)
+    except IsolationProbeError as exc:
+        return {}, str(exc)
+
+
+def _setup_safe_clone(url: str, scratch_root: Path, *, timeout_s: int = 300) -> tuple[dict, str]:
     """Validate and install/reuse the canonical push-disabled clone.
 
     Reuse attests only enforceable properties: canonical location, safe Git
@@ -536,7 +652,11 @@ def list_clone_branches(clone: Path, *, timeout_s: int = 30) -> tuple[list[str],
         return [], f"Not a git clone: {clone}"
     if not _repository_is_safe(clone):
         return [], "clone Git metadata failed safety verification"
-    if not _push_disabled(clone):
+    try:
+        disabled = _push_disabled(clone)
+    except IsolationProbeError as exc:
+        return [], str(exc)
+    if not disabled:
         return [], "clone is not push-disabled"
     proc = subprocess.run(
         [
@@ -807,7 +927,11 @@ def checkout_branch(clone: Path, branch: str, *, timeout_s: int = 120) -> tuple[
         return False, f"invalid branch name: {branch!r}"
     if not _repository_is_safe(clone):
         return False, "clone Git metadata failed safety verification"
-    if not _push_disabled(clone):
+    try:
+        disabled = _push_disabled(clone)
+    except IsolationProbeError as exc:
+        return False, str(exc)
+    if not disabled:
         return False, "clone is not push-disabled"
 
     def _run(*args: str, tmo: int = timeout_s) -> subprocess.CompletedProcess:

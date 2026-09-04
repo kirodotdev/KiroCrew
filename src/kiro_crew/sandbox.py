@@ -2840,6 +2840,18 @@ import os
 import stat
 import tempfile
 
+# Hoisted from Steps 5/6 (used only AFTER unshare()+mount isolation): a
+# FIRST-TIME stdlib import reads module files off disk, and once the child has
+# entered its user+mount namespaces that read can be denied by the host's LSM
+# (seen in the wild: Ubuntu 24.04 with apparmor_restrict_unprivileged_userns=1
+# denies the post-unshare read, so ``import platform`` at seccomp-install time
+# died with ModuleNotFoundError and every sandboxed spawn failed -- #8151).
+# Import EVERYTHING this launcher needs while it is still pre-isolation, so no
+# post-isolation code ever touches the filesystem for stdlib. The static-scan
+# test pins this: every import in this generated script must be module-level.
+import platform as _plat
+import struct as _struct
+
 _CLONE_NEWUSER = 0x10000000
 _CLONE_NEWNS   = 0x00020000
 _MS_RDONLY     = 1
@@ -3103,7 +3115,8 @@ def main():
                     fh.write(expose_data[src_path])
                 # NOTE: this runs inside the embedded Linux-only namespace
                 # launcher script (a standalone /tmp file that imports only
-                # stdlib — sys/ctypes/os/tempfile — and never kiro_crew), so it
+                # stdlib — sys/ctypes/os/stat/tempfile/platform/struct — and
+                # never kiro_crew), so it
                 # must stay a raw os.chmod, NOT platform_compat.chmod_safe
                 # (which is undefined in that process). The launcher never runs
                 # on Windows, so there is no portability loss.
@@ -3216,7 +3229,9 @@ def main():
         # Inside the user namespace, the child has CAP_SYS_ADMIN (owner of the
         # NS) which lets it umount the credential bind-mounts. Drop ALL
         # capabilities from the bounding set and set NO_NEW_PRIVS before exec.
-        import struct as _struct
+        # (_struct is imported in the preamble, pre-isolation -- see the hoist
+        # note there; importing it HERE crashed under AppArmor userns
+        # restriction, #8151.)
 
         _PR_SET_NO_NEW_PRIVS = 38
         _PR_CAPBSET_DROP = 24
@@ -3305,7 +3320,9 @@ def main():
             # setns=308, pivot_root=155, kill=62
             # aarch64: mount=40, umount2=39, unshare=97, setns=268,
             # pivot_root=41, kill=129
-            import platform as _plat
+            # (_plat is imported in the preamble, pre-isolation -- importing it
+            # HERE was the reported #8151 crash: the post-unshare first-time
+            # stdlib read was denied and the whole launcher died.)
             _machine = _plat.machine()
             if _machine == "x86_64":
                 _DENY_SYSCALLS = (165, 166, 272, 308, 155)
