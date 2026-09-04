@@ -240,7 +240,7 @@ class FakeConvLog:
 def _cfg(default_agent: str = "", approval_mode: str = "interactive"):
     return SimpleNamespace(
         agent=SimpleNamespace(default_agent=default_agent, approval_mode=approval_mode),
-        wecom=SimpleNamespace(hard_threshold_pct=95.0, soft_threshold_pct=80.0),
+        wecom=SimpleNamespace(hard_threshold_pct=95.0, soft_threshold_pct=80.0, allowed_users=[]),
         messaging=SimpleNamespace(
             dm_scope="per-channel-peer",
             idle_reset_minutes=0,
@@ -718,3 +718,33 @@ class TestWeComMidTurn:
         assert not any("合并" in content for content in client.said)
         assert any("重发" in content for content in client.said)
         assert sessions.successes == []
+
+
+class TestWeComDisplayName:
+    """``_display_name`` resolves the ``[CURRENT USER]`` label from the allow-list."""
+
+    @staticmethod
+    def _cfg_with_users(users):
+        cfg = _cfg()
+        cfg.wecom.allowed_users = users
+        return cfg
+
+    def test_resolves_name_from_allowed_users(self) -> None:
+        cfg = self._cfg_with_users(
+            [{"userid": "ZhuQiang", "name": "朱强"}, {"userid": "chrishe", "name": "小碗"}]
+        )
+        d = _dispatcher(FakeSessions(FakeProvider([])), FakeCtx(), FakeClient(), cfg=cfg)
+        assert d._display_name("ZhuQiang") == "朱强"
+        assert d._display_name("chrishe") == "小碗"
+
+    def test_falls_back_to_userid_when_unknown(self) -> None:
+        cfg = self._cfg_with_users([{"userid": "ZhuQiang", "name": "朱强"}])
+        d = _dispatcher(FakeSessions(FakeProvider([])), FakeCtx(), FakeClient(), cfg=cfg)
+        # Not in the allow-list -> the raw userid, never an empty label.
+        assert d._display_name("stranger") == "stranger"
+
+    def test_falls_back_to_userid_when_name_missing(self) -> None:
+        cfg = self._cfg_with_users([{"userid": "NoName"}])
+        d = _dispatcher(FakeSessions(FakeProvider([])), FakeCtx(), FakeClient(), cfg=cfg)
+        # No name on the entry -> the raw userid, never an empty label.
+        assert d._display_name("NoName") == "NoName"
