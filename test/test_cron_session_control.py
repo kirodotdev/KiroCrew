@@ -281,6 +281,34 @@ class TestAppOwnedCron:
         ]
         sc._refuse_ineligible_creator(state, caller)
 
+    def test_a_job_whose_authoring_session_has_closed_fails_closed(self, tmp_path):
+        """The confinement escape GPT flagged (backend-security-controls).
+
+        ``mcp_cron.cron_add`` records an app's authority ONLY in ``session_key``
+        (it never writes ``created_by``). The app then closes its session, so the
+        owning slot is gone and its ``_app`` tag is unreadable. Before this fix the
+        ``owning_slot is not None`` guard failed open and returned ``None``, so the
+        app's own cron could mint a persistent, non-app, sidebar-visible session --
+        precisely the confinement the ``_app`` refusal exists to prevent, reached
+        through a closed session the gate can no longer inspect.
+
+        "Cannot verify the owner is not an app" must fail closed, the same
+        direction the missing-job and unreadable-registry cases already take.
+
+        Mutation guard: restore the ``owning_slot is not None and`` short-circuit
+        (drop the unresolvable-owner refusal) and this passes silently, letting the
+        escape back in.
+        """
+        state = _make_state(tmp_path)
+        caller = _cron_tab(state, created_by="")
+        # The job names a session that no longer has a live slot.
+        state.crons.list_jobs.return_value = [
+            SimpleNamespace(id=JOB_ID, created_by="", session_key="dashboard:chat-gone")
+        ]
+        with pytest.raises(sc.SessionControlError) as exc:
+            sc._refuse_ineligible_creator(state, caller)
+        assert exc.value.code == "cron_owner_unverifiable"
+
     def test_an_unfindable_job_fails_closed(self, tmp_path):
         """A tab whose job the registry cannot produce proves no ownership."""
         state = _make_state(tmp_path)
