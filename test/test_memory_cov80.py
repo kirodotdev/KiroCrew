@@ -142,10 +142,25 @@ class TestLegacyCombinedReadWrite:
         prefs.write_bytes(b"# prefs\n\xff bad\n")
 
         baseline = store.read_preferences()
-        assert store.write_preferences(
-            baseline + "\n- extra", expected_baseline=baseline
-        ) is True
+        assert store.write_preferences(baseline + "\n- extra", expected_baseline=baseline) is True
         assert "# prefs" in store.read_preferences()
+
+    def test_sibling_readers_tolerate_bad_bytes(self, tmp_path):
+        # The same one-bad-byte crash lived at four sibling sites
+        # (rebuild_index, append_history, recent-history assembly).
+        from datetime import date
+
+        store = MemoryStore(workspace=tmp_path)
+        store.init()
+        history_dir = tmp_path / "memory" / "history"
+        history_dir.mkdir(parents=True, exist_ok=True)
+        today_file = history_dir / f"{date.today().strftime('%Y-%m-%d')}.md"
+        today_file.write_bytes(b"# today\n\xff bad\n")
+
+        assert store.rebuild_index() >= 1
+        store.append_history("another entry")
+        assert "another entry" in today_file.read_text(encoding="utf-8", errors="replace")
+        assert "today" in store.read_recent_history(days=1)
 
 
 class TestPruneHistory:
