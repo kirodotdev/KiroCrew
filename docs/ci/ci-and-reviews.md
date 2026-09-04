@@ -766,6 +766,19 @@ of that name -- the same-repo twin renames itself (see the reviewer-job security
 posture above) -- so the protected status can only be reported by a review that
 actually ran.
 
+`fork-gpt-review.yml` publishes its GPT verdict by editing one marker comment in
+place, so an incomplete run must never bury a posted verdict (the class of bug tracked
+as #8292). It goes further than a preserve-and-prepend approach: an incomplete run never
+modifies an existing comment at all. Overlapping runs for different SHAs can read the
+comment before a newer run publishes its verdict, so an incomplete run that read verdict
+V1 first must not PATCH V1 back over a newer run's V2 that landed in between -- and even
+a PATCH that only preserved the verdict and prepended a notice would restore that stale
+body. So when an existing bot comment is present, an incomplete run leaves it entirely
+untouched (a diagnostic log line only), whether or not it carries a `[GPT-REVIEWED]`
+verdict. Completed and blocked verdicts still replace the comment as before, and the
+fail-closed `Finalize check-run` step is unchanged, so an incomplete run is never
+mistaken for an approval and merge safety is unaffected.
+
 Nothing the fork controls can influence these reviews:
 
 - `workflow_run` **always** runs the workflow definition from the **default branch**,

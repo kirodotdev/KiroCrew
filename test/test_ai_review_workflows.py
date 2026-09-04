@@ -4191,3 +4191,361 @@ class TestGptVerdictVisibility:
         assert 'if ! grep -Fq "$reviewed" codex-review-output.md; then' in gate
         assert "Failing closed" in gate
         assert "stale-notice" not in gate
+
+
+# The fork step writes its comment body to the workflow's hardcoded
+# `/tmp/fork-codex-comment.md` (a fork-lane idiom that is safe on an isolated CI
+# runner). These host-side cases exercise the REAL step, so `_run` rewrites that
+# absolute path under each test's own `tmp_path` before executing it: the writes
+# stay off the operator's machine and never race each other across xdist workers.
+class TestForkGptVerdictVisibility:
+    """The fork GPT lane must never bury a posted verdict under an incomplete body.
+
+    ``fork-gpt-review.yml``'s ``Post/update summary comment`` step publishes its
+    verdict by editing ONE marker comment in place. A later incomplete run used
+    to PATCH that slot unconditionally, so a real ``[BLOCK-MERGE]`` verdict got
+    overwritten by a short "review incomplete" body -- recoverable only through
+    GraphQL ``userContentEdits``, which no REST reader or tool consults (#8292).
+    An incomplete run therefore NEVER modifies an existing comment: not even to
+    preserve the verdict and prepend a stale notice, because the preserving
+    PATCH is itself a stale-read overwrite (#8350) -- an incomplete run that
+    read verdict V1 would PATCH V1 back over a newer run's V2 that landed in
+    between. So when an existing bot comment is present, an incomplete run
+    leaves it entirely untouched (a diagnostic echo only); only blocked/clear
+    runs PATCH it. Each contract case runs the REAL fork step bash with a
+    stubbed ``gh``.
+
+    The fork lane differs from the same-repo lane: the step runs under
+    ``set -uo pipefail`` with ``if: always()``, reads a cwd-relative
+    ``codex-review-output.md`` to decide ``kind`` (incomplete/blocked/clear --
+    there is NO human-override kind and NO override footer), and swallows gh
+    errors with ``|| true``.
+    """
+
+    MARKER = "<!-- codex-ai-review -->"
+    HEAD = "f" * 40
+    OLD_HEAD = "a" * 40
+    BOT_COMMENT_ID = "555"
+    IMPOSTOR_COMMENT_ID = "666"
+
+    def _step(self) -> str:
+        return _step_script(_workflow("fork-gpt-review.yml"), "Post/update summary comment")
+
+    def _gh_stub(
+        self, comments_json: Path, patch_log: Path, created_log: Path, *, lookup_fails: bool = False
+    ) -> str:
+        """A gh stub that answers the three calls this step makes.
+
+        ``gh api .../comments --paginate --jq <f>``: runs the step's own jq
+        filter over an array fixture that holds both an impostor ``mallory``
+        comment and the ``github-actions[bot]`` comment, so the author guard is
+        exercised for real. ``gh api --method PATCH ...``: records the target id
+        and stdin body. ``gh pr comment ...``: records the created body.
+        """
+        return (
+            "#!/usr/bin/env bash\n"
+            'if [ "${1:-}" = "api" ] && [ "${2:-}" = "--method" ] && [ "${3:-}" = "PATCH" ]; then\n'
+            f'  printf \'%s\\n\' "$4" >> "{patch_log}"\n'
+            "  # --field body=<value> follows; find it and record the value.\n"
+            "  shift 4\n"
+            '  while [ "$#" -gt 0 ]; do\n'
+            '    case "$1" in\n'
+            f'      body=*) printf \'%s\' "${{1#body=}}" >> "{patch_log}" ;;\n'
+            '      --field) shift; printf \'%s\' "${1#body=}" >> "' + str(patch_log) + '" ;;\n'
+            "    esac\n"
+            "    shift\n"
+            "  done\n"
+            "  exit 0\n"
+            "fi\n"
+            'if [ "${1:-}" = "api" ]; then\n'
+            # A lookup FAILURE: the comments-list API errors (network/5xx).
+            # The step must not treat the empty output as "no comment".
+            + ("  echo 'gh: API error' >&2\n  exit 1\n" if lookup_fails else "")
+            + "  # Locate the --jq filter and apply it to the array fixture.\n"
+            "  # `gh api --jq` emits RAW output (like `jq -r`), so an @json\n"
+            "  # record prints as compact JSON with no surrounding quotes --\n"
+            "  # the step's `jq -r '.id'` then reparses that line as an object.\n"
+            '  filter=""\n'
+            '  while [ "$#" -gt 0 ]; do\n'
+            '    if [ "$1" = "--jq" ]; then shift; filter="$1"; fi\n'
+            "    shift\n"
+            "  done\n"
+            f'  jq -r "$filter" "{comments_json}"\n'
+            "  exit 0\n"
+            "fi\n"
+            'if [ "${1:-}" = "pr" ] && [ "${2:-}" = "comment" ]; then\n'
+            "  # --body-file <path> is the last pair.\n"
+            '  file=""\n'
+            '  while [ "$#" -gt 0 ]; do\n'
+            '    if [ "$1" = "--body-file" ]; then shift; file="$1"; fi\n'
+            "    shift\n"
+            "  done\n"
+            f'  cat "$file" >> "{created_log}"\n'
+            "  exit 0\n"
+            "fi\n"
+            'echo "unexpected gh call: $*" >&2\n'
+            "exit 9\n"
+        )
+
+    def _run(
+        self,
+        tmp_path: Path,
+        *,
+        comments: list[dict],
+        review_output: str | None,
+        lookup_fails: bool = False,
+    ) -> tuple[subprocess.CompletedProcess, Path, Path]:
+        bash = _bash()
+        if bash is None:
+            pytest.skip("the step is Bash; skip where Bash is absent")
+        if shutil.which("jq") is None:
+            pytest.skip("the step shells out to jq")
+
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        comments_json = tmp_path / "comments.json"
+        comments_json.write_text(json.dumps(comments), encoding="utf-8")
+        patch_log = tmp_path / "patch.log"
+        patch_log.touch()
+        created_log = tmp_path / "created.log"
+        created_log.touch()
+
+        (bin_dir / "gh").write_text(
+            self._gh_stub(comments_json, patch_log, created_log, lookup_fails=lookup_fails),
+            encoding="utf-8",
+        )
+        (bin_dir / "gh").chmod(0o755)
+
+        # The step reads a cwd-relative codex-review-output.md to decide `kind`.
+        # Absent/empty output => incomplete; markers present => blocked/clear.
+        if review_output is not None:
+            (tmp_path / "codex-review-output.md").write_text(review_output, encoding="utf-8")
+
+        runner_temp = tmp_path / "runner-temp"
+        runner_temp.mkdir()
+
+        # The step writes its new comment body to the workflow's HARDCODED
+        # `/tmp/fork-codex-comment.md` (a fork-lane idiom that is safe on an
+        # isolated CI runner). A test must not touch the operator's machine, so
+        # redirect that absolute path under `tmp_path` before running the real
+        # step (AGENTS.md: no test side effects, a spawn's writes stay under
+        # `tmp_path`). The step's other temp files already honour RUNNER_TEMP.
+        comment_file = tmp_path / "fork-codex-comment.md"
+        step = self._step().replace("/tmp/fork-codex-comment.md", str(comment_file))
+        assert "/tmp/fork-codex-comment.md" not in step
+
+        proc = subprocess.run(
+            # GitHub executes run-blocks as `bash -e {0}`.
+            [bash, "-e", "-c", step],
+            check=False,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            env={
+                **os.environ,
+                "PATH": f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}",
+                "GH_TOKEN": "stub",
+                "REPO": "o/r",
+                "PR": "1",
+                "HEAD": self.HEAD,
+                "RUNNER_TEMP": str(runner_temp),
+            },
+            cwd=tmp_path,
+        )
+        assert proc.returncode == 0, f"stdout={proc.stdout!r} stderr={proc.stderr!r}"
+        return proc, patch_log, created_log
+
+    def _fixture_comments(self, bot_body: str) -> list[dict]:
+        """An array with an impostor first, then the bot's marker comment.
+
+        The impostor plants the marker under a non-bot login: the author guard
+        (`.user.login == "github-actions[bot]"`) must reject it, so a match on
+        it would prove the guard is not exercised.
+        """
+        return [
+            {
+                "id": int(self.IMPOSTOR_COMMENT_ID),
+                "user": {"login": "mallory"},
+                "body": f"{self.MARKER}\nnice try",
+            },
+            {
+                "id": int(self.BOT_COMMENT_ID),
+                "user": {"login": "github-actions[bot]"},
+                "body": bot_body,
+            },
+        ]
+
+    def _blocking_verdict_body(self, head: str, *, extra: str = "") -> str:
+        """A prior completed BLOCK-MERGE verdict comment body, CRLF like GitHub."""
+        lines = [
+            self.MARKER,
+            "## GPT 5.6 Review (fork) — 🔴 changes requested (blocking)",
+            "",
+            f"_Reviewed `{head}` via the fork AI-review pipeline; updated in place on each push._",
+            "",
+            f"[GPT-REVIEWED] {head}",
+            f"[BLOCK-MERGE] {head}",
+            "",
+            "A real blocking finding lives here.",
+        ]
+        if extra:
+            lines.append(extra)
+        # GitHub returns bodies with CRLF; the step must normalize before grep.
+        return "\r\n".join(lines)
+
+    def test_incomplete_run_never_overwrites_a_posted_verdict(self, tmp_path: Path) -> None:
+        # A completed BLOCK-MERGE verdict already sits in the bot comment. An
+        # incomplete run must leave that comment ENTIRELY untouched: no PATCH,
+        # no create. Even a PATCH that "only" preserved the verdict and
+        # prepended a notice is itself the stale-read overwrite (#8350): the
+        # incomplete run read verdict V1, and PATCHing V1 (with a notice) back
+        # would clobber a newer run's V2 that landed in between. So no edit of
+        # any kind may target this comment.
+        verdict_body = self._blocking_verdict_body(self.OLD_HEAD)
+        comments = self._fixture_comments(verdict_body)
+        # review_output=None => the step's `kind` stays "incomplete".
+        _proc, patch_log, created_log = self._run(
+            tmp_path, comments=comments, review_output=None
+        )
+
+        # No PATCH targeted the bot comment (nor the impostor's), and no new
+        # comment was created. A revert to the old preserve-and-prepend PATCH
+        # would record a PATCH here and fail this assertion.
+        assert patch_log.read_text(encoding="utf-8") == ""
+        assert created_log.read_text(encoding="utf-8") == ""
+
+    def test_completed_verdict_still_replaces_the_comment_wholesale(self, tmp_path: Path) -> None:
+        # A completed run for the new HEAD must replace the old body outright:
+        # no stale-notice, old markers gone, new HEAD markers present.
+        old_body = self._blocking_verdict_body(self.OLD_HEAD)
+        comments = self._fixture_comments(old_body)
+        review_output = (
+            f"[GPT-REVIEWED] {self.HEAD}\n"
+            f"[BLOCK-MERGE] {self.HEAD}\n"
+            "Fresh blocking finding.\n"
+        )
+        _proc, patch_log, created_log = self._run(
+            tmp_path, comments=comments, review_output=review_output
+        )
+
+        patched = patch_log.read_text(encoding="utf-8")
+        # PATCH still targets the bot comment.
+        assert self.BOT_COMMENT_ID in patched
+        # New HEAD markers present; old HEAD markers gone.
+        assert f"[BLOCK-MERGE] {self.HEAD}" in patched
+        assert self.OLD_HEAD not in patched
+        # No stale-notice on a wholesale replace.
+        assert "codex-stale-notice-begin" not in patched
+        assert "did not produce a completed verdict" not in patched
+        assert created_log.read_text(encoding="utf-8") == ""
+
+    def test_incomplete_run_never_overwrites_a_marker_absent_comment(self, tmp_path: Path) -> None:
+        # Stale-read race (#8292): overlapping runs for different SHAs. An older
+        # incomplete run reads the bot comment BEFORE a newer run PATCHes its
+        # verdict in, so at read time the body carries no `[GPT-REVIEWED]`
+        # marker yet. The older incomplete run must NOT PATCH -- doing so would
+        # clobber the newer run's just-published verdict with a "review
+        # incomplete" body, re-hiding the finding. An incomplete body never
+        # overwrites an existing comment, marker-present or not.
+        marker_absent_body = "\r\n".join(
+            [
+                self.MARKER,
+                "## GPT 5.6 Review (fork) — ⏳ review incomplete",
+                "",
+                "_No completed GPT verdict for this commit; see the Fork GPT 5.6 Review job logs._",
+            ]
+        )
+        comments = self._fixture_comments(marker_absent_body)
+        # review_output=None => the step's `kind` stays "incomplete".
+        _proc, patch_log, created_log = self._run(
+            tmp_path, comments=comments, review_output=None
+        )
+
+        # The incomplete run left the existing comment untouched: no PATCH, no
+        # new comment. A revert of the workflow fix (unconditional PATCH in the
+        # else branch) would record a PATCH here and fail this assertion.
+        assert patch_log.read_text(encoding="utf-8") == ""
+        assert created_log.read_text(encoding="utf-8") == ""
+
+    def test_incomplete_run_with_no_existing_comment_creates_as_before(self, tmp_path: Path) -> None:
+        # No bot comment exists (only the impostor). An incomplete run creates a
+        # fresh comment carrying the marker and the incomplete verdict, with no
+        # stale-notice and no PATCH.
+        comments = [
+            {
+                "id": int(self.IMPOSTOR_COMMENT_ID),
+                "user": {"login": "mallory"},
+                "body": f"{self.MARKER}\nnice try",
+            },
+        ]
+        _proc, patch_log, created_log = self._run(
+            tmp_path, comments=comments, review_output=None
+        )
+
+        created = created_log.read_text(encoding="utf-8")
+        assert created.startswith(self.MARKER)
+        assert "⚠️ review incomplete" in created
+        assert "codex-stale-notice-begin" not in created
+        # No PATCH happened -- nothing to edit.
+        assert patch_log.read_text(encoding="utf-8") == ""
+
+    def test_step_source_carries_the_fix_and_leaves_finalize_untouched(self) -> None:
+        # Static guards: an incomplete run over an existing comment does NOTHING
+        # to it, and the fail-closed finalize step (the fork analogue of
+        # codex-review.yml's "Gate on findings") is untouched by the fix.
+        workflow = _workflow("fork-gpt-review.yml")
+        comment_step = _step_script(workflow, "Post/update summary comment")
+        # The incomplete branch leaves the comment untouched (diagnostic only),
+        # so only the else branch (blocked/clear) PATCHes the existing comment.
+        assert 'if [ "$kind" = "incomplete" ]; then' in comment_step
+        assert "left existing comment #$existing untouched" in comment_step
+        # No stale-notice construction survives anywhere in the step: nothing
+        # writes a notice, builds a merged body, or strips one with sed.
+        assert "codex-stale-notice" not in comment_step
+        assert "fork-codex-merged-comment" not in comment_step
+        assert "fork-codex-existing-comment" not in comment_step
+        # The fork lane has NO human-override footer.
+        assert "/ai-review override" not in comment_step
+
+        finalize_step = _step_script(workflow, "Finalize check-run (fail closed)")
+        assert "stale-notice" not in finalize_step
+
+    def test_incomplete_run_on_lookup_failure_neither_patches_nor_creates(
+        self, tmp_path: Path
+    ) -> None:
+        # An INCOMPLETE run: a transient comments-list API failure must NOT be
+        # read as "no existing comment", which would send it down the create
+        # path and post a fresh "review incomplete" marker over a verdict that
+        # is really still there. So an incomplete run whose lookup failed makes
+        # no edit of any kind (diagnostic only); the fail-closed finalize step
+        # still gates merge.
+        verdict_body = self._blocking_verdict_body(self.OLD_HEAD)
+        comments = self._fixture_comments(verdict_body)
+        proc, patch_log, created_log = self._run(
+            tmp_path, comments=comments, review_output=None, lookup_fails=True
+        )
+
+        assert patch_log.read_text(encoding="utf-8") == ""
+        assert created_log.read_text(encoding="utf-8") == ""
+        assert "lookup failed" in proc.stdout.lower() or "skipping" in proc.stdout.lower()
+
+    def test_completed_run_on_lookup_failure_still_publishes_the_verdict(
+        self, tmp_path: Path
+    ) -> None:
+        # A COMPLETED verdict (blocked/clear) must become visible. The lookup
+        # failure guard is scoped to the incomplete case ONLY: suppressing a
+        # completed verdict on a transient lookup error would trade away the
+        # very visibility this fix restores. A duplicate comment is far more
+        # recoverable than a real verdict that never posts, so a completed run
+        # whose lookup failed falls through to CREATE rather than staying
+        # silent.
+        review_output = f"[GPT-REVIEWED] {self.HEAD}\n[BLOCK-MERGE] {self.HEAD}\nblocking finding"
+        comments = self._fixture_comments(self._blocking_verdict_body(self.OLD_HEAD))
+        _proc, patch_log, created_log = self._run(
+            tmp_path, comments=comments, review_output=review_output, lookup_fails=True
+        )
+
+        # No PATCH (the lookup could not confirm a target), but the verdict WAS
+        # published via create -- not silently dropped.
+        assert patch_log.read_text(encoding="utf-8") == ""
+        assert created_log.read_text(encoding="utf-8") != ""

@@ -986,12 +986,63 @@ jobs:
               echo "</details>"
             fi
           } > /tmp/fork-codex-comment.md
-          existing="$(gh api "repos/$REPO/issues/$PR/comments" --paginate \
-            --jq ".[] | select(.user.login == \"github-actions[bot]\" and (.body | startswith(\"$MARKER\"))) | .id" 2>/dev/null | head -n1 || true)"
-          if [ -n "$existing" ] && [ "$existing" != "null" ]; then
-            gh api --method PATCH "repos/$REPO/issues/comments/$existing" --field body="$(cat /tmp/fork-codex-comment.md)" >/dev/null || true
+          # Find the bot's existing marker comment (first match wins) and
+          # capture its id. Guards:
+          #   - author filter: only a github-actions[bot] comment can match, so a
+          #     PR commenter cannot plant the marker and have this step PATCH
+          #     their comment with the write-scoped token.
+          #   - per-page jq: with --paginate the --jq filter runs PER PAGE.
+          # An incomplete run never modifies an existing comment (see below), so
+          # only the id is needed here: no body capture, no PATCH decision that
+          # depends on the current body.
+          # Capture the paginated query's FULL output first so its own exit
+          # status alone decides lookup_ok. Piping straight into `head -n1`
+          # would let `head` close the pipe after the first of several matches
+          # (a marker duplicated across API pages) and, under `set -o pipefail`,
+          # make the whole pipeline non-zero -- misreading a successful lookup as
+          # a failure. So select the first id in a second step off the captured
+          # value.
+          lookup_ok=1
+          all_matches="$(gh api "repos/$REPO/issues/$PR/comments" --paginate \
+            --jq ".[] | select(.user.login == \"github-actions[bot]\" and (.body | startswith(\"$MARKER\"))) | .id" 2>/dev/null)" || lookup_ok=0
+          existing="$(printf '%s\n' "$all_matches" | head -n1)"
+          if [ "$kind" = "incomplete" ]; then
+            # Stale-read race (#8292): an incomplete run NEVER modifies an
+            # existing comment, whether or not it carries [GPT-REVIEWED].
+            # Overlapping runs for different SHAs can read this comment before a
+            # newer run PATCHes its verdict in; an incomplete run that read first
+            # would otherwise clobber the newer run's just-published verdict with
+            # its own "review incomplete" body, and even a PATCH that only
+            # preserved the verdict and prepended a notice would restore the
+            # stale body it read. So when a comment already exists -- OR the
+            # lookup could not confirm one does not (a transient API error must
+            # not be read as "no comment", which would send this incomplete run
+            # to the create path and post a spurious marker over a live verdict)
+            # -- leave it untouched and emit a diagnostic only. Only when the
+            # lookup SUCCEEDED and found nothing does an incomplete run create
+            # the first "review incomplete" placeholder. The fail-closed
+            # "Finalize check-run" step still gates merge, so an incomplete run
+            # is never mistaken for an approval; the fork lane has no override.
+            if [ "$lookup_ok" -eq 0 ]; then
+              echo "Incomplete run for $HEAD; lookup failed, skipping to avoid posting a spurious marker over a possibly-live verdict"
+            elif [ -n "$existing" ] && [ "$existing" != "null" ]; then
+              echo "Incomplete run for $HEAD; left existing comment #$existing untouched to avoid overwriting a newer verdict"
+            else
+              gh pr comment "$PR" --body-file /tmp/fork-codex-comment.md || true
+            fi
           else
-            gh pr comment "$PR" --body-file /tmp/fork-codex-comment.md || true
+            # A completed verdict (blocked/clear) must become visible. If the
+            # lookup succeeded and found the marker, PATCH it in place; otherwise
+            # -- no existing comment, OR the lookup failed so we cannot confirm
+            # one -- create. A duplicate comment on a transient error is far more
+            # recoverable than a real verdict that never posts, so a completed
+            # run always publishes rather than staying silent.
+            if [ "$lookup_ok" -eq 1 ] && [ -n "$existing" ] && [ "$existing" != "null" ]; then
+              gh api --method PATCH "repos/$REPO/issues/comments/$existing" \
+                --field body="$(cat /tmp/fork-codex-comment.md)" >/dev/null || true
+            else
+              gh pr comment "$PR" --body-file /tmp/fork-codex-comment.md || true
+            fi
           fi
 
       # Fail-CLOSED finalize of the required "GPT 5.6 Review" check-run, keyed to
