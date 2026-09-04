@@ -103,12 +103,18 @@ _MAX_KNOWN_UNGATED_ROUTES = 20
 
 # --------------------------------------------------------------------------- #
 # Coherence floor: the walk must find at least this many GATED mutating routes.
-# This is the count of routes that we expect to be owner-gated (from agents.py,
-# files.py, connections.py). If a refactor removes or relocates routes such
-# that fewer than this threshold are gated, the test fails loudly rather than
-# passing vacuously.
+# This is the count of owner-gated routes the walk enforces, measured live at
+# issue #8505 (registered by handlers.agents, handlers.connections,
+# handlers.files, and handlers.members). Keep it equal to the real count -- a
+# slack floor cannot catch a refactor that silently drops routes out of the
+# walk. Hardcoded deliberately: deriving it from the walk itself would
+# reintroduce the vacuity one level up. If routes are intentionally removed,
+# the assertion fails and you must lower the floor in the same commit. If
+# routes are added, the ``>=`` assertion still passes, so raising the floor
+# back to the real count is a manual, unenforced step -- do it whenever you
+# touch this file, or the slack this floor exists to prevent regrows.
 # --------------------------------------------------------------------------- #
-_MINIMUM_GATED_ROUTES = 19
+_MINIMUM_GATED_ROUTES = 26
 
 
 class _FakeState:
