@@ -41,7 +41,7 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock('../apps/mochi/src/mochiApi', () => ({ api: mocks.api }))
 
-vi.mock('../apps/mochi/src/renderer/SpriteRenderer', () => ({
+vi.mock('../apps/shared/SpriteRenderer', () => ({
   SpriteRenderer: ({ src, frameWidth, frameHeight, fps }: {
     src: string
     frameWidth: number

@@ -1,5 +1,5 @@
 /**
- * SpriteRenderer — renders a horizontal sprite strip as an animated loop.
+ * Shared sprite-strip renderer for the Mochi and Crew Companion apps.
  * Detects and skips empty trailing frames to avoid flicker.
  */
 import React, { useEffect, useRef } from 'react'
@@ -34,20 +34,21 @@ const SpriteRendererInner: React.FC<SpriteRendererProps> = ({
       const ctx = canvas.getContext('2d')
       if (!ctx) return
 
-      // Detect actual frame count (skip empty trailing frames)
       const maxFrames = totalFrames || Math.floor(img.naturalWidth / frameWidth)
       let frames = maxFrames
       if (!totalFrames) {
         const testCanvas = document.createElement('canvas')
         testCanvas.width = frameWidth
         testCanvas.height = frameHeight
-        const tctx = testCanvas.getContext('2d')!
+        // This context exists only for repeated getImageData calls. The hint
+        // avoids a GPU readback and Chromium warning for every sampled frame.
+        const tctx = testCanvas.getContext('2d', { willReadFrequently: true })!
         for (let i = maxFrames - 1; i > 0; i--) {
           tctx.clearRect(0, 0, frameWidth, frameHeight)
           tctx.drawImage(img, i * frameWidth, 0, frameWidth, frameHeight, 0, 0, frameWidth, frameHeight)
           const data = tctx.getImageData(0, 0, frameWidth, frameHeight).data
           let hasContent = false
-          for (let p = 3; p < data.length; p += 16) { // sample every 4th pixel alpha
+          for (let p = 3; p < data.length; p += 16) {
             if (data[p] > 10) { hasContent = true; break }
           }
           if (hasContent) { frames = i + 1; break }
@@ -62,19 +63,13 @@ const SpriteRendererInner: React.FC<SpriteRendererProps> = ({
         frameRef.current = (frameRef.current + 1) % frames
       }
 
-      // Static sprite: draw once, no animation loop at all.
       if (frames === 1) {
         drawFrame()
         return
       }
 
-      // Pace wakeups at the sprite's fps, not the display's refresh rate.
-      // A bare rAF loop wakes the renderer at 60-120Hz to draw at ~8fps, and
-      // (because an active rAF consumer keeps the compositor's BeginFrame
-      // stream running) holds the GPU process busy too — this window runs with
-      // backgroundThrottling disabled, so nothing ever throttles it. Instead,
-      // sleep out the inter-frame gap with a timer and use rAF only to align
-      // the actual draw with the next vsync.
+      // Sleep between frames and use rAF only to align the draw with vsync.
+      // A bare rAF loop keeps both app windows waking at display refresh rate.
       const animate = (time: number) => {
         rafRef.current = 0
         if (time - lastTimeRef.current >= interval) {

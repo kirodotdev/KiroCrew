@@ -10,7 +10,7 @@
 import React from 'react'
 import { render, cleanup } from '@testing-library/react'
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { SpriteRenderer } from '../apps/crew-companion/SpriteRenderer'
+import { SpriteRenderer } from '../apps/shared/SpriteRenderer'
 
 /** Deterministic clock shared by rAF, setTimeout, and performance.now. */
 let now = 0
@@ -73,7 +73,7 @@ afterEach(() => {
   vi.useRealTimers()
 })
 
-describe('crew-companion SpriteRenderer wakeup pacing', () => {
+describe('SpriteRenderer wakeup pacing', () => {
   it('wakes at the sprite fps, not once per display frame', () => {
     render(
       <SpriteRenderer src="strip.png" frameWidth={64} frameHeight={64} fps={8} totalFrames={4} />,

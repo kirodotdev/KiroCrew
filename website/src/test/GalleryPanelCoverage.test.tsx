@@ -134,7 +134,7 @@ vi.mock('../apps/mochi/src/renderer/ColorCustomizer', () => ({
   ),
 }))
 
-vi.mock('../apps/mochi/src/renderer/SpriteRenderer', () => ({
+vi.mock('../apps/shared/SpriteRenderer', () => ({
   SpriteRenderer: ({ src, frameWidth, frameHeight, fps, displaySize }: {
     src: string
     frameWidth: number
