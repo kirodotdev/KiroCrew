@@ -23,6 +23,8 @@ import { switchSlot, createSlot, deleteSlot, fetchHistory, resumeFromHistory, de
 import { sseSlotTitle, setSidebarOrder } from '../store/dashboardSlice'
 import { useDigitModifierHeld, jumpLabelFor, IS_MAC } from '../hooks/useKeyboardShortcuts'
 import { api, SEARCH_MIN_CHARS } from '../api/client'
+import { ApiError } from '../api/apiError'
+import { findReport, type ErrorReport } from '../utils/errorReport'
 import { computeReorderedFolders } from '../utils/reorderFolders'
 import { computeRecentRank, recencyTintShadow, clampTintCount } from '../utils/recencyTint'
 import { computeActiveSubtree, folderIsHidden, folderOffersHide } from '../utils/folderVisibility'
@@ -4513,8 +4515,21 @@ function ChatSidebar({
       dragExpandTimer.current = null
     }
   }, [folders, updateFolderMutation, boardFolderCollapsed])
+  // The most recent failed folder-scoped create, surfaced inline under that
+  // folder's header. A single {folderId, columnId, message} rather than a
+  // per-folder record: creates are user-initiated one at a time, and the
+  // actionable failure is the one the user just clicked into. `columnId`
+  // scopes the notice to the board column the create was issued from (a root
+  // folder renders once per column, and an unscoped notice would mount N
+  // identical alerts). Cleared by dismissal or by the next successful create.
+  const [folderCreateError, setFolderCreateError] = useState<{ folderId: string; columnId?: string; message: string; title?: string; report?: ErrorReport; offerSettings?: boolean } | null>(null)
+  // Monotonic attempt counter: settle callbacks only act when they belong to
+  // the LATEST attempt, so an older create failing after a newer one succeeded
+  // cannot resurrect a stale notice (and a stale success cannot clear a newer
+  // failure's notice).
+  const folderCreateAttemptRef = useRef(0)
   const createChatInFolderMutation = useMutation({
-    mutationFn: ({ folderId }: { folderId: string; columnId?: string; focus?: boolean }) => {
+    mutationFn: ({ folderId }: { folderId: string; columnId?: string; focus?: boolean; attempt: number }) => {
       const agent = resolveFolderAgent(folders, folderId, defaultAgent)
       const effectiveMode = loadChatConfig().defaultAutopilot ? 'orchestrator' : (mode || '')
       // Carry folder membership in the create payload so createSlot publishes
@@ -4528,7 +4543,14 @@ function ChatSidebar({
       const project = resolveFolderProjectDir(folders, folderId)
       return dispatch(createSlot({ agent, mode: effectiveMode, folder_id: folderId, project })).unwrap()
     },
-    onSuccess: (slot: Slot, { columnId, focus }: { folderId: string; columnId?: string; focus?: boolean }) => {
+    onSuccess: (slot: Slot, { folderId, columnId, focus, attempt }: { folderId: string; columnId?: string; focus?: boolean; attempt: number }) => {
+      // A create that went through supersedes an earlier failure notice for
+      // the same folder (e.g. the user fixed the folder's project directory
+      // and retried); notices for OTHER folders stay put, and a stale success
+      // (an older attempt settling late) must not clear a newer failure.
+      if (attempt === folderCreateAttemptRef.current) {
+        setFolderCreateError(prev => (prev && prev.folderId === folderId ? null : prev))
+      }
       // Focus only after the create fulfils: the composer is bound to the
       // active slot, so focusing while createSlot is still in flight puts the
       // caret on the OLD session and anything typed lands in its draft.
@@ -4541,9 +4563,40 @@ function ChatSidebar({
         dropSlotMutation.mutate({ slot: slot.key, columnId })
       }
     },
-    onError: (err: unknown) => {
+    onError: (err: unknown, { folderId, columnId, attempt }: { folderId: string; columnId?: string; focus?: boolean; attempt: number }) => {
       // eslint-disable-next-line no-console -- surface chat-creation failures for diagnostics
       console.error('Failed to create chat in folder:', err)
+      if (attempt !== folderCreateAttemptRef.current) return
+      // The backend refusing the folder's project directory (HTTP 400
+      // "Not a directory" from the slot-project endpoint) is the one failure
+      // the user can fix themselves, so it gets a specific message naming the
+      // stale path and where to change it. createSlot rethrows the ApiError,
+      // but createAsyncThunk serializes thrown errors down to
+      // {name, message, stack} — the instance and its `status` are gone by the
+      // time `.unwrap()` delivers it here — so match the live instance when
+      // present and fall back to the serialized shape.
+      const isStaleProjectDir = err instanceof ApiError
+        ? err.status === 400 && err.message === 'Not a directory'
+        : (err as { name?: unknown } | null)?.name === 'ApiError'
+          && (err as { message?: unknown }).message === 'Not a directory'
+      const raw = (err as { message?: unknown } | null)?.message
+      const message = isStaleProjectDir
+        ? i18nT('pages.chatSidebar.folder_project_dir_missing', { path: resolveFolderProjectDir(folders, folderId) ?? '' })
+        : (typeof raw === 'string' && raw ? raw : i18nT('pages.chatSidebar.folder_create_failed'))
+      // The generic branch renders raw transport text ("no capacity", "fetch
+      // failed") — give it a task-level lead so the user always sees WHAT
+      // failed. The stale-dir message is already a full sentence; a title
+      // there would double up. `message` stays the journal lookup key.
+      const title = isStaleProjectDir || !(typeof raw === 'string' && raw)
+        ? undefined
+        : i18nT('pages.chatSidebar.folder_create_failed')
+      // Resolve the journal report from the RAW error text, not the rendered
+      // message: the journal keys entries on the transport-level string
+      // ("Not a directory"), so the translated stale-dir message would never
+      // match and the agent hand-off would silently lose the structured
+      // endpoint/status context ErrorNotice exists to recover.
+      const report = typeof raw === 'string' ? findReport(raw) : undefined
+      setFolderCreateError({ folderId, columnId, message, title, report, offerSettings: isStaleProjectDir })
     },
   })
   const createChatInFolder = useCallback((folderId: string, opts?: { columnId?: string; focus?: boolean }) => {
@@ -4564,7 +4617,7 @@ function ChatSidebar({
       persistClearFolderOverrides(folder.id)
       currentId = folder.parent_id || undefined
     }
-    createChatInFolderMutation.mutate({ folderId, columnId: opts?.columnId, focus: opts?.focus })
+    createChatInFolderMutation.mutate({ folderId, columnId: opts?.columnId, focus: opts?.focus, attempt: ++folderCreateAttemptRef.current })
   }, [createChatInFolderMutation, folders, updateFolderMutation])
 
   // Create autopilot session mutation (consistent with useMutation pattern)
@@ -4808,6 +4861,7 @@ function ChatSidebar({
           </span>
           )}
         </div>
+        {renderFolderCreateError(folder.id, columnId)}
         <FolderBody padding={FOLDER_BODY_OPEN_PADDING} open={!boardFolderCollapsed(columnId, folder) && !forceCollapsed}>
           {/* ml-4 + no pl: flush-connector treatment matching the list-view
            *  folder body (renderFolderBlock) so nested rows sit identically
@@ -4886,6 +4940,81 @@ function ChatSidebar({
     visited.add(folderId)
     for (const k of unreadSet) { if (slotFolders[k] === folderId) return true }
     return folders.some(f => f.parent_id === folderId && folderTreeHasUnread(f.id, visited))
+  }
+
+  // Inline failure notice for a folder-scoped create, rendered directly under
+  // the folder's header row through the shared ErrorNotice surface (AUTOSDE
+  // errors-use-error-notice): it carries the role="alert", the design tokens,
+  // the dismiss affordance, and the agent hand-off. askAgent is on because the
+  // hand-off destroys nothing here — the sidebar holds no unsaved draft (the
+  // rename Input commits on blur) and survives the navigation. `columnId`
+  // scopes board-view rendering to the column the create was issued from, so
+  // a root folder repeated across columns announces ONE alert, under a
+  // column-unique test id.
+  // True when the tree lane will NOT render the folder's header (and so its
+  // per-folder notice mount): the folder or an ancestor is hidden or filtered
+  // out, and not currently revealed via the "N hidden folders" peek (whose
+  // container key is the parent id, or 'root' at top level). Mirrors the
+  // exclusion applied at visibleRootFolders / renderFolderBlock's child
+  // filter, so the tree-lane fallback below renders exactly when the scoped
+  // mount cannot.
+  const folderCreateMountAbsent = (folderId: string): boolean => {
+    let cur = folders.find(f => f.id === folderId)
+    // A folder that no longer exists (deleted while its create was in flight)
+    // has no header anywhere by definition — the strongest mount-absent case.
+    if (!cur) return true
+    const seen = new Set<string>()
+    while (cur) {
+      if (seen.has(cur.id)) break
+      seen.add(cur.id)
+      const revealed = revealedContainers.has(cur.parent_id || 'root')
+      if ((isFolderHidden(cur) && !revealed) || isFolderFilteredOut(cur)) return true
+      cur = cur.parent_id ? folders.find(f => f.id === cur!.parent_id) : undefined
+    }
+    return false
+  }
+
+  const renderFolderCreateError = (folderId: string, columnId?: string): React.ReactNode => {
+    if (!folderCreateError || folderCreateError.folderId !== folderId) return null
+    // Ownership: an exact columnId match wins (board columns each render the
+    // folder, so scoping prevents N duplicate alerts). Outside board view the
+    // single tree mount owns EVERY error for its folder — including one whose
+    // columnId outlived its column or its view (user switched back to tree).
+    const owns = folderCreateError.columnId === columnId || (columnId === undefined && !boardLaneActive)
+    if (!owns) return null
+    return (
+      <div className="px-2 py-1">
+        {/* inline variant with flex-wrap: the sidebar drawer is ~250px wide,
+         *  and both stock single-row layouts squeeze the message to a sliver
+         *  beside the Ask-agent / dismiss controls. Wrapping lets the message
+         *  take the full line and the controls fold under it. */}
+        <ErrorNotice
+          message={folderCreateError.message}
+          title={folderCreateError.title}
+          report={folderCreateError.report}
+          variant="inline"
+          askAgent
+          onDismiss={() => setFolderCreateError(null)}
+          testId={columnId ? `col-${columnId}-folder-create-error-${folderId}` : `folder-create-error-${folderId}`}
+          className="flex-wrap w-full"
+        />
+        {/* Direct remedy for the stale-directory case: open Folder settings
+         *  right here instead of describing a hover-only menu glyph. On its
+         *  own line, never as a row peer of the notice's Ask-agent/dismiss
+         *  pair (the two-buttons-per-row cap) — same pattern as the
+         *  PullRequestPanel remedy link. */}
+        {folderCreateError.offerSettings && (
+          <div className="mt-0.5">
+            <button type="button"
+              className="text-[11px] font-medium text-danger/80 hover:text-danger bg-transparent border-none p-0 cursor-pointer underline decoration-danger/30 hover:decoration-danger underline-offset-2"
+              data-testid={`folder-create-error-settings-${folderId}`}
+              onClick={() => { setFolderModal({ mode: 'edit', folderId }); setFolderCreateError(null) }}>
+              {i18nT('components.folderConfigModal.folder_settings')}
+            </button>
+          </div>
+        )}
+      </div>
+    )
   }
 
   const renderFolderHeader = (folder: ChatFolder, dragHandleProps?: React.HTMLAttributes<HTMLElement>) => {
@@ -5128,8 +5257,11 @@ function ChatSidebar({
     })
     const staleSection = renderStaleSection(folder.id, staleChildSlots, depth + 1, folder.name)
     if (staleSection) childNodes.push(staleSection)
-    // Hide folders with no matching children while the list is narrowed
-    if (listNarrowed && childNodes.length === 0) return []
+    // Hide folders with no matching children while the list is narrowed —
+    // unless this folder owns the active create-failure notice: a create fired
+    // from the folder-picker menu can target a folder the narrow is hiding,
+    // and eliding it would make the failure exactly as silent as before #8229.
+    if (listNarrowed && childNodes.length === 0 && folderCreateError?.folderId !== folder.id) return []
     // Wrap children in a bordered container so the folder's extent is visually
     // clear when multiple folders are open. Only wrap when there's content,
     // otherwise the FolderBody would render an empty 1px-tall strip with a line.
@@ -5161,6 +5293,7 @@ function ChatSidebar({
         {({ setNodeRef, isOver }) => (
           <div ref={setNodeRef} data-folder-drop={folder.id} className={`rounded-md transition-all mb-0.5${isOver ? ' ring-1 ring-accent' : ''}`}>
             {renderFolderHeader(folder, dragHandleProps)}
+            {renderFolderCreateError(folder.id)}
             <FolderBody key={`folder-body-${folder.id}`} padding={FOLDER_BODY_OPEN_PADDING} open={!folder.collapsed && !forceCollapsed}>{wrapped}</FolderBody>
           </div>
         )}
@@ -6200,6 +6333,12 @@ function ChatSidebar({
                 chatDropTarget,
               )}
             <motion.div layoutScroll={rowAnimEnabled} className="flex-1 min-h-0 overflow-y-auto scrollbar-none p-2 flex flex-col" style={{ scrollbarWidth: 'none' }} data-testid="flat-view-lane">
+              {/* Flat view renders no folder headers, so the per-folder mount
+               *  points for the create-failure notice never exist here — yet
+               *  the New menu still offers "New chat in folder". Render the
+               *  notice at the top of the lane so a failed folder create is
+               *  never console-only in this layout. */}
+              {folderCreateError && renderFolderCreateError(folderCreateError.folderId, folderCreateError.columnId)}
               {(() => {
                 // Date segments (Today / Yesterday / Last 7 Days / …) between
                 // rows — resurrects the 9bb0f71 active-list pattern: only for
@@ -6248,6 +6387,12 @@ function ChatSidebar({
           // untouched — wheel, trackpad, keyboard, and drag-autoscroll all
           // still work, and the list's own overflow is still the affordance.
           <motion.div layoutScroll={rowAnimEnabled} className="flex-1 min-h-0 overflow-y-auto scrollbar-none p-2 flex flex-col" style={{ scrollbarWidth: 'none' }}>
+            {/* Tree-lane fallback, completing the set (flat and board lanes
+             *  carry the same): a create into a folder the folder-filter or
+             *  hide feature excludes never renders that folder's header, so
+             *  its scoped notice mount does not exist. Renders exactly when
+             *  the scoped mount cannot (folderCreateMountAbsent). */}
+            {folderCreateError && folderCreateMountAbsent(folderCreateError.folderId) && renderFolderCreateError(folderCreateError.folderId, folderCreateError.columnId)}
             {/* One DndContext owns folder reorder (sortable) + session drag-to-
              *  assign (draggable rows + droppable folder/root targets). */}
             <DndContext sensors={dndSensors} collisionDetection={sidebarCollision}
@@ -6324,6 +6469,14 @@ function ChatSidebar({
         ) : (
           // Trello-style horizontal column strip
           <div className="flex-1 min-h-0 flex flex-col">
+          {/* Lane-level fallback ownership (exactly one mount ever renders):
+           *  - no columnId (New-menu create): no per-column mount exists;
+           *  - board-flat: the columnId-scoped mounts are hidden with folders;
+           *  - the error's column was deleted: its mount is gone for good;
+           *  - the target FOLDER was deleted mid-flight: no mount anywhere.
+           *  With folders shown, the column alive and the folder present, the
+           *  column's own mount wins and this line is false. */}
+          {folderCreateError && (flatView || !folderCreateError.columnId || !orderedColumns.some(c => c.id === folderCreateError.columnId) || folderCreateMountAbsent(folderCreateError.folderId)) && renderFolderCreateError(folderCreateError.folderId, folderCreateError.columnId)}
           <div className="flex-1 overflow-x-auto overflow-y-hidden flex gap-2 p-2" data-testid="column-strip">
             {orderedColumns.map((col, colIdx) => {
               const colSlots = filteredSlots.filter(s => columnMatches(col, s))
