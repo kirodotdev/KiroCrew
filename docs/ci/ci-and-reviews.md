@@ -502,6 +502,17 @@ no-output review must not look clean. A BLOCKING-labelled finding without the
 `[BLOCK-MERGE]` marker is only a non-gating **advisory warning**, since a coherence
 check on that pairing mis-fires whenever the model quotes prior text.
 
+The GPT summary comment is upserted in place, which once let a failed run's
+"review incomplete" body replace a posted verdict — the REST comments API
+exposes no edit history, so a `[BLOCK-MERGE]` finding vanished from every
+surface a reader or tool checks (#8292). The same-repo GPT lane's post step
+now refuses exactly that transition: an incomplete body never overwrites a
+marker-present verdict; it keeps the existing verdict and prepends one dated
+stale-verdict notice instead. Completed verdicts and human overrides still
+replace the comment, and the fail-closed gate above is unchanged. The fork
+GPT lane (`fork-gpt-review.yml`) still PATCHes unconditionally and is tracked
+separately.
+
 ### Security posture of the reviewer jobs
 
 - Explicit fork guards (`head.repo.full_name == github.repository`) on **every

@@ -3950,3 +3950,244 @@ class TestBlockAdjudicationExtraction:
         assert "trailing space" not in findings
         assert "[BLOCK-MERGE]" not in findings
         assert "[GPT-REVIEWED]" not in findings
+
+
+class TestGptVerdictVisibility:
+    """An incomplete run must never make a posted GPT verdict invisible (#8292).
+
+    The GPT summary comment is upserted in place, so an unconditional PATCH let
+    a "review incomplete" body replace a posted ``[BLOCK-MERGE]`` verdict; the
+    REST comments API exposes no edit history, so the verdict survived only in
+    GraphQL userContentEdits. The post step now refuses exactly that one
+    transition. These tests run the step's real bash body with a stubbed ``gh``
+    for the three contract cases.
+    """
+
+    HEAD = "1234567890abcdef1234567890abcdef12345678"
+    OLD = "aaaa567890abcdef1234567890abcdef1234aaaa"
+    MARKER = "<!-- codex-ai-review -->"
+
+    def _verdict_body(self, sha: str) -> str:
+        return (
+            f"{self.MARKER}\n"
+            "## GPT 5.6 Review — 🔴 changes requested (blocking)\n"
+            "\n"
+            f"GPT 5.6 found at least one blocking issue that must be resolved before merging `{sha}`.\n"
+            "\n"
+            f"[GPT-REVIEWED] {sha}\n"
+            f"[BLOCK-MERGE] {sha}\n"
+        )
+
+    def _run_step(
+        self,
+        tmp_path: Path,
+        *,
+        existing_body: str | None,
+        review_output: str | None,
+    ) -> tuple[Path, "subprocess.CompletedProcess[bytes]"]:
+        bash = _bash()
+        if bash is None or shutil.which("jq") is None:
+            pytest.skip("GPT comment upsert test requires Bash and jq")
+        if os.name == "nt":
+            pytest.skip("stubbed-PATH gh interception is exercised on POSIX runners")
+
+        stub_dir = tmp_path / "stub"
+        stub_dir.mkdir()
+        calls_dir = tmp_path / "calls"
+        calls_dir.mkdir()
+        runner_temp = tmp_path / "runner-temp"
+        runner_temp.mkdir()
+        cwd = tmp_path / "workspace"
+        cwd.mkdir()
+
+        finder_file = tmp_path / "finder-comments.json"
+        if existing_body is None:
+            finder_file.write_text("[]", encoding="utf-8")
+        else:
+            finder_file.write_text(
+                json.dumps(
+                    [
+                        {"id": 999, "user": {"login": "mallory"}, "body": existing_body},
+                        {"id": 123, "user": {"login": "github-actions[bot]"}, "body": existing_body},
+                    ]
+                ),
+                encoding="utf-8",
+            )
+        if review_output is not None:
+            (cwd / "codex-review-output.md").write_text(review_output, encoding="utf-8")
+
+        gh_stub = stub_dir / "gh"
+        gh_stub.write_text(
+            "#!/usr/bin/env bash\n"
+            "# Emulates the two gh surfaces the step uses; records mutations.\n"
+            "# The finder branch runs the step's REAL --jq filter with real jq\n"
+            "# over an array fixture, so a drift in the filter (dropped @json,\n"
+            "# changed author guard) fails these tests instead of hiding.\n"
+            'if [ "$1" = "api" ] && [ "$2" = "--method" ] && [ "$3" = "PATCH" ]; then\n'
+            '  printf \'%s\\n\' "$4" >> "$STUB_CALLS/patch-calls.txt"\n'
+            '  for a in "$@"; do\n'
+            '    case "$a" in body=*) printf \'%s\' "${a#body=}" > "$STUB_CALLS/patched-body.md";; esac\n'
+            "  done\n"
+            "  exit 0\n"
+            "fi\n"
+            'if [ "$1" = "api" ]; then\n'
+            "  filter=\"\"\n"
+            "  grab=0\n"
+            '  for a in "$@"; do\n'
+            '    if [ "$grab" = 1 ]; then filter="$a"; grab=0; fi\n'
+            '    [ "$a" = "--jq" ] && grab=1\n'
+            "  done\n"
+            '  jq -r "$filter" < "$FINDER_COMMENTS_FILE"\n'
+            "  exit 0\n"
+            "fi\n"
+            'if [ "$1" = "pr" ] && [ "$2" = "comment" ]; then\n'
+            "  shift 3\n"
+            '  if [ "$1" = "--body-file" ]; then cp "$2" "$STUB_CALLS/created-body.md"; fi\n'
+            "  exit 0\n"
+            "fi\n"
+            "exit 0\n",
+            encoding="utf-8",
+        )
+        gh_stub.chmod(0o755)
+
+        script = _step_script(_workflow("codex-review.yml"), "Post/update review comment")
+        script_file = tmp_path / "step.sh"
+        script_file.write_text(script, encoding="utf-8")
+
+        env = {
+            **os.environ,
+            "PATH": f"{stub_dir}{os.pathsep}{os.environ.get('PATH', '')}",
+            "REPO": "example/repo",
+            "PR": "1",
+            "HEAD": self.HEAD,
+            "HUMAN_OVERRIDE": "false",
+            "OVERRIDE_ACTOR": "",
+            "OVERRIDE_SOURCE": "",
+            "GH_TOKEN": "stub-token",
+            "RUNNER_TEMP": str(runner_temp),
+            "STUB_CALLS": str(calls_dir),
+            "FINDER_COMMENTS_FILE": str(finder_file),
+        }
+        # GitHub runs `run:` blocks with `bash -e {0}` when no shell is set.
+        result = subprocess.run(
+            [bash, "-e", str(script_file)],
+            check=False,
+            capture_output=True,
+            cwd=cwd,
+            env=env,
+        )
+        return calls_dir, result
+
+    def test_incomplete_run_never_overwrites_a_posted_verdict(self, tmp_path: Path) -> None:
+        # The existing comment already carries a notice from an earlier
+        # incomplete run: the new notice must REPLACE it, not stack.
+        existing = (
+            f"{self.MARKER}\n"
+            "<!-- codex-stale-notice-begin -->\n"
+            "> ⚠️ **Stale verdict notice (2026-01-01 00:00 UTC):** a later GPT 5.6 run did not produce a completed verdict for `feedbead`; the verdict below is from an earlier completed run. Inspect the GPT 5.6 Review job logs and re-run the workflow.\n"
+            "<!-- codex-stale-notice-end -->\n"
+            "\n" + self._verdict_body(self.OLD).removeprefix(f"{self.MARKER}\n")
+        )
+        calls, result = self._run_step(tmp_path, existing_body=existing, review_output=None)
+
+        assert result.returncode == 0, result.stderr.decode()
+        patched = (calls / "patched-body.md").read_text(encoding="utf-8")
+        # The comment finder keys on startswith(marker): the merged body must
+        # keep the marker as its first line.
+        assert patched.startswith(f"{self.MARKER}\n")
+        # The old verdict stays visible, markers included.
+        assert f"[BLOCK-MERGE] {self.OLD}" in patched
+        assert f"[GPT-REVIEWED] {self.OLD}" in patched
+        assert "🔴 changes requested (blocking)" in patched
+        # Exactly ONE dated notice, naming the sha whose run failed.
+        assert patched.count("<!-- codex-stale-notice-begin -->") == 1
+        assert f"did not produce a completed verdict for `{self.HEAD}`" in patched
+        assert "feedbead" not in patched
+        # The incomplete body itself must not have replaced the verdict.
+        assert "## GPT 5.6 Review — ⚠️ review incomplete" not in patched
+        assert not (calls / "created-body.md").exists()
+        # The author guard ran inside the real filter: the PATCH must target
+        # the bot's comment (123), not the marker-planting impostor's (999).
+        patch_calls = (calls / "patch-calls.txt").read_text(encoding="utf-8")
+        assert "/comments/123" in patch_calls
+        assert "/comments/999" not in patch_calls
+
+    def test_a_verdict_that_quotes_the_notice_markers_is_not_truncated(self, tmp_path: Path) -> None:
+        # The preserved body embeds model-authored review prose. A finding
+        # that QUOTES the notice markers — inline or as a bare fenced line —
+        # must not start an unbounded delete: the notice strip is
+        # line-anchored and bounded to the head window, so quoted markers in
+        # the verdict text survive and the trailing [BLOCK-MERGE] marker
+        # stays visible.
+        existing = (
+            f"{self.MARKER}\n"
+            "## GPT 5.6 Review — 🔴 changes requested (blocking)\n"
+            "\n"
+            "GPT 5.6 found at least one blocking issue that must be resolved"
+            f" before merging `{self.OLD}`.\n"
+            "\n"
+            "_This comment is updated in place on each push._\n"
+            "\n"
+            "BLOCKING — .github/workflows/codex-review.yml:727 — the sed range"
+            " keyed on <!-- codex-stale-notice-begin --> can over-delete\n"
+            "Quoted reproduction of the notice block:\n"
+            "```\n"
+            "<!-- codex-stale-notice-begin -->\n"
+            "> a quoted notice line\n"
+            "```\n"
+            f"[GPT-REVIEWED] {self.OLD}\n"
+            f"[BLOCK-MERGE] {self.OLD}\n"
+        )
+        calls, result = self._run_step(tmp_path, existing_body=existing, review_output=None)
+
+        assert result.returncode == 0, result.stderr.decode()
+        patched = (calls / "patched-body.md").read_text(encoding="utf-8")
+        # The verdict and its markers survive the notice cleanup.
+        assert f"[GPT-REVIEWED] {self.OLD}" in patched
+        assert f"[BLOCK-MERGE] {self.OLD}" in patched
+        assert "can over-delete" in patched
+        assert "> a quoted notice line" in patched
+        # And the fresh notice was still prepended exactly once.
+        assert f"did not produce a completed verdict for `{self.HEAD}`" in patched
+
+    def test_completed_verdict_still_replaces_the_comment(self, tmp_path: Path) -> None:
+        review_output = f"FINDINGS\n[GPT-REVIEWED] {self.HEAD}\n[BLOCK-MERGE] {self.HEAD}\n"
+        calls, result = self._run_step(
+            tmp_path,
+            existing_body=self._verdict_body(self.OLD),
+            review_output=review_output,
+        )
+
+        assert result.returncode == 0, result.stderr.decode()
+        patched = (calls / "patched-body.md").read_text(encoding="utf-8")
+        # A completed verdict replaces the comment wholesale, exactly as before.
+        assert patched.startswith(f"{self.MARKER}\n")
+        assert f"[BLOCK-MERGE] {self.HEAD}" in patched
+        assert f"[GPT-REVIEWED] {self.OLD}" not in patched
+        assert "<!-- codex-stale-notice-begin -->" not in patched
+        assert not (calls / "created-body.md").exists()
+
+    def test_incomplete_with_no_existing_comment_creates_as_before(self, tmp_path: Path) -> None:
+        calls, result = self._run_step(tmp_path, existing_body=None, review_output=None)
+
+        assert result.returncode == 0, result.stderr.decode()
+        created = (calls / "created-body.md").read_text(encoding="utf-8")
+        assert created.startswith(f"{self.MARKER}\n")
+        assert "⚠️ review incomplete" in created
+        assert "<!-- codex-stale-notice-begin -->" not in created
+        assert not (calls / "patched-body.md").exists()
+
+    def test_guard_is_scoped_to_the_post_step_and_gate_is_untouched(self) -> None:
+        workflow = _workflow("codex-review.yml")
+
+        # The body is captured in the SAME query that finds the id, before any
+        # PATCH decision, one compact line per match.
+        assert "| {id, body} | @json" in workflow
+        # The guard tests the marker against a FILE with grep -Fq, mirroring
+        # the step's existing marker checks — bodies never enter shell strings.
+        assert 'grep -Fq "[GPT-REVIEWED]"' in workflow
+        # The gate's fail-closed contract is byte-identical to before.
+        gate = _step_script(workflow, "Gate on findings")
+        assert 'if ! grep -Fq "$reviewed" codex-review-output.md; then' in gate
+        assert "Failing closed" in gate
+        assert "stale-notice" not in gate

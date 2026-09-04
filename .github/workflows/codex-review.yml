@@ -1046,23 +1046,70 @@ jobs:
             echo
             echo "False positive or not applicable? A repository writer can comment:"
             echo "\`/ai-review override gpt $HEAD: <one-sentence reason>\`"
-          } > /tmp/codex-comment.md
+          } > "${RUNNER_TEMP:-/tmp}/codex-comment.md"
 
-          # Find the bot's existing marker comment (first match wins). Two guards:
+          # Find the bot's existing marker comment (first match wins) and
+          # capture its CURRENT body in the same query, before any PATCH
+          # decision (#8292). Guards:
           #   - author filter: only a github-actions[bot] comment can match, so a
           #     PR commenter cannot plant the marker and have this step PATCH
           #     their comment with the write-scoped token.
           #   - per-page jq: with --paginate the --jq filter runs PER PAGE.
-          existing="$(gh api "repos/$REPO/issues/$PR/comments" --paginate \
-            --jq ".[] | select(.user.login == \"github-actions[bot]\" and (.body | startswith(\"$MARKER\"))) | .id" 2>/dev/null \
+          #   - @json: each match arrives as ONE compact line, so `head -n1`
+          #     still selects a whole record even though bodies are multi-line.
+          existing_json="$(gh api "repos/$REPO/issues/$PR/comments" --paginate \
+            --jq ".[] | select(.user.login == \"github-actions[bot]\" and (.body | startswith(\"$MARKER\"))) | {id, body} | @json" 2>/dev/null \
             | head -n1 || true)"
+          existing="$(printf '%s\n' "$existing_json" | jq -r '.id // empty' 2>/dev/null || true)"
+          # GitHub stores comment bodies with CRLF line endings; normalize to LF
+          # so the marker grep and the line-anchored cleanup below see the same
+          # bytes this step originally wrote.
+          printf '%s\n' "$existing_json" | jq -r '.body // empty' 2>/dev/null | tr -d '\r' \
+            > "${RUNNER_TEMP:-/tmp}/codex-existing-comment.md" \
+            || : > "${RUNNER_TEMP:-/tmp}/codex-existing-comment.md"
 
           if [ -n "$existing" ] && [ "$existing" != "null" ]; then
-            gh api --method PATCH "repos/$REPO/issues/comments/$existing" \
-              --field body="$(cat /tmp/codex-comment.md)" >/dev/null || true
-            echo "Updated existing GPT 5.6 comment #$existing"
+            if [ "$kind" = "incomplete" ] \
+              && grep -Fq "[GPT-REVIEWED]" "${RUNNER_TEMP:-/tmp}/codex-existing-comment.md"; then
+              # Visibility invariant (#8292): a verdict that exists never
+              # becomes invisible. The REST comments API exposes no edit
+              # history, so an incomplete body PATCHed over a completed verdict
+              # would bury that verdict — including [BLOCK-MERGE] findings — in
+              # GraphQL userContentEdits where no reader or tool looks. Keep
+              # the existing verdict and prepend ONE dated notice, replacing
+              # any notice a previous incomplete run left so they never stack.
+              # Scope: ONLY marker-absent (incomplete) bodies are caught here;
+              # override/blocked/clear kinds still replace the comment, and
+              # "Gate on findings" below stays fail-closed for $HEAD.
+              {
+                echo "$MARKER"
+                echo "<!-- codex-stale-notice-begin -->"
+                echo "> ⚠️ **Stale verdict notice ($(date -u +'%Y-%m-%d %H:%M UTC')):** a later GPT 5.6 run did not produce a completed verdict for \`$HEAD\`; the verdict below is from an earlier completed run. Inspect the GPT 5.6 Review job logs and re-run the workflow, or have a repository writer comment \`/ai-review override gpt $HEAD: <one-sentence reason>\`."
+                echo "<!-- codex-stale-notice-end -->"
+                echo ""
+                # Strip the leading marker and any previous notice block. Both
+                # patterns are LINE-ANCHORED and the notice strip is bounded to
+                # the head window (lines 1-8) where this step's own notice
+                # always sits: the preserved body embeds model-authored review
+                # prose, so an unanchored or unbounded range keyed on these
+                # markers would let a finding that merely QUOTES them delete
+                # the verdict to EOF — the very failure this guard prevents.
+                # Worst case inside the window is a few head lines; the
+                # verdict body below line 8 is untouchable by construction.
+                sed -e '1{/^<!-- codex-ai-review -->$/d;}' \
+                  -e '1,8{/^<!-- codex-stale-notice-begin -->$/,/^<!-- codex-stale-notice-end -->$/d;}' \
+                  "${RUNNER_TEMP:-/tmp}/codex-existing-comment.md"
+              } > "${RUNNER_TEMP:-/tmp}/codex-merged-comment.md"
+              gh api --method PATCH "repos/$REPO/issues/comments/$existing" \
+                --field body="$(cat "${RUNNER_TEMP:-/tmp}/codex-merged-comment.md")" >/dev/null || true
+              echo "Preserved GPT 5.6 verdict in comment #$existing; prepended incomplete-run notice for $HEAD"
+            else
+              gh api --method PATCH "repos/$REPO/issues/comments/$existing" \
+                --field body="$(cat "${RUNNER_TEMP:-/tmp}/codex-comment.md")" >/dev/null || true
+              echo "Updated existing GPT 5.6 comment #$existing"
+            fi
           else
-            gh pr comment "$PR" --body-file /tmp/codex-comment.md
+            gh pr comment "$PR" --body-file "${RUNNER_TEMP:-/tmp}/codex-comment.md"
             echo "Created new GPT 5.6 comment"
           fi
 
