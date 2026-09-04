@@ -237,3 +237,48 @@ class TestProjectTree:
             data = await resp.json()
         assert data["truncated"] is True
         assert len(data["paths"]) == 2
+
+    @pytest.mark.asyncio
+    async def test_cap_does_not_drop_the_whole_tracked_block(self, tmp_path, mock_sel, monkeypatch):
+        """A fat UNTRACKED subtree must not evict every tracked file.
+
+        ``git ls-files --cached --others`` emits all untracked entries as one
+        complete block and only then the tracked ones, so capping with a plain
+        prefix cut never reaches the tracked block once untracked alone fill it
+        -- the whole source tree loses its rows. The listing is sorted before
+        the cut so the budget is spent by path, not by which block git happened
+        to emit first.
+        """
+        from kiro_crew.dashboard.handlers import files as files_mod
+
+        monkeypatch.setattr(files_mod, "_PROJECT_TREE_MAX_ENTRIES", 20)
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        _git(repo, "init", "-q", ".")
+        tracked = ("README.md", "docs/real.py", "src/real.py")
+        for rel in tracked:
+            p = repo / rel
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text("x")
+        _git(repo, "add", "-A")
+        _git(repo, "commit", "-qm", "init")
+        # Untracked (NOT ignored) and larger than the cap on its own. Named to
+        # sort after every tracked path, so a sorted cut reaches them all.
+        fat = repo / "zz_vendor" / "deep"
+        fat.mkdir(parents=True)
+        for i in range(40):
+            (fat / f"u{i:04d}.txt").write_text("x")
+
+        async with TestClient(TestServer(_make_app(str(repo)))) as client:
+            resp = await client.get(f"/api/project/tree?path={repo}")
+            data = await resp.json()
+
+        assert data["repo"] is True
+        assert data["truncated"] is True
+        assert len(data["paths"]) == 20
+        # The point of the fix: every tracked file keeps a row.
+        for rel in tracked:
+            assert rel in data["paths"], f"{rel} was evicted by the untracked block"
+        # ...and the fix does not merely invert the loss: the untracked subtree
+        # still spends the remaining budget, so it keeps a row too.
+        assert any(p.startswith("zz_vendor/") for p in data["paths"])

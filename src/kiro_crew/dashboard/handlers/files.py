@@ -4951,7 +4951,25 @@ async def api_project_tree(request: web.Request) -> web.Response:
                 timeout=15,
             )
             if ls_rc == 0:
-                listed = [p for p in ls_out.split("\0") if p]
+                # SORT BEFORE THE CAP. `ls-files --cached --others` is not one
+                # sorted stream: git emits every untracked entry as a complete
+                # block and only then the tracked ones (its own emission order
+                # -- unchanged if the flags are written the other way round, and
+                # git-ls-files(1) documents no order at all). A prefix cut of
+                # that therefore never reaches the tracked block once untracked
+                # alone fill the cap, and the whole source tree loses its rows:
+                # the dashboard infers a directory row only from the file paths
+                # present, so those folders go absent rather than collapsed.
+                # Sorting spends the budget by path instead of by whichever
+                # block git happened to emit first. It does NOT make the two
+                # branches emit the same order: the fallback walk below sorts
+                # within each level but is depth-first overall, so it yields a
+                # root `z.txt` before `a/x` where sorted() orders them the other
+                # way. What the branches share is narrower and is the actual
+                # warrant for sorting here -- this handler establishes its own
+                # path order rather than passing through a source's arbitrary
+                # emission order.
+                listed = sorted(p for p in ls_out.split("\0") if p)
                 truncated = len(listed) > _PROJECT_TREE_MAX_ENTRIES
                 return {
                     "root": base,
