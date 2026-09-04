@@ -40,6 +40,23 @@ _TRANSCRIPT_CACHE_MAX = 256
 #: rate collapses to ~0. Measured on an 810-session store: a warm
 #: ``list_sessions`` re-opened and re-parsed ~554 first lines on every call
 #: (57.9 ms); with the cache able to hold the corpus the same call costs 24.5 ms,
+
+
+class _TranscriptRowIndexEntry(NamedTuple):
+    """Sparse byte offsets for one immutable transcript revision.
+
+    ``checkpoints`` stores ``(logical_row, byte_offset)`` pairs for valid,
+    non-metadata message rows. The file stamp and process-wide generation are
+    both required: atomic replacement changes the inode, while a rewrite that
+    restores mtime is exposed by the generation.
+    """
+
+    stamp: tuple[int, int, int, int]
+    generation: int
+    row_count: int
+    checkpoints: tuple[tuple[int, int], ...]
+
+
 #: all of it the unavoidable ``glob`` + one ``stat`` per file.
 #:
 #: This is the same failure mode ``_SearchTextCache`` already documents and
@@ -364,18 +381,24 @@ class HistoryCacheCoordinator:
             cache.pop(entry_key, None)
 
     def _invalidate_cache(self, key: str) -> None:
-        """Invalidate every facade-held cache spelling after a write."""
+        """Invalidate content caches and advance generations after a write.
+
+        Sparse page indexes are revision-specific derived state, so they are
+        invalidated with content caches. A later bounded read rebuilds from byte
+        zero unless the exact file stamp and generation still match.
+        """
         idents = self._log._cache_key_identities(key)
         # Bump BEFORE dropping entries: a fill publishing between a pop and a
         # later bump would pass its re-check and resurrect the entry just
         # dropped. Bump-first makes every fill storing after a pop self-discard.
         self._log._bump_cache_gen(key, idents)
-        # Pops must be exactly as wide as the generation bump. The writer and
-        # reader may use different logical, sanitized, canonical, or legacy
-        # spellings for the same transcript; under-popping one spelling leaves
-        # a warm entry permanently stale after an mtime-preserving rewrite.
+        # Content-cache pops must be exactly as wide as the generation bump. The
+        # writer and reader may use different logical, sanitized, canonical, or
+        # legacy spellings for the same transcript; under-popping one spelling
+        # leaves content or derived offsets stale after a rewrite.
         for ident in idents:
             self._log._msg_cache.pop(ident, None)
+            self._log._page_index_cache.pop(ident, None)
             self._log._meta_cache.pop(ident, None)
             self._log._file_change_cache.pop(ident, None)
             self._log._tab_id_by_key.pop(ident, None)

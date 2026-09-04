@@ -1275,29 +1275,113 @@ class TestSlotDetailPagination:
             assert data["has_more"] is True
 
     @pytest.mark.asyncio
-    async def test_cursor_branch_reads_disk_off_the_loop_thread(self, tmp_path, monkeypatch):
-        """The read must not run on the loop thread that serves every other request.
+    async def test_bounded_request_never_calls_full_chained_reader(self, tmp_path, monkeypatch):
+        state = await self._slot_with_history(tmp_path, monkeypatch, "bounded-reader", count=30)
 
-        Asserts only that the call executed on a different thread. It does not
-        measure loop latency, so it cannot prove the loop was never blocked for
-        some other reason — but it does fail if the ``to_thread`` hop is removed.
-        """
+        def full_read_forbidden(_key):
+            raise AssertionError("bounded slot detail called the full chained reader")
+
+        monkeypatch.setattr(state.conversation_log, "read_messages_chained", full_read_forbidden)
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.get("/api/chat/slots/bounded-reader?limit=10")
+            assert resp.status == 200, await resp.text()
+            data = await resp.json()
+
+        assert [message["content"] for message in data["messages"]] == [
+            f"msg {i}" for i in range(20, 30)
+        ]
+
+    @pytest.mark.asyncio
+    async def test_raw_and_durable_prefix_mismatch_uses_full_reader(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("mixed-prefix")
+        state.conversation_log.append("dashboard:mixed-prefix", "done", "")
+        state.conversation_log.append("dashboard:mixed-prefix", "user", "msg 1")
+        state.conversation_log.append("dashboard:mixed-prefix", "user", "msg 2")
+        slot.append("user", "msg 2")
+        slot.drain()
+        slot._disk_older_count = 2
+        slot._disk_older_durable_count = 1
+
+        real = state.conversation_log.read_messages_chained_page
+        bounded_calls = 0
+
+        def counting_page(*args, **kwargs):
+            nonlocal bounded_calls
+            bounded_calls += 1
+            return real(*args, **kwargs)
+
+        monkeypatch.setattr(state.conversation_log, "read_messages_chained_page", counting_page)
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.get("/api/chat/slots/mixed-prefix?limit=10")
+            assert resp.status == 200, await resp.text()
+            data = await resp.json()
+
+        assert bounded_calls == 0
+        assert data["total"] == 2
+        assert [message["content"] for message in data["messages"]] == [
+            "msg 1",
+            "msg 2",
+        ]
+
+    @pytest.mark.asyncio
+    async def test_bounded_composition_retries_on_chain_revision_change(
+        self, tmp_path, monkeypatch
+    ):
+        state = await self._slot_with_history(tmp_path, monkeypatch, "revision-race", count=30)
+        log = state.conversation_log
+        real = log.read_messages_chained_page
+        inserted = False
+
+        def append_between_ranges(key, *, limit, before=None, expected_revision=None):
+            nonlocal inserted
+            page = real(
+                key,
+                limit=limit,
+                before=before,
+                expected_revision=expected_revision,
+            )
+            if not inserted:
+                inserted = True
+                log.append(key, "assistant", "foreign mid-read")
+            return page
+
+        monkeypatch.setattr(log, "read_messages_chained_page", append_between_ranges)
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.get("/api/chat/slots/revision-race?limit=50")
+            assert resp.status == 200, await resp.text()
+            data = await resp.json()
+
+        contents = [message["content"] for message in data["messages"]]
+        assert contents == [f"msg {i}" for i in range(30)] + ["foreign mid-read"]
+
+    @pytest.mark.asyncio
+    async def test_cursor_branch_reads_bounded_page_off_the_loop_thread(
+        self, tmp_path, monkeypatch
+    ):
+        """The bounded reader must run away from the loop serving other requests."""
         state = await self._slot_with_history(tmp_path, monkeypatch, "offloop")
         log = state.conversation_log
-        real = log.read_messages_chained
+        real = log.read_messages_chained_page
         seen: list[int] = []
 
-        def recording(key):
+        def recording(key, *, limit, before=None, expected_revision=None):
             seen.append(threading.get_ident())
-            return real(key)
+            return real(
+                key,
+                limit=limit,
+                before=before,
+                expected_revision=expected_revision,
+            )
 
-        monkeypatch.setattr(log, "read_messages_chained", recording)
+        monkeypatch.setattr(log, "read_messages_chained_page", recording)
         loop_thread = threading.get_ident()
 
         async with TestClient(TestServer(_make_app(state))) as client:
             resp = await client.get("/api/chat/slots/offloop?limit=5")
             assert resp.status == 200
-        assert seen, "read_messages_chained was never called"
+        assert seen, "read_messages_chained_page was never called"
         assert loop_thread not in seen
 
     @pytest.mark.asyncio
@@ -2152,13 +2236,13 @@ class TestSlotDetailPagination:
 
         loop_thread = threading.get_ident()
         seen: dict[str, int] = {}
-        original = ch._append_unflushed_tail
+        original = ch._append_unflushed_tail_from_offset
 
         def spy(*args, **kwargs):
             seen["thread"] = threading.get_ident()
             return original(*args, **kwargs)
 
-        monkeypatch.setattr(ch, "_append_unflushed_tail", spy)
+        monkeypatch.setattr(ch, "_append_unflushed_tail_from_offset", spy)
 
         async with TestClient(TestServer(_make_app(state))) as client:
             resp = await client.get("/api/chat/slots/offloop?limit=10")
@@ -20067,7 +20151,7 @@ class TestUnflushedTailOrderingAndSnapshot:
         slot.messages.append(owed)
         assert owed["meta"]["mid"] not in disk_mids, "fixture row must be un-persisted"
 
-        original = ch._append_unflushed_tail
+        original = ch._append_unflushed_tail_from_offset
         seen: dict[str, object] = {}
 
         def worker_entered(slot_arg, all_msgs_arg, **kwargs):
@@ -20079,7 +20163,7 @@ class TestUnflushedTailOrderingAndSnapshot:
             ]
             return original(slot_arg, all_msgs_arg, **kwargs)
 
-        monkeypatch.setattr(ch, "_append_unflushed_tail", worker_entered)
+        monkeypatch.setattr(ch, "_append_unflushed_tail_from_offset", worker_entered)
 
         async with TestClient(TestServer(_make_app(state))) as client:
             resp = await client.get("/api/chat/slots/loopsnap?limit=10")

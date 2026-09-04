@@ -28,6 +28,36 @@ Every `ConversationLog` component is constructed with only the same owner; there
 is no helper-callback dependency bundle and no duplicate mutable history state.
 Calls that are established instance patch/diagnostic seams route back through
 the owner. The few module bindings with demonstrated post-construction facade
+
+### Bounded transcript pages
+
+`ConversationLog.read_messages_chained_page` serves dashboard pagination without
+materializing the complete parsed transcript. `TranscriptReadProjection` keeps a
+bounded in-memory sparse index per transcript revision, mapping every fixed row
+stride to a byte offset. Any file-stamp or invalidation-generation change rebuilds
+the index from byte zero; only an exact revision reuses checkpoints.
+Authoritative full reads performed off the event loop (including restore) warm
+the index so the first dashboard page does not repeat the scan. A page seeks to
+the nearest checkpoint and decodes only the intersecting range plus at most one
+stride. Tab-chain membership and ordering come from the same `_tab_id_index` as
+`read_messages_chained`; there is no second lineage model.
+
+The index stores counts and offsets only, never message content, and never crosses
+a process boundary or trusts agent-writable derived state. In-memory validity
+requires the full file stamp (`mtime_ns`, size, inode, device) and the process-wide
+history invalidation generation. A revision changing during a page read is
+retried; repeated churn falls back to the complete-reader oracle so the endpoint
+never returns a mixed revision.
+
+Paginated slot detail composes an indexed durable prefix with the resident disk
+suffix and the existing unflushed/transient window reconciliation. The first
+range read returns an ordered chain revision (`key`, file stamp, invalidation
+generation); every later range in that response must match it, otherwise the
+whole composition retries and ultimately falls back to the full-reader oracle.
+It preserves the legacy exact `total`, `before`, `next_before`, and `has_more`
+fields. The no-limit route and callers requiring complete history remain on
+`read_messages_chained`. Display redaction remains at `_prepare_messages`; neither
+the sparse index nor page projection stores a redacted or alternate transcript.
 rebinds are read through narrow call-time lookups (the search scan window, read
 lock/preview settings, and rewrite rotation/archive settings). Stable clocks,
 parsers, formatters, logging, and atomic I/O remain ordinary module dependencies;

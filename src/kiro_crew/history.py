@@ -41,6 +41,7 @@ from kiro_crew.history_cache import (
     _FileChangeCacheEntry,
     _LRUCache,
     _SearchTextCache,
+    _TranscriptRowIndexEntry,
 )
 from kiro_crew.history_consolidation import (  # noqa: F401 - facade re-exports
     _CONSOLIDATION_BACKOFF_BASE_SECS,
@@ -67,7 +68,9 @@ from kiro_crew.history_consolidation import (  # noqa: F401 - facade re-exports
     _strip_skill_frontmatter,
 )
 from kiro_crew.history_projection import (
+    ChainRevision,
     SessionMetadataProjection,
+    TranscriptPage,
     TranscriptReadProjection,
 )
 from kiro_crew.history_rewrite import HistoryRewriteCoordinator
@@ -1264,6 +1267,10 @@ class ConversationLog:
         #: parsed transcript corpus. The file stamp includes inode and size in
         #: addition to nanosecond mtime so rotations and atomic rewrites miss.
         self._file_change_cache: _LRUCache[_FileChangeCacheEntry] = _LRUCache(cache_max)
+        #: Sparse row-to-byte indexes for paginated transcript reads. Entries
+        #: contain offsets and counts only, never message content, so a bounded
+        #: page does not retain the complete parsed transcript in memory.
+        self._page_index_cache: _LRUCache[_TranscriptRowIndexEntry] = _LRUCache(cache_max)
         #: Bounded memo of ``(mtime, gen, doc_chars, casefolded_blob)`` per
         #: session, consumed only by :meth:`search_sessions`. ``gen`` is the
         #: invalidation generation (:meth:`_cache_gen`) the entry was folded
@@ -2578,6 +2585,21 @@ class ConversationLog:
 
     def read_messages_chained(self, key: str) -> list[dict]:
         return self._read_projection.read_messages_chained(key)
+
+    def read_messages_chained_page(
+        self,
+        key: str,
+        *,
+        limit: int,
+        before: int | None = None,
+        expected_revision: ChainRevision | None = None,
+    ) -> TranscriptPage:
+        return self._read_projection.read_messages_chained_page(
+            key,
+            limit=limit,
+            before=before,
+            expected_revision=expected_revision,
+        )
 
     def _rebuild_tab_id_index(self) -> None:
         self._read_projection._rebuild_tab_id_index()

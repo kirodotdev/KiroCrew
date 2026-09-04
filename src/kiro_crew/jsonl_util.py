@@ -310,6 +310,78 @@ def _frames(handle: IO[bytes], cap: int) -> Iterator[bytes | _Oversized]:
         yield buf
 
 
+def _frames_with_offsets(
+    handle: IO[bytes], cap: int
+) -> Iterator[tuple[int, int, bytes | _Oversized]]:
+    """Frame records like :func:`_frames`, retaining absolute byte offsets.
+
+    The pagination index needs seekable record boundaries but must keep the
+    universal-newline, oversized-record, and bounded-memory behavior of the
+    established reader. Keeping this as a sibling avoids weakening `_frames`'
+    stable policy surface for its existing callers.
+    """
+    buf = b""
+    buf_offset = handle.tell()
+    dropping = False
+    while True:
+        chunk = handle.readline(max(2, cap + 2 - len(buf)))
+        if not chunk:
+            break
+        buf += chunk
+        start = 0
+        while (idx := _boundary_end(buf, start)) is not None:
+            piece_start = start
+            piece, start = buf[start:idx], idx
+            absolute_start = buf_offset + piece_start
+            absolute_end = buf_offset + idx
+            if dropping:
+                dropping = False
+                continue
+            if _body_len(piece) > cap:
+                yield absolute_start, absolute_end, _OVERSIZED
+                continue
+            yield absolute_start, absolute_end, piece
+        buf_offset += start
+        buf = buf[start:]
+        pending_cr = buf.endswith(b"\r")
+        if len(buf) - pending_cr > cap:
+            if not dropping:
+                yield buf_offset, buf_offset + len(buf), _OVERSIZED
+                dropping = True
+            if pending_cr:
+                buf_offset = handle.tell() - 1
+                buf = b"\r"
+            else:
+                buf_offset = handle.tell()
+                buf = b""
+    if buf and not dropping:
+        yield buf_offset, buf_offset + len(buf), buf
+
+
+def bounded_raw_records_with_offsets(
+    handle: IO[bytes], path: Path, *, cap: int = RECORD_CAP, label: str = "read"
+) -> Iterator[tuple[int, int, bytes]]:
+    """Yield ``(start, end, record)`` while skipping oversized records.
+
+    Offsets name exact byte boundaries and are therefore safe seek targets for
+    later bounded reads of the same stamped file revision.
+    """
+    oversized = 0
+    for start, end, frame in _frames_with_offsets(handle, cap):
+        if isinstance(frame, _Oversized):
+            oversized += 1
+            continue
+        yield start, end, frame
+    if oversized:
+        logger.debug(
+            "%s: skipped %d record(s) over %d bytes in %r",
+            label,
+            oversized,
+            cap,
+            path,
+        )
+
+
 def _decode(raw: bytes) -> str:
     """Decode one accepted record.
 

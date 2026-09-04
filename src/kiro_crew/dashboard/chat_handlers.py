@@ -107,6 +107,7 @@ from kiro_crew.dashboard.state import (
 from kiro_crew.dashboard.system_notices import SESSION_RELOAD_KIND, is_system_notice
 from kiro_crew.dashboard.turn_dispatch import spawn_guarded_turn
 from kiro_crew.history import carry_provenance, is_incognito_transcript
+from kiro_crew.history_projection import TranscriptRevisionChanged
 from kiro_crew.messaging.link import is_channel_session_key
 from kiro_crew.providers.acp import AcpProvider
 from kiro_crew.providers.base import LLMProvider
@@ -1461,10 +1462,11 @@ def _snapshot_slot_window(slot: "_ChatSlot") -> tuple[int, list[dict]]:
     return disk_older_count, window
 
 
-def _append_unflushed_tail(
+def _append_unflushed_tail_from_offset(
     slot: "_ChatSlot",
     all_msgs: list[dict],
     *,
+    disk_offset: int,
     snapshot: tuple[int, list[dict]] | None = None,
 ) -> list[dict]:
     """Append window messages that are not yet on disk to a chained disk read.
@@ -1573,7 +1575,8 @@ def _append_unflushed_tail(
     if snapshot is None:
         snapshot = _snapshot_slot_window(slot)
     disk_older_count, window = snapshot
-    window_disk = all_msgs[disk_older_count:]
+    local_older_count = max(0, disk_older_count - disk_offset)
+    window_disk = all_msgs[local_older_count:]
     disk_mid_positions: dict[str, list[int]] = {}
     every_row_has_an_id = bool(window_disk)
     for i, m in enumerate(window_disk):
@@ -1619,7 +1622,7 @@ def _append_unflushed_tail(
             pending.append(m)
         if not owed_before and not pending:
             return all_msgs
-        merged: list[dict] = list(all_msgs[:disk_older_count])
+        merged: list[dict] = list(all_msgs[:local_older_count])
         for i, m in enumerate(window_disk):
             merged.extend(owed_before.get(i, ()))
             merged.append(m)
@@ -1627,7 +1630,7 @@ def _append_unflushed_tail(
         return merged
     else:
         start = 0
-        d = min(disk_older_count, len(all_msgs))
+        d = min(local_older_count, len(all_msgs))
         # An owed row is one the disk slice does not already carry, and this arm walks
         # the WHOLE window so that a single owed row cannot strand the rows behind it.
         # There are two ways to be owed, and both route to ``owed_rows``:
@@ -1716,6 +1719,92 @@ def _append_unflushed_tail(
             merged_idless.append(row)
         merged_idless.extend(tail)
         return merged_idless
+
+
+def _append_unflushed_tail(
+    slot: "_ChatSlot",
+    all_msgs: list[dict],
+    *,
+    snapshot: tuple[int, list[dict]] | None = None,
+) -> list[dict]:
+    """Compatibility wrapper for reconciliation against a complete disk read."""
+    return _append_unflushed_tail_from_offset(
+        slot,
+        all_msgs,
+        disk_offset=0,
+        snapshot=snapshot,
+    )
+
+
+def _bounded_slot_page(
+    conversation_log: Any,
+    slot: "_ChatSlot",
+    history_key: str,
+    *,
+    limit: int,
+    before: int | None,
+    snapshot: tuple[int, list[dict]],
+    durable_prefix_count: int,
+    pending_rewrite: bool,
+) -> tuple[list[dict], int, bool, int]:
+    """Compose one display page from an indexed durable prefix and live suffix.
+
+    The sparse history projection owns durable row ranges. This helper reads at
+    most the resident disk/window suffix, applies the established reconciliation
+    oracle there, and fetches only the older range intersecting the requested
+    page. Unlimited callers keep using the complete-reader path.
+    """
+    disk_older_count, _window = snapshot
+    if disk_older_count != durable_prefix_count:
+        raise TranscriptRevisionChanged("raw and durable history prefix counters differ")
+
+    total_probe = conversation_log.read_messages_chained_page(history_key, limit=1)
+    durable_total = total_probe.total
+    revision = total_probe.revision
+    prefix_total = min(disk_older_count, durable_total)
+
+    if pending_rewrite:
+        disk_suffix: list[dict] = []
+    else:
+        suffix_count = durable_total - prefix_total
+        disk_suffix = (
+            conversation_log.read_messages_chained_page(
+                history_key,
+                limit=suffix_count,
+                before=durable_total,
+                expected_revision=revision,
+            ).messages
+            if suffix_count > 0
+            else []
+        )
+
+    merged_suffix = _append_unflushed_tail_from_offset(
+        slot,
+        disk_suffix,
+        disk_offset=prefix_total,
+        snapshot=snapshot,
+    )
+    collapsed_suffix = _collapse_wire_rows(merged_suffix)
+    total = prefix_total + len(collapsed_suffix)
+    end = total if before is None else max(0, min(before, total))
+    start = max(0, end - limit)
+
+    messages: list[dict] = []
+    prefix_end = min(end, prefix_total)
+    if start < prefix_end:
+        messages.extend(
+            conversation_log.read_messages_chained_page(
+                history_key,
+                limit=prefix_end - start,
+                before=prefix_end,
+                expected_revision=revision,
+            ).messages
+        )
+    suffix_start = max(start, prefix_total) - prefix_total
+    suffix_end = max(0, end - prefix_total)
+    if suffix_start < suffix_end:
+        messages.extend(collapsed_suffix[suffix_start:suffix_end])
+    return messages, total, start > 0, start
 
 
 async def api_chat_slot_detail(request: web.Request) -> web.Response:
@@ -1885,54 +1974,71 @@ async def api_chat_slot_detail(request: web.Request) -> web.Response:
         # for. Sent anyway so the field is present on every response shape.
         next_before = 0
     else:
-        # Legacy pagination path (retained for programmatic callers).
-        # Always reads from chained disk history; no in-memory offset math.
         history_key = slot_history_key(slot)
-        try:
-            all_msgs = (
-                await asyncio.to_thread(state.conversation_log.read_messages_chained, history_key)
-                if state.conversation_log
-                else []
+        bounded_page: tuple[list[dict], int, bool, int] | None = None
+        for _attempt in range(_FLUSH_SNAPSHOT_RETRIES):
+            tail_snapshot = _snapshot_slot_window(slot)
+            durable_prefix_count = int(
+                getattr(slot, "_disk_older_durable_count", tail_snapshot[0]) or 0
             )
-        except Exception:
-            logger.warning("read_messages_chained failed for %s", history_key, exc_info=True)
-            all_msgs = []
-        # Append any un-flushed in-memory tail messages beyond what's on disk.
-        # Snapshot on the LOOP, after the disk read: the two reads inside the helper
-        # have no await between them, so a synchronous finalization cannot be caught
-        # half-done the way a worker thread can catch it.
-        tail_snapshot = _snapshot_slot_window(slot)
-        all_msgs = await asyncio.to_thread(
-            _append_unflushed_tail, slot, all_msgs, snapshot=tail_snapshot
-        )
-        # One row must mean one displayed message BEFORE `limit` is applied. The
-        # owed rows above can include `chunk`/`streaming`, and a segment still
-        # streaming is hundreds of rows that render as one message, so slicing
-        # first spends the caller's budget on rows the response will not carry
-        # and returns a mid-sentence fragment.
-        #
-        # Reduce the whole corpus, not a trailing slice: the helper places owed
-        # rows at the disk index they belong to, so they are not a contiguous
-        # suffix and a slice-scoped fold would miss the interleaved ones. In a
-        # thread for the same reason the append is -- whole-corpus work does not
-        # belong on the event loop.
-        #
-        # `done` is already excluded upstream (`_UNOWED_WINDOW_ROLES`), so on
-        # this path the reduction's remaining job is folding the chunk runs.
-        all_msgs = await asyncio.to_thread(_collapse_wire_rows, all_msgs)
-        total = len(all_msgs)
-        if before is not None:
-            end = max(0, min(before, total))
+            version = (
+                getattr(slot, "_dirty_gen", 0),
+                slot._disk_older_count,
+                durable_prefix_count,
+            )
+            try:
+                candidate = await asyncio.to_thread(
+                    _bounded_slot_page,
+                    state.conversation_log,
+                    slot,
+                    history_key,
+                    limit=limit,
+                    before=before,
+                    snapshot=tail_snapshot,
+                    durable_prefix_count=durable_prefix_count,
+                    pending_rewrite=bool(getattr(slot, "_pending_rewrite", False)),
+                )
+            except Exception:
+                logger.debug(
+                    "bounded slot history revision changed or read failed for %s; retrying",
+                    history_key,
+                    exc_info=True,
+                )
+                continue
+            current_version = (
+                getattr(slot, "_dirty_gen", 0),
+                slot._disk_older_count,
+                int(getattr(slot, "_disk_older_durable_count", tail_snapshot[0]) or 0),
+            )
+            if current_version == version:
+                bounded_page = candidate
+                break
+
+        if bounded_page is not None:
+            messages, total, has_more, next_before = bounded_page
         else:
-            end = total
-        start = max(0, end - limit)
-        messages = all_msgs[start:end]
-        has_more = start > 0
-        # The cursor the client should send next, in the RAW index space this
-        # slice was taken in. The client cannot derive it from the response:
-        # `_prepare_messages` drops `done`, so the returned row count is not
-        # the span consumed here.
-        next_before = start
+            try:
+                all_msgs = (
+                    await asyncio.to_thread(
+                        state.conversation_log.read_messages_chained, history_key
+                    )
+                    if state.conversation_log
+                    else []
+                )
+            except Exception:
+                logger.warning("read_messages_chained failed for %s", history_key, exc_info=True)
+                all_msgs = []
+            tail_snapshot = _snapshot_slot_window(slot)
+            all_msgs = await asyncio.to_thread(
+                _append_unflushed_tail, slot, all_msgs, snapshot=tail_snapshot
+            )
+            all_msgs = await asyncio.to_thread(_collapse_wire_rows, all_msgs)
+            total = len(all_msgs)
+            end = max(0, min(before, total)) if before is not None else total
+            start = max(0, end - limit)
+            messages = all_msgs[start:end]
+            has_more = start > 0
+            next_before = start
 
     # Snapshot every slot field the response needs BEFORE leaving the event
     # loop: the render below runs in a worker thread, and it must not read
