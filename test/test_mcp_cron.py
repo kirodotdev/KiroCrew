@@ -414,3 +414,85 @@ class TestCronRemoveAudit:
         result = _call_tool_inner("cron_remove", {"job_id": jid})
         assert result == f"Removed job: {jid}"
         assert not [j for j in CronService(base_dir=tmp_path).list_jobs() if j.id == jid]
+
+
+class TestCronSubFloorTimeoutWarning:
+    """A ``timeout_secs`` below the reaper floor is accepted and enforced by the
+    primary guard, but the reaper force-kill backstop still floors at
+    ``_JOB_TIMEOUT_SECS``. ``cron_add``/``cron_update`` surface that gap so the
+    caller is not surprised by a job that outruns its configured budget.
+    """
+
+    def _reload(self, tmp_path, name):
+        from kiro_crew.cron import CronService
+
+        matching = [j for j in CronService(base_dir=tmp_path).list_jobs() if j.name == name]
+        assert len(matching) == 1, f"expected exactly one job named {name}"
+        return matching[0]
+
+    def test_cron_add_sub_floor_timeout_secs_warns(self, monkeypatch, tmp_path):
+        """A sub-floor timeout_secs is stored verbatim and flagged in the reply."""
+        from kiro_crew.cron import _JOB_TIMEOUT_SECS
+
+        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+        monkeypatch.delenv("KIROCREW_CHANNEL_ID", raising=False)
+        name = f"low-{uuid.uuid4().hex[:8]}"
+        result = _call_tool_inner(
+            "cron_add",
+            {"name": name, "message": "go", "every": 300, "timeout_secs": 60},
+        )
+        assert "Added job" in result
+        assert "Note:" in result
+        assert str(_JOB_TIMEOUT_SECS) in result
+        assert self._reload(tmp_path, name).timeout_secs == 60
+
+    def test_cron_add_at_floor_timeout_secs_no_warn(self, monkeypatch, tmp_path):
+        """A timeout_secs at the floor is honored without the caveat note."""
+        from kiro_crew.cron import _JOB_TIMEOUT_SECS
+
+        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+        monkeypatch.delenv("KIROCREW_CHANNEL_ID", raising=False)
+        name = f"atfloor-{uuid.uuid4().hex[:8]}"
+        result = _call_tool_inner(
+            "cron_add",
+            {"name": name, "message": "go", "every": 300, "timeout_secs": _JOB_TIMEOUT_SECS},
+        )
+        assert "Added job" in result
+        assert "Note:" not in result
+
+    def test_cron_add_without_timeout_secs_no_warn(self, monkeypatch, tmp_path):
+        """The note only appears when timeout_secs is explicitly set sub-floor."""
+        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+        monkeypatch.delenv("KIROCREW_CHANNEL_ID", raising=False)
+        name = f"none-{uuid.uuid4().hex[:8]}"
+        result = _call_tool_inner("cron_add", {"name": name, "message": "go", "every": 300})
+        assert "Added job" in result
+        assert "Note:" not in result
+
+    def test_cron_update_sub_floor_timeout_secs_warns(self, monkeypatch, tmp_path):
+        """Lowering timeout_secs below the floor via cron_update also warns."""
+        from kiro_crew.cron import _JOB_TIMEOUT_SECS
+
+        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+        monkeypatch.delenv("KIROCREW_CHANNEL_ID", raising=False)
+        name = f"upd-low-{uuid.uuid4().hex[:8]}"
+        _call_tool_inner("cron_add", {"name": name, "message": "go", "every": 300})
+        jid = self._reload(tmp_path, name).id
+        result = _call_tool_inner("cron_update", {"job_id": jid, "timeout_secs": 90})
+        assert "Updated job" in result
+        assert "Note:" in result
+        assert str(_JOB_TIMEOUT_SECS) in result
+        assert self._reload(tmp_path, name).timeout_secs == 90
+
+    def test_cron_update_at_floor_timeout_secs_no_warn(self, monkeypatch, tmp_path):
+        """A cron_update at the floor updates without the caveat note."""
+        from kiro_crew.cron import _JOB_TIMEOUT_SECS
+
+        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+        monkeypatch.delenv("KIROCREW_CHANNEL_ID", raising=False)
+        name = f"upd-floor-{uuid.uuid4().hex[:8]}"
+        _call_tool_inner("cron_add", {"name": name, "message": "go", "every": 300})
+        jid = self._reload(tmp_path, name).id
+        result = _call_tool_inner("cron_update", {"job_id": jid, "timeout_secs": _JOB_TIMEOUT_SECS})
+        assert "Updated job" in result
+        assert "Note:" not in result
