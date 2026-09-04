@@ -431,6 +431,25 @@ class SessionCleanup:
         self.state.idle_timeout = timeout
         interval = max(timeout // 6, 60) if idle_sweep_enabled else 300
 
+        # One reclaim pass at START, and deliberately NOT awaited here. Every
+        # other sweep in this loop is housekeeping that can wait an interval, but
+        # this one reclaims the runtime-tmpfs entries whose exhaustion makes
+        # `systemd-run --scope` fail, and a host in that state cannot spawn an
+        # agent AT ALL -- so an update that installs the fix must apply it now,
+        # not in 5-10 minutes. Fire-and-forget for two reasons: the loop's other
+        # sweeps (idle sessions, PIDs, MCPs) must not queue behind it, and a pass
+        # slowed by a pathological pile or a stalled filesystem must not be able
+        # to keep this loop from ever starting. The work itself is bounded twice
+        # over: it runs in the maintenance executor (never on the event loop) and
+        # the sweep enforces its own wall-clock budget per pass, resuming on the
+        # next tick. Cancelled on shutdown with the loop.
+        boot_reclaim = asyncio.create_task(self._sweep_sandbox_artifacts())
+        try:
+            await self._run_cleanup_ticks(interval)
+        finally:
+            boot_reclaim.cancel()
+
+    async def _run_cleanup_ticks(self, interval: float) -> None:
         while not self._deps.get_shutdown_signal().is_set():
             try:
                 await asyncio.wait_for(

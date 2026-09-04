@@ -478,11 +478,41 @@ def _isolate_sandbox_mount_source_roots(_sandbox_mount_source_root, monkeypatch)
     # ``_mount_pinned_source_names`` itself; ``TestMountPinnedSourceNames``
     # imports the function by name at module import, so the parser's own unit
     # tests are unaffected by this module-attribute patch.
+    _SANDBOX_SWEEP_ORIGINALS.setdefault(
+        "_mount_pinned_source_names", sandbox_mod._mount_pinned_source_names
+    )
     monkeypatch.setattr(
         sandbox_mod,
         "_mount_pinned_source_names",
-        lambda proc_root="/proc": (set(), False),
+        lambda proc_root="/proc", **_kw: (set(), False),
     )
+    # Third half, same floor, for the LEGACY (pre-prefix ``tmp*``) sweep. It
+    # resolves its own narrower root chain -- the launcher's two tmpfs roots,
+    # deliberately excluding the redirected system tempdir -- so without this it
+    # would scan the developer's real /run/user/$UID and /dev/shm, and there it
+    # matches names no Kiro Crew build has created since #6268: an unpinned test
+    # could delete a stranger's temp entry on the host. The bind scan is
+    # defaulted fail-closed for the same reason as the pin scan above: a test
+    # that forgets to fix its answer gets an INERT sweep (coverage unproven ->
+    # removes nothing, stamps nothing) rather than one reading host /proc.
+    _SANDBOX_SWEEP_ORIGINALS.setdefault("_launcher_tmpfs_roots", sandbox_mod._launcher_tmpfs_roots)
+    monkeypatch.setattr(
+        sandbox_mod,
+        "_launcher_tmpfs_roots",
+        lambda: [str(_sandbox_mount_source_root)],
+    )
+    _SANDBOX_SWEEP_ORIGINALS.setdefault(
+        "_bound_source_basenames", sandbox_mod._bound_source_basenames
+    )
+
+    def _unproven_bound_sources(proc_root="/proc", *, coverage=None, **_kw):
+        # Fail closed on BOTH claims the legacy gate accepts, so no test can
+        # reach the developer's real runtime tmpfs through it.
+        if coverage is not None:
+            coverage.covered = False
+        return (set(), False)
+
+    monkeypatch.setattr(sandbox_mod, "_bound_source_basenames", _unproven_bound_sources)
 
 
 @pytest.fixture(autouse=True)

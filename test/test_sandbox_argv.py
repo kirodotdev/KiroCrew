@@ -49,6 +49,33 @@ _POSIX_ONLY = pytest.mark.skipif(
 )
 
 
+@pytest.fixture()
+def systemd_run_resolvable(monkeypatch):
+    """Make ``trusted_system_bin("systemd-run")`` resolve on a host without systemd.
+
+    The cgroup-scope tests below mock ``_probe_cgroup_scope`` to "available" and
+    assert the argv ``cgroup_scope_argv`` BUILDS. That argv is only built when
+    the wrapper also resolves from a trusted system directory, and on macOS /
+    a container without systemd it never does -- so the code degraded (no
+    ceiling, loud warning), and seven tests about argv SHAPE failed for a reason
+    that has nothing to do with argv shape. Only ``systemd-run`` is faked; every
+    other name still goes through the real resolver, so the tests that assert
+    degradation when it is ABSENT (they patch the resolver to ``None``
+    themselves, inside their own ``with``) are unaffected -- an inner patch
+    wins and reverts to this one.
+    """
+    from kiro_crew import platform_compat
+
+    real = platform_compat.trusted_system_bin
+
+    def _resolve(name: str) -> str | None:
+        if name == "systemd-run":
+            return "/usr/bin/systemd-run"
+        return real(name)
+
+    monkeypatch.setattr(sandbox_mod.platform_compat, "trusted_system_bin", _resolve)
+
+
 @pytest.fixture(autouse=True)
 def clean_backend(monkeypatch):
     """Reset cached backend between tests.
@@ -1990,6 +2017,7 @@ class TestSessionHostPreexec:
             self._reset_cache()
 
 
+@pytest.mark.usefixtures("systemd_run_resolvable")
 class TestCgroupScopeArgv:
     """cgroup_scope_argv() wraps agent spawns in a transient systemd --user
     --scope with pids.max + memory.max — the default-on fork-bomb / memory-DoS
@@ -2289,6 +2317,7 @@ class TestCgroupScopeArgv:
             self._reset_probe()
 
 
+@pytest.mark.usefixtures("systemd_run_resolvable")
 class TestAgentsSliceLimits:
     """ensure_agents_slice_limits() puts an AGGREGATE MemoryMax/TasksMax on
     kirocrew-agents.slice — the parent of every per-spawn scope — so N
@@ -2645,6 +2674,7 @@ class TestAgentsSliceLimits:
             sb._CGROUP_SCOPE_PROBE = None
 
 
+@pytest.mark.usefixtures("systemd_run_resolvable")
 class TestCgroupScopeBusEnv:
     """The systemd-run scope prepended by cgroup_scope_argv needs the user
     session bus in the environment it is spawned with. Callers that build that
@@ -3336,6 +3366,7 @@ class TestMacOsNestingDetection:
             sandbox_mod._macos_sandbox_state.cache_clear()
 
 
+@pytest.mark.usefixtures("systemd_run_resolvable")
 class TestAgentSliceMemoryHigh:
     """_ensure_agent_slice_memory_high() reconciles the AGGREGATE MemoryHigh
     ceiling on kirocrew-agents.slice — bounding the SUM of all concurrent agent
