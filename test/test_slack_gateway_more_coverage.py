@@ -136,6 +136,108 @@ def _probe_proc(communicate: Any, *, returncode: int = 0) -> MagicMock:
 class TestWarnIfKiroCliOutdated:
     """The boot-time kiro-cli version probe never raises and never hangs."""
 
+    @pytest.fixture(autouse=True)
+    def _resolvable_kiro_cli(self):
+        """Every arm below exercises the spawn, which now needs a resolved path.
+
+        The probe resolves kiro-cli from the fixed install directories before
+        spawning, so without this the arms would take the "not installed" early
+        return on a host that has no kiro-cli and assert against a spawn that
+        never happened. The refusal path itself is covered separately by
+        :meth:`test_unresolvable_binary_never_spawns`.
+        """
+        with patch(
+            "kiro_crew.slack.gateway.resolve_kiro_cli", return_value="/opt/pinned/bin/kiro-cli"
+        ):
+            yield
+
+    @pytest.mark.asyncio
+    async def test_unresolvable_binary_never_spawns(self, capsys):
+        """An unresolvable kiro-cli is not spawned by bare name.
+
+        This probe runs unattended at gateway boot, so falling back to a bare
+        argv0 would let a `PATH`-planted shim execute here — the `--version`
+        argument is no protection. Nothing to warn about, so nothing runs.
+        """
+        orch = _make_orchestrator()
+        with patch("kiro_crew.slack.gateway.resolve_kiro_cli", return_value=None):
+            with patch("asyncio.create_subprocess_exec") as spawn:
+                await orch._warn_if_kiro_cli_outdated()
+        spawn.assert_not_called()
+        assert "outdated" not in capsys.readouterr().out
+
+    @pytest.mark.asyncio
+    async def test_probe_execs_resolved_absolute_path(self):
+        """The resolved absolute path is argv0, and `PATH` is out of the lookup."""
+
+        async def _communicate() -> tuple[bytes, bytes]:
+            return (b"kiro-cli 9.9.9", b"")
+
+        proc = _probe_proc(_communicate)
+        orch = _make_orchestrator()
+        with patch(
+            "kiro_crew.slack.gateway.resolve_kiro_cli", return_value="/opt/pinned/bin/kiro-cli"
+        ) as mock_resolve:
+            with patch("asyncio.create_subprocess_exec", AsyncMock(return_value=proc)) as spawn:
+                await orch._warn_if_kiro_cli_outdated()
+        assert spawn.await_args.args[0] == "/opt/pinned/bin/kiro-cli"
+        mock_resolve.assert_called_once_with(include_inherited_path=False)
+
+    @pytest.mark.asyncio
+    async def test_path_only_install_is_refused_but_reported(self, caplog):
+        """A PATH-only install is refused for the spawn AND named in the log.
+
+        Refusing is the point of the pin, but silence about it would leave a
+        host that never auto-updates and never warns it is outdated with nothing
+        in `gateway.log` to say why. The line has to name the override, which is
+        the operator's way out.
+        """
+        orch = _make_orchestrator()
+
+        def _resolve(**kwargs: Any) -> str | None:
+            # Pinned lookup misses; the unpinned one (PATH included) hits.
+            return None if kwargs.get("include_inherited_path") is False else "/w/venv/bin/kiro-cli"
+
+        with caplog.at_level("WARNING"):
+            with patch("kiro_crew.slack.gateway.resolve_kiro_cli", side_effect=_resolve):
+                with patch("asyncio.create_subprocess_exec") as spawn:
+                    await orch._warn_if_kiro_cli_outdated()
+        spawn.assert_not_called()
+        assert "KIROCREW_KIRO_BIN" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_absent_backend_is_refused_quietly(self, caplog):
+        """No kiro-cli anywhere is not a problem to report — the backend is optional."""
+        orch = _make_orchestrator()
+        with caplog.at_level("WARNING"):
+            with patch("kiro_crew.slack.gateway.resolve_kiro_cli", return_value=None):
+                with patch("asyncio.create_subprocess_exec") as spawn:
+                    await orch._warn_if_kiro_cli_outdated()
+        spawn.assert_not_called()
+        assert "KIROCREW_KIRO_BIN" not in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_slow_home_directory_cannot_stall_boot(self, caplog):
+        """A wedged path lookup is bounded, and the refusal keeps boot moving.
+
+        `_init_services` awaits this probe BEFORE `_init_dashboard` binds its
+        socket, so an unbounded lookup on an unresponsive network-mounted home
+        would mean the dashboard never comes up at all.
+        """
+        orch = _make_orchestrator()
+
+        def _hang(**kwargs: Any) -> str:
+            time.sleep(5)  # outlives the budget pinned below
+            return "/opt/pinned/bin/kiro-cli"
+
+        with caplog.at_level("WARNING"):
+            with patch.object(gw, "_KIRO_CLI_RESOLVE_TIMEOUT_SECS", 0.01):
+                with patch("kiro_crew.slack.gateway.resolve_kiro_cli", side_effect=_hang):
+                    with patch("asyncio.create_subprocess_exec") as spawn:
+                        await orch._warn_if_kiro_cli_outdated()
+        spawn.assert_not_called()
+        assert "exceeded" in caplog.text
+
     @pytest.mark.asyncio
     async def test_unspawnable_binary_is_silent(self, capsys):
         orch = _make_orchestrator()

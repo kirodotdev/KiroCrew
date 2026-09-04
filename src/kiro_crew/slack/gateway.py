@@ -172,6 +172,7 @@ from kiro_crew.heartbeat import (
 )
 from kiro_crew.history import ConversationLog, HistoryConsolidator
 from kiro_crew.hooks import HookManager, HooksConfig, hooks_config_from_config_dict
+from kiro_crew.kiro_cli import resolve_kiro_cli
 from kiro_crew.learn import LessonStore
 from kiro_crew.llm_helpers import (
     PromptBusyExhaustedError,
@@ -1462,6 +1463,73 @@ def _channel_transport_permitted(member: str) -> bool:
         return False
 
 
+#: Budget for pinning kiro-cli's path before an unattended spawn. The lookup is
+#: a handful of `stat` calls, but they are under the home directory and
+#: `_warn_if_kiro_cli_outdated` awaits them BEFORE `_init_dashboard` binds its
+#: socket — so on an unresponsive network-mounted home an unbounded lookup would
+#: keep the gateway from ever coming up. Overrunning the budget refuses the
+#: spawn, exactly as an absent binary does.
+_KIRO_CLI_RESOLVE_TIMEOUT_SECS = 5.0
+
+
+def _kiro_cli_pin_probe() -> tuple[str | None, bool]:
+    """``(pinned path, an unpinned install exists)`` — the sync half of the pin.
+
+    The second element separates the two ways the pin can come back empty, which
+    a caller must report differently: kiro-cli is not installed at all (nothing
+    to say — the backend is optional), or it IS installed somewhere the pin does
+    not accept, which is a state an operator needs told about.
+    """
+
+    pinned = resolve_kiro_cli(include_inherited_path=False)
+    if pinned is not None:
+        return pinned, False
+    return None, resolve_kiro_cli() is not None
+
+
+async def _pinned_kiro_cli(purpose: str) -> str | None:
+    """kiro-cli's absolute path for an unattended spawn, or ``None`` to refuse.
+
+    Neither unattended spawn may exec a bare argv0: the gateway's inherited
+    ``PATH`` can lead with an agent-writable directory (a worktree venv's
+    ``bin``), and whatever that names would decide the payload. So the candidate
+    set is the fixed known install directories plus the operator's own
+    ``KIROCREW_KIRO_BIN``, with the inherited ``PATH`` excluded.
+
+    That set does not cover every install: a system-wide one outside
+    ``known_kiro_cli_dirs`` — a root-owned ``/usr/local/bin`` on Linux — is
+    refused here while sessions keep launching it off ``PATH``. Refusing is the
+    right default for a spawn with no operator present, but being SILENT about
+    it is not: the resulting host never auto-updates and never warns it is
+    outdated, with nothing in the log to say why. Hence the warning naming the
+    override, and hence its condition — an install the pin declined is worth a
+    line, a backend that simply is not installed is not.
+
+    Off the loop and bounded: see :data:`_KIRO_CLI_RESOLVE_TIMEOUT_SECS`.
+    """
+
+    try:
+        pinned, unpinned_exists = await asyncio.wait_for(
+            asyncio.to_thread(_kiro_cli_pin_probe),
+            timeout=_KIRO_CLI_RESOLVE_TIMEOUT_SECS,
+        )
+    except (TimeoutError, asyncio.TimeoutError):
+        logger.warning(
+            "kiro-cli: path lookup exceeded %.0fs (unresponsive home?), skipping %s",
+            _KIRO_CLI_RESOLVE_TIMEOUT_SECS,
+            purpose,
+        )
+        return None
+    if pinned is None and unpinned_exists:
+        logger.warning(
+            "kiro-cli resolves only through PATH, which an unattended spawn does "
+            "not trust, so %s is skipped. Point KIROCREW_KIRO_BIN at the binary "
+            "to have it used here.",
+            purpose,
+        )
+    return pinned
+
+
 class GatewayOrchestrator:
     """Manages the lifecycle of all gateway services.
 
@@ -2408,10 +2476,18 @@ class GatewayOrchestrator:
         stall every other callback for the 5s budget, and a timeout is logged
         (not silently swallowed) so a wedged kiro-cli that costs 5s on every
         boot is diagnosable from gateway.log.
+
+        Pinned the same way the auto-update pins it, via `_pinned_kiro_cli`:
+        this probe runs unattended at boot, so a shim planted on `PATH` would
+        execute here regardless of the `--version` argument. A binary the pin
+        refuses has no version worth warning about — and the pin logs why.
         """
+        kiro_cli_bin = await _pinned_kiro_cli("the kiro-cli version check")
+        if kiro_cli_bin is None:
+            return
         try:
             proc = await asyncio.create_subprocess_exec(
-                "kiro-cli",
+                kiro_cli_bin,
                 "--version",
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
@@ -10035,12 +10111,17 @@ class GatewayOrchestrator:
                 return
             logger.info("Auto-update: reset to origin/%s, rebuilding", branch)
 
-            # Update the optional kiro-cli backend if present.
-            if shutil.which("kiro-cli"):
+            # Update the optional kiro-cli backend, by the pinned absolute path
+            # `_pinned_kiro_cli` returns — never a bare argv0 this unattended
+            # path would let `PATH` answer. `None` means do not spawn it,
+            # skipped like any absent backend, which this step already treats as
+            # non-fatal.
+            kiro_cli_bin = await _pinned_kiro_cli("the optional kiro-cli backend update")
+            if kiro_cli_bin is not None:
                 kiro_update: asyncio.subprocess.Process | None = None
                 try:
                     kiro_update = await asyncio.create_subprocess_exec(
-                        "kiro-cli",
+                        kiro_cli_bin,
                         "update",
                         stdout=asyncio.subprocess.DEVNULL,
                         stderr=asyncio.subprocess.DEVNULL,

@@ -3528,7 +3528,8 @@ class TestAutoApplyUpdateVenvPath:
 
         async def _fake_exec(*args, **kwargs):
             argv = [a for a in args if isinstance(a, str)]
-            if argv and argv[0] == "kiro-cli":
+            # The resolved absolute path is argv0 now, not the bare name.
+            if argv and Path(argv[0]).name == "kiro-cli":
                 proc = AsyncMock()
                 proc.kill = MagicMock()
                 proc.returncode = None
@@ -3561,9 +3562,10 @@ class TestAutoApplyUpdateVenvPath:
                                 new_callable=AsyncMock,
                             ) as mock_build:
                                 with patch("os.execv", side_effect=OSError("test")):
-                                    # Truthy: the optional kiro-cli step runs.
+                                    # Resolves: the optional kiro-cli step runs.
                                     with patch(
-                                        "shutil.which", return_value="/usr/bin/kiro-cli"
+                                        "kiro_crew.slack.gateway.resolve_kiro_cli",
+                                        return_value="/usr/bin/kiro-cli",
                                     ):
                                         # The gateway resolves _kill_and_reap
                                         # function-locally on every call, so
@@ -3579,6 +3581,152 @@ class TestAutoApplyUpdateVenvPath:
         assert killed == kiro_procs
         # Half 2: the timeout stayed NON-FATAL — the update continued into the
         # frontend build and the dependency install exactly as before.
+        mock_build.assert_awaited_once()
+        assert mock_install.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_kiro_cli_update_execs_resolved_absolute_path(self):
+        """The kiro-cli update spawns the RESOLVED path, never a bare argv0.
+
+        A bare `"kiro-cli"` argv0 is re-resolved off the gateway's inherited
+        `PATH` inside `exec`, and that `PATH` can lead with an agent-writable
+        directory — so a planted shim would run unattended as the gateway user.
+        Asserting the absolute path reached `create_subprocess_exec` is what
+        pins the lookup to the resolver: with the bare name restored, argv0 is
+        `"kiro-cli"` and this fails.
+        """
+        orch = _make_orchestrator()
+        ds = _mock_dashboard_state()
+        orch.dashboard_state = ds
+        orch.sessions = _mock_sessions()
+
+        _git_fake = _git_exec_fake()
+        kiro_argvs: list[list[str]] = []
+
+        async def _fake_exec(*args, **kwargs):
+            argv = [a for a in args if isinstance(a, str)]
+            if argv and Path(argv[0]).name == "kiro-cli":
+                kiro_argvs.append(argv)
+                proc = AsyncMock()
+                proc.returncode = 0
+                proc.wait = AsyncMock(return_value=0)
+                proc.communicate = AsyncMock(return_value=(b"", b""))
+                return proc
+            return await _git_fake(*args, **kwargs)
+
+        with patch("kiro_crew.env.is_toolbox_install", return_value=False):
+            with patch.dict("os.environ", {"KIROCREW_PROJECT_DIR": "/tmp/proj"}):
+                with patch("asyncio.create_subprocess_exec", side_effect=_fake_exec):
+                    with patch("kiro_crew.dep_sync.sync_or_reinstall", return_value=0):
+                        with patch.object(
+                            GatewayOrchestrator, "_is_brazil_install", return_value=False
+                        ):
+                            with patch(
+                                "kiro_crew.slack.gateway.build_frontend_async",
+                                new_callable=AsyncMock,
+                            ):
+                                with patch("os.execv", side_effect=OSError("test")):
+                                    with patch(
+                                        "kiro_crew.slack.gateway.resolve_kiro_cli",
+                                        return_value="/opt/pinned/bin/kiro-cli",
+                                    ):
+                                        await orch._auto_apply_update()
+
+        assert kiro_argvs, "the kiro-cli update spawn never happened"
+        assert kiro_argvs[0][0] == "/opt/pinned/bin/kiro-cli"
+
+    @pytest.mark.asyncio
+    async def test_kiro_cli_update_resolves_without_inherited_path(self):
+        """The candidate set excludes the inherited `PATH`.
+
+        Pinning argv0 is not enough on its own: with the inherited `PATH` in
+        the candidate set, a leading agent-writable directory still gets to
+        name the binary this unattended path resolves to. Asserting the
+        keyword is what pins that — the default is `True`, so a call that
+        forgets it fails here.
+        """
+        orch = _make_orchestrator()
+        ds = _mock_dashboard_state()
+        orch.dashboard_state = ds
+        orch.sessions = _mock_sessions()
+
+        _git_fake = _git_exec_fake()
+
+        async def _fake_exec(*args, **kwargs):
+            argv = [a for a in args if isinstance(a, str)]
+            if argv and Path(argv[0]).name == "kiro-cli":
+                proc = AsyncMock()
+                proc.returncode = 0
+                proc.wait = AsyncMock(return_value=0)
+                proc.communicate = AsyncMock(return_value=(b"", b""))
+                return proc
+            return await _git_fake(*args, **kwargs)
+
+        with patch("kiro_crew.env.is_toolbox_install", return_value=False):
+            with patch.dict("os.environ", {"KIROCREW_PROJECT_DIR": "/tmp/proj"}):
+                with patch("asyncio.create_subprocess_exec", side_effect=_fake_exec):
+                    with patch("kiro_crew.dep_sync.sync_or_reinstall", return_value=0):
+                        with patch.object(
+                            GatewayOrchestrator, "_is_brazil_install", return_value=False
+                        ):
+                            with patch(
+                                "kiro_crew.slack.gateway.build_frontend_async",
+                                new_callable=AsyncMock,
+                            ):
+                                with patch("os.execv", side_effect=OSError("test")):
+                                    with patch(
+                                        "kiro_crew.slack.gateway.resolve_kiro_cli",
+                                        return_value="/opt/pinned/bin/kiro-cli",
+                                    ) as mock_resolve:
+                                        await orch._auto_apply_update()
+
+        # The pin excludes the inherited PATH; the second call is the probe that
+        # decides whether a PATH-only install is worth a log line.
+        assert mock_resolve.call_args_list[0].kwargs == {"include_inherited_path": False}
+
+    @pytest.mark.asyncio
+    async def test_kiro_cli_update_skipped_when_unresolvable(self):
+        """An unresolvable kiro-cli is SKIPPED, not exec'd by bare name.
+
+        Fail-closed, matching what the git path does when `trusted_git_bin`
+        returns `None`. The rest of the update is unaffected: this backend is
+        optional, so the frontend build and dependency install still run.
+        """
+        orch = _make_orchestrator()
+        ds = _mock_dashboard_state()
+        orch.dashboard_state = ds
+        orch.sessions = _mock_sessions()
+
+        _git_fake = _git_exec_fake()
+        kiro_argvs: list[list[str]] = []
+
+        async def _fake_exec(*args, **kwargs):
+            argv = [a for a in args if isinstance(a, str)]
+            if argv and Path(argv[0]).name == "kiro-cli":
+                kiro_argvs.append(argv)
+            return await _git_fake(*args, **kwargs)
+
+        with patch("kiro_crew.env.is_toolbox_install", return_value=False):
+            with patch.dict("os.environ", {"KIROCREW_PROJECT_DIR": "/tmp/proj"}):
+                with patch("asyncio.create_subprocess_exec", side_effect=_fake_exec):
+                    with patch(
+                        "kiro_crew.dep_sync.sync_or_reinstall", return_value=0
+                    ) as mock_install:
+                        with patch.object(
+                            GatewayOrchestrator, "_is_brazil_install", return_value=False
+                        ):
+                            with patch(
+                                "kiro_crew.slack.gateway.build_frontend_async",
+                                new_callable=AsyncMock,
+                            ) as mock_build:
+                                with patch("os.execv", side_effect=OSError("test")):
+                                    with patch(
+                                        "kiro_crew.slack.gateway.resolve_kiro_cli",
+                                        return_value=None,
+                                    ):
+                                        await orch._auto_apply_update()
+
+        assert kiro_argvs == []
         mock_build.assert_awaited_once()
         assert mock_install.call_count == 1
 
@@ -6027,8 +6175,11 @@ class TestCheckMissingDepsPip:
         proc.kill = MagicMock()
         proc.communicate = MagicMock(side_effect=_communicate)
         orch = _make_orchestrator()
-        with patch("asyncio.create_subprocess_exec", AsyncMock(return_value=proc)):
-            await orch._warn_if_kiro_cli_outdated()  # must not raise
+        with patch(
+            "kiro_crew.slack.gateway.resolve_kiro_cli", return_value="/opt/pinned/bin/kiro-cli"
+        ):
+            with patch("asyncio.create_subprocess_exec", AsyncMock(return_value=proc)):
+                await orch._warn_if_kiro_cli_outdated()  # must not raise
         proc.kill.assert_called_once()
 
     @pytest.mark.asyncio

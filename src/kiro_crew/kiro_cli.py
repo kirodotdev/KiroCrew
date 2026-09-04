@@ -258,8 +258,20 @@ def resolve_kiro_cli(
     platform_name: str | None = None,
     home: Path | None = None,
     environ: Mapping[str, str] | None = None,
+    include_inherited_path: bool = True,
 ) -> str | None:
-    """Return the first executable Kiro CLI candidate, if one exists."""
+    """Return the first executable Kiro CLI candidate, if one exists.
+
+    ``include_inherited_path=False`` forwards to
+    :func:`find_kiro_cli_candidates` and drops the inherited ``PATH`` from the
+    candidate set. What remains is the fixed known install directories plus the
+    explicit ``KIROCREW_KIRO_BIN`` override, which is deliberately still
+    honoured: it is set by the operator who starts the gateway, not named by a
+    directory an agent can plant a file in. Unattended callers pass the keyword
+    so a ``PATH`` leading with an agent-writable directory cannot choose what
+    they execute; interactive ones keep the default, where a nonstandard install
+    on ``PATH`` is a convenience rather than an exposure.
+    """
 
     resolved_platform = platform_name or sys.platform
     resolved_home = home or Path.home()
@@ -268,6 +280,6 @@ def resolve_kiro_cli(
         resolved_platform,
         resolved_home,
         resolved_environ,
-        include_inherited_path=True,
+        include_inherited_path=include_inherited_path,
     )
     return candidates[0] if candidates else None
