@@ -3447,6 +3447,120 @@ class TestAStoreThatRefusesToWriteIsReportedNotCrashed(unittest.IsolatedAsyncioT
 
         self.assertEqual(body["code"], "app_config_corrupt")
 
+    async def test_a_refused_ledger_post_is_a_coded_503_not_a_500(self):
+        """POST /ledger appends-or-rewrites under the ledger lock, so it can refuse.
+
+        The ledger trio (POST, DELETE, hygiene) was the last set of mutating routes in
+        this file still answering aiohttp's bare plain-text 500 on a refused write —
+        every sibling store write already reports ``{ok, error, code}``.
+        """
+        from kiro_crew.apps.builtins.ops_mission_control.backend import ledger
+
+        app = web.Application()
+        routes.register_routes(app)
+        with mock.patch.object(routes, "is_app_enabled", return_value=True):
+            with mock.patch.object(ledger, "upsert", self._refuse):
+                client = await self._client(app)
+                resp = await client.post(
+                    "/api/apps/ops-mission-control/ledger",
+                    json={"pattern": "disk full on host", "fix": "clear the spool"},
+                )
+                self.assertEqual(resp.status, 503)
+                body = await resp.json()
+
+        self.assertEqual(body["code"], "ledger_store_unwritable")
+        self.assertIs(body["ok"], False)
+
+    async def test_a_refused_ledger_delete_never_reports_success(self):
+        """Same property as the secret-revocation route: anything 2xx here is the bug.
+
+        A refused rewrite means the entry the operator just deleted is still on disk,
+        and the previous escape (bare 500) left them unable to tell that from a crash
+        after the write. The coded 503 says plainly: still there, retry.
+        """
+        from kiro_crew.apps.builtins.ops_mission_control.backend import ledger
+
+        app = web.Application()
+        routes.register_routes(app)
+        with mock.patch.object(routes, "is_app_enabled", return_value=True):
+            with mock.patch.object(ledger, "remove", self._refuse):
+                client = await self._client(app)
+                resp = await client.delete(
+                    "/api/apps/ops-mission-control/ledger?id=abc123",
+                )
+                self.assertEqual(resp.status, 503, "a refused removal answered as success")
+                body = await resp.json()
+
+        self.assertEqual(body["code"], "ledger_store_unwritable")
+        self.assertNotIn("removed", body, "the refusal must not claim a removal verdict")
+
+    async def test_a_failed_underlying_read_on_delete_is_a_503_not_a_404(self):
+        """The read half of the same fault, driven from below the handler.
+
+        ``remove`` starts from a read of the file it rewrites. When that READ was the
+        thing that failed, the lenient read collapsed it to ``[]`` and the route
+        answered a coded 404 — "no such entry" — about an entry still on disk, with no
+        failure audit. Found in review (GPT 5.6). With the mutation path on the strict
+        read, the same fault now surfaces as the identical retryable 503 the write
+        half answers, and the entry is not mis-reported as absent.
+        """
+        from kiro_crew.apps.builtins.ops_mission_control.backend import ledger
+
+        app = web.Application()
+        routes.register_routes(app)
+        with mock.patch.object(routes, "is_app_enabled", return_value=True):
+            with mock.patch.object(ledger, "read_entries_for_update", self._refuse):
+                client = await self._client(app)
+                resp = await client.delete(
+                    "/api/apps/ops-mission-control/ledger?id=abc123",
+                )
+                self.assertNotEqual(resp.status, 404, "a failed read was reported as absence")
+                self.assertEqual(resp.status, 503)
+                body = await resp.json()
+
+        self.assertEqual(body["code"], "ledger_store_unwritable")
+
+    async def test_a_refused_hygiene_rewrite_is_a_coded_503_and_audited(self):
+        """``hygiene`` rewrites the whole ledger; a refused rewrite must not push.
+
+        Also pins that the refusal is AUDITED as a failure: the success path writes a
+        ``ledger_hygiene`` audit line, and a refusal that skipped the audit would make
+        the maintenance pass look like it never ran rather than like it failed.
+        """
+        from kiro_crew.apps.builtins.ops_mission_control.backend import ledger, ledger_sync
+
+        directions: list[str] = []
+
+        async def _sync(*, direction="pull"):
+            directions.append(direction)
+            return ""
+
+        app = web.Application()
+        routes.register_routes(app)
+        with mock.patch.object(routes, "is_app_enabled", return_value=True):
+            with mock.patch.object(routes.rotation, "is_primary", return_value=True):
+                with mock.patch.object(ledger_sync, "sync_safely", _sync):
+                    with mock.patch.object(ledger, "hygiene", self._refuse):
+                        with mock.patch.object(routes, "_audit") as audited:
+                            client = await self._client(app)
+                            resp = await client.post(
+                                "/api/apps/ops-mission-control/ledger/hygiene"
+                            )
+                            self.assertEqual(resp.status, 503)
+                            body = await resp.json()
+
+        self.assertEqual(body["code"], "ledger_store_unwritable")
+        self.assertIs(body["ok"], False)
+        self.assertNotIn(
+            "push", directions, "a ledger the dedupe never committed to must not be pushed"
+        )
+        failures = [
+            c
+            for c in audited.call_args_list
+            if c.args[0] == "ledger_hygiene" and c.args[2] == "failure"
+        ]
+        self.assertEqual(len(failures), 1, "the refusal must be audited as a failure")
+
     async def test_a_claim_survives_a_failed_ledger_annotation(self):
         """The claim is committed before the annotation runs, so it must not be un-reported.
 

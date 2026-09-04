@@ -1420,6 +1420,38 @@ class TestLedger(_HomeIsolated):
         self.assertEqual(len(entries), 1)
         self.assertEqual(set(entries[0].fingerprints), {"a", "b"})
 
+    def test_a_failed_mutation_read_refuses_instead_of_truncating(self):
+        """Every read-modify-rewrite must refuse when it could not read what it rewrites.
+
+        The lenient ``read_entries`` answers a failed open with ``[]``, and each mutation
+        path then calls ``_write_all`` with what it read — so before the strict read, a
+        transient ``EACCES`` at hygiene time silently truncated the team's whole shared
+        ledger, ``remove`` answered "not found" about an entry still on disk, and
+        ``upsert`` re-created an entry instead of merging into it. Found in review
+        (GPT 5.6). The property pinned here is the refusal ORDER: the ``OSError``
+        escapes before any rewrite, so the file survives the fault untouched.
+        """
+        from unittest import mock
+
+        from kiro_crew.apps.builtins.ops_mission_control.backend import ledger, models
+
+        ledger.upsert(models.LedgerEntry.create(pattern="p", fix="f", fingerprints=["a"]))
+        refuse = mock.Mock(side_effect=PermissionError(13, "Permission denied"))
+        with mock.patch.object(ledger, "read_entries_for_update", refuse):
+            with self.assertRaises(OSError):
+                ledger.hygiene()
+            with self.assertRaises(OSError):
+                ledger.remove("any-id")
+            with self.assertRaises(OSError):
+                ledger.upsert(models.LedgerEntry.create(pattern="q", fix="g"))
+            with self.assertRaises(OSError):
+                ledger.record_use("any-id")
+            with self.assertRaises(OSError):
+                ledger.record_miss("any-id")
+        entries = ledger.read_entries()
+        self.assertEqual(len(entries), 1, "the ledger must survive a refused read intact")
+        self.assertEqual(entries[0].pattern, "p")
+
     def test_relearning_does_not_weaken_trust(self):
         from kiro_crew.apps.builtins.ops_mission_control.backend import ledger, models
 

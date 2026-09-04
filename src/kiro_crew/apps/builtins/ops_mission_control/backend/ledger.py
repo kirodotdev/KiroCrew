@@ -196,34 +196,58 @@ def read_entries() -> list[LedgerEntry]:
     and trust, highest use count), so a read after a merge agrees with what a local
     upsert of the same two entries would have produced. First occurrence keeps its
     position, so ordering stays stable for callers that rank by it.
+
+    Collapsing a FAILED read to ``[]`` is only safe for read-only callers (``match``,
+    ``stats``, the GET routes), where the worst outcome is an empty answer. A
+    read-modify-write that starts from this read must use ``read_entries_for_update``
+    instead: rewriting from the collapsed ``[]`` would truncate the whole ledger on a
+    transient ``EACCES``.
+    """
+    try:
+        return read_entries_for_update()
+    except OSError:
+        logger.exception("ops-mission-control: failed to read ledger")
+        return []
+
+
+def read_entries_for_update() -> list[LedgerEntry]:
+    """The mutation-path read: same parse and reconcile, but ``OSError`` PROPAGATES.
+
+    Every locked read → mutate → ``_write_all`` in this module must start here, not at
+    ``read_entries``. The lenient read answers a failed open with ``[]``, and each of
+    those callers then rewrites the file from what it read — so a transient read fault
+    became a silent full truncation of the team's shared ledger (``hygiene``), a
+    ``404`` claiming an entry never existed while it is still on disk (``remove``), or
+    a "new" entry replacing the merge it should have joined (``upsert``). Refusing is
+    the same posture the incident store's ``_read_index_for_update`` takes, and the
+    route handlers already translate the escape into their coded 503.
+
+    A malformed LINE is still skipped, deliberately: content-level damage is per-line
+    on a JSONL file, the surviving lines are real, and ``hygiene`` rewriting without
+    the broken line is repair. A failed OPEN says nothing about the content at all —
+    there is no partial result to preserve, only a file this process cannot see.
     """
     path = ledger_path()
     if not path.exists():
         return []
     ordered: list[str] = []
     by_id: dict[str, LedgerEntry] = {}
-    try:
-        with path.open("r", encoding="utf-8") as handle:
-            for line_no, line in enumerate(handle, start=1):
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    entry = LedgerEntry.from_dict(json.loads(line))
-                except (TypeError, ValueError):
-                    logger.warning(
-                        "ops-mission-control: skipping malformed ledger line %d", line_no
-                    )
-                    continue
-                prior = by_id.get(entry.entry_id)
-                if prior is None:
-                    ordered.append(entry.entry_id)
-                    by_id[entry.entry_id] = entry
-                else:
-                    by_id[entry.entry_id] = _reconcile(prior, entry)
-    except OSError:
-        logger.exception("ops-mission-control: failed to read ledger")
-        return []
+    with path.open("r", encoding="utf-8") as handle:
+        for line_no, line in enumerate(handle, start=1):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                entry = LedgerEntry.from_dict(json.loads(line))
+            except (TypeError, ValueError):
+                logger.warning("ops-mission-control: skipping malformed ledger line %d", line_no)
+                continue
+            prior = by_id.get(entry.entry_id)
+            if prior is None:
+                ordered.append(entry.entry_id)
+                by_id[entry.entry_id] = entry
+            else:
+                by_id[entry.entry_id] = _reconcile(prior, entry)
     return [by_id[eid] for eid in ordered]
 
 
@@ -306,7 +330,7 @@ def upsert(entry: LedgerEntry) -> LedgerEntry:
 
 
 def _upsert_locked(entry: LedgerEntry) -> LedgerEntry:
-    existing = {e.entry_id: e for e in read_entries()}
+    existing = {e.entry_id: e for e in read_entries_for_update()}
     prior = existing.get(entry.entry_id)
     if prior is None:
         _append(entry)
@@ -459,7 +483,7 @@ def record_use(entry_id: str, fingerprint: str = "", provider_key: str = "") -> 
 
 
 def _record_use_locked(entry_id: str, fingerprint: str, provider_key: str) -> LedgerEntry | None:
-    entries = read_entries()
+    entries = read_entries_for_update()
     changed = False
     hit: LedgerEntry | None = None
     for entry in entries:
@@ -509,7 +533,7 @@ def record_miss(entry_id: str) -> LedgerEntry | None:
 
 
 def _record_miss_locked(entry_id: str) -> LedgerEntry | None:
-    entries = read_entries()
+    entries = read_entries_for_update()
     hit: LedgerEntry | None = None
     for entry in entries:
         if entry.entry_id != entry_id:
@@ -532,7 +556,7 @@ def _record_miss_locked(entry_id: str) -> LedgerEntry | None:
 def remove(entry_id: str) -> bool:
     # Locked read-modify-write; see ``_LedgerLock``.
     with _LedgerLock():
-        entries = read_entries()
+        entries = read_entries_for_update()
         remaining = [e for e in entries if e.entry_id != entry_id]
         if len(remaining) == len(entries):
             return False
@@ -626,7 +650,7 @@ def hygiene(*, now: datetime | None = None) -> dict[str, int]:
 
 def _hygiene_locked(now: datetime | None) -> dict[str, int]:
     current = now or datetime.now(timezone.utc)
-    entries = read_entries()
+    entries = read_entries_for_update()
     before = len(entries)
 
     # Dedupe by content-addressed id, merging fingerprints and keeping the

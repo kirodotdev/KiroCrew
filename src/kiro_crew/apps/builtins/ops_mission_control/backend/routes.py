@@ -2337,7 +2337,24 @@ async def _handle_post_ledger(request: web.Request) -> web.StreamResponse:
         trust=str(body.get("trust", "observed")),
         source=str(body.get("source", "human")),
     )
-    stored = await asyncio.to_thread(ledger.upsert, entry)
+    try:
+        stored = await asyncio.to_thread(ledger.upsert, entry)
+    except OSError as exc:
+        # Reported, not raised — the same shape ``_handle_rotation_arm`` uses for a
+        # refusing store, and for the same reason its comment gives: escaping here
+        # becomes aiohttp's default 500, a plain-text body with no ``code`` for the
+        # UI to branch on. ``upsert`` appends or rewrites ``ledger.jsonl`` under the
+        # ledger lock, so a full disk or a permission fault surfaces as ``OSError``
+        # from either the lock acquisition or the write itself. 503 rather than 500
+        # because the condition is transient and retrying is the correct client
+        # behaviour. This was the last trio of mutating routes in this file (POST /
+        # DELETE /ledger and /ledger/hygiene) still answering the bare 500; every
+        # sibling store write already reports a coded refusal.
+        logger.warning("ops-mission-control: ledger write refused, store unwritable")
+        _audit("ledger_post", entry.entry_id, "failure", error="ledger store unwritable")
+        return web.json_response(
+            {"ok": False, "error": str(exc), "code": "ledger_store_unwritable"}, status=503
+        )
     return web.json_response({"entry": stored.to_dict()})
 
 
@@ -2367,7 +2384,11 @@ async def _handle_ledger_hygiene(request: web.Request) -> web.StreamResponse:
     Every stage is independently fault-tolerant. A missing remote, an offline network, a
     conflicted ledger, or an absent embedding model each degrade to a reported
     sub-result; none prevents the local dedupe/decay/prune from running, because local
-    hygiene is the part that always works and always matters.
+    hygiene is the part that always works and always matters. The one exception is the
+    hygiene rewrite itself: a refused read or write there answers a coded 503
+    (``ledger_store_unwritable``) and skips index, prune, and push, because publishing a
+    ledger the dedupe pass never committed to is worse than deferring everything to the
+    next cron run.
 
     **Only the primary instance may run it.** This pass PRUNES a shared ledger, and on a
     team every instance reaching it means N concurrent dedupe/decay/prune passes over one
@@ -2400,7 +2421,30 @@ async def _handle_ledger_hygiene(request: web.Request) -> web.StreamResponse:
         )
 
     pulled = await ledger_sync.sync_safely(direction="pull")
-    summary = await asyncio.to_thread(ledger.hygiene)
+    try:
+        summary = await asyncio.to_thread(ledger.hygiene)
+    except OSError as exc:
+        # ``hygiene`` is a locked read-modify-REWRITE of the whole ledger file, so a
+        # refused write (full disk, permissions, a failed lock) surfaces here as
+        # ``OSError``. Letting it escape gives aiohttp's default 500 — a plain-text
+        # body with no ``code`` — while every other refusal on this route (not
+        # primary, disabled app) answers coded JSON. The pull above already landed
+        # and is harmless to repeat; the push below must NOT run, because it would
+        # publish a ledger the dedupe pass never committed to. 503 rather than 500
+        # because the condition is transient and the cron's next run is the retry.
+        logger.warning("ops-mission-control: ledger hygiene refused, store unwritable")
+        _audit("ledger_hygiene", "rewrite refused", "failure", error="ledger store unwritable")
+        return web.json_response(
+            {
+                "ok": False,
+                "error": str(exc),
+                "code": "ledger_store_unwritable",
+                # The sibling refusal above (409 not_primary) carries this, and the
+                # hygiene SOP branches on ``changed`` to decide whether to speak at all.
+                "changed": False,
+            },
+            status=503,
+        )
     indexed = await asyncio.to_thread(_index_ledger_safely)
     # Retire old CLOSED incidents. Here rather than on the claim path because pruning is
     # maintenance: doing it in `claim` would make an ordinary claim occasionally pay for a
@@ -2481,7 +2525,19 @@ async def _handle_delete_ledger(request: web.Request) -> web.StreamResponse:
         return web.json_response(
             {"error": "id is required", "code": "missing_required_field"}, status=400
         )
-    removed = await asyncio.to_thread(ledger.remove, entry_id)
+    try:
+        removed = await asyncio.to_thread(ledger.remove, entry_id)
+    except OSError as exc:
+        # ``remove`` rewrites the ledger under its lock, so a refused write raises
+        # ``OSError``. The removal route needs the coded refusal for the same reason
+        # the secret-revocation route does: a bare 500 leaves the operator unsure
+        # whether the entry they just deleted is gone, and the honest answer is
+        # "still there, retry". Same shape as ``_handle_rotation_arm``.
+        logger.warning("ops-mission-control: ledger removal refused, store unwritable")
+        _audit("ledger_delete", entry_id, "failure", error="ledger store unwritable")
+        return web.json_response(
+            {"ok": False, "error": str(exc), "code": "ledger_store_unwritable"}, status=503
+        )
     if not removed:
         # Split from the success return rather than computing the status. A 404 IS an error
         # response and needs a `code` the localized UI can switch on; the previous single
