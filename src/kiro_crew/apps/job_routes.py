@@ -48,8 +48,8 @@ logger = logging.getLogger(__name__)
 
 Handler = Callable[[web.Request], Awaitable[web.StreamResponse]]
 
-#: What one store read returns, so ``_read_with_cancelling`` can pair a single
-#: record and a list of them with the same snapshot without losing the type.
+#: What one store read returns, so ``_read_with_snapshots`` can pair a single
+#: record and a list of them with the same snapshots without losing the type.
 _T = TypeVar("_T")
 
 #: Mounted under each app's own namespace.
@@ -92,7 +92,7 @@ def _safe(text: str) -> str:
         return text[:500]
 
 
-def _public_view(run: JobRun, cancelling: frozenset[str]) -> dict[str, Any]:
+def _public_view(run: JobRun, cancelling: frozenset[str], live: frozenset[str]) -> dict[str, Any]:
     """The record as the browser sees it.
 
     ``origin`` and ``pid`` are host facts with no client meaning, so they are
@@ -100,20 +100,31 @@ def _public_view(run: JobRun, cancelling: frozenset[str]) -> dict[str, Any]:
     caller- or runner-supplied payload to decide about, which is why there is no
     per-field withholding rule here any more.
 
-    ``cancelling`` is the one field NOT read off the record. It says a cancel has
-    been asked for and the worker has not reached the checkpoint where it records
-    the outcome, and it comes from the SDK's live table via ``cancelling_ids``
-    because ``cancel`` deliberately writes nothing -- see that method for why
-    persisting it would break the single-writer rule. ``cancelling`` is a
-    REQUIRED argument rather than a defaulted one so that a future caller cannot
-    quietly serve ``false`` by forgetting to pass it; a missing argument is a
-    type error at the call site instead of a wrong answer in the response.
+    ``cancelling`` is one of two fields NOT read off the record. It says a cancel
+    has been asked for and the worker has not reached the checkpoint where it
+    records the outcome, and it comes from the SDK's live table via
+    ``cancelling_and_live_ids`` because ``cancel`` deliberately writes nothing -- see that
+    method for why persisting it would break the single-writer rule.
+    ``cancelling`` is a REQUIRED argument rather than a defaulted one so that a
+    future caller cannot quietly serve ``false`` by forgetting to pass it; a
+    missing argument is a type error at the call site instead of a wrong answer
+    in the response.
 
-    A terminal run is never ``cancelling``. The worker writes the record before
-    ``_execute`` drops the live entry, so a read landing between those two would
-    otherwise report ``status: cancelled`` and ``cancelling: true`` together --
-    the cancel both finished and still pending. Once the status carries the
-    answer there is nothing left to be pending.
+    ``live`` is the other, from the same table via ``cancelling_and_live_ids``:
+    whether THIS gateway process holds the run in its live table -- claimed at
+    start, dropped after the terminal write. A durable record can carry
+    ``running`` with nothing owning it -- a terminal write that failed twice,
+    or a record minted by another gateway process -- and ``live`` is the only
+    signal that lets a client tell that stale record from real work; ``origin``
+    and ``pid`` stay withheld. It is REQUIRED for the same reason
+    ``cancelling`` is.
+
+    A terminal run is never ``cancelling`` and never ``live``. The worker
+    writes the record before ``_execute`` drops the live entry, so a read
+    landing between those two would otherwise report ``status: cancelled`` and
+    ``cancelling: true`` together -- the cancel both finished and still
+    pending -- or a finished run as still driven. Once the status carries the
+    answer there is nothing left to be pending or driven.
 
     ``interrupted_from`` and ``interrupt_cause`` are served for the reason they
     exist. They are not host facts -- they are the two facts a client needs to
@@ -128,6 +139,7 @@ def _public_view(run: JobRun, cancelling: frozenset[str]) -> dict[str, Any]:
         "status": run.status,
         "cancellable": run.cancellable,
         "cancelling": not run.is_terminal and run.run_id in cancelling,
+        "live": not run.is_terminal and run.run_id in live,
         "created_at": run.created_at,
         "updated_at": run.updated_at,
         "finished_at": run.finished_at,
@@ -137,25 +149,36 @@ def _public_view(run: JobRun, cancelling: frozenset[str]) -> dict[str, Any]:
     }
 
 
-def _read_with_cancelling(sdk: JobSDK, read: Callable[[], _T]) -> tuple[_T, frozenset[str]]:
-    """Run one store read and take the cancelling snapshot, in ONE off-loop hop.
+def _read_with_snapshots(
+    sdk: JobSDK, read: Callable[[], _T]
+) -> tuple[_T, frozenset[str], frozenset[str]]:
+    """Run one store read and take the cancelling + live snapshots, in ONE
+    off-loop hop.
 
-    Off the loop because ``cancelling_ids`` takes the SDK's lock and ``_persist``
-    holds that same lock across a disk write, so acquiring it on the loop could
-    park the gateway for the length of that write. The store read is already
-    off-loop work for the same reason, so pairing them adds no hop.
+    Off the loop because ``cancelling_and_live_ids`` takes the SDK's lock and
+    ``_persist`` holds that same lock across a disk write, so acquiring it on
+    the loop could park the gateway for the length of that write. The store
+    read is already off-loop work for the same reason, so pairing them adds no
+    hop.
 
     ONE snapshot per response, not one per row: a list endpoint would otherwise
     render each row against a different instant, so two rows could disagree about
-    a cancel that landed while the page was being built.
+    a cancel that landed while the page was being built. The two sets come from
+    ONE lock acquisition for the same reason: taken separately, a worker
+    finishing between them could serve ``cancelling: true`` and ``live: false``
+    together for a non-terminal record.
 
-    The record is read BEFORE the snapshot, deliberately. A cancel arriving
+    The record is read BEFORE the snapshots, deliberately. A cancel arriving
     between the two is then reported (a ``running`` record against a snapshot
     that has it) rather than missed, which is the direction that serves the user
     who just pressed the button. The reverse order would answer "not cancelling"
-    about a cancel that was already in.
+    about a cancel that was already in. The same order serves ``live``: a
+    worker finishing between the two reads ``live: false``, which is by then
+    the truth.
     """
-    return read(), sdk.cancelling_ids()
+    result = read()
+    cancelling, live = sdk.cancelling_and_live_ids()
+    return result, cancelling, live
 
 
 def _enabled_and_permitted(app_name: str) -> tuple[bool, bool]:
@@ -303,21 +326,23 @@ async def _handle_start(request: web.Request, app_name: str, sdk: JobSDK) -> web
         # aiohttp's default handler as a bare 500 carrying no machine-readable
         # code, which no client can switch on.
         return web.json_response({"error": _safe(str(exc)), "code": "job_start_failed"}, status=503)
-    run, cancelling = await asyncio.to_thread(_read_with_cancelling, sdk, lambda: sdk.get(run_id))
+    run, cancelling, live = await asyncio.to_thread(
+        _read_with_snapshots, sdk, lambda: sdk.get(run_id)
+    )
     if run is None:
         return web.json_response(
             {"error": "the run record could not be read back", "code": "run_unreadable"},
             status=500,
         )
-    return web.json_response({"run": _public_view(run, cancelling)})
+    return web.json_response({"run": _public_view(run, cancelling, live)})
 
 
 async def _handle_active(request: web.Request, app_name: str, sdk: JobSDK) -> web.StreamResponse:
     kind = request.query.get("kind", "")
-    runs, cancelling = await asyncio.to_thread(
-        _read_with_cancelling, sdk, lambda: sdk.list_active(kind)
+    runs, cancelling, live = await asyncio.to_thread(
+        _read_with_snapshots, sdk, lambda: sdk.list_active(kind)
     )
-    return web.json_response({"runs": [_public_view(r, cancelling) for r in runs]})
+    return web.json_response({"runs": [_public_view(r, cancelling, live) for r in runs]})
 
 
 async def _handle_recent(request: web.Request, app_name: str, sdk: JobSDK) -> web.StreamResponse:
@@ -330,23 +355,27 @@ async def _handle_recent(request: web.Request, app_name: str, sdk: JobSDK) -> we
             {"error": "limit must be an integer", "code": "invalid_limit"}, status=400
         )
     limit = max(1, min(limit, _RECENT_MAX))
-    runs, cancelling = await asyncio.to_thread(
-        _read_with_cancelling, sdk, lambda: sdk.list_recent(kind, limit)
+    runs, cancelling, live = await asyncio.to_thread(
+        _read_with_snapshots, sdk, lambda: sdk.list_recent(kind, limit)
     )
-    return web.json_response({"runs": [_public_view(r, cancelling) for r in runs]})
+    return web.json_response({"runs": [_public_view(r, cancelling, live) for r in runs]})
 
 
 async def _handle_get(request: web.Request, app_name: str, sdk: JobSDK) -> web.StreamResponse:
     run_id = request.match_info.get("run_id", "")
-    run, cancelling = await asyncio.to_thread(_read_with_cancelling, sdk, lambda: sdk.get(run_id))
+    run, cancelling, live = await asyncio.to_thread(
+        _read_with_snapshots, sdk, lambda: sdk.get(run_id)
+    )
     if run is None:
         return web.json_response({"error": "no such run", "code": "job_not_found"}, status=404)
-    return web.json_response({"run": _public_view(run, cancelling)})
+    return web.json_response({"run": _public_view(run, cancelling, live)})
 
 
 async def _handle_cancel(request: web.Request, app_name: str, sdk: JobSDK) -> web.StreamResponse:
     run_id = request.match_info.get("run_id", "")
-    run, cancelling = await asyncio.to_thread(_read_with_cancelling, sdk, lambda: sdk.get(run_id))
+    run, cancelling, live = await asyncio.to_thread(
+        _read_with_snapshots, sdk, lambda: sdk.get(run_id)
+    )
     if run is None:
         return web.json_response({"error": "no such run", "code": "job_not_found"}, status=404)
     accepted = await sdk.cancel_async(run_id)
@@ -358,7 +387,7 @@ async def _handle_cancel(request: web.Request, app_name: str, sdk: JobSDK) -> we
             {
                 "error": "this run cannot be cancelled",
                 "code": "job_not_cancellable",
-                "run": _public_view(run, cancelling),
+                "run": _public_view(run, cancelling, live),
             },
             status=409,
         )
@@ -367,8 +396,12 @@ async def _handle_cancel(request: web.Request, app_name: str, sdk: JobSDK) -> we
     # field inside ``run`` is what any later read of the record will now also
     # report, and the two legitimately differ once a fast worker has already
     # reached its checkpoint and recorded ``cancelled``.
-    fresh, cancelling = await asyncio.to_thread(_read_with_cancelling, sdk, lambda: sdk.get(run_id))
-    return web.json_response({"cancelling": True, "run": _public_view(fresh or run, cancelling)})
+    fresh, cancelling, live = await asyncio.to_thread(
+        _read_with_snapshots, sdk, lambda: sdk.get(run_id)
+    )
+    return web.json_response(
+        {"cancelling": True, "run": _public_view(fresh or run, cancelling, live)}
+    )
 
 
 # ── Registration ──

@@ -1749,8 +1749,8 @@ def _job_view(run: Any) -> dict[str, Any] | None:
     the full ``error``, while this one omits both cancel fields (the backup
     runners declare no cancellability, so they would be permanently false) and
     clamps ``error`` for the caption that renders it. ``_public_view`` also takes
-    a required ``cancelling`` set read from the SDK's live table, which this
-    endpoint has no reason to compute.
+    required ``cancelling`` and ``live`` sets read from the SDK's live table,
+    which this endpoint has no reason to compute.
 
     Sharing one projection between two endpoints with different contracts is how
     a field leaks into one because the other needed it -- and the field at stake

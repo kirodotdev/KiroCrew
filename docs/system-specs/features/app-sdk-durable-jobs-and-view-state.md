@@ -116,6 +116,21 @@ written from a process that does not own the work reports a run as ended when it
 has not ended. Dev Fleet's registry is the process-memory case (see "Dev Fleet
 runs"). `JobSDK` describes work that the gateway process itself executes.
 
+A durable `running` record and a process actually owning the work are therefore
+two separate facts, and the public view serves both.
+`JobSDK.cancelling_and_live_ids` returns the `cancelling` and `live` run id
+sets under a single lock acquisition, so the two fields describe one instant;
+`live` is live-table membership — claimed at start, dropped after the terminal
+write — the same authority that `cancel` and `reconcile` already consult
+(`src/kiro_crew/apps/job_sdk.py`, `JobSDK.cancelling_and_live_ids`).
+`_public_view` serves that as the boolean `live` field, computed at read time
+from memory — nothing new is persisted, and `origin` and `pid` stay withheld
+(`src/kiro_crew/apps/job_routes.py`, `_public_view`). A record whose terminal
+write failed twice and a record minted by another gateway process both read
+`live: false`, which is what lets an API consumer tell a stale `running`
+record from real work between the reconciliation passes that would eventually
+resolve it.
+
 ## View position is not an App SDK contract
 
 Builtin apps are mounted by the single-segment `/:builtinApp` route, and

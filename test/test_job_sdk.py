@@ -295,7 +295,7 @@ class TestCancellation:
 
 
 # ---------------------------------------------------------------------------
-# 5b. cancelling_ids — the read side of "cancel writes nothing"
+# 5b. the cancelling snapshot — the read side of "cancel writes nothing"
 # ---------------------------------------------------------------------------
 
 
@@ -325,11 +325,11 @@ class TestCancellingIds:
         try:
             assert started.wait(5.0)
             # Nothing has been asked for yet.
-            assert sdk.cancelling_ids() == frozenset()
+            assert sdk.cancelling_and_live_ids()[0] == frozenset()
             assert sdk.cancel(run_id) is True
             # Requested, and readable while the RECORD still says running --
             # which is exactly what a fresh mount has to be able to see.
-            assert run_id in sdk.cancelling_ids()
+            assert run_id in sdk.cancelling_and_live_ids()[0]
             record = sdk.get(run_id)
             assert record is not None and record.status == RUNNING
         finally:
@@ -340,7 +340,7 @@ class TestCancellingIds:
         assert run.status == CANCELLED
         # The worker recorded the outcome and the live entry is gone, so the
         # status now carries the answer and nothing is pending.
-        assert sdk.cancelling_ids() == frozenset()
+        assert sdk.cancelling_and_live_ids()[0] == frozenset()
 
     def test_a_refused_cancel_reports_nothing(self, sdk: JobSDK) -> None:
         """The snapshot follows the ACCEPTED request, not the attempt.
@@ -361,7 +361,7 @@ class TestCancellingIds:
         try:
             assert started.wait(5.0)
             assert sdk.cancel(run_id) is False
-            assert sdk.cancelling_ids() == frozenset()
+            assert sdk.cancelling_and_live_ids()[0] == frozenset()
         finally:
             release.set()
         run = _wait_terminal(sdk, run_id)
@@ -492,6 +492,87 @@ class TestReadViews:
         _wait_terminal(sdk, b_id)
         recent_a = sdk.list_recent(kind="a")
         assert [r.run_id for r in recent_a] == [a_id]
+
+
+class TestLiveness:
+    """A durable ``running`` record and a process owning the work are separate facts.
+
+    The ``live`` set answers from the same live-table membership that ``cancel``
+    and ``reconcile`` already treat as the authority, so a record whose terminal
+    write failed twice and a record minted by another gateway process must both
+    be absent from it — that is the whole signal.
+    """
+
+    def test_live_while_a_registered_thread_runs(self, sdk: JobSDK) -> None:
+        started = threading.Event()
+        release = threading.Event()
+
+        def runner(h, **kw):
+            started.set()
+            release.wait(5.0)
+            return {}
+
+        sdk.register("slow", runner)
+        run_id = sdk.start("slow")
+        try:
+            assert started.wait(5.0)
+            _, live = sdk.cancelling_and_live_ids()
+            assert run_id in live
+        finally:
+            release.set()
+        _wait_terminal(sdk, run_id)
+        # The worker recorded the outcome and the live entry is gone.
+        assert sdk.cancelling_and_live_ids() == (frozenset(), frozenset())
+
+    def test_stale_running_record_is_not_live(self, sdk: JobSDK) -> None:
+        """The issue case: a durable record says ``running``, nothing owns it.
+
+        Written raw with a foreign origin — the shape a record from another
+        gateway process has, and the same shape a twice-failed terminal write
+        leaves behind (a ``running`` record with no live entry). No thread was
+        ever registered for it in this process, so liveness must deny it.
+        """
+        run = JobRun(
+            run_id="e" * 32,
+            app="test-app",
+            kind="work",
+            status=RUNNING,
+            origin="foreign-origin-token",
+        )
+        store = sdk.store
+        store.dir.mkdir(parents=True, exist_ok=True)
+        (store.dir / f"{run.run_id}.json").write_text(json.dumps(run.to_dict()))
+        assert sdk.get(run.run_id) is not None  # durably present…
+        _, live = sdk.cancelling_and_live_ids()
+        assert run.run_id not in live  # …but nothing owns it
+
+    def test_one_snapshot_keeps_cancelling_within_live(self, sdk: JobSDK) -> None:
+        """The two sets describe ONE instant, so cancelling ⊆ live holds.
+
+        Both are derived from the live table under a single lock acquisition;
+        taken as two separate snapshots a worker finishing between them could
+        report a cancel pending on a run nothing owns.
+        """
+        started = threading.Event()
+        release = threading.Event()
+
+        def runner(h, **kw):
+            started.set()
+            release.wait(5.0)
+            return {}
+
+        sdk.register("slow", runner, cancellable=True)
+        run_id = sdk.start("slow")
+        try:
+            assert started.wait(5.0)
+            assert sdk.cancel(run_id) is True
+            cancelling, live = sdk.cancelling_and_live_ids()
+            assert run_id in cancelling
+            assert run_id in live
+            assert cancelling <= live
+        finally:
+            release.set()
+        _wait_terminal(sdk, run_id)
 
 
 # ---------------------------------------------------------------------------

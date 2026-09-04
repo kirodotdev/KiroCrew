@@ -41,7 +41,7 @@ BEFORE handing off, the worker thread is the sole writer from then on, and
 the outcome at its next checkpoint). Reconciliation writes only records from a
 process that is already gone. A requested cancel still has to be visible to a
 reader before that checkpoint arrives, so it is DERIVED on read from the live
-table -- ``cancelling_ids`` -- rather than written down. Reading it costs nothing
+table -- ``cancelling_and_live_ids`` -- rather than written down. Reading it costs nothing
 the rule protects; writing it would cost the rule.
 
 **Claiming a run and LAUNCHING it are separate, and the interval between them is
@@ -1230,6 +1230,57 @@ class JobSDK:
         runs.sort(key=lambda r: (r.updated_at, r.created_at), reverse=True)
         return runs[: max(0, limit)]
 
+    def cancelling_and_live_ids(self) -> tuple[frozenset[str], frozenset[str]]:
+        """One-acquisition snapshot of the ``(cancelling, live)`` run id sets.
+
+        ``live`` is live-table membership: whether THIS process holds the run
+        -- claimed at ``start`` just before the record is persisted and the
+        worker thread launched, dropped only after the terminal write lands.
+        That ownership reading is deliberate: it is the same authority
+        :meth:`cancel` and :meth:`reconcile` already consult (``reconcile``
+        spares exactly the runs reported live here). A durable record can say
+        ``running`` while nothing owns it -- a terminal write that failed
+        twice, or a record minted by another gateway process -- and both are
+        absent from ``live``, which is what distinguishes a stale record from
+        work this process is executing. Derived from memory at read time;
+        nothing new is persisted, so it stays correct under any later
+        heartbeat or lease design layered on top.
+
+        ``cancelling`` is the read side of :meth:`cancel`'s "writes nothing".
+        A requested cancel has to outlive the tab that asked -- that is the
+        whole point of the SDK -- but persisting it from ``cancel`` would make
+        a second writer on that run's file, and one-writer-per-run is what
+        keeps ``atomic_write``'s crash-safety from silently dropping the loser
+        of a concurrent update. So the fact is DERIVED from the live table on
+        read instead. The window it covers is the gap between the request and
+        the worker's next checkpoint, and it closes on its own: the worker
+        records ``cancelled`` and ``_execute`` drops the entry, after which
+        the status carries the answer. Deliberately NOT durable across a
+        restart: a restarted gateway has no live table, and ``reconcile`` has
+        already resolved the run to ``interrupted`` -- there is no pending
+        cancel left to report.
+
+        Both sets come from a SINGLE lock acquisition so a response renders
+        them from one instant. Taken as two separate snapshots, a worker
+        finishing between the acquisitions could serve ``cancelling: true``
+        and ``live: false`` together for a non-terminal record -- a cancel
+        pending on a run nothing owns. Within one snapshot ``cancelling`` is a
+        subset of ``live`` by construction, and one acquisition serves a whole
+        response, so a list endpoint renders every row from ONE snapshot
+        rather than N of them.
+
+        Call OFF the event loop: ``_persist`` holds this same lock across a
+        disk write, so taking it on the loop can park the gateway for the
+        length of that write.
+        """
+        with self._lock:
+            return (
+                frozenset(
+                    run_id for run_id, live in self._live.items() if live.handle.cancelled.is_set()
+                ),
+                frozenset(self._live),
+            )
+
     # ── Cancel ──
 
     def cancel(self, run_id: str) -> bool:
@@ -1255,38 +1306,6 @@ class JobSDK:
         """Loop-native :meth:`cancel`. Present so an on-loop caller does not
         have to know which methods happen to touch the disk."""
         return await asyncio.to_thread(self.cancel, run_id)
-
-    def cancelling_ids(self) -> frozenset[str]:
-        """Run ids whose cancel has been asked for and not yet recorded.
-
-        The read side of :meth:`cancel`'s "writes nothing". A requested cancel
-        has to outlive the tab that asked -- that is the whole point of the SDK --
-        but persisting it from ``cancel`` would make a second writer on that
-        run's file, and one-writer-per-run is what keeps ``atomic_write``'s
-        crash-safety from silently dropping the loser of a concurrent update. So
-        the fact is DERIVED from the live table on read instead, the same way
-        :meth:`reconcile` already derives liveness from it. Nothing new is
-        written and the single-writer rule is untouched.
-
-        The window this covers is the gap between the request and the worker's
-        next checkpoint, which for a runner that checkpoints minutes apart is
-        minutes. It closes on its own: the worker records ``cancelled`` and
-        ``_execute`` drops the entry, after which this returns nothing for that
-        run and the status carries the answer.
-
-        Deliberately NOT durable across a restart. A restarted gateway has no
-        live table, and ``reconcile`` has already resolved the run to
-        ``interrupted`` -- there is no pending cancel left to report.
-
-        Call OFF the event loop. ``_persist`` holds this same lock across a disk
-        write, so taking it on the loop can park the gateway for the length of
-        that write. One acquisition serves a whole response, so a list endpoint
-        renders every row from ONE snapshot rather than from N of them.
-        """
-        with self._lock:
-            return frozenset(
-                run_id for run_id, live in self._live.items() if live.handle.cancelled.is_set()
-            )
 
     # ── Reconciliation ──
 

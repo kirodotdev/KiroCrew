@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import json
 import threading
 import time
 from pathlib import Path
@@ -656,6 +657,104 @@ async def test_a_recorded_cancel_is_no_longer_cancelling(
         assert run["cancelling"] is False
     finally:
         release.set()
+
+
+# ---------------------------------------------------------------------------
+# 9b: the live field — a durable record vs a worker actually driving it
+# ---------------------------------------------------------------------------
+
+
+def _write_raw_running(sdk: JobSDK, run_id: str, kind: str = "slow") -> js.JobRun:
+    """Persist a ``running`` record no thread in this process is driving.
+
+    The shape a record from another gateway process has, and the same shape a
+    twice-failed terminal write leaves behind: durable, non-terminal, absent
+    from the live table. Written raw because going through ``start`` would
+    register exactly the live entry whose absence is the subject.
+    """
+    run = js.JobRun(
+        run_id=run_id,
+        app=APP,
+        kind=kind,
+        status=js.RUNNING,
+        origin="foreign-origin-token",
+    )
+    store = sdk.store
+    store.dir.mkdir(parents=True, exist_ok=True)
+    (store.dir / f"{run.run_id}.json").write_text(json.dumps(run.to_dict()))
+    return run
+
+
+@pytest.mark.asyncio
+async def test_a_driven_run_reads_live_true_then_false_once_finished(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, sdk: JobSDK
+) -> None:
+    """``live`` follows the worker, not the record.
+
+    While a registered thread drives the run the view says so; once the run is
+    terminal the same read says false — the work is done, nothing is driven.
+    """
+    _setup_guards(tmp_path, monkeypatch)
+    started, release = _parked_cancellable(sdk)
+    rid = sdk.start("slow")
+    try:
+        assert started.wait(timeout=_DEADLINE), "runner never started"
+        await _wait_status(sdk, rid, js.RUNNING)
+        async with TestClient(TestServer(_make_app())) as client:
+            run = (await (await client.get(f"{_base()}/{rid}")).json())["run"]
+            assert run["live"] is True
+            assert run["status"] == js.RUNNING
+            release.set()
+            await _wait_terminal(sdk, rid)
+            done = (await (await client.get(f"{_base()}/{rid}")).json())["run"]
+        assert done["live"] is False
+    finally:
+        release.set()
+
+
+@pytest.mark.asyncio
+async def test_a_stale_running_record_reads_live_false(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, sdk: JobSDK
+) -> None:
+    """The issue case: ``running`` on disk, nothing driving it.
+
+    Before ``live`` existed this record was indistinguishable from real work —
+    ``origin`` and ``pid`` are withheld, so status and timestamps were all a
+    client had. The field is the one signal that tells them apart.
+    """
+    _setup_guards(tmp_path, monkeypatch)
+    stale = _write_raw_running(sdk, "e" * 32)
+    async with TestClient(TestServer(_make_app())) as client:
+        resp = await client.get(f"{_base()}/{stale.run_id}")
+        assert resp.status == 200
+        run = (await resp.json())["run"]
+    assert run["status"] == js.RUNNING  # the record still claims work…
+    assert run["live"] is False  # …and the view says nothing drives it
+
+
+@pytest.mark.asyncio
+async def test_active_list_tells_a_live_run_from_a_stale_one(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, sdk: JobSDK
+) -> None:
+    """``active`` filters on terminal status alone, so a stale-running record
+    lists as active forever — the field must let a consumer tell the two rows
+    apart within one response."""
+    _setup_guards(tmp_path, monkeypatch)
+    stale = _write_raw_running(sdk, "d" * 32)
+    started, release = _parked_cancellable(sdk)
+    rid = sdk.start("slow")
+    try:
+        assert started.wait(timeout=_DEADLINE), "runner never started"
+        await _wait_status(sdk, rid, js.RUNNING)
+        async with TestClient(TestServer(_make_app())) as client:
+            resp = await client.get(f"{_base()}/active")
+            assert resp.status == 200
+            runs = {r["run_id"]: r for r in (await resp.json())["runs"]}
+        assert runs[rid]["live"] is True
+        assert runs[stale.run_id]["live"] is False
+    finally:
+        release.set()
+    await _wait_terminal(sdk, rid)
 
 
 # ---------------------------------------------------------------------------
