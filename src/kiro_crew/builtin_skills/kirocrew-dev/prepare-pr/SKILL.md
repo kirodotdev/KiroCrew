@@ -311,6 +311,32 @@ three in hand, do not push onto a SHA whose checks are green.
 pending head. Superseded runs also *hide* real reds: a genuine failure can live
 inside a run whose conclusion reads `cancelled`.
 
+**Once you have decided to change code, cancel the old head's in-flight runs
+BEFORE you start editing.** Harvest everything you need from them first — the
+failing log, each reviewer lane's verdict — then kill every `queued` /
+`in_progress` run on that SHA. A local fix routinely takes tens of minutes, and
+every one of those runs spends that whole time on a commit you have already
+condemned. The order is read → cancel → edit: a cancelled run's already-written
+logs stay readable, but a cancelled reviewer lane never posts its verdict, so
+anything you still need must be in hand before the cancel.
+
+```bash
+OLD_SHA=$(gh pr view <pr#> --repo <owner>/<repo> --json headRefOid --jq .headRefOid)
+gh api "repos/<owner>/<repo>/actions/runs?head_sha=$OLD_SHA&per_page=100" \
+  --jq '.workflow_runs[] | select(.status=="queued" or .status=="in_progress") | .id' \
+  | while read -r run_id; do gh run cancel "$run_id" --repo <owner>/<repo>; done
+```
+
+Read `OLD_SHA` from the PR rather than reusing a shell variable from an earlier
+step — an unset one silently queries `head_sha=` and cancels nothing. The
+`while read` loop is deliberate: it is a no-op on empty input and, unlike
+`xargs -r`, works on macOS, whose BSD `xargs` has no `-r`.
+
+Two things this rule does NOT cover: a lane whose verdict you are still waiting on
+in order to decide *whether* to fix (leave it running — cancel is for after the
+decision), and a red you classified as a flake (that job gets a targeted
+`gh run rerun <run-id> --failed`, not a kill and not a whole-matrix replay).
+
 1. **Push only the reviewed commit.** Require a clean index/worktree and fail closed unless `[ "$(git rev-parse HEAD)" = "$REVIEWED_SHA" ]`; any intervening mutation returns to Phase 2. Run the post-squash structural guard (`single_commit` only — see the profile section): `python3 $SKILL_DIR/scripts/push_guard.py --base <base> --require-single-on-base` — **0** safe, **40** the squash landed on a stale ref or the branch carries unexpected history (do NOT push), **2** env error.
 
    **SHA-pinned force-with-lease protocol.** Record `LEASE_SHA=$(git rev-parse origin/<branch>)` at iteration start, BEFORE Phase 1's fetch. **When `origin/<branch>` does not exist yet (first push), `LEASE_SHA` is empty — SKIP the clobber check entirely and push with `git push -u origin <branch>`.** Running it anyway fails merely because the ref is absent, which the next rule would misread as a maintainer commit and stop the first push forever. Otherwise run the clobber check against the pre-squash HEAD: `git merge-base --is-ancestor origin/<branch> HEAD` — if it fails, a maintainer commit exists on the remote that local history never had; STOP, re-sync, re-include it before any rewrite. Do **not** re-run that check after the squash: it can never pass on a rewritten branch, and the SHA-pinned lease is the at-push protection. Then `git push -u origin <branch>` (first push) or `git push --force-with-lease=<branch>:$LEASE_SHA origin <branch>`.
@@ -342,7 +368,7 @@ inside a run whose conclusion reads `cancelled`.
    and Phase 4 can arm auto-merge on a review that never happened.
 
    - **0** → Phase 4.
-   - **20** → run `pr_findings.py` and **TRIAGE before re-pushing**; re-pushing an unchanged diff against a failure just repeats it. **(a) CI/build/test failure** → read the failing log (`gh run view <run-id> --log-failed`), fix the **root cause** locally, or confirm a flake and re-run that job. **(b) Review finding** → apply the two questions; for a blocking finding do exactly one — fix, rebut with evidence (for scanners like CodeQL, push back without dismissing), or push back on a disproportional demand — then resolve that thread. **(c) Conflict / behind base** → Phase 1's re-sync handles it. Then **loop back to Phase 1** → 2 → 3 carrying those fixes.
+   - **20** → run `pr_findings.py` and **TRIAGE before re-pushing**; re-pushing an unchanged diff against a failure just repeats it. **(a) CI/build/test failure** → read the failing log (`gh run view <run-id> --log-failed`), then — once the decision to fix is made — cancel the head's remaining in-flight runs per Phase 3's read → cancel → edit rule, and fix the **root cause** locally; or confirm a flake and re-run **only the failing job**, never the whole run — `gh run rerun <run-id> --failed` (or `--job <job-id>` for one of several reds), since a bare `gh run rerun <run-id>` replays the entire matrix to re-decide one shard, and no cancel applies here. **(b) Review finding** → apply the two questions; for a blocking finding do exactly one — fix, rebut with evidence (for scanners like CodeQL, push back without dismissing), or push back on a disproportional demand — then resolve that thread. **(c) Conflict / behind base** → Phase 1's re-sync handles it. Then **loop back to Phase 1** → 2 → 3 carrying those fixes.
    - **10** → **arm `monitor_start` and END THE TURN.** Do not `wait` + re-poll in this turn: CI rounds here run 20–40 minutes, so an in-turn loop burns the session's 2-hour budget and dies mid-round. `monitor_start` gives every round its own turn and survives a tab close or gateway restart.
 
      **Before the call, settle two things.** (a) With MCP Tool Search active the
