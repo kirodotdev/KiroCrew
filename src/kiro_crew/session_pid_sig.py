@@ -13,7 +13,10 @@ authorization boundary. This module makes the mapping authenticated:
 
 * :func:`publish_session_pid` — the ONLY legitimate write path (gateway-side).
   Writes the ``.txt`` file plus a ``session_pid_<pid>.sig`` sidecar containing
-  an HMAC-SHA256 over ``"<pid>:<session_key>"``, keyed with a subkey **derived
+  an HMAC-SHA256 over ``"<pid>:<body>"`` — *body* being the full published
+  ``.txt`` content: the session key alone (legacy), or the session key plus a
+  second line carrying the process START TOKEN (PID-recycle guard, issue
+  #8343; see below). The MAC is keyed with a subkey **derived
   from** the SEL trust root (``sel_hmac.key`` — the same key that makes the
   security event log tamper-evident, and whose reads are deny-listed for agent
   shells in ``security.py``) via a domain-separation label. The raw root key
@@ -22,6 +25,17 @@ authorization boundary. This module makes the mapping authenticated:
 * :func:`verify_session_pid` — used by STRICT identity resolvers
   (state-mutating MCP tools). Returns the session key only when the sidecar
   verifies; missing/invalid signature fails closed to ``""``.
+
+PID-recycle guard (issue #8343): the mapping and its MAC used to bind only
+the pid NUMBER, so once the OS recycled the pid the mapping still verified
+and answered for the NEW process with the previous owner's session key until
+the next restart's orphan sweep. Publication now records the process
+incarnation (``platform_compat.get_process_start_id`` — the same identity
+``session_pid.py`` writes into its ``<gw>:<pid>:<start_token>`` sweep
+records) and BOTH readers refuse on a proven mismatch, while an absent
+(legacy file) or unreadable (Windows) token stays "unknown", never a
+mismatch. Same-uid only: this is a robustness/misattribution guard, not a
+privilege boundary — the recycled process already runs as the same user.
 
 Why forgery dies: an agent cannot read ``sel_hmac.key`` (deny-listed), so it
 cannot produce a valid sidecar for a forged ``.txt``. Replaying another pid's
@@ -79,6 +93,7 @@ import stat
 import threading
 from pathlib import Path
 
+from kiro_crew import platform_compat
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.paths import config_dir
 from kiro_crew.sel import _sel_hmac_key_bytes, sel_hmac_key_path
@@ -276,11 +291,63 @@ def _derive_subkey(root: bytes) -> bytes:
     return hmac.new(root, _SUBKEY_DOMAIN, hashlib.sha256).digest()
 
 
-def _compute_sig(key: bytes, pid: int | str, session_key: str) -> str:
+def _compute_sig(key: bytes, pid: int | str, payload: str) -> str:
+    """MAC over ``"<pid>:<payload>"``, *payload* being the canonical ``.txt``
+    body: the bare session key (legacy) or ``"<session_key>\\n<start_token>"``
+    (recycle-guarded — see :func:`publish_session_pid`). Binding the pid
+    blocks cross-pid replay; covering the whole body means the start token,
+    when present, is signed — flipping only the token invalidates the MAC.
+    A legacy body produces a byte-identical message to the pre-token scheme,
+    so every signed mapping written before the format change still verifies.
+    """
     subkey = _derive_subkey(key)
     return hmac.new(
-        subkey, f"{pid}:{session_key}".encode("utf-8"), hashlib.sha256
+        subkey, f"{pid}:{payload}".encode("utf-8"), hashlib.sha256
     ).hexdigest()
+
+
+def _parse_mapping_body(raw: str) -> tuple[str, str | None] | None:
+    """Split a ``.txt`` body into ``(session_key, start_token)``.
+
+    Dual-parse, following ``session_pid.py``'s legacy-vs-guarded record
+    handling (``<gw>:<pid>`` vs ``<gw>:<pid>:<start_token>``): one line is
+    the legacy pre-token form (token ``None``); two lines are
+    ``<session_key>\\n<start_token>``. The token rides a second LINE rather
+    than a colon field because — unlike that record's integer fields — the
+    session key itself contains colons (``dashboard:chat-7-...``), so a
+    colon split could not tell a legacy key from a key+token pair. Anything
+    else was never written by :func:`publish_session_pid` — refuse
+    (``None``) rather than guess a parse.
+    """
+    lines = raw.strip().split("\n")
+    if len(lines) == 1:
+        session_key = lines[0].strip()
+        return (session_key, None) if session_key else None
+    if len(lines) == 2:
+        session_key, token = lines[0].strip(), lines[1].strip()
+        return (session_key, token) if session_key and token else None
+    return None
+
+
+def _pid_recycled(pid: int | str, recorded_token: str) -> bool:
+    """True iff *pid*'s LIVE start token is readable and differs from
+    *recorded_token* — positive evidence the pid number was recycled to a
+    different process since the mapping was published.
+
+    The asymmetry here is the whole correctness argument (mirroring the
+    sweep guard around ``session_pid.py``'s ``_pid_start_token``): a
+    MISMATCH proves the pid now names a DIFFERENT process, so answering
+    with the mapped key would attribute the new process to the previous
+    owner's session — refuse, on the strict AND the lenient path. An
+    UNREADABLE live token (Windows, exited process, permission) is merely
+    UNKNOWN, never a mismatch — callers keep today's behaviour there, as
+    they do for an ABSENT recorded token (legacy file).
+    """
+    try:
+        live = platform_compat.get_process_start_id(int(pid))
+    except (TypeError, ValueError):
+        return False  # unparseable pid — identity unknown, not a mismatch
+    return live is not None and live != recorded_token
 
 
 def publish_session_pid(pid: int, session_key: str) -> None:
@@ -300,9 +367,27 @@ def publish_session_pid(pid: int, session_key: str) -> None:
     ``session_pid_<pid>.txt``/``.sig`` pointing at an arbitrary writable
     file — an in-place open would follow it and truncate the target.
     ``os.replace`` swaps the symlink itself out instead of following it.
+
+    PID-recycle guard (issue #8343): when the live process's start token is
+    readable (``platform_compat.get_process_start_id`` — the same
+    incarnation identity ``session_pid.py`` records in its
+    ``<gw>:<pid>:<start_token>`` sweep entries), it is appended to the
+    ``.txt`` as a second line and covered by the MAC, so readers can tell
+    "still the process this mapping was published for" from "the OS
+    recycled this pid number". An unreadable token (Windows, probe failure)
+    degrades to the legacy single-line form — readers then treat identity
+    as unknown, exactly as for a pre-change file.
     """
     cfg = config_dir()
-    atomic_write(_txt_path(pid, cfg), session_key)
+    token = platform_compat.get_process_start_id(pid)
+    # The "\n" guard keeps a pathological multi-line session key (never
+    # produced by any surface — keys are single-line ``surface:slot`` shapes)
+    # from aliasing the legacy and token-bearing forms under one MAC.
+    if token and "\n" not in session_key:
+        body = f"{session_key}\n{token}"
+    else:
+        body = session_key
+    atomic_write(_txt_path(pid, cfg), body)
     key = _load_hmac_key()
     if key is None:
         _report_signing_unavailable()
@@ -311,7 +396,7 @@ def publish_session_pid(pid: int, session_key: str) -> None:
         except OSError:
             pass
         return
-    atomic_write(_sig_path(pid, cfg), _compute_sig(key, pid, session_key))
+    atomic_write(_sig_path(pid, cfg), _compute_sig(key, pid, body))
 
 
 # Upper bound for mapping-file reads. Session keys are short strings
@@ -402,9 +487,26 @@ def read_session_pid_txt(pid: int | str, cfg: Path | None = None) -> str:
     *cfg* overrides the mapping directory (callers that already resolved
     ``config_dir()`` pass it through); defaults to :func:`config_dir`.
     Returns ``""`` on any refusal or I/O error. Never raises.
+
+    A PROVEN pid-recycle (recorded start token present and the live token
+    readable but different — see :func:`_pid_recycled`) refuses on this
+    lenient path too, deliberately: several call sites try
+    :func:`verify_session_pid` first and fall back here (``peer_resolve``),
+    so a mismatch surfaced only from the strict path would be silently
+    recovered by the fallback and the stale attribution kept. A mismatch is
+    positive evidence of a wrong owner — unlike an absent or unreadable
+    token, which is merely unknown and resolves as before.
     """
     txt = _read_regular_nofollow(_txt_path(pid, cfg if cfg is not None else config_dir()))
-    return txt.strip() if txt is not None else ""
+    if txt is None:
+        return ""
+    parsed = _parse_mapping_body(txt)
+    if parsed is None:
+        return ""
+    session_key, token = parsed
+    if token is not None and _pid_recycled(pid, token):
+        return ""
+    return session_key
 
 
 def verify_session_pid(pid: int | str, cfg: Path | None = None) -> str:
@@ -423,10 +525,11 @@ def verify_session_pid(pid: int | str, cfg: Path | None = None) -> str:
     sig_raw = _read_regular_nofollow(_sig_path(pid, cfg))
     if txt is None or sig_raw is None:
         return ""
-    session_key = txt.strip()
+    parsed = _parse_mapping_body(txt)
     sig = sig_raw.strip()
-    if not session_key or not sig:
+    if parsed is None or not sig:
         return ""
+    session_key, token = parsed
     key = _load_hmac_key()
     if key is None:
         # Distinguishable from the MAC-mismatch warning below: this branch
@@ -446,11 +549,25 @@ def verify_session_pid(pid: int | str, cfg: Path | None = None) -> str:
             pid,
         )
         return ""
-    expected = _compute_sig(key, pid, session_key)
+    # Recompute over the canonical body: legacy files (no token) produce the
+    # exact pre-change message, so existing signed mappings keep verifying.
+    payload = session_key if token is None else f"{session_key}\n{token}"
+    expected = _compute_sig(key, pid, payload)
     if not hmac.compare_digest(expected, sig):
         logger.warning(
             "session_pid_%s signature mismatch — refusing identity "
             "(possible forgery or stale sidecar)",
+            pid,
+        )
+        return ""
+    # Recycle check AFTER the MAC: the recorded token is only meaningful
+    # once the signature proves it is the one the publisher wrote. Mismatch
+    # = the pid was recycled → refuse; absent/unreadable = unknown → resolve
+    # (see _pid_recycled for why the asymmetry is load-bearing).
+    if token is not None and _pid_recycled(pid, token):
+        logger.warning(
+            "session_pid_%s start-token mismatch — pid was recycled; "
+            "refusing the previous owner's session identity",
             pid,
         )
         return ""

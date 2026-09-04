@@ -1023,8 +1023,27 @@ Because the `.txt` lives in the same-uid agent-writable config dir it is NOT
 a trust root on its own; publication therefore also writes a
 `session_pid_<pid>.sig` sidecar:
 
-- **MAC**: HMAC-SHA256 over `"<pid>:<session_key>"` — the pid is bound into
-  the MAC so one pid's pair cannot be replayed under another pid.
+- **MAC**: HMAC-SHA256 over `"<pid>:<body>"`, where *body* is the full
+  published `.txt` content — the session key alone (legacy), or
+  `"<session_key>\n<start_token>"` (recycle-guarded, below). The pid is bound
+  into the MAC so one pid's pair cannot be replayed under another pid, and
+  covering the whole body signs the start token too — flipping only the token
+  invalidates the MAC. A legacy body yields a byte-identical message to the
+  pre-token scheme, so mappings signed before the format change still verify.
+- **PID-recycle guard** (issue #8343): the mapping used to bind only the pid
+  *number*, so a recycled pid kept verifying and answered for the new
+  process with the previous owner's session key until the next restart's
+  orphan sweep. Publication now appends the process start token
+  (`platform_compat.get_process_start_id` — the same incarnation identity
+  `session_pid.py` records in its `<gw>:<pid>:<start_token>` sweep entries)
+  as a second line of the `.txt` (a line, not a colon field, because the
+  session key itself contains colons). Both readers dual-parse legacy
+  vs guarded forms and refuse on a PROVEN mismatch — the lenient reader
+  included, since strict-then-lenient fallbacks (`peer_resolve`) would
+  otherwise silently recover the stale attribution. An absent recorded
+  token (legacy file) or an unreadable live token (Windows, exited process)
+  is unknown, never a mismatch — those resolve as before. Same-uid only:
+  a robustness/misattribution guard, not a privilege boundary.
 - **Key**: a purpose-specific subkey derived from the SEL trust root via a
   domain-separation label (`HMAC(sel_hmac.key, "kirocrew.session_pid.sig.v1")`).
   The raw root never signs a sidecar; the sidecar protocol and the SEL audit

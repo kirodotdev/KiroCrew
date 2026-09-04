@@ -14,7 +14,7 @@ from unittest.mock import patch
 
 import pytest
 
-from kiro_crew import session_pid_sig
+from kiro_crew import platform_compat, session_pid_sig
 
 SESSION_KEY = "dashboard:chat-7-123456"
 LOGGER_NAME = "kiro_crew.session_pid_sig"
@@ -55,10 +55,19 @@ def cfg(tmp_path):
     ``SecurityEventLog`` singleton, which other tests in the same process may
     or may not have initialized. Its own behavior is covered by
     ``TestTrustRootRecovery``.
+
+    ``platform_compat.get_process_start_id`` is pinned to ``None`` (no start
+    token) so the fixture is deterministic: the fake pids used here (4242,
+    1000, ...) can be LIVE processes on the test host, and a live pid would
+    otherwise make ``publish_session_pid`` capture a real start token and
+    change the exact ``.txt`` bytes these tests assert on. Recycle-guard
+    tests (``TestPidRecycleGuard``) re-patch it per test with controlled
+    values.
     """
     (tmp_path / "sel_hmac.key").write_bytes(b"\x01" * 32)
     with patch.object(session_pid_sig, "config_dir", return_value=tmp_path), \
          patch.object(session_pid_sig, "_sel_hmac_key_bytes", return_value=None), \
+         patch.object(platform_compat, "get_process_start_id", return_value=None), \
          patch.object(
              session_pid_sig,
              "sel_hmac_key_path",
@@ -225,6 +234,129 @@ class TestLenientReader:
             "x" * (session_pid_sig._MAX_MAPPING_FILE_BYTES + 1), encoding="utf-8"
         )
         assert session_pid_sig.read_session_pid_txt(4242) == ""
+
+
+class TestPidRecycleGuard:
+    """Issue #8343: the mapping and its MAC bound only the pid NUMBER, so a
+    recycled pid kept verifying and answered with the previous owner's
+    session key until the next restart's orphan sweep. Publication now also
+    records the process START TOKEN (``platform_compat.get_process_start_id``
+    — the same incarnation identity ``session_pid.py``'s
+    ``<gw>:<pid>:<start_token>`` sweep records use), the signature covers it,
+    and BOTH readers refuse on a proven mismatch.
+
+    The asymmetry under test: a MISMATCH is positive evidence of a recycled
+    pid → refuse; an ABSENT recorded token (legacy file) or an UNREADABLE
+    live token (Windows, exited process) is merely unknown → resolve as
+    before the guard existed.
+    """
+
+    @staticmethod
+    def _live_token(value):
+        return patch.object(
+            platform_compat, "get_process_start_id", return_value=value
+        )
+
+    def test_recycled_pid_refused_by_strict_resolver(self, cfg):
+        """HEADLINE (red against pre-fix main): publish under one process
+        incarnation, present another incarnation of the same pid number —
+        the strict resolver must refuse, not answer with the old key."""
+        with self._live_token("111"):
+            session_pid_sig.publish_session_pid(4242, SESSION_KEY)
+        with self._live_token("222"):
+            assert session_pid_sig.verify_session_pid(4242) == ""
+
+    def test_recycled_pid_refused_by_lenient_reader(self, cfg):
+        """A proven mismatch refuses on the LENIENT path too: callers like
+        peer_resolve fall back from the strict resolver to this reader, so a
+        refusal surfaced only from the strict path would be silently
+        recovered by the fallback and the stale attribution kept."""
+        with self._live_token("111"):
+            session_pid_sig.publish_session_pid(4242, SESSION_KEY)
+        with self._live_token("222"):
+            assert session_pid_sig.read_session_pid_txt(4242) == ""
+
+    def test_same_incarnation_still_resolves(self, cfg):
+        with self._live_token("111"):
+            session_pid_sig.publish_session_pid(4242, SESSION_KEY)
+            assert session_pid_sig.verify_session_pid(4242) == SESSION_KEY
+            assert session_pid_sig.read_session_pid_txt(4242) == SESSION_KEY
+
+    def test_legacy_tokenless_file_still_resolves(self, cfg):
+        """BACKWARD COMPATIBILITY: a signed mapping written before the
+        format change (no token line, MAC over ``"<pid>:<session_key>"``)
+        must not read as tampered or as a mismatch, even when the live
+        token IS readable (absent recorded token = unknown, not mismatch)."""
+        key = b"\x01" * 32
+        (cfg / "session_pid_4242.txt").write_text(SESSION_KEY, encoding="utf-8")
+        (cfg / "session_pid_4242.sig").write_text(
+            session_pid_sig._compute_sig(key, 4242, SESSION_KEY), encoding="utf-8"
+        )
+        with self._live_token("222"):
+            assert session_pid_sig.verify_session_pid(4242) == SESSION_KEY
+            assert session_pid_sig.read_session_pid_txt(4242) == SESSION_KEY
+
+    def test_unreadable_live_token_resolves_as_today(self, cfg):
+        """UNKNOWN ≠ MISMATCH: a recorded token whose live counterpart
+        cannot be read (Windows, process exited, permission) keeps today's
+        behaviour on both paths."""
+        with self._live_token("111"):
+            session_pid_sig.publish_session_pid(4242, SESSION_KEY)
+        with self._live_token(None):
+            assert session_pid_sig.verify_session_pid(4242) == SESSION_KEY
+            assert session_pid_sig.read_session_pid_txt(4242) == SESSION_KEY
+
+    def test_publish_records_the_token_as_a_second_line(self, cfg):
+        """The on-disk form: ``<session_key>\\n<start_token>``. A second
+        LINE, not a colon field like session_pid.py's integer records,
+        because the session key itself contains colons."""
+        with self._live_token("111"):
+            session_pid_sig.publish_session_pid(4242, SESSION_KEY)
+        assert (
+            cfg / "session_pid_4242.txt"
+        ).read_text(encoding="utf-8") == f"{SESSION_KEY}\n111"
+
+    def test_signature_covers_the_token(self, cfg):
+        """Flipping ONLY the token line invalidates the MAC — even when the
+        rewritten token matches the live process, so the refusal proven
+        here is the signature's, not the recycle check's."""
+        with self._live_token("111"):
+            session_pid_sig.publish_session_pid(4242, SESSION_KEY)
+        (cfg / "session_pid_4242.txt").write_text(
+            f"{SESSION_KEY}\n222", encoding="utf-8"
+        )
+        with self._live_token("222"):
+            assert session_pid_sig.verify_session_pid(4242) == ""
+
+    def test_unsigned_publish_with_token_still_degrades(self, cfg):
+        """The documented unsigned-publish degrade path survives the token:
+        SEL key unavailable → token-bearing ``.txt`` still published (the
+        lenient reader keeps working, recycle guard included), stale sidecar
+        removed, strict resolvers fail closed."""
+        with self._live_token("111"):
+            session_pid_sig.publish_session_pid(4242, SESSION_KEY)  # signed
+        (cfg / "sel_hmac.key").unlink()
+        with self._live_token("111"):
+            session_pid_sig.publish_session_pid(4242, SESSION_KEY)
+            assert not (cfg / "session_pid_4242.sig").exists()
+            assert session_pid_sig.verify_session_pid(4242) == ""
+            assert session_pid_sig.read_session_pid_txt(4242) == SESSION_KEY
+        with self._live_token("222"):
+            assert session_pid_sig.read_session_pid_txt(4242) == ""
+
+    def test_malformed_multiline_body_refused(self, cfg):
+        """Three-plus lines were never written by publish_session_pid —
+        refuse on both paths rather than guess a parse, even under a valid
+        MAC over the raw body."""
+        key = b"\x01" * 32
+        body = f"{SESSION_KEY}\n111\nextra"
+        (cfg / "session_pid_4242.txt").write_text(body, encoding="utf-8")
+        (cfg / "session_pid_4242.sig").write_text(
+            session_pid_sig._compute_sig(key, 4242, body), encoding="utf-8"
+        )
+        with self._live_token("111"):
+            assert session_pid_sig.verify_session_pid(4242) == ""
+            assert session_pid_sig.read_session_pid_txt(4242) == ""
 
 
 class TestNoNofollowPlatform:
