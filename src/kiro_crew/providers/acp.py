@@ -304,7 +304,6 @@ class AcpProvider(LLMProvider):
         tool_search_min_pct: object = None,
         tool_search_min_tokens: object = None,
         mcp_gateway_overlay: str | Path | None = None,
-        mcp_gateway_settings_mcp_json: str | Path | None = None,
         mcp_gateway_socket: str | Path | None = None,
         permission_mode: str | None = None,
         crew_agent: str | None = None,
@@ -326,7 +325,6 @@ class AcpProvider(LLMProvider):
             "extra_env": extra_env,
             "acp_backend": acp_backend,
             "mcp_gateway_overlay": mcp_gateway_overlay,
-            "mcp_gateway_settings_mcp_json": mcp_gateway_settings_mcp_json,
             "mcp_gateway_socket": mcp_gateway_socket,
             # Claude permission mode (Auto-mode/permission-UI parity). None on the
             # kiro-cli path — fully inert; a companion-registered backend threads
@@ -792,9 +790,6 @@ class AcpProvider(LLMProvider):
         sandbox_mode = getattr(self._client, "_sandbox_mode", "auto")
         extra_env = getattr(self._client, "_extra_env", None) or {}
         mcp_gateway_overlay = getattr(self._client, "_mcp_gateway_overlay", None)
-        mcp_gateway_settings_mcp_json = getattr(
-            self._client, "_mcp_gateway_settings_mcp_json", None
-        )
         mcp_gateway_socket = getattr(self._client, "_mcp_gateway_socket", None)
 
         # Check for session resume
@@ -812,7 +807,6 @@ class AcpProvider(LLMProvider):
             sandbox_mode=sandbox_mode,
             extra_env=extra_env,
             mcp_gateway_overlay=mcp_gateway_overlay,
-            mcp_gateway_settings_mcp_json=mcp_gateway_settings_mcp_json,
             mcp_gateway_socket=mcp_gateway_socket,
             acp_backend=self._client.backend,
             crew_agent=self._crew_agent,
@@ -913,7 +907,6 @@ class AcpProvider(LLMProvider):
                         sandbox_mode=sandbox_mode,
                         extra_env=extra_env,
                         mcp_gateway_overlay=mcp_gateway_overlay,
-                        mcp_gateway_settings_mcp_json=mcp_gateway_settings_mcp_json,
                         mcp_gateway_socket=mcp_gateway_socket,
                         acp_backend=self._client.backend,
                         crew_agent=self._crew_agent,

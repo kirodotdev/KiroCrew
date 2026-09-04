@@ -694,7 +694,6 @@ class AcpRuntime:
         sandbox_mode: str = "auto",
         extra_env: dict[str, str] | None = None,
         mcp_gateway_overlay: str | Path | None = None,
-        mcp_gateway_settings_mcp_json: str | Path | None = None,
         mcp_gateway_socket: str | Path | None = None,
         max_age_secs: float = _DEFAULT_MAX_AGE_SECS,
         max_rss_mb: float = _DEFAULT_MAX_RSS_MB,
@@ -729,9 +728,6 @@ class AcpRuntime:
         self._sandbox_mode = sandbox_mode
         self._extra_env = extra_env or {}
         self._mcp_gateway_overlay = str(mcp_gateway_overlay) if mcp_gateway_overlay else None
-        self._mcp_gateway_settings_mcp_json = (
-            str(mcp_gateway_settings_mcp_json) if mcp_gateway_settings_mcp_json else None
-        )
         self._mcp_gateway_socket = str(mcp_gateway_socket) if mcp_gateway_socket else None
         # Whether sessions on this runtime should hold drain_init() open for
         # slow MCP servers (the no-report ceiling). A runtime whose agent is

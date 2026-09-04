@@ -716,7 +716,6 @@ class TestStartKiroRuntimeResume:
         provider._client._sandbox_mode = "auto"
         provider._client._extra_env = {}
         provider._client._mcp_gateway_overlay = None
-        provider._client._mcp_gateway_settings_mcp_json = None
         provider._client._mcp_gateway_socket = None
         # _model is a real string (not a MagicMock) so the DEFAULT_MODEL guard
         # in _start_kiro_runtime compares correctly.
@@ -869,7 +868,6 @@ class TestKiroStartupMetric:
         provider._client._sandbox_mode = "auto"
         provider._client._extra_env = {}
         provider._client._mcp_gateway_overlay = None
-        provider._client._mcp_gateway_settings_mcp_json = None
         provider._client._mcp_gateway_socket = None
         provider._client._resume_session_id = ""
         provider._client._model = model
@@ -955,7 +953,6 @@ class TestFixBDeadRuntimeRespawn:
         provider._client._sandbox_mode = "auto"
         provider._client._extra_env = {}
         provider._client._mcp_gateway_overlay = None
-        provider._client._mcp_gateway_settings_mcp_json = None
         provider._client._mcp_gateway_socket = None
         provider._client._model = "auto"
         return provider
@@ -1112,7 +1109,6 @@ class TestStartKiroRuntimeModelEntitlement:
         provider._client._sandbox_mode = "auto"
         provider._client._extra_env = {}
         provider._client._mcp_gateway_overlay = None
-        provider._client._mcp_gateway_settings_mcp_json = None
         provider._client._mcp_gateway_socket = None
         provider._client._model = model
         provider._client._resume_session_id = ""  # straight to create_session

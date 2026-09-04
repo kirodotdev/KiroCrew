@@ -487,7 +487,6 @@ class TestParentRuntimeKwargs:
             _sandbox_mode="strict",
             _extra_env={"A": "1"},
             _mcp_gateway_overlay={"servers": {}},
-            _mcp_gateway_settings_mcp_json="/tmp/mcp.json",
             _mcp_gateway_socket="/tmp/gw.sock",
         )
         _register(mgr, "d1", provider=_stub_provider(client=client))
@@ -496,7 +495,6 @@ class TestParentRuntimeKwargs:
             "sandbox_mode": "strict",
             "extra_env": {"A": "1"},
             "mcp_gateway_overlay": {"servers": {}},
-            "mcp_gateway_settings_mcp_json": "/tmp/mcp.json",
             "mcp_gateway_socket": "/tmp/gw.sock",
         }
 

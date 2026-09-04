@@ -216,7 +216,6 @@ def _collect_parent_runtime_kwargs(
         ("_sandbox_mode", "sandbox_mode"),
         ("_extra_env", "extra_env"),
         ("_mcp_gateway_overlay", "mcp_gateway_overlay"),
-        ("_mcp_gateway_settings_mcp_json", "mcp_gateway_settings_mcp_json"),
         ("_mcp_gateway_socket", "mcp_gateway_socket"),
         ("backend", "acp_backend"),
     ):

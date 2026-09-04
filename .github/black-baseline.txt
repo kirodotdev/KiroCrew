@@ -842,7 +842,6 @@ test/test_mcp_gateway_image_budget.py
 test/test_mcp_gateway_oversize.py
 test/test_mcp_gateway_pool_integ.py
 test/test_mcp_gateway_recaller.py
-test/test_mcp_gateway_rewriter_fingerprint.py
 test/test_mcp_gateway_session_inject.py
 test/test_mcp_gateway_shutdown_and_env.py
 test/test_mcp_gateway_stub_admission_fallback.py
