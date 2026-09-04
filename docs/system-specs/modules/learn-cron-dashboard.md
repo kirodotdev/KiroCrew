@@ -1927,9 +1927,25 @@ audit-before-mutation ordering. Browser legacy creation is create-only under the
 same service lock as structured creation, so a stale empty snapshot cannot
 replace an automation armed by another tab. Other legacy callers retain explicit
 replacement semantics, but the agent-facing `monitor_start` and `monitor_watch`
-directives are create-only across both record kinds. They cannot silently replace
-a legacy loop with a structured monitor or discard a structured monitor's durable
-evidence. The generic service update also fails closed for structured records.
+directives are create-only across both record kinds, with one deliberate split.
+Dashboard REST creates keep any-record occupancy: a 409 that never discards a
+retained record, active or stopped, preserving inspection evidence. The two
+session-directive arms additionally opt into `replace_stopped`, which narrows
+their refusal to records that still occupy the session — an ACTIVE automation,
+or a retained stop that is evidence. Only system-imposed stops are re-armable:
+`approval_stalled`, `cycle_cap`, `runtime_budget`, and terminal-subject records
+(a merged or blocked watched subject, including structured `BUDGET`, `SUCCESS`
+and `BLOCKED` outcomes). Consumer-recorded stops are preserved on every path —
+a manual pause, a structured `USER_STOP` or `SESSION_CLOSE` record, and the
+auto_research `autonudge_stop` tombstone its watchdog consumes — and an unknown
+stop reason fails closed to preserved. A future-version record is never
+replaceable (it belongs to the newer gateway that wrote it), and a terminal
+record whose accepted wake still awaits completion evidence keeps its own
+wake-in-flight refusal, so an unfinished correlation is never orphaned.
+Create-only directives cannot silently replace an active
+legacy loop with a structured monitor or discard an active structured monitor's
+durable evidence. The generic service update also fails closed for structured
+records.
 
 ### Security Enforcement
 

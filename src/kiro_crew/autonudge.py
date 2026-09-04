@@ -53,6 +53,7 @@ from kiro_crew.monitoring.models import (
     MONITOR_STATE_VERSION,
     MONITOR_STOP_APPROVAL_STALL,
     MONITOR_STOP_COMPLETION_UNAVAILABLE,
+    MONITOR_STOP_INVALID_RECORD,
     MONITOR_STOP_SESSION_CLOSE,
     MONITOR_STOP_SESSION_UNAVAILABLE,
     MONITOR_STOP_UNSUPPORTED_VERSION,
@@ -140,6 +141,47 @@ class NudgeAdmissionRefused(RuntimeError):
 
 
 _TERMINAL_BOUND_REASONS = frozenset({"cycle_cap", "runtime_budget", APPROVAL_STALL_REASON})
+
+#: Stops the SYSTEM imposed on a legacy loop, which a directive re-arm may
+#: therefore displace: a lapsed approval, a spent bound, a finished subject.
+#: Everything else — a manual pause (empty reason), a research tombstone
+#: (``AUTONUDGE_STOP_REASON``, consumed by the auto_research watchdog to tell
+#: deliberate completion from crash cleanup), and any reason this version does
+#: not know — is evidence some consumer may read, so it fails CLOSED to
+#: preserved.
+_REPLACEABLE_LOOP_STOP_REASONS = _TERMINAL_BOUND_REASONS | {MONITOR_TERMINAL_REASON}
+
+
+def _stopped_row_is_replaceable(loop: "NudgeLoop") -> bool:
+    """Whether a directive re-arm (``replace_stopped``) may displace this row.
+
+    Callers have already established the row is INACTIVE. The split is by who
+    recorded the stop: a stop the system imposed (bound expiry, approval
+    stall, terminal subject, crash retirement) is automatically re-armable,
+    while a stop a person or an app recorded — ``USER_STOP``, session-close
+    retention, a manual pause, a research tombstone — is retained evidence.
+    Unknown outcomes and reasons are treated as evidence (fail closed).
+    """
+    state = loop.monitor
+    if state is not None and state.outcome is not None:
+        if str(state.stopped_reason or "") == MONITOR_STOP_INVALID_RECORD:
+            # A quarantined malformed record is an inspection artifact of a
+            # store defect, not a system-imposed stop: _load() synthesized its
+            # BLOCKED outcome precisely to retain the raw payload for a human.
+            # The ruling's fail-closed principle covers it — evidence, never
+            # replaceable.
+            return False
+        return state.outcome in (
+            MonitorOutcome.BUDGET,
+            MonitorOutcome.SUCCESS,
+            MonitorOutcome.BLOCKED,
+            # System-imposed too: a vanished or undeliverable subject
+            # (dispatch failure, shadow NOT_FOUND). No consumer authored it,
+            # so refusing re-creates the deadlock this predicate exists to end.
+            MonitorOutcome.TARGET_UNAVAILABLE,
+        )
+    return (loop.stopped_reason or "") in _REPLACEABLE_LOOP_STOP_REASONS
+
 
 # Namespaced session-key prefixes that identify messaging-channel sessions
 # (as opposed to bare dashboard chat-slot keys). Channel-bound loops have no
@@ -1184,6 +1226,7 @@ class AutoNudgeService:
         # if that PR is already merged, deactivates it before its first turn.
         gate: bool = False,
         replace_existing: bool = True,
+        replace_stopped: bool = False,
     ) -> NudgeLoop:
         # CANCELLATION SAFETY: the mutate+persist runs as a SHIELDED task. If
         # the awaiting caller is cancelled mid-write, a bare await would release
@@ -1209,6 +1252,7 @@ class AutoNudgeService:
                 admission_check=admission_check,
                 gate=gate,
                 replace_existing=replace_existing,
+                replace_stopped=replace_stopped,
             )
         )
         self._inflight_adds.add(inner)
@@ -1233,6 +1277,7 @@ class AutoNudgeService:
         wake_instructions: str = "",
         now: float | None = None,
         replace_existing: bool = True,
+        replace_stopped: bool = False,
         expected_existing_monitor_id: str | None = None,
         expected_existing_config_generation: int | None = None,
         admission_check: Callable[[], bool] | None = None,
@@ -1249,6 +1294,7 @@ class AutoNudgeService:
                 wake_instructions=wake_instructions,
                 now=now,
                 replace_existing=replace_existing,
+                replace_stopped=replace_stopped,
                 expected_existing_monitor_id=expected_existing_monitor_id,
                 expected_existing_config_generation=expected_existing_config_generation,
                 admission_check=admission_check,
@@ -1276,6 +1322,7 @@ class AutoNudgeService:
         wake_instructions: str,
         now: float | None,
         replace_existing: bool,
+        replace_stopped: bool = False,
         expected_existing_monitor_id: str | None,
         expected_existing_config_generation: int | None,
         admission_check: Callable[[], bool] | None,
@@ -1297,9 +1344,45 @@ class AutoNudgeService:
                     ):
                         raise MonitorUpdateConflict("monitor changed before restart")
                 if existing:
-                    if not replace_existing:
+                    # Same split as the legacy add: create-only refuses ANY
+                    # record unless the caller opted into ``replace_stopped``,
+                    # which under the owner's ruling displaces only
+                    # SYSTEM-imposed stops (a spent bound, a finished subject).
+                    # A consumer-recorded stop — including a USER_STOP record
+                    # retained by monitor_stop — is preserved; the dashboard
+                    # restart route (conditional replace) is the sanctioned way
+                    # to succeed one. Dashboard creates never opt in, so their
+                    # any-record 409 keeps retained evidence intact. The
+                    # wake-in-flight guard below still covers a terminal record
+                    # that owns an accepted, uncompleted wake.
+                    if not replace_existing and (existing.active or not replace_stopped):
                         raise MonitorUpdateConflict("session already has an automation")
                     existing_monitor = existing.monitor
+                    if (
+                        not replace_existing
+                        and existing_monitor is not None
+                        and existing_monitor.version != MONITOR_STATE_VERSION
+                    ):
+                        # Same rule as the legacy add: a future-version record
+                        # is a newer gateway's state, retained inactive across a
+                        # downgrade on purpose — never deletable by this one.
+                        raise MonitorUpdateConflict(
+                            "the session's stopped automation was written by a newer "
+                            "gateway and cannot be replaced by this one"
+                        )
+                    if (
+                        not replace_existing
+                        and replace_stopped
+                        and not _stopped_row_is_replaceable(existing)
+                    ):
+                        # Same owner ruling as the legacy add: consumer-recorded
+                        # stops (USER_STOP, SESSION_CLOSE, tombstones) are
+                        # evidence, never displaced by a re-arm.
+                        raise MonitorUpdateConflict(
+                            "the session's stopped automation is retained as evidence "
+                            "and is not replaceable by a re-arm; its owner must clear "
+                            "it first"
+                        )
                     if existing_monitor is not None and existing_monitor.wake_in_flight:
                         raise MonitorUpdateConflict(
                             "existing monitor cannot be replaced while a wake is in flight"
@@ -1355,6 +1438,7 @@ class AutoNudgeService:
         admission_check: Callable[[], bool] | None = None,
         gate: bool = False,
         replace_existing: bool = True,
+        replace_stopped: bool = False,
     ) -> NudgeLoop:
         async with _maintenance_lock(self._base_dir):
             return await self._add_unserialized(
@@ -1368,6 +1452,7 @@ class AutoNudgeService:
                 admission_check=admission_check,
                 gate=gate,
                 replace_existing=replace_existing,
+                replace_stopped=replace_stopped,
             )
 
     async def _add_unserialized(
@@ -1383,6 +1468,7 @@ class AutoNudgeService:
         admission_check: Callable[[], bool] | None = None,
         gate: bool = False,
         replace_existing: bool = True,
+        replace_stopped: bool = False,
     ) -> NudgeLoop:
         idle_secs = max(_MIN_IDLE_SECS, min(_MAX_IDLE_SECS, int(idle_secs)))
         async with self._lock:
@@ -1393,9 +1479,54 @@ class AutoNudgeService:
             # removal+add atomically, avoiding a duplicate blocking save here.
             existing = self._find_by_slot(slot_key)
             if existing:
-                if not replace_existing:
+                # Create-only (``replace_existing=False``) refuses ANY existing
+                # record by default — the dashboard REST creates depend on that:
+                # their documented contract is a 409 that never discards a
+                # retained inspection record. ``replace_stopped`` is the
+                # directive re-arm path's explicit opt-in to narrow the refusal
+                # to ACTIVE records, because a retained INACTIVE row
+                # (approval-stalled, capped, budget-spent, or a terminal record
+                # kept for inspection) otherwise deadlocks the session's only
+                # re-arm: monitor_update's approval-stall refusal names
+                # monitor_start as the remedy. The wake-in-flight guard below
+                # still runs for the replaced-inactive case, so a terminal
+                # record whose accepted wake is awaiting completion evidence
+                # keeps its own refusal rather than having its correlation
+                # orphaned by a replacement.
+                if not replace_existing and (existing.active or not replace_stopped):
                     raise MonitorUpdateConflict("session already has an automation")
                 existing_monitor = existing.monitor
+                if (
+                    not replace_existing
+                    and existing_monitor is not None
+                    and existing_monitor.version != MONITOR_STATE_VERSION
+                ):
+                    # A future-version record belongs to the newer gateway that
+                    # wrote it: _load() retains it inactive so an upgrade can
+                    # resume the watch, and the retarget path refuses to touch
+                    # it for the same reason. A stopped-replacement here would
+                    # destroy state this gateway cannot even read. Checked
+                    # BEFORE the evidence allowlist so the version message —
+                    # the actionable one — wins for such records.
+                    raise MonitorUpdateConflict(
+                        "the session's stopped automation was written by a newer "
+                        "gateway and cannot be replaced by this one"
+                    )
+                if (
+                    not replace_existing
+                    and replace_stopped
+                    and not _stopped_row_is_replaceable(existing)
+                ):
+                    # Owner ruling (option A): only system-imposed stops are
+                    # re-armable. A stop recorded FOR a consumer — a research
+                    # tombstone, a manual pause, a user stop, session-close
+                    # retention — is evidence, and an unknown reason is
+                    # treated as evidence too.
+                    raise MonitorUpdateConflict(
+                        "the session's stopped automation is retained as evidence "
+                        f"(stop reason: {existing.stopped_reason or 'manual'!s}) and is "
+                        "not replaceable by a re-arm; its owner must clear it first"
+                    )
                 if existing_monitor is not None and existing_monitor.wake_in_flight:
                     raise MonitorUpdateConflict(
                         "existing monitor cannot be replaced while a wake is in flight"
