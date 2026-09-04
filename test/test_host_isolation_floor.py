@@ -833,6 +833,72 @@ class TestDynamicCredentialEnvironmentIsRestored:
         assert "JIRA_TOKEN_AABBCC" not in os.environ
 
 
+class TestInheritedShellEnvironmentIsScrubbed:
+    """The entries ``name_grant`` refuses as inherited preloads are hidden per test.
+
+    On a RHEL-family host ``which2.sh`` puts ``BASH_FUNC_which%%`` in every login
+    shell's environment, and ``name_grant``'s AMBIGUOUS_ENV refusal -- checked before
+    every narrower code -- then rewrote what 79 unrelated assertions observed
+    (issue #8395). The scrub under test is ``conftest._scrub_inherited_preload_env``,
+    driven directly (see ``_autouse_floor_generator``); the domain-level regression
+    lives in ``test_name_grant.py::TestInheritedHostEnvironment``, but only this
+    direct drive survives ``autouse=True`` being dropped or the restore half being
+    lost, because it asserts the marker and both halves of one real cycle.
+    """
+
+    def test_this_test_starts_without_the_injected_entries(self) -> None:
+        """True on every host: the live scrub hides even a genuinely inherited entry."""
+        assert "BASH_FUNC_kcfloor%%" not in os.environ
+        assert "BASH_ENV" not in os.environ
+
+    def test_an_inherited_entry_is_scrubbed_then_restored_by_one_cycle(self) -> None:
+        """One full cycle of the real fixture: inject first, so it reads as inherited.
+
+        The fixture records its removals on the monkeypatch instance it is handed,
+        so the restore under test is that instance's ``undo`` -- driven explicitly
+        here, exactly as pytest drives the shared per-test instance after every
+        fixture teardown. A failure part-way cannot leak the entries past this
+        test: the live autouse instance of the same fixture wraps this test too,
+        and its teardown sweep removes matching entries its own snapshot never saw.
+        """
+        mp = pytest.MonkeyPatch()
+        os.environ["BASH_FUNC_kcfloor%%"] = "() { :; }"
+        os.environ["BASH_ENV"] = "/etc/kc-floor-rc"
+        try:
+            cycle = _autouse_floor_generator("_scrub_inherited_preload_env")(mp)
+            next(cycle)  # the floor's setup: the scrub under test
+            assert "BASH_FUNC_kcfloor%%" not in os.environ
+            assert "BASH_ENV" not in os.environ
+            with pytest.raises(StopIteration):
+                next(cycle)  # the floor's teardown sweep: inherited keys stay absent
+            assert "BASH_FUNC_kcfloor%%" not in os.environ
+            mp.undo()  # the restore under test: rides the monkeypatch undo stack
+            assert os.environ.get("BASH_FUNC_kcfloor%%") == "() { :; }"
+            assert os.environ.get("BASH_ENV") == "/etc/kc-floor-rc"
+        finally:
+            mp.undo()
+            os.environ.pop("BASH_FUNC_kcfloor%%", None)
+            os.environ.pop("BASH_ENV", None)
+
+    def test_an_entry_leaked_during_a_test_is_swept_by_the_floors_own_teardown(self) -> None:
+        """The sweep half: a raw write that appeared mid-test does not leak on."""
+        mp = pytest.MonkeyPatch()
+        try:
+            cycle = _autouse_floor_generator("_scrub_inherited_preload_env")(mp)
+            next(cycle)  # the floor's setup: nothing inherited, nothing recorded
+
+            os.environ["BASH_FUNC_kcfloor%%"] = "() { leaked; }"
+
+            with pytest.raises(StopIteration):
+                next(cycle)  # the floor's teardown: the sweep under test
+            assert "BASH_FUNC_kcfloor%%" not in os.environ
+            mp.undo()  # no record for a raw write, so the sweep's removal stands
+            assert "BASH_FUNC_kcfloor%%" not in os.environ
+        finally:
+            mp.undo()
+            os.environ.pop("BASH_FUNC_kcfloor%%", None)
+
+
 # ── the logging record factory ─────────────────────────────────────────────
 
 
