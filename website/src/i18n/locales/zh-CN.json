@@ -4269,6 +4269,58 @@
         "preview_unavailable": "预览不可用"
       }
     },
+    "projectScaffolder": {
+      "manifest": {
+        "display_name": "从项目创建文件夹",
+        "description": "指定一个项目目录，它会找出其中包含哪些子项目，然后为每个子项目创建一个对应的侧边栏文件夹。扫描是只读的，因此在创建任何内容之前，你可以看到完整列表并勾选需要的项。子项目会按照磁盘上的层级嵌套在其父项之下，已经设置好的内容会显示出来，但绝不会重复创建。",
+        "page_label": "创建文件夹",
+        "highlight_1": "先以只读方式扫描，在你确认所选内容之前不会创建任何东西",
+        "highlight_2": "以行列出顶层包，更深层的发现收拢在一个可折叠分组中，可全选或全不选",
+        "highlight_3": "高置信度的匹配默认勾选；较弱的匹配供你自行选择",
+        "highlight_4": "显示每个匹配背后的依据，让你了解某个目录为何被选中",
+        "highlight_5": "已有的文件夹会列出但会被跳过，绝不重复创建",
+        "highlight_6": "准确报告创建了哪些、跳过了哪些，以及哪些失败及原因",
+        "use_case_1": "把单体仓库或存放同级仓库的目录转换为每个包一个侧边栏文件夹，这样按包生效的引导无需手工搭建目录树即可加载。",
+        "configuration_1": "打开“创建文件夹”，浏览到项目目录，查看预览并勾选需要的包，然后确认以创建这些文件夹。"
+      },
+      "projectScaffolderPage": {
+        "absolute_path_to_a_project_directory": "项目目录的绝对路径",
+        "already_set_up": "已设置",
+        "browse": "浏览",
+        "create_folders": "创建文件夹",
+        "create_folders_from_project": "从项目创建文件夹",
+        "create_the_root_folder_only": "仅创建根文件夹",
+        "creating": "正在创建",
+        "directly_under_the_root": "直接位于根目录下",
+        "inside_name": "位于 {{name}} 内",
+        "n_already_existed": "{{n}} 个已存在",
+        "n_created": "已创建 {{n}} 个",
+        "n_failed": "{{n}} 个失败",
+        "n_possible_sub_folders_inside_packages_above": "上方软件包内有 {{n}} 个可能的子文件夹",
+        "n_selected": "根文件夹 + 已选择 {{n}} 个",
+        "n_selected_inside": "内部已选择 {{n}} 个",
+        "no_sub_projects_found": "未找到子项目",
+        "nothing_under_this_directory_looked_like_a_proje": "此目录下没有任何内容看起来像一个项目。你仍然可以为该目录本身创建一个文件夹。",
+        "preview": "预览",
+        "project_directory": "项目目录",
+        "re_scan": "重新扫描",
+        "results": "结果",
+        "scan": "扫描",
+        "scan_a_project_directory_then_create_a_sidebar": "扫描一个项目目录，然后为你选择的每个子项目创建一个侧边栏文件夹。",
+        "scanning": "正在扫描",
+        "select_all": "全选",
+        "select_none": "全不选",
+        "signal_git": "git 仓库",
+        "signal_kiro": "Kiro 文件夹 (.kiro)",
+        "signal_manifest": "发现 {{name}}",
+        "signal_member": "工作区成员",
+        "signals": "依据",
+        "this_preview_no_longer_matches_the_directory_on": "此预览已与磁盘上的目录不一致。请先重新扫描再创建文件夹。",
+        "tier_confident": "高置信度",
+        "tier_offered": "可选",
+        "warnings": "警告"
+      }
+    },
     "projects": {
       "manifest": {
         "use_case_1": "根据自然语言、现有规格或确定性 YAML 来规划并运行依赖感知的多代理任务。",

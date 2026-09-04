@@ -4421,6 +4421,58 @@
         "preview_unavailable": "Pré-visualização não disponível"
       }
     },
+    "projectScaffolder": {
+      "manifest": {
+        "display_name": "Criar pastas a partir de um projeto",
+        "description": "Aponte-o para um diretório de projeto e ele descobre quais subprojetos existem dentro, criando depois uma pasta da barra lateral para cada um. A análise é somente de leitura, por isso você vê a lista completa e marca o que quiser antes de qualquer coisa ser criada. Os subprojetos ficam aninhados sob o diretório superior tal como no disco, e o que você já configurou é mostrado mas nunca criado duas vezes.",
+        "page_label": "Criar pastas",
+        "highlight_1": "Analisa primeiro em modo somente leitura, então nada é criado até você confirmar uma seleção",
+        "highlight_2": "Lista os pacotes de nível superior como linhas, com os achados mais profundos em um único grupo recolhido que você pode selecionar por inteiro ou deixar vazio",
+        "highlight_3": "As correspondências confiáveis vêm marcadas; as mais fracas ficam para você escolher",
+        "highlight_4": "Mostra os sinais por trás de cada correspondência, para você ver por que um diretório foi escolhido",
+        "highlight_5": "As pastas que você já tem aparecem na lista mas são ignoradas, nunca duplicadas",
+        "highlight_6": "Informa exatamente o que foi criado, o que foi ignorado, e o que falhou e por quê",
+        "use_case_1": "Transforma um monorepo ou um diretório de repositórios vizinhos em uma pasta da barra lateral por pacote, para que a orientação por pacote carregue sem montar a árvore à mão.",
+        "configuration_1": "Abra Criar pastas, navegue até um diretório de projeto, revise a prévia e marque os pacotes desejados, depois confirme para criar as pastas."
+      },
+      "projectScaffolderPage": {
+        "absolute_path_to_a_project_directory": "Caminho absoluto para um diretório de projeto",
+        "already_set_up": "Já configurado",
+        "browse": "Procurar",
+        "create_folders": "Criar pastas",
+        "create_folders_from_project": "Criar pastas a partir de um projeto",
+        "create_the_root_folder_only": "Criar apenas a pasta raiz",
+        "creating": "Criando",
+        "directly_under_the_root": "Diretamente sob a raiz",
+        "inside_name": "Dentro de {{name}}",
+        "n_already_existed": "{{n}} já existiam",
+        "n_created": "{{n}} criadas",
+        "n_failed": "{{n}} com falha",
+        "n_possible_sub_folders_inside_packages_above": "{{n}} subpastas possíveis nos pacotes acima",
+        "n_selected": "Pasta raiz + {{n}} selecionadas",
+        "n_selected_inside": "{{n}} selecionadas dentro",
+        "no_sub_projects_found": "Nenhum subprojeto encontrado",
+        "nothing_under_this_directory_looked_like_a_proje": "Nada dentro deste diretório parecia um projeto. Você ainda pode criar uma pasta para o próprio diretório.",
+        "preview": "Pré-visualização",
+        "project_directory": "Diretório do projeto",
+        "re_scan": "Analisar de novo",
+        "results": "Resultados",
+        "scan": "Analisar",
+        "scan_a_project_directory_then_create_a_sidebar": "Analise um diretório de projeto e crie uma pasta da barra lateral para cada subprojeto que escolher.",
+        "scanning": "Analisando",
+        "select_all": "Selecionar tudo",
+        "select_none": "Limpar seleção",
+        "signal_git": "repositório git",
+        "signal_kiro": "pasta Kiro (.kiro)",
+        "signal_manifest": "{{name}} encontrado",
+        "signal_member": "membro do workspace",
+        "signals": "Sinais",
+        "this_preview_no_longer_matches_the_directory_on": "Esta pré-visualização já não corresponde ao diretório em disco. Analise de novo antes de criar pastas.",
+        "tier_confident": "Confiável",
+        "tier_offered": "Opcional",
+        "warnings": "Avisos"
+      }
+    },
     "projects": {
       "manifest": {
         "description": "Entregue um trabalho de várias etapas e deixe que ele vá até o fim sem supervisão. Descreva o trabalho em linguagem simples, cole uma especificação escrita ou envie um arquivo YAML e, então, gere primeiro um plano para revisar as etapas ou comece na hora. Cada execução ganha uma página própria com o progresso passo a passo, e você pode pausar, retomar, tentar novamente ou parar a qualquer momento.",

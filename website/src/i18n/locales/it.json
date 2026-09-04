@@ -4421,6 +4421,58 @@
         "preview_unavailable": "Anteprima non disponibile"
       }
     },
+    "projectScaffolder": {
+      "manifest": {
+        "display_name": "Crea cartelle da un progetto",
+        "description": "Indicagli una directory di progetto e capirà quali sottoprogetti contiene, creando poi una cartella della barra laterale per ciascuno. La scansione è in sola lettura, quindi vedi tutto l’elenco e spunti ciò che vuoi prima che venga creato qualcosa. I sottoprogetti si annidano sotto la directory superiore come sul disco, e ciò che hai già configurato viene mostrato ma mai creato due volte.",
+        "page_label": "Crea cartelle",
+        "highlight_1": "Prima esegue una scansione in sola lettura, quindi nulla viene creato finché non confermi una selezione",
+        "highlight_2": "Elenca i pacchetti di primo livello come righe, con i risultati più profondi in un unico gruppo richiuso da selezionare tutto o niente",
+        "highlight_3": "Le corrispondenze affidabili sono già spuntate; quelle più deboli sono proposte a te",
+        "highlight_4": "Mostra gli indizi dietro ogni corrispondenza, così vedi perché una directory è stata scelta",
+        "highlight_5": "Le cartelle che hai già compaiono nell’elenco ma vengono ignorate, mai duplicate",
+        "highlight_6": "Riporta esattamente cosa è stato creato, cosa ignorato, e cosa è fallito e perché",
+        "use_case_1": "Trasforma un monorepo o una directory di repository affiancati in una cartella della barra laterale per pacchetto, così la guida per pacchetto si carica senza costruire l'albero a mano.",
+        "configuration_1": "Apri Crea cartelle, vai a una directory di progetto, controlla l'anteprima e seleziona i pacchetti desiderati, poi conferma per creare le cartelle."
+      },
+      "projectScaffolderPage": {
+        "absolute_path_to_a_project_directory": "Percorso assoluto di una directory di progetto",
+        "already_set_up": "Già configurato",
+        "browse": "Sfoglia",
+        "create_folders": "Crea cartelle",
+        "create_folders_from_project": "Crea cartelle da un progetto",
+        "create_the_root_folder_only": "Crea solo la cartella radice",
+        "creating": "Creazione in corso",
+        "directly_under_the_root": "Direttamente sotto la radice",
+        "inside_name": "In {{name}}",
+        "n_already_existed": "{{n}} già esistenti",
+        "n_created": "{{n}} create",
+        "n_failed": "{{n}} non riuscite",
+        "n_possible_sub_folders_inside_packages_above": "{{n}} possibili sottocartelle nei pacchetti sopra",
+        "n_selected": "Cartella radice + {{n}} selezionate",
+        "n_selected_inside": "{{n}} selezionate all'interno",
+        "no_sub_projects_found": "Nessun sottoprogetto trovato",
+        "nothing_under_this_directory_looked_like_a_proje": "Nulla in questa directory sembrava un progetto. Puoi comunque creare una cartella per la directory stessa.",
+        "preview": "Anteprima",
+        "project_directory": "Directory del progetto",
+        "re_scan": "Ripeti la scansione",
+        "results": "Risultati",
+        "scan": "Scansiona",
+        "scan_a_project_directory_then_create_a_sidebar": "Scansiona una directory di progetto e crea una cartella della barra laterale per ogni sottoprogetto scelto.",
+        "scanning": "Scansione in corso",
+        "select_all": "Seleziona tutto",
+        "select_none": "Deseleziona tutto",
+        "signal_git": "repository git",
+        "signal_kiro": "cartella Kiro (.kiro)",
+        "signal_manifest": "{{name}} trovato",
+        "signal_member": "membro del workspace",
+        "signals": "Indizi",
+        "this_preview_no_longer_matches_the_directory_on": "Questa anteprima non corrisponde più alla directory su disco. Ripeti la scansione prima di creare le cartelle.",
+        "tier_confident": "Affidabile",
+        "tier_offered": "Proposto",
+        "warnings": "Avvisi"
+      }
+    },
     "projects": {
       "manifest": {
         "description": "Affida un lavoro in più passi e lascialo arrivare alla fine senza supervisione. Descrivi il lavoro in linguaggio naturale, incolla una specifica scritta o carica un file YAML, poi genera prima un piano per rivedere i passi oppure parti subito. Ogni esecuzione ha una pagina propria che mostra i progressi passo per passo, e puoi metterla in pausa, riprenderla, ritentarla o fermarla in qualsiasi momento.",

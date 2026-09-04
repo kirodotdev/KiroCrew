@@ -4396,6 +4396,58 @@
         "preview_unavailable": "Keine Vorschau verfügbar"
       }
     },
+    "projectScaffolder": {
+      "manifest": {
+        "display_name": "Ordner aus Projekt erstellen",
+        "description": "Geben Sie ein Projektverzeichnis an, und es ermittelt, welche Teilprojekte darin liegen, und erstellt anschließend für jedes einen passenden Seitenleisten-Ordner. Der Scan ist schreibgeschützt, Sie sehen also die vollständige Liste und wählen aus, bevor irgendetwas erstellt wird. Teilprojekte werden unter ihrem übergeordneten Verzeichnis so verschachtelt wie auf der Festplatte, und was Sie schon eingerichtet haben, wird angezeigt, aber nie doppelt erstellt.",
+        "page_label": "Ordner erstellen",
+        "highlight_1": "Scannt zuerst schreibgeschützt, es wird also nichts erstellt, bis Sie eine Auswahl bestätigen",
+        "highlight_2": "Listet Pakete der obersten Ebene als Zeilen, tiefere Funde stehen in einer einzigen eingeklappten Gruppe mit Alle auswählen und Auswahl aufheben",
+        "highlight_3": "Sichere Treffer sind vorab angehakt; schwächere werden Ihnen zur Auswahl angeboten",
+        "highlight_4": "Zeigt die Hinweise hinter jedem Treffer, damit Sie sehen, warum ein Verzeichnis gewählt wurde",
+        "highlight_5": "Bereits vorhandene Ordner werden aufgeführt, aber übersprungen und nie doppelt angelegt",
+        "highlight_6": "Berichtet genau, was erstellt und was übersprungen wurde, und was fehlschlug und warum",
+        "use_case_1": "Verwandelt ein Monorepo oder ein Verzeichnis benachbarter Repositories in je einen Seitenleisten-Ordner pro Paket, damit die paketweise Steuerung ohne handgebauten Baum lädt.",
+        "configuration_1": "Öffne Ordner erstellen, wähle ein Projektverzeichnis, prüfe die Vorschau und hake die gewünschten Pakete ab, dann bestätige, um die Ordner zu erstellen."
+      },
+      "projectScaffolderPage": {
+        "absolute_path_to_a_project_directory": "Absoluter Pfad zu einem Projektverzeichnis",
+        "already_set_up": "Bereits eingerichtet",
+        "browse": "Durchsuchen",
+        "create_folders": "Ordner erstellen",
+        "create_folders_from_project": "Ordner aus Projekt erstellen",
+        "create_the_root_folder_only": "Nur den Stammordner erstellen",
+        "creating": "Wird erstellt",
+        "directly_under_the_root": "Direkt unter dem Stammverzeichnis",
+        "inside_name": "In {{name}}",
+        "n_already_existed": "{{n}} waren schon vorhanden",
+        "n_created": "{{n}} erstellt",
+        "n_failed": "{{n}} fehlgeschlagen",
+        "n_possible_sub_folders_inside_packages_above": "{{n}} mögliche Unterordner in den Paketen oben",
+        "n_selected": "Stammordner + {{n}} ausgewählt",
+        "n_selected_inside": "{{n}} darin ausgewählt",
+        "no_sub_projects_found": "Keine Teilprojekte gefunden",
+        "nothing_under_this_directory_looked_like_a_proje": "Nichts in diesem Verzeichnis sah wie ein Projekt aus. Du kannst dennoch einen Ordner für das Verzeichnis selbst erstellen.",
+        "preview": "Vorschau",
+        "project_directory": "Projektverzeichnis",
+        "re_scan": "Neu scannen",
+        "results": "Ergebnisse",
+        "scan": "Scannen",
+        "scan_a_project_directory_then_create_a_sidebar": "Scannen Sie ein Projektverzeichnis und erstellen Sie für jedes gewählte Teilprojekt einen Seitenleisten-Ordner.",
+        "scanning": "Wird gescannt",
+        "select_all": "Alle auswählen",
+        "select_none": "Auswahl aufheben",
+        "signal_git": "Git-Repository",
+        "signal_kiro": "Kiro-Ordner (.kiro)",
+        "signal_manifest": "{{name}} gefunden",
+        "signal_member": "Workspace-Mitglied",
+        "signals": "Hinweise",
+        "this_preview_no_longer_matches_the_directory_on": "Diese Vorschau passt nicht mehr zum Verzeichnis auf der Festplatte. Scannen Sie neu, bevor Sie Ordner erstellen.",
+        "tier_confident": "Sicher",
+        "tier_offered": "Angeboten",
+        "warnings": "Warnungen"
+      }
+    },
     "projects": {
       "manifest": {
         "description": "Übergib eine mehrstufige Aufgabe und lass sie unbeaufsichtigt bis zum Ende laufen. Beschreibe die Arbeit in normaler Sprache, füge eine schriftliche Spezifikation ein oder lade eine YAML-Datei hoch, und erstelle dann entweder zuerst einen Plan, um die Schritte zu prüfen, oder starte sofort. Jede Ausführung erhält ihre eigene Seite mit dem Schritt-für-Schritt-Fortschritt, und du kannst sie jederzeit pausieren, fortsetzen, wiederholen oder stoppen.",

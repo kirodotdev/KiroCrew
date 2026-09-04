@@ -4320,6 +4320,58 @@
         "preview_unavailable": "プレビューは利用できません"
       }
     },
+    "projectScaffolder": {
+      "manifest": {
+        "display_name": "プロジェクトからフォルダーを作成",
+        "description": "プロジェクトのディレクトリを指定すると、その中にどのサブプロジェクトがあるかを判別し、それぞれに対応するサイドバーのフォルダーを作成します。スキャンは読み取り専用なので、何かが作成される前に一覧全体を確認し、必要なものにチェックを入れられます。サブプロジェクトはディスク上と同じように親の下に入れ子になり、すでに設定済みのものは表示されますが二重に作成されることはありません。",
+        "page_label": "フォルダーを作成",
+        "highlight_1": "まず読み取り専用でスキャンするため、選択を確定するまで何も作成されません",
+        "highlight_2": "トップレベルのパッケージを行として一覧表示し、より深い検出結果は 1 つの折りたたみグループにまとめて全選択・全解除できます",
+        "highlight_3": "確度の高い一致は最初からチェック済み、弱い一致は任意で選べます",
+        "highlight_4": "一致の根拠となった手がかりを示すので、そのディレクトリが選ばれた理由が分かります",
+        "highlight_5": "すでにあるフォルダーは一覧に出ますがスキップされ、重複して作られません",
+        "highlight_6": "何が作成され、何がスキップされ、何が失敗してその理由は何かを正確に報告します",
+        "use_case_1": "モノレポや隣接リポジトリのディレクトリを、パッケージごとに 1 つのサイドバーフォルダーへ変換し、ツリーを手作業で組まずにパッケージ単位のステアリングを読み込めるようにします。",
+        "configuration_1": "「フォルダーを作成」を開き、プロジェクトディレクトリを選び、プレビューを確認して必要なパッケージにチェックを入れ、確定してフォルダーを作成します。"
+      },
+      "projectScaffolderPage": {
+        "absolute_path_to_a_project_directory": "プロジェクトディレクトリの絶対パス",
+        "already_set_up": "設定済み",
+        "browse": "参照",
+        "create_folders": "フォルダーを作成",
+        "create_folders_from_project": "プロジェクトからフォルダーを作成",
+        "create_the_root_folder_only": "ルートフォルダーのみ作成",
+        "creating": "作成中",
+        "directly_under_the_root": "ルートの直下",
+        "inside_name": "{{name}} 内",
+        "n_already_existed": "{{n}} 件は既存",
+        "n_created": "{{n}} 件作成",
+        "n_failed": "{{n}} 件失敗",
+        "n_possible_sub_folders_inside_packages_above": "上のパッケージ内にあるサブフォルダー候補 {{n}} 件",
+        "n_selected": "ルートフォルダー + {{n}} 件選択中",
+        "n_selected_inside": "内部で {{n}} 件選択中",
+        "no_sub_projects_found": "サブプロジェクトが見つかりません",
+        "nothing_under_this_directory_looked_like_a_proje": "このディレクトリの中にプロジェクトらしいものはありませんでした。このディレクトリ自身のフォルダーは作成できます。",
+        "preview": "プレビュー",
+        "project_directory": "プロジェクトディレクトリ",
+        "re_scan": "再スキャン",
+        "results": "結果",
+        "scan": "スキャン",
+        "scan_a_project_directory_then_create_a_sidebar": "プロジェクトのディレクトリをスキャンし、選んだサブプロジェクトごとにサイドバーのフォルダーを作成します。",
+        "scanning": "スキャン中",
+        "select_all": "すべて選択",
+        "select_none": "すべて解除",
+        "signal_git": "git リポジトリ",
+        "signal_kiro": "Kiro フォルダー (.kiro)",
+        "signal_manifest": "{{name}} あり",
+        "signal_member": "ワークスペースメンバー",
+        "signals": "手がかり",
+        "this_preview_no_longer_matches_the_directory_on": "このプレビューはディスク上のディレクトリと一致しなくなりました。フォルダーを作成する前に再スキャンしてください。",
+        "tier_confident": "確度高",
+        "tier_offered": "任意",
+        "warnings": "警告"
+      }
+    },
     "projects": {
       "manifest": {
         "use_case_1": "自然言語、既存の仕様、または決定的な YAML から、依存関係を認識するマルチエージェントジョブを計画して実行します。",

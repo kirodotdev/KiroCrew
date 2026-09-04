@@ -4421,6 +4421,58 @@
         "preview_unavailable": "Vista previa no disponible"
       }
     },
+    "projectScaffolder": {
+      "manifest": {
+        "display_name": "Crear carpetas desde un proyecto",
+        "description": "Indícale un directorio de proyecto y averiguará qué subproyectos hay dentro, para luego crear una carpeta de la barra lateral por cada uno. El análisis es de solo lectura, así que ves la lista completa y marcas lo que quieras antes de que se cree nada. Los subproyectos se anidan bajo su directorio superior igual que en el disco, y lo que ya tengas configurado se muestra pero nunca se crea dos veces.",
+        "page_label": "Crear carpetas",
+        "highlight_1": "Analiza primero en solo lectura, así que nada se crea hasta que confirmas una selección",
+        "highlight_2": "Enumera los paquetes de nivel superior como filas, y los hallazgos más profundos en un único grupo plegado que puedes seleccionar por completo o dejar vacío",
+        "highlight_3": "Las coincidencias fiables vienen marcadas; las más débiles se ofrecen para que las elijas",
+        "highlight_4": "Muestra las señales detrás de cada coincidencia, para que veas por qué se eligió un directorio",
+        "highlight_5": "Las carpetas que ya tienes aparecen en la lista pero se omiten, nunca se duplican",
+        "highlight_6": "Informa exactamente de lo creado, lo omitido y lo que falló y por qué",
+        "use_case_1": "Convierte un monorepo o un directorio de repositorios hermanos en una carpeta de barra lateral por paquete, para que la orientación por paquete se cargue sin construir el árbol a mano.",
+        "configuration_1": "Abre Crear carpetas, ve a un directorio de proyecto, revisa la vista previa y marca los paquetes que quieras, luego confirma para crear las carpetas."
+      },
+      "projectScaffolderPage": {
+        "absolute_path_to_a_project_directory": "Ruta absoluta a un directorio de proyecto",
+        "already_set_up": "Ya configurado",
+        "browse": "Explorar",
+        "create_folders": "Crear carpetas",
+        "create_folders_from_project": "Crear carpetas desde un proyecto",
+        "create_the_root_folder_only": "Crear solo la carpeta raíz",
+        "creating": "Creando",
+        "directly_under_the_root": "Directamente bajo la raíz",
+        "inside_name": "Dentro de {{name}}",
+        "n_already_existed": "{{n}} ya existían",
+        "n_created": "{{n}} creadas",
+        "n_failed": "{{n}} con error",
+        "n_possible_sub_folders_inside_packages_above": "{{n}} posibles subcarpetas dentro de los paquetes de arriba",
+        "n_selected": "Carpeta raíz + {{n}} seleccionadas",
+        "n_selected_inside": "{{n}} seleccionadas dentro",
+        "no_sub_projects_found": "No se encontraron subproyectos",
+        "nothing_under_this_directory_looked_like_a_proje": "Nada dentro de este directorio parecía un proyecto. Aun así puedes crear una carpeta para el propio directorio.",
+        "preview": "Vista previa",
+        "project_directory": "Directorio del proyecto",
+        "re_scan": "Volver a analizar",
+        "results": "Resultados",
+        "scan": "Analizar",
+        "scan_a_project_directory_then_create_a_sidebar": "Analiza un directorio de proyecto y crea una carpeta de la barra lateral para cada subproyecto que elijas.",
+        "scanning": "Analizando",
+        "select_all": "Seleccionar todo",
+        "select_none": "No seleccionar nada",
+        "signal_git": "repositorio git",
+        "signal_kiro": "carpeta Kiro (.kiro)",
+        "signal_manifest": "{{name}} encontrado",
+        "signal_member": "miembro del workspace",
+        "signals": "Señales",
+        "this_preview_no_longer_matches_the_directory_on": "Esta vista previa ya no coincide con el directorio en disco. Vuelve a analizar antes de crear carpetas.",
+        "tier_confident": "Fiable",
+        "tier_offered": "Opcional",
+        "warnings": "Advertencias"
+      }
+    },
     "projects": {
       "manifest": {
         "description": "Delega un trabajo de varios pasos y déjalo llegar al final sin supervisión. Describe el trabajo en lenguaje natural, pega una especificación escrita o sube un archivo YAML, y luego genera primero un plan para revisar los pasos o inícialo de una vez. Cada ejecución tiene su propia página con el avance paso a paso, y puedes pausarla, reanudarla, reintentarla o detenerla en cualquier momento.",

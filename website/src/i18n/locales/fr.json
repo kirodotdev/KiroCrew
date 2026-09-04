@@ -4472,6 +4472,58 @@
         "preview_unavailable": "Aperçu indisponible"
       }
     },
+    "projectScaffolder": {
+      "manifest": {
+        "display_name": "Créer des dossiers depuis un projet",
+        "description": "Indiquez-lui un répertoire de projet et il détermine quels sous-projets s'y trouvent, puis crée un dossier de barre latérale correspondant à chacun. L'analyse est en lecture seule : vous voyez donc toute la liste et cochez ce que vous voulez avant que quoi que ce soit soit créé. Les sous-projets s'imbriquent sous leur parent comme sur le disque, et ce que vous avez déjà configuré est affiché mais jamais créé deux fois.",
+        "page_label": "Créer des dossiers",
+        "highlight_1": "Analyse d'abord en lecture seule, donc rien n'est créé avant que vous confirmiez une sélection",
+        "highlight_2": "Liste les paquets de premier niveau, les trouvailles plus profondes étant réunies dans un seul groupe replié que vous pouvez tout sélectionner ou tout désélectionner",
+        "highlight_3": "Les correspondances sûres sont cochées ; les plus faibles vous sont proposées",
+        "highlight_4": "Affiche les indices derrière chaque correspondance, pour voir pourquoi un répertoire a été retenu",
+        "highlight_5": "Les dossiers que vous avez déjà sont listés mais ignorés, jamais dupliqués",
+        "highlight_6": "Indique exactement ce qui a été créé, ignoré, et ce qui a échoué et pourquoi",
+        "use_case_1": "Transforme un monorepo ou un répertoire de dépôts voisins en un dossier de barre latérale par paquet, pour que le pilotage par paquet se charge sans construire l'arborescence à la main.",
+        "configuration_1": "Ouvre Créer des dossiers, navigue vers un répertoire de projet, examine l'aperçu et coche les paquets voulus, puis confirme pour créer les dossiers."
+      },
+      "projectScaffolderPage": {
+        "absolute_path_to_a_project_directory": "Chemin absolu vers un répertoire de projet",
+        "already_set_up": "Déjà configuré",
+        "browse": "Parcourir",
+        "create_folders": "Créer les dossiers",
+        "create_folders_from_project": "Créer des dossiers depuis un projet",
+        "create_the_root_folder_only": "Créer seulement le dossier racine",
+        "creating": "Création",
+        "directly_under_the_root": "Directement sous la racine",
+        "inside_name": "Dans {{name}}",
+        "n_already_existed": "{{n}} existaient déjà",
+        "n_created": "{{n}} créés",
+        "n_failed": "{{n}} en échec",
+        "n_possible_sub_folders_inside_packages_above": "{{n}} sous-dossiers possibles dans les paquets ci-dessus",
+        "n_selected": "Dossier racine + {{n}} sélectionnés",
+        "n_selected_inside": "{{n}} sélectionnés à l'intérieur",
+        "no_sub_projects_found": "Aucun sous-projet trouvé",
+        "nothing_under_this_directory_looked_like_a_proje": "Rien dans ce répertoire ne ressemblait à un projet. Tu peux tout de même créer un dossier pour le répertoire lui-même.",
+        "preview": "Aperçu",
+        "project_directory": "Répertoire du projet",
+        "re_scan": "Relancer l’analyse",
+        "results": "Résultats",
+        "scan": "Analyser",
+        "scan_a_project_directory_then_create_a_sidebar": "Analysez un répertoire de projet, puis créez un dossier de barre latérale pour chaque sous-projet retenu.",
+        "scanning": "Analyse en cours",
+        "select_all": "Tout sélectionner",
+        "select_none": "Tout désélectionner",
+        "signal_git": "dépôt git",
+        "signal_kiro": "dossier Kiro (.kiro)",
+        "signal_manifest": "{{name}} trouvé",
+        "signal_member": "membre du workspace",
+        "signals": "Indices",
+        "this_preview_no_longer_matches_the_directory_on": "Cet aperçu ne correspond plus au répertoire sur le disque. Relancez l’analyse avant de créer les dossiers.",
+        "tier_confident": "Sûr",
+        "tier_offered": "Proposé",
+        "warnings": "Avertissements"
+      }
+    },
     "projects": {
       "manifest": {
         "description": "Confie une tâche en plusieurs étapes et laisse-la s’exécuter jusqu’au bout sans surveillance. Décris le travail en langage simple, colle une spécification écrite ou charge un fichier YAML, puis génère d’abord un plan pour relire les étapes, ou lance-la tout de suite. Chaque exécution obtient sa propre page qui montre la progression étape par étape, et tu peux la mettre en pause, la reprendre, la relancer ou l’arrêter à tout moment.",

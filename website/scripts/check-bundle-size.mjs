@@ -48,7 +48,10 @@ export const CHUNK_BUDGETS = {
   // per-pod system readout then adds its own strings across the same 12
   // catalogs on top of that baseline. The Drive gallery's keys across 13
   // catalogs ride inside the headroom that measurement already left, so this
-  // branch does not move the ceiling.
+  // branch does not move the ceiling. The Create Folders From Project builtin
+  // adds 39 keys (~107 KB of eager strings) per catalog, which also rides
+  // inside that headroom -- no new library or surface reaches this chunk (the
+  // app's page sits behind a lazy import() in `src/apps/builtinRegistry.ts`).
   all: 10490 * KB, // measured 9985 KB before the pod-system catalog keys (~5% headroom)
 
   // The i18n RUNTIME — the i18next singleton, `initI18n`, the English catalog —

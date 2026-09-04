@@ -4320,6 +4320,58 @@
         "preview_unavailable": "미리보기를 사용할 수 없음"
       }
     },
+    "projectScaffolder": {
+      "manifest": {
+        "display_name": "프로젝트에서 폴더 만들기",
+        "description": "프로젝트 디렉터리를 지정하면 그 안에 어떤 하위 프로젝트가 있는지 파악하여 각각에 맞는 사이드바 폴더를 만듭니다. 스캔은 읽기 전용이므로 아무것도 만들어지기 전에 전체 목록을 보고 원하는 항목을 선택할 수 있습니다. 하위 프로젝트는 디스크에서와 같은 방식으로 상위 항목 아래에 중첩되며, 이미 설정해 둔 것은 표시되지만 두 번 만들어지지는 않습니다.",
+        "page_label": "폴더 만들기",
+        "highlight_1": "먼저 읽기 전용으로 스캔하므로 선택을 확인할 때까지 아무것도 만들어지지 않습니다",
+        "highlight_2": "최상위 패키지를 행으로 나열하고, 더 깊은 항목은 하나의 접힌 그룹에 모아 전체 선택하거나 전체 해제할 수 있습니다",
+        "highlight_3": "확실한 일치 항목은 미리 선택되고, 약한 항목은 직접 고를 수 있게 제시됩니다",
+        "highlight_4": "각 일치의 근거가 된 신호를 보여 주므로 해당 디렉터리가 선택된 이유를 알 수 있습니다",
+        "highlight_5": "이미 있는 폴더는 목록에 나오지만 건너뛰며 중복으로 만들어지지 않습니다",
+        "highlight_6": "무엇이 만들어지고 건너뛰어졌으며, 무엇이 실패했고 그 이유가 무엇인지 정확히 보고합니다",
+        "use_case_1": "모노레포나 형제 리포지터리가 모인 디렉터리를 패키지마다 하나의 사이드바 폴더로 바꿔, 트리를 직접 만들지 않고도 패키지별 스티어링이 로드되게 합니다.",
+        "configuration_1": "폴더 만들기를 열고 프로젝트 디렉터리로 이동해 미리보기를 확인한 뒤 원하는 패키지를 선택하고 확인하여 폴더를 만듭니다."
+      },
+      "projectScaffolderPage": {
+        "absolute_path_to_a_project_directory": "프로젝트 디렉터리의 절대 경로",
+        "already_set_up": "이미 설정됨",
+        "browse": "찾아보기",
+        "create_folders": "폴더 만들기",
+        "create_folders_from_project": "프로젝트에서 폴더 만들기",
+        "create_the_root_folder_only": "루트 폴더만 만들기",
+        "creating": "만드는 중",
+        "directly_under_the_root": "루트 바로 아래",
+        "inside_name": "{{name}} 내부",
+        "n_already_existed": "{{n}}개는 이미 있었음",
+        "n_created": "{{n}}개 생성",
+        "n_failed": "{{n}}개 실패",
+        "n_possible_sub_folders_inside_packages_above": "위 패키지 내부의 하위 폴더 후보 {{n}}개",
+        "n_selected": "루트 폴더 + {{n}}개 선택됨",
+        "n_selected_inside": "내부 {{n}}개 선택됨",
+        "no_sub_projects_found": "하위 프로젝트를 찾지 못했습니다",
+        "nothing_under_this_directory_looked_like_a_proje": "이 디렉터리 안에 프로젝트처럼 보이는 것이 없었습니다. 이 디렉터리 자체에 대한 폴더는 그래도 만들 수 있습니다.",
+        "preview": "미리 보기",
+        "project_directory": "프로젝트 디렉터리",
+        "re_scan": "다시 스캔",
+        "results": "결과",
+        "scan": "스캔",
+        "scan_a_project_directory_then_create_a_sidebar": "프로젝트 디렉터리를 스캔한 다음 선택한 하위 프로젝트마다 사이드바 폴더를 만듭니다.",
+        "scanning": "스캔 중",
+        "select_all": "전체 선택",
+        "select_none": "전체 해제",
+        "signal_git": "git 저장소",
+        "signal_kiro": "Kiro 폴더 (.kiro)",
+        "signal_manifest": "{{name}} 발견",
+        "signal_member": "워크스페이스 멤버",
+        "signals": "신호",
+        "this_preview_no_longer_matches_the_directory_on": "이 미리 보기는 디스크의 디렉터리와 더 이상 일치하지 않습니다. 폴더를 만들기 전에 다시 스캔하세요.",
+        "tier_confident": "확실",
+        "tier_offered": "선택 가능",
+        "warnings": "경고"
+      }
+    },
     "projects": {
       "manifest": {
         "use_case_1": "자연어, 기존 사양 또는 결정론적 YAML에서 의존성을 인식하는 다중 에이전트 작업을 계획하고 실행합니다.",

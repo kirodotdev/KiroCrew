@@ -139,6 +139,19 @@ _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
         "the backend.",
     ),
     (
+        "Project-scan warning reasons",
+        "project_scan.py",
+        "The per-file warning strings the folder scanner returns "
+        "(`CandidateTree.warnings`), which ride the scan/scaffold API responses "
+        "into the dashboard's preview surface. A warning reason embeds the "
+        "exception text of a failed parse, and a parser quotes the offending "
+        "source line back -- tree content the user merely pointed at, so a "
+        "malformed workspace declaration holding a credential would otherwise "
+        "be echoed verbatim. Redacted at construction (`_warning_reason`), so "
+        "no unredacted copy of the reason ever exists for a later consumer (a "
+        "log line, a persisted report) to leak.",
+    ),
+    (
         "AWS identity-probe failures",
         "aws_consent.py",
         "The stderr of a failed `aws sts get-caller-identity`, run to show the "

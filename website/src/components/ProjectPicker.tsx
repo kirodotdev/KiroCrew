@@ -154,7 +154,7 @@ export default function ProjectPicker({ open, onOpenChange, anchorRef, anchorRec
   const filteredBrowse = q && q !== browsePath.toLowerCase() ? browseDirs.filter(d => d.name.toLowerCase().includes(q.split('/').pop() || '') || d.path.toLowerCase().includes(q)) : browseDirs
 
   return createPortal(
-    <div ref={dropRef} className="fixed z-[9999] bg-bg-elevated border border-border rounded-xl shadow-xl w-[400px] flex flex-col overflow-hidden animate-slide-up" style={(() => {
+    <div ref={dropRef} className="fixed z-[9999] bg-bg-elevated border border-border rounded-xl shadow-xl w-[400px] max-w-[calc(100vw-16px)] flex flex-col overflow-hidden animate-slide-up" style={(() => {
       const dropMinH = 200
       const spaceBelow = window.innerHeight - anchorR.bottom - 8
       const flipUp = spaceBelow < dropMinH || anchorR.bottom > window.innerHeight / 2

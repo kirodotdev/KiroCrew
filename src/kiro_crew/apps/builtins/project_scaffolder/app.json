@@ -1,0 +1,44 @@
+{
+  "name": "project-scaffolder",
+  "version": "0.1.0",
+  "displayName": "Create Folders From Project",
+  "description": "Point it at a project directory and it works out which sub-projects live inside, then creates a matching sidebar folder for each one. The scan is read-only, so you see the whole list and tick what you want before anything is created. Sub-projects nest under their parent the way they do on disk, and anything you have already set up is shown but never created twice.",
+  "author": "kirocrew",
+  "tags": [
+    "folders",
+    "projects",
+    "organization",
+    "developer-tools"
+  ],
+  "highlights": [
+    "Scans read-only first, so nothing is created until you confirm a selection",
+    "Lists top-level packages as rows, with deeper finds behind one collapsed group you can select all or none of",
+    "Confident matches start ticked; weaker ones are offered for you to opt into",
+    "Shows the signals behind each match, so you can see why a directory was picked",
+    "Folders you already have are listed but skipped, never duplicated",
+    "Reports exactly what was created, skipped, and what failed and why"
+  ],
+  "defaultEnabled": false,
+  "permissions": {
+    "api": [
+      "/api/project-scaffold"
+    ]
+  },
+  "ui": {
+    "pages": [
+      {
+        "route": "/project-scaffolder",
+        "label": "Create Folders",
+        "icon": "FolderPlus"
+      }
+    ]
+  },
+  "iconUrl": "/app-assets/project-scaffolder/icon.svg",
+  "heroImage": "/app-assets/project-scaffolder/hero-light.svg",
+  "heroImageDark": "/app-assets/project-scaffolder/hero-dark.svg",
+  "heroImageDetail": "/app-assets/project-scaffolder/hero-detail-light.svg",
+  "heroImageDetailDark": "/app-assets/project-scaffolder/hero-detail-dark.svg",
+  "screenshots": [
+    "/app-assets/project-scaffolder/screenshot-main.png"
+  ]
+}

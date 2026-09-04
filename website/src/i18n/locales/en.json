@@ -3296,6 +3296,58 @@
         "preview_unavailable": "Preview unavailable"
       }
     },
+    "projectScaffolder": {
+      "manifest": {
+        "display_name": "Create Folders From Project",
+        "description": "Point it at a project directory and it works out which sub-projects live inside, then creates a matching sidebar folder for each one. The scan is read-only, so you see the whole list and tick what you want before anything is created. Sub-projects nest under their parent the way they do on disk, and anything you have already set up is shown but never created twice.",
+        "page_label": "Create Folders",
+        "highlight_1": "Scans read-only first, so nothing is created until you confirm a selection",
+        "highlight_2": "Lists top-level packages as rows, with deeper finds behind one collapsed group you can select all or none of",
+        "highlight_3": "Confident matches start ticked; weaker ones are offered for you to opt into",
+        "highlight_4": "Shows the signals behind each match, so you can see why a directory was picked",
+        "highlight_5": "Folders you already have are listed but skipped, never duplicated",
+        "highlight_6": "Reports exactly what was created, skipped, and what failed and why",
+        "use_case_1": "Turn a monorepo or a directory of sibling repositories into one sidebar folder per package, so per-package steering loads without hand-building the tree.",
+        "configuration_1": "Open Create Folders, browse to a project directory, review the preview and tick the packages you want, then confirm to create the folders."
+      },
+      "projectScaffolderPage": {
+        "absolute_path_to_a_project_directory": "Absolute path to a project directory",
+        "already_set_up": "Already set up",
+        "browse": "Browse",
+        "create_folders": "Create folders",
+        "create_folders_from_project": "Create Folders From Project",
+        "create_the_root_folder_only": "Create the root folder only",
+        "creating": "Creating",
+        "directly_under_the_root": "Directly under the root",
+        "inside_name": "Inside {{name}}",
+        "n_already_existed": "{{n}} already existed",
+        "n_created": "{{n}} created",
+        "n_failed": "{{n}} failed",
+        "n_possible_sub_folders_inside_packages_above": "{{n}} possible sub-folders inside packages above",
+        "n_selected": "Root folder + {{n}} selected",
+        "n_selected_inside": "{{n}} selected inside",
+        "no_sub_projects_found": "No sub-projects found",
+        "nothing_under_this_directory_looked_like_a_proje": "Nothing under this directory looked like a project. You can still create a folder for the directory itself.",
+        "preview": "Preview",
+        "project_directory": "Project directory",
+        "re_scan": "Re-scan",
+        "results": "Results",
+        "scan": "Scan",
+        "scan_a_project_directory_then_create_a_sidebar": "Scan a project directory, then create a sidebar folder for each sub-project you pick.",
+        "scanning": "Scanning",
+        "select_all": "Select all",
+        "select_none": "Select none",
+        "signal_git": "git repository",
+        "signal_kiro": "Kiro folder (.kiro)",
+        "signal_manifest": "{{name}} found",
+        "signal_member": "workspace member",
+        "signals": "Signals",
+        "this_preview_no_longer_matches_the_directory_on": "This preview no longer matches the directory on disk. Scan again before creating folders.",
+        "tier_confident": "Confident",
+        "tier_offered": "Offered",
+        "warnings": "Warnings"
+      }
+    },
     "projects": {
       "manifest": {
         "description": "Hand over a multi-step job and let it run to completion unattended. Describe the work in plain language, paste a written spec, or upload a YAML file, then either generate a plan first to review the steps or start it straight away. Each run gets its own page showing step-by-step progress, and you can pause, resume, retry, or stop it at any point.",
