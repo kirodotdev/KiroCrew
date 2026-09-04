@@ -37,6 +37,18 @@ def _make_cfg(
     return cfg
 
 
+def _owner_request() -> MagicMock:
+    request = MagicMock(spec=web.Request)
+    state = MagicMock()
+    state.owner_id = ""
+    request.app = {"state": state}
+    claims = {"user": "local-app", "app": ""}
+    request.get = lambda key, default=None: claims.get(key, default)
+    request.__contains__.side_effect = lambda key: key in claims
+    request.__getitem__.side_effect = lambda key: claims[key]
+    return request
+
+
 @pytest.mark.asyncio
 async def test_theme_boot_returns_defaults() -> None:
     """GET /api/theme/boot returns empty defaults when unconfigured."""
@@ -112,7 +124,7 @@ async def test_theme_config_put_updates_and_saves() -> None:
     cfg = _make_cfg(theme_mode="", theme_color="", onboarded=False, import_onboarded=False)
     with patch.object(core_mod, "KiroCrewConfig") as mock_cls:
         mock_cls.load.return_value = cfg
-        req = MagicMock(spec=web.Request)
+        req = _owner_request()
         req.method = "PUT"
         req.json = AsyncMock(
             return_value={
@@ -142,7 +154,7 @@ async def test_theme_config_put_validates_mode() -> None:
     cfg = _make_cfg()
     with patch.object(core_mod, "KiroCrewConfig") as mock_cls:
         mock_cls.load.return_value = cfg
-        req = MagicMock(spec=web.Request)
+        req = _owner_request()
         req.method = "PUT"
         req.json = AsyncMock(return_value={"mode": "invalid"})
         with pytest.raises(web.HTTPBadRequest):
@@ -155,7 +167,7 @@ async def test_theme_config_put_validates_import_onboarded_boolean() -> None:
     cfg = _make_cfg()
     with patch.object(core_mod, "KiroCrewConfig") as mock_cls:
         mock_cls.load.return_value = cfg
-        req = MagicMock(spec=web.Request)
+        req = _owner_request()
         req.method = "PUT"
         req.json = AsyncMock(return_value={"import_onboarded": "false"})
         with pytest.raises(web.HTTPBadRequest):
@@ -173,7 +185,7 @@ async def test_theme_config_put_persists_privacy_acked() -> None:
     cfg = _make_cfg()
     with patch.object(core_mod, "KiroCrewConfig") as mock_cls:
         mock_cls.load.return_value = cfg
-        req = MagicMock(spec=web.Request)
+        req = _owner_request()
         req.method = "PUT"
         req.json = AsyncMock(return_value={"privacy_acked": True})
         resp = await core_mod.api_theme_config(req)
@@ -188,7 +200,7 @@ async def test_theme_config_put_validates_privacy_acked_boolean() -> None:
     cfg = _make_cfg()
     with patch.object(core_mod, "KiroCrewConfig") as mock_cls:
         mock_cls.load.return_value = cfg
-        req = MagicMock(spec=web.Request)
+        req = _owner_request()
         req.method = "PUT"
         req.json = AsyncMock(return_value={"privacy_acked": "true"})
         with pytest.raises(web.HTTPBadRequest):
@@ -206,7 +218,7 @@ async def test_theme_config_put_no_change_no_save() -> None:
     )
     with patch.object(core_mod, "KiroCrewConfig") as mock_cls:
         mock_cls.load.return_value = cfg
-        req = MagicMock(spec=web.Request)
+        req = _owner_request()
         req.method = "PUT"
         req.json = AsyncMock(
             return_value={
@@ -224,7 +236,7 @@ async def test_theme_config_put_no_change_no_save() -> None:
 @pytest.mark.asyncio
 async def test_theme_config_put_rejects_non_object_body() -> None:
     """PUT /api/config/theme rejects arrays instead of raising during key access."""
-    req = MagicMock(spec=web.Request)
+    req = _owner_request()
     req.method = "PUT"
     req.json = AsyncMock(return_value=["import_onboarded"])
 
@@ -276,10 +288,10 @@ async def test_theme_config_put_serializes_full_load_modify_save_transaction() -
         await both_parsed.wait()
         return value
 
-    first = MagicMock(spec=web.Request)
+    first = _owner_request()
     first.method = "PUT"
     first.json = lambda: body({"mode": "dark"})
-    second = MagicMock(spec=web.Request)
+    second = _owner_request()
     second.method = "PUT"
     second.json = lambda: body({"import_onboarded": True})
 
@@ -327,7 +339,7 @@ async def test_theme_config_put_accepts_valid_language_tags(tag: str) -> None:
     cfg = _make_cfg()
     with patch.object(core_mod, "KiroCrewConfig") as mock_cls:
         mock_cls.load.return_value = cfg
-        req = MagicMock(spec=web.Request)
+        req = _owner_request()
         req.method = "PUT"
         req.json = AsyncMock(return_value={"language": tag})
         resp = await core_mod.api_theme_config(req)
@@ -342,7 +354,7 @@ async def test_theme_config_put_clears_language_to_auto() -> None:
     cfg = _make_cfg(language="zh-CN")
     with patch.object(core_mod, "KiroCrewConfig") as mock_cls:
         mock_cls.load.return_value = cfg
-        req = MagicMock(spec=web.Request)
+        req = _owner_request()
         req.method = "PUT"
         req.json = AsyncMock(return_value={"language": ""})
         resp = await core_mod.api_theme_config(req)
@@ -370,7 +382,7 @@ async def test_theme_config_put_rejects_malformed_language(bad: str) -> None:
     cfg = _make_cfg()
     with patch.object(core_mod, "KiroCrewConfig") as mock_cls:
         mock_cls.load.return_value = cfg
-        req = MagicMock(spec=web.Request)
+        req = _owner_request()
         req.method = "PUT"
         req.json = AsyncMock(return_value={"language": bad})
         with pytest.raises(web.HTTPBadRequest):
@@ -384,7 +396,7 @@ async def test_theme_config_put_rejects_non_string_language() -> None:
     cfg = _make_cfg()
     with patch.object(core_mod, "KiroCrewConfig") as mock_cls:
         mock_cls.load.return_value = cfg
-        req = MagicMock(spec=web.Request)
+        req = _owner_request()
         req.method = "PUT"
         req.json = AsyncMock(return_value={"language": ["zh-CN"]})
         with pytest.raises(web.HTTPBadRequest):
@@ -402,7 +414,7 @@ async def test_theme_config_put_omitting_language_leaves_it_untouched() -> None:
     cfg = _make_cfg(language="zh-CN")
     with patch.object(core_mod, "KiroCrewConfig") as mock_cls:
         mock_cls.load.return_value = cfg
-        req = MagicMock(spec=web.Request)
+        req = _owner_request()
         req.method = "PUT"
         req.json = AsyncMock(return_value={"color": "monokai"})
         resp = await core_mod.api_theme_config(req)

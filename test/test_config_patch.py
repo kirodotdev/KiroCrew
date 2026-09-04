@@ -11,10 +11,21 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
 
+@web.middleware
+async def _owner_identity(request, handler):
+    request["user"] = "local-app"
+    request["app"] = ""
+    state = request.app.get("state")
+    if state is not None:
+        state.owner_id = ""
+    return await handler(request)
+
+
 def _make_app() -> web.Application:
     from kiro_crew.dashboard.handlers import api_kirocrew_config_patch
 
-    app = web.Application()
+    app = web.Application(middlewares=[_owner_identity])
+    app["state"] = MagicMock()
     app.router.add_patch("/api/config/kirocrew", api_kirocrew_config_patch)
     return app
 

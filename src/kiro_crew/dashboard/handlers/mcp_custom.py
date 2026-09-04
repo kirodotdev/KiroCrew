@@ -24,6 +24,7 @@ import logging
 from aiohttp import web
 
 from kiro_crew.dashboard.handlers import mcp as _mcp
+from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
 from kiro_crew.dashboard.handlers.mcp import (
     _find_server_spec_anywhere,
     _get_kirocrew_entry,
@@ -319,6 +320,10 @@ async def api_mcp_custom_add(request: web.Request) -> web.Response:
     Validates EVERY entry before writing ANY (no partial adds), and
     refuses to clobber existing servers (409 listing the conflicts).
     """
+    denied = await require_owner_dashboard_request(request, "mcp.custom_add")
+    if denied is not None:
+        return denied
+
     try:
         body = await request.json()
     except Exception:
@@ -457,6 +462,10 @@ async def api_mcp_custom_update(request: web.Request) -> web.Response:
     for management on a shared surface.  A FRESH add carries no tolerated
     keys, so a pasted block naming it is still rejected outright.
     """
+    denied = await require_owner_dashboard_request(request, "mcp.custom_update")
+    if denied is not None:
+        return denied
+
     name = request.match_info.get("name", "")
     if not _is_valid_mcp_name(name):
         return web.json_response({"error": f"invalid server name '{name[:64]}'"}, status=400)

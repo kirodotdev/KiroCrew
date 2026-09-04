@@ -139,7 +139,12 @@ class TestMcpServerRegistration:
 
     @asynccontextmanager
     async def _make_client(self):
-        app = web.Application()
+        @web.middleware
+        async def _grant_internal_auth(request, handler):
+            request["internal_auth"] = True
+            return await handler(request)
+
+        app = web.Application(middlewares=[_grant_internal_auth])
         app.router.add_put("/api/mcp/servers/{name}", api_mcp_server_detail)
         app.router.add_delete("/api/mcp/servers/{name}", api_mcp_server_detail)
         async with TestClient(TestServer(app)) as c:

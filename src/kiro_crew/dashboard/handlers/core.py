@@ -59,6 +59,7 @@ from kiro_crew.context_management import RESULT_FILE_MAX_BYTES
 from kiro_crew.dashboard.handlers._shared import (
     _pip_install_channel_available,
     pip_extra_install_command,
+    require_owner_dashboard_request,
 )
 from kiro_crew.dashboard.origin import check_host, is_direct_local_request
 from kiro_crew.dashboard.state import DashboardState
@@ -442,6 +443,9 @@ async def api_theme_config(request: web.Request) -> web.Response:
         return web.json_response(_theme_payload(cfg))
 
     # PUT
+    denied = await require_owner_dashboard_request(request, "config.theme.write")
+    if denied is not None:
+        return denied
     body = await request.json()
     if not isinstance(body, dict):
         raise web.HTTPBadRequest(text="request body must be an object")
@@ -1251,6 +1255,10 @@ async def api_kirocrew_config(request: web.Request) -> web.Response:
     from kiro_crew.config.loader import config_path  # noqa: F811
 
     if request.method == "PUT":
+        denied = await require_owner_dashboard_request(request, "config.update")
+        if denied is not None:
+            return denied
+
         caller = request.get("user", "dashboard")
 
         def _deny(error: str, status: int = 400) -> web.Response:
@@ -1844,6 +1852,10 @@ def _tailnet_governance_pinned_off() -> bool:
 
 async def api_kirocrew_config_patch(request: web.Request) -> web.Response:
     """PATCH /api/config/kirocrew — update a single config field."""
+    denied = await require_owner_dashboard_request(request, "config.patch")
+    if denied is not None:
+        return denied
+
     from kiro_crew.config.loader import ConfigReadError, config_path, update_config_locked
 
     caller = request.get("user")

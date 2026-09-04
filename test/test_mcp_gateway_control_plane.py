@@ -25,7 +25,10 @@ def _make_request(state: object, body: dict) -> web.Request:
     req = MagicMock(spec=web.Request)
     req.json = AsyncMock(return_value=body)
     req.app = {"state": state}
-    req.get = lambda key, default=None: default
+    claims = {"user": "local-app", "app": ""}
+    req.get = lambda key, default=None: claims.get(key, default)
+    req.__contains__.side_effect = lambda key: key in claims
+    req.__getitem__.side_effect = lambda key: claims[key]
     return req
 
 

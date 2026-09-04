@@ -18,7 +18,13 @@ from kiro_crew.dashboard.handlers.core import api_kirocrew_config
 async def _put(agent_settings: dict, cfg_path) -> web.Response:
     request = MagicMock(spec=web.Request)
     request.method = "PUT"
-    request.get = lambda *a, **k: "test-user"
+    state = MagicMock()
+    state.owner_id = ""
+    request.app = {"state": state}
+    claims = {"user": "local-app", "app": ""}
+    request.get = lambda key, default=None: claims.get(key, default)
+    request.__contains__.side_effect = lambda key: key in claims
+    request.__getitem__.side_effect = lambda key: claims[key]
 
     async def _json():
         return {"agent": agent_settings}

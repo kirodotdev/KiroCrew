@@ -40,9 +40,19 @@ def _make_state(tmp_path, **kwargs):
     return state
 
 
+@web.middleware
+async def _owner_identity(request, handler):
+    request["user"] = "local-app"
+    request["app"] = ""
+    state = request.app.get("state")
+    if state is not None:
+        state.owner_id = ""
+    return await handler(request)
+
+
 def _make_api_app(state: DashboardState) -> web.Application:
     """Minimal app using only _register_mcp_routes (same as start_api_server)."""
-    app = web.Application()
+    app = web.Application(middlewares=[_owner_identity])
     app["state"] = state
     app["port"] = 5476
     _register_mcp_routes(app)
@@ -203,7 +213,7 @@ class TestApiServerSpawn:
         mock_mgr.get.return_value = old
         mock_mgr.spawn.return_value = MagicMock(id="retry-1", done=False, error="")
         state = _make_state(tmp_path, subagents=mock_mgr)
-        app = web.Application()
+        app = web.Application(middlewares=[_owner_identity])
         app["state"] = state
         app.router.add_post("/api/spawn/{agent_id}/retry", api_spawn_retry)
         async with TestClient(TestServer(app)) as client:
@@ -671,7 +681,10 @@ class TestApiKirocrewConfig:
     def _make_app(tmp_path):
         from kiro_crew.dashboard import handlers
 
-        app = web.Application()
+        app = web.Application(middlewares=[_owner_identity])
+        state = MagicMock()
+        state.owner_id = ""
+        app["state"] = state
         app.router.add_get("/api/config/kirocrew", handlers.api_kirocrew_config)
         app.router.add_put("/api/config/kirocrew", handlers.api_kirocrew_config)
         return app

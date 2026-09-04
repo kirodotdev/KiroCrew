@@ -9,6 +9,10 @@ from typing import Any
 
 from aiohttp import web
 
+from kiro_crew.dashboard.handlers._shared import (
+    is_owner_dashboard_request,
+    require_owner_dashboard_request,
+)
 from kiro_crew.kiro_prerequisite import (
     KIRO_CLI_LOGIN_COMMAND,
     KIRO_CLI_SSO_LOGIN_COMMAND,
@@ -18,10 +22,18 @@ from kiro_crew.kiro_prerequisite import (
     PrerequisiteStatus,
     legacy_idle_operation,
 )
-from kiro_crew.sel import sel
 
 logger = logging.getLogger(__name__)
-_LOCAL_DASHBOARD_OWNER_SUBJECTS = frozenset({"local-app", "local-startup"})
+
+
+def _is_dashboard_owner(request: "web.Request") -> bool:
+    """Whether *request* carries the dashboard-owner identity.
+
+    Thin alias over the shared ``is_owner_dashboard_request`` so the sibling
+    modules that import this predicate by name keep working after the gate
+    moved to ``_shared``.
+    """
+    return is_owner_dashboard_request(request)
 
 
 def _not_ready_snapshot(initial_setup_complete: bool = False) -> dict[str, Any]:
@@ -64,44 +76,6 @@ def _caller(request: web.Request) -> str:
     return str(user) if user else "dashboard-user"
 
 
-def _is_dashboard_owner(request: web.Request) -> bool:
-    """Return whether a signed dashboard identity may operate host setup."""
-
-    state = request.app["state"]
-    owner_id = str(getattr(state, "owner_id", "") or "")
-    caller = str(request.get("user") or "")
-    return request.get("app") == "" and (
-        (owner_id and caller == owner_id)
-        or (not owner_id and caller in _LOCAL_DASHBOARD_OWNER_SUBJECTS)
-    )
-
-
-async def _dashboard_owner_only(request: web.Request) -> web.Response | None:
-    """Require the configured owner or a signed standalone-local identity."""
-
-    if _is_dashboard_owner(request):
-        return None
-
-    caller = str(request.get("user") or "")
-    audit_caller = str(request.get("app") or caller or "unknown")
-
-    def _audit() -> None:
-        sel().log_api_access(
-            caller=audit_caller,
-            operation="kiro_prerequisite_access",
-            outcome="denied",
-            source="dashboard",
-            resources=request.path,
-            error="dashboard owner required",
-        )
-
-    try:
-        await asyncio.to_thread(_audit)
-    except Exception:
-        logger.debug("Could not audit denied Kiro prerequisite access", exc_info=True)
-    return web.json_response({"error": "dashboard owner required"}, status=403)
-
-
 async def api_kiro_prerequisite_status(request: web.Request) -> web.Response:
     """GET /api/kiro-prerequisite — current install/login readiness.
 
@@ -115,14 +89,19 @@ async def api_kiro_prerequisite_status(request: web.Request) -> web.Response:
     """
 
     if request.get("app") != "":
-        denied = await _dashboard_owner_only(request)
+        denied = await require_owner_dashboard_request(
+            request,
+            "kiro_prerequisite_access",
+            error="dashboard owner required",
+            resources=request.path,
+        )
         assert denied is not None
         return denied
 
     # Only an owner may force a host probe; a non-owner's refresh reads latched
     # state like any other poll (they receive the redacted payload regardless).
     refresh = request.query.get("refresh")
-    is_owner = _is_dashboard_owner(request)
+    is_owner = is_owner_dashboard_request(request)
     explicit = refresh in ("1", "true", "explicit") and is_owner
     auto = refresh == "auto" and is_owner
 
@@ -145,7 +124,7 @@ async def api_kiro_prerequisite_status(request: web.Request) -> web.Response:
         # survives this path and keeps a returning user out of first-run setup.
         logger.warning("Kiro prerequisite status probe failed", exc_info=True)
         snapshot = _not_ready_snapshot(bool(service.initial_setup_complete))
-    if _is_dashboard_owner(request):
+    if is_owner_dashboard_request(request):
         return web.json_response({**snapshot, "setup_allowed": True})
 
     # Authorized non-owner dashboard users need the readiness bit so the
@@ -215,7 +194,12 @@ async def api_kiro_prerequisite_repair_specs(request: web.Request) -> web.Respon
     write, not a long-lived background operation with progress to poll.
     """
 
-    denied = await _dashboard_owner_only(request)
+    denied = await require_owner_dashboard_request(
+        request,
+        "kiro_prerequisite_access",
+        error="dashboard owner required",
+        resources=request.path,
+    )
     if denied is not None:
         return denied
     snapshot = await _service(request).repair_agent_specs(_caller(request))

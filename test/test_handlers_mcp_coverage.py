@@ -50,7 +50,10 @@ def _request(
     req.query = query or {}
     req.match_info = match_info or {}
     req.method = method
-    req.get = lambda key, default=None: default
+    claims = {"user": "local-app", "app": ""}
+    req.get = lambda key, default=None: claims.get(key, default)
+    req.__contains__.side_effect = lambda key: key in claims
+    req.__getitem__.side_effect = lambda key: claims[key]
     return req
 
 

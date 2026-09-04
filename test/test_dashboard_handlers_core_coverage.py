@@ -1430,8 +1430,21 @@ class TestSecurityStats:
 # ── Agent settings PUT (/api/config/kirocrew) ───────────────────────────
 
 
+@web.middleware
+async def _owner_identity(request, handler):
+    request["user"] = "local-app"
+    request["app"] = ""
+    state = request.app.get("state")
+    if state is not None:
+        state.owner_id = ""
+    return await handler(request)
+
+
 def _agent_cfg_app() -> web.Application:
-    app = web.Application()
+    app = web.Application(middlewares=[_owner_identity])
+    state = MagicMock()
+    state.owner_id = ""
+    app["state"] = state
     app.router.add_route("*", "/api/config/kirocrew", core_mod.api_kirocrew_config)
     return app
 
@@ -1675,7 +1688,8 @@ class TestPatchGuards:
     ) -> None:
         """A dead end ("not editable") becomes a next step for fields whose
         side effects the generic write cannot reproduce."""
-        app = web.Application()
+        app = web.Application(middlewares=[_owner_identity])
+        app["state"] = SimpleNamespace(owner_id="")
         app.router.add_patch("/api/config/kirocrew", core_mod.api_kirocrew_config_patch)
         async with TestClient(TestServer(app)) as client:
             resp = await client.patch(
@@ -1687,7 +1701,8 @@ class TestPatchGuards:
 
     @pytest.mark.asyncio
     async def test_unknown_field_is_refused(self, seeded_config, fake_sel) -> None:
-        app = web.Application()
+        app = web.Application(middlewares=[_owner_identity])
+        app["state"] = SimpleNamespace(owner_id="")
         app.router.add_patch("/api/config/kirocrew", core_mod.api_kirocrew_config_patch)
         async with TestClient(TestServer(app)) as client:
             resp = await client.patch(
@@ -1701,7 +1716,10 @@ class TestFallbackModelPatch:
     """agent.fallback_model — single-value str spec with role-model validation."""
 
     def _app(self) -> web.Application:
-        app = web.Application()
+        # PATCH /api/config/kirocrew is owner-gated: supply the same signed
+        # local-owner identity the sibling patch tests use.
+        app = web.Application(middlewares=[_owner_identity])
+        app["state"] = SimpleNamespace(owner_id="")
         app.router.add_patch("/api/config/kirocrew", core_mod.api_kirocrew_config_patch)
         return app
 
