@@ -844,7 +844,7 @@ def build_spliced_lane(
             "no `BUDGET: at most N BLOCKING` or `BUDGET: report ALL` line found in "
             "the extracted prompt."
         )
-    ci_model = _extract_ci_model(workflow_text, scalars)
+    ci_model = _extract_ci_model(workflow_text, scalars, prefer="cli")
     notes.extend(_model_note(ci_model, local_model))
     return Lane(
         name=name,
@@ -972,26 +972,48 @@ def _run_block_with(
     )
 
 
-def _extract_ci_model(workflow_text: str, scalars: list[BlockScalar]) -> str:
-    """The model id CI actually pins.
+def _extract_ci_model(
+    workflow_text: str, scalars: list[BlockScalar], prefer: str = "action"
+) -> str:
+    """The model id CI pins for THIS lane's reviewer.
 
     Scoped to the blocks where a pin is CONFIG - the action's ``claude_args`` and
     the CLI config heredoc written by a ``run`` block - never the whole file: the
     workflows discuss ``--model`` in prose comments too, and a comment match
     would report a word ("below") as the model id.
+
+    A lane may carry BOTH shapes, so which one wins is not incidental. The GPT
+    lanes drive the codex CLI for the review itself and additionally embed a
+    claude-code-action for the Opus adjudication of their blocking verdict - a
+    different model, on a stage that judges the verdict rather than producing it.
+    Reading that pin as the reviewer's would make the brief claim the GPT lane
+    runs on Opus and report drift on every run. ``prefer`` names the reviewer's
+    own shape: ``"cli"`` for a lane that drives the CLI, ``"action"`` for a lane
+    whose reviewer IS the action.
     """
-    for scalar in scalars:
-        if scalar.key != "claude_args":
-            continue
-        match = re.search(r"--model\s+(\S+)", scalar.text)
-        if match is not None:
-            return match.group(1)
-    for scalar in scalars:
-        if scalar.key != "run":
-            continue
-        match = re.search(r"^\s*model\s*=\s*\"([^\"]+)\"", scalar.text, re.MULTILINE)
-        if match is not None:
-            return match.group(1)
+    def from_action() -> Optional[str]:
+        for scalar in scalars:
+            if scalar.key != "claude_args":
+                continue
+            match = re.search(r"--model\s+(\S+)", scalar.text)
+            if match is not None:
+                return match.group(1)
+        return None
+
+    def from_cli() -> Optional[str]:
+        for scalar in scalars:
+            if scalar.key != "run":
+                continue
+            match = re.search(r"^\s*model\s*=\s*\"([^\"]+)\"", scalar.text, re.MULTILINE)
+            if match is not None:
+                return match.group(1)
+        return None
+
+    order = (from_cli, from_action) if prefer == "cli" else (from_action, from_cli)
+    for source in order:
+        found = source()
+        if found is not None:
+            return found
     raise ParityError(
         "no model pin (`--model X` in claude_args, or `model = \"X\"` in a run "
         "block) found in the workflow; the local brief cannot claim model parity."

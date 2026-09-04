@@ -43,13 +43,25 @@ there is no "and other serious issues" clause):
      alone, never from a PR description).
 Nothing else blocks.
 
-FIX BAR: every finding must carry a fix expressible as an edit to lines
-THIS PR changed. If the fix would need a new function, module,
-abstraction, config knob, dependency, or an edit to untouched code, it
-is out of scope for this bot: DROP THE FINDING. The absence of a
-mechanism is never a finding. Prefer deleting or simplifying code over
-adding anything. A finding that meets WHAT BLOCKS is always
-in-scope, because reverting the offending hunk is a valid minimal fix.
+FIX BAR (advisory findings only): an advisory FINDING must carry a fix
+expressible as an edit to lines THIS PR changed. If the fix would need a
+new function, module, abstraction, config knob, dependency, or an edit
+to untouched code, it is out of scope for this bot: DROP THE FINDING.
+The absence of a mechanism is never a finding. Prefer deleting or
+simplifying code over adding anything.
+
+A finding that meets WHAT BLOCKS is NOT subject to that bar. Report it
+BLOCKING even when the fix the author would ship needs a new function,
+module, abstraction, config knob, dependency, or an edit to untouched
+code. Whether closing a rare or extreme defect is worth that cost is
+weighed DOWNSTREAM, by the adjudication pass, on the full evidence — it
+is never decided here by demoting a blocking defect to advisory, because
+a demotion at this stage carries no evidence record and no security
+fence. Do NOT price the remedy as "revert the hunk": for a hunk the PR
+needs, revert is not a fix the author can ship, and pricing it as free
+is how a real blocking defect would wrongly look advisory. Report the
+defect BLOCKING and name the real fix; the adjudication pass does the
+proportionality weighing, not you.
 
 BUDGET: report ALL findings that genuinely meet WHAT BLOCKS in THIS
 review, so the author can fix everything in one pass. Never stage

@@ -381,6 +381,12 @@ def test_gpt_lane_is_spliced_and_opus_lane_has_no_prompt_target():
         "gpt-falsification-mandate.md",
         "gpt-falsification-verdict.md",
     ]
+    # gpt-block-adjudication.md is deliberately NOT in this list: it is the
+    # contract for the Opus stage that adjudicates GPT's blocking findings, so
+    # the workflow loads it from the base ref OUTSIDE this loop with no checkout
+    # fallback (a PR-supplied copy could authorize its own clearance). It is
+    # neither spliced into the reviewer prompt nor staged by this extractor.
+    assert "gpt-block-adjudication" not in [Path(s.src).name for s in gpt_specs]
     assert all(s.worktree_src == s.src for s in gpt_specs)
     assert local_review._prompt_target(_opus_text()) is None
     opus_specs = local_review.extract_prompt_file_specs(_opus_text())
@@ -441,10 +447,20 @@ def test_remap_joins_with_a_forward_slash_on_every_host():
 def test_model_pins_agree_with_the_bundled_profile():
     gpt_scalars = local_review.block_scalars(_gpt_text())
     opus_scalars = local_review.block_scalars(_opus_text())
-    gpt_ci = local_review._extract_ci_model(_gpt_text(), gpt_scalars)
+    gpt_ci = local_review._extract_ci_model(_gpt_text(), gpt_scalars, prefer="cli")
     opus_ci = local_review._extract_ci_model(_opus_text(), opus_scalars)
     assert local_review._model_note(gpt_ci, PROFILE_MODELS["gpt"]["model"]) == []
     assert local_review._model_note(opus_ci, PROFILE_MODELS["opus"]["model"]) == []
+
+
+def test_the_gpt_pin_is_the_reviewers_not_its_adjudicators():
+    """The GPT lane embeds a claude-code-action for the Opus stage that
+    adjudicates its blocking verdict. Reading THAT pin as the reviewer's would
+    make every local brief report drift and claim the GPT lane runs on Opus."""
+    text = _gpt_text()
+    scalars = local_review.block_scalars(text)
+    assert "us.anthropic.claude-opus-4-8" in text
+    assert local_review._extract_ci_model(text, scalars, prefer="cli") == "openai.gpt-5.6-sol"
 
 
 def test_model_drift_is_reported_not_swallowed():
@@ -1370,9 +1386,13 @@ def test_every_staged_prompt_file_is_spliced_exactly_once_in_loop_order():
 
     The staging loop and the assembly are two lists that must agree: a file
     staged but never spliced silently loses a block of the contract while the
-    lane still publishes a verdict. The document splices must be exactly the
-    staged names in staging order, minus the two falsification files, which
-    the pass-2 step consumes as bare `cat` splices instead.
+    lane still publishes a verdict. Every loop-staged file must therefore have a
+    named consumer, in one of two shapes — a document splice into the prompt
+    target, or a bare `cat` in the step that consumes it (the two falsification
+    files). The adjudication contract is deliberately NOT loop-staged: the
+    workflow loads it from the base ref outside this loop and hands it to the
+    Opus stage, so it never appears in ``extract_prompt_file_specs`` and GPT
+    never reads its own judge.
     """
     text = _gpt_text()
     target = local_review._prompt_target(text)
@@ -1394,7 +1414,12 @@ def test_every_staged_prompt_file_is_spliced_exactly_once_in_loop_order():
         for m in map(local_review._CAT_BARE_RE.match, scalar.text.splitlines())
         if m is not None and m.group("src").startswith(".review-prompts-gpt/")
     ]
-    assert spliced == [name for name in staged if name not in pass_spliced]
+    # The adjudication contract is handed to a LATER stage, from a base-ref load
+    # OUTSIDE this loop, so it must never be loop-staged: a PR-supplied copy
+    # could authorize its own clearance.
+    assert "gpt-block-adjudication.md" not in staged
+    consumed_elsewhere = set(pass_spliced)
+    assert spliced == [name for name in staged if name not in consumed_elsewhere]
     assert len(set(spliced)) == len(spliced), "a document splice repeats"
     assert sorted(spliced + pass_spliced) == sorted(staged)
 
