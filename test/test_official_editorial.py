@@ -52,6 +52,31 @@ class TestRefusals:
 
 
 class TestCaching:
+    def test_interrupted_write_keeps_the_previous_cache(self, monkeypatch):
+        path = oe._cache_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        previous = _doc([_app("previous")])
+        replacement = _doc([_app("replacement")])
+        path.write_text(json.dumps(previous), encoding="utf-8")
+
+        real_write_text = type(path).write_text
+
+        def interrupted_write(self, data, *args, **kwargs):
+            if self == path:
+                real_write_text(self, data[:8], *args, **kwargs)
+                raise OSError("simulated interrupted cache write")
+            return real_write_text(self, data, *args, **kwargs)
+
+        def interrupted_atomic_write(*args, **kwargs):
+            raise OSError("simulated interrupted cache write")
+
+        monkeypatch.setattr(type(path), "write_text", interrupted_write)
+        monkeypatch.setattr(oe, "atomic_write", interrupted_atomic_write, raising=False)
+
+        oe._write_cache(replacement)
+
+        assert json.loads(path.read_text(encoding="utf-8")) == previous
+
     def test_a_success_is_cached_and_the_fetcher_is_not_called_again(self):
         calls: list[int] = []
 
