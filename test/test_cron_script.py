@@ -1006,13 +1006,18 @@ class TestMcpToolClient:
     def test_init_drops_reserved_kirocrew_namespace_from_spec_env(self, monkeypatch):
         """SECURITY regression: a spec ``env`` must not forge caller identity.
 
-        The server this bridge most often spawns is ``kirocrew-cron`` itself, and
-        ``mcp_cron._caller_is_cli()`` is just ``os.environ.get("KIROCREW_CLI") ==
-        "1"`` -- a true return makes every cron tool skip per-session ownership.
-        So a ``KIROCREW_CLI: "1"`` in that server's ``env`` block would let a
-        SCRIPT CRON present itself as the admin CLI and call ``cron_remove_all``
-        over every session's jobs, plus read every session's rows through
-        ``cron_list``.
+        The server this bridge most often spawns is ``kirocrew-cron`` itself,
+        whose ownership checks resolve the calling session from
+        ``KIROCREW_SESSION_KEY``/``KIROCREW_HOST_PID`` when no gateway caller
+        block is present. So one of those in that server's ``env`` block would let
+        a SCRIPT CRON name itself another session and reach that session's jobs --
+        ``cron_remove_all`` over its rows, ``cron_list`` over its contents.
+
+        ``KIROCREW_CLI`` is asserted here too, as history rather than as a live
+        consumer: it was an ambient admin flag that skipped ownership outright,
+        and #6624 deleted the consumer instead of re-grounding it, because nothing
+        in ``src/`` ever set the variable. The deny stays because the CLASS is
+        live -- the next identity key somebody adds is the reason.
 
         Neither existing filter stops it: ``_CRON_ENV_DENY`` covers secrets and
         ``KIROCREW_OWNER_ID``, and the loader prefixes cover ``LD_*``/``PYTHON*``.
@@ -1063,41 +1068,48 @@ class TestMcpToolClient:
         assert passed_env["PATH"] == "/opt/helper/bin"
         assert passed_env["MCP_TOKEN"] == "keep-me"
 
-    def test_caller_is_cli_cannot_be_forged_through_a_cron_spec_env_block(
+    def test_an_identity_key_cannot_be_forged_through_a_cron_spec_env_block(
         self, monkeypatch
     ):
         """The end of the attack path, asserted where it actually decides.
 
         The test above proves the key never reaches the child env. This one runs
-        the real consumer against that env: ``_caller_is_cli()`` evaluated in the
-        environment the spawned server would have started with must be False, so
-        the admin bypass is unreachable from a cron spec's ``env`` block even if
-        some future refactor changes which filter drops the key.
+        the real consumer against that env: the strict session resolver evaluated
+        in the environment the spawned server would have started with must not
+        return the forged session, so a spec's ``env`` block cannot name another
+        session even if some future refactor changes which filter drops the key.
+
+        The key under test used to be ``KIROCREW_CLI``, an ambient admin flag
+        whose consumer #6624 deleted outright -- it had no producer in ``src/``,
+        so there was no claim to re-ground. ``KIROCREW_SESSION_KEY`` is the right
+        successor subject precisely because it DOES have legitimate producers
+        (the ACP spawn path, this bridge), so for it the filter is load-bearing
+        rather than belt-and-braces over a dead name.
 
         SCOPE, deliberately narrow: this covers the ``env`` block only, which is
         the channel ``sanitize_spec_env`` controls. The same spec's ``command``
         field is equally config-authored and reaches the identical consumer
-        (``sh -c 'KIROCREW_CLI=1 exec kirocrew-cron'``), so it is a sibling
-        forgery channel this filter does not close and this test does not claim
-        to -- confinement bounds what the child may touch, not whose jobs Kiro
-        Crew believes it owns. Closing it needs consumer-side vouching rather
-        than another deny-list, which is a separate change; naming the boundary
-        here keeps the assertion honest about which half is proven.
+        (``sh -c 'KIROCREW_SESSION_KEY=... exec kirocrew-cron'``), so it is a
+        sibling forgery channel this filter does not close and this test does not
+        claim to -- confinement bounds what the child may touch, not whose jobs
+        Kiro Crew believes it owns. Closing it needs consumer-side vouching
+        rather than another deny-list; naming the boundary here keeps the
+        assertion honest about which half is proven.
         """
         from kiro_crew.cron_script import McpToolClient, _resolve_mcp_server
-        from kiro_crew.mcp_cron import _caller_is_cli
+        from kiro_crew.mcp_core import _resolve_session_key_strict
 
         _resolve_mcp_server.cache_clear()
-        monkeypatch.delenv("KIROCREW_CLI", raising=False)
-        # Baseline: the flag really is the bypass, so a False below means the
-        # filter worked rather than that the flag never mattered.
-        monkeypatch.setenv("KIROCREW_CLI", "1")
-        assert _caller_is_cli() is True
-        monkeypatch.delenv("KIROCREW_CLI")
+        forged = "dashboard:victim"
+        # Baseline: the key really is an identity source, so a miss below means
+        # the filter worked rather than that the key never mattered.
+        monkeypatch.setenv("KIROCREW_SESSION_KEY", forged)
+        assert _resolve_session_key_strict() == forged
+        monkeypatch.delenv("KIROCREW_SESSION_KEY")
 
         with patch(
             "kiro_crew.cron_script._resolve_mcp_server",
-            return_value=(("some-mcp",), {"KIROCREW_CLI": "1"}),
+            return_value=(("some-mcp",), {"KIROCREW_SESSION_KEY": forged}),
         ), patch(
             "kiro_crew.cron_script.wrap_argv", return_value=(["some-mcp"], None)
         ), patch(
@@ -1110,7 +1122,7 @@ class TestMcpToolClient:
 
         child_env = mock_popen.call_args.kwargs["env"]
         with patch.dict("os.environ", child_env, clear=True):
-            assert _caller_is_cli() is False
+            assert _resolve_session_key_strict() != forged
 
     def test_rpc_disconnect_includes_rc_and_stderr_tail(self, tmp_path):
         """a handshake EOF must surface exit code + stderr tail."""

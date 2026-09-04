@@ -939,18 +939,16 @@ _SPEC_ENV_DENIED_PREFIXES: tuple[str, ...] = (
 # how the gateway tells a process it spawns WHO IS CALLING, and the consumers
 # treat them as vouched-for:
 #
-# * ``KIROCREW_CLI`` — ``mcp_cron._caller_is_cli()`` is exactly
-#   ``os.environ.get("KIROCREW_CLI") == "1"``, and a true return makes the cron
-#   tools skip per-session ownership entirely. Forged, it turns
-#   ``cron_remove_all`` into "delete every session's jobs" and ``cron_list``
-#   into the cross-principal disclosure ``mcp_cron`` explicitly refuses (see its
-#   ownerless-row note: an allowlisted Slack participant is not the operator).
+# * ``KIROCREW_CLI`` — no consumer reads it. It is covered because the deny is on
+#   the NAMESPACE rather than on a list of keys, which is the same property that
+#   covers the next identity variable somebody adds.
 # * ``KIROCREW_SESSION_KEY`` / ``KIROCREW_HOST_PID`` — two of the three sources
 #   ``mcp_core._resolve_session_key_strict()`` accepts, chosen precisely because
 #   they are, in its own words, sources "the gateway authors and an agent cannot
 #   write". A spec overlay authoring one makes that claim false, which is worse
 #   than the loader class: it corrupts the resolver the ownership checks are
-#   built on rather than the process that hosts them.
+#   built on rather than the process that hosts them. These two are the live
+#   reason this boundary exists.
 # * ``KIROCREW_OWNER_ID`` / ``KIROCREW_INTERNAL_SECRET`` — the Slack owner
 #   identity and the loopback shared secret. ``cron_script`` already denies these
 #   two on its own path; putting them here extends the same control to the probe,
@@ -1010,13 +1008,15 @@ def sanitize_spec_env(pairs: Iterable[tuple[str, str]]) -> dict[str, str]:
       mitigate this one at all: confinement bounds what the child may touch, not
       whose jobs Kiro Crew believes the child is entitled to. That is why "the
       command is equally config-authored, and it runs sandboxed" does not settle
-      this class the way it settles the command itself. This prefix set is
-      interim depth, not the authorization control: it stops the ``env`` block
+      this class the way it settles the command itself. This prefix set is depth,
+      not the authorization control, and it cannot be: it stops the ``env`` block
       from spelling an identity key, while the same config's ``command`` field
-      reaches the identical consumer (``sh -c 'KIROCREW_CLI=1 exec ...'``). The
-      real fix is consumer-side vouching so the claim is one a config cannot
-      author -- tracked in #6624. Keep this set when that lands; it also covers
-      KIROCREW_SESSION_KEY / KIROCREW_HOST_PID.
+      reaches the identical consumer (``sh -c 'KIROCREW_SESSION_KEY=... exec
+      ...'``). The control belongs at the CONSUMER, which must not grant
+      authority from ambient environment at all. Keep this set regardless:
+      ``KIROCREW_SESSION_KEY`` / ``KIROCREW_HOST_PID`` have legitimate producers,
+      so for them the consumer-side answer is a strict resolver, and this prefix
+      keeps a config out of the overlay it reads.
 
     Matching is case-INSENSITIVE on purpose: Windows environment variables
     are case-insensitive, so ``pythonpath`` reaches Python exactly like

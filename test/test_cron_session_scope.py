@@ -81,8 +81,15 @@ class TestCronRemoveAllScoped:
         assert len(remaining) == 1
         assert remaining[0].name == n2
 
-    def test_cli_removes_all(self, monkeypatch):
-        """With KIROCREW_CLI=1, cron_remove_all removes everything."""
+    def test_the_cli_flag_does_not_widen_the_sweep(self, monkeypatch):
+        """``KIROCREW_CLI=1`` used to make this remove EVERY session's jobs.
+
+        The companion to the unidentified-caller assertions in
+        ``test/test_mcp_cron_caller_identity.py``: here the caller IS named, so
+        the sweep runs -- and it must still stop at the caller's own rows. A flag
+        that anything shaping this process's environment can spell was never a
+        scope, and nothing in ``src/`` ever set it (#6624).
+        """
         monkeypatch.delenv("KIROCREW_CHANNEL_ID", raising=False)
         n1, n2 = _unique_name(), _unique_name()
 
@@ -92,14 +99,16 @@ class TestCronRemoveAllScoped:
         monkeypatch.setenv("KIROCREW_SESSION_KEY", "sess-Y")
         _call_tool_inner("cron_add", {"name": n2, "message": "b", "every": 120})
 
-        # CLI admin removes everything
         monkeypatch.setenv("KIROCREW_CLI", "1")
-        monkeypatch.delenv("KIROCREW_SESSION_KEY", raising=False)
         result = _call_tool_inner("cron_remove_all", {})
-        assert "Removed 2 job(s)" in result
 
-    def test_no_session_key_no_cli_returns_error(self, monkeypatch):
-        """Without session key or CLI flag, returns error.
+        assert "Removed 1 job(s)" in result
+        svc = CronService()
+        remaining = [j.name for j in svc.list_jobs() if j.name in (n1, n2)]
+        assert remaining == [n1]
+
+    def test_no_session_key_returns_error(self, monkeypatch):
+        """Without a resolvable session key, returns error.
 
         Still an error, now the shared one every mutating tool gives an
         unidentifiable caller rather than a message unique to this tool.
@@ -109,14 +118,12 @@ class TestCronRemoveAllScoped:
         monkeypatch.delenv("KIROCREW_CLI", raising=False)
         name = _unique_name()
 
-        # Create a job via CLI so it exists
-        monkeypatch.setenv("KIROCREW_CLI", "1")
+        # Create a job as an ordinary identified session so it exists
         monkeypatch.setenv("KIROCREW_SESSION_KEY", "sess-owner")
         _call_tool_inner("cron_add", {"name": name, "message": "a", "every": 120})
 
-        # Try to remove without session key or CLI
+        # Try to remove with no identity the gateway can name
         monkeypatch.delenv("KIROCREW_SESSION_KEY", raising=False)
-        monkeypatch.delenv("KIROCREW_CLI", raising=False)
         monkeypatch.setattr("kiro_crew.mcp_cron._authz_session_key", lambda: "")
         result = _call_tool_inner("cron_remove_all", {})
         assert "cannot determine which session is calling" in result

@@ -442,15 +442,16 @@ class McpToolClient:
         #     (env._SPEC_ENV_RESERVED_PREFIXES), which is an authorization control
         #     rather than a containment one and is the reason the two other filters
         #     are not sufficient here. The server this bridge most often spawns is
-        #     `kirocrew-cron` itself, and mcp_cron._caller_is_cli() is just
-        #     `os.environ.get("KIROCREW_CLI") == "1"` -- so a `KIROCREW_CLI: "1"`
-        #     in that server's `env` block would make the spawned server treat a
-        #     SCRIPT CRON as the admin CLI and let it run cron_remove_all across
-        #     every session. Sandboxing does not bound that: confinement limits what
-        #     the child may touch, not whose jobs Kiro Crew thinks it owns. The deny
-        #     lives in the shared sanitizer rather than in _CRON_ENV_DENY so the
-        #     discovery probe -- which applies no cron deny-set at all -- is covered
-        #     by the same control instead of a second copy of it.
+        #     `kirocrew-cron` itself, whose ownership checks resolve the calling
+        #     session from KIROCREW_SESSION_KEY / KIROCREW_HOST_PID when no
+        #     gateway caller block is present -- so one of those in that server's
+        #     `env` block would let a SCRIPT CRON name itself another session and
+        #     reach that session's jobs. Sandboxing does not bound that:
+        #     confinement limits what the child may touch, not whose jobs Kiro
+        #     Crew thinks it owns. The deny lives in the shared sanitizer rather
+        #     than in _CRON_ENV_DENY so the discovery probe -- which applies no
+        #     cron deny-set at all -- is covered by the same control instead of a
+        #     second copy of it.
         proc_env = _clean_cron_env()
         proc_env.update(
             sanitize_spec_env((k, v) for k, v in spec_env.items() if k not in _CRON_ENV_DENY)

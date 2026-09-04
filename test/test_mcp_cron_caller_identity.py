@@ -164,16 +164,118 @@ def test_an_unidentified_caller_reads_nothing() -> None:
     assert owned not in listed
 
 
-def test_the_cli_keeps_its_admin_bypass(monkeypatch) -> None:
-    """The refusal never strands an operator; it names this route."""
-    _as_session("dashboard:owner")
-    job_id = _add_job(f"cli-{uuid.uuid4().hex[:8]}")
-    set_current_caller(None)
-    monkeypatch.setenv("KIROCREW_CLI", "1")
+#: The forgery, spelled the way a config reaches this process.
+#:
+#: Every test below sets it from OUTSIDE, which is the only thing an attacker
+#: has to do: a spawned server's environment is shaped by the spec that spawns
+#: it, and the two channels the spec has -- an ``env`` block and a ``command``
+#: like ``sh -c 'KIROCREW_CLI=1 exec kirocrew-cron'`` -- differ only in which
+#: one a filter happens to inspect. By the time the value is in ``os.environ``
+#: they are the same fact, which is why asserting on the CONSUMER covers both
+#: channels at once and why no test here needs to spawn anything.
+_FORGED = ("KIROCREW_CLI", "1")
 
-    assert "cannot determine which session is calling" not in _call_tool_inner(
-        "cron_pause", {"job_id": job_id}
+
+@pytest.mark.parametrize("tool", _MUTATING_TOOLS)
+def test_a_forged_cli_flag_does_not_unlock_another_sessions_job(tool, monkeypatch) -> None:
+    """The mutation gate. Forging the flag must not reach Alice's row.
+
+    This is the assertion that fails before the fix: the gate's first statement
+    was ``if _caller_is_cli(): return None``, so setting two characters in the
+    environment returned "authorized" for every one of these tools without the
+    caller naming a session at all.
+    """
+    _as_session("dashboard:alice")
+    job_id = _add_job(f"alice-{uuid.uuid4().hex[:8]}")
+
+    set_current_caller(None)
+    monkeypatch.setenv(*_FORGED)
+
+    assert "cannot determine which session is calling" in _call_tool_inner(
+        tool, {"job_id": job_id, "message": "x"}
     )
+
+
+def test_a_forged_cli_flag_does_not_widen_the_list(monkeypatch) -> None:
+    """The read gate, over BOTH kinds of row the filter withholds."""
+    _as_session("dashboard:alice")
+    owned = f"alice-{uuid.uuid4().hex[:8]}"
+    _add_job(owned)
+    svc = CronService(base_dir=mcp_cron.config_dir())
+    ownerless = f"cli-made-{uuid.uuid4().hex[:8]}"
+    svc.add_job(name=ownerless, message="go", every_secs=120, session_key="")
+
+    set_current_caller(None)
+    monkeypatch.setenv(*_FORGED)
+    listed = _call_tool_inner("cron_list", {})
+
+    assert owned not in listed
+    assert ownerless not in listed
+
+
+def test_a_forged_cli_flag_does_not_sweep_every_sessions_jobs(monkeypatch) -> None:
+    """The destructive one. A forged flag used to delete the whole store."""
+    _as_session("dashboard:alice")
+    alice = f"alice-{uuid.uuid4().hex[:8]}"
+    _add_job(alice)
+    _as_session("dashboard:bob")
+    bob = f"bob-{uuid.uuid4().hex[:8]}"
+    _add_job(bob)
+
+    set_current_caller(None)
+    monkeypatch.setenv(*_FORGED)
+
+    assert "cannot determine which session is calling" in _call_tool_inner("cron_remove_all", {})
+    svc = CronService(base_dir=mcp_cron.config_dir())
+    survived = {j.name for j in svc.list_jobs(include_disabled=True)}
+    assert survived == {alice, bob}
+
+
+def test_a_forged_cli_flag_does_not_mint_an_ownerless_row(monkeypatch) -> None:
+    """``cron_add``'s branch. The flag let an unidentified caller store a row
+    with no owner -- the very shape that is unreachable from MCP afterwards."""
+    set_current_caller(None)
+    monkeypatch.setenv(*_FORGED)
+
+    result = _call_tool_inner(
+        "cron_add", {"name": f"forged-{uuid.uuid4().hex[:8]}", "message": "go", "every": 120}
+    )
+
+    assert "cannot determine which session is calling" in result
+    svc = CronService(base_dir=mcp_cron.config_dir())
+    assert svc.list_jobs(include_disabled=True) == []
+
+
+def test_the_flag_changes_no_answer_this_server_gives(monkeypatch) -> None:
+    """The regression that a per-site test cannot see.
+
+    Each assertion above pins one consumer. Someone reintroducing the fast path
+    at a SIXTH decision would leave all of them green, so this pins the property
+    the fix actually establishes: the variable is inert. Stated as behaviour
+    rather than as a grep for the name, it also survives a regression that reads
+    the value under a different spelling -- and it still allows the comments that
+    explain to the next reader why nothing consults it.
+    """
+    _as_session("dashboard:alice")
+    job_id = _add_job(f"alice-{uuid.uuid4().hex[:8]}")
+
+    probes = (
+        ("cron_list", {}),
+        ("cron_remove_all", {}),
+        *((tool, {"job_id": job_id, "message": "x"}) for tool in _MUTATING_TOOLS),
+        ("cron_add", {"name": "n", "message": "go", "every": 120}),
+    )
+
+    for tool, args in probes:
+        set_current_caller(None)
+        monkeypatch.delenv("KIROCREW_CLI", raising=False)
+        without = _call_tool_inner(tool, args)
+
+        set_current_caller(None)
+        monkeypatch.setenv(*_FORGED)
+        with_flag = _call_tool_inner(tool, args)
+
+        assert without == with_flag, f"{tool} answered differently with the flag set"
 
 
 # --- 4b: the gate the fix makes reachable at all --------------------------
