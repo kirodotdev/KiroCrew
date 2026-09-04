@@ -4105,6 +4105,25 @@ def _jira_fix_versions(fields: dict[str, Any]) -> list[dict[str, Any]]:
     return usable
 
 
+def _jira_version_is_done(version: dict[str, Any]) -> bool:
+    """A released or archived version no longer takes new work."""
+    return bool(version.get("released")) or bool(version.get("archived"))
+
+
+def _jira_pick_fix_version(fix_versions: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """Pick the fix version that fills the one-slot milestone contract.
+
+    The Issue panel's milestone chip renders only the version's name, with no
+    released/archived signal, so surfacing a shipped release reads as if it
+    were the pending one (issue #7595).  Prefer the first version that is
+    neither released nor archived; when every version has shipped, fall back
+    to the first usable entry so the ticket still shows a release rather than
+    dropping to no milestone at all.
+    """
+    pending = [v for v in fix_versions if not _jira_version_is_done(v)]
+    return (pending or fix_versions)[0] if fix_versions else None
+
+
 def _jira_fix_version_milestone(version: dict[str, Any]) -> dict[str, str]:
     """Map one Jira fix version onto the ``IssueMilestone`` contract.
 
@@ -4117,7 +4136,7 @@ def _jira_fix_version_milestone(version: dict[str, Any]) -> dict[str, str]:
     is done, and an archived one no longer takes work, so both map to
     ``closed`` and everything else stays ``open``.
     """
-    released = bool(version.get("released")) or bool(version.get("archived"))
+    released = _jira_version_is_done(version)
     return {
         "title": str(version.get("name") or "").strip(),
         "state": "closed" if released else "open",
@@ -4315,10 +4334,12 @@ async def _fetch_jira_issue(ref: SourceRef) -> dict[str, Any]:
         )
 
     # Fix versions -> the milestone slot. The contract holds exactly one, so a
-    # ticket scheduled for several releases surfaces the first and declares the
-    # rest partial rather than dropping them silently.
+    # ticket scheduled for several releases surfaces the pending one (falling
+    # back to the first when all have shipped) and declares the rest partial
+    # rather than dropping them silently.
     fix_versions = _jira_fix_versions(fields)
-    milestone = _jira_fix_version_milestone(fix_versions[0]) if fix_versions else None
+    chosen = _jira_pick_fix_version(fix_versions)
+    milestone = _jira_fix_version_milestone(chosen) if chosen else None
     if len(fix_versions) > 1:
         _mark_partial(partial_sections, "fix versions")
 

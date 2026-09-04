@@ -9746,6 +9746,44 @@ class TestJiraFixVersionMilestone:
         assert set(source._jira_fix_version_milestone(version)) == {"title", "state", "dueOn"}
 
 
+class TestJiraPickFixVersion:
+    """Tests for _jira_pick_fix_version (issue #7595)."""
+
+    def test_mixed_versions_prefer_the_unreleased_one(self) -> None:
+        """A pending release wins over an already-shipped one ahead of it."""
+        fix_versions = [
+            {"name": "2.3.0", "released": True},
+            {"name": "2.4.0", "released": False},
+        ]
+        chosen = source._jira_pick_fix_version(fix_versions)
+        assert chosen is not None
+        assert chosen["name"] == "2.4.0"
+
+    def test_all_released_falls_back_to_the_first(self) -> None:
+        """A ticket whose versions all shipped still shows one milestone."""
+        fix_versions = [
+            {"name": "2.2.0", "released": True},
+            {"name": "2.3.0", "archived": True},
+        ]
+        chosen = source._jira_pick_fix_version(fix_versions)
+        assert chosen is not None
+        assert chosen["name"] == "2.2.0"
+
+    def test_empty_list_yields_none(self) -> None:
+        """No usable fix versions means no milestone."""
+        assert source._jira_pick_fix_version([]) is None
+
+    def test_archived_is_not_pending(self) -> None:
+        """An archived-but-unreleased version does not count as pending."""
+        fix_versions = [
+            {"name": "1.0.0", "released": False, "archived": True},
+            {"name": "1.1.0", "released": False},
+        ]
+        chosen = source._jira_pick_fix_version(fix_versions)
+        assert chosen is not None
+        assert chosen["name"] == "1.1.0"
+
+
 class _JiraFakeContent:
     """Minimal ``StreamReader`` stand-in for the capped-response reader."""
 
@@ -9843,6 +9881,26 @@ class TestJiraFixVersionInPayload:
             },
         )
         assert issue["milestone"]["title"] == "2.4.0"
+        assert "fix versions" in issue["partialSections"]
+
+    @pytest.mark.asyncio
+    async def test_pending_version_wins_over_a_shipped_one(self, monkeypatch) -> None:
+        """A released version ahead of a pending one does not steal the chip (#7595)."""
+        issue, _seen = await _jira_fetch(
+            monkeypatch,
+            {
+                "summary": "Fixed in the next release",
+                "fixVersions": [
+                    {"name": "2.3.0", "releaseDate": "2026-06-30", "released": True},
+                    {"name": "2.4.0", "releaseDate": "2026-09-30", "released": False},
+                ],
+            },
+        )
+        assert issue["milestone"] == {
+            "title": "2.4.0",
+            "state": "open",
+            "dueOn": "2026-09-30",
+        }
         assert "fix versions" in issue["partialSections"]
 
     @pytest.mark.asyncio
