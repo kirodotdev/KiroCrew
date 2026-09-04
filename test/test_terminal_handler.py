@@ -3432,6 +3432,140 @@ class TestTerminalWsIntegration:
         reason="POSIX login-shell semantics; needs a real bash on PATH",
     )
     @pytest.mark.asyncio
+    async def test_ws_bash_profile_assigning_prompt_command_stays_fail_closed(
+        self, monkeypatch, tmp_path,
+    ):
+        """A profile that ASSIGNS PROMPT_COMMAND drops the hook, and the barrier
+        must then stay SHUT rather than open on inferred progress.
+
+        `_bash_ready_env`'s docstring calls this outcome deliberate: the readiness
+        marker rides an inherited `PROMPT_COMMAND` because Bash reads an
+        `--init-file` only for a NON-login shell, so `PROMPT_COMMAND='history -a'`
+        in a profile replaces the hook and the marker never fires. Releasing the
+        barrier anyway -- on a timeout, or on a line-discipline guess -- risks
+        handing a queued command to a profile still blocked in `read`, which
+        consumes it silently: executed never, reported sent. #7641 shipped such a
+        release and had it reviewed back out.
+
+        Every sibling case here covers an arm where the hook SURVIVES: appended
+        scalar, appended array, inherited, restored, preserved, blank-inherited.
+        This is the arm where it does not. Without it, the barrier could be made
+        to open on a clobbered session and the whole suite would stay green --
+        which is exactly how the reviewed-out release passed local gates.
+
+        The assertion is deliberately PAIRED. A session that never spawned would
+        satisfy "no ready frame" on its own, so the shell is first proved live:
+        the profile chain ran, and a typed command executes (client input is not
+        gated on `shell_ready`, only the frontend's registration is). The point is
+        that the shell is genuinely usable while the gateway's barrier stays shut.
+
+        Tracked in #7657 with the remedy directions, and this pins only the
+        CURRENT deliberate behaviour without obstructing them: directions 1 and 3
+        both keep queued injection fail-closed and change only interactive typing,
+        so both survive this invariant.
+        """
+        home = tmp_path / "home"
+        home.mkdir()
+        # ASSIGN, not append -- this is the shape that replaces the exported
+        # readiness hook, and it is the assignment (which clobbers the hook), not
+        # the value, that this arm pins. The value is the side-effect-free `:`
+        # no-op rather than a realistic `history -a`, deliberately: a login Bash
+        # sources the system profile chain before this file, and `history -a`
+        # would append to whatever HISTFILE that chain leaves set -- which can be
+        # an absolute path outside tmp_path on a real dev box or CI runner. `:`
+        # drops the hook just as completely while writing nothing anywhere. The
+        # echo is the positive control: a sourced profile's text is not echoed to
+        # the PTY, so seeing it proves execution.
+        (home / ".bash_profile").write_text(
+            "PROMPT_COMMAND=':'\n"
+            "echo KC_PROFILE_RAN\n"
+        )
+
+        cfg_file = tmp_path / "config.json"
+        cfg_file.write_text(json.dumps({
+            "dashboard": {"terminal": {"enabled": True, "shell": "bash"}}
+        }))
+        monkeypatch.setattr(terminal, "config_path", lambda: cfg_file)
+        monkeypatch.setattr(terminal, "_sel", lambda: MagicMock())
+        monkeypatch.setenv("HOME", str(home))
+        monkeypatch.setenv("SHELL", shutil.which("bash") or "/bin/bash")
+
+        registry: dict = {}
+        app = _make_app(registry=registry)
+
+        from aiohttp.test_utils import TestClient, TestServer
+
+        out = bytearray()
+        ready_frames: list[dict] = []
+        typed = False
+        shell_ready = None
+        try:
+            async with TestClient(TestServer(app)) as client:
+                async with client.ws_connect("/api/ws/terminal/pcassign-sess") as ws:
+                    loop = asyncio.get_event_loop()
+                    deadline = loop.time() + 20
+                    while loop.time() < deadline:
+                        try:
+                            msg = await ws.receive(timeout=deadline - loop.time())
+                        except asyncio.TimeoutError:
+                            # No `ready` is the EXPECTED outcome here, so the
+                            # window closing must surface as the assertions below
+                            # rather than as a TimeoutError from the harness.
+                            break
+                        if msg.type == web.WSMsgType.BINARY:
+                            out.extend(msg.data)
+                            blob = bytes(out)
+                            if not typed and b"KC_PROFILE_RAN" in blob:
+                                # Profile chain done, so the shell is at its first
+                                # prompt. EXECUTION-only marker: the typed bytes
+                                # carry LIVE''OK so the line-discipline echo of
+                                # our own keystrokes cannot satisfy the match.
+                                typed = True
+                                await ws.send_bytes(b"echo LIVE''OK=1.\n")
+                            elif typed and b"LIVEOK=1." in blob:
+                                break
+                        elif msg.type == web.WSMsgType.TEXT:
+                            frame = json.loads(msg.data)
+                            if frame.get("type") == "ready":
+                                ready_frames.append(frame)
+                        elif msg.type in (web.WSMsgType.CLOSE, web.WSMsgType.ERROR):
+                            break
+                    await ws.close()
+        finally:
+            spawned = registry.get("pcassign-sess")
+            if spawned is not None:
+                shell_ready = spawned.shell_ready
+                await terminal._kill_session(spawned)
+
+        tail = bytes(out)
+        # Positive control first: without these two, "no ready frame" is also
+        # satisfied by a session that never started, and the test would pass for
+        # the wrong reason.
+        assert b"KC_PROFILE_RAN" in tail, (
+            "the login profile never ran, so this session proves nothing about "
+            f"the readiness barrier. PTY tail: {tail[-400:]!r}"
+        )
+        assert b"LIVEOK=1." in tail, (
+            "the shell never executed a typed command, so it was not interactive "
+            f"and the barrier was not the thing under test. PTY tail: {tail[-400:]!r}"
+        )
+        # The invariant.
+        assert ready_frames == [], (
+            "the readiness barrier OPENED for a session whose profile ASSIGNED "
+            "PROMPT_COMMAND and therefore dropped the hook. Releasing here risks "
+            "handing a queued command to a profile still reading input, which is "
+            f"why #7641's release was reviewed out. frames={ready_frames!r}"
+        )
+        assert shell_ready is False, (
+            "shell_ready must stay False while the hook is clobbered (None means "
+            f"the session was never registered, which is also a failure), got {shell_ready!r}"
+        )
+
+    @pytest.mark.skipif(
+        terminal.platform_compat.IS_WINDOWS or not shutil.which("bash"),
+        reason="POSIX login-shell semantics; needs a real bash on PATH",
+    )
+    @pytest.mark.asyncio
     async def test_ws_bash_restores_an_inherited_prompt_command(
         self, monkeypatch, tmp_path,
     ):
