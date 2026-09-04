@@ -16076,6 +16076,299 @@ class TestEmptyResponseRetry:
         mock_client.stream = _stream
         mock_client.stream_command = _stream
 
+    def _make_upstream_failure_stream(
+        self,
+        mock_client,
+        *,
+        with_tool: bool = True,
+        output_tokens: int = 0,
+    ):
+        """Kiro CLI's synthetic Ok/UserTurnEnd failure after optional tool work."""
+        from kiro_crew.acp.types import STOP_REASON_END_TURN, TurnUsage
+        from kiro_crew.dashboard.chat_utils import _UPSTREAM_TURN_FAILURE_TEXT
+        from kiro_crew.providers.base import (
+            EVENT_COMPLETE,
+            EVENT_TEXT_CHUNK,
+            EVENT_TOOL_CALL,
+            LLMEvent,
+        )
+
+        mock_client.is_kiro_backend = True
+
+        async def _stream(msg):
+            if with_tool:
+                yield LLMEvent(
+                    kind=EVENT_TOOL_CALL,
+                    title="shell",
+                    tool_kind="execute",
+                    tool_call_id="tc-completed",
+                )
+            yield LLMEvent(kind=EVENT_TEXT_CHUNK, text=_UPSTREAM_TURN_FAILURE_TEXT)
+            yield LLMEvent(
+                kind=EVENT_COMPLETE,
+                stop_reason=STOP_REASON_END_TURN,
+                usage=TurnUsage(output_tokens=output_tokens),
+            )
+
+        mock_client.stream = _stream
+        mock_client.stream_command = _stream
+
+    @pytest.mark.asyncio
+    async def test_upstream_failure_after_tool_work_continues_once(self, tmp_path: Path) -> None:
+        """The Kiro CLI sentinel is control output, not a landed assistant answer.
+
+        Completed tool work makes replaying the original request unsafe. The runner
+        removes the sentinel and queues one continuation on the same live session.
+        """
+        from kiro_crew.dashboard.chat_utils import (
+            _POSTTOKEN_RECOVER_MSG,
+            _UPSTREAM_TURN_FAILURE_TEXT,
+            SYNTHETIC_RECOVERY_KIND,
+            TRANSIENT_RETRY_KIND,
+            RecoveryPayload,
+        )
+
+        state, slot, client, _run_chat = self._make_state_and_slot(tmp_path)
+        self._make_upstream_failure_stream(client)
+
+        with (
+            patch(
+                "kiro_crew.dashboard.chat_runner._start_next_queued_turn",
+                new=AsyncMock(return_value=False),
+            ),
+            patch(
+                "kiro_crew.dashboard.chat_runner.save_slot_off_loop",
+                new_callable=AsyncMock,
+            ) as mock_save,
+            patch("kiro_crew.dashboard.chat_runner._maybe_consolidate") as mock_consolidate,
+        ):
+            await _run_chat(state, slot, "perform the task")
+
+        assert [m for m in slot.messages if m.get("content") == _UPSTREAM_TURN_FAILURE_TEXT] == []
+        assert slot._queue == [
+            {
+                "id": slot._queue[0]["id"],
+                "content": _POSTTOKEN_RECOVER_MSG,
+                "kind": SYNTHETIC_RECOVERY_KIND,
+                "payload": RecoveryPayload.CONTINUATION,
+                "meta": slot._queue[0]["meta"],
+            }
+        ]
+        recovery = [
+            m
+            for m in slot.messages
+            if m.get("role") == "error" and "Backend turn failed" in m.get("content", "")
+        ]
+        assert len(recovery) == 1
+        assert "recovering" in recovery[0]["content"]
+        assert (recovery[0].get("meta") or {}).get("kind") == TRANSIENT_RETRY_KIND
+        assert slot._posttoken_retry_used is True
+        mock_save.assert_awaited_once()
+        mock_consolidate.assert_not_called()
+        state.sessions.record_success.assert_not_called()
+        wire = [call.args for call in state.broadcast_ws.call_args_list]
+        reconcile_at = next(
+            i
+            for i, args in enumerate(wire)
+            if args[0] == "chat_message"
+            and args[1].get("role") == "assistant"
+            and args[1].get("content") == ""
+        )
+        chunk_at = next(
+            i
+            for i, args in enumerate(wire)
+            if args[0] == "chat_chunk"
+            and _UPSTREAM_TURN_FAILURE_TEXT.startswith(args[1].get("content", ""))
+        )
+        assert chunk_at < reconcile_at
+
+    @pytest.mark.asyncio
+    async def test_reported_output_tokens_do_not_override_behavioral_evidence(
+        self, tmp_path: Path
+    ) -> None:
+        """Kiro's completion token fields are not an authoritative discriminator."""
+        from kiro_crew.dashboard.chat_utils import _UPSTREAM_TURN_FAILURE_TEXT
+
+        state, slot, client, _run_chat = self._make_state_and_slot(tmp_path)
+        self._make_upstream_failure_stream(client, output_tokens=17)
+
+        with patch(
+            "kiro_crew.dashboard.chat_runner._start_next_queued_turn",
+            new=AsyncMock(return_value=False),
+        ):
+            await _run_chat(state, slot, "perform the task")
+
+        assert not any(
+            m.get("role") == "assistant" and m.get("content") == _UPSTREAM_TURN_FAILURE_TEXT
+            for m in slot.messages
+        )
+        assert slot._posttoken_retry_used is True
+        assert len(slot._queue) == 1
+        state.sessions.record_success.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_upstream_failure_file_changes_use_current_turn_anchor(
+        self, tmp_path: Path
+    ) -> None:
+        """A tool-writing sentinel turn must not mutate the prior assistant row."""
+        state, slot, client, _run_chat = self._make_state_and_slot(tmp_path)
+        prior = slot.append("assistant", "prior turn", "msg msg-a", broadcast=False)
+        changed = tmp_path / "generated.txt"
+        changed.write_text("after\n")
+        slot._file_changes = [{"path": str(changed), "content": "before\n"}]
+        self._make_upstream_failure_stream(client)
+
+        with patch(
+            "kiro_crew.dashboard.chat_runner._start_next_queued_turn",
+            new=AsyncMock(return_value=False),
+        ):
+            await _run_chat(state, slot, "perform the task")
+
+        assert "file_changes" not in (prior.get("meta") or {})
+        anchors = [
+            m
+            for m in slot.messages
+            if m.get("role") == "assistant" and (m.get("meta") or {}).get("file_changes")
+        ]
+        assert len(anchors) == 1
+        assert "stopped" in anchors[0].get("content", "").lower()
+        assert anchors[0]["meta"]["file_changes"][0]["path"] == str(changed)
+        state.sessions.record_success.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_repeated_upstream_failure_is_terminal_not_a_loop(self, tmp_path: Path) -> None:
+        """A sentinel on the synthetic continuation spends no second recovery."""
+        from kiro_crew.dashboard.chat_utils import (
+            _POSTTOKEN_RECOVER_MSG,
+            TRANSIENT_RETRY_KIND,
+        )
+
+        state, slot, client, _run_chat = self._make_state_and_slot(tmp_path)
+        slot._posttoken_retry_used = True
+        self._make_upstream_failure_stream(client, with_tool=True)
+
+        await _run_chat(
+            state,
+            slot,
+            _POSTTOKEN_RECOVER_MSG,
+            _synthetic_payload=True,
+        )
+
+        assert slot._queue == []
+        failures = [
+            m
+            for m in slot.messages
+            if m.get("role") == "error" and "Backend turn failed" in m.get("content", "")
+        ]
+        assert len(failures) == 1
+        assert "please retry" in failures[0]["content"].lower()
+        assert (failures[0].get("meta") or {}).get("kind") != TRANSIENT_RETRY_KIND
+        state.sessions.record_success.assert_not_called()
+
+    def test_upstream_failure_match_is_exact(self) -> None:
+        """Ordinary prose quoting the sentence remains a legitimate answer."""
+        from kiro_crew.dashboard.chat_utils import (
+            _UPSTREAM_TURN_FAILURE_TEXT,
+            is_upstream_turn_failure_text,
+        )
+
+        assert is_upstream_turn_failure_text(_UPSTREAM_TURN_FAILURE_TEXT)
+        assert is_upstream_turn_failure_text(f"  {_UPSTREAM_TURN_FAILURE_TEXT}\n")
+        assert not is_upstream_turn_failure_text(f"The backend said: {_UPSTREAM_TURN_FAILURE_TEXT}")
+        assert not is_upstream_turn_failure_text("Please retry.")
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("non_kiro", [False, True])
+    async def test_exact_text_without_tool_activity_or_from_non_kiro_is_preserved(
+        self, tmp_path: Path, non_kiro: bool
+    ) -> None:
+        """Text alone cannot claim provider control output."""
+        from kiro_crew.dashboard.chat_utils import _UPSTREAM_TURN_FAILURE_TEXT
+
+        state, slot, client, _run_chat = self._make_state_and_slot(tmp_path)
+        self._make_upstream_failure_stream(
+            client,
+            with_tool=False,
+            output_tokens=0,
+        )
+        if non_kiro:
+            client.is_kiro_backend = False
+        else:
+            # The no-tool half independently proves exact text is insufficient.
+            client.is_kiro_backend = True
+
+        await _run_chat(state, slot, "quote the sentence")
+
+        assert any(
+            m.get("role") == "assistant" and m.get("content") == _UPSTREAM_TURN_FAILURE_TEXT
+            for m in slot.messages
+        )
+        assert not any(
+            m.get("role") == "error" and "Backend turn failed" in m.get("content", "")
+            for m in slot.messages
+        )
+        assert slot._queue == []
+        state.sessions.record_success.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_user_requested_exact_text_after_tool_activity_is_preserved(
+        self, tmp_path: Path
+    ) -> None:
+        """A current request quoting the literal outranks the sentinel heuristic."""
+        from kiro_crew.dashboard.chat_utils import _UPSTREAM_TURN_FAILURE_TEXT
+
+        state, slot, client, _run_chat = self._make_state_and_slot(tmp_path)
+        self._make_upstream_failure_stream(client, with_tool=True, output_tokens=0)
+
+        await _run_chat(
+            state,
+            slot,
+            f"Run a harmless check, then reply exactly: {_UPSTREAM_TURN_FAILURE_TEXT}",
+        )
+
+        assert any(
+            m.get("role") == "assistant" and m.get("content") == _UPSTREAM_TURN_FAILURE_TEXT
+            for m in slot.messages
+        )
+        assert not any(
+            m.get("role") == "error" and "Backend turn failed" in m.get("content", "")
+            for m in slot.messages
+        )
+        assert slot._queue == []
+        state.sessions.record_success.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_late_stop_purges_posttoken_continuation(self, tmp_path: Path) -> None:
+        """A Stop after enqueue but before dispatch cannot resume completed tools."""
+        from kiro_crew.dashboard.chat_runner import _start_next_queued_turn
+        from kiro_crew.dashboard.chat_utils import (
+            _POSTTOKEN_RECOVER_MSG,
+            SYNTHETIC_RECOVERY_KIND,
+            RecoveryPayload,
+        )
+
+        state, slot, _client, _run_chat = self._make_state_and_slot(tmp_path)
+        slot._posttoken_retry_used = True
+        slot._promise_only_stop_gen = slot._stop_generation
+        slot.queue_insert(
+            0,
+            _POSTTOKEN_RECOVER_MSG,
+            kind=SYNTHETIC_RECOVERY_KIND,
+            payload=RecoveryPayload.CONTINUATION,
+        )
+        # The Stop resolves back to idle before the queue drain, so only the
+        # monotonic generation can prove intervention occurred.
+        slot._stop_state = "soft_pending"
+        slot._stop_state = "idle"
+
+        assert await _start_next_queued_turn(state, slot) is False
+        assert slot._queue == []
+        assert slot._posttoken_retry_used is False
+        assert any(
+            m.get("role") == "notice" and "Auto-continue cancelled" in m.get("content", "")
+            for m in slot.messages
+        )
+
     @pytest.mark.asyncio
     async def test_first_empty_response_requeues_message(self, tmp_path: Path) -> None:
         """First empty response at depth 0 → message re-queued silently."""
@@ -16680,6 +16973,49 @@ class TestRunChatTransientRetry:
         # (finding #3, prevents a recovery-turn re-failure from looping).
         state.sessions.reset.assert_not_awaited()
         assert slot._posttoken_retry_used is True
+
+    @pytest.mark.asyncio
+    async def test_stop_during_posttoken_backoff_cancels_recovery(self, tmp_path, monkeypatch):
+        """A Stop that begins and resolves during backoff must still veto enqueue."""
+        from kiro_crew.acp.client import AcpError
+        from kiro_crew.dashboard.chat import _run_chat
+        from kiro_crew.dashboard.chat_utils import TRANSIENT_RETRY_KIND
+        from kiro_crew.providers.base import EVENT_TEXT_CHUNK, LLMEvent
+
+        call_count = 0
+
+        async def _stream(msg):
+            nonlocal call_count
+            call_count += 1
+            yield LLMEvent(kind=EVENT_TEXT_CHUNK, text="partial answer")
+            raise AcpError(self._TRANSIENT)
+
+        state = self._make_state(tmp_path, monkeypatch)
+        client = self._client(_stream)
+        self._wire_sessions(state, client)
+        slot = state.get_or_create_slot("s1")
+        slot._titled = True
+
+        async def _stop_during_sleep(_delay):
+            slot._stop_state = "soft_pending"
+            slot._stop_state = "idle"
+
+        with patch("asyncio.sleep", side_effect=_stop_during_sleep):
+            await _run_chat(state, slot, "hello")
+            await self._drain_bg(state)
+
+        assert call_count == 1
+        assert slot._queue == []
+        assert slot._posttoken_retry_used is False
+        assert any("partial answer" in t for t in self._assistant_texts(slot))
+        receipts = [
+            m
+            for m in slot.messages
+            if m.get("role") == "error" and "Backend hiccup" in m.get("content", "")
+        ]
+        assert len(receipts) == 1
+        assert "cancelled" in receipts[0]["content"]
+        assert (receipts[0].get("meta") or {}).get("kind") != TRANSIENT_RETRY_KIND
 
     @pytest.mark.asyncio
     async def test_transient_post_token_suppressed_preserves_partial(self, tmp_path, monkeypatch):

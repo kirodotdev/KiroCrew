@@ -1517,6 +1517,25 @@ _POSTTOKEN_RECOVER_MSG = (
     "to finish the original request — do NOT restart from scratch and do NOT "
     "re-run steps or tools that already completed successfully."
 )
+
+# Kiro CLI emits this exact assistant response when its inner agent loop fails
+# after one or more successful tool cycles. The ACP turn still reports Ok +
+# UserTurnEnd, so the dashboard cannot classify it from the stop reason. Keep the
+# match exact: broader "please retry" matching would reinterpret ordinary model
+# prose and user-requested quotations as backend failures.
+_UPSTREAM_TURN_FAILURE_TEXT = "I hit an issue while processing your request. Please retry."
+
+
+def is_upstream_turn_failure_text(text: str) -> bool:
+    """Return whether *text* is Kiro CLI's synthetic turn-failure response."""
+    return text.strip() == _UPSTREAM_TURN_FAILURE_TEXT
+
+
+def contains_upstream_turn_failure_text(text: str) -> bool:
+    """Return whether the current user request quotes or asks for the sentinel."""
+    return _UPSTREAM_TURN_FAILURE_TEXT in text
+
+
 _EMPTY_AUTO_CONTINUE_MSG = (
     f"{EMPTY_RESPONSE_RECOVERY_PREFIX}\n"
     "Your previous turn produced no output (the model returned an empty "

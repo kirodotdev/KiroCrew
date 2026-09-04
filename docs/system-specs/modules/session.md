@@ -168,8 +168,31 @@ send time.
   internal orchestration instruction is never persisted as user-authored
   history or mirrored to linked channels), draining one does not cancel a
   pending synthesis, and the tag is merge-breaking so a nudge is never folded
-  into a `[N queued messages merged]` user turn. At `_prompt_depth > 0` the ladder is disabled entirely (terminal
-  notice on the first empty) to prevent nested-turn re-queue loops.
+  into a `[N queued messages merged]` user turn. At `_prompt_depth > 0` the
+  ladder is disabled entirely (terminal notice on the first empty) to prevent
+  nested-turn re-queue loops.
+- **Kiro CLI synthetic turn-failure recovery** (dashboard chat runner, depth-0
+  turns only): Kiro CLI can finish a failed inner agent loop as ACP
+  `Ok`/`UserTurnEnd` with the exact assistant sentence `I hit an issue while
+  processing your request. Please retry.` after tools already ran. The runner
+  requires positive Kiro-backend identity, at least one tool call in the turn,
+  the exact sentence, and that the current user message did not itself contain
+  that sentence before treating it as provider control output: it removes the
+  trailing live chunks, never persists the sentence as an assistant answer,
+  and replaces any already-streamed browser row with an empty assistant frame
+  before the recovery notice (the terminal authoritative refresh removes that
+  unpersisted blank row). If tools changed files before the failure, file-change
+  snapshots are attached only to a synthetic assistant anchor created by this
+  turn, never to an assistant message from an earlier turn. Completion token
+  counts are deliberately not evidence:
+  Kiro's credit-only accounting reports zero output tokens for legitimate model
+  text as well as for this sentinel. The failed turn is never recorded as
+  successful, and the runner queues one `_POSTTOKEN_RECOVER_MSG` continuation on the same live session. The continuation preserves completed
+  tool results and explicitly forbids replaying them. It shares the post-token
+  one-shot budget, respects Stop, queued user follow-ups, pending steers and
+  stage-execution boundaries, and a repeated sentinel is terminal rather than a
+  loop. Broader `please retry` prose and sentences that merely quote the literal
+  are ordinary model output.
 - **Leaked tool-call notice** (dashboard chat runner, depth-0 turns only,
   issue #6112): a turn that ends normally with an invoke block emitted as
   TEXT and zero tool calls executed — the model wrote its invocation into the
