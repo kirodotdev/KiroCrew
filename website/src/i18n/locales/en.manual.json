@@ -3514,7 +3514,6 @@
     },
     "connectionsPage": {
       "action_failed": "Action failed: {{error}}",
-      "authorize": "Authorize",
       "before_you_connect": "Before you connect",
       "cancel": "Cancel",
       "complete_connection": "Complete",

@@ -911,7 +911,7 @@ function ConnectionCard({
               {prerequisiteTip}
               <Btn primary onClick={() => void startMint(onReconnect)} disabled={!!busy}>
                 {busy === 'connect' ? <Loader2 className="w-3.5 h-3.5 animate-spin" aria-hidden="true" /> : <KeyRound className="w-3.5 h-3.5" aria-hidden="true" />}
-                {busy === 'connect' ? t('pages.connectionsPage.connecting') : t('pages.connectionsPage.authorize')}
+                {busy === 'connect' ? t('pages.connectionsPage.connecting') : t('pages.connectionsPage.connect')}
               </Btn>
             </div>
           </div>
@@ -1587,7 +1587,7 @@ export default function ConnectionsPage({ servicesEnabled = false }: { servicesE
               {t('pages.connectionsPage.no_matching_services')}
             </div>
           ) : (
-            <div className="grid grid-cols-1 items-start gap-3 xl:grid-cols-2 2xl:grid-cols-3">
+            <div className="grid grid-cols-1 gap-3 xl:grid-cols-2 2xl:grid-cols-3">
               {filteredProviders.map(provider => {
                 const server = serverForConnection(provider, servers)
                 const pending = locallyWaiting[provider.slug]

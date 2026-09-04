@@ -9563,7 +9563,6 @@
     },
     "connectionsPage": {
       "action_failed": "অ্যাকশন ব্যর্থ: {{error}}",
-      "authorize": "অনুমোদন দিন",
       "before_you_connect": "সংযোগ করার আগে",
       "cancel": "বাতিল",
       "complete_connection": "সম্পন্ন করুন",

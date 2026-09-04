@@ -9708,7 +9708,6 @@
     },
     "connectionsPage": {
       "action_failed": "Falha na ação: {{error}}",
-      "authorize": "Autorizar",
       "before_you_connect": "Antes de conectar",
       "cancel": "Cancelar",
       "complete_connection": "Concluir",

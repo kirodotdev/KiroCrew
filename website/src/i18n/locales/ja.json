@@ -9418,7 +9418,6 @@
     },
     "connectionsPage": {
       "action_failed": "操作に失敗しました: {{error}}",
-      "authorize": "認証する",
       "before_you_connect": "接続する前に",
       "cancel": "キャンセル",
       "complete_connection": "完了",

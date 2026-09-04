@@ -9563,7 +9563,6 @@
     },
     "connectionsPage": {
       "action_failed": "कार्रवाई विफल: {{error}}",
-      "authorize": "प्राधिकृत करें",
       "before_you_connect": "कनेक्ट करने से पहले",
       "cancel": "रद्द करें",
       "complete_connection": "पूरा करें",

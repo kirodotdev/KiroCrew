@@ -9418,7 +9418,6 @@
     },
     "connectionsPage": {
       "action_failed": "操作失败：{{error}}",
-      "authorize": "授权",
       "before_you_connect": "连接前",
       "cancel": "取消",
       "complete_connection": "完成",

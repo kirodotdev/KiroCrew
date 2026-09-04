@@ -69,6 +69,7 @@ vi.mock('../pages/overview/McpTab', () => ({
 
 import ConnectionsPage from '../pages/connections/ConnectionsPage'
 import { CONNECTION_PROVIDERS } from '../pages/connections/registry'
+import ProviderLogo, { PROVIDER_LOGO_SLUGS } from '../pages/connections/ProviderLogo'
 import { i18next } from '../i18n'
 import { createTestStore, renderWithProviders } from './helpers'
 
@@ -376,10 +377,13 @@ describe('the provider gallery', () => {
     expect(within(gitlab).queryByRole('button', { name: 'GitLab prerequisites' })).not.toBeInTheDocument()
   })
 
-  it('keeps the prerequisite icon beside Authorize when a configured provider is ungranted', async () => {
-    // A GitLab entry whose grant is confirmed absent offers Authorize instead
-    // of Connect — the same consent flow with the same Duo/group wall, so the
-    // warning must ride this CTA too, not only the first-connect one.
+  it('keeps the prerequisite icon beside Connect when a configured provider is ungranted', async () => {
+    // A GitLab entry whose grant is confirmed absent offers the same Connect
+    // CTA as the first-connect path — same consent flow, same Duo/group wall
+    // -- so the warning must ride this button too, not only the first-connect
+    // one. The label used to read "Authorize" here while every other
+    // consent-starting button read "Connect" for the identical startMint
+    // path; both are unified on "Connect" now.
     mcpServers.mockResolvedValue([
       server({ name: 'gitlab', url: 'https://gitlab.com/api/v4/mcp', status: 'needs_auth' }),
     ])
@@ -391,7 +395,7 @@ describe('the provider gallery', () => {
 
     const gitlab = await waitFor(() => card('gitlab'))
     await waitFor(() => expect(gitlab).toHaveAttribute('data-state', 'not-verified'))
-    expect(within(gitlab).getByRole('button', { name: /Authorize/ })).toBeInTheDocument()
+    expect(within(gitlab).getByRole('button', { name: /Connect/ })).toBeInTheDocument()
     expect(within(gitlab).getByRole('button', { name: 'GitLab prerequisites' })).toBeInTheDocument()
   })
 
@@ -1603,23 +1607,27 @@ describe('the authorization status feed', () => {
 })
 
 // Provider brand marks. The art inventory and the card roster are maintained
-// separately, so a provider can ship without a mark -- GitLab does today, while
-// the inventory carries GitHub, which the launch set holds back. That case must
-// degrade to the lettered tile rather than to an empty gap, and it did not: the
-// card built `<ProviderLogo …/>` unconditionally, which is a truthy element even
-// for a slug with no mark, so the `??` fallback beside it was unreachable.
+// separately, so a provider CAN ship without a mark -- `superhuman` is in the
+// registry today with no `.svg` file at all, while every provider the launch
+// gate lets through onto the visible gallery now ships one (github is also
+// launch-gated off, but the inventory already covers it, so it cannot stand
+// in for the gap case). That gap case must degrade to the lettered tile
+// rather than to an empty gap, and it did not: the card built
+// `<ProviderLogo …/>` unconditionally, which is a truthy element even for a
+// slug with no mark, so the `??` fallback beside it was unreachable.
+// Exercised directly against `ProviderLogo` / `PROVIDER_LOGO_SLUGS` below
+// rather than through a real gallery card, because no visible card is
+// currently gapped to hang that assertion on.
 describe('the card brand mark', () => {
-  it('renders a lettered tile for a provider that ships no mark', async () => {
-    mount()
-
-    await waitFor(() => expect(card('gitlab')).toBeInTheDocument())
-    // The mark slot only -- the header also carries the provider NAME, so asserting
-    // on the header's own text would match the name's first letter either way.
-    const slot = card('gitlab').querySelector('header [role="img"]')
-    if (!slot) throw new Error('no brand-mark slot on the gitlab card')
-    expect(slot.querySelector('[data-testid="provider-logo-gitlab"]')).toBeNull()
-    // ...so the initial stands in, rather than the slot sitting empty.
-    expect(slot.textContent).toBe('G')
+  it('ships no mark for a provider the launch gate holds back (superhuman)', () => {
+    // The card's own fallback logic (`PROVIDER_LOGO_SLUGS.includes(slug) ? <ProviderLogo .../> : null`)
+    // reads this list; asserting on it directly pins the gap the lettered
+    // tile exists to cover, independent of which providers are launch-gated.
+    // `superhuman` is in the registry (launch_gate_passed: false) with no
+    // `.svg` file in `logos/` at all -- unlike github, which the launch gate
+    // also holds back but which the inventory already covers.
+    expect(PROVIDER_LOGO_SLUGS).not.toContain('superhuman')
+    expect(ProviderLogo({ slug: 'superhuman' })).toBeNull()
   })
 
   it('renders the mark, and no letter, for a provider that ships one', async () => {
@@ -1630,6 +1638,16 @@ describe('the card brand mark', () => {
     if (!slot) throw new Error('no brand-mark slot on the notion card')
     expect(slot.querySelector('[data-testid="provider-logo-notion"]')).not.toBeNull()
     // The tile must not double up with the mark.
+    expect(slot.textContent).toBe('')
+  })
+
+  it('renders the full-colour gitlab mark, and no letter', async () => {
+    mount()
+
+    await waitFor(() => expect(card('gitlab')).toBeInTheDocument())
+    const slot = card('gitlab').querySelector('header [role="img"]')
+    if (!slot) throw new Error('no brand-mark slot on the gitlab card')
+    expect(slot.querySelector('[data-testid="provider-logo-gitlab"]')).not.toBeNull()
     expect(slot.textContent).toBe('')
   })
 })
@@ -1657,6 +1675,26 @@ describe('the card description box', () => {
       // lines instead of cutting one mid-glyph.
       expect(description).toHaveClass('leading-[17px]')
     }
+  })
+})
+
+// jsdom runs no layout engine, so the CLASS is the observable here: an
+// `items-start` override on the grid is what let one row's cards take their
+// own heights instead of stretching to a shared bottom edge, which is what
+// "nothing is flush" reported. This supersedes an earlier deliberate choice
+// ("a taller card must not stretch its siblings") -- the user has since
+// overridden that with an explicit flush-rows request, and every card is
+// already `flex flex-col` with its action region on `mt-auto`, so a stretched
+// row aligns buttons on a shared edge rather than clipping content.
+describe('the gallery grid', () => {
+  it('stretches row cards to equal height instead of sizing each to its own content', async () => {
+    mount()
+
+    await waitFor(() => expect(card('notion')).toBeInTheDocument())
+    const grid = card('notion').parentElement
+    if (!grid) throw new Error('no grid parent above the notion card')
+    expect(grid).not.toHaveClass('items-start')
+    expect(grid).toHaveClass('grid')
   })
 })
 

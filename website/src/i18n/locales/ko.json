@@ -9418,7 +9418,6 @@
     },
     "connectionsPage": {
       "action_failed": "작업에 실패했습니다: {{error}}",
-      "authorize": "인증하기",
       "before_you_connect": "연결하기 전에",
       "cancel": "취소",
       "complete_connection": "완료",
