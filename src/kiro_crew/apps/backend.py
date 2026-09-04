@@ -1487,6 +1487,26 @@ def list_app_processes() -> list[dict[str, Any]]:
         return [ap.to_dict() for ap in _processes.values()]
 
 
+def spawned_backend_names() -> list[str]:
+    """App names whose backend THIS gateway process spawned (``proc`` set).
+
+    The gateway-shutdown sweep stops exactly these. Adopted records
+    (``proc is None``) are deliberately excluded: an adopted backend is an
+    externally managed instance whose contract is to SURVIVE gateway exit and
+    be re-probed and re-adopted on the next start (see the adoption comment in
+    ``_start_app_backend_body``) — signalling it from shutdown would take down
+    an independent service. Deriving the sweep from this tracking table rather
+    than from persisted ``enabled`` metadata also keeps it honest in both
+    directions: a child whose app was disabled cross-process (metadata-only)
+    is still stopped, and an app with nothing running is never passed to
+    :func:`stop_app_backend`, whose ``_forget_app_pid`` would otherwise erase
+    the pidfile record that lets ``_reap_stale_app_backends`` recover a
+    prior-generation orphan.
+    """
+    with _lock:
+        return sorted(name for name, ap in _processes.items() if ap.proc is not None)
+
+
 def get_app_backend_port(app_name: str) -> int | None:
     """Get the port for a running app backend (used by reverse proxy)."""
     with _lock:

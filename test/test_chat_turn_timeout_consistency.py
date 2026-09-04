@@ -9,9 +9,11 @@ cron injection path (handlers/messaging.py), the Slack/dashboard nudge path
 (slack/gateway.py:_deliver_script_result) remained unwrapped — depending on
 the inner ACP _DEFAULT_PROMPT_TIMEOUT (7200s) instead.
 
-This module verifies the cap value is correct AND that all eight dispatch
-sites in the source tree are wrapped with ``asyncio.wait_for(...,
-timeout=CHAT_TURN_TIMEOUT)``.
+This module verifies the cap value is correct AND that all helper-visible
+dispatch sites in the source tree are wrapped with ``asyncio.wait_for(...,
+timeout=CHAT_TURN_TIMEOUT)``. The structured dashboard monitor invokes
+``_run_chat`` inside an authorization coroutine that is itself passed to
+``spawn_guarded_turn``; its owning monitor tests pin that nested path.
 
 Why source-level checks (not behavioral): a behavioral test that mocks
 ``_run_chat`` and patches ``CHAT_TURN_TIMEOUT`` to a tiny value can prove
@@ -273,7 +275,7 @@ def _is_inline_wrapped_run_chat_dispatch(node: ast.AST) -> bool:
 
 
 def test_dispatch_site_count_matches_expectation() -> None:
-    """Pin the expected number of ``_run_chat`` dispatch sites at 8.
+    """Pin the expected number of helper-visible ``_run_chat`` sites at 7.
 
     If a new dispatch lands (or one is removed), this fails loudly so the
     contributor updates the PR description, the spec doc
@@ -292,8 +294,8 @@ def test_dispatch_site_count_matches_expectation() -> None:
             if "_run_chat(" in body:
                 total += 1
 
-    assert total == 8, (
-        f"Expected 8 _run_chat dispatch sites, found {total}.  "
+    assert total == 7, (
+        f"Expected 7 helper-visible _run_chat dispatch sites, found {total}.  "
         "If you added or removed one, update:\n"
         "  - the PR description\n"
         "  - docs/system-specs/modules/learn-cron-dashboard.md (Per-turn timeout section)\n"

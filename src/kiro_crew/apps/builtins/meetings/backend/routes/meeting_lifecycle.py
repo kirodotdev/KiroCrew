@@ -119,6 +119,12 @@ def _init_meeting(meeting_id: str, title: str, body: dict[str, Any], root: Any) 
     return meta
 
 
+#: Public name for the blocking init, so the calendar poller (which pre-creates a
+#: meeting the same way the dashboard does) reuses this transaction rather than
+#: keeping a second copy of the folder/metadata/tasks/outputs sequence.
+init_meeting_blocking = _init_meeting
+
+
 async def handle_meeting_init(request: web.Request) -> web.Response:
     """Create the meeting folder, metadata, tasks file, and agent outputs."""
     meeting_id = _meeting_id(request)

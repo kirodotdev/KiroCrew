@@ -183,6 +183,7 @@ class TestA4TheTabStaysCurrent:
             session_key=SLACK_KEY,
         )
         assert slot is not None and len(slot.messages) == 4
+        assert all(not (message.get("meta") or {}).get("mid") for message in slot.messages)
 
         # The channel writes two more turns straight to the shared file.
         log.append(SLACK_KEY, "user", "after the tab opened")
@@ -194,6 +195,7 @@ class TestA4TheTabStaysCurrent:
             "after the tab opened",
             "reply to that",
         ]
+        assert all(not (message.get("meta") or {}).get("mid") for message in slot.messages)
 
     def test_a_refresh_is_idempotent(self, state, log):
         _write_transcript(Path(log._dir), SLACK_STEM, _turns(4))

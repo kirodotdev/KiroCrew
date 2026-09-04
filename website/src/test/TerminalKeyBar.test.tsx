@@ -618,7 +618,7 @@ describe('TerminalKeyBar', () => {
       // No selection → Copy shows its guidance transient; the single slot
       // means it REPLACES the paste error instead of standing beside it.
       await userEvent.click(screen.getByRole('button', { name: 'Copy' }))
-      expect(await screen.findByRole('button', { name: 'Tap Select, then Copy' })).toBeTruthy()
+      expect(await screen.findByRole('button', { name: 'Long-press a line or tap Select, then Copy' })).toBeTruthy()
       expect(screen.queryByRole('button', { name: 'Paste needs a secure (HTTPS) connection' })).toBeNull()
     })
 
@@ -743,7 +743,7 @@ describe('TerminalKeyBar', () => {
       await userEvent.click(screen.getByRole('button', { name: 'Copy' }))
 
       expect(writeText).not.toHaveBeenCalled()
-      expect(await screen.findByRole('button', { name: 'Tap Select, then Copy' })).toBeTruthy()
+      expect(await screen.findByRole('button', { name: 'Long-press a line or tap Select, then Copy' })).toBeTruthy()
     })
 
     it('surfaces a denied clipboard write with the remedy, not a generic failure', async () => {
@@ -849,7 +849,7 @@ describe('TerminalKeyBar', () => {
       await userEvent.click(screen.getByRole('button', { name: 'Copy' }))
 
       const statuses = await screen.findAllByRole('status')
-      const copyStatus = statuses.find(s => s.textContent === 'Tap Select, then Copy')
+      const copyStatus = statuses.find(s => s.textContent === 'Long-press a line or tap Select, then Copy')
       expect(copyStatus).toBeTruthy()
       expect(copyStatus!.closest('button')).toBeNull()
     })
@@ -886,11 +886,11 @@ describe('TerminalKeyBar', () => {
         render(<TerminalKeyBar term={term} />)
 
         fireEvent.click(screen.getByRole('button', { name: 'Copy' }))
-        expect(screen.getByRole('button', { name: 'Tap Select, then Copy' })).toBeTruthy()
+        expect(screen.getByRole('button', { name: 'Long-press a line or tap Select, then Copy' })).toBeTruthy()
 
         act(() => { vi.advanceTimersByTime(4100) })
         expect(screen.getByRole('button', { name: 'Copy' })).toBeTruthy()
-        expect(screen.queryByRole('button', { name: 'Tap Select, then Copy' })).toBeNull()
+        expect(screen.queryByRole('button', { name: 'Long-press a line or tap Select, then Copy' })).toBeNull()
       } finally {
         vi.useRealTimers()
       }
@@ -1217,12 +1217,12 @@ describe('TerminalKeyBar', () => {
         render(<TerminalKeyBar term={term} />)
 
         await userEvent.click(screen.getByRole('button', { name: 'Copy' }))
-        expect(screen.getByRole('button', { name: 'Tap Select, then Copy' })).toBeTruthy()
+        expect(screen.getByRole('button', { name: 'Long-press a line or tap Select, then Copy' })).toBeTruthy()
 
         await userEvent.click(screen.getByRole('button', { name: 'Select' }))
 
         // The copy guidance is cleared; the Select stage announcement is up.
-        expect(screen.queryByRole('button', { name: 'Tap Select, then Copy' })).toBeNull()
+        expect(screen.queryByRole('button', { name: 'Long-press a line or tap Select, then Copy' })).toBeNull()
         expect(screen.getByRole('button', { name: 'Line · tap for all' })).toBeTruthy()
       } finally {
         if (origClipboard) Object.defineProperty(navigator, 'clipboard', origClipboard)

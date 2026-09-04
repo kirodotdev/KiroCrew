@@ -121,9 +121,9 @@ describe('SlashCommandMenu offline fallback (blocked commands hidden)', () => {
     mockApi.slashCommands.mockRejectedValue(new Error('offline'))
     render(<Harness input="/tan" />)
     // Nothing in the fallback matches the /tan prefix. Once the query settles
-    // (error counts as settled), the menu shows the zero-match empty state —
-    // announcing that Enter now sends — rather than an inert /tangent row.
-    expect(await screen.findByText(/No matching commands — Enter sends the message/)).toBeInTheDocument()
+    // (error counts as settled), the menu announces that Enter now sends —
+    // naming the failed load, not a zero-match, and never an inert /tangent.
+    expect(await screen.findByText(/Couldn't load commands — Enter sends the message/)).toBeInTheDocument()
     expect(screen.queryByText('/tangent')).not.toBeInTheDocument()
     expect(screen.queryByRole('option')).not.toBeInTheDocument()
   })
@@ -159,7 +159,7 @@ describe('SlashCommandMenu zero-match key release', () => {
     expect(onSelect).not.toHaveBeenCalled()
   })
 
-  it('while the commands fetch is in flight, Enter stays swallowed and no empty state shows yet', async () => {
+  it('while the commands fetch is in flight, Enter stays swallowed and the menu names the wait', async () => {
     // Before the remote list replaces the synchronous fallback, a
     // server-only command like "/xyz" is transiently a zero-match; releasing
     // there would send the half-typed command as a chat message.
@@ -168,7 +168,8 @@ describe('SlashCommandMenu zero-match key release', () => {
     const onClose = vi.fn()
     render(<Harness input="/xyz" onSelect={onSelect} onClose={onClose} />)
     await waitFor(() => expect(mockApi.slashCommands).toHaveBeenCalled())
-    expect(screen.queryByRole('listbox')).not.toBeInTheDocument()
+    expect(await screen.findByText(/Loading commands…/)).toBeInTheDocument()
+    expect(screen.queryByText(/No matching commands/)).not.toBeInTheDocument()
     expect(fireEvent.keyDown(document, { key: 'Enter' })).toBe(false)
     expect(onClose).not.toHaveBeenCalled()
     expect(onSelect).not.toHaveBeenCalled()

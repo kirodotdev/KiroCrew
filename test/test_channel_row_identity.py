@@ -315,25 +315,18 @@ class TestIdentitySurvivesMaterialization:
         assert first is not None and second is not None
         assert [row_mid(m) for m in first.messages] == [row_mid(m) for m in second.messages]
 
-    def test_an_id_less_transcript_is_re_minted_per_materialization(self, dashboard_state) -> None:
-        """Why the fix has to live in the WRITER, not in a downstream dedup.
+    def test_an_id_less_transcript_stays_id_less_across_materializations(
+        self, dashboard_state
+    ) -> None:
+        """Legacy rows must not advertise an identity absent from disk.
 
-        Re-minting for an id-less row is deliberate and stays: a window row must be
-        addressable. But it means two materializations of an id-less transcript
-        disagree on identity, and no ``mid``-keyed consumer downstream can collapse
-        them. Only the writer can supply an id that is stable by construction.
-        Rows written before this change stay in exactly this state -- nothing is
-        retro-migrated, which is the contract ``TestAppendMid`` pins in
-        ``test_history.py``.
+        Rows written before durable IDs remain on the index-based fallback. If a
+        materializer minted a fresh window-only id, response-level operations
+        would send an anchor that full-history readers cannot resolve.
         """
         bare = self._transcript(with_ids=False)
         first = self._surface(dashboard_state, bare, user="u3")
         second = self._surface(dashboard_state, bare, user="u4")
         assert first is not None and second is not None
-        first_mids = [row_mid(m) for m in first.messages]
-        second_mids = [row_mid(m) for m in second.messages]
-        assert all(isinstance(m, str) and m for m in first_mids)
-        assert first_mids != second_mids, (
-            "an id-less transcript is re-minted per materialization -- the exact "
-            "instability the write-time fix removes"
-        )
+        assert [row_mid(m) for m in first.messages] == [None, None]
+        assert [row_mid(m) for m in second.messages] == [None, None]

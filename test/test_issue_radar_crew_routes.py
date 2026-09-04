@@ -726,6 +726,144 @@ class TestAgentIdentityIsTheSession(_CrewRouteCase):
         self.assertEqual(_payload(res)["code"], "invalid_json")
 
 
+# ── a step that belongs to no issue ─────────────────────────────────────────
+
+
+class TestACrewCanRecordAnEmptyQueue(_CrewRouteCase):
+    """``PUT /crew/work`` with NO ``number`` — the empty-queue checkpoint.
+
+    A crew that swept its queue and took nothing had no way to record the cycle:
+    the route required a number because the number becomes a work-item filename,
+    so the only way to report "checked, nothing to take" was to attribute it to an
+    issue the crew never acted on. The ledger therefore either lied or stayed
+    silent, and a resumed crew could not tell the two apart.
+
+    The pairing is asserted in BOTH directions. Accepting an item kind with no
+    number would only move the fabrication into the store, and accepting the
+    crew-level kind WITH a number files a sweep under an issue it never touched —
+    the same false attribution written the other way round.
+    """
+
+    def agent(self, crew: dict) -> str:
+        return f"dashboard:{crew['slot_key']}"
+
+    async def test_a_sweep_needs_no_number_and_writes_no_work_item(self):
+        crew = self.crew("Andromeda")
+        res = await self.call(
+            "PUT", "/crew/work",
+            body={"event": "checked 42 open issues, took none", "event_kind": "sweep"},
+            internal_auth=True, session=self.agent(crew),
+        )
+        self.assertEqual(res.status, 200)
+        body = _payload(res)
+        # Same envelope as a numbered write, so the MCP tool reads one shape;
+        # `coalesced` rides alongside it to say whether a line was written.
+        self.assertTrue({"item", "event", "skip"}.issubset(set(body)))
+        self.assertIsNone(body["item"])
+        self.assertIsNone(body["skip"])
+        self.assertFalse(body["coalesced"])
+        self.assertEqual(
+            [e["text"] for e in self.ledger(crew["id"])],
+            ["checked 42 open issues, took none"],
+        )
+        # Absent, not zero — a `0` would read as a real issue everywhere.
+        self.assertNotIn("number", self.ledger(crew["id"])[0])
+        self.assertEqual(crew_store.list_work_items(OWNER, REPO, crew["id"], self.root), [])
+
+    async def test_an_idle_crew_does_not_bury_its_own_work_log(self):
+        """Repeated idle cycles must not run the ledger away.
+
+        Every ledger read is capped and drops the OLDEST line first, so one line
+        per nudge would push the crew's real history out of the log this feature
+        exists to make honest.
+        """
+        crew = self.crew("Andromeda")
+        body = {"event": "queue empty", "event_kind": "sweep"}
+        first = await self.call(
+            "PUT", "/crew/work", body=body, internal_auth=True, session=self.agent(crew),
+        )
+        again = await self.call(
+            "PUT", "/crew/work", body={**body, "event": "still empty"},
+            internal_auth=True, session=self.agent(crew),
+        )
+        self.assertEqual((first.status, again.status), (200, 200))
+        self.assertFalse(_payload(first)["coalesced"])
+        self.assertTrue(_payload(again)["coalesced"])
+        # One line, and it is the FIRST one -- its timestamp marks when the idle
+        # stretch began, which is what a human opening a quiet crew wants to know.
+        self.assertEqual([e["text"] for e in self.ledger(crew["id"])], ["queue empty"])
+
+    async def test_an_item_kind_without_a_number_is_refused(self):
+        crew = self.crew("Andromeda")
+        res = await self.call(
+            "PUT", "/crew/work",
+            body={"event": "took something", "event_kind": "claim"},
+            internal_auth=True, session=self.agent(crew),
+        )
+        self.assertEqual(res.status, 400)
+        self.assertEqual(_payload(res)["code"], "number_required")
+        self.assertEqual(self.ledger(crew["id"]), [])
+
+    async def test_a_sweep_carrying_a_number_is_refused(self):
+        crew = self.crew("Andromeda")
+        res = await self.call(
+            "PUT", "/crew/work",
+            body={"number": 7, "event": "queue empty", "event_kind": "sweep"},
+            internal_auth=True, session=self.agent(crew),
+        )
+        self.assertEqual(res.status, 400)
+        self.assertEqual(_payload(res)["code"], "unexpected_number")
+        self.assertEqual(self.ledger(crew["id"]), [])
+
+    async def test_a_present_but_invalid_number_is_not_read_as_a_sweep(self):
+        """A typo must stay a 400, not become "this step has no issue"."""
+        crew = self.crew("Andromeda")
+        res = await self.call(
+            "PUT", "/crew/work",
+            body={"number": 0, "event": "took #0", "event_kind": "claim"},
+            internal_auth=True, session=self.agent(crew),
+        )
+        self.assertEqual(res.status, 400)
+        self.assertEqual(_payload(res)["code"], "invalid_number")
+        self.assertEqual(self.ledger(crew["id"]), [])
+
+    async def test_work_item_fields_are_refused_rather_than_dropped(self):
+        """Honouring the line while discarding the patch would report a phase
+        move that was never stored anywhere."""
+        crew = self.crew("Andromeda")
+        res = await self.call(
+            "PUT", "/crew/work",
+            body={"event": "queue empty", "event_kind": "sweep",
+                  "phase": "claimed", "ci_state": {"state": "success"}},
+            internal_auth=True, session=self.agent(crew),
+        )
+        self.assertEqual(res.status, 400)
+        self.assertEqual(_payload(res)["code"], "item_fields_without_number")
+        self.assertIn("'ci_state'", _payload(res)["error"])
+        self.assertIn("'phase'", _payload(res)["error"])
+        self.assertEqual(self.ledger(crew["id"]), [])
+
+    async def test_a_sweep_still_needs_a_reason(self):
+        crew = self.crew("Andromeda")
+        res = await self.call(
+            "PUT", "/crew/work", body={"event_kind": "sweep"},
+            internal_auth=True, session=self.agent(crew),
+        )
+        self.assertEqual(res.status, 400)
+        self.assertEqual(_payload(res)["code"], "event_required")
+
+    async def test_a_sweep_from_a_non_crew_session_is_refused(self):
+        """The numberless path must not become a way around the identity gate."""
+        self.crew("Andromeda")
+        res = await self.call(
+            "PUT", "/crew/work",
+            body={"event": "queue empty", "event_kind": "sweep"},
+            internal_auth=True, session="dashboard:chat-3-1730000000",
+        )
+        self.assertEqual(res.status, 403)
+        self.assertEqual(_payload(res)["code"], "not_a_crew_session")
+
+
 # ── which routes an agent may reach at all ──────────────────────────────────
 
 

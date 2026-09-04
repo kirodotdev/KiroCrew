@@ -43,15 +43,20 @@ deliberately NOT used: it walks ``/proc`` ancestors over
 ``session_pid_<pid>.txt``, which ``mcp_core`` itself documents as
 "agent-writable and therefore forgeable".
 
-**An unresolved key is NOT a refusal.** It is forwarded empty and the call proceeds.
+**An unresolved key is NOT a refusal.** The call proceeds, carrying the
+per-process ``UNRESOLVED_SESSION_PREFIX`` placeholder rather than a guessed
+identity — and rather than the empty string, which would alias every unresolved
+session onto one ``SnapshotIndex`` slot (see that constant for the aliasing bug).
 Neither accepted source exists for a GUI-launched kiro-cli on macOS —
-``KIROCREW_SESSION_KEY`` is injected only by the ACP spawn path
-(``acp/client.py``) and ``KIROCREW_HOST_PID`` only by the Linux sandbox launcher
-(``sandbox.py``) — so gating on identity made the feature unusable on its only
-supported platform. The unattended-surface rule was removed by product decision;
-"we cannot name the session" must not become "you may not drive the desktop". What
-is lost is audit ATTRIBUTION, not a control: the trail records an empty key, which
-is honest, where the lenient walk would have recorded a forgeable one.
+``KIROCREW_SESSION_KEY`` reaches a child only from a launcher that already knows
+which session it spawns for (the ACP spawn path in ``acp/client.py``, the
+script-cron launcher in ``cron_script.py``) and ``KIROCREW_HOST_PID`` only from the
+Linux sandbox launcher (``sandbox.py``), and a GUI launch has neither above it — so
+gating on identity made the feature unusable on its only supported platform. The
+unattended-surface rule was removed by product decision; "we cannot name the
+session" must not become "you may not drive the desktop". What is lost is audit
+ATTRIBUTION, not a control: the trail records that the session could not be named,
+which is honest, where the lenient walk would have recorded a forgeable name.
 
 Tool visibility follows the keystone primary enable: ``tools/list`` returns ``[]``
 while computer use is off, so a disabled feature is invisible to the model rather
@@ -142,7 +147,7 @@ INVOKE_TIMEOUT_SECS = 90.0
 
 # Refusals this shim produces on its own. Everything else is the gateway's text.
 # NOTE: there is deliberately NO identity refusal here — an unresolvable session
-# key proceeds with an empty identity. See the strict-resolver comment in
+# key proceeds under the placeholder below. See the strict-resolver comment in
 # ``_call_tool_inner``.
 ERR_GATEWAY_UNREACHABLE = (
     "the KiroCrew gateway is not reachable, so computer use cannot run "
@@ -150,9 +155,8 @@ ERR_GATEWAY_UNREACHABLE = (
 )
 
 # Identity used when neither accepted source resolves — which is the NORMAL case on
-# macOS, the only platform with a driver (``KIROCREW_SESSION_KEY`` is injected only
-# by the ACP spawn path and ``KIROCREW_HOST_PID`` only by the Linux sandbox
-# launcher).
+# macOS, the only platform with a driver. Which launchers supply each source, and why
+# a GUI launch has neither, is stated once in the module docstring.
 #
 # Why this exists rather than an empty string: ``SnapshotIndex`` namespaces its
 # entries by
@@ -693,17 +697,17 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
         logger.debug("computer-use enable-state probe failed; refusing", exc_info=True)
         return f"{ERROR_PREFIX}{REFUSAL_DISABLED}"
 
-    # STRICT identity, but NOT a gate. An unresolvable key is passed through as
-    # empty rather than refused: the unattended-surface rule was removed by product
-    # decision, so "we could not name the session" must not become "you may not
-    # drive the desktop". On macOS neither accepted source is even available to a
-    # GUI-launched kiro-cli (``KIROCREW_SESSION_KEY`` is injected only by the ACP
-    # spawn path, and ``KIROCREW_HOST_PID`` only by the Linux sandbox launcher), so
-    # refusing here made the whole feature unusable on its only supported platform.
+    # STRICT identity, but NOT a gate. An unresolvable key proceeds under the
+    # per-process placeholder rather than being refused: the unattended-surface rule
+    # was removed by product decision, so "we could not name the session" must not
+    # become "you may not drive the desktop". On macOS neither accepted source is even
+    # available to a GUI-launched kiro-cli — the module docstring names which launcher
+    # supplies each one — so refusing here made the whole feature unusable on its only
+    # supported platform.
     #
     # Still the STRICT resolver, and deliberately: the lenient one walks a file
     # ``mcp_core`` itself documents as "agent-writable and therefore forgeable", and
-    # an empty audit identity is honest where a forged one is a lie. What the audit
+    # an unnamed audit identity is honest where a forged one is a lie. What the audit
     # loses is attribution, which is worth less than the feature working.
     session_key = _resolve_session_key_strict() or _unresolved_session_key()
     header_err = _session_key_header_error(session_key)

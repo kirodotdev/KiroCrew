@@ -21,19 +21,30 @@ mirror ``test_slack_gateway.py`` / ``test_turn_duration_slack.py``.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import math
+import time
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from kiro_crew import session_directive
 from kiro_crew import subagent as _sa
-from kiro_crew.autonudge import NudgeLoop
+from kiro_crew.acp.types import EVENT_COMPLETE, EVENT_TOOL_CALL, EVENT_TOOL_RESULT, AcpEvent
+from kiro_crew.autonudge import AutoNudgeService, NudgeLoop
 from kiro_crew.config.loader import KiroCrewConfig
+from kiro_crew.monitoring import models as monitor_models
 from kiro_crew.monitoring.completion import MonitorCompletionHook
-from kiro_crew.monitoring.models import MonitorState
+from kiro_crew.monitoring.models import (
+    MonitorActionDisposition,
+    MonitorBudgets,
+    MonitorOutcome,
+    MonitorState,
+)
+from kiro_crew.session import SessionBusyError, SessionClosingError
 from kiro_crew.slack import gateway as gw
 
 # ─── Helpers ─────────────────────────────────────────────────────────────
@@ -71,6 +82,7 @@ def _mock_dashboard_state() -> MagicMock:
     ds.push_slots_update = MagicMock()
     ds.push_refresh = MagicMock()
     ds.broadcast_ws = MagicMock()
+    ds.broadcast_ws_owners = MagicMock()
     ds.get_slot = MagicMock(return_value=None)
     ds.channel_transports = {}
     return ds
@@ -93,9 +105,7 @@ def _slack_nudge_orchestrator() -> Any:
     orch.sessions = _nudge_sessions(SimpleNamespace())
     orch.slack = MagicMock()
     orch.slack.post_message = AsyncMock()
-    orch.ctx_builder = SimpleNamespace(
-        hooks=object(), build_message=lambda *a, **k: ("MSG", None)
-    )
+    orch.ctx_builder = SimpleNamespace(hooks=object(), build_message=lambda *a, **k: ("MSG", None))
     orch.conv_log = None
     orch.autonudge_svc = None
 
@@ -122,7 +132,9 @@ def _discord_transport(*, authorized: bool = True, current_key: str | None = Non
     dispatcher.current_session_key = MagicMock(
         return_value=current_key if current_key is not None else "discord:kirocrew:direct:U9"
     )
-    dispatcher.handle_message = AsyncMock()
+    dispatcher.handle_message = AsyncMock(
+        return_value=monitor_models.MonitorDispatchResult.DISPATCHED
+    )
     sessions = MagicMock()
     sessions.is_busy = MagicMock(return_value=False)
     dispatcher.sessions = sessions
@@ -211,6 +223,139 @@ class TestFireDiscordNudge:
         transport.dispatcher.handle_message.assert_not_called()
 
     @pytest.mark.asyncio
+    async def test_structured_delivery_distinguishes_busy_and_unavailable(self):
+        busy_transport = _discord_transport()
+        busy_transport.dispatcher.sessions.is_busy.return_value = True
+        busy = _discord_orchestrator(busy_transport)
+        unavailable = _discord_orchestrator(
+            _discord_transport(current_key="discord:kirocrew:direct:U9:gen2")
+        )
+
+        assert await busy._fire_discord_nudge(_loop(_DKEY), "[Monitor wake]") is (
+            monitor_models.MonitorDispatchResult.BUSY
+        )
+        assert (
+            await unavailable._fire_discord_nudge(_loop(_DKEY), "[Monitor wake]")
+            is monitor_models.MonitorDispatchResult.UNAVAILABLE
+        )
+
+    @pytest.mark.asyncio
+    async def test_discord_stop_during_conversation_lookup_never_dispatches_as_ordinary(self):
+        """A revoked structured claim cannot lose its hook and enter the legacy path."""
+        transport = _discord_transport()
+        orch = _discord_orchestrator(transport)
+        loop = _loop(_DKEY)
+        loop.monitor = MonitorState(
+            kind="github_pull_request",
+            target="owner/repo#123",
+            objective="review_ready",
+            created_ts=1_000.0,
+            last_wake_fingerprint="failure-a",
+            wake_in_flight=True,
+        )
+
+        async def _stop_during_lookup(_user_id):
+            assert loop.monitor is not None
+            loop.monitor.wake_in_flight = False
+            return "DM123"
+
+        transport.resolve_conversation.side_effect = _stop_during_lookup
+
+        result = await orch._fire_discord_nudge(loop, "[Monitor wake]")
+
+        assert result is monitor_models.MonitorDispatchResult.UNAVAILABLE
+        transport.dispatcher.handle_message.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "boundary_result",
+        [
+            monitor_models.MonitorDispatchResult.BUSY,
+            monitor_models.MonitorDispatchResult.UNAVAILABLE,
+        ],
+    )
+    async def test_structured_delivery_propagates_the_dispatch_boundary_result(
+        self, boundary_result
+    ):
+        """The outer idle check can race; the dispatcher's typed result is authoritative."""
+        transport = _discord_transport()
+        transport.dispatcher.sessions.is_busy.return_value = False
+        transport.dispatcher.handle_message.return_value = boundary_result
+        orch = _discord_orchestrator(transport)
+        loop = _loop(_DKEY)
+        loop.monitor = MonitorState(
+            kind="github_pull_request",
+            target="owner/repo#123",
+            objective="review_ready",
+            created_ts=1_000.0,
+            last_wake_fingerprint="failure-a",
+            wake_in_flight=True,
+        )
+
+        result = await orch._fire_discord_nudge(loop, "[Monitor wake]")
+
+        assert result is boundary_result
+
+    @pytest.mark.asyncio
+    async def test_structured_delivery_stays_dispatched_after_accepted_turn_error(self):
+        """An error after driver acceptance belongs to completion-evidence recovery."""
+        transport = _discord_transport()
+
+        async def _accept_then_fail(_message, **kwargs):
+            kwargs["monitor_completion"].mark_accepted()
+            raise RuntimeError("post-accept failure")
+
+        transport.dispatcher.handle_message.side_effect = _accept_then_fail
+        orch = _discord_orchestrator(transport)
+        loop = _loop(_DKEY)
+        loop.monitor = MonitorState(
+            kind="github_pull_request",
+            target="owner/repo#123",
+            objective="review_ready",
+            created_ts=1_000.0,
+            last_wake_fingerprint="failure-a",
+            wake_in_flight=True,
+        )
+
+        result = await orch._fire_discord_nudge(loop, "[Monitor wake]")
+
+        assert result is monitor_models.MonitorDispatchResult.DISPATCHED
+
+    @pytest.mark.asyncio
+    async def test_structured_delivery_timeout_preserves_accepted_evidence(self, monkeypatch):
+        """A wedged Discord turn is bounded without erasing accepted correlation."""
+        transport = _discord_transport()
+        orch = _discord_orchestrator(transport)
+        cancelled = asyncio.Event()
+
+        async def _accept_then_block(_message, **kwargs):
+            kwargs["monitor_completion"].mark_accepted()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                cancelled.set()
+
+        transport.dispatcher.handle_message.side_effect = _accept_then_block
+        monkeypatch.setattr(gw, "_NUDGE_TURN_TIMEOUT", 0.01)
+        loop = _loop(_DKEY)
+        loop.monitor = MonitorState(
+            kind="github_pull_request",
+            target="owner/repo#123",
+            objective="review_ready",
+            created_ts=1_000.0,
+            last_wake_fingerprint="failure-a",
+            wake_in_flight=True,
+        )
+
+        result = await asyncio.wait_for(
+            orch._fire_discord_nudge(loop, "[Monitor wake]"),
+            timeout=0.2,
+        )
+
+        assert result is monitor_models.MonitorDispatchResult.DISPATCHED
+        assert cancelled.is_set()
+
+    @pytest.mark.asyncio
     async def test_dispatcher_without_sessions_attribute_still_fires(self):
         """``sessions`` is optional on the dispatcher double — absence is not busy."""
         transport = _discord_transport()
@@ -256,11 +401,13 @@ class TestFireDiscordNudge:
         assert await orch._fire_discord_nudge(structured) is True
         _, structured_kwargs = _awaited(transport.dispatcher.handle_message)
         assert isinstance(structured_kwargs["monitor_completion"], MonitorCompletionHook)
+        assert structured_kwargs["monitor_session_key"] == _DKEY
 
         transport.dispatcher.handle_message.reset_mock()
         assert await orch._fire_discord_nudge(_loop(_DKEY)) is True
         _, legacy_kwargs = _awaited(transport.dispatcher.handle_message)
         assert "monitor_completion" not in legacy_kwargs
+        assert "monitor_session_key" not in legacy_kwargs
 
     @pytest.mark.asyncio
     async def test_dispatch_failure_returns_false(self):
@@ -306,6 +453,288 @@ class TestFireSlackNudgeGuards:
         orch.sessions.is_busy.return_value = True
         assert await orch._fire_slack_nudge(_loop()) is False
         orch.sessions.get_or_create.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_structured_delivery_distinguishes_busy_and_unavailable(self):
+        busy = _slack_nudge_orchestrator()
+        busy.sessions.is_busy.return_value = True
+        unavailable = _slack_nudge_orchestrator()
+        unavailable.sessions.get_channel.return_value = None
+
+        assert await busy._fire_slack_nudge(_loop(), "[Monitor wake]") is (
+            monitor_models.MonitorDispatchResult.BUSY
+        )
+        assert await unavailable._fire_slack_nudge(_loop(), "[Monitor wake]") is (
+            monitor_models.MonitorDispatchResult.UNAVAILABLE
+        )
+
+    @pytest.mark.asyncio
+    async def test_structured_delivery_claims_slack_session_without_waiting(self):
+        """A user turn winning after the advisory check keeps the wake unclaimed."""
+        orch = _slack_nudge_orchestrator()
+        orch.sessions.get_or_create.side_effect = SessionBusyError("slack:111.222")
+
+        result = await orch._fire_slack_nudge(_loop(), "[Monitor wake]")
+
+        assert result is monitor_models.MonitorDispatchResult.BUSY
+        orch.sessions.get_or_create.assert_awaited_once_with("slack:111.222", wait_if_busy=False)
+        orch.sessions.cancel_current.assert_not_awaited()
+        orch.sessions.release.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_structured_delivery_refuses_shutdown_before_provider_stream(self):
+        orch = _slack_nudge_orchestrator()
+        loop = _loop()
+        loop.monitor = MonitorState(
+            kind="github_pull_request",
+            target="owner/repo#123",
+            objective="review_ready",
+            created_ts=1_000.0,
+            last_wake_fingerprint="failure-a",
+            wake_in_flight=True,
+        )
+        service = MagicMock()
+        service.record_monitor_turn_completion = AsyncMock()
+        service.monitor_dispatch_is_authorized = AsyncMock(return_value=True)
+        orch.autonudge_svc = service
+        orch.sessions.begin_turn.side_effect = SessionClosingError("closing")
+
+        result = await orch._fire_slack_nudge(loop, "[Monitor wake]")
+
+        assert result is monitor_models.MonitorDispatchResult.BUSY
+        orch.sessions.begin_turn.assert_called_once_with("slack:111.222")
+        orch.sessions.cancel_current.assert_awaited_once_with("slack:111.222")
+        orch.sessions.release.assert_called_once_with("slack:111.222")
+
+    @pytest.mark.asyncio
+    async def test_structured_delivery_rechecks_slack_policy_at_fire_time(self, monkeypatch):
+        orch = _slack_nudge_orchestrator()
+        permitted = AsyncMock(return_value=False)
+        monkeypatch.setattr(gw, "channel_inbound_permitted", permitted)
+
+        result = await orch._fire_slack_nudge(_loop(), "[Monitor wake]")
+
+        assert result is monitor_models.MonitorDispatchResult.UNAVAILABLE
+        permitted.assert_awaited_once_with("slack")
+        orch.sessions.get_or_create.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_slack_stop_during_context_build_never_streams_as_ordinary(self, monkeypatch):
+        """A revoked structured claim cannot lose its hook and enter the legacy path."""
+        orch = _slack_nudge_orchestrator()
+        orch.autonudge_svc = MagicMock()
+        loop = _loop()
+        loop.monitor = MonitorState(
+            kind="github_pull_request",
+            target="owner/repo#123",
+            objective="review_ready",
+            created_ts=1_000.0,
+            last_wake_fingerprint="failure-a",
+            wake_in_flight=True,
+        )
+
+        async def _stop_during_build(_builder, *_args, **_kwargs):
+            assert loop.monitor is not None
+            loop.monitor.wake_in_flight = False
+            return "MSG", None
+
+        stream = AsyncMock(side_effect=AssertionError("revoked wake reached provider"))
+        monkeypatch.setattr(gw, "run_in_embed_pool", _stop_during_build)
+        monkeypatch.setattr(gw, "stream_and_collect", stream)
+
+        result = await orch._fire_slack_nudge(loop, "[Monitor wake]")
+
+        assert result is monitor_models.MonitorDispatchResult.UNAVAILABLE
+        stream.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_structured_stream_exhaustion_without_complete_is_only_dispatched(self):
+        """Stream exhaustion is not completion evidence; the supervisor owns recovery."""
+        orch = _slack_nudge_orchestrator()
+        loop = _loop()
+        loop.monitor = MonitorState(
+            kind="github_pull_request",
+            target="owner/repo#123",
+            objective="review_ready",
+            created_ts=1_000.0,
+            last_wake_fingerprint="failure-a",
+            wake_in_flight=True,
+        )
+        service = MagicMock()
+        service.record_monitor_turn_completion = AsyncMock()
+        service.monitor_dispatch_is_authorized = AsyncMock(return_value=True)
+        orch.autonudge_svc = service
+
+        class _ExhaustedProvider:
+            async def stream(self, _message):
+                if False:
+                    yield
+
+            async def approve_tool(self, _request_id, *, always=False):
+                return None
+
+            async def reject_tool(self, _request_id):
+                return None
+
+        orch.sessions.get_or_create = AsyncMock(return_value=(_ExhaustedProvider(), False, False))
+
+        result = await orch._fire_slack_nudge(loop, "[Monitor wake]")
+
+        assert result is monitor_models.MonitorDispatchResult.DISPATCHED
+        service.record_monitor_turn_completion.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_structured_turn_rechecks_claim_before_slack_provider_stream(self):
+        orch = _slack_nudge_orchestrator()
+        loop = _loop()
+        loop.monitor = MonitorState(
+            kind="github_pull_request",
+            target="owner/repo#123",
+            objective="review_ready",
+            created_ts=1_000.0,
+            last_wake_fingerprint="failure-a",
+            wake_in_flight=True,
+        )
+        service = MagicMock()
+        service.record_monitor_turn_completion = AsyncMock()
+        service.monitor_dispatch_is_authorized = AsyncMock(return_value=False)
+        orch.autonudge_svc = service
+
+        class _RefusingProvider:
+            async def stream(self, _message):
+                raise AssertionError("revoked monitor claim reached the provider")
+                yield
+
+            async def approve_tool(self, _request_id, *, always=False):
+                return None
+
+            async def reject_tool(self, _request_id):
+                return None
+
+        orch.sessions.get_or_create = AsyncMock(return_value=(_RefusingProvider(), False, False))
+
+        result = await orch._fire_slack_nudge(loop, "[Monitor wake]")
+
+        assert result is monitor_models.MonitorDispatchResult.UNAVAILABLE
+        service.monitor_dispatch_is_authorized.assert_awaited_once_with(loop.id, "failure-a")
+        service.record_monitor_turn_completion.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_structured_timeout_before_acceptance_retries_as_busy(self, monkeypatch):
+        """A stalled authorization never starts an evidence deadline."""
+        orch = _slack_nudge_orchestrator()
+        loop = _loop()
+        loop.monitor = MonitorState(
+            kind="github_pull_request",
+            target="owner/repo#123",
+            objective="review_ready",
+            created_ts=1_000.0,
+            last_wake_fingerprint="failure-a",
+            wake_in_flight=True,
+        )
+
+        async def _stall_authorization(_monitor_id: str, _fingerprint: str) -> bool:
+            await asyncio.Event().wait()
+            return True
+
+        service = MagicMock()
+        service.record_monitor_turn_completion = AsyncMock()
+        service.monitor_dispatch_is_authorized = AsyncMock(side_effect=_stall_authorization)
+        orch.autonudge_svc = service
+        persist = AsyncMock()
+        monkeypatch.setattr(gw, "_NUDGE_TURN_TIMEOUT", 0.01)
+        monkeypatch.setattr(gw, "_persist_turn_row", persist)
+
+        result = await orch._fire_slack_nudge(loop, "[Monitor wake]")
+
+        assert result is monitor_models.MonitorDispatchResult.BUSY
+        service.monitor_dispatch_is_authorized.assert_awaited_once_with(loop.id, "failure-a")
+        service.mark_monitor_turn_accepted.assert_not_called()
+        service.record_monitor_turn_completion.assert_not_awaited()
+        persist.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_structured_setup_failure_before_acceptance_retries_as_busy(self, monkeypatch):
+        orch = _slack_nudge_orchestrator()
+        loop = _loop()
+        loop.monitor = MonitorState(
+            kind="github_pull_request",
+            target="owner/repo#123",
+            objective="review_ready",
+            created_ts=1_000.0,
+            last_wake_fingerprint="failure-a",
+            wake_in_flight=True,
+        )
+        service = MagicMock()
+        service.record_monitor_turn_completion = AsyncMock()
+        service.monitor_dispatch_is_authorized = AsyncMock(return_value=True)
+        orch.autonudge_svc = service
+        monkeypatch.setattr(gw, "build_tool_gate", MagicMock(side_effect=RuntimeError("boom")))
+
+        result = await orch._fire_slack_nudge(loop, "[Monitor wake]")
+
+        assert result is monitor_models.MonitorDispatchResult.BUSY
+        service.mark_monitor_turn_accepted.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_structured_turn_applies_monitor_stop_directive(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        """A genuine Slack tool result must stop its owning monitor before completion."""
+        orch = _slack_nudge_orchestrator()
+        service = AutoNudgeService(base_dir=tmp_path)
+        now = time.time()
+        loop = await service.add_monitor(
+            slot_key="slack:111.222",
+            kind="github_pull_request",
+            target="https://github.com/acme/widgets/pull/7",
+            objective="review_ready",
+            cadence_secs=60,
+            budgets=MonitorBudgets(),
+            now=now,
+        )
+        assert await service.mark_monitor_action_in_flight(loop.id, "failure-a", now=now)
+
+        class _DirectiveProvider:
+            async def stream(self, _message):
+                yield AcpEvent(
+                    kind=EVENT_TOOL_CALL,
+                    tool_call_id="stop-1",
+                    title="monitor_stop",
+                    tool_name="monitor_stop",
+                    mcp_server_name=session_directive.CORE_MCP_SERVER,
+                )
+                yield AcpEvent(
+                    kind=EVENT_TOOL_RESULT,
+                    tool_call_id="stop-1",
+                    tool_output=session_directive.encode(
+                        "monitor_stop",
+                        {"reason": "objective complete"},
+                        "Monitor stop requested.",
+                    ),
+                    tool_final=True,
+                )
+                yield AcpEvent(kind=EVENT_COMPLETE, stop_reason="end_turn")
+
+            async def approve_tool(self, _request_id, *, always=False):
+                return None
+
+            async def reject_tool(self, _request_id):
+                return None
+
+        orch.sessions.get_or_create = AsyncMock(return_value=(_DirectiveProvider(), False, False))
+        orch.autonudge_svc = service
+        monkeypatch.setattr("kiro_crew.autonudge.get_instance", lambda: service)
+        monkeypatch.setattr(gw, "_persist_turn_row", AsyncMock())
+
+        result = await orch._fire_slack_nudge(loop, "[Monitor wake]")
+
+        assert result is monitor_models.MonitorDispatchResult.DISPATCHED
+        assert loop.monitor is not None
+        assert loop.monitor.outcome is MonitorOutcome.USER_STOP
+        assert not loop.active
 
     @pytest.mark.asyncio
     async def test_unroutable_session_retires_loop(self):
@@ -388,7 +817,9 @@ class TestFireSlackNudgeGuards:
         order: list[str] = []
 
         async def _stream(*_args, **kwargs):
-            kwargs["on_complete"](SimpleNamespace(stop_reason="max_tokens"))
+            kwargs["on_complete"](
+                SimpleNamespace(stop_reason="max_tokens", synthetic_completion=False)
+            )
             if times_out:
                 await asyncio.Event().wait()
             return "reply body"
@@ -410,6 +841,52 @@ class TestFireSlackNudgeGuards:
             await orch._fire_slack_nudge(loop)
 
         assert order == ["completion", "persist"]
+
+    @pytest.mark.asyncio
+    async def test_cancellation_after_safe_completion_records_monitor_once(self):
+        """Shutdown cancellation cannot discard an already captured completion."""
+        orch = _slack_nudge_orchestrator()
+        service = SimpleNamespace(
+            record_monitor_turn_completion=AsyncMock(),
+            monitor_dispatch_is_authorized=AsyncMock(return_value=True),
+        )
+        orch.autonudge_svc = service
+        loop = _loop()
+        loop.monitor = MonitorState(
+            kind="github_pull_request",
+            target="owner/repo#123",
+            objective="review_ready",
+            created_ts=1_000.0,
+            last_wake_fingerprint="failure-a",
+            wake_in_flight=True,
+        )
+        completed = asyncio.Event()
+
+        class _CompletedThenBlockedProvider:
+            async def stream(self, _message):
+                yield AcpEvent(kind=EVENT_COMPLETE, stop_reason="max_tokens")
+                completed.set()
+                await asyncio.Event().wait()
+
+            async def approve_tool(self, _request_id, *, always=False):
+                return None
+
+            async def reject_tool(self, _request_id):
+                return None
+
+        orch.sessions.get_or_create = AsyncMock(
+            return_value=(_CompletedThenBlockedProvider(), False, False)
+        )
+        task = asyncio.create_task(orch._fire_slack_nudge(loop, "[Monitor wake]"))
+        await asyncio.wait_for(completed.wait(), timeout=1)
+
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        service.record_monitor_turn_completion.assert_awaited_once()
+        completion = _awaited(service.record_monitor_turn_completion).args[0]
+        assert completion.disposition is MonitorActionDisposition.FAILURE
 
     @pytest.mark.asyncio
     async def test_cleanup_failures_do_not_mask_the_turn_result(self, monkeypatch):
@@ -530,13 +1007,17 @@ class TestAutonudgeRouterAndObserver:
 
     async def _wire(self, orch: Any):
         with patch("kiro_crew.slack.gateway.autonudge_enabled", return_value=True):
-            with patch("kiro_crew.slack.gateway.AutoNudgeService") as mock_svc:
+            with (
+                patch("kiro_crew.slack.gateway.AutoNudgeService") as mock_svc,
+                patch("kiro_crew.monitoring.controller.MonitorController") as mock_controller,
+            ):
                 inst = MagicMock()
                 inst.start = AsyncMock()
                 inst.subscribe = MagicMock()
                 inst.remove = AsyncMock()
                 mock_svc.return_value = inst
                 await orch._init_autonudge()
+                inst.monitor_dispatch = mock_controller.call_args.args[1]
         on_fire = mock_svc.call_args.kwargs["on_fire"]
         observer = inst.subscribe.call_args.args[0]
         return on_fire, observer, inst
@@ -576,6 +1057,41 @@ class TestAutonudgeRouterAndObserver:
         orch._fire_dashboard_nudge.assert_awaited_once_with(loop)
 
     @pytest.mark.asyncio
+    async def test_structured_envelope_is_identical_across_delivery_surfaces(self):
+        orch = _make_orchestrator()
+        orch._fire_slack_nudge = AsyncMock(
+            return_value=monitor_models.MonitorDispatchResult.DISPATCHED
+        )
+        orch._fire_discord_nudge = AsyncMock(
+            return_value=monitor_models.MonitorDispatchResult.DISPATCHED
+        )
+        orch._fire_dashboard_nudge = AsyncMock(
+            return_value=monitor_models.MonitorDispatchResult.DISPATCHED
+        )
+        _on_fire, _observer, inst = await self._wire(orch)
+        envelope = "[Monitor wake]\ncanonical facts"
+
+        slack_loop = _loop("slack:111.222")
+        discord_loop = _loop(_DKEY)
+        dashboard_loop = _loop("chat-1-1721")
+        assert (
+            await inst.monitor_dispatch(slack_loop, envelope)
+            is monitor_models.MonitorDispatchResult.DISPATCHED
+        )
+        assert (
+            await inst.monitor_dispatch(discord_loop, envelope)
+            is monitor_models.MonitorDispatchResult.DISPATCHED
+        )
+        assert (
+            await inst.monitor_dispatch(dashboard_loop, envelope)
+            is monitor_models.MonitorDispatchResult.DISPATCHED
+        )
+
+        orch._fire_slack_nudge.assert_awaited_once_with(slack_loop, envelope)
+        orch._fire_discord_nudge.assert_awaited_once_with(discord_loop, envelope)
+        orch._fire_dashboard_nudge.assert_awaited_once_with(dashboard_loop, envelope)
+
+    @pytest.mark.asyncio
     async def test_unsupported_channel_namespace_retires_loop(self, monkeypatch):
         """A channel key with no fire implementation can never succeed."""
         orch = _make_orchestrator()
@@ -600,6 +1116,35 @@ class TestAutonudgeRouterAndObserver:
         assert payload["slot"] == "chat-1-1721"
         assert payload["loop"]["id"] == "loop-1"
         assert payload["loop"]["cycle_count"] == 2
+
+    @pytest.mark.asyncio
+    async def test_observer_broadcasts_structured_state_to_owners_only(self):
+        orch = _make_orchestrator()
+        orch.dashboard_state = _mock_dashboard_state()
+        _on_fire, observer, _inst = await self._wire(orch)
+        secret = "AKIAIOSFODNN7EXAMPLE"
+        loop = _loop("chat-1-1721")
+        loop.monitor = MonitorState(
+            kind="github_pull_request",
+            target="https://github.com/acme/widgets/pull/7",
+            objective="review_ready",
+            created_ts=1.0,
+        )
+        loop.monitor.last_observation = {
+            "checks": {"failed": [f"deploy?token={secret}"]},
+            "target": f"github.com/acme/widgets#7?token={secret}",
+        }
+        loop.monitor.last_provider_error = f"provider rejected token {secret}"
+
+        observer("armed", loop)
+
+        orch.dashboard_state.broadcast_ws.assert_not_called()
+        topic, payload = orch.dashboard_state.broadcast_ws_owners.call_args.args
+        assert topic == "autonudge_state"
+        assert payload["loop"]["monitor"]["target"].endswith("/pull/7")
+        rendered = json.dumps(payload)
+        assert secret not in rendered
+        assert "provider rejected token" in payload["loop"]["monitor"]["last_provider_error"]
 
     @pytest.mark.asyncio
     async def test_observer_expired_event_also_notifies(self):
@@ -865,9 +1410,7 @@ class TestInitMcpGateway:
         orch = _make_orchestrator()
         orch._cfg.mcp_gateway.enabled = False
         orch._cfg.mcp_gateway.stub_servers = ["alpha-mcp"]
-        with patch(
-            "kiro_crew.slack.gateway.is_gateway_supported", return_value=False
-        ) as probe:
+        with patch("kiro_crew.slack.gateway.is_gateway_supported", return_value=False) as probe:
             await orch._init_mcp_gateway()
         probe.assert_called_once()
 
@@ -903,11 +1446,10 @@ class TestInitMcpGateway:
             calls.append("init")
             assert stub_servers == frozenset({"alpha-mcp"})
 
-        with patch(
-            "kiro_crew.config.loader.KiroCrewConfig.load", return_value=orch._cfg
-        ):
-            with patch.object(orch, "_stop_mcp_broker", _stop), patch.object(
-                orch, "_init_mcp_gateway", _init
+        with patch("kiro_crew.config.loader.KiroCrewConfig.load", return_value=orch._cfg):
+            with (
+                patch.object(orch, "_stop_mcp_broker", _stop),
+                patch.object(orch, "_init_mcp_gateway", _init),
             ):
                 await orch._apply_mcp_gateway_enabled(False)
 
@@ -930,11 +1472,10 @@ class TestInitMcpGateway:
         async def _init() -> None:
             calls.append("init")
 
-        with patch(
-            "kiro_crew.config.loader.KiroCrewConfig.load", return_value=orch._cfg
-        ):
-            with patch.object(orch, "_stop_mcp_broker", _stop), patch.object(
-                orch, "_init_mcp_gateway", _init
+        with patch("kiro_crew.config.loader.KiroCrewConfig.load", return_value=orch._cfg):
+            with (
+                patch.object(orch, "_stop_mcp_broker", _stop),
+                patch.object(orch, "_init_mcp_gateway", _init),
             ):
                 await orch._apply_mcp_gateway_enabled(False)
 
@@ -954,17 +1495,14 @@ class TestInitMcpGateway:
     async def test_rewriter_failure_falls_back_to_per_session_mcp(self, tmp_path):
         orch = _make_orchestrator()
         orch._cfg.mcp_gateway.enabled = True
-        with patch("kiro_crew.slack.gateway.is_gateway_supported", return_value=True), patch(
-            "kiro_crew.slack.gateway.resolve_overlay_dir", return_value=tmp_path / "overlay"
-        ), patch(
-            "kiro_crew.slack.gateway.default_socket_path", return_value=tmp_path / "gw.sock"
-        ), patch(
-            "kiro_crew.slack.gateway.kiro_agents_dir", return_value=tmp_path / "agents"
-        ), patch(
-            "kiro_crew.slack.gateway.rewrite_agents", side_effect=RuntimeError("bad spec")
-        ), patch(
-            "kiro_crew.slack.gateway.GatewayManager"
-        ) as mgr_cls:
+        with (
+            patch("kiro_crew.slack.gateway.is_gateway_supported", return_value=True),
+            patch("kiro_crew.slack.gateway.resolve_overlay_dir", return_value=tmp_path / "overlay"),
+            patch("kiro_crew.slack.gateway.default_socket_path", return_value=tmp_path / "gw.sock"),
+            patch("kiro_crew.slack.gateway.kiro_agents_dir", return_value=tmp_path / "agents"),
+            patch("kiro_crew.slack.gateway.rewrite_agents", side_effect=RuntimeError("bad spec")),
+            patch("kiro_crew.slack.gateway.GatewayManager") as mgr_cls,
+        ):
             await orch._init_mcp_gateway()
         mgr_cls.assert_not_called()
         assert orch._mcp_gateway_manager is None
@@ -978,16 +1516,16 @@ class TestInitMcpGateway:
         orch._cfg.mcp_gateway.stub_servers = ["alpha-mcp"]
         manager = MagicMock()
         manager.start = AsyncMock(return_value=True)
-        with patch("kiro_crew.slack.gateway.is_gateway_supported", return_value=True), patch(
-            "kiro_crew.slack.gateway.resolve_overlay_dir", return_value=tmp_path / "overlay"
-        ), patch(
-            "kiro_crew.slack.gateway.default_socket_path", return_value=tmp_path / "gw.sock"
-        ), patch(
-            "kiro_crew.slack.gateway.kiro_agents_dir", return_value=tmp_path / "agents"
-        ), patch(
-            "kiro_crew.slack.gateway.rewrite_agents", return_value=(None, {"MC_MCP_TARGET_X": "1"})
-        ), patch(
-            "kiro_crew.slack.gateway.GatewayManager", return_value=manager
+        with (
+            patch("kiro_crew.slack.gateway.is_gateway_supported", return_value=True),
+            patch("kiro_crew.slack.gateway.resolve_overlay_dir", return_value=tmp_path / "overlay"),
+            patch("kiro_crew.slack.gateway.default_socket_path", return_value=tmp_path / "gw.sock"),
+            patch("kiro_crew.slack.gateway.kiro_agents_dir", return_value=tmp_path / "agents"),
+            patch(
+                "kiro_crew.slack.gateway.rewrite_agents",
+                return_value=(None, {"MC_MCP_TARGET_X": "1"}),
+            ),
+            patch("kiro_crew.slack.gateway.GatewayManager", return_value=manager),
         ):
             await orch._init_mcp_gateway()
         assert orch._mcp_gateway_manager is manager
@@ -1009,16 +1547,13 @@ class TestInitMcpGateway:
         orch._cfg.mcp_gateway.stub_servers = ["alpha-mcp", "beta-mcp"]  # pending
         manager = MagicMock()
         manager.start = AsyncMock(return_value=True)
-        with patch("kiro_crew.slack.gateway.is_gateway_supported", return_value=True), patch(
-            "kiro_crew.slack.gateway.resolve_overlay_dir", return_value=tmp_path / "overlay"
-        ), patch(
-            "kiro_crew.slack.gateway.default_socket_path", return_value=tmp_path / "gw.sock"
-        ), patch(
-            "kiro_crew.slack.gateway.kiro_agents_dir", return_value=tmp_path / "agents"
-        ), patch(
-            "kiro_crew.slack.gateway.rewrite_agents", return_value=(None, {})
-        ) as rewriter, patch(
-            "kiro_crew.slack.gateway.GatewayManager", return_value=manager
+        with (
+            patch("kiro_crew.slack.gateway.is_gateway_supported", return_value=True),
+            patch("kiro_crew.slack.gateway.resolve_overlay_dir", return_value=tmp_path / "overlay"),
+            patch("kiro_crew.slack.gateway.default_socket_path", return_value=tmp_path / "gw.sock"),
+            patch("kiro_crew.slack.gateway.kiro_agents_dir", return_value=tmp_path / "agents"),
+            patch("kiro_crew.slack.gateway.rewrite_agents", return_value=(None, {})) as rewriter,
+            patch("kiro_crew.slack.gateway.GatewayManager", return_value=manager),
         ):
             await orch._init_mcp_gateway(stub_servers=frozenset({"alpha-mcp"}))
 
@@ -1044,30 +1579,25 @@ class TestInitMcpGateway:
         orch._cfg.mcp_gateway.stub_servers = ["alpha-mcp", "beta-mcp"]  # beta pending
         manager = MagicMock()
         manager.start = AsyncMock(return_value=True)
-        with patch("kiro_crew.slack.gateway.is_gateway_supported", return_value=True), patch(
-            "kiro_crew.slack.gateway.resolve_overlay_dir", return_value=tmp_path / "overlay"
-        ), patch(
-            "kiro_crew.slack.gateway.default_socket_path", return_value=tmp_path / "gw.sock"
-        ), patch(
-            "kiro_crew.slack.gateway.kiro_agents_dir", return_value=tmp_path / "agents"
-        ), patch(
-            "kiro_crew.slack.gateway.rewrite_agents", return_value=(None, {})
-        ), patch(
-            "kiro_crew.slack.gateway.GatewayManager", return_value=manager
+        with (
+            patch("kiro_crew.slack.gateway.is_gateway_supported", return_value=True),
+            patch("kiro_crew.slack.gateway.resolve_overlay_dir", return_value=tmp_path / "overlay"),
+            patch("kiro_crew.slack.gateway.default_socket_path", return_value=tmp_path / "gw.sock"),
+            patch("kiro_crew.slack.gateway.kiro_agents_dir", return_value=tmp_path / "agents"),
+            patch("kiro_crew.slack.gateway.rewrite_agents", return_value=(None, {})),
+            patch("kiro_crew.slack.gateway.GatewayManager", return_value=manager),
         ):
             with caplog.at_level(logging.INFO, logger="kiro_crew.slack.gateway"):
                 await orch._init_mcp_gateway(stub_servers=frozenset({"alpha-mcp"}))
 
         ready = [r for r in caplog.records if "broker ready" in r.getMessage()]
         assert ready, "no broker-ready line was emitted"
-        assert "1 stubbed server(s)" in ready[0].getMessage(), (
-            f"the ready line counted the configured set: {ready[0].getMessage()}"
-        )
+        assert (
+            "1 stubbed server(s)" in ready[0].getMessage()
+        ), f"the ready line counted the configured set: {ready[0].getMessage()}"
 
     @pytest.mark.asyncio
-    async def test_a_failed_start_still_records_the_set_so_a_retry_can_bring_it_up(
-        self, tmp_path
-    ):
+    async def test_a_failed_start_still_records_the_set_so_a_retry_can_bring_it_up(self, tmp_path):
         """A start that fails leaves the broker down, and the set has to survive.
 
         Recording only on success would make a transient start failure permanent:
@@ -1081,16 +1611,13 @@ class TestInitMcpGateway:
         orch._cfg.mcp_gateway.stub_servers = ["alpha-mcp"]
         manager = MagicMock()
         manager.start = AsyncMock(return_value=False)  # transient failure
-        with patch("kiro_crew.slack.gateway.is_gateway_supported", return_value=True), patch(
-            "kiro_crew.slack.gateway.resolve_overlay_dir", return_value=tmp_path / "overlay"
-        ), patch(
-            "kiro_crew.slack.gateway.default_socket_path", return_value=tmp_path / "gw.sock"
-        ), patch(
-            "kiro_crew.slack.gateway.kiro_agents_dir", return_value=tmp_path / "agents"
-        ), patch(
-            "kiro_crew.slack.gateway.rewrite_agents", return_value=(None, {})
-        ), patch(
-            "kiro_crew.slack.gateway.GatewayManager", return_value=manager
+        with (
+            patch("kiro_crew.slack.gateway.is_gateway_supported", return_value=True),
+            patch("kiro_crew.slack.gateway.resolve_overlay_dir", return_value=tmp_path / "overlay"),
+            patch("kiro_crew.slack.gateway.default_socket_path", return_value=tmp_path / "gw.sock"),
+            patch("kiro_crew.slack.gateway.kiro_agents_dir", return_value=tmp_path / "agents"),
+            patch("kiro_crew.slack.gateway.rewrite_agents", return_value=(None, {})),
+            patch("kiro_crew.slack.gateway.GatewayManager", return_value=manager),
         ):
             await orch._init_mcp_gateway()
 
@@ -1106,16 +1633,13 @@ class TestInitMcpGateway:
         orch._cfg.mcp_gateway.enabled = True
         manager = MagicMock()
         manager.start = AsyncMock(return_value=False)
-        with patch("kiro_crew.slack.gateway.is_gateway_supported", return_value=True), patch(
-            "kiro_crew.slack.gateway.resolve_overlay_dir", return_value=tmp_path / "overlay"
-        ), patch(
-            "kiro_crew.slack.gateway.default_socket_path", return_value=tmp_path / "gw.sock"
-        ), patch(
-            "kiro_crew.slack.gateway.kiro_agents_dir", return_value=tmp_path / "agents"
-        ), patch(
-            "kiro_crew.slack.gateway.rewrite_agents", return_value=(None, {})
-        ), patch(
-            "kiro_crew.slack.gateway.GatewayManager", return_value=manager
+        with (
+            patch("kiro_crew.slack.gateway.is_gateway_supported", return_value=True),
+            patch("kiro_crew.slack.gateway.resolve_overlay_dir", return_value=tmp_path / "overlay"),
+            patch("kiro_crew.slack.gateway.default_socket_path", return_value=tmp_path / "gw.sock"),
+            patch("kiro_crew.slack.gateway.kiro_agents_dir", return_value=tmp_path / "agents"),
+            patch("kiro_crew.slack.gateway.rewrite_agents", return_value=(None, {})),
+            patch("kiro_crew.slack.gateway.GatewayManager", return_value=manager),
         ):
             await orch._init_mcp_gateway()
         assert orch._mcp_gateway_manager is None
@@ -1243,60 +1767,74 @@ class TestChannelTransportPermittedAuditPaths:
         """A best-effort deny audit that cannot be written must not mask the deny."""
         audit = MagicMock()
         audit.log_governance_decision.side_effect = RuntimeError("sel unwritable")
-        with patch.object(
-            gw, "governance_permits", return_value=_decision(permitted=False)
-        ), patch.object(gw, "sel", return_value=audit):
+        with (
+            patch.object(gw, "governance_permits", return_value=_decision(permitted=False)),
+            patch.object(gw, "sel", return_value=audit),
+        ):
             assert gw._channel_transport_permitted("telegram") is False
 
     def test_ungoverned_allow_survives_an_unwritable_audit(self):
         """No policy governs ``channels`` → SEL disk health must not block startup."""
         audit = MagicMock()
         audit.log_governance_decision.side_effect = RuntimeError("sel unwritable")
-        with patch.object(
-            gw, "governance_permits", return_value=_decision(permitted=True, layer="default")
-        ), patch.object(gw, "sel", return_value=audit):
+        with (
+            patch.object(
+                gw, "governance_permits", return_value=_decision(permitted=True, layer="default")
+            ),
+            patch.object(gw, "sel", return_value=audit),
+        ):
             assert gw._channel_transport_permitted("telegram") is True
 
     def test_governed_allow_denies_when_its_audit_cannot_be_written(self):
         """audit-or-deny: a policy-governed transport never connects unaudited."""
         audit = MagicMock()
         audit.log_governance_decision.side_effect = RuntimeError("sel unwritable")
-        with patch.object(
-            gw, "governance_permits", return_value=_decision(permitted=True, layer="policy")
-        ), patch.object(gw, "sel", return_value=audit), patch.object(
-            gw, "audit_governance_degraded"
-        ) as degraded:
+        with (
+            patch.object(
+                gw, "governance_permits", return_value=_decision(permitted=True, layer="policy")
+            ),
+            patch.object(gw, "sel", return_value=audit),
+            patch.object(gw, "audit_governance_degraded") as degraded,
+        ):
             assert gw._channel_transport_permitted("telegram") is False
         assert degraded.call_args.kwargs["failed_closed"] is True
 
     def test_governed_allow_is_audited_critically(self):
         audit = MagicMock()
-        with patch.object(
-            gw, "governance_permits", return_value=_decision(permitted=True, layer="profile")
-        ), patch.object(gw, "sel", return_value=audit):
+        with (
+            patch.object(
+                gw, "governance_permits", return_value=_decision(permitted=True, layer="profile")
+            ),
+            patch.object(gw, "sel", return_value=audit),
+        ):
             assert gw._channel_transport_permitted("webex") is True
         assert audit.log_governance_decision.call_args.kwargs["critical"] is True
 
     def test_ungoverned_allow_is_audited_best_effort(self):
         audit = MagicMock()
-        with patch.object(
-            gw, "governance_permits", return_value=_decision(permitted=True, layer="")
-        ), patch.object(gw, "sel", return_value=audit):
+        with (
+            patch.object(
+                gw, "governance_permits", return_value=_decision(permitted=True, layer="")
+            ),
+            patch.object(gw, "sel", return_value=audit),
+        ):
             assert gw._channel_transport_permitted("webex") is True
         assert audit.log_governance_decision.call_args.kwargs["critical"] is False
 
     def test_evaluation_error_fails_closed(self):
-        with patch.object(
-            gw, "governance_permits", side_effect=RuntimeError("resolver broke")
-        ), patch.object(gw, "audit_governance_degraded") as degraded:
+        with (
+            patch.object(gw, "governance_permits", side_effect=RuntimeError("resolver broke")),
+            patch.object(gw, "audit_governance_degraded") as degraded,
+        ):
             assert gw._channel_transport_permitted("wecom") is False
         degraded.assert_called_once()
 
     def test_degrade_audit_failure_does_not_mask_the_deny(self):
-        with patch.object(
-            gw, "governance_permits", side_effect=RuntimeError("resolver broke")
-        ), patch.object(
-            gw, "audit_governance_degraded", side_effect=RuntimeError("audit import failed")
+        with (
+            patch.object(gw, "governance_permits", side_effect=RuntimeError("resolver broke")),
+            patch.object(
+                gw, "audit_governance_degraded", side_effect=RuntimeError("audit import failed")
+            ),
         ):
             assert gw._channel_transport_permitted("wecom") is False
 
@@ -1334,9 +1872,7 @@ class TestFireDashboardNudgeDispatch:
         # spawn_guarded_turn, so a plain sentinel avoids creating a coroutine
         # nothing will ever await.
         task = MagicMock()
-        monkeypatch.setattr(
-            "kiro_crew.dashboard.chat._run_chat", MagicMock(return_value="CORO")
-        )
+        monkeypatch.setattr("kiro_crew.dashboard.chat._run_chat", MagicMock(return_value="CORO"))
         monkeypatch.setattr(gw, "spawn_guarded_turn", MagicMock(return_value=task))
 
         loop = _loop("chat-1", cycle_count=1)
@@ -1351,6 +1887,27 @@ class TestFireDashboardNudgeDispatch:
         assert slot.task is task
         assert orch._session_tasks["chat-1"] is task
         ds.push_slots_update.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_structured_delivery_distinguishes_busy_and_unavailable(self, monkeypatch):
+        busy = _make_orchestrator()
+        busy_state = _mock_dashboard_state()
+        busy_slot = MagicMock(running=True, _in_stage_execution=False)
+        busy_state.get_slot.return_value = busy_slot
+        busy.dashboard_state = busy_state
+        unavailable = _make_orchestrator()
+        unavailable_state = _mock_dashboard_state()
+        unavailable_state.get_slot.return_value = None
+        unavailable.dashboard_state = unavailable_state
+        monkeypatch.setattr(gw, "rehydrate_slot_from_history_async", AsyncMock(return_value=None))
+
+        assert await busy._fire_dashboard_nudge(_loop("chat-1"), "[Monitor wake]") is (
+            monitor_models.MonitorDispatchResult.BUSY
+        )
+        assert (
+            await unavailable._fire_dashboard_nudge(_loop("chat-2"), "[Monitor wake]")
+            is monitor_models.MonitorDispatchResult.UNAVAILABLE
+        )
 
     @pytest.mark.asyncio
     async def test_rehydrated_slot_is_used_when_the_registry_is_cold(self, monkeypatch):
@@ -1368,15 +1925,13 @@ class TestFireDashboardNudgeDispatch:
         restored.key = "chat-9"
 
         async def _rehydrate(_state, _key, *, adopt_closed=False):
-            assert adopt_closed is True, (
-                "a nudge loop must survive its slot being archived by idle cleanup"
-            )
+            assert (
+                adopt_closed is True
+            ), "a nudge loop must survive its slot being archived by idle cleanup"
             return restored
 
         monkeypatch.setattr(gw, "rehydrate_slot_from_history_async", _rehydrate)
-        monkeypatch.setattr(
-            "kiro_crew.dashboard.chat._run_chat", MagicMock(return_value="CORO")
-        )
+        monkeypatch.setattr("kiro_crew.dashboard.chat._run_chat", MagicMock(return_value="CORO"))
         monkeypatch.setattr(gw, "spawn_guarded_turn", MagicMock(return_value=MagicMock()))
 
         assert await orch._fire_dashboard_nudge(_loop("chat-9")) is True

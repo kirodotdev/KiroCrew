@@ -69,15 +69,17 @@ export function MochiLocalized({
   children: React.ReactNode
   /**
    * Re-mount the subtree on a language change by keying it on the active
-   * language. TRUE for the panel/settings/avatar windows: they are cheap to
-   * rebuild and carry lots of static `i18nT` text that only refreshes on a
-   * mount. FALSE for the PET window: the pet is a LIVE stateful overlay (an open
+   * language. TRUE (the default) for the panel/settings/avatar windows: they are
+   * cheap to rebuild and carry lots of static `i18nT` text that only refreshes on
+   * a mount. FALSE for the PET window: the pet is a LIVE stateful overlay (an open
    * WS connection, a running animation/sprite, display-activation state), and a
    * hard remount tears all of that down without re-initialising it — the pet
    * simply vanishes and does not come back. The pet has almost no static chrome
    * (its bubble text is backend-supplied and its context menu is rebuilt on each
    * open), so it applies the language for its next natural render instead of
-   * destroying itself to relabel.
+   * destroying itself to relabel. FALSE for the CROP window too, for the same
+   * shape of reason: its mount effect opens the OS capture picker, so a remount
+   * would ask for a second capture mid-crop, and its only static text is one hint.
    */
   remount?: boolean
 }) {
@@ -105,7 +107,14 @@ export function MochiLocalized({
       alive = false
       off?.()
     }
-  }, [])
+    // `remount` is a per-window CONSTANT — all five Mochi entries pass a literal
+    // (`remount={false}` in pet/main.tsx and snip/main.tsx, the default `true` in
+    // panel/settings/avatar) — so a primitive dep here re-runs on nothing and this stays
+    // the mount-once subscribe it reads as. Declaring it rather than closing over it is
+    // what keeps that true: were a caller ever to flip it, the surviving subscription
+    // would go on consulting the mounted-with value and either flash the pet or leave a
+    // remounting window stuck on its old subtree key.
+  }, [remount])
 
   return remount ? (
     <React.Fragment key={active}>{children}</React.Fragment>

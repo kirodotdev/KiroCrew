@@ -336,7 +336,7 @@ class TestUnswappedRemovalStillHappens:
     ) -> None:
         """A link is the one entry a removal can only take by NAME, so it withholds too.
 
-        `_unlink_verified` compares the scanned inode and then unlinks, which is two syscalls
+        `unlink_verified` compares the scanned inode and then unlinks, which is two syscalls
         with no atomic "unlink if this inode" between them. Admitting a link admits that
         window: plant one, let the approval pass it, put a file at the name in between, and the
         removal deletes the file. `empty_trash` still clears such a batch when a user asks.

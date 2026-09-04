@@ -188,7 +188,7 @@ export default function CrewCompanionPage() {
         setNotice(i18nT('apps.crewCompanion.offline.couldnt_turn_off', { error: errText(e) }))
       })
       .finally(() => setTurningOff(false))
-  }, [])
+  }, [clearNotice])
 
   // Memories is a look-back, not a live control — keep it visible even when the
   // pet is off by caching the last good stats and showing them (labelled) offline.

@@ -50,6 +50,12 @@ interface DetailPanelProps {
    *  When set, `title`, `headerActions`, and `secondaryHeaderActions` are
    *  ignored. */
   customHeader?: React.ReactNode
+  /** Override the standalone panel's frame chrome. Default is the docked
+   *  search panel's bare `border-l border-border bg-bg` slab; a page that
+   *  wants the chat SidePanel's card frame (`mb-2 border-l border-t border-b
+   *  rounded-l-xl`) passes that recipe here. Layout classes (flex column,
+   *  h-full, overflow) stay fixed. */
+  frameClassName?: string
 }
 
 /**
@@ -83,7 +89,7 @@ const maxPanelWidth = (rowWidth: number, reserveWidth?: number) => {
 const clampPanelWidth = (w: number, minWidth: number, rowWidth: number, reserveWidth?: number) =>
   Math.max(minWidth, Math.min(w, maxPanelWidth(rowWidth, reserveWidth)))
 
-export default function DetailPanel({ title, icon, onClose, footer, headerActions, secondaryHeaderActions, initialWidth = 380, minWidth = 300, reserveWidth, storageKey, children, noPadding = false, headerClassName, embedded = false, customHeader }: DetailPanelProps) {
+export default function DetailPanel({ title, icon, onClose, footer, headerActions, secondaryHeaderActions, initialWidth = 380, minWidth = 300, reserveWidth, storageKey, children, noPadding = false, headerClassName, embedded = false, customHeader, frameClassName }: DetailPanelProps) {
   const isMobile = useIsMobile()
   // Outer wrapper ref, used to measure the panel's flex row (its parent) so the
   // width cap tracks the actual available room rather than the whole viewport.
@@ -244,7 +250,7 @@ export default function DetailPanel({ title, icon, onClose, footer, headerAction
       transition={{ width: { type: 'spring', bounce: 0, duration: 0.3 }, opacity: { duration: 0.12 } }}
       className="shrink-0 overflow-hidden h-full"
     >
-      <div className="shrink-0 border-l border-border bg-bg flex flex-col h-full overflow-hidden relative" style={{ width, minWidth }}>
+      <div className={`shrink-0 ${frameClassName ?? 'border-l border-border bg-bg'} flex flex-col h-full overflow-hidden relative`} style={{ width, minWidth }}>
         {body}
       </div>
     </motion.div>

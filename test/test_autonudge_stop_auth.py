@@ -30,6 +30,7 @@ the tools are stateless and the loop mutation happens in-process in the applier.
 from __future__ import annotations
 
 import asyncio
+import logging
 
 import pytest
 
@@ -38,6 +39,7 @@ from kiro_crew import autonudge_authz, session_directive
 from kiro_crew.autonudge import (
     APPROVAL_STALL_REASON,
     AUTONUDGE_STOP_REASON,
+    MONITOR_TERMINAL_REASON,
     AutoNudgeService,
     binding_key_for,
 )
@@ -52,9 +54,9 @@ from kiro_crew.validation import ValidationError
 @pytest.fixture()
 def default_install(monkeypatch):
     """Default install: the strict resolver has no accepted identity source and
-    returns ``""``, so the stateless tools RETURN a directive rather than
-    short-circuiting. (Pooling off, unsandboxed, kiro-cli backend.)"""
-    monkeypatch.setattr(mcp_core, "_resolve_session_key_strict", lambda: "")
+    returns a dashboard identity, so the monitor tools can emit a directive.
+    (Pooling off, unsandboxed, kiro-cli backend.)"""
+    monkeypatch.setattr(mcp_core, "_resolve_session_key_strict", lambda: "dashboard:chat-1-1")
     return monkeypatch
 
 
@@ -74,6 +76,10 @@ def test_monitor_start_returns_directive_with_validated_payload(default_install)
         "idle_secs": 300,
         "max_cycles": 5,
         "max_runtime_secs": 0,
+        # Whether the loop may be observation-gated. Always present and True
+        # unless the caller opted out, so whichever surface applies this
+        # directive reads the same decision the ack reported.
+        "gate": True,
     }
 
 
@@ -161,9 +167,7 @@ def test_monitor_update_runtime_budget_passes_through(default_install):
     """A revised wall-clock budget lands in the patch; untouched fields are
     omitted, not defaulted over."""
     result = _call_tool_inner("monitor_update", {"max_runtime_secs": 3600})
-    assert session_directive.decode(result, "monitor_update")["patch"] == {
-        "max_runtime_secs": 3600
-    }
+    assert session_directive.decode(result, "monitor_update")["patch"] == {"max_runtime_secs": 3600}
 
 
 def test_monitor_update_empty_patch_returns_plain_message_no_directive(default_install):
@@ -228,9 +232,29 @@ def test_autonudge_stop_short_circuits_for_non_nudgeable_session(monkeypatch):
 
 
 class _FakeLoop:
+    """Prompt-loop double.
+
+    ``gate`` mirrors ``NudgeLoop.gate``: a prompt loop carries probe state in
+    ``monitor`` only when it is gated, and ``is_structured_monitor_loop`` reads
+    ``monitor is not None and not gate`` to tell a controller-owned structured
+    monitor apart from a prompt loop. A double that sets ``monitor`` without
+    ``gate=True`` is therefore routed to the structured ``monitor_update`` path,
+    which refuses ``message``/``max_cycles``/``active`` as legacy fields.
+    """
+
     def __init__(
-        self, loop_id, *, cycle_count=0, max_cycles=0, active=True, created_ts=0.0,
-        max_runtime_secs=0, stopped_reason="", slot_key="",
+        self,
+        loop_id,
+        *,
+        cycle_count=0,
+        max_cycles=0,
+        active=True,
+        created_ts=0.0,
+        max_runtime_secs=0,
+        stopped_reason="",
+        slot_key="",
+        monitor=None,
+        gate=False,
     ):
         self.id = loop_id
         self.cycle_count = cycle_count
@@ -240,6 +264,21 @@ class _FakeLoop:
         self.max_runtime_secs = max_runtime_secs
         self.stopped_reason = stopped_reason
         self.slot_key = slot_key
+        self.monitor = monitor
+        self.gate = gate
+
+
+class _FakeMonitor:
+    """The two monitor fields the paused-loop branch reads about a subject.
+
+    ``terminal_pending`` is the owed final turn (``"success"``/``"blocked"``) a
+    channel loop records on observing a terminal subject; ``outcome`` is the
+    settled classification written once that turn lands.
+    """
+
+    def __init__(self, *, terminal_pending="", outcome=None):
+        self.terminal_pending = terminal_pending
+        self.outcome = outcome
 
 
 class _FakeSvc:
@@ -309,6 +348,66 @@ def _record_update(monkeypatch, *, loop=None, error=None):
 
 _SESSION = "dashboard:chat-3-1700000000"
 _RESEARCH_SESSION = "dashboard:research-a1b2c3d4"
+
+
+def test_applier_ack_discloses_the_gated_cadence(monkeypatch):
+    """A gated loop must not be acknowledged with an every-interval promise.
+
+    This applier defaults ``gate`` to True, so the unconditional "re-injects every
+    {idle_secs}s" was wrong for its own default: a quiet tick on a gated loop spends no
+    turn at all. The MCP tool's ack already disclosed this; the dashboard directive
+    applier did not, and the pull request's own description claims the arming surface
+    says so.
+
+    The cadence is read off the ARMED loop rather than the request, because this surface
+    knows what the tool has to infer -- whether a monitor was actually attached.
+    """
+    from kiro_crew.monitoring.models import MonitorState
+
+    armed = _FakeLoop("loop-gated")
+    armed.monitor = MonitorState(
+        kind="gh-pr",
+        target="acme/widgets#42",
+        objective="watch until green",
+        created_ts=0.0,
+    )
+    armed.gate = True
+    svc = _FakeSvc()
+    _install_svc(monkeypatch, svc)
+    _record_add(monkeypatch, loop=armed)
+    result = asyncio.run(
+        apply_session_directive(
+            _fake_state(),
+            _fake_slot(),
+            _SESSION,
+            "monitor_start",
+            {"message": "watch https://github.com/acme/widgets/pull/42", "idle_secs": 300},
+        )
+    )
+    assert "only when it changes" in result, "the ack must state the gated cadence"
+    assert "acme/widgets#42" in result, "and name the subject it is watching"
+    assert "message re-injects every 300s" not in result, "not the plain promise"
+
+
+def test_applier_ack_keeps_the_plain_promise_for_an_ungated_loop(monkeypatch):
+    """An ungated loop DOES re-inject every interval, so its ack must still say so."""
+    plain = _FakeLoop("loop-plain")
+    plain.monitor = None
+    plain.gate = False
+    svc = _FakeSvc()
+    _install_svc(monkeypatch, svc)
+    _record_add(monkeypatch, loop=plain)
+    result = asyncio.run(
+        apply_session_directive(
+            _fake_state(),
+            _fake_slot(),
+            _SESSION,
+            "monitor_start",
+            {"message": "keep checking", "idle_secs": 300, "gate": False},
+        )
+    )
+    assert "re-injects every 300s" in result
+    assert "only when it changes" not in result
 
 
 def test_applier_monitor_start_arms_via_the_session_binding_key(monkeypatch):
@@ -382,8 +481,9 @@ def test_applier_monitor_update_refuses_spent_runtime_budget(monkeypatch):
     import time as _time
 
     armed_two_hours_ago = _time.time() - 7200
-    loop = _FakeLoop("loop-8", cycle_count=3, max_cycles=24, active=True,
-                     created_ts=armed_two_hours_ago)
+    loop = _FakeLoop(
+        "loop-8", cycle_count=3, max_cycles=24, active=True, created_ts=armed_two_hours_ago
+    )
     svc = _FakeSvc(loop)
     _install_svc(monkeypatch, svc)
     update_calls = _record_update(monkeypatch, loop=loop)
@@ -422,7 +522,11 @@ def test_applier_monitor_update_refuses_to_resume_a_paused_loop(monkeypatch):
     update_calls = _record_update(monkeypatch)
     result = asyncio.run(
         apply_session_directive(
-            _fake_state(), _fake_slot(), _SESSION, "monitor_update", {"patch": {"message": "revised"}}
+            _fake_state(),
+            _fake_slot(),
+            _SESSION,
+            "monitor_update",
+            {"patch": {"message": "revised"}},
         )
     )
     assert "PAUSED" in result
@@ -455,8 +559,12 @@ def test_applier_monitor_update_revives_a_budget_stopped_loop_on_budget_raise(mo
     import time as _time
 
     loop = _FakeLoop(
-        "loop-budget", cycle_count=5, max_cycles=24, active=False,
-        created_ts=_time.time() - 7200, max_runtime_secs=3600,
+        "loop-budget",
+        cycle_count=5,
+        max_cycles=24,
+        active=False,
+        created_ts=_time.time() - 7200,
+        max_runtime_secs=3600,
         stopped_reason="runtime_budget",
     )
     svc = _FakeSvc(loop)
@@ -485,8 +593,12 @@ def test_applier_manual_pause_is_never_revived_by_a_budget_raise(monkeypatch):
     import time as _time
 
     loop = _FakeLoop(
-        "loop-paused-budget", cycle_count=5, max_cycles=24, active=False,
-        created_ts=_time.time() - 7200, max_runtime_secs=3600,
+        "loop-paused-budget",
+        cycle_count=5,
+        max_cycles=24,
+        active=False,
+        created_ts=_time.time() - 7200,
+        max_runtime_secs=3600,
         stopped_reason="manual",
     )
     svc = _FakeSvc(loop)
@@ -513,7 +625,10 @@ def test_applier_approval_stalled_denial_names_the_authorization(monkeypatch):
     ask a human who already answered by letting the grant lapse.
     """
     loop = _FakeLoop(
-        "loop-stalled", cycle_count=3, max_cycles=24, active=False,
+        "loop-stalled",
+        cycle_count=3,
+        max_cycles=24,
+        active=False,
         stopped_reason=APPROVAL_STALL_REASON,
     )
     svc = _FakeSvc(loop)
@@ -540,8 +655,12 @@ def test_applier_monitor_update_budget_stopped_denial_names_the_budget(monkeypat
     import time as _time
 
     loop = _FakeLoop(
-        "loop-budget2", cycle_count=5, max_cycles=24, active=False,
-        created_ts=_time.time() - 7200, max_runtime_secs=3600,
+        "loop-budget2",
+        cycle_count=5,
+        max_cycles=24,
+        active=False,
+        created_ts=_time.time() - 7200,
+        max_runtime_secs=3600,
         stopped_reason="runtime_budget",
     )
     svc = _FakeSvc(loop)
@@ -549,13 +668,210 @@ def test_applier_monitor_update_budget_stopped_denial_names_the_budget(monkeypat
     update_calls = _record_update(monkeypatch)
     result = asyncio.run(
         apply_session_directive(
-            _fake_state(), _fake_slot(), _SESSION, "monitor_update",
+            _fake_state(),
+            _fake_slot(),
+            _SESSION,
+            "monitor_update",
             {"patch": {"message": "revised"}},
         )
     )
     assert not update_calls
     assert "wall-clock" in result and "max_runtime_secs" in result
     assert "max_cycles" not in result
+
+
+def test_a_probe_state_double_is_a_legacy_loop_only_while_it_carries_the_gate():
+    """Pin ``_FakeLoop``'s premise against the production predicate itself.
+
+    ``monitor_update`` splits on record KIND before it reads a single bound, and a
+    ``monitor`` object alone does not decide that kind. So every paused-loop test
+    below depends on ``gate=True`` putting its double on the LEGACY side — a
+    dependency the class docstring states but nothing executes, so an edit to
+    ``is_structured_monitor_loop`` reports itself only as five assertion failures
+    against a refusal string that names neither the flag nor the routing. This one
+    fails alongside them naming the predicate, so the batch has a cause in it.
+    """
+    from kiro_crew.autonudge import is_structured_monitor_loop
+
+    gated_prompt_loop = _FakeLoop("loop-gated", monitor=_FakeMonitor(), gate=True)
+    controller_record = _FakeLoop("loop-structured", monitor=_FakeMonitor())
+    plain_prompt_loop = _FakeLoop("loop-plain")
+
+    assert not is_structured_monitor_loop(gated_prompt_loop)
+    assert is_structured_monitor_loop(controller_record)
+    assert not is_structured_monitor_loop(plain_prompt_loop)
+
+
+def test_applier_owed_terminal_turn_is_not_reported_as_a_spent_cap(monkeypatch):
+    """A channel loop whose subject MERGED must not be told it ran out of cycles.
+
+    A channel-bound loop does not settle on observation: the probe records the owed
+    final turn in ``monitor.terminal_pending`` and leaves the loop active with no
+    ``outcome``. If that turn is refused (a busy thread) and the retry finds the cap
+    spent, the loop deactivates with ``stopped_reason="cycle_cap"`` before the
+    settlement that would promote the debt ever runs. Reading the reason alone then
+    contradicts a fact already durably on disk — and because the cap is also being
+    raised here, the loop would be REVIVED to watch a subject that already merged,
+    which is the wasted fresh loop this costs.
+    """
+    loop = _FakeLoop(
+        "loop-owed-merged",
+        cycle_count=24,
+        max_cycles=24,
+        active=False,
+        stopped_reason="cycle_cap",
+        slot_key="slack:C123:170.5",
+        monitor=_FakeMonitor(terminal_pending="success"),
+        gate=True,
+    )
+    svc = _FakeSvc(loop)
+    _install_svc(monkeypatch, svc)
+    update_calls = _record_update(monkeypatch)
+    result = asyncio.run(
+        apply_session_directive(
+            _fake_state(),
+            _fake_slot(),
+            _SESSION,
+            "monitor_update",
+            {"patch": {"max_cycles": 48}},
+        )
+    )
+    assert not update_calls, "a terminal subject must not be re-armed by a cap raise"
+    assert "cycle cap" not in result, result
+    assert "merged" in result
+    assert "monitor_start" in result
+
+
+def test_applier_owed_blocked_turn_is_not_reported_as_a_merge(monkeypatch):
+    """A subject closed WITHOUT merging is terminal but is not good news.
+
+    It stopped on a question the operator has to answer — reopen, or abandon — so it
+    must not be worded as a finish. The debt carries the distinction in the same
+    vocabulary the settled outcome uses (``success``/``blocked``).
+    """
+    loop = _FakeLoop(
+        "loop-owed-closed",
+        cycle_count=24,
+        max_cycles=24,
+        active=False,
+        stopped_reason="cycle_cap",
+        slot_key="slack:C123:170.5",
+        monitor=_FakeMonitor(terminal_pending="blocked"),
+        gate=True,
+    )
+    svc = _FakeSvc(loop)
+    _install_svc(monkeypatch, svc)
+    update_calls = _record_update(monkeypatch)
+    result = asyncio.run(
+        apply_session_directive(
+            _fake_state(),
+            _fake_slot(),
+            _SESSION,
+            "monitor_update",
+            {"patch": {"max_cycles": 48}},
+        )
+    )
+    assert not update_calls
+    assert "cycle cap" not in result, result
+    assert "without merging" in result
+    assert "merged" not in result.replace("without merging", "")
+
+
+def test_applier_settled_terminal_loop_is_not_reported_as_a_manual_pause(monkeypatch):
+    """A SETTLED terminal loop had no branch here either, so it fell to the
+    generic wording and was announced as if a human had pressed Stop."""
+    from kiro_crew.monitoring.models import MonitorOutcome
+
+    loop = _FakeLoop(
+        "loop-settled",
+        cycle_count=7,
+        max_cycles=24,
+        active=False,
+        stopped_reason=MONITOR_TERMINAL_REASON,
+        monitor=_FakeMonitor(outcome=MonitorOutcome.SUCCESS),
+        gate=True,
+    )
+    svc = _FakeSvc(loop)
+    _install_svc(monkeypatch, svc)
+    update_calls = _record_update(monkeypatch)
+    result = asyncio.run(
+        apply_session_directive(
+            _fake_state(),
+            _fake_slot(),
+            _SESSION,
+            "monitor_update",
+            {"patch": {"message": "revised"}},
+        )
+    )
+    assert not update_calls
+    assert "paused manually" not in result, result
+    assert "merged" in result
+
+
+def test_applier_a_settled_outcome_outranks_a_stale_owed_turn(monkeypatch):
+    """The settled ``outcome`` is authoritative; the debt is only the fallback.
+
+    Both fields can be populated at once — the settlement writes ``outcome`` and
+    clears the debt in the same pass — so a reader that preferred the debt could
+    announce a stale classification.
+    """
+    from kiro_crew.monitoring.models import MonitorOutcome
+
+    loop = _FakeLoop(
+        "loop-both",
+        cycle_count=24,
+        max_cycles=24,
+        active=False,
+        stopped_reason="cycle_cap",
+        monitor=_FakeMonitor(terminal_pending="success", outcome=MonitorOutcome.BLOCKED),
+        gate=True,
+    )
+    svc = _FakeSvc(loop)
+    _install_svc(monkeypatch, svc)
+    update_calls = _record_update(monkeypatch)
+    result = asyncio.run(
+        apply_session_directive(
+            _fake_state(),
+            _fake_slot(),
+            _SESSION,
+            "monitor_update",
+            {"patch": {"max_cycles": 48}},
+        )
+    )
+    assert not update_calls
+    assert "without merging" in result
+
+
+def test_applier_a_spent_cap_with_no_terminal_news_still_revives(monkeypatch):
+    """Control: the terminal carve-out must not swallow a genuine cap.
+
+    A cap-stopped loop with a monitor that saw nothing terminal keeps the revival
+    affordance a raised cap is supposed to give it.
+    """
+    loop = _FakeLoop(
+        "loop-plain-cap",
+        cycle_count=24,
+        max_cycles=24,
+        active=False,
+        stopped_reason="cycle_cap",
+        monitor=_FakeMonitor(),
+        gate=True,
+    )
+    svc = _FakeSvc(loop)
+    _install_svc(monkeypatch, svc)
+    update_calls = _record_update(monkeypatch, loop=loop)
+    result = asyncio.run(
+        apply_session_directive(
+            _fake_state(),
+            _fake_slot(),
+            _SESSION,
+            "monitor_update",
+            {"patch": {"max_cycles": 48}},
+        )
+    )
+    assert len(update_calls) == 1
+    assert update_calls[0]["active"] is True
+    assert "re-armed" in result
 
 
 def test_applier_monitor_update_without_a_loop_is_a_clean_noop(monkeypatch):
@@ -587,9 +903,7 @@ def test_applier_autonudge_stop_records_tombstone_for_loop_resolved_by_binding(m
         )
     )
     assert svc.get_by_slot_keys == [binding_key_for(_RESEARCH_SESSION)]
-    assert svc.updated == [
-        ("loop-1", {"active": False, "stopped_reason": AUTONUDGE_STOP_REASON})
-    ]
+    assert svc.updated == [("loop-1", {"active": False, "stopped_reason": AUTONUDGE_STOP_REASON})]
     assert svc.removed == []
     assert "stopped" in result.lower()
     assert "done" in result
@@ -802,6 +1116,82 @@ def test_applier_autonudge_stop_ignores_inactive_loops_in_the_miss_diagnostic(mo
     assert "loop-dead" not in result
     assert svc.removed == []
     assert svc.updated == []
+
+
+# The miss message is asserted here as a LITERAL, not rebuilt from the applier's
+# own f-string: the diagnostic below must stay server-side, so a change that
+# leaks a slot key into the model's tool result has to fail this comparison
+# rather than be recomputed into agreement with itself.
+_MISS_MESSAGE = (
+    "NOTHING WAS STOPPED. No auto-nudge loop is bound to this session "
+    "(binding: chat-3-1700000000), but 2 auto-nudge loop(s) are running on "
+    "other sessions. A loop can only be stopped from the session it is bound "
+    "to, so this call could not reach them."
+)
+
+
+def test_applier_autonudge_stop_miss_logs_caller_binding_and_active_slot_keys(monkeypatch, caplog):
+    """The miss branch records the pair that identifies WHICH miss this is.
+
+    A miss has two possible causes — a slot-key spelling the lookup does not
+    model, or an arming path that registered a key the session later resolves
+    differently — and they are told apart only by the caller's resolved binding
+    next to the slot keys the store actually holds. Nothing else captures that
+    pair, so the diagnostic has to be emitted where the miss is detected.
+
+    Server-side ONLY: the log carries the slot keys, the returned message must
+    stay byte-identical and keep reporting a count.
+    """
+    loops = [
+        _FakeLoop("loop-a", slot_key="chat-91-1700009991"),
+        _FakeLoop("loop-b", slot_key="slack:T1/C2/1700009992"),
+    ]
+    svc = _FakeSvc(None, all_loops=loops)
+    _install_svc(monkeypatch, svc)
+    with caplog.at_level(logging.WARNING, logger="kiro_crew.dashboard.session_directive_apply"):
+        result = asyncio.run(
+            apply_session_directive(
+                _fake_state(), _fake_slot(), _SESSION, "autonudge_stop", {"reason": "done"}
+            )
+        )
+
+    warnings = [
+        r
+        for r in caplog.records
+        if r.levelno >= logging.WARNING and r.name == "kiro_crew.dashboard.session_directive_apply"
+    ]
+    assert len(warnings) == 1
+    logged = warnings[0].getMessage()
+    assert binding_key_for(_SESSION) in logged
+    for lp in loops:
+        assert lp.slot_key in logged
+
+    # The model-visible half is unchanged, and the keys stay out of it.
+    assert result == _MISS_MESSAGE
+    for lp in loops:
+        assert lp.slot_key not in result
+    assert svc.removed == []
+    assert svc.updated == []
+
+
+def test_applier_autonudge_stop_logs_nothing_when_no_loop_exists(monkeypatch, caplog):
+    """No loop anywhere is an idempotent success, not a resolution failure.
+
+    Warning on it would fire on every ordinary duplicate stop and bury the miss
+    the log exists to catch.
+    """
+    svc = _FakeSvc(None)
+    _install_svc(monkeypatch, svc)
+    with caplog.at_level(logging.WARNING, logger="kiro_crew.dashboard.session_directive_apply"):
+        result = asyncio.run(
+            apply_session_directive(
+                _fake_state(), _fake_slot(), _SESSION, "autonudge_stop", {"reason": "done"}
+            )
+        )
+    assert "nothing to stop" in result.lower()
+    assert [
+        r for r in caplog.records if r.name == "kiro_crew.dashboard.session_directive_apply"
+    ] == []
 
 
 def test_autonudge_stop_directive_does_not_read_as_confirmation(default_install):

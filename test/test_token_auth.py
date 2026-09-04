@@ -1359,32 +1359,333 @@ def test_signing_secret_read_contention_retries_not_ephemeral(tmp_path, monkeypa
 
 
 def test_signing_secret_create_contention_retries_not_ephemeral(tmp_path, monkeypatch) -> None:
-    """A TRANSIENT sharing violation on the EXCLUSIVE-CREATE of the key file must
-    be retried, not degraded to an ephemeral secret.
+    """A TRANSIENT sharing violation on the PUBLISH of the key file must be
+    retried, not degraded to an ephemeral secret.
 
-    On Windows a racer's ``os.open(..., O_CREAT|O_EXCL)`` can hit a sharing
-    violation (``PermissionError`` / WinError 32) while the winner holds the
-    freshly-created file open — landing on ``os.open``, not the read. The
-    create-side companion to ``test_signing_secret_read_contention_retries_not_ephemeral``;
-    reproduced deterministically with the ``os.open`` simulator so it is caught
+    On Windows the publishing link can hit a sharing violation
+    (``PermissionError`` / WinError 32) while another handle holds the
+    destination open — landing on ``os.link``, not the read. The publish-side
+    companion to ``test_signing_secret_read_contention_retries_not_ephemeral``;
+    reproduced deterministically with the ``os.link`` simulator so it is caught
     on the POSIX dev loop.
     """
-    from windows_sim import open_sharing_violation
+    from windows_sim import link_sharing_violation
 
     from kiro_crew.dashboard import token_secret as ts
 
     monkeypatch.setattr("kiro_crew.config.loader.config_dir", lambda: tmp_path)
     key_file = tmp_path / ts._SECRET_KEY_FILE
 
-    # Fault the FIRST exclusive-create of the key file; the retry must succeed.
-    with open_sharing_violation(match=ts._SECRET_KEY_FILE, times=1) as state:
+    # Fault the FIRST publish of the key file; the retry must succeed.
+    with link_sharing_violation(match=ts._SECRET_KEY_FILE, times=1) as state:
         secret = ts._load_or_create_secret()
 
-    assert state["n"] >= 2, "the contended exclusive-create was not retried"
+    assert state["n"] >= 2, "the contended publish was not retried"
     assert key_file.exists(), "key must be persisted after retrying the create"
     on_disk = key_file.read_bytes()
     assert len(on_disk) >= ts._MIN_KEY_BYTES, "retry wrote a short/incomplete key"
     assert secret == on_disk, "must return the persisted key, not an ephemeral one"
+
+
+def test_signing_secret_destination_never_exists_while_incomplete(tmp_path, monkeypatch) -> None:
+    """Regression (Mesh-3720): ``token_signing.key`` must never exist on disk in a
+    partial state, so an interrupted update cannot leave a 0-byte key.
+
+    The old creator opened the DESTINATION with ``O_CREAT|O_EXCL`` and only then
+    wrote the 32 random bytes. Its ``finally`` cleaned up an exception, but a
+    kill has no ``finally``: an update completing during shutdown, or a reboot,
+    that ended the process between the create and the write persisted a 0-byte
+    key. Every later boot then read <32 bytes, exhausted the retry budget and
+    fell back to a fresh ephemeral secret — a dashboard that loads while every
+    signed action fails, and a plain restart cannot fix it because it re-reads
+    the same empty file.
+
+    The fix stages the whole key into a private sibling and publishes it with
+    ``os.link``, so the destination name only ever appears already-complete.
+    This samples the destination on every ``os.write`` that carries key bytes:
+    with the fix it is absent throughout; before it, it is present at 0 bytes.
+    """
+    from kiro_crew.dashboard import token_secret as ts
+
+    monkeypatch.setattr("kiro_crew.config.loader.config_dir", lambda: tmp_path)
+    key_file = tmp_path / ts._SECRET_KEY_FILE
+    assert not key_file.exists()
+
+    # Sizes the destination had at each point a key byte was being written.
+    # ``None`` means "did not exist", which is the only acceptable value.
+    sizes_during_write: list[int | None] = []
+    real_write = os.write
+
+    def _spy(fd, data):  # type: ignore[no-untyped-def]
+        try:
+            sizes_during_write.append(key_file.stat().st_size)
+        except OSError:
+            sizes_during_write.append(None)
+        return real_write(fd, data)
+
+    monkeypatch.setattr(os, "write", _spy)
+    secret = ts._load_or_create_secret()
+    monkeypatch.undo()
+
+    on_disk = key_file.read_bytes()
+    assert secret == on_disk, "returned key must be the persisted one"
+    assert len(on_disk) >= ts._MIN_KEY_BYTES
+
+    partial = [n for n in sizes_during_write if n is not None and n < ts._MIN_KEY_BYTES]
+    assert not partial, (
+        "the destination existed in a partial state during the write "
+        f"(observed sizes {partial}); a kill there would persist a truncated key"
+    )
+
+
+def test_signing_secret_transient_publish_failure_never_creates_the_destination(
+    tmp_path, monkeypatch
+) -> None:
+    """A publish failure that is NOT "no hard links" must leave the key path alone.
+
+    The in-place fallback creates the destination empty and writes afterwards, so
+    it carries the truncation window this fix removes. Reaching it on a *transient*
+    error — a Windows sharing violation, a security product holding the path, a
+    policy refusal — would recreate exactly the 0-byte key the PR exists to
+    prevent, on a filesystem that can hard-link perfectly well. Only an
+    unsupported-link error may unlock that fallback; anything else degrades to an
+    ephemeral secret with the destination untouched.
+    """
+    from windows_sim import link_sharing_violation
+
+    from kiro_crew.dashboard import token_secret as ts
+
+    monkeypatch.setattr("kiro_crew.config.loader.config_dir", lambda: tmp_path)
+    key_file = tmp_path / ts._SECRET_KEY_FILE
+
+    # A sharing violation (EACCES / WinError 32) on EVERY publish attempt: never
+    # cleared, but never evidence about hard-link support either.
+    with link_sharing_violation(match=ts._SECRET_KEY_FILE, times=10**6) as state:
+        secret = ts._load_or_create_secret()
+
+    assert state["n"] >= ts._CREATE_MAX_ATTEMPTS, "the publish was not retried"
+    assert len(secret) >= ts._MIN_KEY_BYTES, "no usable secret for this session"
+    assert not key_file.exists(), (
+        "a transient publish failure created the destination anyway — a kill in "
+        "that write window persists the 0-byte key this fix removes"
+    )
+    # Nothing of ours is left in the config dir either.
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_signing_secret_persists_on_a_filesystem_without_hard_links(tmp_path, monkeypatch) -> None:
+    """A volume that cannot hard-link must still get a PERSISTED key.
+
+    The publish step is ``os.link``, which FAT/exFAT and some network mounts
+    reject outright. Degrading those hosts to an ephemeral secret would trade
+    one breakage for another (tokens dying on every restart), so the loader
+    falls back to the historical in-place create once the publish budget is
+    spent.
+    """
+    from windows_sim import link_unsupported
+
+    from kiro_crew.dashboard import token_secret as ts
+
+    monkeypatch.setattr("kiro_crew.config.loader.config_dir", lambda: tmp_path)
+    key_file = tmp_path / ts._SECRET_KEY_FILE
+
+    with link_unsupported(match=ts._SECRET_KEY_FILE) as state:
+        secret = ts._load_or_create_secret()
+
+    assert state["n"] >= 1, "the publish link was never attempted"
+    assert key_file.exists(), "no key was persisted on a link-less filesystem"
+    on_disk = key_file.read_bytes()
+    assert len(on_disk) >= ts._MIN_KEY_BYTES, "persisted a short key"
+    assert secret == on_disk, "returned an ephemeral key instead of the persisted one"
+
+
+def test_signing_secret_concurrent_first_init_converges_without_hard_links(
+    tmp_path, monkeypatch
+) -> None:
+    """Concurrent first boots on a LINK-LESS home must still converge on one key.
+
+    The publish path is ``os.link``, so a filesystem that cannot hard-link sends
+    every racing gateway down the in-place fallback instead. ``O_EXCL`` lets
+    exactly one of them create the key; the loser must read the winner's bytes,
+    not mint its own. A loser that returns an ephemeral secret while the winner
+    persists a real one leaves the pair unable to validate each other's tokens —
+    the divergence the exclusive create exists to prevent, and what a single
+    post-loop create attempt with no re-read reintroduces.
+    """
+    from windows_sim import link_unsupported
+
+    from kiro_crew.dashboard import token_secret as ts
+
+    monkeypatch.setattr("kiro_crew.config.loader.config_dir", lambda: tmp_path)
+    key_file = tmp_path / ts._SECRET_KEY_FILE
+    assert not key_file.exists()
+
+    n = 8
+    barrier = threading.Barrier(n)
+    results: list[bytes] = []
+    errors: list[BaseException] = []
+    lock = threading.Lock()
+
+    def _worker() -> None:
+        try:
+            barrier.wait()
+            secret = ts._load_or_create_secret()
+        except BaseException as exc:  # noqa: BLE001 - surfaced via assert below
+            with lock:
+                errors.append(exc)
+            return
+        with lock:
+            results.append(secret)
+
+    with link_unsupported(match=ts._SECRET_KEY_FILE):
+        threads = [threading.Thread(target=_worker) for _ in range(n)]
+        for th in threads:
+            th.start()
+        for th in threads:
+            th.join()
+
+    assert not errors, f"workers raised: {errors!r}"
+    assert len(results) == n
+    on_disk = key_file.read_bytes()
+    assert len(on_disk) >= ts._MIN_KEY_BYTES, "no full key was persisted"
+    assert set(results) == {on_disk}, (
+        "racing first inits diverged on a link-less filesystem: "
+        f"{len(set(results))} distinct secrets for one persisted key"
+    )
+
+
+def test_signing_secret_failed_dir_sync_keeps_a_recoverable_name(tmp_path, monkeypatch) -> None:
+    """A directory sync that FAILS must not be followed by dropping the second name.
+
+    The key bytes are fsynced during staging, but the published NAME lives in the
+    parent directory and is not durable until that directory is synced. Unlinking
+    the staging name after a failed sync leaves a power loss with neither name
+    pointing at the inode: the key becomes unreachable, the next boot mints a
+    fresh one, and every outstanding cookie and link signed by the old key is
+    invalid — the same class of breakage this fix exists to remove.
+
+    So a genuine sync failure keeps the staging name as a recoverable second
+    reference, and still returns the key that is on disk rather than degrading to
+    an ephemeral secret (which would diverge from the persisted key). The kept
+    leftover is safe precisely because it ends in ``.tmp`` and so stays behind the
+    keystone fence.
+    """
+    import errno as _errno
+
+    from kiro_crew.dashboard import token_secret as ts
+
+    monkeypatch.setattr("kiro_crew.config.loader.config_dir", lambda: tmp_path)
+
+    def _failing_sync(path, **kwargs):  # type: ignore[no-untyped-def]
+        # best_effort would swallow this; strict must let it surface here.
+        assert not kwargs.get("best_effort"), (
+            "the publish must sync the directory STRICTLY — best_effort hides the "
+            "very EIO that makes dropping the second name unsafe"
+        )
+        raise OSError(_errno.EIO, "simulated: device refused the directory sync")
+
+    monkeypatch.setattr(ts, "fsync_dir", _failing_sync)
+    secret = ts._load_or_create_secret()
+    monkeypatch.undo()
+
+    key_file = tmp_path / ts._SECRET_KEY_FILE
+    assert key_file.exists(), "the key was not published"
+    assert key_file.read_bytes() == secret, (
+        "returned an ephemeral secret while a valid key sits on disk — the "
+        "divergence the exclusive publish exists to prevent"
+    )
+
+    leftovers = [p for p in tmp_path.iterdir() if p.name != ts._SECRET_KEY_FILE]
+    assert len(leftovers) == 1, (
+        "a failed directory sync must keep exactly one recoverable second name, "
+        f"found {[p.name for p in leftovers]}"
+    )
+    kept = leftovers[0]
+    assert kept.read_bytes() == secret, "the kept name does not resolve to the key"
+    assert kept.stat().st_ino == key_file.stat().st_ino, (
+        "the kept name is a separate inode, so it is a second COPY of the signing "
+        "key rather than a second name for it"
+    )
+    # And it is still fenced, which is what makes keeping it acceptable.
+    from kiro_crew import security
+
+    assert kept.name.endswith(security._KEYSTONE_ARTIFACT_SUFFIXES)
+
+
+def test_signing_secret_staging_file_is_covered_by_the_keystone_fence(
+    tmp_path, monkeypatch
+) -> None:
+    """A leftover staging file must be fenced exactly like the key it copies.
+
+    The staging sibling holds the FULL signing key until the publish link lands,
+    and a kill between that link and the cleanup unlink leaves it on disk. The
+    keystone fence in ``security.py`` protects a publish artifact by SHAPE — a
+    direct child of a keystone leaf's own directory whose name ends in one of
+    ``_KEYSTONE_ARTIFACT_SUFFIXES`` — so a staging name outside those suffixes
+    leaves a readable copy of the key for an agent tool to fetch and forge tokens
+    with.
+
+    Asserted against the real predicate rather than against the literal suffix, so
+    the coupling survives a rename on either side. The name is tested in the
+    directory the key actually lives in: the fence resolves its parent set from
+    the real crew-home prefixes, so pointing ``KIROCREW_HOME`` at a temp dir would
+    move the key without moving the fence and prove nothing.
+    """
+    from kiro_crew import security
+    from kiro_crew.dashboard import token_secret as ts
+
+    captured: list[str] = []
+    real_link = os.link
+
+    def _spy_link(src_path, dst_path, **kwargs):  # type: ignore[no-untyped-def]
+        captured.append(str(src_path))
+        return real_link(src_path, dst_path, **kwargs)
+
+    monkeypatch.setattr("kiro_crew.config.loader.config_dir", lambda: tmp_path)
+    monkeypatch.setattr(os, "link", _spy_link)
+    ts._load_or_create_secret()
+    monkeypatch.undo()
+
+    assert captured, "the publish never linked, so no staging name was observed"
+    staged_name = os.path.basename(captured[0])
+    assert staged_name.endswith(
+        security._KEYSTONE_ARTIFACT_SUFFIXES
+    ), f"staging name {staged_name!r} is outside the keystone artifact suffixes"
+
+    # Now ask the fence about that same name where the key really sits.
+    parents = security._home_dir_targets(security._KEYSTONE_ARTIFACT_PARENTS)
+    assert parents, "the fence resolved no keystone artifact parents"
+    for parent in sorted(parents):
+        candidate = os.path.join(parent, staged_name)
+        assert security._is_keystone_publish_artifact(candidate), (
+            f"a leftover {staged_name!r} in {parent} would not be fenced — it "
+            "holds a full copy of the signing key and agent tools could read it"
+        )
+
+
+def test_signing_secret_publish_leaves_no_staging_file_behind(tmp_path, monkeypatch) -> None:
+    """The staging sibling is this process's private file and must not survive.
+
+    A leftover staging file is inert (the key is published under its own name)
+    but it holds a full copy of the signing secret, so the config directory must
+    contain exactly the key file after a successful publish -- and after a
+    publish this process LOST to a sibling, where its candidate is dropped
+    rather than installed.
+    """
+    from kiro_crew.dashboard import token_secret as ts
+
+    monkeypatch.setattr("kiro_crew.config.loader.config_dir", lambda: tmp_path)
+    key_file = tmp_path / ts._SECRET_KEY_FILE
+
+    secret = ts._load_or_create_secret()
+    assert key_file.read_bytes() == secret
+    assert [p.name for p in tmp_path.iterdir()] == [ts._SECRET_KEY_FILE]
+
+    # Now the losing path: a key already exists, so a second loader must read it
+    # and leave nothing of its own candidate behind.
+    again = ts._load_or_create_secret()
+    assert again == secret, "second loader diverged from the persisted key"
+    assert [p.name for p in tmp_path.iterdir()] == [ts._SECRET_KEY_FILE]
 
 
 def test_signing_secret_binary_write_survives_windows_text_mode(tmp_path, monkeypatch) -> None:
@@ -1457,19 +1758,21 @@ def test_signing_secret_write_failure_cleans_up_incomplete_file(tmp_path, monkey
     """Regression (PR #338 / GPT 5.6 HIGH): a write failure DURING exclusive
     creation must NOT leave a poisoned short key file behind.
 
-    The exclusive creator opens ``token_signing.key`` with ``O_CREAT|O_EXCL``
-    then writes 32 bytes. If that write fails partway (ENOSPC, quota) the file
-    exists but is < 32 bytes. Previously the incomplete file was left on disk:
-    every future boot's fast-path read saw < 32 bytes, the O_EXCL create then
-    hit FileExistsError, the bounded retry budget exhausted, and the gateway
-    fell back to a FRESH ephemeral key on EVERY restart (tokens die on each
-    restart; concurrent gateways cannot validate one another) until a human
+    A creator that writes 32 bytes and fails partway (ENOSPC, quota) must leave
+    NOTHING short or empty where the key belongs. Previously the incomplete file
+    was left on disk: every future boot's fast-path read saw < 32 bytes, the
+    create then hit FileExistsError, the bounded retry budget exhausted, and the
+    gateway fell back to a FRESH ephemeral key on EVERY restart (tokens die on
+    each restart; concurrent gateways cannot validate one another) until a human
     deleted the file by hand.
 
-    The fix removes the creator's OWN incomplete file (guarded by a
-    device+inode identity check so a racing sibling's valid key is never
-    deleted) before degrading to an ephemeral secret, so the NEXT init can
-    create a valid, persisted key.
+    Two mechanisms now hold that invariant. The publish path stages the key in a
+    private sibling, so a failed write never touches the destination at all; the
+    in-place fallback (a filesystem with no hard links) removes the creator's OWN
+    incomplete file, guarded by a device+inode identity check so a racing
+    sibling's valid key is never deleted. This faults EVERY key-persist write, so
+    the loader exhausts the publish budget, reaches the fallback, and has to
+    clean up after itself before degrading to an ephemeral secret.
     """
     from kiro_crew.dashboard import token_secret as ts
 
@@ -1481,11 +1784,15 @@ def test_signing_secret_write_failure_cleans_up_incomplete_file(tmp_path, monkey
     calls = {"n": 0}
 
     def _failing_write(fd, data):  # type: ignore[no-untyped-def]
-        # Fail the FIRST os.write (the key-persist write inside the
-        # exclusive-create path) with ENOSPC; delegate every other write to the
-        # real syscall so the second init below can persist a real key.
-        calls["n"] += 1
-        if calls["n"] == 1:
+        # Fail every KEY-PERSIST write with ENOSPC, identified by its payload
+        # length -- both the staged publish and the in-place fallback write the
+        # key in one 32-byte call. Narrowing by length rather than by call count
+        # leaves pytest's own writes alone AND makes the fault persistent, which
+        # is what drives the loader through the publish retries into the cleanup
+        # path. Every other write delegates, so the second init below can
+        # persist a real key.
+        if len(data) == ts._MIN_KEY_BYTES:
+            calls["n"] += 1
             raise OSError(errno.ENOSPC, "No space left on device")
         return real_write(fd, data)
 

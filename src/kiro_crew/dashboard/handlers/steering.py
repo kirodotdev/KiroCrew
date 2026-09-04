@@ -19,6 +19,11 @@ steering documents are in effect.
 Path handling mirrors the skills browser (``handlers/_shared.py``): traversal,
 absolute paths, ``~`` expansion, non-``.md`` suffixes, symlinked intermediate
 directories and sensitive locations are all rejected before any read or write.
+A LEAF symlink is listed and readable — read-only — when its resolved target
+passes the session loader's admission gate against the source's LINK trust
+base (:func:`kiro_crew.context.steering_target_admissible`: ``$HOME`` for
+``user``, the steering root itself for ``workspace`` — ``_link_trust_base``);
+it never resolves for write.
 """
 
 from __future__ import annotations
@@ -29,12 +34,19 @@ import logging
 import os
 import re
 import stat
+from contextlib import suppress
 from pathlib import Path
 from typing import Any
 
 from aiohttp import web
 
-from kiro_crew.atomic_write import atomic_write, open_access_control_source
+from kiro_crew import pinned_fs
+from kiro_crew.atomic_write import (
+    atomic_write,
+    open_access_control_source,
+    pinned_parent_replace_supported,
+)
+from kiro_crew.context import steering_target_admissible
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.executors import discovery_executor
 from kiro_crew.frontmatter import STEERING_LOADER, set_frontmatter_fields, split_frontmatter
@@ -107,6 +119,18 @@ STEERING_PROJECT_HEADER = "X-Steering-Project"
 # paths fall back to an lstat/open/fstat identity check (same defense, one extra
 # syscall) rather than trusting the kernel to refuse the symlink.
 _O_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
+
+# Whether create/delete can address the leaf relative to a pinned parent
+# descriptor. supports_pinned_walk covers the openat capability itself; the extras
+# name the other descriptor-relative syscalls these paths issue -- os.unlink for
+# delete and for create's rollback, os.stat for the identity check that rollback
+# verifies against (pinned_fs.unlink_verified; os.lstat is not a supports_dir_fd
+# member even on Linux, the capability belongs to os.stat). Where this is False
+# (Windows) the by-name O_EXCL|O_NOFOLLOW create and the by-name unlink are the
+# floor, unchanged.
+_DIR_FD_SUPPORTED = pinned_fs.supports_pinned_walk() and {os.unlink, os.stat}.issubset(
+    os.supports_dir_fd
+)
 
 # Filenames are user-visible document names: word chars, dash, dot, space and
 # nested folders.  Anything else is rewritten on create (see _safe_rel_name).
@@ -258,8 +282,10 @@ def list_steering_blocking(project_dir: Path | None = None) -> dict[str, Any]:
 
     Returns ``{"files": [...], "roots": [...], "project": "<display path>"}``.
     Each file entry: ``{key, name, rel, source, path, size, description,
-    inclusion, inclusion_declared, file_match_pattern}`` where ``key`` is
-    ``"<source>/<rel>"``.
+    inclusion, inclusion_declared, file_match_pattern, linked, editable,
+    target}`` where ``key`` is ``"<source>/<rel>"``. ``linked`` marks a leaf
+    symlink admitted read-only; ``target`` carries its resolved display path
+    (``""`` otherwise) and ``editable`` is False exactly for linked entries.
     """
     files: list[dict[str, Any]] = []
     roots: list[dict[str, Any]] = []
@@ -290,27 +316,46 @@ def list_steering_blocking(project_dir: Path | None = None) -> dict[str, Any]:
                 break
             if entry.name.startswith("."):
                 continue
-            # Symlinked entries are never listed: the key they would produce
-            # must not be resolvable for write, so listing one would offer the
-            # user a file they cannot edit (see resolve_steering_file).
-            if entry.is_symlink():
-                continue
+            linked = entry.is_symlink()
             try:
                 resolved = entry.resolve(strict=True)
-            except OSError:
+            except (OSError, RuntimeError):
+                # RuntimeError is a symlink LOOP (pathlib raises it instead of
+                # ELOOP) — reachable now that leaf links are resolved at all;
+                # one loop.md must hide itself, not 500 the whole listing.
                 continue
             # Reject symlinked intermediate directories that escape the trust
             # base (a leaf symlink whose target is still contained is fine).
             if not _contained(entry.parent, base_resolved):
                 continue
-            if not resolved.is_file() or is_sensitive_path(str(resolved)):
+            if linked:
+                # A leaf symlink is listed READ-ONLY when its resolved target
+                # passes the same admission gate the session loader applies
+                # (regular file, not sensitive, under this source's link
+                # trust base — see _link_trust_base: $HOME for `user`, the
+                # steering root itself for `workspace`). For `user` these
+                # files load into every session, so hiding them made the tab
+                # disagree with what the agent actually reads. The key still
+                # refuses to resolve for write (see resolve_steering_file),
+                # so the entry is not editable.
+                link_base = _link_trust_base(source, root, base_resolved)
+                if not steering_target_admissible(resolved, link_base):
+                    continue
+            elif not resolved.is_file() or is_sensitive_path(str(resolved)):
                 continue
             try:
                 size = int(entry.stat().st_size)
             except OSError:
                 continue
             rel = entry.relative_to(root).as_posix()
-            meta = _head_meta(entry, root)
+            # A linked document's head lives in its target, which can sit
+            # outside the steering root — bind that read to the same link
+            # trust base the admission gate above just checked it against.
+            meta = (
+                _head_meta(resolved, _link_trust_base(source, root, base_resolved))
+                if linked
+                else _head_meta(entry, root)
+            )
             files.append({
                 "key": f"{source}/{rel}",
                 "name": entry.name,
@@ -324,6 +369,9 @@ def list_steering_blocking(project_dir: Path | None = None) -> dict[str, Any]:
                 "inclusion": meta["inclusion"],
                 "inclusion_declared": _redact_meta(meta["inclusion_declared"]),
                 "file_match_pattern": _redact_meta(meta["file_match_pattern"]),
+                "linked": linked,
+                "editable": not linked,
+                "target": _redact_meta(_display_path(resolved)) if linked else "",
             })
     return {
         "files": files,
@@ -351,6 +399,20 @@ def _base_for(source: str, project_dir: Path | None) -> Path | None:
     if source == "user":
         return Path.home()
     return Path(project_dir) if project_dir else None
+
+
+def _link_trust_base(source: str, root: Path, base_resolved: Path) -> Path:
+    """The base a leaf symlink's resolved TARGET must stay under.
+
+    ``user`` gets ``$HOME`` — the session loader's own anchor, and the parity
+    this latitude exists for: those linked targets already load into every
+    session. ``workspace`` has no such loader (kiro-cli reads that root
+    itself), so a repository-committed link earns no latitude beyond the
+    steering root: with the whole project as the base, ``leak.md -> ../../.env``
+    would turn the steering GET into a verbatim reader for any file in the
+    project.
+    """
+    return base_resolved if source == "user" else root
 
 
 def _deepest_existing(path: Path) -> Path | None:
@@ -383,13 +445,26 @@ def _contained(candidate: Path, base_resolved: Path) -> bool:
 
 
 def resolve_steering_file(
-    key: str, project_dir: Path | None, *, for_write: bool = False
+    key: str,
+    project_dir: Path | None,
+    *,
+    for_write: bool = False,
+    follow_links: bool = False,
 ) -> Path | None:
     """Resolve ``key`` to an absolute steering file path, or None if rejected.
 
     With ``for_write`` the target need not exist yet (the deepest existing
     ancestor is validated instead) and write-protected locations are rejected
     too.  Without it the target must already be a regular file.
+
+    ``follow_links`` is READ-only latitude: a leaf symlink resolves to its
+    target when that target passes the loader's admission gate against this
+    source's LINK trust base (regular file, not sensitive, under ``$HOME``
+    for ``user`` or the steering root itself for ``workspace`` — see
+    ``_link_trust_base``), matching what the listing shows. It is
+    deliberately not the default: update and delete resolve with the default
+    and must keep refusing a leaf symlink, or PUT would truncate — and DELETE
+    unlink — a file that is not a steering document.
     """
     parts = _split_key(key)
     if parts is None:
@@ -414,11 +489,22 @@ def resolve_steering_file(
     # base. A link that still resolves inside the base (e.g.
     # ``.kiro/steering/rules.md -> ../../README.md``) would otherwise let PUT
     # truncate, and DELETE unlink, a file that is not a steering document.
+    # The read path opts into following it via ``follow_links``, gated on the
+    # loader's own admission predicate.
     try:
         if target.is_symlink():
-            return None
+            if not follow_links:
+                return None
+            resolved = target.resolve(strict=True)
+            if not steering_target_admissible(
+                resolved, _link_trust_base(source, root, base_resolved)
+            ):
+                return None
+            return resolved
         resolved = target.resolve(strict=True)
-    except OSError:
+    except (OSError, RuntimeError):
+        # RuntimeError is pathlib's symlink-loop signal — a loop.md is "not
+        # found", the same answer a dangling link gets.
         return None
     if not resolved.is_file() or is_sensitive_path(str(resolved)):
         return None
@@ -478,12 +564,21 @@ def _resolve_and_read_blocking(key: str, project_dir: Path | None) -> tuple[str,
     so without ``within_root`` an ancestor directory swapped for a symlink
     between resolution and open could still escape the tree.
 
+    A LINKED entry (leaf symlink the listing admitted read-only) resolves to
+    its target, which can sit outside the steering root — that read is bound
+    to the source's LINK trust base instead (``$HOME`` for ``user``, the
+    steering root itself for ``workspace`` — ``_link_trust_base``), the same
+    anchor ``steering_target_admissible`` admits the target against. The
+    descriptor checks still apply to the inode actually opened, so a link
+    retargeted after resolution can reach nothing outside the base the
+    listing admitted from.
+
     The ``lstat`` below only supplies the size for the 413 message; the file
     can still grow past the cap before the descriptor read, in which case the
     helper raises ``FileTooLargeError`` — caught here so that race yields 413
     rather than a 500.
     """
-    target = resolve_steering_file(key, project_dir)
+    target = resolve_steering_file(key, project_dir, follow_links=True)
     if target is None:
         return "", "", "notfound"
     display = _redact_meta(_display_path(target))
@@ -491,8 +586,19 @@ def _resolve_and_read_blocking(key: str, project_dir: Path | None) -> tuple[str,
     root = (
         next((p for s, p in steering_roots(project_dir) if s == parts[0]), None) if parts else None
     )
-    if root is None:
+    if root is None or parts is None:
         return "", display, "notfound"
+    # The nominal path and the resolved one disagree exactly when the leaf is a
+    # link — recheck the leaf itself rather than comparing paths, since an
+    # ordinary file can also resolve elsewhere through allowed ancestor links.
+    try:
+        linked = (root / parts[1]).is_symlink()
+    except OSError:
+        linked = False
+    base = _base_for(parts[0], project_dir)
+    if base is None:
+        return "", display, "notfound"
+    within_root = _link_trust_base(parts[0], root, base) if linked else root
     try:
         pre = target.lstat()
     except OSError:
@@ -503,7 +609,7 @@ def _resolve_and_read_blocking(key: str, project_dir: Path | None) -> tuple[str,
         return "", display, f"toolarge:{pre.st_size}"
     try:
         data = safe_read_file_bytes_nolink(
-            str(target), within_root=str(root), max_bytes=STEERING_FILE_MAX_BYTES
+            str(target), within_root=str(within_root), max_bytes=STEERING_FILE_MAX_BYTES
         )
     except FileTooLargeError:
         # Grew past the cap between the lstat and the descriptor read.
@@ -516,23 +622,126 @@ def _resolve_and_read_blocking(key: str, project_dir: Path | None) -> tuple[str,
 def _create_file_blocking(target: Path, content: str) -> tuple[str | None, str]:
     """Create *target* with *content*; return ``(error token or None, display path)``."""
     display = _redact_meta(_display_path(target))
+    if not _DIR_FD_SUPPORTED:
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            # O_EXCL — never clobber a file that appeared between the check and
+            # the write, and never follow a symlink planted at the target path
+            # (O_EXCL already refuses an existing symlink, so this is safe where
+            # O_NOFOLLOW is unavailable).
+            fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL | _O_NOFOLLOW, 0o600)
+            # newline="": steering documents round-trip through the editor, and
+            # Windows newline translation on every save would accumulate carriage
+            # returns (CRLF -> CR CR LF -> ...). Write exactly what was sent.
+            with os.fdopen(fd, "w", encoding="utf-8", newline="") as f:
+                f.write(content)
+        except FileExistsError:
+            return "exists", display
+        except OSError as exc:
+            logger.warning("steering create failed: %s", type(exc).__name__)
+            return "writefailed", display
+        return None, display
+
+    # Ensure the tree by name first (the same contract prompts uses: callers
+    # create their own tree roots), then create only the leaf relative to a
+    # descriptor pinning the parent chain, so a directory swapped for a link
+    # after resolution cannot redirect the create.
+    #
+    # open_dir_pinned here, NOT pin_parent as the update and delete paths use.
+    # Those two are handed the RESOLVED leaf, so pin_parent can walk the chain
+    # resolution already canonicalized. Create is handed ``root / rel`` with
+    # ``for_write`` True -- the target need not exist yet and only the deepest
+    # EXISTING ancestor was resolved, for containment -- so there is no canonical
+    # chain to be faithful to and open_dir_pinned's own realpath is the first
+    # resolution rather than a second one. pin_parent on this path would also
+    # refuse the symlinked ancestors ``_contained`` deliberately allows above the
+    # trust base (a symlinked $HOME, /tmp on macOS) and break create outright.
+    # What remains is the by-name mkdir(parents=True) below, which follows a link
+    # already sitting on the chain; that is the floor create inherits.
     try:
         target.parent.mkdir(parents=True, exist_ok=True)
-        # O_EXCL — never clobber a file that appeared between the check and the
-        # write, and never follow a symlink planted at the target path (O_EXCL
-        # already refuses an existing symlink, so this is safe where
-        # O_NOFOLLOW is unavailable).
-        fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL | _O_NOFOLLOW, 0o600)
-        # newline="": steering documents round-trip through the editor, and
-        # Windows newline translation on every save would accumulate carriage
-        # returns (CRLF -> CR CR LF -> ...). Write exactly what was sent.
-        with os.fdopen(fd, "w", encoding="utf-8", newline="") as f:
-            f.write(content)
-    except FileExistsError:
-        return "exists", display
+        dir_fd = pinned_fs.open_dir_pinned(target.parent, what="steering directory")
+    except pinned_fs.PinnedPathRefusal:
+        # A linked or non-directory ancestor -- steering collapses to writefailed
+        # rather than distinguishing a linked-root token here.
+        return "writefailed", display
     except OSError as exc:
         logger.warning("steering create failed: %s", type(exc).__name__)
         return "writefailed", display
+    try:
+        try:
+            # O_EXCL keeps create-if-absent atomic; O_NOFOLLOW refuses a symlink at
+            # the leaf. O_BINARY (Windows-only, unreachable here since that platform
+            # takes the by-name floor) keeps os.write from translating \n to \r\n --
+            # the newline="" byte-exactness the fdopen path above gets from newline.
+            fd = os.open(
+                target.name,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL | _O_NOFOLLOW | getattr(os, "O_BINARY", 0),
+                0o600,
+                dir_fd=dir_fd,
+            )
+        except FileExistsError:
+            return "exists", display
+        leaf: os.stat_result | None = None
+        try:
+            # Identity of the inode THIS call created, read from the descriptor while
+            # it is provably ours. The rollback below addresses a NAME, and a rival
+            # can unlink ours and create its own inside the failure window, so this
+            # is what makes the cleanup remove this object or nothing.
+            #
+            # Captured INSIDE the guarded region: an fstat that fails (EIO or ESTALE on
+            # a network filesystem) must be rolled back like any other failure, not
+            # escape leaving the O_EXCL name on disk for every retry to trip over.
+            leaf = os.fstat(fd)
+            data = content.encode("utf-8")
+            written = 0
+            while written < len(data):
+                written += os.write(fd, data[written:])
+            # Closed INSIDE the guarded region, not in the finally below. A deferred
+            # write error is reported by close(), not by write() -- ENOSPC once the
+            # last block is flushed, EIO on NFS -- so a close in `finally` raises
+            # after this cleanup arm has been skipped and leaves the partial body
+            # under an O_EXCL name, which is the permanent "exists" the arm exists to
+            # prevent. Cleared first so the fallback close cannot double-close, the
+            # same shape atomic_write uses before its own publish.
+            fd, open_fd = -1, fd
+            os.close(open_fd)
+        except BaseException:
+            # Partial body under an O_EXCL name: remove it relative to the same
+            # descriptor, or a retry answers "exists" forever. Verified against the
+            # inode this call created, so a rival that replaced the name inside the
+            # failure window keeps ITS file -- "remove this object, or nothing",
+            # rather than "remove whatever answers to this name". The residual is
+            # irreducible and stated in unlink_verified: POSIX has no
+            # unlink-by-inode, so the stat and the unlink remain two syscalls.
+            #
+            # No unlink runs without that identity. Where the first fstat failed the
+            # descriptor is still open (the close is the last statement of the guarded
+            # region, and it clears fd first), so the identity is asked for once more
+            # THROUGH IT -- an EIO or ESTALE on a network filesystem is usually
+            # transient, and a second answer is a free way to reach the verified arm.
+            identity = leaf
+            if identity is None and fd >= 0:
+                with suppress(OSError):
+                    identity = os.fstat(fd)
+            if identity is not None:
+                pinned_fs.unlink_verified(dir_fd, target.name, (identity.st_dev, identity.st_ino))
+            # Otherwise the name stays. Two fstats on a descriptor this call owns both
+            # failing is the only way here, and it costs an EMPTY document rather than a
+            # truncated one -- the fstat precedes the first os.write, so nothing was
+            # written when there is no identity. An empty steering document is listed,
+            # editable and deletable from the dashboard, so the recovery is a save
+            # rather than a shell; unlinking whatever answers to the name would instead
+            # destroy a rival's file, which is content this code has never read.
+            raise
+        finally:
+            if fd >= 0:
+                os.close(fd)
+    except OSError as exc:
+        logger.warning("steering create failed: %s", type(exc).__name__)
+        return "writefailed", display
+    finally:
+        os.close(dir_fd)
     return None, display
 
 
@@ -556,45 +765,84 @@ def _update_file_blocking(target: Path, content: str) -> str | None:
         return "notfound"
     if stat.S_ISLNK(pre.st_mode) or not stat.S_ISREG(pre.st_mode):
         return "notfound"
-    # Hand atomic_write a descriptor on the existing file so it can read the
-    # access-control xattrs off it. mode= carries permission BITS only, so a
-    # named POSIX ACL (system.posix_acl_access) the owner
-    # set is otherwise silently dropped the moment the replace installs a fresh
-    # inode -- handing back a file protected more narrowly than the one it
-    # replaced.
+    # Pin the parent chain and hand atomic_write the descriptor so its temp
+    # create and publishing rename run relative to it -- the mkstemp + replace
+    # are otherwise by-name, leaving an ancestor swapped after the lstat above
+    # able to redirect where the replacement lands. os.replace already swaps the
+    # directory entry rather than following the leaf, so this closes the residual
+    # ancestor window without weakening the ACL carry below.
     #
-    # open_access_control_source returns None on a platform with no xattr
-    # syscalls, which is what keeps this write working on Windows: nothing to
-    # carry there, and a read handle held open across the write would make
-    # os.replace fail with PermissionError on every save.
+    # BEFORE the access-control source is opened, so the leaf is only ever
+    # addressed through this descriptor: a directory replaced at the parent's name
+    # in between would otherwise supply the mode and ACL while the write published
+    # into the pinned original.
+    #
+    # pin_parent, NOT open_dir_pinned: ``resolve_steering_file`` hands the update
+    # path the RESOLVED leaf (``for_write`` False), so this parent chain is already
+    # canonical and pin_parent walks exactly it, refusing a component that has
+    # since become a link. Resolving it again here would follow that link instead.
+    #
+    # None where the platform cannot walk a parent by descriptor or cannot stage
+    # and rename through one: atomic_write refuses a descriptor it cannot use, so
+    # both capabilities are asked rather than assumed to move together.
+    dir_fd: int | None = None
+    if _DIR_FD_SUPPORTED and pinned_parent_replace_supported():
+        try:
+            dir_fd = pinned_fs.pin_parent(str(target.parent), what="steering directory")
+        except pinned_fs.PinnedPathRefusal:
+            return "writefailed"
+        except OSError:
+            return "notfound"
+    src_fd: int | None = None
     try:
-        src_fd = open_access_control_source(target)
-    except OSError:
-        # The file vanished or turned into a link between the lstat above and
-        # here; treat it the same as the lstat miss above.
-        return "notfound"
-    try:
+        # Hand atomic_write a descriptor on the existing file so it can read the
+        # access-control xattrs off it. mode= carries permission BITS only, so a
+        # named POSIX ACL (system.posix_acl_access) the owner
+        # set is otherwise silently dropped the moment the replace installs a fresh
+        # inode -- handing back a file protected more narrowly than the one it
+        # replaced.
+        #
+        # Without a pinned parent open_access_control_source returns None on a
+        # platform with no xattr syscalls, which is what keeps this write working
+        # on Windows: nothing to carry there, and a read handle held open across
+        # the write would make os.replace fail with PermissionError on every save.
+        try:
+            src_fd = open_access_control_source(target, dir_fd=dir_fd)
+        except OSError:
+            # The file vanished or turned into a link between the lstat above and
+            # here; treat it the same as the lstat miss above.
+            return "notfound"
         # Preserve the file's existing permissions rather than forcing 0o600:
         # the old in-place write inherited them, and a project steering file
         # checked out group-readable should not be silently tightened by a save.
         # preserve_access_control_from is ADDITIVE to mode=: bits plus the ACL.
+        #
+        # Read off the descriptor where there is one, so the bits and the ACL come
+        # from the same inode. ``pre`` is the by-name lstat above and is only the
+        # fallback on the unpinned floor, where nothing was pinned to disagree
+        # with it.
+        mode = stat.S_IMODE(os.fstat(src_fd).st_mode) if src_fd is not None else (
+            stat.S_IMODE(pre.st_mode)
+        )
         atomic_write(
             target,
             content,
             fsync=True,
-            mode=stat.S_IMODE(pre.st_mode),
+            mode=mode,
             newline="",
             preserve_access_control_from=src_fd,
+            parent_dir_fd=dir_fd,
         )
     except OSError as exc:
         logger.warning("steering update failed: %s", type(exc).__name__)
         return "writefailed"
     finally:
-        if src_fd is not None:
-            try:
-                os.close(src_fd)
-            except OSError:
-                pass
+        for fd in (src_fd, dir_fd):
+            if fd is not None:
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
     return None
 
 
@@ -670,16 +918,47 @@ def _apply_declaration(content: str, body: dict[str, Any]) -> str:
 def _delete_file_blocking(target: Path) -> str | None:
     """Unlink *target*; return an error token or None.
 
-    ``unlink`` never follows a symlink, so a link raced into place after
-    resolution loses only the link itself.
+    ``resolve_steering_file`` hands back the RESOLVED leaf here (``for_write``
+    False), so *target* is symlink-free by construction. ``unlink`` never follows
+    a symlink either, so a link raced into place after resolution loses only the
+    link itself. When the platform supports it the unlink runs relative to a
+    descriptor pinning the parent chain, which additionally closes the window in
+    which an ancestor directory is swapped for a link between resolution and the
+    unlink: ``pin_parent`` walks the chain that resolution already canonicalized,
+    so a component that has since become a link fails ``O_NOFOLLOW`` and the
+    delete is refused rather than redirected.
     """
+    if not _DIR_FD_SUPPORTED:
+        try:
+            target.unlink()
+        except FileNotFoundError:
+            return "notfound"
+        except OSError as exc:
+            logger.warning("steering delete failed: %s", type(exc).__name__)
+            return "deletefailed"
+        return None
+
     try:
-        target.unlink()
+        dir_fd = pinned_fs.pin_parent(str(target.parent), what="steering directory")
+    except pinned_fs.PinnedPathRefusal:
+        # A linked or non-directory ancestor means the file the caller resolved is
+        # no longer reachable through the tree it named -- the same outcome as a
+        # by-name unlink finding it gone.
+        return "notfound"
     except FileNotFoundError:
         return "notfound"
     except OSError as exc:
         logger.warning("steering delete failed: %s", type(exc).__name__)
         return "deletefailed"
+    try:
+        os.unlink(target.name, dir_fd=dir_fd)
+    except FileNotFoundError:
+        return "notfound"
+    except OSError as exc:
+        logger.warning("steering delete failed: %s", type(exc).__name__)
+        return "deletefailed"
+    finally:
+        os.close(dir_fd)
     return None
 
 

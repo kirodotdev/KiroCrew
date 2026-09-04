@@ -250,10 +250,9 @@ def test_dev_extra_covers_test_imports():
 def _dependency_group_requirements(group: str) -> list[str]:
     """Requirement strings from a pyproject ``[dependency-groups]`` list.
 
-    Text-level, like every other pyproject read in this module: the 3.10 shard
-    has no ``tomllib`` and this gate must run there too. The list items are
-    plain double-quoted strings, so collecting quoted spans between the group's
-    opening ``[`` and its closing ``]`` reads exactly what pip's
+    Text-level, like every other pyproject read in this module. The list items
+    are plain double-quoted strings, so collecting quoted spans between the
+    group's opening ``[`` and its closing ``]`` reads exactly what pip's
     ``--group`` resolver sees.
     """
     lines = _pyproject_text().splitlines()
@@ -302,6 +301,12 @@ def test_dev_extra_pins_agree_with_the_dev_dependency_group():
     ``importorskip`` does the same for the Teams token gate. A missing entry
     means a locally green pytest that never ran those guards; a version skew is
     quieter still -- both sides run, against different behavior.
+
+    imageio-ffmpeg is the loud member of the same family: ``test_transcribe.py``
+    imports it at module scope deliberately, so a ``.[dev]`` install without it
+    turns that whole module into a collection error rather than a silent skip.
+    It is listed here so deleting the setup.cfg line fails on the line that
+    explains why, instead of as an unexplained ImportError.
     """
     group_pins = _pinned_versions(_dependency_group_requirements("dev"))
     extra_pins = _pinned_versions(_extra_requirements("dev"))
@@ -309,7 +314,7 @@ def test_dev_extra_pins_agree_with_the_dev_dependency_group():
     assert group_pins, "pyproject.toml [dependency-groups] dev declares no == pins"
 
     # The enablers must be present in the extra, not merely consistent-if-present.
-    for enabler in ("jsonschema", "pyjwt"):
+    for enabler in ("jsonschema", "pyjwt", "imageio-ffmpeg"):
         assert enabler in extra_pins, (
             f"setup.cfg [options.extras_require] dev must pin {enabler!r} in sync "
             "with pyproject's [dependency-groups] dev -- without it a `.[dev]` "

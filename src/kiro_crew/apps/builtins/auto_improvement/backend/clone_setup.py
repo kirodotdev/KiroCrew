@@ -26,6 +26,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlparse
 
+from kiro_crew.platform.context import redact_via_context
 from kiro_crew.platform_compat import (
     first_linked_ancestor,
     is_link_or_junction,
@@ -491,7 +492,10 @@ def setup_safe_clone(url: str, scratch_root: Path, *, timeout_s: int = 300) -> t
     if proc.returncode != 0:
         tail = (proc.stderr or "").strip().splitlines()[-1:] or [""]
         rmtree_force(dest)
-        return {}, f"git clone failed: {tail[0][:200]}"
+        # Redact BEFORE the bound (here and at every sibling site below): the slice
+        # can cut a credential in the echoed remote URL mid-match, leaving a fragment
+        # no downstream redaction pass recognises.
+        return {}, f"git clone failed: {redact_via_context(tail[0])[:200]}"
     if not _repository_is_safe(dest):
         rmtree_force(dest)
         return {}, "cloned repository failed Git metadata safety verification"
@@ -552,7 +556,7 @@ def list_clone_branches(clone: Path, *, timeout_s: int = 30) -> tuple[list[str],
     )
     if proc.returncode != 0:
         tail = (proc.stderr or "").strip().splitlines()[-1:] or [""]
-        return [], f"could not list branches: {tail[0][:160]}"
+        return [], f"could not list branches: {redact_via_context(tail[0])[:160]}"
     names: list[str] = []
     seen: set[str] = set()
     for raw in (proc.stdout or "").splitlines():
@@ -845,7 +849,7 @@ def checkout_branch(clone: Path, branch: str, *, timeout_s: int = 120) -> tuple[
         if co.returncode == 0:
             return True, f"checked out {bare} @ origin/{bare}"
         err = (co.stderr or "").strip().splitlines()[-1:] or [""]
-        return False, f"could not check out {bare}: {err[0][:160]}"
+        return False, f"could not check out {bare}: {redact_via_context(err[0])[:160]}"
     # The fetch failed. That is the NORMAL case here, not an edge case: this clone's
     # origin is neutralized to DISABLED_NO_PUSH (both urls — see `_disable_push`), so
     # `git fetch origin <branch>` always exits 128. Measured against a local bare repo.
@@ -874,7 +878,7 @@ def checkout_branch(clone: Path, branch: str, *, timeout_s: int = 120) -> tuple[
         if co.returncode == 0:
             return True, f"checked out local {bare} (fetch failed — offline?)"
     err = (fetched.stderr or "").strip().splitlines()[-1:] or [""]
-    return False, f"could not fetch {bare}: {err[0][:160]}"
+    return False, f"could not fetch {bare}: {redact_via_context(err[0])[:160]}"
 
 
 def _ok(spec: CloneSpec, dest: Path, *, reused: bool) -> dict:

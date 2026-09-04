@@ -27,6 +27,8 @@ vi.mock('../api/client', () => ({
 import { api } from '../api/client'
 import SlotTagPopover from '../components/SlotTagPopover'
 import { TagPopoverProvider } from '../hooks/useTagPopover'
+import type { RootState } from '../store'
+import type { ChatSlot } from '../types'
 
 const dashboardState = {
   status: {}, connected: true, slots: [], approvalMode: 'normal',
@@ -34,14 +36,14 @@ const dashboardState = {
   subagentRunning: {}, subagentDetails: {}, subagentText: {},
   sessionDefaultColor: null, sessionColorsMode: 'tint', sessionColorsPalette: 'horizon', sessionColorsIntensity: 'clear',
   enabledAppIds: [],
-} as any
+} as unknown as RootState['dashboard']
 
 /**
  * Seed the open slot via TagPopoverProvider (the context owns open-state);
  * the slot's tags still live in the Redux store, so `slots` seeds those.
  */
-function renderPopover({ slotKey, slots = [] }: { slotKey: string | null; slots?: any[] }) {
-  const store = createTestStore({ dashboard: { ...dashboardState, slots } })
+function renderPopover({ slotKey, slots = [] }: { slotKey: string | null; slots?: Partial<ChatSlot>[] }) {
+  const store = createTestStore({ dashboard: { ...dashboardState, slots } as unknown as RootState['dashboard'] })
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   const utils = render(
     <QueryClientProvider client={qc}>

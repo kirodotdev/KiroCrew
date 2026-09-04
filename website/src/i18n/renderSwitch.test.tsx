@@ -102,7 +102,7 @@ describe('a language switch preserves component state', () => {
       const { setLanguage } = useLanguage()
       return (
         <div>
-          <input data-testid="draft" value={v} onChange={e => setV(e.target.value)} />
+          <input data-testid="draft" aria-label="draft" value={v} onChange={e => setV(e.target.value)} />
           <span data-testid="text">{i18nT('pages.settings.displayPanel.view')}</span>
           <button onClick={() => setLanguage('zh-CN')}>zh</button>
         </div>

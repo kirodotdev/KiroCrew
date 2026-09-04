@@ -9,7 +9,10 @@ data home and surfaces ``internal_auth_mismatch``. Nothing names the dead path.
 
 This module walks every agent spec JSON in :func:`kiro_agents_dir_path` and
 stats every absolute ``command`` path, absolute path-like arg, and absolute
-path-like env value:
+path-like env value. Values that only LOOK like paths are screened out first —
+separator-joined lists, and the operands of flags that take an opaque identifier
+(see :data:`_IDENTIFIER_FLAGS`) — because a false "dead path" on a healthy
+install turns the whole check red and teaches operators to ignore it:
 
 * **Managed specs** (the ones ``install_agent`` / ``rebuild_agent_config`` own,
   i.e. :data:`~kiro_crew.agent_files.OWNED_KIRO_AGENT_FILES`) with dead paths are
@@ -239,12 +242,40 @@ _CREDENTIAL_KEY_MARKERS: tuple[str, ...] = (
     "PRIVATE",
 )
 
+#: Flags whose OPERAND is an opaque identifier, never a filesystem path.
+#: Some namespace and scope identifiers are conventionally slash-prefixed
+#: (``--scope /spaces/ns_abc123``), which makes them absolute-path-SHAPED while
+#: being unresolvable on any host by design. That is indistinguishable from a
+#: genuinely removed directory by value alone: such an operand is absolute, is a
+#: single value, and does not exist. The only signal that separates them is
+#: POSITIONAL — which flag the value is the operand of — so the skip has to read
+#: the preceding argument rather than the value.
+#:
+#: Deliberately a short, literal set rather than a heuristic. A heuristic here
+#: would trade a guaranteed false positive for an unbounded false NEGATIVE, and a
+#: dead-path check that silently stops reporting real dead paths is worse than one
+#: that over-reports.
+_IDENTIFIER_FLAGS: frozenset[str] = frozenset({"--scope", "--namespace", "--space"})
+
 _REDACTED_VALUE = "<redacted: credential-shaped key>"
 
 
 def _credential_shaped_key(key: str) -> bool:
     upper = key.upper()
     return any(marker in upper for marker in _CREDENTIAL_KEY_MARKERS)
+
+
+def _is_identifier_operand(args: list, i: int) -> bool:
+    """Whether ``args[i]`` is the operand of an identifier-taking flag.
+
+    Read BEFORE the value is tested, so the operand is never stat-ed. Deciding it
+    afterwards reaches the same report but performs the filesystem probe the
+    module docstring promises not to perform.
+    """
+    if i == 0:
+        return False
+    prev = args[i - 1]
+    return isinstance(prev, str) and prev in _IDENTIFIER_FLAGS
 
 
 def _walk_server_paths(server: str, entry: dict) -> list[DeadPath]:
@@ -260,6 +291,7 @@ def _walk_server_paths(server: str, entry: dict) -> list[DeadPath]:
         for i, arg in enumerate(args):
             if (
                 isinstance(arg, str)
+                and not _is_identifier_operand(args, i)
                 and _looks_like_single_absolute_path(arg)
                 and _path_is_dead(arg)
             ):

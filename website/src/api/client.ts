@@ -1,5 +1,6 @@
 import { resizeImageForModel, type ResizeInfo } from '../utils/resizeImage'
 import type {
+  AppContributor,
   ChatSlot,
   IssueSource,
   McpApplyChange,
@@ -33,6 +34,12 @@ import { withDeadline } from '../lib/withDeadline'
  *  the 9.76s case that still completed and cuts off the pathological ones.
  *  Rationale in the CR description. */
 export const SKILLS_TIMEOUT_MS = 15_000
+
+/** Deadline for `api.slashCommands`. Same value as the `$`-menu's above, for the
+ *  same reason and against the same gateway: both menus are composer affordances
+ *  whose fetch blocks Enter while it is unsettled, so a divergent bound here
+ *  would only be a second number to explain. Rationale in the CR description. */
+export const SLASH_COMMANDS_TIMEOUT_MS = 15_000
 import { installApiTransport } from './apiTransport'
 import type { SessionSummary } from '../types/sessionSummary'
 import { queryClient } from './queryClient'
@@ -221,6 +228,15 @@ export interface ConnectionStatus {
    *  "could not look" rather than "absent". */
   grantIndeterminate?: boolean
   connectedSince?: string
+}
+
+/** Authenticated provider-tool verdict returned by POST /api/connections/test. */
+export interface ConnectionTestResult {
+  schema_version: number
+  slug: string
+  verdict: 'usable' | 'no_tools' | 'failed'
+  code: string
+  toolCount: number
 }
 
 /**
@@ -767,6 +783,12 @@ export interface DeniedCommandRule {
    *  null/absent = freely toggleable. Additive — `pinned` keeps its
    *  governance-only meaning. */
   lock_reason?: 'floor' | 'policy' | null
+  /** Where the rule came from: 'builtin' = shipped in Kiro Crew's catalog;
+   *  'edition' = contributed by a composed edition through the `denied_rules`
+   *  seam. Edition rules are default-on and freely toggleable (never locked),
+   *  and are grouped by their own `category`, so the panel needs no special
+   *  case. Optional so an older gateway's response still type-checks. */
+  source?: 'builtin' | 'edition'
 }
 
 /** A user-authored denied-command pattern. */
@@ -1221,6 +1243,10 @@ export function removeAuthBanner(): void {
   // still authenticates for everything the owner gate does not front, so a
   // success proves nothing about the stale-subject denial.
   if (_staleOwnerBanner) return
+  // Auth works again, so a LATER lapse in this same document deserves its own
+  // hand-off. Deliberately after the stale-owner return above: that denial is not
+  // disproved by an unrelated success, and re-asking the hub for it loops forever.
+  _embeddedHandoffPosted = false
   if (!_sessionExpiredShown) return
   _sessionExpiredShown = false
   const el = document.getElementById('mc-session-expired')
@@ -1231,6 +1257,31 @@ export function removeAuthBanner(): void {
 // Reactive warm-path recovery: background-poll 403s funnel here, through the
 // shared single-flight refreshOnce(). True if the 30-day cookie rotated.
 let _silentRefreshExhausted = false
+// One hub hand-off per pane DOCUMENT. Without this every 403 from every
+// background poll posts another `mc-auth-expired`, and the hub answers each one
+// with an SSH token mint (rate-limited, never stopped) — a mint storm behind a
+// loading spinner. A hub re-mint reloads this iframe, which resets this latch,
+// so a pane that can recover still gets a fresh ask on every load.
+let _embeddedHandoffPosted = false
+
+/** Hand auth recovery to the hub, at most once per pane document.
+ *
+ * The wildcard target is deliberate and matches the two call sites' comments:
+ * the hub's origin is not knowable from inside the pane (tunnel hosts vary), and
+ * the message carries only a fixed type string — no secret — while the parent
+ * validates `event.origin` before acting on it (see resolveTunnelOrigin).
+ */
+function postAuthExpiredToHub(): boolean {
+  if (_embeddedHandoffPosted) return true
+  try {
+    // nosemgrep: javascript.browser.security.wildcard-postmessage-configuration.wildcard-postmessage-configuration
+    window.parent.postMessage({ type: 'mc-auth-expired' }, '*')
+  } catch {
+    return false // cross-origin parent unreachable — caller falls back to the banner
+  }
+  _embeddedHandoffPosted = true
+  return true
+}
 
 export function attemptSilentRefresh(): Promise<boolean> {
   return refreshOnce().then((res) => {
@@ -1249,6 +1300,7 @@ export function attemptSilentRefresh(): Promise<boolean> {
 /** Test-only: reset module auth-recovery state between cases. */
 export function __resetAuthRecoveryStateForTests(): void {
   _silentRefreshExhausted = false
+  _embeddedHandoffPosted = false
   _sessionExpiredShown = false
   _staleOwnerBanner = false
   __resetRefreshOnceForTests()
@@ -1310,17 +1362,30 @@ export function checkSessionExpired(r: Response): Response {
     // When this dashboard is running embedded in the Instances pane stack
     // (an <iframe> inside the hub), don't show the paste-token banner here —
     // the user can't easily fetch the remote token from inside the pane, and
-    // the hub owns recovery. Signal the parent, which force-mints a fresh
-    // token and reloads this iframe (mirrors the hub's auto-recovery).
-    // The message carries no secret; the parent validates event.origin before
-    // acting (see InstancesViewport / resolveTunnelOrigin).
+    // the hub owns recovery.
+    //
+    // But try OUR OWN recovery first. This pane holds the same 30-day
+    // `mc_refresh_<port>` cookie the top-level path below uses, and the common
+    // cause of a burst of 403s here is a lapsed access cookie (a laptop that
+    // slept through the proactive refresh) — which one silent refresh fixes, with
+    // no SSH mint, no iframe reload, and no lost pane state. Handing that to the
+    // hub instead costs a remote mint and a full reload of this document.
+    //
+    // Only when the refresh cannot recover do we signal the parent, which
+    // force-mints a fresh token and reloads this iframe. That hand-off is
+    // latched to once per document (see postAuthExpiredToHub): the hub answers
+    // every ask with a mint, so an unrepairable session used to produce one mint
+    // per rate-limit window for as long as the window stayed open.
     if (window.parent && window.parent !== window) {
-      try {
-        window.parent.postMessage({ type: 'mc-auth-expired' }, '*')
-      } catch {
-        /* cross-origin parent unreachable — fall through to the banner below */
+      if (!_silentRefreshExhausted) {
+        void attemptSilentRefresh().then((ok) => {
+          if (ok) removeAuthBanner()
+          else postAuthExpiredToHub()
+        })
+        return r
       }
-      return r
+      if (postAuthExpiredToHub()) return r
+      // Cross-origin parent unreachable — fall through to the banner below.
     }
     // Mid-session the access cookie can lapse (20h TTL, or laptop sleep
     // pausing the proactive refresh timer) while the tab stays open. The
@@ -1360,18 +1425,15 @@ function handleStaleOwnerSession(): void {
   // Embedded in the Instances pane stack: hand recovery to the hub, mirroring
   // checkSessionExpired — the hub force-mints a fresh token (whose subject is
   // derived from the current owner) and reloads this iframe.
+  // No silent refresh attempt here, unlike checkSessionExpired: re-minting from
+  // the incoming subject keeps the stale bootstrap subject, so a "successful"
+  // refresh would rotate the cookie and be denied again. The hand-off is latched
+  // to once per document, and `_staleOwnerBanner` above keeps a later 2xx from
+  // re-opening it — a hub re-mint cannot fix this denial either, so asking twice
+  // only buys another SSH mint.
   if (typeof window !== 'undefined' && window.parent && window.parent !== window) {
-    try {
-      // The wildcard target mirrors checkSessionExpired's hand-off above: the
-      // hub's origin is not knowable from inside the pane (tunnel hosts vary),
-      // and the message carries only a fixed type string — no secret — while
-      // the parent validates event.origin before acting on it.
-      // nosemgrep: javascript.browser.security.wildcard-postmessage-configuration.wildcard-postmessage-configuration
-      window.parent.postMessage({ type: 'mc-auth-expired' }, '*')
-      return
-    } catch {
-      /* cross-origin parent unreachable — fall through to the banner below */
-    }
+    if (postAuthExpiredToHub()) return
+    // Cross-origin parent unreachable — fall through to the banner below.
   }
   showSessionExpiredBanner(i18nT('api.client.stale_owner_session'))
 }
@@ -1771,6 +1833,26 @@ export interface KiroPrerequisiteStatus {
    * verbatim and untranslated: it names the file and the construct refused.
    */
   agent_spec_rejection_detail?: string
+  /**
+   * Whether the installed kiro-cli exposes the `acp` subcommand every Kiro Crew
+   * session is launched through. False means the CLI runs and is signed in but
+   * is too OLD to start a session, so `ready` is forced false. The remedy is an
+   * update, not a reinstall. Optional because a gateway older than this field
+   * does not send it — treat a missing value as `true` (supported).
+   */
+  acp_supported?: boolean
+  /**
+   * The command that updates the CLI in place (`kiro-cli update`). Unlike
+   * `login_command`, Kiro Crew also runs this FOR the owner via the update-cli
+   * POST — it is the CLI's own self-update. Rendered verbatim in a `<code>`.
+   */
+  update_command?: string
+  /**
+   * Failure text from an update-cli attempt. Empty when none was attempted or it
+   * succeeded. Shown verbatim and untranslated: it names why the self-update did
+   * not complete.
+   */
+  cli_update_error?: string
 }
 
 export interface KiroBonusCreditGrantPayload {
@@ -2136,6 +2218,11 @@ export const api = {
   // cross-site triggerable and would leave no audit record.
   repairKiroPrerequisiteSpecs: () =>
     post('/api/kiro-prerequisite/repair-specs').then(j) as Promise<KiroPrerequisiteStatus>,
+  // A POST for the same CSRF/audit reasons as the spec repair above. Runs the
+  // CLI's own in-place self-update on the gateway host and returns the
+  // post-update snapshot; `cli_update_error` is empty on success.
+  updateKiroPrerequisiteCli: () =>
+    post('/api/kiro-prerequisite/update-cli').then(j) as Promise<KiroPrerequisiteStatus>,
   // KAS-mode in-product sign-in (no kiro-cli, no terminal). Status is a cheap
   // read; every step that changes sign-in state is a POST for the same
   // CSRF/audit reasons as the spec repair above. Error responses carry a
@@ -2421,7 +2508,11 @@ export const api = {
   models: () => fetch('/api/models').then(j),
   effortLevels: (slot?: string) =>
     fetch('/api/effort-levels' + (slot ? '?slot=' + encodeURIComponent(slot) : '')).then(j) as Promise<string[]>,
-  slashCommands: () => fetch('/api/slash-commands').then(j),
+  // Bounded HERE, not per initiator: react-query dedupes on the key, so the
+  // weakest initiator would otherwise decide whether the promise is bounded.
+  slashCommands: (signal?: AbortSignal) =>
+    withDeadline(SLASH_COMMANDS_TIMEOUT_MS, signal, s =>
+      fetch('/api/slash-commands', { signal: s }).then(j)),
   chatSlotAgent: (slot: string, agent: string) =>
     post('/api/chat/slots/' + encodeURIComponent(slot) + '/agent', { agent }).then(j) as Promise<{ ok?: boolean; agent?: string; workspace?: string }>,
   chatSlotModel: (slot: string, model: string) =>
@@ -2487,7 +2578,7 @@ export const api = {
     return fetch('/api/crons/' + jobId + '/history' + (qs ? '?' + qs : ''), { headers: { ..._sk } }).then(j)
   },
   cronRunDetail: (jobId: string, runId: string) => fetch('/api/crons/' + jobId + '/history/' + encodeURIComponent(runId), { headers: { ..._sk } }).then(j),
-  cronScript: (jobId: string) => fetch('/api/crons/' + jobId + '/script').then(j),
+  cronScript: (jobId: string) => fetch('/api/crons/' + jobId + '/script', { headers: { ..._sk } }).then(j),
   ackCron: (id: string, summary: string, ts?: string) => post('/api/crons/' + id + '/ack', { summary, ts }).then(j),
   cronHistoryAll: (opts?: { offset?: number; limit?: number; jobId?: string }) => {
     const p = new URLSearchParams()
@@ -2700,10 +2791,25 @@ export const api = {
     post('/api/connections/mint', { slug }).then(j) as Promise<{ ok: boolean; slug: string; state: string; token: string }>,
   connectionsMintState: (slug: string) =>
     fetch(`/api/connections/mint?slug=${encodeURIComponent(slug)}`).then(j) as Promise<ConnectionMintState>,
+  // Warm every mintable provider's URL in one activation, so a later Connect
+  // serves a URL the warm table already holds instead of paying a cold spawn.
+  // Deliberately BODYLESS: what is mintable is a fact about the user's registry
+  // and grant state, never a caller's choice, and the bound on what may be
+  // spawned stays on the server's side of the wire. `preminting` names the
+  // providers warming was STARTED for, which is why it can answer before any of
+  // them holds a URL — a card's verdict remains its mint state, never this.
+  // Owner-gated, so a non-owner session rejects (403); the caller is expected to
+  // treat that as "no warm table", not as an error worth showing.
+  connectionsPremint: () =>
+    post('/api/connections/premint').then(j) as Promise<{ ok: boolean; preminting: string[] }>,
   // Authorization verdict + first-connect time per visible provider. Additive to
   // the mint feed above; never mints.
   connectionsStatus: () =>
     fetch('/api/connections/status').then(j) as Promise<{ schema_version: number; connections: ConnectionStatus[] }>,
+  // Promptless authenticated enumeration through kiro-cli. The runtime owns
+  // bearer injection and provider tools/list; this receives only a verdict and count.
+  connectionsTest: (slug: string) =>
+    post('/api/connections/test', { slug }).then(j) as Promise<ConnectionTestResult>,
   // Dispose an in-flight mint (process, listener, spec). Does NOT touch the MCP
   // config entry — the card owns that. `token` fences a sibling tab's row.
   connectionsCancel: (slug: string, token?: string) =>
@@ -2823,6 +2929,8 @@ export const api = {
   // Issue sources. `refresh` bypasses the server's cached payload; the panel
   // never polls, so a refresh is always an explicit user action.
   fetchIssueSource: (url: string, refresh = false) => post('/api/source/issue', { url, refresh }).then(j) as Promise<IssueSource>,
+  /** Top contributors to an app's source repo (GitHub only). Owner-gated. */
+  appContributors: (url: string, refresh = false) => post('/api/source/contributors', { url, refresh }).then(j) as Promise<{ contributors: AppContributor[] }>,
   chatSlots: () => fetch('/api/chat/slots').then(j),
   /** All goal loops across sessions. Returns `{enabled:false, loops:[]}` when
    *  the auto-nudge feature flag is off, so callers need no flag check. */
@@ -2861,7 +2969,7 @@ export const api = {
   approveChatSlot: (slot: string, action: string, extra?: Record<string, string>) => post('/api/chat/slots/' + encodeURIComponent(slot) + '/approve', { action, ...extra }).then(j),
   planAction: (slot: string, action: string) => post('/api/chat/slots/' + encodeURIComponent(slot) + '/plan-action', { action }).then(j),
   resumeChatSlot: (key: string, title?: string) => post('/api/chat/slots/' + encodeURIComponent(key) + '/resume', { name: key, key, title: title || key }).then(j),
-  forkChatSlot: (slot: string, atIndex?: number, prompt?: string, mode?: string, direction?: string) => post('/api/chat/slots/' + encodeURIComponent(slot) + '/fork', { ...(atIndex !== undefined ? { at_message_index: atIndex } : {}), ...(prompt ? { prompt } : {}), ...(mode ? { mode } : {}), ...(direction ? { direction } : {}) }).then(j),
+  forkChatSlot: (slot: string, atIndex?: number, prompt?: string, mode?: string, direction?: string, messageId?: string) => post('/api/chat/slots/' + encodeURIComponent(slot) + '/fork', { ...(atIndex !== undefined ? { at_message_index: atIndex } : {}), ...(messageId ? { at_message_id: messageId } : {}), ...(prompt ? { prompt } : {}), ...(mode ? { mode } : {}), ...(direction ? { direction } : {}) }).then(j),
   sideOpen: (slot: string) => post('/api/chat/slots/' + encodeURIComponent(slot) + '/side/open', {}).then(j) as Promise<{ ok: boolean; open: boolean; messages: number; last_run_id: string; created_at: string }>,
   sideTurn: (slot: string, question: string, opts?: { steer?: boolean }) => post('/api/chat/slots/' + encodeURIComponent(slot) + '/side/turn', { question, ...(opts?.steer ? { steer: true } : {}) }).then(j) as Promise<{ ok: boolean; run_id?: string; messages?: number; steered?: boolean; pending?: boolean; queued?: boolean; demoted?: boolean; queue_id?: string; still_queued?: boolean; depth?: number; steer_id?: string }>,
   sideQueueCancel: (slot: string, queueId: string) => del('/api/chat/slots/' + encodeURIComponent(slot) + '/side/queue/' + encodeURIComponent(queueId), { client: TAB_ID }).then(j) as Promise<{ ok: boolean; content: string; depth: number }>,
@@ -2949,13 +3057,15 @@ export const api = {
   // Mid-turn steer: inject into the RUNNING turn instead of queueing. Fire-and-forget
   // JSON response ({ok, steered}); the backend falls back to queue if steer is
   // unavailable so the text is never dropped.
+  // `ws=1` because a steer that races `chat_done` falls through to the plain send
+  // path, whose JSON receipt is gated on it — without it that arm streams SSE.
   // `sendId` is the client-minted correlation id stamped on the optimistic steer
   // bubble (same convention as the plain send path). It rides in `meta`, which
   // BOTH backend paths persist — the accepted-steer row and the new-turn row a
   // steer that races chat_done falls onto — so the bubble is reconcilable, and
   // its accepted-vs-new-turn ambiguity resolvable, by id identity (#6075).
   steerChat: (message: string, slot?: string, sendId?: string) =>
-    fetch('/api/chat', { method: 'POST', headers: { 'Content-Type': 'application/json', ..._sk }, body: JSON.stringify({ message, slot, steer: true, ...(sendId ? { meta: { sendId } } : {}) }) }).then(j),
+    fetch('/api/chat?ws=1', { method: 'POST', headers: { 'Content-Type': 'application/json', ..._sk }, body: JSON.stringify({ message, slot, steer: true, ...(sendId ? { meta: { sendId } } : {}) }) }).then(j),
   sessionsHealth: () => fetch('/api/sessions/health').then(j),
   // Knowledge
   knowledgeSearch: (q: string) => get(`/api/knowledge/search-for-context?q=${encodeURIComponent(q)}`).then(j),
@@ -3463,9 +3573,9 @@ export const api = {
   artifactSessionDocs: (session?: string) =>
     get(`/api/artifacts/session-docs${session ? `?session=${encodeURIComponent(session)}` : ''}`).then(j) as Promise<{ docs: SessionDoc[] }>,
   /** Turn a session document path into a real, saved (pinned) file-backed artifact.
-   * `originSessionKey` records which chat session saved it (for the Source column). */
+   * `originSessionKey` records the saving session; `slug_collided_with` names the plain slug, present only when the store had to suffix it. */
   materializeArtifact: (path: string, originSessionKey?: string) =>
-    post('/api/artifacts/materialize', { path, ...(originSessionKey ? { origin_session_key: originSessionKey } : {}) }).then(j),
+    post('/api/artifacts/materialize', { path, ...(originSessionKey ? { origin_session_key: originSessionKey } : {}) }).then(j) as Promise<{ slug: string; slug_collided_with?: string }>,
   // Artifact publishing / sharing. Local publish/sharing management
   // only — remote-browse / clone / fork surfaces are not part of this edition.
   publishArtifact: (slug: string, body: { visibility?: 'PRIVATE' | 'SHARED' | 'PUBLIC'; shared_with?: string[]; provider?: string }) =>

@@ -608,7 +608,7 @@ class TestFindPythonInterpreter:
 
     def test_returns_none_when_only_stub_or_too_old(self, monkeypatch):
         # No usable interpreter: which() yields only the stub (Windows) / nothing,
-        # or an interpreter that reports < 3.10. Either way → None, never the stub.
+        # or an interpreter that reports < 3.12. Either way → None, never the stub.
         if pc.IS_WINDOWS:
             stub = r"C:\Users\me\AppData\Local\Microsoft\WindowsApps\python3.EXE"
             monkeypatch.setattr("shutil.which", lambda name: stub)
@@ -982,8 +982,8 @@ class TestDirLinkShims:
         assert pc.is_link_or_junction(link)
         # 0xA0000003 = IO_REPARSE_TAG_MOUNT_POINT, spelled literally rather than
         # read from the module under test (so the assertion is independent of it)
-        # and rather than via os.path.isjunction (3.12+ only; this project
-        # supports 3.10).
+        # and rather than via os.path.isjunction, which would couple the
+        # assertion to the same stdlib helper the module itself may use.
         assert os.lstat(str(link)).st_reparse_tag == 0xA0000003
         pc.unlink_link_or_junction(link)
         assert not link.exists()
@@ -2510,7 +2510,7 @@ class TestFindPythonInterpreterReal:
         # The selection-side twin of test_origin_probe_ignores_pythonpath: at
         # child startup the ``site`` module imports any ``sitecustomize.py``
         # found on the caller's PYTHONPATH, and that module can monkeypatch
-        # ``sys.version_info`` — here forcing this real >= 3.10 interpreter to
+        # ``sys.version_info`` — here forcing this real >= 3.12 interpreter to
         # report 3.4, which would make the version gate reject it and steer
         # selection. The gate runs the probe isolated (-I), so the decoy is
         # never imported and the candidate is judged by its REAL version.
@@ -2524,7 +2524,7 @@ class TestFindPythonInterpreterReal:
         )
         monkeypatch.setenv("PYTHONPATH", str(decoy))
         # Every candidate name resolves to this suite's own interpreter — a
-        # real, runnable >= 3.10 CPython on every platform CI runs.
+        # real, runnable >= 3.12 CPython on every platform CI runs.
         monkeypatch.setattr("shutil.which", lambda name: sys.executable)
 
         assert pc.find_python_interpreter() == sys.executable

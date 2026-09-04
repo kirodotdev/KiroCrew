@@ -87,6 +87,40 @@ class TestChatSlotProject:
                 assert resp.status == 403
 
     @pytest.mark.asyncio
+    async def test_data_home_overlap_returns_actionable_400(self, tmp_path, monkeypatch):
+        """#7392 pre-flight: a workspace containing the voice runtime is refused
+        at the endpoint with the actionable message, before any session spawn."""
+        import kiro_crew.sandbox as sandbox_mod
+
+        # The pre-flight is darwin-gated to match the spawn-time guards it
+        # mirrors (review round 1), so pin the platform for the refusal path.
+        monkeypatch.setattr(sandbox_mod.sys, "platform", "darwin")
+        runtime = tmp_path / "data" / "run" / "voice-runtime"
+        runtime.mkdir(parents=True)
+        monkeypatch.setattr(
+            sandbox_mod,
+            "_voice_runtime_sandbox_paths",
+            lambda: (str(runtime),),
+        )
+        slot = _ChatSlot("test")
+        state = _mock_state(slot)
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post(
+                "/api/chat/slots/test/project",
+                json={"project": str(tmp_path)},
+            )
+            assert resp.status == 400
+            data = await resp.json()
+            assert data["code"] == "workspace_overlaps_data_home"
+            assert "protected voice runtime" in data["error"]
+            # The guard message embeds paths with !r (#7407), so on Windows the
+            # backslashes are repr-escaped — assert the repr form, which is the
+            # exact token the formatter emits on every platform.
+            assert repr(str(runtime)) in data["error"]
+            assert "Pick a project subdirectory" in data["error"]
+            assert slot.project != str(tmp_path)
+
+    @pytest.mark.asyncio
     async def test_can_change_mid_session(self, tmp_path):
         """Unlike workspace, project can be changed after messages are sent."""
         slot = _ChatSlot("test")
@@ -145,3 +179,44 @@ class TestChatSlotProject:
                 assert resp.status == 200
         state.sessions.reset.assert_not_awaited()
         assert slot._pending_reset_history_key is None
+
+
+class TestFolderProjectDirOverlapPreflight:
+    """#7392 review round 3: the folder ``project_dir`` write path is the third
+    user-driven project chokepoint — it must refuse a data-home overlap at the
+    moment of choice with the SAME message as the endpoint and set_project.
+    Round 4: the check lives in ``_folder_project_overlap_denied`` (run off-loop
+    by the create/update handlers), NOT in ``_validate_project_dir``, which the
+    slot-create read path re-runs against stored values."""
+
+    def _pin_runtime(self, tmp_path, monkeypatch):
+        import kiro_crew.sandbox as sandbox_mod
+
+        monkeypatch.setattr(sandbox_mod.sys, "platform", "darwin")
+        runtime = tmp_path / "data" / "run" / "voice-runtime"
+        runtime.mkdir(parents=True)
+        monkeypatch.setattr(
+            sandbox_mod,
+            "_voice_runtime_sandbox_paths",
+            lambda: (str(runtime),),
+        )
+        return runtime
+
+    def test_folder_overlap_denied_with_guard_message(self, tmp_path, monkeypatch):
+        from kiro_crew.dashboard.chat_folders import _folder_project_overlap_denied
+
+        runtime = self._pin_runtime(tmp_path, monkeypatch)
+        err = _folder_project_overlap_denied(str(tmp_path))
+        assert err is not None
+        # Byte-identical family: same formatter as endpoint + spawn guard (#7407).
+        assert "protected voice runtime" in err
+        assert repr(str(runtime)) in err
+        assert "Pick a project subdirectory" in err
+
+    def test_folder_overlap_check_accepts_non_overlapping_dir(self, tmp_path, monkeypatch):
+        from kiro_crew.dashboard.chat_folders import _folder_project_overlap_denied
+
+        self._pin_runtime(tmp_path, monkeypatch)
+        clean = tmp_path / "clean"
+        clean.mkdir()
+        assert _folder_project_overlap_denied(str(clean)) is None

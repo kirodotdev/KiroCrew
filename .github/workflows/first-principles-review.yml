@@ -50,15 +50,33 @@ concurrency:
 
 jobs:
   first-principles-review:
-    name: First Principles Review
+    # BRANCH-PROTECTION NAME COLLISION -- keep this conditional. Two workflows
+    # publish the protected check name "First Principles Review": this same-repo lane and the
+    # privileged Stage-2 fork-first-principles-review.yml. GitHub resolves a required status
+    # check to the NEWEST check-run carrying that name, so on a fork PR -- where
+    # this lane reviews nothing -- any `pull_request` event firing AFTER the fork
+    # lane published its verdict (a reopen, and for codex-review an `edited`
+    # title/body) would make THIS lane the newest run under the protected name
+    # and satisfy the gate on a review that never ran. Naming this job
+    # differently on a fork PR leaves exactly ONE publisher of the protected
+    # name per PR type: this lane for same-repo PRs, the Stage-2 lane for forks.
+    # `pr-readiness.yml` is unaffected -- it already collapses every check-run of
+    # the name for forks and treats a name with no completed run as pending,
+    # never as passed.
+    #
+    # The fork guard sits on EVERY step rather than on the job, and that
+    # placement is what makes the name above render. GitHub never evaluates a
+    # skipped job's `name:` expression, so while the guard was a job-level `if:`
+    # every fork PR published the raw expression source as its check name.
+    # Letting the job start with all steps gated costs seconds of runner time and
+    # reports the intended name instead. `test_ai_review_workflows.py` asserts
+    # the guard is on every step, so a step added later cannot quietly run
+    # against fork content.
+    name: "${{ github.event.pull_request.head.repo.full_name == github.repository && 'First Principles Review' || 'First Principles Review (same-repo lane, not applicable to forks)' }}"
     runs-on: ubuntu-latest
     # Consumer counting is grep-heavy, so this lane runs more turns than the
     # other advisory lanes; keep headroom for the model-latency fat tail.
     timeout-minutes: 60
-    # Same-repo PRs only (not forks): fork PRs have no OIDC/secrets access, and
-    # this keeps budget abuse / prompt-injection / secret-exfil out -- mirrors
-    # the fork guard in design-review.yml / ux-review.yml.
-    if: github.event.pull_request.head.repo.full_name == github.repository
     steps:
       # persist-credentials:false stops actions/checkout from writing the
       # GITHUB_TOKEN into .git/config, where the agentic reviewer -- which reads
@@ -66,6 +84,7 @@ jobs:
       # still works (history is fetched via depth 0); the posting step uses its
       # own scoped GH_TOKEN. Mirrors design-review.yml.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: github.event.pull_request.head.repo.full_name == github.repository
         with:
           fetch-depth: 0
           persist-credentials: false
@@ -77,6 +96,7 @@ jobs:
       # catch. Only a change that ships no capability at all (docs, tests,
       # screenshots, generated files) skips, with no model call.
       - name: Detect reviewable surface
+        if: github.event.pull_request.head.repo.full_name == github.repository
         id: scope
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
@@ -114,7 +134,11 @@ jobs:
       # the head's copy instead.
       - name: Extract the review contract from the base commit
         id: contract
-        if: github.actor != 'dependabot[bot]' && steps.scope.outputs.surface == 'true'
+        if: >-
+          github.event.pull_request.head.repo.full_name == github.repository
+          && (
+          github.actor != 'dependabot[bot]' && steps.scope.outputs.surface == 'true'
+          )
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
@@ -140,9 +164,12 @@ jobs:
       # contract and forge a clean verdict against a rewritten rubric.
       - name: Prefetch the change as data files
         if: >-
+          github.event.pull_request.head.repo.full_name == github.repository
+          && (
           github.actor != 'dependabot[bot]'
           && steps.scope.outputs.surface == 'true'
           && steps.contract.outputs.available == 'true'
+          )
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
@@ -157,7 +184,33 @@ jobs:
             echo "::error::empty diff for $BASE_SHA...HEAD; failing closed."
             exit 1
           fi
-          raw="$(gh api "repos/$REPO/pulls/$PR" --jq '"Title: \(.title)\n\nDescription:\n\(.body // "")"' 2>/dev/null || true)"
+          # A title/description this step could not READ is not a PR without
+          # stated intent. `2>/dev/null || true` discarded both the error text
+          # and the exit status, so a transient API failure handed the reviewer
+          # an empty intent file and the lane judged a PR that appeared to
+          # state nothing -- blaming the author for a description the workflow
+          # never read. The common case is transient, so absorb it here rather
+          # than spending the author's re-run on it: up to three attempts with
+          # a short backoff. A read that never succeeds fails closed while
+          # naming the read as the cause; a genuinely empty description reads
+          # successfully on the first attempt and is judged as written, which
+          # is correct.
+          raw=""
+          read_ok=""
+          for attempt in 1 2 3; do
+            if raw="$(gh api "repos/$REPO/pulls/$PR" --jq '"Title: \(.title)\n\nDescription:\n\(.body // "")"')"; then
+              read_ok=1
+              break
+            fi
+            echo "Reading the PR title and description failed on attempt $attempt."
+            if [ "$attempt" -lt 3 ]; then
+              sleep "$attempt"
+            fi
+          done
+          if [ -z "$read_ok" ]; then
+            echo "::error::Could not read this PR's title and description from the API after 3 attempts, so the review would judge a PR that appears to state no intent. This is a read failure, not a missing description -- re-run this job."
+            exit 1
+          fi
           # Strip embedded media: a screenshot-heavy body is pure cost to a
           # reviewer that judges prose, and an attachment URL is not intent.
           stripped="$(printf '%s' "$raw" | perl -0777 -pe 's/!\[[^\]]*\]\([^)]*\)/[image removed]/g; s{<img\b[^>]*>}{[image removed]}gi; s{<video\b.*?</video>}{[video removed]}gsi; s{<source\b[^>]*>}{[media removed]}gi; s{https?://\S*user-attachments\S*}{[media removed]}g' 2>/dev/null || printf '%s' "$raw")"
@@ -189,6 +242,7 @@ jobs:
           echo "Wrote the diff ($(wc -c < "$PATCH") bytes) and the PR intent ($(wc -c < "$INTENT") bytes) as data files."
 
       - name: Resolve human override
+        if: github.event.pull_request.head.repo.full_name == github.repository
         id: human_override
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -198,11 +252,37 @@ jobs:
         run: |
           exact="<!-- ai-review-human-override target=first-principles head=$HEAD "
           all="<!-- ai-review-human-override target=all head=$HEAD "
-          record="$(gh api "repos/$REPO/issues/$PR/comments" --paginate 2>/dev/null \
+          # A comments feed this step could not READ is not a PR with no
+          # override recorded. `2>/dev/null || true` discarded both the error
+          # text and the exit status, so a transient API failure collapsed
+          # onto the same empty string as "no override recorded" and the lane
+          # re-gated a verdict a human had already cleared with
+          # /ai-review override. The common case is transient, so absorb it
+          # here: up to three attempts with a short backoff. A read that never
+          # succeeds fails this run CLOSED while naming the read as the cause;
+          # a PR genuinely carrying no override still reads successfully and
+          # resolves to inactive, as before.
+          comments=""
+          read_ok=""
+          for attempt in 1 2 3; do
+            if comments="$(gh api "repos/$REPO/issues/$PR/comments" --paginate)"; then
+              read_ok=1
+              break
+            fi
+            echo "Reading the PR comments failed on attempt $attempt."
+            if [ "$attempt" -lt 3 ]; then
+              sleep "$attempt"
+            fi
+          done
+          if [ -z "$read_ok" ]; then
+            echo "::error::Could not read this PR's comments after 3 attempts, so this lane cannot tell whether a human override is recorded for $HEAD. Failing closed rather than re-gating a verdict a human may have cleared -- re-run this job."
+            exit 1
+          fi
+          record="$(printf '%s' "$comments" \
             | jq -sr --arg exact "$exact" --arg all "$all" \
               'add // [] | [.[] | select(.user.login == "github-actions[bot]")
               | select((.body | startswith($exact)) or (.body | startswith($all)))]
-              | (last.body // "")' 2>/dev/null || true)"
+              | (last.body // "")')"
           actor="$(printf '%s\n' "$record" | sed -nE '1s/^.* actor=([^ ]+) source=([0-9]+) -->$/\1/p')"
           source="$(printf '%s\n' "$record" | sed -nE '1s/^.* actor=([^ ]+) source=([0-9]+) -->$/\2/p')"
           if [ -n "$actor" ] && [ -n "$source" ]; then
@@ -220,7 +300,11 @@ jobs:
       # by PR content. Also skip when a human override is recorded, so an OIDC
       # failure can never keep the override from clearing the lane.
       - uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6.2.3
-        if: github.actor != 'dependabot[bot]' && steps.scope.outputs.surface == 'true' && steps.human_override.outputs.active != 'true'
+        if: >-
+          github.event.pull_request.head.repo.full_name == github.repository
+          && (
+          github.actor != 'dependabot[bot]' && steps.scope.outputs.surface == 'true' && steps.human_override.outputs.active != 'true'
+          )
         with:
           role-to-assume: ${{ secrets.AWS_BEDROCK_ROLE_ARN }}
           aws-region: us-west-2
@@ -233,10 +317,13 @@ jobs:
         # by human review). The always()-run steps below still post a leak-safe
         # comment and log the outcome regardless.
         if: >-
+          github.event.pull_request.head.repo.full_name == github.repository
+          && (
           github.actor != 'dependabot[bot]'
           && steps.scope.outputs.surface == 'true'
           && steps.contract.outputs.available == 'true'
           && steps.human_override.outputs.active != 'true'
+          )
         uses: anthropics/claude-code-action@24dcd50c0568f0fc9e9211213a4fd2d9eb15c4e0 # v1
         with:
           # Inference via Amazon Bedrock. Model id form (bare, regional `us.`
@@ -294,7 +381,11 @@ jobs:
       # comment noise. Mirrors ux-review.yml.
       - name: Post first-principles review summary
         id: post
-        if: always()
+        if: >-
+          github.event.pull_request.head.repo.full_name == github.repository
+          && (
+          always()
+          )
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
@@ -495,7 +586,11 @@ jobs:
       # gates merge only if added to required status checks (a repo setting, out
       # of scope). Do NOT widen the failing branch beyond BLOCK.
       - name: First-principles review status (gates on BLOCK)
-        if: always()
+        if: >-
+          github.event.pull_request.head.repo.full_name == github.repository
+          && (
+          always()
+          )
         env:
           HEAD: ${{ github.event.pull_request.head.sha }}
           ACTOR: ${{ github.actor }}

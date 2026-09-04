@@ -999,6 +999,49 @@ def _extra_mcp_servers() -> dict[str, dict]:
     return dict(extra) if extra else {}
 
 
+def managed_mcp_spec_entry(name: str) -> dict[str, Any] | None:
+    """The kiro-spec ``mcpServers`` entry a fresh build would emit for *name*.
+
+    One entry, resolved live (``invocation_fn`` + the pinned data home), for a
+    consumer that needs a single managed server without rebuilding the whole
+    config. ``None`` when *name* is not managed, when it is ``opt_in`` (an
+    assignable set is granted by a spec, never minted here) or when its
+    ``spec_gate`` is closed — the same predicate the two spec writers use, so a
+    caller cannot resurrect a server emission withholds.
+
+    ``autoApprove`` is deliberately NOT carried, unlike the emit loop in
+    :func:`build_agent_config`. The flag is kiro-cli's local approval, and the
+    one caller here (the claude MCP translation, :mod:`kiro_crew.acp.session_mcp`)
+    targets a backend whose nearest equivalent — a ``permissions.allow`` entry —
+    means Claude never asks, so the call never reaches Crew's gate. Emitting the
+    entry un-approved keeps every call gated.
+
+    Never raises: an invocation that cannot be resolved yields ``None``, because
+    the caller is on a spawn path where no MCP server is better than no session.
+    """
+    spec = _MANAGED_MCP_SERVERS.get(name)
+    if not isinstance(spec, dict):
+        return None
+    if not _mcp_server_emission_eligible(name, spec):
+        return None
+    try:
+        if "invocation_fn" in spec:
+            cmd, args = spec["invocation_fn"]()
+        else:
+            cmd = spec.get("command") or spec["command_fn"]()
+            args = list(spec["args"])
+    except Exception:
+        logger.warning("cannot resolve invocation for managed MCP server %r", name, exc_info=True)
+        return None
+    if not cmd:
+        return None
+    entry: dict[str, Any] = {"command": cmd, "args": list(args)}
+    env = _managed_mcp_env()
+    if env:
+        entry["env"] = env
+    return entry
+
+
 def _extra_mcp_scope_globals() -> list[Path]:
     """Provider-global MCP config files contributed by the edition (CPP seam).
 
@@ -3278,18 +3321,17 @@ def _seed_kas_permissions(config: dict[str, Any]) -> None:
     if config.get("permissions") is not None:
         return
 
-    # circular import: `kiro_crew.acp.__init__` pulls in the runtime, which reaches
-    # back into config/agent — and it is also the whole ACP stack, which this
-    # module has no business dragging onto the gateway boot path just to write one
-    # JSON field. The imported module itself depends on nothing in the package.
-    from kiro_crew.acp.kas_permissions import (  # noqa: PLC0415
-        allowed_tools_to_permissions,
+    # Routed through the agent-sdk boundary: ``drivers.acp`` is the one layer
+    # permitted to import ``kiro_crew.acp``, and agent.py's direct-import count
+    # is a shrink-only baseline that must not grow. Function-local for the same
+    # boot-path reason as every import here — this module has no business
+    # dragging the ACP stack onto the gateway boot path just to write one JSON
+    # field.
+    from kiro_crew.agent_sdk.drivers.acp import (  # noqa: PLC0415 - boot path
+        derived_agent_permissions,
     )
 
-    derived = allowed_tools_to_permissions(
-        config.get("allowedTools"), agent_id=Path(AGENT_FILENAME).stem
-    )
-    config["permissions"] = derived if derived is not None else {"rules": []}
+    config["permissions"] = derived_agent_permissions(config.get("allowedTools"), AGENT_FILENAME)
 
 
 def _may_auto_approve(ref: str) -> bool:
@@ -4994,6 +5036,22 @@ _CONDUCTOR_DASHBOARD_GRANTS: tuple[str, ...] = (
     "@kirocrew-dashboard/session_read_message",
 )
 
+#: The dashboard verbs a CREW MEMBER's DM session may call without an approval
+#: prompt. Superset of the conductor's: the write verbs (``session_send``,
+#: ``session_stop``) join because a member's reach is SERVER-bounded in a way
+#: the conductor's is not — ``authorize_target`` refuses a member caller on any
+#: session it did not itself create (``created_by`` ownership, 403), so the
+#: worst case of an auto-approved write is confined to worker sessions the
+#: member opened, never the person's own conversations. The conductor has no
+#: such ownership fence, which is why its list withholds the writes. Without
+#: these two the dispatch loop this feature exists for (create → seed → patrol
+#: → stop) stalls on an approval prompt at its second step with nobody at the
+#: keyboard.
+_MEMBER_DASHBOARD_GRANTS: tuple[str, ...] = _CONDUCTOR_DASHBOARD_GRANTS + (
+    "@kirocrew-dashboard/session_send",
+    "@kirocrew-dashboard/session_stop",
+)
+
 
 def _install_conductor_agent() -> None:
     """Generate and install the kirocrew-conductor agent config.
@@ -5148,16 +5206,17 @@ def _install_conductor_agent() -> None:
     # as a literal: the rules come out byte-identical, a later edit to
     # ``allowedTools`` carries through, and a ceiling that strips a grant strips
     # its KAS rule with it (a hand-written ``kirocrew-core/*`` allow would have
-    # survived the filter on the KAS backend). ``{"rules": []}`` when nothing
-    # qualifies — the key's mere PRESENCE is what makes KAS load the spec at all.
-    from kiro_crew.acp.kas_permissions import (  # noqa: PLC0415 - circular import
-        allowed_tools_to_permissions,
+    # survived the filter on the KAS backend). Routed through the agent-sdk
+    # boundary like the pipeline conductor below: ``drivers.acp`` is the one
+    # layer permitted to import ``kiro_crew.acp``, and agent.py's direct-import
+    # count is a shrink-only baseline that must not grow.
+    from kiro_crew.agent_sdk.drivers.acp import (  # noqa: PLC0415 - boot path
+        derived_agent_permissions,
     )
 
-    derived = allowed_tools_to_permissions(
-        config["allowedTools"], agent_id=Path(_CONDUCTOR_AGENT_FILENAME).stem
+    config["permissions"] = derived_agent_permissions(
+        config["allowedTools"], _CONDUCTOR_AGENT_FILENAME
     )
-    config["permissions"] = derived if derived is not None else {"rules": []}
     kiro_agents_dir_path().mkdir(parents=True, exist_ok=True)
     path = kiro_agents_dir_path() / _CONDUCTOR_AGENT_FILENAME
     _atomic_json_write(path, config)
@@ -5184,11 +5243,16 @@ worker's tail and its PR state and returns a verdict — spawn it with an
 not assumed of the prompt.
 
 **Scripts are the deterministic half of your loop.** Shell access exists to
-run the `pipeline-conductor` skill's two bundled scripts:
-`scripts/fleet_probe.py` (the ONE batch probe per patrol cycle — worker tails,
-idle age, error tails, banned-process scan, host load) and
-`scripts/credit_spend.py` (per-item credit rollups and budget verdicts). Read
-their output; never re-derive what they compute from transcripts.
+run the scripts the `pipeline-conductor` skill carries:
+`scripts/claim_preflight.py` (ONE verdict per candidate item before you dispatch
+it — CLAIM / SKIP / CLOSE / UNKNOWN, branched on the exit code, and UNKNOWN is
+never permission), `scripts/fleet_probe.py` (the ONE batch probe per patrol
+cycle — worker tails, tail index, idle age, error tails, banned-process scan,
+host load, delivery counters) and `scripts/credit_spend.py` (per-item credit
+rollups and budget verdicts). Read their output; never re-derive what they
+compute from transcripts. A script your install does not carry reads as UNKNOWN
+for the questions it answers — never as permission; the skill says what to do
+in that case.
 
 **Patrol with `monitor_start`, never with `wait`.** Arm it with the full cycle
 instructions AND the exit condition, then end the turn; call `autonudge_stop`
@@ -5214,9 +5278,11 @@ Your tools:
 - `tool_search` loads a tool that is not in your list yet.
 
 The `pipeline-conductor` skill carries the operating procedure — the pipeline
-spec, the work-order brief, the probe cycle and its action table, the
-intervention ladder, the adjudication and override protocol, the
-resource-posture table, the credit budget rules, and the cleanup steps. Read
+spec, the claim preflight, the work-order brief, the probe cycle and its action
+table, the intervention ladder, outage recovery and loop liveness, the
+adjudication and override protocol, the delivery-based admission table, the
+credit budget rules, the `conductor-status/v1` file that records your OWN
+obligations, and the cleanup steps. Read
 it before acting on a pipeline. The user can message you at any time: a
 steering message is a MODE CHANGE — fold it into the standing patrol
 instruction with `monitor_update` so every later cycle honors it.

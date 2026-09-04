@@ -6,12 +6,15 @@ import { SplitGlyph } from './SplitGlyph'
 import { useQuery, useMutation } from '@tanstack/react-query'
 import { useModelsDegraded } from '../providers/modelListHealth'
 import ChatMessageList from '../app-sdk/ChatMessageList'
+import { useChatScrollFollow } from '../app-sdk/useChatScrollFollow'
+import { EdgeFade, JumpToBottomButton } from '../app-sdk/ChatScrollChrome'
 import { createTranscriptRenderers } from '../pages/chat/transcriptRenderers'
 import ChatInput from './ChatInput'
 import ChatDropOverlay, { useChatFileDrop } from './ChatDropOverlay'
 import PendingQuestionCard from './PendingQuestionCard'
 import QueueStack, { SubagentDeliveryProgress, splitPaneMessages } from './QueueStack'
 import SubagentProgressBar from '../pages/chat/SubagentProgressBar'
+import ChatFooter from '../pages/chat/ChatFooter'
 import AgentDropdownList, { DefaultAgentRow, ManageAgentsFooter } from './AgentDropdownList'
 import { agentSwitchFailureMessage } from '../utils/agentSwitchFeedback'
 import ModelDropdownList from './ModelDropdownList'
@@ -108,9 +111,10 @@ export default function ChatPane({
   const [uploadError, setUploadError] = useState('')
   const [agentBtnRect, setAgentBtnRect] = useState<DOMRect | null>(null)
   const [modelBtnRect, setModelBtnRect] = useState<DOMRect | null>(null)
-  const endRef = useRef<HTMLDivElement>(null)
-  const lastHashRef = useRef('')
-  const isAtBottomRef = useRef(true)
+  // Shared stick-to-bottom follow (same FollowController core as the main
+  // chat's virtualizer): RO-driven re-pin on any content growth or collapse,
+  // released only by a genuine user scroll up, re-armed at the bottom.
+  const follow = useChatScrollFollow({ resetKey: slotKey })
 
   const allMessages = useAppSelector((s) => selectSlotMessages(s, slotKey))
   const activeSlot = useAppSelector((s) => s.chat.activeSlot)
@@ -282,35 +286,10 @@ export default function ChatPane({
     if (slotDetail?.messages) dispatch(hydrateSlotMessages({ slot: slotKey, messages: slotDetail.messages, hasMore: slotDetail.has_more, bounded: hydrateLimit !== undefined, total: slotDetail.total, running: slotDetail.running }))
   }, [slotDetail, slotKey, dispatch, hydrateLimit])
 
-  // Track whether this pane is scrolled to the bottom. The endRef sentinel sits
-  // at the bottom of the scroll container (the overflow-y-auto div); when it's
-  // intersecting, the user is pinned to the bottom. Mirrors ChatPage's
-  // isAtBottom guard so auto-scroll never yanks a user who scrolled up to read
-  // earlier messages in a streaming pane.
-  useEffect(() => {
-    const el = endRef.current
-    if (!el || !el.parentElement) return
-    const observer = new IntersectionObserver(
-      ([entry]) => { isAtBottomRef.current = entry.isIntersecting },
-      { root: el.parentElement, threshold: 0.1 },
-    )
-    observer.observe(el)
-    return () => observer.disconnect()
-  }, [])
-
-  const msgHash =
-    messages.length + ':' + (messages[messages.length - 1]?.content?.length || 0) + ':' + queuedMessages.length
-  useEffect(() => {
-    if (msgHash !== lastHashRef.current) {
-      lastHashRef.current = msgHash
-      // Only auto-scroll when the user is already at the bottom — don't drag
-      // someone reading history back down on every message hash change.
-      if (!isAtBottomRef.current) return
-      // Smooth only when idle; during streaming use 'instant' so we don't queue
-      // dozens of concurrent smooth-scroll animations per second (jank).
-      endRef.current?.scrollIntoView({ behavior: running ? 'instant' : 'smooth' })
-    }
-  }, [msgHash, running])
+  // Scroll follow (auto-pin, release, jump pill) is owned by useChatScrollFollow
+  // above — the ResizeObserver on the content wrapper replaces the old
+  // message-hash effect, so growth on EARLIER rows (a tool result updating, a
+  // thinking block expanding) and turn-collapse shrink re-pin too.
 
 
   const switchAgent = useCallback(async (name: string) => {
@@ -705,6 +684,13 @@ export default function ChatPane({
 
         <ChatDropOverlay active={dragOver} />
 
+        {/* Zero-height anchor so the top fade overlays the scroller's first
+            24px, dissolving content under the header edge (shared chrome —
+            see ChatScrollChrome's layout contract). */}
+        <div className="relative z-[1]">
+          <EdgeFade side="top" />
+        </div>
+
         {/* stable theming hook 'chat-container' — see website/docs/theming-contract.md */}
         {/* overflow-x-hidden: `overflow-y-auto` alone leaves overflow-x at
             `visible`, which CSS then forces to compute to `auto` — so any single
@@ -712,7 +698,8 @@ export default function ChatPane({
             gives the WHOLE message list a draggable horizontal scrollbar that
             sits right above the composer. The conversation should never pan
             sideways; wide children scroll within themselves. */}
-        <div className="chat-container flex-1 overflow-y-auto overflow-x-hidden py-3 min-h-0">
+        <div ref={follow.scrollerRef} onScroll={follow.onScroll} className="chat-container flex-1 overflow-y-auto overflow-x-hidden py-3 min-h-0">
+          <div ref={follow.contentRef}>
           {messages.length === 0 && !running && (
             <div className="text-center text-muted text-[13px] py-8">{i18nT('components.chatPane.session_ready_type_a_message_to_start')}</div>
           )}
@@ -727,8 +714,32 @@ export default function ChatPane({
             </button>
           )}
           <ChatMessageList messages={messages} running={running} renderers={renderers} hideCardOwnedOAuth={connectionsUiOn} />
-          <div ref={endRef} />
+          {/* The same working indicator the full chat page shows (the ghost-pose
+              carousel, theme-swappable via themeBranding): a running turn in a
+              pane — a member DM, a split pane — was otherwise invisible between
+              tool steps. Inside the scroll container, after the last message,
+              so it reads as "the reply is coming" exactly where the reply will
+              land. Stop/regenerate chrome stays page-level: the pane derives
+              the footer's inputs from its own per-slot stream state. */}
+          <ChatFooter
+            running={running || !!paneSlot?.running}
+            stopping={streamState === 'stopping' || !!paneSlot?.stopping}
+            state={streamState}
+            lastRole={messages[messages.length - 1]?.role ?? ''}
+            streamTick={
+              messages[messages.length - 1]?.role === 'streaming'
+                ? (messages[messages.length - 1]?.content.length ?? 0)
+                : 0
+            }
+          />
+          </div>
         </div>
+        {/* Bottom fade overlays the scroller's last 24px above the status bars
+            and composer (in-flow height cancelled by its own negative margin). */}
+        <EdgeFade side="bottom" />
+
+        <div className="relative">
+        <JumpToBottomButton visible={!follow.isAtBottom && messages.length > 0} onClick={follow.scrollToBottom} />
 
         <SubagentProgressBar slot={slotKey} />
 
@@ -863,6 +874,7 @@ export default function ChatPane({
           onDragOver={dropTargetProps.onDragOver}
           onDragLeave={dropTargetProps.onDragLeave}
         />
+        </div>
 
         {/* Agent picker portal — anchored to the input-bar agent button. */}
         {agentDD.open && agentBtnRect && createPortal(

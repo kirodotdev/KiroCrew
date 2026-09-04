@@ -3,7 +3,6 @@
 // These are pure given a PullRequestSource, so they are tested directly; the tab
 // bar that hosts them (and the single shared query behind it) is covered in
 // CodeReviewSageShell.test.tsx.
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { render, screen } from '@testing-library/react'
 import { describe, expect, it } from 'vitest'
 
@@ -14,14 +13,6 @@ import PrStatusChips from '../apps/code-review-sage/components/PrStatusChips'
 import type { PullRequestSource } from '../types'
 
 const URL_ = 'https://github.com/acme/widgets/pull/7'
-
-/** The comments tab posts replies, so it needs a query client for its mutations. */
-function renderComments(src: PullRequestSource) {
-  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
-  return render(
-    <QueryClientProvider client={qc}><PartialNote src={src} /></QueryClientProvider>,
-  )
-}
 
 function source(over: Partial<PullRequestSource> = {}): PullRequestSource {
   return {

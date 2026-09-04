@@ -30,6 +30,7 @@ from kiro_crew.feishu.client import CHAT_GROUP
 from kiro_crew.feishu.renderer import FeishuRenderer
 from kiro_crew.feishu.transport import FEISHU_CAPABILITIES
 from kiro_crew.history import mint_row_mid
+from kiro_crew.messaging.commands import compact_unsupported_backend
 from kiro_crew.messaging.conversation import ConversationState
 from kiro_crew.messaging.dispatch import (
     ChannelTurn,
@@ -264,6 +265,19 @@ class FeishuDispatcher:
             if provider is None:
                 await self.client.send_reply(inbound.message_id, "ℹ️ 当前没有可压缩的对话。")
                 return
+            # Capability gate (#8156, mirroring the dashboard's #7800 gate): a
+            # backend that cannot serve a manual /compact treats the prompt as
+            # ordinary text and never answers, so dispatching would strand the
+            # unbounded wait below. Informational (this surface speaks Chinese;
+            # the wording translates ``compact_unsupported_reply``), never an
+            # error.
+            unsupported = compact_unsupported_backend(provider)
+            if unsupported:
+                logger.debug("Feishu: manual /compact declined — %s compacts itself", unsupported)
+                await self.client.send_reply(
+                    inbound.message_id, "ℹ️ 当前后端会自动压缩上下文，无需手动 /compact。"
+                )
+                return
             await provider.compact()
             await provider.wait_for_compaction()
             await self.client.send_reply(inbound.message_id, "🗜️ 已压缩上下文。")
@@ -358,6 +372,14 @@ class FeishuDispatcher:
         assert self.client is not None
         route = self._route(inbound)
         pct = self.sessions.check_context_usage(session_key, provider)
+        if pct >= self.cfg.feishu.soft_threshold_pct:
+            # Capability gate (#8156): no forced compaction to run and the
+            # soft nudge's /compact advice cannot work — the backend compacts
+            # on its own as context fills.
+            unsupported = compact_unsupported_backend(provider)
+            if unsupported:
+                logger.debug("Feishu: context notice skipped — %s compacts itself", unsupported)
+                return
         if pct >= self.cfg.feishu.hard_threshold_pct:
             self._conv.clear_awaiting(route)
             try:

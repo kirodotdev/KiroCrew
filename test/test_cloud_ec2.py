@@ -49,6 +49,76 @@ class TestSubTemplateSyntax:
         assert "9e7905fdee722f9650a03ae644b51c4c6effd3b98ac93c588700072ab35c9ddb" in text
         assert "e05a4d65232ae2b27b3d77da2e368522fb46b923335b8e0d5f77624c32484044" in text
 
+    def test_failure_reason_leads_with_the_error_not_the_log_tail(self):
+        # CloudFormation's reason is read PREFIX-first (the CLI's streamed progress
+        # line, a truncated stack event), and `tail -n 25` starts at an uncontrolled
+        # point -- so the tail alone can open on output from a step that SUCCEEDED.
+        # That is what happened on the Q VPC-endpoint DNS failure: the prefix was
+        # dnf RPM names that had installed fine, and the `curl: (6)` error was past
+        # the visible window. The error extract must therefore come FIRST.
+        text = ec2.load_template()
+        assert "err1=$(grep -aiE" in text, "no error-first extract in fail()"
+        # The capture must run BEFORE fail()'s own banner echo. All bootstrap
+        # output is `exec >>`-redirected into $LOG, and "BOOTSTRAP FAILED"
+        # matches the pattern's own `fail` alternative case-insensitively — so
+        # capturing after the echo makes `tail -1` return the banner every time,
+        # which ships a duplicate of $1 instead of the real error. Ordering is
+        # the whole mechanism, so assert it on the SCRIPT, not just the reason.
+        i_capture = text.index("err1=$(grep -aiE")
+        i_banner = text.index('echo "BOOTSTRAP FAILED: $1"')
+        assert i_capture < i_banner, (
+            "err1 must be captured BEFORE the BOOTSTRAP FAILED echo, or it "
+            "deterministically captures that banner instead of the real error"
+        )
+        # And the banner is excluded anyway: the log APPENDS across re-runs of
+        # the unit, so a previous attempt's banner can still be the last match.
+        assert "grep -av 'BOOTSTRAP FAILED'" in text, (
+            "a prior attempt's banner lingers in the appended log; exclude it"
+        )
+        reason = next(
+            line for line in text.splitlines() if line.strip().startswith('reason="')
+        )
+        assert "err1" in reason and "tail_ctx" in reason, reason
+        assert reason.index("err1") < reason.index("tail_ctx"), (
+            "the error line must precede the log tail in the reason, or a "
+            "prefix-truncated reader still sees successful output first"
+        )
+        # The reason stays capped; the tail keeps its budget because the cap
+        # clips from the END, which is now the least valuable part.
+        assert "head -c 1000" in text
+        assert "tail -c 900" in text
+
+    def test_download_failure_is_reported_as_a_download_not_an_install(self):
+        # The curl that fetches the archive is judged on its own, because a host
+        # that will not resolve is a network fault -- calling it "did not install"
+        # points the reader at permissions and glibc/musl instead of at DNS.
+        text = ec2.load_template()
+        assert 'fail "could not DOWNLOAD kiro-cli from $KIRO_URL' in text, (
+            "the download must fail with its own message naming the URL"
+        )
+        # The install keeps its deliberately tolerant path plus the binary check,
+        # so a genuine install failure is still reported as an install failure.
+        assert "install returned nonzero" in text
+        assert 'fail "kiro-cli did not install' in text
+        # And the download must be judged BEFORE the install runs.
+        assert text.index("could not DOWNLOAD kiro-cli") < text.index(
+            "install returned nonzero"
+        )
+
+    def test_source_fetch_failure_is_not_asserted_to_be_an_install_failure(self):
+        # kcfetch.sh runs under `set -e`, so a failing `aws s3 cp`, `git clone`
+        # or `tar` exits the script and lands on the SAME `|| fail` as a genuine
+        # install.sh failure. Claiming "install.sh failed" for a fetch fault
+        # sends the reader to the build instead of to the network. Each of those
+        # tools writes its own error into $LOG, so the error-first extract now
+        # surfaces which one it was — the message must simply stop asserting a
+        # step it cannot know.
+        text = ec2.load_template()
+        assert 'fail "kirocrew source fetch or install failed"' in text
+        assert 'fail "kirocrew install.sh failed"' not in text, (
+            "this message asserts the install step for what may be a fetch fault"
+        )
+
 
 class TestValidation:
     def test_valid_tag(self):
@@ -259,6 +329,55 @@ class TestTemplate:
         # actually re-run a transient first-boot build failure.
         text = ec2.load_template()
         assert "KIROCREW_REQUIRE_FRONTEND=1" in text
+
+    def test_bootstrap_hands_off_to_persistent_oneshot_before_heavy_work(self):
+        # State Manager applies wildcard associations when a managed node first comes
+        # online. AWS-RunPatchBaseline can therefore reboot a brand-new instance while
+        # cloud-init is still building the frontend. UserData must persist itself and
+        # start an enabled oneshot before any package/build work, so systemd starts the
+        # same rendered script again after that reboot.
+        text = ec2.load_template()
+        handoff = text.index("BOOTSTRAP_SCRIPT=/usr/local/sbin/kirocrew-bootstrap")
+        heavy_work = text.index('echo "--- installing system packages ---"')
+        assert handoff < heavy_work
+        assert 'if [ "$#" -eq 0 ]; then' in text
+        assert 'install -m 0700 "$0" "$BOOTSTRAP_SCRIPT"' in text
+        assert "Type=oneshot" in text
+        assert "ExecStart=/usr/local/sbin/kirocrew-bootstrap --resume" in text
+        assert "RemainAfterExit=yes" in text
+        assert "WantedBy=multi-user.target" in text
+        assert "systemctl enable kirocrew-bootstrap.service" in text
+        assert "systemctl start --no-block kirocrew-bootstrap.service" in text
+
+    def test_bootstrap_checkpoints_install_and_waitcondition_signal_separately(self):
+        # A reboot can land after the gateway is installed but before CloudFormation
+        # receives SUCCESS. Keep separate markers so resume skips destructive install
+        # work but retries the still-missing WaitCondition handshake.
+        text = ec2.load_template()
+        signal_guard = text.index('[ -f "$SIGNAL_DONE" ] && exit 0')
+        install_guard = text.index('if [ ! -f "$INSTALL_DONE" ]; then')
+        install_done = text.index('touch "$INSTALL_DONE"')
+        signal = text.index("/opt/aws/bin/cfn-signal -e 0")
+        signal_done = text.index('touch "$SIGNAL_DONE"')
+        assert signal_guard < install_guard < install_done < signal < signal_done
+        assert "INSTALL_DONE=$BOOTSTRAP_STATE/install-complete" in text
+        assert "SIGNAL_DONE=$BOOTSTRAP_STATE/signal-complete" in text
+
+    def test_bootstrap_resume_cannot_clobber_a_running_gateway(self):
+        # If a reboot lands after the gateway unit was written but before the install
+        # marker, systemd may queue both services on the next boot. Stop the gateway
+        # before replacing its checkout, then mark install complete before starting it
+        # and performing the health/signal phase outside the install guard.
+        text = ec2.load_template()
+        install_guard = text.index('if [ ! -f "$INSTALL_DONE" ]; then')
+        stop_gateway = text.index("systemctl stop kirocrew.service")
+        replace_checkout = text.index("rm -rf kirocrew && mkdir kirocrew")
+        install_done = text.index('touch "$INSTALL_DONE"')
+        start_gateway = text.index("systemctl start kirocrew.service")
+        signal = text.index("/opt/aws/bin/cfn-signal -e 0")
+        assert (
+            install_guard < stop_gateway < replace_checkout < install_done < start_gateway < signal
+        )
 
     def test_bootstrap_installs_voice_extra_before_gateway_boot(self):
         # Remote instances need the Transcribe SDK in their venv before the
@@ -800,6 +919,84 @@ def _nat_route_table(subnet_ids):
         ],
         "Associations": [{"SubnetId": sid} for sid in subnet_ids],
     }
+
+
+class TestDnsPreflight:
+    """A private hosted zone on the target VPC can hide a bootstrap download host.
+
+    The zone is authoritative for its whole subtree, so the lookup returns
+    NXDOMAIN instead of falling through to public DNS and the bootstrap fails
+    minutes later blaming the wrong layer. These cover the detection only.
+    """
+
+    def test_zone_shadows_subdomain_and_apex(self):
+        assert ec2._zone_shadows_host(
+            "q.us-east-1.amazonaws.com.", "desktop-release.q.us-east-1.amazonaws.com"
+        )
+        assert ec2._zone_shadows_host("nodejs.org", "nodejs.org")
+
+    def test_match_is_on_label_boundaries(self):
+        # A plain endswith would wrongly match these.
+        assert not ec2._zone_shadows_host(
+            "xq.us-east-1.amazonaws.com", "desktop-release.q.us-east-1.amazonaws.com"
+        )
+        assert not ec2._zone_shadows_host("notnodejs.org", "nodejs.org")
+        # A narrower zone does not shadow a shorter name.
+        assert not ec2._zone_shadows_host("a.b.nodejs.org", "nodejs.org")
+
+    def test_empty_zone_never_shadows(self):
+        assert not ec2._zone_shadows_host("", "nodejs.org")
+        assert not ec2._zone_shadows_host(".", "nodejs.org")
+
+    def test_detects_q_endpoint_zone(self, monkeypatch):
+        def fake_json(args, profile="", region="", *, action, timeout=aws.DEFAULT_TIMEOUT):
+            if "list-hosted-zones-by-vpc" in args:
+                return {
+                    "HostedZoneSummaries": [
+                        {"Name": "q.us-east-1.amazonaws.com.", "HostedZoneId": "Z1"},
+                        {"Name": "efs.us-east-1.amazonaws.com.", "HostedZoneId": "Z2"},
+                    ]
+                }
+            return {}
+
+        monkeypatch.setattr(aws, "checked_json", fake_json)
+        hits = ec2.shadowed_download_hosts("vpc-1", "dev", "us-east-1")
+        assert hits == [
+            ("desktop-release.q.us-east-1.amazonaws.com", "q.us-east-1.amazonaws.com")
+        ]
+
+    def test_clean_vpc_has_no_hits(self, monkeypatch):
+        def fake_json(args, profile="", region="", *, action, timeout=aws.DEFAULT_TIMEOUT):
+            if "list-hosted-zones-by-vpc" in args:
+                return {"HostedZoneSummaries": [{"Name": "internal.example.com."}]}
+            return {}
+
+        monkeypatch.setattr(aws, "checked_json", fake_json)
+        assert ec2.shadowed_download_hosts("vpc-1", "dev", "us-east-1") == []
+
+    def test_missing_permission_is_not_fatal(self, monkeypatch):
+        # An older launch policy has no route53:ListHostedZonesByVPC. Losing the
+        # early warning is acceptable; blocking an otherwise-fine launch is not.
+        def fake_json(args, profile="", region="", *, action, timeout=aws.DEFAULT_TIMEOUT):
+            raise aws.AWSError("AccessDenied", action="route53:ListHostedZonesByVPC")
+
+        monkeypatch.setattr(aws, "checked_json", fake_json)
+        assert ec2.shadowed_download_hosts("vpc-1", "dev", "us-east-1") == []
+        # ...and the assert wrapper stays quiet too.
+        ec2.assert_download_hosts_resolvable("vpc-1", "dev", "us-east-1")
+
+    def test_assert_raises_with_actionable_text(self, monkeypatch):
+        def fake_json(args, profile="", region="", *, action, timeout=aws.DEFAULT_TIMEOUT):
+            if "list-hosted-zones-by-vpc" in args:
+                return {"HostedZoneSummaries": [{"Name": "q.us-east-1.amazonaws.com."}]}
+            return {}
+
+        monkeypatch.setattr(aws, "checked_json", fake_json)
+        with pytest.raises(aws.AWSError) as err:
+            ec2.assert_download_hosts_resolvable("vpc-1", "dev", "us-east-1")
+        msg = str(err.value)
+        assert "q.us-east-1.amazonaws.com" in msg
+        assert "--subnet" in msg  # the user needs a way forward, not just a diagnosis
 
 
 class TestDiscoverNetwork:

@@ -835,11 +835,15 @@ describe('structured editor preserves unmodelled frontmatter', () => {
   })
 
   it('declines an existing block scalar with an explicit indentation indicator', () => {
-    /* GPT round 24, read side. `SKILL_LOADER` resolves only the six BARE indicators
-       (`>` `|` `>-` `|-` `>+` `|+`, its own BLOCK_SCALAR_INDICATORS); given `|2-` it
-       takes the header itself as the value. The YAML parser decodes the body, so the
-       two disagree about what this file already means, and the divergence rule was
-       skipping every block scalar rather than just the ones both sides resolve. */
+    /* GPT round 24, read side. The ORIGINAL reason was that `SKILL_LOADER` resolved only
+       the six BARE indicators, so given `|2-` it took the header itself as the value while
+       the YAML parser decoded the body -- the two disagreed about what the file already
+       meant. #7097 fixed that: the backend now resolves the full header grammar and agrees
+       with the parser here.
+       The refusal REMAINS, for a narrower reason: this file does not simulate the explicit
+       indent, so it has no value to compare and must not guess. That only declines an edit
+       the backend could have taken -- conservative, never corrupting -- and relaxing it is
+       a capability change belonging with the folded-family work #7187 deferred. */
     const raw = ['---', 'name: s', 'description: |2-', '  body text', 'repo_scope: x', '---', '', '# Body'].join('\n')
     expect(canEditStructured(raw)).toBe(false)
     expect(assembleSkillContent(parseSkillContent(raw, 's'))).toBe(raw)
@@ -851,20 +855,37 @@ describe('structured editor preserves unmodelled frontmatter', () => {
        the real Python reader, so this test fails if either side drifts. Reached through
        the public behaviour: a field whose simulated backend value MATCHES the parser's is
        editable, one that differs is refused. */
-    const editable: [string, string[]][] = [
-      ['plain two lines', ['  one', '  two']],
-      ['interior blank', ['  one', '', '  two']],
-      ['deeper indent inside', ['  one', '    nested', '  two']],
-    ]
-    for (const [label, body] of editable) {
-      const raw = ['---', 'name: s', 'description: |', ...body, 'repo_scope: x', '---', '', '# Body'].join('\n')
-      expect(canEditStructured(raw), label).toBe(true)
-    }
-    /* These the reader collapses to something the parser does not: a leading blank line
-       survives in YAML and not in the reader, and keep-chomped trailing blanks likewise. */
-    const refused: [string, string, string[]][] = [
+    const editable: [string, string, string[]][] = [
+      ['plain two lines', '|', ['  one', '  two']],
+      ['interior blank', '|', ['  one', '', '  two']],
+      ['deeper indent inside', '|', ['  one', '    nested', '  two']],
+      /* These two used to be refused: the reader collapsed them to something the parser
+         did not, because its fold ended in `.strip()`. #7097 made it honour chomping and
+         keep a leading break, so both sides now agree and the capability comes back. */
       ['leading blank', '|', ['', '  true']],
       ['keep chomp trailing blanks', '|+', ['  true', '', '']],
+      ['clip chomp trailing blank', '|', ['  one', '']],
+      /* Whitespace shapes, each of which used to make the simulation disagree with the
+         reader and so refuse an edit the backend could take. A trailing line of three
+         spaces is a one-space CONTENT line once dedented, not a break; a content line
+         keeps the spaces its author typed at the end; and indentation is counted in
+         SPACES, so two spaces then a tab is a tab of content -- which also means a bare
+         tab line ends the block, exactly as the reader's own walk decides. */
+      ['whitespace-only trailing line', '|', ['  one', '   ']],
+      ['content with trailing spaces', '|', ['  one  ', '  two  ']],
+      ['tab past the indent', '|', ['  \t']],
+      ['tab then deeper then flush', '|', ['  \t', '    deep', '  one']],
+      ['trailing whitespace and a blank', '|-', ['  one  ', '   ', '']],
+    ]
+    for (const [label, ind, body] of editable) {
+      const raw = ['---', 'name: s', `description: ${ind}`, ...body, 'repo_scope: x', '---', '', '# Body'].join('\n')
+      expect(canEditStructured(raw), label).toBe(true)
+    }
+    /* Still refused, and for a reason the simulation cannot remove: the FOLDED family's
+       rules are not reproduced here at all, so there is no simulated value to compare. */
+    const refused: [string, string, string[]][] = [
+      ['folded', '>', ['  one', '  two']],
+      ['folded keep chomp', '>+', ['  one', '', '']],
     ]
     for (const [label, ind, body] of refused) {
       const raw = ['---', 'name: s', `description: ${ind}`, ...body, 'repo_scope: x', '---', '', '# Body'].join('\n')
@@ -874,12 +895,15 @@ describe('structured editor preserves unmodelled frontmatter', () => {
 
   it('compares block scalars instead of trusting their indicator', () => {
     /* GPT rounds 24-26 walked this boundary three times: six indicators exempt, then
-       four, then the realisation that agreement depends on the CONTENT -- the reader's
-       fold ends in `.strip()`, which eats LEADING whitespace, something no YAML chomping
-       mode does. So nothing is exempt by indicator any more. A bare LITERAL scalar is
-       SIMULATED and compared, which keeps it editable when the two readings match; a
-       FOLDED or explicit-indicator form is refused, because reproducing those rules to
-       compare is the coupling this change avoids. */
+       four, then the realisation that agreement depended on the CONTENT -- the reader's
+       fold ended in `.strip()`, which ate LEADING whitespace, something no YAML chomping
+       mode does. #7097 removed that step, so the `|` family now agrees outright; the
+       SIMULATION stays because it is what catches the next drift, and because the dedent
+       rule still is not derivable from the indicator. A bare LITERAL scalar is SIMULATED
+       and compared, which keeps it editable when the two readings match; a FOLDED form is
+       refused because reproducing those rules to compare is the coupling #7187 avoided,
+       and an explicit indicator is refused for the same reason even though the backend
+       now resolves it -- refusing merely declines an edit, it cannot corrupt. */
     const literal = ['---', 'name: s', 'description: |', '  body text', 'repo_scope: x', '---', '', '# Body'].join('\n')
     expect(canEditStructured(literal), 'plain literal agrees').toBe(true)
     for (const ind of ['>', '>-', '>+', '|2-']) {
@@ -889,22 +913,52 @@ describe('structured editor preserves unmodelled frontmatter', () => {
     }
   })
 
-  it('declines a block scalar whose blank first line the reader eats', () => {
+  it('edits a block scalar whose blank first line the reader used to eat', () => {
     /* The case that ended the indicator approach: `|-` is a STRIP form, so nothing about
-       the indicator hints at a problem -- the divergence comes from where the content
-       sits. On `always` it is the undisableable-skill case again. */
+       the indicator hinted at a problem -- the divergence came from where the content
+       sat, because the reader's fold ended in `.strip()`. #7097 removed that step, so a
+       leading break now survives on BOTH sides and the field is editable. The comparison
+       is what proves it, not the indicator. */
     const raw = ['---', 'name: s', 'always: |-', '', '  true', 'repo_scope: x', '---', '', '# Body'].join('\n')
-    expect(canEditStructured(raw)).toBe(false)
-    expect(parseSkillContent(raw, 's').raw).toBeDefined()
+    expect(canEditStructured(raw)).toBe(true)
+    /* And the flag still reads as ON: the value is `\ntrue`, which only equals `true`
+       once trimmed -- the same normalisation the loader applies. Getting this wrong shows
+       the skill as off in the form while the loader keeps injecting it. */
+    expect(parseSkillContent(raw, 's').always).toBe(true)
   })
 
-  it('does not let a keep-chomped always become undisableable', () => {
-    /* The form would read `true\n\n` (not "true") and treat the field as already false,
-       so `managedUnchanged` would keep the original bytes and the backend would go on
-       reading true -- the skill could not be turned off. */
+  it('keeps a keep-chomped always disableable', () => {
+    /* Was 'does not let a keep-chomped always become undisableable', which refused the
+       block because the reader dropped the trailing breaks and the parser kept them. Both
+       now read `true\n\n`, so the field is editable -- and the round trip below is the
+       part that matters: turning the checkbox OFF must actually reach the file, not be
+       swallowed by `managedUnchanged` comparing an untrimmed `true\n\n` against `true`. */
     const raw = ['---', 'name: s', 'always: |+', '  true', '', '', 'repo_scope: x', '---', '', '# Body'].join('\n')
-    expect(canEditStructured(raw)).toBe(false)
-    expect(parseSkillContent(raw, 's').raw).toBeDefined()
+    expect(canEditStructured(raw)).toBe(true)
+    const data = parseSkillContent(raw, 's')
+    expect(data.always).toBe(true)
+    const off = assembleSkillContent({ ...data, always: false })
+    expect(off).not.toBe(raw)
+    expect(parseSkillContent(off, 's').always).toBe(false)
+  })
+
+  it('reads an uppercase always the way the loader does', () => {
+    /* GPT 5.6 review, head 9cc2cfa32. The loader reads this flag as
+       `.strip().lower() == "true"`, so `always: "TRUE"` activates the skill. The form
+       compared case-sensitively, so it showed the same skill as OFF -- the checkbox
+       disagreeing with the loader about whether the skill injects. Pre-existing in the
+       case dimension; fixed here because this PR is what makes the two comparisons
+       claim to agree. */
+    for (const spelling of ['"TRUE"', 'True', '  true  ']) {
+      const raw = ['---', 'name: s', `always: ${spelling}`, 'repo_scope: x', '---', '', '# Body'].join('\n')
+      expect(parseSkillContent(raw, 's').always, spelling).toBe(true)
+    }
+    /* ...and a genuinely false-like value still reads as off, so the normalisation did
+       not turn the comparison into "any non-empty value activates". */
+    for (const spelling of ['false', 'FALSE', 'no', '0', '']) {
+      const raw = ['---', 'name: s', `always: ${spelling}`, 'repo_scope: x', '---', '', '# Body'].join('\n')
+      expect(parseSkillContent(raw, 's').always, spelling).toBe(false)
+    }
   })
 
   it('leaves a skill with no frontmatter alone', () => {

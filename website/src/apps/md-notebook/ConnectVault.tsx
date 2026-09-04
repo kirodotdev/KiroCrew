@@ -221,6 +221,7 @@ export function ConnectVault({
               {i18nT('apps.mdNotebook.connect.repoUrl')}
               <input
                 id="mdnb-repoUrl"
+                aria-label={i18nT('apps.mdNotebook.connect.repoUrl')}
                 style={field}
                 value={url}
                 onChange={e => setUrl(e.target.value)}
@@ -229,12 +230,19 @@ export function ConnectVault({
             </label>
             <label style={label} htmlFor="mdnb-branch">
               {i18nT('apps.mdNotebook.connect.branch')}
-              <input id="mdnb-branch" style={field} value={branch} onChange={e => setBranch(e.target.value)} />
+              <input
+                id="mdnb-branch"
+                aria-label={i18nT('apps.mdNotebook.connect.branch')}
+                style={field}
+                value={branch}
+                onChange={e => setBranch(e.target.value)}
+              />
             </label>
             <label style={label} htmlFor="mdnb-token">
               {i18nT('apps.mdNotebook.connect.token')}
               <input
                 id="mdnb-token"
+                aria-label={i18nT('apps.mdNotebook.connect.token')}
                 style={field}
                 type="password"
                 value={pat}
@@ -249,6 +257,7 @@ export function ConnectVault({
           {i18nT('apps.mdNotebook.connect.subfolder')}
           <input
             id="mdnb-subfolder"
+            aria-label={i18nT('apps.mdNotebook.connect.subfolder')}
             style={field}
             value={subfolder}
             onChange={e => setSubfolder(e.target.value)}

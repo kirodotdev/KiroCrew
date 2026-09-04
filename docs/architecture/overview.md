@@ -199,6 +199,7 @@ graph TB
         MCP_CRON[mcp_cron.py<br/>cron tools]
         MCP_COMP[mcp_computer.py<br/>computer-use shim]
         MCP_DISC[mcp_discovery.py<br/>Server detection]
+        MCP_HOT[mcp_hot_reload.py<br/>Live-reconcile gate]
     end
 
     subgraph "Security"

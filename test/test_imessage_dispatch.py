@@ -207,6 +207,34 @@ class TestCompact:
         assert "compacted" in client.sent[0]
 
     @pytest.mark.asyncio
+    async def test_compact_declined_on_auto_managed_backend(self) -> None:
+        # A backend that cannot serve /compact gets the informational reply and
+        # compact() is NEVER dispatched (#8156).
+        dispatcher, client, sessions = _dispatcher()
+        key = dispatcher._session_key(HANDLE)
+        provider = FakeProvider()
+        provider.manual_compact_unsupported_backend = "kas"
+        sessions.providers[key] = provider
+        sessions.sessions.add(key)
+        await dispatcher.handle_message(_inbound("/compact"))
+        assert provider.compacted == 0
+        assert sessions.released == [key]
+        assert "manages compaction automatically" in client.sent[0]
+        assert "`" not in client.sent[0]  # iMessage speech carries no markdown
+
+    @pytest.mark.asyncio
+    async def test_compact_none_capability_preserves_dispatch(self) -> None:
+        # The ABC's None (supported) default keeps the existing dispatch.
+        dispatcher, client, sessions = _dispatcher()
+        key = dispatcher._session_key(HANDLE)
+        provider = FakeProvider()
+        provider.manual_compact_unsupported_backend = None
+        sessions.providers[key] = provider
+        sessions.sessions.add(key)
+        await dispatcher.handle_message(_inbound("/compact"))
+        assert provider.compacted == 1
+
+    @pytest.mark.asyncio
     async def test_compact_on_a_busy_session_asks_the_user_to_retry(self) -> None:
         # Compacting while a turn is mutating the same session races the
         # transcript, so it must not proceed.
@@ -308,6 +336,20 @@ class TestThresholdNotices:
         await dispatcher._maybe_notice(_inbound("x"), "k", provider)
         assert provider.compacted == 1
         assert "compacted automatically" in client.sent[0]
+
+    @pytest.mark.asyncio
+    async def test_thresholds_decline_silently_on_auto_managed_backend(self) -> None:
+        # Hard: no forced compaction; soft: no /compact nudge — the backend
+        # compacts on its own as context fills (#8156).
+        dispatcher, client, sessions = _dispatcher()
+        provider = FakeProvider()
+        provider.manual_compact_unsupported_backend = "kas"
+        sessions.usage_pct = 99.0
+        await dispatcher._maybe_notice(_inbound("x"), "k", provider)
+        assert provider.compacted == 0
+        sessions.usage_pct = 85.0
+        await dispatcher._maybe_notice(_inbound("x"), "k", provider)
+        assert client.sent == []
 
     @pytest.mark.asyncio
     async def test_a_failed_auto_compaction_is_not_announced_as_success(self) -> None:

@@ -20,6 +20,7 @@ from kiro_crew.artifacts import (
     ArtifactValidationError,
     _infer_kind,
     detect_editor_kind,
+    has_unthemed_hardcoded_colors,
     slugify,
 )
 
@@ -33,6 +34,55 @@ def store(tmp_path: Path) -> ArtifactStore:
 
 
 # ── slugify ─────────────────────────────────────────────────────────────────
+
+
+class TestHasUnthemedHardcodedColors:
+    # Direct unit tests for the shared theme-contrast detector — the ONE
+    # place the verdict is computed (the gateway handlers stamp it on
+    # responses; MCP + CLI relay it).
+
+    def test_fires_on_hardcoded_hex(self) -> None:
+        assert has_unthemed_hardcoded_colors("widget", '<div style="color:#111">x</div>')
+
+    def test_fires_on_rgb_function(self) -> None:
+        assert has_unthemed_hardcoded_colors(
+            "html", "<style>body{background:rgb(255,255,255)}</style>"
+        )
+
+    def test_fires_on_uppercase_color_function(self) -> None:
+        # CSS functions are case-insensitive: RGB(...) is as hardcoded as
+        # rgb(...). Locks the IGNORECASE flag.
+        assert has_unthemed_hardcoded_colors("widget", '<div style="color:RGB(1,2,3)">x</div>')
+
+    def test_silent_on_href_fragment_links(self) -> None:
+        # href="#abc" is a fragment link, not a color — including the
+        # whitespace-spaced form (href = "#abc"), which is valid HTML a
+        # fixed-width lookbehind could not exempt. Locks the strip-based
+        # href exclusion.
+        assert not has_unthemed_hardcoded_colors(
+            "widget", '<a href="#abc">jump</a> <a href = "#facade">also</a>'
+        )
+
+    def test_silent_when_theme_vars_present(self) -> None:
+        # The recommended fallback form carries a hex literal AND a
+        # var(--…) reference — theme-aware content must not flag.
+        assert not has_unthemed_hardcoded_colors(
+            "widget", '<div style="color:var(--text,#111);background:var(--bg,#fff)">x</div>'
+        )
+
+    def test_silent_for_non_iframe_kinds(self) -> None:
+        # markdown/text/json/svg render natively (no injected theme
+        # defaults to clash with) — the lint is widget/html only.
+        assert not has_unthemed_hardcoded_colors("markdown", "color: #ff0000")
+
+    def test_silent_on_empty_content(self) -> None:
+        assert not has_unthemed_hardcoded_colors("widget", "")
+
+    def test_hex_shaped_id_selector_at_value_position_is_accepted_noise(self) -> None:
+        # Documented residual: a whitespace-preceded hex-shaped id selector
+        # can fire, because whitespace must stay in the prefix class or true
+        # positives like "border: 1px solid #ccc" are lost. Soft warning only.
+        assert has_unthemed_hardcoded_colors("widget", "<style>border: 1px solid #ccc</style>")
 
 
 class TestSlugify:

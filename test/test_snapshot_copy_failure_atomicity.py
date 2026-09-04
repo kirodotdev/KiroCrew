@@ -64,13 +64,13 @@ class TestAFailedDatabaseCopyIsNotSilentlyDowngraded:
         dst.mkdir()
         (src / "notes.db").write_text("this is not a database", encoding="utf-8")
         (dst / "notes.db").write_text("this is not a database", encoding="utf-8")
-        snap._restage_databases(src, dst)
+        snap._restage_databases(src, dst, bundle_root=dst)
         assert "not a readable SQLite database" in capsys.readouterr().out
         assert (dst / "notes.db").read_text(encoding="utf-8") == "this is not a database"
 
     def test_a_real_database_is_copied_consistently(self, tmp_path):
         src, dst = self._staged_pair(tmp_path)
-        snap._restage_databases(src, dst)
+        snap._restage_databases(src, dst, bundle_root=dst)
         with closing(sqlite3.connect(str(dst / "memory.db"))) as c:
             assert c.execute("SELECT v FROM t").fetchone()[0] == "real"
 
@@ -108,7 +108,7 @@ class TestAFailedDatabaseCopyIsNotSilentlyDowngraded:
         src, dst = self._staged_pair(tmp_path)
         self._break_backup(monkeypatch, "database is locked")
         with pytest.raises(snap.DatabaseCopyFailed) as e:
-            snap._restage_databases(src, dst)
+            snap._restage_databases(src, dst, bundle_root=dst)
         assert e.value.path.name == "memory.db", "the error must name the file"
 
     def test_the_probe_does_not_mask_a_backup_failure_as_a_plain_file(
@@ -118,7 +118,7 @@ class TestAFailedDatabaseCopyIsNotSilentlyDowngraded:
         src, dst = self._staged_pair(tmp_path)
         self._break_backup(monkeypatch, "disk I/O error")
         with pytest.raises(snap.DatabaseCopyFailed):
-            snap._restage_databases(src, dst)
+            snap._restage_databases(src, dst, bundle_root=dst)
         assert "not a readable SQLite database" not in capsys.readouterr().out
 
     def test_the_command_reports_it_instead_of_crashing(self, home, tmp_path, monkeypatch, capsys):
@@ -159,7 +159,7 @@ class TestAFailedDatabaseCopyIsNotSilentlyDowngraded:
             holder.execute("BEGIN EXCLUSIVE")
             holder.execute("INSERT INTO t VALUES ('held')")
             with pytest.raises(snap.DatabaseCopyFailed) as e:
-                snap._restage_databases(src, dst)
+                snap._restage_databases(src, dst, bundle_root=dst)
             assert e.value.path.name == "memory.db"
             assert "not a readable SQLite database" not in capsys.readouterr().out
         finally:
@@ -173,35 +173,62 @@ class TestAFailedDatabaseCopyIsNotSilentlyDowngraded:
         dst.mkdir()
         (src / "notes.db").write_text("plainly not a database", encoding="utf-8")
         (dst / "notes.db").write_text("plainly not a database", encoding="utf-8")
-        snap._restage_databases(src, dst)
+        snap._restage_databases(src, dst, bundle_root=dst)
         assert "not a readable SQLite database" in capsys.readouterr().out
 
     def test_both_database_copy_sites_raise_the_typed_error(self):
-        """Structural: core files and trees are separate `backup()` call sites, and only
-        one was wrapped at first -- the other exited on a traceback. The readability
-        PROBE is a third raiser: anything it cannot positively classify as
-        not-a-database must raise rather than fall through to the plain-file path."""
+        """Structural: core files and trees are separate staging paths, and only one was
+        wrapped at first -- the other exited on a traceback. The readability PROBE is a
+        third raiser: anything it cannot positively classify as not-a-database must raise
+        rather than fall through to the plain-file path.
+
+        Rewritten when #5451 collapsed the two duplicated `backup()` blocks into one
+        shared helper. The invariant is unchanged and now holds by construction: instead
+        of counting two call sites and checking each is wrapped, there is ONE call site to
+        wrap, and what needs asserting is that BOTH paths still route through it. The old
+        `calls >= 2` form would now fail on the very refactor that removed the duplication
+        it existed to police.
+        """
         import inspect
         import re
 
         src = inspect.getsource(snap)
         calls = len(re.findall(r"src_conn\.backup\(dst_conn\)", src))
         wrapped = len(re.findall(r"raise DatabaseCopyFailed\(src, e\) from e", src))
-        assert calls >= 2, "expected both the core-file and tree copy sites"
+        assert calls == 1, (
+            f"{calls} backup call sites; the copy is meant to live in exactly one helper "
+            "so the two staging paths cannot drift apart again"
+        )
         assert wrapped >= calls, (
             f"{calls} backup call sites but only {wrapped} raise the typed error; an "
             "unwrapped site exits the command on a traceback"
         )
+        # Both staging paths must reach that one helper. Without this, collapsing the
+        # duplication would satisfy the count above while silently leaving one path
+        # copying databases some other way.
+        assert "_copy_database_consistently(" in inspect.getsource(
+            snap._restage_databases
+        ), "the tree pass no longer routes through the shared hardened copy"
+        assert "_copy_database_consistently(" in inspect.getsource(
+            snap._build_snapshot
+        ), "the core-file pass no longer routes through the shared hardened copy"
         # The probe must fail closed. `SQLITE_BUSY` (a locked database) is a
         # DatabaseError too, so continuing on anything unclassified ships a raw copy
         # without its WAL as if it were consistent.
-        probe_src = inspect.getsource(snap._restage_databases)
+        probe_src = inspect.getsource(snap._copy_database_consistently)
         assert (
             "SQLITE_NOTADB" in probe_src
         ), "the probe must identify not-a-database positively, not by exception class"
         assert probe_src.index("if not not_a_database:") < probe_src.index(
-            "is not a readable SQLite database"
-        ), "the raise must precede the plain-file fall-through"
+            "return DB_NOT_A_DATABASE"
+        ), "the raise must precede the not-a-database outcome"
+        # The source is opened read-only. This is the #5451 fix and it is asserted
+        # structurally as well as behaviourally, because a read-write open still passes
+        # every functional test on a database with no unreplayed log.
+        assert "?mode=ro" in probe_src, (
+            "the staging connection must be read-only; a read-write open recovers an "
+            "unreplayed -wal into the live main file and unlinks the log"
+        )
 
     def test_the_module_under_test_and_this_file_agree_on_the_driver(self):
         """Pins the reason the tests above use snap.sqlite3: if the package ever binds

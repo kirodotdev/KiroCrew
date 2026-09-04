@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# pod-e2e.sh <worktree-name> [--keep] [--no-stop] [--api-only] [--fe-only] [--video]
+# pod-e2e.sh <worktree-name> [--keep] [--no-stop] [--api-only] [--fe-only] [--video] [--no-suppress-first-run]
 #
 # Run the full e2e flow for ONE worktree against an ISOLATED pod instance,
 # never touching the live gateway:
@@ -21,6 +21,7 @@ set -uo pipefail
 
 # ---------------------------------------------------------------- args ----
 NAME="" ; KEEP=0 ; NO_STOP=0 ; RUN_API=1 ; RUN_FE=1 ; VIDEO=0
+NO_SUPPRESS_FIRST_RUN=0
 for a in "$@"; do
   case "$a" in
     --keep)     KEEP=1 ;;
@@ -28,11 +29,14 @@ for a in "$@"; do
     --api-only) RUN_FE=0 ;;
     --fe-only)  RUN_API=0 ;;
     --video)    VIDEO=1 ;;
+    # Documented in SKILL.md and accepted by pod-playwright.py; without this
+    # arm the catch-all below rejects the documented spelling with exit 64.
+    --no-suppress-first-run) NO_SUPPRESS_FIRST_RUN=1 ;;
     -*)         echo "unknown flag: $a" >&2; exit 64 ;;
     *)          NAME="$a" ;;
   esac
 done
-[ -n "$NAME" ] || { echo "usage: pod-e2e.sh <worktree-name> [--keep] [--no-stop] [--api-only] [--fe-only] [--video]" >&2; exit 64; }
+[ -n "$NAME" ] || { echo "usage: pod-e2e.sh <worktree-name> [--keep] [--no-stop] [--api-only] [--fe-only] [--video] [--no-suppress-first-run]" >&2; exit 64; }
 # Pod names are [a-zA-Z0-9._-] without leading dots — reject anything that
 # could traverse paths (slashes, '..') before NAME is used in any path.
 case "$NAME" in
@@ -316,7 +320,13 @@ if [ -z "$HEALTH_TIMEOUT" ] || [ "${#HEALTH_TIMEOUT}" -gt 6 ]; then
   HEALTH_TIMEOUT=60
 fi
 HEALTH_DEADLINE=$(( $(date +%s) + 10#$HEALTH_TIMEOUT ))
-while [ "$(date +%s)" -lt "$HEALTH_DEADLINE" ]; do
+# Probe FIRST, test the deadline after -- a do-while, not a while. `date +%s` has
+# whole-second resolution, so a pre-test loop reads a clock that may already have
+# ticked past the deadline computed one fork earlier, and skips its body. The body
+# is the only place HEALTHY is set, so that zero-probe run reports "never became
+# healthy" about a pod nobody ever asked. The window is one fork wide, which is
+# invisible at the 60s default and near-certain to bite at the 1s a test uses.
+while :; do
   CODE=$("$KIROCREW_CLI" pod status "$NAME" --json 2>/dev/null \
     | python3 -c 'import sys,json;print(json.load(sys.stdin).get("health",0))' 2>/dev/null \
     || echo 0)
@@ -326,6 +336,8 @@ while [ "$(date +%s)" -lt "$HEALTH_DEADLINE" ]; do
     # the timeout names the conflict instead of blaming the worktree build.
     -2)          FOREIGN=1 ;;
   esac
+  # Deadline reached: stop without burning a final pointless sleep.
+  [ "$(date +%s)" -lt "$HEALTH_DEADLINE" ] || break
   sleep 1
 done
 if [ "$HEALTHY" -eq 0 ]; then
@@ -397,6 +409,7 @@ if [ "$RUN_FE" -eq 1 ] && [ "$HEALTHY" -eq 1 ]; then
     PW_ARGS=("$PW_RUNNER" --base-url "$BASE_URL" --artifact-dir "$ARTIFACT_DIR" --checkout "$CHECKOUT")
     PW_ARGS+=(--teardown-timeout "${POD_E2E_TEARDOWN_TIMEOUT:-30}")
     [ "$VIDEO" -eq 1 ] && PW_ARGS+=(--video)
+    [ "$NO_SUPPRESS_FIRST_RUN" -eq 1 ] && PW_ARGS+=(--no-suppress-first-run)
     # Declarative manifest parse: extract ONLY the PLAYWRIGHT_SPEC value.
     # The manifest is branch-controlled — never source/eval it on the host.
     PLAYWRIGHT_SPEC=""

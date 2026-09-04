@@ -969,8 +969,12 @@ async def _build_fleet() -> dict:
         # Build state is a plain filesystem check (``.venv`` binary present /
         # ``static/dist`` directory present) and is therefore knowable on EVERY
         # platform — report it even where pods cannot run, so the Fleet view
-        # still tells the truth about which worktrees are built.
-        if runtime._POD_IMPORTED and not is_main:
+        # still tells the truth about which worktrees are built. That includes
+        # the MAIN checkout (#8058): during a cutover the panel is exactly the
+        # surface a human checks, and reporting main as unprovisioned reads as
+        # "the cutover failed". The ``not is_main`` restriction belongs to the
+        # POD-state check below (pods never run on main), not to these probes.
+        if runtime._POD_IMPORTED:
             try:
                 has_venv = await loop.run_in_executor(
                     subprocess_executor(), runtime.prov.has_venv, Path(path)

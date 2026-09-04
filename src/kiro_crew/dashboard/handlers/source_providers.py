@@ -23,6 +23,7 @@ import re
 import time
 from collections.abc import Awaitable, Callable, Iterable, Iterator
 from dataclasses import dataclass, fields
+from pathlib import PurePosixPath
 from typing import Any, Protocol, TypedDict, TypeVar
 from urllib.parse import quote, urlparse, urlunparse
 
@@ -1231,6 +1232,78 @@ def _safe_error_text(text: str, *, fallback: str = "provider command failed") ->
 
 def _safe_error(stderr: bytes) -> str:
     return _safe_error_text(stderr.decode("utf-8", errors="replace"))
+
+
+@dataclass(frozen=True)
+class RepoRef:
+    """A validated bare repository reference (host, owner, repo -- no number)."""
+
+    provider: str
+    host: str
+    owner: str
+    repo: str
+
+
+# A GitHub username/org login: alphanumeric or single hyphens, 1-39 chars. Used
+# to gate the per-login profile lookup so a malformed login from provider data
+# can never widen the `gh api users/<login>` path (traversal / query injection).
+_GH_LOGIN_RE = re.compile(r"[A-Za-z0-9](?:-?[A-Za-z0-9]){0,38}")
+
+
+def _strip_git_suffix(repo: str) -> str:
+    return repo[:-4] if repo.endswith(".git") else repo
+
+
+def parse_repo_url(raw_url: str) -> RepoRef:
+    """Validate and normalize a bare repository URL (no pull/issue number).
+
+    Reuses the exact host, scheme, and allowlist guarantees of
+    :func:`parse_source_url`: HTTPS only, no userinfo, and a host that is
+    github.com, gitlab.com, or an operator-allowlisted self-managed GitLab
+    instance (via :func:`ensure_gitlab_hosts_loaded`). Fails closed on every
+    other host so browser input can never point a credential-bearing CLI at an
+    arbitrary server. A pull/issue URL (extra path segments) is refused rather
+    than silently truncated to its owner/repo root.
+    """
+    if not isinstance(raw_url, str) or not raw_url or len(raw_url) > _MAX_URL_LENGTH:
+        raise ValueError("A repository URL is required.")
+    parsed = urlparse(raw_url.strip())
+    if parsed.scheme != "https" or parsed.username or parsed.password:
+        raise ValueError("Only HTTPS repository URLs without userinfo are supported.")
+    host = (parsed.hostname or "").lower().rstrip(".")
+    path = parsed.path.rstrip("/")
+    segments = [segment for segment in PurePosixPath(path).parts if segment not in ("", "/")]
+
+    if host in {"github.com", "www.github.com"}:
+        # A repo root is exactly /owner/repo. A pull/issue/tree URL carries more
+        # segments and is not a repository root -- refuse it.
+        if len(segments) != 2:
+            raise ValueError("Expected a GitHub repository URL like https://github.com/owner/repo.")
+        owner, repo = segments[0], _strip_git_suffix(segments[1])
+        if owner in {".", ".."} or repo in {".", ".."} or not repo:
+            raise ValueError("Invalid GitHub owner/repo path.")
+        return RepoRef("github", "github.com", owner, repo)
+
+    # gitlab.com and allowlisted self-managed GitLab are recognized as valid git
+    # hosts so parsing succeeds, but contributor fetching is GitHub-only in v1
+    # (fetch_app_contributors returns [] for a non-github provider). Only the
+    # host is authorized here; the project path is not deeply validated.
+    port = parsed.port
+    candidate = f"{host}:{port}" if port and port != 443 else host
+    is_public_gitlab = host in {"gitlab.com", "www.gitlab.com"}
+    if host and (is_public_gitlab or candidate in _allowed_gitlab_hosts()):
+        if len(segments) < 2:
+            raise ValueError(
+                "Expected a GitLab repository URL like https://gitlab.com/group/project."
+            )
+        gitlab_host = "gitlab.com" if is_public_gitlab else candidate
+        owner = "/".join(segments[:-1])
+        return RepoRef("gitlab", gitlab_host, owner, _strip_git_suffix(segments[-1]))
+
+    raise ValueError(
+        "Only github.com and gitlab.com (or a GitLab host listed in "
+        "dashboard.gitlab_hosts) repository URLs are supported."
+    )
 
 
 class _ProviderOutputTooLarge(RuntimeError):
@@ -3279,7 +3352,16 @@ def _md_inline_code(text: str) -> str:
     content both begins and ends with a space or newline (unless the content is
     nothing but whitespace, which is left alone). One space of padding -- which
     that same rule then removes -- is what keeps such content intact.
+
+    A line break inside the content is collapsed to a space FIRST. A code span is
+    inline, so it cannot span a paragraph: a newline in the content ends the
+    enclosing paragraph and everything after it is parsed as fresh markdown --
+    outside the fence, and so past :func:`_md_escape_inline`,
+    :func:`_md_link_target` and the redaction gate. Collapsed rather than emitted
+    as a fenced block, because a block would change the document structure at
+    every call site while the escape is what actually has to hold.
     """
+    text = re.sub(r"\r\n?|\n", " ", text)
     fence = _md_backtick_fence(text, 1)
     first, last = text[:1], text[-1:]
     edge_stripped = first in (" ", "\n") and last in (" ", "\n") and text.strip() != ""
@@ -3338,8 +3420,18 @@ def _md_one_line(text: str) -> str:
     would be eaten by a blanket whitespace collapse. Only a newline has to go,
     and a code span's own padding sits inside its backticks where no newline can
     reach it.
+
+    Split on the line breaks rather than matched with a regex. The pattern this
+    replaces made the leading whitespace run and the newline anchor compete for
+    the same characters, so on a long newline-FREE whitespace run -- content a
+    provider controls, bounded only by the 8MiB fetch cap -- the engine retried
+    every split of that run at every starting offset before failing. A split,
+    strip and join reads each character a fixed number of times. The collapsed
+    set is unchanged: a maximal whitespace run containing at least one line break
+    becomes one space, and the whitespace class strip uses is the one the pattern
+    matched.
     """
-    return re.sub(r"\s*\n\s*", " ", text).strip()
+    return " ".join(seg for seg in (line.strip() for line in text.split("\n")) if seg)
 
 
 def _md_guard_line_expansion(text: str, per_line: int) -> None:
@@ -3996,6 +4088,62 @@ def _jira_linked_changes(fields: dict[str, Any], base_url: str) -> list[dict[str
     return changes
 
 
+def _jira_fix_versions(fields: dict[str, Any]) -> list[dict[str, Any]]:
+    """Return the fix versions that can populate the milestone slot.
+
+    A version is usable only when it is an object carrying a non-empty
+    ``name``: the Issue panel gates the milestone chip on the object being
+    truthy, so a nameless version would render an icon with no text.  A
+    malformed leading entry therefore does not hide a usable one behind it.
+    """
+    usable: list[dict[str, Any]] = []
+    for version in _as_list(fields.get("fixVersions")):
+        if not isinstance(version, dict):
+            continue
+        if str(version.get("name") or "").strip():
+            usable.append(version)
+    return usable
+
+
+def _jira_version_is_done(version: dict[str, Any]) -> bool:
+    """A released or archived version no longer takes new work."""
+    return bool(version.get("released")) or bool(version.get("archived"))
+
+
+def _jira_pick_fix_version(fix_versions: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """Pick the fix version that fills the one-slot milestone contract.
+
+    The Issue panel's milestone chip renders only the version's name, with no
+    released/archived signal, so surfacing a shipped release reads as if it
+    were the pending one (issue #7595).  Prefer the first version that is
+    neither released nor archived; when every version has shipped, fall back
+    to the first usable entry so the ticket still shows a release rather than
+    dropping to no milestone at all.
+    """
+    pending = [v for v in fix_versions if not _jira_version_is_done(v)]
+    return (pending or fix_versions)[0] if fix_versions else None
+
+
+def _jira_fix_version_milestone(version: dict[str, Any]) -> dict[str, str]:
+    """Map one Jira fix version onto the ``IssueMilestone`` contract.
+
+    Jira has no milestones; a fix version is the release a ticket is
+    scheduled for, which is the same thing the panel's milestone chip
+    communicates.  ``name`` becomes the title and ``releaseDate`` (ISO, unlike
+    the locale-formatted ``userReleaseDate``) becomes ``dueOn``.
+
+    ``state`` has only GitHub's two values to choose from.  A released version
+    is done, and an archived one no longer takes work, so both map to
+    ``closed`` and everything else stays ``open``.
+    """
+    released = _jira_version_is_done(version)
+    return {
+        "title": str(version.get("name") or "").strip(),
+        "state": "closed" if released else "open",
+        "dueOn": str(version.get("releaseDate") or ""),
+    }
+
+
 async def _fetch_jira_issue(ref: SourceRef) -> dict[str, Any]:
     """Fetch a Jira issue via the REST API using configured credentials.
 
@@ -4030,7 +4178,7 @@ async def _fetch_jira_issue(ref: SourceRef) -> dict[str, Any]:
         f"{base_url}/rest/api/{api_version}/issue/{issue_key}"
         f"?fields=summary,status,issuetype,assignee,description,labels,"
         f"comment,priority,reporter,created,updated,resolution,resolutiondate,"
-        f"issuelinks"
+        f"issuelinks,fixVersions"
     )
 
     # Build auth header
@@ -4185,6 +4333,16 @@ async def _fetch_jira_issue(ref: SourceRef) -> dict[str, Any]:
             }
         )
 
+    # Fix versions -> the milestone slot. The contract holds exactly one, so a
+    # ticket scheduled for several releases surfaces the pending one (falling
+    # back to the first when all have shipped) and declares the rest partial
+    # rather than dropping them silently.
+    fix_versions = _jira_fix_versions(fields)
+    chosen = _jira_pick_fix_version(fix_versions)
+    milestone = _jira_fix_version_milestone(chosen) if chosen else None
+    if len(fix_versions) > 1:
+        _mark_partial(partial_sections, "fix versions")
+
     return {
         "provider": "jira",
         "url": ref.url,
@@ -4200,7 +4358,7 @@ async def _fetch_jira_issue(ref: SourceRef) -> dict[str, Any]:
         "closedBy": "",  # Jira does not expose who resolved
         "labels": labels,
         "assignees": assignees,
-        "milestone": None,  # Jira uses Fix Version, not milestones
+        "milestone": milestone,  # Jira's Fix Version is its milestone equivalent
         "commentCount": total_comments,
         "locked": False,  # Jira has no issue locking concept
         "reactions": None,  # Jira has no reactions
@@ -4527,6 +4685,85 @@ async def fetch_issue(raw_url: str, *, refresh: bool = False) -> dict[str, Any]:
     return await asyncio.shield(task)
 
 
+_CONTRIBUTORS_TTL_SECS = 6 * 60 * 60
+_CONTRIBUTORS_MAX = 6
+_contributors_cache: dict[str, tuple[float, list[dict[str, str]]]] = {}
+_contributors_lock = LoopBoundLock()
+_contributors_inflight: dict[str, asyncio.Task[list[dict[str, str]]]] = {}
+
+
+async def _fetch_github_contributors(ref: RepoRef, key: str) -> list[dict[str, str]]:
+    raw = await _run_json(
+        "gh",
+        "api",
+        f"repos/{ref.owner}/{ref.repo}/contributors?per_page={_CONTRIBUTORS_MAX}&anon=false",
+    )
+    contributors: list[dict[str, str]] = []
+    for row in _as_list(raw)[:_CONTRIBUTORS_MAX]:
+        login = str(row.get("login") or "").strip()
+        if not login:
+            continue
+        # The display name needs a second lookup, but only when the login is a
+        # safe GitHub handle -- an unexpected value never reaches the API path.
+        name = login
+        if _GH_LOGIN_RE.fullmatch(login):
+            profile = _as_dict(await _run_json("gh", "api", f"users/{login}"))
+            name = str(profile.get("name") or "").strip() or login
+        contributors.append(
+            {
+                "login": login,
+                "name": name,
+                "avatarUrl": str(row.get("avatar_url") or ""),
+                "profileUrl": f"https://github.com/{login}",
+            }
+        )
+    # Names and avatar URLs are provider-controlled: redact secrets/exfil URLs
+    # before they are cached or returned. The client renders them as text/<img>.
+    contributors = _redact_provider_data(contributors)
+    async with _contributors_lock:
+        now = time.monotonic()
+        stale_keys = [
+            k for k, (at, _) in _contributors_cache.items() if now - at >= _CONTRIBUTORS_TTL_SECS
+        ]
+        for stale in stale_keys:
+            del _contributors_cache[stale]
+        _contributors_cache[key] = (now, contributors)
+        while len(_contributors_cache) > _CACHE_MAX_ENTRIES:
+            oldest = min(_contributors_cache, key=lambda k: _contributors_cache[k][0])
+            del _contributors_cache[oldest]
+    return contributors
+
+
+async def fetch_app_contributors(url: str, *, refresh: bool = False) -> list[dict[str, str]]:
+    """Return an app source repo's top contributors (GitHub only, v1).
+
+    Each entry is ``{login, name, avatarUrl, profileUrl}`` -- ``name`` falls back
+    to the login when the GitHub profile has no display name. Capped at six by
+    commit count (the provider's default ordering). A non-github host returns
+    ``[]`` (not an error) so the caller can simply hide the row; an unparseable
+    or non-allowlisted URL raises ``ValueError`` (mapped to 400).
+    """
+    # Refresh the self-managed GitLab allowlist off the loop before parse_repo_url
+    # reads the cached snapshot, mirroring fetch_pull_request.
+    await ensure_gitlab_hosts_loaded()
+    ref = parse_repo_url(url)
+    if ref.provider != "github":
+        return []
+    key = f"{ref.host}/{ref.owner}/{ref.repo}"
+    async with _contributors_lock:
+        cached = _contributors_cache.get(key)
+        if not refresh and cached and time.monotonic() - cached[0] < _CONTRIBUTORS_TTL_SECS:
+            return cached[1]
+        task = _contributors_inflight.get(key)
+        if task is None:
+            task = asyncio.create_task(_fetch_github_contributors(ref, key))
+            _contributors_inflight[key] = task
+            task.add_done_callback(lambda done: _finish_inflight(_contributors_inflight, key, done))
+    # Shield the shared fetch so one disconnected browser cannot cancel work
+    # another concurrent view is still awaiting for the same repo.
+    return await asyncio.shield(task)
+
+
 def _provider_error_response(
     request: web.Request, operation: str, exc: SourceProviderError
 ) -> web.Response:
@@ -4622,6 +4859,43 @@ async def api_issue_source(request: web.Request) -> web.Response:
         return _provider_error_response(request, "source.issue.read", exc)
     _audit_source_api(request, "source.issue.read", "completed")
     return web.json_response(data)
+
+
+async def api_app_contributors(request: web.Request) -> web.Response:
+    """Owner-only POST ``/api/source/contributors`` with ``{url, refresh?}``.
+
+    Same authorization, audit, and error mapping as
+    :func:`api_pull_request_source`: contributor data is credential-backed
+    provider data, so it is gated on the dashboard owner identically.
+    """
+    denied = _authorize_owner_request(
+        request, "source.contributors.read", allow_local_no_owner=True
+    )
+    if denied is not None:
+        return denied
+    try:
+        body = await request.json()
+    except asyncio.CancelledError:
+        _audit_source_api(request, "source.contributors.read", "failed", "request_cancelled")
+        raise
+    except Exception:
+        body = {}
+    if not isinstance(body, dict):
+        body = {}
+    try:
+        contributors = await fetch_app_contributors(
+            str(body.get("url") or ""), refresh=bool(body.get("refresh"))
+        )
+    except asyncio.CancelledError:
+        _audit_source_api(request, "source.contributors.read", "failed", "request_cancelled")
+        raise
+    except ValueError as exc:
+        _audit_source_api(request, "source.contributors.read", "failed", "invalid_request")
+        return web.json_response({"error": str(exc), "code": "invalid_request"}, status=400)
+    except SourceProviderError as exc:
+        return _provider_error_response(request, "source.contributors.read", exc)
+    _audit_source_api(request, "source.contributors.read", "completed")
+    return web.json_response({"contributors": contributors})
 
 
 async def api_pull_request_checks(request: web.Request) -> web.Response:

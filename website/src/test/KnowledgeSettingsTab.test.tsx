@@ -12,8 +12,6 @@ const { patchConfigMock, kirocrewConfigMock } = vi.hoisted(() => ({
   patchConfigMock: vi.fn(() => Promise.resolve({})),
   kirocrewConfigMock: vi.fn(() => Promise.resolve({
     knowledge: {
-      auto_ingest_chunk_budget: 200,
-      max_sources: 50,
       embed_rate_limit: 120,
       extraction_model: '',
       extraction_pool_size: 3,
@@ -47,11 +45,6 @@ function wrap() {
   )
 }
 
-async function settledInput(label: string): Promise<HTMLInputElement> {
-  const el = await screen.findByLabelText(label, {}, { timeout: 3000 })
-  return el as HTMLInputElement
-}
-
 function rejectOnce(mock: ReturnType<typeof vi.fn>) {
   mock.mockRejectedValueOnce(new Error('fail'))
 }
@@ -62,62 +55,63 @@ beforeEach(() => {
 })
 
 describe('KnowledgeSettingsTab', () => {
-  it('renders all 5 settings fields', async () => {
+  it('renders all 3 settings fields', async () => {
     wrap()
     expect(await screen.findByText('Ingestion Settings')).toBeInTheDocument()
     // Check labels exist
-    expect(screen.getByText('Per-source chunk limit')).toBeInTheDocument()
-    expect(screen.getByText('Max sources')).toBeInTheDocument()
     expect(screen.getByText('Embedding rate limit')).toBeInTheDocument()
     expect(screen.getByText('Extraction model')).toBeInTheDocument()
     expect(screen.getByText('Extraction pool size')).toBeInTheDocument()
+    // The two auto-registration knobs are gone with the feature.
+    expect(screen.queryByText('Per-source chunk limit')).not.toBeInTheDocument()
+    expect(screen.queryByText('Max sources')).not.toBeInTheDocument()
   })
 
-  it('PATCHes chunk budget on blur with a valid value', async () => {
+  it('PATCHes the embedding rate limit on blur with a valid value', async () => {
     wrap()
     // Wait for config to load — inputs get seeded from the mock config
     await waitFor(() => {
       const inputs = document.querySelectorAll('input[type="number"]')
-      expect(inputs.length).toBeGreaterThanOrEqual(4)
+      expect(inputs.length).toBeGreaterThanOrEqual(2)
     })
     const inputs = document.querySelectorAll('input[type="number"]')
-    const chunkInput = inputs[0] as HTMLInputElement
-    await waitFor(() => expect(chunkInput.value).toBe('200'))
-    fireEvent.change(chunkInput, { target: { value: '500' } })
-    fireEvent.blur(chunkInput)
+    const rateInput = inputs[0] as HTMLInputElement
+    await waitFor(() => expect(rateInput.value).toBe('120'))
+    fireEvent.change(rateInput, { target: { value: '500' } })
+    fireEvent.blur(rateInput)
     await waitFor(() =>
-      expect(patchConfigMock).toHaveBeenCalledWith('knowledge.auto_ingest_chunk_budget', 500),
+      expect(patchConfigMock).toHaveBeenCalledWith('knowledge.embed_rate_limit', 500),
     )
   })
 
-  it('reverts chunk budget when value is out of range', async () => {
+  it('reverts the embedding rate limit when value is out of range', async () => {
     wrap()
     await waitFor(() => {
       const inputs = document.querySelectorAll('input[type="number"]')
-      expect(inputs.length).toBeGreaterThanOrEqual(4)
+      expect(inputs.length).toBeGreaterThanOrEqual(2)
     })
     const inputs = document.querySelectorAll('input[type="number"]')
-    const chunkInput = inputs[0] as HTMLInputElement
-    await waitFor(() => expect(chunkInput.value).toBe('200'))
-    fireEvent.change(chunkInput, { target: { value: '99999' } })
-    fireEvent.blur(chunkInput)
+    const rateInput = inputs[0] as HTMLInputElement
+    await waitFor(() => expect(rateInput.value).toBe('120'))
+    fireEvent.change(rateInput, { target: { value: '99999' } })
+    fireEvent.blur(rateInput)
     expect(patchConfigMock).not.toHaveBeenCalled()
-    expect(chunkInput.value).toBe('200')
+    expect(rateInput.value).toBe('120')
   })
 
-  it('reverts chunk budget when value is NaN', async () => {
+  it('reverts the embedding rate limit when value is NaN', async () => {
     wrap()
     await waitFor(() => {
       const inputs = document.querySelectorAll('input[type="number"]')
-      expect(inputs.length).toBeGreaterThanOrEqual(4)
+      expect(inputs.length).toBeGreaterThanOrEqual(2)
     })
     const inputs = document.querySelectorAll('input[type="number"]')
-    const chunkInput = inputs[0] as HTMLInputElement
-    await waitFor(() => expect(chunkInput.value).toBe('200'))
-    fireEvent.change(chunkInput, { target: { value: 'abc' } })
-    fireEvent.blur(chunkInput)
+    const rateInput = inputs[0] as HTMLInputElement
+    await waitFor(() => expect(rateInput.value).toBe('120'))
+    fireEvent.change(rateInput, { target: { value: 'abc' } })
+    fireEvent.blur(rateInput)
     expect(patchConfigMock).not.toHaveBeenCalled()
-    await waitFor(() => expect(chunkInput.value).toBe('200'))
+    await waitFor(() => expect(rateInput.value).toBe('120'))
   })
 
   it('PATCHes extraction_model as empty string when auto is selected', async () => {
@@ -140,13 +134,13 @@ describe('KnowledgeSettingsTab', () => {
     wrap()
     await waitFor(() => {
       const inputs = document.querySelectorAll('input[type="number"]')
-      expect(inputs.length).toBeGreaterThanOrEqual(4)
+      expect(inputs.length).toBeGreaterThanOrEqual(2)
     })
     const inputs = document.querySelectorAll('input[type="number"]')
-    const chunkInput = inputs[0] as HTMLInputElement
-    await waitFor(() => expect(chunkInput.value).toBe('200'))
-    fireEvent.change(chunkInput, { target: { value: '300' } })
-    fireEvent.blur(chunkInput)
+    const rateInput = inputs[0] as HTMLInputElement
+    await waitFor(() => expect(rateInput.value).toBe('120'))
+    fireEvent.change(rateInput, { target: { value: '300' } })
+    fireEvent.blur(rateInput)
     expect(await screen.findByText(/Failed to save knowledge setting/)).toBeInTheDocument()
   })
 })

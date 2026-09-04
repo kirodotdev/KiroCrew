@@ -3,15 +3,13 @@
 Covers:
 - KnowledgeConfig new field defaults
 - Global sweep chunk budget enforcement in watcher
-- Max sources cap in create_auto_source_unless_dismissed
 - EmbedRateLimiter token bucket
 - extraction_model resolution in _install_knowledge_agent
 - extraction_pool_size in LLMPool
 """
 import asyncio
-import sqlite3
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 from kiro_crew.config.loader import KnowledgeConfig
 
@@ -22,10 +20,6 @@ class TestKnowledgeConfigBudgetDefaults:
     def test_sweep_chunk_budget_default_500(self):
         c = KnowledgeConfig()
         assert c.sweep_chunk_budget == 500
-
-    def test_max_sources_default_50(self):
-        c = KnowledgeConfig()
-        assert c.max_sources == 50
 
     def test_embed_rate_limit_default_120(self):
         c = KnowledgeConfig()
@@ -42,10 +36,6 @@ class TestKnowledgeConfigBudgetDefaults:
     def test_sweep_chunk_budget_zero_is_unbounded(self):
         c = KnowledgeConfig(sweep_chunk_budget=0)
         assert c.sweep_chunk_budget == 0
-
-    def test_max_sources_zero_is_unbounded(self):
-        c = KnowledgeConfig(max_sources=0)
-        assert c.max_sources == 0
 
     def test_embed_rate_limit_zero_is_unlimited(self):
         c = KnowledgeConfig(embed_rate_limit=0)
@@ -97,106 +87,6 @@ class TestEmbedRateLimiter:
             limiter = get_embed_rate_limiter()
             assert limiter.rate_limit == 200
         ing_mod._embed_rate_limiter = None
-
-
-# --- Max sources cap ---
-
-class TestMaxSourcesCap:
-    def _make_store(self, tmp_path):
-        """Create a minimal store with the sources table."""
-        db_path = tmp_path / "test.db"
-        conn = sqlite3.connect(str(db_path))
-        conn.row_factory = sqlite3.Row
-        conn.execute("""
-            CREATE TABLE sources (
-                id TEXT PRIMARY KEY,
-                name TEXT,
-                source_type TEXT,
-                uri TEXT UNIQUE,
-                properties TEXT,
-                sync_status TEXT DEFAULT 'pending',
-                created_at TEXT,
-                updated_at TEXT
-            )
-        """)
-        conn.execute("""
-            CREATE TABLE dismissed_auto_sources (
-                uri TEXT PRIMARY KEY,
-                dismissed_at TEXT
-            )
-        """)
-        conn.commit()
-
-        from kiro_crew.knowledge.store import KnowledgeStore
-        store = MagicMock(spec=KnowledgeStore)
-        store.db = conn
-        store.source_count = lambda: conn.execute(
-            "SELECT COUNT(*) AS cnt FROM sources").fetchone()[0]
-        # Wire the real method
-        from kiro_crew.knowledge.store import KnowledgeStore as RealStore
-        store.create_auto_source_unless_dismissed = (
-            lambda *a, **kw: RealStore.create_auto_source_unless_dismissed(store, *a, **kw)
-        )
-        store._initial_sync_status = RealStore._initial_sync_status
-        return store
-
-    def test_under_cap_allows_creation(self, tmp_path):
-        store = self._make_store(tmp_path)
-        sid, created = store.create_auto_source_unless_dismissed(
-            name="test", source_type="local_folder", uri="/test/path",
-            properties={"sync_status": "active"}, max_sources=5,
-        )
-        assert created is True
-        assert sid is not None
-
-    def test_at_cap_blocks_creation(self, tmp_path):
-        store = self._make_store(tmp_path)
-        # Fill to cap
-        for i in range(3):
-            store.db.execute(
-                "INSERT INTO sources (id, name, source_type, uri, properties, "
-                "created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                (f"s{i}", f"src{i}", "local_folder", f"/path/{i}", "{}", "", ""))
-        store.db.commit()
-        # Now try to add one more with cap=3
-        sid, created = store.create_auto_source_unless_dismissed(
-            name="blocked", source_type="local_folder", uri="/new/path",
-            properties={"sync_status": "active"}, max_sources=3,
-        )
-        assert sid is None
-        assert created is False
-
-    def test_zero_cap_is_unbounded(self, tmp_path):
-        store = self._make_store(tmp_path)
-        # Fill with many sources
-        for i in range(100):
-            store.db.execute(
-                "INSERT INTO sources (id, name, source_type, uri, properties, "
-                "created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                (f"s{i}", f"src{i}", "local_folder", f"/path/{i}", "{}", "", ""))
-        store.db.commit()
-        # cap=0 should still allow
-        sid, created = store.create_auto_source_unless_dismissed(
-            name="allowed", source_type="local_folder", uri="/new/path",
-            properties={"sync_status": "active"}, max_sources=0,
-        )
-        assert created is True
-
-    def test_existing_uri_returns_existing_id_regardless_of_cap(self, tmp_path):
-        store = self._make_store(tmp_path)
-        # Insert one source
-        store.db.execute(
-            "INSERT INTO sources (id, name, source_type, uri, properties, "
-            "created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-            ("existing-id", "existing", "local_folder", "/existing", "{}", "", ""))
-        store.db.commit()
-        # Even with cap=1 (at capacity), existing URI should return its id
-        sid, created = store.create_auto_source_unless_dismissed(
-            name="existing", source_type="local_folder", uri="/existing",
-            properties={"sync_status": "active"}, max_sources=1,
-        )
-        assert sid == "existing-id"
-        assert created is False
 
 
 # --- Sweep chunk budget ---

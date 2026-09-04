@@ -357,6 +357,37 @@ class TestListServers:
         monkeypatch.setattr("kiro_crew.mcp_discovery.Path.home", lambda: tmp_path)
         assert not any(s.name == "srv" for s in list_servers())
 
+    def test_dashboard_disabled_server_keeps_a_disabled_row(self, tmp_path, monkeypatch) -> None:
+        """``/api/mcp/toggle`` off writes ``disabled: true`` into the Kiro global
+        AND onto the agent entry (the agent-side marker is what stops a running
+        kiro-cli session's server). The row must survive that, or the user has
+        nothing to switch back on — and it carries the agent entry's full spec,
+        because the global copy can be the bare stub the toggle creates."""
+        agent_dir = tmp_path / "agents"
+        agent_dir.mkdir()
+        (agent_dir / "defaults.json").write_text(
+            json.dumps(
+                {"mcpServers": {"srv": {"command": "real-cmd", "args": ["-x"], "disabled": True}}}
+            )
+        )
+        store = tmp_path / "store.json"
+        store.write_text(json.dumps({"mcpServers": {}}))
+        kiro_mcp = tmp_path / "kiro.json"
+        kiro_mcp.write_text(json.dumps({"mcpServers": {"srv": {"disabled": True}}}))
+        monkeypatch.setenv("KIROCREW_PROJECT_DIR", str(tmp_path))
+        monkeypatch.setattr(
+            "kiro_crew.mcp_discovery._MCP_SOURCES",
+            ((store, SCOPE_KIROCREW), (kiro_mcp, SCOPE_KIRO_GLOBAL)),
+        )
+        monkeypatch.setattr("kiro_crew.mcp_discovery._MCP_JSON_PATHS", (store, kiro_mcp))
+        monkeypatch.setattr("kiro_crew.mcp_discovery.Path.home", lambda: tmp_path)
+        rows = [s for s in list_servers() if s.name == "srv"]
+        assert len(rows) == 1
+        assert rows[0].disabled is True
+        assert rows[0].source == "agent"
+        assert rows[0].command == "real-cmd"
+        assert rows[0].args == ["-x"]
+
     def test_disabled_mcp_json_still_carries_disabled_tools(self, tmp_path, monkeypatch) -> None:
         """disabledTools from a disabled mcp.json entry are applied to an existing agent server."""
         agent_dir = tmp_path / "agents"

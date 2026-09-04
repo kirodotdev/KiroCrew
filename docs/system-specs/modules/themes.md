@@ -32,6 +32,15 @@ a pack may ship. Validation is tier-scaled to payload trust.
 | **L1 Branded** | 1 | + `branding/` (logo, favicon, wordmark), `styles/fonts/`, scoped `overrides.css` |
 | **L2 Experience** | 2 | + `overlays/` + `topbar/` sandboxed HTML, `audio/`, `persona.md` |
 
+Level-1 and Level-2 manifests may also declare `loaderIcons`: 4–8 distinct
+names from the bundled stock-symbol allowlist (`cloud`, `flower`, `heart`,
+`moon`, `sparkles`, `star`, `sun`, `zap`). The backend validates and surfaces
+the names in the theme asset descriptor; the frontend maps them to bundled
+Lucide components and reuses the existing carousel. No component code, SVG, or
+asset path crosses the manifest boundary. Missing declarations preserve the
+Kiro ghost poses, and trusted compiled themes retain the broader
+`registerThemeBranding()` component seam.
+
 Constants (`dashboard/theme_validate.py`): `_THEME_MAX_LEVEL=2`,
 `_THEME_MAX_FONTS=6`, `_THEME_MAX_OVERLAYS=5`, `_THEME_PERSONA_MAX_CHARS=2000`,
 plus per-file byte caps (`_THEME_FILE_CAPS`) and per-level entry-count + total

@@ -147,10 +147,14 @@ def test_snapshot_shape_and_defaults(home: Path):
         "enabled",
         "pinned",
         "lock_reason",
+        # Discriminates a shipped rule from one contributed through the
+        # ``denied_rules`` seam; see test_denied_rule_seam.py.
+        "source",
     }
     assert b["enabled"] is True
     assert b["pinned"] is False
     assert b["lock_reason"] is None
+    assert b["source"] == "builtin"
     assert snap["effective_count"] == _CATALOG_N
 
 
@@ -218,12 +222,17 @@ def test_snapshot_disable_all_string_false_is_not_truthy(home: Path, config_file
 
 
 def test_snapshot_marks_floor_rules_locked_and_forced_on(home: Path, config_file: Path):
-    # Every git-publish rule is floor-enforced: forced enabled and lock-flagged,
-    # even when its id was persisted into disabled_ids by an older build.
+    # Only the git-publish rules whose coverage is the UNGATED anti-obfuscation
+    # branch are floor-enforced: forced enabled and lock-flagged, even when the id
+    # was persisted into disabled_ids by an older build. The rest of the category
+    # is gated on the per-rule enable state and renders freely toggleable.
+    from kiro_crew.security import floor_enforced_builtin_command_ids
+
     rid = _a_floor_id()
     _seed(config_file, {"disabled_ids": [rid]})
     snap = build_denied_commands_snapshot()
-    floor_rules = [b for b in snap["builtins"] if b["category"] == "git-publish"]
+    floor_ids = floor_enforced_builtin_command_ids()
+    floor_rules = [b for b in snap["builtins"] if b["id"] in floor_ids]
     assert len(floor_rules) == _floor_n() > 0
     for b in floor_rules:
         assert b["enabled"] is True
@@ -247,17 +256,22 @@ def test_floor_lock_reason_wins_over_policy(home: Path):
 
 
 def test_floor_ids_are_derived_from_the_category():
-    # Guard: the accessor derives from the catalog category, so a newly added
-    # git-publish rule is locked without a code change. A hand-maintained id
-    # list would fail this the moment the catalog gains one.
+    # Guard: the accessor reports ONLY the rules whose coverage is an ungated
+    # branch of the floor. The rest of the git-publish category is now gated on
+    # the per-rule enable state, so reporting the whole category would lock rows
+    # whose toggle actually works — the inverse of the no-op this accessor exists
+    # to prevent. Brace expansion is the ungated one: it is caught by
+    # ``_AMBIGUOUS_EXPANSION_RE`` inside the unverifiable-glue check, which no
+    # opt-out may reach.
     from kiro_crew.security import (
         BUILTIN_DENIED_RULES,
         floor_enforced_builtin_command_ids,
     )
 
-    expected = {r.id for r in BUILTIN_DENIED_RULES if r.category == "git-publish"}
-    assert expected, "catalog must carry git-publish rules"
-    assert floor_enforced_builtin_command_ids() == expected
+    floor = floor_enforced_builtin_command_ids()
+    assert floor == {"git-publish-push-brace-expansion-refspec"}
+    git_publish = {r.id for r in BUILTIN_DENIED_RULES if r.category == "git-publish"}
+    assert floor < git_publish, "floor ids must be a strict subset of the category"
 
 
 # ── GET ──

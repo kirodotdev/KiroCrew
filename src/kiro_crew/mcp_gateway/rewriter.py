@@ -922,6 +922,197 @@ def _injectable_settings_servers(
     return out
 
 
+def _overlay_inputs_unchanged(
+    stored: dict[str, Any] | None,
+    current: dict[str, Any],
+    *,
+    source_name: str,
+) -> bool:
+    """Return ``True`` when every input the overlay for *source_name* was built
+    from still matches this pass -- everything EXCEPT the settings entry.
+
+    Used to decide whether a previous overlay may be KEPT on a pass that cannot
+    establish the injection set. Keeping one defers every input that overlay
+    encodes, not only the injection: the agent's own spec (an ``autoApprove``
+    entry removed, a server disabled) and the policy knobs
+    ``_build_stub_entry`` bakes into each stub's argv (``--sandbox-mode``,
+    ``--approval-mode``, ``--poolable``, the work dir, the socket, the identity
+    keys). A revocation or a tightened policy is a deliberate instruction and
+    must not wait for the next boot, so a keep is only honest when nothing it
+    would defer has changed.
+
+    The settings entry is the ONE input compared conditionally, and only because
+    a transient fault is what makes it unanswerable: ``_rewrite_inputs_fingerprint``
+    signs that file with ``_stat_sig``, which returns ``None`` when it cannot be
+    read, and that ``None`` is why control reaches the rewrite loop instead of the
+    cached early return. So it is skipped when this pass could not sign the file --
+    demanding a match there would refuse every keep on exactly the path this
+    protects. When the signature IS available and differs, the file demonstrably
+    changed and the keep is refused: read_text and read_bytes are separate calls,
+    so a fault can hit one and not the other, and a settings revocation kept alive
+    by a stale injected entry is an absorbed instruction, not a deferred edit.
+    Every other input is compared unconditionally, so a new fingerprinted input is
+    covered without being enumerated here.
+
+    ``False`` whenever the answer cannot be established: no stored fingerprint
+    (one is unlinked at the end of every uncacheable pass, so two consecutive
+    faulty passes cannot keep), a malformed one, or a source this pass could not
+    sign. The caller then rewrites, which is the pre-existing behaviour.
+    """
+    if stored is None:
+        return False
+    prev = stored.get("inputs")
+    if not isinstance(prev, dict):
+        return False
+    for key in set(prev) | set(current):
+        if key == "sources":
+            continue
+        if key == "settings":
+            cur_settings = current.get("settings")
+            if cur_settings is None:
+                continue  # unsignable this pass: the unanswerable input
+            if prev.get("settings") != cur_settings:
+                return False  # signable AND changed: a real, known difference
+            continue
+        if prev.get(key) != current.get(key):
+            return False
+    prev_sources = prev.get("sources")
+    cur_sources = current.get("sources")
+    if not isinstance(prev_sources, dict) or not isinstance(cur_sources, dict):
+        return False
+    sig = cur_sources.get(source_name)
+    # A ``None`` signature means this pass could not read or stat that source,
+    # so "unchanged" is not established -- never assume it.
+    return sig is not None and prev_sources.get(source_name) == sig
+
+
+def _kept_artifacts_vouched(
+    stored: dict[str, Any] | None,
+    *,
+    overlay_dir: Path,
+    env_dir: Path,
+) -> bool:
+    """Validate and re-protect the SHARED artifacts a keep would serve.
+
+    A keep serves files this pass did not write, which is the same position
+    ``_cached_rewrite_result`` is in -- and that path does not merely check
+    existence. It compares every recorded output against ``_stat_sig`` (a
+    tampered or edited artifact must be regenerated, not served) and re-asserts
+    owner-only protection on each one, because a chmod or DACL edit changes no
+    size, mtime or digest and so is invisible to a signature. A keep must offer
+    the same guarantees or it becomes a way to have a tampered overlay served,
+    and a loosened sidecar ACL left unrepaired, by inducing one transient fault.
+
+    This covers the pass-wide set: the env sidecar directory, every recorded
+    sidecar, and the recorded ``shutil.which`` probes. A kept overlay still
+    points ``--env-file`` at those sidecars, the sidecar prune is skipped on this
+    pass, and mapping sidecars to individual agents would require parsing stub
+    argv -- so if the set cannot be vouched for, no keep is allowed and every
+    agent is rewritten through the protect-before-content writers. Per-overlay
+    validation is separate; see ``_kept_overlay_vouched``.
+
+    The which() re-probe is here for the same reason the cached path has it, and
+    it is not covered by any signature: directory contents are which() input the
+    stat fingerprint cannot see, and a kept overlay's stub argv embeds the
+    ABSOLUTE path a previous pass resolved. A target binary removed, moved
+    between PATH prefixes, or newly shadowed would otherwise leave the kept
+    overlay launching a dead path for the rest of the gateway's lifetime.
+
+    Fail-loud like the cached path: ``restrict_to_owner`` raises on both
+    platforms, and any failure returns ``False`` rather than serving an
+    artifact whose protection could not be re-asserted.
+    """
+    if stored is None:
+        return False
+    outputs = stored.get("outputs")
+    if not isinstance(outputs, dict):
+        return False
+    sidecar_sigs = outputs.get("sidecars")
+    if not isinstance(sidecar_sigs, dict):
+        return False
+    which_probes = stored.get("which")
+    if not isinstance(which_probes, dict):
+        return False
+    try:
+        for name, sig in sidecar_sigs.items():
+            if _stat_sig(env_dir / name) != sig:
+                return False
+        if env_dir.is_dir():
+            platform_compat.make_owner_only_dir(env_dir)
+            if platform_compat.IS_POSIX:
+                # nosemgrep: python.lang.security.audit.insecure-file-permissions.insecure-file-permissions -- 0o700 is OWNER-ONLY, the tightest traversable mode for this credential-sidecar directory; the rule's suggested 0o644 would grant world-read and drop the execute bit a directory needs. Raw os.chmod (not make_owner_only_dir alone) because this path must FAIL LOUD into the full rewrite, matching _cached_rewrite_result.  # noqa: E501
+                os.chmod(env_dir, 0o700)
+        for name in sidecar_sigs:
+            platform_compat.restrict_to_owner(env_dir / name)
+        # The settings overlay is KEPT on this pass (#5328), and it carries the
+        # passed-through env of every non-poolable / HTTP-SSE global server, so a
+        # loosened ACL on it would otherwise persist for the gateway's lifetime.
+        # Only the protection is re-asserted, not the content: its recorded
+        # signature is deliberately NOT compared, because no available action
+        # would improve on a mismatch -- this pass cannot rewrite it (the source
+        # is unreadable), must not delete it (#5328: that strips every global
+        # server), and refusing the agent keeps would not repair it while making
+        # the injection loss worse. Guarded on existence rather than treated as a
+        # refusal: an absent settings overlay has no ACL to repair and is not
+        # something this pass is serving.
+        settings_overlay_file = overlay_dir.parent / "settings" / "mcp.json"
+        if outputs.get("settings_overlay") is not None and (
+            settings_overlay_file.is_file()
+        ):
+            platform_compat.make_owner_only_dir(settings_overlay_file.parent)
+            if platform_compat.IS_POSIX:
+                # nosemgrep: python.lang.security.audit.insecure-file-permissions.insecure-file-permissions -- 0o700 is OWNER-ONLY, the tightest traversable mode for a directory holding a credential-bearing overlay; the rule's suggested 0o644 would grant world-read and drop the execute bit a directory needs. Raw os.chmod because this path must FAIL LOUD into the full rewrite, matching _cached_rewrite_result.  # noqa: E501
+                os.chmod(settings_overlay_file.parent, 0o700)
+            platform_compat.restrict_to_owner(settings_overlay_file)
+    except OSError:
+        return False
+    # Same comparison the cached path makes, for the same reason.
+    for key, recorded in which_probes.items():
+        bare, _, search_path = key.partition(_WHICH_KEY_SEP)
+        try:
+            current = shutil.which(bare, path=search_path) or ""
+        except OSError:
+            return False
+        if current != recorded:
+            return False
+    return True
+
+
+def _kept_overlay_vouched(
+    stored: dict[str, Any] | None,
+    *,
+    overlay_dir: Path,
+    name: str,
+) -> bool:
+    """Validate and re-protect ONE overlay a keep would serve.
+
+    The per-agent half of :func:`_kept_artifacts_vouched`: the overlay must
+    still carry the size+mtime+digest the previous run recorded for it, and its
+    owner-only protection must be re-assertable. An overlay with no recorded
+    signature is refused too -- there is nothing to compare it against, and an
+    unvouched artifact must be regenerated rather than served.
+    """
+    if stored is None:
+        return False
+    outputs = stored.get("outputs")
+    if not isinstance(outputs, dict):
+        return False
+    overlay_sigs = outputs.get("overlays")
+    if not isinstance(overlay_sigs, dict):
+        return False
+    sig = overlay_sigs.get(name)
+    if sig is None:
+        return False
+    target = overlay_dir / name
+    try:
+        if _stat_sig(target) != sig:
+            return False
+        platform_compat.restrict_to_owner(target)
+    except OSError:
+        return False
+    return True
+
+
 def _stat_sig(path: Path) -> list[Any] | None:
     """Return ``[size, mtime_ns, sha256]`` for *path*, or ``None`` if it
     cannot be read. Size and nanosecond mtime are cheap discriminators, but
@@ -1416,6 +1607,12 @@ def rewrite_agents(
     settings_src_spec: dict[str, Any] | None = None
     settings_poolable: dict[str, Any] = {}
     settings_read_transient = False
+    # ``True`` only when this pass ESTABLISHED that there is nothing usable to
+    # relocate: confirmed absent, present but not a regular file, or bad content.
+    # Deliberately NOT the same as "we ended up with no spec", which a transient
+    # fault also produces. It is what licenses pruning the previous settings
+    # overlay, and it is read once, below, instead of being re-derived there.
+    settings_prunable = False
     if kiro_settings_json.is_file():
         try:
             loaded = json.loads(kiro_settings_json.read_text())
@@ -1428,6 +1625,10 @@ def rewrite_agents(
                     identity_keys=identity_keys,
                     notes=notes,
                 )
+            else:
+                # Valid JSON, wrong shape: deterministic, and fixing it changes
+                # the stat signature, so this classification is safe to cache.
+                settings_prunable = True
         except OSError as exc:
             # Transient read failure: same reasoning as the per-agent site —
             # do not cache a pass that treated an existing settings file as
@@ -1437,7 +1638,39 @@ def rewrite_agents(
             logger.warning("failed to read global mcp.json: %s", exc)
         except json.JSONDecodeError as exc:
             # Content problem — cacheable; a fix changes the stat signature.
+            settings_prunable = True
             logger.warning("failed to read global mcp.json: %s", exc)
+    else:
+        # ``is_file()`` answers False for a missing file AND for a stat fault
+        # whose errno pathlib chooses to swallow, so it cannot be read as
+        # "absent" on its own. Only SOME faults are swallowed: measured on
+        # CPython 3.12, EACCES/EIO/EPERM propagate (the caller's ``except
+        # Exception`` then abandons the pass without touching an overlay), while
+        # ENOENT/EBADF/ENOTDIR/ELOOP return False. ENOTDIR and ELOOP are
+        # reachable without the file being gone -- a directory component
+        # momentarily replaced, an atomic directory swap, a symlink being
+        # re-pointed -- and reading those as absent rewrote every overlay with an
+        # empty injection set, which is #5344 through the stat path rather than
+        # the read path.
+        #
+        # So classify explicitly, and do it HERE rather than beside the prune:
+        # ONE classification then serves both the injection decision below and
+        # the prune, instead of the prune's answer arriving after the agent loop
+        # has already acted on a different one. Only ``FileNotFoundError`` may
+        # mean absent; every other OSError means unknown.
+        try:
+            kiro_settings_json.stat()
+        except FileNotFoundError:
+            settings_prunable = True  # confirmed absent: deleted between runs
+        except OSError as exc:
+            notes.source_read_failed = True  # unknown: keep and retry
+            settings_read_transient = True
+            logger.warning("failed to stat global mcp.json: %s", exc)
+        else:
+            # Stats fine but is not a regular file (e.g. a directory in its
+            # place): a permanent misconfiguration, deterministic like bad
+            # content, not a transient fault to retry forever.
+            settings_prunable = True
 
     # Names of agents whose overlay could not be refreshed THIS PASS for a
     # TRANSIENT reason (source read failure, overlay write failure). The prune
@@ -1450,7 +1683,83 @@ def rewrite_agents(
     # behave differently.
     transient_keep: set[str] = set()
 
+    # A settings read that FAILED is not a settings file that declared nothing.
+    # ``settings_poolable`` is empty on that path because the pass could not
+    # ASK, so an agent overlay written from it reflects a fact this pass never
+    # established: every globally-declared poolable server silently stops being
+    # pooled for the rest of this gateway's lifetime. Its tools do not vanish --
+    # the raw entry still merges from the real settings file -- but it runs
+    # per-session and unpooled, with none of the identity the stub carries. The
+    # pass is already uncacheable (``notes.source_read_failed`` was set at the
+    # read site), so a restart self-heals; the degraded window is a whole
+    # gateway lifetime (#5344).
+    #
+    # Refuse to rewrite instead, exactly as the per-agent transient read
+    # failure below does -- but only where refusing PRESERVES something. An
+    # agent that has a previous overlay keeps it: that overlay carries both its
+    # own wrapped servers and the injected globals, so nothing is dropped. An
+    # agent with NO previous overlay is still written, because there the empty
+    # injection set is not the conflation this guards against -- no injected
+    # copy exists to drop, and refusing would leave that agent with no overlay
+    # at all, unpooling its OWN servers too. That is strictly worse than the
+    # fault warrants, and worse than what this pass does today.
+    #
+    # The trade on a kept overlay is staleness in the other direction, and it is
+    # bounded to the injection set alone: a keep is only honest when NOTHING
+    # ELSE the overlay encodes has changed. Keeping one otherwise defers the
+    # agent's own spec (an autoApprove entry removed, a server disabled) and the
+    # policy knobs _build_stub_entry bakes into every stub argv (--sandbox-mode,
+    # --approval-mode, --poolable, work dir, socket, identity keys) -- all
+    # deliberate instructions, unlike a transient fault. So the keep is gated on
+    # _overlay_inputs_unchanged: the stored fingerprint must show this pass's
+    # inputs matching the ones that overlay was built from, every input except
+    # the settings entry the failed read made unknowable. One comparison covers
+    # every dimension, so a future fingerprinted input is covered without being
+    # enumerated at this site.
+    #
+    # Gated on nothing else: with an empty stub set nothing is wrapped and
+    # ``_injectable_settings_servers`` returns nothing whatever the file says, so
+    # a keep and a rewrite produce identical bytes there. An extra
+    # ``bool(stub_set)`` term would be unobservable -- no test can distinguish
+    # it -- so the fingerprint comparison below carries the whole decision.
+    injection_unknown = settings_read_transient
+    # A keep SERVES artifacts this pass did not write, so it must carry the same
+    # guarantees the other serve-without-writing path does. Vouch for the shared
+    # set once: if the recorded sidecars cannot be validated and re-protected, no
+    # keep is allowed at all and every agent goes through the
+    # protect-before-content writers instead.
+    if injection_unknown and not _kept_artifacts_vouched(
+        stored, overlay_dir=overlay_dir, env_dir=env_sidecar_dir_for_stubs(stubs_dir)
+    ):
+        injection_unknown = False
+        logger.warning(
+            "global mcp.json unreadable this pass, but the recorded env sidecars "
+            "could not be validated and re-protected: rewriting every agent "
+            "overlay rather than serving artifacts this pass cannot vouch for"
+        )
+    if injection_unknown:
+        logger.warning(
+            "global mcp.json unreadable this pass: keeping the previous overlay "
+            "of each agent whose other inputs are unchanged, instead of "
+            "rewriting it without the servers that file declares (kept overlays "
+            "stay in effect until a later pass succeeds)"
+        )
+
     for path in sorted(source_dir.glob("*.json")):
+        if (
+            injection_unknown
+            and (overlay_dir / path.name).is_file()
+            and _overlay_inputs_unchanged(
+                stored, current_inputs, source_name=path.name
+            )
+            and _kept_overlay_vouched(stored, overlay_dir=overlay_dir, name=path.name)
+        ):
+            # Keep without classifying: the spec is not read on this path, so a
+            # source whose CONTENT is deterministically bad is kept too, unlike
+            # the read below which prunes it. The pass is uncacheable, so the
+            # next boot reads that source and prunes its overlay then.
+            transient_keep.add(path.name)
+            continue
         try:
             spec = json.loads(path.read_text())
         except OSError as exc:
@@ -1650,26 +1959,14 @@ def rewrite_agents(
             settings_overlay_path = None
             overlay_write_failed = True
     else:
-        # ``settings_src_spec`` is None: the source is absent, was unreadable
-        # this pass, or carried bad content. Only CONFIRMED absence and
-        # deterministic bad content prune the previous overlay (matching the
-        # per-agent rule and the cached path's keying); a transient read
-        # failure keeps it (#5328). Classify with an explicit ``stat()``
-        # rather than ``is_file()``, which folds a stat fault (ACL hiccup,
-        # transient I/O error) into "absent" and would delete a healthy
-        # overlay — treat a stat fault as transient: keep, and mark the pass
-        # uncacheable so the next boot retries.
-        prune_settings = False
-        if not settings_read_transient:
-            try:
-                kiro_settings_json.stat()
-            except FileNotFoundError:
-                prune_settings = True  # confirmed absent: deleted between runs
-            except OSError:
-                notes.source_read_failed = True  # unknown: keep and retry
-            else:
-                prune_settings = True  # present but bad content: deterministic
-        if prune_settings and settings_overlay_file.is_file():
+        # ``settings_src_spec`` is None: the source is absent, was unreadable or
+        # unstatable this pass, or carried bad content. Only CONFIRMED absence
+        # and deterministic bad content prune the previous overlay (matching the
+        # per-agent rule and the cached path's keying); a transient read or a
+        # swallowed stat fault keeps it (#5328). That classification was made
+        # once at the read site above -- re-deriving it here is what let the
+        # agent loop act on a different answer than the prune (#5344).
+        if settings_prunable and settings_overlay_file.is_file():
             try:
                 settings_overlay_file.unlink()
             except OSError:

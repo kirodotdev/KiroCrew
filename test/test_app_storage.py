@@ -81,6 +81,25 @@ class TestAppStorageKeyIsolation:
         storage = AppStorage("test-app", tmp_path)
         assert storage.delete(key) is False
 
+    def test_delete_returns_false_when_key_vanishes_after_probe(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A concurrent delete is the same observable state as an absent key."""
+        storage = AppStorage("test-app", tmp_path)
+        storage.set("shared", {"value": 1})
+        key_path = storage._key_path("shared")
+        real_is_file = Path.is_file
+
+        def _remove_after_probe(path: Path) -> bool:
+            present = real_is_file(path)
+            if path == key_path and present:
+                path.unlink()
+            return present
+
+        monkeypatch.setattr(Path, "is_file", _remove_after_probe)
+
+        assert storage.delete("shared") is False
+
     @settings(max_examples=50, suppress_health_check=[HealthCheck.function_scoped_fixture])
     @given(keys=st.lists(_valid_key(), min_size=1, max_size=10, unique=True))
     def test_list_keys_returns_all_set_keys(self, keys: list[str], tmp_path: Path) -> None:

@@ -1,5 +1,5 @@
-import { memo, useEffect, useState } from 'react'
-import { PinOff, Copy, Link2 } from 'lucide-react'
+import { memo, useEffect, useRef, useState } from 'react'
+import { PinOff, Copy, Link2, Check } from 'lucide-react'
 import { i18nT } from '../../i18n/t'
 import { fmtDateTime } from '../../i18n/format'
 import { copyToClipboard } from '../../utils/clipboard'
@@ -50,10 +50,38 @@ const PinnedMessagesPanel = memo(function PinnedMessagesPanel({
   useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
   const [now, setNow] = useState(() => Date.now())
 
+  // Which pin's Copy / Copy-link button is currently showing its "done"
+  // checkmark. Keyed by pin id (not a bool) so only the row the user clicked
+  // flips its icon, matching the in-chat message action buttons which give a
+  // 1.5s Check-icon confirmation. Without this the panel's Copy/Link buttons
+  // ran their side effect silently and looked inert.
+  const [copiedId, setCopiedId] = useState<string | null>(null)
+  const [linkCopiedId, setLinkCopiedId] = useState<string | null>(null)
+  const copyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const linkTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
   useEffect(() => {
     const interval = window.setInterval(() => setNow(Date.now()), 60_000)
     return () => window.clearInterval(interval)
   }, [])
+
+  // Clear any pending feedback-reset timers on unmount so a late setState
+  // doesn't fire against a torn-down component.
+  useEffect(() => () => {
+    if (copyTimerRef.current) clearTimeout(copyTimerRef.current)
+    if (linkTimerRef.current) clearTimeout(linkTimerRef.current)
+  }, [])
+
+  const flashCopied = (id: string) => {
+    setCopiedId(id)
+    if (copyTimerRef.current) clearTimeout(copyTimerRef.current)
+    copyTimerRef.current = setTimeout(() => { copyTimerRef.current = null; setCopiedId(null) }, 1500)
+  }
+  const flashLinkCopied = (id: string) => {
+    setLinkCopiedId(id)
+    if (linkTimerRef.current) clearTimeout(linkTimerRef.current)
+    linkTimerRef.current = setTimeout(() => { linkTimerRef.current = null; setLinkCopiedId(null) }, 1500)
+  }
 
   return (
     <div
@@ -92,20 +120,20 @@ const PinnedMessagesPanel = memo(function PinnedMessagesPanel({
             {/* Hover actions — forced visible + 40px targets where the pointer cannot hover */}
             <div data-testid="pin-actions" className={`flex items-center gap-1 mt-0.5 opacity-0 group-hover/pin:opacity-100 focus-within:opacity-100 transition-opacity ${HOVER_NONE_ACTIONS_ROW_CLS}`}>
               <button
-                onClick={(e) => { e.stopPropagation(); copyToClipboard(pin.preview) }}
+                onClick={(e) => { e.stopPropagation(); copyToClipboard(pin.preview).then((ok) => { if (ok) flashCopied(pin.id) }).catch(() => {}) }}
                 className="text-muted hover:text-text p-0.5 rounded transition-colors"
-                title={i18nT('pages.chat.pins.copy_preview')}
+                title={copiedId === pin.id ? i18nT('pages.chat.pins.copied') : i18nT('pages.chat.pins.copy_preview')}
                 aria-label={i18nT('pages.chat.pins.copy_preview')}
               >
-                <Copy size={12} />
+                {copiedId === pin.id ? <Check size={12} className="text-ok" /> : <Copy size={12} />}
               </button>
               <button
-                onClick={(e) => { e.stopPropagation(); copySessionLink(slotKey, slotTitle, pin.message_ts, mode, pin.mid) }}
+                onClick={(e) => { e.stopPropagation(); copySessionLink(slotKey, slotTitle, pin.message_ts, mode, pin.mid).then((ok) => { if (ok) flashLinkCopied(pin.id) }).catch(() => {}) }}
                 className="text-muted hover:text-text p-0.5 rounded transition-colors"
-                title={i18nT('pages.chat.pins.copy_link')}
+                title={linkCopiedId === pin.id ? i18nT('pages.chat.pins.copied') : i18nT('pages.chat.pins.copy_link')}
                 aria-label={i18nT('pages.chat.pins.copy_link')}
               >
-                <Link2 size={12} />
+                {linkCopiedId === pin.id ? <Check size={12} className="text-ok" /> : <Link2 size={12} />}
               </button>
               <button
                 onClick={(e) => { e.stopPropagation(); onUnpin(pin.id) }}

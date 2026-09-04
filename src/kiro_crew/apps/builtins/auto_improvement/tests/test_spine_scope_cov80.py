@@ -14,6 +14,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from kiro_crew.apps.builtins.auto_improvement.spine.scope import in_scope, scoped_relpaths
+from kiro_crew.subprocess_utf8 import UTF8_TEXT
 
 
 def _proc(*, returncode: int = 0, stdout: str = "") -> SimpleNamespace:
@@ -85,3 +86,78 @@ class TestInScopePredicate:
 
     def test_a_scope_of_nothing_admits_nothing(self) -> None:
         assert in_scope("src/a.py", set()) is False
+
+
+class TestGitOutputIsDecodedAsUtf8:
+    """The scope set and the gate that consumes it must share one decoder.
+
+    ``scoped_relpaths`` passes ``core.quotePath=false``, which is what makes git emit
+    a non-ASCII path as RAW UTF-8 bytes instead of its default octal escapes. Decoding
+    those bytes with ``locale.getpreferredencoding(False)`` -- what a bare ``text=True``
+    selects -- is the legacy ANSI code page on Windows, so the two sides of ``in_scope``
+    stop agreeing:
+
+    * a strict-decode failure raises inside the ``runner`` call, and the module's
+      ``except Exception`` turns that into ``None`` -- which is UNSCOPED, widening the
+      edit fence to the whole repository. That is the exact fail-open direction this
+      module's docstring records having already fixed once, by another route.
+    * a code page that maps every byte (cp1252) raises nothing and yields a mojibake
+      path instead, so a file that IS in the branch's change set is judged out of
+      scope and the agent's edit to it is rejected.
+
+    ``spine/gate.py::_changed_status_paths`` -- which produces the paths compared
+    against this set -- already splats ``UTF8_TEXT``. Pinning the producer to the same
+    mapping makes an undecodable byte become U+FFFD on BOTH sides, so the two still
+    compare equal.
+
+    ``scripts/check_subprocess_encoding.py`` cannot catch this site: it matches spawn
+    functions BY NAME, and the call here goes through the injected ``runner`` seam.
+    """
+
+    def test_the_diff_is_decoded_as_utf8_not_the_host_code_page(self, tmp_path: Path) -> None:
+        seen: dict[str, object] = {}
+
+        def _runner(argv, **kwargs):
+            seen.update(kwargs)
+            return _proc(stdout="src/a.py")
+
+        assert scoped_relpaths(tmp_path, "origin/main", runner=_runner) == {"src/a.py"}
+        assert seen["encoding"] == "utf-8"
+        assert seen["errors"] == "replace"
+
+    def test_it_uses_the_shared_utf8_mapping_rather_than_a_local_spelling(
+        self, tmp_path: Path
+    ) -> None:
+        """One definition of "decode this child as UTF-8", not a re-typed pair."""
+        seen: dict[str, object] = {}
+
+        def _runner(argv, **kwargs):
+            seen.update(kwargs)
+            return _proc(stdout="")
+
+        scoped_relpaths(tmp_path, "origin/main", runner=_runner)
+        assert {k: seen.get(k) for k in UTF8_TEXT} == dict(UTF8_TEXT)
+
+    def test_a_non_ascii_path_survives_into_the_scope_set(self, tmp_path: Path) -> None:
+        """The set must hold the path the gate will later compare against, verbatim."""
+        non_ascii = "src/日本語/café.py"
+
+        def _runner(argv, **kwargs):
+            return _proc(stdout=non_ascii + "\n" + "src/a.py" + "\n")
+
+        scope = scoped_relpaths(tmp_path, "origin/main", runner=_runner)
+
+        assert scope == {non_ascii, "src/a.py"}
+        assert in_scope(non_ascii, scope) is True
+
+    def test_quote_path_stays_off_so_the_bytes_are_raw_utf8(self, tmp_path: Path) -> None:
+        """The decoder pin is only correct while git is told not to escape paths."""
+        seen: dict[str, object] = {}
+
+        def _runner(argv, **kwargs):
+            seen["argv"] = list(argv)
+            return _proc(stdout="")
+
+        scoped_relpaths(tmp_path, "origin/main", runner=_runner)
+
+        assert "core.quotePath=false" in seen["argv"]  # type: ignore[operator]

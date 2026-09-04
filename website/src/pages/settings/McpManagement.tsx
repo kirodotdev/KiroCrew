@@ -977,7 +977,13 @@ export function McpManagement() {
           unmeasuredCount={unmeasuredCount}
         />
       </TabsContent>
-      <TabsContent value="servers">
+      {/* The servers view stacks a lede header, two inline banners and three
+          cards as SIBLINGS. The `space-y-4` on the <Tabs> root only gaps the tab
+          rail from the panel below it -- it cannot reach inside a panel -- so
+          without a gap class here the cards render flush against each other,
+          unlike the assessment view (which wraps its body in `space-y-4`) and
+          every other settings panel. Match that rhythm on the panel itself. */}
+      <TabsContent value="servers" className="space-y-4">
       {/* No <h2> here: the Developer tab header already names this surface, and a
           second copy of the title read as two stacked headings. */}
       <header>

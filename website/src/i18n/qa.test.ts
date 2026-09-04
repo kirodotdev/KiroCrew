@@ -125,7 +125,9 @@ const live: Record<string, string[]> = Object.fromEntries(
 
 if (REPORT) {
   for (const check of CHECKS) {
+    // eslint-disable-next-line no-console -- stdout IS the report channel `I18N_QA_REPORT=1` asks for; the worklist is deliberately not a committed file that could go stale, so swallowing this leaves the documented reproduction with nothing to show
     console.log(`\n# ${check.id} — ${live[check.id].length} site(s)`)
+    // eslint-disable-next-line no-console -- same report, one line per violation site: this IS the cleanup worklist, and printing only the per-check counts above would make the run useless
     for (const s of live[check.id]) console.log(`  ${s}`)
   }
 }

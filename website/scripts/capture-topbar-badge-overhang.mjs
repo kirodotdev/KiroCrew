@@ -31,6 +31,8 @@
 import { chromium } from 'playwright'
 import { mkdirSync } from 'node:fs'
 
+import { diffPngs } from './lib/diff-pngs.mjs'
+
 const BASE = process.argv[2] || 'http://127.0.0.1:6811'
 const OUT = process.argv[3] || '../temp-screenshots/topbar-badge-overhang'
 mkdirSync(OUT, { recursive: true })
@@ -58,40 +60,6 @@ const near = (a, b) => Math.abs(a - b) <= 0.5
  *  and `rawN` is reported so the noise stays visible rather than discarded. */
 const TOL = 24
 
-async function diffPngs(page, aB64, bB64) {
-  return page.evaluate(async ([a, b, tol]) => {
-    const load = (b64) => new Promise((res) => {
-      const img = new Image()
-      img.onload = () => {
-        const c = document.createElement('canvas')
-        c.width = img.naturalWidth; c.height = img.naturalHeight
-        c.getContext('2d').drawImage(img, 0, 0)
-        res(c.getContext('2d').getImageData(0, 0, c.width, c.height))
-      }
-      img.src = `data:image/png;base64,${b64}`
-    })
-    const [ia, ib] = await Promise.all([load(a), load(b)])
-    let n = 0, rawN = 0, minX = Infinity, maxX = -1, minY = Infinity, maxY = -1
-    for (let y = 0; y < ia.height; y++) {
-      for (let x = 0; x < ia.width; x++) {
-        const i = (ia.width * y + x) << 2
-        // Alpha compared too: the glow's edge differs in alpha before opacity is
-        // flattened onto the page background.
-        let d = 0
-        for (let k = 0; k < 4; k++) d = Math.max(d, Math.abs(ia.data[i + k] - ib.data[i + k]))
-        if (d > 0) rawN++
-        if (d > tol) {
-          n++
-          if (x < minX) minX = x
-          if (x > maxX) maxX = x
-          if (y < minY) minY = y
-          if (y > maxY) maxY = y
-        }
-      }
-    }
-    return { n, rawN, minX, maxX, minY, maxY }
-  }, [aB64, bB64, TOL])
-}
 
 /** Boxes that decide whether the badge is clipped. `.tb-right` carries no
  *  border, so its client rect IS its padding box — the clip box for `overflow`. */
@@ -157,7 +125,7 @@ for (const w of WIDTHS) {
 
   const dp = await browser.newPage({ viewport: { width: 400, height: 300 } })
   await dp.goto(PAGE('on', w), { waitUntil: 'domcontentloaded' })
-  const d = await diffPngs(dp, shots.off, shots.on)
+  const d = await diffPngs(dp, shots.off, shots.on, TOL)
   await dp.close()
   console.log(`  diff: ${d.n}px over tol=${TOL} (raw ${d.rawN}px incl. rasterisation noise) x=[${d.minX},${d.maxX}] y=[${d.minY},${d.maxY}]`)
   if (d.n === 0) {

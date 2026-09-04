@@ -998,7 +998,118 @@ class TestFlushSegment:
 
         chat_runner._flush_segment(state, slot, "secret AKIAIOSFODNN7EXAMPLE here")
 
-        assert "AKIAIOSFODNN7EXAMPLE" not in slot.messages[-1]["content"]
+        # Target the assistant row by role, not `messages[-1]`: a redacted
+        # segment now also appends a notice row after it, and asserting on the
+        # last row would pass even if the assistant text still held the secret.
+        # Selected via a list + assertion rather than `next(...)` so a missing row
+        # fails on an assertion naming what WAS there, instead of a StopIteration
+        # that cannot distinguish "no assistant row" from "the flush threw".
+        assistants = [m for m in slot.messages if m.get("role") == "assistant"]
+        assert len(assistants) == 1, f"expected one assistant row, got {slot.messages}"
+        assert "AKIAIOSFODNN7EXAMPLE" not in assistants[0]["content"]
+
+    def test_a_redacted_connection_string_warns_the_user(self, tmp_path):
+        """issue #6189: the corruption must not be silent.
+
+        Uses the reporter's exact command. The assistant row keeps the mangled
+        text (redaction is not weakened), but a notice row now follows it saying
+        so and warning that the command will not run as pasted.
+        """
+        from kiro_crew.security import REDACTED_CREDENTIAL_TAG
+
+        state, slot = _state(tmp_path), _slot()
+        command = "echo 'DATABASE_URL=postgresql://user:pass@host:5432/db' >> .env"
+
+        chat_runner._flush_segment(state, slot, command)
+
+        roles = [m.get("role") for m in slot.messages]
+        assert roles == ["assistant", "notice"]
+        assistant, notice = slot.messages[0], slot.messages[1]
+        # Redaction still happened -- the credential is gone from what is stored.
+        assert "user:pass" not in assistant["content"]
+        assert REDACTED_CREDENTIAL_TAG in assistant["content"]
+        # ...and the user is now told, including that it will not run as pasted.
+        assert "Security notice" in notice["content"]
+        assert "will not work if you paste it as-is" in notice["content"]
+        assert notice["cls"] == "msg msg-info"
+        # The notice must never carry the secret it is reporting on.
+        assert "user:pass" not in notice["content"]
+
+    def test_the_notice_counts_multiple_credentials(self, tmp_path):
+        state, slot = _state(tmp_path), _slot()
+
+        chat_runner._flush_segment(
+            state,
+            slot,
+            "first postgresql://a:b@h1/db then mysql://c:d@h2/db",
+        )
+
+        # Assert on the collected rows rather than `next(...)`: a bare `next` over a
+        # generator raises StopIteration when the row is missing, and a raise cannot
+        # distinguish "no notice was appended" from "_flush_segment threw before
+        # appending one". An assertion on the list says which.
+        notices = [m for m in slot.messages if m.get("role") == "notice"]
+        assert len(notices) == 1, f"expected exactly one notice row, got {notices}"
+        assert "2 credentials" in notices[0]["content"]
+        assert "were replaced" in notices[0]["content"]
+
+    def test_a_clean_segment_gets_no_notice(self, tmp_path):
+        state, slot = _state(tmp_path), _slot()
+
+        chat_runner._flush_segment(state, slot, "here is a plain answer")
+
+        assert [m.get("role") for m in slot.messages] == ["assistant"]
+
+    def test_an_encoded_credential_also_warns(self, tmp_path):
+        """A base64-encoded credential is redacted by a DIFFERENT pass and tag.
+
+        `redact_credentials` pass 2 substitutes `[REDACTED: encoded credential]`,
+        which is not a substring of the plaintext tag. Counting only the plaintext
+        tag left this segment silently rewritten -- the same #6189 failure, just
+        reached by another pass.
+        """
+        import base64
+
+        from kiro_crew.security import (
+            _REDACTED_ENCODED_CREDENTIAL_TAG,
+            REDACTED_CREDENTIAL_TAG,
+        )
+
+        state, slot = _state(tmp_path), _slot()
+        # The issue's own connection string, base64-encoded.
+        blob = base64.b64encode(b"postgresql://user:pass@host:5432/db").decode()
+
+        chat_runner._flush_segment(state, slot, f"decode this: {blob}")
+
+        # Assert on collected rows, not `next(...)`. The roles list is also the
+        # witness that `_flush_segment` RAN to completion: if it had thrown before
+        # appending, there would be no assistant row either, so a missing notice
+        # beside a present assistant row isolates the count as the cause.
+        roles = [m.get("role") for m in slot.messages]
+        assert roles == ["assistant", "notice"], f"unexpected rows: {roles}"
+        assistant, notice = slot.messages[0], slot.messages[1]
+        # Redacted by pass 2, so ONLY the encoded tag is present.
+        assert _REDACTED_ENCODED_CREDENTIAL_TAG in assistant["content"]
+        assert REDACTED_CREDENTIAL_TAG not in assistant["content"]
+        assert "A credential" in notice["content"]
+        assert "will not work if you paste it as-is" in notice["content"]
+
+    def test_the_two_credential_tags_do_not_overlap(self):
+        """Summing per-tag counts must not double-count one substitution.
+
+        `_flush_segment` adds `redacted.count(tag)` across every tag in
+        `CREDENTIAL_REDACTION_TAGS`. That is only safe while no tag contains
+        another; if a tag were ever renamed to a superstring of another, a single
+        redaction would report as two and the notice would overcount.
+        """
+        from kiro_crew.security import CREDENTIAL_REDACTION_TAGS
+
+        for outer in CREDENTIAL_REDACTION_TAGS:
+            for inner in CREDENTIAL_REDACTION_TAGS:
+                if outer is inner:
+                    continue
+                assert inner not in outer, f"{inner!r} is a substring of {outer!r}"
+        assert len(set(CREDENTIAL_REDACTION_TAGS)) == len(CREDENTIAL_REDACTION_TAGS)
 
     def test_trailing_stop_event_is_replaced_below_the_segment(self, tmp_path):
         state, slot = _state(tmp_path), _slot()
@@ -2647,10 +2758,11 @@ class TestRunChatRecoveryLadders:
 
     @pytest.mark.asyncio
     async def test_compaction_failure_neither_retries_nor_claims_a_lost_link(self, tmp_path):
-        """A compaction-failed turn is terminal: the reason is in the "error:"
-        family, so without its own branch it lands in pipe-death recovery — a
-        re-queue plus a "Connection lost" card, both false. Compaction retry
-        policy is not this layer's to invent (issue #3583)."""
+        """A PERMANENT compaction failure is terminal: the reason is in the
+        "error:" family, so without its own branch it lands in pipe-death
+        recovery — a re-queue plus a "Connection lost" card, both false. An
+        overflowing conversation fails again identically, so it earns no retry
+        (issue #3583)."""
         state, client = _runner_state(tmp_path)
         slot = _slot()
         _set_stream(
@@ -2697,6 +2809,114 @@ class TestRunChatRecoveryLadders:
         state.sessions.reset.assert_awaited_once()
         assert slot._queue == []
         assert slot._acp_pipe_death_retries == 0
+
+    @pytest.mark.asyncio
+    async def test_a_throttled_compaction_requeues_the_abandoned_message(self, tmp_path):
+        """A summarization call that was throttled has nothing wrong with it, so
+        the turn it abandoned is worth running again. Dropping the message here
+        ended the turn on a backend hiccup the next attempt would clear."""
+        state, client = _runner_state(tmp_path)
+        slot = _slot()
+        client.last_compaction_transient = True
+        _set_stream(client, [_complete(STOP_REASON_COMPACTION_FAILED)])
+
+        await _drive(state, slot, "do the thing")
+
+        assert slot._compaction_failed_retries == 1
+        assert any("Compaction failed — retrying" in err for err in _errors(slot)), _errors(slot)
+        # The requeue is proven by the follow-up turn the finally DISPATCHED
+        # from it. Asserting on slot._queue cannot see it: that dispatch is the
+        # drain, so the entry is already gone by the time the turn returns.
+        assert slot.task is not None
+        # Still not pipe-death: that budget and its card stay untouched.
+        assert slot._acp_pipe_death_retries == 0
+        assert not any("Connection lost" in err for err in _errors(slot))
+
+    @pytest.mark.asyncio
+    async def test_a_stopped_turn_is_not_revived_by_the_throttle_requeue(self, tmp_path):
+        """A requeue lands at queue index 0, so a message the user STOPPED during
+        the turn would come back and run first. The stop completed, so _stopping
+        and _stop_state have both snapped back to idle — only the monotonic
+        generation counter still records that it happened."""
+        state, client = _runner_state(tmp_path)
+        slot = _slot()
+        client.last_compaction_transient = True
+        # The stop has to land DURING the turn: the generation is snapshotted at
+        # turn start, and the branch reads it before the finally block runs.
+        slot._stop_generation = 7
+
+        def _stream(*_a, **_kw):
+            slot._stop_generation = 8
+            return _async_iter([_complete(STOP_REASON_COMPACTION_FAILED)])
+
+        client.stream = MagicMock(side_effect=_stream)
+
+        slot._empty_response_retries = 2
+        with _quiet_sel():
+            await chat_runner._run_chat(state, slot, "do the thing")
+        await _settle(slot)
+
+        assert slot._compaction_failed_retries == 0
+        assert not any("retrying" in err for err in _errors(slot)), _errors(slot)
+
+    @pytest.mark.asyncio
+    async def test_a_user_followup_outranks_the_throttle_requeue(self, tmp_path):
+        """The user typed a correction while the turn was failing. Re-queuing the
+        superseded message at index 0 would run it BEFORE their correction, so the
+        turn stays abandoned and their message is what runs."""
+        state, client = _runner_state(tmp_path)
+        slot = _slot()
+        client.last_compaction_transient = True
+        _set_stream(client, [_complete(STOP_REASON_COMPACTION_FAILED)])
+        slot.queue_insert(0, "actually, do this instead", kind="user", payload="")
+
+        with _quiet_sel():
+            await chat_runner._run_chat(state, slot, "do the thing")
+        await _settle(slot)
+
+        assert slot._compaction_failed_retries == 0
+        assert not any("retrying" in err for err in _errors(slot)), _errors(slot)
+
+    @pytest.mark.asyncio
+    async def test_the_throttle_requeue_is_bounded(self, tmp_path):
+        """A throttle still firing after the budget is not clearing inside this
+        turn, and every attempt pays for the summarization call again."""
+        state, client = _runner_state(tmp_path)
+        slot = _slot()
+        client.last_compaction_transient = True
+        slot._compaction_failed_retries = chat_runner._COMPACTION_FAILED_RETRIES
+        _set_stream(client, [_complete(STOP_REASON_COMPACTION_FAILED)])
+
+        await _drive(state, slot)
+
+        # Unchanged: the budget was already spent, so this failure bought no
+        # further attempt and added no retry notice.
+        assert slot._compaction_failed_retries == chat_runner._COMPACTION_FAILED_RETRIES
+        assert slot._queue == []
+        assert not any("retrying" in err for err in _errors(slot)), _errors(slot)
+
+    @pytest.mark.asyncio
+    async def test_a_transient_failure_after_output_is_not_replayed(self, tmp_path):
+        """Verbatim replay is only safe before anything landed. Once a tool call
+        has been delivered, re-sending the message could repeat its side
+        effect — so an emitted turn keeps the give-up behaviour even for a
+        reason that would otherwise be retried."""
+        state, client = _runner_state(tmp_path)
+        slot = _slot()
+        client.last_compaction_transient = True
+        _set_stream(
+            client,
+            [
+                LLMEvent(kind=EVENT_TEXT_CHUNK, text="partial answer"),
+                _complete(STOP_REASON_COMPACTION_FAILED),
+            ],
+        )
+
+        await _drive(state, slot)
+
+        assert slot._compaction_failed_retries == 0
+        assert slot._queue == []
+        assert not any("retrying" in err for err in _errors(slot)), _errors(slot)
 
     @pytest.mark.asyncio
     async def test_tool_stall_recovery_names_the_stalled_tool(self, tmp_path):

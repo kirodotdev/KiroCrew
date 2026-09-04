@@ -60,6 +60,38 @@ cron resume <id>
 
 The default per-wake execution budget is 30 minutes. Script and command subprocesses have separate defaults of 30 seconds and 300 seconds respectively.
 
+## The Chat Tab a Cron Writes Into
+
+A `persistent_session` job (the default) has ONE dashboard chat tab, `Cron: <name>`, for its whole life — every run appends to the same conversation rather than opening a new tab per run. Replying in that tab is a normal follow-up turn against the job's accumulated session.
+
+Each run appends a pair of rows so the runs stay distinguishable inside that one tab:
+
+| Row | Header | Content |
+|-----|--------|---------|
+| `user` | `# Cron Run: <name> \| <date time tz>` | the job's `message` — what this run was asked to do, or, for a long unchanged instruction, a reference to the row that holds it (below) |
+| `assistant` | `# Cron Job Result: <name> \| <date time tz>` | what the run produced |
+
+The timestamp is the moment the run produced its result, to the second, rendered in the job's `timezone` (then the config timezone, then UTC). It is what lets a follow-up turn tell which run it is answering, so when you reply to a daily job, answer the newest pair. Rows written before this behaviour shipped carry no timestamp.
+
+The stamp is rendered ONCE, when the result is recorded, and stored with it — later edits to the job's `timezone` do not respell an existing row. That matters because a row is recognised as already-written by its exact text, so a re-render under changed settings would append a second copy of a run instead of recognising the first.
+
+Each row's header also carries an invisible identity marker, `<!-- cron-run:<job-id>:<epoch> -->`, holding the run's timestamp at full precision. It does not render, and it is what keeps two runs distinct: the visible stamp is written for a person to read, so its resolution must not decide whether two fast runs collapse into one row. It sits ahead of the body rather than after it because a prompt or result can end inside an unclosed code fence, and everything after such a fence renders as code — which would print the marker instead of hiding it.
+
+### A repeated instruction is referenced, not stored again
+
+A persistent job runs the same `message` every time, and each row carries a per-run marker that deliberately stops runs collapsing — so writing the instruction verbatim on every run would store one unchanged text once per run. For a job with a large prompt that is self-defeating: the transcript rotates (10MB, ~200 lines) and the replay a follow-up turn reads is character-budgeted, so copies of one instruction crowd out the distinct runs the pair exists to separate.
+
+So a **long** instruction is written verbatim only when it is new to the run above it — the first run, the first run after someone edits the message on a live job, and periodically thereafter. Otherwise the row still appears, with the same header, stamp and marker, and its body says the instruction is unchanged and points at the nearest `# Cron Run` row above that carries the text.
+
+Four consequences worth knowing:
+
+- **Short instructions are never referenced.** The row keeps its header, stamp and marker either way, so replacing the text costs the length of the placeholder and saves the length of the prompt — below break-even that makes the transcript *bigger* and loses the instruction. Anything under 500 characters, which is most crons in the wild ("check pipeline health"), is stored verbatim every run exactly as before.
+- **"Unchanged" is decided by reading the rows**, not by tracking edits on the job, and it is the *latest* instruction-bearing row that is compared rather than any row in reach. Runs that write no row at all — `hide_in_chat`, or `persistent_session: false` — therefore cannot affect it; a remembered "the message changed" signal would be spent by such a run, and the next visible run would reference a surviving row still holding the previous instruction. Comparing the latest row also means an edit that is later reverted (A, then B, then A again) stores A again rather than pointing past B at the older copy.
+- **The reference points into the transcript**, never at the job's current `message`. A pointer to live configuration would resolve to whatever the instruction is now, which is the same misattribution that makes `/to-chat` omit the prompt row entirely.
+- **A reference reaches back at most 40 rows (~20 runs), so the text re-anchors periodically.** Three windows disagree about what "still here" means: the tab's live window holds 10,000 rows, the durable transcript keeps ~200 lines, and the replay a follow-up turn reads is character-budgeted and tail-heavy. An unbounded search would read the largest of the three and keep matching a copy that rotation has already dropped from disk — the instruction stored once and referenced forever, with the text nowhere a reader can reach. Bounding it re-writes the instruction in full every ~20 runs instead, which is inside the two windows counted in ROWS. It does not promise the same for the replay, which is counted in characters: ~20 runs whose results are long can exhaust that budget before it reaches the antecedent, so the text is still on disk but may sit outside what a single replay shows. No write-time row count can close that, because the replay budget is scaled at read time by the active model's context window — closing it belongs on the reading side. A referenced row does **not** count as a copy: it shares the `# Cron Run:` header because it is still a run boundary, but holds no instruction text, so treating it as one would let references chain off each other with nothing at the end. Which rows are references is marked by an invisible tag in the header, not inferred from the body wording — so a job whose message is *itself* the "unchanged" sentence is still stored and compared as an ordinary instruction, never mistaken for a pointer.
+
+Re-opening the last result from the Schedule page (`/to-chat`) reuses that stored stamp, so it never duplicates a run the executor already wrote. It shows the result row only: the prompt behind a stored result is not recoverable from the job's current `message`, which may have been edited since, so only the run that produced a result writes the `user` row.
+
 ## Per-Agent Cron
 
 Jobs can specify an agent — useful for running specialized agents on a schedule (e.g., a code-reviewer agent checking for open CRs).

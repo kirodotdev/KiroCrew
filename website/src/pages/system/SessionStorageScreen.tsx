@@ -385,12 +385,17 @@ export default function SessionStorageScreen({ onBack }: { onBack: () => void })
           <div className="flex items-center gap-2">
             <label className="flex-1 flex items-center gap-2 bg-bg-elevated border border-border focus-within:border-accent rounded-md px-2.5 py-1.5">
               <Search className="w-3.5 h-3.5 text-muted" />
+              {/* The wrapping label carries only the magnifier glyph, so the
+                  placeholder is this field's only visible name — and a
+                  placeholder is not an accessible name. One string for both, so
+                  the two can never end up describing different fields. */}
               <input
                 type="text"
                 value={search}
                 onChange={e => setSearch(e.target.value)}
+                aria-label={i18nT('pages.sessionStorage.search_placeholder')}
                 placeholder={i18nT('pages.sessionStorage.search_placeholder')}
-                className="flex-1 bg-transparent border-0 outline-none text-[13px] text-text placeholder:text-muted"
+                className="flex-1 bg-transparent border-0 text-[13px] text-text placeholder:text-muted"
               />
             </label>
             {/* SimpleSelect, not a native <select>: a native popup is drawn by the
@@ -746,6 +751,12 @@ function SessionRow({
   onTrash: () => void
 }) {
   const title = session.title || session.origin
+  // The row's visible title is the selection checkbox's label. Bound by
+  // `aria-labelledby` rather than by turning the title into a `<label>`: a
+  // label would make clicking the title toggle selection instead of expanding
+  // the row. `uid` is unique across both lists (they partition on `background`),
+  // so the reference cannot collide.
+  const titleId = `session-title-${session.uid}`
 
   return (
     <div className={`border-b border-border ${isExpanded ? 'bg-bg-hover' : ''}`}>
@@ -761,6 +772,7 @@ function SessionRow({
         <input
           type="checkbox"
           checked={isSelected}
+          aria-labelledby={titleId}
           disabled={session.active}
           title={
             session.active
@@ -774,7 +786,7 @@ function SessionRow({
           className="w-[13px] h-[13px] accent-muted cursor-pointer disabled:opacity-35 disabled:cursor-default"
         />
         <div className="min-w-0">
-          <div className="text-[13px] text-text-strong truncate">
+          <div id={titleId} className="text-[13px] text-text-strong truncate">
             {title}
             {session.active && (
               <span className="ml-2 inline-block px-1.5 border border-border-strong rounded text-[10px] text-muted align-middle">

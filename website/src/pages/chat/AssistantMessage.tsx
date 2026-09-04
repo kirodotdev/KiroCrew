@@ -1,6 +1,7 @@
 import { useState, useMemo, useEffect, memo, useRef, useId } from 'react'
 import { motion } from 'framer-motion'
-import { Copy, Check, Volume2, Code, ClipboardList, CheckCircle, RefreshCw, ChevronLeft, ChevronRight, GitFork, Loader2, Link2, Compass, Clock, Pin, PinOff, MoreHorizontal } from 'lucide-react'
+import { Copy, Check, Volume2, Code, ClipboardList, CheckCircle, RefreshCw, ChevronLeft, ChevronRight, GitFork, Loader2, Link2, Compass, Clock, Pin, PinOff, MoreHorizontal, Share2 } from 'lucide-react'
+import { lazy, Suspense } from 'react'
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem } from '../../components/ui/dropdown-menu'
 import { copyToClipboard } from '../../utils/clipboard'
 import { copySessionLink } from '../../utils/shareUrl'
@@ -78,15 +79,20 @@ function SteerAckChip({ summary }: { summary: string }) {
 /** Shared by the fork/plan row buttons below; identical to their base-branch class. */
 const ROW_ACTION_CLS = 'text-muted hover:text-text p-0.5 rounded transition-colors disabled:opacity-50'
 
+/** Loaded on first open: the share dialog pulls in html-to-image, which no
+ *  chat render path should pay for before the user actually shares. */
+const LazyShareMessageModal = lazy(() => import('./share/ShareMessageModal'))
+
 /** The footer's hover-reveal + touch-target contract, shared by the action row and the
     unavailable fork affordance that sits outside it. */
 const ACTIONS_REVEAL_CLS = `flex items-center gap-1 mt-1 opacity-0 transition-opacity duration-300 delay-100 group-hover/msg:opacity-100 group-hover/msg:delay-300 group-focus-within/msg:opacity-100 group-focus-within/msg:delay-300 ${HOVER_NONE_ACTIONS_ROW_CLS}`
 
-const AssistantMessage = memo(function AssistantMessage({ content, isStreaming, onFileOpen, onFolderOpen, onArtifactOpen, onSessionOpen, sessions, activeSession, planTaskId, onApplyPlan, slotRunning, onSpeak, timestamp, timestampTitle, showFooter = true, onRegenerate, variants, variantIdx, onSwitchVariant, isRegenerating, onFork, onPlanFromHere, forkIndex, onLoadEarlier, loadingOlder, earlierRemaining, onQuote, onAsk, messageTs, slotKey, slotTitle, mode, fileChanges, onOpenDiff, fileChipStyle, artifactPaths, turnStats, linkPreviews, pinned, onTogglePin, suppressSteerAck }: { content: string; isStreaming: boolean; onFileOpen?: (path: string, opts?: { line?: number; endLine?: number }) => void; onFolderOpen?: (path: string) => void; onArtifactOpen?: (slug: string) => void; onSessionOpen?: (key: string) => void; sessions?: ReadonlyMap<string, string>; activeSession?: string; planTaskId?: string; onApplyPlan?: (steps: PlanStepInput[]) => Promise<boolean>; slotRunning?: boolean; onSpeak?: (content: string) => void; timestamp?: string; timestampTitle?: string; showFooter?: boolean; onRegenerate?: () => void; variants?: { content: string; ts?: string }[]; variantIdx?: number; onSwitchVariant?: (index: number) => void; isRegenerating?: boolean; onFork?: (index: number) => void | Promise<void>; onPlanFromHere?: (index: number) => void | Promise<void>; forkIndex?: number; onLoadEarlier?: () => void; loadingOlder?: boolean; earlierRemaining?: number; onQuote?: (text: string, rect: DOMRect) => void; onAsk?: (text: string, rect: DOMRect) => void; messageTs?: string; slotKey?: string; slotTitle?: string; mode?: string; fileChanges?: FileChangeEntry[]; onOpenDiff?: (path: string, modified: string, original: string) => void; fileChipStyle?: FileChipStyle; artifactPaths?: Set<string>; turnStats?: TurnStats; linkPreviews?: boolean; pinned?: boolean; onTogglePin?: () => void; /** Drop the steer chip: this turn's steer was a system policy notice, not the user's. */ suppressSteerAck?: boolean }) {
+const AssistantMessage = memo(function AssistantMessage({ content, isStreaming, onFileOpen, onFolderOpen, onArtifactOpen, onSessionOpen, sessions, activeSession, planTaskId, onApplyPlan, slotRunning, onSpeak, timestamp, timestampTitle, showFooter = true, onRegenerate, variants, variantIdx, onSwitchVariant, isRegenerating, onFork, onPlanFromHere, forkIndex, forkMessageId, onLoadEarlier, loadingOlder, earlierRemaining, onQuote, onAsk, messageTs, slotKey, slotTitle, mode, fileChanges, onOpenDiff, fileChipStyle, artifactPaths, turnStats, linkPreviews, pinned, onTogglePin, suppressSteerAck, prevUserText }: { content: string; isStreaming: boolean; onFileOpen?: (path: string, opts?: { line?: number; endLine?: number }) => void; onFolderOpen?: (path: string) => void; onArtifactOpen?: (slug: string) => void; onSessionOpen?: (key: string) => void; sessions?: ReadonlyMap<string, string>; activeSession?: string; planTaskId?: string; onApplyPlan?: (steps: PlanStepInput[]) => Promise<boolean>; slotRunning?: boolean; onSpeak?: (content: string) => void; timestamp?: string; timestampTitle?: string; showFooter?: boolean; onRegenerate?: () => void; variants?: { content: string; ts?: string }[]; variantIdx?: number; onSwitchVariant?: (index: number) => void; isRegenerating?: boolean; onFork?: (index: number, messageId?: string) => void | Promise<void>; onPlanFromHere?: (index: number, messageId?: string) => void | Promise<void>; forkIndex?: number; forkMessageId?: string; onLoadEarlier?: () => void; loadingOlder?: boolean; earlierRemaining?: number; onQuote?: (text: string, rect: DOMRect) => void; onAsk?: (text: string, rect: DOMRect) => void; messageTs?: string; slotKey?: string; slotTitle?: string; mode?: string; fileChanges?: FileChangeEntry[]; onOpenDiff?: (path: string, modified: string, original: string) => void; fileChipStyle?: FileChipStyle; artifactPaths?: Set<string>; turnStats?: TurnStats; linkPreviews?: boolean; pinned?: boolean; onTogglePin?: () => void; /** Drop the steer chip: this turn's steer was a system policy notice, not the user's. */ suppressSteerAck?: boolean; /** The user question this reply answered — enables the share card's Q&A pairing. */ prevUserText?: string }) {
   useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
   const [applied, setApplied] = useState(false)
   const [copied, setCopied] = useState(false)
   const [linkCopied, setLinkCopied] = useState(false)
+  const [shareOpen, setShareOpen] = useState(false)
   const [busyAction, setBusyAction] = useState<'fork' | 'plan' | null>(null)
   // The disabled reason is VISIBLE text, so it needs an id to be referenced by
   // rather than a tooltip only a patient mouse can reach.
@@ -100,6 +106,26 @@ const AssistantMessage = memo(function AssistantMessage({ content, isStreaming, 
       : i18nT('pages.chat.assistantMessage.needs_earlier_history')
   const forkLabel = i18nT('pages.chat.assistantMessage.fork_conversation_from_here')
   const planLabel = i18nT('pages.chat.assistantMessage.plan_from_here')
+  const runForkAction = async () => {
+    if (!onFork || forkIndex === undefined || busyAction !== null) return
+    setBusyAction('fork')
+    try {
+      await (forkMessageId ? onFork(forkIndex, forkMessageId) : onFork(forkIndex))
+    } finally {
+      setBusyAction(null)
+    }
+  }
+  const runPlanAction = async () => {
+    if (!onPlanFromHere || forkIndex === undefined || busyAction !== null) return
+    setBusyAction('plan')
+    try {
+      await (forkMessageId
+        ? onPlanFromHere(forkIndex, forkMessageId)
+        : onPlanFromHere(forkIndex))
+    } finally {
+      setBusyAction(null)
+    }
+  }
   // Stops on lack of PROGRESS, never a page cap: a cap false-reports distant but
   // reachable rows as unavailable, which is why the earlier one was removed.
   const [pagingToTarget, setPagingToTarget] = useState(false)
@@ -257,7 +283,7 @@ const AssistantMessage = memo(function AssistantMessage({ content, isStreaming, 
     {/* 'message-bubble' is a stable theming hook — see website/docs/theming-contract.md */}
     <div ref={contentRef} className="message-bubble msg-content group/bubble relative text-sm leading-6 text-text overflow-hidden" style={{ overflowWrap: 'anywhere', wordBreak: 'break-word' }}>
       <MessageErrorBoundary rawContent={smoothedText}>
-        <MarkdownRenderer content={smoothedText} streaming={isStreaming} onFileOpen={onFileOpen} onFolderOpen={onFolderOpen} onArtifactOpen={onArtifactOpen} onSessionOpen={onSessionOpen} sessions={sessions} activeSession={activeSession} rawMode={rawMode} messageTs={messageTs} slotKey={slotKey} glow={isStreaming} smooth={smooth} linkPreviews={linkPreviews && !draining} />
+        <MarkdownRenderer content={smoothedText} streaming={isStreaming} onFileOpen={onFileOpen} onFolderOpen={onFolderOpen} onArtifactOpen={onArtifactOpen} onSessionOpen={onSessionOpen} sessions={sessions} activeSession={activeSession} rawMode={rawMode} messageTs={messageTs} slotKey={slotKey} glow={isStreaming} smooth={smooth} linkPreviews={linkPreviews && !draining} collapseDiffs />
       </MessageErrorBoundary>
       {/* Render the steer ack the moment kiro-cli emits the [STEERING …] marker
           — including mid-stream — so the user sees the agent acknowledge the
@@ -324,8 +350,8 @@ const AssistantMessage = memo(function AssistantMessage({ content, isStreaming, 
         {/* A loaded window keeps fork/plan as row buttons, as on base: the menu below exists
             only to give the UNAVAILABLE state a visible reason, and relocating the everyday
             controls taxed chats the bound never touched. */}
-        {onFork && forkIndex !== undefined && <button className={ROW_ACTION_CLS} disabled={busyAction !== null} data-testid="fork-from-here" title={forkLabel} aria-label={forkLabel} onClick={async () => { setBusyAction('fork'); try { await onFork(forkIndex) } finally { setBusyAction(null) } }}>{busyAction === 'fork' ? <Loader2 size={14} className="animate-spin" /> : <GitFork size={14} />}</button>}
-        {onPlanFromHere && forkIndex !== undefined && <button className={ROW_ACTION_CLS} disabled={busyAction !== null} data-testid="plan-from-here" title={planLabel} aria-label={planLabel} onClick={async () => { setBusyAction('plan'); try { await onPlanFromHere(forkIndex) } finally { setBusyAction(null) } }}>{busyAction === 'plan' ? <Loader2 size={14} className="animate-spin" /> : <ClipboardList size={14} />}</button>}
+        {onFork && forkIndex !== undefined && !forkMessageId && <button className={ROW_ACTION_CLS} disabled={busyAction !== null} data-testid="fork-from-here" title={forkLabel} aria-label={forkLabel} onClick={() => { void runForkAction() }}>{busyAction === 'fork' ? <Loader2 size={14} className="animate-spin" /> : <GitFork size={14} />}</button>}
+        {onPlanFromHere && forkIndex !== undefined && !forkMessageId && <button className={ROW_ACTION_CLS} disabled={busyAction !== null} data-testid="plan-from-here" title={planLabel} aria-label={planLabel} onClick={() => { void runPlanAction() }}>{busyAction === 'plan' ? <Loader2 size={14} className="animate-spin" /> : <ClipboardList size={14} />}</button>}
         {/* Row buttons, not menu items: neither depends on `slotHasMore`, and the raw-mode
             state has to be VISIBLE without opening anything. */}
         {text.length >= 50 && onSpeak && <button className="text-muted hover:text-text p-0.5 rounded transition-colors" title={i18nT('pages.chat.assistantMessage.speak')} aria-label={i18nT('pages.chat.assistantMessage.speak_message')} onClick={() => onSpeak(content)}><Volume2 size={14} /></button>}
@@ -349,10 +375,15 @@ const AssistantMessage = memo(function AssistantMessage({ content, isStreaming, 
           )
         })()}
       </div>
-      {/* Outside the action row on purpose: without an index base rendered no fork/plan
-          at all, so a trigger inside that row would be a net +1 control. */}
-      {(onFork || onPlanFromHere) && forkIndex === undefined && (
-      <div className={ACTIONS_REVEAL_CLS}>
+      {/* Its own row below the hover actions on purpose: that row is a
+          legacy-status 3+ group the two-action rule forbids growing, so
+          overflow actions live here. Share is present whenever the menu is;
+          fork/plan appear only in their unavailable state (a loaded window
+          keeps them as row buttons above, where the everyday controls belong).
+          Both fork handlers absent means an embedded pane (co-author, artifact
+          chat), which carries no per-message actions at all — the menu, Share
+          included, stays out with them. */}
+      {(onFork || onPlanFromHere) && <div className={ACTIONS_REVEAL_CLS}>
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <button
@@ -365,23 +396,38 @@ const AssistantMessage = memo(function AssistantMessage({ content, isStreaming, 
             </button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end" className="min-w-[210px]">
+            <DropdownMenuItem data-testid="share-message" onSelect={() => setShareOpen(true)}>
+              <span className="flex items-center gap-2">
+                <Share2 size={13} className="shrink-0" />
+                <span>{i18nT('pages.chat.assistantMessage.share_message')}</span>
+              </span>
+            </DropdownMenuItem>
+            {(onFork || onPlanFromHere) && (forkIndex === undefined || !!forkMessageId) && (<>
             {onFork && (
               <DropdownMenuItem
                 // Radix skips a `disabled` item in keyboard nav and kills pointer events,
-                // so the reason below would be reachable by neither keyboard nor hover.
+                // so the unavailable reason stays reachable through aria-disabled.
                 aria-disabled={forkIndex === undefined || busyAction !== null || undefined}
                 aria-describedby={forkIndex === undefined ? `${reasonId}-fork` : undefined}
                 className="flex-col items-start gap-0.5"
                 data-testid="fork-from-here"
-                onSelect={(e) => { e.preventDefault(); if (busyAction !== null) return; setPagingToTarget(true) }}
+                onSelect={(e) => {
+                  if (busyAction !== null) { e.preventDefault(); return }
+                  if (forkIndex === undefined) {
+                    e.preventDefault()
+                    setPagingToTarget(true)
+                    return
+                  }
+                  void runForkAction()
+                }}
               >
-                <span className="flex items-center gap-2 opacity-50">
+                <span className={`flex items-center gap-2 ${forkIndex === undefined ? 'opacity-50' : ''}`}>
                   {busyAction === 'fork' || loadingOlder ? <Loader2 size={13} className="shrink-0 animate-spin" /> : <GitFork size={13} className="shrink-0" />}
                   <span>{forkLabel}</span>
                 </span>
-                <span id={`${reasonId}-fork`} data-testid="fork-unavailable-reason" className="text-[11px] leading-4 text-muted pl-[21px]">
+                {forkIndex === undefined && <span id={`${reasonId}-fork`} data-testid="fork-unavailable-reason" className="text-[11px] leading-4 text-muted pl-[21px]">
                   {unavailableReason}
-                </span>
+                </span>}
               </DropdownMenuItem>
             )}
             {onPlanFromHere && (
@@ -390,21 +436,32 @@ const AssistantMessage = memo(function AssistantMessage({ content, isStreaming, 
                 aria-describedby={forkIndex === undefined ? `${reasonId}-plan` : undefined}
                 className="flex-col items-start gap-0.5"
                 data-testid="plan-from-here"
-                onSelect={(e) => { e.preventDefault(); if (busyAction !== null) return; setPagingToTarget(true) }}
+                onSelect={(e) => {
+                  if (busyAction !== null) { e.preventDefault(); return }
+                  if (forkIndex === undefined) {
+                    e.preventDefault()
+                    setPagingToTarget(true)
+                    return
+                  }
+                  void runPlanAction()
+                }}
               >
-                <span className="flex items-center gap-2 opacity-50">
+                <span className={`flex items-center gap-2 ${forkIndex === undefined ? 'opacity-50' : ''}`}>
                   {busyAction === 'plan' || loadingOlder ? <Loader2 size={13} className="shrink-0 animate-spin" /> : <ClipboardList size={13} className="shrink-0" />}
                   <span>{planLabel}</span>
                 </span>
-                <span id={`${reasonId}-plan`} className="text-[11px] leading-4 text-muted pl-[21px]">
+                {forkIndex === undefined && <span id={`${reasonId}-plan`} className="text-[11px] leading-4 text-muted pl-[21px]">
                   {unavailableReason}
-                </span>
+                </span>}
               </DropdownMenuItem>
             )}
+            </>)}
           </DropdownMenuContent>
         </DropdownMenu>
-      </div>
-      )}
+        {/* Radix portals the dialog to <body>; gating on shareOpen keeps the
+            lazy chunk unfetched until the first share. */}
+        {shareOpen && <Suspense fallback={null}><LazyShareMessageModal onClose={() => setShareOpen(false)} messageText={steerCleaned} prevUserText={prevUserText} /></Suspense>}
+      </div>}
     </>)}
     {planSteps && onApplyPlan && !applied && !isRegenerating && (
       <button className="mt-1 px-3 py-2 rounded-md text-[13px] leading-5 font-medium border border-accent text-accent bg-transparent cursor-pointer hover:bg-accent hover:text-accent-fg transition-all" onClick={async () => { const ok = await onApplyPlan(planSteps); if (ok) setApplied(true) }}>

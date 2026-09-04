@@ -219,21 +219,34 @@ export function typicalRunMs(runs: {
 export function failureReason(run: {
   status: RunStatus
   error?: string
+  reason?: string
   changes: string[]
   change_ids?: string[]
-  progress?: Record<string, { phase?: string; error?: string }>
+  progress?: Record<string, { phase?: string; error?: string; reason?: string }>
 }, changeId?: string): { text: string; raw: string } | null {
   if (effectiveRunStatus(run) !== 'error' && run.status !== 'interrupted') return null
   // Prefer the per-change cause when a specific change is in view: on a
   // multi-PR run the run-level error may belong to a different one.
   let raw = ''
-  if (changeId) raw = (run.progress?.[changeId]?.error || '').trim()
+  // The stable backend token for the same cause, resolved through the SAME
+  // precedence as the prose so the two always describe one failure. Empty for a
+  // run recorded before the backend carried it.
+  let token = ''
+  if (changeId) {
+    raw = (run.progress?.[changeId]?.error || '').trim()
+    token = (run.progress?.[changeId]?.reason || '').trim()
+  }
   if (!raw) raw = (run.error || '').trim()
+  if (!token) token = (run.reason || '').trim()
   if (!raw) {
     for (const change of run.changes) {
       const cid = run.change_ids?.[run.changes.indexOf(change)] ?? change
       const e = (run.progress?.[cid]?.error || '').trim()
-      if (e) { raw = e; break }
+      if (e) {
+        raw = e
+        if (!token) token = (run.progress?.[cid]?.reason || '').trim()
+        break
+      }
     }
   }
   if (!raw) return { text: i18nT('apps.codeReviewSage.lib.format.cause_unknown'), raw: '' }
@@ -250,8 +263,39 @@ export function failureReason(run: {
       raw,
     }
   }
+  // ── The reviewer never started: the runtime preflight refused ──
+  // Three strings rather than one, because each names a different missing thing
+  // with a different remedy: `review_pool.runtime_preflight` returns either "no
+  // kiro-cli executable was found" or "the ACP runtime … is not importable", and
+  // `routes.py::_first_change_error` renders a third, generic sentence for a
+  // record that kept only the `runtime_unavailable` reason.
+  //
+  // Matched on the specific phrase, NOT on the word `kiro-cli`: a missing agent
+  // spec also names it ("Agent spec '…' is not installed: kiro-cli found no
+  // '….json' in … — repair with `kirocrew setup --agent-only --clean`", from
+  // acp/runtime.py) and reaches this function through the pool's spawn error. A
+  // bare /kiro-cli/ branch would replace that message — which already carries
+  // the exact repair command — with "install kiro-cli", losing the fix.
+  if (/no kiro-cli executable/.test(lower)) {
+    return { text: i18nT('apps.codeReviewSage.lib.format.cause_no_agent_cli'), raw }
+  }
+  if (/is not importable/.test(lower)) {
+    return { text: i18nT('apps.codeReviewSage.lib.format.cause_runtime_not_importable'), raw }
+  }
+  if (/runtime_unavailable|agent runtime is unavailable/.test(lower)) {
+    return { text: i18nT('apps.codeReviewSage.lib.format.cause_runtime_unavailable'), raw }
+  }
   if (/no result record|no_review_recorded/.test(lower)) {
     return { text: i18nT('apps.codeReviewSage.lib.format.cause_no_record'), raw }
+  }
+  // A record landed but the review never completed. Deliberately not matched by
+  // the branch above — "wrote a result record" is the opposite of "no result
+  // record" — so it needs its own. One phrase covers both wordings: the driver's
+  // per-change "review wrote a result record but never completed the review" and
+  // the run-level sentence `_first_change_error` maps `review_record_incomplete`
+  // to, "the reviewer wrote a findings record but never completed the review".
+  if (/never completed the review|review_record_incomplete/.test(lower)) {
+    return { text: i18nT('apps.codeReviewSage.lib.format.cause_record_incomplete'), raw }
   }
   if (/timed out|timeout/.test(lower)) {
     return { text: i18nT('apps.codeReviewSage.lib.format.cause_timeout'), raw }
@@ -259,6 +303,39 @@ export function failureReason(run: {
   if (/review_failed/.test(lower)) {
     return { text: i18nT('apps.codeReviewSage.lib.format.cause_turn_failed'), raw }
   }
+  // No prose branch matched. THIS is where a backend rewording lands, and
+  // returning `raw` here is the defect: the reader gets untranslated English and
+  // no test goes red, because the fixtures above are the frontend's own copies of
+  // the backend's strings. So fall back to the cause TOKEN before falling back to
+  // the prose.
+  //
+  // Consulted here rather than first, which the obvious reading of "key on the
+  // token" would do, because for one cause the prose is strictly MORE specific
+  // than the token: all three runtime-preflight messages carry the single token
+  // `runtime_unavailable`, so a token-first lookup would replace "no kiro-cli
+  // executable was found" and "the ACP runtime is not importable" -- one of which
+  // carries the exact repair command -- with the generic sentence. Prose-first
+  // keeps every currently-translated message translated exactly as it is today
+  // and changes behaviour ONLY on the pass-through path, which is the bug.
+  //
+  // `review_failed` is deliberately NOT in this table, though it is one of the
+  // four tokens. The other three label prose the BACKEND wrote -- a closed set of
+  // fixed sentences the token faithfully stands in for. `review_failed` labels
+  // whatever the failed dispatch returned, so its prose is arbitrary and usually
+  // far more specific than the token: the missing-agent-spec message arrives on
+  // that path carrying its own `kirocrew setup --agent-only --clean` repair
+  // command. Substituting the generic "the review turn failed" for it would lose
+  // the fix -- the same information loss a broad /kiro-cli/ branch would cause,
+  // just reached through the token. Its card passes the backend text through
+  // today and still does, which is the correct rendering for a message that IS
+  // the information.
+  const byToken: Record<string, string> = {
+    runtime_unavailable: 'apps.codeReviewSage.lib.format.cause_runtime_unavailable',
+    no_review_recorded: 'apps.codeReviewSage.lib.format.cause_no_record',
+    review_record_incomplete: 'apps.codeReviewSage.lib.format.cause_record_incomplete',
+  }
+  const key = byToken[token]
+  if (key) return { text: i18nT(key), raw }
   return { text: raw, raw }
 }
 

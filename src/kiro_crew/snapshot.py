@@ -532,7 +532,27 @@ def _chain_is_link_free(root: Path, rel_parts: tuple[str, ...]) -> bool:
     """
     if not pinned_fs.supports_pinned_walk():
         return True
-    fd = pinned_fs.open_dir_pinned(root, what="database source root")
+    try:
+        fd = pinned_fs.open_dir_pinned(root, what="database source root")
+    except OSError:
+        # Gone, or otherwise unopenable: the same answer the intermediate components below
+        # already give, and for the same reason -- a root this pass cannot open is a file it
+        # cannot verify as reachable without following a link.
+        #
+        # `open_dir_pinned` translates only `ELOOP`/`ENOTDIR` into `PinnedPathRefusal` and
+        # re-raises every other `OSError`, and this call sat OUTSIDE the try below. So a root
+        # lost to a concurrent rename or removal left `ENOENT` escaping as
+        # `FileNotFoundError` from a call site under `_build_snapshot`, whose enclosing try
+        # handles `PinnedPathRefusal`, `UnsafeComponentRoot` and `DatabaseCopyFailed` -- the
+        # `OSError` arm belongs to a later, separate try. The command exited on a traceback
+        # where the declared path owes a named refusal and the tree path owes a recorded
+        # skip. Returning False routes both through the `require_database` asymmetry the
+        # caller already implements. Review's finding.
+        #
+        # `PinnedPathRefusal` is deliberately NOT caught here: `snapshot_main` handles it and
+        # audits it as `unpinnable_staging`. That is a decision the operator should see, not
+        # a source that went missing.
+        return False
     try:
         for part in rel_parts[:-1]:
             try:
@@ -555,7 +575,237 @@ def _dir_flags_nofollow() -> int:
     return flags | getattr(os, "O_CLOEXEC", 0)
 
 
-def _restage_databases(src_dir: Path, dst_dir: Path) -> None:
+# Outcomes of `_copy_database_consistently`. Three, not a bool, because the two
+# non-success cases need OPPOSITE handling from the caller and collapsing them is how a
+# bundle ends up carrying a database nobody copied consistently while reporting success:
+#
+#   COPIED         the backup API produced a consistent copy at the destination.
+#   NOT_A_DATABASE the file is positively NOT SQLite, so the caller should stage its bytes
+#                  -- a non-database named `.db` is still the operator's file.
+#   UNSAFE_SOURCE  the source could not be verified as reachable without traversing a
+#                  link, so nothing was read from it. The caller must NOT substitute a
+#                  byte copy: that is the read this refusal exists to prevent.
+#
+# Anything else raises `DatabaseCopyFailed`. A database that IS readable but could not be
+# copied is never degraded to a byte copy, because this module excludes `-wal`/`-shm` and
+# such a copy would be a torn database shipped as a whole one.
+DB_COPIED = "copied"
+DB_NOT_A_DATABASE = "not_a_database"
+DB_UNSAFE_SOURCE = "unsafe_source"
+
+# Recorded in MANIFEST.json when a database was staged as bytes rather than consistently.
+# An archive whose manifest names the degradation is recoverable information; a quietly
+# inconsistent database in an archive that reports success is not.
+SKIP_DB_UNPINNED_SOURCE = "db_unpinned_source"
+
+
+def _copy_database_consistently(
+    src: Path,
+    dst: Path,
+    *,
+    root: Path,
+    rel_parts: tuple[str, ...],
+    require_database: bool = False,
+) -> str:
+    """Copy the live SQLite database *src* to *dst* through the backup API, read-only.
+
+    THE one place this module reads a live database on the creation path. Both staging
+    paths -- the fixed core-file list and the tree re-stage pass -- call it, because the
+    hardening below was arrived at over five review rounds on #5156 and a second,
+    structurally identical copy of it is how one of the two drifts back.
+
+    Four properties, each closing a failure that reported success:
+
+    **The chain is verified through descriptors, not by name.** Every component from
+    *root* down is opened relative to the previous one with ``O_NOFOLLOW``, so a directory
+    that is a link -- or one swapped for a link while this runs -- fails its own open
+    instead of redirecting the read. ``src.resolve()`` and a late ``realpath()`` are both
+    a SECOND by-name walk and were both wrong here: they can land on a database this
+    function never inspected, whose rows then ride in the bundle under an innocuous name.
+
+    **The URI is percent-escaped.** ``as_uri()``, not interpolation: a POSIX filename
+    containing ``?`` or ``#`` was otherwise parsed as the start of the URI's query or
+    fragment, truncating the path so the copy opened a DIFFERENT database and stored it
+    under the requested name. Built once and shared by the probe and the copy, because two
+    spellings of one URI is how they diverge.
+
+    **The connection is ``mode=ro``.** Staging only ever needs to read, and a read-write
+    open is not merely more authority than required -- it MUTATES the live database.
+    Measured on a fixture with a ``-wal`` left unreplayed by a killed writer: the
+    read-write open recovered the log into the main file (8192 -> 16384 bytes, different
+    hash) and unlinked the 836 KB ``-wal``; ``mode=ro`` left both byte-identical and
+    captured exactly the same rows. So a backup command was rewriting the data it was
+    asked to read, and in the window before SQLite's own open a swapped-in database was
+    handed a writable handle. ``mode=ro`` refuses the write outright.
+
+    **"Not a database" is told apart from "cannot read this database".** They are
+    distinguished by probing readability separately from copying, not by matching the
+    error, because ``sqlite_errorname`` is 3.11+ while this package supports 3.10 and
+    message text changes with any SQLite release. The broad form was wrong in the
+    dangerous direction: "database is locked" is also a ``DatabaseError``, so an exclusive
+    writer made the probe report "not a database" and a raw byte copy shipped as if it
+    were consistent.
+
+    What this does NOT close, stated rather than implied: SQLite's API takes a PATH and
+    cannot be pointed at a held descriptor -- probed, it refuses ``/proc/self/fd/N`` and
+    ``/dev/fd/N`` alike -- so SQLite re-resolves the final name itself, and a same-uid
+    swap in the window between the check above and that open is not detectable here. A
+    post-hoc identity re-check does not close it either, since swapping back defeats the
+    check. Closing it needs a descriptor-taking VFS, which is a different change.
+
+    The WAL question the issue this came from also raises is NOT handled by checkpointing
+    and copying bytes, and deliberately so: the backup API already reads a consistent
+    snapshot that INCLUDES rows living only in the ``-wal``. Measured against a
+    cross-process writer with ``wal_autocheckpoint=0`` and a 1.5 MB log, the copy
+    contained all 421 rows -- 371 of them WAL-resident -- and passed ``integrity_check``.
+    A check-then-copy-bytes design has the race; this one has no check to race.
+    """
+    if not _chain_is_link_free(root, rel_parts):
+        if require_database:
+            # Same reasoning as the not-a-database case below, and an earlier revision of
+            # this change applied it to only one of the two: omitting a REQUIRED database
+            # still let the snapshot succeed, so `--keep N` pruned the last complete
+            # archive in favour of one missing the database it claims. A recorded omission
+            # is "recoverable information" only while the operator still HAS the archive it
+            # could be recovered from. Review's finding.
+            raise DatabaseCopyFailed(
+                src,
+                pinned_fs.PinnedPathRefusal(
+                    f"{'/'.join(rel_parts)} could not be verified as reachable without "
+                    "following a link, so it was not read"
+                ),
+            )
+        return DB_UNSAFE_SOURCE
+    ro_uri = f"{src.absolute().as_uri()}?mode=ro"
+    try:
+        with closing(sqlite3.connect(ro_uri, uri=True)) as probe:
+            probe.execute("PRAGMA schema_version").fetchone()
+    except sqlite3.DatabaseError as e:
+        # `sqlite_errorname` is read defensively for 3.10 and the message is the
+        # documented fallback. Either way the DEFAULT is to raise: an error this code
+        # cannot classify is not evidence the file is safe to copy byte-for-byte.
+        name = getattr(e, "sqlite_errorname", "")
+        not_a_database = name == "SQLITE_NOTADB" or (
+            not name and "not a database" in str(e).lower()
+        )
+        if not not_a_database:
+            raise DatabaseCopyFailed(src, e) from e
+        if require_database:
+            # A DECLARED component file, so this is a hard failure. The asymmetry with the
+            # tree pass below is deliberate, and an earlier revision of this change got it
+            # backwards by "unifying" the two -- review caught the consequence:
+            #
+            # A corrupt `memory.db` staged as bytes makes the snapshot SUCCEED. `--keep N`
+            # then counts that archive as the newest backup and prunes a real one, while
+            # restore refuses the new archive outright at its strict database validation.
+            # The operator is left with no restorable backup, having run a command that
+            # printed success. The module already names this hazard class where `--keep`
+            # is handled: an empty bundle "would count as the newest backup and prune a
+            # real one".
+            #
+            # A `.db` found by the TREE walk is incidental -- some file the operator
+            # happens to keep in their workspace -- and refusing the whole snapshot over
+            # it would be an outage, not a safeguard. Declared and load-bearing versus
+            # discovered and incidental is a real difference, so the two paths get
+            # different answers on purpose.
+            raise DatabaseCopyFailed(src, e) from e
+        return DB_NOT_A_DATABASE
+    # The connects are INSIDE the try, not just `backup()`. Between the probe above and
+    # this open the file can disappear -- and `mode=ro` makes that a hard failure where a
+    # read-write open would have silently CREATED an empty database, so this change made
+    # the window matter more, not less. `sqlite3.connect` then raises `OperationalError`,
+    # which `snapshot_main` does not catch (it handles PinnedPathRefusal,
+    # UnsafeComponentRoot, DatabaseCopyFailed and _ArchiveTooLarge), so the command exited
+    # on a traceback instead of naming the database. Review's finding.
+    try:
+        with (
+            closing(sqlite3.connect(ro_uri, uri=True)) as src_conn,
+            closing(sqlite3.connect(str(dst))) as dst_conn,
+        ):
+            # The file is a readable database, so a failure here means the consistent copy
+            # did not happen. Absorbing it would leave the caller's byte copy -- taken
+            # WITHOUT the `-wal` this module excludes -- passing for a whole database, so
+            # it is raised, but typed and naming the file so the command boundary reports
+            # which database failed instead of exiting on a traceback.
+            src_conn.backup(dst_conn)
+    except sqlite3.Error as e:
+        raise DatabaseCopyFailed(src, e) from e
+    if require_database:
+        _refuse_unsound_required_capture(src, dst)
+    return DB_COPIED
+
+
+def _refuse_unsound_required_capture(src: Path, dst: Path) -> None:
+    """Raise unless a REQUIRED database was captured soundly.
+
+    ``PRAGMA schema_version`` above only proves the file parses, which is a much weaker
+    claim than restore's, and the two unsoundnesses it misses need checking at OPPOSITE
+    ends. Both were measured rather than reasoned about.
+
+    **Page corruption -- checked on the STAGED COPY.** With a database's interior pages
+    overwritten and the header left intact, ``schema_version`` answered normally,
+    ``backup()`` succeeded and faithfully staged all 192512 bytes, and ``integrity_check``
+    reported "database disk image is malformed" on the source AND the copy. So the archive
+    reported success and restore was guaranteed to refuse it; ``--keep N`` then counts it as
+    the newest backup and prunes a real one, so the operator loses their last restorable
+    copy at the one moment they reach for it. The copy is the right end to check: it is what
+    goes in the archive and what restore validates, checking it keeps this path read-only
+    with respect to live data, and it also catches a copy damaged in transit. Source
+    corruption still surfaces, because ``backup()`` reproduces it.
+
+    **A zero-byte source -- checked on the SOURCE, and ONLY visible there.** SQLite opens a
+    zero-byte file as a valid EMPTY database, so ``integrity_check`` answers ``ok``. Worse,
+    ``backup()`` does not preserve the emptiness: measured, a 0-byte source produced a
+    4096-byte staged copy that ``integrity_check`` called ``ok``. Restore's own zero-byte
+    guard reads the size of the ARCHIVED file, so it sees 4096 and accepts -- meaning that
+    for this path restore does NOT refuse the archive, it RESTORES it and installs an empty
+    database over live data while reporting success. That is why the check cannot be
+    deferred to the copy or to restore: the "captured nothing" condition exists only at the
+    source, which is the same reason restore reads size before opening.
+
+    The cost is not a reason to hesitate: ``integrity_check`` measured 1285 MB/s against
+    415 MB/s for the ``backup()`` and 227 MB/s for the gzip this command already performs
+    over the same bytes unconditionally, so it adds about a tenth of work already paid.
+
+    Raises ``DatabaseCopyFailed`` rather than restore's ``SourceComponentUnsound``: the try
+    around ``_build_snapshot`` handles ``PinnedPathRefusal``, ``UnsafeComponentRoot`` and
+    ``DatabaseCopyFailed``, so the restore-side type would leave here as a traceback --
+    the same escape this change fixed for the chain check. Review's finding.
+    """
+    try:
+        if src.stat().st_size == 0:
+            raise DatabaseCopyFailed(
+                src,
+                sqlite3.DatabaseError(
+                    "the live database is EMPTY (zero bytes). SQLite opens such a file as "
+                    "a valid empty database and the staged copy passes an integrity check, "
+                    "so this would archive nothing and a later restore would install "
+                    "nothing over live data while reporting success"
+                ),
+            )
+    except OSError as e:
+        raise DatabaseCopyFailed(src, e) from e
+    try:
+        with closing(sqlite3.connect(str(dst))) as check:
+            result = check.execute("PRAGMA integrity_check;").fetchone()[0]
+    except sqlite3.Error as e:
+        # Severe corruption makes the pragma RAISE rather than answer -- the measurement
+        # above got `DatabaseError: database disk image is malformed` here -- so this arm is
+        # the common path for a page-corrupt database, not a defensive afterthought.
+        raise DatabaseCopyFailed(src, e) from e
+    if result != "ok":
+        raise DatabaseCopyFailed(
+            src, sqlite3.DatabaseError(f"integrity check on the staged copy failed ({result})")
+        )
+
+
+def _restage_databases(
+    src_dir: Path,
+    dst_dir: Path,
+    *,
+    bundle_root: Path,
+    on_skip: pinned_fs.SkipReporter | None = None,
+) -> None:
     """Re-copy every SQLite database under *src_dir* through the backup API.
 
     The plain tree copy already placed a byte copy there; this replaces it with a
@@ -564,8 +814,23 @@ def _restage_databases(src_dir: Path, dst_dir: Path) -> None:
     covered without anyone remembering to register it.
 
     A file whose suffix says database but which SQLite cannot open is left as the byte
-    copy already made: a non-database that happens to be named ``.db`` is still the
-    operator's file and must ride the bundle.
+    copy already made -- UNLESS its bundle-relative path is in ``PRODUCT_TREE_DATABASES``,
+    in which case the snapshot fails. That set's own contract is that everything in it is
+    "validated as strictly as ``memory.db``", and the restore side already enforces exactly
+    that (``_refuse_unless_sound(..., strict=rel in PRODUCT_TREE_DATABASES)``). Staging a
+    corrupt ``workspace/knowledge/knowledge.db`` as bytes and reporting success therefore
+    produced an archive that restore is guaranteed to refuse, which is worse than failing:
+    ``--keep N`` counts the new archive as the newest backup and prunes a real one, so the
+    operator loses their last restorable copy to a snapshot that "succeeded". Review's
+    finding.
+
+    *bundle_root* is what makes that key comparable. ``PRODUCT_TREE_DATABASES`` is spelled
+    relative to a bundle root, while this pass walks one tree, so a tree-relative path would
+    never match any entry and the strictness would be silently vacuous.
+
+    A non-database that happens to be named ``.db`` and is NOT one of ours is still the
+    operator's file and must ride the bundle: refusing a whole snapshot over a stray
+    ``Thumbs.db`` would be an outage rather than a safeguard.
 
     A database the tree copy did NOT stage is left alone. This pass exists to REPLACE a
     byte copy with a consistent one, so a destination that does not already hold that byte
@@ -575,6 +840,12 @@ def _restage_databases(src_dir: Path, dst_dir: Path) -> None:
     to a database outside the component tree was skipped as `not_regular` and then rebuilt
     by this pass, putting the external database's rows in the bundle. Checking the PARENT
     directory is not enough, because the parent exists for every sibling that copied fine.
+
+    *on_skip* is how a degradation reaches ``MANIFEST.json``. A source that cannot be
+    verified link-free leaves the tree walk's byte copy in place, which is the right call
+    -- deleting it is data loss -- but the bundle then holds a database that was never
+    copied consistently, and that belongs on the record rather than only in the console
+    scrollback of whoever ran the command.
     """
     for src in sorted(src_dir.rglob("*")):
         if not src.is_file() or src.is_symlink() or src.suffix not in _DB_SUFFIXES:
@@ -588,82 +859,27 @@ def _restage_databases(src_dir: Path, dst_dir: Path) -> None:
             continue
         if not _stat.S_ISREG(dst_st.st_mode):
             continue
-        # The chain from the source root down to this file is verified COMPONENT BY
-        # COMPONENT through descriptors, each opened `O_NOFOLLOW`, so a directory that is a
-        # link -- or one swapped for a link while this pass runs -- is refused where it is
-        # opened rather than silently traversed.
-        #
-        # `src.resolve()` was wrong here, and so was resolving the parent late: both re-walk
-        # every ancestor BY NAME after the loop screened the file, so a swapped ancestor
-        # redirects the open at a database this pass never inspected -- someone else's, whose
-        # rows then ride in the bundle under an innocuous name. Review's finding; this is the
-        # construction `open_dir_pinned` uses, for the same reason.
-        #
-        # Once no component is a link, the path AS GIVEN names the file that was verified, so
-        # the URI is built from it without resolving anything. What this does NOT close,
-        # stated rather than implied: SQLite's API takes a PATH, not a descriptor, so SQLite
-        # re-resolves the name itself, and a same-uid swap in the window between this check
-        # and that open is not detectable here -- a post-hoc identity re-check is defeated by
-        # swapping back. Closing that needs a descriptor-taking VFS, which is a change to how
-        # this module opens every database: main's own snapshot module opens SQLite by name
-        # in six places, including the structurally identical creation-side copy.
-        if not _chain_is_link_free(src_dir, src.relative_to(src_dir).parts):
-            continue
-        # `as_uri()` percent-escapes the path. Interpolating it raw meant a POSIX
-        # filename containing `?` or `#` was parsed as the start of the URI's query or
-        # fragment, truncating the path — so the copy would open a DIFFERENT database
-        # and store it under the requested name. Built ONCE and reused by both the probe
-        # and the copy: two spellings of the same URI is how one of them drifts.
-        ro_uri = f"{src.absolute().as_uri()}?mode=ro"
-        # Two different failures hide behind sqlite3.Error here, and treating them
-        # alike is unsafe. If the file is not a database at all, the plain byte copy
-        # already staged is exactly right. If it IS a database and the backup call
-        # failed -- an exclusive writer, an I/O error -- the staged copy is a raw
-        # snapshot of the file WITHOUT its WAL sidecars, which this module deliberately
-        # excludes, so the bundle would carry a torn database and report success.
-        #
-        # They are told apart by probing readability separately from copying, rather
-        # than by inspecting the error: `sqlite_errorname` is 3.11+ and this package
-        # supports 3.10, and matching on message text would break with any SQLite
-        # wording change.
-        try:
-            with closing(sqlite3.connect(ro_uri, uri=True)) as probe:
-                probe.execute("PRAGMA schema_version").fetchone()
-        except sqlite3.DatabaseError as e:
-            # Only a POSITIVELY identified non-database keeps the plain copy. The broad
-            # form was wrong in the dangerous direction: "database is locked" is also a
-            # DatabaseError, so an exclusive writer made the probe report "not a
-            # database" and the raw byte copy -- taken WITHOUT its WAL sidecars, which
-            # this module excludes -- shipped as if it were consistent.
-            #
-            # `sqlite_errorname` is 3.11+ and this package supports 3.10, so it is read
-            # defensively and the message is the documented fallback. Either way the
-            # DEFAULT is to raise: an error this code cannot classify is not evidence
-            # that the file is safe to copy byte-for-byte.
-            name = getattr(e, "sqlite_errorname", "")
-            not_a_database = name == "SQLITE_NOTADB" or (
-                not name and "not a database" in str(e).lower()
-            )
-            if not not_a_database:
-                raise DatabaseCopyFailed(src, e) from e
+        # Spelled `relative_to(bundle_root).as_posix()` to match the restore side's own
+        # key for the same set, so the two ends of the invariant read the same.
+        rel = dst.relative_to(bundle_root).as_posix()
+        outcome = _copy_database_consistently(
+            src,
+            dst,
+            root=src_dir,
+            rel_parts=src.relative_to(src_dir).parts,
+            require_database=rel in PRODUCT_TREE_DATABASES,
+        )
+        if outcome == DB_UNSAFE_SOURCE:
+            # The byte copy the walk already made stays -- it is the operator's data and
+            # this pass only ever REPLACES a copy, never creates one. Recorded so the
+            # archive does not silently claim a consistent database.
+            if on_skip is not None:
+                on_skip(SKIP_DB_UNPINNED_SOURCE, str(src))
+        elif outcome == DB_NOT_A_DATABASE:
             print(
                 f"⚠️  {_safe_name(src.name)} is not a readable SQLite database "
                 "— copied as a plain file"
             )
-            continue
-        with (
-            closing(sqlite3.connect(ro_uri, uri=True)) as src_conn,
-            closing(sqlite3.connect(str(dst))) as dst_conn,
-        ):
-            # The file is a readable database, so a failure here means the consistent
-            # copy did not happen and the staged file is a raw copy WITHOUT its WAL
-            # sidecars. Absorbing that would ship a torn database, so it is raised --
-            # but as a typed error naming the file, so the command boundary can report
-            # which database failed instead of exiting on a traceback.
-            try:
-                src_conn.backup(dst_conn)
-            except sqlite3.Error as e:
-                raise DatabaseCopyFailed(src, e) from e
 
 
 def safe_tree_root(root: Path, *, what: str, home: Path | None = None) -> Path | None:
@@ -1546,32 +1762,31 @@ def _build_snapshot(
                         # (`workspace/knowledge/knowledge.db`), so the parent is created
                         # per file rather than assumed from the component's tree roots.
                         (stage / f).parent.mkdir(parents=True, exist_ok=True)
-                        # DATABASES ARE OUT OF SCOPE for this change, deliberately, and
-                        # this is main's behaviour unchanged.
+                        # Through the SAME hardened copy the tree pass uses, so the two
+                        # cannot drift: descriptor-verified chain, percent-escaped URI,
+                        # `mode=ro`, and "not a database" told apart from "cannot read
+                        # this database". Before this, the core path was the last
+                        # unhardened SQLite read on the creation path -- it connected
+                        # READ-WRITE to the live name, which is what #5451 is about.
                         #
-                        # Capturing a live SQLite database without reopening its name is a
-                        # genuine conflict of requirements -- SQLite accepts only a path,
-                        # and it cannot be pointed at a held descriptor (probed: it refuses
-                        # /proc/self/fd/N and /dev/fd/N alike). Five review rounds were
-                        # spent on it here and each fix set up the next, so the database
-                        # question is tracked separately rather than solved in the middle
-                        # of a PR about the pinned tree walk.
-                        #
-                        # The `backup()` call reopens the live name and so inherits main's
-                        # existing exposure. That is not a regression introduced here: it is
-                        # what shipped before this change and what still ships after it.
-                        with (
-                            closing(sqlite3.connect(str(src))) as src_conn,
-                            closing(sqlite3.connect(str(stage / f))) as dst_conn,
-                        ):
-                            # Same contract as the tree path: a failed consistent copy is
-                            # reported by name at the command boundary, never absorbed and
-                            # never a traceback. A silently-skipped database would upload a
-                            # bundle that restores an incomplete memory.
-                            try:
-                                src_conn.backup(dst_conn)
-                            except sqlite3.Error as e:
-                                raise DatabaseCopyFailed(src, e) from e
+                        # `mc_fd` screened this name a few lines up and cannot be handed
+                        # to SQLite, which takes only a path; the chain check inside the
+                        # helper is what makes the ANCESTORS non-redirectable, and the
+                        # residual final-name window is documented there.
+                        # `require_database=True` makes every non-success outcome a raise,
+                        # so there is no outcome to branch on here: a declared component
+                        # file is either copied consistently or the snapshot fails. Both
+                        # degradations that used to live here -- byte-copying a corrupt
+                        # database, and omitting an unverifiable one -- let the command
+                        # succeed, which let `--keep` prune the last good archive in favour
+                        # of one that cannot be restored.
+                        _copy_database_consistently(
+                            src,
+                            stage / f,
+                            root=mc,
+                            rel_parts=PurePosixPath(f).parts,
+                            require_database=True,
+                        )
                     elif mc_fd is not None:
                         (stage / f).parent.mkdir(parents=True, exist_ok=True)
                         pinned_fs.copy_file_pinned(
@@ -1649,7 +1864,7 @@ def _build_snapshot(
             # outright. Re-copy each one through the backup API, which takes a
             # consistent snapshot, and leave the -wal/-shm out entirely: they
             # describe the source's transaction state, not the copy's.
-            _restage_databases(src_dir, dst_dir)
+            _restage_databases(src_dir, dst_dir, bundle_root=stage, on_skip=_record_skip)
 
         # Manifest
         ws_files = sum(1 for _ in (stage / "workspace").rglob("*") if _.is_file())
@@ -1850,16 +2065,25 @@ def snapshot_main(
         if total_mb > 500:
             print(f"⚠️  {mc} is {total_mb:.0f} MB — snapshot may be large and slow")
 
-    # WAL checkpoint
-    if (mc / "memory.db").is_file():
-        try:
-            with closing(sqlite3.connect(str(mc / "memory.db"))) as c:
-                c.execute("PRAGMA wal_checkpoint(TRUNCATE);")
-        except Exception:
-            print(
-                "⚠️  WAL checkpoint failed (DB may be locked by gateway). "
-                "The backup API still produces a consistent copy."
-            )
+    # NO pre-staging WAL checkpoint. There used to be one here, and removing it is the
+    # point rather than an omission: it was the ONLY write this command made to the live
+    # database, and it could not be made safe. A checkpoint cannot run read-only, so the
+    # name has to be reopened for writing -- and verifying the name first does not close
+    # that, because SQLite re-resolves it, so a swap in the window between the check and
+    # the open put the checkpoint's WRITE into whatever the name then pointed at,
+    # truncating an external database's log. Review's finding, and the remedy it asked for.
+    #
+    # Nothing the archive depends on is lost. The backup API reads a consistent snapshot
+    # that already INCLUDES rows living only in the `-wal`: measured against a
+    # cross-process writer with `wal_autocheckpoint=0` and a 1.5 MB log, the copy carried
+    # all 421 rows -- 371 of them WAL-resident -- and passed `integrity_check`. The
+    # checkpoint only kept the log from riding along at its full size, which is a size
+    # optimisation, not a correctness step.
+    #
+    # With it gone, the whole creation path is read-only: every database is opened
+    # `mode=ro`, so `kirocrew snapshot` cannot modify the data it was asked to copy.
+    # That is a cleaner invariant than "read-only except one verified write", and it is
+    # what makes `test_the_command_never_writes_to_the_live_database` assertable.
 
     try:
         outfile = _build_snapshot(

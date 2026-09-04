@@ -75,6 +75,11 @@ export default function SlotTagPopover() {
         if (e.target !== e.currentTarget) return
         if (e.key === 'Enter' || e.key === ' ' || e.key === 'Escape') { e.preventDefault(); close() }
       }}>
+      {/* Both handlers below belong to the modal container, not to a control the
+          user activates: `stopPropagation` keeps a click inside the dialog from
+          reaching the backdrop's dismiss, and `onKeyDown` gives Escape a home
+          when focus sits on an inner button whose events the backdrop ignores. */}
+      {/* eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions -- dialog-level dismissal plumbing; the operable controls are the menuitems and the input inside */}
       <div role="dialog" aria-modal="true" aria-label={i18nT('components.slotTagPopover.assign_tags')} data-testid="slot-tag-picker"
         className="absolute bg-bg-elevated border border-border rounded-lg shadow-lg p-2 min-w-[240px] text-[13px]"
         style={{ left: '50%', top: '30%', transform: 'translate(-50%, 0)' }}
@@ -84,7 +89,11 @@ export default function SlotTagPopover() {
           <span className="text-[11px] font-semibold text-muted uppercase tracking-wider px-1">{i18nT('components.slotTagPopover.assign_tags')}</span>
           <button type="button" className="text-muted hover:text-text cursor-pointer bg-transparent border-none p-0 leading-none" onClick={close} aria-label={i18nT('components.slotTagPopover.close')}><X size={13} /></button>
         </div>
-        <div ref={listRef} role="menu" aria-label={i18nT('components.slotTagPopover.tags')} className="flex flex-col gap-0.5 max-h-[260px] overflow-y-auto"
+        {/* tabIndex=-1: the roving-focus menu owns the arrow keys, so it must be
+            able to hold focus itself (and be a focus target when it has no
+            options yet) without ever joining the tab order — the menuitems are
+            reached with the arrows, not with Tab. */}
+        <div ref={listRef} role="menu" tabIndex={-1} aria-label={i18nT('components.slotTagPopover.tags')} className="flex flex-col gap-0.5 max-h-[260px] overflow-y-auto"
           onKeyDown={e => {
             // Roving focus across the tag options. Deliberately does NOT handle
             // Tab (keeps the "New tag" input reachable) or Escape (the dialog

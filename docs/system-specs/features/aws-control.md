@@ -91,6 +91,24 @@ On the versioned drive, `storage.delete_key` writes an S3 delete marker rather
 than purging historical versions. This is the current recovery property; the
 app does not implement a version purge.
 
+`routes._handle_drive_move` moves one object as a server-side copy followed by
+a delete, both through `storage` (`storage.copy_object`, then
+`storage.delete_key`), with the source deleted only after the copy succeeded —
+a failed copy leaves the drive unchanged. Two invariants are load-bearing: a
+move never silently overwrites (an existing destination refuses with 409,
+pinned by
+`test_aws_control_routes.py::TestDriveMove.test_move_existing_destination_answers_409_and_deletes_nothing`),
+and the section is restricted to `drive` (the `library` and `backup` sections
+are managed surfaces whose objects carry ledger state a move would orphan;
+pinned by
+`test_aws_control_routes.py::TestDriveMove.test_move_rejects_a_non_drive_section`).
+Both keys pass `storage.validate_key` before any AWS call, the source must
+exist (404), and the copy-before-delete order is pinned by
+`test_aws_control_routes.py::TestDriveMove.test_move_copies_before_deleting`
+and `TestDriveMove.test_move_copy_failure_issues_no_delete`. The copy carries
+both `--expected-bucket-owner` and `--expected-source-bucket-owner`
+(`test_aws_control_storage.py::TestCopyObject.test_copy_object_is_owner_pinned_on_both_ends`).
+
 ## Publishing and sharing
 
 `routes._publish_gate` applies the shared fail-closed publish-governance decision
@@ -106,6 +124,46 @@ removes its ledger record. Backup objects are not shareable.
 `test_aws_control_app.py::TestDriveGuards.test_share_of_backup_section_is_refused_outright`
 and `test_aws_control_routes.py::TestSharesListForget.test_forget_removes_a_known_share`
 pin those boundaries.
+
+The share ledger is CURRENT STATE, not an audit log: `shares._prune` drops every
+expired entry on both the read and the write path, and `record_share` keeps only
+the newest `_MAX_SHARES`. The audit trail of minted URLs is the SEL event
+`routes._audit` writes per grant, so nothing is lost by this file forgetting.
+The state it holds is a GRANT — a URL was minted for this key and has not
+expired — and NOT a claim that the object is still there.
+
+That distinction decides how a deleted object is handled. `GET /shares` reads the
+account's drive (`storage.list_object_keys`) and `shares.mark_missing_objects`
+sets `objectMissing` on every row whose `section/key` the drive does not hold; no
+row is removed and nothing is written. Dropping the row would be wrong on both
+counts: a presigned URL signs bucket, key and expiry but no version, so
+recreating the key makes an unexpired URL resolve again — the grant is dormant,
+not dead — and dropping the record is exactly the `forget` the app documents as
+the user's decision. The mark is not persisted for the same reason: it is a fact
+about the bucket at render time, which recreating the key would make stale in the
+under-reporting direction. This is a deliberate divergence from
+`library.reconcile`, which does prune, because that ledger claims a cloud copy
+exists and the bucket can settle that claim.
+
+The listing is best-effort and its outcome is reported, never implied: `checked`
+says whether the rows were compared against the drive, because an absent
+`objectMissing` otherwise reads as "the object is there" on a render where the
+drive was never read. WHY the check did not run is logged rather than sent — the
+reason is a backend-authored English sentence and the console is rendered in
+thirteen locales, so it shows a translated "not checked" line gated on `checked`,
+the same resolution the Library's `remoteError` reaches.
+`storage.list_object_keys` raises rather than degrading to an empty set, and
+per-row `storage.object_exists` is deliberately not used — it answers `rc == 0`,
+so a throttle or a timeout is indistinguishable from a 404, which is correct when
+refusing to mint and would mark live shares dead here. The ledger is read BEFORE
+the listing is taken, which is what makes an `observed_at` cutoff unnecessary: no
+row in hand can postdate the listing.
+`test_aws_control_routes.py::TestSharesListForget` pins the mark, the read order,
+the unmarked degradation, the logged reason, and the empty-ledger case that takes
+no listing at all.
+
+Existing rows stranded before this shipped are corrected on the next render;
+there is no migration over `shares.json`.
 
 AWS Control does not create bucket-policy account grants or public CDN shares.
 The IAM-policy endpoint renders `deploy.iam.policy_json` for the operator to
@@ -198,7 +256,11 @@ metadata should say about when the push started.
 Cloud copies with no local artifact row are reported to the caller as
 `remoteOnly` rather than being hidden: `list_pushable` walks the local store, so
 a copy pushed from another machine has no row to carry it and would otherwise be
-unreachable from the console that must be able to remove it.
+unreachable from the console that must be able to remove it. The dashboard keeps
+that promise through the Library folder's listing rather than through this field:
+the folder renders one card per listed prefix and offers removal on all of them,
+so a copy with no local row is reachable by construction rather than by a second,
+separately-derived set.
 
 `costs.fetch_month_costs` calls Cost Explorer for the requested linked account
 and groups results by service. `routes._handle_costs` serves a fresh local cache
@@ -226,18 +288,109 @@ resources itself.
 `routes.register_routes` exposes owner-gated reads for accounts, available
 profiles, reconnect guidance, drive status/list/download, costs, library,
 backup status, share metadata, and rendered IAM policy. Its mutations are
-profile registration; drive bootstrap, upload, delete, folder create/delete,
-and share; share-ledger removal; library push and library removal; backup run,
-nightly toggle, and staged restore.
+profile registration; drive bootstrap, upload, delete, move, folder
+create/delete, and share; share-ledger removal; library push and library
+removal; backup run, nightly toggle, and staged restore.
 
-Drive bootstrap is the only API-level preview-plus-confirm flow. Upload, profile
-registration, library push, library removal, share creation, and backup
+Drive bootstrap is the only API-level preview-plus-confirm flow. Upload, move,
+profile registration, library push, library removal, share creation, and backup
 mutations have no separate confirmation request; the dashboard separately
-confirms object and folder deletion. Library removal is API-level only in this
-change — it has no dashboard caller yet, so no UI confirm exists for it; the
-companion frontend is expected to gate it the way object and folder deletion are
-gated. Every mutation is owner-gated, restricted-session refused, and
-SEL-audited. Account-targeted AWS operations additionally enforce live identity
-and service consent, and egress paths enforce publish governance. Library removal
-is deliberately outside that egress set: it sends no bytes out, so a profile that
-denies publishing can still empty a bucket it is paying for.
+confirms object deletion, folder deletion, and library removal. Library removal
+is offered on the Library folder's own listing — one overflow menu per listed
+cloud copy, in both the grid and the list view, the same `⋮` shape the Files
+folder's cards and rows use — and never on the "Add from Artifacts" picker. That
+placement is the correctness boundary, not a layout preference: a picker row is a
+LOCAL artifact joined to the `account -> slug` ledger, and because
+`ArtifactStore.delete` does not prune that ledger and a new artifact starts at
+version 1, a reused slug lends a never-pushed artifact another one's push record,
+so a removal offered there empties a different artifact's copy under the wrong
+name. No predicate available on such a row separates the two, and naming the
+bucket folder in the confirm narrows the blast radius without fixing it — the
+reader is still asked to vouch for an identity this machine cannot establish. A
+folder row comes from the bucket listing, so removing it empties the object that
+was LISTED rather than one inferred from the ledger. That fixes the target, not
+the name: the card's label still comes from the slug-keyed join, and the folder
+named in the confirm is built from that same shared slug, so under slug reuse the
+reader can be shown one artifact's name over another's bytes with nothing on
+screen able to separate them. Establishing whose copy it is needs the pushed
+`meta.json` sidecar and is tracked by #6987; the same slug-targeted removal is
+offered from the picker on the current release, so this placement neither
+introduces that gap nor closes it. Removal is therefore not gated on local state
+at all, which is
+what makes a copy pushed from another machine (`remoteOnly` above) removable
+rather than stranded. It is gated the way folder deletion is: the menu item
+reveals an inline Cancel-plus-danger strip that names both the item and the
+`artifacts/<slug>/` prefix it will empty, and that strip stays open until the
+request resolves — it is the only place the outcome can render, so neither its
+Cancel nor an early close may discard an in-flight answer. Every mutation is
+owner-gated, restricted-session
+refused, and SEL-audited. Account-targeted AWS operations additionally enforce
+live identity and service consent, and egress paths enforce publish governance.
+Library removal is deliberately outside that egress set: it sends no bytes out,
+so a profile that denies publishing can still empty a bucket it is paying for.
+
+## Error surfaces
+
+Every failure the dashboard shows for this app renders through one wrapper,
+`shared.AwsErrorNotice`, over the dashboard's shared `ErrorNotice` — never an
+ad-hoc red paragraph, and never nothing. The wrapper exists because of a
+mismatch the shared notice cannot bridge on its own: `ErrorNotice` recovers an
+error's context from the error journal by matching the message it renders, and
+this app renders a LOCALISED sentence keyed off the backend `code`, not the
+backend prose, so that lookup can never match here. The client closes the gap
+at the transport instead. `api.request` journals every non-ok response
+(`utils/errorReport.recordError`: status, machine-readable `code`, path-only
+endpoint, raw body) and hands the resulting entry to the thrown
+`AwsControlError` as `report`; a transport-level rejection is journaled by its
+own message and rethrown unchanged. `api.errorReportOf` is the one reader of
+both paths, and `AwsErrorNotice` passes what it returns to the notice as the
+structured report — so the "ask the agent" hand-off carries the endpoint, the
+status, the code and the body, while the reader sees the sentence.
+`api.test.ts::request error contract` pins the journal entry's shape, the
+query-string strip, and that an error built outside the client (as tests do)
+degrades to the sentence alone rather than throwing.
+
+The hand-off keeps `ErrorNotice`'s opt-in default and is stated at every call
+site in this app. The safety argument for leaving it off is an unsaved draft the
+navigation would destroy, so the three notices rendered beside unsaved input —
+the folder-create failure under the folder-name field, the share failure under
+the share note, and the register failure under the Add-accounts checkboxes —
+leave it off; the refusal is journaled regardless. Two panes go further and
+gate every notice they render on their one draft being absent, because all of
+those notices share the screen with it: the Files pane on the folder-name
+disclosure being closed, and the accounts pane on no profile being ticked in
+the Add-accounts form (`AddAccounts` reports that through `onDraftChange`; the
+row and connections-card Reconnect notices and the orphaned-consent rescue all
+take the pane's `handOff`). A
+client-side name check (a rejected folder or file name) leaves it off too: no
+request was made, so there is no report and nothing for the agent to read.
+Every other notice opts in. `AwsConsentGate` is shared with settings panels
+that DO hold drafts, so it takes the decision as an `askAgent` prop, off by
+default, which this app sets. Every READ notice this app renders itself offers
+a Try-again button under the notice (`onRetry`), because a transient read is
+the one failure the reader can clear alone; a mutation's retry is the control
+that fired it, which is still on screen. `AwsConsentGate`'s own status-read
+failure carries that button itself, because with the grant and withdraw
+controls gone the notice is the whole card. The page-level accounts failure words
+a 403 as a permission answer (sign in as the owner) rather than as a transient
+read, because a retry cannot clear it. A confirm strip that already holds
+Cancel and Delete renders its inline notice on its own line (`basis-full`), so
+the hand-off never becomes a third action in that row.
+
+Two classes of failure previously rendered nothing and now render a notice:
+every read whose query had no error branch (the Files listing, drive status
+outside the consent 409, the permissions drawer, backup status, the share
+ledger, the local profile scan) and every mutation whose error was never read
+(drive create-confirm, share creation, nightly toggle, restore, share removal).
+A failed read must not fall through to the surface's empty state — a failed
+listing is not an empty folder, a failed profile scan is not "nothing left to
+add" — and the tests for each state assert the empty state's absence alongside
+the notice. Two states are deliberately NOT errors: a 403 whose code is
+`app_disabled` renders the disabled-app copy (any other 403 — a non-owner
+caller's `dashboard_owner_required` — is an error to diagnose and goes to the
+notice), and a costs 409 `aws_consent_required` is answered by the Cost Explorer
+ask, not a banner beside it. A reason the backend reports inside a 200 (the
+backup archive's `remoteError`) travels as the notice's message under the
+localised lead, so the hand-off carries the text AWS returned.
+`DrivePage.test.tsx::error surfaces reach the agent`,
+`AwsControlPage.test.tsx::edge states`, and `ConsoleView.test.tsx` pin these.

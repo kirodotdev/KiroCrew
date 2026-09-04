@@ -32,6 +32,7 @@ if TYPE_CHECKING:
     from aiohttp import web
 
     from kiro_crew.config.loader import KiroCrewConfig, TelemetryConfig
+    from kiro_crew.security import DeniedCommandRule
     from kiro_crew.skill_providers.base import SkillProvider
 
 
@@ -631,6 +632,73 @@ class SkillDiscoveryProvider(Protocol):
         site (fallback ``[]``). The public Default returns ``[]`` (discovery
         offers the built-in catalog only). v1 addition (no ``CONTRACT_VERSION``
         bump).
+        """
+        ...
+
+
+class DeniedRuleProvider(Protocol):
+    """Edition-contributed DENIED-COMMAND RULES that the user can switch off.
+
+    A distinct edition concern with its own interface (not folded into
+    ``SecurityOverlay``) because the two answer opposite questions.
+    ``SecurityOverlay.extra_deny_patterns`` is the un-weakenable floor: its
+    patterns travel the GLOB tier via ``extra_patterns`` and no user opt-out can
+    reach them. This seam is the other half — rules an edition wants ON by
+    default but wants the operator to be ABLE to turn off, which the overlay
+    structurally cannot express.
+    """
+
+    def denied_rules(self) -> List["DeniedCommandRule"]:
+        """Extra denied-command rules the edition contributes, DISABLEABLE.
+
+        WIRED: ``hooks.resolve_effective_denied_regexes`` unions these into the
+        rule list it hands ``security.compute_effective_denied``, so each rule is
+        subject to the SAME opt-out resolution as a built-in — an operator can
+        disable one by id, or clear the lot with ``disable_all``, through the
+        existing ``denied_commands.json`` keystone and the existing
+        ``/api/security/denied-commands`` endpoints. ``handlers/security`` lists
+        them in the Settings panel (tagged ``source="edition"``) and accepts a
+        toggle for them, so a rule contributed here is discoverable rather than
+        an invisible block.
+
+        TIER: ``pattern`` is a Python REGEX matched via ``re.search`` with
+        ``re.IGNORECASE`` — the same tier and the same ReDoS-bounded matcher as a
+        built-in rule. It is NOT an fnmatch glob. An edition moving a pattern
+        here from ``extra_deny_patterns`` MUST rewrite it: ``*ada credentials*``
+        is a glob, and as a regex its ``*`` are quantifiers on ``a`` and ``s``.
+
+        SCOPE — the surfaces these rules reach, and the one they do not.  They
+        are enforced wherever the *effective* denied set is resolved from the
+        keystone opt-out state: the agent tool gate (``hooks.on_tool_call``) and
+        the cron/MCP gate (``mcp_cron`` via
+        ``effective_denied_regexes_from_config``).  They deliberately do NOT
+        reach ``computer_use.policy.check_text_input``, which calls
+        ``is_denied`` with ``denied_regexes=None`` to fail closed to the BUILT-IN
+        catalogue alone — that surface ignores opt-out state on purpose (typing
+        into somebody else's window is not the same decision as running a command
+        under the tool gate), and honouring an edition contribution there without
+        its opt-out would make the seam mean two different things on two
+        surfaces.  An edition needing a rule enforced on the computer-use
+        surface must express it as an un-weakenable
+        ``SecurityOverlay.extra_deny_patterns`` glob instead.
+
+        IDENTITY: ``id`` is the opt-out key and the SEL ``rule_id``, so it MUST be
+        namespaced by the edition (``<edition>-<slug>``). ``disabled_ids`` is one
+        flat set: a rule whose id collides with a built-in id is SKIPPED with a
+        warning (the built-in wins), because a collision would make one rule's
+        toggle silently move the other.
+
+        NOT PINNABLE (v1): governance ``commands``-scope pins resolve a pattern to
+        a rule id against the STATIC catalog, so a pin naming a rule from this
+        seam matches nothing. An edition needing an un-opt-out-able pattern keeps
+        using ``extra_deny_patterns`` — that is still the floor, unchanged.
+
+        Read fail-closed through ``safe_context_call`` at the call site (fallback
+        ``[]``): a raising provider degrades to the built-in catalog rather than
+        wedging the deny gate. Losing an additive, user-disableable rule is the
+        safe direction; the overlay floor is unaffected either way. The public
+        Default returns ``[]`` (the built-in catalog only). v1 addition (no
+        ``CONTRACT_VERSION`` bump).
         """
         ...
 

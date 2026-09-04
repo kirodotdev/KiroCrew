@@ -365,7 +365,12 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
     enabled: !!slug,
     staleTime: 30_000,
   })
-  const durableComments = commentsQuery.data?.comments ?? []
+  // Memoized because it is the dep of rootIdOf / unreadRootIds / markThreadRead:
+  // the `?? []` fallback (query not yet resolved) is a fresh array each render,
+  // which would rebuild all three — and the overlay/sidebar memos keyed on them —
+  // on every render. React Query keeps `data` referentially stable between
+  // refetches that resolve deep-equal, so this changes only on real data.
+  const durableComments = useMemo(() => commentsQuery.data?.comments ?? [], [commentsQuery.data?.comments])
   const commentCount = durableComments.length
   const remoteSyncError = commentsQuery.data?.remote_sync_error ?? null
   // Right-hand panel state machine: the comments sidebar and the companion
@@ -1925,6 +1930,7 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
                 )}
               </>
             ) : (
+              // eslint-disable-next-line jsx-a11y/no-static-element-interactions -- a passive drag-select probe over the rendered prose, not a control: the pair only brackets a selection so `handleMouseUp` can offer to comment on the quote, and there is no action to activate. Giving the wrapper a role and tabIndex would announce a phantom button around the whole artifact body and put a focus stop in front of the text.
               <div
                 ref={bodyRef}
                 className="relative"

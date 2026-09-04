@@ -46,7 +46,7 @@ const BASE_MC = {
     soft_stop_budget_secs: 10,
   },
   dashboard: { user_role: '', user_role_other: '', user_technical_level: '', prevent_sleep: false },
-  knowledge: { auto_ingest_chunk_budget: 200 },
+  knowledge: { embed_rate_limit: 120 },
 }
 
 const {

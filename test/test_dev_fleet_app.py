@@ -930,8 +930,15 @@ async def test_upstream_remote_reads_config():
 # --- sync runner emits ::step:: markers ---
 @pytest.mark.asyncio
 async def test_sync_script_emits_step_markers():
-    """The generated sync script must print ::step::<idx>::<label> before each step."""
+    """The sync runner emits ::step::<idx>::<label> before each step.
+
+    The runner is a snapshotted module (sync_runner.py) run by path, so the
+    gateway-side contract is "invoke that module"; the marker EMISSION itself is
+    proven by execution in test_dev_fleet_sync_runner.py. Here we pin that the
+    sync invokes the runner by path and that the module still emits the marker.
+    """
     import kiro_crew.apps.builtins.dev_fleet.server as mod
+    from kiro_crew.apps.builtins.dev_fleet import sync_runner
 
     repository_mod._UPSTREAM_REMOTE = "origin"
     worktree_ops_mod._SYNC_RID = None
@@ -943,13 +950,17 @@ async def test_sync_script_emits_step_markers():
          patch.object(runtime_mod, "_start_run", new_callable=AsyncMock, return_value="run-123") as mock_start:
         async with mod._SYNC_LOCK:
             result = await mod._sync_start_locked()
+    # Clean up the snapshot + steps file the stubbed _start_run would have —
+    # BEFORE any assertion, so a failing assertion cannot leak the staged
+    # temporary directories (GPT round 2, no-test-side-effects).
+    _cleanup_sync_tempdirs(mock_start)
     assert result["ok"] is True
     cmd_args = mock_start.call_args[0]
-    script_cmd = cmd_args[1]
-    assert script_cmd[0].endswith("python") or "python" in script_cmd[0]
-    script_src = script_cmd[2]
-    assert "::step::" in script_src
-    assert "print(f" in script_src
+    runner_cmd = cmd_args[1]
+    assert runner_cmd[0].endswith("python") or "python" in runner_cmd[0]
+    assert any(str(a).endswith("sync_runner.py") for a in runner_cmd)
+    src = Path(sync_runner.__file__).read_text(encoding="utf-8")
+    assert "::step::" in src
     repository_mod._UPSTREAM_REMOTE = None
 
 
@@ -959,34 +970,65 @@ async def test_sync_script_emits_step_markers():
 # use of the result: which install step gets built.
 
 
-def _steps_from_script(script):
-    """Pull the structured step list back out of the generated script.
+def _steps_json_path_from_cmd(cmd):
+    """The steps-JSON file path from a runner command.
 
-    Asserting on the raw script text is a trap: the steps are embedded
-    double-JSON-encoded, so a label reads as ``\\"Pull\\"`` and a naive
-    ``'"pip install"' in script`` check can never match — it passes whether or
-    not the step is there. Parse it instead so the assertions actually bite.
+    ``cmd`` is ``[python, -I, -c, <bootstrap>, <snapshot>, <snapshot-sha256>,
+    <steps_json>, <repo>, --reserved, <codes>, ...]``. The steps file is the
+    SECOND positional after the snapshot path (the snapshot ends in
+    ``sync_runner.py``; the argv-pinned snapshot digest sits between them).
+    """
+    for i, tok in enumerate(cmd):
+        if isinstance(tok, str) and tok.endswith("sync_runner.py"):
+            return cmd[i + 2]
+    raise AssertionError("sync_runner.py snapshot not found in command — shape changed")
+
+
+def _sync_steps_from_cmd(cmd):
+    """Pull the structured step list back out of the runner invocation.
+
+    The runner is no longer a ``-c <script>`` string; it is a snapshot of
+    sync_runner.py run BY PATH, and the steps travel as a JSON FILE whose path
+    is the runner's first positional argument. Read that file so the assertions
+    bite on the real step list rather than on source text.
     """
     import json as _json
-    import re
 
-    m = re.search(r"steps = json\.loads\((.*?)\)\n", script, re.S)
-    assert m, "steps assignment not found — the script shape changed"
-    return [s["label"] for s in _json.loads(_json.loads(m.group(1)))]
+    steps_json_path = _steps_json_path_from_cmd(cmd)
+    with open(steps_json_path, encoding="utf-8") as fh:
+        return _json.load(fh)
 
 
-def _sync_steps_from_script(script):
-    """Same extraction as :func:`_steps_from_script`, but the whole step dicts.
+def _install_step(steps):
+    """The 'pip install' step dict from a decoded step list.
 
-    The metadata the runner acts on (``stash``) lives beside the
-    label, and asserting on it through the label-only view is impossible.
+    Both branches (editable reinstall and dependency-only substitute) label
+    their install step 'pip install'; the argv is what differs between them.
     """
-    import json as _json
-    import re
+    for st in steps:
+        if st["label"] == "pip install":
+            return st
+    raise AssertionError("no 'pip install' step found in the step list")
 
-    m = re.search(r"steps = json\.loads\((.*?)\)\n", script, re.S)
-    assert m, "steps assignment not found — the script shape changed"
-    return _json.loads(_json.loads(m.group(1)))
+
+def _cleanup_sync_tempdirs(mock_start):
+    """Delete the snapshot dirs a stubbed _start_run would have cleaned up.
+
+    Stubbing ``_start_run`` also stubs out its ``finally`` cleanup, so the
+    snapshot dirs the sync stages (the runner snapshot + steps file, the
+    preflight snapshot, and the dependency-only path's dep_sync snapshot) would
+    outlive the test. Remove exactly what it registered, file before directory.
+    """
+    if not getattr(mock_start, "call_args", None):
+        return
+    for path in mock_start.call_args.kwargs.get("cleanup_paths") or []:
+        try:
+            os.unlink(path)
+        except OSError:
+            try:
+                os.rmdir(path)
+            except OSError:
+                pass
 
 
 #: The main checkout the sync tests run against. Pinned rather than ambient so the
@@ -1001,8 +1043,15 @@ _LAST_CLEANUP_PATHS: list[str] = []
 
 
 async def _run_sync(mod, locked):
-    """Drive _sync_start_locked with the probe stubbed; return its result dict
-    plus the generated script (None when the sync refused).
+    """Drive _sync_start_locked with the probe stubbed.
+
+    Returns ``(result, cmd, steps)``: the result dict, the runner command handed
+    to ``_start_run`` (``None`` when the sync refused), and the decoded step
+    dicts read from the steps JSON file BEFORE the harness deletes it (``None``
+    on a refusal). The runner is a snapshot of sync_runner.py run by path with
+    the step list in a JSON file, so assertions inspect ``cmd`` and ``steps``
+    rather than script source text.
+
     MAIN_REPO is pinned because the sync refuses outright when no checkout was
     discovered, and these tests are about the sync's own behaviour: leaving it
     ambient makes them pass or fail on whether the HOST running them happens to
@@ -1025,26 +1074,23 @@ async def _run_sync(mod, locked):
         async with mod._SYNC_LOCK:
             result = await mod._sync_start_locked()
     repository_mod._UPSTREAM_REMOTE = None
-    script = mock_start.call_args[0][1][2] if mock_start.call_args else None
-    # Stubbing _start_run also stubs out its `finally` cleanup, so anything the
-    # sync staged for removal (the dependency-only path snapshots dep_sync into a
-    # temp dir) would outlive the test. Remove exactly what it registered, in the
-    # order it registered it — file before directory.
+    cmd = mock_start.call_args[0][1] if mock_start.call_args else None
+    # Decode the steps BEFORE cleanup deletes the staged JSON file — inside
+    # try/finally so a malformed file or a changed command shape cannot leave
+    # the staged directories behind (the finally owns cleanup either way).
     global _LAST_CLEANUP_PATHS
     _LAST_CLEANUP_PATHS = list(
         (mock_start.call_args.kwargs.get("cleanup_paths") or [])
         if mock_start.call_args else []
     )
-    if mock_start.call_args:
-        for path in mock_start.call_args.kwargs.get("cleanup_paths") or []:
-            try:
-                os.unlink(path)
-            except OSError:
-                try:
-                    os.rmdir(path)
-                except OSError:
-                    pass
-    return result, script
+    try:
+        steps = _sync_steps_from_cmd(cmd) if cmd else None
+    finally:
+        # Stubbing _start_run also stubs out its `finally` cleanup, so anything
+        # the sync staged for removal (the runner snapshot + steps file, and
+        # the dependency-only path's dep_sync snapshot) would outlive the test.
+        _cleanup_sync_tempdirs(mock_start)
+    return result, cmd, steps
 
 
 @pytest.mark.asyncio
@@ -1061,32 +1107,33 @@ async def test_sync_substitutes_a_dependency_only_install_when_a_script_is_locke
     import kiro_crew.apps.builtins.dev_fleet.server as mod
     from kiro_crew import dep_sync
 
-    result, script = await _run_sync(mod, [r"C:\repo\.venv\Scripts\kirocrew.exe"])
+    result, cmd, steps = await _run_sync(mod, [r"C:\repo\.venv\Scripts\kirocrew.exe"])
 
     assert result["ok"] is True
     # A run was started, so fetch and merge do happen.
-    assert script is not None
-    # Steps are JSON-embedded in the generated script, so quotes arrive escaped;
-    # comparing against a de-escaped copy keeps these assertions independent of
-    # how many encoding layers the script generator happens to use.
-    flat = script.replace("\\", "")
-    assert "dep_sync.py" in flat
-    assert '"-e"' not in flat
+    assert cmd is not None
+    # The install step's argv is what the substitution changes; inspect it
+    # directly rather than source text.
+    install = _install_step(steps)
+    argv_flat = " ".join(install["argv"])
+    assert "dep_sync.py" in argv_flat
+    assert "-e" not in install["argv"]
     # It must NOT be run as `-m kiro_crew...dep_sync`. That would import the
     # module from the working tree after the merge has landed, pulling the whole
     # package __init__ chain with it, so a revision that raises the
     # `requires-python` floor with newer syntax would SyntaxError while being
     # parsed and the floor refusal written for that revision could never run.
-    assert dep_sync.__name__ not in flat
-    assert '"-m"' not in flat.split('"merge"', 1)[1]
+    assert dep_sync.__name__ not in argv_flat
+    assert "-m" not in install["argv"]
     # The file it runs is a snapshot taken BEFORE the merge, so it lives outside
     # the checkout being synced.
-    assert r"C:repo\dep_sync.py" not in flat
+    assert r"C:\repo\dep_sync.py" not in argv_flat
     # ORDER MATTERS, and it is the SAME order the reinstall it replaces uses:
     # fetch -> merge -> install. Installing first would need the merge to be
     # proven impossible to fail, which cannot be done completely; a failed install
     # after a landed merge is exactly what the reinstall path already does.
-    assert flat.index('"merge"') < flat.index("dep_sync.py")
+    labels = [s["label"] for s in steps]
+    assert labels.index("Merge") < labels.index("pip install")
 
 
 @pytest.mark.asyncio
@@ -1100,13 +1147,14 @@ async def test_sync_keeps_the_editable_reinstall_when_nothing_is_locked():
     import kiro_crew.apps.builtins.dev_fleet.server as mod
     from kiro_crew import dep_sync
 
-    result, script = await _run_sync(mod, [])
+    result, cmd, steps = await _run_sync(mod, [])
 
     assert result["ok"] is True
-    flat = script.replace("\\", "")
-    assert '"-e"' in flat
-    assert dep_sync.__name__ not in flat
-    assert "dep_sync.py" not in flat
+    install = _install_step(steps)
+    argv_flat = " ".join(install["argv"])
+    assert "-e" in install["argv"]
+    assert dep_sync.__name__ not in argv_flat
+    assert "dep_sync.py" not in argv_flat
 
 
 @pytest.mark.asyncio
@@ -1117,17 +1165,21 @@ async def test_every_step_gets_a_utf8_pin_in_its_environment():
     encoding from the locale, so the Python steps (pip, and the build-and-stage
     child) would still encode a non-ASCII checkout path with the codepage and
     die on it. The environment is the only channel that reaches a child.
+
+    The MECHANISM is proven by execution in test_dev_fleet_sync_runner.py
+    (a child spawned under a divergent inherited PYTHONIOENCODING observes the
+    utf-8 pin). What stays here is the module contract: run_step assigns the
+    pin onto every step's env before spawning.
     """
-    import kiro_crew.apps.builtins.dev_fleet.server as mod
+    from kiro_crew.apps.builtins.dev_fleet import sync_runner
 
-    _, script = await _run_sync(mod, [])
-
-    assert "env['PYTHONIOENCODING'] = 'utf-8:replace'" in script
+    src = Path(sync_runner.__file__).read_text(encoding="utf-8")
+    run_step_body = src.split("def run_step(", 1)[1].split("\ndef ", 1)[0]
+    assert 'env["PYTHONIOENCODING"] = "utf-8:replace"' in run_step_body
     # Applied to the env actually handed to subprocess.run, not a stale copy.
-    assert "subprocess.run(st['argv'], cwd=cwd, env=env)" in script
-    assert "env=st['env']" not in script
+    assert "cwd=cwd, env=env" in run_step_body
     # Set before the step is spawned, not after.
-    assert script.index("PYTHONIOENCODING") < script.index("subprocess.run(")
+    assert run_step_body.index("PYTHONIOENCODING") < run_step_body.index("subprocess.run(")
 
 
 @pytest.mark.asyncio
@@ -1135,10 +1187,10 @@ async def test_sync_runs_every_step_when_nothing_is_locked():
     """Control: an unlocked venv gets the full sync, reinstall included."""
     import kiro_crew.apps.builtins.dev_fleet.server as mod
 
-    result, script = await _run_sync(mod, [])
+    result, cmd, steps = await _run_sync(mod, [])
 
     assert result["ok"] is True, result
-    labels = _steps_from_script(script)
+    labels = [s["label"] for s in steps]
     assert "pip install" in labels
     assert "Pull" in labels
 
@@ -1165,7 +1217,7 @@ async def test_sync_refuses_a_venv_that_serves_another_checkout(locked):
         "venv_not_mapped_to",
         return_value="the target venv imports this project from /other/checkout",
     ):
-        result, script = await _run_sync(mod, locked)
+        result, cmd, steps = await _run_sync(mod, locked)
 
     assert result["ok"] is False
     assert "/other/checkout" in result["error"]
@@ -1173,7 +1225,7 @@ async def test_sync_refuses_a_venv_that_serves_another_checkout(locked):
     assert "own editable install" in result["error"]
     # Nothing ran: no fetch, no merge, no install. A refusal after the merge
     # would leave the checkout moved with its dependencies unresolved.
-    assert script is None
+    assert cmd is None
 
 
 @pytest.mark.asyncio
@@ -1185,11 +1237,18 @@ async def test_sync_runner_pins_utf8_stdout_before_its_first_print():
     any non-ASCII print. Pinned before the step loop so no print predates it.
     """
     import kiro_crew.apps.builtins.dev_fleet.server as mod
+    from kiro_crew.apps.builtins.dev_fleet import sync_runner
 
-    _, script = await _run_sync(mod, [])
+    _, cmd, _ = await _run_sync(mod, [])
 
-    assert "reconfigure(encoding='utf-8'" in script
-    assert script.index("reconfigure(") < script.index("print(f'::step::")
+    assert cmd is not None
+    src = Path(sync_runner.__file__).read_text(encoding="utf-8")
+    assert 'reconfigure(encoding="utf-8"' in src
+    # Within main(), the reconfigure runs before run_steps() is called, so no
+    # print in the step loop predates it.
+    main_body = src.split("def main(", 1)[1]
+    assert "reconfigure(" in main_body
+    assert main_body.index("reconfigure(") < main_body.index("run_steps(")
 
 
 def test_utf8_reconfigure_survives_a_legacy_codepage_pipe():
@@ -6439,6 +6498,36 @@ async def test_build_state_is_reported_even_where_pods_cannot_run(tmp_path):
     assert row["port"] is None
 
 
+@pytest.mark.asyncio
+async def test_main_checkout_build_state_is_probed(tmp_path):
+    """Regression (#8058): the build-state probes were gated on ``not is_main``,
+    so a fully provisioned MAIN checkout always rendered as unprovisioned —
+    during a cutover that reads as "the cutover failed". Build state is a plain
+    filesystem check and is knowable for every worktree, main included; only
+    the POD-state check legitimately skips main."""
+    main_co = tmp_path / "repo"
+    binp = main_co / ".venv" / ("Scripts" if platform_compat.IS_WINDOWS else "bin")
+    binp.mkdir(parents=True)
+    exe = binp / ("kirocrew.exe" if platform_compat.IS_WINDOWS else "kirocrew")
+    exe.write_text("#!/bin/sh\n")
+    exe.chmod(0o755)
+    (main_co / "src" / "kiro_crew" / "static" / "dist").mkdir(parents=True)
+
+    fleet = await _fleet_with(
+        [{"path": str(main_co), "branch": "main", "is_main": True}],
+        _POD_AVAILABLE=False,
+        _POD_ERROR="pods require Linux systemd",
+        _load_cfg=lambda: None,
+    )
+    (row,) = fleet["worktrees"]
+    assert row["is_main"] is True
+    assert row["has_venv"] is True
+    assert row["has_dist"] is True
+    # Pod state still never applies to main.
+    assert row["running"] is False
+    assert row["port"] is None
+
+
 # =============================================================================
 # Regression: _find_cli must target a RUNNABLE entry point (issue #220)
 # =============================================================================
@@ -9393,8 +9482,8 @@ async def test_sync_preflights_between_fetch_and_merge(monkeypatch):
     refusal would already be too late; before the fetch there is nothing to read.
     """
     monkeypatch.setattr(worktree_ops_mod.frontend, "edition_configured", lambda: False)
-    _, script = await _run_sync(mod, [])
-    labels = _steps_from_script(script)
+    _, cmd, steps = await _run_sync(mod, [])
+    labels = [s["label"] for s in steps]
 
     assert mod._PREFLIGHT_LABEL in labels, labels
     # The probe sits between the fetch and the merge, which is the whole point:
@@ -9442,8 +9531,8 @@ async def test_sync_skips_the_preflight_on_an_edition_checkout(monkeypatch):
     a network round trip that can only produce a false refusal.
     """
     monkeypatch.setattr(worktree_ops_mod.frontend, "edition_configured", lambda: True)
-    _, script = await _run_sync(mod, [])
-    assert mod._PREFLIGHT_LABEL not in _steps_from_script(script)
+    _, cmd, steps = await _run_sync(mod, [])
+    assert mod._PREFLIGHT_LABEL not in [s["label"] for s in steps]
 
 
 @pytest.mark.asyncio
@@ -9455,26 +9544,15 @@ async def test_npm_ci_step_carries_a_node_modules_stash(monkeypatch):
     restore.
     """
     monkeypatch.setattr(worktree_ops_mod.frontend, "edition_configured", lambda: False)
-    _, script = await _run_sync(mod, [])
-    steps = _sync_steps_from_script(script)
+    _, cmd, steps = await _run_sync(mod, [])
     stashed = {s["label"]: s["stash"] for s in steps if s.get("stash")}
     assert list(stashed) == ["npm ci"], stashed
     assert stashed["npm ci"] == str(Path(_SYNC_REPO) / "website" / "node_modules")
-    # The runner must actually put it back, and only on a non-zero outcome.
-    assert "os.rename(backup, stash)" in script
-    # Deletions whose outcome decides the next rename are CONFIRMED, not
-    # fire-and-forget: a silently partial removal leaves a directory in place,
-    # makes the rename fail, and ends with a partial tree restored over a good
-    # one.
-    assert "def gone(p):" in script
-    # lexists, not exists: a DANGLING symlink is still something at this path,
-    # and the helper must unlink a symlink rather than rmtree it -- rmtree refuses
-    # a link and ignore_errors=True hides the refusal, which used to leave the
-    # backup in place and make every later sync refuse as ambiguous.
-    assert "return not os.path.lexists(p)" in script
-    assert "if os.path.islink(p):" in script
-    assert "os.unlink(p)" in script
-    assert "elif gone(stash):" in script
+    # The transaction's BEHAVIOUR — restore on failure only, confirmed
+    # deletions, symlink unlinking, lexists gates — is proven by EXECUTION in
+    # test_dev_fleet_sync_runner.py against real directory trees; the inline
+    # source-text assertions this test used to carry moved there with it. What
+    # stays here is the composition contract: the stash rides the npm ci step.
 
 
 @pytest.mark.asyncio
@@ -9494,21 +9572,22 @@ async def test_sync_never_runs_an_operator_supplied_command(monkeypatch):
     """
     monkeypatch.setenv("KIROCREW_DEVFLEET_NPM_AUTH_REPAIR", "/bin/sh -c true")
     monkeypatch.setattr(worktree_ops_mod.frontend, "edition_configured", lambda: False)
-    _, script = await _run_sync(mod, [])
+    _, cmd, steps = await _run_sync(mod, [])
 
-    steps = _sync_steps_from_script(script)
-    assert not any("repair" in s for s in steps), steps
+    assert not any("repair" in s["label"] for s in steps), steps
     assert not hasattr(mod, "_npm_auth_repair_argv")
+    cmd_flat = " ".join(map(str, cmd))
     for token in ("KIROCREW_DEVFLEET_NPM_AUTH_REPAIR", "npm_auth_repair"):
-        assert token not in script
-    # The declared command must appear NOWHERE in the generated script. Asserted
+        assert token not in cmd_flat, cmd
+    # The declared command must appear NOWHERE in the composed steps. Asserted
     # this way rather than against a list of expected argv[0]s: the toolchain
     # binaries are resolved from the host (npm is /usr/bin/npm on one platform
     # and /opt/homebrew/bin/npm on another), so a path allowlist tests the host
     # rather than the property.
-    assert "/bin/sh" not in script
+    assert "/bin/sh" not in cmd_flat
     for s in steps:
         assert "/bin/sh" not in " ".join(map(str, s["argv"])), s["argv"]
+        assert not any("repair" in str(v) for v in s.get("env", {}).values()), s
 
 
 @pytest.mark.asyncio
@@ -9522,17 +9601,27 @@ async def test_a_stashed_tree_is_recovered_before_any_step_runs(monkeypatch):
     halves of leftover-state reconciliation therefore happen before the loop.
     """
     monkeypatch.setattr(worktree_ops_mod.frontend, "edition_configured", lambda: False)
-    _, script = await _run_sync(mod, [])
+    from kiro_crew.apps.builtins.dev_fleet import sync_runner
 
-    claim = script.index("left stashed by an earlier")
-    loop_at = script.index("for i, st in enumerate(steps):")
-    assert claim < loop_at, "the stashed tree must be reclaimed before any step runs"
-    # The step's pre-run section now only moves the tree ASIDE -- no second,
-    # redundant adoption. (The `finally` block legitimately renames the backup
-    # back; that is the restore, not a reconciliation.)
-    prerun = script[loop_at:script.index("    try:", loop_at)]
-    assert "os.rename(stash, backup)" in prerun
-    assert "os.rename(backup, stash)" not in prerun
+    _, cmd, steps = await _run_sync(mod, [])
+    assert cmd is not None
+    # The reconcile/adopt decision and the move-aside now live in the runner
+    # module. That both halves happen -- and the backup-only recovery lands
+    # BEFORE any step runs, and the pre-run section only moves the tree aside --
+    # is driven against real trees in test_dev_fleet_sync_runner.py
+    # (TestReconcileLeftovers, TestNodeModulesTransaction). Here we pin the
+    # structural ordering in main(): reconcile_leftovers is called before
+    # run_steps.
+    src = Path(sync_runner.__file__).read_text(encoding="utf-8")
+    main_body = src.split("def main(", 1)[1]
+    assert main_body.index("reconcile_leftovers(") < main_body.index("run_steps("), (
+        "the stashed tree must be reclaimed before any step runs"
+    )
+    # The move-aside (enter) and the restore (exit) are separate phases of the
+    # transaction, not a redundant second adoption in the pre-run section.
+    enter = src.split("def __enter__", 1)[1].split("def __exit__", 1)[0]
+    assert "os.rename(self.stash, self.backup)" in enter
+    assert "os.rename(self.backup, self.stash)" not in enter
 
 
 @pytest.mark.asyncio
@@ -9546,9 +9635,13 @@ async def test_the_failure_cause_is_never_taken_from_child_output(monkeypatch):
     So the diagnosis is derived from the EXIT CODE, which a step's own child
     cannot choose, and nothing is parsed out of the stream.
     """
-    _, script = await _run_sync(mod, [])
+    from kiro_crew.apps.builtins.dev_fleet import sync_runner
+
+    _, cmd, _ = await _run_sync(mod, [])
+    assert cmd is not None
     # No promotable marker is emitted by the runner at all.
-    assert "::cause::" not in script
+    src = Path(sync_runner.__file__).read_text(encoding="utf-8")
+    assert "::cause::" not in src
     # And the worker has no branch that lifts text out of a line.
     import inspect
     body = inspect.getsource(mod._start_run)
@@ -9568,14 +9661,20 @@ async def test_runner_refuses_when_a_tree_and_a_backup_both_exist(monkeypatch):
     the gateway maps to a sentence naming the next step.
     """
     monkeypatch.setattr(worktree_ops_mod.frontend, "edition_configured", lambda: False)
-    _, script = await _run_sync(mod, [])
+    _, cmd, _ = await _run_sync(mod, [])
+    assert cmd is not None
 
-    assert f"sys.exit({npm_preflight.EXIT_TREE_AMBIGUOUS})" in script
-    assert "print('tree: %s' % stash, flush=True)" in script
-    assert "print('backup: %s' % backup, flush=True)" in script
-    # The refusal is reconciliation, so it lands before any step runs.
-    refuse = script.index(f"sys.exit({npm_preflight.EXIT_TREE_AMBIGUOUS})")
-    assert refuse < script.index("for i, st in enumerate(steps):")
+    # The both-exist refusal (exit the ambiguous-tree code, touch neither, name
+    # both paths) is driven against real trees in test_dev_fleet_sync_runner.py
+    # (TestReconcileLeftovers), and that it lands as reconciliation before any
+    # step is pinned there and by the main() ordering test. The code itself has
+    # ONE spelling now (npm_preflight.EXIT_TREE_AMBIGUOUS, passed to the runner
+    # via --exit-tree-ambiguous); here we pin the pieces that stay
+    # gateway-side: the code is handed in on argv, and the gateway maps it to a
+    # sentence naming the next step.
+    assert "--exit-tree-ambiguous" in cmd
+    passed = cmd[cmd.index("--exit-tree-ambiguous") + 1]
+    assert passed == str(npm_preflight.EXIT_TREE_AMBIGUOUS)
     # The mapped sentence names what to do, not merely what happened.
     text = npm_preflight.explain_exit(npm_preflight.EXIT_TREE_AMBIGUOUS)
     assert "press Pull + Build again" in text
@@ -9594,18 +9693,21 @@ async def test_only_the_preflight_step_may_assert_a_diagnosis(monkeypatch):
     code in the log rather than believing it.
     """
     monkeypatch.setattr(worktree_ops_mod.frontend, "edition_configured", lambda: False)
-    _, script = await _run_sync(mod, [])
+    _, cmd, _ = await _run_sync(mod, [])
+    assert cmd is not None
 
-    assert "if rc in RESERVED and st['label'] != PREFLIGHT:" in script
-    # The gate must sit on the value the STEP returned, before the finally block
-    # can set a runner-owned code of its own.
-    gate = script.index("if rc in RESERVED and st['label'] != PREFLIGHT:")
-    assert script.index("rc = run(st)") < gate < script.index("    finally:")
-    # Both literals come from the modules that own them, so they cannot drift
-    # from the step label or the explain table.
-    assert f"PREFLIGHT = {json.dumps(mod._PREFLIGHT_LABEL)}" in script
+    # The gate itself (a reserved code is trusted from the preflight label and
+    # demoted from every other step) is driven by execution in
+    # test_dev_fleet_sync_runner.py (TestDemoteReserved, TestRunSteps). Here we
+    # pin that the gateway passes the reserved set and the trusted label IN, so
+    # the runner needs to import nothing from kiro_crew and the two cannot
+    # drift from the modules that own them.
+    assert "--reserved" in cmd
     reserved = sorted(npm_preflight.RESERVED_EXIT_CODES)
-    assert f"RESERVED = {reserved!r}" in script
+    passed = cmd[cmd.index("--reserved") + 1]
+    assert passed == ",".join(str(c) for c in reserved), passed
+    assert "--preflight-label" in cmd
+    assert cmd[cmd.index("--preflight-label") + 1] == mod._PREFLIGHT_LABEL
     # Every code the gateway will explain must be in the guarded set, or a code
     # it explains could still arrive forged.
     for code in reserved:
@@ -9640,8 +9742,8 @@ async def test_probe_and_merge_consume_one_immutable_commit(monkeypatch):
     because the promise is what makes the merge look safe.
     """
     monkeypatch.setattr(worktree_ops_mod.frontend, "edition_configured", lambda: False)
-    _, script = await _run_sync(mod, [])
-    steps = _sync_steps_from_script(script)
+    _, cmd, steps = await _run_sync(mod, [])
+
     by_label = {}
     for st in steps:
         by_label.setdefault(st["label"], []).append(st["argv"])
@@ -9938,10 +10040,10 @@ async def test_prune_runs_before_the_fetch_step_is_built(monkeypatch):
         calls.append(repo)
     monkeypatch.setattr(worktree_ops_mod, "_prune_dead_sync_base_refs", spy)
     monkeypatch.setattr(worktree_ops_mod.frontend, "edition_configured", lambda: False)
-    _, script = await _run_sync(mod, [])
+    _, cmd, steps = await _run_sync(mod, [])
 
     assert calls, "the sync never pruned stale pinned refs"
-    steps = _sync_steps_from_script(script)
+
     fetch = [st for st in steps if "fetch" in st["argv"]]
     assert fetch, "no fetch step"
     # The pin the fetch writes is this process's, which the prune never removes.
@@ -10060,13 +10162,13 @@ async def test_a_full_tmpdir_refuses_the_sync_instead_of_raising(
 
         monkeypatch.setattr(Path, "write_bytes", fail_write)
 
-    result, script = await _run_sync(mod, [])
+    result, cmd, steps = await _run_sync(mod, [])
 
     assert result.get("ok") is False, result
     assert "preflight" in result["error"].lower(), result
     assert "No space left on device" in result["error"], result
     # A refusal means no run was started at all, so no steps ran.
-    assert script is None, "the sync started a run despite failing to stage"
+    assert cmd is None, "the sync started a run despite failing to stage"
     # And the partial snapshot is gone: nothing registered it for cleanup, so the
     # refusal path has to remove it itself.
     leaked = list(tmp_path.glob("kirocrew-npm-preflight-*"))
@@ -10121,11 +10223,11 @@ async def test_sync_refuses_when_the_probe_source_could_not_be_captured(monkeypa
     monkeypatch.setattr(worktree_ops_mod.frontend, "edition_configured", lambda: False)
     monkeypatch.setattr(runtime_mod, "_PREFLIGHT_SOURCE", None)
 
-    result, script = await _run_sync(mod, [])
+    result, cmd, steps = await _run_sync(mod, [])
 
     assert result.get("ok") is False, result
     assert "preflight" in result["error"].lower(), result
-    assert script is None, "the sync started a run with no trustworthy probe"
+    assert cmd is None, "the sync started a run with no trustworthy probe"
 
 
 @pytest.mark.asyncio
@@ -10143,11 +10245,15 @@ async def test_every_stash_presence_gate_uses_lexists(monkeypatch):
     this pins the shape so the gates cannot silently revert.
     """
     monkeypatch.setattr(worktree_ops_mod.frontend, "edition_configured", lambda: False)
-    _, script = await _run_sync(mod, [])
+    from kiro_crew.apps.builtins.dev_fleet import sync_runner
 
-    assert "have_tree = os.path.lexists(stash)" in script
-    assert "have_backup = os.path.lexists(backup)" in script
-    assert "if backup and os.path.lexists(stash):" in script
+    _, cmd, _ = await _run_sync(mod, [])
+    assert cmd is not None
+
+    src = Path(sync_runner.__file__).read_text(encoding="utf-8")
+    assert "have_tree = os.path.lexists(stash)" in src
+    assert "have_backup = os.path.lexists(backup)" in src
+    assert "if self.stash and self.backup and os.path.lexists(self.stash):" in src
     # No presence gate on either path may follow a link.
     for bad in (
         "os.path.isdir(stash)",
@@ -10155,4 +10261,4 @@ async def test_every_stash_presence_gate_uses_lexists(monkeypatch):
         "os.path.exists(stash)",
         "os.path.exists(backup)",
     ):
-        assert bad not in script, f"{bad} follows symlinks; use lexists"
+        assert bad not in src, f"{bad} follows symlinks; use lexists"

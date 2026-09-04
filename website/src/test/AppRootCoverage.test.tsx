@@ -14,7 +14,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { act, screen, fireEvent, waitFor, within } from '@testing-library/react'
 import { renderWithProviders } from './helpers'
-import { setUpdateProgress } from '../store/dashboardSlice'
+import { setUpdateProgress, sseConnected, sseDisconnected } from '../store/dashboardSlice'
 
 vi.mock('../pages/ChatPage', () => ({ default: () => <div data-testid="chat-page">ChatPage</div> }))
 vi.mock('../pages/SystemPage', () => ({ default: () => null }))
@@ -273,6 +273,32 @@ describe('App — update progress overlay', () => {
     expect(screen.getByText('Rebuilding package')).toBeInTheDocument()
     expect(screen.getByText('Restarting server')).toBeInTheDocument()
     expect(screen.getByText('0s')).toBeInTheDocument()
+  })
+
+  it('names the restart when the socket drops mid-update', async () => {
+    // The restart step kills the socket BY DESIGN (the gateway execs itself)
+    // and progress events stop with it. Before this state existed the overlay
+    // froze on the last step with its idle waiting copy — indistinguishable
+    // from a hang. Disconnected-while-updating must say the gateway is
+    // restarting and that reconnection is in progress.
+    const { store } = await startUpdate()
+    await screen.findByText('Updating Kiro Crew…')
+
+    act(() => { store.dispatch(setUpdateProgress({ step: 'restarting', detail: 'Restarting server…' })) })
+    expect(screen.getByText('Page will reconnect when ready…')).toBeInTheDocument()
+
+    act(() => { store.dispatch(sseDisconnected()) })
+    const note = screen.getByTestId('update-reconnecting')
+    expect(note.textContent).toContain('Gateway is restarting — reconnecting…')
+    // The idle copy stands down: both lines together would say "waiting" and
+    // "dialing" about the same moment.
+    expect(screen.queryByText('Page will reconnect when ready…')).toBeNull()
+
+    // Reconnected (the gateway is back, the reload latch takes it from here):
+    // the transient line yields back to the idle copy.
+    act(() => { store.dispatch(sseConnected()) })
+    expect(screen.queryByTestId('update-reconnecting')).toBeNull()
+    expect(screen.getByText('Page will reconnect when ready…')).toBeInTheDocument()
   })
 
 })

@@ -53,6 +53,24 @@ ICS_FETCH_TIMEOUT_SECS = 20
 ICS_MAX_REDIRECTS = 5
 CALENDAR_SYNC_DAYS = 7
 
+#: How often the background calendar poll runs when nothing overrides it. Five
+#: minutes catches a meeting accepted an hour before it starts and stays well
+#: inside every provider's rate limit; a manual Sync is still instant.
+CALENDAR_POLL_INTERVAL_SECS = 300
+#: Bounds on the configurable poll cadence. The floor keeps a misconfigured
+#: install from hammering a calendar host; the ceiling keeps "every so often"
+#: from silently becoming "never".
+CALENDAR_POLL_MIN_SECS = 60
+CALENDAR_POLL_MAX_SECS = 3600
+#: How long before a calendar event starts its meeting directory is created, so
+#: the user opens a meeting that already exists rather than an empty list. ``0``
+#: turns pre-creation off while leaving the background sync on.
+CALENDAR_PRECREATE_LEAD_MINUTES = 15
+CALENDAR_PRECREATE_LEAD_MAX_MINUTES = 24 * 60
+#: Pause before the first background poll after the gateway starts, so a
+#: calendar fetch is not part of the startup path.
+CALENDAR_POLL_STARTUP_DELAY_SECS = 20
+
 # Per-agent batching dispatcher.
 BATCH_INTERVAL_SECS = 30.0
 MAX_DISPATCH_FAILURES = 3

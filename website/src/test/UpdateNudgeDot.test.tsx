@@ -1,6 +1,6 @@
 // Update nudge dots: the desktopUpdateAvailable flag, its mirroring from
 // Electron update-state events, and the dot rendering in SidePanelLayout tabs.
-import { describe, it, expect, vi, afterEach } from 'vitest'
+import { describe, it, expect, afterEach } from 'vitest'
 import { render, screen, cleanup, act } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Provider } from 'react-redux'

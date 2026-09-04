@@ -55,6 +55,36 @@ _DRAIN_TIMEOUT_SECS = 120.0
 # external SIGTERM arriving mid-drain.
 _DRAIN_POLL_SECS = 2.0
 
+# Process exit status the gateway uses when THIS watchdog initiated the
+# shutdown. Non-zero on purpose: the whole point of the shutdown is to be
+# restarted by a supervisor, and ``Restart=on-failure`` (systemd) /
+# ``KeepAlive.SuccessfulExit=false`` (launchd) style policies only relaunch a
+# process that did NOT exit 0. A unit generated before ``Restart=always``
+# landed, or one an operator hand-edited back to ``on-failure``, would
+# otherwise treat the clean exit as "done" and leave the gateway down until
+# a human notices. 75 is ``EX_TEMPFAIL`` from ``sysexits.h`` ("temporary
+# failure; retry later"), the closest standard meaning to "restart me".
+STALE_ASSET_EXIT_CODE = 75
+
+
+def shutdown_exit_code(watchdog: "asyncio.Future[bool] | None") -> int:
+    """Map the watchdog task's outcome onto the gateway's process exit status.
+
+    ``STALE_ASSET_EXIT_CODE`` iff the watchdog has finished and reported
+    ``True`` (it confirmed a vanish and set the shutdown event itself). Every
+    other state is 0: no watchdog, still running (the event was set by
+    SIGTERM/``systemctl stop`` while it slept), cancelled, or crashed — a
+    crashed watchdog must not turn an operator's stop into a restart.
+    """
+    if watchdog is None or not watchdog.done() or watchdog.cancelled():
+        return 0
+    try:
+        fired = watchdog.result()
+    except Exception:
+        logger.debug("Stale-asset watchdog task raised", exc_info=True)
+        return 0
+    return STALE_ASSET_EXIT_CODE if fired else 0
+
 
 class _ShutdownSignal(Protocol):
     """Minimal contract we need from a shutdown-signalling event."""
@@ -90,8 +120,15 @@ async def run_stale_asset_watchdog(
     count_in_flight: Callable[[], int] | None = None,
     drain_timeout: float = _DRAIN_TIMEOUT_SECS,
     drain_poll: float = _DRAIN_POLL_SECS,
-) -> None:
+) -> bool:
     """Background loop: check asset presence, trigger shutdown if stale.
+
+    Returns ``True`` iff this watchdog is the one that set ``shutdown_event``
+    (a confirmed asset vanish). Every other exit — never armed, or
+    ``shutdown_event`` set externally by SIGTERM/``systemctl stop`` — returns
+    ``False``. The gateway maps ``True`` onto :data:`STALE_ASSET_EXIT_CODE` so
+    the process exits non-zero and a restart-on-failure supervisor relaunches
+    it, while an operator-initiated stop still exits 0 and stays stopped.
 
     Only arms if assets are present at startup. A fresh source/dev install
     that never built its frontend will NOT be killed — the watchdog
@@ -141,12 +178,12 @@ async def run_stale_asset_watchdog(
             "Stale-asset watchdog: assets not present at startup — "
             "not arming (dev/source install without a built frontend)."
         )
-        return
+        return False
 
     while not shutdown_event.is_set():
         try:
             await asyncio.wait_for(shutdown_event.wait(), timeout=interval)
-            return
+            return False
         except asyncio.TimeoutError:
             pass
 
@@ -160,7 +197,7 @@ async def run_stale_asset_watchdog(
                 await asyncio.wait_for(
                     shutdown_event.wait(), timeout=confirm_delay
                 )
-                return
+                return False
             except asyncio.TimeoutError:
                 pass
             if assets_present():
@@ -173,7 +210,7 @@ async def run_stale_asset_watchdog(
             if shutdown_event.is_set():
                 # Someone else shut us down during the confirm window; don't
                 # log a misleading "watchdog fired" CRITICAL.
-                return
+                return False
             await _drain_in_flight(
                 shutdown_event,
                 count_in_flight,
@@ -183,7 +220,7 @@ async def run_stale_asset_watchdog(
             if shutdown_event.is_set():
                 # An external SIGTERM arrived during the drain window and has
                 # already begun graceful shutdown — don't double-signal.
-                return
+                return False
             # Re-check once more now that in-flight work has drained. This
             # covers a rebuild that outlives the confirmation but finishes
             # while turns are still draining; it adds no grace on an idle
@@ -204,7 +241,9 @@ async def run_stale_asset_watchdog(
                 "so a supervisor can restart a fresh gateway."
             )
             shutdown_event.set()
-            return
+            return True
+    # Loop never entered: the event was already set when the watchdog armed.
+    return False
 
 
 async def _drain_in_flight(

@@ -10,6 +10,7 @@ const {
   buildFeedBase,
   configureUpdater,
   readExternallyManaged,
+  canRewriteMarker,
   DEFAULT_FEED_BASE,
   SUPPORTED_PLATFORMS,
 } = require("../auto-update");
@@ -867,10 +868,14 @@ const cpModule = require("node:child_process");
 // {code, out}. Returns a restore fn + the recorded command list.
 function stubSpawn(script) {
   const commands = [];
+  // Spawn OPTIONS per call, so a test can assert the hardened environment the
+  // marker's command runs in and not only which command ran.
+  const optsList = [];
   const orig = cpModule.spawn;
   const { EventEmitter } = require("node:events");
-  cpModule.spawn = (command, _opts) => {
+  cpModule.spawn = (command, opts) => {
     commands.push(command);
+    optsList.push(opts);
     const child = new EventEmitter();
     child.stdout = new EventEmitter();
     child.stderr = new EventEmitter();
@@ -888,7 +893,7 @@ function stubSpawn(script) {
     });
     return child;
   };
-  return { commands, restore: () => { cpModule.spawn = orig; } };
+  return { commands, optsList, restore: () => { cpModule.spawn = orig; } };
 }
 
 test("managed check() with updateCommand+checkCommand emits found with the printed version", async (t) => {
@@ -1194,7 +1199,13 @@ test("readExternallyManaged: JSON marker carries metadata", (t) => {
     path.join(dir, "EXTERNALLY-MANAGED"),
     JSON.stringify({ managedBy: "internal-registry", updateCommand: "pkgtool update kirocrew" }),
   );
-  assert.deepStrictEqual(readExternallyManaged({ env: {}, resourcesPath: dir }), {
+  // probeMarkerRewritable: this test is about PARSING a trusted marker; the
+  // integrity gate itself is covered by the writability tests below.
+  assert.deepStrictEqual(readExternallyManaged({
+    env: {},
+    resourcesPath: dir,
+    probeMarkerRewritable: () => false,
+  }), {
     managedBy: "internal-registry",
     updateCommand: "pkgtool update kirocrew",
     checkCommand: "",
@@ -1269,7 +1280,11 @@ test("readExternallyManaged: metadata fields are length-capped", (t) => {
     path.join(dir, "EXTERNALLY-MANAGED"),
     JSON.stringify({ managedBy: "m".repeat(500), updateCommand: "c".repeat(2000), checkCommand: "k".repeat(2000) }),
   );
-  const got = readExternallyManaged({ env: {}, resourcesPath: dir });
+  const got = readExternallyManaged({
+    env: {},
+    resourcesPath: dir,
+    probeMarkerRewritable: () => false,
+  });
   assert.strictEqual(got.managedBy.length, 128);
   assert.strictEqual(got.updateCommand.length, 512);
   assert.strictEqual(got.checkCommand.length, 512);
@@ -1286,8 +1301,314 @@ test("readExternallyManaged: env override points at a marker file", (t) => {
   const got = readExternallyManaged({
     env: { KIROCREW_EXTERNALLY_MANAGED: marker },
     resourcesPath: "/nonexistent",
+    probeMarkerRewritable: () => false,
   });
   assert.deepStrictEqual(got, { managedBy: "harness", updateCommand: "", checkCommand: "" });
+});
+
+// ---------------------------------------------------------------------------
+// Marker INTEGRITY. The marker's updateCommand/checkCommand are shelled, and the
+// background launch check fires them with no user action, so the marker is an
+// execution trust root: one file write under a user-writable <resourcesPath>
+// (Homebrew, `pip --user`, ~/Applications) would otherwise be arbitrary code
+// execution in the desktop app. These exercise the REAL probe -- no injected
+// seam -- because a test that only greps for the call would execute none of it.
+// ---------------------------------------------------------------------------
+
+// Root can chmod and rewrite anything, so the probe correctly answers
+// "rewritable" for every path and a trusted-marker case has nothing to assert.
+// Windows has no POSIX owner to read and is declared fail-closed.
+const canTestOwnership = process.platform !== "win32"
+  && typeof process.geteuid === "function" && process.geteuid() !== 0;
+
+// A real path this account does NOT own and cannot chmod, used as the trusted
+// marker case. Resolved from the filesystem rather than hard-coded so the test
+// asserts only when its own precondition genuinely holds.
+function foreignOwnedPath() {
+  if (!canTestOwnership) return "";
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const euid = process.geteuid();
+  for (const candidate of ["/usr/bin/env", "/bin/sh", "/usr/lib/os-release"]) {
+    try {
+      const st = fs.lstatSync(candidate);
+      const dir = fs.lstatSync(path.dirname(candidate));
+      if (st.uid !== euid && dir.uid !== euid
+        && (st.mode & 0o022) === 0 && (dir.mode & 0o022) === 0) return candidate;
+    } catch {
+      // try the next candidate
+    }
+  }
+  return "";
+}
+
+test("readExternallyManaged: a marker in a USER-WRITABLE dir yields NO metadata", (t) => {
+  const fs = require("node:fs");
+  const os = require("node:os");
+  const path = require("node:path");
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "kc-ext-"));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  fs.writeFileSync(
+    path.join(dir, "EXTERNALLY-MANAGED"),
+    JSON.stringify({
+      managedBy: "attacker",
+      updateCommand: "/bin/sh -c 'touch /tmp/pwned'",
+      checkCommand: "/bin/sh -c 'touch /tmp/pwned'",
+    }),
+  );
+  // Still MANAGED (the updater stays off) but the commands are refused: this is
+  // the historical bare-marker shape.
+  assert.deepStrictEqual(readExternallyManaged({ env: {}, resourcesPath: dir }), {
+    managedBy: "",
+    updateCommand: "",
+    checkCommand: "",
+  });
+});
+
+test("readExternallyManaged: chmod 0400 on an OWNED marker does not buy trust", (t) => {
+  // The bypass the mode-bit version of this gate had: the owner can always
+  // chmod +w back, so read-only-right-now is not provenance. An agent shell
+  // plants the marker, makes it 0400 in a 0500 dir, and must still be refused.
+  if (!canTestOwnership) {
+    t.skip("needs a non-root POSIX host: root can rewrite anything");
+    return;
+  }
+  const fs = require("node:fs");
+  const os = require("node:os");
+  const path = require("node:path");
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "kc-ext-"));
+  t.after(() => {
+    fs.chmodSync(dir, 0o700);
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+  const marker = path.join(dir, "EXTERNALLY-MANAGED");
+  fs.writeFileSync(marker, JSON.stringify({
+    managedBy: "attacker",
+    updateCommand: "/bin/sh -c 'touch /tmp/pwned'",
+    checkCommand: "/bin/sh -c 'touch /tmp/pwned'",
+  }));
+  fs.chmodSync(marker, 0o400); // "not writable" -- but still ours
+  fs.chmodSync(dir, 0o500);    // ditto
+  assert.deepStrictEqual(readExternallyManaged({ env: {}, resourcesPath: dir }), {
+    managedBy: "",
+    updateCommand: "",
+    checkCommand: "",
+  });
+});
+
+test("canRewriteMarker: a marker we do NOT own and cannot chmod is trusted", (t) => {
+  // The positive half: without this the gate could refuse everything and still
+  // pass every negative test. Asserted against a real foreign-owned path (the
+  // shape a root-owned system install has) rather than a fabricated one.
+  const foreign = foreignOwnedPath();
+  if (!foreign) {
+    t.skip("no foreign-owned path available on this host");
+    return;
+  }
+  assert.strictEqual(canRewriteMarker(foreign), false,
+    `${foreign} is owned by another account in a directory we cannot write`);
+});
+
+test("canRewriteMarker: ownership is what is probed, not the mode bits", (t) => {
+  if (!canTestOwnership) {
+    t.skip("needs a non-root POSIX host: root can rewrite anything");
+    return;
+  }
+  const fs = require("node:fs");
+  const os = require("node:os");
+  const path = require("node:path");
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "kc-ext-"));
+  t.after(() => {
+    fs.chmodSync(dir, 0o700);
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+  const marker = path.join(dir, "EXTERNALLY-MANAGED");
+  fs.writeFileSync(marker, "{}");
+  // Every mode an owner can set still answers "rewritable", because chmod is
+  // ours: 0600 (plainly writable), 0400 (read-only file), 0000 (no bits at all).
+  for (const mode of [0o600, 0o400, 0o000]) {
+    fs.chmodSync(marker, mode);
+    assert.strictEqual(canRewriteMarker(marker), true, `mode ${mode.toString(8)} is still ours`);
+  }
+  fs.chmodSync(marker, 0o600);
+  // A marker that is absent cannot have its provenance established either.
+  assert.strictEqual(canRewriteMarker(path.join(dir, "nope")), true);
+});
+
+test("canRewriteMarker: an ACL-granted write is rewritable even at a safe mode", (t) => {
+  // POSIX mode bits do not model ACLs, so ownership + mode alone would call a
+  // root-owned 0755 dir carrying a `chmod +a`/setfacl grant for this user
+  // "not rewritable". A two-uid ACL fixture is not constructible in a test (it
+  // needs a directory this account does not own), so the arm is asserted as a
+  // DECLARED property, the same way the win32 branch below is.
+  const js = require("node:fs").readFileSync(require.resolve("../auto-update"), "utf8");
+  const probe = js.slice(js.indexOf("function canRewriteMarker"));
+  assert.match(probe.slice(0, probe.indexOf("\n}")),
+    /fs\.accessSync\(target, fs\.constants\.W_OK\);\s*\n\s*return true;/,
+    "the probe must ask the kernel, not only the mode bits");
+  // And the arm must not over-refuse: a foreign-owned path with no grant to us
+  // still reads as trusted (covered positively above, re-asserted here against
+  // the same subject so a broadened arm cannot pass silently).
+  const foreign = foreignOwnedPath();
+  if (!foreign) {
+    t.diagnostic("no foreign-owned path available to re-assert the trusted case");
+    return;
+  }
+  assert.strictEqual(canRewriteMarker(foreign), false);
+});
+
+test("canRewriteMarker: Windows is fail-closed by declaration", () => {
+  // No POSIX owner to read and access(W_OK) does not model ACLs, so there is no
+  // honest verdict; every Windows marker is refused. Asserted as a DECLARED
+  // property so it cannot silently become an accident.
+  const js = require("node:fs").readFileSync(require.resolve("../auto-update"), "utf8");
+  assert.match(js, /if \(process\.platform === "win32" \|\| typeof process\.geteuid !== "function"\) return true;/,
+    "the win32 branch must return 'rewritable' before any stat is attempted");
+  if (process.platform === "win32") {
+    const os = require("node:os");
+    assert.strictEqual(canRewriteMarker(require("node:path").join(os.tmpdir(), "EXTERNALLY-MANAGED")), true);
+  }
+});
+
+test("readExternallyManaged: a PACKAGED app ignores KIROCREW_EXTERNALLY_MANAGED", (t) => {
+  const fs = require("node:fs");
+  const os = require("node:os");
+  const path = require("node:path");
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "kc-ext-"));
+  const empty = fs.mkdtempSync(path.join(os.tmpdir(), "kc-res-"));
+  t.after(() => {
+    fs.rmSync(dir, { recursive: true, force: true });
+    fs.rmSync(empty, { recursive: true, force: true });
+  });
+  const marker = path.join(dir, "custom-marker.json");
+  fs.writeFileSync(marker, JSON.stringify({ managedBy: "env", updateCommand: "/bin/false" }));
+  // The env var names a marker the probe would trust, yet a packaged app must
+  // not consult it at all: the launch environment is user-writable.
+  assert.strictEqual(
+    readExternallyManaged({
+      env: { KIROCREW_EXTERNALLY_MANAGED: marker },
+      resourcesPath: empty,
+      isPackaged: true,
+      probeMarkerRewritable: () => false,
+    }),
+    null,
+    "packaged: the env seam is off and the real resources dir has no marker",
+  );
+  // Unpackaged (the harness case) still honors it.
+  assert.deepStrictEqual(
+    readExternallyManaged({
+      env: { KIROCREW_EXTERNALLY_MANAGED: marker },
+      resourcesPath: empty,
+      isPackaged: false,
+      probeMarkerRewritable: () => false,
+    }),
+    { managedBy: "env", updateCommand: "/bin/false", checkCommand: "" },
+  );
+});
+
+test("managed updater: a rewritable marker never arms the background check", async (t) => {
+  // End-to-end wiring: the launch timer fires managedCheck() 30s after start
+  // with no user action, so an unverified marker must never reach that path.
+  const fs = require("node:fs");
+  const os = require("node:os");
+  const path = require("node:path");
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "kc-ext-"));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  fs.writeFileSync(
+    path.join(dir, "EXTERNALLY-MANAGED"),
+    JSON.stringify({
+      managedBy: "attacker",
+      updateCommand: "/bin/sh -c 'touch /tmp/pwned'",
+      checkCommand: "/bin/sh -c 'touch /tmp/pwned'",
+    }),
+  );
+  // externallyManaged left UNSET so the module reads the real marker from disk.
+  const { deps } = makeDeps({ resourcesPath: dir });
+  delete deps.externallyManaged;
+  const realST = global.setTimeout;
+  const realSI = global.setInterval;
+  let timerArmed = false;
+  let pollArmed = false;
+  global.setTimeout = (fn, ms) => { timerArmed = true; return realST(fn, ms); };
+  global.setInterval = (fn, ms) => { pollArmed = true; return realSI(fn, ms); };
+  const { commands, restore } = stubSpawn({ code: 0, out: "9.9.9" });
+  t.after(() => { global.setTimeout = realST; global.setInterval = realSI; restore(); });
+  const u = initAutoUpdate(deps);
+  global.setTimeout = realST;
+  global.setInterval = realSI;
+  assert.strictEqual(u.disabled, "externally-managed",
+    "a rewritable marker is managed-with-no-metadata, so the updater is off");
+  assert.strictEqual(timerArmed, false, "no launch check may be scheduled");
+  assert.strictEqual(pollArmed, false, "no background poll may be armed");
+  // And the explicit surfaces are inert too.
+  await u.check();
+  await u.download();
+  await u.install();
+  assert.deepStrictEqual(commands, [], "no marker command may ever be shelled");
+});
+
+// Everything a shell reads as code. The managed command's environment is
+// CONSTRUCTED, so none of these can reach it whether or not it is named here --
+// this list is the adversary's side of the contract, not the implementation's.
+const SHELL_CODE_VARS = [
+  "PYTHONPATH", "PYTHONHOME", "PYTHONSTARTUP", "PYTHONEXECUTABLE", "PYTHONUSERBASE",
+  "PYTHONWARNINGS", "LD_PRELOAD", "LD_LIBRARY_PATH", "LD_AUDIT", "DYLD_INSERT_LIBRARIES",
+  "DYLD_LIBRARY_PATH", "DYLD_FRAMEWORK_PATH", "BASH_ENV", "ENV", "SHELLOPTS", "PS4",
+  "IFS", "NODE_OPTIONS", "BASHOPTS", "PERL5OPT", "RUBYOPT",
+  "BASH_FUNC_check%%", "BASH_FUNC_apply()", "BASH_FUNC_grep%%",
+  // Not shell-interpreted, but an interpreter reads code from it: Python's
+  // user-site dir comes from HOME, so a planted sitecustomize.py runs on every
+  // `python` start.
+  "HOME",
+];
+
+test("managed command env is CONSTRUCTED: nothing the shell reads as code is inherited", async (t) => {
+  // A narrowed PATH stops a planted shim shadowing a command NAME. These go
+  // further: an exported shell function shadows the name outright, PS4 under
+  // SHELLOPTS=xtrace runs a command substitution before the command does, and
+  // the loader family makes even a trusted absolute binary load planted code.
+  // Because the env is built by naming what is ALLOWED, this also covers the
+  // names nobody has thought of yet.
+  const saved = new Map(SHELL_CODE_VARS.map((k) => [k, process.env[k]]));
+  for (const k of SHELL_CODE_VARS) process.env[k] = "() { echo pwned; }";
+  const savedProbe = process.env.KC_TEST_UNLISTED_PROBE;
+  const savedLang = process.env.LANG;
+  process.env.KC_TEST_UNLISTED_PROBE = "an-unlisted-variable";
+  process.env.LANG = "C.UTF-8";
+  t.after(() => {
+    for (const [k, v] of saved) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+    if (savedProbe === undefined) delete process.env.KC_TEST_UNLISTED_PROBE;
+    else process.env.KC_TEST_UNLISTED_PROBE = savedProbe;
+    if (savedLang === undefined) delete process.env.LANG;
+    else process.env.LANG = savedLang;
+  });
+  const { deps } = makeDeps({
+    externallyManaged: { managedBy: "m", updateCommand: "/usr/bin/apply", checkCommand: "/usr/bin/check" },
+  });
+  const { optsList, restore } = stubSpawn({ code: 0, out: "0.5.0.5" });
+  t.after(restore);
+  const u = initAutoUpdate(deps);
+  await u.check();
+  assert.strictEqual(optsList.length, 1, "the check shelled exactly one command");
+  const env = optsList[0].env;
+  for (const k of SHELL_CODE_VARS) {
+    assert.ok(!(k in env), `${k} must not reach the managed command`);
+  }
+  assert.ok(!Object.keys(env).some((k) => k.startsWith("BASH_FUNC_")),
+    "no exported shell function may survive");
+  // Constructed, not filtered: an UNLISTED variable is absent because it was
+  // never copied. This is the assertion that holds against the next name.
+  assert.ok(!("KC_TEST_UNLISTED_PROBE" in env),
+    "an unlisted variable must be absent by construction, not by denylist");
+  // The declared pass-through still arrives, or a packager's updater breaks.
+  assert.strictEqual(env.LANG, "C.UTF-8", "declared pass-through vars must survive");
+  // The rest of the hardened environment is unchanged.
+  assert.ok(env.PATH && !env.PATH.includes(require("node:os").homedir()),
+    "PATH stays the narrowed system one");
+  assert.strictEqual(optsList[0].cwd, "/");
 });
 
 // ---------------------------------------------------------------------------

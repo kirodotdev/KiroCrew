@@ -21,11 +21,11 @@ from __future__ import annotations
 import ast
 import asyncio
 import json
-import pathlib
 import threading
 from unittest.mock import MagicMock
 
 import pytest
+from source_corpus import parsed_candidates, src_root
 
 from kiro_crew.knowledge.folder_watcher import FolderWatcher
 from kiro_crew.knowledge.store import KnowledgeStore
@@ -35,7 +35,7 @@ from kiro_crew.knowledge.store import KnowledgeStore
 # repo's other on-loop guards use.
 _NESTED_SCOPES = (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)
 
-_SRC = pathlib.Path(__file__).resolve().parents[1] / "src" / "kiro_crew"
+_SRC = src_root()
 
 
 def _called_names(body: list[ast.stmt]) -> set[tuple[str, int]]:
@@ -101,11 +101,11 @@ def _on_loop_call_sites(name: str) -> list[str]:
     reaches it (see ``_sync_helpers_reaching``).
     """
     found: list[str] = []
-    for path in sorted(_SRC.rglob("*.py")):
-        try:
-            tree = ast.parse(path.read_text(errors="replace"))
-        except SyntaxError:  # pragma: no cover - syntax is enforced elsewhere
-            continue
+    # Only files whose TEXT holds ``name`` can call it (directly, or through a
+    # same-module sync helper that does), so the shared corpus parses just those
+    # instead of re-walking all ~1250 modules for this gate. ``src_root()`` is the
+    # same tree the old ``_SRC`` named, so the relative paths below are unchanged.
+    for path, _text, tree in parsed_candidates(require_all=(name,)):
         indirect = _sync_helpers_reaching(tree, name)
         for fn in (n for n in ast.walk(tree) if isinstance(n, ast.AsyncFunctionDef)):
             for called, lineno in sorted(_called_names(fn.body), key=lambda c: c[1]):

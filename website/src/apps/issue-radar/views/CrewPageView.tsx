@@ -122,6 +122,7 @@ const KIND_LABEL_KEY: Record<CrewEventKind, string> = {
   'handback': 'apps.issueRadar.views.crews.page.kind_handback',
   'skip': 'apps.issueRadar.views.crews.page.kind_skip',
   'yield': 'apps.issueRadar.views.crews.page.kind_yield',
+  'sweep': 'apps.issueRadar.views.crews.page.kind_sweep',
 }
 
 function phaseVariant(phase: CrewPhase): 'ok' | 'err' | 'warn' | 'aim' | 'muted' {
@@ -139,7 +140,19 @@ function kindVariant(kind: CrewEventKind): 'ok' | 'err' | 'warn' | 'aim' | 'mute
   if (kind === 'merge') return 'ok'
   if (kind === 'ci' || kind === 'conflict') return 'warn'
   if (kind === 'skip' || kind === 'yield' || kind === 'handback') return 'muted'
+  // A sweep took no work, so it reads as background like the other did-not-act
+  // kinds rather than competing with the lines that moved something.
+  if (kind === 'sweep') return 'muted'
   return 'aim'
+}
+
+/** The Issue cell's text for one ledger line.
+ *
+ *  A crew-level line has no issue, and the honest cell is an em dash rather than
+ *  `#` followed by nothing: the column is monospaced and right-aligned against
+ *  numbers, so a bare `#` reads as a number that failed to load. */
+function issueCell(number: number | undefined): string {
+  return number === undefined ? '—' : `#${number}`
 }
 
 /** A calendar date with the year elided while it is THIS year — `Aug 6` now,
@@ -525,7 +538,7 @@ export default function CrewPageView({ crewId, onEdit }: CrewPageViewProps) {
                   <td className={`${TD} border-l-2 border-l-accent whitespace-nowrap text-muted`} title={fmtDateTime(e.ts)}>
                     {fmtRelative(e.ts, { now: log.nowMs })}
                   </td>
-                  <td className={`${TD} whitespace-nowrap font-mono`}>#{e.number}</td>
+                  <td className={`${TD} whitespace-nowrap font-mono`}>{issueCell(e.number)}</td>
                   <td className={`${TD} break-words leading-relaxed`}>{e.text}</td>
                   <td className={`${TD} text-right whitespace-nowrap`}>
                     <Badge variant={kindVariant(e.kind)} className="font-body">{t(KIND_LABEL_KEY[e.kind])}</Badge>
@@ -544,7 +557,7 @@ export default function CrewPageView({ crewId, onEdit }: CrewPageViewProps) {
                   <td className={`${TD} border-l-2 border-l-transparent whitespace-nowrap text-muted`} title={fmtDateTime(e.ts)}>
                     {shortDate(e.ts, log.nowMs)}
                   </td>
-                  <td className={`${TD} whitespace-nowrap font-mono`}>#{e.number}</td>
+                  <td className={`${TD} whitespace-nowrap font-mono`}>{issueCell(e.number)}</td>
                   <td className={`${TD} break-words leading-relaxed`}>{e.text}</td>
                   <td className={`${TD} text-right whitespace-nowrap`}>
                     <Badge variant={kindVariant(e.kind)} className="font-body">{t(KIND_LABEL_KEY[e.kind])}</Badge>

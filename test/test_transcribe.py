@@ -10,19 +10,32 @@ whisper.cpp decodes one.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import importlib.machinery
 import importlib.util
 import os
+import re
 import subprocess
 import sys
 import threading
 import types
 import wave
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import imageio_ffmpeg
 import numpy as np
 import pytest
+
+# The authoritative upstream map of platform key -> shipped ffmpeg filename, plus
+# the resolver for which key THIS host is. The pin-completeness test derives the
+# expected filename set from the map rather than hand-copying names, so a
+# one-character drift fails at test time. imageio-ffmpeg is a dev dependency
+# precisely so this import (and the tests) run for real; a `pytest.importorskip`
+# here would silently pass and reproduce the very "green while checking nothing"
+# shape these tests replace.
+from imageio_ffmpeg._definitions import FNAME_PER_PLATFORM, get_platform
 
 from kiro_crew import platform_compat as _pc
 from kiro_crew import stt, transcribe
@@ -166,7 +179,10 @@ class TestAvailabilityDetail:
         detail = self._detail(SttConfig(enabled=True, provider="local"))
         assert detail.ok is False
         assert detail.code == stt.CODE_EXTRA_MISSING
-        assert "voice" in detail.detail
+        # The recogniser distribution, not the extra name: `kirocrew[voice]` is
+        # not installable from any index.
+        assert "pywhispercpp" in detail.detail
+        assert "kirocrew[" not in detail.detail
 
     def test_local_no_wheel_for_platform(self, monkeypatch):
         """A platform with no published wheel means "install a C++ toolchain",
@@ -220,7 +236,9 @@ class TestAvailabilityDetail:
         detail = self._detail(SttConfig(enabled=True, provider="transcribe"))
         assert detail.ok is False
         assert detail.code == stt.CODE_EXTRA_MISSING
-        assert "kirocrew[voice]" in detail.detail
+        # The cloud half by name, and never the unresolvable extras form.
+        assert "amazon-transcribe" in detail.detail
+        assert "kirocrew[" not in detail.detail
 
     def test_transcribe_without_the_streaming_client(self, monkeypatch):
         """boto3 alone is not enough: the streaming client is a separate package
@@ -1216,6 +1234,17 @@ class TestTranscriptRedaction:
 # ffmpeg discovery: bundled with desktop releases, with system fallback for source
 # ---------------------------------------------------------------------------
 
+# Floor for a plausible pinned ffmpeg payload. The real upstream executables are
+# 49-88 MB, so this is an order of magnitude below the smallest of them: it is here
+# to catch a size transcribed with digits dropped, not to track a version, and it
+# must stay far enough below the true sizes that an upstream bump never trips it.
+_MIN_PLAUSIBLE_FFMPEG_BYTES = 8 * 1024 * 1024
+
+# GitHub Actions sets CI=true on every runner. Used only to decide whether a test
+# that cannot obtain its inputs is allowed to skip: a developer machine may lack
+# them, a runner may not.
+_RUNNING_UNDER_CI = os.environ.get("CI", "").strip().lower() in {"1", "true", "yes"}
+
 
 class TestBundledFfmpeg:
     """Resolve only the executable inside the pinned imageio-ffmpeg wheel."""
@@ -1737,27 +1766,141 @@ class TestBundledFfmpeg:
         assert unknown.exists()
 
     def test_release_artifact_pins_cover_every_supported_desktop(self):
-        assert transcribe._PACKAGED_FFMPEG_ARTIFACTS == {
-            # NOT "...v7.1.gz": a compressed payload is decompressed and scanned
-            # by the Apple notary service, which rejects the unsigned executable
-            # inside it and fails the whole macOS release (#6746 regression).
-            "ffmpeg-macos-aarch64-v7.1": (
-                49_368_728,
-                "6d175a4743ca50256e89a8cdd731100f9cee33bd79aeea46894d209410dc6617",
-            ),
-            "ffmpeg-linux-aarch64-v7.0.2": (
-                51_134_160,
-                "6bb182d0d75d23028db82e9e4f723ca69b853d055698486e6984ddb2c06fb8ce",
-            ),
-            "ffmpeg-linux-x86_64-v7.0.2": (
-                79_826_272,
-                "e7e7fb30477f717e6f55f9180a70386c62677ef8a4d4d1a5d948f4098aa3eb99",
-            ),
-            "ffmpeg-win-x86_64-v7.1.exe": (
-                87_638_016,
-                "2ce797a0f88d7f067180338fb227f7b1928ea727bd9a4d7a1d022f7c52af71a3",
-            ),
+        """The pin list must cover EXACTLY the shipped desktop platforms.
+
+        No more, no less. The expected filenames are DERIVED from upstream
+        imageio_ffmpeg._definitions.FNAME_PER_PLATFORM through the maintainer-owned
+        source of truth transcribe._SHIPPED_FFMPEG_PLATFORMS, rather than
+        hand-copied into this test. So an omitted platform, a one-character name
+        typo, or a stale version suffix fails loudly HERE instead of silently at
+        runtime, where _open_packaged_ffmpeg_resource() would treat the missed
+        filename as an absent binary and report a generic "missing or damaged"
+        decoder.
+        """
+        # A stale or renamed platform key would silently drop that platform's
+        # binary from expected_filenames below, so check membership first.
+        missing_keys = transcribe._SHIPPED_FFMPEG_PLATFORMS - set(FNAME_PER_PLATFORM)
+        assert not missing_keys, (
+            f"_SHIPPED_FFMPEG_PLATFORMS keys absent from upstream "
+            f"FNAME_PER_PLATFORM (renamed or removed upstream?): {sorted(missing_keys)}"
+        )
+
+        expected_filenames = {
+            FNAME_PER_PLATFORM[key] for key in transcribe._SHIPPED_FFMPEG_PLATFORMS
         }
+        assert set(transcribe._PACKAGED_FFMPEG_ARTIFACTS) == expected_filenames
+
+    def test_host_platform_pin_matches_the_real_installed_bytes(self):
+        """The pin for THIS host's platform is checked against the actual bytes.
+
+        Deriving the KEY set from upstream says nothing about the (size, sha256)
+        VALUES, and the digest is what the module calls its trust anchor: a
+        fat-fingered or truncated one ships a decoder that no platform can
+        authenticate. imageio-ffmpeg is a real dev dependency, so its wheel puts
+        this platform's executable in site-packages -- the same upstream bytes the
+        desktop build stages -- which turns one transcribed literal per host into a
+        checked claim. Across the Linux, Windows and macOS-arm64 legs that covers
+        three of the five pins; the two no runner can supply are shape-guarded
+        below.
+
+        CI may not skip this. Every CI leg runs on a platform the desktop matrix
+        ships, and pip resolves that platform's imageio-ffmpeg wheel, which carries
+        the executable -- so under CI both of those are requirements rather than
+        luck, and a resolver that produced the pure-Python wheel instead has
+        silently removed the only byte-level check on the pinned values. A skip
+        scores as a pass, which is the exact "green while checking nothing" shape
+        this whole class of test exists to end, so it becomes a red instead. A
+        contributor on an unshipped platform, or one whose environment genuinely
+        cannot supply the bytes, still skips -- fetching them over the network is
+        not something a unit test may do.
+        """
+        host_key = get_platform()
+        filename = FNAME_PER_PLATFORM.get(host_key)
+        binary = (
+            Path(imageio_ffmpeg.__file__).parent / "binaries" / filename
+            if filename is not None
+            else None
+        )
+
+        unavailable = ""
+        if host_key not in transcribe._SHIPPED_FFMPEG_PLATFORMS:
+            unavailable = f"host platform {host_key!r} is not a shipped desktop target"
+        elif binary is None or not binary.is_file():
+            unavailable = f"imageio-ffmpeg installed no upstream executable at {binary}"
+
+        if unavailable:
+            assert not _RUNNING_UNDER_CI, (
+                "CI must check this host's pin against the real installed bytes, "
+                f"and cannot: {unavailable}"
+            )
+            pytest.skip(unavailable)
+
+        assert binary is not None  # narrowed by the guard above
+
+        payload = binary.read_bytes()
+        assert (
+            len(payload),
+            hashlib.sha256(payload).hexdigest(),
+        ) == transcribe._PACKAGED_FFMPEG_ARTIFACTS[filename], (
+            f"the pin for {filename} disagrees with the bytes imageio-ffmpeg "
+            "actually installs -- one of the two is wrong"
+        )
+
+    def test_every_pin_is_a_well_formed_size_and_sha256(self):
+        """Shape guard for the pinned values no CI leg can hash.
+
+        macOS Intel and linux-aarch64 have no runner that installs their upstream
+        executable, and the only gate that EXECUTES a staged decoder
+        (``_packaged_ffmpeg_version_probe``, called from
+        ``local_voice_runtime_gate`` in packaging/build-desktop.sh) is skipped for
+        the Intel slice. So for those two entries a truncated digest or a
+        zero-length size would otherwise reach a desktop user as a generic
+        "missing or damaged decoder" remedy with CI fully green. The bounds are
+        deliberately loose -- an ffmpeg build is tens of megabytes and a signed one
+        stays under _MAX_SIGNED_FFMPEG_BYTES -- so a legitimate version bump passes
+        while a transcription slip does not.
+        """
+        assert transcribe._PACKAGED_FFMPEG_ARTIFACTS, "the pin table must not be empty"
+
+        for filename, (size, digest) in sorted(transcribe._PACKAGED_FFMPEG_ARTIFACTS.items()):
+            assert (
+                _MIN_PLAUSIBLE_FFMPEG_BYTES <= size <= transcribe._MAX_SIGNED_FFMPEG_BYTES
+            ), f"{filename}: pinned size {size} is not a plausible ffmpeg payload"
+            assert re.fullmatch(
+                r"[0-9a-f]{64}", digest
+            ), f"{filename}: pinned digest is not a lowercase 64-hex SHA-256: {digest!r}"
+
+        # Two platforms pinning one digest is the copy-paste slip that a per-entry
+        # check cannot see, and it authorizes one platform's bytes to run as
+        # another's.
+        digests = [digest for _, digest in transcribe._PACKAGED_FFMPEG_ARTIFACTS.values()]
+        assert len(set(digests)) == len(
+            digests
+        ), f"duplicate pinned digest across platforms: {digests}"
+
+    def test_signer_rewritten_artifacts_are_exactly_the_macos_slices(self):
+        """The signature-anchored set is derived, not hand-listed.
+
+        The macOS app signer rewrites every nested Mach-O on its way into a
+        release, so exactly the macOS slices -- and only those -- are the ones
+        whose pinned upstream digest cannot match the released bytes and which
+        therefore need the signature anchor instead. Deriving the set means adding
+        a macOS slice cannot forget it: an omitted name makes every SIGNED release
+        on that platform refuse its own decoder, because the digest cannot match
+        post-signing and the signature anchor is never consulted for a name that is
+        not listed.
+        """
+        expected = {
+            FNAME_PER_PLATFORM[key]
+            for key in transcribe._SHIPPED_FFMPEG_PLATFORMS
+            if key.startswith("macos-")
+        }
+        assert transcribe._SIGNER_REWRITTEN_FFMPEG_ARTIFACTS == expected
+        # Authenticating-by-signature a name the module never pins would be a claim
+        # about nothing.
+        assert transcribe._SIGNER_REWRITTEN_FFMPEG_ARTIFACTS <= set(
+            transcribe._PACKAGED_FFMPEG_ARTIFACTS
+        )
 
     @pytest.mark.asyncio
     async def test_authenticated_bytes_remain_bound_until_spawn(self, monkeypatch, tmp_path):

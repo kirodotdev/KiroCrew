@@ -395,6 +395,17 @@ inside a run whose conclusion reads `cancelled`.
 
      **`max_cycles` is a poll budget, not a round budget.** One 20–40 minute round costs several 5-minute cycles, so the default expires after two or three rounds — silently. `max_cycles=80` is roughly ten rounds; raise it via `monitor_update` if the work is still live near the cap. See `babysit` for the loop's own semantics.
 
+     **`interval_secs=300` is FIXED for the whole run — raise `max_cycles`, never
+     the interval.** Lengthening it is the wrong lever for every state this loop
+     reaches. When the PR is holding for a user decision it looks like an "idle
+     tick", and the generic wake-up guidance for idle ticks (1200–1800s) is
+     *about a different mechanism* — it does not apply here, because a PR is
+     never idle: CI lanes and review bots post on their own schedule, so a
+     20–30 minute gap means findings that are already actionable sit unread for
+     up to half an hour. If the loop needs to survive longer, that is a
+     `max_cycles` / `max_runtime_secs` change. The only sanctioned interval
+     change is *downward*, and only on explicit user request.
+
 ### Phase 4 — Converge or escalate
 
 **Converged** — `pr_status.py` = 0 **and** no unanswered concern remains (re-check

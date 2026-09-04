@@ -53,8 +53,8 @@ from kiro_crew.artifacts import (
     ArtifactValidationError,
     get_default_folder_store,
     get_default_store,
+    has_unthemed_hardcoded_colors,
     is_document_path,
-    slugify,
     webapp_metadata_from_dict,
 )
 from kiro_crew.dashboard.chat_folders import generate_emoji_for_name
@@ -868,10 +868,31 @@ def _recorded_doc_identities(conversation_log: Any) -> set[tuple[int, int]]:
     return out
 
 
+def _collision_report(art: Any) -> str:
+    """Name the slug ``art``'s name derives to when the store had to suffix it.
+
+    Reads ``Artifact.slug_collided_with``, which ``ArtifactStore.create`` sets
+    from its uniquifier — the one place that knows a suffix happened. Nothing is
+    inferred here, so the caveats an inference needed no longer apply: a record
+    reused rather than created, or renamed by ``update()`` without recomputing
+    its slug, carries an empty field and cannot report a phantom collision.
+    """
+    return str(getattr(art, "slug_collided_with", "") or "")
+
+
 def _materialize_and_pin(
     path: str, conversation_log: Any, source: str = "chat", session_key: str = ""
-) -> Any:
+) -> tuple[Any, str]:
     """Create (or reuse) a file-backed artifact from ``path`` and mark it saved.
+
+    Returns ``(artifact, slug_collided_with)``, where the second element names
+    the slug the artifact's name derives to when the store had to append a
+    numeric suffix because that slug was taken, and is empty otherwise. It is
+    computed here, not by the caller, because only this function knows whether a
+    create happened: the reuse branch below collides with nothing, and
+    :meth:`ArtifactStore.update` can rename an artifact without recomputing its
+    slug, so a reused record's name may derive to a slug that differs from its
+    own with no collision ever having occurred.
 
     Idempotent: if an artifact already backs this path, just pin it. Otherwise
     the file is AUTHORIZED and READ through a single ``O_NOFOLLOW`` descriptor in
@@ -895,7 +916,7 @@ def _materialize_and_pin(
     canonical = os.path.realpath(expanded)
     existing = store.find_by_source_path(path) or store.find_by_source_path(canonical)
     if existing is not None:
-        return store.set_pinned(existing.slug, True)
+        return store.set_pinned(existing.slug, True), ""
     if not is_document_path(canonical):
         raise ArtifactValidationError("only document files can be saved this way")
     # Defense in depth: a resolved target under a sensitive dir is never a chat
@@ -928,7 +949,11 @@ def _materialize_and_pin(
         source_path=canonical,
         session_key=session_key,
     )
-    return store.set_pinned(art.slug, True)
+    # No slug parameter reaches this path, so the store always derives the slug
+    # from the name and silently appends a numeric suffix when that slug is taken;
+    # the shared report therefore needs no explicit-slug argument here. The reuse
+    # branch above returns before this point, so this only ever describes a create.
+    return store.set_pinned(art.slug, True), _collision_report(art)
 
 
 # ── List / Create ─────────────────────────────────────────────────────────────
@@ -1513,19 +1538,19 @@ async def api_artifacts_create(request: web.Request) -> web.Response:
     # Report a de-duplicated slug to the CLI and the MCP tool, both of which are
     # HTTP clients and so cannot see the store's log line. Create-only: the value
     # describes this call, and a GET or LIST would carry it empty forever.
-    #
-    # Derived from ``art.name`` (post-validation) rather than the raw body, so the
-    # comparison uses the exact string the store slugified. Guarded on an absent
-    # ``slug``: an explicit one legitimately differs from the name, and the store
-    # refuses it on collision rather than renaming, so comparing there would warn
-    # about a collision that never happened.
     payload = _serialize(art, include_content=True)
-    collided_with = ""
-    if not body.get("slug"):
-        requested = slugify(art.name)
-        if art.slug != requested:
-            collided_with = requested
-    payload["slug_collided_with"] = collided_with
+    payload["slug_collided_with"] = _collision_report(art)
+    # Theme-contrast verdict for the clients, same relay pattern as
+    # ``slug_collided_with``: computed once here at the convergence point so
+    # EVERY authoring surface (MCP tool, CLI, dashboard) sees the same
+    # verdict -- the motivating incident traveled the CLI, which never runs
+    # the MCP-layer hint. Scans ``art.content`` (what was actually persisted),
+    # not the request body: a file-promoted save persists the server-read
+    # bytes, and the client's copy can be stale or redacted. Advisory only;
+    # the save has already succeeded.
+    payload["theme_contrast_warning"] = has_unthemed_hardcoded_colors(
+        art.kind, art.content or ""
+    )
     return _json_response(payload, status=201)
 
 
@@ -1853,7 +1878,18 @@ async def api_artifact_update(request: web.Request) -> web.Response:
                 await publish_sync.push_version_by_slug(art.slug)
             except Exception as exc:  # noqa: BLE001 - best-effort egress
                 logger.info("auto-sync push after snapshot failed for %s: %s", art.slug, exc)
-    return _json_response(_serialize(art, include_content=True))
+    payload = _serialize(art, include_content=True)
+    # Same relay as the save path's ``theme_contrast_warning``: a
+    # content-carrying update gets the verdict computed here at the
+    # convergence point, so the CLI's PATCH (the motivating incident's
+    # path) hears it too. Unlike save, PATCH never file-promotes, so the
+    # body IS the persisted content -- and scanning the body (not
+    # ``art.content``) keeps metadata-only updates (rename/retag) from
+    # warning about pre-existing content they didn't touch.
+    payload["theme_contrast_warning"] = has_unthemed_hardcoded_colors(
+        art.kind, body.get("content") or ""
+    )
+    return _json_response(payload)
 
 
 async def api_artifact_settle_blank(request: web.Request) -> web.Response:
@@ -2835,10 +2871,24 @@ async def api_artifact_folders(request: web.Request) -> web.Response:
     return _json_response({"folders": out})
 
 
-def _spawn_artifact_folder_icon_task(request: web.Request, folder_id: str, name: str) -> None:
+def _spawn_artifact_folder_icon_task(
+    request: web.Request, folder_id: str, name: str, *, expected_epoch: int
+) -> None:
     """Fire-and-forget: derive a single-emoji icon for an artifact folder via
     the shared LLM helper (same mechanism as chat-sidebar folders) and store
-    it. Best-effort — any failure leaves the folder with the default glyph."""
+    it. Best-effort — any failure leaves the folder with the default glyph.
+
+    The write-back goes through ``set_icon_if_epoch``, which re-finds the
+    folder, checks the epoch and writes inside ONE critical section under the
+    store lock. So a folder deleted while generation was in flight is never
+    resurrected, and a manual icon set, an icon clear, or a rename that lands
+    while generation is pending wins over the stale generated result.
+    ``expected_epoch`` is the epoch this generation is pinned to, and each
+    caller obtains it without ever reading the epoch back: the rename path takes
+    the value :meth:`ArtifactFolderStore.rename` returns from inside its own
+    bump's critical section, and the create path pins 0, which a fresh folder's
+    epoch is by construction. A read-back would be a second lock acquisition and
+    could capture a competing mutation's epoch (issue #7991)."""
     state = request.app.get("state")
     if state is None:
         return
@@ -2849,8 +2899,10 @@ def _spawn_artifact_folder_icon_task(request: web.Request, folder_id: str, name:
             if not icon:
                 return
             fstore = get_default_folder_store()
-            if fstore.exists(folder_id):
-                await _run_off_loop(lambda: fstore.set_icon(folder_id, icon))
+            # No exists() pre-check: it was a TOCTOU gap (the folder could go
+            # away, or its icon change, between the check and the write) and
+            # set_icon_if_epoch subsumes it by re-finding under the lock.
+            await _run_off_loop(lambda: fstore.set_icon_if_epoch(folder_id, icon, expected_epoch))
         except Exception:  # noqa: BLE001 — best-effort background task
             logger.debug("artifact folder icon generation failed for %s", folder_id, exc_info=True)
 
@@ -2904,7 +2956,14 @@ async def api_artifact_folder_create(request: web.Request) -> web.Response:
         _audit(tool="artifact_folder_create", request=request, outcome="error", error=str(exc))
         return _err(str(exc), status=500)
     # Derive an emoji icon from the name in the background (chat-folder parity).
-    _spawn_artifact_folder_icon_task(request, folder["id"], name)
+    # A just-created folder's icon epoch is 0 by construction -- create() never
+    # touches the registry, and delete() pops its entry, so even a reused id
+    # reads 0. Passing the literal is deliberate rather than re-reading it: a
+    # read here would be a second lock acquisition, and any mutation landing in
+    # that window would raise the epoch, so the read would capture the
+    # COMPETING value and the generated icon would then clobber it. With 0
+    # pinned, any such mutation makes the write-back lose, which is correct.
+    _spawn_artifact_folder_icon_task(request, folder["id"], name, expected_epoch=0)
     _audit(
         tool="artifact_folder_create",
         request=request,
@@ -2940,6 +2999,12 @@ async def api_artifact_folder_update(request: web.Request) -> web.Response:
     if folder is None:  # exists() checked above; guards against a concurrent delete
         return _err("folder not found", status=404)
 
+    # Set by _apply_updates when it renames: the icon epoch the rename's own
+    # bump produced, read inside that same critical section. The handler must
+    # arm background generation with THIS value and never re-read the epoch
+    # afterwards -- see ArtifactFolderStore.rename for why a re-read is a race.
+    armed_icon_epoch: dict[str, int] = {}
+
     def _apply_updates() -> dict[str, Any]:
         # Each mutation persists via _save() (fsync/replace) — runs in the
         # executor, off the event loop.
@@ -2947,7 +3012,7 @@ async def api_artifact_folder_update(request: web.Request) -> web.Response:
         if f is None:
             raise ArtifactNotFoundError(f"folder not found: {fid}")
         if "name" in body:
-            f = fstore.rename(fid, str(body["name"]))
+            f, armed_icon_epoch["value"] = fstore.rename(fid, str(body["name"]))
         if "parent_id" in body:
             f = fstore.reparent(fid, str(body.get("parent_id") or ""))
         if "icon" in body:
@@ -2989,7 +3054,15 @@ async def api_artifact_folder_update(request: web.Request) -> web.Response:
     # A rename re-derives the emoji icon from the new name (chat-folder
     # parity) — unless this same request set an explicit icon, which wins.
     if "name" in body and "icon" not in body:
-        _spawn_artifact_folder_icon_task(request, fid, str(body["name"]))
+        # Arm with the epoch the rename itself produced, captured under the
+        # rename's own lock. Re-reading it here instead would pick up a manual
+        # icon set that landed in between and let the generated icon overwrite
+        # it. A missing value means the rename did not run, so nothing to arm.
+        epoch = armed_icon_epoch.get("value")
+        if epoch is not None:
+            _spawn_artifact_folder_icon_task(
+                request, fid, str(body["name"]), expected_epoch=epoch
+            )
     return _json_response(_serialize_folder(updated, path=fstore.breadcrumb(fid)))
 
 
@@ -3301,7 +3374,7 @@ async def api_artifact_materialize(request: web.Request) -> web.Response:
         )
         return _err("conversation log unavailable", status=500)
     try:
-        art = await _run_off_loop(
+        art, collided_with = await _run_off_loop(
             lambda: _materialize_and_pin(
                 path,
                 clog,
@@ -3333,7 +3406,14 @@ async def api_artifact_materialize(request: web.Request) -> web.Response:
         outcome="success",
         extra={"path": audit_path, "slug": art.slug},
     )
-    return _json_response(_serialize(art, include_content=True))
+    # Report a de-duplicated slug so a client promoting a corrected document
+    # learns it landed at a suffixed slug while the canonical one keeps serving
+    # the older text. This response only: the value describes this call, so the
+    # artifact record would carry it empty on every GET and LIST, and would keep
+    # naming a collision after the artifact that caused it is deleted.
+    payload = _serialize(art, include_content=True)
+    payload["slug_collided_with"] = collided_with
+    return _json_response(payload)
 
 
 # ── Comments ──────────────────────────────────────────────────────────────────

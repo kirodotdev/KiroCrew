@@ -453,6 +453,14 @@ def main() -> None:
     if args == ["whoami"]:
         print(FAKE_IDENTITY)
         return
+    if args == ["acp", "--help"]:
+        # The readiness probe runs this to confirm the `acp` subcommand exists
+        # (kiro_prerequisite._probe_acp_support). Answer success so the offline
+        # gateway clears the acp-support gate exactly as a real, current kiro-cli
+        # would; the real ACP session still drives the protocol over stdio when
+        # invoked as `acp` with no `--help`.
+        print("Usage: kiro-cli acp [OPTIONS]")
+        return
     # Read on a daemon thread so _handle can poll _INBOX for a session/cancel
     # that arrives WHILE a prompt is streaming. select() on stdin is not an
     # option: the backend suite also runs on Windows.

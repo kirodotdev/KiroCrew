@@ -1,10 +1,11 @@
 import { memo, useState, useMemo, useCallback, useEffect, useRef } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Download, FileText, Film, Music } from 'lucide-react'
+import { Download, ExternalLink, FileText, Film, Music } from 'lucide-react'
 import DOMPurify from 'dompurify'
 
 import { i18nT } from '../i18n/t'
 import { ExcalidrawBlock } from './ExcalidrawBlock'
+import { useCanOpenFile, useCopyAck } from './FilePathMenu'
 import { fileDownloadUrl, fileStreamUrl, fileOfficePreviewUrl } from '../utils/fileReadUrl'
 import { useLanguageGeneration } from '../i18n/useLanguageGeneration'
 /* ── extension helpers ── */
@@ -313,7 +314,18 @@ export const PdfViewer = memo(function PdfViewer({ filePath }: { filePath: strin
  * duplicating the previewable-ext list on the frontend. */
 
 /** Card body shared by both rendering states — full-size Download button
- *  (fallback mode) or compact "Download original" affordance (preview mode). */
+ *  (fallback mode) or compact "Download original" affordance (preview mode).
+ *
+ *  Both modes lead with **Open with default app**, not Download. The file is
+ *  already on disk at the path this panel is showing, so downloading writes a
+ *  SECOND copy: the user then edits that copy, which the agent never reads back
+ *  and a later agent write silently diverges from. Handing the existing file to
+ *  Word / PowerPoint / Excel is the action the surface is actually for.
+ *
+ *  Open is shown only when `useCanOpenFile` allows it — the same gate every other
+ *  Open surface reads. A browser talking to a remote gateway has no desktop to
+ *  open on, so there Download is the only thing that can work and it takes the
+ *  accent styling back. */
 function OfficeCard({ filePath, showBigDownload, hideHint }: { filePath: string; showBigDownload: boolean; hideHint?: boolean }) {
   // Split on BOTH separators — Kiro Crew ships native on Windows where paths
   // arrive as `C:\Users\…\report.docx`, and a `/`-only split would surface the
@@ -322,6 +334,24 @@ function OfficeCard({ filePath, showBigDownload, hideHint }: { filePath: string;
   const filename = filePath.split(/[\\/]/).pop() || filePath
   const ext = extOf(filePath).replace('.', '').toUpperCase()
   const url = fileDownloadUrl(filePath)
+  const sizeCls = showBigDownload ? 'px-3 py-1.5 text-sm' : 'px-2 py-1 text-xs'
+  const iconSize = showBigDownload ? 16 : 14
+  // The ONE gate for an Open-with-default-app surface, shared with the file
+  // panel's ⋯ entry and MarkdownPanel's overflow: the browser must sit on the
+  // gateway host, or `/api/reveal` has no desktop to open on and the click looks
+  // broken. When it is false the card falls back to Download-as-primary, which
+  // is what a remote session actually needs — the bytes.
+  const canOpen = useCanOpenFile('file')
+  // A headless direct-local host has no desktop, so the backend degrades the
+  // `open` to a clipboard copy. Shared with the file-path menu (see useCopyAck)
+  // so the primary button acknowledges that degrade with the same inline swap
+  // instead of reading as a dead click.
+  const { copyStatus, revealOrOpenWithAck } = useCopyAck(filePath)
+  const openLabel = copyStatus === 'copied'
+    ? i18nT('components.filePathMenu.path_copied')
+    : copyStatus === 'failed'
+      ? i18nT('components.filePathMenu.copy_failed')
+      : i18nT('components.markdownPanel.open_with_default_app')
   return (
     <div className="flex flex-col items-center gap-3 max-w-md text-center mx-auto">
       <div className="relative">
@@ -334,20 +364,43 @@ function OfficeCard({ filePath, showBigDownload, hideHint }: { filePath: string;
       <div className="text-sm text-text break-all">{filename}</div>
       {showBigDownload && !hideHint && (
         <div className="text-xs text-muted">
-          {i18nT('components.fileRenderers.office_download_hint')}
+          {/* The hint is the card's only instruction, so it must name the action
+              the card leads with. Pointing a local user at Download is pointing
+              them at the duplicate-file divergence this card exists to avoid;
+              on remote/Windows, where Open is gated away, Download IS the
+              action and the original wording stays correct. */}
+          {canOpen
+            ? i18nT('components.fileRenderers.office_open_hint')
+            : i18nT('components.fileRenderers.office_download_hint')}
         </div>
       )}
-      <a
-        href={url}
-        download={filename}
-        className={`inline-flex items-center gap-2 rounded no-underline bg-accent text-white hover:opacity-90 ${showBigDownload ? 'px-3 py-1.5 text-sm' : 'px-2 py-1 text-xs'}`}
-        aria-label={i18nT('components.fileRenderers.download_file', { filename })}
-      >
-        <Download size={showBigDownload ? 16 : 14} aria-hidden="true" />
-        {showBigDownload
-          ? i18nT('components.fileRenderers.download')
-          : i18nT('components.fileRenderers.office_download_original')}
-      </a>
+      {/* Wraps rather than shrinks: the file panel is narrow, and a clipped
+          label is worse than a second line. */}
+      <div className="flex items-center justify-center gap-2 flex-wrap">
+        {canOpen && (
+          <button
+            type="button"
+            onClick={() => { void revealOrOpenWithAck('open') }}
+            className={`inline-flex items-center gap-2 rounded border-none cursor-pointer bg-accent text-white hover:opacity-90 ${sizeCls}`}
+          >
+            <ExternalLink size={iconSize} aria-hidden="true" />
+            {openLabel}
+          </button>
+        )}
+        <a
+          href={url}
+          download={filename}
+          className={`inline-flex items-center gap-2 rounded no-underline ${sizeCls} ${canOpen
+            ? 'border border-border bg-bg-hover text-text hover:bg-bg-elevated'
+            : 'bg-accent text-white hover:opacity-90'}`}
+          aria-label={i18nT('components.fileRenderers.download_file', { filename })}
+        >
+          <Download size={iconSize} aria-hidden="true" />
+          {showBigDownload
+            ? i18nT('components.fileRenderers.download')
+            : i18nT('components.fileRenderers.office_download_original')}
+        </a>
+      </div>
     </div>
   )
 }

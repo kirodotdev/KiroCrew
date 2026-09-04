@@ -60,6 +60,7 @@ from kiro_crew.deploy.webapp_types import (  # noqa: F401 — re-export for API 
     WebAppTeardown,
     webapp_metadata_from_dict,
 )
+from kiro_crew.metrics.events import ARTIFACTS_CREATED, emit_counter
 from kiro_crew.publish_provider import DEFAULT_PROVIDER
 from kiro_crew.security import is_sensitive_path
 
@@ -473,6 +474,14 @@ class Artifact:
     #: reads "in sync"). This field is the signal that the pointer is dead.
     #: Not persisted; set by ``get()`` — same contract as ``live_dirty``.
     source_missing: bool = False
+    #: Set by ``create()`` when it had to suffix the slug derived from ``name``
+    #: because that slug was taken: names the plain slug that was already in
+    #: use, and is empty otherwise. Reported by the uniquifier rather than
+    #: inferred by a caller, because only the create knows a suffix happened —
+    #: ``update()`` renames without recomputing the slug, and a reused record
+    #: read from disk would compare as collided when nothing collided.
+    #: Not persisted; a create-time fact, meaningless on a later read.
+    slug_collided_with: str = ""
     #: Structured metadata for ``kind="webapp"`` artifacts — a deployed application
     #: (deploy target, architecture, lifecycle/TTL, cost estimate, teardown handle).
     #: ``None`` for every other kind. Tolerant-loaded from meta.json.
@@ -495,6 +504,11 @@ class Artifact:
         d = asdict(self)
         if not include_content:
             d.pop("content", None)
+        # slug_collided_with is an internal create-time signal read off the
+        # attribute, never through this dict: a response that reports it composes
+        # the key itself, and serializing it here would leak it into every later
+        # GET as though the collision had just happened.
+        d.pop("slug_collided_with", None)
         if persist:
             # live_dirty is a transient, GET-time-computed
             # field. Persisting it via meta.json would create staleness
@@ -651,6 +665,55 @@ def is_document_path(path: str) -> bool:
     if not path:
         return False
     return os.path.splitext(path)[1].lower() in DOC_EXTENSIONS
+
+
+# Literal-color detector backing the theme-contrast warning. Lives here (the
+# store module) so every artifact-authoring surface computes the SAME verdict:
+# the gateway handlers stamp it on save/update responses, and the MCP tool
+# phrases its own hint from it. Hex colors are 3/4/6/8 digits -- 5 and 7 are
+# excluded on purpose so hex-ish CSS id selectors ("#added1") don't fire. The
+# leading [:=(\s"'] anchors the literal to a value position (color:#111,
+# fill="#111") rather than a fragment anchor or an id selector at line start.
+# IGNORECASE is what lets RGB(...) / HSL(...) match -- CSS functions are
+# case-insensitive. Fragment/URL hrefs (href="#abc") are excluded by
+# stripping href attributes BEFORE scanning (see _HREF_ATTR_RE) rather than
+# by a lookbehind: Python lookbehinds must be fixed-width, so a lookbehind
+# cannot tolerate `href = "#abc"` spacing -- the strip is whitespace-tolerant
+# and covers xlink:href and any case for free.
+# Accepted noise, documented rather than parsed away: a whitespace-preceded
+# hex-ish id selector ("... } #decade {") can still fire, but whitespace must
+# stay in the prefix class or true positives like "border: 1px solid #ccc"
+# are lost -- and every consumer surfaces this as a soft warning, never a
+# rejection.
+_HARDCODED_COLOR_RE = re.compile(
+    r"[:=(\s\"']#(?:[0-9a-fA-F]{3,4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})\b"
+    r"|\brgba?\("
+    r"|\bhsla?\(",
+    re.IGNORECASE,
+)
+
+# href / xlink:href attribute (quoted value), whitespace-tolerant around the
+# ``=``. An href value is a URL or fragment, never a rendered color, so it is
+# removed before the color scan to keep the warning's false-positive rate low.
+_HREF_ATTR_RE = re.compile(r"href\s*=\s*(\"[^\"]*\"|'[^']*')", re.IGNORECASE)
+
+
+def has_unthemed_hardcoded_colors(kind: str, content: str) -> bool:
+    """True when iframe-rendered content hardcodes its palette.
+
+    Only widget/html kinds render inside the dashboard's themed iframe, so
+    only they can clash with the injected theme defaults. Content carrying a
+    single ``var(--`` reference is treated as theme-aware -- including the
+    recommended fallback form ``color:var(--text,#111)`` -- and never flags.
+    A full foreground/background *pairing* check needs a CSS parser; this
+    zero-var heuristic catches the observed failure class (partially styled
+    content clashing with the injected theme) with one regex.
+    """
+    if kind not in ("widget", "html"):
+        return False
+    if not content or "var(--" in content:
+        return False
+    return bool(_HARDCODED_COLOR_RE.search(_HREF_ATTR_RE.sub("href=x", content)))
 
 
 def _infer_kind(content: str, source_path: str = "", explicit: str | None = None) -> str:
@@ -1133,8 +1196,12 @@ class ArtifactStore:
 
         with self._lock:
             if slug is None:
-                slug = self._unique_slug(slugify(name))
+                derived = slugify(name)
+                slug = self._unique_slug(derived)
+                # The uniquifier is the only place that knows it suffixed.
+                collided_with = derived if slug != derived else ""
             else:
+                collided_with = ""
                 slug = _validate_slug(slug)
                 if self._artifact_dir(slug).exists():
                     raise ArtifactAlreadyExistsError(f"artifact already exists: {slug}")
@@ -1160,6 +1227,7 @@ class ArtifactStore:
                 auto_registered=bool(auto_registered),
                 version_kinds={"1": kind},
                 webapp_metadata=webapp_metadata,
+                slug_collided_with=collided_with,
             )
             # Lifecycle: emit `created` event. New artifacts are tagged
             # `events_backfilled=True` because their history starts here —
@@ -1174,6 +1242,14 @@ class ArtifactStore:
             self._write_artifact(art, content)
             logger.info("artifact created: slug=%s name=%s kind=%s", slug, name, kind)
         self._fire_change("upsert", slug)
+        # After the write, so a failed create contributes nothing. ``kind`` and
+        # ``source`` are the values ``_validate_kind`` / ``_validate_source``
+        # already restrict to closed sets, and ``kind_auto`` says whether the
+        # kind was inferred rather than pinned by the caller.
+        emit_counter(
+            ARTIFACTS_CREATED,
+            {"kind": kind, "source": source, "kind_auto": bool(kind_auto)},
+        )
         return art
 
     def create_image(
@@ -1248,8 +1324,12 @@ class ArtifactStore:
 
         with self._lock:
             if slug is None:
-                slug = self._unique_slug(slugify(name))
+                derived = slugify(name)
+                slug = self._unique_slug(derived)
+                # The uniquifier is the only place that knows it suffixed.
+                collided_with = derived if slug != derived else ""
             else:
+                collided_with = ""
                 slug = _validate_slug(slug)
                 if self._artifact_dir(slug).exists():
                     raise ArtifactAlreadyExistsError(f"artifact already exists: {slug}")
@@ -1271,6 +1351,7 @@ class ArtifactStore:
                 auto_registered=bool(auto_registered),
                 version_kinds={"1": "image"},
                 image=image_meta,
+                slug_collided_with=collided_with,
             )
             self._append_event(
                 art,
@@ -3519,7 +3600,61 @@ class ArtifactFolderStore:
         self._path = (path or (config_dir() / self._FILE)).expanduser()
         self._lock = threading.Lock()
         self._folders: _List[dict[str, Any]] = []
+        #: Per-folder icon epoch, bumped under ``self._lock`` by every
+        #: user-visible mutation a generated icon must not outlive: a manual
+        #: icon set, an icon clear, and a rename. An in-flight generation task
+        #: captures the epoch at scheduling time and its write-back
+        #: (:meth:`set_icon_if_epoch`) is dropped unless the epoch is
+        #: unchanged. One invariant closes all three races that a bare
+        #: existence check leaves open and that a value-pin cannot catch: a
+        #: clear (absent -> absent) and a rename (icon untouched) both leave
+        #: the icon VALUE unchanged, so only a counter distinguishes them.
+        #: Deliberately per-folder rather than a store-wide generation
+        #: counter, which would cancel a legitimate icon delivery whenever an
+        #: unrelated folder changed mid-generation. Held per store INSTANCE
+        #: (not module-level as in the chat-folder original, whose folders
+        #: live on DashboardState rather than in a store object) so two stores
+        #: over different JSON paths cannot alias each other's folder ids. In
+        #: memory on purpose -- in-flight tasks die with the process, so the
+        #: epoch has nothing to survive a restart for. Entries are dropped on
+        #: a confirmed folder delete. Ported from the chat-folder guard
+        #: ``_CHAT_FOLDER_ICON_EPOCHS`` (issue #7991).
+        self._icon_epochs: dict[str, int] = {}
         self._load()
+
+    def _bump_icon_epoch_locked(self, folder_id: str) -> None:
+        """Invalidate any in-flight icon generation for this folder.
+
+        Must be called with ``self._lock`` held -- holding the lock is what
+        orders the bump against :meth:`set_icon_if_epoch`'s check, so a
+        mutation can never interleave between that check and its write.
+        """
+        self._icon_epochs[folder_id] = self._icon_epochs.get(folder_id, 0) + 1
+
+    def set_icon_if_epoch(
+        self, folder_id: str, icon: str, expected_epoch: int
+    ) -> dict[str, Any] | None:
+        """Apply a generated icon only while the folder's epoch is unchanged.
+
+        The re-find, the epoch check and the write share one critical section,
+        so a manual icon set, an icon clear, or a rename that lands while
+        generation was in flight wins over the stale generated result. Returns
+        the updated folder, or ``None`` when the write was dropped (folder
+        deleted mid-generation, or the epoch moved).
+
+        Does NOT bump the epoch: this is the generated result landing, not a
+        user-visible mutation that later generations must lose to.
+        """
+        with self._lock:
+            folder = self._by_id().get(folder_id)
+            if folder is None:
+                return None  # deleted mid-generation; drop the icon
+            if self._icon_epochs.get(folder_id, 0) != expected_epoch:
+                # Icon or name changed while generation ran -- drop the result.
+                return None
+            folder["icon"] = str(icon or "")[:16]
+            self._save()
+            return dict(folder)
 
     # ── persistence ───────────────────────────────────────────────────────
 
@@ -3651,15 +3786,32 @@ class ArtifactFolderStore:
             )
             return dict(folder)
 
-    def rename(self, folder_id: str, name: str) -> dict[str, Any]:
+    def rename(self, folder_id: str, name: str) -> tuple[dict[str, Any], int]:
+        """Rename, returning the folder AND the icon epoch this rename produced.
+
+        The epoch comes back from inside the same critical section as the bump,
+        which is the only way a caller can arm background icon generation
+        safely. Renaming and then READING the epoch back would be two lock
+        acquisitions: a competing manual icon set landing between them bumps the
+        epoch again, the later read would capture THAT epoch, and the generated
+        icon would then satisfy :meth:`set_icon_if_epoch` and clobber the manual
+        pick -- the very race the epoch exists to prevent. Returning it closes
+        that window by construction, because there is no read to lose.
+
+        The tuple is deliberately the ONLY spelling of this mutation: a
+        dict-returning ``rename`` alongside it would be a second spelling of one
+        write, and the two would drift.
+        """
         name = self._clean_name(name)
         with self._lock:
             folder = self._by_id().get(folder_id)
             if folder is None:
                 raise ArtifactNotFoundError(f"folder not found: {folder_id}")
             folder["name"] = name
+            # An in-flight icon was derived from the OLD name -- invalidate it.
+            self._bump_icon_epoch_locked(folder_id)
             self._save()
-            return dict(folder)
+            return dict(folder), self._icon_epochs[folder_id]
 
     def reparent(self, folder_id: str, new_parent: str = "") -> dict[str, Any]:
         """Move a folder under ``new_parent`` (``""`` = root). Cycle-guarded."""
@@ -3698,6 +3850,9 @@ class ArtifactFolderStore:
             if folder is None:
                 raise ArtifactNotFoundError(f"folder not found: {folder_id}")
             folder["icon"] = str(icon or "")[:16]
+            # A manual set OR a clear (icon == "") invalidates any in-flight
+            # generation: its result was derived before the user's choice.
+            self._bump_icon_epoch_locked(folder_id)
             self._save()
             return dict(folder)
 
@@ -3872,6 +4027,20 @@ class ArtifactFolderStore:
                         f["parent_id"] = parent
             self._folders = [f for f in self._folders if f.get("id") not in affected_ids]
             self._save()
+            # Release the icon-epoch guards only after the removal is
+            # CONFIRMED persisted. _save() raising propagates out of this
+            # block, so the pop is skipped and the guard stays armed. Note
+            # what a failed _save() actually leaves behind: self._folders was
+            # already filtered above, so the folder is gone from memory but
+            # SURVIVES on disk, and any later reload brings it back. Keeping
+            # its epoch is the conservative side of that split -- resetting it
+            # to 0 would let a stale in-flight generation clobber a manual
+            # icon on the record that comes back. After a confirmed delete the
+            # entries have nothing left to guard (set_icon_if_epoch already
+            # drops a folder it cannot re-find); popping keeps the registry
+            # from growing with every deleted id.
+            for _gone in affected_ids:
+                self._icon_epochs.pop(_gone, None)
 
         # Phase 2: artifacts. ``affected_ids`` is the subtree for cascade, or
         # just the single folder for the safe path.

@@ -39,12 +39,14 @@ from kiro_crew.apps.manifest import (
 )
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.loader import (
+    ConfigReadError,
     config_dir,
     config_local_path,
     config_path,
-    write_config_atomically,
+    update_config_locked,
 )
 from kiro_crew.loop_lock import LoopBoundLock
+from kiro_crew.pinned_fs import supports_pinned_walk
 from kiro_crew.platform import current_context, safe_context_call
 from kiro_crew.sel import sel
 
@@ -1209,15 +1211,36 @@ def _drop_trust_grant(name: str) -> None:
     # Preserve the no-grant fast path: ordinary uninstalls perform no config write.
     if not (has_name or has_repository or has_local):
         return
-    agent_raw["apps_trusted"] = [
-        a for a in (base_grants if isinstance(base_grants, list) else []) if a != name
-    ]
-    if isinstance(repositories, dict):
-        repositories = dict(repositories)
-        repositories.pop(name, None)
-        agent_raw["apps_trusted_repositories"] = repositories
-    if isinstance(local_grants, list):
-        agent_raw["apps_trusted_local"] = [a for a in local_grants if a != name]
+
+    def _revoke(raw_locked: dict) -> dict | None:
+        # Re-derived under the advisory lock. The read above decided WHETHER a
+        # grant exists (and the fast path for the ordinary no-grant uninstall);
+        # this is the read the write is derived from, so a settings write that
+        # landed in between is carried forward instead of being reverted.
+        agent_locked = raw_locked.get("agent")
+        if not isinstance(agent_locked, dict):
+            return None
+        base_locked = agent_locked.get("apps_trusted")
+        repos_locked = agent_locked.get("apps_trusted_repositories")
+        local_locked = agent_locked.get("apps_trusted_local")
+        if not (
+            (isinstance(base_locked, list) and name in base_locked)
+            or (isinstance(repos_locked, dict) and name in repos_locked)
+            or (isinstance(local_locked, list) and name in local_locked)
+        ):
+            # Another writer already revoked it. Skip the write rather than
+            # rewriting the document with identical bytes.
+            return None
+        agent_locked["apps_trusted"] = [
+            a for a in (base_locked if isinstance(base_locked, list) else []) if a != name
+        ]
+        if isinstance(repos_locked, dict):
+            repos_copy = dict(repos_locked)
+            repos_copy.pop(name, None)
+            agent_locked["apps_trusted_repositories"] = repos_copy
+        if isinstance(local_locked, list):
+            agent_locked["apps_trusted_local"] = [a for a in local_locked if a != name]
+        return raw_locked
     # Concurrency: this is the repo's standard config read-modify-write, and it
     # inherits that model exactly — no cross-process lock, atomic (tmp+rename) on
     # the way out so no reader can see a torn file. `read_config_for_update`'s own
@@ -1235,7 +1258,13 @@ def _drop_trust_grant(name: str) -> None:
     # also a single-key edit of the raw document rather than a re-serialisation of
     # the whole config, so what it can clobber is bounded to a concurrent edit that
     # lands inside the same read-to-write window.
-    write_config_atomically(path, raw)
+    try:
+        update_config_locked(path, mutate=_revoke, stamp_meta=False)
+    except ConfigReadError as exc:
+        # RAISE rather than return, for the same reason as the read above: a
+        # silent bail is the "uninstalled but still trusted" state the caller
+        # must not reach. Fails closed, so nothing was written.
+        raise RuntimeError(f"{path} is unreadable: {exc}") from exc
     logger.info("Dropped third-party trust grant for uninstalled app %s", name)
     # Audited, because this REVOKES an execution permission. The dashboard's revoke
     # endpoint emits its own SEL event, but this path runs from `kirocrew app
@@ -1342,26 +1371,45 @@ def _restore_trust_grant(
     if _has_trust_grant(name):
         return
     path = config_path()
-    raw = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else {}
-    if not isinstance(raw, dict):
-        raise RuntimeError(f"{path} does not hold a JSON object")
-    agent_raw = raw.setdefault("agent", {})
-    if not isinstance(agent_raw, dict):
-        raise RuntimeError(f"{path} has a non-object agent section")
-    grants = agent_raw.get("apps_trusted")
-    agent_raw["apps_trusted"] = [*(grants if isinstance(grants, list) else []), name]
-    if repository:
-        repositories = agent_raw.get("apps_trusted_repositories")
-        bindings = dict(repositories) if isinstance(repositories, dict) else {}
-        bindings[name] = repository
-        agent_raw["apps_trusted_repositories"] = bindings
-    if local:
-        local_grants = agent_raw.get("apps_trusted_local")
-        local_names = list(local_grants) if isinstance(local_grants, list) else []
-        if name not in local_names:
-            local_names.append(name)
-        agent_raw["apps_trusted_local"] = local_names
-    write_config_atomically(path, raw)
+
+    def _restore(raw: dict) -> dict:
+        # Read and write inside one hold of the ``<config>.json.lock`` sidecar,
+        # so the restore cannot republish a document that predates a concurrent
+        # settings write. The CLI runs this in its own process, which is exactly
+        # the writer an in-process asyncio lock cannot serialize against.
+        agent_raw = raw.setdefault("agent", {})
+        if not isinstance(agent_raw, dict):
+            raise RuntimeError(f"{path} has a non-object agent section")
+        # Append only when absent. The pre-lock ``_has_trust_grant`` check above
+        # answered "should this restore run at all"; it is not the read this write
+        # is derived from, so a dashboard re-grant landing between it and the
+        # acquire would otherwise be duplicated into the persisted list. Same
+        # guarded shape as the ``apps_trusted_local`` branch below, and the same
+        # re-derive-under-the-lock rule ``_drop_trust_grant`` follows.
+        grants = agent_raw.get("apps_trusted")
+        granted = list(grants) if isinstance(grants, list) else []
+        if name not in granted:
+            granted.append(name)
+        agent_raw["apps_trusted"] = granted
+        if repository:
+            repositories = agent_raw.get("apps_trusted_repositories")
+            bindings = dict(repositories) if isinstance(repositories, dict) else {}
+            bindings[name] = repository
+            agent_raw["apps_trusted_repositories"] = bindings
+        if local:
+            local_grants = agent_raw.get("apps_trusted_local")
+            local_names = list(local_grants) if isinstance(local_grants, list) else []
+            if name not in local_names:
+                local_names.append(name)
+            agent_raw["apps_trusted_local"] = local_names
+        return raw
+
+    try:
+        update_config_locked(path, mutate=_restore, stamp_meta=False)
+    except ConfigReadError as exc:
+        # Unchanged shape: a document that is not a readable JSON object refuses
+        # the restore, and ``uninstall_app`` folds it into ``restore_note``.
+        raise RuntimeError(f"{path} does not hold a JSON object: {exc}") from exc
 
     # The CLI and dashboard run in different processes, so a same-name
     # replacement can land after the pre-write check.  Recheck the exact durable
@@ -2279,11 +2327,13 @@ def _rmtree_dirfd(fd: int) -> None:
 
 
 def _dirfd_ops_supported() -> bool:
-    return (
-        os.open in os.supports_dir_fd
-        and os.unlink in os.supports_dir_fd
-        and os.rmdir in os.supports_dir_fd
-    )
+    # supports_pinned_walk covers the openat capability itself (O_DIRECTORY,
+    # O_NOFOLLOW, os.open in supports_dir_fd); _rmtree_dirfd above also removes
+    # files AND directories relative to the pinned descriptor, so those two extra
+    # syscalls are probed on top -- the extras name the descriptor-relative calls
+    # this surface actually issues, the way prompts.py adds {os.unlink, os.mkdir}
+    # for its own.
+    return supports_pinned_walk() and {os.unlink, os.rmdir}.issubset(os.supports_dir_fd)
 
 
 def resolve_mcp_backend_url(mcp_servers: Any) -> str | None:

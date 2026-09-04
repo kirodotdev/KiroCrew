@@ -119,6 +119,14 @@ export interface StatusData {
   release_channel?: 'nightly' | 'insider' | 'stable'
   branch?: string
   commit?: string
+  /**
+   * Short content hash of the SERVED frontend bundle's entry point. The SPA
+   * compares it across status pushes and reloads when it moves — the reload
+   * signal `version` cannot give for a same-version rebuild (a git checkout's
+   * in-app update), and one that reaches every open tab. `""`/absent means no
+   * built bundle / older gateway: unknown, never a change.
+   */
+  bundle_id?: string
   platform?: string
   yolo?: boolean
   /** ISO timestamp when the current timed auto-approve grant expires ("" when none). */
@@ -493,6 +501,18 @@ export interface SteeringFile {
   /** `fileMatchPattern` verbatim, `''` when absent. Only meaningful alongside
    *  `inclusion: fileMatch`. */
   file_match_pattern: string
+  /** True for a leaf symlink admitted read-only: its resolved target passes the
+   *  session loader's gate against the source's trust base, so the document
+   *  loads into sessions but the write path refuses it. Optional because the
+   *  UI reads it defensively — a cached listing from an older backend simply
+   *  renders no chip. */
+  linked?: boolean
+  /** False exactly for linked entries — the tab disables Edit/Delete on them.
+   *  Optional: an absent field fails OPEN (editable), see `selectedReadOnly`. */
+  editable?: boolean
+  /** Resolved symlink target (display path, home collapsed to `~`); `''` when
+   *  the entry is not linked. */
+  target?: string
 }
 
 /** Response shape of ``GET /api/steering``. */
@@ -727,6 +747,33 @@ export interface TodoList {
   current: string
 }
 
+/**
+ * What ONE agent session's MCP servers reported while starting.
+ *
+ * Distinct from every other MCP payload in the dashboard: `/api/mcp/active`
+ * reads an agent spec off disk and `/api/mcp/probe` records whether the gateway
+ * itself can start a server. Both answer a question about the host. This is the
+ * only one that answers "what did THIS session actually mount".
+ *
+ * Two properties callers must respect:
+ * - A name absent from every bucket means *no report yet*, never *not mounted*:
+ *   the backend's init drain is time bounded and a late frame still arrives.
+ * - The buckets are a SUPERSET of `configured`, because the backend also starts
+ *   the agent spec's own servers, not just the ones Kiro Crew injects.
+ */
+export interface McpSessionReport {
+  /** Server names Kiro Crew put on the wire for this session. */
+  configured: string[]
+  /** Reported initialized. */
+  ready: string[]
+  /** Reported a startup failure. */
+  failed: string[]
+  /** Asked for authorization and has not reported since. */
+  awaiting_auth: string[]
+  /** Server name -> its redacted failure reason, when one was reported. */
+  failures: Record<string, string>
+}
+
 export interface SessionLink {
   channel: string
   label: string
@@ -818,6 +865,16 @@ export interface ChatSlot {
   wait_state?: { wait_id: string; seconds: number; deadline_ts: number } | null
   /** Agent TODO list. Null/absent = the todo tool was never used in this slot. */
   todo?: TodoList | null
+  /**
+   * What this slot's agent session reported about its own MCP servers.
+   *
+   * Null/absent means this slot has no session that reported — render that as
+   * absence of knowledge, NOT as "no servers". It is deliberately separate from
+   * `/api/mcp/active` and `/api/mcp/probe`, which answer questions about the
+   * HOST (what an agent spec declares, what the gateway can start) rather than
+   * about this session.
+   */
+  mcp_report?: McpSessionReport | null
 }
 
 export interface PullRequestCommit {
@@ -942,6 +999,16 @@ export interface IssueSource {
   linkedChanges: IssueLinkedChange[]
   /** Sections potentially incomplete because a provider request failed or hit a limit. */
   partialSections?: string[]
+}
+
+/** A single contributor to an app's source repository (GitHub only, v1).
+ *  Names and avatar URLs are provider-controlled — render as text / <img>. */
+export interface AppContributor {
+  login: string
+  /** Display name, falling back to the login when the profile has none. */
+  name: string
+  avatarUrl: string
+  profileUrl: string
 }
 
 export interface PullRequestSource {

@@ -13,9 +13,10 @@ diverge.
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import MagicMock
 
 import pytest
+from body_stream_helpers import attach_body
 
 from kiro_crew.cron import CronService
 from kiro_crew.dashboard.handlers import api_cron_update
@@ -35,7 +36,7 @@ def _create_request(body: dict, crons: CronService) -> MagicMock:
     state.crons = crons
     request = MagicMock()
     request.app = {"state": state}
-    request.json = AsyncMock(return_value=body)
+    attach_body(request, body)
     return request
 
 
@@ -88,8 +89,6 @@ class TestDashboardUpdateName:
         (zero-width space) is stripped before persistence, matching create."""
         crons = CronService(base_dir=tmp_path)
         job = crons.add_job(name="old", message="m", every_secs=3600)
-        resp = await api_cron_update(
-            _update_request({"name": "new\u200bname"}, crons, job.id)
-        )
+        resp = await api_cron_update(_update_request({"name": "new\u200bname"}, crons, job.id))
         assert resp.status == 200
         assert crons.list_jobs()[0].name == "newname"

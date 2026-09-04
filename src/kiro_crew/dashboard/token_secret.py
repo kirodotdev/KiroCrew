@@ -21,6 +21,7 @@ commands like ``kirocrew --help``.
 
 from __future__ import annotations
 
+import errno
 import logging
 import os
 import threading
@@ -28,6 +29,7 @@ import time
 from pathlib import Path
 
 from kiro_crew import platform_compat
+from kiro_crew.atomic_write import atomic_write, fsync_dir
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +44,46 @@ _MIN_KEY_BYTES = 32
 # an unbounded hang.
 _CREATE_MAX_ATTEMPTS = 50
 _CREATE_BACKOFF_SECONDS = 0.02
+
+#: Errors that mean the FILESYSTEM has no hard links, as opposed to a link that
+#: failed for a reason retrying could fix. Only these may send the publish onto
+#: the in-place fallback, because that fallback creates the destination empty and
+#: so carries the truncation window this module exists to close: a transient
+#: refusal must never be mistaken for a missing filesystem feature. POSIX
+#: specifies EPERM for "the filesystem does not support links"; the *NOTSUP pair
+#: and ENOSYS are the explicit spellings.
+#:
+#: Deliberately EXCLUDED: EACCES (a Windows sharing violation while another
+#: handle holds the path -- transient, and the one this most needs to keep out),
+#: ENOSPC, EDQUOT, EIO and EROFS. Each of those exhausts the retry budget and
+#: degrades to an ephemeral secret with the destination untouched. EXDEV is
+#: excluded too, for the opposite reason: the staged file is a same-directory
+#: sibling, so a cross-device link cannot arise and listing it would only suggest
+#: the staging path is allowed to move.
+_LINK_UNSUPPORTED_ERRNOS = frozenset(
+    {
+        getattr(errno, name)
+        for name in ("EPERM", "EOPNOTSUPP", "ENOTSUP", "ENOSYS")
+        if hasattr(errno, name)
+    }
+)
+
+#: Windows reports a hard link on FAT/exFAT through a Win32 code whose errno
+#: translation is not one of the POSIX names above, so match it directly:
+#: ERROR_INVALID_FUNCTION (1) and ERROR_NOT_SUPPORTED (50).
+_LINK_UNSUPPORTED_WINERRORS = frozenset({1, 50})
+
+
+def _is_link_unsupported(exc: OSError) -> bool:
+    """Whether *exc* says this filesystem cannot hard-link at all.
+
+    False for anything a retry might clear, which keeps a transient failure from
+    routing the key through the in-place create -- see
+    :data:`_LINK_UNSUPPORTED_ERRNOS` for why that distinction is the whole point.
+    """
+    if exc.errno in _LINK_UNSUPPORTED_ERRNOS:
+        return True
+    return getattr(exc, "winerror", None) in _LINK_UNSUPPORTED_WINERRORS
 
 
 def _enforce_owner_only(key_path: Path) -> None:
@@ -64,6 +106,20 @@ def _enforce_owner_only(key_path: Path) -> None:
             key_path,
             exc_info=True,
         )
+
+
+def _unlink_quietly(path: Path) -> None:
+    """Remove *path* if present, swallowing any error.
+
+    Used only for THIS process's private staging file, which no other writer
+    can name, so there is no identity check to make and no failure worth
+    propagating -- a leftover staging file is inert (the key is published under
+    its own name) and must never mask the outcome of the publish itself.
+    """
+    try:
+        os.unlink(path)
+    except OSError:
+        pass
 
 
 def _unlink_if_same_file(key_path: Path, created_stat: os.stat_result) -> None:
@@ -108,6 +164,110 @@ def _unlink_if_same_file(key_path: Path, created_stat: os.stat_result) -> None:
             )
 
 
+def _create_key_in_place(key_path: Path) -> bytes | None:
+    """Create the key by exclusive create AT *key_path*, the historical path.
+
+    Reached only when the filesystem cannot hard-link, so the stage-then-link
+    publish in :func:`_load_or_create_secret` is unavailable. Returns the new
+    key, or ``None`` when another process won the create (the caller retries).
+
+    This carries the pre-existing truncation window with it: the destination is
+    created EMPTY and only then written, so a kill between the two leaves a
+    0-byte key. That is deliberate -- on a filesystem with no hard links the
+    alternative is no persisted key at all -- and it is why the linked publish
+    is the default rather than this.
+    """
+    # O_EXCL guarantees exactly one process across all sharers of this data
+    # home wins the create; everyone else hits FileExistsError and loops back
+    # to read the winner's bytes. This is what eliminates the divergence: only
+    # one key is ever generated.
+    try:
+        # os.O_BINARY is REQUIRED on Windows: os.open() there defaults
+        # to TEXT mode, so the os.write() below would translate any
+        # 0x0A ('\n') byte in the random key to 0x0D 0x0A ('\r\n'),
+        # persisting a longer, corrupted key that the creator's
+        # in-memory bytes (and every sibling read) no longer match ->
+        # silent auth divergence. getattr(..., 0) makes it a no-op on
+        # POSIX, where os.O_BINARY does not exist and there is no text
+        # mode. Evaluated at call time so tests can simulate the flag.
+        fd = os.open(
+            str(key_path),
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0),
+            0o600,
+        )
+    except FileExistsError:
+        # Someone else created it (possibly not yet written). Give the
+        # writer a beat, then loop back to read their bytes.
+        return None
+    except OSError:
+        # On Windows the winner may hold the freshly-created file open
+        # while it writes; a racer's exclusive-create can then hit a
+        # sharing violation (PermissionError / WinError 32) INSTEAD of
+        # FileExistsError. Treat it as contention — back off and retry
+        # within the bounded loop rather than propagating to the outer
+        # ephemeral fallback, which would make this racer diverge from
+        # the winner's persisted key (silent auth corruption). POSIX does
+        # not raise here; a genuinely unwritable dir still degrades to an
+        # ephemeral secret once the retry budget is exhausted.
+        logger.debug(  # nosemgrep: python-logger-credential-disclosure -- logs the path only, never key bytes
+            "token signing key exclusive-create contended at %s; retrying",
+            key_path,
+        )
+        return None
+
+    # We hold the exclusive create. Capture the created file's identity
+    # (device + inode) NOW, while we still hold the fd, so that if we
+    # later have to remove a half-written file we unlink ONLY the exact
+    # file this process created — never a valid key a racing sibling may
+    # have substituted at the same path in the meantime.
+    created_stat = os.fstat(fd)
+    wrote_durable_key = False
+    # Lock the DACL down BEFORE writing the secret bytes: on Windows the
+    # lockdown replaces an existing DACL rather than being applied at
+    # create time, so writing first would leave a window during which
+    # another local principal could slurp the bytes; on POSIX it
+    # collapses to an in-process chmod. Create empty
+    # → tighten → write → fsync.
+    try:
+        _enforce_owner_only(key_path)
+        key = os.urandom(_MIN_KEY_BYTES)
+        # os.write() may return a SHORT count (notably on a nearly-full
+        # disk). Loop until every byte lands; a 0-byte write is an error.
+        mv = memoryview(key)
+        while mv:
+            n = os.write(fd, mv)
+            if n == 0:
+                raise OSError(
+                    "short write persisting token signing key (wrote 0 bytes)"
+                )
+            mv = mv[n:]
+        # Cross-restart persistence is the entire reason this file
+        # exists, so flush the bytes to stable storage before we treat
+        # the key as durable and hand it back. A failing fsync means the
+        # key is not reliably persisted — fall into the cleanup path.
+        os.fsync(fd)
+        wrote_durable_key = True
+    finally:
+        os.close(fd)
+        if not wrote_durable_key:
+            # The exclusive create succeeded but we failed to persist a
+            # full, durable key (ENOSPC, quota, fsync failure, ...). The
+            # on-disk file is now short/empty; leaving it PERMANENTLY
+            # poisons every future boot — the fast-path read sees
+            # <32 bytes, the O_EXCL create then hits FileExistsError, the
+            # retry budget exhausts, and every gateway falls back to a
+            # fresh ephemeral key (tokens die on each restart, concurrent
+            # gateways cannot validate one another) until a human deletes
+            # it. Remove OUR incomplete file so the next init can create a
+            # valid key cleanly. The identity guard ensures we never
+            # delete a valid key a sibling has since substituted.
+            _unlink_if_same_file(key_path, created_stat)
+    # Reaching here means the write + fsync completed; a failure would
+    # have propagated the OSError to the outer handler (the ephemeral
+    # fallback) after the cleanup above ran.
+    return key
+
+
 def _load_or_create_secret() -> bytes:
     """Return the HMAC signing secret, persisted across restarts.
 
@@ -125,12 +285,25 @@ def _load_or_create_secret() -> bytes:
     keep an in-memory key that no longer matches the persisted file, silently
     corrupting every token it issues for sibling instances / after a restart.
 
-    The fix: only ONE key may ever be created. We attempt an exclusive create
-    (``O_CREAT | O_EXCL``); exactly one process wins and writes the fresh key,
-    and every other process takes the ``FileExistsError`` branch and READS the
-    winner's bytes instead of generating its own. A small bounded retry loop
-    covers the create-then-read interleaving (a racing reader can momentarily
-    see the just-created, not-yet-written empty file).
+    The fix: only ONE key may ever be created, and it is only ever PUBLISHED
+    whole. The fresh key is staged into a private sibling file (the shared
+    :func:`kiro_crew.atomic_write.atomic_write` helper -- owner-only before the
+    first byte, fsynced, cleaned up on failure) and then linked into place with
+    ``os.link``. The link is atomic and non-clobbering: exactly one process
+    wins, and every other process takes the ``FileExistsError`` branch and READS
+    the winner's bytes instead of generating its own.
+
+    ``os.link`` rather than ``os.replace`` is what keeps the single-creator
+    election -- a last-writer-wins rename would let each racer install its own
+    key, leaving the losers signing with bytes no longer on disk. Staging rather
+    than creating in place is what keeps the destination name from ever
+    resolving to a partial file: creating it empty and writing afterwards means
+    a kill in between (an update completing during shutdown, a reboot) persists
+    a 0-byte key, and because the fast-path read then sees <32 bytes forever,
+    every later boot degrades to an ephemeral secret -- a dashboard that loads
+    while every signed action fails, which a restart cannot fix.
+
+    A small bounded retry loop still covers the publish-then-read interleaving.
     """
     # Local import: config.loader pulls in modules that import token_auth
     # (which re-exports this module), so a top-level import here risks a
@@ -141,6 +314,12 @@ def _load_or_create_secret() -> bytes:
     try:
         key_path = config_dir() / _SECRET_KEY_FILE
         key_path.parent.mkdir(parents=True, exist_ok=True)
+
+        # Set only by a link failure that says this filesystem HAS no hard
+        # links. It is what unlocks the in-place fallback after the loop, so a
+        # transient failure leaves it False and never reaches code that creates
+        # the destination empty.
+        link_unsupported = False
 
         for _attempt in range(_CREATE_MAX_ATTEMPTS):
             # 1) Fast path: an already-populated key file. Read the persisted
@@ -172,106 +351,178 @@ def _load_or_create_secret() -> bytes:
                 _enforce_owner_only(key_path)
                 return existing
 
-            # 2) Try to become the SOLE creator. O_EXCL guarantees exactly one
-            #    process across all sharers of this data home wins the create;
-            #    everyone else hits FileExistsError and loops back to read the
-            #    winner's bytes. This is what eliminates the divergence: only
-            #    one key is ever generated.
+            # 2) Publish a WHOLE key, or lose the race and read the winner's.
+            #    The key is staged into a private sibling first and only then
+            #    linked into place, because the destination name must never
+            #    exist in a partial state. An interrupted update -- or a reboot
+            #    that kills this process between an in-place create and the
+            #    write -- otherwise leaves a 0-byte key on disk, and every
+            #    later boot then reads <32 bytes, exhausts the retry budget and
+            #    degrades to an ephemeral secret: a dashboard that loads while
+            #    every signed action fails, which a restart cannot fix because
+            #    it re-reads the same empty file.
+            #
+            #    os.link is the publish step, not os.replace, because exactly
+            #    ONE key may ever exist. link fails with FileExistsError once a
+            #    sibling has published, which keeps the single-creator election
+            #    the in-place O_EXCL create used to provide; os.replace would
+            #    let each racer install its own key and leave the losers
+            #    signing with bytes that are no longer on disk.
+            # The suffix is load-bearing, not cosmetic. This file holds the FULL
+            # key until the publish link lands, and a kill between that link and
+            # the cleanup unlink below leaves it on disk. security.py's keystone
+            # fence protects a publish artifact by SHAPE -- a direct child of a
+            # keystone leaf's own directory whose name ends in one of
+            # _KEYSTONE_ARTIFACT_SUFFIXES -- so ".tmp" is what puts a leftover
+            # copy of the signing key behind the same fence as the key itself,
+            # rather than leaving it readable to agent tools (a forged-token
+            # path). It also matches the suffix atomic_write's own mkstemp temp
+            # already uses. test_token_auth.py pins this against the real
+            # predicate so a rename cannot silently leave the fence behind.
+            staged = key_path.with_name(
+                f".{key_path.name}.{os.getpid()}.{os.urandom(8).hex()}.tmp"
+            )
+            key = os.urandom(_MIN_KEY_BYTES)
             try:
-                # os.O_BINARY is REQUIRED on Windows: os.open() there defaults
-                # to TEXT mode, so the os.write() below would translate any
-                # 0x0A ('\n') byte in the random key to 0x0D 0x0A ('\r\n'),
-                # persisting a longer, corrupted key that the creator's
-                # in-memory bytes (and every sibling read) no longer match ->
-                # silent auth divergence. getattr(..., 0) makes it a no-op on
-                # POSIX, where os.O_BINARY does not exist and there is no text
-                # mode. Evaluated at call time so tests can simulate the flag.
-                fd = os.open(
-                    str(key_path),
-                    os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0),
-                    0o600,
+                # restrict_to_owner (rather than mode=0o600 alone) is what
+                # _enforce_owner_only applies today, and the helper applies it
+                # BEFORE any key byte reaches the file, so the secret never
+                # exists under a wider mode. restrict_on_error="warn" preserves
+                # this call site's fail-soft permission policy, and fsync=True
+                # carries the os.fsync() the in-place writer performed.
+                atomic_write(
+                    staged,
+                    key,
+                    fsync=True,
+                    restrict_to_owner=True,
+                    restrict_on_error="warn",
                 )
-            except FileExistsError:
-                # Someone else created it (possibly not yet written). Give the
-                # writer a beat, then loop back to read their bytes.
-                time.sleep(_CREATE_BACKOFF_SECONDS)
-                continue
             except OSError:
-                # On Windows the winner may hold the freshly-created file open
-                # while it writes; a racer's exclusive-create can then hit a
-                # sharing violation (PermissionError / WinError 32) INSTEAD of
-                # FileExistsError. Treat it as contention — back off and retry
-                # within the bounded loop rather than propagating to the outer
-                # ephemeral fallback, which would make this racer diverge from
-                # the winner's persisted key (silent auth corruption). POSIX does
-                # not raise here; a genuinely unwritable dir still degrades to an
-                # ephemeral secret once the retry budget is exhausted.
+                # Staging failed. No destination file was ever created, so
+                # key_path is untouched. On Windows this can be a TRANSIENT
+                # sharing violation, so retry within the budget rather than
+                # degrading immediately; a genuinely unwritable directory
+                # exhausts the loop and lands on the fallback below.
+                _unlink_quietly(staged)
                 logger.debug(  # nosemgrep: python-logger-credential-disclosure -- logs the path only, never key bytes
-                    "token signing key exclusive-create contended at %s; retrying",
-                    key_path,
+                    "token signing key staging failed at %s; retrying", key_path
                 )
                 time.sleep(_CREATE_BACKOFF_SECONDS)
                 continue
-
-            # We hold the exclusive create. Capture the created file's identity
-            # (device + inode) NOW, while we still hold the fd, so that if we
-            # later have to remove a half-written file we unlink ONLY the exact
-            # file this process created — never a valid key a racing sibling may
-            # have substituted at the same path in the meantime.
-            created_stat = os.fstat(fd)
-            wrote_durable_key = False
-            # Lock the DACL down BEFORE writing the secret bytes: on Windows the
-            # lockdown replaces an existing DACL rather than being applied at
-            # create time, so writing first would leave a window during which
-            # another local principal could slurp the bytes; on POSIX it
-            # collapses to an in-process chmod. Create empty
-            # → tighten → write → fsync.
             try:
-                _enforce_owner_only(key_path)
-                key = os.urandom(_MIN_KEY_BYTES)
-                # os.write() may return a SHORT count (notably on a nearly-full
-                # disk). Loop until every byte lands; a 0-byte write is an error.
-                mv = memoryview(key)
-                while mv:
-                    n = os.write(fd, mv)
-                    if n == 0:
-                        raise OSError(
-                            "short write persisting token signing key (wrote 0 bytes)"
-                        )
-                    mv = mv[n:]
-                # Cross-restart persistence is the entire reason this file
-                # exists, so flush the bytes to stable storage before we treat
-                # the key as durable and hand it back. A failing fsync means the
-                # key is not reliably persisted — fall into the cleanup path.
-                os.fsync(fd)
-                wrote_durable_key = True
-            finally:
-                os.close(fd)
-                if not wrote_durable_key:
-                    # The exclusive create succeeded but we failed to persist a
-                    # full, durable key (ENOSPC, quota, fsync failure, ...). The
-                    # on-disk file is now short/empty; leaving it PERMANENTLY
-                    # poisons every future boot — the fast-path read sees
-                    # <32 bytes, the O_EXCL create then hits FileExistsError, the
-                    # retry budget exhausts, and every gateway falls back to a
-                    # fresh ephemeral key (tokens die on each restart, concurrent
-                    # gateways cannot validate one another) until a human deletes
-                    # it. Remove OUR incomplete file so the next init can create a
-                    # valid key cleanly. The identity guard ensures we never
-                    # delete a valid key a sibling has since substituted.
-                    _unlink_if_same_file(key_path, created_stat)
-            # Reaching here means the write + fsync completed; a failure would
-            # have propagated the OSError to the outer handler (the ephemeral
-            # fallback) after the cleanup above ran.
+                os.link(staged, key_path)
+            except FileExistsError:
+                # A sibling published first. Drop our candidate and loop back to
+                # read theirs; never install it over the winner.
+                _unlink_quietly(staged)
+                time.sleep(_CREATE_BACKOFF_SECONDS)
+                continue
+            except OSError as exc:
+                # Retry either way -- a transient sharing violation (Windows,
+                # while another handle holds the destination) succeeds on a
+                # later attempt, and a filesystem with no hard links simply
+                # fails every attempt. What differs is what the exhausted budget
+                # is allowed to do next: ONLY an unsupported-link error may fall
+                # back to creating the destination in place, because that path
+                # reintroduces the truncation window. A transient error must
+                # degrade to an ephemeral secret with key_path untouched.
+                if _is_link_unsupported(exc):
+                    link_unsupported = True
+                _unlink_quietly(staged)
+                logger.debug(  # nosemgrep: python-logger-credential-disclosure -- logs the path only, never key bytes
+                    "token signing key publish link failed at %s (errno=%s); retrying",
+                    key_path,
+                    exc.errno,
+                )
+                time.sleep(_CREATE_BACKOFF_SECONDS)
+                continue
+            # Linked: the name now resolves to the fully-written inode. The key
+            # BYTES were fsynced during staging, but the new NAME lives in the
+            # parent directory, so the entry is not durable until that directory
+            # is synced -- and the next statement would remove the only other
+            # name pointing at the inode.
+            #
+            # Strict, NOT best_effort: best_effort downgrades even EIO to a
+            # warning, which is right for a caller whose work is already
+            # committed and wrong here, where a swallowed failure followed by the
+            # unlink can leave a power loss with neither name. Then the inode is
+            # unreachable, the next boot mints a fresh key, and every outstanding
+            # cookie and link signed by the old one is invalid.
+            #
+            # A real failure is caught rather than propagated: raising would hit
+            # the outer handler and hand back an EPHEMERAL secret while a valid
+            # key sits at key_path, which is the divergence this function exists
+            # to prevent. So keep the recoverable second name and return the key
+            # that IS on disk. Keeping it is only safe because the staging name
+            # ends in ".tmp": the leftover stays behind security.py's keystone
+            # fence instead of becoming a readable copy of the signing key.
+            #
+            # fsync_dir returns quietly where a directory sync cannot be
+            # EXPRESSED (Windows has no directory descriptor; some network mounts
+            # reject it) and raises only where the device refused the write, so
+            # the normal and unsupported paths still reach the unlink below.
+            try:
+                fsync_dir(key_path.parent)
+            except OSError:
+                logger.warning(  # nosemgrep: python-logger-credential-disclosure -- logs the path only, never key bytes
+                    "could not sync %s after publishing the token signing key; "
+                    "keeping the staging copy as a recoverable second name",
+                    key_path.parent,
+                    exc_info=True,
+                )
+            else:
+                _unlink_quietly(staged)
+            _enforce_owner_only(key_path)
             return key
 
-        # Retries exhausted: a persistently short/empty file (external
-        # corruption, or a creator that crashed after O_EXCL but before the
-        # write). Do NOT truncate-and-regenerate — that reintroduces the exact
-        # divergence race this function exists to prevent. Degrade to an
-        # ephemeral secret (works this session, not across restart), matching
-        # the unwritable-file fallback below. An operator can remove the stale
-        # file to let a fresh key be created cleanly.
+        # Retries exhausted. The in-place fallback below creates the
+        # destination EMPTY and writes afterwards, so it carries the very
+        # truncation window this fix removes -- it is worth that only where the
+        # alternative is no persisted key on any boot, i.e. a filesystem that
+        # genuinely cannot hard-link (FAT/exFAT, some network mounts). Anything
+        # else that exhausted the budget -- a transient sharing violation, a
+        # policy refusal, a short/empty file already at key_path -- skips it and
+        # degrades to the ephemeral secret with key_path untouched, exactly as
+        # the pre-PR code did.
+        #
+        # Fall back under its OWN bounded loop.
+        #
+        # The loop is what makes this converge, and a single attempt would not.
+        # Two gateways booting concurrently on a link-less home both exhaust the
+        # publish loop above and reach here; O_EXCL lets exactly one create the
+        # key, and the LOSER gets None back. Without the re-read below it would
+        # fall through to an ephemeral secret while the winner persisted a real
+        # one, leaving the pair unable to validate each other's tokens -- the
+        # divergence the exclusive create exists to prevent. So the loser loops,
+        # reads the winner's bytes, and returns those instead.
+        if link_unsupported:
+            for _attempt in range(_CREATE_MAX_ATTEMPTS):
+                try:
+                    existing = key_path.read_bytes()
+                except FileNotFoundError:
+                    existing = b""
+                except OSError:
+                    # Windows sharing violation while the winner holds the file
+                    # open; transient, so retry rather than degrade.
+                    time.sleep(_CREATE_BACKOFF_SECONDS)
+                    continue
+                if len(existing) >= _MIN_KEY_BYTES:
+                    _enforce_owner_only(key_path)
+                    return existing
+                created = _create_key_in_place(key_path)
+                if created is not None:
+                    return created
+                # Lost the create (or it failed): give the winner a beat, then
+                # loop back and read what they persisted.
+                time.sleep(_CREATE_BACKOFF_SECONDS)
+
+        # A persistently short/empty file (external corruption, or a creator
+        # that was killed mid-publish on a filesystem with no hard links). Do
+        # NOT truncate-and-regenerate — that reintroduces the exact divergence
+        # race this function exists to prevent. Degrade to an ephemeral secret
+        # (works this session, not across restart), matching the
+        # unwritable-file fallback below. An operator can remove the stale file
+        # to let a fresh key be created cleanly.
         # Logs only the key PATH (key_path) and an attempt count, never the key
         # bytes; the Semgrep rule fires on the credential-adjacent wording in
         # the static message string, not on any secret value.

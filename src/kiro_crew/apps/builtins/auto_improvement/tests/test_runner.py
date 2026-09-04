@@ -313,6 +313,217 @@ class TestStatusShape:
         assert "ruler not trusted" in st["error"]
 
 
+class TestOfflineRunIsNotReportedAsDone:
+    """A run with no agent runner did no work, so it must not end in the success state.
+
+    With ``agent_runner=None`` the profile's discovery early-returns an empty candidate
+    list, so every cycle finds nothing, the budget's quiescence break fires, and
+    ``driver.run()`` returns its stats CLEANLY. The supervisor used to take that as success
+    and report ``done`` with an empty ``error`` -- a state indistinguishable from a run that
+    genuinely searched and found nothing.
+
+    ``_build_driver`` is patched, which is exactly how the sibling tests in this file drive
+    the loop; ``_offline_reason`` is set by hand to stand in for what ``_build_runner``
+    records, and ``test_build_runner_records_why_it_went_offline`` covers that real function
+    separately so the two halves are not asserted only against each other.
+    """
+
+    @staticmethod
+    def _start_offline(
+        supervisor: R.RunSupervisor,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        *,
+        reason: str = "no provider-backed agent runner is available",
+    ) -> None:
+        clone = _tiny_repo(tmp_path / "clone")
+
+        class _InstantDriver:
+            def run(self, **_kw: Any) -> Any:
+                return _FakeStats()
+
+            def request_stop(self) -> None:
+                pass
+
+        monkeypatch.setattr(supervisor, "_build_driver", lambda _cfg: _InstantDriver())
+        supervisor._offline_reason = reason
+        supervisor.start({"clone": str(clone)})
+        _join(supervisor)
+
+    def test_an_offline_run_ends_in_error_not_done(
+        self, supervisor: R.RunSupervisor, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._start_offline(supervisor, tmp_path, monkeypatch, reason="the factory raised")
+        st = supervisor.status()
+        assert st["status"] == R.STATUS_ERROR, st
+        assert st["status"] != R.STATUS_DONE
+        # The reason must reach the field the UI actually renders, not just a log line.
+        assert "the factory raised" in st["error"]
+
+    def test_the_offline_reason_is_surfaced_when_the_run_starts(
+        self, supervisor: R.RunSupervisor, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Not only at the end: the operator watching the feed sees it immediately."""
+        self._start_offline(supervisor, tmp_path, monkeypatch, reason="the factory raised")
+        errors = [e for e in supervisor.status()["activity"] if "error" in e]
+        assert any("OFFLINE" in str(e["error"]) for e in errors), errors
+
+    def test_a_run_with_a_live_runner_still_ends_done(
+        self, supervisor: R.RunSupervisor, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The control. An empty ``_offline_reason`` must keep the success path intact --
+        a fix that reports every quiesced run as an error is a different bug, not this one."""
+        self._start_offline(supervisor, tmp_path, monkeypatch, reason="")
+        st = supervisor.status()
+        assert st["status"] == R.STATUS_DONE, st
+        assert st["error"] == ""
+
+    def test_the_terminal_state_is_persisted(
+        self, supervisor: R.RunSupervisor, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """``RunState`` is in-memory only, so without a durable record the outcome dies
+        with the process and a restart shows no trace that a run ended at cycle 0."""
+        self._start_offline(supervisor, tmp_path, monkeypatch, reason="the factory raised")
+        record = json.loads(R._terminal_record_path().read_text(encoding="utf-8"))
+        assert record["status"] == R.STATUS_ERROR
+        assert "the factory raised" in record["error"]
+        assert record["offline_reason"] == "the factory raised"
+        assert record["cycle"] == 0
+
+    def test_a_fresh_supervisor_reports_the_persisted_failure(
+        self, supervisor: R.RunSupervisor, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The reload. A new supervisor is what a restarted gateway has, and it must still
+        be able to say what happened rather than reporting a blank ``idle``."""
+        self._start_offline(supervisor, tmp_path, monkeypatch, reason="the factory raised")
+        revived = R.RunSupervisor()
+        st = revived.status()
+        assert st["status"] == R.STATUS_ERROR, st
+        assert "the factory raised" in st["error"]
+
+    def test_the_record_lands_in_the_workspace_the_run_started_in(
+        self, supervisor: R.RunSupervisor, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A repository retarget must not move a finished run's outcome to another workspace.
+
+        `_terminal_record_path()` resolves `store.results_dir()`, which is scoped to the ACTIVE
+        repository+branch. The terminal write happens after the status is already terminal, so
+        the run reads as non-active and `routes._refuse_while_running` admits a retarget in
+        exactly that window. Resolving the path at write time therefore filed the outcome under
+        whichever repository happened to be selected by then, and left the run's own workspace
+        with no record. Raised by the GPT review of this branch.
+        """
+        clone = _tiny_repo(tmp_path / "clone")
+        release = threading.Event()
+
+        class _BlockingDriver:
+            """Parks in ``run`` so the retarget lands while the run is genuinely in flight."""
+
+            def run(self, **_kw: Any) -> Any:
+                release.wait(timeout=10.0)
+                return _FakeStats()
+
+            def request_stop(self) -> None:
+                release.set()
+
+        monkeypatch.setattr(supervisor, "_build_driver", lambda _cfg: _BlockingDriver())
+        supervisor._offline_reason = "the factory raised"
+        started_in = R._terminal_record_path()
+        supervisor.start({"clone": str(clone)})
+
+        # Retarget the app at the repository the run was NOT started against.
+        store.write_json_atomic(
+            store.config_path(), {"target_display": "owner/somewhere-else", "branch": "main"}
+        )
+        retargeted_to = R._terminal_record_path()
+        # The premise: the two workspaces really are different directories, so this test would
+        # be vacuous if `workspace_key()` ever stopped depending on the configured target.
+        assert retargeted_to != started_in
+
+        release.set()
+        _join(supervisor)
+        assert started_in.exists(), "the outcome did not land in the run's own workspace"
+        assert not retargeted_to.exists(), "the outcome leaked into the retargeted workspace"
+
+    def test_a_failing_run_also_persists_its_terminal_record(
+        self, supervisor: R.RunSupervisor, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The durable record covers the ordinary failure path too, not only the offline one."""
+        clone = _tiny_repo(tmp_path / "clone")
+
+        class _ExplodingDriver:
+            def run(self, **_kw: Any) -> Any:
+                raise RuntimeError("ruler not trusted")
+
+            def request_stop(self) -> None:
+                pass
+
+        monkeypatch.setattr(supervisor, "_build_driver", lambda _cfg: _ExplodingDriver())
+        supervisor.start({"clone": str(clone)})
+        _join(supervisor)
+        record = json.loads(R._terminal_record_path().read_text(encoding="utf-8"))
+        assert record["status"] == R.STATUS_ERROR
+        assert "ruler not trusted" in record["error"]
+
+    def test_an_extreme_persisted_counter_does_not_wedge_the_app(self, tmp_path: Path) -> None:
+        """`1e309` on disk is `float('inf')` in memory, and `int(inf)` raises OverflowError --
+        which a `(TypeError, ValueError)` tuple does NOT catch. Raised on the event loop inside
+        the process-wide singleton, and `get_supervisor()` caches only on success, so one such
+        record would 500 EVERY `GET /run` for the life of the process, not just the first.
+        Raised by the GPT review of this branch.
+        """
+        R._terminal_record_path().parent.mkdir(parents=True, exist_ok=True)
+        R._terminal_record_path().write_text(
+            '{"status": "error", "error": "boom", "cycle": 1e309}', encoding="utf-8"
+        )
+        # Constructing must not raise, and must not be reported as a real run.
+        assert R.RunSupervisor().status()["status"] == R.STATUS_IDLE
+
+    def test_a_non_finite_timestamp_cannot_poison_the_run_response(self, tmp_path: Path) -> None:
+        """The sibling of the counter crash, from the SAME input. `inf` sails through
+        `_pos_float`'s `> 0` guard, and `json.dumps(inf)` emits the literal `Infinity` -- not
+        valid JSON, so the browser's `JSON.parse` rejects the whole `GET /run` payload and the
+        app shows nothing. Fixing only the counter would leave this live.
+        """
+        R._terminal_record_path().parent.mkdir(parents=True, exist_ok=True)
+        R._terminal_record_path().write_text(
+            '{"status": "error", "error": "boom", "started_at": 1e309}', encoding="utf-8"
+        )
+        status = R.RunSupervisor().status()
+        # Round-tripping through STRICT json is the real assertion: `allow_nan=False` rejects
+        # exactly what a browser rejects.
+        json.loads(json.dumps(status, allow_nan=False))
+
+    def test_a_non_terminal_persisted_record_is_ignored(self, tmp_path: Path) -> None:
+        """A stale or hand-edited ``running`` record must not resurrect a run with no thread
+        behind it -- that is the UI-spins-forever lie ``status()`` already guards against."""
+        R._terminal_record_path().parent.mkdir(parents=True, exist_ok=True)
+        R._terminal_record_path().write_text(
+            json.dumps({"status": R.STATUS_RUNNING, "run_id": "run-1"}), encoding="utf-8"
+        )
+        assert R.RunSupervisor().status()["status"] == R.STATUS_IDLE
+
+    def test_a_corrupt_persisted_record_leaves_the_supervisor_idle(self, tmp_path: Path) -> None:
+        """Startup hydration is best-effort: it runs inside the process-wide singleton every
+        run route resolves through, so it must degrade rather than break run reporting."""
+        R._terminal_record_path().parent.mkdir(parents=True, exist_ok=True)
+        R._terminal_record_path().write_text("{not json", encoding="utf-8")
+        assert R.RunSupervisor().status()["status"] == R.STATUS_IDLE
+
+    def test_build_runner_records_why_it_went_offline(
+        self, supervisor: R.RunSupervisor, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The real ``_build_runner``: going offline must leave a reason behind, because the
+        ``logger.warning`` it already emits goes to the process's stdout/stderr pipe, which a
+        supervised gateway does not capture into its log file."""
+        from kiro_crew.apps.builtins.auto_improvement.spine import agent_runner as AR
+
+        monkeypatch.setattr(AR.SessionAgentRunner, "available", staticmethod(lambda: False))
+        assert supervisor._build_runner(stop_check=lambda: False) is None
+        assert supervisor._offline_reason
+        assert "available" in supervisor._offline_reason
+
+
 class TestStop:
     def test_stop_on_an_idle_supervisor_is_a_noop(self, supervisor: R.RunSupervisor) -> None:
         result = supervisor.stop()

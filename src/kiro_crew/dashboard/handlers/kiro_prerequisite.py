@@ -12,6 +12,7 @@ from aiohttp import web
 from kiro_crew.kiro_prerequisite import (
     KIRO_CLI_LOGIN_COMMAND,
     KIRO_CLI_SSO_LOGIN_COMMAND,
+    KIRO_CLI_UPDATE_COMMAND,
     OFFICIAL_INSTALL_DOCS_URL,
     KiroPrerequisiteService,
     PrerequisiteStatus,
@@ -185,6 +186,14 @@ async def api_kiro_prerequisite_status(request: web.Request) -> web.Response:
             # withholding them costs them nothing.
             "missing_agent_specs": [],
             "agent_spec_repair_error": "",
+            # Same shape-stability reason: a non-owner cannot act on an outdated
+            # CLI (the update is an owner-gated POST), so acp_supported is
+            # reported healthy, update_command carries the standard command
+            # string, and cli_update_error is blank. Present rather than omitted
+            # so a consumer reading these keys never branches on ``undefined``.
+            "acp_supported": True,
+            "update_command": KIRO_CLI_UPDATE_COMMAND,
+            "cli_update_error": "",
             # See _LEGACY_IDLE_OPERATION: a pre-upgrade tab crashes without this,
             # and the payload shape must not vary by caller either way.
             "operation": legacy_idle_operation(),
@@ -210,4 +219,25 @@ async def api_kiro_prerequisite_repair_specs(request: web.Request) -> web.Respon
     if denied is not None:
         return denied
     snapshot = await _service(request).repair_agent_specs(_caller(request))
+    return web.json_response({**snapshot, "setup_allowed": True})
+
+
+async def api_kiro_prerequisite_update_cli(request: web.Request) -> web.Response:
+    """POST /api/kiro-prerequisite/update-cli — run the CLI's in-place self-update.
+
+    A POST for the same reason as repair-specs: the spawn must be origin-checked
+    and audited, and both barriers are method-scoped. Offered only to remedy a
+    too-old kiro-cli that lacks the ``acp`` subcommand Kiro Crew launches every
+    session through. Unlike the install/sign-in steps (which Kiro Crew only
+    names), this one runs ``kiro-cli update`` FOR the owner — the CLI's own
+    self-update, the same command the auto-update path already runs.
+
+    Returns 200 with the post-update snapshot (``cli_update_error`` empty on
+    success): it runs to completion within the request, like repair-specs.
+    """
+
+    denied = await _dashboard_owner_only(request)
+    if denied is not None:
+        return denied
+    snapshot = await _service(request).update_cli(_caller(request))
     return web.json_response({**snapshot, "setup_allowed": True})

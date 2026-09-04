@@ -5,6 +5,7 @@ import { api } from '../../api/client'
 import { useAppSelector, useAppDispatch } from '../../store'
 import { sideClose, sideOptimisticAppend, sideOptimisticRollback, sseSideQueue, sideReleaseConsumed, queueEditBroadcastAt } from '../../store/chatSlice'
 import QueueStack from '../../components/QueueStack'
+import { useChatScrollFollow } from '../../app-sdk/useChatScrollFollow'
 import ChatMessageList from '../../app-sdk/ChatMessageList'
 import FollowUpBar from '../../components/FollowUpBar'
 import { deriveFollowUpOptions } from '../../app-sdk/protocol'
@@ -12,7 +13,7 @@ import { useComposerDraft, draftByteSize } from '../../app-sdk/useComposerDraft'
 import ChatInput from '../../components/ChatInput'
 import { SlotProvider } from '../../providers/SlotContext'
 import { useConnected } from '../../hooks/useConnected'
-import type { SideMessage } from '../../store/chatSlice'
+import type { SideMessage, SideQueueEntry } from '../../store/chatSlice'
 import type { ChatMessage } from '../../types'
 
 import { i18nT } from '../../i18n/t'
@@ -24,6 +25,13 @@ const MAX_INPUT_H = 240
 // not a state, so leaving it until the next submit would let it sit beside a later
 // turn it has nothing to do with.
 const NOTICE_TTL_MS = 8_000
+// Stable fallbacks for a slot with no side buffer yet. An inline `?? []` allocates
+// a fresh array every render, so the transcript map, the queue cards and the
+// blocked-id set would all recompute on every render of an EMPTY panel — the one
+// case where there is provably nothing to recompute. Never mutated: both are read
+// only through `.length`, indexing and `.map`.
+const EMPTY_SIDE_MESSAGES: SideMessage[] = []
+const EMPTY_SIDE_QUEUE: SideQueueEntry[] = []
 
 /** One composer submit. `steer` and `optimistic` are decided at submit time and
  *  carried along, so a mutation callback that runs later never re-derives them
@@ -73,12 +81,16 @@ export default function SideChat({ slot }: { slot: string }) {
     const t = setTimeout(() => setLocalNotice(null), NOTICE_TTL_MS)
     return () => clearTimeout(t)
   }, [localNotice])
-  const scrollRef = useRef<HTMLDivElement>(null)
-  const isNearBottomRef = useRef(true)
+  // Stick-to-bottom follow shared with ChatPane/ChatEmbed (FollowController
+  // semantics): the RO on the content wrapper re-pins on growth ANYWHERE in
+  // the transcript and on collapse shrink, and only a genuine user scroll up
+  // releases it.
+  const follow = useChatScrollFollow({ resetKey: slot })
+  const scrollRef = follow.scrollerRef
 
-  const messages = reduxSide?.messages ?? []
+  const messages = reduxSide?.messages ?? EMPTY_SIDE_MESSAGES
   const isPending = reduxSide?.pending ?? false
-  const queue = reduxSide?.queue ?? []
+  const queue = reduxSide?.queue ?? EMPTY_SIDE_QUEUE
   // Steer-vs-queue mode lives inside ChatInput's own split button, keyed by the
   // same slot as the main composer — the side panel and the main chat of ONE
   // session share the mode while other sessions keep their own.
@@ -453,19 +465,8 @@ export default function SideChat({ slot }: { slot: string }) {
     },
   })
 
-  const handleScroll = useCallback(() => {
-    const el = scrollRef.current
-    if (!el) return
-    isNearBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 40
-  }, [])
-
-  const lastMessageContent = messages[messages.length - 1]?.content
-  useEffect(() => {
-    const el = scrollRef.current
-    if (el && isNearBottomRef.current) {
-      requestAnimationFrame(() => { el.scrollTop = el.scrollHeight })
-    }
-  }, [messages.length, lastMessageContent])
+  // Scroll follow lives in useChatScrollFollow (wired on the scroller below);
+  // no tail-keyed effect — the hook's ResizeObserver sees every height change.
 
   // Select-to-Ask seed: when the user clicks "Ask" in the selection toolbar,
   // ChatPage opens this panel and fires a `side-seed` CustomEvent carrying the
@@ -545,9 +546,13 @@ export default function SideChat({ slot }: { slot: string }) {
   const showBanner = !!reduxSide && messages.length > 0
   const isStale = turnsBehind >= 10 || (reduxSide?.createdAt && Date.now() - new Date(reduxSide.createdAt).getTime() >= 4 * 3600_000)
 
+  // `slot` is read in the body, so it is declared. No stale capture is being fixed
+  // here: `refreshMutation` is already a dep and `useMutation` hands back a fresh
+  // object every render, so this callback is rebuilt every render either way and has
+  // no stability worth protecting. `send` above declares it for the same reason.
   const handleRefresh = useCallback(() => {
     refreshMutation.mutate({ slot })
-  }, [refreshMutation])
+  }, [refreshMutation, slot])
 
   return (
     <div className="flex-1 flex flex-col min-h-0">
@@ -578,7 +583,8 @@ export default function SideChat({ slot }: { slot: string }) {
           </button>
         </div>
       )}
-      <div ref={scrollRef} onScroll={handleScroll} className="flex-1 overflow-y-auto px-3 py-2 space-y-2">
+      <div ref={scrollRef} onScroll={follow.onScroll} className="flex-1 overflow-y-auto px-3 py-2">
+        <div ref={follow.contentRef} className="space-y-2">
         {messages.length === 0 ? (
           <div className="flex flex-col items-center justify-center h-full text-muted gap-2 py-8">
             {/* The icon is decoration and stays faint; the sentence is the only
@@ -600,6 +606,7 @@ export default function SideChat({ slot }: { slot: string }) {
             <span className="text-[12px] streaming-indicator">{i18nT('pages.chat.sideChat.thinking')}</span>
           </div>
         )}
+        </div>
       </div>
       {displayError && (
         <div className="px-3 py-1 text-[12px] text-danger border-t border-border">{displayError}</div>

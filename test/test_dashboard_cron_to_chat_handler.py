@@ -35,21 +35,20 @@ def _make_state(jobs=None, history_messages=None, notifications=None):
             slot.messages = []
             slot.title = ""
 
-            def append(role, content, cls, broadcast=True, meta=None):
-                # Mirror the real ``_ChatSlot.append`` contract: accept ``meta``
-                # (hydration threads each disk row's meta through so a persisted
-                # ``meta.mid`` survives), preserve a supplied id, mint one
-                # otherwise, and hand the appended row back for the dual-write
-                # id pass-through.
+            def append(role, content, cls, broadcast=True, meta=None, mint_mid=True):
+                # Mirror the real ``_ChatSlot.append`` contract: preserve a
+                # supplied durable id and mint only when the caller allows it.
+                # History hydration passes ``mint_mid=False`` so a legacy row
+                # cannot advertise an identity absent from its disk copy.
                 supplied = meta.get("mid") if isinstance(meta, dict) else None
+                stored_meta = dict(meta) if isinstance(meta, dict) else {}
+                if mint_mid and not supplied:
+                    stored_meta["mid"] = f"m-test-{len(slot.messages)}"
                 msg = {
                     "role": role,
                     "content": content,
                     "cls": cls,
-                    "meta": {
-                        **(meta if isinstance(meta, dict) else {}),
-                        "mid": supplied or f"m-test-{len(slot.messages)}",
-                    },
+                    **({"meta": stored_meta} if stored_meta else {}),
                 }
                 slot.messages.append(msg)
                 return msg
@@ -94,7 +93,14 @@ class TestApiCronToChat:
                 data = await resp.json()
                 assert data["ok"] is True
                 assert data["slot"] == "cron-abc123"
-                mock_inject.assert_called_once_with(state, job, "Hello world", history=ANY)
+                # include_prompt=False is the contract, not an incidental
+                # kwarg: /to-chat re-surfaces a STORED result, and the prompt
+                # behind it is not recoverable from job.message, which the user
+                # may have edited since. Pinning it here keeps a later
+                # refactor from silently pairing the two again.
+                mock_inject.assert_called_once_with(
+                    state, job, "Hello world", history=ANY, include_prompt=False
+                )
 
     @pytest.mark.asyncio
     async def test_deleted_job_with_history_creates_slot(self):

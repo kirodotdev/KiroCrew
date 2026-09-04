@@ -180,10 +180,13 @@ describe('AutoNudgePopover number-field editing (idle / max cycles)', () => {
     // Select the call by URL, not by index: opening the popover also READS
     // /api/crons to list this slot's watches, so the save POST is no longer
     // call 0 and an index would pin an unrelated ordering.
-    const calls = (fetch as unknown as { mock: { calls: any[][] } }).mock.calls
+    // The init arg is optional and its `body` is too: the /api/crons read is a
+    // bare `fetch(url)` and a delete carries only `{ method }`, so `c[1]?.body`
+    // below is load-bearing rather than defensive.
+    const calls = (fetch as unknown as { mock: { calls: [string, { body?: string }?][] } }).mock.calls
     const save = calls.find(c => String(c[0]).startsWith('/api/autonudge') && c[1]?.body)
     expect(save, 'no /api/autonudge write was issued').toBeTruthy()
-    const body = JSON.parse(save![1].body)
+    const body = JSON.parse(save![1]!.body!)
     expect(body.idle_secs).toBe(45)
   })
 })

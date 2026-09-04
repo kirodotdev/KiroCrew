@@ -63,7 +63,7 @@ export function useDisplayActivation(
     // query saved position to check if we should be active
     const timer = setTimeout(() => {
       if (!isActiveRef.current) {
-        api?.getWindowPosition?.().then((p: any) => {
+        api?.getWindowPosition?.().then((p) => {
           if (p && p.x >= 0 && p.y >= 0 && !isActiveRef.current) {
             // We have a saved position — likely the active overlay
             // Main process will re-send set-active on next move/heartbeat

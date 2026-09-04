@@ -16,7 +16,8 @@ import { MemoryRouter } from 'react-router-dom'
 import { createTestStore } from './helpers'
 import { jumpLetters } from '../hooks/useKeyboardShortcuts'
 import { ThemeProvider } from '../hooks/useTheme'
-import type { ChatFolder } from '../types'
+import type { ChatFolder, ChatSlot } from '../types'
+import type { RootState } from '../store'
 
 // Render framer-motion elements as plain DOM (jsdom can't run projection).
 vi.mock('framer-motion', async () => {
@@ -27,21 +28,21 @@ vi.mock('framer-motion', async () => {
     'drag', 'dragConstraints', 'dragElastic', 'onAnimationComplete',
   ])
   const make = (tag: string) =>
-    React.forwardRef((props: any, ref: any) => {
-      const clean: any = {}
+    React.forwardRef((props: Record<string, unknown>, ref: React.Ref<unknown>) => {
+      const clean: Record<string, unknown> = {}
       for (const k of Object.keys(props)) {
         if (k === 'children') continue
         if (k === 'layoutId') { clean['data-layout-id'] = props[k]; continue }
         if (FRAMER_PROPS.has(k)) continue
         clean[k] = props[k]
       }
-      return React.createElement(tag, { ...clean, ref }, props.children)
+      return React.createElement(tag, { ...clean, ref }, props.children as React.ReactNode)
     })
   const motion = new Proxy({}, { get: (_t, tag: string) => make(tag) })
   return {
     motion,
-    AnimatePresence: ({ children }: any) => React.createElement(React.Fragment, null, children),
-    LayoutGroup: ({ children }: any) => React.createElement(React.Fragment, null, children),
+    AnimatePresence: ({ children }: { children?: React.ReactNode }) => React.createElement(React.Fragment, null, children),
+    LayoutGroup: ({ children }: { children?: React.ReactNode }) => React.createElement(React.Fragment, null, children),
   }
 })
 
@@ -82,9 +83,9 @@ const SLOTS = [
   { key: 'k-oldest', title: 'Oldest', messages: 1, running: false, modified: 1000 },
   { key: 'k-middle', title: 'Middle', messages: 1, running: false, modified: 2000 },
   { key: 'k-newest', title: 'Newest', messages: 1, running: false, modified: 3000 },
-]
+] as unknown as ChatSlot[]
 
-function renderSidebar(slots: any[] = SLOTS, folders: ChatFolder[] = []) {
+function renderSidebar(slots: ChatSlot[] = SLOTS, folders: ChatFolder[] = []) {
   mocks.folders = folders
   const store = createTestStore({
     dashboard: {
@@ -93,12 +94,12 @@ function renderSidebar(slots: any[] = SLOTS, folders: ChatFolder[] = []) {
       slotsLoaded: true,
       subagentRunning: {}, subagentDetails: {}, subagentText: {},
       sessionDefaultColor: null, sessionColorsMode: 'tint', sessionColorsPalette: 'horizon', sessionColorsIntensity: 'clear',
-    } as any,
-    chat: { activeSlot: null, slotStatusDetail: {}, subagents: {}, slotActivity: {} } as any,
+    } as unknown as RootState['dashboard'],
+    chat: { activeSlot: null, slotStatusDetail: {}, subagents: {}, slotActivity: {} } as unknown as RootState['chat'],
   })
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })
   qc.setQueryData(['chat-folders'], folders)
-  const tree = (s: any[]) => (
+  const tree = (s: ChatSlot[]) => (
     <QueryClientProvider client={qc}>
       <Provider store={store}>
         <ThemeProvider>
@@ -113,7 +114,7 @@ function renderSidebar(slots: any[] = SLOTS, folders: ChatFolder[] = []) {
     </QueryClientProvider>
   )
   const utils = render(tree(slots))
-  return { store, rerenderWith: (s: any[]) => utils.rerender(tree(s)), ...utils }
+  return { store, rerenderWith: (s: ChatSlot[]) => utils.rerender(tree(s)), ...utils }
 }
 
 // Fixtures here carry fixed old timestamps; keep the stale-session collapse
@@ -147,7 +148,7 @@ describe('chat sidebar — published shortcut order', () => {
         { key: 'k-a', title: 'A', messages: 1, running: false, modified: 1000, folder_id: 'f1' },
         { key: 'k-b', title: 'B', messages: 1, running: false, modified: 3000 },
         { key: 'k-c', title: 'C', messages: 1, running: false, modified: 2000, folder_id: 'f1' },
-      ],
+      ] as unknown as ChatSlot[],
       [{ id: 'f1', name: 'Alpha', order: 0 }] as ChatFolder[],
     )
     expect(store.getState().dashboard.sidebarOrder).toEqual(['k-c', 'k-a', 'k-b'])
@@ -162,7 +163,7 @@ describe('chat sidebar — published shortcut order', () => {
         { key: 'k-a', title: 'A', messages: 1, running: false, modified: 1000, folder_id: 'f1' },
         { key: 'k-b', title: 'B', messages: 1, running: false, modified: 3000 },
         { key: 'k-c', title: 'C', messages: 1, running: false, modified: 2000, folder_id: 'f1' },
-      ],
+      ] as unknown as ChatSlot[],
       [{ id: 'f1', name: 'Alpha', order: 0, collapsed: true }] as ChatFolder[],
     )
     expect(store.getState().dashboard.sidebarOrder).toEqual(['k-b'])
@@ -248,7 +249,7 @@ describe('chat sidebar — held-modifier digit badges', () => {
       { key: 'k-oldest', title: 'Oldest', messages: 1, running: false, modified: 4000 },
       { key: 'k-middle', title: 'Middle', messages: 1, running: false, modified: 2000 },
       { key: 'k-newest', title: 'Newest', messages: 1, running: false, modified: 3000 },
-    ])
+    ] as unknown as ChatSlot[])
 
     // Frozen: each digit stays glued to the session the user aimed at (badges
     // travel with their rows), and the store order the jump handler reads is
@@ -275,7 +276,7 @@ describe('chat sidebar — held-modifier digit badges', () => {
     rerenderWith([
       { key: 'k-oldest', title: 'Oldest', messages: 1, running: false, modified: 1000 },
       { key: 'k-newest', title: 'Newest', messages: 1, running: false, modified: 3000 },
-    ])
+    ] as unknown as ChatSlot[])
 
     const byRow = getAllByTestId('digit-jump-badge').map(b => [b.closest('[data-session-row]')?.getAttribute('data-session-row'), b.textContent])
     expect(byRow).toHaveLength(2)

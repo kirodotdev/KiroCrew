@@ -7,11 +7,21 @@ Storage layout:
     ~/.kiro/crew/cron-history/
         {job_id}.jsonl      — full records (including trace) for one job
         _index.jsonl        — lightweight index (no trace) for list queries
+
+History is BEST-EFFORT.  When the directory cannot be created or written the
+store constructs anyway with ``enabled`` False: reads return empty, writes are
+dropped, and nothing raises.  A runtime failure on a store that DID construct
+degrades the same way (``_degrade``) rather than propagating, so the invariant
+holds at the store itself instead of relying on every caller to wrap it.
+Losing run records must never take scheduling down with it — see
+``_prepare_dir`` for how usability is decided, and ``prepare()`` for why a
+loop-bound caller must resolve that off the event loop.
 """
 
 from __future__ import annotations
 
 import asyncio
+import errno
 import json
 import logging
 import os
@@ -29,6 +39,10 @@ _SUMMARY_CAP = 200
 _TRACE_CAP = 50 * 1024  # 50KB
 _MAX_RECORDS_PER_JOB = 100
 _MAX_INDEX_RECORDS = 2000
+
+#: Errnos that mean "this store is refused", not "this attempt failed". Only
+#: these disable history for the process's lifetime — see ``_degrade``.
+_DENIAL_ERRNOS = frozenset({errno.EPERM, errno.EACCES, errno.EROFS})
 
 
 @dataclass
@@ -67,14 +81,134 @@ class CronHistoryStore:
         cron_trace_cap_kb: int = _TRACE_CAP // 1024,
         cron_max_records_per_job: int = _MAX_RECORDS_PER_JOB,
         cron_max_index_records: int = _MAX_INDEX_RECORDS,
+        *,
+        _defer_prepare: bool = False,
     ):
         self._dir = (base_dir or config_dir()) / "cron-history"
-        self._dir.mkdir(parents=True, exist_ok=True)
         self._index_path = self._dir / "_index.jsonl"
         self._summary_cap = cron_summary_cap
         self._trace_cap = cron_trace_cap_kb * 1024
         self._max_records_per_job = cron_max_records_per_job
         self._max_index_records = cron_max_index_records
+        # Directory setup does synchronous filesystem I/O, so a caller on an
+        # event loop MUST defer it and run prepare() in a worker thread — see
+        # prepare() and CronService.create(). Deferred starts DISABLED so a read
+        # racing the prepare degrades rather than touching an unprepared store.
+        self._prepared = False
+        self._enabled = False
+        if not _defer_prepare:
+            self.prepare()
+
+    @property
+    def enabled(self) -> bool:
+        """False when the history directory is unusable, or not yet prepared.
+
+        Every read returns empty and every write is dropped, so a caller never
+        has to branch on it: history degrades, scheduling does not.
+        """
+        return self._enabled
+
+    def prepare(self) -> None:
+        """Resolve whether history is usable. Blocking; idempotent.
+
+        Off the event loop only. ``CronService.create()`` runs this via
+        ``asyncio.to_thread``, mirroring how it defers ``_load()``.
+        """
+        if self._prepared:
+            return
+        self._prepared = True
+        self._enabled = self._prepare_dir()
+
+    def _prepare_dir(self) -> bool:
+        """Ensure the history directory is usable. Never raises.
+
+        Returns True when records can be persisted, False to disable history.
+        """
+        try:
+            self._dir.mkdir(parents=True, exist_ok=True)
+            return True
+        except OSError as exc:
+            # A denial scoped to this one leaf answers EPERM to BOTH os.mkdir
+            # and the os.stat behind Path.is_dir(), and pathlib consults
+            # is_dir() to decide whether exist_ok applies — so mkdir raises
+            # even though the directory is already there. A failed mkdir
+            # therefore does not by itself mean the store is unusable.
+            if self._probe_usable():
+                logger.debug(
+                    "cron history: mkdir refused for existing %s (%s); the "
+                    "store's own syscalls work, continuing",
+                    self._dir,
+                    exc,
+                )
+                return True
+            logger.warning(
+                "cron history disabled: %s is unusable (%s). Scheduling is "
+                "unaffected; run records will not be persisted.",
+                self._dir,
+                exc,
+            )
+            return False
+
+    def _probe_usable(self) -> bool:
+        """True when the syscalls this store's own paths depend on all work.
+
+        Opening the lock file is NOT sufficient evidence that a store whose
+        mkdir was refused is usable. The read and rotate paths go through
+        ``Path.exists()`` (an ``os.stat``) and ``Path.glob()`` (a directory
+        scan), and pathlib RE-RAISES EPERM out of both rather than reporting
+        False — ``_ignore_error`` covers ENOENT/ENOTDIR/EBADF/ELOOP, not
+        EPERM. A probe that only opened the lock file therefore reported a
+        stat-denied directory as usable, and ``rotate_all()`` — awaited
+        unguarded by ``CronService.start()`` — then raised straight back out
+        of service startup, which is the failure this class exists to prevent.
+
+        So require the two capabilities that discriminate: stat the directory
+        and open the lock file. Both are O(1) and fail fast. Enumerating the
+        directory is deliberately NOT part of the probe — its cost grows with
+        the number of jobs, and ``_degrade()`` already turns a directory-scan
+        failure at runtime into disabled history rather than a raise, so
+        proving ``glob()`` works up front buys nothing.
+        """
+        try:
+            os.stat(self._dir)
+            fd = os.open(str(self._lock_path()), os.O_WRONLY | os.O_CREAT, 0o600)
+        except OSError:
+            return False
+        os.close(fd)
+        return True
+
+    def _degrade(self, operation: str, exc: OSError) -> None:
+        """Handle a runtime failure. Never raises.
+
+        Only a DENIAL disables the store. A denial is a standing condition — the
+        sandbox profile that refused us will refuse us for this process's whole
+        life — so continuing to attempt writes just logs the same error per run.
+
+        Every other ``OSError`` is treated as transient and costs ONE record:
+        a full disk, an fd exhaustion, or a transient I/O error clears on its
+        own, and disabling history for the process's remaining lifetime over a
+        momentary ENOSPC would lose every subsequent run's record for no reason
+        — strictly worse than the pre-existing behaviour, where each call site
+        caught its own failure and the next run wrote normally.
+        """
+        if exc.errno in _DENIAL_ERRNOS:
+            if self._enabled:
+                self._enabled = False
+                logger.warning(
+                    "cron history disabled: %s was denied on %s (%s). Scheduling "
+                    "is unaffected; run records will no longer be persisted.",
+                    operation,
+                    self._dir,
+                    exc,
+                )
+            return
+        logger.warning(
+            "cron history: %s failed on %s (%s); dropping this record and "
+            "staying enabled. Scheduling is unaffected.",
+            operation,
+            self._dir,
+            exc,
+        )
 
     def _job_path(self, job_id: str) -> Path:
         path = (self._dir / f"{job_id}.jsonl").resolve()
@@ -102,7 +236,12 @@ class CronHistoryStore:
         if len(record.trace) > self._trace_cap:
             record.trace = record.trace[:self._trace_cap] + "\n...[truncated]"
 
-        await asyncio.to_thread(self._append_sync, record)
+        if not self._enabled:
+            return
+        try:
+            await asyncio.to_thread(self._append_sync, record)
+        except OSError as exc:
+            self._degrade("append", exc)
 
     def _append_sync(self, record: CronRunRecord) -> None:
         fd = self._lock()
@@ -121,7 +260,13 @@ class CronHistoryStore:
         self, job_id: str, offset: int = 0, limit: int = 20
     ) -> tuple[list[dict[str, Any]], int]:
         """Return (records_without_trace, total_count) for a job, newest first."""
-        return await asyncio.to_thread(self._get_job_history_sync, job_id, offset, limit)
+        if not self._enabled:
+            return [], 0
+        try:
+            return await asyncio.to_thread(self._get_job_history_sync, job_id, offset, limit)
+        except OSError as exc:
+            self._degrade("get_job_history", exc)
+            return [], 0
 
     # Reads are lock-free (eventually-consistent): a concurrent append may
     # produce a partial final line, silently skipped by the JSONDecodeError handler.
@@ -152,7 +297,13 @@ class CronHistoryStore:
         self, offset: int = 0, limit: int = 20, job_id: str | None = None
     ) -> tuple[list[dict[str, Any]], int]:
         """Return records from global index, newest first, optionally filtered."""
-        return await asyncio.to_thread(self._get_all_history_sync, offset, limit, job_id)
+        if not self._enabled:
+            return [], 0
+        try:
+            return await asyncio.to_thread(self._get_all_history_sync, offset, limit, job_id)
+        except OSError as exc:
+            self._degrade("get_all_history", exc)
+            return [], 0
 
     # Reads are lock-free (eventually-consistent): a concurrent append may
     # produce a partial final line, silently skipped by the JSONDecodeError handler.
@@ -187,7 +338,13 @@ class CronHistoryStore:
 
     async def get_run_detail(self, job_id: str, run_id: str) -> dict[str, Any] | None:
         """Return full record (with trace) for a specific run."""
-        return await asyncio.to_thread(self._get_run_detail_sync, job_id, run_id)
+        if not self._enabled:
+            return None
+        try:
+            return await asyncio.to_thread(self._get_run_detail_sync, job_id, run_id)
+        except OSError as exc:
+            self._degrade("get_run_detail", exc)
+            return None
 
     def _get_run_detail_sync(self, job_id: str, run_id: str) -> dict[str, Any] | None:
         job_path = self._job_path(job_id)
@@ -208,7 +365,12 @@ class CronHistoryStore:
 
     async def rotate(self, job_id: str) -> None:
         """Trim job file to last _MAX_RECORDS_PER_JOB records."""
-        await asyncio.to_thread(self._rotate_sync, job_id)
+        if not self._enabled:
+            return
+        try:
+            await asyncio.to_thread(self._rotate_sync, job_id)
+        except OSError as exc:
+            self._degrade("rotate", exc)
 
     def _rotate_sync(self, job_id: str) -> None:
         job_path = self._job_path(job_id)
@@ -230,7 +392,12 @@ class CronHistoryStore:
 
     async def rotate_all(self) -> None:
         """Rotate all job files and trim the global index."""
-        await asyncio.to_thread(self._rotate_all_sync)
+        if not self._enabled:
+            return
+        try:
+            await asyncio.to_thread(self._rotate_all_sync)
+        except OSError as exc:
+            self._degrade("rotate_all", exc)
 
     def _rotate_all_sync(self) -> None:
         fd = self._lock()
@@ -260,7 +427,13 @@ class CronHistoryStore:
 
     async def delete_job_history(self, job_id: str) -> bool:
         """Remove all history for a job."""
-        return await asyncio.to_thread(self._delete_job_history_sync, job_id)
+        if not self._enabled:
+            return False
+        try:
+            return await asyncio.to_thread(self._delete_job_history_sync, job_id)
+        except OSError as exc:
+            self._degrade("delete_job_history", exc)
+            return False
 
     def _delete_job_history_sync(self, job_id: str) -> bool:
         fd = self._lock()

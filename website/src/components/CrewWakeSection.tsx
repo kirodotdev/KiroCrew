@@ -11,17 +11,19 @@
  * here; a dashboard nudge loop is keyed by slot, not by crew, so listing it
  * would still be inventing an attribution the backend cannot answer.
  */
-import { useCallback } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
-import { Clock, Pause, Play, Zap, ExternalLink, AlarmClockOff, TriangleAlert } from 'lucide-react'
+import { Clock, Pause, Play, Zap, ExternalLink, AlarmClockOff, TriangleAlert, Plus, X } from 'lucide-react'
 import { api } from '../api/client'
-import { Badge, Btn, IconButton, Skeleton } from './ui'
+import { Badge, Btn, IconButton, SendBtn, Skeleton } from './ui'
 import { timeAgo } from '../utils/timeAgo'
 import { fmtRelative } from '../i18n/format'
 import type { CronJob } from '../types'
 import { useCronActions } from '../hooks/useCronActions'
 import { wakesCrew, crewWakeQueryKey } from './crew/wakesCrew'
+import JobForm from './JobForm'
+import { SaveCreateLabel } from '../utils/cronUtils'
 
 import { i18nT } from '../i18n/t'
 
@@ -100,14 +102,87 @@ function WakeRow({ job, onChanged }: { job: CronJob; onChanged: () => void }) {
   )
 }
 
-export default function CrewWakeSection({ crew, isDefaultCrew }: { crew: string; isDefaultCrew: boolean }) {
+export default function CrewWakeSection({ crew, isDefaultCrew, onDraftChange, onSavingChange, onRequestCancel }: {
+  crew: string
+  isDefaultCrew: boolean
+  /** Reports whether the create form holds unsaved TYPED work, so the host
+   *  editor can fold it into its own unsaved-state accounting (dirty dot,
+   *  Save gating, discard confirms). Keyed on the form's own dirtiness, not
+   *  on mere open-ness: opening the form to look and backing out is not work,
+   *  and a "what you typed will be lost" confirm over nothing typed trains
+   *  users to click through the confirm that guards real drafts. */
+  onDraftChange?: (open: boolean) => void
+  /** Reports whether the draft's create request is IN FLIGHT, so the host can
+   *  lock its own draft-destruction paths (the discard confirm) for the same
+   *  reason this section locks its toggle: a discard that unmounts the form
+   *  does not cancel the request, so the "discarded" schedule would persist. */
+  onSavingChange?: (saving: boolean) => void
+  /** Asks the host to confirm cancelling a DIRTY draft before this section
+   *  collapses it. The toggle is the one destruction path the host cannot
+   *  see — at narrow widths it renders as a bare icon-only X, where a single
+   *  misclick would otherwise erase everything typed with no confirm while
+   *  every sibling path (rail, Escape, chat) asks first. `proceed` performs
+   *  the collapse; the host calls it only when the user confirms. Without a
+   *  host (Schedule-page-less embeds, tests), the toggle collapses directly. */
+  onRequestCancel?: (proceed: () => void) => void
+}) {
   const navigate = useNavigate()
+  const [creating, setCreatingState] = useState(false)
+  const [savingDraft, setSavingDraftState] = useState(false)
+  const submitRef = useRef<(() => void) | null>(null)
+  const addBtnRef = useRef<HTMLButtonElement | null>(null)
+  // Open/close is NOT reported as draft state: the host hears about typed
+  // work through JobForm's onDirtyChange below, so a pristine form never
+  // arms a discard confirm. The flag is teed locally too: the toggle needs
+  // to know whether collapsing would destroy typed work.
+  const setCreating = setCreatingState
+  const draftDirty = useRef(false)
+  const reportDirty = useCallback((d: boolean) => {
+    draftDirty.current = d
+    onDraftChange?.(d)
+  }, [onDraftChange])
+  const setSavingDraft = useCallback((v: boolean) => {
+    setSavingDraftState(v)
+    onSavingChange?.(v)
+  }, [onSavingChange])
+  // Focus follows the surface that appeared: into the form's first field on
+  // expand, back to the toggle on collapse — otherwise a collapse-after-save
+  // unmounts the focused Create button and focus falls to the body.
+  const everOpened = useRef(false)
+  useEffect(() => {
+    if (creating) { everOpened.current = true; document.getElementById('jobform-name')?.focus() }
+    else if (everOpened.current) addBtnRef.current?.focus()
+  }, [creating])
+  // Switching panes unmounts this section and its form state with it — the
+  // draft no longer exists, so the host must not keep accounting for it (a
+  // stale flag would leave the editor's Save disabled with nothing to finish).
+  // The callback rides a ref so this runs on UNMOUNT only: keyed on the
+  // callback's identity, an inline-arrow host would re-run the cleanup every
+  // render and falsely clear a live draft. The saving flag clears for the
+  // same reason: stranded true, it would lock the host's discard paths with
+  // no request left to protect.
+  const draftChangeRef = useRef(onDraftChange)
+  draftChangeRef.current = onDraftChange
+  const savingChangeRef = useRef(onSavingChange)
+  savingChangeRef.current = onSavingChange
+  useEffect(() => () => { draftChangeRef.current?.(false); savingChangeRef.current?.(false) }, [])
   const { data, isLoading, isError, refetch } = useQuery({
     queryKey: crewWakeQueryKey(crew),
     queryFn: () => api.crons(),
   })
   const jobs: CronJob[] = (data?.jobs || []).filter((j: CronJob) => wakesCrew(j, crew, isDefaultCrew))
   const onChanged = useCallback(() => { void refetch() }, [refetch])
+  const onCreated = useCallback(() => {
+    // The saved job should be visible where it was made: close the form and
+    // let the refreshed list carry the evidence that the save happened. The
+    // form unmounts before it can report saving=false (its host on the
+    // Schedule page unmounts WITH it, so it never needs to), so the flag is
+    // cleared here — a stale true would render the next create's button as a
+    // permanently disabled "Saving…".
+    setSavingDraft(false)
+    setCreating(false)
+    void refetch()
+  }, [refetch, setCreating, setSavingDraft])
 
   // A failed fetch leaves `jobs` empty, which would otherwise render the
   // affirmative "nothing wakes this crew" — a false statement about the crew
@@ -135,12 +210,107 @@ export default function CrewWakeSection({ crew, isDefaultCrew }: { crew: string;
     <section className="flex flex-col gap-3" data-testid="crew-wake-section">
       <div className="flex items-center gap-2">
         <h3 className="text-[12px] font-semibold uppercase tracking-wider text-muted">{i18nT('components.crewWakeSection.what_wakes_this_crew')}</h3>
-        <Btn className="ml-auto" onClick={() => navigate('/schedule')}>
-          <ExternalLink className="lucide-inline" aria-hidden="true" />
-          {i18nT('components.crewWakeSection.open_schedule')}
-        </Btn>
+        <div className="ml-auto flex items-center gap-1.5">
+          {/* Below `md` the editor pane runs as narrow as ~216px (320px
+              viewport), where the heading plus two intrinsic-width buttons
+              overflow the pane's `overflow-x-hidden` — so both actions
+              collapse to icon-only there, with the full name riding
+              aria-label and title. The open-form label is the FULL "Cancel
+              new schedule": the dialog footer's own Cancel (close the whole
+              editor) is on screen at the same time, and two controls named
+              identically with different blast radii is the trap. */}
+          <Btn
+            ref={addBtnRef}
+            onClick={() => {
+              // Collapsing a DIRTY draft is destruction: route it through the
+              // host's confirm like every sibling path. A clean form (or a
+              // hostless mount) collapses directly.
+              if (creating && draftDirty.current && onRequestCancel) {
+                onRequestCancel(() => setCreating(false))
+                return
+              }
+              setCreating(!creating)
+            }}
+            data-testid="crew-wake-add"
+            aria-expanded={creating}
+            aria-controls={creating ? 'crew-wake-create' : undefined}
+            // Cancelling while the create request is IN FLIGHT would unmount
+            // the form without cancelling the POST: the "discarded" schedule
+            // then persists server-side. Every destruction path locks on
+            // savingDraft (this toggle here; the host's discard confirm via
+            // onSavingChange).
+            disabled={creating && savingDraft}
+            aria-label={creating
+              ? i18nT('components.crewWakeSection.cancel_new_schedule')
+              : i18nT('components.crewWakeSection.new_schedule')}
+            title={creating && savingDraft
+              ? i18nT('components.jobForm.saving')
+              : creating
+                ? i18nT('components.crewWakeSection.cancel_new_schedule')
+                : i18nT('components.crewWakeSection.new_schedule')}
+          >
+            {creating
+              ? <X className="lucide-inline" aria-hidden="true" />
+              : <Plus className="lucide-inline" aria-hidden="true" />}
+            <span className="hidden md:inline">
+              {creating
+                ? i18nT('components.crewWakeSection.cancel_new_schedule')
+                : i18nT('components.crewWakeSection.new_schedule')}
+            </span>
+          </Btn>
+          {/* One creation path at a time: while the inline form is open the
+              jump to the Schedule page is hidden — it navigates away and would
+              silently discard everything typed. */}
+          {!creating && (
+            <Btn
+              onClick={() => navigate('/schedule')}
+              aria-label={i18nT('components.crewWakeSection.open_schedule')}
+              title={i18nT('components.crewWakeSection.open_schedule')}
+            >
+              <ExternalLink className="lucide-inline" aria-hidden="true" />
+              <span className="hidden md:inline">
+                {i18nT('components.crewWakeSection.open_schedule')}
+              </span>
+            </Btn>
+          )}
+        </div>
       </div>
       <p className="m-0 text-[11.5px] leading-relaxed text-muted">{i18nT('components.crewWakeSection.schedules_that_run_this_crew_without_you_asking')}</p>
+      {creating && (
+        <div
+          id="crew-wake-create"
+          className="rounded-md border border-border bg-bg-accent p-3"
+          data-testid="crew-wake-create"
+        >
+          {/* Create sits in the card header, always visible: the form is taller
+              than the pane, and a submit that only exists below the fold loses
+              to the sticky dialog footer's disabled Save changes as the thing
+              the eye lands on. */}
+          <div className="mb-3 flex items-center justify-between gap-2">
+            <span className="text-[12px] font-medium text-text-strong">
+              {i18nT('components.crewWakeSection.new_schedule')}
+            </span>
+            <SendBtn onClick={() => submitRef.current?.()} disabled={savingDraft} data-testid="crew-wake-create-submit">
+              <SaveCreateLabel isEdit={false} saving={savingDraft} />
+            </SendBtn>
+          </div>
+          {/* The Schedule page's own create form, pinned to this crew: same
+              fields, same validation, same POST — only the crew picker is a
+              fixed value, because filing the job on another crew from inside
+              this crew's editor would be the mistake, not a choice. */}
+          <JobForm
+            layout="vertical"
+            agents={[]}
+            defaultAgent=""
+            lockedAgent={crew}
+            onSaved={onCreated}
+            externalSubmit
+            submitRef={submitRef}
+            onSavingChange={setSavingDraft}
+            onDirtyChange={reportDirty}
+          />
+        </div>
+      )}
       {body}
     </section>
   )

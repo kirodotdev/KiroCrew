@@ -47,7 +47,6 @@ Dependency direction is ``discord -> messaging`` (allowed).
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import logging
 import os
 import re
@@ -79,6 +78,7 @@ from kiro_crew.messaging.renderer import (
     apply_options_cap,
     chunk_text,
     new_approval_nonce,
+    session_provenance_tag,
     split_options_trailer,
 )
 from kiro_crew.messaging.split import split_markdown_safe
@@ -268,25 +268,6 @@ def _neutralize_md(raw: str) -> str:
     perturb surrounding formatting."""
     t = " ".join((raw or "").split())[:120]
     return re.sub(r"[*_`\[\]()]", "", t)
-
-
-def session_provenance_tag(session_key: str) -> str:
-    """A short, stable, non-reversible tag naming the session that posted a message.
-
-    Stamped into option-button ``custom_id``s so a press can be checked against the
-    conversation's CURRENT target session: Discord replays old components
-    indefinitely, and a button minted by one session must not inject its choice
-    into whatever session the conversation was later rebound to. A hash rather
-    than the raw key because a custom_id is client-visible in guild threads and
-    internal session keys are not the channel's to see; unsalted and truncated
-    because this is an equality gate on state the caller already controls, not an
-    authentication token — forging the tag of a session buys exactly what typing a
-    message into the conversation already does. Stateless by design: it survives a
-    gateway restart, which a server-side registry of live buttons would not.
-    """
-    if not session_key:
-        return ""
-    return hashlib.sha256(session_key.encode("utf-8")).hexdigest()[:12]
 
 
 def build_option_components(options: list[str], origin_tag: str = "") -> list[dict] | None:

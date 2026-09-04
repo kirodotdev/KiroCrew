@@ -19,6 +19,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
+from kiro_crew import extras
 from kiro_crew.messaging.driver import APPROVAL_AUTO, APPROVAL_INTERACTIVE
 from kiro_crew.teams.client import HAS_JWT, TeamsClient
 from kiro_crew.teams.transport import TeamsTransport
@@ -58,11 +59,12 @@ async def maybe_start_teams(orch: "GatewayOrchestrator") -> "TeamsClient | None"
         return None
 
     if not HAS_JWT:
-        msg = "PyJWT not installed (pip install 'kirocrew[teams]')"
+        hint = extras.install_hint("teams")
+        msg = f"PyJWT not installed ({hint})"
         logger.error(
             "Teams channel is enabled but PyJWT is missing; inbound JWT "
-            "validation is impossible. Install the extra: pip install "
-            "'kirocrew[teams]'. Skipping Teams."
+            "validation is impossible. Install it with: %s. Skipping Teams.",
+            hint,
         )
         if orch.dashboard_state is not None:
             orch.dashboard_state.teams_connect_error = msg

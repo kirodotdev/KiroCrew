@@ -38,6 +38,7 @@ import os
 import re
 import secrets
 from typing import Any, Optional
+from urllib.parse import quote
 
 from kiro_crew.deploy import engine
 from kiro_crew.deploy.engine import AWSError, _checked, _harden_bucket
@@ -405,6 +406,69 @@ def list_library_folders(profile: str, region: str, bucket: str, *, account: str
     ]
 
 
+def list_object_keys(profile: str, region: str, bucket: str, *, account: str) -> set[str]:
+    """Every object key in the drive — RAW, unredacted, complete or raised.
+
+    The share ledger's rows name objects, and only the bucket can say whether
+    one is still there. This is the read that answers it for a whole render at
+    once: one listing, membership-tested per row.
+
+    Deliberately NOT :func:`object_exists` per row, which is the obvious shape
+    and the wrong one here. That function answers ``rc == 0``, so a throttle, a
+    timeout, an expired session and a 404 are one answer. Collapsing them is
+    correct where it lives — a mint refuses rather than signing a URL for an
+    object it could not see — and is the opposite of correct on this path,
+    where "could not see" would report a live share as broken. One listing that
+    fails LOUDLY replaces up to ``shares._MAX_SHARES`` probes that cannot.
+
+    The same two rules :func:`list_library_folders` states hold here, for the
+    same reason — the caller reasons about ABSENCE, and absence from a partial
+    listing is not absence:
+
+    * No ``--max-items`` and no page token. The CLI auto-paginates and applies
+      ``--query`` to the MERGED result, so the answer is the COMPLETE key set
+      or an error, never a first page a caller could mistake for the drive.
+    * An unreadable response RAISES instead of degrading to an empty set,
+      unlike :func:`usage`. Empty means "the drive holds nothing", and a caller
+      acting on that would mark every share it holds as pointing at nothing.
+
+    Also deliberately NOT redacted, for the reason :func:`list_library_folders`
+    gives: these keys are compared against LEDGER keys, and a redacted key
+    matches none of them — so a share whose object is present would read as
+    absent. Nothing here reaches the dashboard; only the membership answer does.
+
+    The whole bucket rather than one section per call: a share row can name any
+    shareable section, and one listing has one failure mode where several would
+    have one each. Listing the whole bucket at drive scale is the cost
+    :func:`usage` already accepts.
+    """
+    out = _checked(
+        [
+            "s3api",
+            "list-objects-v2",
+            "--bucket",
+            bucket,
+            "--expected-bucket-owner",
+            account,
+            "--output",
+            "json",
+            "--query",
+            "Contents[].Key",
+        ],
+        profile,
+        action="s3:ListBucket",
+        timeout=120,
+    )
+    try:
+        rows = json.loads(out or "[]") or []
+    except json.JSONDecodeError:
+        raise AWSError(
+            "the object listing returned a response that could not be read as JSON; "
+            "refusing to report the drive as empty"
+        ) from None
+    return {row for row in rows if isinstance(row, str)}
+
+
 #: Ceiling for a single owner-pinned transfer. ``put-object`` is one request and
 #: S3 rejects a body over 5 GiB; ``s3 cp`` would have split it into a multipart
 #: upload, but no ``aws s3`` command accepts ``--expected-bucket-owner``, so a
@@ -494,6 +558,53 @@ def get_file(
         ],
         profile,
         action="s3:GetObject",
+        timeout=timeout,
+    )
+
+
+def copy_object(
+    profile: str,
+    region: str,
+    bucket: str,
+    section: str,
+    from_key: str,
+    to_key: str,
+    *,
+    account: str,
+    timeout: int = 600,
+) -> None:
+    """Server-side copy of ``section/from_key`` to ``section/to_key``.
+
+    ``s3api copy-object`` rather than ``s3 cp`` for the same reason as
+    :func:`put_file`: the high-level ``aws s3`` commands cannot carry the
+    bucket-owner pin. Both ends are pinned — ``--expected-bucket-owner`` for
+    the destination write and ``--expected-source-bucket-owner`` for the read
+    — so a renamed bucket in a stranger's account can serve neither side.
+
+    The copy source travels inside an HTTP header, so its key is URL-encoded
+    here (``/`` kept as the separator); the destination ``--key`` is a plain
+    request parameter and stays raw. Bytes never transit this host: S3 copies
+    within the bucket, which is what makes copy-then-delete a safe move — the
+    caller deletes the source only after this call returned without raising.
+    """
+    source = quote(f"{bucket}/{section_key(section, from_key)}", safe="/")
+    _checked(
+        [
+            "s3api",
+            "copy-object",
+            "--bucket",
+            bucket,
+            "--key",
+            section_key(section, to_key),
+            "--copy-source",
+            source,
+            "--expected-bucket-owner",
+            account,
+            "--expected-source-bucket-owner",
+            account,
+        ],
+        profile,
+        action="s3:PutObject",
         timeout=timeout,
     )
 
@@ -797,8 +908,15 @@ def object_exists(
     Presigning is LOCAL signing — S3 is never consulted — so without this
     check a typo'd key would mint a working-looking URL that 404s for the
     recipient AND leave a phantom entry in the share ledger.
+
+    Only a HEAD that S3 itself answered 404/NotFound reads as "absent".
+    Any other failure — a timeout, a throttle, a credential lapse, an
+    owner-pin 403 — RAISES instead of returning ``False``: the move handler
+    treats ``False`` on the destination as permission to copy over that key,
+    so folding a transient error into "absent" would turn one failed HEAD
+    into an overwrite plus a source delete.
     """
-    rc, _out, _err = engine.run_aws(
+    rc, _out, err = engine.run_aws(
         [
             "s3api",
             "head-object",
@@ -812,7 +930,17 @@ def object_exists(
         profile,
         timeout=30,
     )
-    return rc == 0
+    if rc == 0:
+        return True
+    # head-object reports a missing key as "(404)... Not Found" on stderr
+    # (HEAD carries no body, so there is no NoSuchKey code to parse).
+    text = err or ""
+    if "(404)" in text or "Not Found" in text:
+        return False
+    raise AWSError(
+        "head-object failed — cannot tell whether the key exists. "
+        f"({engine._trimmed_stderr(err)})"
+    )
 
 
 def presign(

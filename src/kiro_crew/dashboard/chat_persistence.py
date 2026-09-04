@@ -965,6 +965,12 @@ def _rehydrate_slot_from_history(
             slot.project = meta["project"]
         if meta.get("mode") and _member_identity is None:
             slot.mode = meta["mode"]
+        if meta.get("created_by"):
+            # Creator attribution restored so the member ownership boundary in
+            # session-control authorization survives a restart: without it every
+            # worker a member dispatched would come back unowned and the
+            # fail-closed `not_creator` check would strand them.
+            slot._created_by = str(meta["created_by"])
         if meta.get("folder_id"):
             slot.folder_id = meta["folder_id"]
         if meta.get("channel_folder_filed"):
@@ -1138,6 +1144,7 @@ def _rehydrate_slot_from_history(
                 # (chat_utils._prepare_messages), which is the only path that returns
                 # meta to a client.
                 meta=(m["meta"] if isinstance(m.get("meta"), dict) else None),
+                mint_mid=False,
             )
             # Provenance is not a slot.append() argument, so carry it onto the
             # message the append just created. Without this the window loses where
@@ -1444,6 +1451,12 @@ def _apply_recent_session(
         slot.project = meta["project"]
     if meta.get("mode") and _member_identity is None:
         slot.mode = meta["mode"]
+    if meta.get("created_by"):
+        # Same rehydration as _rehydrate_slot_from_history: without it a
+        # member-created worker restored through the recent-session path
+        # loses its creator binding and authorize_target refuses the
+        # legitimate member with not_creator.
+        slot._created_by = str(meta["created_by"])
     if meta.get("folder_id"):
         slot.folder_id = meta["folder_id"]
     if meta.get("channel_folder_filed"):
@@ -1541,6 +1554,7 @@ def _apply_recent_session(
             ts=m.get("ts", ""),
             broadcast=False,
             meta=(m["meta"] if isinstance(m.get("meta"), dict) else None),
+            mint_mid=False,
         )
         # See the equivalent call in _rehydrate_slot_from_history.
         carry_provenance(slot.messages[-1], m)
@@ -2690,6 +2704,11 @@ def _save_slot_to_history(
                     fields["app"] = slot._app
                 if slot._origin:
                     fields["origin"] = slot._origin
+                if getattr(slot, "_created_by", ""):
+                    # Creator attribution: the member ownership boundary in
+                    # session-control authorization reads it, so dropping it here
+                    # would orphan a member's workers on the next restart.
+                    fields["created_by"] = slot._created_by
                 if slot.linked_session_key:
                     fields["linked_session_key"] = slot.linked_session_key
                 if getattr(slot, "channel_origin", False):
@@ -2981,6 +3000,10 @@ def _save_slot_to_history(
             # slot would lose the CRON tag that keeps it out of ``slots:user``.
             if slot._origin:
                 meta_line["origin"] = slot._origin
+            if getattr(slot, "_created_by", ""):
+                # Creator attribution — read by the member ownership boundary in
+                # session-control authorization; see the partial-save mirror above.
+                meta_line["created_by"] = slot._created_by
             # Artifact companion binding — persisted so a bound
             # session restored after a gateway restart (or resumed from the
             # History page) comes back as the artifact's active bound session.
@@ -3195,73 +3218,11 @@ def _save_slot_to_history(
             # from ``existing_meta`` when present), so the delete-won guard can
             # recognize a file recreated by another writer after a permanent
             # delete on the NEXT save.
-            #
-            # Read before the rotation below, but valid after it either way:
-            # rotation rewrites the meta line to stamp ``rotated_at`` and
-            # preserves every other field, so ``created_at`` — the only field
-            # this identity depends on — survives a rotation unchanged.
             slot._disk_meta_created_at = str(meta_line.get("created_at") or "")
             # A committed save is a direct observation of the file this slot
             # writes — even when the carried-forward metadata is legacy and
             # has no ``created_at`` for the identity string above.
             slot._disk_meta_observed = True
-            # Enforce the session byte cap on THIS path too, against the FROZEN
-            # PREFIX. ``_maybe_rotate`` used to have exactly one caller
-            # (``ConversationLog.append``), so a transcript written only through
-            # this whole-file save was never size-checked while the documented cap
-            # said otherwise. The prefix is also the part that actually grows
-            # without bound: the live window is capped at ``_MAX_SLOT_MESSAGES``,
-            # so every byte a long session accumulates beyond that lands in the
-            # prefix, and the prefix is what this save re-emits verbatim forever.
-            #
-            # ``max_drop`` is the whole reason this call is safe. This save writes
-            # ``meta + frozen_prefix + serialize(window)``, so a line rotation
-            # drops from the WINDOW region is one the slot still holds in
-            # ``slot.messages`` — the next save re-emits it, rotation drops it
-            # again, and the two churn forever. Measured on the unbounded call at
-            # 30 x 100 KB with no frozen prefix: rotation dropped 10 window rows,
-            # and each of the next 5 ordinary saves resurrected and re-dropped the
-            # same 10 (5 rotations, 50 re-archived lines). Capping the drop at the
-            # prefix leaves the window's head as the file's first message line,
-            # which is the only state the frozen-prefix + window model can
-            # express; there is no representable state with a hole at the front of
-            # the window.
-            #
-            # Deliberately NOT closed by trimming ``slot.messages`` instead: this
-            # runs in the flush executor thread (see the snapshot rationale at the
-            # top of this function), where every other window mutation in the
-            # dashboard is loop-only, and it would delete messages out from under
-            # an open tab. The cost of the cap is that a session whose entire
-            # transcript is still its live window stays oversized until the memory
-            # trim gives it a prefix, or until an ``append`` writer rotates it
-            # uncapped. Oversized is recoverable; churn and lost rows are not.
-            #
-            # The ceiling is counted off the prefix bytes actually written, not
-            # ``disk_older``: on a short/truncated file the prefix carries fewer
-            # lines than the counter claims, and ``count("\n")`` is the count that
-            # matches how rotation will re-split the file.
-            #
-            # Called INSIDE ``_locked`` and after the mtime restore, so rotation
-            # cannot race another writer and cannot resurrect an mtime the close
-            # path deliberately rewound.
-            dropped = state.conversation_log._maybe_rotate(
-                path, history_key, max_drop=frozen_prefix.count("\n")
-            )
-            if dropped:
-                # Rotation removed leading messages, which moves the frozen-prefix
-                # boundary this slot is holding. Reconcile it: without this, every
-                # later save rebuilds its payload from ``body[:disk_older]`` — a
-                # floor that no longer exists — RESURRECTING the dropped messages,
-                # which rotation then drops again.
-                #
-                # A plain subtraction, because ``max_drop`` above guarantees
-                # ``dropped`` came entirely from the prefix. ``_disk_window_len``
-                # is deliberately left alone: it is a PREFIX length over the
-                # window ("``messages[:n]`` are on disk"), so there is no value it
-                # could take to describe a window whose head is missing from disk —
-                # which is exactly why rotation is not allowed to create that
-                # state.
-                slot._disk_older_count = max(0, slot._disk_older_count - dropped)
             # Record the post-write mtime in the frozen-prefix cache (even when
             # there is no frozen prefix, ``disk_older == 0``). The cache doubles
             # as the "did another process touch this file since we last wrote
@@ -3274,28 +3235,17 @@ def _save_slot_to_history(
             # the on-disk window region (after the frozen prefix), and because
             # ``disk_older`` is unchanged a bare frozen+window rebuild on the next
             # save would otherwise silently delete them.
-            #
-            # After a rotation the cached tuple would be stale on the two fields
-            # that matter: ``disk_older`` and ``frozen_prefix`` describe the
-            # pre-rotation file. Caching it is worse than caching nothing,
-            # because the next save trusts the cache instead of re-reading and so
-            # re-emits the dropped rows. Drop the cache and let that save pay one
-            # O(file) re-read against the reconciled counts above; rotation is
-            # rare, so this costs nothing on the steady path.
-            if dropped:
+            try:
+                _st = path.stat()
+                slot._frozen_prefix_cache = (
+                    _st.st_mtime,
+                    _st.st_size,
+                    disk_older,
+                    frozen_prefix,
+                    foreign_lines,
+                )
+            except OSError:
                 slot._frozen_prefix_cache = None
-            else:
-                try:
-                    _st = path.stat()
-                    slot._frozen_prefix_cache = (
-                        _st.st_mtime,
-                        _st.st_size,
-                        disk_older,
-                        frozen_prefix,
-                        foreign_lines,
-                    )
-                except OSError:
-                    slot._frozen_prefix_cache = None
             state.conversation_log._invalidate_cache(history_key)
             state.conversation_log.note_tab_id(history_key, tab_id)
             return True
@@ -3478,6 +3428,21 @@ async def save_slot_off_loop(
             expected_history_key=expected_history_key,
         )
 
+    def _begin_guarded_metadata_write() -> None:
+        inflight = getattr(slot, "_metadata_persist_inflight", 0)
+        # Production slots initialize this counter, while compatibility callers
+        # may provide a mock that synthesizes missing attributes. Treat a
+        # non-integer value as an absent counter rather than leaking it into the
+        # write's cleanup path.
+        slot._metadata_persist_inflight = inflight + 1 if type(inflight) is int else 1
+
+    def _finish_guarded_metadata_write() -> None:
+        inflight = getattr(slot, "_metadata_persist_inflight", 0)
+        slot._metadata_persist_inflight = (
+            inflight - 1 if type(inflight) is int and inflight > 0 else 0
+        )
+
+    guarded_metadata = expected_history_key is not None
     try:
         loop = asyncio.get_running_loop()
     except RuntimeError:
@@ -3500,6 +3465,8 @@ async def save_slot_off_loop(
                 return True
         return _do()
     if best_effort:
+        if guarded_metadata:
+            _begin_guarded_metadata_write()
         try:
             return await loop.run_in_executor(None, _do)
         except Exception:  # noqa: BLE001 - best-effort durable copy
@@ -3510,9 +3477,18 @@ async def save_slot_off_loop(
                 "save_slot_off_loop: offloaded save failed slot=%s", slot.key, exc_info=True
             )
             return True
+        finally:
+            if guarded_metadata:
+                _finish_guarded_metadata_write()
     # Non-best-effort: propagate so the caller can roll back (do NOT remove the
     # session until the durable write is confirmed).
-    return await loop.run_in_executor(None, _do)
+    if guarded_metadata:
+        _begin_guarded_metadata_write()
+    try:
+        return await loop.run_in_executor(None, _do)
+    finally:
+        if guarded_metadata:
+            _finish_guarded_metadata_write()
 
 
 def _build_history_prefix(slot: _ChatSlot) -> str:

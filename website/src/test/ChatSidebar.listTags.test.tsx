@@ -20,21 +20,21 @@ vi.mock('framer-motion', async () => {
     'drag', 'dragConstraints', 'dragElastic', 'onAnimationComplete',
   ])
   const make = (tag: string) =>
-    React.forwardRef((props: any, ref: any) => {
-      const clean: any = {}
+    React.forwardRef((props: Record<string, unknown>, ref: React.Ref<unknown>) => {
+      const clean: Record<string, unknown> = {}
       for (const k of Object.keys(props)) {
         if (k === 'children') continue
         if (k === 'layoutId') { clean['data-layout-id'] = props[k]; continue }
         if (FRAMER_PROPS.has(k)) continue
         clean[k] = props[k]
       }
-      return React.createElement(tag, { ...clean, ref }, props.children)
+      return React.createElement(tag, { ...clean, ref }, props.children as React.ReactNode)
     })
   const motion = new Proxy({}, { get: (_t, tag: string) => make(tag) })
   return {
     motion,
-    AnimatePresence: ({ children }: any) => React.createElement(React.Fragment, null, children),
-    LayoutGroup: ({ children }: any) => React.createElement(React.Fragment, null, children),
+    AnimatePresence: ({ children }: { children?: React.ReactNode }) => React.createElement(React.Fragment, null, children),
+    LayoutGroup: ({ children }: { children?: React.ReactNode }) => React.createElement(React.Fragment, null, children),
   }
 })
 
@@ -65,8 +65,10 @@ Object.defineProperty(window, 'matchMedia', {
 })
 
 import ChatSidebar from '../pages/ChatSidebar'
+import type { RootState } from '../store'
+import type { ChatSlot } from '../types'
 
-function renderSidebar(slots: any[]) {
+function renderSidebar(slots: ChatSlot[]) {
   const store = createTestStore({
     dashboard: {
       status: {}, connected: true, slots, approvalMode: 'normal',
@@ -74,8 +76,8 @@ function renderSidebar(slots: any[]) {
       slotsLoaded: true,
       subagentRunning: {}, subagentDetails: {}, subagentText: {},
       sessionDefaultColor: null, sessionColorsMode: 'tint', sessionColorsPalette: 'horizon', sessionColorsIntensity: 'clear',
-    } as any,
-    chat: { activeSlot: null, slotStatusDetail: {} } as any,
+    } as unknown as RootState['dashboard'],
+    chat: { activeSlot: null, slotStatusDetail: {} } as unknown as RootState['chat'],
   })
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })
   qc.setQueryData(['chat-folders'], [])
@@ -102,7 +104,7 @@ describe('chat sidebar — list-view tag rendering', () => {
   it('renders every tag in the meta line in the flat list view, regardless of the board flag', async () => {
     // tagColumnsEnabled is forced OFF (mock above). Tags still surface — now as
     // tinted `· name` text in the row's meta line, not as bordered chips.
-    const { findByTestId, getByTestId } = renderSidebar([{ key: 'k1', title: 'tagged', running: false, messages: 2, tags: ['t1', 't2'] }])
+    const { findByTestId, getByTestId } = renderSidebar([{ key: 'k1', title: 'tagged', running: false, messages: 2, tags: ['t1', 't2'] }] as unknown as ChatSlot[])
     const alpha = await findByTestId('slot-tag-t1')
     expect(alpha).toHaveTextContent('Alpha')
     expect(getByTestId('slot-tag-t2')).toHaveTextContent('Beta')
@@ -111,7 +113,7 @@ describe('chat sidebar — list-view tag rendering', () => {
   })
 
   it('renders no tag node for a slot without tags', () => {
-    const { queryByTestId } = renderSidebar([{ key: 'k2', title: 'untagged', running: false, messages: 1 }])
+    const { queryByTestId } = renderSidebar([{ key: 'k2', title: 'untagged', running: false, messages: 1 }] as unknown as ChatSlot[])
     expect(queryByTestId('slot-tag-t1')).toBeNull()
   })
 })

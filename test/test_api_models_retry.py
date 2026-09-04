@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -430,3 +431,45 @@ def test_sandbox_refusal_is_reported_with_a_machine_readable_code(tmp_path, capl
     }
     # The remedy reaches the operator rather than a bare traceback.
     assert any("not Linux" in r.getMessage() for r in caplog.records), caplog.text
+
+
+def test_ssh_auth_sock_resolver_runs_off_the_event_loop(tmp_path):
+    """``_resolve_ssh_auth_sock`` globs ``/tmp/ssh-*/agent.*`` and ``os.stat``s
+    every hit, so its latency scales with the ``/tmp`` entry count. The frontend
+    polls this endpoint every 8s while the model list is degraded, so an on-loop
+    call stalls chat, cron and the liveness heartbeat on exactly the host where
+    the probe is slowest. Its sibling wrapper's docstring states the rule: never
+    on the event loop. Same shape as
+    ``test_acp_spawn_offload.py``'s resolver assertions.
+    """
+    payload = json.dumps({"models": [{"model_name": "claude-opus-4.8"}]}).encode()
+    seen: list[threading.Thread] = []
+
+    def _probe(env):
+        seen.append(threading.current_thread())
+        return None
+
+    async def _drive():
+        loop_thread = threading.current_thread()
+        resp = await agents.api_models(_kiro_request(tmp_path))
+        return loop_thread, resp
+
+    with patch.object(agents.KiroCrewConfig, "load", return_value=_kiro_cfg()), patch(
+        "kiro_crew.acp.client._resolve_kiro_bin_for_spawn", return_value="/usr/bin/kiro-cli"
+    ), patch("kiro_crew.acp.client._resolve_ssh_auth_sock", _probe), patch(
+        "kiro_crew.env.augmented_path", lambda p: p
+    ), patch(
+        "kiro_crew.dashboard.handlers.agents.wrap_argv", _stub_wrap_argv
+    ), patch(
+        "kiro_crew.dashboard.handlers.agents.cgroup_scope_argv", lambda argv: argv
+    ), patch(
+        "kiro_crew.sandbox.resource_limit_preexec", lambda: None
+    ), patch.object(
+        agents.asyncio, "create_subprocess_exec", return_value=_FakeProc(payload)
+    ):
+        loop_thread, resp = _run(_drive())
+
+    assert resp.status == 200
+    assert seen, "_resolve_ssh_auth_sock was never called by api_models"
+    for thread in seen:
+        assert thread is not loop_thread, "ssh resolver ran on the event loop thread"

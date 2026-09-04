@@ -74,7 +74,7 @@ allow-dependencies-licenses:
  
 
 # License gate only — vulnerability scanning is covered separately by the
-# Dependency Audit / Semgrep / CodeQL jobs, so we don't duplicate it here.
+# nightly/release Dependency Audit and the Semgrep / CodeQL jobs, so we don't duplicate it here.
 license-check: true
 vulnerability-check: false
 

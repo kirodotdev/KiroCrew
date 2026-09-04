@@ -439,11 +439,7 @@ describe('pickBubblePlacementWithinBounds', () => {
           }
 
           // Use a deterministic random that returns the fixed value
-          let callCount = 0
-          const fixedRandom = () => {
-            callCount++
-            return randomVal
-          }
+          const fixedRandom = () => randomVal
 
           const result = pickBubblePlacementWithinBounds(anchor, bw, bh, boundsRect, {
             random: fixedRandom,

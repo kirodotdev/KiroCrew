@@ -125,7 +125,10 @@ const TW_ERROR_INLINE_HANDLER =
  * growth eagerly, and defers/cancels shrinks. The net effect is that a
  * continuously animating widget (lava lamp, starry night) reports its height
  * once and then stops posting, instead of feeding a per-frame resize loop back
- * to the parent. */
+ * to the parent. The one deliberate exception is the window `load` re-report
+ * below: quietness must never extend across a load event the parent can
+ * observe, because parent surfaces treat post-load silence as the frame no
+ * longer showing this document. */
 const HEIGHT_REPORTER_BODY = `(function(){
   var EPS = ${HEIGHT_REPORT_EPSILON_PX};
   var SHRINK_MS = ${HEIGHT_REPORT_SHRINK_MS};
@@ -190,7 +193,21 @@ const HEIGHT_REPORTER_BODY = `(function(){
     rafId = raf(evaluate);
   }
   new ResizeObserver(schedule).observe(document.body);
-  window.addEventListener('load', function(){ setTimeout(schedule, 100); });
+  window.addEventListener('load', function(){
+    // Re-report UNCONDITIONALLY after load, bypassing the deadband. The parent
+    // surface re-arms its silence window on EVERY iframe load event (an engine
+    // renavigation onto a spent single-use url fires load with no reporter
+    // behind it, and silence within the grace window is its only signal -- see
+    // DOC_REPORT_GRACE_MS in ArtifactBody). A first measurement that raced
+    // ahead of the load event -- layout settles before images and fonts finish
+    // -- would otherwise be the LAST post this document ever makes: the parent
+    // discards it at load, the deadband swallows this re-check because the
+    // height is unchanged, and three seconds later a healthy, rendering
+    // document is flagged as no longer showing. Resetting lastSent routes the
+    // scheduled measurement through the first-measurement path, so every load
+    // the parent can observe is followed by a report.
+    setTimeout(function(){ lastSent = -1; schedule(); }, 100);
+  });
   schedule();
   document.addEventListener('click', function(e){
  // NOTE: this isTrusted check runs INSIDE the sandboxed iframe

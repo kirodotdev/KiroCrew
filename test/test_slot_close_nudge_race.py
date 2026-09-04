@@ -35,6 +35,7 @@ from kiro_crew import autonudge
 from kiro_crew.apps.builtins.issue_radar.backend import crew_runtime
 from kiro_crew.autonudge import AutoNudgeService, NudgeAdmissionRefused
 from kiro_crew.dashboard import chat_handlers as handlers
+from kiro_crew.monitoring.models import MonitorBudgets, MonitorOutcome
 
 NAME = "chat-1-1785"
 
@@ -207,6 +208,60 @@ async def test_failed_persist_gives_the_session_its_clock_back(tmp_path, monkeyp
     # Remaining budget, never a fresh one: 3 cycles and 600s are already spent.
     assert replacement.max_cycles == 21
     assert 2900 < replacement.max_runtime_secs <= 3000
+    svc.stop()
+
+
+@pytest.mark.asyncio
+async def test_structured_rollback_rechecks_the_restored_slot_generation(
+    tmp_path, monkeypatch
+) -> None:
+    """A superseded close cannot reactivate a monitor for a removed slot."""
+    svc = await _service(tmp_path, monkeypatch)
+    loop = await svc.add_monitor(
+        slot_key=NAME,
+        kind="github_pull_request",
+        target="https://github.com/acme/widgets/pull/7",
+        objective="review_ready",
+        cadence_secs=60,
+        budgets=MonitorBudgets(),
+        now=100.0,
+    )
+    await svc.retire_monitor_for_session_close(loop.id, now=120.0)
+
+    await handlers._restore_slot_nudge_loop(loop, lambda: False)
+
+    assert loop.active is False
+    assert loop.monitor is not None
+    assert loop.monitor.outcome is MonitorOutcome.SESSION_CLOSE
+    svc.stop()
+
+
+@pytest.mark.asyncio
+async def test_active_structured_rollback_does_not_enter_legacy_restore(
+    tmp_path, monkeypatch
+) -> None:
+    """A failed retirement write already restores the active typed record."""
+    svc = await _service(tmp_path, monkeypatch)
+    loop = await svc.add_monitor(
+        slot_key=NAME,
+        kind="github_pull_request",
+        target="https://github.com/acme/widgets/pull/7",
+        objective="review_ready",
+        cadence_secs=60,
+        budgets=MonitorBudgets(),
+        now=100.0,
+    )
+    legacy_add = AsyncMock()
+    structured_restore = AsyncMock()
+    monkeypatch.setattr(svc, "add", legacy_add)
+    monkeypatch.setattr(svc, "restore_monitor_after_failed_session_close", structured_restore)
+
+    await handlers._restore_slot_nudge_loop(loop, lambda: True)
+
+    legacy_add.assert_not_awaited()
+    structured_restore.assert_not_awaited()
+    assert svc.get_by_slot(NAME) is loop
+    assert loop.monitor is not None
     svc.stop()
 
 

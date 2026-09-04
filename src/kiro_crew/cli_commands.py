@@ -222,8 +222,16 @@ def _spawn(args: argparse.Namespace) -> None:
             print("No subagents.")
             return
         for a in agents:
-            status = "✅" if a.get("done") else "⏳"
-            print(f"  {status} {a['id']}  {a.get('task', '')[:60]}")
+            if a.get("done"):
+                status, note = "✅", ""
+            elif a.get("awaiting_approval"):
+                # A run parked on its spawn-approval prompt used to render the
+                # same bare hourglass as one that is executing, so `spawn list`
+                # could not answer "is this working or waiting for me?" (#6484).
+                status, note = "🔐", "  — waiting for spawn approval"
+            else:
+                status, note = "⏳", ""
+            print(f"  {status} {a['id']}  {a.get('task', '')[:60]}{note}")
         return
 
     if action == "run":
@@ -269,6 +277,7 @@ def _spawn_run(args: argparse.Namespace, base: str) -> None:
     print(f"Spawned subagent {agent_id}, waiting for result...", file=sys.stderr)
     poll_url = f"{base}/api/spawn/{agent_id}"
     secret = _internal_secret(args.port)
+    told_awaiting = False
     while True:
         _time.sleep(2)
         poll_req = urllib.request.Request(poll_url, headers={"X-Internal-Secret": secret})
@@ -278,6 +287,18 @@ def _spawn_run(args: argparse.Namespace, base: str) -> None:
         except Exception:
             print("Error: lost connection to gateway", file=sys.stderr)
             sys.exit(1)
+        # Say WHY the wait is not progressing. A spawn with no parent session
+        # raises its approval prompt unowned, so it appears only on the global
+        # approvals surface -- not in any chat tab -- and this loop would
+        # otherwise sit on "waiting for result..." indefinitely with nothing to
+        # act on (#6484). Announced once, not every 2s poll.
+        if status.get("awaiting_approval") and not told_awaiting:
+            told_awaiting = True
+            print(
+                "Waiting for spawn approval: approve it in the dashboard "
+                "(Approvals) to start this run.",
+                file=sys.stderr,
+            )
         if status.get("done"):
             if status.get("error"):
                 print(f"Error: {status['error']}", file=sys.stderr)
@@ -593,6 +614,49 @@ def _register_app_crons_to_scheduler(app_name: str) -> list[str]:
     return registered
 
 
+def _warn_hooks_need_restart(app_name: str) -> bool:
+    """Say plainly that a running gateway will not pick up this app's backend hooks.
+
+    Everything else a CLI enable writes is re-read by a running gateway:
+    ``enable_app`` writes ``installed.json``, ``register_app`` writes agent and
+    skill files, and ``_register_app_crons_to_scheduler`` writes through the
+    shared cron store that the gateway's timer tick re-syncs by content digest.
+    Backend hooks are the exception -- they are Python modules imported INTO the
+    gateway process, and only the gateway can replace them (``on_app_enable`` ->
+    ``RouteRegistry.register_app_routes`` -> ``load_app_module``, reached by the
+    HTTP enable route and by ``on_gateway_startup``). This process has no handle
+    on that one's ``sys.modules``, so a CLI enable cannot load them.
+
+    Printing only "enabled <app>" reads as though it had. The operator then
+    verifies a hook change against the code the gateway imported earlier and
+    concludes the change did not work -- or that it did, when it never ran
+    (issue #7880).
+
+    Deliberately NOT gated on a live-gateway probe. ``_marker_port`` is the only
+    verified one available here, and it writes its own multi-gateway warning to
+    stderr, which would surface out of context on an app enable. The notice is
+    phrased conditionally instead, so it stays true when no gateway is up.
+
+    Only for apps that declare ``backend.hooks``: there is nothing stale to warn
+    about otherwise. Returns whether the notice was printed.
+    """
+    info = get_app(app_name)
+    manifest = info.get("manifest") if isinstance(info, dict) else None
+    backend = manifest.get("backend") if isinstance(manifest, dict) else None
+    hooks = backend.get("hooks") if isinstance(backend, dict) else None
+    if not isinstance(hooks, dict) or not hooks:
+        return False
+    declared = ", ".join(sorted(str(k) for k in hooks))
+    print(
+        f"  note: this app declares backend hooks ({declared}).\n"
+        "  A gateway that is already running keeps executing the hook code it\n"
+        "  imported earlier; this command cannot replace it. Run `kirocrew\n"
+        "  restart`, or disable and re-enable the app from the dashboard, for\n"
+        "  hook changes to take effect."
+    )
+    return True
+
+
 def _run_app_mcp_server(app_name: str) -> None:
     """Run the named app's stdio MCP server in this process.
 
@@ -676,6 +740,7 @@ def _handle_app(args: argparse.Namespace) -> None:
             if reg.skills:
                 print(f"   Skills registered: {len(reg.skills)}")
             _register_app_crons_to_scheduler(args.name)
+            _warn_hooks_need_restart(args.name)
         else:
             print(f"❌ {result.error}", file=sys.stderr)
             sys.exit(1)
@@ -1476,7 +1541,7 @@ def _print_denied_command_summary(*, ids: bool) -> None:
     """Print the built-in denied-command catalog as grouped counts (or, with
     ``--ids``, each category's rule ids).
 
-    The 139 built-in rules are visible and configurable to the USER (Settings
+    The built-in rules are visible and configurable to the USER (Settings
     → Security renders them in category accordions, backed by
     ``GET /api/security/denied-commands``) but were invisible to the AGENT --
     ``policy show`` reported everything except them, so an agent planning a
@@ -2363,6 +2428,18 @@ def _artifact(args: argparse.Namespace) -> None:
                 f"kirocrew artifact update {taken}",
                 file=sys.stderr,
             )
+        # Relayed from the gateway (same pattern as slug_collided_with): the
+        # handler computes the theme-contrast verdict at the convergence
+        # point, so this CLI path -- the one the motivating incident traveled
+        # -- hears it without duplicating the detector. Advisory only.
+        if d.get("theme_contrast_warning"):
+            print(
+                "Warning: content hardcodes colors with no theme variables — it "
+                "will clash in dark/light/custom dashboard themes. Prefer "
+                "var(--text,#111) / var(--bg,#fff) style fallbacks (see the "
+                "widgets skill's theme table).",
+                file=sys.stderr,
+            )
         return
 
     if action == "update":
@@ -2394,6 +2471,17 @@ def _artifact(args: argparse.Namespace) -> None:
             print(f"Error: {d['error']}", file=sys.stderr)
             sys.exit(1)
         print(f"Updated: slug={d.get('slug', slug)} version={d.get('version', '?')}")
+        # Relayed from the gateway (see the save action above) -- the PATCH
+        # path is exactly how the motivating incident's script pushed its
+        # hardcoded-palette page. Advisory only; the update succeeded.
+        if d.get("theme_contrast_warning"):
+            print(
+                "Warning: content hardcodes colors with no theme variables — it "
+                "will clash in dark/light/custom dashboard themes. Prefer "
+                "var(--text,#111) / var(--bg,#fff) style fallbacks (see the "
+                "widgets skill's theme table).",
+                file=sys.stderr,
+            )
         return
 
     if action == "delete":

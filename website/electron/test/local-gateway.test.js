@@ -1,5 +1,7 @@
 const { test } = require("node:test");
 const assert = require("node:assert");
+const fs = require("node:fs");
+const path = require("node:path");
 const {
   LOCAL_GATEWAY_KEY,
   isLocalGatewayEnabled,
@@ -129,4 +131,32 @@ test("classifyStartFailure: a plain spawn failure and a timeout stay distinct", 
   assert.equal(classifyStartFailure({ failedToStart: true }), "failed");
   assert.equal(classifyStartFailure({ failedToStart: false }), "unreachable");
   assert.equal(classifyStartFailure(), "unreachable");
+});
+
+// #6138: the client-only dialog must not dress an expected state as a crash.
+test("client-only: the failure dialog derives its log pane from that one bit", () => {
+  // Source-level pin. The log pane is exactly the client-only condition, so a
+  // second flag for it would be a duplicate spelling that can drift.
+  const source = fs.readFileSync(
+    path.join(__dirname, "..", "gateway-supervisor.js"),
+    "utf8",
+  );
+  assert.match(source, /const showLog = !localGatewayOff;/);
+  assert.doesNotMatch(source, /showLog:/);
+});
+
+test("client-only: the local-start offer is withheld on a remote crew's port", () => {
+  // The spawn binds THIS port (`"--port", String(PORT)`), so on a port that
+  // names a remote crew the escape hatch would stand up a local gateway
+  // shadowing that crew. The button is therefore gated on its own condition,
+  // not on client-only mode -- these are genuinely different questions.
+  const source = fs.readFileSync(
+    path.join(__dirname, "..", "gateway-supervisor.js"),
+    "utf8",
+  );
+  assert.match(source, /const enableButton = offerLocalStart && !noRetry/);
+  assert.match(source, /offerLocalStart: localGatewayOff && !remoteTarget/);
+  assert.match(source, /remotePort: remoteConfig\?\.remotePort \|\| ""/);
+  // The title must name the crew's own port, not this end of the link.
+  assert.match(source, /nothing answering at \$\{remoteTarget\}:\$\{remoteTargetPort\}/);
 });

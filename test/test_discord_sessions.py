@@ -1497,7 +1497,7 @@ async def test_choice_refusal_for_outbound_mirror_names_unlink() -> None:
     # And the instruction is followable: the sweep frees the location, after
     # which the conflict check no longer refuses.
     sessions.clear_mirror_links_at(ChannelLink(channel_type="discord", channel_id="c1"))
-    conflict = dispatcher._session_resume._binding_conflict(
+    conflict = dispatcher._session_resume._binder.binding_conflict(
         "dashboard:chat-1",
         "chat one",
         ChannelLink(channel_type="discord", channel_id="c1"),

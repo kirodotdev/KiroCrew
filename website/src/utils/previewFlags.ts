@@ -82,9 +82,12 @@ export const PREVIEW_CREW = `${PREVIEW_FLAG_PREFIX}crew`
  * by switching to that crew's pane, and the local session list does not show
  * live remote sessions — so the session is hard to return to afterwards.
  *
- * Its toggle lives in Settings > Remote crews, not Developer > Feature Previews:
- * the flag is only meaningful to someone who already has a crew connected, and
- * that is the page where crews are managed.
+ * Its toggle lives in Developer > Feature Previews, alongside every other
+ * unreleased surface, and NOT on Settings > Remote crews where it started: a
+ * held feature is found by looking at the one page that lists held features, so
+ * scattering an opt-in onto the page it happens to act on hides it from the only
+ * reader who wants it. It keeps its own card there rather than sharing
+ * {@link PREVIEW_CREW}'s, for the two-meanings reason above.
  *
  * Gating the INGRESS only. A session already created on a peer keeps running
  * there and stays reachable through that crew's own dashboard; turning the flag

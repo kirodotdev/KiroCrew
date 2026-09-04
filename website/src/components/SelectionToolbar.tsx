@@ -4,6 +4,7 @@ import { motion, AnimatePresence } from 'framer-motion'
 import { MessageSquareQuote, MessageCircleQuestionMark, Copy, Check } from 'lucide-react'
 import { copyToClipboard } from '../utils/clipboard'
 import { isTouchDevice } from '../utils/isTouchDevice'
+import { containedSelectionRange } from '../utils/selectionContainment'
 import { i18nT } from '../i18n/t'
 
 export interface SelectionAction {
@@ -288,9 +289,17 @@ export default function SelectionToolbar({ containerRef, actions, externalSelect
     const container = containerRef.current
     if (!container) { setVisible(false); return }
 
-    // Ensure selection is within our container
+    // Ensure selection is within our container. Containment cannot be judged by
+    // `commonAncestorContainer` alone — see `containedSelectionRange`, which
+    // carries the boundary-normalization mechanism and both rejection tiers.
+    //
+    // `measureRange` is what the toolbar is positioned from, and the helper
+    // returns it clamped to the container: an accepted overhang's boundary point
+    // would otherwise pull the next block's line box into the rect and park the
+    // toolbar one line below the selection on the touch/keyboard paths.
     const range = sel.getRangeAt(0)
-    if (!container.contains(range.commonAncestorContainer)) {
+    const measureRange = containedSelectionRange(range, container)
+    if (!measureRange) {
       setVisible(false)
       return
     }
@@ -300,7 +309,7 @@ export default function SelectionToolbar({ containerRef, actions, externalSelect
 
     selectedTextRef.current = text
 
-    const rect = range.getBoundingClientRect()
+    const rect = measureRange.getBoundingClientRect()
     selectionRectRef.current = rect
     const x = triggeredByMouseRef.current
       ? lastMouseRef.current.x

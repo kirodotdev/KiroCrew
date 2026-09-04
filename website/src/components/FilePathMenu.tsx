@@ -153,25 +153,21 @@ interface FilePathMenuItemsProps {
 }
 
 /**
- * Renders the file-path action items (Open / Reveal / Copy path) as
- * ContextMenu items. Drop these into any ContextMenuContent.
+ * The ONE owner of the inline "Path copied" acknowledgment for a path action.
+ *
+ * The app has no toast, so a copy — or an open/reveal the backend silently
+ * DEGRADED to a copy on a headless session — is acknowledged by flipping a
+ * label to `Path copied` / `Couldn't copy the path` for 1.5s and back. Both
+ * consumers read it from here rather than re-deriving the timer, the attempt
+ * guard and the wording: the file-path menu (whose Copy row and Open/Reveal
+ * rows share one status) and the Office card's primary Open button, which
+ * would otherwise read as a dead click on a headless direct-local host.
+ *
+ * `attemptRef` is what makes a late-settling write safe: it is bumped on
+ * unmount and on every `filePath` change, so a resolution that arrives after
+ * the component moved on cannot acknowledge a path that is no longer shown.
  */
-function FilePathMenuItems({ filePath, kind }: FilePathMenuItemsProps) {
-  const isLocal = useBranding().directLocal
-  // Shared owner of the platform-aware reveal label (see useRevealLabel) — the
-  // same wording MarkdownPanel's overflow and FileViewer's overflow use.
-  const revealLabel = useRevealLabel()
-  const openLabel = i18nT('components.markdownPanel.open_with_default_app')
-  // The one shared Open gate (see useCanOpenFile) — the same predicate the two
-  // overflow menus consume, so a Windows/dir target hides Open identically.
-  const canOpen = useCanOpenFile(kind)
-
-  // Copy path's whole acknowledgment is the glyph flipping to a tick and back —
-  // the app has no toast, so this is the same inline swap every other
-  // menu-hosted copy uses (see PrDetail's copyLink). The Copy item keeps the
-  // menu open on select so the confirmation is not taken off screen the instant
-  // it is earned. `copyAttemptRef` guards a late-settling write from reporting a
-  // tick for a path the menu has since left behind.
+export function useCopyAck(filePath: string) {
   const [copyStatus, setCopyStatus] = useState<'idle' | 'copied' | 'failed'>('idle')
   const copyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const copyAttemptRef = useRef(0)
@@ -183,9 +179,8 @@ function FilePathMenuItems({ filePath, kind }: FilePathMenuItemsProps) {
     copyAttemptRef.current += 1
     setCopyStatus('idle')
   }, [filePath])
-  // The one owner of the transient swap: flip the row to `copied`/`failed`, then
-  // reset. `copyAttemptRef` guards a late-settling write from acknowledging a
-  // path the menu has since left behind (unmount or a `filePath` change).
+  // Flip to `copied`/`failed`, then reset. Guarded by the attempt counter so a
+  // stale resolution cannot acknowledge a path left behind.
   const flashCopyStatus = (attempt: number, next: 'copied' | 'failed') => {
     if (attempt !== copyAttemptRef.current) return
     if (copyTimerRef.current) clearTimeout(copyTimerRef.current)
@@ -206,19 +201,40 @@ function FilePathMenuItems({ filePath, kind }: FilePathMenuItemsProps) {
     flashCopyStatus(attempt, next)
   }
   // Open/Reveal degrade to a clipboard copy on a remote or headless session
-  // (files.py cannot drive a file manager there). Reuse the SAME inline "Path
-  // copied" swap the Copy row shows, so a click on "Show in file manager" that
-  // silently copied is acknowledged instead of reading as a dead no-op — no
-  // blocking alert, no new toast surface.
+  // (files.py cannot drive a file manager there), so acknowledge that instead of
+  // leaving a click that silently copied looking like a no-op — no blocking
+  // alert, no new toast surface.
   const revealOrOpenWithAck = async (action: 'open' | 'reveal') => {
     const attempt = ++copyAttemptRef.current
     const { copied, copyFailed } = await revealOrOpen(filePath, action)
     if (copied) flashCopyStatus(attempt, 'copied')
-    // A degrade that could not reach the clipboard flips the row to the same
-    // `copy_failed` wording the Copy row uses, rather than leaving a click that
-    // did nothing looking like one that worked.
+    // A degrade that could not reach the clipboard flips to the same
+    // `copy_failed` wording, rather than leaving a click that did nothing
+    // looking like one that worked.
     else if (copyFailed) flashCopyStatus(attempt, 'failed')
   }
+  return { copyStatus, copyPath, revealOrOpenWithAck }
+}
+
+/**
+ * Renders the file-path action items (Open / Reveal / Copy path) as
+ * ContextMenu items. Drop these into any ContextMenuContent.
+ */
+function FilePathMenuItems({ filePath, kind }: FilePathMenuItemsProps) {
+  const isLocal = useBranding().directLocal
+  // Shared owner of the platform-aware reveal label (see useRevealLabel) — the
+  // same wording MarkdownPanel's overflow and FileViewer's overflow use.
+  const revealLabel = useRevealLabel()
+  const openLabel = i18nT('components.markdownPanel.open_with_default_app')
+  // The one shared Open gate (see useCanOpenFile) — the same predicate the two
+  // overflow menus consume, so a Windows/dir target hides Open identically.
+  const canOpen = useCanOpenFile(kind)
+
+  // Copy path's whole acknowledgment is the glyph flipping to a tick and back
+  // (see useCopyAck, shared with the Office card). The Copy item keeps the menu
+  // open on select so the confirmation is not taken off screen the instant it is
+  // earned.
+  const { copyStatus, copyPath, revealOrOpenWithAck } = useCopyAck(filePath)
   const copyLabel = copyStatus === 'copied'
     ? i18nT('components.filePathMenu.path_copied')
     : copyStatus === 'failed'

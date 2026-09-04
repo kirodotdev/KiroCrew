@@ -8,6 +8,7 @@ import { useSearchHighlight, useCurrentOcc } from '../../hooks/SearchHighlightCo
 import { useImeGuard } from '../../hooks/useImeGuard'
 import { applySearchHighlights } from '../../utils/domHighlight'
 import { scrollCurrentMatchIntoView } from '../../utils/searchScroll'
+import { containedSelectionRange } from '../../utils/selectionContainment'
 import { type PasteBlock, expandAll as expandPasteTokens } from '../../utils/pasteTokens'
 
 import { i18nT } from '../../i18n/t'
@@ -118,8 +119,13 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp, timest
     const sel = window.getSelection()
     if (!sel || sel.rangeCount === 0 || sel.isCollapsed) return
     const range = sel.getRangeAt(0)
-    if (!userRef.current?.contains(range.commonAncestorContainer)) return
-    const frag = range.cloneContents()
+    // A multi-click of the bubble's LAST line normalizes to a boundary point
+    // past the bubble, so ancestor containment alone would bail here and ship
+    // the chip label this handler exists to replace (#7891). The clamped range
+    // keeps the whitespace overhang out of the cloned fragment.
+    const contained = userRef.current && containedSelectionRange(range, userRef.current)
+    if (!contained) return
+    const frag = contained.cloneContents()
     const chips = frag.querySelectorAll('[data-paste-seq]')
     if (!chips.length) return
     const bySeq = new Map(pastes.map(p => [p.seq, p]))

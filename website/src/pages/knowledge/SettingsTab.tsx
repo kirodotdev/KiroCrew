@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, useId, createContext, useContext } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '../../api/client'
 import { useAvailableModels } from '../../hooks/useAvailableModels'
@@ -7,14 +7,6 @@ import { i18nT } from '../../i18n/t'
 import ErrorNotice from '../../components/ErrorNotice'
 
 // ── Constants matching backend _EDITABLE_CONFIG bounds ──
-const CHUNK_BUDGET_MIN = 0
-const CHUNK_BUDGET_MAX = 10000
-const CHUNK_BUDGET_DEFAULT = 150
-
-const MAX_SOURCES_MIN = 0
-const MAX_SOURCES_MAX = 1000
-const MAX_SOURCES_DEFAULT = 50
-
 const EMBED_RATE_MIN = 0
 const EMBED_RATE_MAX = 10000
 const EMBED_RATE_DEFAULT = 120
@@ -26,8 +18,8 @@ const POOL_SIZE_DEFAULT = 3
 /**
  * Knowledge Library settings tab — ingestion cost & performance controls.
  *
- * Fields: per-source chunk limit, max sources, embedding rate limit,
- * extraction model, extraction pool size. Reads/writes via the same
+ * Fields: embedding rate limit, extraction model, extraction pool size.
+ * Reads/writes via the same
  * PATCH /api/config/kirocrew endpoint as the Settings page.
  */
 export function SettingsTab() {
@@ -38,10 +30,7 @@ export function SettingsTab() {
   const cfgQ = useQuery<{
     knowledge?: {
       auto_add_documents?: boolean
-      auto_register_project_docs?: boolean
       auto_ingest_artifacts?: boolean
-      auto_ingest_chunk_budget?: number
-      max_sources?: number
       embed_rate_limit?: number
       extraction_model?: string
       extraction_pool_size?: number
@@ -60,8 +49,6 @@ export function SettingsTab() {
     onError: () => {
       setSaveError(i18nT('pages.knowledge.settings.save_failed'))
       // Revert all local inputs to last-known server values
-      setLocalChunkBudget(String(cfg?.auto_ingest_chunk_budget ?? CHUNK_BUDGET_DEFAULT))
-      setLocalMaxSources(String(cfg?.max_sources ?? MAX_SOURCES_DEFAULT))
       setLocalEmbedRate(String(cfg?.embed_rate_limit ?? EMBED_RATE_DEFAULT))
       setLocalPoolSize(String(cfg?.extraction_pool_size ?? POOL_SIZE_DEFAULT))
     },
@@ -69,8 +56,6 @@ export function SettingsTab() {
   const disabled = !cfgQ.isSuccess || patchMut.isPending
 
   // ── Local state for number inputs (commit on blur) ──
-  const [localChunkBudget, setLocalChunkBudget] = useState('')
-  const [localMaxSources, setLocalMaxSources] = useState('')
   const [localEmbedRate, setLocalEmbedRate] = useState('')
   const [localPoolSize, setLocalPoolSize] = useState('')
 
@@ -78,8 +63,6 @@ export function SettingsTab() {
   useEffect(() => {
     if (cfgQ.data && !initRef.current) {
       initRef.current = true
-      setLocalChunkBudget(String(cfg?.auto_ingest_chunk_budget ?? CHUNK_BUDGET_DEFAULT))
-      setLocalMaxSources(String(cfg?.max_sources ?? MAX_SOURCES_DEFAULT))
       setLocalEmbedRate(String(cfg?.embed_rate_limit ?? EMBED_RATE_DEFAULT))
       setLocalPoolSize(String(cfg?.extraction_pool_size ?? POOL_SIZE_DEFAULT))
     }
@@ -141,59 +124,10 @@ export function SettingsTab() {
       </SettingRow>
 
       <SettingRow
-        label={i18nT('pages.knowledge.settings.auto_project_label')}
-        description={i18nT('pages.knowledge.settings.auto_project_desc')}
-      >
-        <Toggle checked={cfg?.auto_register_project_docs ?? false} onChange={v => patchMut.mutate({ path: 'knowledge.auto_register_project_docs', value: v })} disabled={disabled} />
-      </SettingRow>
-
-      <SettingRow
         label={i18nT('pages.knowledge.settings.auto_artifacts_label')}
         description={i18nT('pages.knowledge.settings.auto_artifacts_desc')}
       >
         <Toggle checked={cfg?.auto_ingest_artifacts ?? false} onChange={v => patchMut.mutate({ path: 'knowledge.auto_ingest_artifacts', value: v })} disabled={disabled} />
-      </SettingRow>
-
-      {/* Per-source chunk limit */}
-      <SettingRow
-        label={i18nT('pages.knowledge.settings.chunk_limit_label')}
-        description={i18nT('pages.knowledge.settings.chunk_limit_desc')}
-      >
-        <NumberInput
-          value={localChunkBudget}
-          onChange={setLocalChunkBudget}
-          onBlur={() => commitNumber(
-            localChunkBudget, 'knowledge.auto_ingest_chunk_budget',
-            CHUNK_BUDGET_MIN, CHUNK_BUDGET_MAX,
-            cfg?.auto_ingest_chunk_budget ?? CHUNK_BUDGET_DEFAULT,
-            setLocalChunkBudget,
-          )}
-          min={CHUNK_BUDGET_MIN}
-          max={CHUNK_BUDGET_MAX}
-          step={50}
-          disabled={disabled}
-        />
-      </SettingRow>
-
-      {/* Max sources */}
-      <SettingRow
-        label={i18nT('pages.knowledge.settings.max_sources_label')}
-        description={i18nT('pages.knowledge.settings.max_sources_desc')}
-      >
-        <NumberInput
-          value={localMaxSources}
-          onChange={setLocalMaxSources}
-          onBlur={() => commitNumber(
-            localMaxSources, 'knowledge.max_sources',
-            MAX_SOURCES_MIN, MAX_SOURCES_MAX,
-            cfg?.max_sources ?? MAX_SOURCES_DEFAULT,
-            setLocalMaxSources,
-          )}
-          min={MAX_SOURCES_MIN}
-          max={MAX_SOURCES_MAX}
-          step={10}
-          disabled={disabled}
-        />
       </SettingRow>
 
       {/* Embedding rate limit */}
@@ -269,18 +203,33 @@ export function SettingsTab() {
 
 // ── Sub-components ──
 
+/**
+ * Id of the enclosing row's visible label text, so the control on the other
+ * side of the row can name itself with `aria-labelledby` instead of repeating
+ * the label as an `aria-label` — one string, and it cannot drift from what the
+ * user reads.
+ *
+ * Carried by context rather than by prop because several rows wrap their
+ * control in a layout `<div>` (the unit suffix, the restart badge), so the row
+ * cannot hand the id to the control directly.
+ */
+const RowLabelIdContext = createContext<string | undefined>(undefined)
+
 function SettingRow({ label, description, children }: {
   label: string
   description: string
   children: React.ReactNode
 }) {
+  const labelId = useId()
   return (
     <div className="flex items-start justify-between py-3 border-b border-border last:border-b-0 gap-4">
       <div className="flex-1 min-w-0">
-        <div className="text-[13px] font-medium text-text">{label}</div>
+        <div id={labelId} className="text-[13px] font-medium text-text">{label}</div>
         <div className="text-[11px] text-muted mt-0.5 leading-relaxed">{description}</div>
       </div>
-      <div className="shrink-0">{children}</div>
+      <div className="shrink-0">
+        <RowLabelIdContext.Provider value={labelId}>{children}</RowLabelIdContext.Provider>
+      </div>
     </div>
   )
 }
@@ -294,9 +243,11 @@ function NumberInput({ value, onChange, onBlur, min, max, step, disabled }: {
   step: number
   disabled: boolean
 }) {
+  const labelId = useContext(RowLabelIdContext)
   return (
     <input
       type="number"
+      aria-labelledby={labelId}
       className="w-[80px] px-2 py-1 text-[12px] text-right border border-border rounded-md bg-bg text-text"
       value={value}
       onChange={e => onChange(e.target.value)}
@@ -314,10 +265,12 @@ function Toggle({ checked, onChange, disabled }: {
   onChange: (v: boolean) => void
   disabled: boolean
 }) {
+  const labelId = useContext(RowLabelIdContext)
   return (
     <button
       role="switch"
       aria-checked={checked}
+      aria-labelledby={labelId}
       onClick={() => !disabled && onChange(!checked)}
       disabled={disabled}
       className={`relative w-[36px] h-[20px] rounded-full transition-colors cursor-pointer border-none ${checked ? 'bg-accent' : 'bg-border'} ${disabled ? 'opacity-50 cursor-not-allowed' : ''}`}

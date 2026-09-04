@@ -234,9 +234,12 @@ exists, so the blast radius is unmeasured.
 **Backend, Electron, CLI and site are English-only.** No `gettext`, `babel`, or
 `Accept-Language` anywhere in `src/kiro_crew`; `dashboard.language` is stored,
 served, and injected into the LLM prompt only. Native menus
-(`website/electron/app-menu.js`), tray and dialogs
-(`website/electron/main.js:1091-1102` and `website/electron/main.js:355-444`), and
-update notifications (`website/electron/main.js:2040-2042`) are hardcoded.
+(`website/electron/app-menu.js`), tray (`createTray` in
+`website/electron/window-lifecycle.js`), and dialogs (`resolveGatewayConflict`
+in `website/electron/gateway-supervisor.js` and
+`offerRelocationIfUnupdatable` in `website/electron/main.js`) are hardcoded, as
+are update notifications (the `notifyUpdateFound` callback in `registerUpdater`
+in `website/electron/ipc-registrar.js`).
 `src/kiro_crew/builtin_skills` has 79 user-facing
 `print`/`echo` lines and zero i18n references. `site/` has no `i18n` directory.
 
@@ -269,7 +272,7 @@ update notifications (`website/electron/main.js:2040-2042`) are hardcoded.
 |---|---|---|
 | Dashboard React UI | **Partially localized** — 10 catalogs at exact parity, but 1,860 hardcoded literals remain | catalogs, `catalogParity.test.ts`, `untranslated-baseline.json` |
 | Dashboard formatting | **Partial** — 62 sites still follow the browser, down from 97/109 | `localeFormatting.test.ts` (`BASELINE`) |
-| Electron chrome | **English-only** | `app-menu.js`, `main.js` |
+| Electron chrome | **English-only** | `app-menu.js`, `window-lifecycle.js`, `gateway-supervisor.js`, `ipc-registrar.js`, `main.js` |
 | Backend (notifications, channels, API errors) | **English-only** | no `gettext`/`babel`/`Accept-Language` |
 | CLI | **English-only** | same |
 | Built-in skills | **English-only** | 79 `print`/`echo` lines |

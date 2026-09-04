@@ -137,8 +137,8 @@ credentials occupy. An unknown provider defaults to *not* self-sandboxing.
 | | kiro-cli | KAS | CC |
 |---|---|---|---|
 | Delivery channel | reads the agent file; Crew rewrites copies into `<config dir>/mcp-gateway/agents/` and injects stubs per session over `session/new`, which outranks the same-named agent-spec entry (`mcp_gateway/rewriter.py:3-8`) | not projected at all (`kas_agents.py:20-27`) | reads **no file**; servers must be passed as the `mcpServers` parameter on **both** `session/new` and `session/load` (`acp/client.py:3300-3311`, `:3425-3434`) |
-| Shape | agent-file JSON | — | different: `env` and `headers` are **required arrays**; reshaped before it goes on the wire (companion) |
-| Public-core default | real | — | `_claude_session_mcp_servers()` returns `[]` and the adapter does not read `kirocrew.mcp.json` itself, so a CC session on any build that does not override that method has **zero MCP tools**. The harness works — prompts, streaming, permissions — and Crew's own tools are simply absent. Now that CC is selectable, this is a **reachable public-build gap**, not a companion-only one; closing it in the core means translating `kirocrew.mcp.json` into this array (`acp/client.py:2399-2411`) |
+| Shape | agent-file JSON | — | different: `env` and `headers` are **required arrays** of `{"name","value"}` and the transport `type` must be explicit (a url with no `type` is routed to the stdio branch and rejected for having no command); omitting either array fails the whole `session/new` with `-32602 expected array, received undefined`, so both are always emitted — empty when there is nothing to carry (`acp/session_mcp.py`) |
+| Public-core default | real | — | real: `_session_mcp_servers()` translates the materialized kiro agent spec into the array on every spawn (`acp/session_mcp.py`, `session_mcp_servers`). The spec stays the single source of truth — there is no second, CC-shaped registry — so installing or toggling a server takes effect on the **next session** with no gateway restart. The spec's `tools` references are honoured, so an entry kiro-cli would declare but not mount (every `opt_in` grant, and any hand-narrowed spec) cannot come alive just because the session ran on CC; `type: "registry"` catalog pointers are withheld (CC cannot resolve a registry, and their command/url are placeholders kiro-cli itself ignores); Crew's own `kirocrew-core` / `kirocrew-cron` are re-derived from the managed source (`agent.managed_mcp_spec_entry`) so a stale hand-edited command cannot cost a session its control plane. A missing or malformed spec degrades to the control plane alone, never to a failed spawn |
 | Env expansion | Crew reimplements kiro-cli's expander byte-for-byte: unresolved `${VAR}` stays literal, `env:` prefix dropped (`mcp_gateway/rewriter.py:260-268`) | — | adapter-side |
 | Loader strictness | an `mcpServers` entry without a command makes kiro-cli reject the whole agent file, surfacing as "Mode not found" at session time while `agent list`/`validate` still pass (`apps/bridges.py:445-460`) | — | frontmatter-scoped |
 | Auto-approve bypass | `allowedTools` is the one path that never reaches `hooks.on_tool_call` (`apps/bridges.py:388-393`) | KAS `rules` array | see §7 |
@@ -170,7 +170,7 @@ token is discovered, and its unattributable-overhead model.
 | Deny-pattern engine | authored for kiro-cli's linear-time RE2-style engine; two patterns are catastrophic under Python `re`, so a behaviourally identical linear matcher is substituted (`security.py:1864-1868`) | same | regex, not globs — Crew translates globs with metacharacter escaping (companion) |
 | Auto-approve vocabulary | `allowedTools` | `{"rules":[{"capability":"mcp","match":["srv/*"],"effect":"allow"}]}`; unmatched → `ask`; `match` omitted → `['**']` (`acp/kas_permissions.py:1-42`) | frontmatter `tools`; `deniedCommands` → `disallowedTools: ["Bash(<cmd>)"]` |
 | Permission-request options | `allow_once` / `allow_always`, with a `cancelled` fallback for deny | kiro vocabulary | `allow` / `allow_always` **and a real `reject`** (`acp/session_handle.py:1137-1170`) |
-| Auto mode | protocol flag | protocol flag | a per-session **file**: `<work dir>/.claude/settings.local.json`, `permissions.defaultMode`. Written for the *next* spawn, and a stale file is unlinked on reset so `bypassPermissions` cannot survive a crash (`acp/types.py:222-232`, `acp/client.py:3198-3204`) |
+| Auto mode | protocol flag | protocol flag | a per-session **file**: `<work dir>/.claude/settings.local.json`, `permissions.defaultMode`, written by `_write_claude_local_settings` for the *next* spawn. The work dir is frequently a project the user also uses with CC by hand, so the writer **snapshots** any pre-existing file (bytes plus mode) and merges Crew's keys over it; on reset the snapshot is restored byte-for-byte, or the file is removed when Crew created it. Either way no `bypassPermissions` Crew asked for survives a crash, and a file Crew never seeded is left alone (`acp/types.py:222-232`, `acp/client.py`) |
 | Inherited-config hazard | — | omitting `permissions` resolves everything to `ask` | an inherited `defaultMode: dontAsk`, or any inherited `allow`/`ask` wildcard, is auto-approved by CC's engine **without calling `canUseTool`**, silently bypassing Crew's gate — so `defaultMode`/`allow`/`ask` are stripped from the seed (companion) |
 | Rules Crew cannot override | — | shell/filesystem families are refused rather than translated | the user's own deny rules run first; a detector fnmatches them against benign canaries (`ls`, `git status`, `pwd`) and **surfaces** what it cannot beat (companion) |
 | Tool-call titles | prefixed `Reading `/`Running: ` | prefixed | no prefix, so sensitive-path gates must run on every target (`hooks.py:559-563`) |
@@ -218,6 +218,40 @@ distinguishable, and a remedy named only where this repository actually
 establishes one — the `claude` CLI reports an empty install command rather than an
 invented one.
 
+## 9. Tool-result text fidelity (control markers)
+
+| | kiro-cli | KAS | CC |
+|---|---|---|---|
+| How a tool result arrives | `content[].content.text` blocks, or `rawOutput.items[].Text` / `.Json.stdout` | same shapes, but an MCP result can arrive as an **already-serialised** JSON envelope under a key this repository does not recognise | `content[]` text blocks |
+| Marker survives untouched | yes | **no** — the envelope reaches the consumer through `json.dumps`, which escapes every quote in it | yes |
+| Recovery | not needed | `acp/_dispatch._repair_escaped_marker`, run over the joined output before redaction and the head cut | not needed |
+
+Two consumers read a control marker out of the tool-result TEXT rather than out
+of a structured field: a session directive (`session_directive.peek` — how
+`monitor_start` / `monitor_update` / `autonudge_stop` reach the session that owns
+the loop) and an MCP App render marker (`mcp_apps_render.find_marker`). Both
+sentinels are quote-free, so JSON escaping leaves them perfectly intact while
+mangling the payload behind them. The failure that produces is silent and
+expensive: the frame still looks like it carries a directive, the consumer can no
+longer name the record the MCP stub parked, the tool answers "requested", and no
+loop arms. It cost several gateway restarts to find on KAS precisely because
+every layer looked healthy.
+
+The recovery is keyed on the sentinel, not on any envelope field name, because
+the field differs per backend; and acceptance is the test — a candidate is used
+only when `peek` actually reads a selector from it, so a wrong guess degrades to
+the original text instead of substituting something worse. A frame carrying two
+DIFFERENT markers is refused rather than resolved to the first, since applying
+the wrong directive is worse than applying none.
+
+**A provider must declare:** whether its tool-result text arrives verbatim or
+pre-serialised, and — if any builder it adds can emit an `EVENT_TOOL_RESULT` —
+that the builder runs the repair. This is the one bucket in this document with a
+ratchet instead of a checklist line: `test_session_directive_transport.py` walks
+every `AcpEvent(kind=EVENT_TOOL_RESULT)` construction under `acp/` and fails when
+one of them does not call `_repair_escaped_marker`, because a provider author is
+exactly the person who will not know this constraint exists.
+
 ## Seam status today
 
 | Bucket | Seam |
@@ -231,6 +265,7 @@ invented one.
 | 5 MCP injection | **none** — an overridable method returning `[]` is the whole extension point, and now that CC is selectable that neutral default is what a public build actually runs |
 | 7 Regex-engine parity | **none** — the deny catalog is authored against one engine |
 | 8 Auxiliary runtimes | partial — `agent_sdk/backend_install.py` is a real preflight that names each absent component before a session, but the *requirement* is still declared nowhere a type checker can see: the probe knows CC needs two binaries because it was written to, not because CC declared it |
+| 9 Tool-result marker fidelity | real — one recovery function, and the only bucket whose requirement a test enforces rather than a comment asserting it |
 
 ## New-provider checklist
 
@@ -243,6 +278,10 @@ from 1M to 200K — both documented as comments rather than enforced by an
 interface. Neither is hypothetical any more. CC is selectable on a public build,
 so a public build reaches both, and a comment is not a thing an operator can
 read.
+
+Bucket 9 is the exception worth copying: its requirement is enforced by a
+ratchet, so a new builder that drops the marker recovery fails a test instead of
+shipping a monitor loop that never arms.
 
 ## What supporting one foreign host costs today
 
@@ -260,7 +299,7 @@ path a public build takes when an operator picks Claude Code.
 | Methods returning a neutral value purely for a companion to override | 6 |
 | `ClaudeCodeProvider is not None and isinstance(...)` guards against a name hard-coded to `None` | 11 sites, 2 sentinels (`session.py:200`, `subagent.py:144`) |
 | Comment clusters naming the companion or a deleted module as the supplier | 19 |
-| Refusal / downgrade mechanisms | 9, including one degrade log line (`config/loader.py:4647-4652`) and five capability non-memberships |
+| Refusal / downgrade mechanisms | 9, including the degrade log in `acp_backends.resolve_selected_backend()` and five capability non-memberships |
 | Live `_is_claude` branches inside `acp/` | 13 |
 | CC-symbol lines in `src/kiro_crew` | 146 (352 including `test/`) |
 

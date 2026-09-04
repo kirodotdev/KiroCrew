@@ -356,29 +356,67 @@ async def list_accounts(*, refresh: bool = False) -> dict[str, Any]:
         return snapshot
 
 
-async def resolve_account_profile(account: str) -> tuple[str, str] | None:
-    """The working (profile, region) for operations on ``account``.
+def _pick_profile(snapshot: dict[str, Any], account: str) -> tuple[str, str] | None:
+    """Choose the working (profile, region) for ``account`` from a snapshot.
 
     Preference order: the registry default when it belongs to this account
     and probes healthy, then any healthy profile, then None — an account
     with no working key gets NO silent fallback to a different account's
     credentials.
+
+    Factored out so the async reader and the sync one below cannot drift: this
+    is the policy that decides WHICH credentials an operation runs under, and
+    two copies of it is two places for that decision to diverge.
     """
     if not account:
         return None
-    snapshot = await list_accounts()
-    for row in snapshot["accounts"]:
-        if row["account"] != account:
+    for row in snapshot.get("accounts", []):
+        if row.get("account") != account:
             continue
-        profiles = row["profiles"]
-        healthy = [p for p in profiles if p["identityOk"]]
-        chosen = next((p for p in healthy if p["default"]), None) or (
+        healthy = [p for p in row.get("profiles", []) if p.get("identityOk")]
+        chosen = next((p for p in healthy if p.get("default")), None) or (
             healthy[0] if healthy else None
         )
         if chosen is None:
             return None
         return chosen["name"], chosen["region"]
     return None
+
+
+async def resolve_account_profile(account: str) -> tuple[str, str] | None:
+    """The working (profile, region) for operations on ``account``."""
+    if not account:
+        return None
+    return _pick_profile(await list_accounts(), account)
+
+
+def resolve_account_profile_cached(account: str) -> tuple[str, str] | None:
+    """Sync :func:`resolve_account_profile`, served from the warm snapshot only.
+
+    For a caller that is a WORKER THREAD and therefore cannot await: the Job SDK
+    runners, which are plain ``def`` by the SDK's contract. The async twin cannot
+    be reached from there — ``asyncio.run`` in a worker thread builds a second
+    event loop, and a module-global asyncio primitive binds to the loop that
+    imported it and raises when acquired from another (#4800, which is why
+    ``_snapshot_lock`` is a :class:`LoopBoundLock` at all). So this reads the
+    snapshot the loop already built rather than building one of its own.
+
+    Returns None when the snapshot is absent or past its TTL, which the caller
+    must treat as "no working connection for this account" and refuse. That is
+    the honest answer: a probe sweep is exactly the async work this cannot do.
+    In practice the owner-driven path has just warmed it — the route's
+    pre-flight awaits :func:`resolve_account_profile` before starting the run.
+
+    Staleness cannot cause a WRONG-ACCOUNT operation: every caller re-verifies
+    the live account with ``sts:GetCallerIdentity`` through the package's sync
+    chokepoint immediately before it acts (see ``backup._authorize_upload``).
+    This resolves which credentials to TRY; that check decides whether they may
+    be used.
+    """
+    snapshot = _snapshot
+    if snapshot is None or (time.monotonic() - _snapshot_at) >= _PROBE_TTL_SECS:
+        return None
+    return _pick_profile(snapshot, account)
 
 
 def invalidate_cache() -> None:

@@ -28,6 +28,7 @@ from kiro_crew.apps.builtins.meetings.backend.providers import tasks as taskprov
 from kiro_crew.apps.builtins.meetings.backend.routes._common import (
     BadRequest,
     data_root,
+    field_bool,
     field_int,
     field_str,
     field_str_list,
@@ -193,6 +194,23 @@ async def handle_put_config(request: web.Request) -> web.Response:
             # private-address refusal in providers/calendar.py), not here: the
             # check needs DNS and must not run on the loop during a settings save.
             "source": field_str(calendar_raw, "source", max_len=2000),
+            # The background poller's knobs (calendar_poller.py). Bounded here so
+            # a client cannot set a one-second cadence against a calendar host.
+            "auto_sync": field_bool(calendar_raw, "auto_sync", default=True),
+            "poll_interval_secs": field_int(
+                calendar_raw,
+                "poll_interval_secs",
+                default=k.CALENDAR_POLL_INTERVAL_SECS,
+                low=k.CALENDAR_POLL_MIN_SECS,
+                high=k.CALENDAR_POLL_MAX_SECS,
+            ),
+            "precreate_lead_minutes": field_int(
+                calendar_raw,
+                "precreate_lead_minutes",
+                default=k.CALENDAR_PRECREATE_LEAD_MINUTES,
+                low=0,
+                high=k.CALENDAR_PRECREATE_LEAD_MAX_MINUTES,
+            ),
         },
         "presets": presets,
         "default_preset": default_preset,

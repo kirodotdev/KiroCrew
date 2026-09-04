@@ -995,6 +995,7 @@ export default function McpAppFrame({ payload }: { payload: McpAppRenderPayload 
             </IconButton>
           </IconButtonGroup>
         </div>
+        {/* eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions -- onLoad is a document-load lifecycle hook (it is how the bridge learns the app navigated away from our trusted srcdoc), not a user interaction; the keyboard reaches the app THROUGH the frame, not by activating it */}
         <iframe
           ref={iframeRef}
           onLoad={() => {
@@ -1012,6 +1013,7 @@ export default function McpAppFrame({ payload }: { payload: McpAppRenderPayload 
           // `[tabindex]:not([tabindex="-1"])`, which a bare <iframe> does not
           // satisfy — so Tab cycled on that one control and a keyboard user
           // could never reach the canvas they had just opened full screen.
+          // eslint-disable-next-line jsx-a11y/no-noninteractive-tabindex -- the tab stop is the ONLY way into the sandboxed app's own focusable content; removing it strands keyboard users outside the frame
           tabIndex={0}
           allow={allow || undefined}
           className="w-full border-none bg-card block"

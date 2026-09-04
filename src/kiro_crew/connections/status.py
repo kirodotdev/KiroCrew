@@ -286,11 +286,25 @@ def _reconcile_connected_since_locked(statuses: list[ConnectionStatus], now: str
     return recorded
 
 
-def _classify(granted: bool | None, mint_state: str) -> tuple[str, str]:
-    """The authorization verdict for one provider, from local facts only."""
+def _classify(granted: bool | None, mint_state: str, *, shared: bool = False) -> tuple[str, str]:
+    """The authorization verdict for one provider, from local facts only.
+
+    ``shared`` marks an UNCLAIMED premint -- a row the warm table minted ahead of any
+    click (:mod:`kiro_crew.connections.warm`), holding a URL nobody has asked for. It
+    must not read as consent in flight: the page folds every ``awaiting_consent`` slug
+    into its waiting set, so one premint sweep flipped EVERY mintable card to the
+    in-flight-consent rendering with no user action at all.
+
+    An unclaimed row therefore falls THROUGH to the grant branches rather than
+    reporting a status of its own. That is deliberate: the honest verdict for a URL
+    nobody claimed is the verdict the card would get with no row at all, and a fourth
+    status would be one the frontend has no rendering for. The row is not lost -- it is
+    what a Connect ADOPTS (``warm.adopt_shared_mint``), and adoption clears ``shared``,
+    at which point the same row reads as awaiting consent because now it truly is.
+    """
     if granted:
         return STATUS_CONNECTED, "grant_present"
-    if mint_state in ("minting", "waiting"):
+    if mint_state in ("minting", "waiting") and not shared:
         return STATUS_AWAITING_CONSENT, "mint_in_flight"
     if granted is None:
         # Not a claim that nothing is connected -- a statement that the grant
@@ -354,9 +368,15 @@ async def collect_connection_statuses() -> list[ConnectionStatus]:
     # Read on the loop: the mint table is guarded by an asyncio lock, so it must
     # not be touched from a worker thread.
     mint_states: dict[str, str] = {}
+    #: Slugs whose row is an UNCLAIMED premint. Carried alongside the state rather
+    #: than folded into it, because the row's state is genuinely ``waiting`` -- what
+    #: differs is whose wait it is, and only the classifier needs that distinction.
+    unclaimed: set[str] = set()
     for provider in providers:
         view = pending_mint_for(provider["slug"])
         mint_states[provider["slug"]] = str(view.get("state") or "") if view else ""
+        if view and view.get("shared"):
+            unclaimed.add(str(provider["slug"]))
 
     grants = await asyncio.to_thread(_grant_presence_map, providers)
 
@@ -364,7 +384,7 @@ async def collect_connection_statuses() -> list[ConnectionStatus]:
     for provider in providers:
         slug = provider["slug"]
         granted = grants.get(slug, False)
-        status, reason = _classify(granted, mint_states[slug])
+        status, reason = _classify(granted, mint_states[slug], shared=slug in unclaimed)
         entry: ConnectionStatus = {
             "slug": slug,
             "status": status,

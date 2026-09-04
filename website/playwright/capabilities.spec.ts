@@ -61,7 +61,7 @@ test.describe('Capabilities Page — /capabilities', () => {
 
     // The trailing dashed tile is the roster's second entry point into the
     // create sheet, so it is part of the contract rather than decoration.
-    await expect(page.getByRole('button', { name: 'Create a new crew', exact: true })).toBeVisible()
+    await expect(page.getByRole('button', { name: 'Create a new agent', exact: true })).toBeVisible()
   })
 
   test('switching to Skills tab renders skills content', async ({ page }) => {
@@ -92,11 +92,11 @@ test.describe('Capabilities Page — /capabilities', () => {
     // Create, deletion is card → dialog → Delete crew. Driving them through the
     // UI is the round-trip now, since neither control exists on the page itself.
     const agentName = `pw-cap-${Date.now()}`
-    const card = page.getByRole('button', { name: `Edit crew ${agentName}`, exact: true })
+    const card = page.getByRole('button', { name: `Edit agent ${agentName}`, exact: true })
 
     try {
       await page.getByTestId('new-crew').click()
-      const createSheet = page.getByRole('dialog', { name: 'Create a new crew' })
+      const createSheet = page.getByRole('dialog', { name: 'Create a new agent' })
       await expect(createSheet).toBeVisible({ timeout: 5000 })
 
       // The Name field's label is a <span>, not a <label for>, so the input has
@@ -116,13 +116,13 @@ test.describe('Capabilities Page — /capabilities', () => {
       // Delete through the same panel — the danger zone only renders for a crew
       // that is not the default, which a freshly created one never is.
       await card.click()
-      const editSheet = page.getByRole('dialog', { name: `Edit crew ${agentName}` })
+      const editSheet = page.getByRole('dialog', { name: `Edit agent ${agentName}` })
       await expect(editSheet).toBeVisible({ timeout: 5000 })
       // The editor is a rail plus one pane, so removal lives on its own pane and
       // the button is not mounted until that pane is showing. This is the click a
       // user makes; without it the button below is simply absent.
       await editSheet.getByTestId('crew-rail-danger').click()
-      await editSheet.getByRole('button', { name: 'Delete crew', exact: true }).click()
+      await editSheet.getByRole('button', { name: 'Delete agent', exact: true }).click()
       // Delete is a two-step confirm: the first press only arms it, so without
       // this second press the sheet never closes and the delete never happens.
       await editSheet.getByTestId('confirm-delete-crew').click()

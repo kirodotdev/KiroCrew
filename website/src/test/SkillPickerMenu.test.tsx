@@ -192,7 +192,7 @@ describe('SkillPickerMenu', () => {
     const onSelect = vi.fn()
     const onClose = vi.fn()
     render(<Harness query="grill" open onSelect={onSelect} onClose={onClose} />)
-    expect(await screen.findByText('Loading skills…')).toBeInTheDocument()
+    expect(await screen.findByText(/Loading skills…/)).toBeInTheDocument()
     expect(fireEvent.keyDown(document, { key: 'Enter' })).toBe(false)
     expect(onClose).not.toHaveBeenCalled()
     expect(onSelect).not.toHaveBeenCalled()

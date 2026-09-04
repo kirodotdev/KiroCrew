@@ -568,6 +568,35 @@ successful async startup hook that returns within the deadline is unaffected.
 
 Writer: `apps/lifecycle.py::LifecycleDispatcher._invoke`.
 
+After the hook sweep, graceful shutdown stops the backend **processes this
+gateway spawned** (`apps/hooks_integration.py::on_gateway_shutdown` →
+`stop_app_backend`). Spawned backends are gateway children: without this stop
+they reparent to PID 1 when the gateway exits and keep listening on their
+ports, and the startup stale-reap only recovers them at the **next** boot.
+Ordering is deliberate — hooks first, so an app's `on_shutdown` still has its
+own backend alive. Stop targets come from the runtime tracking table
+(`apps/backend.py::spawned_backend_names`), never from persisted `enabled`
+metadata: the metadata filter is wrong in both directions (it would signal an
+**adopted** externally-managed backend, whose contract is to survive gateway
+exit and be re-adopted on the next start, and it would miss a still-running
+child whose app was disabled cross-process, metadata-only). Driving the sweep
+from the tracking table also keeps `stop_app_backend`'s pidfile-record erasure
+away from apps with nothing running, so a retained prior-generation orphan
+record stays recoverable by the stale-reap. The stops are offloaded to the
+subprocess executor and run **concurrently under one shared deadline**
+(`_BACKEND_STOP_BUDGET_SECS`, kept under the gateway's 10-second cooperative
+shutdown budget): a serial sweep would multiply the per-app SIGTERM grace by
+the number of apps, and the supervisor's force-exit would orphan every backend
+the sweep had not reached. The sweep runs in a `finally` around hook dispatch,
+so a wedged or failing `on_shutdown` hook (dispatch awaits an invoked hook to
+completion) cannot skip it — the shutdown deadline's cancellation still reaches
+the sweep on its way out. The stop futures are shielded from the deadline: the
+executor is shared with the rest of shutdown, so a stop can still be queued
+when the budget fires, and cancelling it then would mean that backend is never
+signalled at all — instead the sweep returns and the stops finish in the
+background. The sweep is not gated on the lifecycle dispatcher being
+initialized, and one app's failing stop does not skip the rest.
+
 ## 8. An app's EventBus only exists with a real broadcast function
 
 `build_app_context` returns `events=None` when `broadcast_fn` is None, and

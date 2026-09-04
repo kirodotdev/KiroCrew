@@ -49,7 +49,7 @@ class TestTelegramOptionLabelStraddle:
         start = label.index(_TOKEN)
         assert start < bound < start + len(_TOKEN)
 
-        keyboard = tg_renderer.build_inline_keyboard([label])
+        keyboard = tg_renderer.build_inline_keyboard([label], "telegram:test")
         assert keyboard is not None
         texts = [btn["text"] for row in keyboard["inline_keyboard"] for btn in row]
         joined = "\n".join(texts)

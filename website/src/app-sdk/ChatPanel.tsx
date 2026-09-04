@@ -16,9 +16,10 @@ import ChatPage from '../pages/ChatPage'
 
 export interface ChatPanelProps {
   slotKey: string
+  conversationOnly?: boolean
 }
 
-export default function ChatPanel({ slotKey }: ChatPanelProps) {
+export default function ChatPanel({ slotKey, conversationOnly = false }: ChatPanelProps) {
   const dispatch = useAppDispatch()
   const prevSlotRef = useRef<string | null>(null)
 
@@ -31,7 +32,11 @@ export default function ChatPanel({ slotKey }: ChatPanelProps) {
 
   return (
     <div className="flex flex-col h-full min-h-0 overflow-hidden">
-      <ChatPage embedded />
+      <ChatPage
+        embedded
+        embedMode={conversationOnly ? 'chat' : undefined}
+        noUrlSync={conversationOnly || undefined}
+      />
     </div>
   )
 }

@@ -444,6 +444,79 @@ class TestMaterialize:
         assert len(store.list()) == 1
 
     @pytest.mark.asyncio
+    async def test_free_slug_reports_empty_collision(
+        self, store: ArtifactStore, tmp_path: Path
+    ) -> None:
+        """Regression guard: a derived slug nobody holds reports an empty string."""
+        doc = tmp_path / "free.md"
+        _write(doc, "# free\n")
+        log = _FakeLog(
+            sessions=[{"key": "chat-1", "title": "T", "modified": 1.0}],
+            messages={"chat-1": [_doc_change(str(doc))]},
+        )
+        data = _j(
+            await h.api_artifact_materialize(
+                _req(body={"path": str(doc)}, conversation_log=log)
+            )
+        )
+        assert data["slug"] == "free-md"
+        assert data["slug_collided_with"] == ""
+
+    @pytest.mark.asyncio
+    async def test_taken_slug_is_reported_and_artifact_lands_suffixed(
+        self, store: ArtifactStore, tmp_path: Path
+    ) -> None:
+        """Promoting a document whose derived slug is taken names the plain slug.
+
+        Without the report the caller is told only the suffixed slug, so a
+        corrected document appears to have been promoted while the canonical
+        slug keeps serving the older artifact's text.
+        """
+        holder = store.create(name="taken.md", content="# older text\n")
+        assert holder.slug == "taken-md"
+        doc = tmp_path / "taken.md"
+        _write(doc, "# corrected text\n")
+        log = _FakeLog(
+            sessions=[{"key": "chat-1", "title": "T", "modified": 1.0}],
+            messages={"chat-1": [_doc_change(str(doc))]},
+        )
+        data = _j(
+            await h.api_artifact_materialize(
+                _req(body={"path": str(doc)}, conversation_log=log)
+            )
+        )
+        assert data["slug"] == "taken-md-2"
+        assert data["slug_collided_with"] == "taken-md"
+        # The canonical slug still holds the other artifact's text.
+        assert store.get("taken-md").content == "# older text\n"
+
+    @pytest.mark.asyncio
+    async def test_collision_key_is_absent_from_a_later_get(
+        self, store: ArtifactStore, tmp_path: Path
+    ) -> None:
+        """The key describes one call, so the artifact record must not carry it."""
+        store.create(name="later.md", content="# older\n")
+        doc = tmp_path / "later.md"
+        _write(doc, "# newer\n")
+        log = _FakeLog(
+            sessions=[{"key": "chat-1", "title": "T", "modified": 1.0}],
+            messages={"chat-1": [_doc_change(str(doc))]},
+        )
+        created = _j(
+            await h.api_artifact_materialize(
+                _req(body={"path": str(doc)}, conversation_log=log)
+            )
+        )
+        assert created["slug_collided_with"] == "later-md"
+        detail = _j(await h.api_artifact_detail(_req(match={"slug": created["slug"]})))
+        # Positive control on the SAME payload: the read succeeded and returned
+        # the artifact we just created, so the absence below is a fact about the
+        # field rather than about an empty or failed response.
+        assert detail["slug"] == "later-md-2"
+        assert detail["content"] == "# newer\n"
+        assert "slug_collided_with" not in detail
+
+    @pytest.mark.asyncio
     async def test_store_error_is_a_500(
         self, store: ArtifactStore, monkeypatch: pytest.MonkeyPatch, audit: list
     ) -> None:

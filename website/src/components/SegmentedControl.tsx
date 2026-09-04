@@ -43,11 +43,18 @@ interface SegmentedControlProps<T extends string = string> {
    * has already made.
    */
   compact?: boolean
+  /**
+   * Hide EVERY segment's label, the selected one included — the control is a
+   * row of icon buttons. Each label moves to the segment's `aria-label` and
+   * `title`, so the name survives for readers and hover. For a pair whose
+   * icons are self-evident (grid/list) where even the selected label is noise.
+   */
+  iconOnly?: boolean
 }
 
 type Mode = 'full' | 'compact' | 'dropdown'
 
-export default function SegmentedControl<T extends string = string>({ segments, value, onChange, layoutId = 'segment', collapse = true, compact = false }: SegmentedControlProps<T>) {
+export default function SegmentedControl<T extends string = string>({ segments, value, onChange, layoutId = 'segment', collapse = true, compact = false, iconOnly = false }: SegmentedControlProps<T>) {
   const containerRef = useRef<HTMLDivElement>(null)
   // The label below animates its WIDTH while clipping overflow, so until it
   // settles the text is genuinely cut off. Anything measuring layout in that
@@ -146,10 +153,11 @@ export default function SegmentedControl<T extends string = string>({ segments, 
           const isActive = s.key === value
           const isDisabled = s.disabled === true
           // Compact hides an unselected segment's label, leaving an icon-only
-          // button. Name it explicitly rather than leaning on `title` as the
-          // accessible-name fallback: the tooltip never appears on touch, which
-          // is the form factor compact exists for.
-          const labelShown = mode === 'full' || isActive
+          // button; `iconOnly` hides every label. Name it explicitly rather
+          // than leaning on `title` as the accessible-name fallback: the
+          // tooltip never appears on touch, which is the form factor compact
+          // exists for.
+          const labelShown = !iconOnly && (mode === 'full' || isActive)
           return (
             <motion.button
               key={s.key}

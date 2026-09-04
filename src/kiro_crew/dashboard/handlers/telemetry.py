@@ -51,6 +51,7 @@ from kiro_crew.dashboard.handlers.usage import (
 )
 from kiro_crew.dashboard.state import NEW_SESSION_TITLE
 from kiro_crew.hooks import validate_file_path
+from kiro_crew.jsonl_util import bounded_records
 from kiro_crew.metrics.provider import TELEMETRY_ENV_VAR, env_pin, otlp_egress_active
 from kiro_crew.metrics.schema import RESOURCE_ATTR_PROCESS_START_TIME
 from kiro_crew.metrics.turns import TURN_COST_METRIC, TURN_CREDITS_METRIC, TURN_METRIC
@@ -88,6 +89,47 @@ _COST_WINDOW_DAYS = 7
 # arbitrary truncation cap on the payload. ``warm`` is boolean, so the split is
 # two entries wide and needs no cap.
 _OTHER_SPLIT_ATTRS = frozenset({"warm"})
+
+# Gauge names whose reading is a monotonic PROCESS-LIFETIME total, not the
+# current state of anything: the process CPU/GC instruments plus the inventory
+# probe-failure count. Each instrument module declares its own
+# ``LIFETIME_TOTAL_METRICS`` -- the module that registers an instrument is the one
+# that knows what its reading means -- and this is where the two are merged, so
+# neither module has to know about the other and no name is re-listed here.
+#
+# These are reduced through the CUMULATIVE reducer instead of the gauge one.
+# Two reasons, and both matter:
+#
+#   * The gauge reducer reports the newest sample, which for a lifetime total is
+#     "CPU seconds since this process started" — a number that only grows and
+#     answers nothing about the window on screen. The cumulative reducer already
+#     computes exactly the right thing (newest minus first-in-window, per
+#     process-identity stream), so this is a routing decision, not a new reducer.
+#   * They WERE observable counters, so shards written before that changed carry
+#     them as CUMULATIVE sums. Routing both shapes into the same per-stream
+#     structure is what keeps one continuous series across the switch instead of
+#     splitting the window into a counter row and a gauge row.
+#
+# Resolved on FIRST USE, not at import. This module is imported while the gateway
+# is still assembling its routes, and importing the two instrument modules there
+# costs a measured 22ms and 14 extra modules (including sqlite3, via
+# platform_compat's dependency chain) for a telemetry subsystem that is off by
+# default — work on the boot path before the socket is even bound. The names are
+# needed only inside :func:`_aggregate`, which runs per request, so the import
+# happens there and the merged set is memoized for the life of the process.
+_lifetime_total_gauges: "frozenset[str] | None" = None
+
+
+def _lifetime_total_gauge_names() -> "frozenset[str]":
+    """The merged lifetime-total roster, imported on first use and cached."""
+    global _lifetime_total_gauges
+    if _lifetime_total_gauges is None:
+        from kiro_crew.metrics.inventory_gauges import LIFETIME_TOTAL_METRICS as _inventory
+        from kiro_crew.metrics.process_gauges import LIFETIME_TOTAL_METRICS as _process
+
+        _lifetime_total_gauges = frozenset(_process + _inventory)
+    return _lifetime_total_gauges
+
 
 # Only terminal-fault outcomes count toward fault_rate. The two watchdog
 # recovery outcomes ("tool_stall" and "stale_recover") are NOT faults: a
@@ -614,8 +656,8 @@ def _iter_export_cycles(
         shard_day = "-".join(stem_parts[1:4])
         shard_pid = stem_parts[4] if len(stem_parts) > 4 and stem_parts[4].isdigit() else ""
         try:
-            with p.open(encoding="utf-8") as fh:
-                for line in fh:
+            with p.open("rb") as fh:
+                for line in bounded_records(fh, p, label="telemetry"):
                     try:
                         obj = json.loads(line)
                     except ValueError:
@@ -829,10 +871,13 @@ def _other_series(
 def _cumulative_series(
     other_cum: dict[str, dict[tuple[str, str, str], list[tuple[int, float]]]],
 ) -> list[dict[str, Any]]:
-    """Window-relative totals for CUMULATIVE sums, name-sorted.
+    """Window-relative totals for lifetime-total streams, name-sorted.
 
-    Observable counters (CPU seconds, GC stats) re-emit a process-lifetime
-    snapshot every export cycle. Two ordering/window traps shape this reducer:
+    Two record shapes land here and they describe the same thing: a CUMULATIVE
+    sum (what the process CPU/GC instruments wrote while they were observable
+    counters) and a lifetime-total GAUGE (what they write now). Either way the
+    stream re-emits a process-lifetime snapshot every export cycle. Two
+    ordering/window traps shape this reducer:
 
     * Samples were buffered during the scan and are sorted by timestamp here,
       because shard iteration order is not chronological — a per-PID stream
@@ -854,7 +899,7 @@ def _cumulative_series(
     see. An unchanged identity across provider rebuilds (telemetry off/on)
     stitches the rebuild segments into one stream. Within an identity-keyed
     stream a value below the running maximum is shard garbage, never a reset:
-    one identity is one OS process, whose observable counters are monotonic,
+    one identity is one OS process, whose lifetime totals are monotonic,
     and banking a garbage drop would double-count the recovery.
 
     The value-below-segment-max RESET heuristic applies ONLY to identity-less
@@ -976,7 +1021,8 @@ def _aggregate(shard_paths: list[Path]) -> dict[str, Any]:
     # concurrently — collapsing them on timestamp alone would show whichever
     # process exported last as "the" process state.
     other_gauge: dict[str, dict[tuple[str, str], tuple[int, float]]] = {}
-    # CUMULATIVE sums (observable counters): per (pid, process-identity,
+    # Lifetime-total streams — CUMULATIVE sums, plus the lifetime-total gauges
+    # named by _lifetime_total_gauge_names(): per (pid, process-identity,
     # attrs) stream, buffer (time_unix_nano, value) samples during the scan.
     # The identity is the resource-level start-time token, so a reused PID
     # starts a NEW stream deterministically ("" for legacy shards, which
@@ -1001,6 +1047,10 @@ def _aggregate(shard_paths: list[Path]) -> dict[str, Any]:
     # model that spent it cannot be named.
     turn_credits_by_model: dict[str, _Hist] = {}
     turn_cost_by_model: dict[str, _Hist] = {}
+    # Resolved once per call rather than per datapoint: the first call imports the
+    # instrument modules (deferred off the gateway boot path) and every later one
+    # is a cached lookup.
+    lifetime_totals = _lifetime_total_gauge_names()
 
     for name, dp, shard_day, shard_pid, identity, data in _iter_metric_points(shard_paths):
         attrs = dp.get("attributes") or {}
@@ -1062,12 +1112,16 @@ def _aggregate(shard_paths: list[Path]) -> dict[str, Any]:
             ts = int(fts) if fts is not None else 0
             # A Sum's data block carries aggregation_temporality/is_monotonic;
             # a Gauge's carries neither. DELTA sums (regular counters)
-            # accumulate across cycles. CUMULATIVE sums (observable counters:
-            # CPU seconds, GC stats) re-emit a process-lifetime snapshot every
-            # cycle, so summing them would multiply by cycle count — they are
-            # buffered per (PID, identity, attrs) stream and reduced
-            # window-relative after the scan (_cumulative_series). Gauges keep
-            # the newest sample per attribute set.
+            # accumulate across cycles. CUMULATIVE sums re-emit a
+            # process-lifetime snapshot every cycle, so summing them would
+            # multiply by cycle count — they are buffered per (PID, identity,
+            # attrs) stream and reduced window-relative after the scan
+            # (_cumulative_series). Gauges keep the newest sample per attribute
+            # set, EXCEPT the lifetime-total gauges (process CPU/GC), whose
+            # newest sample is a running total rather than a state: those take
+            # the same window-relative path, which is also what stitches them to
+            # the cumulative-sum records the same instruments wrote before they
+            # became gauges. See _lifetime_total_gauge_names().
             is_sum = "aggregation_temporality" in data or "is_monotonic" in data
             try:
                 # OTel JSON: DELTA=1, CUMULATIVE=2. Same chokepoint contract
@@ -1077,11 +1131,11 @@ def _aggregate(shard_paths: list[Path]) -> dict[str, Any]:
             except (TypeError, ValueError, OverflowError):
                 cumulative = False
             key = ",".join(f"{k}={attrs[k]}" for k in sorted(attrs)) if attrs else ""
-            if is_sum and cumulative:
+            if (is_sum and cumulative) or (not is_sum and name in lifetime_totals):
                 if ts <= 0:
-                    # A cumulative sample that cannot be ordered cannot join
-                    # the delta math — and letting it sort oldest would make
-                    # it the stream baseline, resurrecting the
+                    # A lifetime total that cannot be ordered cannot join the
+                    # delta math — and letting it sort oldest would make it the
+                    # stream baseline, resurrecting the
                     # lifetime-as-window-total bug on one corrupt record.
                     continue
                 other_cum.setdefault(name, {}).setdefault((shard_pid, identity, key), []).append(

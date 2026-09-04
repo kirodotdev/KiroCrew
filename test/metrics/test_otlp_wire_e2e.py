@@ -55,7 +55,7 @@ _CUMULATIVE = 2
 #: assertion must not require them. ``probe.failures`` publishes only once a probe
 #: has failed -- its presence is the signal, so demanding it here would invert the
 #: contract. Its positive path is covered in ``test_inventory_gauges.py``.
-_HEALTHY_ABSENT = frozenset({ig.COUNTER_PROBE_FAILURES})
+_HEALTHY_ABSENT = frozenset({ig.GAUGE_PROBE_FAILURES})
 
 #: Process gauges whose SOURCE is Linux-only: ``process_gauges`` maps an
 #: unavailable ``/proc`` surface to None, which is a gap by design. Exempted only
@@ -76,15 +76,12 @@ def _not_required() -> frozenset:
 #: Sentinel for "keep this probe's real implementation" in a readings override.
 _REAL = object()
 
-#: Instruments whose kind carries a temporality (observable counters are Sums).
-#: Observable GAUGES must carry none — a temporality on a gauge would mean the
-#: exporter is treating a point-in-time reading as an accumulating one.
-_COUNTER_NAMES = (
-    pg.COUNTER_CPU_SECONDS,
-    pg.COUNTER_GC_COLLECTIONS,
-    pg.COUNTER_GC_COLLECTED,
-    pg.COUNTER_GC_UNCOLLECTABLE,
-)
+#: Instruments whose reading is a monotonic PROCESS-LIFETIME total (process CPU
+#: and the GC stats). They were observable COUNTERS, which made them the only
+#: CUMULATIVE series Kiro Crew exported; they are observable GAUGES now, so they
+#: must carry NO temporality like every other gauge here. Named separately from
+#: the rest of the roster because they are the ones a regression would flip back.
+_LIFETIME_TOTAL_NAMES = pg.LIFETIME_TOTAL_METRICS
 
 
 # ---------------------------------------------------------------------------
@@ -217,6 +214,35 @@ def test_every_declared_instrument_reaches_the_exporter(exported):
         assert not data.points(name), f"{name} must publish nothing on a healthy build"
 
 
+def test_the_probe_failure_series_is_a_gauge_when_it_does_publish(tmp_path, monkeypatch):
+    """The one instrument the healthy-build ratchet cannot see, asserted directly.
+
+    ``probe.failures`` publishes only once a probe has raised, so it is absent
+    from the fixture every other tier-1 test reads — which means
+    ``test_no_instrument_exports_cumulative`` is structurally blind to it, and it
+    was an observable COUNTER (the last CUMULATIVE series exported) until it
+    became a lifetime-total gauge. Force a probe failure so the series exists,
+    then assert on it.
+    """
+
+    def _raise():
+        raise RuntimeError("probe blew up")
+
+    monkeypatch.setattr(ig, "read_active_crons", _raise)
+    readings = dict(_PINNED_READINGS)
+    readings["read_active_crons"] = _REAL  # keep the raiser installed above
+    data, _ = _drive_live_build(tmp_path, monkeypatch, readings)
+
+    points = data.points(ig.GAUGE_PROBE_FAILURES)
+    assert points, "the forced probe failure published no series"
+    assert data.attr_values(ig.GAUGE_PROBE_FAILURES, "probe") == {ig.PROBE_CRONS}
+    assert data.temporality(ig.GAUGE_PROBE_FAILURES) is None, (
+        "probe.failures carries a temporality, so it is an accumulating "
+        "instrument again -- the last cumulative series is back"
+    )
+    assert not data.points(ig.GAUGE_CRONS_ACTIVE), "the raising probe still published a value"
+
+
 def test_a_probe_that_cannot_answer_yields_a_gap_not_a_zero(tmp_path, monkeypatch):
     """A None reading must produce NO series, all the way through the exporter.
 
@@ -271,18 +297,47 @@ def test_local_shards_carry_the_process_identity_token(exported):
         assert RESOURCE_ATTR_PROCESS_START_TIME in serialized
 
 
-def test_observable_counters_export_cumulative(exported):
+def test_no_instrument_exports_cumulative(exported):
+    """The ratchet: not one Kiro Crew series is CUMULATIVE on either destination.
+
+    One cumulative series is enough to force a consumer into stateful whole-hour
+    aggregation — its hourly increment is last-minus-first across the entire
+    hour, per host and per process lifetime — while a DELTA sum or a gauge merges
+    one datapoint at a time. The process CPU/GC instruments were the last four,
+    as observable counters; they are gauges now.
+
+    Asserted over EVERY exported instrument rather than a list, so a new
+    cumulative instrument fails here without anyone remembering to add it. One
+    instrument is structurally outside this population -- ``probe.failures``
+    publishes nothing on a healthy build -- so it has its own assertion in
+    ``test_the_probe_failure_series_is_a_gauge_when_it_does_publish``.
+    """
     data, _ = exported
-    for name in _COUNTER_NAMES:
-        assert data.temporality(name) == _CUMULATIVE, (
-            f"{name} must export CUMULATIVE: its delta baseline lives in the "
-            "provider, which telemetry consent changes rebuild in-process"
-        )
+    offenders = sorted(name for name in data.metrics if data.temporality(name) == _CUMULATIVE)
+    assert not offenders, (
+        f"instruments exporting CUMULATIVE: {offenders}. A cumulative series "
+        "forces every consumer into whole-hour stateful aggregation"
+    )
+
+
+def test_lifetime_total_instruments_are_gauges_carrying_their_total(exported):
+    """Gauge-shaped, and the READING is still the process-lifetime total.
+
+    Both halves matter: a temporality would mean they went back to being
+    observable counters, and an empty point set would mean the switch dropped
+    CPU/GC trend data rather than re-encoding it.
+    """
+    data, _ = exported
+    for name in _LIFETIME_TOTAL_NAMES:
+        assert data.temporality(name) is None, f"{name} is not a gauge on the wire"
+        points = data.points(name)
+        assert points, f"{name} published nothing; the reading was dropped, not re-encoded"
+        assert all(p["value"] >= 0 for p in points), f"{name} published a negative total"
 
 
 def test_observable_gauges_carry_no_temporality(exported):
     data, _ = exported
-    for name in ig.ALL_METRIC_NAMES:
+    for name in tuple(ig.ALL_METRIC_NAMES) + tuple(pg.ALL_METRIC_NAMES):
         if not data.points(name):
             continue
         assert data.temporality(name) is None, (
@@ -505,28 +560,75 @@ def test_otlp_export_delivers_every_instrument_and_the_resource(monkeypatch, tmp
 
 
 @requires_otlp
+def test_otlp_defaults_to_the_local_sink_temporality(monkeypatch, tmp_path):
+    """With no operator preference, both destinations resolve the SAME temporality.
+
+    The defect this pins: the OTLP reader was built with an endpoint, a session
+    and an interval and nothing else, so it kept the exporter's CUMULATIVE
+    default while the local sink used DELTA — one MeterProvider describing the
+    same instruments two different ways, with nothing failing.
+
+    Asserted by resolving BOTH exporters rather than by reading our own map back,
+    so a map that reaches only one of them still fails here.
+    """
+    from opentelemetry.sdk.metrics import Counter, Histogram, UpDownCounter
+    from opentelemetry.sdk.metrics.export import AggregationTemporality
+
+    from kiro_crew.metrics.local_exporter import JsonlMetricExporter
+    from kiro_crew.metrics.provider import _build_otlp_reader
+    from kiro_crew.metrics.temporality import TEMPORALITY_ENV_VAR
+    from kiro_crew.platform.interfaces import OtlpDestination
+
+    monkeypatch.delenv(TEMPORALITY_ENV_VAR, raising=False)
+
+    class _Cfg:
+        export_interval_seconds = 60
+
+    reader = _build_otlp_reader(
+        OtlpDestination("test", "http://127.0.0.1:1/v1/metrics", frozenset({"metrics"})),
+        _Cfg(),
+    )
+    assert reader is not None, "the extra is installed, so the builder must produce a reader"
+    try:
+        otlp = reader._exporter._preferred_temporality
+    finally:
+        reader.shutdown()
+    local = JsonlMetricExporter(tmp_path)._preferred_temporality
+
+    for kind in (Counter, UpDownCounter, Histogram):
+        assert otlp[kind] == local[kind] == AggregationTemporality.DELTA, (
+            f"{kind.__name__}: OTLP resolved {otlp[kind]}, local sink {local[kind]} — "
+            "the two destinations must not disagree about the same instrument"
+        )
+
+
+@requires_otlp
 def test_otlp_temporality_preference_is_honored(monkeypatch, tmp_path):
     """``OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE`` must reach the exporter.
 
     Asserted through ``_build_otlp_reader``, not against a hand-built exporter.
-    The claim is about OUR builder: it passes no explicit temporality, deliberately,
-    so the exporter keeps its own env-var fallback — which is what lets an operator
-    match a backend that requires DELTA (Datadog, Statsig) without a code change,
-    and what the guide documents. A hand-built exporter would only pin the SDK's
-    env handling, leaving an explicit preference added in the builder undetected;
-    reaching into the reader the builder returned is what makes that regression
-    visible here.
+    The claim is about OUR builder: it passes its own DELTA map only when the
+    operator has NOT set the variable, so a host that names a preference keeps
+    the exporter's own handling of it — which is what lets an operator match a
+    backend that requires CUMULATIVE (CloudWatch, Prometheus-style) or DELTA
+    (Datadog, Statsig) without a code change, and what the guide documents.
+
+    The CUMULATIVE direction is the one that needs a test rather than a comment:
+    the exporter applies an explicitly passed dict ON TOP of whichever base the
+    variable chose, so passing the map unconditionally would silently override
+    exactly the operator who asked for the OTel default.
     """
     from opentelemetry.sdk.metrics import Counter
 
     from kiro_crew.metrics.provider import _build_otlp_reader
+    from kiro_crew.metrics.temporality import TEMPORALITY_ENV_VAR
     from kiro_crew.platform.interfaces import OtlpDestination
 
     class _Cfg:
         export_interval_seconds = 60
 
     def _temporality_for(preference):
-        monkeypatch.setenv("OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE", preference)
+        monkeypatch.setenv(TEMPORALITY_ENV_VAR, preference)
         dest = OtlpDestination("test", "http://127.0.0.1:1/v1/metrics", frozenset({"metrics"}))
         reader = _build_otlp_reader(dest, _Cfg())
         assert reader is not None, "the extra is installed, so the builder must produce a reader"
@@ -536,8 +638,8 @@ def test_otlp_temporality_preference_is_honored(monkeypatch, tmp_path):
             reader.shutdown()
 
     # Both directions, so the assertion cannot pass on a builder that pins one of
-    # them: an explicit preference in _build_otlp_reader fails whichever value it
-    # is not, and ignoring the env entirely fails one of the two.
+    # them: an unconditional preference in _build_otlp_reader fails whichever
+    # value it is not.
     assert (
         _temporality_for("DELTA") == _DELTA
     ), "DELTA not honored: the builder is overriding the exporter's env-var fallback"

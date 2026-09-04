@@ -5,6 +5,7 @@ from __future__ import annotations
 from kiro_crew.monitoring.models import (
     MONITOR_STATE_VERSION,
     MONITOR_STOP_AGENT_TURN_BUDGET,
+    MONITOR_STOP_PROVIDER_ERROR_BUDGET,
     MONITOR_STOP_RUNTIME_BUDGET,
     MONITOR_STOP_TOKEN_BUDGET,
     MonitorBudgets,
@@ -45,14 +46,20 @@ def decide_monitor(
         return _provider_error_decision(state, observation, state.budgets)
     if observation.status is MonitorObservationStatus.ACTIONABLE:
         if observation.fingerprint == state.last_wake_fingerprint:
+            if observation.supplemental_provider_error is not None:
+                return _supplemental_provider_error_decision(state, state.budgets)
             return MonitorDecision.NO_CHANGE
         return MonitorDecision.WAKE_ACTIONABLE
+    if observation.supplemental_provider_error is not None:
+        return _supplemental_provider_error_decision(state, state.budgets)
+    if observation.status is MonitorObservationStatus.SUCCESS:
+        if observation.head_changed:
+            return MonitorDecision.WAKE_ACTIONABLE
+        return MonitorDecision.STOP_SUCCESS
     if observation.fingerprint == state.last_fingerprint:
         return MonitorDecision.NO_CHANGE
     if observation.status is MonitorObservationStatus.PENDING:
         return MonitorDecision.RECORD_ONLY
-    if observation.status is MonitorObservationStatus.SUCCESS:
-        return MonitorDecision.STOP_SUCCESS
     return MonitorDecision.STOP_BLOCKED
 
 
@@ -75,6 +82,8 @@ def monitor_budget_reason(state: MonitorState, *, now: float) -> str:
         return MONITOR_STOP_AGENT_TURN_BUDGET
     if state.total_tokens >= budgets.max_tokens:
         return MONITOR_STOP_TOKEN_BUDGET
+    if state.provider_error_count >= budgets.max_provider_errors:
+        return MONITOR_STOP_PROVIDER_ERROR_BUDGET
     return ""
 
 
@@ -86,6 +95,16 @@ def _provider_error_decision(
     error = observation.provider_error
     if error not in _RETRYABLE_PROVIDER_ERRORS:
         return MonitorDecision.STOP_BLOCKED
+    if state.consecutive_provider_errors + 1 >= budgets.max_provider_errors:
+        return MonitorDecision.STOP_BLOCKED
+    return MonitorDecision.RETRY_PROVIDER
+
+
+def _supplemental_provider_error_decision(
+    state: MonitorState,
+    budgets: MonitorBudgets,
+) -> MonitorDecision:
+    """Retry incomplete secondary evidence before retiring the readable target."""
     if state.consecutive_provider_errors + 1 >= budgets.max_provider_errors:
         return MonitorDecision.STOP_BLOCKED
     return MonitorDecision.RETRY_PROVIDER

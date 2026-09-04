@@ -18,12 +18,13 @@ import {
 import type { ProjectRun } from '../types'
 
 vi.mock('../pages/ProjectDetailPage', () => ({ default: () => <div data-testid="project-detail">Detail</div> }))
-vi.mock('../components/AgentSelector', () => ({ default: () => <select data-testid="agent-select" /> }))
+vi.mock('../components/AgentSelector', () => ({ default: () => <select data-testid="agent-select" aria-label="agent" /> }))
 
 vi.mock('../api/client', () => ({
   api: {
     taskRunnerStatus: vi.fn().mockResolvedValue({ running: false, available: true, runs: [] }),
     kirocrewAgents: vi.fn().mockResolvedValue({ agents: [], default_agent: '' }),
+    syncKirocrewAgents: vi.fn().mockResolvedValue({}),
     refineStatus: vi.fn().mockResolvedValue({ status: 'idle', text: '', error: '' }),
     cancelTaskRunner: vi.fn().mockResolvedValue({ ok: true }),
     deleteTaskRun: vi.fn().mockResolvedValue({ ok: true }),

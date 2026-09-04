@@ -11,9 +11,9 @@ import pytest
 
 from kiro_crew import autonudge as _an
 from kiro_crew import autonudge_authz as _autonudge_mod
-from kiro_crew.autonudge import AutoNudgeService, NudgeLoop
+from kiro_crew.autonudge import AutoNudgeService, MonitorUpdateConflict, NudgeLoop
 from kiro_crew.dashboard.handlers.autonudge import render_nudge_message
-from kiro_crew.monitoring.models import MonitorOutcome, MonitorState
+from kiro_crew.monitoring.models import MonitorBudgets, MonitorOutcome, MonitorState
 
 
 @pytest.fixture(autouse=True)
@@ -128,20 +128,92 @@ async def test_persistence_across_restart(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_unwired_structured_monitor_is_not_armed_or_fired_on_start(tmp_path):
-    """PR1 persists structured monitors but cannot deliver them before Task4."""
+async def test_arming_a_loop_that_names_one_pr_gates_it_without_any_parameter(tmp_path):
+    """The default-on property, stated as a test -- at the surface that owns it.
+
+    No caller passes a target, a kind, or an enable flag: the subject comes out of
+    the instruction the caller had already written. Every earlier version of this
+    saving was an opt-in and measured zero adoption; there is nothing to opt into.
+
+    The default lives at the ARMING SURFACES (the monitor_start tool, its directive,
+    the REST route), not in ``AutoNudgeService.add``. That distinction is the point
+    rather than a detail: the service also arms loops whose work is NOT a pull
+    request -- a goal loop, an app's own timer -- and inferring a monitor from any
+    message that merely mentions one PR would throttle those and, if the PR is
+    already merged, deactivate them before their first turn. The surfaces' own
+    defaults are pinned where they live: ``test_monitor_start_ack`` asserts the
+    tool's directive payload carries ``gate: true`` when the caller passed nothing,
+    and ``test_autonudge_handlers_cov80`` asserts the REST route passes ``gate=True``
+    on an absent field. What THIS test owns is the other half -- that a gated arming
+    needs no target, kind or enable flag to find its subject.
+    """
+    service = AutoNudgeService(base_dir=tmp_path)
+    loop = await service.add(
+        "chat-9-999",
+        "Babysit https://github.com/acme/widgets/pull/42 until the checks are green.",
+        idle_secs=300,
+        gate=True,
+    )
+    try:
+        assert loop.monitor is not None
+        assert loop.monitor.kind == "gh-pr"
+        assert loop.monitor.target == "acme/widgets#42"
+        assert loop.monitor.quiet_ticks == 0
+    finally:
+        service.stop()
+
+
+@pytest.mark.asyncio
+async def test_arming_a_loop_with_no_observable_subject_stays_exactly_as_before(tmp_path):
+    service = AutoNudgeService(base_dir=tmp_path)
+    loop = await service.add(
+        "chat-9-998",
+        "Keep checking the canary until the deployment settles.",
+        idle_secs=300,
+    )
+    try:
+        assert loop.monitor is None
+    finally:
+        service.stop()
+
+
+@pytest.mark.asyncio
+async def test_an_ambiguous_instruction_arms_ungated_rather_than_guessing(tmp_path):
+    """Two PRs named -- gating the wrong one would silence the right one."""
+    service = AutoNudgeService(base_dir=tmp_path)
+    loop = await service.add(
+        "chat-9-997",
+        "Drive acme/widgets#42; it is blocked on acme/widgets#7 merging first.",
+        idle_secs=300,
+    )
+    try:
+        assert loop.monitor is None
+    finally:
+        service.stop()
+
+
+@pytest.mark.asyncio
+async def test_a_gated_monitor_survives_a_restart_and_re_arms(tmp_path):
+    """A persisted monitor keeps its active intent across a gateway restart.
+
+    It used to be deactivated on load, because delivery had no gate and the
+    legacy timer would have injected a prompt without a decision. With the tick
+    gate in place, deactivating would instead end every watch at the next
+    restart -- and silently, since a stopped watch and a quiet one look the same
+    from outside. No turn is fired here: arming is not firing.
+    """
     store = {
         "version": 1,
         "loops": [
             {
                 "id": "monitor01",
                 "slot_key": "chat-1-123",
-                "message": "must not dispatch",
+                "message": "Babysit https://github.com/acme/widgets/pull/42",
                 "idle_secs": 15,
                 "active": True,
                 "monitor": {
-                    "kind": "github_pull_request",
-                    "target": "owner/repo#123",
+                    "kind": "gh-pr",
+                    "target": "acme/widgets#42",
                     "objective": "review_ready",
                     "created_ts": 1_000.0,
                 },
@@ -159,8 +231,8 @@ async def test_unwired_structured_monitor_is_not_armed_or_fired_on_start(tmp_pat
     await service.start()
     try:
         loop = service._loops["monitor01"]
-        assert not loop.active
-        assert loop.id not in service._timers
+        assert loop.active
+        assert loop.id in service._timers
         assert fired == []
     finally:
         service.stop()
@@ -170,13 +242,16 @@ async def test_unwired_structured_monitor_is_not_armed_or_fired_on_start(tmp_pat
 @pytest.mark.parametrize(
     "monitor",
     (
-        _structured_monitor(),
         _structured_monitor(version=99),
         _structured_monitor(outcome=MonitorOutcome.BLOCKED),
     ),
 )
-async def test_generic_update_cannot_reactivate_a_structured_monitor(tmp_path, monitor):
-    """The legacy PATCH path cannot revive current, future, or terminal monitors."""
+async def test_generic_update_cannot_reactivate_a_settled_or_future_monitor(tmp_path, monitor):
+    """A finished monitor, and one this gateway cannot interpret, stay off.
+
+    The tick gate declines to observe a monitor that carries an outcome, so
+    reviving one would fire ungated prompts at a subject that is already done.
+    """
     service = AutoNudgeService(base_dir=tmp_path)
     loop = NudgeLoop(
         id="monitor02",
@@ -195,8 +270,1807 @@ async def test_generic_update_cannot_reactivate_a_structured_monitor(tmp_path, m
 
 
 @pytest.mark.asyncio
-async def test_unwired_structured_monitor_timer_dispatches_zero_turns(tmp_path):
-    """A pre-existing timer cannot reach legacy delivery after monitor attachment."""
+async def test_a_current_gated_monitor_can_be_resumed_by_the_user(tmp_path):
+    """Pausing and resuming a watch from the goal popover must work.
+
+    Refusing here is what made a monitor loop unrecoverable once stopped: the
+    only surface that can resume a loop is this generic path.
+    """
+    service = AutoNudgeService(base_dir=tmp_path)
+    loop = NudgeLoop(
+        id="monitor02b",
+        slot_key="chat-1-123",
+        message="Babysit https://github.com/acme/widgets/pull/42",
+        active=False,
+        monitor=_structured_monitor(kind="gh-pr", target="acme/widgets#42"),
+        gate=True,
+    )
+    service._loops[loop.id] = loop
+
+    await service.update(loop.id, active=True)
+
+    assert loop.active
+    assert loop.id in service._timers
+    service.stop()
+
+
+@pytest.mark.asyncio
+async def test_a_long_quiet_streak_is_delivered_anyway(tmp_path, monkeypatch):
+    """Gating must SLOW an act-on-quiet loop, never silence it.
+
+    The gate sees only the subject, so a loop whose duty is to act while the
+    subject is quiet -- refresh a heartbeat, chase a silent reviewer, rebase onto
+    a moving base -- is invisible to it. Inference cannot read that intent out of
+    the wording, so the bound is what keeps the design honest.
+    """
+    import kiro_crew.autonudge as _an
+
+    fired: list[NudgeLoop] = []
+
+    async def on_fire(loop):
+        fired.append(loop)
+        return True
+
+    monkeypatch.setattr(
+        _an.irq, "poll", lambda *a, **k: _an.irq.Verdict(_an.irq.Outcome.QUIET, "nothing new")
+    )
+    service = AutoNudgeService(base_dir=tmp_path, on_fire=on_fire)
+    loop = NudgeLoop(
+        id="monitor08",
+        slot_key="chat-1-123",
+        message="If https://github.com/acme/widgets/pull/42 still has no review, ping the reviewer",
+        idle_secs=30,
+        monitor=_structured_monitor(kind="gh-pr", target="acme/widgets#42"),
+        gate=True,
+    )
+    service._loops[loop.id] = loop
+
+    try:
+        for _ in range(_an._MAX_QUIET_STREAK - 1):
+            await service._timer(loop, delay=0)
+        assert fired == [], "the saving must hold below the floor"
+
+        await service._timer(loop, delay=0)
+        assert len(fired) == 1, "the floor must deliver a turn"
+        assert loop.monitor is not None
+        assert loop.monitor.floor_ticks == 1
+        assert loop.monitor.quiet_streak == 0, "the streak must reset after delivery"
+        # Counted apart from wakes, so a periodic delivery is never reported as
+        # a real signal.
+        assert loop.monitor.wakes == 0
+    finally:
+        service.stop()
+
+
+@pytest.mark.asyncio
+async def test_an_unusable_instruction_mid_poll_discards_the_verdict(tmp_path, monkeypatch):
+    """The verdict is about the config the poll ran with, so the tick re-derives it.
+
+    This replaces a test for a HOST change mid-poll -- an instruction edited from a
+    bare ``owner/name#123`` to the same subject as a URL, which left kind and target
+    identical while changing which SERVER was observed. Requiring an explicit
+    pull-request URL removes that case entirely: a shorthand no longer infers, and an
+    enterprise URL is refused, so no inferable spelling can change the host. Keeping
+    a test for an unreachable path would only look like protection.
+
+    What is still reachable is an edit that stops naming a subject at all. The
+    verdict must not settle the watch then either.
+    """
+    import kiro_crew.autonudge as _an
+
+    async def on_fire(loop):
+        return True
+
+    service = AutoNudgeService(base_dir=tmp_path, on_fire=on_fire)
+    loop = NudgeLoop(
+        id="monitor16",
+        slot_key="chat-1-123",
+        message="watch https://github.com/acme/widgets/pull/42 until green",
+        idle_secs=30,
+        monitor=_structured_monitor(kind="gh-pr", target="acme/widgets#42"),
+        gate=True,
+    )
+    service._loops[loop.id] = loop
+
+    def _unbind_then_terminal(*_a, **_k):
+        # Stands in for an edit landing while gh was still running.
+        loop.message = "watch the canary deployment instead"
+        return _an.irq.Verdict(_an.irq.Outcome.TERMINAL, "merged", ("merged",))
+
+    monkeypatch.setattr(_an.irq, "poll", _unbind_then_terminal)
+
+    try:
+        assert await service._monitor_tick_is_quiet(loop) is False
+        assert loop.monitor is not None
+        assert loop.monitor.outcome is None, "a verdict about the old subject must not settle it"
+    finally:
+        service.stop()
+
+
+@pytest.mark.asyncio
+async def test_the_tick_recovers_the_host_from_the_instruction(tmp_path, monkeypatch):
+    """The stored target is a SHORTHAND, which carries no host.
+
+    Re-inferring the probe config from it would discard the github.com pin a
+    URL-armed watch is entitled to, and on a machine configured for an enterprise
+    server the probe would resolve the slug there -- where a same-numbered pull
+    request being merged would falsely terminate a live public watch.
+    """
+    import json
+
+    import kiro_crew.autonudge as _an
+
+    seen: list[str] = []
+
+    async def on_fire(loop):
+        return True
+
+    def _capture(identity, message, probe):
+        seen.append(message)
+        return _an.irq.Verdict(_an.irq.Outcome.QUIET, "nothing new")
+
+    monkeypatch.setattr(_an.irq, "poll", _capture)
+    service = AutoNudgeService(base_dir=tmp_path, on_fire=on_fire)
+    loop = NudgeLoop(
+        id="monitor14",
+        slot_key="chat-1-123",
+        message="Watch https://github.com/acme/widgets/pull/42 until green",
+        idle_secs=30,
+        monitor=_structured_monitor(kind="gh-pr", target="acme/widgets#42"),
+        gate=True,
+    )
+    service._loops[loop.id] = loop
+
+    try:
+        assert await service._monitor_tick_is_quiet(loop) is True
+        assert seen, "the probe must have been driven"
+        assert json.loads(seen[0])["host"] == "github.com"
+    finally:
+        service.stop()
+
+
+@pytest.mark.asyncio
+async def test_a_drifted_instruction_fires_instead_of_observing(tmp_path, monkeypatch):
+    """If the instruction and the bound monitor name different subjects, fire.
+
+    They should never disagree -- the retarget path rebinds both -- but resolving a
+    disagreement by guessing which one is right is how a watch ends up observing
+    the wrong pull request.
+    """
+    import kiro_crew.autonudge as _an
+
+    polled: list[str] = []
+
+    async def on_fire(loop):
+        return True
+
+    monkeypatch.setattr(
+        _an.irq,
+        "poll",
+        lambda i, m, p: (polled.append(m), _an.irq.Verdict(_an.irq.Outcome.QUIET, "q"))[1],
+    )
+    service = AutoNudgeService(base_dir=tmp_path, on_fire=on_fire)
+    loop = NudgeLoop(
+        id="monitor15",
+        slot_key="chat-1-123",
+        message="Watch https://github.com/acme/widgets/pull/99 until green",
+        idle_secs=30,
+        monitor=_structured_monitor(kind="gh-pr", target="acme/widgets#42"),
+        gate=True,
+    )
+    service._loops[loop.id] = loop
+
+    try:
+        assert await service._monitor_tick_is_quiet(loop) is False
+        assert polled == [], "a drifted subject must not be observed at all"
+    finally:
+        service.stop()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "keys, expected",
+    [
+        (("merged",), "success"),
+        (("closed",), "blocked"),
+        ((), "blocked"),
+    ],
+)
+async def test_only_a_merged_subject_is_recorded_as_a_success(
+    tmp_path, monkeypatch, keys, expected
+):
+    """Reaching the end is not the same as ending well.
+
+    A subject CLOSED WITHOUT MERGING is a watch that stopped on a question --
+    reopen or abandon -- and recording it as a success tells the user "no action
+    needed" about the one case that needs them most. No key at all means the
+    kernel could not attribute the end to an observation, which is also not a
+    success. The probe already distinguishes the two, so the gate reads its keys
+    rather than its prose.
+    """
+    import kiro_crew.autonudge as _an
+
+    async def on_fire(loop):
+        return True
+
+    monkeypatch.setattr(
+        _an.irq,
+        "poll",
+        lambda *a, **k: _an.irq.Verdict(_an.irq.Outcome.TERMINAL, "ended", keys),
+    )
+    service = AutoNudgeService(base_dir=tmp_path, on_fire=on_fire)
+    loop = NudgeLoop(
+        id="monitor17",
+        slot_key="chat-1-123",
+        message="watch https://github.com/acme/widgets/pull/42 until green",
+        idle_secs=30,
+        monitor=_structured_monitor(kind="gh-pr", target="acme/widgets#42"),
+        gate=True,
+    )
+    service._loops[loop.id] = loop
+
+    try:
+        assert await service._monitor_tick_is_quiet(loop) is True
+        assert loop.monitor is not None
+        assert loop.monitor.outcome is not None
+        assert loop.monitor.outcome.value == expected
+    finally:
+        service.stop()
+
+
+@pytest.mark.asyncio
+async def test_a_direct_service_call_is_not_gated(tmp_path):
+    """The service also arms loops whose work is NOT the pull request.
+
+    A goal loop, or an app's own timer, can easily MENTION one PR in the message it
+    was given -- "drive PR #42 to green" is the ordinary phrasing. Gating by default
+    at this layer would throttle such a loop to the quiet-streak floor, and if that
+    PR is already merged or closed it would deactivate the loop before its first
+    agent turn. The evidence for gating is about monitor_start specifically, so the
+    default belongs to that surface and not to everyone who calls ``add``.
+    """
+    service = AutoNudgeService(base_dir=tmp_path)
+    try:
+        goal = await service.add(
+            "chat-4-400",
+            "Keep working the backlog; the tracking PR is "
+            "https://github.com/acme/widgets/pull/42",
+            idle_secs=300,
+        )
+        assert goal.gate is False, "a direct call must not inherit the surface default"
+        assert goal.monitor is None, "and no monitor may be inferred from the mention"
+    finally:
+        service.stop()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "stored, note",
+    [
+        ({"gate": None}, "a null is not a decision"),
+        ({"gate": "false"}, "and neither is a string"),
+        ({}, "and an absent key is a loop nobody chose to gate"),
+    ],
+)
+async def test_every_uncertain_stored_gate_resolves_to_ungated(tmp_path, stored, note):
+    """Only an explicit boolean true gates. Everything else stays ungated.
+
+    Two earlier tests here asserted the OPPOSITE -- that a corrupt value and an absent
+    key both decode to gated -- on the grounds that reading corrupt data as an opt-out
+    would ungate loops nobody chose to ungate. That had the asymmetry backwards, and
+    four review rounds circled it before it was named: gating is the state that can
+    silently STOP a loop, because a gated loop whose subject is merged or closed
+    DEACTIVATES. Being wrong toward ungated costs a turn per interval, which is what
+    today already costs. Being wrong toward gated stops a recurring task because its
+    instruction happened to mention a pull request -- and the absent-key case is
+    exactly the legacy generic loop that predates this field.
+    """
+    import json
+
+    async def on_fire(loop):
+        return True
+
+    record = {
+        "id": "monitor28",
+        "slot_key": "chat-1-123",
+        "message": "watch https://github.com/acme/widgets/pull/42",
+        "idle_secs": 300,
+        "active": True,
+    }
+    record.update(stored)
+    (tmp_path / "autonudge.json").write_text(json.dumps({"loops": [record]}), encoding="utf-8")
+    service = AutoNudgeService(base_dir=tmp_path, on_fire=on_fire)
+    try:
+        await service.start()
+        loop = service._loops.get("monitor28")
+        assert loop is not None, "the loop must load"
+        assert loop.gate is False, note
+        assert loop.monitor is None, "and no monitor is inferred for it"
+        # A later edit must not gate it either -- that is where a falsy-but-untrusted
+        # value used to bite, by looking like an opt-out nobody had recorded.
+        await service.update(loop.id, message="watch https://github.com/acme/widgets/pull/99")
+        assert loop.monitor is None, "an edit must not gate a loop that was never gated"
+    finally:
+        service.stop()
+
+
+@pytest.mark.asyncio
+async def test_the_marker_writes_do_not_release_the_lock_mid_write(tmp_path, monkeypatch):
+    """A cancellable write can let a stale snapshot overwrite newer state.
+
+    ``_persist_locked`` releases ``_lock`` if its awaiting task is cancelled while the
+    executor write is still in flight, so a pause or retarget landing there could have
+    the marker's stale snapshot land on top of the update that just wrote. The
+    settlements already use the non-releasing writer; these marker writes were left
+    behind, and nothing pinned which writer they used.
+    """
+    import kiro_crew.autonudge as _an
+
+    async def on_fire(loop):
+        return True
+
+    monkeypatch.setattr(
+        _an.irq,
+        "poll",
+        lambda *a, **k: _an.irq.Verdict(_an.irq.Outcome.TERMINAL, "merged", ("merged",)),
+    )
+    service = AutoNudgeService(base_dir=tmp_path, on_fire=on_fire)
+    loop = NudgeLoop(
+        id="monitor27",
+        slot_key="slack:C0123456:1700000000.1",
+        message="watch https://github.com/acme/widgets/pull/42 until green",
+        idle_secs=30,
+        monitor=_structured_monitor(kind="gh-pr", target="acme/widgets#42"),
+        gate=True,
+    )
+    service._loops[loop.id] = loop
+
+    releasing = {"n": 0}
+    real_releasing = service._persist_locked
+
+    async def _count_releasing():
+        releasing["n"] += 1
+        await real_releasing()
+
+    monkeypatch.setattr(service, "_persist_locked", _count_releasing)
+
+    try:
+        assert await service._monitor_tick_is_quiet(loop) is False
+        assert loop.monitor is not None
+        assert loop.monitor.terminal_pending == "success", "the flow must reach both markers"
+        assert (
+            releasing["n"] == 0
+        ), "no marker may go through the writer that releases the lock mid-write"
+    finally:
+        service.stop()
+
+
+@pytest.mark.asyncio
+@pytest.mark.asyncio
+async def test_a_re_owed_claim_survives_the_backoff_re_arm(tmp_path, monkeypatch):
+    """The accounting fix was being defeated by the cleanup meant to protect it.
+
+    A refused fire re-owes its wake so the retried delivery still charges it. But the
+    refusal path then re-arms with a backoff, ``_arm_timer`` cancels before it creates,
+    and the cancel path dropped both claims -- erasing, one statement later, the claim
+    the refusal had just re-owed. So the wake was undercounted and its follow-up turn
+    lost, in the ordinary case of a busy slot.
+
+    Replacing a timer is not cancelling a cycle. An explicit cancel still drops the
+    claim, which the sibling test pins and which is a deliberate trade: an undelivered
+    observation is lost rather than charged to a later turn that did not carry it.
+    """
+    import kiro_crew.autonudge as _an
+
+    async def on_fire(loop):
+        return False
+
+    def _wake(*_a, **_k):
+        return _an.irq.Verdict(_an.irq.Outcome.WAKE, "new red", ())
+
+    monkeypatch.setattr(_an.irq, "poll", _wake)
+    service = AutoNudgeService(base_dir=tmp_path, on_fire=on_fire)
+    loop = NudgeLoop(
+        id="monitor45",
+        slot_key="chat-1-123",
+        message="watch https://github.com/acme/widgets/pull/42 until green",
+        idle_secs=30,
+        monitor=_structured_monitor(kind="gh-pr", target="acme/widgets#42"),
+        gate=True,
+    )
+    service._loops[loop.id] = loop
+
+    try:
+        assert await service._monitor_tick_is_quiet(loop) is False
+        # A timer must EXIST, or ``_cancel_timer`` returns before the code under test:
+        # the refusal path re-arms with a backoff, and it is that re-arm's cancel which
+        # used to erase the claim. Without this the test cannot fail.
+        service._arm_timer(loop, delay=3600)
+        assert loop.id in service._timers
+        await service._run_fire_cycle(loop)
+        assert loop.monitor is not None and loop.monitor.wakes == 0, "a refusal charges nothing"
+        assert loop.id in service._pending_monitor_wake, "and the re-arm must not erase the debt"
+        # An explicit CANCEL still drops it, which is the trade the sibling test pins:
+        # an undelivered observation is lost rather than charged to a turn that did not
+        # carry it. Only REPLACING a timer is exempt.
+        service._cancel_timer(loop.id)
+        assert loop.id not in service._pending_monitor_wake
+        assert loop.id not in service._pending_floor_tick
+    finally:
+        service.stop()
+
+
+@pytest.mark.asyncio
+async def test_the_revalidation_does_not_consume_the_ticks_dedupe_identity(tmp_path, monkeypatch):
+    """A poll whose answer is discarded must not be able to swallow a signal.
+
+    ``identity`` is the kernel's dedupe key -- ``poll``'s contract says it replaces the
+    cron job id in the state digest so two drivers keep independent memories. The
+    revalidation shared the tick's key while returning only a bool, so a reopened subject
+    with a fresh comment observed HERE was marked reported and the next real tick read it
+    as unchanged, losing the signal until the streak floor.
+    """
+    import kiro_crew.autonudge as _an
+
+    seen: list[str] = []
+
+    async def on_fire(loop):
+        return True
+
+    def _record_identity(identity, *_a, **_k):
+        seen.append(identity)
+        return _an.irq.Verdict(_an.irq.Outcome.WAKE, "reopened with a comment", ())
+
+    monkeypatch.setattr(_an.irq, "poll", _record_identity)
+    service = AutoNudgeService(base_dir=tmp_path, on_fire=on_fire)
+    monitor = _structured_monitor(kind="gh-pr", target="acme/widgets#42")
+    monitor.terminal_pending = "success"
+    loop = NudgeLoop(
+        id="monitor44",
+        slot_key="slack:C123:1700000000.1",
+        message="watch https://github.com/acme/widgets/pull/42 until green",
+        idle_secs=30,
+        monitor=monitor,
+        gate=True,
+    )
+    service._loops[loop.id] = loop
+
+    try:
+        await service._run_fire_cycle(loop)
+        assert seen, "the settlement revalidated"
+        tick_identity = f"{loop.id}:github.com"
+        assert tick_identity not in seen, "the discarded poll must not spend the tick's key"
+        assert all(i.startswith(tick_identity) and i != tick_identity for i in seen)
+        assert loop.active is True, "and a reopened subject is not settled"
+    finally:
+        service.stop()
+
+
+@pytest.mark.asyncio
+async def test_a_changed_terminal_classification_does_not_settle(tmp_path, monkeypatch):
+    """A pull request can be closed, reopened and MERGED inside one channel turn.
+
+    The revalidation added last round accepted any terminal, so the merge would have been
+    settled under the stale "blocked" marker and announced as an unmerged close -- the
+    delivered news and the persisted outcome disagreeing about the same event.
+
+    When the classification changes, the owed terminal is simply gone: the debt is dropped
+    and the watch stays alive so the next tick records the real one.
+    """
+    import kiro_crew.autonudge as _an
+
+    async def on_fire(loop):
+        return True
+
+    def _merged_now(*_a, **_k):
+        return _an.irq.Verdict(_an.irq.Outcome.TERMINAL, "merged after reopen", ("merged",))
+
+    monkeypatch.setattr(_an.irq, "poll", _merged_now)
+    service = AutoNudgeService(base_dir=tmp_path, on_fire=on_fire)
+    monitor = _structured_monitor(kind="gh-pr", target="acme/widgets#42")
+    monitor.terminal_pending = "blocked"
+    loop = NudgeLoop(
+        id="monitor43",
+        slot_key="slack:C123:1700000000.1",
+        message="watch https://github.com/acme/widgets/pull/42 until green",
+        idle_secs=30,
+        monitor=monitor,
+        gate=True,
+    )
+    service._loops[loop.id] = loop
+
+    try:
+        await service._run_fire_cycle(loop)
+        assert loop.monitor is not None
+        assert loop.active is True, "a different ending is not the owed one"
+        assert loop.monitor.outcome is None, "so no outcome is persisted from the stale marker"
+        assert loop.monitor.terminal_pending == "", "and the owed one is dropped, not kept"
+    finally:
+        service.stop()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("outcome,stays_alive", [("WAKE", True), ("TERMINAL", False)])
+async def test_a_settlement_revalidates_before_it_deactivates(
+    tmp_path, monkeypatch, outcome, stays_alive
+):
+    """The window between the terminal observation and the turn landing had no evidence.
+
+    Every earlier guard for a reopened subject runs on the NEXT TICK -- the debt clearing
+    from round 31, the forced re-observation from round 34 -- and this settlement happens
+    before any tick can. A channel turn runs inline and can take minutes, which is long
+    enough for a pull request to be reopened, so the settlement re-asks.
+
+    Only a fresh TERMINAL settles. Anything else keeps the watch alive, because settling
+    is the one action here that stops work silently.
+    """
+    import kiro_crew.autonudge as _an
+
+    async def on_fire(loop):
+        return True
+
+    def _verdict(*_a, **_k):
+        return _an.irq.Verdict(getattr(_an.irq.Outcome, outcome), "state", ("merged",))
+
+    monkeypatch.setattr(_an.irq, "poll", _verdict)
+    service = AutoNudgeService(base_dir=tmp_path, on_fire=on_fire)
+    monitor = _structured_monitor(kind="gh-pr", target="acme/widgets#42")
+    monitor.terminal_pending = "success"
+    loop = NudgeLoop(
+        id="monitor41",
+        slot_key="slack:C123:1700000000.1",
+        message="watch https://github.com/acme/widgets/pull/42 until green",
+        idle_secs=30,
+        monitor=monitor,
+        gate=True,
+    )
+    service._loops[loop.id] = loop
+
+    try:
+        await service._run_fire_cycle(loop)
+        assert loop.monitor is not None
+        assert loop.active is stays_alive
+        assert loop.monitor.terminal_pending == "", "the debt is resolved either way"
+        if stays_alive:
+            assert loop.monitor.outcome is None, "a live subject keeps no settled outcome"
+        else:
+            assert loop.monitor.outcome is not None
+    finally:
+        service.stop()
+
+
+@pytest.mark.asyncio
+async def test_an_unobservable_subject_does_not_get_settled(tmp_path, monkeypatch):
+    """Absence of evidence must not retire a watch.
+
+    A failed fetch, a probe defect or a binding that no longer resolves cannot CONFIRM
+    that the subject is finished, and settling on that would be the silent stop this whole
+    design resolves away from.
+    """
+    import kiro_crew.autonudge as _an
+
+    async def on_fire(loop):
+        return True
+
+    def _explode(*_a, **_k):
+        raise RuntimeError("gh unavailable")
+
+    monkeypatch.setattr(_an.irq, "poll", _explode)
+    service = AutoNudgeService(base_dir=tmp_path, on_fire=on_fire)
+    monitor = _structured_monitor(kind="gh-pr", target="acme/widgets#42")
+    monitor.terminal_pending = "success"
+    loop = NudgeLoop(
+        id="monitor42",
+        slot_key="slack:C123:1700000000.1",
+        message="watch https://github.com/acme/widgets/pull/42 until green",
+        idle_secs=30,
+        monitor=monitor,
+        gate=True,
+    )
+    service._loops[loop.id] = loop
+
+    try:
+        await service._run_fire_cycle(loop)
+        assert loop.active is True, "an unobserved subject is not a finished one"
+    finally:
+        service.stop()
+
+
+@pytest.mark.asyncio
+async def test_a_retarget_does_not_overwrite_a_future_version_monitor(tmp_path):
+    """A record this gateway cannot read must not be replaced by it either.
+
+    The revival guard already refuses to touch a future-version monitor, because the
+    stored intent belongs to the newer gateway that wrote it. That guard runs AFTER the
+    message retarget, so a downgraded gateway destroyed the payload before the rule
+    protecting it ever applied. Same rule, second surface.
+    """
+    from kiro_crew.monitoring.models import MONITOR_STATE_VERSION
+
+    async def on_fire(loop):
+        return True
+
+    service = AutoNudgeService(base_dir=tmp_path, on_fire=on_fire)
+    monitor = _structured_monitor(kind="gh-pr", target="acme/widgets#42")
+    monitor.version = MONITOR_STATE_VERSION + 1
+    loop = NudgeLoop(
+        id="monitor39",
+        slot_key="chat-1-123",
+        message="watch https://github.com/acme/widgets/pull/42 until green",
+        idle_secs=30,
+        monitor=monitor,
+        gate=True,
+    )
+    service._loops[loop.id] = loop
+
+    try:
+        await service.update(loop.id, message="watch https://github.com/acme/widgets/pull/99")
+        assert loop.monitor is monitor, "the newer gateway's record must survive"
+        assert loop.monitor.target == "acme/widgets#42"
+        assert loop.monitor.version == MONITOR_STATE_VERSION + 1
+    finally:
+        service.stop()
+
+
+@pytest.mark.asyncio
+async def test_a_retarget_releases_the_floor_claim_too(tmp_path):
+    """A floor claim earned by the OLD subject must not charge the new one.
+
+    The retarget released the wake claim and forgot this one, so an in-flight floor
+    delivery completing after a retarget incremented ``floor_ticks`` on a monitor that
+    had never hit a floor. It is the third time this review has found a claim released
+    in one set and forgotten in another.
+    """
+
+    async def on_fire(loop):
+        return True
+
+    service = AutoNudgeService(base_dir=tmp_path, on_fire=on_fire)
+    loop = NudgeLoop(
+        id="monitor40",
+        slot_key="chat-1-123",
+        message="watch https://github.com/acme/widgets/pull/42 until green",
+        idle_secs=30,
+        monitor=_structured_monitor(kind="gh-pr", target="acme/widgets#42"),
+        gate=True,
+    )
+    service._loops[loop.id] = loop
+    service._pending_floor_tick.add(loop.id)
+
+    try:
+        await service.update(loop.id, message="watch https://github.com/acme/widgets/pull/99")
+        assert loop.monitor is not None and loop.monitor.target == "acme/widgets#99"
+        assert loop.id not in service._pending_floor_tick, "the old subject's claim is gone"
+        await service._run_fire_cycle(loop)
+        assert loop.monitor.floor_ticks == 0, "so the new monitor is not charged for it"
+    finally:
+        service.stop()
+
+
+@pytest.mark.asyncio
+async def test_a_floor_tick_is_charged_only_when_its_delivery_lands(tmp_path, monkeypatch):
+    """The floor counter must describe turns that ran, like the wake counter.
+
+    The floor decides to deliver in the QUIET branch, and the fire it asks for can still
+    be refused by a busy slot. Charging at the decision reported a turn that never ran,
+    and because the honest free-tick figure is ``quiet_ticks`` minus ``floor_ticks``, an
+    over-counted floor understates the saving.
+
+    The prescribed remedy was to revert the counter until it could be charged after
+    delivery. That was declined -- the counter is the subtraction that separates a quiet
+    verdict from a free tick -- and the substance adopted instead.
+    """
+    import kiro_crew.autonudge as _an
+
+    outcomes = [False, True]
+
+    async def on_fire(loop):
+        return outcomes.pop(0)
+
+    def _verdict(*_a, **_k):
+        return _an.irq.Verdict(_an.irq.Outcome.QUIET, "nothing yet", ())
+
+    monkeypatch.setattr(_an.irq, "poll", _verdict)
+    service = AutoNudgeService(base_dir=tmp_path, on_fire=on_fire)
+    monitor = _structured_monitor(kind="gh-pr", target="acme/widgets#42")
+    monitor.quiet_streak = _an._MAX_QUIET_STREAK - 1
+    loop = NudgeLoop(
+        id="monitor38",
+        slot_key="chat-1-123",
+        message="watch https://github.com/acme/widgets/pull/42 until green",
+        idle_secs=30,
+        monitor=monitor,
+        gate=True,
+    )
+    service._loops[loop.id] = loop
+
+    try:
+        # The floor trips and asks for a turn, but the slot refuses it.
+        assert await service._monitor_tick_is_quiet(loop) is False
+        await service._run_fire_cycle(loop)
+        assert loop.monitor is not None
+        assert loop.monitor.floor_ticks == 0, "a refused floor delivery spent nothing"
+        assert loop.id in service._pending_floor_tick, "so the charge stays owed"
+
+        # The retry lands, and only now is it charged -- exactly once.
+        await service._run_fire_cycle(loop)
+        assert loop.monitor.floor_ticks == 1
+        assert loop.id not in service._pending_floor_tick
+    finally:
+        service.stop()
+
+
+@pytest.mark.asyncio
+async def test_a_refused_wake_is_charged_once_when_its_retry_delivers(tmp_path, monkeypatch):
+    """A refused fire accounts for nothing, so the wake must stay owed.
+
+    The claim was discarded on the assumption that reaching the end of the fire cycle
+    meant the wake had been accounted for. A refused fire does not account for it: the
+    next tick takes the observation-free follow-up bypass, DELIVERS the turn, and finds
+    no claim to charge -- so a wake that really happened and really woke the agent was
+    missing from ``wakes`` entirely, which makes the saving look better than it is.
+
+    Exactly once is the property: the refusal charges nothing, the retry charges one.
+    """
+    import kiro_crew.autonudge as _an
+
+    outcomes = [False, True]
+
+    async def on_fire(loop):
+        return outcomes.pop(0)
+
+    def _verdict(*_a, **_k):
+        return _an.irq.Verdict(_an.irq.Outcome.WAKE, "new red", ())
+
+    monkeypatch.setattr(_an.irq, "poll", _verdict)
+    service = AutoNudgeService(base_dir=tmp_path, on_fire=on_fire)
+    loop = NudgeLoop(
+        id="monitor37",
+        slot_key="chat-1-123",
+        message="watch https://github.com/acme/widgets/pull/42 until green",
+        idle_secs=30,
+        monitor=_structured_monitor(kind="gh-pr", target="acme/widgets#42"),
+        gate=True,
+    )
+    service._loops[loop.id] = loop
+
+    try:
+        # First tick: the probe wakes, the fire is REFUSED.
+        assert await service._monitor_tick_is_quiet(loop) is False
+        await service._run_fire_cycle(loop)
+        assert loop.monitor is not None
+        assert loop.monitor.wakes == 0, "a refused fire charges nothing"
+        assert loop.monitor.followup_ticks == _an._WAKE_FOLLOWUP_TICKS
+
+        # Second tick: the follow-up bypass retries the delivery, which lands.
+        assert await service._monitor_tick_is_quiet(loop) is False
+        await service._run_fire_cycle(loop)
+        assert loop.monitor.wakes == 1, "the delivered retry charges the owed wake"
+    finally:
+        service.stop()
+
+
+@pytest.mark.asyncio
+async def test_a_failed_clear_write_leaves_the_debt_cleared(tmp_path, monkeypatch):
+    """A rollback here would restore a debt a live observation just disproved.
+
+    Round 31 restored ``terminal_pending`` when its clearing write failed, to keep memory
+    and disk in agreement. That is the right instinct almost everywhere and the wrong one
+    here: the next delivered turn would settle a terminal state that no longer holds and
+    silently stop a watch whose subject is alive -- the exact harm this feature's gating
+    default is designed to avoid.
+
+    The divergence is safe in one direction only, so it is allowed to stand: memory saying
+    "no debt" keeps the watch running, and a restart before the write lands brings the
+    stale debt back, where the re-observation forced for outstanding debt clears it again.
+    """
+    import kiro_crew.autonudge as _an
+
+    async def on_fire(loop):
+        return True
+
+    def _verdict(*_a, **_k):
+        return _an.irq.Verdict(_an.irq.Outcome.WAKE, "open again with news", ())
+
+    monkeypatch.setattr(_an.irq, "poll", _verdict)
+    service = AutoNudgeService(base_dir=tmp_path, on_fire=on_fire)
+    monitor = _structured_monitor(kind="gh-pr", target="acme/widgets#42")
+    monitor.terminal_pending = "success"
+    loop = NudgeLoop(
+        id="monitor36",
+        slot_key="slack:C123:1700000000.1",
+        message="watch https://github.com/acme/widgets/pull/42 until green",
+        idle_secs=30,
+        monitor=monitor,
+        gate=True,
+    )
+    service._loops[loop.id] = loop
+
+    real_write = service._write_monitor_snapshot_locked
+    calls: list[int] = []
+
+    async def _explode_after_the_first(*a, **k):
+        # The doubt marker's own durable write comes first, and when THAT fails the
+        # tick fires without polling -- so failing every write would never reach the
+        # clearing this test is about.
+        calls.append(1)
+        if len(calls) == 1:
+            return await real_write(*a, **k)
+        raise OSError("disk full")
+
+    monkeypatch.setattr(service, "_write_monitor_snapshot_locked", _explode_after_the_first)
+
+    try:
+        await service._monitor_tick_is_quiet(loop)
+        assert loop.monitor is not None
+        assert loop.monitor.terminal_pending == "", "a disproved debt must not come back"
+        await service._run_fire_cycle(loop)
+        assert loop.active is True, "so the delivered turn cannot settle a live subject"
+    finally:
+        service.stop()
+
+
+@pytest.mark.asyncio
+async def test_a_cancelled_settlement_still_counts_the_delivered_turn(tmp_path, monkeypatch):
+    """A re-raise leaves by the same door an early return would.
+
+    The settlement block carries a comment forbidding an early RETURN precisely so the
+    fire cycle's accounting still runs. But the terminal write DRAINS before propagating
+    a cancellation and then re-raises, which skipped the same code -- committing the loop
+    as finished while the turn that carried the news went uncounted.
+
+    Recording a delivery that has already happened cannot be wrong, so the accounting now
+    precedes the settlement.
+    """
+
+    import kiro_crew.autonudge as _an
+
+    async def on_fire(loop):
+        return True
+
+    def _still_terminal(*_a, **_k):
+        # The settlement now revalidates before deactivating, so this test has to let
+        # that check CONFIRM the terminal -- otherwise the settlement is skipped and the
+        # cancellation this test is about never happens.
+        return _an.irq.Verdict(_an.irq.Outcome.TERMINAL, "merged", ("merged",))
+
+    monkeypatch.setattr(_an.irq, "poll", _still_terminal)
+    service = AutoNudgeService(base_dir=tmp_path, on_fire=on_fire)
+    monitor = _structured_monitor(kind="gh-pr", target="acme/widgets#42")
+    monitor.terminal_pending = "success"
+    loop = NudgeLoop(
+        id="monitor35",
+        slot_key="slack:C123:1700000000.1",
+        message="watch https://github.com/acme/widgets/pull/42 until green",
+        idle_secs=30,
+        monitor=monitor,
+        gate=True,
+    )
+    service._loops[loop.id] = loop
+    before = loop.cycle_count
+
+    async def _cancel_mid_write(*_a, **_k):
+        raise asyncio.CancelledError()
+
+    monkeypatch.setattr(service, "_write_monitor_snapshot_locked", _cancel_mid_write)
+
+    try:
+        with pytest.raises(asyncio.CancelledError):
+            await service._run_fire_cycle(loop)
+        assert loop.cycle_count == before + 1, "the delivered turn must be counted"
+        assert loop.last_fire_ts > 0, "and its timestamp recorded"
+    finally:
+        service.stop()
+
+
+@pytest.mark.asyncio
+async def test_terminal_debt_is_re_observed_rather_than_spending_a_free_tick(tmp_path, monkeypatch):
+    """The follow-up allowance must not jump over the reopened-subject check.
+
+    The allowance skips observation to protect work already in progress after a wake.
+    A subject carrying terminal debt is FINISHED, so there is no work to protect, and
+    the retry's correctness depends on it still being finished. Because the clearing
+    for a reopened subject lives AFTER the poll, the bypass jumped straight over it
+    and the retried delivery settled a terminal state that no longer held.
+    """
+    import kiro_crew.autonudge as _an
+
+    polls: list[str] = []
+
+    async def on_fire(loop):
+        return True
+
+    def _verdict(*_a, **_k):
+        polls.append("polled")
+        return _an.irq.Verdict(_an.irq.Outcome.QUIET, "open again", ())
+
+    monkeypatch.setattr(_an.irq, "poll", _verdict)
+    service = AutoNudgeService(base_dir=tmp_path, on_fire=on_fire)
+    monitor = _structured_monitor(kind="gh-pr", target="acme/widgets#42")
+    monitor.terminal_pending = "success"
+    monitor.followup_ticks = 1
+    loop = NudgeLoop(
+        id="monitor34",
+        slot_key="slack:C123:1700000000.1",
+        message="watch https://github.com/acme/widgets/pull/42 until green",
+        idle_secs=30,
+        monitor=monitor,
+        gate=True,
+    )
+    service._loops[loop.id] = loop
+
+    try:
+        await service._monitor_tick_is_quiet(loop)
+        assert polls == ["polled"], "the debt must be re-observed, not assumed"
+        assert loop.monitor is not None
+        assert loop.monitor.terminal_pending == "", "and a live verdict clears it"
+        assert loop.monitor.followup_ticks == 1, "the allowance is not spent on this path"
+    finally:
+        service.stop()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "outcome,held_across_fire",
+    [
+        ("WAKE", True),
+        ("FALLBACK", False),
+        ("QUIET", False),
+    ],
+)
+async def test_a_wake_keeps_the_interrupted_poll_doubt_until_delivery_settles(
+    tmp_path, monkeypatch, outcome, held_across_fire
+):
+    """The doubt guards DELIVERY for a wake, not the poll returning.
+
+    The kernel commits "reported" for what it saw, so a process that dies between the
+    verdict and the turn landing leaves a signal nothing will re-raise: a fresh
+    observation reads the same state as unchanged. The in-process refusal is covered by
+    ``followup_ticks``; only a marker that OUTLIVES the fire covers a death. Clearing it
+    when the poll returned made the protection depend on whether a debounced write won a
+    race against the shutdown, and a crash-safety property that holds only when a race
+    falls one way is not a property.
+
+    Other outcomes discharge it immediately: QUIET delivers nothing that could be lost,
+    and a FALLBACK observed nothing, so the kernel committed nothing to dedupe against.
+    """
+    import kiro_crew.autonudge as _an
+
+    seen_during_fire: list[bool] = []
+
+    async def on_fire(loop):
+        seen_during_fire.append(loop.monitor.poll_in_flight if loop.monitor else False)
+        return True
+
+    def _verdict(*_a, **_k):
+        return _an.irq.Verdict(getattr(_an.irq.Outcome, outcome), "moved", ())
+
+    monkeypatch.setattr(_an.irq, "poll", _verdict)
+    service = AutoNudgeService(base_dir=tmp_path, on_fire=on_fire)
+    loop = NudgeLoop(
+        id="monitor33",
+        slot_key="chat-1-123",
+        message="watch https://github.com/acme/widgets/pull/42 until green",
+        idle_secs=30,
+        monitor=_structured_monitor(kind="gh-pr", target="acme/widgets#42"),
+        gate=True,
+    )
+    service._loops[loop.id] = loop
+
+    try:
+        quiet = await service._monitor_tick_is_quiet(loop)
+        assert loop.monitor is not None
+        if held_across_fire:
+            assert quiet is False, "a wake fires"
+            assert loop.monitor.poll_in_flight is True, "the doubt must outlive the verdict"
+            await service._run_fire_cycle(loop)
+            assert seen_during_fire == [True], "and must still be set DURING the fire"
+            assert loop.monitor.poll_in_flight is False, "then discharged once it settles"
+        else:
+            assert loop.monitor.poll_in_flight is False, "nothing was owed, so nothing is held"
+    finally:
+        service.stop()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "outcome,expect_cleared",
+    [
+        ("QUIET", True),
+        ("WAKE", True),
+        ("FALLBACK", False),
+    ],
+)
+async def test_a_reopened_subject_clears_the_owed_terminal_turn(
+    tmp_path, monkeypatch, outcome, expect_cleared
+):
+    """A channel loop's terminal debt is durable, so it must be revocable.
+
+    Settlement is deferred for a channel loop because only a delivered turn can carry
+    the news, and the fire that would deliver it is routinely refused. If the subject
+    is REOPENED in that window, the next delivered turn would claim the stale debt and
+    deactivate a watch whose subject is live again. Nothing cleared the marker: it was
+    written once and read at settlement.
+
+    Only a TRUSTWORTHY observation clears it. A FALLBACK means the subject was not
+    observed at all, and letting an unobserved tick erase real debt would lose the
+    terminal news permanently -- the opposite of "failure resolves toward spending".
+    """
+    import kiro_crew.autonudge as _an
+
+    async def on_fire(loop):
+        return True
+
+    def _verdict(*_a, **_k):
+        return _an.irq.Verdict(getattr(_an.irq.Outcome, outcome), "still open", ())
+
+    monkeypatch.setattr(_an.irq, "poll", _verdict)
+    service = AutoNudgeService(base_dir=tmp_path, on_fire=on_fire)
+    monitor = _structured_monitor(kind="gh-pr", target="acme/widgets#42")
+    monitor.terminal_pending = "blocked"
+    loop = NudgeLoop(
+        id="monitor32",
+        slot_key="slack:C123:1700000000.1",
+        message="watch https://github.com/acme/widgets/pull/42 until green",
+        idle_secs=30,
+        monitor=monitor,
+        gate=True,
+    )
+    service._loops[loop.id] = loop
+
+    try:
+        assert _an.is_channel_key(loop.slot_key), "the deferral only applies to a channel loop"
+        await service._monitor_tick_is_quiet(loop)
+        if expect_cleared:
+            assert loop.monitor is not None and loop.monitor.terminal_pending == ""
+            on_disk = json.loads((tmp_path / "autonudge.json").read_text(encoding="utf-8"))
+            stored = [row for row in on_disk["loops"] if row["id"] == loop.id][0]
+            assert stored["monitor"]["terminal_pending"] == "", "and the clearing must be durable"
+        else:
+            assert loop.monitor is not None and loop.monitor.terminal_pending == "blocked"
+    finally:
+        service.stop()
+
+
+@pytest.mark.asyncio
+async def test_an_upgraded_record_with_a_monitor_but_no_gate_is_not_polled(tmp_path, monkeypatch):
+    """The stored decision wins over the presence of the monitor object.
+
+    Flipping the legacy default to ungated created a state the two checks disagree
+    about: a record with a monitor dict but no ``gate`` key -- armed while the default
+    was True, or upgraded from an earlier build -- decodes to ``gate=False`` with its
+    monitor intact. Reading only ``monitor is None`` would poll it anyway and let a
+    terminal verdict DEACTIVATE it, which is the harm the opt-out exists to prevent.
+    An opt-out honoured by only some paths is worse than none.
+    """
+    import kiro_crew.autonudge as _an
+
+    polled: list[str] = []
+
+    async def on_fire(loop):
+        return True
+
+    def _should_never_run(*_a, **_k):
+        polled.append("polled")
+        return _an.irq.Verdict(_an.irq.Outcome.TERMINAL, "merged", ("merged",))
+
+    monkeypatch.setattr(_an.irq, "poll", _should_never_run)
+    service = AutoNudgeService(base_dir=tmp_path, on_fire=on_fire)
+    loop = NudgeLoop(
+        id="monitor31",
+        slot_key="chat-1-123",
+        message="watch https://github.com/acme/widgets/pull/42 until green",
+        idle_secs=30,
+        monitor=_structured_monitor(kind="gh-pr", target="acme/widgets#42"),
+        gate=False,
+    )
+    service._loops[loop.id] = loop
+
+    try:
+        assert await service._monitor_tick_is_quiet(loop) is False, "it must fire, not gate"
+        assert polled == [], "and the probe must not run at all"
+        assert loop.active is True, "so nothing can deactivate it"
+        assert loop.monitor is not None and loop.monitor.outcome is None
+    finally:
+        service.stop()
+
+
+@pytest.mark.asyncio
+async def test_a_failed_retarget_write_hands_the_wake_claim_back(tmp_path, monkeypatch):
+    """The rollback has to restore everything the retarget took, not just the fields.
+
+    Replacing the monitor drops the loop's pending wake claim, because a claim earned
+    by the OLD subject must not be spent on the new one. If the write then FAILS the
+    retarget did not happen -- so the claim belongs to the loop again, and leaving it
+    discarded costs the delivered wake its accounting and its follow-up turn. Same
+    incomplete-restore shape as the terminal transition's missing field.
+    """
+
+    async def on_fire(loop):
+        return True
+
+    service = AutoNudgeService(base_dir=tmp_path, on_fire=on_fire)
+    loop = NudgeLoop(
+        id="monitor30",
+        slot_key="chat-1-123",
+        message="watch https://github.com/acme/widgets/pull/42 for failures",
+        idle_secs=30,
+        monitor=_structured_monitor(kind="gh-pr", target="acme/widgets#42"),
+        gate=True,
+    )
+    service._loops[loop.id] = loop
+    service._pending_monitor_wake.add(loop.id)
+
+    def _explode(_payload):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(service, "_write_state", _explode)
+
+    try:
+        with pytest.raises(OSError):
+            await service.update(
+                loop.id, message="watch https://github.com/acme/widgets/pull/99 for failures"
+            )
+        assert loop.id in service._pending_monitor_wake, "the claim must come back"
+        assert loop.monitor is not None
+        assert loop.monitor.target == "acme/widgets#42", "and the old subject with it"
+    finally:
+        service.stop()
+
+
+@pytest.mark.asyncio
+async def test_a_retarget_during_lock_acquisition_does_not_crash_the_settlement(
+    tmp_path, monkeypatch
+):
+    """Waiting for the lock is an await, so the monitor can vanish in that gap.
+
+    An instruction edited to name no subject clears ``loop.monitor``. Dereferencing
+    it afterwards raises out of the fire cycle, which leaves the retargeted loop
+    ACTIVE with no timer -- a watch that never ticks again. The earlier re-read
+    checked the debt and the registration but not the object itself.
+    """
+    import kiro_crew.autonudge as _an
+
+    async def on_fire(loop):
+        return True
+
+    monkeypatch.setattr(
+        _an.irq,
+        "poll",
+        lambda *a, **k: _an.irq.Verdict(_an.irq.Outcome.TERMINAL, "merged", ("merged",)),
+    )
+    service = AutoNudgeService(base_dir=tmp_path, on_fire=on_fire)
+    loop = NudgeLoop(
+        id="monitor29",
+        slot_key="slack:C0123456:1700000000.1",
+        message="watch https://github.com/acme/widgets/pull/42 until green",
+        idle_secs=30,
+        monitor=_structured_monitor(kind="gh-pr", target="acme/widgets#42"),
+        gate=True,
+    )
+    service._loops[loop.id] = loop
+
+    real_acquire = service._acquire_mutation_lock
+
+    async def _clear_the_monitor_then_acquire(loop_id):
+        lock = await real_acquire(loop_id)
+        if loop.monitor is not None and loop.monitor.terminal_pending:
+            # Stands in for a retarget landing while we waited for this lock.
+            loop.monitor = None
+        return lock
+
+    monkeypatch.setattr(service, "_acquire_mutation_lock", _clear_the_monitor_then_acquire)
+
+    try:
+        await service._timer(loop, delay=0)  # must not raise
+        assert loop.monitor is None
+        assert loop.active is True, "the retargeted loop must keep its timer"
+    finally:
+        service.stop()
+
+
+@pytest.mark.asyncio
+async def test_a_failed_settlement_write_leaves_the_terminal_turn_owed(tmp_path, monkeypatch):
+    """Announce only what the record holds -- at this site too.
+
+    The gate's own settlement already persisted before announcing. This one was added
+    two rounds later and did not inherit the rule: the delivered path reaches a write
+    further down, but AFTER the emit, so a failed write left memory reporting a finish
+    while the record still said active-and-owed, and the restart delivered the final
+    turn twice.
+    """
+    import kiro_crew.autonudge as _an
+
+    events: list[str] = []
+
+    async def on_fire(loop):
+        return True
+
+    monkeypatch.setattr(
+        _an.irq,
+        "poll",
+        lambda *a, **k: _an.irq.Verdict(_an.irq.Outcome.TERMINAL, "merged", ("merged",)),
+    )
+    service = AutoNudgeService(base_dir=tmp_path, on_fire=on_fire)
+    loop = NudgeLoop(
+        id="monitor26",
+        slot_key="slack:C0123456:1700000000.1",
+        message="watch https://github.com/acme/widgets/pull/42 until green",
+        idle_secs=30,
+        monitor=_structured_monitor(kind="gh-pr", target="acme/widgets#42"),
+        gate=True,
+    )
+    service._loops[loop.id] = loop
+    monkeypatch.setattr(service, "_emit", lambda event, _loop: events.append(event))
+
+    real_writer = service._write_monitor_snapshot_locked
+
+    async def _fail_the_settlement_write(payload=None):
+        # Three writes use this writer in this flow -- the gate's in-flight marker,
+        # the channel's terminal marker, and the settlement -- so the settlement is
+        # isolated by the one state only IT has: it deactivates the loop just before
+        # writing. Counting calls, or testing terminal_pending, both catch a marker
+        # write instead, which then rolls itself back and the settlement never runs.
+        if not loop.active:
+            raise OSError("disk full")
+        await real_writer(payload)
+
+    monkeypatch.setattr(service, "_write_monitor_snapshot_locked", _fail_the_settlement_write)
+
+    try:
+        await service._timer(loop, delay=0)
+        assert loop.monitor is not None
+        assert "expired" not in events, "a finish must not be announced unpersisted"
+        assert loop.monitor.terminal_pending == "success", "the debt stays owed"
+        assert loop.monitor.outcome is None
+        assert loop.active is True, "and the watch stays live so it retries"
+    finally:
+        service.stop()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("delivers", [True, False])
+async def test_the_owed_terminal_turn_settles_only_once_it_lands(tmp_path, monkeypatch, delivers):
+    """Settle on confirmed delivery, and stay live when it is refused.
+
+    A busy thread is the ordinary case, so a refused final fire must leave the loop
+    watchable: the probe re-raises a terminal state on every tick (it is not
+    deduped), which is what makes the retry converge instead of announcing forever.
+    """
+    import kiro_crew.autonudge as _an
+
+    async def on_fire(loop):
+        return delivers
+
+    monkeypatch.setattr(
+        _an.irq,
+        "poll",
+        lambda *a, **k: _an.irq.Verdict(_an.irq.Outcome.TERMINAL, "merged", ("merged",)),
+    )
+    service = AutoNudgeService(base_dir=tmp_path, on_fire=on_fire)
+    loop = NudgeLoop(
+        id="monitor25",
+        slot_key="slack:C0123456:1700000000.1",
+        message="watch https://github.com/acme/widgets/pull/42 until green",
+        idle_secs=30,
+        monitor=_structured_monitor(kind="gh-pr", target="acme/widgets#42"),
+        gate=True,
+    )
+    service._loops[loop.id] = loop
+    locks: list[str] = []
+    real_acquire = service._acquire_mutation_lock
+
+    async def _tracking_acquire(loop_id):
+        locks.append(loop_id)
+        return await real_acquire(loop_id)
+
+    monkeypatch.setattr(service, "_acquire_mutation_lock", _tracking_acquire)
+
+    try:
+        await service._timer(loop, delay=0)
+        assert loop.monitor is not None
+        if delivers:
+            assert loop.active is False, "the turn landed, so the watch closes"
+            assert loop.monitor.outcome is not None
+            assert loop.monitor.terminal_pending == ""
+            assert locks == [loop.id], "the settlement must take the lock update takes"
+        else:
+            assert loop.active is True, "a refused turn must leave the watch alive"
+            assert loop.monitor.outcome is None, "and nothing may be recorded as final"
+            assert loop.monitor.terminal_pending == "success", "the debt is still owed"
+    finally:
+        service.stop()
+
+
+@pytest.mark.asyncio
+async def test_an_interrupted_poll_fires_on_the_next_tick(tmp_path, monkeypatch):
+    """A cancelled poll may already have been consumed on disk.
+
+    The kernel commits its dedupe state BEFORE raising a wake, which is right for
+    the cron driver -- there the raise IS the delivery. For a driver that awaits the
+    verdict the two come apart: a gateway shutdown landing mid-poll leaves the
+    observation recorded as reported while no turn was dispatched, and re-observing
+    would read the same state as unchanged. So the next tick fires, and the doubt is
+    consumed once rather than latching.
+    """
+    import kiro_crew.autonudge as _an
+
+    async def on_fire(loop):
+        return True
+
+    polled: list[str] = []
+
+    def _should_not_be_trusted(*_a, **_k):
+        polled.append("polled")
+        return _an.irq.Verdict(_an.irq.Outcome.QUIET, "no change")
+
+    monkeypatch.setattr(_an.irq, "poll", _should_not_be_trusted)
+    service = AutoNudgeService(base_dir=tmp_path, on_fire=on_fire)
+    monitor = _structured_monitor(kind="gh-pr", target="acme/widgets#42")
+    monitor.poll_in_flight = True  # as a restart would find it
+    loop = NudgeLoop(
+        id="monitor24",
+        slot_key="chat-1-123",
+        message="watch https://github.com/acme/widgets/pull/42 until green",
+        idle_secs=30,
+        monitor=monitor,
+        gate=True,
+    )
+    service._loops[loop.id] = loop
+
+    try:
+        assert await service._monitor_tick_is_quiet(loop) is False, "the wake is owed a turn"
+        assert polled == [], "and the stale observation must not be re-consulted"
+        assert loop.monitor is not None
+        assert loop.monitor.poll_in_flight is False, "the doubt must not latch"
+        assert loop.monitor.gate_fallbacks == 1, "and it is metered as a fallback"
+        # The NEXT tick has no doubt to consume, so the gate works normally again.
+        assert await service._monitor_tick_is_quiet(loop) is True
+        assert polled == ["polled"]
+    finally:
+        service.stop()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "slot_key, expect_quiet",
+    [("chat-1-123", True), ("slack:C0123456:1700000000.1", False)],
+)
+async def test_a_channel_loop_gets_a_final_turn_but_a_dashboard_loop_does_not(
+    tmp_path, monkeypatch, slot_key, expect_quiet
+):
+    """The expiry notification only reaches the dashboard bell.
+
+    A loop armed in a Slack thread or a Discord DM would otherwise finish with
+    nothing said where its user is actually watching -- and monitor_start advertises
+    those surfaces as first-class. Returning False for a channel key delivers one
+    final turn so the agent reports into the thread; a dashboard loop already got the
+    bell and does not need to pay for a turn.
+    """
+    import kiro_crew.autonudge as _an
+
+    async def on_fire(loop):
+        return True
+
+    monkeypatch.setattr(
+        _an.irq,
+        "poll",
+        lambda *a, **k: _an.irq.Verdict(_an.irq.Outcome.TERMINAL, "merged", ("merged",)),
+    )
+    service = AutoNudgeService(base_dir=tmp_path, on_fire=on_fire)
+    loop = NudgeLoop(
+        id="monitor23",
+        slot_key=slot_key,
+        message="watch https://github.com/acme/widgets/pull/42 until green",
+        idle_secs=30,
+        monitor=_structured_monitor(kind="gh-pr", target="acme/widgets#42"),
+        gate=True,
+    )
+    service._loops[loop.id] = loop
+
+    try:
+        assert await service._monitor_tick_is_quiet(loop) is expect_quiet
+        assert loop.monitor is not None
+        if expect_quiet:
+            # Dashboard: the bell already carries the news, so the watch settles now.
+            assert loop.active is False
+            assert loop.monitor.outcome is not None
+            assert loop.monitor.terminal_pending == ""
+        else:
+            # Channel: the news rides a delivered TURN, so the loop must stay LIVE
+            # until that turn lands. An earlier version of this test asserted
+            # active is False here; committing the settlement first is exactly what
+            # loses the message when the thread is busy, because an inactive loop
+            # has nothing to re-arm. No outcome yet either, so a restart in this
+            # window finds a plain live loop rather than one refused revival.
+            assert loop.active is True
+            assert loop.monitor.outcome is None
+            assert loop.monitor.terminal_pending == "success"
+    finally:
+        service.stop()
+
+
+@pytest.mark.asyncio
+async def test_the_terminal_settlement_is_serialized_against_update(tmp_path, monkeypatch):
+    """A retarget must not land a new subject onto a just-deactivated loop.
+
+    ``update`` takes the MAINTENANCE lock and awaits inside it, so without holding
+    that same lock the settlement could deactivate the old subject in the middle of
+    a retarget -- leaving the new subject bound to an inactive loop, a watch that
+    never ticks. ``_lock`` alone would not close this: it is not the lock ``update``
+    contends for.
+    """
+    import kiro_crew.autonudge as _an
+
+    async def on_fire(loop):
+        return True
+
+    monkeypatch.setattr(
+        _an.irq,
+        "poll",
+        lambda *a, **k: _an.irq.Verdict(_an.irq.Outcome.TERMINAL, "merged", ("merged",)),
+    )
+    service = AutoNudgeService(base_dir=tmp_path, on_fire=on_fire)
+    loop = NudgeLoop(
+        id="monitor22",
+        slot_key="chat-1-123",
+        message="watch https://github.com/acme/widgets/pull/42 until green",
+        idle_secs=30,
+        monitor=_structured_monitor(kind="gh-pr", target="acme/widgets#42"),
+        gate=True,
+    )
+    service._loops[loop.id] = loop
+
+    held: list[str] = []
+    real_acquire = service._acquire_mutation_lock
+
+    async def _tracking_acquire(loop_id):
+        held.append(loop_id)
+        return await real_acquire(loop_id)
+
+    monkeypatch.setattr(service, "_acquire_mutation_lock", _tracking_acquire)
+
+    try:
+        assert await service._monitor_tick_is_quiet(loop) is True
+        assert held == [loop.id], "the settlement must take the same lock update takes"
+        assert loop.active is False
+        assert loop.monitor is not None
+        assert loop.monitor.outcome is not None
+    finally:
+        service.stop()
+
+
+@pytest.mark.asyncio
+async def test_the_terminal_transition_is_on_disk_before_the_user_is_told(tmp_path, monkeypatch):
+    """Announcing first would promise a finish the record does not have.
+
+    If the durable write fails after the notification, the user has been told the
+    watch finished while the stored loop still says it is running. The emit must
+    therefore follow the persist -- while still preceding the deactivation, whose
+    cancel reaches this very task.
+    """
+    import kiro_crew.autonudge as _an
+
+    order: list[str] = []
+
+    async def on_fire(loop):
+        return True
+
+    monkeypatch.setattr(
+        _an.irq,
+        "poll",
+        lambda *a, **k: _an.irq.Verdict(_an.irq.Outcome.TERMINAL, "merged", ("merged",)),
+    )
+    service = AutoNudgeService(base_dir=tmp_path, on_fire=on_fire)
+    real_persist = service._write_monitor_snapshot_locked
+
+    async def _tracking_persist(payload=None):
+        order.append("persist")
+        await real_persist(payload)
+
+    monkeypatch.setattr(service, "_write_monitor_snapshot_locked", _tracking_persist)
+    monkeypatch.setattr(service, "_emit", lambda event, loop: order.append(f"emit:{event}"))
+    loop = NudgeLoop(
+        id="monitor18",
+        slot_key="chat-1-123",
+        message="watch https://github.com/acme/widgets/pull/42 until green",
+        idle_secs=30,
+        monitor=_structured_monitor(kind="gh-pr", target="acme/widgets#42"),
+        gate=True,
+    )
+    service._loops[loop.id] = loop
+
+    try:
+        await service._monitor_tick_is_quiet(loop)
+        assert "persist" in order and "emit:expired" in order
+        assert order.index("persist") < order.index(
+            "emit:expired"
+        ), f"the finish was announced before it was durable: {order}"
+    finally:
+        service.stop()
+
+
+@pytest.mark.asyncio
+async def test_a_retarget_does_not_hand_the_old_wake_to_the_new_subject(tmp_path):
+    """The claim is keyed by loop, so a replaced monitor would inherit it.
+
+    A wake claimed while watching one subject, then retargeted mid-turn, would be
+    charged to a monitor that has observed nothing -- and would grant it a
+    follow-up allowance it never earned.
+    """
+
+    async def on_fire(loop):
+        return True
+
+    service = AutoNudgeService(base_dir=tmp_path, on_fire=on_fire)
+    loop = NudgeLoop(
+        id="monitor19",
+        slot_key="chat-1-123",
+        message="watch https://github.com/acme/widgets/pull/42 for failures",
+        idle_secs=30,
+        monitor=_structured_monitor(kind="gh-pr", target="acme/widgets#42"),
+        gate=True,
+    )
+    service._loops[loop.id] = loop
+    service._pending_monitor_wake.add(loop.id)
+
+    try:
+        await service.update(
+            loop.id, message="watch https://github.com/acme/widgets/pull/99 for failures"
+        )
+        assert loop.monitor is not None
+        assert loop.monitor.target == "acme/widgets#99", "the new subject must be bound"
+        assert loop.id not in service._pending_monitor_wake
+        assert loop.monitor.wakes == 0
+        assert loop.monitor.followup_ticks == 0
+    finally:
+        service.stop()
+
+
+@pytest.mark.asyncio
+async def test_a_failed_terminal_write_keeps_the_watch_alive(tmp_path, monkeypatch):
+    """A write failure must not take the timer down with the loop still active.
+
+    The gate is awaited from ``_timer`` with no guard around it, so an exception
+    escaping here kills the timer task while the record still says the loop is
+    running: a dead watch that looks exactly like a calm one. The marks are undone
+    and the tick fires instead, so the user gets a turn and the next observation
+    can try again.
+    """
+    import kiro_crew.autonudge as _an
+
+    async def on_fire(loop):
+        return True
+
+    monkeypatch.setattr(
+        _an.irq,
+        "poll",
+        lambda *a, **k: _an.irq.Verdict(_an.irq.Outcome.TERMINAL, "merged", ("merged",)),
+    )
+    service = AutoNudgeService(base_dir=tmp_path, on_fire=on_fire)
+
+    async def _explode(payload=None):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(service, "_write_monitor_snapshot_locked", _explode)
+    loop = NudgeLoop(
+        id="monitor20",
+        slot_key="chat-1-123",
+        message="watch https://github.com/acme/widgets/pull/42 until green",
+        idle_secs=30,
+        monitor=_structured_monitor(kind="gh-pr", target="acme/widgets#42"),
+        gate=True,
+    )
+    service._loops[loop.id] = loop
+
+    try:
+        assert await service._monitor_tick_is_quiet(loop) is False, "it must fire, not raise"
+        assert loop.active is True, "the watch must stay live"
+        assert loop.monitor is not None
+        assert loop.monitor.outcome is None, "an uncommitted finish must not be recorded"
+        assert loop.monitor.stopped_reason in (None, "")
+        # The LOOP's reason, not just the monitor's. A live loop left tagged as
+        # terminated is worse than a lost mark: the fallback delivery that follows
+        # would persist it, so the record would claim the watch had finished while
+        # it was still running.
+        assert loop.stopped_reason in (None, ""), "the loop must not stay tagged terminal"
+    finally:
+        service.stop()
+
+
+@pytest.mark.asyncio
+async def test_a_retarget_under_a_terminal_verdict_is_not_settled(tmp_path, monkeypatch):
+    """An old subject's finish must not deactivate a watch that has moved on.
+
+    The verdict is about the monitor that was observed. If a retarget replaced it
+    while the probe was in flight, the new subject has been observed by nothing,
+    so settling the loop on that verdict would stop a live watch.
+    """
+    import kiro_crew.autonudge as _an
+
+    async def on_fire(loop):
+        return True
+
+    service = AutoNudgeService(base_dir=tmp_path, on_fire=on_fire)
+    loop = NudgeLoop(
+        id="monitor21",
+        slot_key="chat-1-123",
+        message="watch https://github.com/acme/widgets/pull/42 until green",
+        idle_secs=30,
+        monitor=_structured_monitor(kind="gh-pr", target="acme/widgets#42"),
+        gate=True,
+    )
+    service._loops[loop.id] = loop
+
+    def _retarget_then_terminal(*_a, **_k):
+        loop.monitor = _structured_monitor(kind="gh-pr", target="acme/widgets#99")
+        return _an.irq.Verdict(_an.irq.Outcome.TERMINAL, "merged", ("merged",))
+
+    monkeypatch.setattr(_an.irq, "poll", _retarget_then_terminal)
+
+    try:
+        assert await service._monitor_tick_is_quiet(loop) is False
+        assert loop.active is True, "the retargeted watch must stay live"
+        assert loop.monitor is not None
+        assert loop.monitor.outcome is None
+    finally:
+        service.stop()
+
+
+@pytest.mark.asyncio
+async def test_a_terminal_watch_notifies_even_though_it_cancels_its_own_timer(
+    tmp_path, monkeypatch
+):
+    """The finish must reach the user, not be lost to a self-cancel.
+
+    ``update`` runs its mutation as a separate shielded task, so its cancel does
+    not see this timer as the current task and cancels it -- and the gate runs in
+    that timer, outside the firing window that would have deferred the cancel. So
+    anything sequenced AFTER the await can be dropped, and that used to be the
+    notification.
+    """
+    import kiro_crew.autonudge as _an
+
+    events: list[str] = []
+    reasons: list[str] = []
+
+    async def on_fire(loop):
+        return True
+
+    monkeypatch.setattr(
+        _an.irq,
+        "poll",
+        lambda *a, **k: _an.irq.Verdict(_an.irq.Outcome.TERMINAL, "merged", ("merged",)),
+    )
+    service = AutoNudgeService(base_dir=tmp_path, on_fire=on_fire)
+
+    def _record(event, loop):
+        events.append(event)
+        # Captured AT EMIT TIME: the observer picks its wording from this, so a
+        # reason set only by the update that follows leaves the terminal case
+        # unreachable and the user is told a cycle cap fired.
+        reasons.append(getattr(loop, "stopped_reason", ""))
+
+    monkeypatch.setattr(service, "_emit", _record)
+    loop = NudgeLoop(
+        id="monitor13",
+        slot_key="chat-1-123",
+        message="Watch https://github.com/acme/widgets/pull/42",
+        idle_secs=30,
+        monitor=_structured_monitor(kind="gh-pr", target="acme/widgets#42"),
+        gate=True,
+    )
+    service._loops[loop.id] = loop
+
+    try:
+        # Driven through the REAL timer, not by calling the gate directly: the
+        # defect lives in update() cancelling the timer task that awaits it, so a
+        # direct call registers no timer and cannot see it.
+        service._arm_timer(loop, delay=0)
+        for _ in range(80):
+            await asyncio.sleep(0.01)
+            if events:
+                break
+        assert "expired" in events, "the user must be told the watch finished"
+        assert reasons and reasons[0] == _an.MONITOR_TERMINAL_REASON, (
+            "the reason must be readable at emit time or the wording falls through "
+            "to the cycle-cap branch"
+        )
+    finally:
+        service.stop()
+
+
+# The corrupt-stored-gate case lives in
+# ``test_every_uncertain_stored_gate_resolves_to_ungated`` above, parametrised over
+# null, a string and an absent key. A separate test here asserted the opposite
+# answer for the same input and was removed rather than left contradicting it.
+
+
+@pytest.mark.asyncio
+async def test_the_opt_out_survives_an_instruction_edit(tmp_path):
+    """An explicit opt-out must not be revoked by the documented way to revise.
+
+    The instruction IS the target, so editing it re-infers the subject. A loop
+    armed with gate=False would otherwise be silently re-gated by the next wording
+    change -- and an ungated loop and a re-gated one look identical until the turns
+    stop arriving.
+    """
+
+    async def on_fire(loop):
+        return True
+
+    service = AutoNudgeService(base_dir=tmp_path, on_fire=on_fire)
+    try:
+        loop = await service.add(
+            "chat-1-123",
+            "Keep the heartbeat fresh while https://github.com/acme/widgets/pull/42 is open",
+            idle_secs=30,
+            gate=False,
+        )
+        assert loop.monitor is None
+
+        await service.update(
+            loop.id,
+            message="Keep the heartbeat fresh while https://github.com/acme/widgets/pull/42 is open",
+        )
+        assert loop.monitor is None, "an edit must not re-gate an opted-out loop"
+        assert loop.gate is False, "and the decision must still be remembered"
+    finally:
+        service.stop()
+
+    # The decision is persisted, so a fresh service reading the same store agrees.
+    revived = AutoNudgeService(base_dir=tmp_path, on_fire=on_fire)
+    try:
+        await revived.start()
+        stored = revived._loops.get(loop.id)
+        assert stored is not None and stored.gate is False
+    finally:
+        revived.stop()
+
+
+@pytest.mark.asyncio
+async def test_the_opt_out_arms_an_ungated_loop(tmp_path):
+    """gate=False must reach the SCHEDULER, not just the acknowledgement text.
+
+    If the flag stopped at the ack the loop would be armed gated anyway, and the
+    disclosure would be wrong in the other direction -- an act-on-quiet loop told
+    it was exempt and then slowed regardless.
+    """
+
+    async def on_fire(loop):
+        return True
+
+    service = AutoNudgeService(base_dir=tmp_path, on_fire=on_fire)
+    try:
+        gated = await service.add(
+            "chat-1-123",
+            "Watch https://github.com/acme/widgets/pull/42",
+            idle_secs=30,
+            gate=True,
+        )
+        assert gated.monitor is not None, "the surface's decision must still gate"
+
+        ungated = await service.add(
+            "chat-1-124",
+            "Watch https://github.com/acme/widgets/pull/42",
+            idle_secs=30,
+            gate=False,
+        )
+        assert ungated.monitor is None, "the opt-out must arm exactly as before the gate"
+    finally:
+        service.stop()
+
+
+@pytest.mark.asyncio
+async def test_a_cancelled_cycle_does_not_bequeath_its_wake(tmp_path, monkeypatch):
+    """A wake claim belongs to the tick that took it.
+
+    A wake is claimed at observation and charged where delivery is confirmed. If
+    the cycle is cancelled in between -- an update(), a deactivation, a shutdown --
+    the claim must die with it. Otherwise the loop's next delivered fire, which
+    may be a fallback or a floor tick that observed nothing, inherits the claim
+    and is counted as a wake no observation ever made.
+    """
     fired: list[NudgeLoop] = []
 
     async def on_fire(loop):
@@ -205,22 +2079,433 @@ async def test_unwired_structured_monitor_timer_dispatches_zero_turns(tmp_path):
 
     service = AutoNudgeService(base_dir=tmp_path, on_fire=on_fire)
     loop = NudgeLoop(
+        id="monitor12",
+        slot_key="chat-1-123",
+        message="Watch https://github.com/acme/widgets/pull/42",
+        idle_secs=30,
+        monitor=_structured_monitor(kind="gh-pr", target="acme/widgets#42"),
+        gate=True,
+    )
+    service._loops[loop.id] = loop
+
+    async def _never() -> None:
+        await asyncio.sleep(3600)
+
+    try:
+        # A tick observed a wake and is now in flight toward its fire.
+        service._pending_monitor_wake.add(loop.id)
+        service._timers[loop.id] = asyncio.create_task(_never())
+        await asyncio.sleep(0)
+
+        service._cancel_timer(loop.id)
+        assert (
+            loop.id not in service._pending_monitor_wake
+        ), "a cancelled cycle must not leave a claim for a later fire to inherit"
+
+        # And the later fire, which observed nothing, charges nothing.
+        await service._run_fire_cycle(loop)
+        assert loop.monitor is not None
+        assert loop.monitor.wakes == 0
+        assert loop.monitor.followup_ticks == 0
+    finally:
+        service.stop()
+
+
+@pytest.mark.asyncio
+async def test_an_unsupported_monitor_version_is_never_armed(tmp_path, monkeypatch):
+    """A record from a newer gateway must go inert WITHOUT losing its intent.
+
+    The load path synthesises a BLOCKED outcome for such a record but deliberately
+    leaves ``active`` alone, because that flag belongs to the gateway that wrote
+    it. Inertness therefore has to come from the arm refusing, and this asserts
+    the ABSENCE of a timer -- the bug it guards would have injected the raw
+    message every interval with no gate decision at all.
+    """
+    from kiro_crew.monitoring.models import MONITOR_STATE_VERSION
+
+    fired: list[NudgeLoop] = []
+
+    async def on_fire(loop):
+        fired.append(loop)
+        return True
+
+    service = AutoNudgeService(base_dir=tmp_path, on_fire=on_fire)
+    monitor = _structured_monitor(kind="gh-pr", target="acme/widgets#42")
+    monitor.version = MONITOR_STATE_VERSION + 1
+    loop = NudgeLoop(
+        id="monitor09",
+        slot_key="chat-1-123",
+        message="Watch https://github.com/acme/widgets/pull/42",
+        idle_secs=30,
+        monitor=monitor,
+        active=True,
+    )
+    service._loops[loop.id] = loop
+
+    try:
+        service._arm_from_deadline(loop)
+        assert loop.id not in service._timers, "an unsupported version must get no timer"
+        assert loop.active is True, "the newer gateway's intent must survive untouched"
+        assert fired == []
+    finally:
+        service.stop()
+
+
+@pytest.mark.asyncio
+async def test_a_verdict_is_discarded_when_the_loop_was_retargeted_mid_poll(tmp_path, monkeypatch):
+    """The poll awaits, so the subject can change under it.
+
+    A terminal verdict about the OLD pull request must not stop a watch that has
+    just been pointed at a live one.
+    """
+    import kiro_crew.autonudge as _an
+
+    async def on_fire(loop):
+        return True
+
+    service = AutoNudgeService(base_dir=tmp_path, on_fire=on_fire)
+    loop = NudgeLoop(
+        id="monitor10",
+        slot_key="chat-1-123",
+        message="Watch https://github.com/acme/widgets/pull/42",
+        idle_secs=30,
+        monitor=_structured_monitor(kind="gh-pr", target="acme/widgets#42"),
+        gate=True,
+    )
+    service._loops[loop.id] = loop
+
+    def _retarget_then_terminal(*_a, **_k):
+        # Stands in for update(message=...) landing while gh was running.
+        assert loop.monitor is not None
+        loop.monitor.target = "acme/widgets#99"
+        return _an.irq.Verdict(_an.irq.Outcome.TERMINAL, "merged")
+
+    monkeypatch.setattr(_an.irq, "poll", _retarget_then_terminal)
+
+    try:
+        quiet = await service._monitor_tick_is_quiet(loop)
+        assert quiet is False, "a stale verdict must fire as usual, not be acted on"
+        assert loop.monitor is not None
+        assert loop.monitor.outcome is None, "the retargeted watch must not be settled"
+        assert loop.monitor.stopped_reason != _an.MONITOR_TERMINAL_REASON
+    finally:
+        service.stop()
+
+
+@pytest.mark.asyncio
+async def test_a_refused_fire_charges_no_wake(tmp_path, monkeypatch):
+    """Counters must describe turns that happened.
+
+    A wake is a delivered turn. If the fire is refused -- busy slot, callback
+    error -- charging it would report a turn that never ran and would hand out
+    the follow-up allowance for it, so the next tick would skip its observation
+    to protect work that was never started.
+    """
+    import kiro_crew.autonudge as _an
+
+    async def refuse(loop):
+        return False
+
+    monkeypatch.setattr(
+        _an.irq, "poll", lambda *a, **k: _an.irq.Verdict(_an.irq.Outcome.WAKE, "new red")
+    )
+    service = AutoNudgeService(base_dir=tmp_path, on_fire=refuse)
+    loop = NudgeLoop(
+        id="monitor11",
+        slot_key="chat-1-123",
+        message="Watch https://github.com/acme/widgets/pull/42",
+        idle_secs=30,
+        monitor=_structured_monitor(kind="gh-pr", target="acme/widgets#42"),
+        gate=True,
+    )
+    service._loops[loop.id] = loop
+
+    try:
+        await service._timer(loop, delay=0)
+        assert loop.monitor is not None
+        assert loop.monitor.wakes == 0, "a refused fire is not a wake"
+        assert loop.id in service._pending_monitor_wake, "but the wake is still OWED"
+        # The claim used to be RELEASED here, and that was the second wrong belief
+        # this one test has recorded. The reasoning then treated the claim as a record
+        # of a turn that had happened, so releasing it looked like the way to avoid
+        # charging a wake that did not. It is really a record of a wake that is OWED:
+        # the next tick takes the gate-free bypass below, DELIVERS the turn, and found
+        # no claim to charge -- so a wake that really woke the agent was missing from
+        # the counter, which makes the saving look better than it is. Keeping it owed
+        # cannot double-charge, because the charge happens only where delivery is
+        # confirmed and the claim is discarded at that same point.
+        # It DOES buy a gate-free retry, and an earlier version of this test
+        # asserted the opposite. The reasoning then was "a refused fire earns
+        # nothing"; the reasoning now is that the kernel has already deduped the
+        # observation this fire was carrying, so without a bypassed tick the next
+        # one re-observes an unchanged subject, calls it quiet, and the signal is
+        # gone until the streak floor. Not counting it as a wake and not letting
+        # it retry are different things.
+        assert loop.monitor.followup_ticks == _an._WAKE_FOLLOWUP_TICKS
+    finally:
+        service.stop()
+
+
+@pytest.mark.asyncio
+async def test_a_terminal_verdict_leaves_no_timer_armed(tmp_path, monkeypatch):
+    """ "Do not spend a turn" and "keep watching" are different answers.
+
+    The terminal verdict returns the first while having just deactivated the
+    loop, so a re-arm on that path would poll a merged pull request forever and
+    re-emit its expiry notification every tick.
+    """
+    import kiro_crew.autonudge as _an
+
+    async def on_fire(loop):  # pragma: no cover - must not be reached
+        raise AssertionError("a terminal verdict must not fire")
+
+    monkeypatch.setattr(
+        _an.irq,
+        "poll",
+        lambda *a, **k: _an.irq.Verdict(_an.irq.Outcome.TERMINAL, "the PR merged"),
+    )
+    service = AutoNudgeService(base_dir=tmp_path, on_fire=on_fire)
+    loop = NudgeLoop(
+        id="monitor07",
+        slot_key="chat-1-123",
+        message="Babysit https://github.com/acme/widgets/pull/42",
+        monitor=_structured_monitor(kind="gh-pr", target="acme/widgets#42"),
+        gate=True,
+    )
+    service._loops[loop.id] = loop
+
+    await service._timer(loop, delay=0)
+    try:
+        assert not loop.active
+        assert loop.id not in service._timers, "a finished subject must not stay armed"
+        assert loop.next_due_ts == 0.0
+        # The finish is recorded on the MONITOR too, so the record does not read
+        # as merely paused. Without that, the generic resume path would re-arm
+        # this watch onto an already-merged pull request.
+        assert loop.monitor is not None
+        assert loop.monitor.outcome is not None
+        await service.update(loop.id, active=True)
+        assert not loop.active, "a finished watch must not be revivable by a generic save"
+        assert loop.id not in service._timers
+    finally:
+        service.stop()
+
+
+@pytest.mark.asyncio
+async def test_retargeting_the_instruction_retargets_the_probe(tmp_path):
+    """A changed instruction can change the subject, so the monitor must follow.
+
+    Otherwise the loop keeps polling the PR it was armed on: the new subject is
+    never watched, and the old one merging retires the loop while the work it was
+    retargeted to sits unobserved.
+    """
+    service = AutoNudgeService(base_dir=tmp_path)
+    loop = await service.add(
+        "chat-9-990", "Babysit https://github.com/acme/widgets/pull/42", idle_secs=300, gate=True
+    )
+    try:
+        assert loop.monitor is not None and loop.monitor.target == "acme/widgets#42"
+
+        await service.update(
+            loop.id, message="Babysit https://github.com/acme/widgets/pull/77 instead"
+        )
+        assert loop.monitor is not None
+        assert loop.monitor.target == "acme/widgets#77"
+
+        # Refining the wording for the SAME subject keeps the existing monitor,
+        # so its counters and follow-up allowance are not silently reset.
+        loop.monitor.quiet_ticks = 5
+        await service.update(
+            loop.id,
+            message="Babysit https://github.com/acme/widgets/pull/77 -- read the log first",
+        )
+        assert loop.monitor is not None
+        assert loop.monitor.quiet_ticks == 5
+
+        # An instruction that no longer names one subject returns the loop to a
+        # plain timer rather than leaving it bound to a stale target.
+        await service.update(loop.id, message="watch the canary deployment instead")
+        assert loop.monitor is None
+    finally:
+        service.stop()
+
+
+@pytest.mark.asyncio
+async def test_a_quiet_tick_re_arms_its_own_timer(tmp_path, monkeypatch):
+    """A quiet tick must schedule the next one, or the watch dies on tick one.
+
+    The delivered paths re-arm elsewhere -- notify_turn_complete for a dashboard
+    slot, the fire cycle's own exit for a channel key -- and a quiet tick reaches
+    neither. Asserting only "no turn was spent" is what let this through the
+    first time: a dead watch and a calm watch both spend nothing.
+    """
+    import kiro_crew.autonudge as _an
+
+    async def on_fire(loop):  # pragma: no cover - must not be reached
+        raise AssertionError("a quiet tick must not fire")
+
+    monkeypatch.setattr(
+        _an.irq, "poll", lambda *a, **k: _an.irq.Verdict(_an.irq.Outcome.QUIET, "pending")
+    )
+    service = AutoNudgeService(base_dir=tmp_path, on_fire=on_fire)
+    loop = NudgeLoop(
+        id="monitor06",
+        slot_key="chat-1-123",
+        message="Babysit https://github.com/acme/widgets/pull/42",
+        idle_secs=30,
+        monitor=_structured_monitor(kind="gh-pr", target="acme/widgets#42"),
+        gate=True,
+    )
+    service._loops[loop.id] = loop
+
+    await service._timer(loop, delay=0)
+    try:
+        assert loop.id in service._timers, "the quiet tick left no timer armed"
+        assert loop.next_due_ts > 0, "the quiet tick left no deadline"
+        assert loop.active
+    finally:
+        service.stop()
+
+
+@pytest.mark.asyncio
+async def test_a_wake_buys_exactly_one_follow_up_turn_then_gating_resumes(tmp_path, monkeypatch):
+    """The stall guard, and its bound.
+
+    The probe watches the subject, so an agent that was woken and has not pushed
+    yet is invisible to it. One unconditional follow-up turn after each wake
+    keeps that work moving; the bound is what stops the guard from quietly
+    disabling the gate altogether.
+    """
+    import kiro_crew.autonudge as _an
+
+    fired: list[NudgeLoop] = []
+
+    async def on_fire(loop):
+        fired.append(loop)
+        return True
+
+    verdicts = iter(
+        (
+            _an.irq.Verdict(_an.irq.Outcome.WAKE, "red: Build"),
+            _an.irq.Verdict(_an.irq.Outcome.QUIET, "checks running"),
+        )
+    )
+    monkeypatch.setattr(_an.irq, "poll", lambda *a, **k: next(verdicts))
+    service = AutoNudgeService(base_dir=tmp_path, on_fire=on_fire)
+    loop = NudgeLoop(
+        id="monitor05",
+        slot_key="chat-1-123",
+        message="Babysit https://github.com/acme/widgets/pull/42",
+        monitor=_structured_monitor(kind="gh-pr", target="acme/widgets#42"),
+        gate=True,
+    )
+    service._loops[loop.id] = loop
+
+    # 1) the wake fires and grants the allowance
+    await service._timer(loop, delay=0)
+    assert len(fired) == 1
+    assert loop.monitor is not None
+    assert loop.monitor.followup_ticks == 1
+
+    # 2) the next tick spends it WITHOUT observing -- the probe iterator is not
+    #    advanced, which is what proves the gate was bypassed rather than passed
+    await service._timer(loop, delay=0)
+    assert len(fired) == 2
+    assert loop.monitor.followup_ticks == 0
+
+    # 3) gating resumes: the queued QUIET verdict is now consumed and no turn
+    #    is spent, so the allowance cannot silently disable the saving
+    await service._timer(loop, delay=0)
+    assert len(fired) == 2
+    assert loop.monitor.quiet_ticks == 1
+    # A QUIET verdict RE-ARMS, by design -- so this test has left a pending timer
+    # task and must stop the service, or the leak lands in whatever test runs next.
+    service.stop()
+
+
+@pytest.mark.asyncio
+async def test_a_quiet_probe_tick_dispatches_zero_turns(tmp_path, monkeypatch):
+    """The saving, stated as a test: nothing changed, so no turn is spent.
+
+    The loop must stay ACTIVE. Skipping a turn is not stopping -- a gate that
+    deactivated on a quiet tick would end the watch on the first uneventful
+    observation, which is every watch's normal state.
+    """
+    import kiro_crew.autonudge as _an
+
+    fired: list[NudgeLoop] = []
+
+    async def on_fire(loop):
+        fired.append(loop)
+        return True
+
+    monkeypatch.setattr(
+        _an.irq, "poll", lambda *a, **k: _an.irq.Verdict(_an.irq.Outcome.QUIET, "checks running")
+    )
+    service = AutoNudgeService(base_dir=tmp_path, on_fire=on_fire)
+    loop = NudgeLoop(
         id="monitor03",
         slot_key="chat-1-123",
-        message="must not dispatch",
-        monitor=_structured_monitor(),
+        message="Babysit https://github.com/acme/widgets/pull/42",
+        monitor=_structured_monitor(kind="gh-pr", target="acme/widgets#42"),
+        gate=True,
     )
     service._loops[loop.id] = loop
 
     await service._timer(loop, delay=0)
 
     assert fired == []
-    assert not loop.active
+    assert loop.active
+    assert loop.monitor is not None
+    assert loop.monitor.quiet_ticks == 1
+    assert loop.monitor.wakes == 0
+    # The quiet tick re-armed itself -- that is the behaviour under test -- so the
+    # pending timer has to be cancelled here rather than left for the next test.
+    service.stop()
 
 
 @pytest.mark.asyncio
-async def test_unwired_structured_monitor_fire_cycle_dispatches_zero_turns(tmp_path):
-    """Legacy delivery stays closed if monitor state changes after timer checks."""
+async def test_a_waking_probe_tick_dispatches_exactly_one_turn(tmp_path, monkeypatch):
+    import kiro_crew.autonudge as _an
+
+    fired: list[NudgeLoop] = []
+
+    async def on_fire(loop):
+        fired.append(loop)
+        return True
+
+    monkeypatch.setattr(
+        _an.irq, "poll", lambda *a, **k: _an.irq.Verdict(_an.irq.Outcome.WAKE, "red: Build")
+    )
+    service = AutoNudgeService(base_dir=tmp_path, on_fire=on_fire)
+    loop = NudgeLoop(
+        id="monitor03b",
+        slot_key="chat-1-123",
+        message="Babysit https://github.com/acme/widgets/pull/42",
+        monitor=_structured_monitor(kind="gh-pr", target="acme/widgets#42"),
+        gate=True,
+    )
+    service._loops[loop.id] = loop
+
+    await service._timer(loop, delay=0)
+
+    assert fired == [loop]
+    assert loop.monitor is not None
+    assert loop.monitor.wakes == 1
+    assert loop.monitor.quiet_ticks == 0
+    # A DELIVERED tick re-arms too, through the fire cycle's own exit -- so this
+    # leaks a pending timer as surely as a quiet one does.
+    service.stop()
+
+
+@pytest.mark.asyncio
+async def test_a_monitor_whose_kind_has_no_probe_fires_exactly_as_before(tmp_path):
+    """No observer for the subject must degrade to today's timer, not to silence.
+
+    This is the direction the whole gate is biased toward: a monitor we cannot
+    observe keeps the behaviour it had before this feature existed. The fixture's
+    kind deliberately has no probe registered.
+    """
     fired: list[NudgeLoop] = []
 
     async def on_fire(loop):
@@ -231,13 +2516,78 @@ async def test_unwired_structured_monitor_fire_cycle_dispatches_zero_turns(tmp_p
     loop = NudgeLoop(
         id="monitor04",
         slot_key="chat-1-123",
-        message="must not dispatch",
+        message="watch something we have no probe for",
         monitor=_structured_monitor(),
+        gate=True,
     )
+    service._loops[loop.id] = loop
 
-    await service._run_fire_cycle(loop)
+    await service._timer(loop, delay=0)
+
+    assert fired == [loop]
+    service.stop()  # the FALLBACK fire re-armed; do not leak its timer
+
+
+@pytest.mark.asyncio
+async def test_a_probe_that_raises_still_fires_rather_than_going_silent(tmp_path, monkeypatch):
+    import kiro_crew.autonudge as _an
+
+    fired: list[NudgeLoop] = []
+
+    async def on_fire(loop):
+        fired.append(loop)
+        return True
+
+    def _boom(*_a, **_k):
+        raise RuntimeError("probe defect")
+
+    monkeypatch.setattr(_an.irq, "poll", _boom)
+    service = AutoNudgeService(base_dir=tmp_path, on_fire=on_fire)
+    loop = NudgeLoop(
+        id="monitor04b",
+        slot_key="chat-1-123",
+        message="Babysit https://github.com/acme/widgets/pull/42",
+        monitor=_structured_monitor(kind="gh-pr", target="acme/widgets#42"),
+        gate=True,
+    )
+    service._loops[loop.id] = loop
+
+    await service._timer(loop, delay=0)
+
+    assert fired == [loop]
+    service.stop()  # the FALLBACK fire re-armed; do not leak its timer
+
+
+@pytest.mark.asyncio
+async def test_a_terminal_subject_stops_the_loop_without_a_turn(tmp_path, monkeypatch):
+    import kiro_crew.autonudge as _an
+
+    fired: list[NudgeLoop] = []
+
+    async def on_fire(loop):
+        fired.append(loop)
+        return True
+
+    monkeypatch.setattr(
+        _an.irq,
+        "poll",
+        lambda *a, **k: _an.irq.Verdict(_an.irq.Outcome.TERMINAL, "the PR merged"),
+    )
+    service = AutoNudgeService(base_dir=tmp_path, on_fire=on_fire)
+    loop = NudgeLoop(
+        id="monitor04c",
+        slot_key="chat-1-123",
+        message="Babysit https://github.com/acme/widgets/pull/42",
+        monitor=_structured_monitor(kind="gh-pr", target="acme/widgets#42"),
+        gate=True,
+    )
+    service._loops[loop.id] = loop
+
+    await service._timer(loop, delay=0)
 
     assert fired == []
+    assert not loop.active
+    assert loop.stopped_reason == _an.MONITOR_TERMINAL_REASON
 
 
 @pytest.mark.asyncio
@@ -604,6 +2954,187 @@ async def test_one_loop_per_slot_replaces(svc):
     all_loops = svc.list_all()
     assert len(all_loops) == 1
     assert all_loops[0].message == "second"
+
+
+@pytest.mark.asyncio
+async def test_add_monitor_refuses_to_replace_an_inflight_wake(svc):
+    await svc.start()
+    existing = await svc.add_monitor(
+        slot_key="chat-1-123",
+        kind="github_pull_request",
+        target="owner/repo#123",
+        objective="review_ready",
+        cadence_secs=60,
+        budgets=MonitorBudgets(),
+    )
+    assert existing.monitor is not None
+    existing.monitor.wake_in_flight = True
+    existing.monitor.last_wake_fingerprint = "actionable-1"
+
+    with pytest.raises(MonitorUpdateConflict, match="wake is in flight"):
+        await svc.add_monitor(
+            slot_key="chat-1-123",
+            kind="github_pull_request",
+            target="owner/repo#456",
+            objective="review_ready",
+            cadence_secs=60,
+            budgets=MonitorBudgets(),
+        )
+
+    assert svc.get_by_slot("chat-1-123") is existing
+    assert existing.monitor.wake_in_flight
+    assert existing.monitor.last_wake_fingerprint == "actionable-1"
+
+
+@pytest.mark.asyncio
+async def test_add_monitor_can_atomically_refuse_an_occupied_slot(svc):
+    existing = await svc.add_monitor(
+        slot_key="chat-1-123",
+        kind="github_pull_request",
+        target="owner/repo#123",
+        objective="review_ready",
+        cadence_secs=60,
+        budgets=MonitorBudgets(),
+    )
+    persisted_before = svc._path.read_bytes()
+
+    with pytest.raises(MonitorUpdateConflict, match="already has an automation"):
+        await svc.add_monitor(
+            slot_key="chat-1-123",
+            kind="github_pull_request",
+            target="owner/repo#456",
+            objective="review_ready",
+            cadence_secs=60,
+            budgets=MonitorBudgets(),
+            replace_existing=False,
+        )
+
+    assert svc.get_by_slot("chat-1-123") is existing
+    assert svc._path.read_bytes() == persisted_before
+
+
+@pytest.mark.asyncio
+async def test_add_monitor_conditionally_replaces_one_terminal_generation(svc):
+    existing = await svc.add_monitor(
+        slot_key="chat-1-123",
+        kind="github_pull_request",
+        target="owner/repo#123",
+        objective="review_ready",
+        cadence_secs=60,
+        budgets=MonitorBudgets(),
+    )
+    assert existing.monitor is not None
+    existing.active = False
+    existing.monitor.outcome = MonitorOutcome.USER_STOP
+    expected_generation = existing.monitor.config_generation
+
+    async def restart() -> NudgeLoop:
+        return await svc.add_monitor(
+            slot_key="chat-1-123",
+            kind="github_pull_request",
+            target="owner/repo#123",
+            objective="review_ready",
+            cadence_secs=60,
+            budgets=MonitorBudgets(),
+            expected_existing_monitor_id=existing.id,
+            expected_existing_config_generation=expected_generation,
+        )
+
+    results = await asyncio.gather(restart(), restart(), return_exceptions=True)
+    winners = [result for result in results if isinstance(result, NudgeLoop)]
+    conflicts = [result for result in results if isinstance(result, MonitorUpdateConflict)]
+
+    assert len(winners) == 1
+    assert len(conflicts) == 1
+    assert "monitor changed before restart" in str(conflicts[0])
+    assert svc.get_by_slot("chat-1-123") is winners[0]
+
+
+@pytest.mark.asyncio
+async def test_add_monitor_persistence_failure_keeps_existing_monitor_running(svc, monkeypatch):
+    async def on_monitor_tick(_loop):
+        return None
+
+    svc._on_monitor_tick = on_monitor_tick
+    await svc.start()
+    existing = await svc.add_monitor(
+        slot_key="chat-1-123",
+        kind="github_pull_request",
+        target="owner/repo#123",
+        objective="review_ready",
+        cadence_secs=60,
+        budgets=MonitorBudgets(),
+    )
+    persisted_before = svc._path.read_bytes()
+
+    async def fail_snapshot(_payload):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(svc, "_write_monitor_snapshot_locked", fail_snapshot)
+
+    with pytest.raises(OSError, match="disk full"):
+        await svc.add_monitor(
+            slot_key="chat-1-123",
+            kind="github_pull_request",
+            target="owner/repo#456",
+            objective="review_ready",
+            cadence_secs=60,
+            budgets=MonitorBudgets(),
+        )
+
+    assert svc.get_by_slot("chat-1-123") is existing
+    assert existing.id in svc._timers
+    assert not svc._timers[existing.id].done()
+    assert svc._path.read_bytes() == persisted_before
+
+
+@pytest.mark.asyncio
+async def test_add_legacy_loop_refuses_to_replace_an_inflight_monitor(svc):
+    await svc.start()
+    existing = await svc.add_monitor(
+        slot_key="chat-1-123",
+        kind="github_pull_request",
+        target="owner/repo#123",
+        objective="review_ready",
+        cadence_secs=60,
+        budgets=MonitorBudgets(),
+    )
+    assert existing.monitor is not None
+    existing.monitor.wake_in_flight = True
+    existing.monitor.last_wake_fingerprint = "actionable-1"
+
+    with pytest.raises(MonitorUpdateConflict, match="wake is in flight"):
+        await svc.add(slot_key="chat-1-123", message="legacy replacement", idle_secs=60)
+
+    assert svc.get_by_slot("chat-1-123") is existing
+    assert existing.monitor.wake_in_flight
+    assert existing.monitor.last_wake_fingerprint == "actionable-1"
+
+
+@pytest.mark.asyncio
+async def test_add_legacy_loop_create_only_preserves_an_existing_monitor(svc):
+    """A browser legacy create racing a monitor arm cannot replace the winner."""
+    await svc.start()
+    existing = await svc.add_monitor(
+        slot_key="chat-1-123",
+        kind="github_pull_request",
+        target="owner/repo#123",
+        objective="review_ready",
+        cadence_secs=60,
+        budgets=MonitorBudgets(),
+    )
+    persisted_before = svc._path.read_bytes()
+
+    with pytest.raises(MonitorUpdateConflict, match="session already has an automation"):
+        await svc.add(
+            slot_key="chat-1-123",
+            message="legacy replacement",
+            idle_secs=60,
+            replace_existing=False,
+        )
+
+    assert svc.get_by_slot("chat-1-123") is existing
+    assert svc._path.read_bytes() == persisted_before
 
 
 @pytest.mark.asyncio
@@ -1312,7 +3843,11 @@ class TestAutonudgeStartIntCoercion:
 
         monkeypatch.setattr(_handler, "_autonudge_get", lambda: fake_svc)
         state = MagicMock()
-        state._slots = {"chat-1-123": MagicMock(workspace="default")}
+        state._slots = {
+            "chat-1-123": MagicMock(
+                workspace="default", mode="", memory_mode="persistent", _closing=False
+            )
+        }
         app = web.Application()
         app["state"] = state
         app.router.add_post("/api/autonudge", _handler.api_autonudge_start)
@@ -2596,10 +5131,9 @@ class TestATimerOutlivesItsEventLoop:
 
         `cancel()` only SCHEDULES the cancellation, so the flag is not set on the
         calling tick. Polled rather than read after a single `sleep(0)` because the
-        number of ticks it takes is an implementation detail — and `Task.cancelling()`,
-        which would read the request directly, is Python 3.11+ while this repo supports
-        >= 3.10 (CI runs a 3.10 shard). Keeps the assertion; only the waiting is
-        generous.
+        number of ticks it takes is an implementation detail. Deliberately asserts
+        the terminal `cancelled()` flag rather than `Task.cancelling()`, which
+        counts outstanding requests instead. Only the waiting is generous.
         """
         for _ in range(ticks):
             if task.cancelled():

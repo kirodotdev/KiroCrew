@@ -793,9 +793,14 @@ Inline within a `Card`, built from the shared primitives:
   reliably hand a finger drag to that shape — Settings → Voice → Language showed
   7 of its ~41 codes with the rest unreachable. A themed list nobody can scroll
   is worse than an OS-drawn list that works. Because the choice lives inside
-  `SimpleSelect`, no call site makes it: keep reaching for the components above
-  and the touch case is already handled. `NativeSelect` is the single file
-  exempted from the `no-restricted-syntax` rule; do not add a second.
+  `SimpleSelect`, no call site makes it — and `SettingsSelect` inherits it by
+  wrapping `SimpleSelect`. It goes no further: `SearchableSelect`,
+  `DropdownMenu` and `AgentSelector` keep the themed popup on a coarse pointer,
+  since a native `<select>` cannot host a filter box, per-option sublabels or a
+  command menu. Reaching for one of those does not mean the touch case has been
+  handled for you; whether that scroller is a real defect on a phone is
+  unresolved in #5551. `NativeSelect` is the single file exempted from the
+  `no-restricted-syntax` rule; do not add a second.
 - `Toggle` for a boolean switch. It carries `role="switch"`, `aria-checked` and
   `aria-disabled` itself, so do not re-add them.
 

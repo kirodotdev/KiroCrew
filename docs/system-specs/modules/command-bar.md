@@ -81,8 +81,9 @@ that.
 - `ROOT_GROUPS = ['commands', 'apps', 'settings']`, rendered in that order. `rankRootRows`
   ends with a sort on `groupOrder`, so groups are always contiguous blocks under their own
   header — they never interleave by score.
-- A row's `kind` is `view` (enter a surface inside the bar), `navigate` (leave and route), or
-  `invoke` (run and close).
+- A row's `kind` is `view` (enter a surface inside the bar), `navigate` (leave and route),
+  `invoke` (run and close), or `prompt` (a contributed command -- collect one argument if it
+  declares one, then seed a session).
 - App rows are derived from the installed-app list, so a newly installed app appears as a
   destination with no per-app work.
 - Each row renders its kind as a right-aligned word — Command, App, Setting or View — because
@@ -91,6 +92,12 @@ that.
   acting and closing.
 - `PER_GROUP_LIMIT = 6` caps each group so one group cannot push the others off the page.
   **Known gap:** rows past the cap are dropped silently.
+- `idleDemote` sorts a row to the end of its group while the query is EMPTY, at a cost sized
+  to lose to a single real use. The empty-query order is frecency, so on a cold install every
+  score is zero and the alphabet alone decides what the launcher opens on. It is DERIVED, not
+  declared: a command that needs an argument cannot act on an empty query, so it has nothing
+  to offer a bar that has just opened -- leaving it to the manifest would mean asking every
+  app author to volunteer their own row out of the first page, which none would.
 
 ## Ranking and frecency
 
@@ -128,6 +135,127 @@ that answer an older prefix.
 | every `['apps']` reader goes through the one api call | a divergent shape silently poisons the shared cache |
 | no builtin declares both `ui.overlays` and `ui.entry` | origin downgrade on restart refuses its own slot |
 | a rejected lazy chunk falls back to the legacy palette | the gesture dead-ends after a bad deploy |
+| a malformed contribution is skipped, never thrown | one bad app takes the Cmd+K gesture down for every app |
+| a contributed row id is namespaced by its app | a contribution impersonates a builtin row and inherits its frecency |
+| an argument the matcher refuses creates no session | a wrong paste reaches an agent told to write somewhere |
+| a manifest never supplies its own matcher | a third-party regex on the launcher's thread cannot be bounded |
+| a disabled app contributes nothing | the enable switch stops being the reader's control |
+| an auto-sending command shows its resolved prompt first | app-authored text is sent that the reader was never shown |
+| `autoSend` without an argument is refused, and clamped off | a command that skips the argument state sends with no preview at all |
+| `autoSend` is honoured only for the JSON boolean `true` | `"autoSend": "false"` coerces truthy and enables the send |
+| an argument carrying `pattern` or an unknown `kind` is refused | a stale-contract app would silently fall back to accepting anything |
+| a command that needs an argument never leads an empty query | the alphabet makes a bulk write the default Cmd+K offer |
+
+## Contributed commands
+
+`contributes.commands` is the seam that lets a launcher row live OUTSIDE this
+repository. An app declares what the row says and what it does; the host renders and
+runs it. This is the answer to "my commands should be my own configuration, not a
+patch to the product" — an app that contributes commands needs no page, no frontend
+bundle, no backend and no process. A manifest and a skill are enough.
+
+It sits beside `ui`, not inside it, and the split is the whole idea: `ui` is where an
+app declares surfaces of its OWN (a page, an overlay it supplies a component for),
+while a contribution is a row inside a surface the host owns.
+
+A contribution is **data, not code**:
+
+| Field | What it is |
+|---|---|
+| `id` | kebab slug; the row id is namespaced `app:<app>:<id>` |
+| `title` / `subtitle` | row copy, straight from the manifest |
+| `icon` | a name from the host's own glyph set |
+| `keywords` | hidden match aliases |
+| `argument` | the ONE value the command collects: `kind` (`url` / `text`), `hosts` for `url`, plus `placeholder`, `hint`, `patternError` |
+| `prompt` | the action — the text a new session is seeded with, interpolating `{argument}` |
+| `autoSend` | send that text immediately rather than leaving it in the composer |
+
+**No app-supplied code, and no app-supplied image.** A contributed function would be
+third-party JavaScript running inside the host's own surface, on every keystroke,
+with the reader's session; a contributed icon URL would be a network request from the
+one surface that promises to issue none. Both are refused for the same reason the
+overlay registry resolves `id` against components compiled into the bundle rather
+than loading one from the app. The glyph set grows by pull request, which is a cheap
+ask next to either alternative.
+
+**The argument declares a matcher by NAME; it never ships one.** The collected text is
+spliced into an instruction handed to an agent with tools, so "whatever the reader
+pasted" is not an acceptable domain — but the check itself belongs to the host.
+`kind` selects one of a fixed set (`url`, with an optional `hosts` allowlist, or
+`text`), and the host implements each one.
+
+An earlier revision of this contract let the manifest supply its own `pattern`. That
+was wrong in a way worth recording, because the shape of the mistake recurs: a regex
+is a small program, and this one ran against the field on every keystroke on the
+thread that draws the launcher. `^(a+)+$` and `^(a|aa)+$` are both under ten
+characters and both exponential, and neither runtime can interrupt a synchronous
+match, so no timeout was available. Screening the pattern syntactically was tried and
+abandoned — such a check recognizes shapes, so each version invites the next hostile
+pattern it does not cover, and the length cap bounded nothing (eight characters is
+enough). The fix was to delete the primitive rather than keep fencing it.
+
+So every matcher now runs in time proportional to the input no matter what a manifest
+asks for: `url` uses the runtime's own URL parser, which is linear by construction.
+An `argument` carrying a `pattern` key is REFUSED rather than migrated, because
+silently dropping it would leave an app written against the old contract running on
+`text` — accepting any non-empty string — with auto-send still on. An unknown `kind`
+is refused for the same reason: a manifest asking for a check this host does not have
+must not quietly receive a weaker one.
+
+The cost is precision, and it is real. A pattern could demand `/pull/<n>`; `url` with
+`hosts: ["github.com"]` admits any URL on that host and leaves what the link DENOTES
+to the agent reading it. That is the right split — the host is the wrong place to
+encode another product's URL taxonomy, and it cannot do so safely — but it is a
+reduction in what an app can express, not a free win.
+
+The allowlist is exact unless an entry carries a leading dot (`.github.com` admits
+subdomains, `github.com` does not admit `github.com.evil.test`), and only `http` and
+`https` are accepted: `javascript:` and `data:` parse as valid URLs, and this value is
+shown back to the reader and handed to an agent.
+
+**Validated twice, on purpose.** `AppManifest` checks it on every parse, and
+`contributedCommands.ts` re-checks the same rules before rendering. The second pass
+is not redundancy: an unknown top-level manifest key reaches the dashboard through
+the manifest's `extra` bucket having passed no schema at all, so an app installed by
+an older gateway can put an arbitrary object on this path. A bad declaration is
+SKIPPED with a warning, never thrown — a malformed app must not take the Cmd+K
+gesture down for every other app on the instance.
+
+**Disabled apps contribute nothing.** The enable state is the reader's switch over
+the whole app, and a row that still ran from a disabled app would make that switch a
+lie. There is no provenance check beyond that, unlike an overlay claim: an overlay
+REPLACES a host surface so only a builtin may claim one, while a command ADDS a row
+the host renders and runs, which is exactly the capability an external app should
+have.
+
+### What the reader sees before an auto-sending command fires
+
+`autoSend` sends app-authored text to an agent with tools as if the reader had typed
+it. They chose the row and supplied the value, but nothing had shown them the
+instruction itself. So the argument state renders the RESOLVED prompt — the template
+with their value already spliced in — once the matcher accepts the value, and Enter
+sends that. The preview is withheld until the value validates, so it never advertises
+text that is not what would be sent.
+
+**`autoSend` therefore REQUIRES an argument.** The preview is the consent, and it
+lives in the argument state; a command that collects nothing never reaches that step,
+so honouring `autoSend` there would send app-authored text with nothing shown to the
+reader at all — which is precisely what a misleading row in a hostile manifest would
+aim for. The manifest refuses the combination outright rather than downgrading it
+silently, so the app author learns the rule instead of wondering why it did not fire,
+and `contributedCommands.ts` clamps it independently for an app whose manifest reached
+the dashboard through `extra` without being validated. Such a command still runs — it
+lands in the composer, where the text is visible and one keystroke sends it.
+
+`autoSend` is also honoured only for the JSON boolean `true`. Every non-empty string
+is truthy in both languages, so a coercing read would let `"autoSend": "false"` enable
+the one capability that sends on the reader's behalf.
+
+That is informed consent at the moment of action rather than a grant dialog at
+install time, which is what an argument-taking command can offer: the reader is
+already looking at the field. A stronger per-app grant is a reasonable future
+addition, not a substitute — a grant given once at install is not read again at the
+moment a bulk write actually fires.
 
 ## Switching it off, and back on
 
@@ -145,9 +273,5 @@ being installed, not on this app's name, and it lists the other default-off buil
 
 - **Session search on the root.** Removed on purpose; it is the cost the app exists to avoid.
 - **Quicklinks.** A group with no writer was removed rather than shipped empty.
-- **App-contributed commands.** An app can appear as a destination today, but declaring its own
-  commands needs `contributes.commands`, which this module does not yet read. Until then the
-  bar's own command rows are hand-declared, and they can drift from the palette's
-  `actionsProvider`.
 - **A default-on launcher.** Flipping the default and deleting the legacy palette is a separate
   change, after the remaining corpora become apps with their own scopes.

@@ -109,6 +109,24 @@ describe('AgentPanel — html output', () => {
     expect(container.querySelector('iframe')!.getAttribute('title')).toContain('Sketch Artist')
   })
 
+  it('gives the frame its own compositing layer so a skipped first paint cannot blank it', () => {
+    // Same mechanism and remedy as the dashboard's sandbox-doc frames (#7931):
+    // without layer promotion an engine can lay the document out, run its
+    // scripts and report a correct height while rasterizing nothing — a
+    // correctly sized, visible frame painting an empty box, silent by
+    // construction. This frame builds its document inline via srcDoc and never
+    // reaches the sandbox-doc mint, so it sat outside that PR's scope (#8037).
+    // Chromium in this DOM paints fine either way, so removing the property
+    // looks completely harmless here: this assertion is the whole guard.
+    const { container } = mount(HTML, { output: '<h1>promoted</h1>' })
+    const frame = container.querySelector('iframe') as HTMLIFrameElement
+    expect(frame.style.transform).toBe('translateZ(0)')
+    // The promotion is additive: the fixed sizing that reserves the panel's
+    // box must survive alongside it.
+    expect(frame.style.height).toBe('340px')
+    expect(frame.style.minHeight).toBe('340px')
+  })
+
   it('never hands the model document to srcDoc raw — it goes through buildSketchSrcdoc', () => {
     // This is the BLOCKING finding, as a test. The vulnerable version set
     // srcDoc={output} directly, so the srcdoc equalled the model HTML exactly
@@ -473,4 +491,45 @@ describe('editable minutes — wiring', () => {
     expect(ViewSource).toContain('onSaveOutput={')
   })
 
+})
+
+describe('AgentPanel — markdown output pane scrolling (#7664)', () => {
+  it('scrolls the notes on an element that does not carry the card-glow clip', () => {
+    const { container } = mount(MARKDOWN, {
+      output: '# Notes\n\n' + 'A line of meeting notes.\n\n'.repeat(120),
+    })
+    const scrollers = Array.from(container.querySelectorAll('.overflow-y-auto'))
+    expect(scrollers.length).toBeGreaterThan(0)
+    for (const el of scrollers) {
+      // index.css declares `.card-glow { overflow: hidden }` AFTER
+      // @tailwind utilities, and Card unconditionally prepends card-glow. On the
+      // SAME element the clip beats `overflow-y-auto` (equal specificity, later
+      // source order; twMerge cannot resolve a conflict with a hand-written
+      // class), so the pane clipped at its max height with no scroller — the
+      // app-wide bug in #7664. The scroll container must never be the card-glow
+      // element itself.
+      expect(el.classList.contains('card-glow')).toBe(false)
+    }
+    // The scroller caps its height (so overflow actually engages) and contains
+    // the rendered notes (so it is the output pane that scrolls, not some
+    // unrelated element).
+    const pane = scrollers.find(el => /max-h-\[/.test(el.className))
+    expect(pane).toBeTruthy()
+    expect(pane!.textContent).toContain('Notes')
+    expect(pane!.getAttribute('data-testid')).toBe('agent-output-pane')
+    // The pane must still live INSIDE a card-glow Card — the fix moves the
+    // scroller inward, it does not detach the pane from the Card. If this
+    // relationship breaks, the class-separation assertions above go vacuous.
+    const card = pane!.closest('.card-glow')
+    expect(card).not.toBeNull()
+    // And no ancestor BETWEEN the pane and the Card may re-impose a clip: a
+    // wrapper gaining overflow-hidden would clip the scroller exactly the way
+    // card-glow clipped the Card, and the per-element checks above would not
+    // see it. (The Card itself keeps card-glow's overflow:hidden by design —
+    // that is the glow treatment this fix deliberately leaves intact.)
+    for (let el = pane!.parentElement; el && el !== card; el = el.parentElement) {
+      expect(el.classList.contains('overflow-hidden')).toBe(false)
+      expect(el.classList.contains('card-glow')).toBe(false)
+    }
+  })
 })

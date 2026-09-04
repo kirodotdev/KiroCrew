@@ -7,6 +7,7 @@
   ],
   "gates": [
     "python3 scripts/run_scoped_tests.py --test",
+    "python3 scripts/leaf_test_scope.py --test",
     "BASE=\"$(git merge-base HEAD origin/main)\" && SCOPED_TESTS_BASE_REF=\"$BASE\" python3 scripts/run_scoped_tests.py --surface backend",
     "python3 scripts/check_black_formatting.py",
     "python3 scripts/check_subprocess_encoding.py --test",
@@ -23,6 +24,8 @@
     "BASE=\"$(git merge-base HEAD origin/main)\" && BRAND_BASE_REF=\"$BASE\" python3 scripts/check_brand_name.py",
     "python3 scripts/check_harness_parity.py --test",
     "BASE=\"$(git merge-base HEAD origin/main)\" && HARNESS_BASE_REF=\"$BASE\" python3 scripts/check_harness_parity.py",
+    "python3 scripts/check_feature_map.py --test",
+    "BASE=\"$(git merge-base HEAD origin/main)\" && FEATURE_MAP_BASE_REF=\"$BASE\" python3 scripts/check_feature_map.py",
     "python3 scripts/check_loop_bound_locks.py --test",
     "python3 scripts/check_loop_bound_locks.py",
     "python3 scripts/check_builtin_skill_scope.py --test",

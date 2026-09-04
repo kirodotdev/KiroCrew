@@ -286,6 +286,7 @@ describe('formatting follows the app language', () => {
     // batch that migrates twenty call sites leaves no trace in CI output and the
     // ceiling silently drifts away from the live count until it measures nothing.
     if (offenders.length < BASELINE) {
+      // eslint-disable-next-line no-console -- stdout IS this ratchet's report channel: the assertion only tolerates a decrease, so swallowing this leaves a lowered count with no trace and the ceiling drifts until it measures nothing
       console.log(
         `[host-locale] ${offenders.length} call(s) remain, under the ceiling of ${BASELINE}. `
         + `Lower BASELINE to ${offenders.length} in src/i18n/localeFormatting.test.ts to keep it `
@@ -316,6 +317,7 @@ describe('formatting follows the app language', () => {
     if (scope === null) {
       // The sibling `.mjs` gates print this. A test that returns silently is a gate
       // nobody can tell ran — reached on a bare local run, never in CI.
+      // eslint-disable-next-line no-console -- stdout IS this gate's report channel: a gate that returns silently is one nobody can tell ran, and this skip is reachable on a bare local run
       console.log('[added-lines] skipped — I18N_BASE_REF is unset, so there is no branch to diff.')
       return
     }
@@ -337,6 +339,7 @@ describe('formatting follows the app language', () => {
     if (scope === null) {
       // The sibling `.mjs` gates print this. A test that returns silently is a gate
       // nobody can tell ran — reached on a bare local run, never in CI.
+      // eslint-disable-next-line no-console -- stdout IS this gate's report channel: a gate that returns silently is one nobody can tell ran, and this skip is reachable on a bare local run
       console.log('[vs-base] skipped — I18N_BASE_REF is unset, so there is no branch to diff.')
       return
     }

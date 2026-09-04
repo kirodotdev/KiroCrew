@@ -713,7 +713,7 @@ describe('ChatPage draft persistence', { timeout: 15_000 }, () => {
     const { api } = await import('../api/client')
     let resolveCreate!: (v: { key: string; title: string; messages: number; running: boolean }) => void
     const deferred = new Promise<{ key: string; title: string; messages: number; running: boolean }>(r => { resolveCreate = r })
-    vi.mocked(api.createChatSlot).mockReturnValueOnce(deferred as any)
+    vi.mocked(api.createChatSlot).mockReturnValueOnce(deferred as ReturnType<typeof api.createChatSlot>)
 
     const store = makeStore('slot-a', [{ key: 'slot-a' }, { key: 'slot-b' }])
     await renderAndWaitForInput(store)

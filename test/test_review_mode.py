@@ -662,6 +662,56 @@ class TestHandleReviewApprove:
         assert _has_sel_call(sel_mock, "allowed")
 
     @pytest.mark.asyncio
+    async def test_clean_draft_posts_no_redaction_notice(
+        self, mock_orch, owner_patch, sel_mock
+    ) -> None:
+        """A draft with no credential posts exactly once: the answer, no warning."""
+        _review_drafts_set("C1|ts1|abc", "plain text with no secrets", REQUESTER_ID)
+        await _handle_review_approve(_make_payload(user_id=OWNER_ID), _make_action())
+        assert mock_orch.slack.post_message.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_credential_draft_warns_and_keeps_redaction(
+        self, mock_orch, owner_patch, sel_mock
+    ) -> None:
+        """Approving a draft that carries a credential posts the redacted draft AND a warning.
+
+        Review approve is a public-post egress: the approved draft goes to the
+        whole channel, so a member who copies the command must be told the
+        credential was stripped or they hit an opaque downstream error.
+        """
+        secret = "postgresql://user:pass@host:5432/db"
+        _review_drafts_set("C1|ts1|abc", f"run: {secret}", REQUESTER_ID)
+        await _handle_review_approve(_make_payload(user_id=OWNER_ID), _make_action())
+
+        assert mock_orch.slack.post_message.await_count == 2
+        posted_draft = mock_orch.slack.post_message.await_args_list[0].args[1]
+        warning = mock_orch.slack.post_message.await_args_list[1].args[1]
+        # Redaction is NOT relaxed: the secret never reaches the channel.
+        assert secret not in posted_draft
+        assert "pass@host" not in posted_draft
+        assert "[REDACTED: credential]" in posted_draft
+        # The warning tells the user the text was altered and carries no secret.
+        assert "redaction placeholder" in warning
+        assert "paste it as-is" in warning
+        assert "pass" not in warning
+        assert secret not in warning
+
+    @pytest.mark.asyncio
+    async def test_credential_notice_failure_does_not_break_approve(
+        self, mock_orch, owner_patch, sel_mock
+    ) -> None:
+        """A failing notice post must not abort the approve flow (best-effort)."""
+        secret = "postgresql://user:pass@host:5432/db"
+        _review_drafts_set("C1|ts1|abc", f"run: {secret}", REQUESTER_ID)
+        # First call (the draft) succeeds; the follow-up notice raises.
+        mock_orch.slack.post_message = AsyncMock(side_effect=[None, RuntimeError("api down")])
+        await _handle_review_approve(_make_payload(user_id=OWNER_ID), _make_action())
+        # The draft was posted and the audit still records success.
+        assert mock_orch.slack.post_message.await_count == 2
+        assert _has_sel_call(sel_mock, "allowed")
+
+    @pytest.mark.asyncio
     async def test_stranger_denied_and_notified(
         self,
         mock_orch,

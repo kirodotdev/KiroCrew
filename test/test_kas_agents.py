@@ -722,7 +722,7 @@ class TestRuntimeSuppliesTheStubbedSet:
         monkeypatch.setattr(runtime_mod, "ensure_agent_materialized", lambda _a: None)
         monkeypatch.setattr(runtime_mod, "kiro_agents_dir", lambda: Path("/agents"))
 
-        def _capture(_dir, agent, *, stub_server_names=frozenset()):
+        def _capture(_dir, agent, *, stub_server_names=frozenset(), member_dispatch=False):
             seen.append(stub_server_names)
             return [{"id": agent}]
 

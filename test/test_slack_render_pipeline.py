@@ -53,6 +53,7 @@ import re
 import tokenize
 
 import pytest
+from source_corpus import parsed_candidates
 
 from kiro_crew.slack.format import (
     CONTINUATION,
@@ -174,10 +175,15 @@ def find_violations(source: str, path: str = "<source>") -> list[tuple[str, int,
 
 def collect_repo_violations() -> list[tuple[str, int, str]]:
     """Scan every ``kiro_crew/**/*.py`` except the owning module."""
-    root = _src_root()
-    base = root.parent
+    base = _src_root().parent
     out: list[tuple[str, int, str]] = []
-    for py in sorted(root.rglob("*.py")):
+    # A direct call to to_slack_mrkdwn -- bare-imported or reached as
+    # ``<module>.to_slack_mrkdwn`` -- can only exist in a file whose TEXT holds the
+    # literal ``to_slack_mrkdwn`` (the import that binds the alias, or the attribute
+    # call itself), so the shared corpus parses just those files rather than
+    # re-walking the whole package for this one gate. Narrowing on the literal
+    # drops non-matches only (proved lossless in the PR body).
+    for py, text, _tree in parsed_candidates(require_all=(_BANNED_FUNC,)):
         try:
             rel = str(py.relative_to(base))
         except ValueError:  # pragma: no cover - defensive
@@ -185,11 +191,7 @@ def collect_repo_violations() -> list[tuple[str, int, str]]:
         if rel.replace("\\", "/").endswith(_OWNER_MODULE):
             continue
         try:
-            src = py.read_text(encoding="utf-8")
-        except (OSError, UnicodeDecodeError):  # pragma: no cover - defensive
-            continue
-        try:
-            out.extend(find_violations(src, rel))
+            out.extend(find_violations(text, rel))
         except SyntaxError:  # pragma: no cover - defensive
             continue
     return out

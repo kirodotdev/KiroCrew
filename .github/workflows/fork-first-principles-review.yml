@@ -309,7 +309,33 @@ jobs:
           INTENT: ${{ runner.temp }}/pr-intent.txt
         run: |
           set -uo pipefail
-          raw="$(gh api "repos/$REPO/pulls/$PR" --jq '"Title: \(.title)\n\nDescription:\n\(.body // "")"' 2>/dev/null || true)"
+          # A title/description this step could not READ is not a PR without
+          # stated intent. `2>/dev/null || true` discarded both the error text
+          # and the exit status, so a transient API failure handed the reviewer
+          # an empty intent file and the lane judged a PR that appeared to
+          # state nothing -- blaming the author for a description the workflow
+          # never read. The common case is transient, so absorb it here rather
+          # than spending the author's re-run on it: up to three attempts with
+          # a short backoff. A read that never succeeds fails closed while
+          # naming the read as the cause; a genuinely empty description reads
+          # successfully on the first attempt and is judged as written, which
+          # is correct.
+          raw=""
+          read_ok=""
+          for attempt in 1 2 3; do
+            if raw="$(gh api "repos/$REPO/pulls/$PR" --jq '"Title: \(.title)\n\nDescription:\n\(.body // "")"')"; then
+              read_ok=1
+              break
+            fi
+            echo "Reading the PR title and description failed on attempt $attempt."
+            if [ "$attempt" -lt 3 ]; then
+              sleep "$attempt"
+            fi
+          done
+          if [ -z "$read_ok" ]; then
+            echo "::error::Could not read this PR's title and description from the API after 3 attempts, so the review would judge a PR that appears to state no intent. This is a read failure, not a missing description -- re-run this job."
+            exit 1
+          fi
           # Strip embedded media: a screenshot-heavy body is pure cost to a
           # reviewer that judges prose, and an attachment URL is not intent.
           stripped="$(printf '%s' "$raw" | perl -0777 -pe 's/!\[[^\]]*\]\([^)]*\)/[image removed]/g; s{<img\b[^>]*>}{[image removed]}gi; s{<video\b.*?</video>}{[video removed]}gsi; s{<source\b[^>]*>}{[media removed]}gi; s{https?://\S*user-attachments\S*}{[media removed]}g' 2>/dev/null || printf '%s' "$raw")"

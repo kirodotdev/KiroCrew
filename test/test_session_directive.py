@@ -18,7 +18,9 @@ from kiro_crew import session_directive as sd
 # the protocol (it is just round-tripped as JSON), so any dict suffices.
 _CASES = {
     "monitor_start": {"message": "check PR", "interval_secs": 300},
+    "monitor_watch": {"kind": "github_pull_request", "target": "url"},
     "monitor_update": {"message": "check CI now", "max_cycles": 40},
+    "monitor_stop": {},
     "autonudge_stop": {},
     "set_project": {"project": "/workspace/foo", "clear": False},
     "suggest_followup": {"items": [{"title": "t", "prompt": "p"}]},

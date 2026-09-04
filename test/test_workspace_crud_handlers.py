@@ -8,9 +8,12 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import patch
 
 import pytest
+from aiohttp import web
+from aiohttp.test_utils import make_mocked_request
+from body_stream_helpers import BodyStreamPayload
 
 from kiro_crew.config.loader import (
     KiroCrewAgentConfig,
@@ -26,16 +29,18 @@ from kiro_crew.dashboard.handlers import (
 # ── Helpers ──
 
 
-def _req(body: dict | None = None, match_info: dict | None = None) -> MagicMock:
-    """Build a mock aiohttp.web.Request."""
-    r = MagicMock()
-    if body is not None:
-        r.json = AsyncMock(return_value=body)
-    else:
-        r.json = AsyncMock(side_effect=json.JSONDecodeError("bad", "", 0))
-    r.get = MagicMock(return_value="test")
-    r.match_info = match_info or {}
-    return r
+def _req(body: dict | None = None, match_info: dict | None = None) -> web.Request:
+    """Build a mocked aiohttp.web.Request carrying real body bytes."""
+    # ``body=None`` means "malformed JSON": the capped read parses the bytes
+    # itself, so the malformed case is expressed as malformed bytes.
+    raw = json.dumps(body).encode() if body is not None else b"{bad json"
+    return make_mocked_request(
+        "POST",
+        "/api/workspaces",
+        match_info=match_info or {},
+        headers={"Content-Length": str(len(raw))},
+        payload=BodyStreamPayload(raw),
+    )
 
 
 def _cfg(**kw: object) -> KiroCrewConfig:
@@ -64,7 +69,7 @@ class TestCreateHandler:
     async def test_invalid_json_returns_400(self) -> None:
         resp = await api_workspaces_create(_req(body=None))
         assert resp.status == 400
-        assert b"Invalid JSON" in resp.body
+        assert b"invalid JSON" in resp.body
 
     @pytest.mark.asyncio
     async def test_empty_name_returns_400(self) -> None:
@@ -166,7 +171,7 @@ class TestUpdateHandler:
         with patch(_LOAD, return_value=cfg):
             resp = await api_workspaces_update(_req(body=None, match_info={"name": "default"}))
         assert resp.status == 400
-        assert b"Invalid JSON" in resp.body
+        assert b"invalid JSON" in resp.body
 
     @pytest.mark.asyncio
     async def test_update_dir_success(self, tmp_path: Path) -> None:

@@ -1303,6 +1303,79 @@ class TestSkillsLoaderExtraPaths:
         )
         assert "LocalBody" in loader.load_skill("dup")
 
+    def test_identical_copy_at_different_depth_deduped_in_context(self, tmp_path):
+        """A physical copy of a skill nested one level deeper in another root
+        (a package tree plus a flat mirror of it) yields ONE index line, not two.
+
+        The per-key shadowing in enumeration cannot catch this: the copies have
+        different dir-relative keys (``pkg/tool`` vs ``tool``), so both survive
+        to ``list_skills()`` and, before the fingerprint dedup, both rendered
+        identical summary lines differing only in path.
+        """
+        body = "---\nname: tool\ndescription: One tool\n---\n# Tool\nSame bytes.\n"
+        local = tmp_path / "local"
+        local.mkdir()
+        extra = tmp_path / "extra"
+        _create_skill(extra, "tool", body)
+        _create_skill(extra, "mirror-pkg/tool", body)
+        loader = SkillsLoader(
+            skills_path=local,
+            install_builtins=False,
+            config=_cfg_with_extra([str(extra)]),
+        )
+        # Both copies are enumerated (different keys) ...
+        keys = {s["key"] for s in loader.list_skills()}
+        assert {"tool", "mirror-pkg/tool"} <= keys
+        # ... but the injected index carries exactly one line for the skill,
+        # on the legacy full-dump path and the budgeted lazy path alike.
+        legacy = loader.get_context()
+        assert legacy.count("**tool**") == 1
+        lazy = loader.get_context(budget=10_000)
+        assert lazy.count("**tool**") == 1
+
+    def test_same_name_different_content_not_deduped(self, tmp_path):
+        """Same frontmatter name with different content is a legitimate
+        collision, not a mirror copy — both index lines must survive."""
+        local = tmp_path / "local"
+        local.mkdir()
+        extra = tmp_path / "extra"
+        _create_skill(extra, "tool", "---\nname: tool\ndescription: Original\n---\n# A\n")
+        _create_skill(
+            extra, "fork-pkg/tool", "---\nname: tool\ndescription: Forked variant\n---\n# B\n"
+        )
+        loader = SkillsLoader(
+            skills_path=local,
+            install_builtins=False,
+            config=_cfg_with_extra([str(extra)]),
+        )
+        legacy = loader.get_context()
+        assert legacy.count("**tool**") == 2
+        assert "Original" in legacy and "Forked variant" in legacy
+
+    def test_equal_metadata_different_bytes_not_deduped(self, tmp_path):
+        """Equal (name, description, size) with DIFFERENT bodies is a metadata
+        coincidence, not a copy — content verification must keep both.
+
+        The pinned path injects full bodies, so dropping a same-size row on
+        metadata alone would silently lose one skill's instructions. The two
+        bodies below are the same byte length but different procedures.
+        """
+        local = tmp_path / "local"
+        local.mkdir()
+        extra = tmp_path / "extra"
+        head = "---\nname: tool\ndescription: One tool\nalways: true\n---\n"
+        _create_skill(extra, "tool", head + "# Tool\nStep: run AAAA.\n")
+        _create_skill(extra, "mirror-pkg/tool", head + "# Tool\nStep: run BBBB.\n")
+        loader = SkillsLoader(
+            skills_path=local,
+            install_builtins=False,
+            config=_cfg_with_extra([str(extra)]),
+        )
+        rows = [s for s in loader.list_skills() if s["name"] == "tool"]
+        assert rows[0]["size_bytes"] == rows[1]["size_bytes"]  # fingerprints collide
+        legacy = loader.get_context()
+        assert "run AAAA" in legacy and "run BBBB" in legacy  # both bodies survive
+
     def test_nonexistent_extra_path_ignored(self, tmp_path):
         local = tmp_path / "local"
         local.mkdir()
@@ -2118,6 +2191,23 @@ class TestStripFrontmatterCloserParity:
     def test_closer_at_eof_without_newline_strips(self) -> None:
         out = SkillsLoader.strip_frontmatter("---\ndescription: test skill\n---")
         assert out == ""
+
+    def test_crlf_fences_strip_whatever_the_parser_parses(self) -> None:
+        """Line-ending side of the same invariant: the display dialect
+        tolerates a carriage return before each fence newline, so the
+        stripper must too — a CRLF document whose fields render in the UI
+        must not leak its whole block to the model."""
+        from kiro_crew.frontmatter import SKILL_LOADER, parse_frontmatter
+
+        doc = f"---\r\ndescription: test skill\r\n---\r\n{self.BODY}"
+        fields = parse_frontmatter(doc, SKILL_LOADER)
+        assert fields.get("description") == "test skill", (
+            "premise broken: the display parser no longer tolerates a CRLF "
+            "fence — re-check _COLUMN0_BLOCK_RE before touching the stripper"
+        )
+        out = SkillsLoader.strip_frontmatter(doc)
+        assert "description:" not in out, "frontmatter leaked past a CRLF fence"
+        assert out == self.BODY
 
     def test_no_closer_leaves_content_unchanged(self) -> None:
         doc = "---\ndescription: dangling opener, no closer"

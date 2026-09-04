@@ -1549,12 +1549,23 @@ async def api_session_directive(request: web.Request) -> web.Response:
     # either one is positive proof of a local caller, and a cookie carries
     # neither. Same predicate as ``handlers/updates.py``'s host-locality gate.
     if not (request.get("internal_auth") or request.get("peer_verified")):
+        logger.warning(
+            "session-directive REFUSED (not_local_caller): neither internal_auth nor "
+            "peer_verified was set, so the caller could not be proven local. "
+            "Nothing was parked."
+        )
         return web.json_response(
             {"error": "local caller required", "code": "not_local_caller"},
             status=403,
         )
     session_key = request.headers.get("X-Session-Key", "").strip()
     if not session_key:
+        logger.warning(
+            "session-directive REFUSED (session_key_required): the caller sent no "
+            "X-Session-Key, so no session could be named and nothing was parked. On a "
+            "backend that emits no _meta.kiro identity this is fatal: the marker cannot "
+            "be trusted either, so the directive is dropped entirely."
+        )
         return web.json_response(
             {"error": "X-Session-Key required", "code": "session_key_required"},
             status=400,
@@ -1576,6 +1587,13 @@ async def api_session_directive(request: web.Request) -> web.Response:
     try:
         record_id = directive_queue.publish(session_key, kind, args)
     except ValueError as exc:
+        logger.warning(
+            "session-directive REFUSED (invalid_directive) for session_key=%r kind=%r: "
+            "%s. Nothing was parked.",
+            session_key,
+            kind,
+            exc,
+        )
         return web.json_response({"error": str(exc), "code": "invalid_directive"}, status=400)
     return web.json_response({"ok": True, "id": record_id})
 

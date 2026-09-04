@@ -50,8 +50,6 @@ import {
 } from '../../api/client'
 import { Card, Btn, Badge, IconButton } from '../../components/ui'
 import { SettingsToggle } from '../../components/settings'
-import { usePreviewFlag } from '../../hooks/usePreviewFlag'
-import { PREVIEW_REMOTE_CREW_CHAT, setPreviewFlag } from '../../utils/previewFlags'
 import {
   DropdownMenu,
   DropdownMenuTrigger,
@@ -653,7 +651,6 @@ export function RemoteCrewPanel() {
   const queryClient = useQueryClient()
   const dispatch = useAppDispatch()
   const [tab, setTab] = useState<'crews' | 'setup'>('crews')
-  const remoteCrewChat = usePreviewFlag(PREVIEW_REMOTE_CREW_CHAT)
   // Default-on: when set, the web app auto-connects every crew on load and on
   // tab focus (see useAutoConnectInstances). Off lets a many-crew user stop the
   // per-load SSH + token-mint fan-out.
@@ -1156,20 +1153,6 @@ export function RemoteCrewPanel() {
 
       {tab === 'crews' ? (
         <div className="space-y-4">
-          {/* Preview opt-in for dispatching a chat to a crew. It lives here
-           *  rather than in Developer > Feature Previews because the capability
-           *  is meaningless without a connected crew, and this is the page where
-           *  crews are managed — so the toggle sits next to the thing it acts on.
-           *  No ingress link of its own: flipping it puts the create-menu entry
-           *  back in the same tick, and that menu is already reachable. */}
-          <Card>
-            <SettingsToggle
-              label={i18nT('pages.settings.remoteCrewPanel.chat_on_a_crew')}
-              description={i18nT('pages.settings.remoteCrewPanel.chat_on_a_crew_desc')}
-              checked={remoteCrewChat}
-              onChange={v => setPreviewFlag(PREVIEW_REMOTE_CREW_CHAT, v)}
-            />
-          </Card>
           <Card>
             <SettingsToggle
               label={i18nT('pages.settings.remoteCrewPanel.auto_connect')}

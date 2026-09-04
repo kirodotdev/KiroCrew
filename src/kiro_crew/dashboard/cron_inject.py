@@ -11,7 +11,7 @@ import math
 from typing import TYPE_CHECKING, Any
 
 from kiro_crew.dashboard.state import DashboardState, SlotOrigin, row_mid
-from kiro_crew.history import append_if_absent_off_loop
+from kiro_crew.history import append_rows_if_absent_off_loop
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
 if TYPE_CHECKING:
@@ -67,9 +67,303 @@ def context_meter_reading(client: object) -> dict[str, Any] | None:
         return None
 
 
+def run_stamp(job: "CronJob") -> str:
+    """The header suffix identifying WHICH run a row belongs to, or ``""``.
+
+    A persistent cron reuses one session and one ``cron-{id}`` tab for its whole
+    life, so every run appended a row headed only by the job's name. N days of
+    runs therefore read as one undated pile -- in the tab, and in the
+    ``build_session_replay`` reconstruction a follow-up turn opens with, which
+    is how a reply meant for the newest run lands against an older one.
+
+    Read straight off ``job.last_result_stamp``, which ``CronJob.set_run_result``
+    rendered when the result was recorded. This function deliberately does no
+    formatting and no timezone lookup: the stamp is part of the row's dedup key,
+    so a re-render under an edited ``timezone`` would spell an existing row
+    differently and append a duplicate instead of collapsing onto it.
+
+    ``""`` when the job carries no stamp (a store written by an older build, or
+    a job that has never run): the header keeps its pre-stamp spelling, so a row
+    already on disk still matches and is not re-appended beside a stamped twin.
+    """
+    stamp = getattr(job, "last_result_stamp", "")
+    return stamp if isinstance(stamp, str) else ""
+
+
+def run_marker(job: "CronJob") -> str:
+    """The row's IDENTITY as an invisible marker, or ``""``.
+
+    A row is recognised as already-written by its exact text: both dedup layers
+    compare content (``_reflect``'s window scan and
+    ``ConversationLog.append_if_absent``). Leaving identity to the DISPLAYED
+    stamp made resolution load-bearing -- at minutes, two runs in one minute with
+    identical output collapsed; at seconds, two runs in one second still did. The
+    bound moves but never closes, because a stamp is written for a person to read
+    and a person does not need microseconds.
+
+    So identity stops riding on the display string. This marker carries the run's
+    own ``last_result_ts`` at full precision, and the stamp is free to stay
+    human-readable. An HTML comment because it must not render: the tab shows the
+    stamp, while the replay a follow-up turn reads gets an explicit, unambiguous
+    run boundary.
+
+    Built only from ``job.id`` and the timestamp -- both internal, neither
+    user-supplied -- so it carries nothing the redactors would need to touch.
+
+    Emitted BEFORE the body, not after it. A prompt or result is untrusted text
+    that can end inside an unclosed ``` fence, and everything following such a
+    fence renders as code -- which would print this comment verbatim in the tab
+    instead of hiding it. Position does not affect identity, since the dedup
+    compares the row's whole content either way.
+
+    ``""`` when the job has no timestamp, matching :func:`run_stamp`: a legacy
+    row already on disk keeps its historical spelling and still dedups.
+    """
+    ts = getattr(job, "last_result_ts", 0.0)
+    if not isinstance(ts, (int, float)) or not ts:
+        return ""
+    # Fixed 6dp rather than repr(): it round-trips through the JSON store
+    # unchanged, so the marker a reloaded job renders is byte-identical to the
+    # one the executor wrote.
+    return f"\n\n{_MARKER_PREFIX}{job.id}:{ts:.6f} -->"
+
+
+#: Header prefix of a PROMPT row. Distinct from the result row's
+#: ``"# Cron Job Result:"``, which does not share this prefix, so a scan for one
+#: never matches the other.
+_PROMPT_ROW_PREFIX = "# Cron Run:"
+
+#: Opening of the invisible identity marker :func:`run_marker` emits, and the
+#: token :func:`_prompt_row_body` finds a row's header by. Declared once and used
+#: by both: a marker written with a spelling the parser does not recognise turns
+#: every body read into the header text, and the repeat suppression into a no-op.
+_MARKER_PREFIX = "<!-- cron-run:"
+
+#: Body written in place of a repeated instruction. Points at a row in the
+#: TRANSCRIPT -- a historical record of what a run was actually given -- and
+#: deliberately not at ``job.message``, which is live configuration: a reader
+#: resolving that would get whatever the instruction is NOW, which is the same
+#: misattribution that makes ``/to-chat`` pass ``include_prompt=False``.
+#:
+#: "the nearest row above that carries one" rather than "the row above", because
+#: in the steady state the row directly above is another reference. What the
+#: sentence promises is exactly what :func:`_prompt_already_recorded` enforces: a
+#: verbatim copy within :data:`_PROMPT_LOOKBACK_ROWS` rows, so following the
+#: pointer terminates.
+_UNCHANGED_PROMPT_BODY = (
+    "_Same instruction as the previous run — its full text is in the nearest "
+    '"# Cron Run" row above that carries one._'
+)
+
+#: Invisible token that marks a prompt row as a REFERENCE rather than a verbatim
+#: instruction. It rides in the header's protected marker block -- immediately
+#: after the run marker, ahead of the body separator -- so it can never be
+#: confused with body text, exactly as the run marker cannot (see
+#: :func:`_parse_prompt_row`).
+#:
+#: Reference-ness MUST be a structural fact of how the row was written, never an
+#: inference from what the body renders as. The body of a reference is the human
+#: prose :data:`_UNCHANGED_PROMPT_BODY`, and a real instruction can equal that
+#: prose (a job whose ``message`` literally is that sentence) or quote this token
+#: in its own text. Deciding "is this a reference?" from the body would then read
+#: a genuine instruction row as a pointer, skip it as the latest antecedent, and
+#: attribute a later identical run to the row above it -- the run-attribution
+#: corruption this whole path exists to prevent. Keyed off the marker instead,
+#: the two are independent: a verbatim row is compared on its real bytes however
+#: they read, and a reference is recognised however its prose reads.
+_REFERENCE_MARKER = "<!-- cron-ref -->"
+
+#: Shortest instruction worth referencing instead of storing again.
+#:
+#: A reference is not free: the row keeps its header, stamp and marker either way,
+#: so replacing the text costs ``len(_UNCHANGED_PROMPT_BODY)`` and saves
+#: ``len(prompt)``. Below break-even the transcript gets BIGGER *and* loses the
+#: instruction -- the worst of both -- and most crons in the wild carry a one-line
+#: message ("check pipeline health"), so the common case must be left alone. The
+#: threshold sits well above break-even rather than at it: a 100-char message
+#: repeated across a full 200-row window costs ~20KB against a 10MB rotation
+#: budget, which is not worth trading the text for. The saving only becomes worth
+#: the indirection at the kilobyte-prompt scale this change exists for.
+_MIN_PROMPT_CHARS_TO_REFERENCE = 500
+
+#: How far back a reference may reach for its antecedent, in ROWS of the tab.
+#: A run writes two rows, so this is ~20 runs.
+#:
+#: The bound is what makes a reference RESOLVABLE rather than merely true. Three
+#: windows disagree about what "still here" means: the live slot keeps 10,000 rows
+#: (``state._MAX_SLOT_MESSAGES``), the durable transcript keeps ~200 lines
+#: (``history._SESSION_KEEP_LINES``, tail), and the replay a follow-up turn reads
+#: is character-budgeted and tail-heavy (``context._REPLAY_BUDGET_CHARS``). An
+#: unbounded scan reads the largest of the three, so a copy that rotation has
+#: already dropped from disk keeps satisfying it -- the instruction would be stored
+#: once and referenced forever, with the text nowhere a reader can reach. Bounding
+#: the look-back re-anchors a verbatim copy every ~20 runs instead, which is inside
+#: the two ROW-counted windows (the 10,000-row slot and the ~200-line transcript
+#: tail) and cannot be defeated by a long-lived gateway.
+#:
+#: It does NOT promise resolvability inside the replay: that window is counted in
+#: CHARACTERS, so ~20 runs whose RESULTS are long can exhaust the budget before it
+#: reaches the antecedent, leaving a reference whose text is on disk but outside
+#: what one replay shows. No write-time row count can close that -- the budget is
+#: scaled at REPLAY time by the active model's context window, which the writing
+#: run cannot know and which can change between the write and the read. Closing it
+#: belongs on the READING side (have the replay builder resolve a marker it can
+#: see); a row count is the conservative invariant available here, and it errs
+#: toward re-anchoring too often rather than too rarely.
+_PROMPT_LOOKBACK_ROWS = 40
+
+
+def _prompt_row_body(content: str) -> str | None:
+    """The instruction text stored in a prompt row, or ``None`` if unreadable.
+
+    ``None`` is the FAIL-SAFE answer, and the direction matters: the caller reads
+    it as "this row does not record the instruction", so an unparseable row makes
+    the run store its prompt verbatim. An extra copy costs bytes; suppressing
+    against a row whose text was never confirmed would attribute a run to an
+    instruction it never had.
+    """
+    return _parse_prompt_row(content)[1]
+
+
+def _parse_prompt_row(content: str) -> tuple[bool, str | None]:
+    """Split a prompt row into ``(is_reference, instruction_body)``.
+
+    ``is_reference`` is read from :data:`_REFERENCE_MARKER` in the header's
+    protected marker block, NOT from what the body renders as -- see that
+    constant for why the distinction cannot ride on the body. ``instruction_body``
+    is the verbatim text a run was given, or ``None`` on an unreadable row (the
+    fail-safe :func:`_prompt_row_body` documents). A reference row reports
+    ``(True, _UNCHANGED_PROMPT_BODY)``: it is not instruction-bearing, and its
+    body is the pointer prose.
+
+    The marker, when present, is its own block DIRECTLY after the header, and is
+    recognised only there rather than wherever it first appears in the row. An
+    instruction is untrusted text that may quote this very format -- a prompt
+    asking the agent about ``<!-- cron-run:`` spellings is the obvious case -- and
+    a row-wide search would cut such a body at its own quoted marker, then compare
+    the remainder as though it were the whole instruction. The reference marker
+    sits in that same protected block, so a body that merely quotes it is read as
+    part of the instruction, not as a structural flag.
+    """
+    text = content.lstrip()
+    if not text.startswith(_PROMPT_ROW_PREFIX):
+        return (False, None)
+    _header, sep, rest = text.partition("\n\n")
+    if not sep:
+        return (False, None)
+    if rest.startswith(_MARKER_PREFIX):
+        close = rest.find("-->")
+        if close == -1:
+            return (False, None)
+        after = rest[close + 3 :]
+        is_reference = after.startswith(_REFERENCE_MARKER)
+        if is_reference:
+            after = after[len(_REFERENCE_MARKER) :]
+        return (is_reference, _after_separator(after))
+    # No run marker means the row was never written as a reference (a reference is
+    # only ever emitted for a run that carries one), so its whole body is verbatim.
+    return (False, rest)
+
+
+def _after_separator(tail: str) -> str:
+    """Drop the ``\\n\\n`` the row builder puts between header and body.
+
+    Exactly one separator, not every leading newline: an instruction may itself
+    START with a blank line, and a greedy strip would read that row's body back
+    as a value the run was never given. It would never equal the prompt being
+    compared, so suppression would silently never fire for such a job -- the
+    defect this whole path exists to fix, invisible because the fallback is the
+    old behaviour.
+    """
+    return tail[2:] if tail.startswith("\n\n") else tail.lstrip("\n")
+
+
+def _prompt_already_recorded(slot: Any, prompt_body: str, own_marker: str) -> bool:
+    """Whether the run just before this one was given this exact instruction.
+
+    The question is asked of the TRANSCRIPT, never of a flag on the job, and that
+    is the whole point. A flag saying "the instruction changed" is set where the
+    result is recorded, while the row that must act on it is written by a
+    different component that may not run at all: ``hide_in_chat`` and
+    ``persistent_session=False`` both skip this injection entirely, so a hidden
+    run of an edited message would spend the signal, and the next visible run
+    would reference a surviving row still holding the OLD instruction -- a
+    transcript that attributes a result to something the run was never asked.
+    Reading the rows cannot desync from them.
+
+    It is deliberately the LATEST instruction-bearing prompt row that is compared,
+    not any row in reach. An edit that is later reverted (A, then B, then A again)
+    would satisfy an ``any()`` scan against the old A row while the run above
+    actually carries B -- so the placeholder would assert "same as the previous
+    run" about a different instruction, which is the exact misattribution this
+    design exists to avoid. Comparing the latest one makes the sentence true by
+    construction, and reverts write A again.
+
+    Equality, not containment: a substring test would find a newly shortened
+    "do X" inside a stored "do X and Y" and suppress a genuine change.
+
+    Bounded by :data:`_PROMPT_LOOKBACK_ROWS`, which is what keeps a reference
+    resolvable rather than merely accurate -- see that constant for the three
+    disagreeing windows and why an unbounded scan strands the instruction off
+    disk. Reaching the end of the look-back without an instruction-bearing row is
+    the ordinary re-anchor path, not an error: the run writes the text again.
+
+    Skipped entirely for a prompt shorter than
+    :data:`_MIN_PROMPT_CHARS_TO_REFERENCE`, where a reference would cost more
+    bytes than it saves.
+
+    Reads ``slot.messages``, the live window: freshly hydrated from the transcript
+    on a first bind, and carrying this process's appended rows afterwards. The
+    ``history`` parameter is NOT usable here -- :func:`prefetch_cron_history`
+    returns ``None`` once the slot is linked, which is every run of a persistent
+    cron after the first, so a scan of it would see nothing exactly when the
+    answer matters. Only ``user`` rows are considered, because only a run's prompt
+    row is evidence of what a run was given; a row a person typed in the tab is
+    not, however it is headed.
+
+    ``own_marker`` -- this run's own :func:`run_marker` -- excludes the run asking
+    the question. Injecting one run twice must render the SAME bytes, or the two
+    rows dedup to neither and the tab grows: a scan counting this run's own
+    earlier row as precedent would make the second call write a reference where
+    the first wrote the instruction. No production caller injects one run twice
+    with ``include_prompt=True`` today (``/to-chat`` re-surfaces the result alone),
+    so this is an invariant the dedup layers rely on rather than a live path --
+    which is why it is pinned by tests rather than left to be rediscovered.
+
+    A run with no marker gets no suppression at all (``own_marker`` empty, which
+    :func:`run_marker` returns for a job carrying no timestamp). Without a run
+    identity there is nothing to tell "the row I just wrote" from "a row a
+    previous run wrote", so the safe answer is the one that keeps the legacy
+    spelling: write the instruction, and let content dedup collapse the repeat.
+    """
+    if not own_marker or len(prompt_body) < _MIN_PROMPT_CHARS_TO_REFERENCE:
+        return False
+    messages = getattr(slot, "messages", None) or []
+    for msg in reversed(list(messages)[-_PROMPT_LOOKBACK_ROWS:]):
+        if msg.get("role") != "user":
+            continue
+        content = str(msg.get("content", "") or "")
+        if own_marker in content:
+            continue
+        is_reference, body = _parse_prompt_row(content)
+        # A REFERENCE row holds no instruction -- it points at the verbatim copy
+        # above it -- so skip past it to that copy. Reference-ness is the
+        # structural marker, never ``body == _UNCHANGED_PROMPT_BODY``: a verbatim
+        # instruction whose text equals that prose is a real antecedent and must
+        # be compared here, or a later run given it references the row above and
+        # its result is attributed to a different instruction.
+        if is_reference or body is None:
+            continue
+        return body == prompt_body
+    return False
+
+
 def inject_cron_result_to_dashboard(
-    state: DashboardState, job: "CronJob", result_text: str,
+    state: DashboardState,
+    job: "CronJob",
+    result_text: str,
     *,
+    include_prompt: bool = True,
     history: list[dict[str, Any]] | None,
     context_reading: dict[str, Any] | None = None,
 ) -> None:
@@ -90,6 +384,23 @@ def inject_cron_result_to_dashboard(
     hydration, because the only state that consumes ``history`` is an unlinked
     slot, and the sole writer of ``linked_session_key`` for a cron slot is the
     line below, which runs in this same synchronous block.
+
+    Writes the run as a PAIR: the job's own prompt as a ``user`` row, then the
+    result as an ``assistant`` row, both headed by :func:`run_stamp`. The
+    executor streams the prompt straight to the provider and never persists it,
+    so a follow-up turn used to replay a stack of results with nothing saying
+    what any of them had been asked -- it could not tell which run the person in
+    front of it was answering. The pair is written only when the run produced a
+    result, so neither row can appear without its counterpart.
+
+    ``include_prompt`` is False for a caller that is RE-SURFACING an older
+    result rather than delivering a fresh one (``/to-chat``). Only the run that
+    produced the result knows the prompt that produced it: ``job.message`` is
+    live configuration a user can edit afterwards, so a re-surfacing caller
+    reading it would pair the stored output with an instruction that never ran.
+    Such a caller writes the result row alone -- the pre-existing behaviour --
+    and any prompt row the executor already wrote is still in the history it
+    hydrates from.
 
     ``context_reading`` is the run's context-meter reading captured by
     :func:`context_meter_reading` while the cron's provider was still resident.
@@ -123,49 +434,115 @@ def inject_cron_result_to_dashboard(
     from kiro_crew.dashboard.chat_utils import _sync_dashboard_slots
 
     _sync_dashboard_slots(state)
+
+    # Rows this call owes the durable transcript, in the order they happened.
+    # Collected rather than written per row: the pair is flushed once, below,
+    # under a single ``atomic_appends`` hold -- see the flush for why.
+    durable_rows: list[tuple[str, str, str, str | None]] = []
+
+    def _reflect(role: str, content: str, cls: str) -> None:
+        """Put one row in the live slot and queue it for the durable write."""
+        if any(msg.get("content") == content for msg in slot.messages):
+            return
+        # The durable copy must carry the SAME ``meta.mid`` the window copy is
+        # minted (read off the append's return via ``row_mid``): an id-less
+        # durable row cannot be matched by the bounded read's identity walk,
+        # which then treats the window copy as still owed and re-appends the
+        # injection.
+        window_mid = row_mid(slot.append(role, content, cls))
+        durable_rows.append((role, content, cls, window_mid))
+
+    def _flush_durable_rows() -> None:
+        """Write the queued rows to the canonical log as ONE grouped append.
+
+        Persisted under the linked session key so a dashboard follow-up turn has
+        the run as context: the cron execution path (gateway
+        stream_and_collect) streams text into job.last_result but never writes
+        the dashboard conversation_log, and slot.append only updates the
+        in-memory slot. Without this, chat_runner.build_session_replay reads an
+        empty cron:{id} log and the follow-up agent opens with no memory of the
+        run the user is looking at. The stable linked key (cron:{id}) covers
+        both persistent and stateless crons, since the slot always links there
+        regardless of the per-run execution key.
+
+        ONE grouped write, not one per row: a run writes a prompt row AND a
+        result row, and dispatching them separately hands two worker threads two
+        independent appends -- they can land out of order, or one can fail
+        alone, leaving the replay with a reversed or half-written run that no
+        timestamp ordering repairs. ``append_rows_if_absent_off_loop`` holds
+        ``atomic_appends`` for the group, which is the contract's stated
+        companion for a multi-append caller that offloads.
+
+        Each row keeps ``append_if_absent``'s idempotence, so the duplicate
+        check and the write stay one critical section per row: an unlocked
+        read_messages() + append would leave a TOCTOU window in which a
+        concurrent slot save (or a cron re-fire) lands the identical row between
+        the check and the write. Best-effort -- lock/IO errors only skip the
+        durable copy, which the slot above already carries.
+        """
+        if state.conversation_log is None or not durable_rows:
+            return
+        append_rows_if_absent_off_loop(
+            state.conversation_log,
+            f"cron:{job.id}",
+            durable_rows,
+            agent=job.agent_id or None,
+        )
+
     if result_text:
+        stamp = run_stamp(job)
+        # Identity, separate from the displayed stamp -- see run_marker.
+        marker = run_marker(job)
+        # Prompt first, so the transcript reads in the order it happened and a
+        # replay pairs each result with the instruction that produced it. Gated
+        # on the result: a lone prompt row would be a run boundary with nothing
+        # behind it, which is what ``/to-chat`` on a job that has never produced
+        # one would otherwise write.
+        # Stored VERBATIM. ``.strip()`` belongs in the emptiness test, not in
+        # the stored value: the executor sends ``job.message`` as written, so
+        # persisting a trimmed copy records a prompt the run was never given --
+        # and leading indentation is not decoration in a message carrying a
+        # fenced block or an indented snippet. The strip still decides whether a
+        # prompt EXISTS, so a whitespace-only message writes no row (dropping it
+        # entirely would emit a run boundary whose body is blank).
+        raw_prompt = job.message or ""
+        prompt = raw_prompt if include_prompt and raw_prompt.strip() else ""
+        if prompt:
+            # A persistent cron carries ONE message for its whole life, so the
+            # verbatim text is stored only when the transcript does not already
+            # hold it -- see _prompt_already_recorded. The row itself is written
+            # every run regardless: it carries the stamp and the marker, so the
+            # run boundary and the user/assistant alternation hold whichever body
+            # it gets. Redacted BEFORE the comparison, because the redacted form
+            # is what a previous run stored.
+            safe_prompt, _ = redact_exfiltration_urls(prompt)
+            safe_prompt, _ = redact_credentials(safe_prompt)
+            if _prompt_already_recorded(slot, safe_prompt, marker):
+                # Mark the row a reference STRUCTURALLY: the invisible
+                # _REFERENCE_MARKER rides in the header's protected block right
+                # after the run marker (which is non-empty here -- suppression
+                # only fires for a run that carries one), so the scan above can
+                # tell this from a verbatim row whose text merely reads like the
+                # placeholder. See _REFERENCE_MARKER.
+                header_marker = f"{marker}{_REFERENCE_MARKER}"
+                prompt_body = _UNCHANGED_PROMPT_BODY
+            else:
+                header_marker = marker
+                prompt_body = safe_prompt
+            _reflect(
+                "user",
+                f"# Cron Run: {safe_name}{stamp}{header_marker}\n\n{prompt_body}",
+                "msg msg-u",
+            )
         safe_result, _ = redact_exfiltration_urls(result_text)
         safe_result, _ = redact_credentials(safe_result)
-        context = f"# Cron Job Result: {safe_name}\n\n{safe_result}"
-        if not any(msg.get("content") == context for msg in slot.messages):
-            # The durable copy below must carry the SAME ``meta.mid`` the window
-            # copy is minted (read off the append's return via ``row_mid``): an
-            # id-less durable row cannot be matched by the bounded read's
-            # identity walk, which then treats the window copy as still owed and
-            # re-appends the injection.
-            window_mid = row_mid(slot.append("assistant", context, "msg msg-a"))
-            # Persist the result to the canonical ConversationLog under the
-            # linked session key so a dashboard follow-up turn has it as
-            # context. The cron execution path (gateway stream_and_collect)
-            # streams text into job.last_result but never writes the dashboard
-            # conversation_log, and slot.append only updates the in-memory
-            # slot. Without this, chat_runner.build_session_replay reads an
-            # empty cron:{id} log and the follow-up agent opens with no memory
-            # of the result the user is looking at. Writing to the stable
-            # linked key (cron:{id}) fixes both persistent and stateless crons
-            # (the slot always links to cron:{id} regardless of the per-run
-            # execution key).
-            log_key = f"cron:{job.id}"
-            if state.conversation_log is not None:
-                # append_if_absent performs the duplicate check under the SAME
-                # per-session cross-process lock as the write itself, so the
-                # existence test and the append are one atomic critical section.
-                # An unlocked read_messages() + append_off_loop would leave a
-                # TOCTOU window in which a concurrent slot save (or a cron
-                # re-fire) could land the identical result between the check and
-                # the fire-and-forget append — duplicating it on disk and
-                # replaying it twice to the follow-up agent turn after a restart.
-                # append_off_loop dispatches to a worker thread (patient acquire)
-                # and swallows lock/I/O errors — the slot above already carries
-                # the message.
-                append_if_absent_off_loop(
-                    state.conversation_log,
-                    log_key,
-                    "assistant",
-                    context,
-                    agent=job.agent_id or None,
-                    mid=window_mid,
-                )
+        _reflect(
+            "assistant",
+            f"# Cron Job Result: {safe_name}{stamp}{marker}\n\n{safe_result}",
+            "msg msg-a",
+        )
+        # After BOTH rows are queued, so the pair lands as one write.
+        _flush_durable_rows()
     if context_reading:
         # Same frame shape as chat_runner._context_usage_payload. `reset` when
         # the counts are unknown is load-bearing: the frontend stores pct and
@@ -181,9 +558,7 @@ def inject_cron_result_to_dashboard(
     state.push_slots_update()
 
 
-async def prefetch_cron_history(
-    state: DashboardState, job_id: str
-) -> list[dict[str, Any]] | None:
+async def prefetch_cron_history(state: DashboardState, job_id: str) -> list[dict[str, Any]] | None:
     """Off-loop read of the ``cron:{id}`` transcript for the injection above.
 
     :func:`inject_cron_result_to_dashboard` is synchronous and hydrates a
@@ -232,4 +607,5 @@ def hydrate_slot_from_history(slot: Any, messages: list[dict[str, Any]]) -> None
             f"msg msg-{'a' if role == 'assistant' else 'u'}",
             broadcast=False,
             meta=(msg["meta"] if isinstance(msg.get("meta"), dict) else None),
+            mint_mid=False,
         )

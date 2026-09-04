@@ -27,6 +27,7 @@ See ``docs/system-specs/modules/ops-mission-control.md`` (dispatch cycle).
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from dataclasses import dataclass, field
 from typing import Any
@@ -471,9 +472,35 @@ def verify_pending_actions(
                 verification=verdict,
                 verification_detail=detail,
             )
-        except (KeyError, ValueError):
+        except json.JSONDecodeError:
+            # Corruption does NOT get the tolerance below, and this clause exists only
+            # to stop it taking it by accident: `JSONDecodeError` subclasses
+            # `ValueError`, which the next clause already catches for a completely
+            # different reason (an illegal status transition). Without this the two
+            # would share one handler and a corrupt index would be swallowed by a
+            # debug log written for a grammar error.
+            #
+            # Refusing is the deliberate choice, and the difference from the OSError
+            # case is persistence. An unreadable index is transient: the next
+            # heartbeat probably succeeds, so skipping one annotation costs nothing.
+            # A corrupt index fails identically on every future cycle until a person
+            # intervenes -- so tolerating it means degrading indefinitely while the
+            # board still renders and nothing reports why. That is the same
+            # looks-like-health failure the display reads now log, and the reason this
+            # one has to escape.
+            raise
+        except (KeyError, ValueError, OSError):
             # Pruned or raced away between the read and the write. Not an error worth
             # failing a cycle for, and nothing else in the cycle depends on it.
+            #
+            # ``OSError`` joins the two race cases rather than escaping: the strict
+            # for-update index read means `update_fields` can now refuse instead of
+            # silently truncating, and that refusal must not become the one thing that
+            # aborts a cycle. Tolerating it is safe precisely BECAUSE the store refused --
+            # the mutation was abandoned before it wrote, so nothing is half-applied and
+            # the only cost is this annotation, which the next verification pass redoes.
+            # The store staying strict and this caller staying tolerant are the same
+            # decision seen from two ends, not a contradiction. Found in review (GPT 5.6).
             logger.debug(
                 "ops-mission-control: could not record verification for %s",
                 incident.incident_id,
@@ -581,7 +608,26 @@ async def run_cycle(
     # in a cron of its own because a TTL that only advances when a separate job fires
     # is a TTL that silently stops existing when that job is paused — and every other
     # cron here is pausable by design.
-    expired = await asyncio.to_thread(store.expire_stale_proposals)
+    try:
+        expired = await asyncio.to_thread(store.expire_stale_proposals)
+    except OSError:
+        # Any index-maintenance I/O failure, not only an unreadable index: this also
+        # catches the sidecar lock and the atomic write, which could always raise. The
+        # strict for-update read just made the case common enough to matter. Either way
+        # the durable state is intact -- a failed read abandons the mutation before it
+        # writes, and a failed write leaves the previous document in place -- so the only
+        # thing lost is this cycle's TTL stamping, which the next heartbeat redoes.
+        #
+        # Raising instead would cost the ENTIRE cycle from here down: every claim, the
+        # Slack pin mirror, the desktop notifications and the cycle's SEL entry. This
+        # function is ordered specifically so a later fault cannot cost an earlier step
+        # ("a Slack outage can never cost us a claim"), and a maintenance pass that reruns
+        # every heartbeat is the clearest case of that rule. Found in review.
+        logger.warning(
+            "ops-mission-control: proposal expiry skipped, dispatch index I/O failed",
+            exc_info=True,
+        )
+        expired = []
     if expired:
         logger.info(
             "ops-mission-control: %d proposal(s) expired unanswered: %s",
@@ -666,7 +712,32 @@ async def run_cycle(
 
     claimed: list[ClaimedIncident] = []
     for signal in candidates[:limit]:
-        result = await asyncio.to_thread(_claim_one, signal)
+        try:
+            result = await asyncio.to_thread(_claim_one, signal)
+        except OSError:
+            # `claim` itself keeps raising -- a compare-and-set has no safe degraded
+            # answer, because `None` already means "another instance owns this signal".
+            # But the CALLER must not let that abort the cycle, and the ordering here is
+            # why: the pre-filter above reads the index leniently, so an unreadable index
+            # empties `owned`, every firing signal becomes a candidate, and this line
+            # raises before `webhook.ack`, the stale sweep, the Slack pin mirror,
+            # `_notify_cycle_changes` and the cycle's SEL entry. Incidents claimed EARLIER
+            # in this same loop are durably on disk, so escaping here means an in-flight
+            # investigation nobody is ever told about -- and it made the maintenance-pass
+            # guard below unreachable on any install with something firing, which is the
+            # only install where it matters. Found in review (Design Review, Fable 5).
+            #
+            # `break`, not `continue`: whatever stopped this claim will stop every
+            # remaining one the same way, so continuing only repeats the failure per
+            # candidate. Nothing was published either way -- the abandoned mutation wrote
+            # nothing -- and the next heartbeat retries from a clean read.
+            logger.warning(
+                "ops-mission-control: claiming stopped early after %d claim(s), "
+                "dispatch index I/O failed",
+                len(claimed),
+                exc_info=True,
+            )
+            break
         if result is not None:
             # Gather evidence HERE, on the credentialed gateway, rather than letting
             # the investigating agent fetch it — the agent has no AWS credentials and
@@ -720,13 +791,26 @@ async def run_cycle(
     verifications = await asyncio.to_thread(verify_pending_actions, signals, registry.poll_health())
 
     stale_after = _config_int(_CONFIG_STALE_AFTER, DEFAULT_STALE_AFTER_SECS)
-    released = await asyncio.to_thread(
-        store.sweep_stale,
-        stale_after,
-        # 0 / unset means "derive from the working threshold", which is what
-        # ``sweep_stale`` does for ``None``.
-        _config_int(_CONFIG_NEEDS_HUMAN_STALE_AFTER, 0) or None,
-    )
+    try:
+        released = await asyncio.to_thread(
+            store.sweep_stale,
+            stale_after,
+            # 0 / unset means "derive from the working threshold", which is what
+            # ``sweep_stale`` does for ``None``.
+            _config_int(_CONFIG_NEEDS_HUMAN_STALE_AFTER, 0) or None,
+        )
+    except OSError:
+        # Same policy and same breadth as the proposal expiry above: any
+        # index-maintenance I/O failure, the lock and the atomic write included. The
+        # ordering argument is even more direct here -- the three steps that follow are
+        # the Slack mirror, the notification bus and the SEL entry, each of which the
+        # comments below place AFTER the claim precisely so its failure cannot cost one.
+        # An abandoned sweep releases nothing and is retried on the next heartbeat.
+        logger.warning(
+            "ops-mission-control: stale sweep skipped, dispatch index I/O failed",
+            exc_info=True,
+        )
+        released = []
 
     # Mirror newly-claimed incidents onto the Slack pin board. After the claim, so
     # a Slack outage can never cost us a claim; each send is already failure-

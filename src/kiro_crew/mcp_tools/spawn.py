@@ -52,6 +52,35 @@ from kiro_crew.validation import (
 # self-correction for a few dozen characters, not a full agent listing.
 _MAX_ROSTER_NAMES = 8
 
+# Owner recorded on an audit record when the resolver named no session. An empty
+# owner is ambiguous by construction: a resolver whose every identity source
+# failed and a spawn with genuinely no owning session both produce ``""``, and
+# nothing downstream can recover which one it was. This marker names the failed
+# resolution where it happens, so the audit trail says "the owner was lost"
+# rather than naming no session at all.
+#
+# Same ``unresolved:<pid>`` wire format the computer-use shim already writes
+# (``mcp_computer.UNRESOLVED_SESSION_PREFIX``), so one audit-reader vocabulary
+# covers both producers. Deliberately NOT trustworthy attribution -- the prefix
+# says it is not, so a reader cannot mistake a pid for a session identity.
+_OWNER_UNRESOLVED_PREFIX = "unresolved:"
+
+
+def _audit_owner(parent_session: str) -> str:
+    """The owner to record on an audit record for *parent_session*.
+
+    A resolved key is recorded verbatim. An empty one becomes the unresolved
+    marker for THIS process, read at call time so a forked child cannot report
+    its parent's pid.
+
+    Audit-only. The spawn REQUEST keeps the empty owner, because
+    ``parent_session_key`` addresses per-slot frame delivery and a synthetic key
+    there would route frames at a slot that does not exist.
+    """
+    if parent_session:
+        return parent_session
+    return f"{_OWNER_UNRESOLVED_PREFIX}{os.getpid()}"
+
 
 def _agent_roster_hint() -> str:
     """Valid agent names, for the ``agent``/``agents`` parameter descriptions.
@@ -544,7 +573,9 @@ def spawn_run(name: str, args: dict[str, Any]) -> str:
     inc_lessons = args.get("include_lessons", True) is not False
     inc_project = args.get("include_project", True) is not False
     if agents_list and len(agents_list) != len(task_list):
-        return f"Error: agents length ({len(agents_list)}) must match tasks length ({len(task_list)})"
+        return (
+            f"Error: agents length ({len(agents_list)}) must match tasks length ({len(task_list)})"
+        )
 
     agent_ids: list[str] = []
     agent_names: list[str] = []
@@ -739,8 +770,7 @@ def spawn_run(name: str, args: dict[str, Any]) -> str:
             )
         else:
             spawn_lines.append(
-                f"Error: acceptance status is unknown for "
-                f"{len(transport_errors)} task(s):"
+                f"Error: acceptance status is unknown for " f"{len(transport_errors)} task(s):"
             )
         for e in transport_errors:
             spawn_lines.append(f"  - {e}")
@@ -843,7 +873,17 @@ def spawn_list(name: str, args: dict[str, Any]) -> str:
         lines.append("No subagents running.")
     else:
         for a in agents:
-            status = "done" if a.get("done") else "running"
+            # A run parked on an unanswered spawn-approval prompt has launched
+            # no process and produced no turn, so reporting it as "running" is
+            # actively misleading to a caller this module itself points here
+            # ("Check spawn_list", above) -- it reads as work in progress when
+            # the truth is that a human has not approved it yet (#6484).
+            if a.get("done"):
+                status = "done"
+            elif a.get("awaiting_approval"):
+                status = "awaiting-approval"
+            else:
+                status = "running"
             err = f" error: {_redact(a['error'])}" if a.get("error") else ""
             progress = ""
             if not a.get("done"):
@@ -858,9 +898,7 @@ def spawn_list(name: str, args: dict[str, Any]) -> str:
                 progress = f" ({', '.join(parts)})"
             _withheld = a.get("context_withheld") or []
             scope = f"  ctx-withheld: {','.join(_withheld)}" if _withheld else ""
-            lines.append(
-                f"{a['id']}  [{status}]{err}{progress}{scope}  {_redact(a['task'])[:60]}"
-            )
+            lines.append(f"{a['id']}  [{status}]{err}{progress}{scope}  {_redact(a['task'])[:60]}")
     # Always append available agents (fresh read from disk). Same grammar filter and
     # redaction as the two rosters above, via the shared helper: this output is a
     # tool RESULT, so it lands in the same model context, and a spec's ``name``
@@ -954,7 +992,7 @@ def spawn_sub_agents(name: str, args: dict[str, Any]) -> str:
             entry["agent_or_mode"] = a[:MAX_SHORT_STRING]
 
     mcp_core.sel().log_tool_invocation(
-        session_key=parent_session or "",
+        session_key=_audit_owner(parent_session),
         source="mcp_core",
         tool_name="spawn_sub_agents",
         outcome="attempt",
@@ -1087,7 +1125,7 @@ def spawn_sub_agents(name: str, args: dict[str, Any]) -> str:
     if sa_errors:
         sa_results.append(json.dumps({"status": "spawn_errors", "errors": sa_errors}))
     mcp_core.sel().log_tool_invocation(
-        session_key=parent_session or "",
+        session_key=_audit_owner(parent_session),
         source="mcp_core",
         tool_name="spawn_sub_agents",
         outcome="completed" if not timed_out and not errored else "partial",

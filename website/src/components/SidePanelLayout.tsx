@@ -2,6 +2,7 @@ import React from 'react'
 import { useSearchParams, useLocation, useNavigate } from 'react-router-dom'
 import { ChevronRight } from 'lucide-react'
 import { NavBackBar } from './NavBackBar'
+import { useRegisterNavigationLeaveGuard } from './NavigationLeaveGuard'
 import { hasSubSelection, deleteSubSelection, COARSE_TOUCH_TARGET, SUBNAV_PUSH_STATE, toPathSegment, parsePathSegments } from './subNavParams'
 import { useIsMobile } from '../hooks/useIsMobile'
 import { useVisualViewport } from '../hooks/useVisualViewport'
@@ -84,6 +85,51 @@ interface SidePanelLayoutProps {
  *  off-screen. */
 export const SidePanelDockContext = React.createContext<'header' | 'bottom-float'>('header')
 
+/** A mounted pane's answer to "may I leave you?". `true` allows the switch,
+ *  `false` keeps the pane exactly where it is. */
+export type SidePanelLeaveGuard = () => boolean
+
+/** How a pane hands its guard to the shell. Null outside a SidePanelLayout, so
+ *  the hook below is a no-op for a pane rendered standalone (tests, embedded
+ *  uses) rather than a crash. */
+const SidePanelLeaveGuardContext = React.createContext<
+  ((guard: SidePanelLeaveGuard) => () => void) | null
+>(null)
+
+/**
+ * Let the mounted pane veto a tab switch that would unmount it.
+ *
+ * Every consumer of this layout renders exactly one pane at a time behind
+ * `{tab === '<key>' && <Tab />}`, so switching tabs UNMOUNTS the pane and takes
+ * its component-local state with it. A pane holding a draft the user typed
+ * cannot defend that on its own: React fires nothing before an unmount that a
+ * confirm could answer, and the click that causes it belongs to this shell.
+ *
+ * The guard answers "may I leave", not "am I dirty", so the pane keeps both the
+ * dirtiness test and the confirm copy. The question a user reads about losing a
+ * draft belongs next to the draft — the shell has no idea what is in it, and a
+ * shell-owned string would have to be vague enough to cover every pane.
+ *
+ * One registration, several askers: this layout also forwards the guard to the
+ * app shell (see NavigationLeaveGuard), so the same answer covers an in-app
+ * route change that unmounts the layout itself. A pane declares dirtiness here
+ * and nowhere else.
+ */
+export function useSidePanelLeaveGuard(guard: SidePanelLeaveGuard) {
+  const register = React.useContext(SidePanelLeaveGuardContext)
+  // Register a stable trampoline over a ref, not `guard` itself: the guard
+  // closes over the draft, so a new closure arrives on every keystroke.
+  // Registering it directly would either re-run the effect per keystroke or
+  // (with an empty dep list) pin the FIRST render's closure and read an empty
+  // draft forever — losing exactly the text this exists to protect.
+  const latest = React.useRef(guard)
+  latest.current = guard
+  React.useEffect(() => {
+    if (!register) return
+    return register(() => latest.current())
+  }, [register])
+}
+
 const TAB_MEMORY_PREFIX = 'kirocrew:sidepanel-tab:'
 
 export default function SidePanelLayout({ title, tabs, defaultTab, rememberKey, footer, headerRight, headerRightDock = 'header', fixedContent, basePath, children }: SidePanelLayoutProps) {
@@ -155,7 +201,49 @@ export default function SidePanelLayout({ title, tabs, defaultTab, rememberKey, 
   // mobile — iOS Settings always opens at its root, and a phone visit that
   // teleports into last week's tab reads as being lost, not resumed.
   const mobileTab = rawTab && tabs.some(t => t.key === rawTab) ? rawTab : null
+
+  // The pane currently on screen may publish ONE veto. A single slot rather than
+  // a registry: this layout renders exactly one pane at a time, so two
+  // simultaneous registrants cannot exist, and a set sized for a case with no
+  // instances is speculation. Cleanup is identity-checked, which is not
+  // speculative: it is what stops an outgoing pane's unmount from clearing the
+  // incoming pane's guard if the two ever interleave.
+  const leaveGuard = React.useRef<SidePanelLeaveGuard | null>(null)
+  const registerLeaveGuard = React.useCallback((guard: SidePanelLeaveGuard) => {
+    leaveGuard.current = guard
+    return () => { if (leaveGuard.current === guard) leaveGuard.current = null }
+  }, [])
+  /** Ask the mounted pane before an action that would unmount it. A pane with
+   *  nothing at stake registers no guard and this is a bare `true`. The guard
+   *  may show a confirm, so this must only ever be called from an event
+   *  handler — never during render. */
+  const mayLeavePane = () => leaveGuard.current?.() !== false
+  // The pane's guard answers for exits this layout owns. An in-app route change
+  // unmounts this whole layout and takes the pane's draft with it, and that click
+  // belongs to the app shell. Forwarding the SAME guard keeps a pane registering
+  // its dirtiness in ONE place: it publishes one answer, and every asker wired to
+  // the channel — the rail here, the global sidebar, the command palette — reads
+  // it. An in-app navigation surface that has NOT been wired still bypasses it;
+  // see PromptsTab for what that leaves open.
+  useRegisterNavigationLeaveGuard(mayLeavePane)
+  /** The pane, with the leave-guard channel open to it. A function, not a
+   *  precomputed element: the mobile root list renders no pane, and building
+   *  one there would start invoking the host's render prop on a branch that
+   *  never called it before. */
+  const renderPane = () => (
+    <SidePanelLeaveGuardContext.Provider value={registerLeaveGuard}>
+      {children(tab)}
+    </SidePanelLeaveGuardContext.Provider>
+  )
+
   const setTab = (t: string) => {
+    // Before anything else: switching tabs unmounts the pane, and the pane may
+    // hold work the user has not saved. Gated on the tab actually CHANGING —
+    // the desktop rail calls this for the tab already shown, which unmounts
+    // nothing, so an unqualified ask would pop a discard-confirm over a click
+    // that was never going to destroy anything. (PromptsTab's own row select
+    // carries the same caveat for re-clicking the selected row.)
+    if (t !== tab && !mayLeavePane()) return
     // Synchronously, in the same batched update as the param write: picking the
     // FIRST tab deletes the param, so a fallback still holding the previous tab
     // would render it for a frame AND get re-written into the URL by the sync
@@ -207,6 +295,10 @@ export default function SidePanelLayout({ title, tabs, defaultTab, rememberKey, 
    *  replace path remains for entries we did not mint (cold deep links),
    *  where `history.back()` would exit the app. */
   const backToRoot = () => {
+    // The mobile back bar is the other exit that unmounts the pane: the root
+    // list replaces it entirely. Same ask as a tab switch — a phone user one
+    // thumb-width from the back bar loses the same draft.
+    if (!mayLeavePane()) return
     if ((location.state as Record<string, unknown> | null)?.[SUBNAV_PUSH_STATE]) {
       navigate(-1)
       return
@@ -405,7 +497,7 @@ export default function SidePanelLayout({ title, tabs, defaultTab, rememberKey, 
         </div>
         )}
         <div data-testid="side-panel-pane" className={`px-4 pt-1 ${fixed ? 'flex-1 min-h-0 flex flex-col' : 'flex-1 pb-8'}`}>
-          {children(tab)}
+          {renderPane()}
         </div>
       </div>
     )
@@ -451,7 +543,7 @@ export default function SidePanelLayout({ title, tabs, defaultTab, rememberKey, 
           {headerRight}
         </div>
         <div data-testid="side-panel-pane" className={`px-6 ${fixed ? 'flex-1 min-h-0 flex flex-col' : 'flex-1 pb-8'}`}>
-          {children(tab)}
+          {renderPane()}
         </div>
       </div>
     </div>

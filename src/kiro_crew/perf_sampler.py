@@ -40,6 +40,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from kiro_crew import platform_compat
+from kiro_crew.extras import install_hint
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
 # Environment switch. Off unless explicitly set, so a normal install cannot
@@ -452,7 +453,7 @@ def pyspy_unavailable_message() -> str:
     """Explain that out-of-process sampling needs py-spy, and how to get it."""
     return (
         "Attaching to another process needs py-spy, which is not installed.\n"
-        "Install it with:  pip install 'kirocrew[perf]'   (or: pip install py-spy)\n"
+        f"Install it with:  {install_hint('perf')}\n"
         "On macOS py-spy also needs elevated privileges to read another "
         "process (the OS denies task_for_pid otherwise), so it may require sudo.\n"
         "To profile work in this process instead, use: --call module:callable"

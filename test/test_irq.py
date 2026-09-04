@@ -24,6 +24,7 @@ import pytest
 from kiro_crew.cron_script import Done, Report, Skip
 from kiro_crew.irq import (
     Observation,
+    Outcome,
     Probe,
     Severity,
     Tick,
@@ -31,6 +32,9 @@ from kiro_crew.irq import (
 from kiro_crew.irq import _dedupe_key as dedupe_key
 from kiro_crew.irq import (
     load_state,
+)
+from kiro_crew.irq import poll as irq_poll
+from kiro_crew.irq import (
     run,
     sanitize_label,
     state_path,
@@ -119,10 +123,20 @@ def _ctx(message: str = "{}", job_id: str = "job-1") -> types.SimpleNamespace:
 class ScriptedProbe(Probe):
     """A probe that replays a list of pre-built ticks, one per run()."""
 
-    def __init__(self, ticks: list[Tick], subject: str = "sub-1") -> None:
+    def __init__(
+        self, ticks: list[Tick], subject: str = "sub-1", coalesce_secs: float | None = None
+    ) -> None:
         self._ticks = list(ticks)
         self._subject = subject
+        self._coalesce_secs = coalesce_secs
         self.identity_calls = 0
+
+    def tuning(self) -> dict[str, float]:
+        # Declared through the probe's own hook, which is how a real probe asks
+        # for a floor. poll() forwards no bounds of its own.
+        if self._coalesce_secs is None:
+            return {}
+        return {"coalesce_secs": self._coalesce_secs}
 
     def identity(self, ctx: object) -> tuple[str, str]:
         self.identity_calls += 1
@@ -1287,3 +1301,148 @@ def test_a_window_written_before_per_entry_ages_keeps_the_age_it_had():
     verdict = _verdict(probe, coalesce_secs=_COALESCE)
     assert isinstance(verdict, Report), "the entry had already waited ten minutes"
     assert "said" in str(verdict)
+
+
+# ------------------------------------------------------- driver front door (poll)
+
+
+class _RaisingProbe(Probe):
+    """A probe with a defect: it raises instead of reporting fetch_ok=False."""
+
+    def identity(self, ctx: object) -> tuple[str, str]:
+        return ("test-kind", "sub-raise")
+
+    def observe(self, ctx: object) -> Tick:
+        raise RuntimeError("probe defect")
+
+
+class _ReturningKernelProbe(Probe):
+    """Identity only; used with a patched run() that returns without raising."""
+
+    def identity(self, ctx: object) -> tuple[str, str]:
+        return ("test-kind", "sub-return")
+
+    def observe(self, ctx: object) -> Tick:
+        return Tick()
+
+
+def test_poll_maps_a_quiet_tick_to_QUIET():
+    probe = ScriptedProbe([Tick()])
+    verdict = irq_poll("loop-1", "{}", probe)
+    assert verdict.outcome is Outcome.QUIET
+
+
+def test_poll_maps_a_wake_to_WAKE_and_carries_the_brief():
+    probe = ScriptedProbe(
+        [Tick(observations=[_wake("red:build", "build went red")])], coalesce_secs=0
+    )
+    verdict = irq_poll("loop-1", "{}", probe)
+    assert verdict.outcome is Outcome.WAKE
+    assert "build went red" in verdict.body
+
+
+def test_poll_refuses_to_call_a_failed_fetch_quiet():
+    """A probe that could not observe the subject has not shown it unchanged.
+
+    The cron driver sleeps on every Skip alike, so this distinction never had to
+    exist. A driver that decides whether to SPEND on the strength of a Skip does
+    need it: mapping a failed fetch to QUIET is how an expired credential or a
+    network outage becomes an indefinitely silent watch.
+    """
+    probe = ScriptedProbe([Tick(fetch_ok=False), Tick(fetch_ok=False)])
+    first = irq_poll("loop-blind", "{}", probe)
+    second = irq_poll("loop-blind", "{}", probe)
+    assert Outcome.QUIET not in (first.outcome, second.outcome)
+    assert Outcome.FALLBACK in (first.outcome, second.outcome)
+
+
+def test_poll_carries_the_terminal_keys_for_classification():
+    """A driver recording a durable outcome must tell merged from closed.
+
+    Matching on the delivered prose would break the first time that wording is
+    edited, so the probe's own keys travel with the verdict.
+    """
+    probe = ScriptedProbe(
+        [Tick(observations=[Observation("closed", Severity.TERMINAL, "closed unmerged")])]
+    )
+    verdict = irq_poll("loop-1", "{}", probe)
+    assert verdict.outcome is Outcome.TERMINAL
+    assert verdict.keys == ("closed",)
+
+
+def test_poll_maps_a_terminal_observation_to_TERMINAL():
+    probe = ScriptedProbe(
+        [Tick(observations=[Observation("merged", Severity.TERMINAL, "the PR merged")])]
+    )
+    verdict = irq_poll("loop-1", "{}", probe)
+    assert verdict.outcome is Outcome.TERMINAL
+    assert "the PR merged" in verdict.body
+
+
+def test_poll_maps_a_malformed_config_to_TERMINAL():
+    class _BadConfig(Probe):
+        def identity(self, ctx: object) -> tuple[str, str]:
+            raise ValueError("pr must be a positive integer")
+
+        def observe(self, ctx: object) -> Tick:  # pragma: no cover - never reached
+            raise AssertionError("observe must not run for a malformed config")
+
+    verdict = irq_poll("loop-1", "{}", _BadConfig())
+    assert verdict.outcome is Outcome.TERMINAL
+
+
+def test_a_probe_defect_falls_back_instead_of_going_quiet():
+    """The fail-safe direction: a bug must not silence the driver's schedule.
+
+    QUIET would tell the caller "nothing to service", so a broken probe would
+    stop every wake and the watched work would stall with no signal. FALLBACK
+    tells the caller to keep the schedule it already had.
+    """
+    verdict = irq_poll("loop-1", "{}", _RaisingProbe())
+    assert verdict.outcome is Outcome.FALLBACK
+    assert verdict.outcome is not Outcome.QUIET
+
+
+def test_a_kernel_that_returns_without_a_verdict_falls_back(monkeypatch):
+    monkeypatch.setattr("kiro_crew.irq.run", lambda *a, **k: None)
+    verdict = irq_poll("loop-1", "{}", _ReturningKernelProbe())
+    assert verdict.outcome is Outcome.FALLBACK
+
+
+def test_poll_keys_dedupe_state_by_the_identity_it_is_given():
+    """Two drivers on one subject must not share alert memory."""
+    first = ScriptedProbe(
+        [Tick(observations=[_wake("red:build")])], subject="shared", coalesce_secs=0
+    )
+    second = ScriptedProbe(
+        [Tick(observations=[_wake("red:build")])], subject="shared", coalesce_secs=0
+    )
+    assert irq_poll("loop-A", "{}", first).outcome is Outcome.WAKE
+    # Same subject, same observation key, different identity -> its own memory,
+    # so it wakes too rather than being deduped against the other driver.
+    assert irq_poll("loop-B", "{}", second).outcome is Outcome.WAKE
+
+
+def test_poll_dedupes_a_repeat_within_one_identity():
+    probe = ScriptedProbe(
+        [Tick(observations=[_wake("red:build")]), Tick(observations=[_wake("red:build")])],
+        subject="same",
+        coalesce_secs=0,
+    )
+    assert irq_poll("loop-A", "{}", probe).outcome is Outcome.WAKE
+    assert irq_poll("loop-A", "{}", probe).outcome is Outcome.QUIET
+
+
+def test_poll_passes_the_message_through_to_the_probe():
+    seen: list[str] = []
+
+    class _MessageProbe(Probe):
+        def identity(self, ctx: object) -> tuple[str, str]:
+            seen.append(getattr(ctx, "message", ""))
+            return ("test-kind", "sub-msg")
+
+        def observe(self, ctx: object) -> Tick:
+            return Tick()
+
+    irq_poll("loop-1", '{"repo": "o/n", "pr": 7}', _MessageProbe())
+    assert seen == ['{"repo": "o/n", "pr": 7}']

@@ -1,13 +1,41 @@
-# KiroCrew Backend AutoSDE Rules
+# Kiro Crew AutoSDE Rules
 #
-# Backend (Python) counterpart to website/AUTOSDE.yaml (React/TypeScript
-# frontend rules). Rules here govern the Python package under src/kiro_crew/.
-# Both files are enforced by the Claude and Codex PR reviewers.
+# Root rules cover backend Python plus cross-stack invariants whose file patterns
+# span backend, frontend, and docs. Frontend-only rules live in
+# website/AUTOSDE.yaml. Both files are enforced by the Claude and Codex PR
+# reviewers.
 #
 # De-Amazoned from the internal package rule set (internal links removed).
 # Blocking rules are backed by real vulnerabilities/incidents in this codebase.
 
 custom-rules:
+  - id: feature-map-correctness
+    blocking: true
+    file-patterns:
+      - "docs/feature-map/README.md"
+      - "website/src/pages/**"
+      - "src/kiro_crew/dashboard/handlers/**"
+      - "website/src/App.tsx"
+    rule: |
+      Keep the feature map semantically aligned with every structural dashboard
+      change in the pull request. The mechanical gate proves only that the map
+      was touched; this rule judges whether that edit is true.
+
+      - For every dashboard page or backend handler added or deleted in the
+        diff, and every `<Route>` registration added or removed in
+        `website/src/App.tsx`, require the corresponding map row to be added,
+        removed, or updated. A new feature needs a new or updated row; a removed
+        feature needs its row removed or updated.
+      - Verify every changed map row against the code in the diff. Its user
+        navigation path, frontend page, backend handler, and representative
+        endpoints must exist and identify the feature's real ownership.
+      - Reject unrelated map churn. A whitespace-only, reflow-only, or cosmetic
+        map edit beside a real structural change is a token touch made only to
+        satisfy `scripts/check_feature_map.py`, not evidence the map was reviewed.
+      - The map's net additions, removals, and row edits must match the scope the
+        pull request claims. Do not accept rows for unrelated features or omit
+        a structural feature because the map file changed somewhere else.
+
   - id: backend-security-controls
     blocking: true
     file-patterns:
@@ -462,3 +490,33 @@ custom-rules:
       here or in semgrep/). Sentinel-return misuse (str.find/rfind -1 in a
       boolean context) is deliberately NOT listed: semgrep owns it
       (semgrep/find-sentinel-truthiness.yaml).
+
+  - id: no-new-builtin-apps
+    blocking: true
+    file-patterns:
+      - "src/kiro_crew/apps/builtins/**"
+    rule: |
+      The set of built-in apps is CLOSED. A new app ships as an EXTERNAL app
+      published through the KiroCrewApps registry (what the App Store's
+      Discover page lists), never as a new built-in in this repo. A built-in
+      rides the wheel: it grows every user's install footprint, cannot be
+      uninstalled (only disabled), and couples the app's release and fix
+      cadence to Kiro Crew releases — the registry exists precisely so an app
+      can be listed, updated, and corrected with a catalog publish instead of
+      a client ship.
+
+      - FLAG any PR that adds a new app directory under
+        src/kiro_crew/apps/builtins/ (a new app.json). The publishing path is
+        the KiroCrewApps registry; point the author there. An explicit
+        maintainer decision recorded on the PR (the /ai-review override flow)
+        is the only exception — the default is closed.
+      - FLAG restoring a withdrawn built-in (the Board app) or un-hiding the
+        Channels app from the App Store (flipping "hidden": true in
+        src/kiro_crew/apps/builtins/channels/app.json). Both are deliberate
+        fork divergences an upstream sync must not undo.
+
+      Allowed (do NOT flag):
+      - Changes inside an EXISTING built-in app directory: fixes, features,
+        tests, i18n, refactors.
+      - Deleting an existing built-in, or moving one OUT of the repo to the
+        registry — that is the direction this rule pushes.

@@ -14,10 +14,38 @@ try:
 except ImportError:
     import sqlite3
 
-from .._sqlite_compat import fts5_quote_tokens
+from .._sqlite_compat import fts5_cjk_match_groups, is_cjk_char
 from .store import KnowledgeStore
 
 logger = logging.getLogger(__name__)
+
+# Entity-name candidates drawn from one spaceless CJK run. Each candidate costs a
+# `find_entity` query, so the run is capped: an entity name longer than this is
+# still reachable by the whole-word candidate the whitespace split already emits.
+_CJK_SUBRUN_MAX_LEN = 6
+_CJK_SUBRUN_MAX_CANDIDATES = 24
+
+
+def _cjk_subruns(word: str) -> list[str]:
+    """Contiguous CJK substrings of ``word``, longest first, bounded.
+
+    A spaceless CJK run carries several words with no boundary to split on, so an
+    entity named for a word inside the run cannot be found by the whitespace
+    split. Returns nothing for input with no CJK, leaving non-CJK queries with
+    exactly the candidate list they had before.
+    """
+    if len(word) < 2 or not any(is_cjk_char(ch) for ch in word):
+        return []
+    out: list[str] = []
+    for size in range(min(len(word), _CJK_SUBRUN_MAX_LEN), 1, -1):
+        for i in range(len(word) - size + 1):
+            piece = word[i:i + size]
+            if piece != word and all(is_cjk_char(ch) for ch in piece):
+                out.append(piece)
+                if len(out) >= _CJK_SUBRUN_MAX_CANDIDATES:
+                    return out
+    return out
+
 
 # Recall for natural-language queries.
 # Common English stopwords + connective phrasing are dropped before FTS5
@@ -239,6 +267,10 @@ class HybridRetriever:
         ``source_id`` narrows matches to items of one source via a
         parameterized WHERE clause (never string interpolation).
         """
+        # A legacy database still holds the pre-CJK-segmentation term
+        # representation. Migrating it is a reader's job, not the constructor's,
+        # so the cost lands on this worker thread rather than on gateway boot.
+        self.store.ensure_fts_index_current()
         safe_query = self._sanitize_fts5_query(query)
         if not safe_query:
             return []
@@ -275,6 +307,10 @@ class HybridRetriever:
         and the remaining tokens OR-joined
         so natural-language queries no longer require every
         literal token to appear in a matching document.
+
+        A CJK run is one whitespace token but several words, so it expands to its
+        adjacent-character phrases instead of being matched whole; queries with
+        no CJK produce exactly the expression they did before.
         """
         raw_tokens = [t for t in query.split() if t]
         if not raw_tokens:
@@ -284,10 +320,10 @@ class HybridRetriever:
         # than returning an empty match (which would drop the keyword leg).
         if not tokens:
             tokens = raw_tokens
-        # Quoting comes from the shared primitive so the tree has exactly one
-        # FTS5 escaping dialect; the stopword drop and OR join above stay this
-        # surface's own recall policy.
-        return " OR ".join(fts5_quote_tokens(" ".join(tokens)))
+        # Quoting and CJK segmentation come from the shared primitive so the tree
+        # has exactly one FTS5 dialect; the stopword drop and OR join above stay
+        # this surface's own recall policy.
+        return " OR ".join(fts5_cjk_match_groups(" ".join(tokens)))
 
     def _graph_search(self, query: str, limit: int = 20) -> list[tuple[str, int]]:
         """Find entities matching query terms, traverse graph, rank items by mention count."""
@@ -296,6 +332,13 @@ class HybridRetriever:
         candidates = list(words)
         for i in range(len(words) - 1):
             candidates.append(f"{words[i]} {words[i + 1]}")
+        # A spaceless CJK run is one whitespace word but several entity-name
+        # candidates, so an entity named for a word *inside* the run is
+        # unreachable by the whitespace split alone. Add the run's own substrings,
+        # longest first so the most specific entity name is tried before a
+        # shorter prefix of it. Bounded per run: entity lookup is a query each.
+        for word in words:
+            candidates.extend(_cjk_subruns(word))
 
         entity_ids = set()
         for term in candidates:

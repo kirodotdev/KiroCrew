@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from kiro_crew import platform_compat
-from kiro_crew.apps.builtins.dev_fleet import npm_preflight
+from kiro_crew.apps.builtins.dev_fleet import npm_preflight, sync_runner
 from kiro_crew.env import find_node_tool, node_bin_dirs
 from kiro_crew.executors import subprocess_executor
 from kiro_crew.loop_lock import LoopBoundLock
@@ -637,6 +637,15 @@ try:
 except OSError:  # pragma: no cover - frozen/zipimported install
     _PREFLIGHT_SOURCE = None
 
+#: The sync runner's source, captured ONCE at import — same contract, same
+#: reasons as :data:`_PREFLIGHT_SOURCE` above: the snapshot must be of the code
+#: THIS gateway is running, and ``None`` (unreadable ``__file__``) makes the
+#: sync REFUSE rather than fall back to reading the file later.
+try:
+    _SYNC_RUNNER_SOURCE: bytes | None = Path(sync_runner.__file__).read_bytes()
+except OSError:  # pragma: no cover - frozen/zipimported install
+    _SYNC_RUNNER_SOURCE = None
+
 #: Label of the ONE sync step whose binary is ours, so its exit code can be
 #: trusted to mean what :mod:`npm_preflight` says it means. Every other step runs
 #: worktree-controlled code and can exit any number it likes, so a reserved code
@@ -1083,6 +1092,7 @@ __all__ = (
     "_SHUTDOWN_ADMISSION_LOCK",
     "_SHUTDOWN_IN_PROGRESS",
     "_SYNC_LOCK",
+    "_SYNC_RUNNER_SOURCE",
     "_SYNC_RUN_LABEL",
     "_TRUSTED_BIN_CACHE",
     "_TRUSTED_BIN_DIRS",

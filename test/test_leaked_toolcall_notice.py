@@ -30,6 +30,7 @@ from kiro_crew.acp.types import STOP_REASON_CANCELLED, STOP_REASON_END_TURN
 from kiro_crew.dashboard.chat_utils import (
     has_leaked_tool_call,
     should_notice_leaked_tool_call,
+    should_notice_mixed_turn_leak,
 )
 
 _END = STOP_REASON_END_TURN
@@ -208,7 +209,10 @@ def test_adversarial_delimiter_runs_scan_in_linear_time():
 
 
 def test_a_turn_that_made_tool_calls_never_notices():
-    # A turn that executed tools and also printed a block is not the leak shape.
+    # Not because a tool-heavy turn is a different shape — it is the same leak —
+    # but because THIS path un-lands the turn, and a turn whose earlier calls had
+    # side effects must not be marked unacted. That shape is noticed without
+    # un-landing by should_notice_mixed_turn_leak, covered below.
     assert _notice(turn_tool_calls=1) is False
 
 
@@ -234,3 +238,64 @@ def test_stage_execution_turns_never_notice():
 
 def test_non_leak_text_never_notices():
     assert _notice(final_segment_text="All done — the queue is empty.") is False
+
+
+# ── Mixed turn: dispatched tools, THEN leaked its final dispatch ──
+
+
+def _mixed(**over):
+    """should_notice_mixed_turn_leak with firing defaults, so each test flips
+    exactly the one field it is about."""
+    kw = dict(
+        stop_reason=_END,
+        end_turn_reason=_END,
+        final_segment_text=_LEAK,
+        prompt_depth=0,
+        turn_tool_calls=4,
+    )
+    kw.update(over)
+    return should_notice_mixed_turn_leak(**kw)
+
+
+def test_a_turn_that_dispatched_tools_then_leaked_its_last_call_is_noticed():
+    """The observed shape: read state over several calls, announce the write,
+    leak the write itself. The turn lands looking like a completed action, so
+    there is no stall to notice and no missing output to explain — which is why
+    the sibling's silence here read as success.
+    """
+    assert _mixed() is True
+
+
+def test_the_two_predicates_partition_by_tool_count():
+    """Neither shape may fall through both, and neither may claim the other's.
+
+    The runner chains them as if/elif, so an overlap would be an ordering bug
+    and a gap would be a silent stall.
+    """
+    assert _notice(turn_tool_calls=0) is True
+    assert _mixed(turn_tool_calls=0) is False
+    assert _notice(turn_tool_calls=2) is False
+    assert _mixed(turn_tool_calls=2) is True
+
+
+def test_a_cancelled_mixed_turn_is_not_noticed():
+    """Excluded via the stop reason rather than an is_cancelled flag: a cancelled
+    turn never reports end_turn, and the user already knows they cancelled it.
+    """
+    assert _mixed(stop_reason=STOP_REASON_CANCELLED) is False
+
+
+def test_non_end_turn_and_nested_mixed_turns_are_not_noticed():
+    assert _mixed(stop_reason="error: tool stall") is False
+    assert _mixed(prompt_depth=1) is False
+
+
+def test_a_mixed_turn_whose_text_is_prose_is_not_noticed():
+    # The count alone must never fire the card: it takes an actual leak.
+    assert _mixed(final_segment_text="Read four resources; all consistent.") is False
+
+
+def test_a_mixed_turn_quoting_a_fenced_block_is_not_noticed():
+    # Same structural exclusion the sibling gets: explaining a leak is not one.
+    fenced = "Here is what a leak looks like:\n\n```\n" + _LEAK + "\n```\n"
+    assert _mixed(final_segment_text=fenced) is False

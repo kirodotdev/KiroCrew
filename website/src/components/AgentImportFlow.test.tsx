@@ -5,17 +5,23 @@ import type {
   AgentImportApplyResponse,
   AgentImportScanResponse,
 } from '../api/client'
-import { api } from '../api/client'
+import { api, ApiError } from '../api/client'
 import { renderWithProviders } from '../test/helpers'
 import AgentImportFlow from './AgentImportFlow'
 
-vi.mock('../api/client', () => ({
-  api: {
-    onboardingImportScan: vi.fn(),
-    onboardingImportApply: vi.fn(),
-    onboardingImportState: vi.fn(),
-  },
-}))
+// Spread the real module rather than replacing it: the component branches on
+// `error instanceof ApiError`, which needs the real class identity.
+vi.mock('../api/client', async (importOriginal) => {
+  const mod = await importOriginal<typeof import('../api/client')>()
+  return {
+    ...mod,
+    api: {
+      onboardingImportScan: vi.fn(),
+      onboardingImportApply: vi.fn(),
+      onboardingImportState: vi.fn(),
+    },
+  }
+})
 
 const SCAN_RESPONSE: AgentImportScanResponse = {
   sources: [
@@ -186,6 +192,62 @@ describe('AgentImportFlow', () => {
         conflict_strategy: 'skip',
       })
     })
+  })
+
+  it('prefers the localized fallback when the refusal carries a backend code', async () => {
+    // The backend's own prose for these routes is generic English produced in
+    // Python ("request failed") that never passes through the i18n catalog.
+    // Once it also sends a `code`, the failure is identified and the catalog
+    // string wins. The plain-Error test below is the control: with no code, the
+    // message still renders.
+    mockSuccessfulRequests()
+    vi.mocked(api.onboardingImportApply).mockRejectedValueOnce(
+      new ApiError(500, 'request failed', '{"error":"request failed","code":"apply_failed"}'),
+    )
+    renderWithProviders(<AgentImportFlow initialOpen onComplete={vi.fn()} />)
+
+    await startImport()
+
+    const alert = await screen.findByRole('alert')
+    expect(alert).toHaveTextContent('The import did not finish. Please try again.')
+    expect(alert).not.toHaveTextContent('request failed')
+  })
+
+  it('preserves the actionable auth-recovery copy instead of offering a retry', async () => {
+    mockSuccessfulRequests()
+    vi.mocked(api.onboardingImportApply).mockRejectedValueOnce(
+      new ApiError(
+        403,
+        'Session expired. Run kirocrew token, then use the banner to sign back in.',
+        '{"error":"invalid session","code":"invalid_token"}',
+        true,
+      ),
+    )
+    renderWithProviders(<AgentImportFlow initialOpen onComplete={vi.fn()} />)
+
+    await startImport()
+
+    const alert = await screen.findByRole('alert')
+    expect(alert).toHaveTextContent('Session expired. Run kirocrew token')
+    expect(alert).not.toHaveTextContent('The import did not finish. Please try again.')
+  })
+
+  it('does not tell an unauthenticated caller that retrying the import can recover', async () => {
+    mockSuccessfulRequests()
+    vi.mocked(api.onboardingImportApply).mockRejectedValueOnce(
+      new ApiError(
+        401,
+        'authentication required',
+        '{"error":"authentication required","code":"auth_required"}',
+      ),
+    )
+    renderWithProviders(<AgentImportFlow initialOpen onComplete={vi.fn()} />)
+
+    await startImport()
+
+    const alert = await screen.findByRole('alert')
+    expect(alert).toHaveTextContent('Sign in again to continue.')
+    expect(alert).not.toHaveTextContent('The import did not finish. Please try again.')
   })
 
   it('keeps a failed apply visible and retries the same import', async () => {

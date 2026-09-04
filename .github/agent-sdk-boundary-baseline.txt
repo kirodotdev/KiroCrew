@@ -22,7 +22,6 @@
 #
 # Refresh (after removing something listed here):
 #   python3 scripts/check_agent_sdk_boundary.py --update-baseline
-2 src/kiro_crew/agent.py
 1 src/kiro_crew/apps/builtins/auto_improvement/backend/pr_watchers.py
 1 src/kiro_crew/apps/builtins/auto_improvement/backend/runner.py
 1 src/kiro_crew/apps/builtins/auto_improvement/spine/agent_runner.py
@@ -73,6 +72,7 @@
 3 src/kiro_crew/slack/handler.py
 1 src/kiro_crew/slack/transport_dispatch.py
 8 src/kiro_crew/subagent.py
+1 src/kiro_crew/subagent_manager/terminal.py
 2 src/kiro_crew/subagent_persistence.py
 2 src/kiro_crew/task_executor.py
 1 src/kiro_crew/task_planner.py

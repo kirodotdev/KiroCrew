@@ -3,20 +3,39 @@
 Status: implemented
 
 Owners: `kiro_crew.irq`; in-tree GitHub pull-request probe:
-`builtin_skills/kirocrew-dev/babysit/scripts/pr_watch.py`.
+`kiro_crew.probes.gh_pr`.
 
 ## Purpose
 
-`kiro_crew.irq` lets a script cron perform cheap observation and request an
-agent turn only when a probe reports an actionable condition. `Probe` supplies
-subject identity and a `Tick`; `irq.run` owns persisted state, deduplication,
-coalescing, and the `Skip` / `Report` / `Done` verdict. The controller's
-verdict ownership keeps probes from each encoding different retry and delivery
-policies. See `irq.Probe`, `irq.Tick`, and `irq.run`.
+`kiro_crew.irq` lets a driver perform cheap observation and request an agent
+turn only when a probe reports an actionable condition. `Probe` supplies
+subject identity and a `Tick`; the kernel owns persisted state, deduplication,
+coalescing, and the verdict. The controller's verdict ownership keeps probes
+from each encoding different retry and delivery policies. See `irq.Probe`,
+`irq.Tick`, and `irq.run`.
+
+Two drivers, one kernel, and the difference is only how the verdict is
+delivered:
+
+* `irq.run` RAISES `Skip` / `Report` / `Done`, which is what the cron runner
+  consumes. Unchanged.
+* `irq.poll` RETURNS a `Verdict(outcome, body)` with outcome `QUIET`, `WAKE`,
+  `TERMINAL`, or `FALLBACK`, for an in-process driver that owns its own wake
+  mechanism and only needs the decision -- the AutoNudge scheduler's probe gate.
+  Anything unexpected resolves to `FALLBACK`, telling the driver to keep the
+  schedule it already had, because the alternative default would convert a bug
+  into silence. A redundant cycle costs tokens; a lost wake costs the task. The
+  kernel's bounds are deliberately not forwarded through `poll`: a probe already
+  declares what it needs through `Probe.tuning`.
 
 The in-tree consumer is `PrWatchProbe`. It reads a pull request through `gh`,
-classifies pull-request state and checks, and passes its result to `irq.run`
-through `watch`. See `pr_watch.PrWatchProbe.observe` and `pr_watch.watch`.
+classifies pull-request state and checks, and hands its result to the kernel.
+The probe lives in the package rather than beside a driver because it outlives
+its drivers -- it is now driven by both the script cron adapter
+(`builtin_skills/kirocrew-dev/babysit/scripts/pr_watch.py:watch`, via `irq.run`)
+and the scheduler (via `irq.poll`), and a hyphenated skill directory is not
+importable, so a copy per driver would have meant two copies of one classifier.
+See `probes.gh_pr.PrWatchProbe.observe`.
 
 ## Authoring contract
 

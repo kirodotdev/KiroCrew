@@ -47,6 +47,7 @@ globalThis.ResizeObserver = class { observe() {} unobserve() {} disconnect() {} 
 
 import SidePanel from '../pages/chat/SidePanel'
 import { usePanelTabs, openPanelView } from '../hooks/usePanelTabs'
+import { setSidePanelDock } from '../hooks/useSidePanelDock'
 
 function Harness() {
   const tabsCtl = usePanelTabs('slot-tabs')
@@ -198,5 +199,31 @@ describe('side panel browser-tab strip', () => {
     // The inactive hover wash must stay behind the chip's children but above
     // the strip: z-index:-1 paired with the chip's isolate class.
     expect(css).toMatch(/\.side-tab-inactive:hover::before\{[\s\S]{0,300}z-index:-1/)
+  })
+
+  // Focus mode takes the dashboard header out of flow, and that header's own
+  // right inset is the ONLY thing clearing the native caption buttons on Windows
+  // and frameless Linux. Right-docked, this strip is what then owns the window's
+  // top-trailing corner, so its trailing controls (⋯, Close) end up under those
+  // buttons — covered, and unclickable because the OS strip hit-tests above web
+  // content (#6509). The class is only the opt-in; index.css picks the width per
+  // platform and applies nothing outside focus mode.
+  it('opts the right-docked strip into the focus-mode caption reserve', () => {
+    setSidePanelDock('right')
+    renderPanel()
+    expect(document.querySelector('.side-panel-strip')!.className).toContain('focus-caption-reserve')
+  })
+
+  it('leaves the bottom-docked strip edge-to-edge', () => {
+    // Bottom-docked the strip is pinned under the chat, nowhere near that
+    // corner: padding there would be a gap with nothing behind it, and focus
+    // mode exists to give the window's edges back.
+    setSidePanelDock('bottom')
+    try {
+      renderPanel()
+      expect(document.querySelector('.side-panel-strip')!.className).not.toContain('focus-caption-reserve')
+    } finally {
+      setSidePanelDock('right')
+    }
   })
 })

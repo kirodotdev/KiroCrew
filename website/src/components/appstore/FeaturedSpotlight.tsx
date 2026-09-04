@@ -305,6 +305,7 @@ export default function FeaturedSpotlight({
       style={artSrc ? { background: 'var(--bg-elevated)' } : { background: gradientFor(lead.name) }}
     >
       {artSrc ? (
+        // eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions -- onError is an image-load lifecycle hook (it retires unreachable art in favour of the gradient plate), not a user interaction; the card's activation lives on the Clickable that wraps it
         <img
           src={artSrc}
           alt={editorial.src ? editorial.alt : ''}
@@ -481,6 +482,7 @@ export default function FeaturedSpotlight({
                 className="relative aspect-[16/9] md:aspect-auto overflow-hidden"
                 style={{ background: 'var(--bg-elevated)' }}
               >
+                {/* eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions -- onError is an image-load lifecycle hook (retire unreachable art), not a user interaction; the collection face's activation is the Clickable above */}
                 <img
                   src={artSrc}
                   alt={editorial.src ? editorial.alt : ''}
@@ -514,6 +516,7 @@ export default function FeaturedSpotlight({
           <DialogContent maxWidth={560} aria-label={title}>
             {artSrc && (
               <div className="relative aspect-[16/9] shrink-0 overflow-hidden" style={{ background: 'var(--bg-elevated)' }}>
+                {/* eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions -- onError is an image-load lifecycle hook (retire unreachable art), not a user interaction; this art is decoration inside the dialog and offers nothing to activate */}
                 <img
                   src={artSrc}
                   alt={editorial.src ? editorial.alt : ''}

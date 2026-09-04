@@ -313,6 +313,12 @@ class TurnDriver:
         transports. Injected by the caller with its own session key bound, so
         the driver stays channel-neutral. When omitted, directive markers are
         ignored exactly as before.
+    closing_gate:
+        Optional synchronous gate invoked immediately before the provider stream
+        starts. Callers use it to reject a lease that shutdown can no longer
+        drain, and may also reject a structured monitor whose conversation
+        generation changed. It must not await: the gate, monitor acceptance, and
+        the stream's synchronous turn registration are one event-loop span.
     """
 
     def __init__(
@@ -455,25 +461,15 @@ class TurnDriver:
                 )
 
         await self.renderer.on_turn_start()
-        # Lease-dispatch race gate, placed HERE because this is the only line at
-        # which it is actually atomic. The dispatcher claimed the session long
-        # before this, and everything since -- the context build, and the
-        # `on_turn_start` platform round-trip immediately above -- is awaited. A
-        # gate at the call site therefore still leaves that round-trip open: a
-        # restart landing in it sets `_closing` and takes `close_all`'s drain
-        # snapshot while no turn is registered, and the prompt below then opens
-        # BEHIND that snapshot, where teardown kills it mid-turn holding its
-        # native lock and the user gets an empty response instead of a notice.
-        #
-        # Synchronous, with no await between this call and the `async for` below.
-        # `provider.stream(...)` registers the turn before its own first await
-        # (AcpClient.stream_events clears _turn_done up front), so the gate and
-        # the registration form one span ordered against `_closing`. This is the
-        # same shape the dashboard runner and the native Slack handler use, and
-        # the reason the gate is one line here rather than four at the call
-        # sites. Raises SessionClosingError, which each dispatcher catches.
+        if self.monitor_completion is not None:
+            if not await self.monitor_completion.authorize():
+                return accumulated
+        # The closing gate remains yield-free with stream registration. Monitor
+        # acceptance below is synchronous, so it cannot reopen that race.
         if self.closing_gate is not None:
             self.closing_gate()
+        if self.monitor_completion is not None:
+            self.monitor_completion.mark_accepted()
         async for event in self.provider.stream(message):
             kind = event.kind
             if kind == EVENT_TEXT_CHUNK:
@@ -726,7 +722,8 @@ class TurnDriver:
                 # perform itself (it holds no session key).
                 self.last_stop_reason = event.stop_reason or ""
                 if self.monitor_completion is not None and is_monitor_completion_evidence(
-                    event.stop_reason
+                    event.stop_reason,
+                    synthetic=event.synthetic_completion,
                 ):
                     try:
                         await self.monitor_completion.complete(

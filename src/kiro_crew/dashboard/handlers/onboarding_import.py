@@ -122,7 +122,9 @@ def _caller(request: web.Request, operation: str) -> tuple[str | None, web.Respo
             outcome="denied",
             error="authentication_required",
         )
-        return None, web.json_response({"error": "authentication required"}, status=401)
+        return None, web.json_response(
+            {"error": "authentication required", "code": "auth_required"}, status=401
+        )
     return str(request["user"]), None
 
 
@@ -596,7 +598,7 @@ async def api_onboarding_import_scan(request: web.Request) -> web.Response:
     except Exception:
         logger.exception("Onboarding import scan failed")
         _audit(caller=caller, operation=operation, outcome="failed", error="scan_failed")
-        return web.json_response({"error": "request failed"}, status=500)
+        return web.json_response({"error": "request failed", "code": "scan_failed"}, status=500)
 
     _audit(caller=caller, operation=operation, outcome="completed")
     return response
@@ -616,7 +618,9 @@ async def api_onboarding_import_apply(request: web.Request) -> web.Response:
         conflict_strategy = _parse_conflict_strategy(body)
     except (ValueError, TypeError):
         _audit(caller=caller, operation=operation, outcome="failed", error="invalid_request")
-        return web.json_response({"error": "invalid request"}, status=400)
+        return web.json_response(
+            {"error": "invalid request", "code": "invalid_request"}, status=400
+        )
 
     state = request.app.get("state")
     cron_service = getattr(state, "crons", None)
@@ -669,11 +673,13 @@ async def api_onboarding_import_apply(request: web.Request) -> web.Response:
                 _schedule_embedding_backfill(vector_store)
     except _InvalidSelection:
         _audit(caller=caller, operation=operation, outcome="failed", error="invalid_request")
-        return web.json_response({"error": "invalid request"}, status=400)
+        return web.json_response(
+            {"error": "invalid request", "code": "invalid_request"}, status=400
+        )
     except Exception:
         logger.exception("Onboarding import apply failed")
         _audit(caller=caller, operation=operation, outcome="failed", error="apply_failed")
-        return web.json_response({"error": "request failed"}, status=500)
+        return web.json_response({"error": "request failed", "code": "apply_failed"}, status=500)
 
     _audit_item_outcomes(caller, result)
     _audit(caller=caller, operation=operation, outcome="completed")
@@ -694,7 +700,9 @@ async def api_onboarding_import_state(request: web.Request) -> web.Response:
             raise _InvalidSelection
     except (ValueError, TypeError):
         _audit(caller=caller, operation=operation, outcome="failed", error="invalid_request")
-        return web.json_response({"error": "invalid request"}, status=400)
+        return web.json_response(
+            {"error": "invalid request", "code": "invalid_request"}, status=400
+        )
 
     try:
         async with _get_config_lock():
@@ -702,7 +710,7 @@ async def api_onboarding_import_state(request: web.Request) -> web.Response:
     except Exception:
         logger.exception("Onboarding import state update failed")
         _audit(caller=caller, operation=operation, outcome="failed", error="state_failed")
-        return web.json_response({"error": "request failed"}, status=500)
+        return web.json_response({"error": "request failed", "code": "state_failed"}, status=500)
 
     _audit(caller=caller, operation=operation, outcome="completed")
     return web.json_response({"ok": True})

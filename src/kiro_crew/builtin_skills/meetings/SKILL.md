@@ -64,14 +64,20 @@ Two things are pluggable, and which implementation is active comes from
   `calendar.source` (a local `.ics` file path, or a published `https://` URL).
 
 To sync the calendar, call `POST /api/apps/meetings/calendar/sync` — do not try
-to fetch or parse the calendar yourself.
+to fetch or parse the calendar yourself. With a provider configured the app also
+syncs on its own every `calendar.poll_interval_secs` (default 300) and creates
+the meeting directory for an event `calendar.precreate_lead_minutes` (default 15)
+before it starts, so an imminent meeting usually already exists as `idle`;
+`calendar.auto_sync: false` turns the background poll off, and a lead of `0`
+keeps the sync but stops pre-creation.
 
 ## Speech-to-text
 
 Transcription uses KiroCrew's own streaming endpoint (`/api/ws/stt`), driven from
-the browser. Cloud transcription is an optional extra
-(`pip install kirocrew[voice]`); when it is not installed the app says so and the
-user can still type into the broadcast bar to feed the agents.
+the browser. Cloud transcription is optional
+(`pip install 'boto3>=1.34,<2' 'amazon-transcribe>=0.6,<1'`); when it is not
+installed the app says so and the user can still type into the broadcast bar to
+feed the agents.
 
 ## Correcting recurring mistranscriptions
 

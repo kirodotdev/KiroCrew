@@ -31,9 +31,17 @@ def _make_state_with_slot(has_reader=True):
     slot._has_reader = has_reader
     slot.messages = [{"role": "assistant", "content": "hello", "ts": "2026-05-27T20:00:00+00:00"}]
 
-    def fake_append(role, content, **kwargs):
-        msg = {"role": role, "content": content, "ts": "2026-05-27T20:42:33.357701+00:00"}
+    def fake_append(role, content, cls="", **kwargs):
+        # Mirror the real ``_ChatSlot.append`` contract: mint ``meta.mid`` and
+        # return the appended row (append_and_surface reads ts/meta off it).
+        msg = {
+            "role": role,
+            "content": content,
+            "ts": "2026-05-27T20:42:33.357701+00:00",
+            "meta": {**(kwargs.get("meta") or {}), "mid": f"m-test-{len(slot.messages)}"},
+        }
         slot.messages.append(msg)
+        return msg
 
     slot.append = MagicMock(side_effect=fake_append)
     state = MagicMock()
@@ -48,9 +56,15 @@ def _make_state_with_two_slots():
     slot_1.key = "chat-1"
     slot_1.messages = [{"role": "assistant", "content": "older", "ts": "2026-05-27T20:00:00+00:00"}]
 
-    def fake_append_1(role, content, **kwargs):
-        msg = {"role": role, "content": content, "ts": "2026-05-27T20:42:33.357701+00:00"}
+    def fake_append_1(role, content, cls="", **kwargs):
+        msg = {
+            "role": role,
+            "content": content,
+            "ts": "2026-05-27T20:42:33.357701+00:00",
+            "meta": {**(kwargs.get("meta") or {}), "mid": f"m-t1-{len(slot_1.messages)}"},
+        }
         slot_1.messages.append(msg)
+        return msg
 
     slot_1.append = MagicMock(side_effect=fake_append_1)
 
@@ -58,9 +72,15 @@ def _make_state_with_two_slots():
     slot_2.key = "chat-2"
     slot_2.messages = [{"role": "assistant", "content": "newer", "ts": "2026-05-27T21:00:00+00:00"}]
 
-    def fake_append_2(role, content, **kwargs):
-        msg = {"role": role, "content": content, "ts": "2026-05-27T21:42:33.357701+00:00"}
+    def fake_append_2(role, content, cls="", **kwargs):
+        msg = {
+            "role": role,
+            "content": content,
+            "ts": "2026-05-27T21:42:33.357701+00:00",
+            "meta": {**(kwargs.get("meta") or {}), "mid": f"m-t2-{len(slot_2.messages)}"},
+        }
         slot_2.messages.append(msg)
+        return msg
 
     slot_2.append = MagicMock(side_effect=fake_append_2)
 
@@ -80,10 +100,15 @@ def _make_state_with_cron_and_chat_slots():
     cron_slot.key = "cron-daily-digest"
     cron_slot.messages = [{"role": "assistant", "content": "digest", "ts": "2026-05-27T20:00:00+00:00"}]
 
-    def fake_append_cron(role, content, **kwargs):
-        cron_slot.messages.append(
-            {"role": role, "content": content, "ts": "2026-05-27T20:42:33.357701+00:00"}
-        )
+    def fake_append_cron(role, content, cls="", **kwargs):
+        msg = {
+            "role": role,
+            "content": content,
+            "ts": "2026-05-27T20:42:33.357701+00:00",
+            "meta": {**(kwargs.get("meta") or {}), "mid": f"m-tc-{len(cron_slot.messages)}"},
+        }
+        cron_slot.messages.append(msg)
+        return msg
 
     cron_slot.append = MagicMock(side_effect=fake_append_cron)
 
@@ -91,10 +116,15 @@ def _make_state_with_cron_and_chat_slots():
     chat_slot.key = "chat-2"
     chat_slot.messages = [{"role": "assistant", "content": "newer", "ts": "2026-05-27T21:00:00+00:00"}]
 
-    def fake_append_chat(role, content, **kwargs):
-        chat_slot.messages.append(
-            {"role": role, "content": content, "ts": "2026-05-27T21:42:33.357701+00:00"}
-        )
+    def fake_append_chat(role, content, cls="", **kwargs):
+        msg = {
+            "role": role,
+            "content": content,
+            "ts": "2026-05-27T21:42:33.357701+00:00",
+            "meta": {**(kwargs.get("meta") or {}), "mid": f"m-tt-{len(chat_slot.messages)}"},
+        }
+        chat_slot.messages.append(msg)
+        return msg
 
     chat_slot.append = MagicMock(side_effect=fake_append_chat)
 
@@ -111,10 +141,15 @@ def _make_state_with_empty_slot(has_reader=True):
     slot._has_reader = has_reader
     slot.messages = []
 
-    def fake_append(role, content, **kwargs):
-        slot.messages.append(
-            {"role": role, "content": content, "ts": "2026-05-27T20:42:33.357701+00:00"}
-        )
+    def fake_append(role, content, cls="", **kwargs):
+        msg = {
+            "role": role,
+            "content": content,
+            "ts": "2026-05-27T20:42:33.357701+00:00",
+            "meta": {**(kwargs.get("meta") or {}), "mid": f"m-test-{len(slot.messages)}"},
+        }
+        slot.messages.append(msg)
+        return msg
 
     slot.append = MagicMock(side_effect=fake_append)
     state = MagicMock()

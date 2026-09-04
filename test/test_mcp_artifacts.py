@@ -508,6 +508,87 @@ class TestArtifactSave:
         assert "Saved artifact" in result
 
 
+class TestThemeContrastHint:
+    # The save/update responses attach a soft warning when the gateway's
+    # relayed ``theme_contrast_warning`` field says the persisted content
+    # hardcodes its palette. The MCP tool does NOT recompute the verdict
+    # (the request body can be stale for file-promoted saves) — it reads
+    # the relayed field, exactly like ``slug_collided_with``. Detection
+    # edge cases are unit-tested directly on the store predicate in
+    # test_artifacts.py. Warning only — the save/update always proceeds.
+
+    def test_save_hint_when_gateway_flags(self) -> None:
+        with (
+            patch("kiro_crew.mcp_core._get", return_value={"artifacts": []}),
+            patch(
+                "kiro_crew.mcp_core._post",
+                return_value={
+                    "slug": "perf",
+                    "version": 1,
+                    "kind": "widget",
+                    "theme_contrast_warning": True,
+                },
+            ),
+        ):
+            result = _call_tool_inner(
+                "artifact_save",
+                {"name": "Perf page", "content": '<div style="color:#111">hi</div>'},
+            )
+        assert "Hardcoded colors, no theme variables" in result
+        assert "var(--text,#111)" in result
+
+    def test_save_no_hint_when_gateway_silent(self) -> None:
+        # False AND absent (older gateway) must both stay silent.
+        for extra in ({"theme_contrast_warning": False}, {}):
+            with (
+                patch("kiro_crew.mcp_core._get", return_value={"artifacts": []}),
+                patch(
+                    "kiro_crew.mcp_core._post",
+                    return_value={"slug": "perf", "version": 1, "kind": "widget", **extra},
+                ),
+            ):
+                result = _call_tool_inner(
+                    "artifact_save",
+                    {"name": "Perf page", "content": "<div>hi</div>"},
+                )
+            assert "Hardcoded colors" not in result
+
+    def test_update_hint_when_gateway_flags(self) -> None:
+        with patch(
+            "kiro_crew.mcp_core._patch",
+            return_value={
+                "slug": "perf",
+                "version": 2,
+                "kind": "widget",
+                "name": "Perf",
+                "theme_contrast_warning": True,
+            },
+        ):
+            result = _call_tool_inner(
+                "artifact_update",
+                {"slug": "perf", "content": '<body style="background:#fffbe6">x</body>'},
+            )
+        assert "Hardcoded colors, no theme variables" in result
+
+    def test_update_no_hint_when_gateway_silent(self) -> None:
+        # Metadata-only updates: the gateway stamps False (nothing to lint).
+        with patch(
+            "kiro_crew.mcp_core._patch",
+            return_value={
+                "slug": "perf",
+                "version": 2,
+                "kind": "widget",
+                "name": "P2",
+                "theme_contrast_warning": False,
+            },
+        ):
+            result = _call_tool_inner(
+                "artifact_update",
+                {"slug": "perf", "name": "P2"},
+            )
+        assert "Hardcoded colors" not in result
+
+
 class TestArtifactGet:
     def test_get_current(self) -> None:
         with patch(

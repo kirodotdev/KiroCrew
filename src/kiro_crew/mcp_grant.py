@@ -101,7 +101,7 @@ def artifact_presence(path: Path) -> bool | None:
     Deliberately NOT ``Path.is_file()``. From Python 3.14 that method swallows
     every ``OSError`` and answers ``False``, so an unreadable cache home -- a
     permission error, a stalled mount -- would be indistinguishable from "nothing
-    was ever written". This package declares ``requires-python >= 3.10`` with no
+    was ever written". This package declares ``requires-python >= 3.12`` with no
     ceiling, so a build running on 3.14 would silently collapse the tri-state and
     tell the owner of an authorized server to sign in again. Stat-ing explicitly
     and classifying the errno answers the same on every supported version.

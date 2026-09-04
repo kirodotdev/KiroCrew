@@ -62,6 +62,8 @@ from kiro_crew.dashboard.chat_persistence import (
 )
 from kiro_crew.dashboard.chat_runner import (
     _context_usage_payload,
+    _expire_mcp_oauth_banners,
+    _open_mcp_oauth_banner_mids,
     _run_chat,
     _start_next_queued_turn,
     context_entry_expired,
@@ -90,11 +92,13 @@ from kiro_crew.dashboard.chat_utils import (
     slot_history_key,
     subagents_attached,
 )
+from kiro_crew.dashboard.handlers._shared import read_bounded_json
 from kiro_crew.dashboard.state import (
     DashboardState,
     _ChatSlot,
     _mark_permission_resolved,
     _normalize_slot_key,
+    append_and_surface,
     durable_row_count,
     is_stop_event_row,
     is_turn_interrupted,
@@ -108,6 +112,7 @@ from kiro_crew.messaging.link import is_channel_session_key
 from kiro_crew.providers.acp import AcpProvider
 from kiro_crew.providers.base import LLMProvider
 from kiro_crew.safety_override import safety_override
+from kiro_crew.sandbox import voice_runtime_workspace_conflict
 from kiro_crew.security import (
     is_sensitive_path,
     redact_credentials,
@@ -189,10 +194,10 @@ def _sweep_stale_permissions(slot: "_ChatSlot") -> None:
 async def api_chat(request: web.Request) -> web.StreamResponse:
     """POST /api/chat — send message to a slot, stream response via SSE."""
     state: DashboardState = request.app["state"]
-    try:
-        body = await request.json()
-    except Exception:
-        return web.json_response({"error": "invalid JSON"}, status=400)
+    body, body_err = await read_bounded_json(request, max_bytes=None)
+    if body_err is not None:
+        return body_err
+    assert body is not None  # read_bounded_json returns (dict, None) on success
     message = body.get("message", "").strip()
     agent = body.get("agent", "")
     slot_name = body.get("slot")
@@ -687,7 +692,10 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
     # to honour it for widget-origin turns and let the text fall through to a
     # normal, fully-gated _run_chat turn instead. Mode changes and tool
     # approvals live on separate endpoints a widget iframe cannot reach.
-    _widget_origin = bool(user_meta) and user_meta.get("origin") == "widget"
+    # `is not None` (not truthiness): user_meta is normalized to dict-or-None
+    # above, and with the body typed by read_bounded_json, mypy narrows the
+    # Optional only through an explicit None check.
+    _widget_origin = user_meta is not None and user_meta.get("origin") == "widget"
     if (
         getattr(slot, "mode", "") == "orchestrator"
         and message.strip().lower() in ("go", "go all")
@@ -781,10 +789,7 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
                 if t and not t.done():
                     t.cancel()
         stop_msg = "🛑 [SYSTEM] Orchestration stopped by user."
-        slot.append("assistant", stop_msg, "msg msg-a")
-        state.broadcast_ws(
-            "chat_message", {"slot": slot.key, "role": "assistant", "content": stop_msg}
-        )
+        append_and_surface(state, slot, "assistant", stop_msg, "msg msg-a")
         state.broadcast_ws("chat_done", {"slot": slot.key})
         return web.json_response({"ok": True, "stopped": True})
 
@@ -1855,6 +1860,7 @@ async def api_chat_slot_detail(request: web.Request) -> web.Response:
                                     if isinstance(msg.get("meta"), dict)
                                     else None
                                 ),
+                                mint_mid=False,
                             )
                             carry_provenance(slot.messages[-1], msg)
                             _attach_variants(slot, msg)
@@ -2000,10 +2006,10 @@ _CREATABLE_MODES = ("", "orchestrator", "crew", "design-critique")
 async def api_chat_slot_create(request: web.Request) -> web.Response:
     """POST /api/chat/slots — create a new chat slot."""
     state: DashboardState = request.app["state"]
-    try:
-        body = await request.json()
-    except Exception:
-        body = {}
+    body, body_err = await read_bounded_json(request, allow_absent=True)
+    if body_err is not None:
+        return body_err
+    assert body is not None  # read_bounded_json returns (dict, None) on success
     name = body.get("name")
     agent = body.get("agent", "")
     model = body.get("model", "")
@@ -2269,10 +2275,18 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
             cfg_proj = cfg.dashboard.default_project if cfg else ""
             if isinstance(cfg_proj, str) and cfg_proj:
                 resolved = os.path.realpath(os.path.expanduser(cfg_proj))
-                if os.path.isdir(resolved) and not is_sensitive_path(resolved):
-                    cfg_proj = resolved
-                else:
-                    cfg_proj = ""
+                eligible = os.path.isdir(resolved) and not is_sensitive_path(resolved)
+                if eligible:
+                    # #7392 round 3: a configured default that overlaps the
+                    # data home would be refused at spawn anyway — skip it
+                    # here like a sensitive path, falling back to the
+                    # workspace default instead of wedging every new slot.
+                    # Off-loop (round 4): the shared scan primes runtime
+                    # paths (realpath/mkdir) on first use.
+                    eligible = (
+                        await asyncio.to_thread(voice_runtime_workspace_conflict, resolved)
+                    ) is None
+                cfg_proj = resolved if eligible else ""
             else:
                 cfg_proj = ""
             slot.project = cfg_proj or default_project_dir(workspace)
@@ -2297,7 +2311,16 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
     # write, a restart rehydrates the previous title with a refreshable "auto"
     # origin and the background refresh may rewrite the pin.
     if folder_id or title:
-        await save_slot_off_loop(state, slot, force=True)
+        # The create/recreate request has been authorized against this
+        # transcript.  Do not let a rebind while the off-loop write waits on
+        # the history lock redirect its newly supplied metadata to another
+        # session.
+        await save_slot_off_loop(
+            state,
+            slot,
+            force=True,
+            expected_history_key=slot_history_key(slot),
+        )
     # Speculative session creation: overlap the ACP handshake with the user's
     # think-time before their first message. No-op unless session.eager_spawn.
     schedule_eager_spawn(state, slot)
@@ -2411,8 +2434,19 @@ async def _reset_slot_session(
     completed an LLM round-trip, and such a turn is visible to any caller's
     has_active_turn() fast path — so a decline here implies a turn that started
     microseconds ago, which cannot have posted a card yet.
+
+    A successful reset also drops the slot's MCP session report, for the same
+    reason the pending card goes: it describes the session being torn down.
+    Every caller here changes what the next session will mount (agent, model,
+    workspace) or restarts it outright, so keeping the old report would leave
+    the UI presenting a dead session's server list as the live one's — the
+    stale-evidence failure that report exists to remove.
     """
     _unblock_pending_waits(state, slot)
+    # Snapshot the open OAuth banners BEFORE the teardown: a successor session can
+    # start and emit its own request while this one is shutting down, and a sweep
+    # taken afterwards would withdraw that live URL too.
+    doomed_oauth_banners = _open_mcp_oauth_banner_mids(slot)
     try:
         reloaded = await state.sessions.reset(session_key, skip_if_busy=skip_if_busy)
     except BaseException:
@@ -2439,6 +2473,25 @@ async def _reset_slot_session(
         # decline would throw the authoritative answer away and re-create exactly
         # that.
         slot.record_model_withheld(None)
+        # The MCP session report rides the same gate for the same reason: it
+        # describes the session that was just torn down. Clearing is a courtesy
+        # delta push -- correctness rests on the identity projector in
+        # serialize_slots -- so it only fires when something was recorded.
+        if slot.clear_mcp_report():
+            state.broadcast_ws("mcp_report_update", {"slot": slot.key, "mcp_report": None})
+        # An open MCP OAuth banner rides the same gate for the same reason, and it
+        # is the widest of the three: every caller of this funnel destroys the child
+        # that owns the loopback listener and the PKCE verifier an open banner's
+        # Authorize link is redeemable against, so the link is dead the moment the
+        # teardown completes. The gateway generation does NOT change here, so the
+        # read-time gate in `_prepare_messages` cannot infer it (issue #7654).
+        #
+        # Gating on `reloaded` is load-bearing in the OTHER direction from the two
+        # above: a `skip_if_busy` decline leaves the session, its child, and its
+        # listener alive, so retiring here would take away a button that still
+        # works -- the one outcome worse than the dead link this fixes. Limited to
+        # the pre-teardown snapshot so a successor's banner is never swept.
+        _expire_mcp_oauth_banners(state, slot, doomed_oauth_banners)
     return reloaded
 
 
@@ -2731,6 +2784,10 @@ async def stop_slot_turn(
         # of having a row persisted for a message that never ran.
         for _discarded in slot._pending_steers:
             slot._steer_delivery_ids.pop(_discarded, None)
+            # Lockstep with the line above (see `_ChatSlot._steer_send_ids`): a hard
+            # kill discards the text, so there is no requeued entry left to carry
+            # the client's send id onto.
+            slot._steer_send_ids.pop(_discarded, None)
         slot._pending_steers.clear()
         state.push_slots_update()
         logger.info("Stop (force): hard-killing session for slot %s", name)
@@ -3129,15 +3186,10 @@ async def api_chat_slot_end_wait(request: web.Request) -> web.Response:
     denied = _deny_cross_app_slot_access(request, slot, name, "slot_end_wait")
     if denied is not None:
         return denied
-    try:
-        body = await request.json() if request.content_length else {}
-    except Exception:
-        body = {}
-    # `request.json()` happily returns a list or a scalar for well-formed JSON
-    # that simply is not an object, and `.get` on one of those raises past the
-    # except above into a 500. Normalize the shape, not just the parse.
-    if not isinstance(body, dict):
-        body = {}
+    body, body_err = await read_bounded_json(request, allow_absent=True)
+    if body_err is not None:
+        return body_err
+    assert body is not None  # read_bounded_json returns (dict, None) on success
     wait_id = str(body.get("wait_id") or "").strip()
     if not wait_id:
         return web.json_response(
@@ -3208,19 +3260,37 @@ async def api_chat_slot_interrupt(request: web.Request) -> web.Response:
 
     # Claim the stop slot synchronously BEFORE the await below: the
     # idempotency guard above is check-then-act, and a concurrent /interrupt
-    # arriving during `await request.json()` would otherwise still see
+    # arriving during the awaited body read below would otherwise still see
     # _stop_state == "idle" and slip past the guard (double stop_turn +
     # double SEL audit for one logical press). /stop is race-safe because it
     # has no await between guard and claim; this makes /interrupt match.
+    prev_auto_run = slot._auto_run
     slot._stop_state = "soft_pending"
     slot._auto_run = False
 
-    # Optionally promote a specific queue item to front
+    # Optionally promote a specific queue item to front. The except is not a
+    # parse guard (read_bounded_json owns that): it rolls the claimed stop
+    # state back when the body read fails in transit, and the refused-body
+    # branch below rolls it back the same way. Both paths also restore
+    # _auto_run: a refused request must not leave orchestrator auto-run
+    # disabled when no interrupt actually happened. The rollback is
+    # conditional on our claim being intact: a concurrent /stop arriving
+    # during the body await may escalate _stop_state (e.g. to "killing"),
+    # and an unconditional reset to "idle" would erase that escalation and
+    # admit another stop while the hard kill is still running.
     try:
-        body = await request.json() if request.content_length else {}
+        body, body_err = await read_bounded_json(request, allow_absent=True)
     except Exception:
-        slot._stop_state = "idle"
+        if slot._stop_state == "soft_pending":
+            slot._stop_state = "idle"
+            slot._auto_run = prev_auto_run
         raise
+    if body_err is not None:
+        if slot._stop_state == "soft_pending":
+            slot._stop_state = "idle"
+            slot._auto_run = prev_auto_run
+        return body_err
+    assert body is not None  # read_bounded_json returns (dict, None) on success
     queue_id = body.get("queue_id")
     if queue_id:
         # Wire-side field is `queue_id`; stored items carry `id` (the key
@@ -3337,10 +3407,10 @@ async def api_chat_slot_queue_edit(request: web.Request) -> web.Response:
     denied = _deny_cross_app_slot_access(request, slot, name, "slot_queue_edit")
     if denied is not None:
         return denied
-    try:
-        body = await request.json()
-    except Exception:
-        return web.json_response({"error": "invalid JSON"}, status=400)
+    body, body_err = await read_bounded_json(request, max_bytes=None)
+    if body_err is not None:
+        return body_err
+    assert body is not None  # read_bounded_json returns (dict, None) on success
     content = body.get("content")
     if not isinstance(content, str) or not content.strip():
         return web.json_response({"error": "content must be a non-empty string"}, status=400)
@@ -3382,10 +3452,10 @@ async def api_chat_slot_queue_reorder(request: web.Request) -> web.Response:
     denied = _deny_cross_app_slot_access(request, slot, name, "slot_queue_reorder")
     if denied is not None:
         return denied
-    try:
-        body = await request.json()
-    except Exception:
-        return web.json_response({"error": "invalid JSON"}, status=400)
+    body, body_err = await read_bounded_json(request)
+    if body_err is not None:
+        return body_err
+    assert body is not None  # read_bounded_json returns (dict, None) on success
     order = body.get("order")
     if not isinstance(order, list) or not all(isinstance(x, str) for x in order):
         return web.json_response({"error": "order must be a list of queue id strings"}, status=400)
@@ -3472,9 +3542,11 @@ async def _retire_slot_nudge_loop(name: str) -> "NudgeLoop | None":
     either lands first and is removed or runs after the synchronous slot pop.
     Its uncontended acquire does not yield, so the initial retirement also
     cancels a scheduled timer before the fire callback gets another turn.
+    Legacy loops are removed. Structured monitors instead retain their durable
+    outcome and clear their timer, so terminal history remains inspectable.
 
-    The returned loop is the only remaining record of it — the persist-failure
-    path uses it to put the clock back (see :func:`_restore_slot_nudge_loop`).
+    The returned loop lets the persist-failure path put the clock back (see
+    :func:`_restore_slot_nudge_loop`).
 
     A removal that FAILS raises :exc:`_NudgeRetireFailed` rather than logging and
     carrying on. Removal drops the loop from memory first and only then writes
@@ -3523,7 +3595,33 @@ async def _restore_slot_nudge_loop(
     restored at all (it was one tick from terminal), and neither is a paused one
     — reviving that would override an explicit stop.
     """
-    if loop is None or not loop.active:
+    if loop is None:
+        return
+    monitor = getattr(loop, "monitor", None)
+    if monitor is not None:
+        if (
+            not loop.active
+            and monitor.outcome is not None
+            and monitor.outcome.value == "session_close"
+        ):
+            try:
+                from kiro_crew.autonudge import (
+                    get_instance as _autonudge_get,  # circular: autonudge -> dashboard
+                )
+
+                svc = _autonudge_get()
+                if svc is not None:
+                    await svc.restore_monitor_after_failed_session_close(
+                        loop.id,
+                        admission_check=admission_check,
+                    )
+            except Exception:
+                logger.warning(
+                    "structured monitor restore after failed slot close failed",
+                    exc_info=True,
+                )
+        return
+    if not loop.active:
         return
     try:
         from kiro_crew import autonudge  # circular: autonudge -> dashboard.chat -> chat_handlers
@@ -3592,11 +3690,17 @@ async def api_chat_slot_reset_conversation(request: web.Request) -> web.Response
     mid-write, a plan between stages, and children still running after their
     parent's turn ended.
 
-    ``has_active_turn`` is the probe the reload route uses for this same teardown,
-    and it inherits that probe's edge: a turn holding the per-session semaphore
-    but not yet having a prompt in flight is not seen. Matching the sibling is
-    deliberate — a second, subtly different notion of "busy" for one teardown is
-    how the two drift apart.
+    The ``has_active_turn()`` check is a best-effort fast path; the
+    authoritative guard is the discard's ``skip_if_busy``, which probes the
+    per-session SEMAPHORE atomically with the session pop (see
+    :meth:`SessionManager.discard_conversation`). The fast path has a known
+    edge — a turn holding the semaphore but not yet having a prompt in flight
+    is invisible to it — and the atomic guard is what closes it, the same
+    contract the sibling reload route rests on, so the two teardowns keep one
+    notion of "busy". Of the refusal paths, only the atomic guard's decline is
+    SEL-recorded (``outcome="denied"``): it is the one refusal that happens
+    after the route has committed to the teardown, while the fast-path 409s
+    are pre-checks and stay unlogged, as they are on the sibling.
 
     The transcript is deliberately left in place, which means the tab still shows
     the earlier messages while the model no longer remembers them. That is the
@@ -3633,15 +3737,16 @@ async def api_chat_slot_reset_conversation(request: web.Request) -> web.Response
     # however long a slow body takes to arrive. The guards must be the last thing
     # that happens before the teardown.
     #
-    # A malformed or absent body is not an error. This route took no body before,
-    # so refusing one would break every existing caller for a parameter they do
-    # not send.
+    # An absent body is not an error: this route took no body before, so
+    # refusing one would break every existing caller for a parameter they do
+    # not send. A present-but-malformed body IS refused — "sent nothing" and
+    # "sent garbage" are different facts, and only the first can be defaulted.
     replay = True
-    try:
-        body = await request.json()
-    except Exception:
-        body = None
-    if isinstance(body, dict) and "replay" in body:
+    body, body_err = await read_bounded_json(request, allow_absent=True)
+    if body_err is not None:
+        return body_err
+    assert body is not None  # read_bounded_json returns (dict, None) on success
+    if "replay" in body:
         replay = bool(body.get("replay"))
 
     # A turn in flight on the SESSION, which ``slot.running`` cannot see: that
@@ -3681,9 +3786,28 @@ async def api_chat_slot_reset_conversation(request: web.Request) -> web.Response
     if attached is not None:
         return attached
 
-    await state.sessions.discard_conversation(key, replay=replay)
+    # ``skip_if_busy``: the fast paths above cannot see a turn that holds the
+    # per-session semaphore but has not yet put a prompt in flight (an inbound
+    # channel message between the lease and its first stream event). The discard
+    # probes the semaphore atomically with the session pop, so a turn admitted
+    # after the guards above answered False is refused here instead of being
+    # torn down mid-lease.
+    discarded = await state.sessions.discard_conversation(key, replay=replay, skip_if_busy=True)
+    if not discarded:
+        sel().log_api_access(
+            caller=request.get("app", "") or "dashboard",
+            operation="slot_reset_conversation",
+            outcome="denied",
+            resources=f"slot={name} replay={replay}",
+        )
+        return web.json_response(
+            {"error": "a turn is in flight", "code": "turn_in_flight", "slot": name},
+            status=409,
+        )
     # The fresh conversation will advertise its own model list, so the previous
-    # one's withhold verdict no longer describes this slot.
+    # one's withhold verdict no longer describes this slot. Only on a performed
+    # discard: a refusal above leaves the old conversation (and its verdict) in
+    # place.
     slot.record_model_withheld(None)
     sel().log_api_access(
         caller=request.get("app", "") or "dashboard",
@@ -4008,10 +4132,10 @@ async def api_chat_slots_cleanup(request: web.Request) -> web.Response:
     Skips the active slot and pinned sessions.
     """
     state: DashboardState = request.app["state"]
-    try:
-        body = await request.json()
-    except Exception:
-        body = {}
+    body, body_err = await read_bounded_json(request, allow_absent=True)
+    if body_err is not None:
+        return body_err
+    assert body is not None  # read_bounded_json returns (dict, None) on success
     max_days = 3
     try:
         max_days = max(1, int(body.get("max_inactive_days", 3)))
@@ -4226,10 +4350,10 @@ async def api_chat_slot_agent(request: web.Request) -> web.Response:
     denied = _deny_cross_app_slot_access(request, slot, name, "slot_agent")
     if denied is not None:
         return denied
-    try:
-        body = await request.json()
-    except Exception:
-        return web.json_response({"error": "invalid JSON"}, status=400)
+    body, body_err = await read_bounded_json(request)
+    if body_err is not None:
+        return body_err
+    assert body is not None  # read_bounded_json returns (dict, None) on success
     agent_name = body.get("agent", "")
     if agent_name and not _AGENT_NAME_RE.match(agent_name):
         return web.json_response({"error": "invalid agent name"}, status=400)
@@ -4588,10 +4712,10 @@ async def api_chat_slot_model(request: web.Request) -> web.Response:
     denied = _deny_cross_app_slot_access(request, slot, name, "slot_model")
     if denied is not None:
         return denied
-    try:
-        body = await request.json()
-    except Exception:
-        return web.json_response({"error": "invalid JSON"}, status=400)
+    body, body_err = await read_bounded_json(request)
+    if body_err is not None:
+        return body_err
+    assert body is not None  # read_bounded_json returns (dict, None) on success
     model_name = _normalize_model(body.get("model", ""))
     reason = _model_rejected_reason(model_name)
     if reason:
@@ -4951,10 +5075,10 @@ async def api_chat_slots_model(request: web.Request) -> web.Response:
     ``failed`` and keeps its old model) rather than aborting the whole switch.
     """
     state: DashboardState = request.app["state"]
-    try:
-        body = await request.json()
-    except Exception:
-        return web.json_response({"error": "invalid JSON"}, status=400)
+    body, body_err = await read_bounded_json(request)
+    if body_err is not None:
+        return body_err
+    assert body is not None  # read_bounded_json returns (dict, None) on success
     model_name = _normalize_model(body.get("model", ""))
     reason = _model_rejected_reason(model_name)
     if reason:
@@ -5059,10 +5183,10 @@ async def api_chat_slot_reasoning_effort(request: web.Request) -> web.Response:
     denied = _deny_cross_app_slot_access(request, slot, name, "slot_reasoning_effort")
     if denied is not None:
         return denied
-    try:
-        body = await request.json()
-    except Exception:
-        return web.json_response({"error": "invalid JSON"}, status=400)
+    body, body_err = await read_bounded_json(request)
+    if body_err is not None:
+        return body_err
+    assert body is not None  # read_bounded_json returns (dict, None) on success
     effort = body.get("reasoning_effort", "")
     valid_efforts = get_reasoning_effort_values()
     if not isinstance(effort, str) or effort not in valid_efforts:
@@ -5253,10 +5377,10 @@ async def api_chat_slot_workspace(request: web.Request) -> web.Response:
     denied = _deny_cross_app_slot_access(request, slot, name, "slot_workspace")
     if denied is not None:
         return denied
-    try:
-        body = await request.json()
-    except Exception:
-        return web.json_response({"error": "invalid JSON"}, status=400)
+    body, body_err = await read_bounded_json(request)
+    if body_err is not None:
+        return body_err
+    assert body is not None  # read_bounded_json returns (dict, None) on success
     ws_name = body.get("workspace", "default")
     # Block workspace change after conversation has started
     if slot.total_messages > 0:
@@ -5284,10 +5408,10 @@ async def api_chat_slot_project(request: web.Request) -> web.Response:
     denied = _deny_cross_app_slot_access(request, slot, name, "slot_project")
     if denied is not None:
         return denied
-    try:
-        body = await request.json()
-    except Exception:
-        return web.json_response({"error": "invalid JSON"}, status=400)
+    body, body_err = await read_bounded_json(request)
+    if body_err is not None:
+        return body_err
+    assert body is not None  # read_bounded_json returns (dict, None) on success
     project = body.get("project", "")
     if not isinstance(project, str):
         return web.json_response({"error": "project must be a string"}, status=400)
@@ -5305,6 +5429,25 @@ async def api_chat_slot_project(request: web.Request) -> web.Response:
                 error="sensitive path",
             )
             return web.json_response({"error": "Access denied"}, status=403)
+        # Pre-flight the voice-runtime workspace guard (issue #7392): a
+        # workspace that contains (or sits inside) the Kiro Crew data home is
+        # refused at agent spawn anyway, but only after the session exists and
+        # with a spawn-time stack trace. Reject it here, at the moment of
+        # choice, with the same actionable message. Off-loop: the check primes
+        # the runtime path cache (mkdir/realpath) on first use.
+        conflict = await asyncio.to_thread(voice_runtime_workspace_conflict, project)
+        if conflict is not None:
+            sel().log_api_access(
+                caller=request.get("user", "dashboard"),
+                operation="chat_slot_project",
+                outcome="denied",
+                resources=f"slot={name} project={project}",
+                error="voice runtime overlap",
+            )
+            return web.json_response(
+                {"error": conflict, "code": "workspace_overlaps_data_home"},
+                status=400,
+            )
     old_project = slot.project
     slot.project = project
     logger.info("Slot %s project set to %r", name, project)
@@ -5473,12 +5616,10 @@ async def api_chat_slot_followup(request: web.Request) -> web.Response:
     slot = state._slots.get(name)
     if not slot:
         return web.json_response({"error": "not found"}, status=404)
-    try:
-        body = await request.json()
-    except Exception:
-        return web.json_response({"error": "invalid JSON"}, status=400)
-    if not isinstance(body, dict):
-        return web.json_response({"error": "invalid JSON"}, status=400)
+    body, body_err = await read_bounded_json(request, max_bytes=None)
+    if body_err is not None:
+        return body_err
+    assert body is not None  # read_bounded_json returns (dict, None) on success
     try:
         cleaned = validate_tool_args(body, SUGGEST_FOLLOWUP_SCHEMA)
     except ValidationError as exc:
@@ -5696,6 +5837,7 @@ async def _reconcile_slot_window(state: DashboardState, slot: "_ChatSlot") -> No
                 if isinstance(msg.get("meta"), dict)
                 else None
             ),
+            mint_mid=False,
         )
         carry_provenance(slot.messages[-1], msg)
         _attach_variants(slot, msg)
@@ -5849,10 +5991,10 @@ async def api_chat_slot_resume(request: web.Request) -> web.Response:
             error="app cannot access member slots",
         )
         return web.json_response({"error": "not found", "code": "slot_not_found"}, status=404)
-    try:
-        body = await request.json()
-    except Exception:
-        body = {}
+    body, body_err = await read_bounded_json(request, allow_absent=True)
+    if body_err is not None:
+        return body_err
+    assert body is not None  # read_bounded_json returns (dict, None) on success
     history_key = body.get("key", name)
 
     # If slot already exists (active session), just return it — no duplicate.
@@ -6368,6 +6510,7 @@ async def api_chat_slot_resume(request: web.Request) -> web.Response:
             meta=(
                 _redact_meta_for_role(role, m["meta"]) if isinstance(m.get("meta"), dict) else None
             ),
+            mint_mid=False,
         )
         # See the equivalent call in _rehydrate_slot_from_history: resume loads
         # the window that the next save re-serializes.
@@ -6418,10 +6561,10 @@ async def api_chat_mode(request: web.Request) -> web.Response:
     denied = deny_non_dashboard_caller(request, "chat_mode")
     if denied is not None:
         return denied
-    try:
-        body = await request.json()
-    except Exception:
-        return web.json_response({"error": "invalid JSON"}, status=400)
+    body, body_err = await read_bounded_json(request)
+    if body_err is not None:
+        return body_err
+    assert body is not None  # read_bounded_json returns (dict, None) on success
     mode = body.get("mode", "normal")
     raw_slot = body.get("slot")
     slot_key = raw_slot or None
@@ -6732,10 +6875,10 @@ async def api_chat_slot_approve(request: web.Request) -> web.Response:
     slot = state._slots.get(name)
     if not slot:
         return web.json_response({"error": "not found"}, status=404)
-    try:
-        body = await request.json()
-    except Exception:
-        return web.json_response({"error": "invalid JSON"}, status=400)
+    body, body_err = await read_bounded_json(request)
+    if body_err is not None:
+        return body_err
+    assert body is not None  # read_bounded_json returns (dict, None) on success
     action = body.get("action", "rejected")
     original_action = action
     request_id = body.get("request_id", "")
@@ -6945,10 +7088,10 @@ async def api_chat_slot_color(request: web.Request) -> web.Response:
     slot = state._slots.get(name)
     if not slot:
         return web.json_response({"error": "not found"}, status=404)
-    try:
-        body = await request.json()
-    except Exception:
-        return web.json_response({"error": "invalid JSON"}, status=400)
+    body, body_err = await read_bounded_json(request)
+    if body_err is not None:
+        return body_err
+    assert body is not None  # read_bounded_json returns (dict, None) on success
     has_ci = "color_index" in body
     has_ch = "color_hex" in body
     ci = body.get("color_index")
@@ -7371,14 +7514,10 @@ async def api_chat_slot_context(request: web.Request) -> web.Response:
     if denied is not None:
         return denied
 
-    try:
-        body = await request.json()
-    except Exception:
-        return web.json_response({"error": "invalid JSON"}, status=400)
-    if not isinstance(body, dict):
-        return web.json_response(
-            {"error": "body must be a JSON object", "code": "invalid_body"}, status=400
-        )
+    body, body_err = await read_bounded_json(request, max_bytes=None)
+    if body_err is not None:
+        return body_err
+    assert body is not None  # read_bounded_json returns (dict, None) on success
 
     content = body.get("content", "")
     bad = (
@@ -7498,16 +7637,10 @@ async def api_chat_slot_note(request: web.Request) -> web.Response:
     if denied is not None:
         return denied
 
-    try:
-        body = await request.json()
-    except Exception:
-        return web.json_response({"error": "invalid JSON", "code": "invalid_json"}, status=400)
-    # A scalar or array parses cleanly and then makes `.get` raise past the
-    # except above into a 500, so the SHAPE needs its own rejection.
-    if not isinstance(body, dict):
-        return web.json_response(
-            {"error": "body must be a JSON object", "code": "invalid_body"}, status=400
-        )
+    body, body_err = await read_bounded_json(request, max_bytes=None)
+    if body_err is not None:
+        return body_err
+    assert body is not None  # read_bounded_json returns (dict, None) on success
 
     content = body.get("content", "")
     bad = (

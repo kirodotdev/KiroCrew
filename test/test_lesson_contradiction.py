@@ -10,6 +10,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from body_stream_helpers import attach_body
 
 from kiro_crew.providers.base import (
     EVENT_COMPLETE,
@@ -355,7 +356,8 @@ class TestApiLessonsCreateSchedulesSweep:
         request = MagicMock()
         request.app = {"state": state}
         request.headers = {"X-Session-Key": "dashboard:ui"}
-        request.json = AsyncMock(return_value={"rule": "a real rule", "category": "knowledge"})
+        body = {"rule": "a real rule", "category": "knowledge"}
+        attach_body(request, body)
         return request
 
     async def _run(self, candidates, wrote=True):
@@ -435,13 +437,12 @@ class TestApiLessonsCreateForwardsNegative:
         request = MagicMock()
         request.app = {"state": state}
         request.headers = {"X-Session-Key": "dashboard:ui"}
-        request.json = AsyncMock(
-            return_value={
-                "rule": self._RULE,
-                "category": "tool",
-                "negative": self._NEGATIVE,
-            }
-        )
+        body = {
+            "rule": self._RULE,
+            "category": "tool",
+            "negative": self._NEGATIVE,
+        }
+        attach_body(request, body)
         return request
 
     async def _post(self, state, vector_store):
@@ -521,7 +522,8 @@ class TestApiLessonsDeleteOffloadsRemove:
         request = MagicMock()
         request.app = {"state": state}
         request.headers = {"X-Session-Key": "dashboard:ui"}
-        request.json = AsyncMock(return_value={"rule": "pin the port"})
+        body = {"rule": "pin the port"}
+        attach_body(request, body)
 
         with patch.object(cron, "_get_memory", return_value=MagicMock(vector_store=None)), \
              patch.object(cron, "_is_restricted_session", return_value=False), \

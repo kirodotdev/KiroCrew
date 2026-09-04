@@ -13,7 +13,7 @@ from aiohttp import web
 from kiro_crew.config.loader import KiroCrewConfig, config_dir
 from kiro_crew.context_management import OrchestrationTracker
 from kiro_crew.dashboard.chat_runner import _run_chat, _start_next_queued_turn
-from kiro_crew.dashboard.state import DashboardState, _ChatSlot
+from kiro_crew.dashboard.state import DashboardState, _ChatSlot, append_and_surface
 from kiro_crew.dashboard.turn_dispatch import _bounded_turn
 from kiro_crew.hooks import safe_read_file
 from kiro_crew.security import is_sensitive_path, redact_credentials, redact_exfiltration_urls
@@ -234,8 +234,7 @@ async def _exit_cancelled_plan(state: "DashboardState", slot: "_ChatSlot") -> No
     helper's own flush-above-drain ordering.
     """
     stop_msg = "🛑 This plan was already cancelled — ask for a new plan to continue."
-    slot.append("assistant", stop_msg, "msg msg-a")
-    state.broadcast_ws("chat_message", {"slot": slot.key, "role": "assistant", "content": stop_msg})
+    append_and_surface(state, slot, "assistant", stop_msg, "msg msg-a")
     # Same owner-guard as the loop finally: flush only when the registered task
     # is ours / absent / done, so a turn someone else owns keeps its notes.
     _own_task = slot.task
@@ -804,11 +803,7 @@ async def _stage_loop(
                     )
                     done_msg, _ = redact_exfiltration_urls(done_msg)
                     done_msg, _ = redact_credentials(done_msg)
-                    slot.append("assistant", done_msg, "msg msg-a")
-                    state.broadcast_ws(
-                        "chat_message",
-                        {"slot": slot.key, "role": "assistant", "content": done_msg},
-                    )
+                    append_and_surface(state, slot, "assistant", done_msg, "msg msg-a")
                     _paused = True
                     return  # User's next "Go" click will re-enter _stage_loop
         else:
@@ -842,11 +837,7 @@ async def _stage_loop(
                 done_msg = "\n".join(summary_lines)
                 done_msg, _ = redact_exfiltration_urls(done_msg)
                 done_msg, _ = redact_credentials(done_msg)
-                slot.append("assistant", done_msg, "msg msg-a")
-                state.broadcast_ws(
-                    "chat_message",
-                    {"slot": slot.key, "role": "assistant", "content": done_msg},
-                )
+                append_and_surface(state, slot, "assistant", done_msg, "msg msg-a")
                 sel().log(
                     SecurityEvent(
                         event_id=uuid.uuid4().hex,
@@ -1017,10 +1008,7 @@ async def api_chat_plan_action(request: web.Request) -> web.Response:
                     t.cancel()
         if not already_cancelled:
             stop_msg = "🛑 Plan cancelled."
-            slot.append("assistant", stop_msg, "msg msg-a")
-            state.broadcast_ws(
-                "chat_message", {"slot": slot.key, "role": "assistant", "content": stop_msg}
-            )
+            append_and_surface(state, slot, "assistant", stop_msg, "msg msg-a")
             state.broadcast_ws("chat_done", {"slot": slot.key})
         return web.json_response({"ok": True, "cancelled": True})
 
@@ -1064,8 +1052,7 @@ async def api_chat_plan_action(request: web.Request) -> web.Response:
         )
 
     _label = "Go All" if is_auto else "Go"
-    slot.append("user", _label, "msg msg-u")
-    state.broadcast_ws("chat_message", {"slot": slot.key, "role": "user", "content": _label})
+    append_and_surface(state, slot, "user", _label, "msg msg-u", broadcast_user=True)
     if not is_auto:
         sel().log(
             SecurityEvent(

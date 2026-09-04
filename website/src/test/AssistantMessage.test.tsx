@@ -151,8 +151,9 @@ describe('AssistantMessage', () => {
     expect(screen.getByTestId('md')).toHaveTextContent('v1')
   })
 
-  /* Only the UNAVAILABLE state sits behind the overflow trigger; a loaded window keeps
-   * fork/plan as row buttons. Radix opens on POINTERDOWN, not click. */
+  /* Unavailable legacy actions and immediately available stable-ID actions share
+   * the overflow trigger. Fully loaded index actions keep the existing row buttons.
+   * Radix opens on POINTERDOWN, not click. */
   const openOverflow = () => fireEvent.pointerDown(
     screen.getByTitle('More actions'), { button: 0, ctrlKey: false, pointerType: 'mouse' },
   )
@@ -163,6 +164,48 @@ describe('AssistantMessage', () => {
     fireEvent.click(screen.getByTitle('Fork conversation from here'))
     expect(onFork).toHaveBeenCalledTimes(1)
     expect(onFork).toHaveBeenCalledWith(0)
+  })
+
+  it('forwards stable message ids from active overflow items', () => {
+    const onFork = vi.fn()
+    const onPlanFromHere = vi.fn()
+    render(
+      <AssistantMessage
+        content="Hello world"
+        isStreaming={false}
+        slotRunning={false}
+        onFork={onFork}
+        onPlanFromHere={onPlanFromHere}
+        forkIndex={7}
+        forkMessageId="row-42"
+      />,
+    )
+    expect(screen.queryByTitle('Fork conversation from here')).not.toBeInTheDocument()
+    const more = screen.getByTestId('assistant-more-actions')
+    const row = screen.getByTitle('Copy').parentElement as HTMLElement
+    expect(row).not.toContainElement(more)
+
+    openOverflow()
+    const forkItem = screen.getByTestId('fork-from-here')
+    expect(forkItem).not.toHaveAttribute('aria-disabled')
+    expect(screen.queryByTestId('fork-unavailable-reason')).not.toBeInTheDocument()
+    fireEvent.click(forkItem)
+    expect(onFork).toHaveBeenCalledWith(7, 'row-42')
+
+    cleanup()
+    render(
+      <AssistantMessage
+        content="Hello world"
+        isStreaming={false}
+        slotRunning={false}
+        onPlanFromHere={onPlanFromHere}
+        forkIndex={7}
+        forkMessageId="row-42"
+      />,
+    )
+    openOverflow()
+    fireEvent.click(screen.getByTestId('plan-from-here'))
+    expect(onPlanFromHere).toHaveBeenCalledWith(7, 'row-42')
   })
 
   it('does not render fork button when onFork is undefined', () => {
@@ -185,9 +228,10 @@ describe('AssistantMessage', () => {
     const loaded = full.querySelectorAll('button').length
     expect(bounded).toBeLessThanOrEqual(loaded)
     // A loaded row restores fork/plan in place, exactly as the base branch had them.
+    // The overflow trigger stays: it is Share's permanent home, in its own row.
     expect(screen.getByTitle('Fork conversation from here').tagName).toBe('BUTTON')
     expect(screen.getByTitle('Plan from here').tagName).toBe('BUTTON')
-    expect(screen.queryAllByTitle('More actions')).toHaveLength(0)
+    expect(screen.queryAllByTitle('More actions')).toHaveLength(1)
   })
 
   it('keeps the unavailable overflow trigger OUT of the footer action row', () => {
@@ -201,6 +245,24 @@ describe('AssistantMessage', () => {
     const row = screen.getByTitle('Copy').parentElement as HTMLElement
     expect(row).not.toContainElement(screen.getByTestId('assistant-more-actions'))
     expect(row.querySelectorAll('button')).toHaveLength(baseRowButtons)
+  })
+
+  it('renders no fork or plan affordance at all when handlers are absent (embedded co-author pane)', () => {
+    // ChatPage passes onFork/onPlanFromHere as undefined when `embedded` —
+    // an embedded pane (scribe/papyrus co-author, artifact chat) forking would
+    // mint a top-level session in the Sessions tab and silently switch the
+    // GLOBAL active slot. With no handlers, neither the row buttons nor the
+    // unavailable-state overflow menu may render.
+    render(<AssistantMessage content={'x'.repeat(80)} isStreaming={false} slotRunning={false} forkIndex={2} />)
+    expect(screen.queryByTestId('fork-from-here')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('plan-from-here')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('assistant-more-actions')).not.toBeInTheDocument()
+    cleanup()
+    // Same with no forkIndex: the (onFork || onPlanFromHere) overflow branch
+    // must also stay closed when both handlers are undefined.
+    render(<AssistantMessage content={'x'.repeat(80)} isStreaming={false} slotRunning={false} />)
+    expect(screen.queryByTestId('fork-from-here')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('assistant-more-actions')).not.toBeInTheDocument()
   })
 
   it('keeps an unavailable fork item reachable, so its reason can actually be read', () => {
@@ -357,7 +419,8 @@ describe('AssistantMessage', () => {
     const fork = screen.getByTitle('Fork conversation from here')
     expect(fork.tagName).toBe('BUTTON')
     expect(fork).not.toHaveAttribute('role', 'menuitem')
-    expect(screen.queryAllByTitle('More actions')).toHaveLength(0)
+    // The trigger survives as Share's home, but fork/plan are not inside it.
+    expect(screen.queryAllByTitle('More actions')).toHaveLength(1)
     const plan = screen.getByTitle('Plan from here')
     expect(plan.tagName).toBe('BUTTON')
     expect(plan).not.toHaveAttribute('role', 'menuitem')
@@ -391,28 +454,29 @@ describe('AssistantMessage', () => {
     expect(onFork).not.toHaveBeenCalled()
   })
 
-  it('mounts the overflow trigger whenever fork/plan exist, since the unavailable item still ACTS', () => {
-    // The menu holds fork/plan ONLY, and an unavailable item is no longer inert -- it pages
-    // earlier history -- so handler presence IS actionability, and an index gate would hide it.
+  it('mounts the overflow trigger whenever fork/plan handlers exist, with their items only in the unavailable state', () => {
+    // Share lives in the menu, whose presence follows the fork/plan handlers:
+    // a top-level chat always passes at least one, an embedded pane passes
+    // none and carries no per-message actions at all (Share included).
     const variants = [{ content: 'ready' }, { content: 'ok' }]
     const short = 'ready'
-    // 1. No handlers at all (the app-SDK renderer's shape): nothing to offer.
+    // 1. No handlers at all (embedded pane / app-SDK renderer): no trigger.
     const a = render(<AssistantMessage content={short} isStreaming={false} slotRunning={false} variants={variants} />)
-    expect(screen.queryAllByTitle('More actions')).toHaveLength(0)
+    expect(screen.queryByTitle('More actions')).toBeNull()
     a.unmount()
-    // 2. Handlers but NO index: the trigger MUST appear -- the item's action is the remedy.
+    // 2. Handlers but NO index: the trigger appears -- the item's action is the remedy.
     const b = render(<AssistantMessage content={short} isStreaming={false} slotRunning={false} onFork={vi.fn()} onPlanFromHere={vi.fn()} variants={variants} />)
     expect(screen.getAllByTitle('More actions').length).toBeGreaterThan(0)
     b.unmount()
-    // 3. Actionable fork: NO trigger -- the control returns to the row.
+    // 3. Actionable fork: the control returns to the row; the trigger stays for Share.
     const c = render(<AssistantMessage content={short} isStreaming={false} slotRunning={false} onFork={vi.fn()} forkIndex={0} variants={variants} />)
-    expect(screen.queryAllByTitle('More actions')).toHaveLength(0)
+    expect(screen.getAllByTitle('More actions')).toHaveLength(1)
     expect(screen.getByTitle('Fork conversation from here').tagName).toBe('BUTTON')
     c.unmount()
-    // 4. Speak and raw-view are ROW buttons, so they neither mount the trigger nor sit
-    //    inside it -- they have no relation to the bounded window.
-    const d = render(<AssistantMessage content={'x'.repeat(80)} isStreaming={false} slotRunning={false} onSpeak={vi.fn()} variants={variants} />)
-    expect(screen.queryAllByTitle('More actions')).toHaveLength(0)
+    // 4. Speak and raw-view are ROW buttons and never sit inside the menu;
+    //    the trigger keeps to the fork/plan signal, as Share's home.
+    const d = render(<AssistantMessage content={'x'.repeat(80)} isStreaming={false} slotRunning={false} onSpeak={vi.fn()} onFork={vi.fn()} variants={variants} />)
+    expect(screen.getAllByTitle('More actions')).toHaveLength(1)
     expect(screen.getByTitle('Raw markdown')).toBeTruthy()
     // `speak` is the TITLE and `speak_message` the aria-label, as on base: the
     // relabel that swapped them is out of this PR's scope.

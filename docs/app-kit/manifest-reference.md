@@ -182,6 +182,126 @@ At most one enabled app owns a slot. When two enabled apps declare the same
 `replaces`, the first by app name wins and the collision is reported -- the winner
 does not depend on which app was enabled or installed more recently.
 
+## Contributions
+
+### `contributes.commands` — Adding Rows to the Command Bar
+
+Adds command rows to the host's Command Bar. This is the lightest thing an app can
+be: a command-contributing app needs no page, no frontend bundle, no backend and no
+process — a manifest, plus whatever skill its prompt names.
+
+```json
+{
+  "contributes": {
+    "commands": [
+      {
+        "id": "approve-all",
+        "title": "Approve all PRs",
+        "subtitle": "Approve every pull request behind a link",
+        "icon": "Check",
+        "keywords": ["pr", "lgtm"],
+        "argument": {
+          "placeholder": "Paste a GitHub link…",
+          "hint": "A PR search, a label, or a single pull request.",
+          "kind": "url",
+          "hosts": ["github.com"],
+          "patternError": "Not a github.com link."
+        },
+        "prompt": "Load the $my-skill skill and approve every PR behind {argument}",
+        "autoSend": true
+      }
+    ]
+  }
+}
+```
+
+| Field | Required | Notes |
+|---|---|---|
+| `id` | yes | lowercase alphanumeric + dashes; unique within the app |
+| `title` | yes | row label, up to 120 characters |
+| `prompt` | yes | the action: a new session is seeded with this text, up to 4000 characters |
+| `subtitle` | no | defaults to the app's display name |
+| `icon` | no | a name from the host's glyph set; an unknown name falls back |
+| `keywords` | no | hidden match aliases |
+| `argument` | no | the ONE value the command collects before it runs; must be an object |
+| `autoSend` | no | send the seeded prompt instead of leaving it in the composer |
+
+Every entry of `commands` must be an object, and every length above is counted in UTF-16
+code units -- what the launcher itself counts. Both matter for the same reason: the host
+validates your manifest twice, once on install and once when it renders, and anything the
+two would measure differently is a command that installs clean and then does not appear.
+So a title of 100 emoji is 200 units, not 100, and a single non-object entry is refused
+rather than quietly skipped past.
+
+Inside `argument`:
+
+| Field | Required | Notes |
+|---|---|---|
+| `kind` | no | `url` or `text`; defaults to `text`. An unknown kind is refused |
+| `hosts` | no | `url` only: allowed hostnames, up to 20. Empty means any host |
+| `placeholder` | no | field placeholder |
+| `hint` | no | one line under the field |
+| `patternError` | no | shown when the value is not accepted |
+
+`contributes` sits beside `ui`, not inside it: `ui` declares surfaces the app owns,
+while a contribution is a row inside a surface the host owns and renders.
+
+**A contribution is data, never code.** There is no way to ship a function or an icon
+URL: the launcher would be running app-authored JavaScript inside the host's surface
+on every keystroke, and the root page promises to issue no network request. Ask for a
+new glyph name by pull request.
+
+**The host owns the matcher; a manifest names one rather than supplying it.** The
+collected value is spliced into an instruction handed to an agent with tools, so it has
+to be checked before the prompt is built — but `kind` selects one of a fixed set the
+host implements, and there is no way to ship a regex of your own. An earlier revision
+of this contract accepted `argument.pattern`; a pattern from a manifest runs against
+the field on every keystroke on the thread that draws the launcher, and shapes like
+`^(a+)+$` or `^(a|aa)+$` are a few characters long and exponential, so an `argument`
+that still carries `pattern` is now REFUSED rather than migrated — leaving it to fall
+back on `text` would accept any non-empty string with `autoSend` still on. An unknown
+`kind` is refused for the same reason.
+
+`kind: "url"` parses the value with the runtime's own URL parser and then applies
+`hosts`. The allowlist is exact unless an entry starts with a dot: `github.com` does
+not admit `github.com.evil.test`, while `.github.com` admits `gist.github.com`. Only
+`http` and `https` are accepted. `kind: "text"` takes any non-empty value.
+
+This is less precise than a regex, deliberately: a pattern could demand `/pull/<n>`,
+while `url` + `hosts` admits any URL on the host and leaves what the link DENOTES to
+the agent — or to your skill, which is the better place for your own product's URL
+taxonomy.
+
+Declaring an argument the prompt never interpolates is an error — the reader would be
+asked for a value the command then ignores. A command whose prompt needs no value
+simply omits `argument`; activating it is the whole action.
+
+**What the reader sees with `autoSend`.** The host shows the resolved prompt — the
+template with the reader's value already spliced in — in the argument field before
+the send, so the instruction is visible at the moment it fires. Write prompts on the
+assumption they will be read.
+
+**`autoSend` requires an `argument`.** That preview is what makes the send informed and
+it lives in the argument step, so a command that collects nothing never reaches it and
+the combination is refused rather than silently downgraded. Such a command still works:
+its prompt lands in the composer and one keystroke sends it. `autoSend` is also
+honoured only for the JSON boolean `true`, never for the string `"true"`.
+
+A malformed command is skipped with a console warning and the app's other commands
+still load. Commands from a disabled app do not appear at all.
+
+**If your app is SIGNED, set `minKiroCrewVersion`.** Contributions are covered by the
+admission signature -- a contributed prompt goes to an agent with tools and `autoSend`
+fires it, so leaving it unsigned would make your rows the one part of a signed app an
+attacker could rewrite with the signature still verifying. The consequence for you is
+that a signed manifest declaring `contributes` does not verify on a gateway older than
+this change, because that gateway computes the signed bytes without the
+`contributes` key. It fails CLOSED -- a refused install, not a silent downgrade -- but
+the error will not obviously point here, so declare the floor and the install refuses
+for a legible reason instead. Unsigned apps are unaffected, as are signed apps that
+contribute nothing: the key is only added to the payload when non-empty, so every
+signature issued before this existed still verifies.
+
 ### App Icon
 
 `iconPath` is the App Store's card and row icon, and it is **top-level** — not
@@ -301,9 +421,18 @@ root (validated against `HooksConfig._HOOK_PATH_RE`).
 | `backend.hooks.on_startup` | string | `module.path:callable` invoked when the app's hooks are wired up |
 | `backend.hooks.on_shutdown` | string | `module.path:callable` invoked when the app is disabled/torn down |
 
-`hooks.routes` handlers are wired up when the app is enabled (via
-`on_app_enable`, also re-run at gateway startup via `on_gateway_startup`), so
-they go live without waiting for a Gateway restart.
+`hooks.routes` handlers are wired up when the app is enabled **through the
+Gateway** -- the dashboard's enable action (`on_app_enable`), also re-run at
+gateway startup (`on_gateway_startup`) -- so on that path they go live without
+waiting for a Gateway restart.
+
+`kirocrew app enable` is not that path. The CLI is a separate process with no
+handle on a running Gateway's imported modules, so it cannot load or replace
+hooks: a Gateway that is already up keeps executing the hook module it imported
+earlier, even though the command succeeds and `app info` reports the new
+version. Restart the Gateway, or disable and re-enable the app from the
+dashboard, for hook changes to take effect. The CLI prints this reminder after
+enabling any app that declares `backend.hooks`.
 
 **Importing your own modules.** Hook entry files are loaded from their file path
 into a synthetic package named after the app, never via `sys.path`, so use a

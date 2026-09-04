@@ -51,6 +51,10 @@
 //
 
 const path = require("path");
+// The SAME debug opt-in the desktop profiler uses, rather than a second one:
+// `enable-precise-memory-info` below is a profiling switch, and one gate for
+// all of them keeps `KIROCREW_DEBUG=1` the single answer to "turn profiling on".
+const { profilingEnabled } = require("./perf-metrics");
 
 /** Log file name, alongside gateway-launch.log in the app's logs directory. */
 const NATIVE_LOG_BASENAME = "chromium.log";
@@ -80,25 +84,36 @@ function previousNativeLogPath(logPath) {
  * switch names: these are Chromium's spelling, not Electron's, and a typo here
  * fails silently (an unknown switch is ignored, logging simply stays off).
  *
+ * @param {object} [env] Environment consulted for the debug opt-in.
  * @returns {Array<[string, string]>} `[name, value]` pairs for appendSwitch.
  */
-function nativeLoggingSwitches(logPath) {
-  return [
+function nativeLoggingSwitches(logPath, env = process.env) {
+  const switches = [
     // `=file` is what sends output to --log-file instead of stderr, which the
     // GUI launch we are compensating for would throw away again.
     ["enable-logging", "file"],
     ["log-file", String(logPath)],
-    // Makes `performance.memory` exact and uncached. Without it Chromium
-    // BUCKETIZES those values and caches them for 20 MINUTES unless the renderer
-    // happens to be locked to a site -- so a memory probe reading it can return a
-    // plausible-looking constant forever and be misread as "flat and healthy".
-    // The renderer-memory trajectory (src/lib/memoryWatch.ts) derives V8 external
-    // memory from that reading, so this switch is what makes its series real; its
-    // flush reports `externalMoved=NO-FROZEN-VALUE` if the number never changes,
-    // which is the check that this switch actually took effect. Value-less switch,
-    // so the empty string is the whole argument.
-    ["enable-precise-memory-info", ""],
   ];
+  // Makes `performance.memory` exact and uncached. Without it Chromium
+  // BUCKETIZES those values and caches them for 20 MINUTES unless the renderer
+  // happens to be locked to a site -- so a memory probe reading it can return a
+  // plausible-looking constant forever and be misread as "flat and healthy".
+  // The renderer-memory trajectory (src/lib/memoryWatch.ts) derives V8 external
+  // memory from that reading, so this switch is what makes its series real; its
+  // flush reports `externalMoved=NO-FROZEN-VALUE` if the number never changes,
+  // which is the check that this switch actually took effect. Value-less switch,
+  // so the empty string is the whole argument.
+  //
+  // DEBUG-ONLY, unlike the two above: the bucketization it removes is a
+  // Chromium PRIVACY control, and it is removed per-PROCESS for every renderer
+  // -- including the browser-panel renderers that load UNTRUSTED pages, where
+  // exact heap sizes are the side channel the bucketing exists to blunt. The
+  // logging switches serve a user debugging their own crash; this one widens
+  // what an arbitrary page can measure, so it stays behind the same
+  // KIROCREW_DEBUG opt-in as the rest of the profiling surface and is OFF on a
+  // normal install. Turning it on is what a memory investigation already does.
+  if (profilingEnabled(env)) switches.push(["enable-precise-memory-info", ""]);
+  return switches;
 }
 
 /**
@@ -171,6 +186,7 @@ function rotateNativeLog(logPath, { fs, log = () => {} } = {}) {
  * @param {(opts: object) => void} [deps.startCrashReporter]
  * @param {object} [deps.fs]                 Injected for the rotate step.
  * @param {(msg: string) => void} [deps.log]
+ * @param {object} [deps.env]                Environment for the debug opt-in.
  * @returns {{logPath: string, previousPath: string|null, rotated: boolean, blocked: boolean, switches: string[], crashReporter: boolean}}
  */
 function initNativeLogging({
@@ -179,6 +195,7 @@ function initNativeLogging({
   startCrashReporter,
   fs,
   log = () => {},
+  env = process.env,
 } = {}) {
   const logPath = nativeLogPath(logsDir);
   const applied = [];
@@ -204,7 +221,7 @@ function initNativeLogging({
         `sink is skipped this launch rather than risk overwriting it`
     );
   } else {
-    for (const [name, value] of nativeLoggingSwitches(logPath)) {
+    for (const [name, value] of nativeLoggingSwitches(logPath, env)) {
       try {
         appendSwitch(name, value);
         applied.push(name);

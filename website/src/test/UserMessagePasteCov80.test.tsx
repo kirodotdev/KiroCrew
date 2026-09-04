@@ -138,6 +138,67 @@ describe('UserMessage paste chips', () => {
   })
 })
 
+/**
+ * Copying the bubble's LAST line by multi-click (#7891).
+ *
+ * A double/triple-click of the last line normalizes to a boundary point just
+ * PAST the bubble — the selection's end lives in the bubble's parent — which
+ * hoists `range.commonAncestorContainer` above the bubble. The interceptor's
+ * ancestor-containment early-return then bailed, and the browser's own copy
+ * shipped the literal chip label ("[ Paste #1 - 4 lines ]") that this handler
+ * exists to replace. happy-dom performs no native multi-click selection, so the
+ * normalized geometry is modelled directly, as PR #7875 does for the toolbar.
+ */
+function copyFromNormalized(bubble: HTMLElement, opts: { endAfter?: HTMLElement } = {}) {
+  const setData = vi.fn()
+  const parent = bubble.parentElement!
+  const childIndex = (node: Node) => Array.from(parent.childNodes).indexOf(node as ChildNode)
+  const range = document.createRange()
+  // Normalization moves only the far boundary: the near one stays inside the
+  // bubble, which is what keeps this distinguishable from a foreign selection.
+  range.setStart(bubble, 0)
+  range.setEnd(parent, childIndex(opts.endAfter ?? bubble) + 1)
+
+  const sel = window.getSelection()!
+  sel.removeAllRanges()
+  sel.addRange(range)
+
+  const ev = new Event('copy', { bubbles: true, cancelable: true })
+  Object.defineProperty(ev, 'clipboardData', { value: { setData } })
+  bubble.dispatchEvent(ev)
+  return { setData, defaultPrevented: ev.defaultPrevented }
+}
+
+describe('UserMessage paste chips, multi-click on the last line', () => {
+  it('still expands the chip when the selection end is normalized past the bubble', () => {
+    const { container } = render(
+      <UserMessage content={`head ${TOKEN}`} meta={{ pastes: [BLOCK] }} renderContent={renderWithChip} />,
+    )
+    const bubble = bubbleOf(container)
+    const { setData, defaultPrevented } = copyFromNormalized(bubble)
+
+    expect(setData).toHaveBeenCalledWith('text/plain', `head ${BLOCK.content}`)
+    expect(defaultPrevented).toBe(true)
+  })
+
+  it('keeps ignoring a selection that genuinely runs past the bubble into a sibling', () => {
+    const { container } = render(
+      <UserMessage content={`head ${TOKEN}`} meta={{ pastes: [BLOCK] }} renderContent={renderWithChip} />,
+    )
+    const bubble = bubbleOf(container)
+    // A real neighbour after the bubble, so the overhang holds text rather than
+    // just the bubble's closing boundary. Accepting this would rewrite a
+    // clipboard payload that reaches beyond the message the handler owns.
+    const neighbour = document.createElement('div')
+    neighbour.textContent = 'zzq-neighbour'
+    bubble.parentElement!.appendChild(neighbour)
+
+    const { setData } = copyFromNormalized(bubble, { endAfter: neighbour })
+    expect(setData).not.toHaveBeenCalled()
+    neighbour.remove()
+  })
+})
+
 describe('UserMessage pin affordance', () => {
   it('offers Pin for an unpinned message and calls back on click', () => {
     const onTogglePin = vi.fn()

@@ -3,7 +3,7 @@ import { act, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { renderWithProviders, createTestStore } from './helpers'
 import InstancesViewport from '../components/InstancesViewport'
-import { setActiveId } from '../store/instancesSlice'
+import { removeWarm, setActiveId, setWarm } from '../store/instancesSlice'
 import {
   consumeChatHandoff,
   installSoftNavigate,
@@ -696,6 +696,204 @@ describe('InstancesViewport', () => {
     expect(screen.getByText(/Loading pane/i)).toBeInTheDocument()
   })
 
+  it('stops re-minting after MAX_REACTIVE_REMINTS unanswered mc-auth-expired asks', async () => {
+    // A pane whose session a fresh token cannot repair posts mc-auth-expired on
+    // EVERY 403 it sees, forever. Without a budget that is one SSH mint every
+    // REFRESH_MIN_INTERVAL_MS for as long as the window stays open — and each
+    // re-mint used to postpone the load watchdog, so the user saw only a
+    // spinner. The reactive path must go quiet and let the verdict stand.
+    mockConnectedCd1()
+    // Retry reconnects, and the pane keeps its loopback port — so pin the
+    // connect mock to 7778 like every other mock here. The module default
+    // answers 7777, which would move the pane's expected origin mid-test and
+    // make the posts below cross-origin (silently dropped) rather than capped.
+    vi.mocked(api.connectInstance).mockResolvedValue({ state: 'connected', local_port: 7778, token: 'tok' })
+    vi.useFakeTimers()
+    try {
+      const store = createTestStore({
+        instances: { warm: { 'cd-1': { port: 7778, token: 'tok' } }, activeId: 'cd-1', mru: ['cd-1'], unread: {}, ready: {} },
+      })
+      renderWithProviders(<InstancesViewport />, { store })
+
+      const expire = async () => {
+        await act(async () => {
+          window.dispatchEvent(
+            new MessageEvent('message', {
+              data: { type: 'mc-auth-expired' },
+              origin: 'http://127.0.0.1:7778',
+            }),
+          )
+        })
+        // Past the per-instance rate guard, so the throttle is never what stops us.
+        await act(async () => { vi.advanceTimersByTime(11_000) })
+      }
+
+      for (let i = 0; i < 6; i++) await expire()
+      expect(vi.mocked(api.refreshInstanceToken).mock.calls.length).toBe(3)
+
+      // `mc-embedded-ready` must NOT re-open the budget. EmbeddedHostBridge
+      // posts it from a mount effect, BEFORE the pane's first authenticated
+      // request, so a pane whose shell mounts and whose API then 403s posts it
+      // on every reload — crediting it would clear the count once per re-mint
+      // and leave the loop this cap exists to bound running forever.
+      const ready = async () => {
+        await act(async () => {
+          window.dispatchEvent(
+            new MessageEvent('message', {
+              data: { type: 'mc-embedded-ready', v: 1 },
+              origin: 'http://127.0.0.1:7778',
+            }),
+          )
+        })
+      }
+      await ready()
+      await expire()
+      expect(vi.mocked(api.refreshInstanceToken).mock.calls.length).toBe(3)
+
+      // Only Retry re-opens it, and it does.
+      await act(async () => { screen.getByRole('button', { name: /retry/i }).click() })
+      await expire()
+      expect(vi.mocked(api.refreshInstanceToken).mock.calls.length).toBe(4)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('surfaces the error panel when the reactive budget runs out on a READY pane', async () => {
+    // The exhausted ask can land while the pane counts as ready: its shell
+    // mounted (mc-embedded-ready) and only its API is 403ing. The load watchdog
+    // skips a ready pane and the child has latched its own hand-off, so simply
+    // dropping the ask would leave a live-looking pane on stale content with no
+    // affordance at all. Exhaustion must retract readiness and show Retry.
+    mockConnectedCd1()
+    vi.useFakeTimers()
+    try {
+      const store = createTestStore({
+        instances: { warm: { 'cd-1': { port: 7778, token: 'tok' } }, activeId: 'cd-1', mru: ['cd-1'], unread: {}, ready: {} },
+      })
+      renderWithProviders(<InstancesViewport />, { store })
+
+      const post = async (data: unknown) => {
+        await act(async () => {
+          window.dispatchEvent(new MessageEvent('message', { data, origin: 'http://127.0.0.1:7778' }))
+        })
+      }
+
+      // Every cycle re-announces readiness, exactly as a real reload does.
+      for (let i = 0; i < 4; i++) {
+        await post({ type: 'mc-embedded-ready', v: 1 })
+        await post({ type: 'mc-auth-expired' })
+        await act(async () => { vi.advanceTimersByTime(11_000) })
+      }
+
+      // Capped at 3 mints even though the pane reported ready before every ask.
+      expect(vi.mocked(api.refreshInstanceToken).mock.calls.length).toBe(3)
+      // And the pane is no longer passing for loaded — Retry is reachable.
+      expect(store.getState().instances.ready['cd-1']).toBeUndefined()
+      expect(screen.getByRole('button', { name: /retry/i })).toBeInTheDocument()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('does not spend the reactive budget on asks the rate guard drops', async () => {
+    // The budget bounds MINTS, not asks. A pane can post several asks inside one
+    // rate window — a 200 landing mid-reload re-arms the child's hand-off latch,
+    // so a 403 from a poll that started before the reload posts again seconds
+    // later — and refreshToken drops those. Charging for a mint that never
+    // happened would fail the pane after one real retry instead of three.
+    mockConnectedCd1()
+    vi.useFakeTimers()
+    try {
+      const store = createTestStore({
+        instances: { warm: { 'cd-1': { port: 7778, token: 'tok' } }, activeId: 'cd-1', mru: ['cd-1'], unread: {}, ready: {} },
+      })
+      renderWithProviders(<InstancesViewport />, { store })
+
+      const post = async (data: unknown) => {
+        await act(async () => {
+          window.dispatchEvent(new MessageEvent('message', { data, origin: 'http://127.0.0.1:7778' }))
+        })
+      }
+      const nextWindow = async () => { await act(async () => { vi.advanceTimersByTime(11_000) }) }
+
+      // Ready throughout, so the 15s load watchdog is never what shows the panel
+      // — only the budget can. The mock re-mints the SAME token, so setWarm does
+      // not clear readiness between asks.
+      await post({ type: 'mc-embedded-ready', v: 1 })
+
+      // Three asks inside ONE rate window: the first mints, the other two are
+      // dropped by the guard and must cost nothing.
+      await post({ type: 'mc-auth-expired' })
+      await post({ type: 'mc-auth-expired' })
+      await post({ type: 'mc-auth-expired' })
+      expect(vi.mocked(api.refreshInstanceToken).mock.calls.length).toBe(1)
+
+      // Two more windows spend the rest of the budget. Six asks, three mints.
+      await nextWindow()
+      await post({ type: 'mc-auth-expired' })
+      await nextWindow()
+      await post({ type: 'mc-auth-expired' })
+      expect(vi.mocked(api.refreshInstanceToken).mock.calls.length).toBe(3)
+      // Still alive: the dropped asks did not bring the panel forward.
+      expect(store.getState().instances.ready['cd-1']).toBe(true)
+      expect(screen.queryByRole('button', { name: /retry/i })).toBeNull()
+
+      // The next ask is the one that finds the budget spent.
+      await nextWindow()
+      await post({ type: 'mc-auth-expired' })
+      expect(vi.mocked(api.refreshInstanceToken).mock.calls.length).toBe(3)
+      expect(screen.getByRole('button', { name: /retry/i })).toBeInTheDocument()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('re-warming a pane restores its budget instead of failing on the first ask', async () => {
+    // Both the budget and the timed-out verdict describe ONE load of ONE
+    // connection. Eviction and disconnect end that connection, and a re-warm is
+    // a new load — but only Retry used to clear either, and a re-warm is exactly
+    // the path that skips Retry. Left stale, a healthy re-warm renders "Pane
+    // failed to load" before its fresh iframe has had a chance to load at all.
+    mockConnectedCd1()
+    vi.useFakeTimers()
+    try {
+      const store = createTestStore({
+        instances: { warm: { 'cd-1': { port: 7778, token: 'tok' } }, activeId: 'cd-1', mru: ['cd-1'], unread: {}, ready: {} },
+      })
+      renderWithProviders(<InstancesViewport />, { store })
+
+      const post = async (data: unknown) => {
+        await act(async () => {
+          window.dispatchEvent(new MessageEvent('message', { data, origin: 'http://127.0.0.1:7778' }))
+        })
+      }
+      await post({ type: 'mc-embedded-ready', v: 1 })
+      for (let i = 0; i < 4; i++) {
+        await post({ type: 'mc-auth-expired' })
+        await act(async () => { vi.advanceTimersByTime(11_000) })
+      }
+      expect(vi.mocked(api.refreshInstanceToken).mock.calls.length).toBe(3)
+      expect(screen.getByRole('button', { name: /retry/i })).toBeInTheDocument()
+
+      // The same teardown InstancesPanel and the K-cap eviction dispatch, then a
+      // fresh warm for the same id.
+      await act(async () => { store.dispatch(removeWarm('cd-1')) })
+      await act(async () => { store.dispatch(setWarm({ id: 'cd-1', conn: { port: 7778, token: 'tok2' } })) })
+      await act(async () => { store.dispatch(setActiveId('cd-1')) })
+
+      // The stale verdict is gone: the new load gets its loading overlay, not the
+      // error panel it never earned.
+      expect(screen.queryByRole('button', { name: /retry/i })).toBeNull()
+      expect(screen.getByText(/Loading pane/i)).toBeInTheDocument()
+      // And its first ask is answered with a mint rather than instant exhaustion.
+      await post({ type: 'mc-auth-expired' })
+      expect(vi.mocked(api.refreshInstanceToken).mock.calls.length).toBe(4)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('ignores mc-switch-instance to an unknown target id even from a trusted origin', async () => {
     // The inbound switcher validates the TARGET (known instance OR warm) after
     // resolving the SENDER origin. A trusted pane must NOT be able to flip the
@@ -795,6 +993,46 @@ describe('InstancesViewport', () => {
     // The iframe was remounted (new element) to force the reload.
     const after = document.querySelector('iframe') as HTMLIFrameElement
     expect(after).not.toBe(before)
+  })
+
+  it('still times out when a re-mint churns the token faster than the watchdog window', async () => {
+    // Regression: the watchdog's countdown used to restart on every token change.
+    // Re-mints are rate-limited to REFRESH_MIN_INTERVAL_MS (10s), which is SHORTER
+    // than PANE_LOAD_TIMEOUT_MS (15s), so a pane stuck in an auth-expired -> re-mint
+    // loop reset the clock before it could ever fire: the loading overlay spun
+    // forever and Retry was unreachable. The deadline is now absolute per load.
+    mockConnectedCd1()
+    vi.useFakeTimers()
+    try {
+      const store = createTestStore({
+        instances: { warm: { 'cd-1': { port: 7778, token: 'tok-0' } }, activeId: 'cd-1', mru: ['cd-1'], unread: {}, ready: {} },
+      })
+      renderWithProviders(<InstancesViewport />, { store })
+      expect(screen.getByText(/Loading pane/i)).toBeInTheDocument()
+
+      // Two re-mints inside the 15s window, 10s apart — same port, new token each
+      // time (exactly what the auth-expired path dispatches).
+      await act(async () => {
+        vi.advanceTimersByTime(10_000)
+        store.dispatch(setWarm({ id: 'cd-1', conn: { port: 7778, token: 'tok-1' } }))
+      })
+      expect(screen.queryByText(/Pane failed to load/i)).toBeNull()
+      await act(async () => {
+        vi.advanceTimersByTime(4_000)
+        store.dispatch(setWarm({ id: 'cd-1', conn: { port: 7778, token: 'tok-2' } }))
+      })
+      // 14s elapsed: still inside the ORIGINAL deadline, so not yet a failure.
+      expect(screen.queryByText(/Pane failed to load/i)).toBeNull()
+
+      // Crossing 15s of real elapsed time fires, despite the churn.
+      await act(async () => {
+        vi.advanceTimersByTime(1_000)
+      })
+      expect(screen.getByText(/Pane failed to load/i)).toBeInTheDocument()
+      expect(screen.getByRole('button', { name: /Retry/i })).toBeInTheDocument()
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('a late mc-embedded-ready clears a timed-out verdict without Retry', async () => {

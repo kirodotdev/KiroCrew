@@ -242,11 +242,23 @@ def _trusted_path_env() -> dict[str, str] | None:
     # command has no business inheriting an interpreter search path.
     for var in _INJECTABLE_LOADER_VARS:
         env.pop(var, None)
+    # Exported shell FUNCTIONS are the same threat carrying an open-ended name:
+    # bash imports ``BASH_FUNC_<name>%%`` (4.3+) or ``BASH_FUNC_<name>()`` (the
+    # patched-4.2 form), and the resulting function shadows that command word
+    # outright -- beating the narrowed PATH above rather than competing in it.
+    # Matched by PREFIX because the suffix is version-specific, so neither form
+    # can be missed and no future one has to be enumerated.
+    for var in [k for k in env if k.startswith("BASH_FUNC_")]:
+        env.pop(var, None)
     return env
 
 
-#: Environment variables that make an interpreter or dynamic linker load code
-#: from a caller-controlled path. Removed from every update-command child.
+#: Environment variables that make an interpreter, a dynamic linker, or the
+#: shell itself load code from a caller-controlled path. Removed from every
+#: update-command child. ``SHELLOPTS``/``PS4`` are the shell's own pair: the
+#: command runs via ``[<sh>, "-c", ...]`` and where that ``sh`` is bash,
+#: ``SHELLOPTS=xtrace`` enables tracing while ``PS4`` is expanded with command
+#: substitution, so a payload there runs before the command does.
 _INJECTABLE_LOADER_VARS: tuple[str, ...] = (
     "PYTHONPATH",
     "PYTHONHOME",
@@ -262,6 +274,8 @@ _INJECTABLE_LOADER_VARS: tuple[str, ...] = (
     "DYLD_FRAMEWORK_PATH",
     "BASH_ENV",
     "ENV",
+    "SHELLOPTS",
+    "PS4",
     "IFS",
 )
 

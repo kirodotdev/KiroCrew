@@ -28,16 +28,20 @@ from aiohttp import web
 from aiohttp.client_exceptions import ClientConnectionResetError
 from aiohttp.multipart import BodyPartReader
 
-from kiro_crew import platform_compat
-from kiro_crew.atomic_write import atomic_write, open_access_control_source
+from kiro_crew import pinned_fs, platform_compat
+from kiro_crew.atomic_write import (
+    atomic_write,
+    open_access_control_source,
+    pinned_parent_replace_supported,
+)
 from kiro_crew.config import loader as config_loader
 from kiro_crew.config.loader import KiroCrewConfig, WorkspaceConfig, config_dir, data_home
 from kiro_crew.dashboard import part_stream, upload_destination
 from kiro_crew.dashboard.chat_utils import dashboard_slot_key
 from kiro_crew.dashboard.file_index import _SKIP_DIRS as _WALK_SKIP_DIRS
-from kiro_crew.dashboard.handlers._shared import _probe_persisted_session
+from kiro_crew.dashboard.handlers._shared import _probe_persisted_session, read_bounded_json
 from kiro_crew.dashboard.origin import is_direct_local_request
-from kiro_crew.dashboard.state import DashboardState
+from kiro_crew.dashboard.state import DashboardState, append_and_surface
 from kiro_crew.doc_parser import extract_text
 from kiro_crew.hooks import FileTooLargeError, safe_read_file_bytes, safe_read_prefix
 from kiro_crew.messaging.display_safety import redact_for_display
@@ -122,12 +126,28 @@ def _audit_file_send(
     )
 
 
+def _body_err_code(body_err: web.Response) -> str:
+    """SEL error label for a refused body read.
+
+    Derived from the guard response's machine-readable ``code`` so the audit
+    record distinguishes a parse failure from an oversized body (413
+    ``payload_too_large``) instead of filing every refusal as a JSON error.
+    """
+    try:
+        parsed = json.loads(body_err.text or "")
+    except ValueError:
+        return "invalid_json_body"
+    code = parsed.get("code") if isinstance(parsed, dict) else None
+    return str(code) if code else "invalid_json_body"
+
+
 async def api_reveal_path(request: web.Request) -> web.Response:
     """POST /api/reveal — reveal a file/folder in Finder or open with default app."""
-    try:
-        body = await request.json()
-    except ValueError:
-        return web.json_response({"error": "invalid JSON body"}, status=400)
+    # Default cap: the body is a path and an action flag (issue #5587 sweep).
+    body, body_err = await read_bounded_json(request)
+    if body_err is not None:
+        return body_err
+    assert body is not None  # read_bounded_json returns (dict, None) on success
     path = body.get("path", "")
     action = body.get("action", "reveal")  # "reveal" or "open"
     if not path or ".." in Path(path).parts:
@@ -181,19 +201,20 @@ async def api_reveal_path(request: web.Request) -> web.Response:
 async def api_outbox_notify(request: web.Request) -> web.Response:
     """POST /api/outbox/notify — agent sent a file, notify the user."""
     state: DashboardState = request.app["state"]
-    try:
-        body = await request.json()
-    except ValueError:
-
+    # Default cap: the body names an outbox file (path, filename, short
+    # description, size) — the file bytes themselves never travel in it.
+    body, body_err = await read_bounded_json(request)
+    if body_err is not None:
         _sel().log_tool_invocation(
             session_key="api",
             source="api",
             tool_name="file_send",
             tool_kind="notify",
             outcome="denied",
-            error="invalid_json_body",
+            error=_body_err_code(body_err),
         )
-        return web.json_response({"error": "Invalid JSON body"}, status=400)
+        return body_err
+    assert body is not None  # read_bounded_json returns (dict, None) on success
 
     raw_path = body.get("path", "")
     raw_filename = body.get("filename", "")
@@ -319,16 +340,11 @@ async def api_outbox_notify(request: web.Request) -> web.Response:
             # extra credential regexes scrub the broadcast file JSON too — the
             # same overlay-aware pass the filename/path/description gates use.
             redacted_file_json = redact(json.dumps(file_data))
-            active.append("file", redacted_file_json)
-            # Only broadcast explicitly when _has_reader suppresses append's
-            # built-in _on_message callback. Avoids duplicate file cards.
-            if getattr(active, "_has_reader", False):
-                state.broadcast_ws("chat_message", {
-                    "slot": active.key,
-                    "role": "file",
-                    "content": redacted_file_json,
-                    "ts": active.messages[-1]["ts"],
-                })
+            # append_and_surface = the same conditional-broadcast pattern this
+            # site pioneered, now also stamping ``ts`` + ``meta.mid`` on the
+            # reader-suppressed frame so a client seeing the row through two
+            # doors recognises it instead of rendering a duplicate card.
+            append_and_surface(state, active, "file", redacted_file_json)
 
     _sel().log_tool_invocation(
         session_key="api",
@@ -637,11 +653,12 @@ async def api_slack_upload_file(request: web.Request) -> web.Response:
 
     Destination and authorization come from the shared oracle
     (:func:`kiro_crew.dashboard.upload_destination.resolve_slack`), which holds
-    this leg's ladder — request-named channel, session-map-linked thread,
-    owner-DM fallback, tracked-channel authorization — next to the non-Slack
-    leg's, so the two cannot drift apart rung by rung (issue #6060). What stays
-    here is what only this leg can answer: the Slack client, its upload verb,
-    and the response shapes.
+    this leg's ladder — the ``channels``-scope governance vet, the
+    restricted-session ceiling, then a request-named channel, a
+    session-map-linked thread, or the owner-DM fallback with its tracked-channel
+    authorization — next to the non-Slack leg's, so the two cannot drift apart
+    rung by rung (issue #6060). What stays here is what only this leg can
+    answer: the Slack client, its upload verb, and the response shapes.
 
     The client-presence check stays AHEAD of the body parse, where it shipped: a
     gateway with no Slack client answers ``skipped: no_slack`` even for a
@@ -652,11 +669,13 @@ async def api_slack_upload_file(request: web.Request) -> web.Response:
     if not slack:
         _audit_file_send(leg="slack", outcome="skipped", error="no_slack_client")
         return web.json_response({"ok": True, "skipped": "no_slack"})
-    try:
-        body = await request.json()
-    except ValueError:
-        _audit_file_send(leg="slack", outcome="denied", error="invalid_json_body")
-        return web.json_response({"error": "Invalid JSON body"}, status=400)
+    # Default cap: the body carries a file path, a filename, and Slack routing
+    # ids — the file bytes are read from disk, never from this body.
+    body, body_err = await read_bounded_json(request)
+    if body_err is not None:
+        _audit_file_send(leg="slack", outcome="denied", error=_body_err_code(body_err))
+        return body_err
+    assert body is not None  # read_bounded_json returns (dict, None) on success
     file_path_raw = body.get("file_path", "")
     filename = body.get("filename", "")
     # Off-loop: the gate reads up to MAX_FILE_BYTES and regex-scans the content
@@ -667,9 +686,10 @@ async def api_slack_upload_file(request: web.Request) -> web.Response:
     if error_resp is not None:
         return error_resp
     assert resolved is not None and raw is not None  # narrowed by the gate
-    # ``is_tracked_channel`` is handed to the oracle rather than imported there:
-    # one binding site, and the module stays free of the Slack handler's config
-    # dependency (same contract as ``persisted_probe`` below).
+    # ``is_tracked_channel`` and the persisted-transcript probe are handed to the
+    # oracle rather than imported there: one binding site, and the module stays
+    # free of both the Slack handler's config dependency and the ``dashboard``
+    # package ``messaging.upload_gate`` may not import.
     destination = await upload_destination.resolve_slack(
         state,
         slack,
@@ -677,6 +697,7 @@ async def api_slack_upload_file(request: web.Request) -> web.Response:
         requested_channel=body.get("channel", ""),
         thread_ts=body.get("thread_ts"),
         tracked_probe=is_tracked_channel,
+        persisted_probe=_probe_persisted_session,
     )
     if isinstance(destination, upload_destination.Refusal):
         _audit_file_send(
@@ -754,11 +775,13 @@ async def api_channel_upload_file(request: web.Request) -> web.Response:
     and the Slack leg exactly as before this endpoint existed.
     """
     state: DashboardState = request.app["state"]
-    try:
-        body = await request.json()
-    except ValueError:
-        _audit_file_send(leg="channel", outcome="denied", error="invalid_json_body")
-        return web.json_response({"error": "Invalid JSON body"}, status=400)
+    # Default cap: same shape as the Slack leg — a path, a filename, and a
+    # short description; the file bytes are read from disk by the gate.
+    body, body_err = await read_bounded_json(request)
+    if body_err is not None:
+        _audit_file_send(leg="channel", outcome="denied", error=_body_err_code(body_err))
+        return body_err
+    assert body is not None  # read_bounded_json returns (dict, None) on success
 
     def _skip(reason: str) -> web.Response:
         _audit_file_send(leg="channel", outcome="skipped", error=reason)
@@ -920,6 +943,11 @@ _ALLOWED_TEXT_EXT = {
     ".txt",
     ".md",
     ".json",
+    # Excalidraw scene JSON — the composer's sketch pad attaches one per
+    # sketch, and the dashboard has a dedicated read-only renderer for it
+    # (FileRenderers routes on this exact extension). Content-wise it is
+    # ordinary JSON text.
+    ".excalidraw",
     ".har",
     ".yaml",
     ".yml",
@@ -1455,10 +1483,11 @@ async def api_workspaces_create(request: web.Request) -> web.Response:
 
     from kiro_crew.validation import WORKSPACE_NAME_RE  # noqa: F811
 
-    try:
-        body = await request.json()
-    except Exception:
-        return web.json_response({"error": "Invalid JSON body"}, status=400)
+    # Default cap: the body is a workspace name plus optional dir/copy_from.
+    body, body_err = await read_bounded_json(request)
+    if body_err is not None:
+        return body_err
+    assert body is not None  # read_bounded_json returns (dict, None) on success
     name = body.get("name", "").strip()
     if not name:
         return web.json_response({"error": "Workspace name is required"}, status=400)
@@ -1613,10 +1642,11 @@ async def api_workspaces_update(request: web.Request) -> web.Response:
     cfg = KiroCrewConfig.load()
     if name not in cfg.workspaces:
         return web.json_response({"error": f"Workspace '{name}' not found"}, status=404)
-    try:
-        body = await request.json()
-    except Exception:
-        return web.json_response({"error": "Invalid JSON body"}, status=400)
+    # Default cap: the body is a single directory field.
+    body, body_err = await read_bounded_json(request)
+    if body_err is not None:
+        return body_err
+    assert body is not None  # read_bounded_json returns (dict, None) on success
     if "dir" in body:
         new_dir = body["dir"]
         _abs = Path(new_dir).expanduser().is_absolute()
@@ -2868,11 +2898,42 @@ def _file_write_blocking(path: str, content: str) -> str | None:
     component is swapped for a link after the check. That refusal is a rejected
     target rather than a server fault, hence ``"notfound"`` and not an exception.
     """
+    # Pin the parent chain FIRST, then address the leaf only through that
+    # descriptor. The pin is what stops atomic_write's temp create and publishing
+    # rename from re-resolving the parent by name, and the ORDER is what stops the
+    # metadata read below from re-resolving it either: a directory replaced at
+    # that name between the pin and the leaf open would otherwise supply the mode
+    # and ACL while the write published into the pinned original.
+    #
+    # pin_parent, NOT open_dir_pinned: ``path`` is already realpath-canonicalized,
+    # so every component of its parent was a real directory at validation time.
+    # pin_parent walks THAT recorded chain with O_NOFOLLOW per component, so a
+    # component swapped for a link since is REFUSED. open_dir_pinned would
+    # realpath the chain again here and follow the swap instead -- a fresh
+    # resolution cannot be more faithful than the one already done, only less.
+    #
+    # None on a platform that cannot walk a parent by descriptor or cannot stage
+    # and rename through one, where atomic_write keeps the by-name floor. Both
+    # probes are asked because they are two capabilities: atomic_write refuses a
+    # descriptor it cannot use rather than silently writing by name.
+    dir_fd: int | None = None
+    if pinned_fs.supports_pinned_walk() and pinned_parent_replace_supported():
+        try:
+            dir_fd = pinned_fs.pin_parent(os.path.dirname(path), what="file directory")
+        except (pinned_fs.PinnedPathRefusal, OSError):
+            # Both are the same disposition -- a target that can no longer be
+            # reached through the tree the caller validated is rejected, not a
+            # server fault -- so they share one arm rather than drifting apart.
+            return "notfound"
+    src_fd: int | None = None
     try:
-        src_fd = open_access_control_source(path)
-    except OSError:
-        return "notfound"
-    try:
+        try:
+            src_fd = open_access_control_source(path, dir_fd=dir_fd)
+        except OSError:
+            return "notfound"
+        # os.stat by name only where nothing was pinned: with dir_fd the helper
+        # always hands back a descriptor, so the mode comes from the same inode
+        # the ACL does and neither is re-resolved.
         src_stat = os.fstat(src_fd) if src_fd is not None else os.stat(path)
         # mode= keeps the previous copymode behaviour (permission bits), and
         # preserve_access_control_from is ADDITIVE to it: copymode carried BITS
@@ -2885,13 +2946,15 @@ def _file_write_blocking(path: str, content: str) -> str | None:
             content,
             mode=_stat_mod.S_IMODE(src_stat.st_mode),
             preserve_access_control_from=src_fd,
+            parent_dir_fd=dir_fd,
         )
     finally:
-        if src_fd is not None:
-            try:
-                os.close(src_fd)
-            except OSError:
-                pass
+        for fd in (src_fd, dir_fd):
+            if fd is not None:
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
     return None
 
 
@@ -2903,13 +2966,12 @@ async def api_file_write(request: web.Request) -> web.Response:
         validate_tool_args,
     )
 
-    try:
-        body = await request.json()
-    except Exception:
-        return web.json_response({"error": "invalid JSON body"}, status=400)
-
-    if not isinstance(body, dict):
-        return web.json_response({"error": "invalid JSON body"}, status=400)
+    # max_bytes=None: the body carries the file's whole contents, which has no
+    # defensible byte ceiling (issue #5587 sweep).
+    body, body_err = await read_bounded_json(request, max_bytes=None)
+    if body_err is not None:
+        return body_err
+    assert body is not None  # read_bounded_json returns (dict, None) on success
 
     try:
         validate_tool_args(
@@ -3706,18 +3768,17 @@ async def api_dashboard_config(request: web.Request) -> web.Response:
         )
         raise
     if request.method == "PUT":
-        try:
-            body = await request.json()
-        except Exception:
+        # Default cap: the body is a fixed set of dashboard toggles and numbers.
+        body, body_err = await read_bounded_json(request)
+        if body_err is not None:
             _sel().log_tool_invocation(
-                session_key="dashboard", tool_name="dashboard_config_write", outcome="failure"
+                session_key="dashboard",
+                tool_name="dashboard_config_write",
+                outcome="failure",
+                error=_body_err_code(body_err),
             )
-            return web.json_response({"error": "invalid JSON"}, status=400)
-        if not isinstance(body, dict):
-            _sel().log_tool_invocation(
-                session_key="dashboard", tool_name="dashboard_config_write", outcome="failure"
-            )
-            return web.json_response({"error": "request body must be a JSON object"}, status=400)
+            return body_err
+        assert body is not None  # read_bounded_json returns (dict, None) on success
         _allowed = {"restore_sessions", "restore_window_minutes", "merge_queued_messages", "widget_density", "use_builtin_browser", "verbosity", "quick_send", "session_grid", "tail_fork_enabled", "link_previews", "mcp_app_panel", "auto_open_git_panel", "folder_suggestions_enabled", "session_card_source_links"}
         # One-release backward-compat shim for removed key; delete after all clients update.
         deprecated_ignored_keys = {"tail_fork_head_handling"}
@@ -4778,8 +4839,34 @@ async def api_project_git_status(request: web.Request) -> web.Response:
         result["repoRoot"] = redact(result["repoRoot"])
     if result.get("branch"):
         result["branch"] = redact(result["branch"])
+    # Redact each file path, then drop entries that duplicate an earlier one
+    # (preserving order and first occurrence). Same collision class as
+    # api_project_tree: redact() can collapse two genuinely-different paths to
+    # the same placeholder. This list feeds GitPanel, which keys its rows on
+    # `${path}:${staged}` and takes its file total from files.length, so a
+    # collision would render two indistinguishable rows under one React key and
+    # overstate the count. (It cannot reach @pierre/trees as a duplicate the way
+    # api_project_tree's list can: the tree's "changed" mode already collapses
+    # status entries by path before handing them over.) The files[:500] cap was
+    # already applied to the raw listing above, so this only removes collisions.
+    #
+    # The key is (path, status, staged), NOT path alone: one file with both
+    # staged and unstaged changes ("MM", "AM", "MD") legitimately yields two
+    # entries sharing a path but differing in status/staged, and GitPanel
+    # renders them as separate rows. Keying on path alone would drop the
+    # unstaged lane and undercount the file total. A real redaction collision
+    # has an identical tuple, so it still collapses.
+    deduped_files: list[dict] = []
+    seen_keys: set[tuple[str, str | None, bool | None]] = set()
     for f in result.get("files", []):
         f["path"] = redact(f["path"])
+        key = (f["path"], f.get("status"), f.get("staged"))
+        if key in seen_keys:
+            continue
+        seen_keys.add(key)
+        deduped_files.append(f)
+    if "files" in result:
+        result["files"] = deduped_files
     return web.json_response(result)
 
 
@@ -4916,7 +5003,15 @@ async def api_project_tree(request: web.Request) -> web.Response:
     # Egress redaction, same rationale as api_project_git_status: listed names
     # are repo content and this body is rendered by the dashboard.
     result["root"] = redact(result["root"])
-    result["paths"] = [redact(p) for p in result["paths"]]
+    # De-duplicate after redaction, preserving order and first occurrence.
+    # redact() collapses each matched token to a fixed placeholder, so two
+    # genuinely-different project-relative paths (e.g. a src/ vs target/ Maven
+    # prefix and a credential-shaped filename token) can flatten to the same
+    # redacted string. The dashboard tree hands this list straight to
+    # @pierre/trees, whose appendPresortedPaths throws "Duplicate path" on
+    # adjacent identical entries. dict.fromkeys keeps first occurrence. This
+    # does not affect "truncated": the cap is applied to the raw listing above.
+    result["paths"] = list(dict.fromkeys(redact(p) for p in result["paths"]))
     return web.json_response(result)
 
 

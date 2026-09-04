@@ -26,6 +26,7 @@ import { DOUBLE_TAP_MS, DOUBLE_TAP_SLOP, DOUBLE_TAP_ZOOM, usePinchZoom } from '.
 import AskAgentButton from '../components/AskAgentButton'
 
 import { i18nT } from '../i18n/t'
+import type { AppContributor } from '../types'
 import {
   appDisplayName, appDescription, appHighlights, appUseCases, appConfiguration,
 } from '../components/appstore/appManifest'
@@ -603,6 +604,32 @@ export default function AppDetailPage() {
   const [serverHostname, setServerHostname] = useState('')
   const [showUninstallConfirm, setShowUninstallConfirm] = useState(false)
   const [keepData, setKeepData] = useState(true)
+
+  // Contributors row (Details panel). Resolved GitHub repo URL for the app's
+  // source, its top contributors, and the fetch's loading state. The row hides
+  // entirely unless a GitHub repo URL resolves and the fetch yields entries.
+  const [repoUrl, setRepoUrl] = useState('')
+  const [contributors, setContributors] = useState<AppContributor[]>([])
+  const [contribLoading, setContribLoading] = useState(false)
+
+  useEffect(() => {
+    // Prefer the registry/manifest repo, then the git URL the app was trusted
+    // from, then its source. GitHub-only in v1; a non-GitHub value leaves the
+    // row hidden (the backend also returns [] for one).
+    const candidates = [app?.repo, app?.manifest?.repo, app?.trustRepository, app?.source]
+    const url = candidates.find(
+      (v): v is string => typeof v === 'string' && /^https:\/\/github\.com\//i.test(v),
+    ) || ''
+    setRepoUrl(url)
+    if (!url) { setContributors([]); setContribLoading(false); return }
+    let cancelled = false
+    setContribLoading(true)
+    api.appContributors(url)
+      .then(res => { if (!cancelled) setContributors(res.contributors || []) })
+      .catch(() => { if (!cancelled) setContributors([]) })
+      .finally(() => { if (!cancelled) setContribLoading(false) })
+    return () => { cancelled = true }
+  }, [app])
 
   // Helper: open chat with a pre-filled message (same mechanism as useChatLauncher from app-sdk)
   const openChatWithMessage = useCallback((message: string) => {
@@ -1621,6 +1648,57 @@ export default function AppDetailPage() {
               {app.repo && <div>{i18nT('pages.appDetailPage.repository')} {app.repo}</div>}
               {typeof app.stargazersCount === 'number' && <div>{i18nT('pages.appDetailPage.github_stars_2', { value: fmtNumber(app.stargazersCount) })}</div>}
               {app.author && <div>{i18nT('pages.appDetailPage.author')} {app.author}</div>}
+              {repoUrl && (contribLoading || contributors.length > 0) && (
+                <div className="flex items-start gap-2 flex-wrap">
+                  <span className="shrink-0">{i18nT('pages.appDetailPage.contributors')}</span>
+                  {contribLoading ? (
+                    <div className="flex gap-1.5">
+                      {[0, 1, 2].map(i => (
+                        <span
+                          key={i}
+                          className="inline-block h-[22px] w-16 rounded-full animate-pulse"
+                          style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border)' }}
+                        />
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="flex items-center gap-1.5 flex-wrap">
+                      {contributors.slice(0, 6).map(c => (
+                        <span
+                          key={c.login}
+                          title={c.name}
+                          className="inline-flex items-center gap-1.5 rounded-full pl-0.5 pr-2 py-0.5"
+                          style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border)', color: 'var(--text)' }}
+                        >
+                          <span
+                            className="relative inline-flex h-[18px] w-[18px] items-center justify-center overflow-hidden rounded-full text-[10px]"
+                            style={{ background: 'var(--accent-subtle)', color: 'var(--accent)' }}
+                          >
+                            <span>{(c.name || c.login).slice(0, 1).toUpperCase()}</span>
+                            {c.avatarUrl && /^https:\/\/[^"')(\s]+$/.test(c.avatarUrl) && (
+                              <span
+                                aria-hidden="true"
+                                className="absolute inset-0 rounded-full"
+                                style={{ backgroundImage: `url("${c.avatarUrl}")`, backgroundSize: 'cover', backgroundPosition: 'center' }}
+                              />
+                            )}
+                          </span>
+                          <span className="text-[12px]">{c.name}</span>
+                        </span>
+                      ))}
+                      <a
+                        href={`${repoUrl.replace(/\.git$/, '').replace(/\/$/, '')}/graphs/contributors`}
+                        target="_blank"
+                        rel="noreferrer noopener"
+                        className="inline-flex items-center rounded-full px-2 py-0.5 text-[12px] no-underline"
+                        style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border)', color: 'var(--muted)' }}
+                      >
+                        {i18nT('pages.appDetailPage.all_contributors')}
+                      </a>
+                    </div>
+                  )}
+                </div>
+              )}
               {app.installedAt && <div>{i18nT('pages.appDetailPage.installed')} {fmtDateNumeric(app.installedAt)}</div>}
               {app.origin && <div>{i18nT('pages.appDetailPage.origin')} {app.origin} {i18nT('pages.appDetailPage.resources_2')} {app.resources || 'gateway'} {i18nT('pages.appDetailPage.lifecycle')} {app.lifecycle || 'gateway'}</div>}
               {app.manifest?.minKiroCrewVersion && <div>{i18nT('pages.appDetailPage.min_kirocrew_v')}{app.manifest.minKiroCrewVersion}</div>}

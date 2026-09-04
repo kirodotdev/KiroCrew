@@ -18,6 +18,8 @@ at ``job_routes`` module scope, so it is patched there.
 from __future__ import annotations
 
 import asyncio
+import inspect
+import json
 import threading
 import time
 from pathlib import Path
@@ -121,26 +123,38 @@ def _base(app: str = APP) -> str:
     return f"/api/apps/{app}/_jobs"
 
 
-def _wait_terminal(sdk: JobSDK, run_id: str, deadline: float = _DEADLINE) -> js.JobRun:
-    """Poll until the run reaches a terminal state or the deadline passes."""
+async def _wait_terminal(sdk: JobSDK, run_id: str, deadline: float = _DEADLINE) -> js.JobRun:
+    """Poll until the run reaches a terminal state or the deadline passes.
+
+    ``async``, with every ``sdk.get`` offloaded via ``asyncio.to_thread`` — the
+    same shape ``job_routes.py`` uses for every store read.  Every caller is an
+    async test, so a plain ``sdk.get`` here would run ON the event loop, where
+    ``read_bytes_with_retry`` deliberately re-raises ``PermissionError`` instead
+    of sleeping the loop for its retry budget.  When the job worker's concurrent
+    ``os.replace`` is in flight, that surfaces the Windows sharing violation as
+    a flaky test failure (#7703).  Off the loop the retry applies, exactly as it
+    does for the production routes.
+    """
     end = time.monotonic() + deadline
     while time.monotonic() < end:
-        run = sdk.get(run_id)
+        run = await asyncio.to_thread(sdk.get, run_id)
         if run is not None and run.is_terminal:
             return run
-        time.sleep(0.02)
-    run = sdk.get(run_id)
+        await asyncio.sleep(0.02)
+    run = await asyncio.to_thread(sdk.get, run_id)
     raise AssertionError(f"run {run_id} did not reach a terminal state: {run and run.status}")
 
 
-def _wait_status(sdk: JobSDK, run_id: str, status: str, deadline: float = _DEADLINE) -> js.JobRun:
+async def _wait_status(
+    sdk: JobSDK, run_id: str, status: str, deadline: float = _DEADLINE
+) -> js.JobRun:
     end = time.monotonic() + deadline
     while time.monotonic() < end:
-        run = sdk.get(run_id)
+        run = await asyncio.to_thread(sdk.get, run_id)
         if run is not None and run.status == status:
             return run
-        time.sleep(0.02)
-    run = sdk.get(run_id)
+        await asyncio.sleep(0.02)
+    run = await asyncio.to_thread(sdk.get, run_id)
     raise AssertionError(f"run {run_id} never reached {status!r}: {run and run.status}")
 
 
@@ -242,7 +256,51 @@ async def test_start_registered_kind_returns_run_without_params(
         assert field in run
     assert run["kind"] == "quick"
     assert run["cancellable"] is False
-    _wait_terminal(sdk, run["run_id"])
+    await _wait_terminal(sdk, run["run_id"])
+
+
+@pytest.mark.asyncio
+async def test_the_interruption_fields_reach_the_client(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, sdk: JobSDK
+) -> None:
+    """``interrupted_from`` and ``interrupt_cause`` are served, unlike origin/pid.
+
+    They are not host facts: they are the two facts a client needs in order to
+    recover from an interruption -- whether the run may have committed side
+    effects, and whether retrying it is possible now -- and the client is the only
+    party that can act on either. A record that carries them behind an API that
+    withholds them leaves the record honest and the API not.
+    """
+    from kiro_crew.apps.job_sdk import (
+        CAUSE_RUNNER_UNREGISTERED,
+        INTERRUPTED,
+        STARTING,
+        JobRun,
+    )
+
+    _setup_guards(tmp_path, monkeypatch)
+    run_id = "5c" * 16
+    sdk.store.write(
+        JobRun(
+            run_id=run_id,
+            app=sdk.app_name,
+            kind="vanished",
+            status=STARTING,
+            origin="a-process-that-is-gone",
+        )
+    )
+    assert sdk.reconcile() == 1
+
+    async with TestClient(TestServer(_make_app())) as client:
+        resp = await client.get(f"{_base()}/{run_id}")
+        assert resp.status == 200
+        run = (await resp.json())["run"]
+    assert run["status"] == INTERRUPTED
+    assert run["interrupted_from"] == STARTING
+    assert run["interrupt_cause"] == CAUSE_RUNNER_UNREGISTERED
+    # Still withheld: these have no client meaning and never gained one.
+    assert "origin" not in run
+    assert "pid" not in run
 
 
 @pytest.mark.asyncio
@@ -293,7 +351,7 @@ async def test_start_with_malformed_body_is_treated_as_empty_not_500(
         )
         assert resp.status == 200
         run = (await resp.json())["run"]
-    _wait_terminal(sdk, run["run_id"])
+    await _wait_terminal(sdk, run["run_id"])
 
 
 @pytest.mark.asyncio
@@ -341,7 +399,7 @@ async def test_active_and_recent_return_runs_array(
     _setup_guards(tmp_path, monkeypatch)
     sdk.register("k", lambda handle, **p: {"ok": True})
     rid = sdk.start("k")
-    _wait_terminal(sdk, rid)
+    await _wait_terminal(sdk, rid)
     async with TestClient(TestServer(_make_app())) as client:
         active = await client.get(f"{_base()}/active")
         recent = await client.get(f"{_base()}/recent")
@@ -407,7 +465,7 @@ async def test_get_existing_run_is_200(
     _setup_guards(tmp_path, monkeypatch)
     sdk.register("k", lambda handle, **p: {"ok": True})
     rid = sdk.start("k")
-    _wait_terminal(sdk, rid)
+    await _wait_terminal(sdk, rid)
     async with TestClient(TestServer(_make_app())) as client:
         resp = await client.get(f"{_base()}/{rid}")
         assert resp.status == 200
@@ -438,7 +496,7 @@ async def test_cancel_non_cancellable_run_is_409_with_run(
     # A terminal, non-cancellable run: cancel_async returns False.
     sdk.register("k", lambda handle, **p: {"ok": True})
     rid = sdk.start("k")
-    _wait_terminal(sdk, rid)
+    await _wait_terminal(sdk, rid)
     async with TestClient(TestServer(_make_app())) as client:
         resp = await client.post(f"{_base()}/{rid}/cancel")
         assert resp.status == 409
@@ -463,13 +521,13 @@ async def test_cancel_live_cancellable_run_is_200_cancelling(
     sdk.register("blocker", _blocking, cancellable=True)
     rid = sdk.start("blocker")
     assert started.wait(timeout=_DEADLINE), "runner never started"
-    _wait_status(sdk, rid, js.RUNNING)
+    await _wait_status(sdk, rid, js.RUNNING)
     async with TestClient(TestServer(_make_app())) as client:
         resp = await client.post(f"{_base()}/{rid}/cancel")
         assert resp.status == 200
         assert (await resp.json())["cancelling"] is True
     # The worker observes the signal and settles into CANCELLED.
-    run = _wait_terminal(sdk, rid)
+    run = await _wait_terminal(sdk, rid)
     assert run.status == js.CANCELLED
 
 
@@ -513,7 +571,7 @@ async def test_requested_cancel_is_visible_to_a_later_read_of_the_run(
     rid = sdk.start("slow")
     try:
         assert started.wait(timeout=_DEADLINE), "runner never started"
-        _wait_status(sdk, rid, js.RUNNING)
+        await _wait_status(sdk, rid, js.RUNNING)
         async with TestClient(TestServer(_make_app())) as client:
             assert (await client.post(f"{_base()}/{rid}/cancel")).status == 200
             # A brand-new read, holding nothing from the cancel call.
@@ -526,7 +584,7 @@ async def test_requested_cancel_is_visible_to_a_later_read_of_the_run(
         assert run["status"] == js.RUNNING
     finally:
         release.set()
-    assert _wait_terminal(sdk, rid).status == js.CANCELLED
+    assert (await _wait_terminal(sdk, rid)).status == js.CANCELLED
 
 
 @pytest.mark.asyncio
@@ -539,7 +597,7 @@ async def test_requested_cancel_is_visible_in_the_active_list(
     rid = sdk.start("slow")
     try:
         assert started.wait(timeout=_DEADLINE), "runner never started"
-        _wait_status(sdk, rid, js.RUNNING)
+        await _wait_status(sdk, rid, js.RUNNING)
         async with TestClient(TestServer(_make_app())) as client:
             assert (await client.post(f"{_base()}/{rid}/cancel")).status == 200
             resp = await client.get(f"{_base()}/active")
@@ -550,7 +608,7 @@ async def test_requested_cancel_is_visible_in_the_active_list(
         assert adopted[0]["cancelling"] is True
     finally:
         release.set()
-    assert _wait_terminal(sdk, rid).status == js.CANCELLED
+    assert (await _wait_terminal(sdk, rid)).status == js.CANCELLED
 
 
 @pytest.mark.asyncio
@@ -563,14 +621,14 @@ async def test_a_run_nobody_cancelled_reads_not_cancelling(
     rid = sdk.start("slow")
     try:
         assert started.wait(timeout=_DEADLINE), "runner never started"
-        _wait_status(sdk, rid, js.RUNNING)
+        await _wait_status(sdk, rid, js.RUNNING)
         async with TestClient(TestServer(_make_app())) as client:
             run = (await (await client.get(f"{_base()}/{rid}")).json())["run"]
         assert run["cancelling"] is False
         assert run["status"] == js.RUNNING
     finally:
         release.set()
-    _wait_terminal(sdk, rid)
+    await _wait_terminal(sdk, rid)
 
 
 @pytest.mark.asyncio
@@ -589,16 +647,114 @@ async def test_a_recorded_cancel_is_no_longer_cancelling(
     rid = sdk.start("slow")
     try:
         assert started.wait(timeout=_DEADLINE), "runner never started"
-        _wait_status(sdk, rid, js.RUNNING)
+        await _wait_status(sdk, rid, js.RUNNING)
         async with TestClient(TestServer(_make_app())) as client:
             assert (await client.post(f"{_base()}/{rid}/cancel")).status == 200
             release.set()
-            assert _wait_terminal(sdk, rid).status == js.CANCELLED
+            assert (await _wait_terminal(sdk, rid)).status == js.CANCELLED
             run = (await (await client.get(f"{_base()}/{rid}")).json())["run"]
         assert run["status"] == js.CANCELLED
         assert run["cancelling"] is False
     finally:
         release.set()
+
+
+# ---------------------------------------------------------------------------
+# 9b: the live field — a durable record vs a worker actually driving it
+# ---------------------------------------------------------------------------
+
+
+def _write_raw_running(sdk: JobSDK, run_id: str, kind: str = "slow") -> js.JobRun:
+    """Persist a ``running`` record no thread in this process is driving.
+
+    The shape a record from another gateway process has, and the same shape a
+    twice-failed terminal write leaves behind: durable, non-terminal, absent
+    from the live table. Written raw because going through ``start`` would
+    register exactly the live entry whose absence is the subject.
+    """
+    run = js.JobRun(
+        run_id=run_id,
+        app=APP,
+        kind=kind,
+        status=js.RUNNING,
+        origin="foreign-origin-token",
+    )
+    store = sdk.store
+    store.dir.mkdir(parents=True, exist_ok=True)
+    (store.dir / f"{run.run_id}.json").write_text(json.dumps(run.to_dict()))
+    return run
+
+
+@pytest.mark.asyncio
+async def test_a_driven_run_reads_live_true_then_false_once_finished(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, sdk: JobSDK
+) -> None:
+    """``live`` follows the worker, not the record.
+
+    While a registered thread drives the run the view says so; once the run is
+    terminal the same read says false — the work is done, nothing is driven.
+    """
+    _setup_guards(tmp_path, monkeypatch)
+    started, release = _parked_cancellable(sdk)
+    rid = sdk.start("slow")
+    try:
+        assert started.wait(timeout=_DEADLINE), "runner never started"
+        await _wait_status(sdk, rid, js.RUNNING)
+        async with TestClient(TestServer(_make_app())) as client:
+            run = (await (await client.get(f"{_base()}/{rid}")).json())["run"]
+            assert run["live"] is True
+            assert run["status"] == js.RUNNING
+            release.set()
+            await _wait_terminal(sdk, rid)
+            done = (await (await client.get(f"{_base()}/{rid}")).json())["run"]
+        assert done["live"] is False
+    finally:
+        release.set()
+
+
+@pytest.mark.asyncio
+async def test_a_stale_running_record_reads_live_false(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, sdk: JobSDK
+) -> None:
+    """The issue case: ``running`` on disk, nothing driving it.
+
+    Before ``live`` existed this record was indistinguishable from real work —
+    ``origin`` and ``pid`` are withheld, so status and timestamps were all a
+    client had. The field is the one signal that tells them apart.
+    """
+    _setup_guards(tmp_path, monkeypatch)
+    stale = _write_raw_running(sdk, "e" * 32)
+    async with TestClient(TestServer(_make_app())) as client:
+        resp = await client.get(f"{_base()}/{stale.run_id}")
+        assert resp.status == 200
+        run = (await resp.json())["run"]
+    assert run["status"] == js.RUNNING  # the record still claims work…
+    assert run["live"] is False  # …and the view says nothing drives it
+
+
+@pytest.mark.asyncio
+async def test_active_list_tells_a_live_run_from_a_stale_one(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, sdk: JobSDK
+) -> None:
+    """``active`` filters on terminal status alone, so a stale-running record
+    lists as active forever — the field must let a consumer tell the two rows
+    apart within one response."""
+    _setup_guards(tmp_path, monkeypatch)
+    stale = _write_raw_running(sdk, "d" * 32)
+    started, release = _parked_cancellable(sdk)
+    rid = sdk.start("slow")
+    try:
+        assert started.wait(timeout=_DEADLINE), "runner never started"
+        await _wait_status(sdk, rid, js.RUNNING)
+        async with TestClient(TestServer(_make_app())) as client:
+            resp = await client.get(f"{_base()}/active")
+            assert resp.status == 200
+            runs = {r["run_id"]: r for r in (await resp.json())["runs"]}
+        assert runs[rid]["live"] is True
+        assert runs[stale.run_id]["live"] is False
+    finally:
+        release.set()
+    await _wait_terminal(sdk, rid)
 
 
 # ---------------------------------------------------------------------------
@@ -697,3 +853,73 @@ async def test_sdk_refusal_becomes_a_coded_503_not_a_bare_500(
             assert (await resp.json())["code"] == "job_start_failed"
     finally:
         forget_sdk(APP)
+
+
+# ---------------------------------------------------------------------------
+# The off-loop-read invariant behind the polling helpers (#7703)
+# ---------------------------------------------------------------------------
+
+
+def test_wait_helpers_are_coroutine_functions() -> None:
+    """A revert to synchronous helpers must fail loudly, not flake on Windows.
+
+    The helpers poll ``sdk.get``; every caller is an async test.  Synchronous,
+    they read ON the event loop, where ``read_bytes_with_retry`` deliberately
+    re-raises the Windows sharing-violation ``PermissionError`` instead of
+    sleeping the loop for its retry budget — a flake nobody can reproduce on
+    a POSIX box (#7703).  ``async`` + ``asyncio.to_thread`` is the contract.
+    """
+    assert inspect.iscoroutinefunction(_wait_terminal)
+    assert inspect.iscoroutinefunction(_wait_status)
+
+
+@pytest.mark.asyncio
+async def test_on_loop_read_propagates_permission_error_offloaded_read_retries(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, sdk: JobSDK
+) -> None:
+    """Prove the #7703 defect directly, without a Windows shard.
+
+    With Windows semantics shimmed (``platform_compat.IS_WINDOWS`` true) and the
+    record's first ``Path.read_bytes`` raising ``PermissionError`` — the sharing
+    violation a concurrent ``os.replace`` produces — a synchronous ``sdk.get``
+    from the event loop propagates the error (``read_bytes_with_retry`` gives up
+    its retry budget on the loop, by design), while the offloaded polls the
+    helpers now use retry off-loop and succeed.  Shimmed on the module attribute
+    only — never ``os.name``, which breaks ``Path.home()`` on POSIX.
+    """
+    from kiro_crew import platform_compat
+
+    sdk.register("k", lambda handle, **p: {"ok": True})
+    rid = sdk.start("k")
+    # Settle the run first so no real writer races the injected failure.
+    await _wait_terminal(sdk, rid)
+
+    monkeypatch.setattr(platform_compat, "IS_WINDOWS", True)
+    real_read_bytes = Path.read_bytes
+    inject = {"armed": False}
+
+    def flaky_read_bytes(self: Path) -> bytes:
+        if inject["armed"] and self.name == f"{rid}.json":
+            inject["armed"] = False
+            raise PermissionError(13, "Permission denied", str(self))
+        return real_read_bytes(self)
+
+    monkeypatch.setattr(Path, "read_bytes", flaky_read_bytes)
+
+    # The OLD shape: a sync read on the event loop — one attempt, error escapes.
+    inject["armed"] = True
+    with pytest.raises(PermissionError):
+        sdk.get(rid)
+    inject["armed"] = False
+
+    # The NEW shape: both helpers poll off-loop, so the retry budget applies
+    # and the poll survives the same injected sharing violation.
+    inject["armed"] = True
+    run = await _wait_terminal(sdk, rid)
+    assert run.run_id == rid
+    assert not inject["armed"], "_wait_terminal never hit the injected error"
+
+    inject["armed"] = True
+    run = await _wait_status(sdk, rid, js.DONE)
+    assert run.status == js.DONE
+    assert not inject["armed"], "_wait_status never hit the injected error"

@@ -100,6 +100,8 @@ def _make_state(tmp_path, **kwargs):
     """Create a DashboardState with mocked services and real ConversationLog."""
     sessions = MagicMock(count=0)
     sessions.remove = AsyncMock()
+    sessions.discard_conversation = AsyncMock()
+    sessions.aflush = AsyncMock()
     sessions.recycle_background = AsyncMock()
     sessions.get_pid = MagicMock(return_value=None)
     # Real in-memory Slack-link store rather than bare MagicMocks. The unlink

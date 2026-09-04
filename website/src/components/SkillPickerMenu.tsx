@@ -200,7 +200,7 @@ export default function SkillPickerMenu({
 
   if (!open || !anchorRef.current) return null
 
-  const { top, left, width, maxHeight } = menuGeometry(
+  const { above, top, bottom, left, width, maxHeight } = menuGeometry(
     anchorRef.current, results.length, 48, showScopeFooter ? SCOPE_FOOTER_H : 0,
   )
 
@@ -233,8 +233,14 @@ export default function SkillPickerMenu({
           ? 'components.skillPickerMenu.no_matching_skills_ctrl_enter_sends'
           : 'components.skillPickerMenu.no_matching_skills_enter_sends')
 
+  // `loading` implies isFetching, so the gate above swallows the send key here.
+  // Say what that means for the reader — it won't send yet — not how it works.
+  const loadingKey = sendOnEnter === 'ctrl-enter'
+    ? 'components.skillPickerMenu.loading_skills_ctrl_enter_held'
+    : 'components.skillPickerMenu.loading_skills_enter_held'
+
   const empty = loading
-    ? <div className="px-3 py-3 text-[12px] text-muted">{i18nT('components.skillPickerMenu.loading_skills')}</div>
+    ? <div role="status" className="px-3 py-3 text-[12px] text-muted">{i18nT(loadingKey)}</div>
     // Enter's meaning flips with the release gate (pick → send), so the copy
     // must announce it at the point of action rather than silently sending.
     // Named per the composer's send binding: in 'ctrl-enter' mode a bare
@@ -258,7 +264,7 @@ export default function SkillPickerMenu({
     // stays in the accessibility tree and in `title`.
     <div
       className="fixed z-[9999] bg-card border border-border rounded-lg shadow-lg py-1 animate-slide-up flex flex-col"
-      style={{ top, left, width: Math.min(width, 460), maxHeight }}
+      style={{ ...(above ? { bottom } : { top }), left, width: Math.min(width, 460), maxHeight }}
     >
       <div
         role="listbox"

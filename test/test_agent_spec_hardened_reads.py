@@ -874,6 +874,14 @@ class TestProjectNamesDenialAttribution:
 # Forwarding helpers are pinned as forwarding rather than forced to use a fixed
 # literal that would erase the caller's attribution.
 _EXPECTED_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
+    # Two reads, deliberately labelled apart: the session-MCP translation resolves
+    # the PROJECT checkout first (kiro-cli resolves --agent there before the user
+    # level) and falls back to the user-level spec, so a refusal names which of the
+    # two was refused rather than leaving the reader to guess.
+    "kiro_crew/acp/session_mcp.py": [
+        ("session_mcp_project_agent", "unknown"),
+        ("session_mcp_servers", "unknown"),
+    ],
     "kiro_crew/agent.py": [
         ("agent_spec_lookup", "unknown"),
         ("migrate_agent_specs", "unknown"),

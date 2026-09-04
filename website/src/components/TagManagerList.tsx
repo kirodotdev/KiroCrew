@@ -153,6 +153,11 @@ export default function TagManagerList({ mode, selectedIds = [], onToggleTag, cr
               *  Picking a colour PATCHes the tag and returns focus to the swatch
               *  (the palette unmounts, so focus would otherwise fall to <body>). */}
             {mode === 'manage' && openColorId === t.id && (
+              // The group's only listener is keyboard-only Escape-to-dismiss,
+              // delegated here so it fires whichever swatch holds focus. The
+              // group activates nothing itself — every affordance inside it is a
+              // real <button> — so there is no mouse action a keyboard misses.
+              // eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions -- container-level Escape dismissal, which IS the keyboard path rather than a substitute for one
               <div
                 role="group"
                 data-testid={`tag-palette-${t.id}`}

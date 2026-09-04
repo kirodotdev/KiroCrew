@@ -18,8 +18,11 @@ the authorization so no network or live STS is ever reached.
 from __future__ import annotations
 
 import datetime as dt
+import errno
 import json
+import logging
 import tarfile
+import time
 from pathlib import Path
 from unittest import mock
 
@@ -53,7 +56,7 @@ class TestAuthorizeUpload:
             return_value=json.dumps({"Account": "999988887777"}),
         ):
             with pytest.raises(RuntimeError, match="no longer points at"):
-                backup._authorize_upload(ACCOUNT, "p", "us-west-2")
+                backup._authorize_upload(ACCOUNT, "p", "us-west-2", caller=backup.CALLER_OWNER)
 
     def test_unparseable_sts_output_reads_as_no_account_and_refuses(self):
         # A garbled STS response must not be trusted as a match: it decodes to
@@ -61,7 +64,7 @@ class TestAuthorizeUpload:
         # upload is refused rather than proceeding on unknown identity.
         with mock.patch("kiro_crew.deploy.engine._checked", return_value="not json"):
             with pytest.raises(RuntimeError, match="no longer points at"):
-                backup._authorize_upload(ACCOUNT, "p", "us-west-2")
+                backup._authorize_upload(ACCOUNT, "p", "us-west-2", caller=backup.CALLER_OWNER)
 
     def test_upload_refused_when_app_disabled_during_build(self):
         # STS agrees, but the app was disabled while the archive built: the
@@ -74,7 +77,7 @@ class TestAuthorizeUpload:
             mock.patch("kiro_crew.apps.manager.is_app_enabled", return_value=False),
         ):
             with pytest.raises(RuntimeError, match="was disabled"):
-                backup._authorize_upload(ACCOUNT, "p", "us-west-2")
+                backup._authorize_upload(ACCOUNT, "p", "us-west-2", caller=backup.CALLER_OWNER)
 
     def test_upload_refused_when_s3_consent_no_longer_holds(self):
         # STS agrees and the app is on, but S3 consent was withdrawn: the
@@ -88,7 +91,7 @@ class TestAuthorizeUpload:
             mock.patch("kiro_crew.aws_consent.is_granted", return_value=(False, "expired")),
         ):
             with pytest.raises(RuntimeError, match="consent no longer holds.*expired"):
-                backup._authorize_upload(ACCOUNT, "p", "us-west-2")
+                backup._authorize_upload(ACCOUNT, "p", "us-west-2", caller=backup.CALLER_OWNER)
 
 
 # ---------------------------------------------------------------------------
@@ -111,7 +114,9 @@ class TestRunSnapshotBackup:
             mock.patch.object(backup.storage, "put_file") as put_file,
         ):
             with pytest.raises(RuntimeError, match="snapshot build failed"):
-                backup.run_snapshot_backup(ACCOUNT, "p", "us-west-2", "bkt")
+                backup.run_snapshot_backup(
+                    ACCOUNT, "p", "us-west-2", "bkt", caller=backup.CALLER_OWNER
+                )
         authz.assert_not_called()
         put_file.assert_not_called()
 
@@ -123,7 +128,9 @@ class TestRunSnapshotBackup:
             mock.patch.object(backup.storage, "put_file") as put_file,
         ):
             with pytest.raises(RuntimeError, match="produced no archive"):
-                backup.run_snapshot_backup(ACCOUNT, "p", "us-west-2", "bkt")
+                backup.run_snapshot_backup(
+                    ACCOUNT, "p", "us-west-2", "bkt", caller=backup.CALLER_OWNER
+                )
         put_file.assert_not_called()
 
     def test_snapshot_success_pushes_entropy_keyed_archive_and_records_run(self):
@@ -142,9 +149,11 @@ class TestRunSnapshotBackup:
             mock.patch.object(backup, "_authorize_upload") as authz,
             mock.patch.object(backup.storage, "put_file") as put_file,
         ):
-            record = backup.run_snapshot_backup(ACCOUNT, "p", "us-west-2", "bkt")
+            record = backup.run_snapshot_backup(
+                ACCOUNT, "p", "us-west-2", "bkt", caller=backup.CALLER_OWNER
+            )
 
-        authz.assert_called_once_with(ACCOUNT, "p", "us-west-2")
+        authz.assert_called_once_with(ACCOUNT, "p", "us-west-2", caller=backup.CALLER_OWNER)
         put_file.assert_called_once()
         # Same long-timeout contract as the sessions push: the declared
         # `_PUSH_TIMEOUT_SECS` has to REACH the uploader, not sit unread.
@@ -179,7 +188,9 @@ class TestRunSessionsBackup:
             mock.patch.object(backup.storage, "put_file") as put_file,
         ):
             with pytest.raises(RuntimeError, match="no session files to archive"):
-                backup.run_sessions_backup(ACCOUNT, "p", "us-west-2", "bkt")
+                backup.run_sessions_backup(
+                    ACCOUNT, "p", "us-west-2", "bkt", caller=backup.CALLER_OWNER
+                )
         authz.assert_not_called()
         put_file.assert_not_called()
 
@@ -217,7 +228,9 @@ class TestRunSessionsBackup:
             mock.patch.object(backup, "_authorize_upload"),
             mock.patch.object(backup.storage, "put_file", side_effect=fake_put),
         ):
-            record = backup.run_sessions_backup(ACCOUNT, "p", "us-west-2", "bkt")
+            record = backup.run_sessions_backup(
+                ACCOUNT, "p", "us-west-2", "bkt", caller=backup.CALLER_OWNER
+            )
 
         assert pushed["key"].startswith("sessions/sessions-")
         # A multi-GB sessions archive on a slow uplink needs the long timeout, not
@@ -340,7 +353,9 @@ class TestRefusalWithoutPinnedTraversal:
             mock.patch.object(backup, "_authorize_upload") as authz,
         ):
             with pytest.raises(RuntimeError) as exc:
-                backup.run_sessions_backup("123456789012", "p", "us-west-2", "b")
+                backup.run_sessions_backup(
+                    "123456789012", "p", "us-west-2", "b", caller=backup.CALLER_OWNER
+                )
         assert "refused" in str(exc.value)
         put.assert_not_called()
         authz.assert_not_called()
@@ -456,6 +471,402 @@ class TestDueForNightlyBadStamp:
 # ---------------------------------------------------------------------------
 # costs — cache read and freshness branches
 # ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# The state file is a WHOLE document: a read that failed must not be published
+# ---------------------------------------------------------------------------
+
+
+OTHER_ACCOUNT = "444455556666"
+
+
+class TestUnreadableStateIsNotOverwritten:
+    """``_locked_state_update`` rewrites the ENTIRE state document.
+
+    ``read_state`` is a display read and collapses every failure to ``{}``. Used
+    as the base of a read-modify-write, that empty dict is not "no fields to
+    carry forward" -- it is an instruction to replace every account's nightly
+    toggle and run history with whatever this one mutation writes. A missing
+    file is the only failure where ``{}`` is true. The sidecar lock does not
+    help: it serializes writers, and this loss happens inside the lock.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _isolated_state(self, tmp_path, monkeypatch):
+        self.state_file = tmp_path / "backup.json"
+        # Captured BEFORE the failure is injected, so assertions can read the
+        # file the code under test could not.
+        self.real_read_text = Path.read_text
+        monkeypatch.setattr(backup, "_state_path", lambda: self.state_file)
+        yield
+
+    def _on_disk(self) -> dict:
+        return json.loads(self.real_read_text(self.state_file, encoding="utf-8"))
+
+    def _guarded_read(self):
+        """A ``Path.read_text`` that fails for the state file only -- a transient
+        EACCES, e.g. a Windows scanner holding the handle between the open and
+        the read."""
+        real = self.real_read_text
+        target = self.state_file
+
+        def guarded(path_self, *args, **kwargs):
+            if Path(path_self) == target:
+                raise PermissionError(13, "Permission denied")
+            return real(path_self, *args, **kwargs)
+
+        return guarded
+
+    def _break_reads(self, monkeypatch):
+        monkeypatch.setattr(Path, "read_text", self._guarded_read())
+
+    def test_a_transient_read_failure_does_not_wipe_the_other_account(self, monkeypatch):
+        backup.set_nightly(ACCOUNT, True)
+        assert self._on_disk()["accounts"][ACCOUNT]["nightly"] is True
+        # Captured through read_bytes, which `_break_reads` does not patch, so the
+        # comparison below is against the real pre-failure bytes.
+        before = self.state_file.read_bytes()
+
+        self._break_reads(monkeypatch)
+        with pytest.raises(OSError):
+            backup.set_nightly(OTHER_ACCOUNT, True)
+
+        # The strongest form of the invariant: the file was not rewritten AT ALL.
+        # `_locked_state_update` rewrites the whole document from whatever the
+        # in-lock read returned, so a lenient read that collapses OSError to `{}`
+        # publishes an empty base over live state. Byte equality rules out a
+        # partial write and a dropped run record too, not just a surviving flag.
+        assert self.state_file.read_bytes() == before
+        # And the same harm in human terms: the first account's authorization to
+        # run unattended paid uploads is still on disk.
+        assert self._on_disk()["accounts"][ACCOUNT]["nightly"] is True
+
+    def test_a_missing_file_is_still_a_first_write(self):
+        # The one failure where an empty base IS the truth -- this must keep
+        # working, so the guard above cannot be "refuse whenever the read fails".
+        assert not self.state_file.exists()
+        backup.set_nightly(ACCOUNT, True)
+        assert self._on_disk()["accounts"][ACCOUNT]["nightly"] is True
+
+    def test_a_corrupt_file_still_repairs_on_write(self):
+        # Deliberate existing behaviour (see `_account_state`): a corrupted
+        # document is replaced by the mutation rather than crashing it. Pinned
+        # here so the unreadable-file guard is not mistaken for a licence to
+        # start failing on corruption too.
+        self.state_file.write_text("{not json", encoding="utf-8")
+        backup.set_nightly(ACCOUNT, True)
+        assert self._on_disk()["accounts"][ACCOUNT]["nightly"] is True
+
+    def test_a_completed_run_reports_itself_without_publishing_over_unread_state(self, monkeypatch):
+        # `_record_run` runs AFTER the archive is already in the bucket. Raising
+        # would 500 a request whose upload succeeded and send the operator back
+        # to the button for a duplicate -- the same harm the corrupt-`runs`
+        # branch avoids. It must neither raise nor destroy the other account.
+        backup.set_nightly(ACCOUNT, True)
+        self._break_reads(monkeypatch)
+
+        record = backup._record_run(OTHER_ACCOUNT, backup.KIND_SNAPSHOT, "snapshots/x.tar.gz", 7)
+
+        assert record["key"] == "snapshots/x.tar.gz"
+        assert record["bytes"] == 7
+        assert self._on_disk()["accounts"][ACCOUNT]["nightly"] is True
+
+    def test_the_log_names_the_read_when_the_read_is_what_failed(self, caplog):
+        backup.set_nightly(ACCOUNT, True)
+        with (
+            caplog.at_level(logging.ERROR),
+            mock.patch.object(Path, "read_text", self._guarded_read()),
+        ):
+            backup._record_run(ACCOUNT, backup.KIND_SNAPSHOT, "snapshots/x.tar.gz", 7)
+
+        assert "could not be read" in caplog.text
+        assert "could not be written" not in caplog.text
+
+    def test_a_run_lost_to_a_transient_read_failure_does_not_re_upload(self):
+        # A PERSISTING read failure needs no guard: `due_for_nightly` asks
+        # `nightly_enabled` first, which reads through `read_state`, so an
+        # unreadable file collapses authorization to False and the loop goes
+        # quiet by itself. The repeat belongs to a read failure that CLEARS --
+        # authorization comes back on the next wake, the stamp is still missing,
+        # and the loop would upload the same archive again.
+        backup.set_nightly(ACCOUNT, True)
+        with mock.patch.object(Path, "read_text", self._guarded_read()):
+            assert backup.due_for_nightly(ACCOUNT) is False  # quiet while unreadable
+            backup._record_run(ACCOUNT, backup.KIND_SNAPSHOT, "snapshots/x.tar.gz", 7)
+
+        # Reads work again: authorization is back, the stamp never landed.
+        assert backup.nightly_enabled(ACCOUNT) is True
+        assert backup.KIND_SNAPSHOT not in self._on_disk()["accounts"][ACCOUNT].get("runs", {})
+        assert backup.due_for_nightly(ACCOUNT) is False
+
+
+class TestALostRunWriteDoesNotReUploadForever:
+    """A run whose state WRITE failed must not leave the nightly loop due.
+
+    ``_record_run`` deliberately does not raise: the archive is already in the
+    bucket, so a 500 would send the operator back to the button for a duplicate
+    upload. On its own, though, not raising is a worse bug than the one it
+    avoids. ``due_for_nightly`` reads due-ness from the PERSISTED stamp and
+    ``hooks._run_once`` calls it on every wake, so a write that never landed
+    leaves the loop permanently due -- it re-uploads, unattended and billable, on
+    every wake, behind one log line nobody reads.
+
+    Holding the run in process-local memory bounds that to at most one extra
+    upload per gateway restart, which is honest: the archive really is in the
+    bucket, and this process really did put it there.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _isolated_state(self, tmp_path, monkeypatch):
+        self.state_file = tmp_path / "backup.json"
+        monkeypatch.setattr(backup, "_state_path", lambda: self.state_file)
+        yield
+
+    def _on_disk(self) -> dict:
+        return json.loads(self.state_file.read_text(encoding="utf-8"))
+
+    def _full_disk(self):
+        """The read succeeds and the WRITE fails. This is the case the single
+        ``except OSError`` swallowed while its log line blamed the read."""
+
+        def raiser(_state):
+            raise OSError(errno.ENOSPC, "No space left on device")
+
+        return mock.patch.object(backup, "write_state", raiser)
+
+    def test_a_lost_write_does_not_leave_the_nightly_loop_due(self):
+        backup.set_nightly(ACCOUNT, True)
+        with self._full_disk():
+            backup._record_run(ACCOUNT, backup.KIND_SNAPSHOT, "snapshots/x.tar.gz", 7)
+
+        # Nothing reached disk -- the stamp the loop reads is genuinely absent.
+        assert backup.KIND_SNAPSHOT not in self._on_disk()["accounts"][ACCOUNT].get("runs", {})
+        # And yet the loop must not re-upload an archive that is already there.
+        assert backup.due_for_nightly(ACCOUNT) is False
+
+    def test_the_completed_run_still_reports_itself_to_the_caller(self):
+        backup.set_nightly(ACCOUNT, True)
+        with self._full_disk():
+            record = backup._record_run(ACCOUNT, backup.KIND_SNAPSHOT, "snapshots/x.tar.gz", 7)
+
+        # No raise: the upload succeeded, so the handler must not 500 the
+        # operator into pressing the button again for a duplicate.
+        assert record["key"] == "snapshots/x.tar.gz"
+        assert record["bytes"] == 7
+
+    def test_the_held_run_is_what_the_panel_reads_too(self):
+        # `due_for_nightly` reads through `last_runs`, so that is where the
+        # overlay lands -- and showing it is truthful, not a white lie: the
+        # archive is in the bucket.
+        backup.set_nightly(ACCOUNT, True)
+        with self._full_disk():
+            backup._record_run(ACCOUNT, backup.KIND_SNAPSHOT, "snapshots/x.tar.gz", 7)
+
+        assert backup.last_runs(ACCOUNT)[backup.KIND_SNAPSHOT]["key"] == "snapshots/x.tar.gz"
+
+    def test_the_log_names_the_write_not_the_read(self, caplog):
+        backup.set_nightly(ACCOUNT, True)
+        with caplog.at_level(logging.ERROR), self._full_disk():
+            backup._record_run(ACCOUNT, backup.KIND_SNAPSHOT, "snapshots/x.tar.gz", 7)
+
+        # The old line said the state file "could not be read", which sends
+        # whoever reads it to check permissions on what is really a full disk.
+        assert "could not be written" in caplog.text
+        assert "could not be read" not in caplog.text
+
+    def test_a_later_successful_write_takes_over_from_memory(self):
+        # The memory entry is a stopgap, not a second source of truth: once a
+        # write lands, disk answers and the entry is dropped.
+        backup.set_nightly(ACCOUNT, True)
+        with self._full_disk():
+            backup._record_run(ACCOUNT, backup.KIND_SNAPSHOT, "snapshots/lost.tar.gz", 7)
+        assert backup.last_runs(ACCOUNT)[backup.KIND_SNAPSHOT]["key"] == "snapshots/lost.tar.gz"
+
+        backup._record_run(ACCOUNT, backup.KIND_SNAPSHOT, "snapshots/kept.tar.gz", 9)
+
+        runs = self._on_disk()["accounts"][ACCOUNT]["runs"]
+        assert runs[backup.KIND_SNAPSHOT]["key"] == "snapshots/kept.tar.gz"
+        assert backup.last_runs(ACCOUNT)[backup.KIND_SNAPSHOT]["key"] == "snapshots/kept.tar.gz"
+        assert (str(self.state_file), ACCOUNT, backup.KIND_SNAPSHOT) not in backup._unpersisted_runs
+
+    def test_an_entry_never_answers_for_a_different_state_document(self, tmp_path, monkeypatch):
+        # The memory key carries the state FILE, so a held run is a claim about
+        # one document only. A relocated data home reads its own truth -- and
+        # this is also what keeps the tests hermetic with no reset hook.
+        backup.set_nightly(ACCOUNT, True)
+        with self._full_disk():
+            backup._record_run(ACCOUNT, backup.KIND_SNAPSHOT, "snapshots/x.tar.gz", 7)
+        assert backup.last_runs(ACCOUNT)[backup.KIND_SNAPSHOT]["key"] == "snapshots/x.tar.gz"
+
+        elsewhere = tmp_path / "moved" / "backup.json"
+        monkeypatch.setattr(backup, "_state_path", lambda: elsewhere)
+        assert backup.last_runs(ACCOUNT) == {}
+
+    def test_a_persisting_run_does_not_evict_a_newer_held_run(self):
+        # The pop happens after the sidecar lock is released, so a run that
+        # failed its write can cache a NEWER record in the window between another
+        # run's write and that pop. An unconditional pop would evict it and the
+        # panel would report the older archive while the newer upload has no
+        # record anywhere. Two gateway processes hold separate caches, so no file
+        # lock can close this -- only monotonic eviction can.
+        backup.set_nightly(ACCOUNT, True)
+        newer = {
+            "key": "snapshots/newer.tar.gz",
+            "bytes": 11,
+            "at": dt.datetime(2099, 1, 1, tzinfo=dt.timezone.utc).isoformat(
+                timespec="microseconds"
+            ),
+        }
+        backup._remember_unpersisted(ACCOUNT, backup.KIND_SNAPSHOT, newer)
+
+        # This one persists, and its stamp is older than the held record's.
+        backup._record_run(ACCOUNT, backup.KIND_SNAPSHOT, "snapshots/older.tar.gz", 7)
+
+        assert backup.last_runs(ACCOUNT)[backup.KIND_SNAPSHOT]["key"] == "snapshots/newer.tar.gz"
+
+    def test_a_stale_held_run_is_still_evicted(self):
+        # The counterpart: monotonic must not become "never evict", or the entry
+        # would outlive the write that supersedes it.
+        backup.set_nightly(ACCOUNT, True)
+        stale = {
+            "key": "snapshots/stale.tar.gz",
+            "bytes": 3,
+            "at": dt.datetime(2000, 1, 1, tzinfo=dt.timezone.utc).isoformat(
+                timespec="microseconds"
+            ),
+        }
+        backup._remember_unpersisted(ACCOUNT, backup.KIND_SNAPSHOT, stale)
+
+        backup._record_run(ACCOUNT, backup.KIND_SNAPSHOT, "snapshots/fresh.tar.gz", 7)
+
+        assert backup.last_runs(ACCOUNT)[backup.KIND_SNAPSHOT]["key"] == "snapshots/fresh.tar.gz"
+        assert (str(self.state_file), ACCOUNT, backup.KIND_SNAPSHOT) not in backup._unpersisted_runs
+
+    def test_the_run_is_stamped_inside_the_lock_not_before(self):
+        # Two concurrent runs can stamp in one order and acquire the sidecar lock
+        # in the other, so a stamp taken BEFORE the lock does not order the
+        # writes: the older-stamped record can write last and the ledger then
+        # names the wrong archive. It also undermines everything that compares
+        # these stamps -- the overlay's newest-wins and the monotonic eviction --
+        # both of which assume stamp order equals write order.
+        #
+        # Asserted without threads: delay the locked section, capture a moment
+        # from inside it, and require the record's stamp to be no earlier. A
+        # stamp taken before the lock is necessarily earlier than that moment.
+        backup.set_nightly(ACCOUNT, True)
+        observed = {}
+        real_read = backup._read_state_for_update
+
+        def slow_read():
+            time.sleep(0.01)
+            observed["inside"] = dt.datetime.now(dt.timezone.utc).isoformat(timespec="microseconds")
+            return real_read()
+
+        with mock.patch.object(backup, "_read_state_for_update", slow_read):
+            record = backup._record_run(ACCOUNT, backup.KIND_SNAPSHOT, "snapshots/x.tar.gz", 7)
+
+        assert record["at"] >= observed["inside"]
+        # And the stamp that reached disk is that same authoritative one.
+        on_disk = self._on_disk()["accounts"][ACCOUNT]["runs"][backup.KIND_SNAPSHOT]
+        assert on_disk["at"] == record["at"]
+
+    def test_a_failed_read_keeps_the_provisional_stamp(self):
+        # `mutate` never runs when the read fails, so the pre-lock stamp is all
+        # there is. It must still be a usable timestamp: the held record is
+        # ordered against the persisted one, and `due_for_nightly` parses it.
+        backup.set_nightly(ACCOUNT, True)
+        real_read = backup._read_state_for_update
+
+        def broken_read():
+            raise backup._StateUnreadable(13, "Permission denied")
+
+        with mock.patch.object(backup, "_read_state_for_update", broken_read):
+            record = backup._record_run(ACCOUNT, backup.KIND_SNAPSHOT, "snapshots/x.tar.gz", 7)
+
+        assert dt.datetime.fromisoformat(record["at"]).tzinfo is not None
+        assert backup.due_for_nightly(ACCOUNT) is False
+        assert real_read is backup._read_state_for_update  # patch scoped, not leaked
+
+    def test_an_unresolvable_data_dir_neither_raises_nor_loses_the_run(self):
+        # `_state_path()` is not a pure path join: it goes through `app_data_dir`,
+        # whose last statement is mkdir(parents=True, exist_ok=True), so resolving
+        # it RAISES on a read-only filesystem or EACCES. That is the same broken
+        # filesystem this overlay exists to survive, and the read is already
+        # guarded (`read_state` swallows OSError) -- so an unguarded key
+        # derivation absorbs the failure once and then raises on the very next
+        # statement, from inside `_record_run`'s own except handler.
+        #
+        # What the redness means when this fails: a backup that finished uploading
+        # reports as a failure because the machine's app-data directory went
+        # read-only, which is the defect this PR exists to remove.
+        def unresolvable():
+            raise OSError(errno.EROFS, "Read-only file system")
+
+        with mock.patch.object(backup, "_state_path", unresolvable):
+            record = backup._record_run(ACCOUNT, backup.KIND_SNAPSHOT, "snapshots/x.tar.gz", 7)
+
+            # The completed upload still reports to its caller.
+            assert record["key"] == "snapshots/x.tar.gz"
+            assert record["bytes"] == 7
+
+            # And the status read returns rather than raising -- the sentinel key
+            # is consistent within the process, so the overlay still answers.
+            runs = backup.last_runs(ACCOUNT)
+            assert runs[backup.KIND_SNAPSHOT]["key"] == "snapshots/x.tar.gz"
+
+    def test_a_held_run_with_an_equal_stamp_is_evicted(self):
+        # Windows clock granularity is far above a microsecond, so two
+        # back-to-back runs can stamp IDENTICALLY -- this is what reddened
+        # `test_a_later_successful_write_takes_over_from_memory` on the Windows
+        # shard while it passed on Linux. On a tie the entry must go: the two
+        # records are simultaneous and the persisted one is on disk, and keeping
+        # the held copy would make it immortal for the life of the process
+        # because no later write can ever compare greater. Only a STRICTLY newer
+        # held record is protected. Asserted directly rather than through the
+        # clock, so it pins the rule on every platform.
+        stamp = dt.datetime(2030, 1, 1, tzinfo=dt.timezone.utc).isoformat(timespec="microseconds")
+        backup._remember_unpersisted(
+            ACCOUNT,
+            backup.KIND_SNAPSHOT,
+            {"key": "snapshots/tie.tar.gz", "bytes": 5, "at": stamp},
+        )
+
+        backup._forget_unpersisted(ACCOUNT, backup.KIND_SNAPSHOT, stamp)
+
+        assert (backup._state_key(), ACCOUNT, backup.KIND_SNAPSHOT) not in backup._unpersisted_runs
+
+    def test_two_runs_in_the_same_second_are_distinguishable(self):
+        # `_stamp` already carries entropy because a manual run can race the
+        # nightly loop into the same second. The run record has to be orderable
+        # at that resolution too, or the overlay cannot tell which of two uploads
+        # is the later one: at `timespec="seconds"` these compare EQUAL.
+        backup.set_nightly(ACCOUNT, True)
+        first = backup._record_run(ACCOUNT, backup.KIND_SNAPSHOT, "snapshots/a.tar.gz", 1)
+        second = backup._record_run(ACCOUNT, backup.KIND_SNAPSHOT, "snapshots/b.tar.gz", 2)
+
+        assert first["at"] != second["at"]
+        assert first["at"] < second["at"]
+        # And it still parses as a timestamp, which `due_for_nightly` relies on.
+        assert dt.datetime.fromisoformat(second["at"]).tzinfo is not None
+
+    def test_the_later_of_two_same_second_runs_wins_the_overlay(self):
+        # The concrete harm from an unorderable stamp: the first upload persists,
+        # the second fails its write in the same second, and the panel reports
+        # the first archive as the last run.
+        backup.set_nightly(ACCOUNT, True)
+        persisted = backup._record_run(ACCOUNT, backup.KIND_SNAPSHOT, "snapshots/first.tar.gz", 1)
+        held = {
+            "key": "snapshots/second.tar.gz",
+            "bytes": 2,
+            # One microsecond later: same second, genuinely newer.
+            "at": (
+                dt.datetime.fromisoformat(persisted["at"]) + dt.timedelta(microseconds=1)
+            ).isoformat(timespec="microseconds"),
+        }
+        backup._remember_unpersisted(ACCOUNT, backup.KIND_SNAPSHOT, held)
+
+        assert backup.last_runs(ACCOUNT)[backup.KIND_SNAPSHOT]["key"] == "snapshots/second.tar.gz"
 
 
 class TestCostsCacheBranches:

@@ -161,32 +161,6 @@ class TestPauseSource:
         assert "sync_status" not in json.loads(row["properties"])
 
 
-class TestDeleteSourceDismissal:
-    """Deleting an auto-discovered source must not let it come straight back."""
-
-    @pytest.mark.asyncio
-    async def test_delete_records_dismissal_for_auto_added(self, store, tmp_path):
-        sid = store.add_source(
-            "Workspace Documents", "local_folder", str(tmp_path),
-            properties={"sync_status": "active", "auto_added": True},
-        )
-        async with TestClient(TestServer(_make_app(store))) as client:
-            resp = await client.delete(f"/api/knowledge/sources/{sid}")
-            assert resp.status == 200
-        assert store.is_auto_source_dismissed(str(tmp_path)) is True
-
-    @pytest.mark.asyncio
-    async def test_delete_does_not_dismiss_hand_added(self, store, tmp_path):
-        """A user-registered folder has no discovery loop to resurrect it."""
-        sid = store.add_source(
-            "My Docs", "local_folder", str(tmp_path), properties={"sync_status": "active"},
-        )
-        async with TestClient(TestServer(_make_app(store))) as client:
-            resp = await client.delete(f"/api/knowledge/sources/{sid}")
-            assert resp.status == 200
-        assert store.is_auto_source_dismissed(str(tmp_path)) is False
-
-
 class TestResumeSource:
     @pytest.mark.asyncio
     async def test_resume_clears_pause(self, store, tmp_path):

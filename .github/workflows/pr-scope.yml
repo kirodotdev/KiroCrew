@@ -51,14 +51,33 @@ jobs:
 
           # Vendored code and review screenshots are excluded: they inflate both
           # metrics without adding anything a reviewer must reason about.
-          files="$(git diff --name-only "$BASE_SHA...$HEAD_SHA" -- . \
+          #
+          # A diff this step could not COMPUTE is not an empty diff.
+          # `2>/dev/null || true` collapsed a failed `git diff` (a base or head
+          # object absent after a force-push race, a pruned base branch) onto
+          # the same empty string as "no files changed", so the step printed
+          # "No reviewable files changed." having measured nothing. This check
+          # is advisory by contract -- it never fails the build -- so an
+          # uncomputable diff refuses to report a verdict instead: a loud
+          # warning, no scope claim, and still exit 0.
+          if ! files="$(git diff --name-only "$BASE_SHA...$HEAD_SHA" -- . \
             ':(exclude)src/kiro_crew/_vendor/**' \
-            ':(exclude)temp-screenshots/**' \
-            2>/dev/null || true)"
-          lines="$(git diff --numstat "$BASE_SHA...$HEAD_SHA" -- . \
+            ':(exclude)temp-screenshots/**')"; then
+            echo "::warning::Could not compute the diff between the base and head commits, so this advisory check measured nothing. This is a read failure, not a self-contained scope -- re-run this job for a real measurement."
+            echo "PR scope was NOT measured: the diff could not be computed." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          # Same read, same failure mode, for the line count: keep the exit
+          # status out of the awk pipeline so a failed `git diff` cannot be
+          # summed into a legitimate-looking 0.
+          if ! numstat="$(git diff --numstat "$BASE_SHA...$HEAD_SHA" -- . \
             ':(exclude)src/kiro_crew/_vendor/**' \
-            ':(exclude)temp-screenshots/**' \
-            2>/dev/null | awk '{a+=$1; d+=$2} END {print a+d+0}')"
+            ':(exclude)temp-screenshots/**')"; then
+            echo "::warning::Could not compute the line-count diff between the base and head commits, so this advisory check measured nothing. This is a read failure, not a self-contained scope -- re-run this job for a real measurement."
+            echo "PR scope was NOT measured: the diff could not be computed." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          lines="$(printf '%s\n' "$numstat" | awk '{a+=$1; d+=$2} END {print a+d+0}')"
 
           if [ -z "$files" ]; then
             echo "No reviewable files changed."

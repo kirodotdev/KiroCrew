@@ -1,1 +1,8 @@
 schema-version: 2026-04-28
+fixture-name: empty
+description: |
+  A KIROCREW_HOME with nothing in it but this manifest. The gateway writes its
+  own defaults on first start, so this is the baseline for anything that must
+  observe a genuinely blank instance -- first-boot bootstrap, "what does the
+  dashboard show with no content", and as the default the seeded_home helper
+  hands a test that names no fixture.

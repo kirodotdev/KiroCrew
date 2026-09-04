@@ -58,10 +58,11 @@ def _write_doc(tmp_path: Path, name: str, body: str = "# hello\n") -> str:
 
 def test_materialize_recorded_document_succeeds(isolated_store, tmp_path):
     doc = _write_doc(tmp_path, "note.md")
-    art = h._materialize_and_pin(doc, _FakeLog([doc]))
+    art, collided_with = h._materialize_and_pin(doc, _FakeLog([doc]))
     assert art.pinned is True
     assert art.source_path == os.path.realpath(doc)
     assert isolated_store.get(art.slug).content == "# hello\n"
+    assert collided_with == ""
 
 
 def test_materialize_unrecorded_path_refused(isolated_store, tmp_path):
@@ -93,7 +94,7 @@ def test_materialize_symlinked_request_resolves_to_recorded_inode(isolated_store
     doc = _write_doc(tmp_path, "real.md", "# real\n")
     link = tmp_path / "link.md"
     link.symlink_to(doc)
-    art = h._materialize_and_pin(str(link), _FakeLog([doc]))
+    art, _ = h._materialize_and_pin(str(link), _FakeLog([doc]))
     assert isolated_store.get(art.slug).content == "# real\n"
 
 
@@ -110,11 +111,77 @@ def test_materialize_symlink_to_unrecorded_file_refused(isolated_store, tmp_path
 
 def test_materialize_is_idempotent(isolated_store, tmp_path):
     doc = _write_doc(tmp_path, "note.md")
-    a1 = h._materialize_and_pin(doc, _FakeLog([doc]))
-    a2 = h._materialize_and_pin(doc, _FakeLog([doc]))
+    a1, first_collided = h._materialize_and_pin(doc, _FakeLog([doc]))
+    a2, second_collided = h._materialize_and_pin(doc, _FakeLog([doc]))
     assert a1.slug == a2.slug
     assert a2.pinned is True
     assert len(isolated_store.list()) == 1
+    # The reuse branch creates nothing, so it collides with nothing.
+    assert (first_collided, second_collided) == ("", "")
+
+
+# ── de-duplicated slug reporting ─────────────────────────────────────────────
+
+
+def test_materialize_free_slug_reports_no_collision(isolated_store, tmp_path):
+    """A derived slug nobody holds is reported as an empty string."""
+    doc = _write_doc(tmp_path, "note.md")
+    art, collided_with = h._materialize_and_pin(doc, _FakeLog([doc]))
+    assert art.slug == "note-md"
+    assert collided_with == ""
+
+
+def test_materialize_taken_slug_reports_the_plain_slug(isolated_store, tmp_path):
+    """A taken derived slug is reported, and the artifact lands suffixed."""
+    holder = isolated_store.create(name="note.md", content="# other\n")
+    assert holder.slug == "note-md"
+    doc = _write_doc(tmp_path, "note.md")
+    art, collided_with = h._materialize_and_pin(doc, _FakeLog([doc]))
+    assert art.slug == "note-md-2"
+    assert collided_with == "note-md"
+
+
+def test_materialize_renamed_reuse_reports_no_collision(isolated_store, tmp_path):
+    """Renaming does not recompute the slug, so a reused record whose name now
+    derives elsewhere must NOT be reported as a collision."""
+    doc = _write_doc(tmp_path, "note.md")
+    art, _ = h._materialize_and_pin(doc, _FakeLog([doc]))
+    isolated_store.update(art.slug, name="Release Notes")
+    again, collided_with = h._materialize_and_pin(doc, _FakeLog([doc]))
+    # Same record, whose name now derives to a different slug than it holds.
+    assert again.slug == art.slug
+    assert again.name == "Release Notes"
+    assert collided_with == ""
+
+
+def test_store_create_reports_the_taken_slug_itself(isolated_store):
+    """The store, not a caller comparing strings, is what names the collision.
+
+    Every ``create`` caller gets the fact, so a path that does not surface it is
+    an unreported collision rather than an uncomputable one.
+    """
+    first = isolated_store.create(name="note.md", content="# one\n")
+    assert (first.slug, first.slug_collided_with) == ("note-md", "")
+    second = isolated_store.create(name="note.md", content="# two\n")
+    assert (second.slug, second.slug_collided_with) == ("note-md-2", "note-md")
+
+
+def test_store_create_with_an_explicit_slug_reports_nothing(isolated_store):
+    """An explicit slug is refused on collision rather than renamed, so there is
+    no suffix to report."""
+    art = isolated_store.create(name="note.md", content="# one\n", slug="chosen")
+    assert (art.slug, art.slug_collided_with) == ("chosen", "")
+
+
+def test_the_collision_fact_never_serializes(isolated_store):
+    """It is a create-time signal read off the attribute; serializing it would
+    re-assert the collision on every later read."""
+    art = isolated_store.create(name="note.md", content="# one\n")
+    dup = isolated_store.create(name="note.md", content="# two\n")
+    assert dup.slug_collided_with == "note-md"
+    assert "slug_collided_with" not in dup.to_dict()
+    assert "slug_collided_with" not in dup.to_dict(persist=True)
+    assert "slug_collided_with" not in isolated_store.get(art.slug).to_dict()
 
 
 # ── malformed-history robustness ─────────────────────────────────────────────

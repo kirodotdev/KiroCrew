@@ -82,6 +82,46 @@ def _fold_item(root: Path, number: int) -> dict:
     return match[0]
 
 
+def _bulk_no_move_lines(
+    root: Path, crew_id: str, number: int, count: int, *, tag: str, kind: str = "ci"
+) -> None:
+    """Append *count* byte-identical no-move ledger lines in ONE write.
+
+    Each line is shaped exactly as ``commit_work_progress`` writes for a CI round
+    that does NOT move the item: the numbered ``{id, ts, crew_id, number, kind,
+    text}`` line with NO ``phase`` key (``append_event`` omits the key when
+    ``phase is None``). The volume the fold reads past is the write COUNT, not the
+    write PATH -- the property under test lives entirely in the fold's
+    ``require_phase`` READ filter, which discards every one of these lines -- so
+    building them directly and appending once replaces thousands of real,
+    disk-backed transactions with a single append while preserving the exact line
+    the fold must skip.
+
+    ``id`` is content-addressed the same way the real writer computes it
+    (:func:`crew_store._event_id`), and ``text`` carries *tag* plus the line index
+    so every id is distinct -- a duplicated id would collapse on read and undercount
+    the volume. The lines are legal input to ``read_events`` and indistinguishable
+    from lines the real path emits for a non-moving round.
+    """
+    path = crew_store.events_path(OWNER, REPO, root)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    ts = store._now_iso()
+    buf = []
+    for i in range(count):
+        text = f"{tag}-{i}"
+        entry = {
+            "id": crew_store._event_id(ts, crew_id, number, kind, text),
+            "ts": ts,
+            "crew_id": crew_id,
+            "number": int(number),
+            "kind": kind,
+            "text": text,
+        }
+        buf.append(json.dumps(entry))
+    with open(path, "a", encoding="utf-8") as out:
+        out.write("\n".join(buf) + "\n")
+
+
 class FoldTest(unittest.TestCase):
     def setUp(self) -> None:
         tmp = tempfile.TemporaryDirectory()
@@ -577,11 +617,12 @@ class TestStalledLaneSurvivesLedgerVolume(unittest.TestCase):
 
         # The repo stays busy: 6,000 further writes on the SAME item that do not
         # move it (CI rounds), which is how production accumulates volume without
-        # transitions. This is past the old 5,000 global cap.
-        for i in range(6000):
-            _work(
-                self.root, cid, 4242, {"ci_round": i, "_event_kind": "ci", "_event_text": "round"}
-            )
+        # transitions. This is past the old 5,000 global cap. The 6,000 is
+        # load-bearing (it exceeds the historical cap), but the write PATH is not
+        # -- the property lives in the fold's require_phase READ filter, which
+        # drops every no-move line -- so the volume is built byte-identically and
+        # appended once instead of driven through 6,000 real transactions.
+        _bulk_no_move_lines(self.root, cid, 4242, 6000, tag="round")
 
         after = _fold_item(self.root, 4242)
         self.assertEqual(
@@ -603,16 +644,57 @@ class TestStalledLaneSurvivesLedgerVolume(unittest.TestCase):
 
         # Other work items generate the volume, so the stalled lane itself is
         # written once and then never again — the worst case for a global cap.
-        for i in range(6000):
-            _work(
-                self.root,
-                cid,
-                900 + (i % 3),
-                {"ci_round": i, "_event_kind": "ci", "_event_text": "x"},
-            )
+        # Built byte-identically and appended once (see _bulk_no_move_lines): the
+        # 6,000 count is what exceeds the historical cap; the write path is not
+        # what the fold's require_phase filter turns on.
+        for other in (900, 901, 902):
+            _bulk_no_move_lines(self.root, cid, other, 2000, tag=f"x{other}")
 
         self.assertEqual(
             _fold_item(self.root, 77)["timeline"][-1]["at"],
             stalled_at,
             "another item's write volume must not erase this lane's entry",
         )
+
+    def test_phase_filter_alone_saves_the_entry_when_the_cap_cannot(self):
+        """The require_phase filter is load-bearing ON ITS OWN, not only as a
+        partner to the cap.
+
+        The two cases above go red only if BOTH the cap AND require_phase are
+        reverted together: with the cap intact, dropping require_phase still lets
+        their few thousand no-move lines fit under the 200,000 ceiling, so the
+        phase line survives and the phase filter sits unguarded. This case closes
+        that gap with enough no-move filler that the cap alone cannot save the
+        phase-bearing entry: past the ceiling, an unfiltered newest-first read
+        never reaches the lone old phase line, so dropping require_phase buries it
+        while leaving the cap untouched.
+
+        FILLER_N is one line past the 200,000 ceiling -- the smallest count that
+        still goes red under the require_phase-only mutation, since the phase line
+        is then exactly the single oldest line an unfiltered read evicts. Built
+        byte-identically and appended once, it stays ~1s.
+        """
+        crew = _crew(self.root)
+        cid = crew["id"]
+
+        # The stalled lane enters its phase once and never moves again.
+        _step(self.root, cid, 555, "awaiting-ci", "ci", "waiting on checks")
+        entry = _fold_item(self.root, 555)
+        self.assertEqual(entry["phase"], "awaiting-ci")
+        stamped_at = entry["timeline"][-1]["at"]
+        self.assertTrue(stamped_at, "the lane must carry the moment it entered the phase")
+
+        # One filler past the fold's cap. With require_phase intact these are all
+        # discarded before the cap is consulted, so the phase line is read. Drop
+        # require_phase and the cap evicts the single oldest line -- which is the
+        # phase line -- and the lane loses its entry timestamp.
+        filler_n = crew_store._FABRIC_PHASE_EVENT_LIMIT + 1
+        _bulk_no_move_lines(self.root, cid, 900, filler_n, tag="filler")
+
+        after = _fold_item(self.root, 555)
+        self.assertEqual(
+            after["timeline"][-1]["at"],
+            stamped_at,
+            "the phase filter alone must keep the entry when the cap cannot",
+        )
+        self.assertEqual(after["phase"], "awaiting-ci")

@@ -1,6 +1,6 @@
 ---
 name: kirocrew-worktree-dev
-description: "HARD RULE for developing the Kiro Crew source repo ITSELF (not for users' own projects): every change is built and verified inside a git worktree, never against the live gateway. Covers worktree creation, the blocking local build gates (pytest + isort + flake8 + mypy + tsc + vitest), the built-dist gotcha, feature flags, live preview paths (dev-backend.sh or isolated pods), and the PR workflow. Use only when building, testing, switching, or verifying a change to Kiro Crew's own codebase."
+description: "HARD RULE for developing the Kiro Crew source repo ITSELF (not for users' own projects): every change is built and verified inside a git worktree, never against the live gateway. Covers worktree creation, the blocking local build gates (pytest + isort + flake8 + mypy + tsc + vitest), the built-dist gotcha, feature flags, live preview paths (isolated pods, dev-backend.sh as fallback), and the PR workflow. Use only when building, testing, switching, or verifying a change to Kiro Crew's own codebase."
 triggers: kirocrew worktree, kirocrew build gate, kirocrew dev, kirocrew source, contribute to kirocrew, kirocrew repo
 repo_scope: src/kiro_crew
 ---
@@ -241,26 +241,48 @@ the gate that lets you push.
 
 **Build gates green is the floor** — it proves the code compiles and tests pass.
 Actually *running* the worktree to click through it is an **optional** preview
-step with several paths; use whichever your environment supports:
+step. **Prefer the isolated pod over `dev-backend.sh`** — it is hands-off (no
+port/data-home bookkeeping to remember) and disposable (`pod down` leaves zero
+residue), where `dev-backend.sh` leaves a foreground process and a
+`.kirocrew-dev/` directory you manage yourself. Reach for `dev-backend.sh` only
+where a pod cannot run.
 
-1. **`dev-backend.sh` (simplest).** From the worktree root:
+1. **Isolated pod (preferred).** Preview the full stack on its own port without
+   touching the live gateway:
+   ```bash
+   kirocrew pod up <worktree-name> --json   # own KIROCREW_HOME, own port, no crons
+   kirocrew pod down <worktree-name>        # zero residue
+   ```
+   Best for QA agents and end-to-end tests, but the default for a human
+   iterating on a worktree too — it needs no cleanup discipline of its own.
+   `kirocrew pod --help` for all verbs (`ls`, `status`, `logs`, `provision`,
+   …). The worktree must be built first (venv + dist); `kirocrew pod up
+   --provision` does the full on-ramp.
+
+   For behavior that needs existing data, seed a shipped fixture instead of
+   clicking state in by hand:
+   ```bash
+   kirocrew pod up <worktree-name> --seed minimal --json
+   ```
+   A bare name populates the whole isolated home; an unknown name is refused
+   with the available names. A path remains the sanitized config-only form.
+
+   Pods need Linux `systemd --user` or macOS `launchd` (`kirocrew pod install`
+   once per machine) — see [`kiro_crew/pod/README.md`](../../../pod/README.md)
+   for the platform gate. Without one of those, fall through to
+   `dev-backend.sh` below.
+
+2. **`dev-backend.sh` (fallback where a pod cannot run).** From the worktree
+   root:
    ```bash
    ./dev-backend.sh
    ```
    Starts the gateway on its own dev port using `.kirocrew-dev/` as its data
    directory (isolated from your production `~/.kiro/crew/`). It uses
    `PYTHONPATH=src` so code changes are picked up on restart. Ctrl+C to stop,
-   re-run after changes.
-
-2. **Isolated pod (no cutover, hands-off).** Preview the full stack on its own
-   port without touching the live gateway:
-   ```bash
-   kirocrew pod up <worktree-name> --json   # own KIROCREW_HOME, own port, no crons
-   kirocrew pod down <worktree-name>        # zero residue
-   ```
-   Best for QA agents and end-to-end tests. `kirocrew pod --help` for all verbs
-   (`ls`, `status`, `logs`, `provision`, …). The worktree must be built first
-   (venv + dist); `kirocrew pod up --provision` does the full on-ramp.
+   re-run after changes. Use this on a host with no `systemd --user` / `launchd`
+   (or before running `kirocrew pod install`), or when you specifically need a
+   foreground process to attach a debugger to.
 
 3. **No preview at all (also valid).** For many changes, the build gate + unit
    tests are enough confidence to cut the PR. Previewing live is optional.

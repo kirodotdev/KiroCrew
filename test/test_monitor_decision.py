@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from kiro_crew.monitoring.decision import decide_monitor
+from kiro_crew.monitoring.decision import decide_monitor, monitor_budget_reason
 from kiro_crew.monitoring.models import (
     MonitorBudgets,
     MonitorDecision,
@@ -77,6 +77,47 @@ def test_observation_changes_control_when_a_model_turn_is_allowed(
     assert decide_monitor(state, observation, now=1_100.0) is expected
 
 
+def test_changed_head_does_not_wake_while_readiness_is_pending() -> None:
+    """A push with incomplete evidence must not spend a model turn."""
+    observation = MonitorObservation(
+        "pending-new-head",
+        MonitorObservationStatus.PENDING,
+        head_changed=True,
+    )
+
+    assert decide_monitor(_state(), observation, now=1_100.0) is MonitorDecision.RECORD_ONLY
+
+
+def test_success_after_a_changed_head_can_reach_terminal_success() -> None:
+    """The changed-head wake must not make a later identical green probe immortal."""
+    changed = MonitorObservation(
+        "green-new-head",
+        MonitorObservationStatus.SUCCESS,
+        head_changed=True,
+    )
+    settled = MonitorObservation("green-new-head", MonitorObservationStatus.SUCCESS)
+
+    assert decide_monitor(_state(), changed, now=1_100.0) is MonitorDecision.WAKE_ACTIONABLE
+    assert (
+        decide_monitor(
+            _state(last_fingerprint="green-new-head"),
+            settled,
+            now=1_101.0,
+        )
+        is MonitorDecision.STOP_SUCCESS
+    )
+
+
+def test_cumulative_provider_error_budget_is_a_hard_bound() -> None:
+    state = _state(
+        provider_error_count=3,
+        consecutive_provider_errors=0,
+        budgets=MonitorBudgets(max_provider_errors=3),
+    )
+
+    assert monitor_budget_reason(state, now=1_100.0) == "provider_error_budget"
+
+
 @pytest.mark.parametrize(
     ("error", "consecutive_errors", "expected"),
     [
@@ -86,6 +127,7 @@ def test_observation_changes_control_when_a_model_turn_is_allowed(
         (ProviderErrorKind.AUTHENTICATION, 0, MonitorDecision.STOP_BLOCKED),
         (ProviderErrorKind.AUTHORIZATION, 0, MonitorDecision.STOP_BLOCKED),
         (ProviderErrorKind.NOT_FOUND, 0, MonitorDecision.STOP_BLOCKED),
+        (ProviderErrorKind.SETUP, 0, MonitorDecision.STOP_BLOCKED),
     ],
 )
 def test_provider_failures_never_buy_a_model_turn(
@@ -197,6 +239,17 @@ def test_provider_error_observation_requires_a_string_fingerprint() -> None:
             [],
             MonitorObservationStatus.PROVIDER_ERROR,
             provider_error=ProviderErrorKind.TRANSIENT,
+        )
+
+
+def test_provider_error_observation_rejects_a_changed_head_fact() -> None:
+    """A failed provider call cannot claim to have observed a new revision."""
+    with pytest.raises(ValueError, match="head_changed"):
+        MonitorObservation(
+            "",
+            MonitorObservationStatus.PROVIDER_ERROR,
+            provider_error=ProviderErrorKind.TRANSIENT,
+            head_changed=True,
         )
 
 

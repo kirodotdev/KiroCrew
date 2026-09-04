@@ -15,7 +15,7 @@
  * LibraryPage, so the two pages cannot drift. Only view-local state (search
  * query, category pick, sort, action loading) lives here.
  */
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { Link, Navigate, useLocation, useNavigate } from 'react-router-dom'
 import { AlertTriangle, CheckCircle2, RefreshCw, ShoppingBag, X } from 'lucide-react'
@@ -196,13 +196,65 @@ function DiscoverPageBody() {
   // (same mechanism as TrustAppModal / RegistryManager; awaiting them holds
   // the spinner until the refetches settle). allSettled, because one source
   // being unreachable must not stop the refetch from repairing the other.
+  //
+  // The settled results are READ, not discarded: a failed refresh keeps
+  // serving the prior (stale or seed) listing, which looks identical to a
+  // successful one, so the outcome must reach the error banner or the user
+  // cannot tell them apart. TWO outcomes are observable here and the code
+  // claims only those: a REJECTED POST reports its own message, and a
+  // fulfilled registries response reporting per-source failures names them
+  // (the same branch RegistryManager runs on this response shape).
+  //
+  // A degraded OFFICIAL catalog is deliberately NOT claimed: the store POST
+  // only drops caches and never fetches (see handle_registry_refresh), so it
+  // resolves ok whatever the catalog's health, and the fetch it defers to
+  // serves the seed listing with a 200. Reporting that needs a signal on the
+  // follow-up GET, which is a server change and not this one.
+  //
+  // Reporting never skips the invalidations below -- the healthy source still
+  // gets its refetch.
   const queryClient = useQueryClient()
   const [refreshing, setRefreshing] = useState(false)
+  // The last banner text THIS handler wrote, so a later success clears its own
+  // stale error without erasing an unrelated one. `setError` is shared page
+  // state (useAppActions): SourcesPopover, runEnable and useAppUpdates all
+  // write it, and Update All's failure notice has no auto-dismiss -- so an
+  // unconditional clear here would silently drop the only report of a failed
+  // update the moment the user clicked the adjacent refresh.
+  const refreshErrorRef = useRef('')
+  const reportRefreshOutcome = (message: string) => {
+    const previous = refreshErrorRef.current
+    refreshErrorRef.current = message
+    if (message) setError(message)
+    // Clear only while the banner still shows what this handler put there.
+    else setError(prev => (prev === previous ? '' : prev))
+  }
   const handleRefresh = async () => {
     if (refreshing) return
     setRefreshing(true)
     try {
-      await Promise.allSettled([api.refreshAppStore(), api.refreshRegistries()])
+      const [storeResult, registriesResult] = await Promise.allSettled([
+        api.refreshAppStore(),
+        api.refreshRegistries(),
+      ])
+      const rejection = [storeResult, registriesResult].find(
+        (r): r is PromiseRejectedResult => r.status === 'rejected',
+      )
+      if (rejection) {
+        reportRefreshOutcome(rejection.reason instanceof Error && rejection.reason.message
+          ? rejection.reason.message
+          : i18nT('components.registryManager.failed_to_refresh_registries'))
+      } else if (
+        registriesResult.status === 'fulfilled'
+        && registriesResult.value.ok === false
+        && registriesResult.value.failed && registriesResult.value.failed.length > 0
+      ) {
+        reportRefreshOutcome(
+          i18nT('components.registryManager.could_not_refresh_still_showing_last_synced',
+            { names: registriesResult.value.failed.join(', ') }))
+      } else {
+        reportRefreshOutcome('')
+      }
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ['registry'] }),
         queryClient.invalidateQueries({ queryKey: ['apps'] }),

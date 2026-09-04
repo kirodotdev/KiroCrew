@@ -219,6 +219,18 @@ async def steer_into_running_turn(
     # through a merge.
     delivery_id = uuid.uuid4().hex
     slot._steer_delivery_ids[message] = delivery_id
+    # Recorded HERE, next to the delivery id, because the requeue is what needs it
+    # and the requeue runs in the TURN's teardown -- another coroutine, which never
+    # sees this call's arguments. The three `STEER_REQUEUED` returns below cannot
+    # do this themselves: two of them have no queue entry to write to at the moment
+    # they run (one returns before the teardown has requeued anything, the other
+    # after the drain already wrote the row), so the only common writer is
+    # `_requeue_unconsumed_steers`. Normalized value, not the raw argument -- the
+    # entry meta is persisted with the queue and reaches the row, so it must clear
+    # the same gate the row stamp does. Absent id stores nothing, which keeps the
+    # requeued entry's meta byte-identical to its pre-#6751 shape.
+    if send_id:
+        slot._steer_send_ids[message] = send_id
     slot._pending_steers.append(message)
     try:
         steered = await client.steer(message)
@@ -241,6 +253,7 @@ async def steer_into_running_turn(
         # writing a second one. Checked first: it is the one signal that survives
         # every intermediate transition, including a merged row.
         slot._steer_delivery_ids.pop(message, None)
+        slot._steer_send_ids.pop(message, None)
         logger.info(
             "steer for slot %s was requeued and drained during the RPC; row already " "persisted",
             slot.key,
@@ -259,6 +272,7 @@ async def steer_into_running_turn(
             # plain remove and not an index dance over possible duplicates.
             slot._pending_steers.remove(message)
             slot._steer_delivery_ids.pop(message, None)
+            slot._steer_send_ids.pop(message, None)
             return STEER_UNAVAILABLE
         if stopped:
             # Still registered means the teardown has not run yet and will
@@ -332,6 +346,10 @@ async def steer_into_running_turn(
     # deliberately keep theirs because `chat_runner`'s drain still has to match it,
     # and that entry is bounded by the queue.
     slot._steer_delivery_ids.pop(message, None)
+    # Same lockstep, same reason: this delivery stamps `sendId` onto its own row a
+    # few lines below, so nothing will read the map entry again and leaving it
+    # would hold a full message string for the slot's lifetime.
+    slot._steer_send_ids.pop(message, None)
 
     ts = datetime.now(timezone.utc).isoformat()
     # Cut the in-flight text segment at the steer boundary BEFORE persisting the

@@ -1,9 +1,10 @@
-import { useState, useRef, useEffect, useLayoutEffect, memo, useMemo, useCallback, Fragment } from 'react'
+import { useState, useRef, useEffect, useLayoutEffect, memo, useMemo, useCallback, useId, Fragment } from 'react'
 import { createPortal } from 'react-dom'
 import { LayoutGroup, AnimatePresence, motion } from 'framer-motion'
 import { Plus, X, Pin, Monitor, Eye, EyeOff, VenetianMask, Ghost, Droplet, FolderPlus, MessageSquare, MessageSquarePlus, MessagesSquare, Folder, ChevronRight, ChevronDown, ChevronUp, Clock, Pencil, BrushCleaning, Link2, Circle, MoreVertical, Tag as TagIcon, Columns3, GripVertical, Zap, Check, Copy, ListFilter, List, Loader, Loader2, Settings, RotateCcw, Bot, ExternalLink, Cpu, GitMerge, Workflow, CircleDot, Users, TriangleAlert, Goal, MessageCircleQuestionMark, ShieldCheck, Repeat, Server } from 'lucide-react'
 import GithubLogo from '../components/icons/GithubLogo'
 import GitlabLogo from '../components/icons/GitlabLogo'
+import { FolderBody } from '../components/FolderBody'
 import JiraLogo from '../components/icons/JiraLogo'
 import { sourceProviderMeta } from '../utils/sourceProviderMeta'
 import FolderGlyph from '../components/FolderGlyph'
@@ -1231,6 +1232,7 @@ function useDebouncedSessionSearch<T>(
     try {
       const d = await api.instancesSearchSessions(q)
       if (Array.isArray(d?.unreachable) && d.unreachable.length) {
+        // eslint-disable-next-line no-console -- the only record that a CONNECTED peer silently dropped out of the merged results; surfacing it would nag about a transient the local floor already covered
         console.warn('[sidebar] federated session search: unreachable instances', d.unreachable)
       }
       return d
@@ -1329,22 +1331,9 @@ function dateSegment(ts: number | string | undefined): string {
  *  test instead of silently moving three guides. */
 export const FOLDER_BODY_INSET_PX = 2
 
-function FolderBody({ open, children }: { open: boolean; children: React.ReactNode }) {
-  return (
-    <div
-      aria-hidden={!open}
-      // @ts-expect-error inert is a valid HTML attribute but TS types may lag
-      inert={!open ? '' : undefined}
-      style={{
-        display: 'grid',
-        gridTemplateRows: open ? '1fr' : '0fr',
-        transition: 'grid-template-rows 0.15s ease-out',
-      }}
-    >
-      <div style={{ overflow: 'hidden', visibility: open ? 'visible' : 'hidden', padding: open ? `2px 0 2px ${FOLDER_BODY_INSET_PX}px` : 0 }}>{children}</div>
-    </div>
-  )
-}
+/** Padding the folder body carries while open. The LEFT term is the alignment
+ *  algebra's `D`; the vertical 2px keeps focus rings off the clip edge. */
+const FOLDER_BODY_OPEN_PADDING = `2px 0 2px ${FOLDER_BODY_INSET_PX}px`
 
 /** Test seam: reports every SessionRow body execution. The memo boundary
  *  below is a behavioral contract — one slot's background event re-renders one
@@ -1401,7 +1390,7 @@ interface SessionRowProps {
   boost: PaletteBoost
   boostFor: (hex: string) => PaletteBoost
   renameInputRef: React.MutableRefObject<HTMLTextAreaElement | null>
-  onRenameStart: (key: string, scope: string, title: string) => void
+  onRenameStart: (key: string, scope: string, title: string, fromMenu: boolean) => void
   onRenameChange: (value: string) => void
   onRenameCommit: (key: string, value: string) => void
   onRenameCancel: () => void
@@ -1770,7 +1759,7 @@ const SessionRow = memo(function SessionRow({
     const rowMenuProps = {
       slotKey: s.key,
       mode,
-      onRename: () => onRenameStart(s.key, scope, s.title && s.title !== s.key ? s.title : ''),
+      onRename: () => onRenameStart(s.key, scope, s.title && s.title !== s.key ? s.title : '', true),
       onOpenInNewTab: onOpenSlotInNewTab ? () => onOpenSlotInNewTab(s.key) : undefined,
     }
     return (
@@ -1853,6 +1842,10 @@ const SessionRow = memo(function SessionRow({
             onOpenSlotInNewTab(s.key, { background: true })
           }) : undefined}
           onClick={e => {
+            // A browser emits two click events before dblclick. Let the first
+            // select an inactive session, but do not fetch it a second time
+            // before the title's double-click handler opens rename.
+            if (e.detail > 1 && (e.target as HTMLElement).closest?.('[data-session-title]')) return
             if ((e.target as HTMLElement).closest?.('[data-fork]')) { onDuplicate(s.key); return }
             if ((e.target as HTMLElement).closest?.('[data-close]')) { onCloseSession(s.key); return }
             // When the gateway is offline, switching sessions silently fails
@@ -1878,6 +1871,13 @@ const SessionRow = memo(function SessionRow({
             }
             dispatch(switchSlot(s.key))
             onSelectSlot?.(s.key)
+          }}
+          onDoubleClick={e => {
+            if (!(e.target as HTMLElement).closest?.('[data-session-title]')) return
+            if (renamingHere) return
+            e.preventDefault()
+            e.stopPropagation()
+            onRenameStart(s.key, scope, s.title && s.title !== s.key ? s.title : '', false)
           }}>
           {/* Held-modifier digit badge: while the chat-jump modifier is down,
            *  the first nine sessions in shortcut order show the digit that
@@ -2078,7 +2078,11 @@ const SessionRow = memo(function SessionRow({
                 made the list read as ragged. The full string stays reachable
                 through the `title` attribute, and the rename box below is the one
                 place it is shown in full. */}
-            <div className={`${ROW_TITLE_CLS} font-semibold text-text ${renamingHere ? '' : 'truncate'}`} title={s.title && s.title !== s.key ? s.title : s.key}>
+            <div
+              data-session-title
+              className={`${ROW_TITLE_CLS} font-semibold text-text ${renamingHere ? '' : 'truncate'}`}
+              title={s.title && s.title !== s.key ? s.title : s.key}
+            >
               {/* No separate fork glyph: forked titles already carry the
                   persisted "↳ " marker (chat_fork.py _FORK_TITLE_MARKER). Keeping
                   the arrow in the title text — rather than as a UI-only glyph —
@@ -2478,8 +2482,8 @@ function ChatSidebar({
   // draft VALUE from the row as an argument rather than closing over
   // `renameValue` — a closure over it would mint a new handler per keystroke
   // and re-render every row on each key.
-  const onRenameStart = useCallback((key: string, scope: string, title: string) => {
-    suppressMenuRestoreRef.current = true
+  const onRenameStart = useCallback((key: string, scope: string, title: string, fromMenu: boolean) => {
+    if (fromMenu) suppressMenuRestoreRef.current = true
     setRenamingSlot(key)
     setRenameScope(scope)
     setRenameValue(title)
@@ -2925,6 +2929,9 @@ function ChatSidebar({
   const [bulkModel, setBulkModel] = useState('')        // pending pick ('auto' = provider default)
   const [bulkSkipRunning, setBulkSkipRunning] = useState(true)
   const [bulkModelError, setBulkModelError] = useState('')
+  // Per-instance id: ChatPage mounts a mobile-drawer sidebar and a desktop one, so a
+  // literal id would collide and point one panel's checkbox at the other's label.
+  const bulkSkipRunningLabelId = useId()
   const bulkModelOptions = useAvailableModels({ enabled: bulkModelOpen })
   const bulkRunningCount = useMemo(() => slots.filter(s => s.running).length, [slots])
   // Count only slots that would actually change: model differs from the target
@@ -3592,14 +3599,20 @@ function ChatSidebar({
         clear: () => clearTagFilter(),
       },
       {
-        // Text search. Scoped to title while the backend ranking is live: that
-        // is the field a rename mutates, and widening it to key/agent appends
-        // rows the backend's content search deliberately excluded.
+        // Text search: title + source links, never key/agent (rows the backend
+        // excluded) — a badge id is a card-visible PROPERTY, like tags above.
         filtersRow: slot => {
           if (!slotFilter) return true
-          const titleMatch = (slot.title || '').toLowerCase().includes(slotFilter.toLowerCase())
-          if (searchRanked) return searchRanked.has(slot.key) || titleMatch
-          return ((slot.title || '') + slot.key + (slot.agent || '')).toLowerCase().includes(slotFilter.toLowerCase())
+          const q = slotFilter.toLowerCase()
+          const titleMatch = (slot.title || '').toLowerCase().includes(q)
+          // Both id spellings match by PREFIX, so progressive typing works while an
+          // interior run of the digits — an accident, not an id — does not.
+          const sourceMatch = (slot.source_links ?? []).some(link =>
+            String(link.number).startsWith(q)
+            || chipLabel(link).toLowerCase().startsWith(q))
+          if (searchRanked) return searchRanked.has(slot.key) || titleMatch || sourceMatch
+          return sourceMatch
+            || ((slot.title || '') + slot.key + (slot.agent || '')).toLowerCase().includes(q)
         },
         narrows: () => Boolean(slotFilter),
         hides: (slot, excluded) => Boolean(slotFilter) && excluded(slot),
@@ -3864,6 +3877,7 @@ function ChatSidebar({
   // stale keys are dropped by both consumers, while backend insertion order
   // would be actively wrong.
   const [shortcutOrderKeys, setShortcutOrderKeys] = useState<string[]>([])
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- run-after-every-commit is the point: the order is READ BACK from the DOM, and any dep list would be a re-derivation that can drift from what actually rendered (the drift this effect exists to eliminate). `[]` would freeze the order at mount. The update chain terminates because shortcutOrderKeys only feeds row BADGES — it never adds, removes or inerts a data-session-row node — so the second pass reads an identical order and the setState updater returns `prev`, which React bails out on.
   useEffect(() => {
     const root = sidebarRootRef.current
     if (!root) return
@@ -4157,6 +4171,7 @@ function ChatSidebar({
     if (!slot) {
       // Stale key or a session outside this surface's slot list. Not user-visible
       // (there is nothing to highlight), so leave a trace for bug reports.
+      // eslint-disable-next-line no-console -- a reveal's only success signal is the scroll+flash, so this early return is the one path where the user's click provably did nothing and nothing else records it
       console.debug('reveal-in-sidebar: no session for key', key)
       return
     }
@@ -4215,6 +4230,7 @@ function ChatSidebar({
         if (attempt <= REVEAL_MAX_ATTEMPTS) run.timer = window.setTimeout(tryScroll, REVEAL_RETRY_MS)
         // Row never appeared (e.g. board lane with no matching column). Not
         // user-visible, so leave a trace for bug reports instead of vanishing.
+        // eslint-disable-next-line no-console -- records that the bounded retry loop exhausted REVEAL_MAX_ATTEMPTS; without it an unrendered row is indistinguishable from a reveal that worked
         else console.debug('reveal-in-sidebar: row never rendered for', key)
         return
       }
@@ -4702,7 +4718,7 @@ function ChatSidebar({
           </span>
           )}
         </div>
-        <FolderBody open={!boardFolderCollapsed(columnId, folder) && !forceCollapsed}>
+        <FolderBody padding={FOLDER_BODY_OPEN_PADDING} open={!boardFolderCollapsed(columnId, folder) && !forceCollapsed}>
           {/* ml-4 + no pl: flush-connector treatment matching the list-view
            *  folder body (renderFolderBlock) so nested rows sit identically
            *  against the connector line in both views. */}
@@ -5055,7 +5071,7 @@ function ChatSidebar({
         {({ setNodeRef, isOver }) => (
           <div ref={setNodeRef} data-folder-drop={folder.id} className={`rounded-md transition-all mb-0.5${isOver ? ' ring-1 ring-accent' : ''}`}>
             {renderFolderHeader(folder, dragHandleProps)}
-            <FolderBody key={`folder-body-${folder.id}`} open={!folder.collapsed && !forceCollapsed}>{wrapped}</FolderBody>
+            <FolderBody key={`folder-body-${folder.id}`} padding={FOLDER_BODY_OPEN_PADDING} open={!folder.collapsed && !forceCollapsed}>{wrapped}</FolderBody>
           </div>
         )}
       </DndDroppable>,
@@ -5506,8 +5522,12 @@ function ChatSidebar({
           </div>
           {bulkRunningCount > 0 && (
             <label className="flex items-center gap-2 text-[12px] text-muted mb-2 cursor-pointer">
-              <input type="checkbox" checked={bulkSkipRunning} onChange={e => setBulkSkipRunning(e.target.checked)} />
-              {i18nT('pages.chatSidebar.skip')} {i18nT('pages.chatSidebar.running_session', { count: bulkRunningCount })}
+              {/* aria-labelledby, not aria-label: the name is the visible
+                  "Skip N running sessions" text, which is two catalog keys plus a
+                  live count. Binding it by reference keeps the announced name and
+                  the rendered name the same string, so the count cannot drift. */}
+              <input type="checkbox" aria-labelledby={bulkSkipRunningLabelId} checked={bulkSkipRunning} onChange={e => setBulkSkipRunning(e.target.checked)} />
+              <span id={bulkSkipRunningLabelId}>{i18nT('pages.chatSidebar.skip')} {i18nT('pages.chatSidebar.running_session', { count: bulkRunningCount })}</span>
             </label>
           )}
           <div className="flex items-center gap-2 justify-end">
@@ -5606,6 +5626,7 @@ function ChatSidebar({
                       // Non-menu-item controls: stop click/keydown from reaching
                       // Radix so choosing a window doesn't dismiss the menu
                       // (mirrors the folder-rename input pattern).
+                      // eslint-disable-next-line jsx-a11y/no-static-element-interactions -- the three handlers only stopPropagation, so this wrapper has no action of its own for a keyboard to reach; the chips and the number input inside are the real controls and each is separately focusable
                       <div
                         onClick={e => e.stopPropagation()}
                         onMouseDown={e => e.stopPropagation()}
@@ -6298,6 +6319,7 @@ function ChatSidebar({
                        focus, but we deliberately omit aria-modal — the popover has no
                        backdrop and is outside-click-dismissible, so claiming the rest of
                        the page is inert would mislead screen readers. */
+                    // eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions -- Escape-dismiss and the Tab trap ARE a dialog's documented keyboard operation, and they have to live on the dialog root because the trap reasons about first/last focusable inside it; the onClick only stopPropagation
                     <div ref={columnPopoverRef} role="dialog" aria-label={i18nT('pages.chatSidebar.filter_tags', { name: col.name || 'column' })} tabIndex={-1} data-column-popover={col.id}
                       className="fixed z-[9100] bg-bg-elevated border border-border rounded-lg shadow-lg p-2 min-w-[240px] text-[13px] outline-none"
                       style={{ top: popoverPos.top, left: popoverPos.left }}
@@ -6477,7 +6499,9 @@ function ChatSidebar({
           When collapsed: just a static 1px divider between sessions and the Older Sessions footer. */}
       {historyOpen ? (
         // Separator that doubles as a Pointer-Events resize handle (drag,
-        // mouse/touch/pen) / collapse (double-click); no keyboard analogue.
+        // mouse/touch/pen) / collapse (double-click); neither gesture is driven
+        // from the keyboard on this element.
+        // eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions -- the handler the rule sees is onDoubleClick, and the collapse it performs is duplicated on the "Older Sessions" row below (role=button/tabIndex=0, Enter+Space), so the COLLAPSE is keyboard-reachable. The RESIZE is not: usePointerDrag exposes pointer handlers only and this pane has no arrow-key resize anywhere. Giving it one is the ARIA window-splitter keyboard contract — a feature, not a lint fix
         <div
           role="separator"
           aria-orientation="horizontal"

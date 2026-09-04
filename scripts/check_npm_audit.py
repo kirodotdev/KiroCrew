@@ -8,13 +8,56 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
 NPM_VERSION = "10.8.2"
-AUDIT_TIMEOUT_SECONDS = 120
+# Per ATTEMPT. `npm audit --package-lock-only` is one bulk-advisory POST to the
+# registry, normally seconds; a slow registry stalls it rather than failing it,
+# so the ceiling is what turns a stall into a retryable failure. Sized from
+# observation, not hope: on a degraded registry a single lockfile has taken
+# ~60s on a good night and just over 120s on a bad one -- and the latter
+# COMPLETED on its second attempt, so it was slow, not hung. 120s left no
+# headroom for that shape; 180s does, while a genuinely hung registry still
+# fails within the budget below.
+AUDIT_TIMEOUT_SECONDS = 180
+# The audit is a read-only query and idempotent, so a transient registry or
+# network failure -- the attempt timing out, or npm reporting a connection-level
+# error -- is retried. Anything else (a malformed report, an exit code npm does
+# not document, a real finding) is definitive and is NOT retried: a retry cannot
+# change it and would only delay the fail-closed answer.
+AUDIT_ATTEMPTS = 3
+AUDIT_RETRY_BACKOFF_SECONDS = (5.0, 20.0)
+# Wall-clock budget for ALL audits together, so retries cannot outgrow the CI
+# job's own timeout (15 minutes, leaving room for checkout and toolchain
+# setup): an attempt never gets more than the time left, and no retry starts
+# with less than one full attempt's ceiling remaining. Three lockfiles at the
+# degraded pace above (one slow attempt each, one retry) fit; a registry that
+# stays down still fails closed inside it.
+AUDIT_TOTAL_BUDGET_SECONDS = 720
+# Substrings that mark npm's own connection-level failures. A stderr carrying
+# one of them (with an exit status other than the documented 0/1 audit results)
+# is transient; every other stderr is treated as definitive.
+TRANSIENT_STDERR_MARKERS = (
+    "ETIMEDOUT",
+    "ESOCKETTIMEDOUT",
+    "ERR_SOCKET_TIMEOUT",
+    "ECONNRESET",
+    "ECONNREFUSED",
+    "EAI_AGAIN",
+    "ENOTFOUND",
+    "EPIPE",
+    "socket hang up",
+    "FETCH_ERROR",
+    "E429",
+    "E500",
+    "E502",
+    "E503",
+    "E504",
+)
 MAX_EXCEPTION_DAYS = 30
 # Lead time on the expiry warning. An exception stays valid through its expiry
 # date and the gate fails closed the day after, so this is the window in which
@@ -380,6 +423,18 @@ def audit_command(npx: str) -> list[str]:
     ]
 
 
+def warm_command(npx: str) -> list[str]:
+    """Resolve and cache the pinned npm WITHOUT auditing anything.
+
+    `npx --yes npm@<version>` downloads that npm on a cold runner before it can
+    run the audit, so on the first lockfile the download used to be paid inside
+    the audit's own timeout -- a slow registry then failed the gate before a
+    single advisory was asked for. Warming once up front moves that cost to its
+    own bounded step; the audits that follow hit the npx cache.
+    """
+    return [npx, "--yes", f"npm@{NPM_VERSION}", "--version"]
+
+
 def _shell_quote(value: str) -> str:
     if re.fullmatch(r"[A-Za-z0-9_@%+=:,./-]+", value):
         return value
@@ -403,12 +458,129 @@ def _audit_failure_details(project_dir: Path, command: Sequence[str], stderr: st
     return "\n".join(details)
 
 
+def is_transient_failure(returncode: int, stderr: str) -> bool:
+    """Whether a failed npm run looks like a registry/network fault worth retrying.
+
+    Exit 0 and 1 are npm's documented audit RESULTS (clean / findings) and are
+    never transient, whatever stderr says; any other exit is transient only when
+    stderr carries one of npm's connection-level markers.
+    """
+    if returncode in (0, 1):
+        return False
+    return any(marker in stderr for marker in TRANSIENT_STDERR_MARKERS)
+
+
+class Deadline:
+    """Shared wall-clock budget for every attempt of every audit in one run."""
+
+    def __init__(self, seconds: float, *, clock: Callable[[], float] = time.monotonic) -> None:
+        self._clock = clock
+        self._ends_at = clock() + seconds
+
+    def remaining(self) -> float:
+        return max(0.0, self._ends_at - self._clock())
+
+    def attempt_timeout(self) -> float:
+        """The ceiling for the next attempt: one attempt's worth, or what is left."""
+        return min(float(AUDIT_TIMEOUT_SECONDS), self.remaining())
+
+    def can_retry(self, *, after_pause: float = 0.0) -> bool:
+        """A retry needs the backoff it will sleep PLUS a full attempt's ceiling
+        left, or it would wake up already short and only time out."""
+        return self.remaining() >= after_pause + AUDIT_TIMEOUT_SECONDS
+
+
+def _with_transient_retries(
+    label: str,
+    attempt: Callable[[float], subprocess.CompletedProcess[str]],
+    *,
+    deadline: Deadline,
+    describe_failure: Callable[[str], str],
+    sleeper: Callable[[float], None] = time.sleep,
+) -> subprocess.CompletedProcess[str]:
+    """Run ``attempt`` until it returns a non-transient result or the retries run out.
+
+    Raises :class:`GateError` (fail closed) after the last permitted transient
+    failure, naming how many attempts were made so a persistent registry outage
+    reads as one rather than as a flaky gate.
+    """
+    for index in range(1, AUDIT_ATTEMPTS + 1):
+        timeout = deadline.attempt_timeout()
+        if timeout <= 0:
+            raise GateError(f"{label}: audit time budget exhausted before attempt {index}")
+        try:
+            result = attempt(timeout)
+        except subprocess.TimeoutExpired as exc:
+            stderr = exc.stderr if isinstance(exc.stderr, str) else ""
+            failure = f"timed out after {int(timeout)}s"
+        except (OSError, subprocess.SubprocessError) as exc:
+            stderr_value = getattr(exc, "stderr", "")
+            stderr = stderr_value if isinstance(stderr_value, str) else ""
+            failure = f"could not run: {exc}"
+        else:
+            if not is_transient_failure(result.returncode, result.stderr or ""):
+                return result
+            stderr = result.stderr or ""
+            failure = f"failed with a transient registry/network error (exit {result.returncode})"
+        pause = AUDIT_RETRY_BACKOFF_SECONDS[min(index - 1, len(AUDIT_RETRY_BACKOFF_SECONDS) - 1)]
+        if index >= AUDIT_ATTEMPTS or not deadline.can_retry(after_pause=pause):
+            raise GateError(
+                f"{label} {failure} on attempt {index} of {AUDIT_ATTEMPTS}; giving up\n"
+                f"{describe_failure(stderr)}"
+            )
+        print(f"{label} {failure} on attempt {index} of {AUDIT_ATTEMPTS}; retrying in {pause:g}s")
+        sleeper(pause)
+    raise AssertionError("unreachable: the loop returns or raises")
+
+
+def warm_npm(
+    npx: str,
+    *,
+    deadline: Deadline,
+    repo_root: Path = _REPO_ROOT,
+    runner: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
+    sleeper: Callable[[float], None] = time.sleep,
+) -> None:
+    """Fetch the pinned npm once and prove it is the pinned one before auditing."""
+    command = warm_command(npx)
+
+    def attempt(timeout: float) -> subprocess.CompletedProcess[str]:
+        return runner(
+            command,
+            cwd=repo_root,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
+        )
+
+    def describe(stderr: str) -> str:
+        return _audit_failure_details(repo_root, command, stderr)
+
+    result = _with_transient_retries(
+        f"npm@{NPM_VERSION} warm-up",
+        attempt,
+        deadline=deadline,
+        describe_failure=describe,
+        sleeper=sleeper,
+    )
+    reported = (result.stdout or "").strip()
+    if result.returncode != 0 or reported != NPM_VERSION:
+        raise GateError(
+            f"npm@{NPM_VERSION} warm-up did not yield the pinned npm "
+            f"(exit {result.returncode}, reported {reported!r})\n"
+            f"{describe(result.stderr or '')}"
+        )
+
+
 def run_audit(
     lockfile: str,
     *,
     npx: str,
     repo_root: Path = _REPO_ROOT,
     runner: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
+    deadline: Deadline | None = None,
+    sleeper: Callable[[float], None] = time.sleep,
 ) -> list[Finding]:
     lock_path = repo_root / lockfile
     project_dir = lock_path.parent
@@ -418,33 +590,35 @@ def run_audit(
         raise GateError(f"audited package manifest is missing beside {lockfile}")
 
     command = audit_command(npx)
-    try:
-        result = runner(
+    if deadline is None:
+        deadline = Deadline(AUDIT_TOTAL_BUDGET_SECONDS)
+
+    def attempt(timeout: float) -> subprocess.CompletedProcess[str]:
+        return runner(
             command,
             cwd=project_dir,
             capture_output=True,
             text=True,
-            timeout=AUDIT_TIMEOUT_SECONDS,
+            timeout=timeout,
             check=False,
         )
-    except subprocess.TimeoutExpired as exc:
-        stderr = exc.stderr if isinstance(exc.stderr, str) else ""
-        details = _audit_failure_details(project_dir, command, stderr)
-        raise GateError(
-            f"npm audit timed out after {AUDIT_TIMEOUT_SECONDS}s for {lockfile}\n{details}"
-        ) from exc
-    except (OSError, subprocess.SubprocessError) as exc:
-        stderr_value = getattr(exc, "stderr", "")
-        stderr = stderr_value if isinstance(stderr_value, str) else ""
-        details = _audit_failure_details(project_dir, command, stderr)
-        raise GateError(f"npm audit could not run for {lockfile}: {exc}\n{details}") from exc
+
+    def describe(stderr: str) -> str:
+        return _audit_failure_details(project_dir, command, stderr)
+
+    result = _with_transient_retries(
+        f"npm audit for {lockfile}",
+        attempt,
+        deadline=deadline,
+        describe_failure=describe,
+        sleeper=sleeper,
+    )
 
     try:
         return parse_audit_report(result.stdout, returncode=result.returncode, lockfile=lockfile)
     except GateError as exc:
         stderr = result.stderr if isinstance(result.stderr, str) else ""
-        details = _audit_failure_details(project_dir, command, stderr)
-        raise GateError(f"{exc}\n{details}") from exc
+        raise GateError(f"{exc}\n{describe(stderr)}") from exc
 
 
 def unexcepted_findings(
@@ -461,15 +635,19 @@ def main() -> int:
         rules = load_exception_rules(_REPO_ROOT / EXCEPTIONS_FILENAME, today=today)
         # Emitted BEFORE the audit: the audit reaches the network and can fail
         # for reasons of its own, and the owner still needs the expiry notice
-        # when it does. This runs on every nightly, which is what makes the
-        # warning time-based rather than dependent on someone opening a PR.
+        # when it does. The gate runs before every release build, so the
+        # notice reaches whoever cuts the release that would carry the
+        # exception.
         for line in expiry_warning_lines(rules, today=today):
             print(line)
         npx = locate_npx()
+        deadline = Deadline(AUDIT_TOTAL_BUDGET_SECONDS)
+        print(f"Resolving npm@{NPM_VERSION} ...")
+        warm_npm(npx, deadline=deadline)
         findings: list[Finding] = []
         for lockfile in AUDITED_LOCKFILES:
             print(f"Auditing production dependencies in {lockfile} with npm@{NPM_VERSION} ...")
-            findings.extend(run_audit(lockfile, npx=npx))
+            findings.extend(run_audit(lockfile, npx=npx, deadline=deadline))
         blocked = unexcepted_findings(findings, rules)
     except GateError as exc:
         print(f"ERROR: production dependency audit failed closed: {exc}", file=sys.stderr)

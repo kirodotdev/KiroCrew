@@ -9,7 +9,7 @@ const { serializeMenuItems } = require("../windows-menu-model");
 // must agree, and every disagreement fails silently rather than loudly:
 //
 //   1. `app-menu.js`                       — the native template's menu ids
-//   2. `main.js` WINDOWS_TITLEBAR_MENU_IDS — the IPC allowlist; an id missing
+//   2. `window-lifecycle.js` WINDOWS_TITLEBAR_MENU_IDS — the IPC allowlist; an id missing
 //      here makes `app-menu:items` return [] , so the menu opens EMPTY
 //   3. `WindowsTitlebarMenu.tsx` WINDOWS_MENUS — the rendered label row; an id
 //      missing here means the menu is never offered at all
@@ -18,12 +18,11 @@ const { serializeMenuItems } = require("../windows-menu-model");
 // not appear or opens blank, with nothing failing. These tests turn each of
 // those into a build failure instead.
 //
-// Read as TEXT for (2) and (3) on purpose: `main.js` requires `electron` at load
-// and the renderer is TSX, so neither can be required from this suite. The same
-// source-text idiom is used by `shell-contract.test.js` for main.js's requires.
+// Read as TEXT for (2) and (3) on purpose: the allowlist is intentionally kept
+// literal for review and the renderer is TSX, so neither is required here.
 
 const ELECTRON_DIR = path.join(__dirname, "..");
-const MAIN_JS = path.join(ELECTRON_DIR, "main.js");
+const WINDOW_LIFECYCLE_JS = path.join(ELECTRON_DIR, "window-lifecycle.js");
 const RENDERER_TSX = path.join(
   ELECTRON_DIR, "..", "src", "components", "WindowsTitlebarMenu.tsx",
 );
@@ -44,7 +43,7 @@ function windowsTemplate() {
 }
 
 /**
- * Ids from the ALLOWLIST literal in main.js (the `-menu` suffixed strings).
+ * Ids from the ALLOWLIST literal in window-lifecycle.js (the `-menu` suffixed strings).
  *
  * Both this and `rendererIds` hard-code the `-menu` suffix (and the renderer's
  * quote style), so a future top-level id that breaks that convention is seen by
@@ -55,9 +54,9 @@ function windowsTemplate() {
  * missing entry.
  */
 function allowlistIds() {
-  const src = fs.readFileSync(MAIN_JS, "utf8");
+  const src = fs.readFileSync(WINDOW_LIFECYCLE_JS, "utf8");
   const block = /WINDOWS_TITLEBAR_MENU_IDS\s*=\s*new Set\(\[([\s\S]*?)\]\)/.exec(src);
-  assert.ok(block, "WINDOWS_TITLEBAR_MENU_IDS literal not found in main.js");
+  assert.ok(block, "WINDOWS_TITLEBAR_MENU_IDS literal not found in window-lifecycle.js");
   return [...block[1].matchAll(/"([a-z-]+-menu)"/g)].map((m) => m[1]);
 }
 
@@ -73,7 +72,7 @@ test("the native template's top-level menu ids are all allowlisted for IPC", () 
   const templateIds = windowsTemplate().map((m) => m.id).filter(Boolean);
   assert.deepStrictEqual(
     [...templateIds].sort(), [...allowlistIds()].sort(),
-    "app-menu.js top-level ids and main.js WINDOWS_TITLEBAR_MENU_IDS disagree — "
+    "app-menu.js top-level ids and window-lifecycle.js WINDOWS_TITLEBAR_MENU_IDS disagree — "
     + "an id only in the template opens an EMPTY menu (the handler returns [])",
   );
 });

@@ -16,6 +16,7 @@ import { MemoryRouter, Routes, Route } from 'react-router-dom'
 import { createTestStore } from './helpers'
 import { ThemeProvider } from '../hooks/useTheme'
 import { __resetPanelTabs, usePanelTabs } from '../hooks/usePanelTabs'
+import { setSidePanelDock } from '../hooks/useSidePanelDock'
 import { switchSlot, toggleActivity } from '../store/chatSlice'
 
 // --- Stub child components (same scaffold as ChatPage.embedded test) ---
@@ -89,8 +90,8 @@ Object.defineProperty(window, 'matchMedia', {
     addEventListener: vi.fn(), removeEventListener: vi.fn(), dispatchEvent: vi.fn(),
   })),
 })
-globalThis.fetch = vi.fn().mockResolvedValue({ ok: true, json: () => Promise.resolve({}) }) as any
-globalThis.ResizeObserver = class { observe() {} unobserve() {} disconnect() {} } as any
+globalThis.fetch = vi.fn().mockResolvedValue({ ok: true, json: () => Promise.resolve({}) }) as unknown as typeof fetch
+globalThis.ResizeObserver = class { observe() {} unobserve() {} disconnect() {} } as unknown as typeof ResizeObserver
 
 import ChatPage from '../pages/ChatPage'
 
@@ -372,5 +373,78 @@ describe('ChatPage — message scroller contains its scroll', () => {
     // The guard: without containment, a delta at the top or bottom edge
     // chains to the document and drags the whole app shell.
     expect(scroller.style.overscrollBehavior).toBe('contain')
+  })
+})
+
+
+/**
+ * Focus mode takes the dashboard header out of flow, and that header's own right
+ * inset is the ONLY thing clearing the native caption buttons on Windows and
+ * frameless Linux. The side panel's tab strip carries the reserve for the state
+ * where IT holds the window's trailing edge — but the reported scenario (#6509)
+ * is the panel CLOSED, where the chat title row's trailing group owns that
+ * corner and the control that reopens the panel is the one under the buttons.
+ *
+ * Asserted through the class, not a computed padding: jsdom applies no
+ * stylesheet, so index.css owns the width (pinned in App.focusMode.test.tsx) and
+ * these tests own which surface opts in. `ml-auto` anchors the match to that
+ * group specifically — SidePanel is stubbed in this file, so it cannot supply a
+ * second element with the class and make a false positive.
+ */
+describe('ChatPage — focus-mode caption reserve on the title row', () => {
+  beforeEach(() => { setWindowWidth(1400); localStorage.clear(); setSidePanelDock('right') })
+  afterEach(() => { document.getElementById('activity-bar-slot')?.remove(); setSidePanelDock('right') })
+
+  function renderWithSlot() {
+    const store = createTestStore()
+    act(() => {
+      store.dispatch(switchSlot.pending('req-reserve', 'slot-reserve'))
+      store.dispatch(switchSlot.fulfilled({
+        key: 'slot-reserve',
+        messages: [{ role: 'assistant', content: 'hi', cls: '' }],
+        running: false, hasMore: false, total: 1, queue: [],
+      }, 'req-reserve', 'slot-reserve'))
+    })
+    return renderChat(store)
+  }
+
+  const reserved = () => document.querySelector('.focus-caption-reserve')
+
+  it('reserves the caption strip for the trailing group while the panel is closed', async () => {
+    const { store } = renderWithSlot()
+    // The reported scenario: closed panel, so the reopen toggle is the control
+    // sitting in the caption band.
+    const toggle = await screen.findByLabelText('Open activity panel')
+    expect(store.getState().chat.activityOpen).toBe(false)
+
+    const group = reserved()
+    expect(group, 'title-row trailing group opts into the reserve').not.toBeNull()
+    expect(group!.classList.contains('ml-auto')).toBe(true)
+    // The covered control is inside the group that got the reserve — the whole
+    // point, and what tells this apart from reserving some other surface.
+    expect(group!.contains(toggle)).toBe(true)
+  })
+
+  it('drops the reserve while the right-docked panel holds that edge', async () => {
+    renderWithSlot()
+    fireEvent.click(await screen.findByLabelText('Open activity panel'))
+    await screen.findByTestId('side-panel')
+
+    // The panel is at the window's trailing edge now and carries the reserve on
+    // its own strip; padding the title row too would indent it for nothing.
+    expect(reserved()).toBeNull()
+  })
+
+  it('keeps the reserve while the panel is docked at the bottom', async () => {
+    setSidePanelDock('bottom')
+    renderWithSlot()
+    fireEvent.click(await screen.findByLabelText('Open activity panel'))
+    await screen.findByTestId('side-panel')
+
+    // Bottom-docked the panel sits under the chat, so the title row still owns
+    // the corner even with the panel open.
+    const group = reserved()
+    expect(group, 'reserve survives an open bottom-docked panel').not.toBeNull()
+    expect(group!.classList.contains('ml-auto')).toBe(true)
   })
 })

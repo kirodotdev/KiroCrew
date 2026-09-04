@@ -12,7 +12,6 @@ from urllib.parse import parse_qs, urlsplit
 
 from aiohttp import web
 
-from kiro_crew import hooks
 from kiro_crew.connections import get_provider
 from kiro_crew.connections.ownership import remove_provider_entry
 from kiro_crew.connections.registry import Provider
@@ -344,11 +343,37 @@ async def api_connections_mint(request: web.Request) -> web.Response:
 
     # Function-local by DESIGN, not for a cycle: this handlers package is imported
     # on the gateway boot path, and the mint engine drags in the ACP client, the
-    # credential predicate and the PID registry. Keeping it here is what stops a
+    # credential predicate and the PID registry -- the warm engine adds the ACP
+    # runtime and the MCP inventory on top. Keeping both here is what stops a
     # gateway start paying for a subsystem most requests never touch, and
-    # test_the_handlers_package_does_not_import_the_mint_engine enforces it in a
-    # subprocess -- hoisting this to module scope turns that test red.
+    # test_the_handlers_package_does_not_import_the_mint_engine (and its warm twin)
+    # enforce it in a subprocess -- hoisting either to module scope turns them red.
     from kiro_crew.connections.mint import _dispose_mint, reserve_mint_row, start_oauth_mint
+    from kiro_crew.connections.warm import adopt_shared_mint
+
+    # ADOPTION FIRST, because the alternative is throwing the answer away. The premint
+    # sweep may already hold this provider's approval URL, and ``reserve_mint_row``
+    # below pops whatever row is at the slug -- so reserving first disposed the very
+    # URL this click existed to serve and then paid a ~7.5s cold spawn to re-mint it.
+    # A refusal (nothing warmed, a dead holder, another tab got there first) falls
+    # through to that cold path, which stays correct and stays the only path for a
+    # provider warming never covered.
+    adopted = await adopt_shared_mint(slug, str(provider["mcp_url"]))
+    if adopted is not None:
+        # ONE event, outcome ``ok``: unlike the cold path below, this request both
+        # starts and finishes here, so a ``started`` with no completion would leave the
+        # audit trail showing a mint that never ended.
+        await asyncio.to_thread(
+            lambda: sel().log_api_access(
+                caller="dashboard",
+                operation="connections_mint",
+                outcome="ok",
+                resources=f"provider:{slug} reason=adopted_warm_mint",
+            )
+        )
+        # ``waiting`` rather than ``minting``: the URL exists already. The card polls
+        # the mint state either way, and that poll now finds it on the first read.
+        return web.json_response({"ok": True, "slug": slug, "state": "waiting", "token": adopted})
 
     # Reserved BEFORE responding: the response names a row this tab polls
     # immediately, so the row has to be visible first. Allocating only a token here
@@ -441,6 +466,32 @@ async def api_connections_status(request: web.Request) -> web.Response:
     await expire_dead_mints()
     statuses = await collect_connection_statuses()
     return web.json_response({"schema_version": _STATUS_SCHEMA_VERSION, "connections": statuses})
+
+
+async def api_connections_test(request: web.Request) -> web.Response:
+    """POST /api/connections/test — enumerate this provider through kiro-cli.
+
+    The dedicated ACP session is promptless: kiro-cli authenticates the remote
+    server, performs its MCP ``tools/list``, and reports the final agent-exposed
+    tools through native structured commands. The endpoint never receives token
+    material and never invokes a provider tool.
+    """
+    from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
+
+    owner_denied = await require_owner_dashboard_request(request, "connections_test")
+    if owner_denied is not None:
+        return owner_denied
+    parsed = await _mint_request(request)
+    if isinstance(parsed, web.Response):
+        return parsed
+    _body, provider = parsed
+
+    # Function-local by design: the handlers package is imported at gateway
+    # boot, while this path imports the ACP client and should be paid only when
+    # the owner explicitly clicks Test.
+    from kiro_crew.connections.tool_test import test_connection_tools
+
+    return web.json_response(await test_connection_tools(provider))
 
 
 async def api_connections_cancel(request: web.Request) -> web.Response:
@@ -648,13 +699,13 @@ async def api_connections_premint(request: web.Request) -> web.Response:
     # scope then adds the ACP runtime and the MCP inventory on top -- the heaviest
     # half of Connections. test_the_handlers_package_does_not_import_the_warm_engine
     # enforces it in a subprocess; hoisting this to module scope turns that red.
-    from kiro_crew.connections.warm import mintable_providers, warm_mint_all
+    from kiro_crew.connections.warm import _audited_mintable_providers, warm_mint_all
 
     # Off the loop: the scan reads the user's MCP config and stats kiro-cli's OAuth
     # artifact directory, either of which can sit on a network mount where a stat is
     # unbounded. warm.py routes the same call through a thread for this reason and
     # pins it with a drift guard.
-    candidates = await asyncio.to_thread(mintable_providers)
+    candidates, audit_recorded = await asyncio.to_thread(_audited_mintable_providers)
     slugs = [str(provider["slug"]) for provider in candidates]
     if not slugs:
         # Nothing to warm: an activation with an empty claim set would spawn a
@@ -676,9 +727,7 @@ async def api_connections_premint(request: web.Request) -> web.Response:
     # opened, so no credential material crosses this boundary, and refusing to warm on
     # an SEL outage would make every Connect pay a cold spawn instead. An unaudited
     # boolean is the lesser failure, and it leaves a warning behind.
-    if not await asyncio.to_thread(
-        hooks.emit_internal_read_audit, _GRANT_PRESENCE_READ_ID, "success"
-    ):
+    if not audit_recorded:
         logger.warning(
             "grant-presence audit for the premint scan could not be recorded; "
             "proceeding unaudited"

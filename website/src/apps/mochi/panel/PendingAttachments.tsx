@@ -67,16 +67,46 @@ function Chip({ item, onRemove }: { item: PendingAttachment; onRemove: () => voi
       title={item.name}
     >
       {item.isImage ? (
-        <img
-          // Clickable: the chip is a 40px thumbnail, so seeing what was actually
-          // attached requires opening it. Passes the PATH, not the rendered URL,
-          // because the OS viewer opens files.
+        // A real <button>, not a clickable <img>: the chip is a 40px thumbnail, so
+        // seeing what was actually attached requires opening it, and that makes the
+        // thumbnail a CONTROL — one Tab must reach and Enter/Space must fire, which
+        // only the native element gives for free. Zero chrome so the thumbnail still
+        // fills the chip, and it carries the accessible name (the alt below is the
+        // image's own description, and reads as one only while the image loads).
+        // Passes the PATH, not the rendered URL, because the OS viewer opens files.
+        //
+        // `open_image` is the name the three other `openLightbox` controls use, so a
+        // screen-reader user hears one operation named one way; `preview` belongs to
+        // the separate `api.previewFile` control. The `<action>: <name>` shape is the
+        // sibling Remove button's, and the file name is what tells two images in the
+        // same chip row apart.
+        <button
+          type="button"
           onClick={() => openLightbox(item.path)}
-          title={item.name}
-          src={localFileUrl(item.path)}
-          alt={item.name}
-          style={{ width: 40, height: 40, objectFit: 'cover', display: 'block' }}
-        />
+          aria-label={`${i18nT('apps.mochi.chatPanel.open_image')}: ${item.name}`}
+          style={{
+            display: 'block',
+            width: 40,
+            height: 40,
+            padding: 0,
+            border: 'none',
+            background: 'none',
+            // Stated explicitly, not inherited: these panel windows get no
+            // Tailwind preflight and ship no stylesheet of their own, so there is
+            // no `button { cursor }` rule to fall back on — without this the
+            // thumbnail renders the default arrow while the remove button in the
+            // same chip shows a pointer, so one chip disagrees with itself about
+            // what is clickable.
+            cursor: 'pointer',
+          }}
+        >
+          <img
+            title={item.name}
+            src={localFileUrl(item.path)}
+            alt={item.name}
+            style={{ width: 40, height: 40, objectFit: 'cover', display: 'block' }}
+          />
+        </button>
       ) : (
         <span
           style={{

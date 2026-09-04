@@ -4,7 +4,7 @@
  * Preset picker grid (each preset shows an SVG preview) + manual color editor
  * with per-body-part highlighting. i18n via useT().
  */
-import React, { useCallback, useEffect, useMemo, useState } from 'react'
+import React, { useCallback, useEffect, useId, useMemo, useState } from 'react'
 import { Check, X } from 'lucide-react'
 import { extractSvgColors, applySvgColorMap, type ColorMap } from '../shared/colorCustomizer'
 import { PresetRegistry, extractSwatches, type CatPreset } from '../shared/catPresets'
@@ -90,11 +90,20 @@ function ColorEditorCard({ sourceColor, targetColor, bodyPart, svgContent, allCo
     return toDataUri(applySvgColorMap(svgContent, buildHighlightMap(allColors, sourceColor, targetColor)))
   }, [sourceColor, targetColor, svgContent, allColors])
 
+  // The body-part caption IS this swatch's name, so it is bound to the input
+  // instead of being restated as an aria-label the translators would have to
+  // keep in step: `htmlFor` makes the caption open the colour picker, and
+  // `aria-labelledby` names the input from the same node. `display: 'block'` is
+  // the <div> default the caption is keeping — a <label> is inline, and without
+  // it the caption's marginBottom would stop applying.
+  const swatchId = useId()
+  const labelId = `${swatchId}-label`
+
   return (
     <div style={{ padding: 6, borderRadius: 8, textAlign: 'center' as const, border: '1px solid var(--border)', background: 'var(--bg-input)' }}>
       <img src={highlightUri} alt={bodyPart} style={CS.presetThumb} draggable={false} />
-      <div style={{ fontSize: 10, color: 'var(--text-muted)', marginBottom: 4 }}>{bodyPart}</div>
-      <input type="color" value={targetColor} onChange={e => onChange(e.target.value)}
+      <label id={labelId} htmlFor={swatchId} style={{ fontSize: 10, color: 'var(--text-muted)', marginBottom: 4, display: 'block' }}>{bodyPart}</label>
+      <input id={swatchId} aria-labelledby={labelId} type="color" value={targetColor} onChange={e => onChange(e.target.value)}
         style={{ width: 36, height: 20, border: 'none', padding: 0, cursor: 'pointer', borderRadius: 4 }} />
     </div>
   )

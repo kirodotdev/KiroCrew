@@ -21,6 +21,7 @@
     "expand_sidebar": "Expand sidebar",
     "gateway_connected": "Gateway connected",
     "gateway_offline": "Gateway offline",
+    "gateway_restarting_reconnecting": "Gateway is restarting — reconnecting…",
     "hide_full_changelog": "▾ Hide Full Changelog",
     "i_d_like_to_request_a_feature": "I’d like to request a feature!",
     "iam_identity_center": "IAM Identity Center",
@@ -75,6 +76,11 @@
     }
   },
   "apps": {
+    "awsControl": {
+      "console": {
+        "library_remove_confirm_slug": "This empties the cloud folder <folder>{{folder}}</folder>."
+      }
+    },
     "meetings": {
       "transcript": {
         "empty": "No transcript yet",
@@ -598,6 +604,9 @@
           "editor": {
             "agent_hint": "Any agent works.",
             "agent_label": "Agent",
+            "agent_roster_failed": "Couldn't load the agent list.",
+            "agent_roster_retry": "Retry",
+            "agent_roster_retrying": "Retrying…",
             "aria_create": "Create a new Crew",
             "aria_edit": "Edit Crew {{name}}",
             "automerge_hint": "Merges once a human approves.",
@@ -685,6 +694,7 @@
             "kind_reply": "Replied",
             "kind_review": "Review",
             "kind_skip": "Passed",
+            "kind_sweep": "Swept",
             "kind_yield": "Yielded",
             "no_next_recorded": "no next step recorded",
             "no_open_work_items": "Nothing in flight",
@@ -1207,6 +1217,7 @@
       "search_failed": "Search failed",
       "retry": "Retry",
       "action_enter": "Open View",
+      "action_continue": "Continue",
       "action_ask": "Ask",
       "group_attention": "Needs You",
       "ask_agent": "Ask the agent: “{{query}}”",
@@ -1222,7 +1233,13 @@
         "command": "Command",
         "setting": "Setting",
         "view": "View"
-      }
+      },
+      "placeholder_argument": "Enter a value…",
+      "argument_invalid": "That value is not accepted by this command.",
+      "argument_withdrawn": "That command is no longer available.",
+      "argument_changed": "This command changed. Check what will be sent, then press Enter again.",
+      "will_send": "Will send",
+      "will_send_clipped": "Scroll to read the rest — this instruction continues below."
     },
     "papyrus": {
       "workspace": {
@@ -1251,6 +1268,10 @@
       "setup_timeout": "Phone access did not reach a ready state. Re-check the setup, then try again."
     },
     "filePickerMenu": {
+      "type_2_chars_to_search_files_enter_held": "Type 2+ chars to search files and folders… — Enter won’t send yet; press Esc, then Enter sends the message",
+      "type_2_chars_to_search_files_ctrl_enter_held": "Type 2+ chars to search files and folders… — Ctrl+Enter won’t send yet; press Esc, then Ctrl+Enter sends the message",
+      "searching_enter_held": "Searching… — Enter won’t send yet; press Esc, then Enter sends the message",
+      "searching_ctrl_enter_held": "Searching… — Ctrl+Enter won’t send yet; press Esc, then Ctrl+Enter sends the message",
       "no_matches_ctrl_enter_sends": "No matching files — Ctrl+Enter sends the message",
       "no_matches_enter_sends": "No matching files — Enter sends the message"
     },
@@ -1468,7 +1489,9 @@
       "redaction_failed_retry": "Redaction failed — retry",
       "send_selection_to_chat": "Send selection to chat",
       "send_to_chat": "Send to chat",
-      "sending": "Sending…"
+      "sending": "Sending…",
+      "touch_select_anchor": "First point set — tap the other end",
+      "touch_select_done": "Range selected — tap Copy"
     },
     "codeBlock": {
       "copied": "Copied!",
@@ -1614,6 +1637,7 @@
     },
     "fileRenderers": {
       "media_preview_failed": "Playback failed — the browser cannot decode this file.",
+      "office_open_hint": "Preview isn't available for this file. Open it in its app, or download a copy.",
       "scroll_for_more_count": "Scroll for more… ({{count}} remaining)",
       "sheet_cols_truncated": "Additional columns not shown",
       "sheet_empty": "Empty sheet",
@@ -1834,9 +1858,11 @@
       "if_you_are_diagnosing_this_from_a_terminal_kiro": "If you are diagnosing this from a terminal, note that kiro-cli diagnostic reports nothing until the Kiro CLI app itself is running — launch it with kiro-cli launch first. That refusal is not the cause of this.",
       "install_kiro_cli_from_kiros_official_setup_page": "Install Kiro CLI from Kiro's official setup page. It carries the steps for your platform and stays current.",
       "kiro_cli_is_installed_but_could_not_be_verified": "Kiro CLI is installed but could not be verified",
+      "kiro_cli_is_installed_and_signed_in_but_too_old": "Kiro CLI is installed and signed in, but this version predates the acp command {{productName}} launches every session through. Update it and this page continues on its own.",
       "kiro_cli_is_installed_finish_signing_in_to_conti": "Kiro CLI is installed. Finish signing in to continue.",
       "kiro_cli_is_required_on_the_gateway_host": "Kiro CLI is required on the {{platform}} gateway host.",
       "kiro_cli_s_reason": "Why it was refused",
+      "kiro_cli_update_needed": "Kiro CLI update needed",
       "kiro_cli_was_found_on_this_host": "Kiro CLI was found on this host.",
       "kiro_cli_will_not_load_kiro_crew_s_agent_specs": "Kiro CLI will not load {{productName}}'s agent specs",
       "kiro_crew_installs_the_agent_specs_kiro_cli_load": "{{productName}} installs the agent specs Kiro CLI loads before it can answer anything.",
@@ -1870,11 +1896,17 @@
       "the_gateway_returned_an_unexpected_error": "The gateway returned an unexpected error.",
       "the_gateway_returned_no_prerequisite_status": "The gateway returned no prerequisite status.",
       "the_repair_attempt_failed": "The repair attempt failed",
+      "the_update_attempt_failed": "The update attempt failed",
       "this_host_allows_user_namespaces_but_the_kernel_d": "This host allows user namespaces, but the kernel then denied the mount namespace — the signature of Ubuntu 23.10 and newer, which moves any process that creates a user namespace into a restricted AppArmor profile. {{productName}} refuses to run the agent unisolated rather than expose your credentials, so it stays blocked until the profile is in place.",
       "this_host_provides_no_os_level_sandbox_so_kiro_c": "This host provides no OS-level sandbox, so {{productName}} cannot isolate the agent. It refuses to run the agent unsandboxed rather than expose your credentials.",
       "this_kiro_cli_is_signed_in": "This Kiro CLI is signed in.",
+      "this_kiro_cli_is_too_old_for_the_acp_command": "This Kiro CLI is too old for the acp command {{productName}} needs. Update it here.",
       "this_page_detects_kiro_cli_automatically": "Leave this page open. It checks the gateway host and continues on its own once Kiro CLI is installed.",
-      "waiting": "Waiting"
+      "update_command_label": "Update command",
+      "update_kiro_cli": "Update Kiro CLI",
+      "updating_kiro_cli": "Updating Kiro CLI…",
+      "waiting": "Waiting",
+      "your_kiro_cli_is_out_of_date": "Your Kiro CLI is out of date"
     },
     "linkedSurfacesSection": {
       "connect_failed": "Could not connect to {{label}}: {{reason}}",
@@ -2187,6 +2219,8 @@
       "root": "(root)"
     },
     "skillPickerMenu": {
+      "loading_skills_ctrl_enter_held": "Loading skills… — Ctrl+Enter won’t send yet; press Esc, then Ctrl+Enter sends the message",
+      "loading_skills_enter_held": "Loading skills… — Enter won’t send yet; press Esc, then Enter sends the message",
       "no_matching_skills_ctrl_enter_sends": "No matching skills — Ctrl+Enter sends the message",
       "no_matching_skills_enter_sends": "No matching skills — Enter sends the message",
       "no_skills_mapped_to_agent": "No skills mapped to {{agent}}",
@@ -2225,7 +2259,7 @@
       "copy": "Copy",
       "copy_failed": "Copy failed",
       "copy_needs_https": "Copy needs a secure (HTTPS) connection",
-      "copy_no_selection": "Tap Select, then Copy",
+      "copy_no_selection": "Long-press a line or tap Select, then Copy",
       "copy_done": "Copied",
       "copy_permission_needed": "Allow clipboard access",
       "paste": "Paste",
@@ -2306,8 +2340,7 @@
       "back_to_dashboard": "Back to dashboard",
       "restarting": "Restarting..."
     },
-    "voiceDisabledModal": {
-    },
+    "voiceDisabledModal": {},
     "voiceStatusBar": {
       "default_microphone": "Default microphone"
     },
@@ -2408,6 +2441,10 @@
       "title_md": "Medium width"
     },
     "slashCommandMenu": {
+      "loading_commands_enter_held": "Loading commands… — Enter won’t send yet; press Esc, then Enter sends the message",
+      "loading_commands_ctrl_enter_held": "Loading commands… — Ctrl+Enter won’t send yet; press Esc, then Ctrl+Enter sends the message",
+      "commands_load_failed_ctrl_enter_sends": "Couldn't load commands — Ctrl+Enter sends the message",
+      "commands_load_failed_enter_sends": "Couldn't load commands — Enter sends the message",
       "desc_agent": "Switch or manage the active agent",
       "desc_changelog": "Show the release changelog",
       "desc_chat": "Save or load a chat session",
@@ -2513,9 +2550,9 @@
       "pane_schedules": "Schedules",
       "pane_webhook": "Webhook",
       "pane_workspace_memory": "Workspace · Memory",
-      "rail_label": "Crew settings",
+      "rail_label": "Agent settings",
       "stat_active_schedules": "Active schedules",
-      "stat_crews_sharing": "Crews sharing its storage",
+      "stat_crews_sharing": "Agents sharing its storage",
       "stat_resolved_model": "Resolved model",
       "stat_unknown": "Unknown",
       "tag_shared": "Shared",
@@ -2527,19 +2564,19 @@
       "cancel": "Cancel"
     },
     "crewWebhookSection": {
-      "could_not_load_webhooks": "Could not load webhooks, so what wakes this crew is unknown right now.",
+      "could_not_load_webhooks": "Could not load webhooks, so what wakes this agent is unknown right now.",
       "inbound_webhooks_are_switched_off": "Inbound webhooks are switched off, so nothing can call in — bound tokens included.",
       "last_used_ago": "used {{time}}",
-      "no_tokens_are_bound_to_this_crew": "No webhook tokens are bound to this crew.",
+      "no_tokens_are_bound_to_this_crew": "No webhook tokens are bound to this agent.",
       "off": "Off",
       "open_webhooks": "Open Webhooks",
-      "outside_systems_holding_one_of_these_credentials": "Outside systems holding one of these tokens can start a turn as this crew. Create and revoke them on the Webhooks page.",
+      "outside_systems_holding_one_of_these_credentials": "Outside systems holding one of these tokens can start a turn as this agent. Create and revoke them on the Webhooks page.",
       "retry": "Retry",
       "signed": "Signed",
-      "unbound_tokens_can_wake_any_crew_one": "{{count}} token without a crew binding also exists; it can wake any crew, this one included.",
-      "unbound_tokens_can_wake_any_crew_other": "{{count}} tokens without a crew binding also exist; they can wake any crew, this one included.",
+      "unbound_tokens_can_wake_any_crew_one": "{{count}} token without an agent binding also exists; it can wake any agent, this one included.",
+      "unbound_tokens_can_wake_any_crew_other": "{{count}} tokens without an agent binding also exist; they can wake any agent, this one included.",
       "webhook": "Webhook",
-      "webhooks_that_wake_this_crew": "Webhooks that wake this crew"
+      "webhooks_that_wake_this_crew": "Webhooks that wake this agent"
     },
     "shortcutsModal": {
       "panel_toggles": "Panel toggles",
@@ -2739,6 +2776,8 @@
     },
     "appDetailPage": {
       "app_not_found_2": "App \"{{name}}\" not found",
+      "all_contributors": "All contributors",
+      "contributors": "Contributors",
       "disabled": "Disabled",
       "doesnt_exist": "\"{{name}}\" doesn't exist",
       "enabled": "Enabled",
@@ -2916,6 +2955,10 @@
       "not_deployed_2": "Not deployed",
       "open_folder": "Open folder {{name}}",
       "preview": "Preview: {{slug}}",
+      "promote_slug_taken_title": "Saved under a different address",
+      "promote_slug_taken_body": "That name was taken, so your document was saved as “{{slug}}”. “{{taken}}” still holds the older artifact.",
+      "promote_slug_taken_open": "Open {{slug}}",
+      "promote_slug_taken_open_older": "Open older {{taken}}",
       "published": "Published ({{visibility}})",
       "published_sync_issue": "Published (sync issue)",
       "remove_artifact_confirm": "Remove artifact “{{slug}}” from your library?\n\nThis deletes the artifact entry and its version history. If this artifact came from a file on disk or a chat widget, the original is NOT touched — you can re-add it later.",
@@ -3042,7 +3085,8 @@
         "more_actions": "More actions",
         "needs_active_chat": "Available once this chat finishes opening",
         "needs_earlier_history_count_one": "Select to load earlier history — {{count}} earlier message remains",
-        "needs_earlier_history_count_other": "Select to load earlier history — {{count}} earlier messages remain"
+        "needs_earlier_history_count_other": "Select to load earlier history — {{count}} earlier messages remain",
+        "share_message": "Share as image"
       },
       "chatNavPanel": {
         "link": "Link"
@@ -3274,6 +3318,32 @@
         "minimize_pinned_prompt": "Minimize pinned turn",
         "pinned_turn": "Pinned turn",
         "restore_pinned_prompt": "Restore pinned turn"
+      },
+      "share": {
+        "title": "Share to social media",
+        "description": "Turn this reply into a share card you can post anywhere.",
+        "preview_label": "Card preview",
+        "edit_hint": "Click the card text to edit it",
+        "card_footer": "Made with {{productName}}",
+        "include_question": "Include my question",
+        "caption_label": "Post text",
+        "caption_template": "{{productName}} just did this for me {{link}} #AIAgent",
+        "char_count": "{{count}} / {{limit}} · X limit",
+        "download_png": "Download PNG",
+        "copy_image_text": "Copy image + text",
+        "share_on_x": "Share on X",
+        "share_on_linkedin": "Share on LinkedIn",
+        "copied": "Copied — paste the image into the post box",
+        "copy_unavailable": "Clipboard unavailable here — the image was downloaded instead",
+        "intent_hint": "The post box opens with your text prefilled; paste the copied image to attach the card.",
+        "kind_aws_key": "an AWS access key",
+        "kind_token": "an API token",
+        "kind_private_key": "a private key",
+        "kind_local_path": "a local file path",
+        "kind_internal_url": "an internal URL",
+        "card_wordmark": "{{productName}}",
+        "sensitive_in_card": "Before you share — the card contains: {{kinds}}",
+        "sensitive_in_caption": "Before you share — the post text contains: {{kinds}}"
       }
     },
     "chatPage": {
@@ -3291,6 +3361,12 @@
       "hide_sessions_sidebar": "Hide sessions sidebar",
       "knowledge_item_one": "{{count}} knowledge item",
       "knowledge_item_other": "{{count}} knowledge items",
+      "mcp_session_also_started": "Also started in this session: {{names}}",
+      "mcp_session_awaiting_auth": "Waiting for authorization",
+      "mcp_session_failed": "Failed to start in this session",
+      "mcp_session_no_report": "No report from this session yet",
+      "mcp_session_source_note": "The list is this agent's configuration; the status beside each name is what this session reported.",
+      "mcp_session_started": "Started in this session",
       "message_queued_until_session_ready": "{{error}}. Your message is queued and will be sent when a session is ready — but it is held in this tab only, so if you navigate away or reload you will need to retype it.",
       "message_saved_as_draft": "{{error}}. Your message is saved as a draft in the session you sent it from.{{extra}}",
       "no_results": "No results",
@@ -3428,6 +3504,7 @@
     "connectionsPage": {
       "action_failed": "Action failed: {{error}}",
       "authorize": "Authorize",
+      "before_you_connect": "Before you connect",
       "cancel": "Cancel",
       "complete_connection": "Complete",
       "connect": "Connect",
@@ -3452,6 +3529,11 @@
       "invalid_return_address": "Paste the full http://127.0.0.1:PORT/?code=… address from your browser.",
       "managed_by_connections": "Managed by Connections",
       "mcp_servers": "MCP Servers",
+      "mint_failure_process_gone": "The authorization process stopped before approval finished. Try connecting again.",
+      "mint_failure_server_absent": "The MCP server entry disappeared before authorization could start. Try connecting again.",
+      "mint_failure_timed_out": "Authorization setup timed out before an approval address was ready. Try connecting again.",
+      "mint_failure_unknown": "Authorization setup failed before an approval address was ready. Try connecting again.",
+      "mint_failure_url_rejected": "The provider returned an approval address containing credential-like data, so it was not displayed.",
       "needs_attention": "Needs attention",
       "no_matching_services": "No services match this search.",
       "not_connected": "Not connected",
@@ -3460,6 +3542,10 @@
       "not_verified_help": "{{productName}} cannot see the authorization for {{provider}} — the Kiro CLI holds the token. If an agent can already call it, it is working; if not, it still needs authorization.",
       "official_mcp_server": "Official MCP server",
       "open_managed_connection": "Open the {{provider}} connection card",
+      "prerequisite_atlassian": "Requires an Atlassian account with a Jira or Confluence site — without one, the consent page's Accept button stays disabled.",
+      "prerequisite_gitlab": "Enable GitLab Duo with beta and experimental features, and allow MCP server access for your top-level group — without them, connecting succeeds but exposes no tools.",
+      "prerequisite_gitlab_steps": "Enable GitLab Duo with beta and experimental features, and allow MCP server access for your top-level group.",
+      "prerequisites_for_provider": "{{provider}} prerequisites",
       "reconnect": "Reconnect",
       "reconnecting": "Reconnecting…",
       "relaying": "Sending…",
@@ -3827,10 +3913,6 @@
         "title": "Ingestion Settings",
         "description": "Control how documents are extracted, indexed, and rate-limited. Changes take effect on the next watcher sweep unless noted otherwise.",
         "save_failed": "Failed to save knowledge setting",
-        "chunk_limit_label": "Per-source chunk limit",
-        "chunk_limit_desc": "Maximum chunks a single source may ingest per scan cycle. Each chunk costs one LLM extraction call. 0 = no limit.",
-        "max_sources_label": "Max sources",
-        "max_sources_desc": "Maximum number of auto-discovered knowledge sources. Manually added sources are not capped. 0 = no limit.",
         "embed_rate_label": "Embedding rate limit",
         "embed_rate_desc": "How many embedding requests per minute when indexing documents into the vector store. Lower values reduce system load but slow down indexing. 0 = unlimited.",
         "model_label": "Extraction model",
@@ -3841,8 +3923,6 @@
         "requires_restart": "restart required",
         "auto_add_label": "Auto-add documents",
         "auto_add_desc": "Let the agent add documents it reads during normal work to the Knowledge Library.",
-        "auto_project_label": "Auto-register project documents",
-        "auto_project_desc": "Register documents from each project you work in as a Knowledge source automatically.",
         "auto_artifacts_label": "Auto-add saved artifacts",
         "auto_artifacts_desc": "Mirror documents you save as artifacts into the Knowledge Library.",
         "load_failed": "Failed to load settings.",
@@ -4039,6 +4119,7 @@
         "disabled": "Disabled",
         "error": "Error",
         "online": "Online",
+        "online_help": "The gateway started this server itself. That is a check of this host, not a guarantee that a given chat session mounted it — each session reports its own servers in its MCP panel.",
         "outdated": "Outdated",
         "pending_disable_click_to_revert": "Pending: disable (click to revert)",
         "pending_enable_click_to_revert": "Pending: enable (click to revert)",
@@ -4153,7 +4234,8 @@
         "scope_hint_no_project": "Workspace scope needs a project. Open a chat, choose a folder with the project button beside the composer, then reopen this dialog.",
         "scope_hint_project_conflict": "Your open chats are on different projects, so no single project applies. Close or re-point one, then reopen this dialog.",
         "conflict_while_editing": "This file belongs to a project that is no longer active, so it cannot be saved here. Copy your changes somewhere safe before closing the editor.",
-        "conflict_list_refreshed": "The active project changed, so this list has been refreshed."
+        "conflict_list_refreshed": "The active project changed, so this list has been refreshed.",
+        "linked_read_only": "Linked from {{target}} — read-only. Edit the target file instead."
       },
       "displayTab": {
         "change_the_dashboard_font_family_persists_across": "Change the dashboard font family. Persists across sessions.",
@@ -4685,8 +4767,6 @@
         "update_setting_failed": "Failed to update setting: {{error}}"
       },
       "remoteCrewPanel": {
-        "chat_on_a_crew": "Chat on a crew",
-        "chat_on_a_crew_desc": "Adds “New chat on crew” to the create menu, which starts a session that runs on a connected crew. Unfinished: it opens in that crew’s own pane, and sessions running on a crew are not listed here yet.",
         "auto_connect": "Auto-connect crews",
         "auto_connect_desc": "When on, opening the web app connects every crew automatically, and reconnects them when you come back to the tab. Turn off to connect a crew only when you switch to it."
       },
@@ -4842,6 +4922,8 @@
         "layer_n": "Layer {{n}}",
         "enforced_by_floor": "Enforced by an always-on protection built into {{productName}}",
         "pinned_by_policy": "Enforced by your organization's security policy",
+        "edition_rule_badge": "edition",
+        "edition_rule_tooltip": "Added by this installation's edition, not the built-in catalog. On by default, and you can switch it off.",
         "pinned_for_the_host_surface": "Set by the host-surface profile. This is the ceiling for in-process host actions only — other surfaces have their own profiles and may allow this.",
         "yolo_duration_title": "How long auto-approve stays on",
         "yolo_duration_desc": "Applies whenever you turn auto-approve on from the dashboard, Slack, or the API — all of them use this one duration.",
@@ -4955,7 +5037,7 @@
       },
       "teamsPanel": {
         "active": "Active",
-        "jwt_required": "<strong>Microsoft Teams needs the PyJWT dependency.</strong> Inbound Bot Framework requests carry a signed token that has to be validated, so the channel refuses to start without it. Run <mono>pip install \"kirocrew[teams]\"</mono> in the environment that runs the gateway, then restart it.",
+        "jwt_required": "<strong>Microsoft Teams needs the PyJWT dependency.</strong> Inbound Bot Framework requests carry a signed token that has to be validated, so the channel refuses to start without it. Run <mono>pip install \"PyJWT[crypto]==2.13.0\"</mono> in the environment that runs the gateway, then restart it.",
         "microsoft_app_id": "Microsoft App ID",
         "needs_setup": "Needs setup",
         "not_active": "Not active",
@@ -5208,7 +5290,7 @@
         "group_allowlist_description": "Feishu group chat_ids allowed to drive a turn. Empty = no group is served.",
         "group_allowlist_label": "Allowed group chat IDs",
         "group_empty_hint": "Group chats are on but no chat_id is listed, so no group is served. Add a chat_id, or turn the toggle off.",
-        "guide_body": "In the Feishu developer console, create a <mono>custom app</mono> and open its <mono>Credentials & Basic Info</mono> page for the <mono>App ID</mono> and <mono>App Secret</mono> — paste both below. Then enable the <mono>Long connection</mono> event mode and subscribe to <mono>im.message.receive_v1</mono>. Each member’s <mono>open_id</mono> goes in the allow-list. The channel also needs its optional dependency: run <mono>pip install \"kirocrew[feishu]\"</mono> in the environment that runs the gateway, then restart it.",
+        "guide_body": "In the Feishu developer console, create a <mono>custom app</mono> and open its <mono>Credentials & Basic Info</mono> page for the <mono>App ID</mono> and <mono>App Secret</mono> — paste both below. Then enable the <mono>Long connection</mono> event mode and subscribe to <mono>im.message.receive_v1</mono>. Each member’s <mono>open_id</mono> goes in the allow-list. The channel also needs its optional dependency: run <mono>pip install \"lark-oapi>=1.4,<2\"</mono> in the environment that runs the gateway, then restart it.",
         "open_developer_console": "Open Feishu developer console"
       },
       "shortcutsPanel": {
@@ -5258,6 +5340,12 @@
     "worldsPopout": {
       "hide_controls": "Hide controls",
       "show_controls": "Show controls"
+    },
+    "developer": {
+      "featurePreviewsTab": {
+        "chat_on_a_crew": "Chat on a crew",
+        "chat_on_a_crew_desc": "Adds “New chat on crew” to the create menu, which starts a session that runs on a connected crew. Unfinished: it opens in that crew’s own pane, and sessions running on a crew are not listed here yet."
+      }
     }
   },
   "privacyDisclosure": {

@@ -886,6 +886,84 @@ def _extract_tool_input_strings(tool_input: str) -> list[str]:
     return results
 
 
+# Longest single string the tool_input scan will attempt.
+#
+# CPython's ``re`` does not release the GIL for the duration of one match call,
+# so the worker-thread hop below yields BETWEEN per-string scans but not WITHIN
+# one: a single huge string holds the GIL inside one ``.search`` and the event
+# loop cannot run its watchdog heartbeat for that whole time.
+#
+# The anchor rewrite in this change cut the constant but NOT the growth -- the
+# scan is still superlinear in the length of one line. Measured on one dev box:
+#
+#     4 KiB 0.16s | 8 KiB 0.31s | 16 KiB 1.14s | 20 KiB 1.52s | 32 KiB 3.79s
+#
+# 16->32 KiB is 3.3x for 2x the input (~n^1.7), so extrapolation is the wrong
+# instinct here and a ceiling has to be set from the measured curve. A CI runner
+# under parallel load came in roughly an order of magnitude slower than this box,
+# which is what sets the margin: 20 KiB is ~1.5s here and ~15s there, under the
+# 25s loop watchdog on both.
+#
+# Exceeding it is FAIL-CLOSED: the call is denied, never skipped. A skip would
+# convert a liveness bug into a security hole by letting unscanned input through
+# the deny surface; a denial only refuses input we cannot prove safe, and is
+# strictly better than the alternative it replaces, which was crashing the
+# gateway and losing the whole turn.
+#
+# Known cost of that trade, and why the ceiling is an interim: a permission-gated
+# write of a benign file larger than this lands its whole content in
+# ``tool_input`` and is now refused. Chunked scanning cannot lift the ceiling on
+# its own, because one branch of the pattern puts an unbounded ``.*`` between a
+# verb and the path, so no chunk overlap preserves that distance. The durable fix
+# is to stop running the SHELL-COMMAND matcher over fields that never carry a
+# command. Tracked in https://github.com/kirodotdev/KiroCrew/issues/8053.
+_MAX_SCANNABLE_TOOL_INPUT_CHARS = 20 * 1024
+
+
+def _first_tool_input_denial(
+    strings: list[str],
+    denied_regexes: list[str] | None,
+) -> tuple[str, str, str] | None:
+    """Return the first tool_input denial among *strings*, or ``None``.
+
+    Pure, synchronous, and blocking: the three predicates are regex-heavy and
+    ``_extract_tool_input_strings`` hands over EVERY string in the payload, so a
+    single long document body can occupy this loop for seconds. It therefore
+    runs on a worker thread (one hop for the whole loop, not one per string),
+    which keeps the event loop free BETWEEN strings -- not within one, because
+    ``re`` holds the GIL for a whole match call. That is why each string is
+    length-checked against :data:`_MAX_SCANNABLE_TOOL_INPUT_CHARS` first, and an
+    oversized one is denied rather than scanned or skipped.
+
+    The tuple is ``(kind, reason, matched_string)`` where *kind* is
+    ``"path"`` / ``"bash"`` / ``"regex"`` / ``"oversize"``. Mechanism
+    classification stays with the caller on the event loop, because it consults
+    the HookManager.
+    """
+    for s in strings:
+        if len(s) > _MAX_SCANNABLE_TOOL_INPUT_CHARS:
+            # Fail closed: too long to scan inside the loop's liveness budget,
+            # so it cannot be shown safe and is refused.
+            return (
+                "oversize",
+                (
+                    "Blocked: a tool_input string is too large to security-scan "
+                    f"({len(s)} chars > {_MAX_SCANNABLE_TOOL_INPUT_CHARS} limit); "
+                    "refused rather than left unscanned"
+                ),
+                s[:64],
+            )
+        if is_sensitive_path(s):
+            return ("path", f"Blocked: sensitive path in tool_input: {s}", s)
+        _input_bash = is_sensitive_bash_command(s)
+        if _input_bash:
+            return ("bash", _input_bash, s)
+        _input_deny = is_denied(s, denied_regexes=denied_regexes)
+        if _input_deny:
+            return ("regex", _input_deny, s)
+    return None
+
+
 # ── Tool Approval Policies ──
 
 
@@ -2046,29 +2124,25 @@ async def _resolve_permission(
     if _tool_input:
         # Extract string values from JSON tool_input for path/command checking.
         _input_strings = _extract_tool_input_strings(_tool_input)
-        for s in _input_strings:
-            if is_sensitive_path(s):
-                await provider.reject_tool(event.request_id)
-                _log(
-                    "denied",
-                    error=f"Blocked: sensitive path in tool_input: {s}",
-                    metadata={"mechanism": "always_deny_input"},
-                )
-                return False
-            _input_bash = is_sensitive_bash_command(s)
-            if _input_bash:
-                await provider.reject_tool(event.request_id)
-                _log("denied", error=_input_bash, metadata={"mechanism": "always_deny_input"})
-                return False
-            _input_deny = is_denied(s, denied_regexes=_denied_regexes)
-            if _input_deny:
-                await provider.reject_tool(event.request_id)
-                _log(
-                    "denied",
-                    error=_input_deny,
-                    metadata={"mechanism": _regex_deny_mechanism(s, "always_deny_input")},
-                )
-                return False
+        # Offloaded: the scan is regex-heavy over every string in the payload,
+        # so a large document body would block the event loop past its watchdog
+        # and take the gateway down. One hop for the whole loop.
+        _hit = await asyncio.to_thread(_first_tool_input_denial, _input_strings, _denied_regexes)
+        if _hit is not None:
+            _kind, _reason, _matched = _hit
+            await provider.reject_tool(event.request_id)
+            _log(
+                "denied",
+                error=_reason,
+                metadata={
+                    "mechanism": (
+                        _regex_deny_mechanism(_matched, "always_deny_input")
+                        if _kind == "regex"
+                        else "always_deny_input"
+                    )
+                },
+            )
+            return False
 
     if policy == ToolApprovalPolicy.HOOK_BASED and hooks:
         tool_result = hooks.on_tool_call(

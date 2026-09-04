@@ -65,12 +65,13 @@ from kiro_crew.apps.registry import (
 from kiro_crew.apps.routes import app_lifecycle_lock
 from kiro_crew.apps.teardown import teardown_app_runtime
 from kiro_crew.config.loader import (
+    ConfigReadError,
     KiroCrewConfig,
     _invalidate_config_cache,
     config_local_path,
     config_path,
     denied_commands_path,
-    write_config_atomically,
+    update_config_locked,
 )
 from kiro_crew.dashboard.handlers.agents import _get_config_lock
 from kiro_crew.executors import governance_executor
@@ -97,7 +98,7 @@ from kiro_crew.platform.governance_profiles import (
     resolve_active_scope,
     unknown_profile_scopes,
 )
-from kiro_crew.security import DENY_REASON_MATCH_PREFIX
+from kiro_crew.security import DENY_REASON_MATCH_PREFIX, edition_denied_rules
 
 logger = logging.getLogger(__name__)
 
@@ -197,6 +198,9 @@ def _denied_state(data: dict) -> dict:
         "disable_all": _coerce_bool(denied.get("disable_all", False), default=False),
         "disabled_ids": [i for i in disabled_ids if isinstance(i, str) and i],
         "user_added": list(user_added) if isinstance(user_added, list) else [],
+        # This function REBUILDS the object rather than passing it through, so an
+        # unlisted key is invisible to every consumer downstream. A new key must
+        # be added here or it silently does nothing.
     }
 
 
@@ -273,10 +277,28 @@ def build_denied_commands_snapshot() -> dict:
     floor_ids = floor_enforced_builtin_command_ids()
 
     builtins: list[dict] = []
-    for rule in builtin_denied_rules():
+    # Edition-contributed rules are listed in the SAME array so the panel's
+    # category grouping, counts and toggles work with no frontend change. They
+    # carry source="edition" so a consumer can tell them apart, and they are
+    # never pinned or floor-enforced: a governance pin resolves a pattern to a
+    # rule id against the static catalog only, so a pin cannot name one.
+    catalog: list[tuple[dict, bool]] = [(r, False) for r in builtin_denied_rules()]
+    catalog += [
+        (
+            {
+                "id": r.id,
+                "pattern": r.pattern,
+                "category": r.category,
+                "description": r.description,
+            },
+            True,
+        )
+        for r in edition_denied_rules()
+    ]
+    for rule, from_edition in catalog:
         rid = rule["id"]
-        is_pinned = rid in pinned
-        is_floor = rid in floor_ids
+        is_pinned = (not from_edition) and rid in pinned
+        is_floor = (not from_edition) and rid in floor_ids
         # Floor-enforced rules render forced-on even when the id somehow sits in
         # disabled_ids (state persisted before the toggle rejected it): the floor
         # consults no opt-out state, so honesty requires enabled=true.
@@ -299,6 +321,7 @@ def build_denied_commands_snapshot() -> dict:
                 "enabled": enabled,
                 "pinned": is_pinned,
                 "lock_reason": lock_reason,
+                "source": "edition" if from_edition else "builtin",
             }
         )
 
@@ -473,7 +496,11 @@ async def api_denied_commands_list(request: web.Request) -> web.Response:
 
 async def api_denied_command_builtin_toggle(request: web.Request) -> web.Response:
     """PATCH /api/security/denied-commands/builtins/{id} — {enabled: bool}."""
-    from kiro_crew.security import builtin_denied_rules, floor_enforced_builtin_command_ids
+    from kiro_crew.security import (
+        builtin_denied_rules,
+        edition_denied_rules,
+        floor_enforced_builtin_command_ids,
+    )
 
     op = "security.denied_commands.builtin_toggle"
     rule_id = request.match_info["id"]
@@ -491,7 +518,10 @@ async def api_denied_command_builtin_toggle(request: web.Request) -> web.Respons
         _audit(request, operation=op, outcome="denied", resources=f"{rule_id}=bad_type")
         return web.json_response({"error": "enabled must be a boolean"}, status=400)
 
-    if rule_id not in {r["id"] for r in builtin_denied_rules()}:
+    # Union the edition-contributed ids: a rule listed in the panel must be
+    # toggleable there, or the UI offers a switch the API 404s.
+    known_ids = {r["id"] for r in builtin_denied_rules()} | {r.id for r in edition_denied_rules()}
+    if rule_id not in known_ids:
         _audit(request, operation=op, outcome="denied", resources=f"{rule_id}=unknown")
         return web.json_response({"error": "unknown builtin rule"}, status=404)
 
@@ -1035,26 +1065,32 @@ async def _mutate_agent_config(mutate) -> None:
     """
     def _read_modify_write() -> None:
         path = config_path()
-        raw: dict = {}
-        if path.is_file():
-            try:
-                loaded = json.loads(path.read_text(encoding="utf-8"))
-            except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-                raise ConfigCorruptError(f"{path} is unreadable: {exc}") from exc
-            if not isinstance(loaded, dict):
-                raise ConfigCorruptError(f"{path} is not a JSON object")
-            raw = loaded
-        # Inside the lock, so a concurrent writer cannot add an overlay between the
-        # check and the write.
-        owned = _overlay_owned_trust_settings()
-        if owned:
-            raise TrustSettingOverlayOwned(owned)
-        agent_raw = raw.get("agent")
-        if not isinstance(agent_raw, dict):
-            agent_raw = {}
-            raw["agent"] = agent_raw
-        mutate(agent_raw)
-        write_config_atomically(path, raw)
+
+        def _apply(raw: dict) -> dict:
+            # Runs inside ``update_config_locked``'s hold on the
+            # ``<config>.json.lock`` sidecar, so neither the overlay check nor
+            # the grant edit can be separated from the write by ANY other
+            # writer -- including the CLI and other processes, which the
+            # surrounding asyncio lock cannot reach.
+            owned = _overlay_owned_trust_settings()
+            if owned:
+                raise TrustSettingOverlayOwned(owned)
+            agent_raw = raw.get("agent")
+            if not isinstance(agent_raw, dict):
+                agent_raw = {}
+                raw["agent"] = agent_raw
+            mutate(agent_raw)
+            return raw
+
+        try:
+            update_config_locked(path, mutate=_apply, stamp_meta=False)
+        except ConfigReadError as exc:
+            # Same refusal as before, reported through this module's own error
+            # type so callers keep turning it into a coded 409. The locked read
+            # fails closed by default (``on_corrupt="fail"``), so the existing
+            # file is never replaced with defaults -- an absent file is still a
+            # genuine empty starting point and proceeds.
+            raise ConfigCorruptError(f"{path} is unreadable: {exc}") from exc
         # save() would have done this; a raw write must do it explicitly or the
         # grant does not take effect until a restart — and a REVOKE that does not
         # take effect is the exact failure this feature exists to prevent.

@@ -60,6 +60,13 @@ def _manifest_to_builtin_dict(manifest: AppManifest) -> dict[str, Any]:
     if manifest.skills:
         d["skills"] = list(manifest.skills)
 
+    # Same reason as agents/skills above: a typed field missing here is stripped from
+    # the persisted app.json, so a builtin's contributed commands would vanish from
+    # the launcher while an external app's survived.
+    contrib_d = manifest.contributes.to_dict()
+    if contrib_d:
+        d["contributes"] = contrib_d
+
     if manifest.mcpServers:
         d["mcpServers"] = manifest.mcpServers
 

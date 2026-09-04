@@ -55,6 +55,37 @@ Out-of-band lanes that never gate a PR:
   builds two real app bundles and performs an actual update swap, because the
   Electron unit suite stops at the `autoUpdater` handoff and never proves a real
   bundle is replaced on disk and relaunches.
+- **The ratchet verdict `main` otherwise never gets:** `main-ratchet-audit.yml`
+  re-runs only the cheap ratchet, ceiling and baseline gates on every push to
+  `main`. Two things make a push to `main` unable to answer for them in `ci.yml`:
+  GitHub keeps one *pending* run per concurrency group, so on a busy `main` each
+  run is evicted before its slower lanes report and a commit's checks end up
+  `cancelled` rather than `failure` — which is not a red X, so `main` looks green
+  while drift accumulates; and the lint lanes are surface-gated, so a
+  backend-only merge *skips* the eslint ceiling outright. This lane's group is
+  keyed on the SHA so no push can supersede an earlier push's audit, it runs both
+  surfaces unconditionally, and it reconciles one `ratchet-audit`-labeled tracking
+  issue — opened on drift, commented on each further drifting push, closed on the
+  next all-green one. Because per-SHA groups let audits for different commits
+  finish out of order, only a run whose commit is still `main`'s head writes to
+  that shared issue: a slow green audit would otherwise close the live drift
+  record a newer push just opened. An unreadable head resolves toward keeping
+  drift visible in both directions — still recorded on drift, still not closed on
+  green. Every gate step runs on `!cancelled()` rather than the default
+  `success()`, so one drifting ratchet does not skip the rest and reduce the
+  verdict to whichever gate is listed first; and the set of gate scripts is
+  pinned equal to `ci.yml`'s `backend-lint`, because a gate *added* there and not
+  mirrored here would never be measured on `main` at all. Two further details are
+  load-bearing. It sets
+  `RATCHET_SCOPE_WHOLE_TREE`, because the four diff-scoped gates
+  (`scripts/ratchet_scope.py`) would otherwise resolve an EMPTY diff on a push to
+  the branch they measure against and pass by judging nothing; and it *reads* the
+  eslint ceiling out of `ci.yml` rather than transcribing it, because a second
+  copy would keep granting the old budget after a burn-down and report green on a
+  tree the PR gate reds. It deliberately does not touch `ci.yml`'s concurrency or
+  add a second full run: full serialization or a merge queue is a runner-budget
+  call, and `test-durations.yml` already pays for a full suite on `main`.
+  Contributor-facing half: [CONTRIBUTING.md](../../CONTRIBUTING.md).
 - **Maintenance:** `ship-report.yml` (a scheduled Slack summary),
   `cleanup-temp-screenshots.yml` (prunes the ephemeral `temp-screenshots/` dir,
   see [its README](../../temp-screenshots/README.md); safe because PR bodies
@@ -125,13 +156,14 @@ Every job here is blocking.
 | `vendor-manifest` | `scripts/verify_vendor_manifest.py`. Hashes every file under `src/kiro_crew/_vendor` against the committed `scripts/vendor_manifest.sha256` — the tree is excluded from semgrep and the AI reviewers' diff, so this checksum is its only content review. Always-on (not behind the `changes` path filter) |
 | `backend-lint` | `isort --check-only`, `flake8`, `mypy` on Python 3.10 and 3.12, plus `scripts/check_black_formatting.py` — black enforced on every file outside `.github/black-baseline.txt`, which can only shrink — and `scripts/check_subprocess_encoding.py` (self-test first) — no text-mode subprocess call without an explicit `encoding=`, `**UTF8_TEXT`, or a `# subprocess-encoding: locale` marker, outside `.github/subprocess-encoding-baseline.txt`, which can only shrink — and `scripts/check_sync_io_in_async.py` (self-test first) — no blocking db / subprocess / http / `time.sleep` call inside an `async def` under `src/`, outside `.github/sync-io-in-async-baseline.txt`, which can only shrink. A stall past `dashboard.loop_stall_exit_after_secs` (25s) makes the watchdog kill the gateway and drop every in-flight turn (#3057, #1572); the escape is an offload (`await asyncio.to_thread(...)`, or a named lane from `src/kiro_crew/executors.py`) or a `# on-loop-io-ok: <why it cannot block>` marker whose reason is mandatory. All four baselined gates in this job read their diff scope from the one shared resolver in `scripts/ratchet_scope.py`, so they cannot disagree about which lines a change added; the env-base gates (`check_brand_name.py`, `check_harness_parity.py`, `check_focus_cue.py`) share the same diff parsing through its explicit-base entry points while keeping their `*_BASE_REF` base semantics |
 | `harness-parity` | `scripts/check_harness_parity.py`, self-test first. Fails on a newly added line that expresses "this is the Kiro harness" as the absence of another one — a shape that fails toward the permissive answer, so nothing else goes red. Diff-scoped; the whole-tree backlog is a non-failing report |
+| `feature-map` | `scripts/check_feature_map.py`, self-test first. Fails when a file is ADDED or DELETED under `website/src/pages/` or `src/kiro_crew/dashboard/handlers/`, or a `<Route>` entry arrives or leaves `website/src/App.tsx`, while `docs/feature-map/README.md` stays untouched. The blocking root AUTOSDE rule `feature-map-correctness` is the semantic half: it verifies changed rows against the code, rejects unrelated or cosmetic map churn, and checks that the map's net diff matches the PR's stated scope. Structural on purpose: an edit to an existing page changes a feature's behavior, which the map does not describe, so an edit-only diff never fires — a gate demanding a map review on every UI fix produces a map nobody reads. Fails OPEN on an unreadable diff, unlike the gates above: this one guards a documentation habit, not an invariant a bad line carries into `main` forever |
 | `loop-bound-locks` | `scripts/check_loop_bound_locks.py`, self-test first. Fails on any module-global `asyncio.Lock()`/`Event()`/`Queue()` declaration — those bind to the import-time (or first-use) event loop and raise `RuntimeError` when acquired from another loop (Python 3.10+). #4800 converted the tree to `kiro_crew.loop_lock.LoopBoundLock`; whole-tree, since the backlog is zero |
 | `backend-test` | 2 Python versions x 4 duration-balanced pytest-split shards (8 jobs), `-n auto` within each. Coverage only on 3.12 (3.10 passes `--no-cov` for a trace-free run) |
 | `backend-test-windows` | windows-latest, 4 shards, `--no-cov`, 180s per-test timeout. The backend supports Windows natively via `platform_compat`, and nothing else in CI holds that line |
 | `backend-test-macos` | macos-14, deliberately SCOPED (gateway, socketsec, platform-compat, pod and MCP-apps suites via a glob). A full macOS run needs its own exclusion burn-down first, and a job that is red on arrival trains people to ignore it |
 | `backend-test-sandbox` | The one job that clears the AppArmor userns restriction, so the tests guarded by `skipif(not userns_available())` EXECUTE instead of skipping. Runs all eleven sandbox-dependent suites. The shards collect the same files — nothing is deselected — but there the sandbox-guarded tests skip, so this is the only lane where those 85 assertions (the `~/.kiro/crew` keystone among them) actually execute |
 | `coverage-combine` then `coverage-gate` | Combines the 3.12 shard data, then enforces the project line-rate floors, plus a per-file floor with a shrink-only baseline (all floors live in the job's `env:` block) |
-| `frontend-lint` | `tsc -b`, `eslint --max-warnings <measured count>`, `jscpd`, and `npm run i18n:check` |
+| `frontend-lint` | `tsc -b`, `eslint` under a hard-zero warning ceiling, `jscpd`, and `npm run i18n:check` |
 | `electron-test` | The Electron shell's own node:test suite (`website/electron`) |
 | `frontend-test` | `vitest run --coverage` |
 | `cfn-lint` | Lints the artifact-deploy templates with a pinned `cfn-lint` |
@@ -171,11 +203,16 @@ Details worth knowing:
   places. Per-file enforcement is skipped for a lane whose suite ran as a
   coverage-free subset, because subset rates are not comparable to a baseline
   recorded on the full suite.
-- **`eslint --max-warnings <n>` is a ratchet baseline, and `<n>` is the measured
-  count.** Burn it down, never raise it, and never leave it above what
-  `npx eslint src/` reports: the difference is a budget new warnings land inside
-  without anyone seeing them. `test_eslint_warning_ceiling.py` keeps the number in one place so a
-  burn-down cannot leave a stale copy behind.
+- **`eslint src/ --max-warnings 0` is a hard ceiling, not a stored baseline.**
+  The tree carries no warnings, so any warning a change introduces fails this
+  job. Never lift the ceiling to admit one: a ceiling above the measured count is
+  a budget new warnings land inside without anyone seeing them, and a warning
+  admitted that way is indistinguishable from the rest. Fix it, or suppress that
+  one line with `// eslint-disable-next-line <rule> -- <why the code is correct>`,
+  which is reviewable in the diff where a lifted ceiling is not.
+  `test_eslint_warning_ceiling.py` pins the zero and pins that `ci.yml` declares
+  exactly one ceiling, so it cannot be lifted quietly — and because the value is
+  fixed rather than measured, naming it here cannot go stale.
 - **The i18n gates split into three tiers,** and only two can fail: diff-scoped
   zero-tolerance checks (a user-visible literal on a line this branch wrote, a
   file holding more than it did at the base, new English key shape, changed catalog
@@ -249,10 +286,16 @@ of the AUTOSDE rules; the semantic half is delegated to the line reviewers.
   community packs plus `semgrep/`, with `--error`. The fixtures are listed in
   `.semgrepignore` so the deliberately vulnerable fixture code is never read by
   the scan. Blocking.
-- **`dep-audit`** calls the reusable `dependency-vulnerability.yml`, which runs
+- The production dependency audit (`dependency-vulnerability.yml`, which runs
   `scripts/check_npm_audit.py` over every lockfile-backed Node project and fails
-  closed on **high or critical production** vulnerabilities. Time-boxed exceptions
-  live in `.vulnerability-exceptions.json`.
+  closed on **high or critical production** vulnerabilities) is **not** a PR
+  job, nor a nightly one. It reaches the npm registry, whose slow hours made it
+  the one red X on otherwise-green PRs and then failed nightlies for hours at a
+  stretch; it runs before every release build instead, where a vulnerable
+  dependency would actually ship. Time-boxed exceptions live in
+  `.vulnerability-exceptions.json`, and a registry stall or connection fault is
+  retried inside one shared time budget before it fails (see the
+  transient-failure contract in the security spec).
 - **`pr-hygiene`** enforces a Conventional-Commits PR title (it becomes the
   squash-merge message) and at most two commits (`git rev-list --count <= 2`).
   One commit stays the norm; the second is there so a mechanical follow-up (a
@@ -459,12 +502,35 @@ no-output review must not look clean. A BLOCKING-labelled finding without the
 `[BLOCK-MERGE]` marker is only a non-gating **advisory warning**, since a coherence
 check on that pairing mis-fires whenever the model quotes prior text.
 
+The GPT summary comment is upserted in place, which once let a failed run's
+"review incomplete" body replace a posted verdict — the REST comments API
+exposes no edit history, so a `[BLOCK-MERGE]` finding vanished from every
+surface a reader or tool checks (#8292). The same-repo GPT lane's post step
+now refuses exactly that transition: an incomplete body never overwrites a
+marker-present verdict; it keeps the existing verdict and prepends one dated
+stale-verdict notice instead. Completed verdicts and human overrides still
+replace the comment, and the fail-closed gate above is unchanged. The fork
+GPT lane (`fork-gpt-review.yml`) still PATCHes unconditionally and is tracked
+separately.
+
 ### Security posture of the reviewer jobs
 
-- Explicit fork guards (`head.repo.full_name == github.repository`), so the job
-  **skips** on a fork rather than failing an unsatisfiable credential step. GitHub
-  treats a skipped required check as satisfied, which is why fork coverage needs
-  the separate `fork-*` pipeline below.
+- Explicit fork guards (`head.repo.full_name == github.repository`) on **every
+  step**, so on a fork the job starts and then does nothing rather than failing an
+  unsatisfiable credential step. The guard is per-step and not job-level because
+  GitHub never evaluates a **skipped** job's `name:` -- while it was job-level,
+  every fork PR published the raw name expression as its check name. Fork coverage
+  still comes from the separate `fork-*` pipeline below.
+- **The job name is conditional on the head repository**, so a fork PR gets
+  `<check> (same-repo lane, not applicable to forks)` instead of the protected
+  name. Same-repo PRs keep the exact protected name. Without this, both lanes
+  publish one name and GitHub resolves a required status check to the **newest**
+  check-run of that name: a `pull_request` event firing after the fork lane
+  posted its verdict (a reopen, or an `edited` title/body on `codex-review.yml`)
+  would make the same-repo lane's own run the newest one and satisfy the
+  gate on a review that never ran. `pr-readiness.yml` was never fooled by this
+  -- it collapses every check-run of the name and treats "no completed run" as
+  pending -- so the rename closes the branch-protection half of the gate.
 - `persist-credentials: false` on checkout, so `actions/checkout` never writes the
   token into `.git/config` where a reviewer reading untrusted PR content could find
   it.
@@ -695,7 +761,10 @@ privileged from the default branch (stage 2), gated on
 named exactly like its same-repo twin (`Opus 4.8 Review`, `GPT 5.6 Review`,
 `Design Review`, `UX Review`), so branch protection is satisfied on either path, and
 it opens that check-run as early as possible keyed to `head_sha` so a job that dies
-still leaves a fail-closed result.
+still leaves a fail-closed result. On a fork PR this lane is the **only** publisher
+of that name -- the same-repo twin renames itself (see the reviewer-job security
+posture above) -- so the protected status can only be reported by a review that
+actually ran.
 
 Nothing the fork controls can influence these reviews:
 

@@ -194,11 +194,18 @@ send time.
   executed tools and then leaked its final dispatch as text lands normally
   (un-landing a turn whose earlier calls had real side effects would
   misdescribe it) and is logged at WARNING as a diagnostic instead.
-- **Context compaction**: at ≥ configured threshold (`session.autocompact_pct`, default 70%, valid 5–90), compacts **in place** on both
-  backends: kiro-cli via a `/compact` **prompt** (`session/prompt` +
+- **Context compaction**: at ≥ configured threshold (`session.autocompact_pct`, default 70%, valid 5–90), compacts **in place** on a backend that can serve
+  `/compact`: kiro-cli via a `/compact` **prompt** (`session/prompt` +
   `_kiro.dev/compaction/status` watch — never the string form of
   `_kiro.dev/commands/execute`, which kiro-cli 2.14.0 exits rc=0 on),
-  claude via SDK `/compact`. The
+  claude via SDK `/compact`. A backend OUTSIDE `ACP_BACKENDS_COMPACT` is
+  declined instead (`"compact_unsupported"`, see the gate ladder below):
+  KAS never answers the `/compact` prompt with a compaction status, so an
+  ungated dispatch stranded the status wait for the whole budget WHILE
+  HOLDING the turn semaphore and then recycled the session, losing the live
+  conversation (#7812) — it summarizes on its own initiative and its
+  `summarization_completed` frame resets the meter, so declining leaves
+  nothing unmanaged. The
   process and session ID survive, so queued/agentic work continues
   automatically. kiro-cli only: if the in-place compact fails, times out,
   or the provider lacks native support, falls back to the legacy
@@ -341,8 +348,9 @@ send time.
 |--------|---------|
 | `start_pool(blocking=True)` | Pre-spawn warm + background sessions. `blocking=False` for non-blocking mode. |
 | `get_or_create(key, agent=None, approval_policy="", speculative=False, speculative_resume=False)` | Returns `(LLMProvider, is_new, resumed)`. Uses warm pool for new sessions (default agent only). Sessions with a resume mapping skip warm pool (cold start needed for `session/load`). A `reasoning_effort_override` also skips the warm pool (`bypass_effort`): a pre-warmed provider was built without the override and post-claim fixups never touch effort, so the override must reach a fresh provider-factory call to be delivered — which also keeps the factory's effort gate the single authority reporting a dropped level. Every decision is counted via `_record_pool_decision` (`kirocrew.session.pool.decision`) with the single disqualifying reason, so the pool's hit rate and the frequency of the `bypass_resume` case are observable. Non-default agents skip warm pool and resolve their model by precedence via `_model_fallback()` — caller model > per-agent pin > global default: `model=None` (defer to kiro's agent-JSON resolution) only when the agent pins its own model, otherwise the global default, unless that default is the `"auto"` sentinel (also `None`). The per-agent pin is resolved off the event loop via `run_in_executor` using `_resolve_named_agent_model`; blank agents inherit the global, and `kirocrew` is excluded (tracks the global). `approval_policy` is persisted on the new `_Session` — callers (e.g. subagent) pass parent policy so the session inherits it. `speculative=True` (eager spawn) pre-creates ahead of a real first turn: the one-shot `_Session.first_turn` observation — a single three-member `FirstTurnState` enum (`NOTHING_ARMED` / `FRESH` / `RESUMED`), so a resume marker on an already-claimed session is unrepresentable rather than forbidden by convention — is registered ARMED (`FRESH`) and never consumed by speculative callers, and a resumable key raises `SpeculativeResumeRefused` — unless `speculative_resume=True` (resume prefetch) opts in, in which case the speculative creator performs the `session/load` and registers the observation as `RESUMED` when the load restored the transcript. The observation is consumed in one read-then-clear by the first real claimant under the per-session semaphore (fast path and won-race path alike), with the returned booleans derived from it at the return boundary — so that turn observes `(is_new=True, resumed=True)` exactly as if it had resumed itself, preserving its history-injection decision. |
+| `get_or_create(..., wait_if_busy=False)` | Optional non-waiting reuse for structured monitor delivery. It raises `SessionBusyError` at the semaphore claim boundary instead of waiting; same-key cold-start races apply the same rule. Channel callers pass the exact generation authorized by the gateway and refuse if it changes before this claim, rather than recomputing a newer conversation key. The default remains `True` for every ordinary caller. |
 | `check_context_usage(key, provider)` | Returns %. Triggers compaction at configured threshold (default 70%), warns one `CONTEXT_WARN_MARGIN_PCT` below it. |
-| `compact_if_needed(key)` | Awaitable twin of the `check_context_usage` trigger for callers that must not start their next turn while a compaction is pending (the task runner's between-steps check, #4686). Same gates in the same order — both entry points consume the shared `_compaction_gate_decision` ladder, the single owner of the gate order (its docstring documents each rung) — then AWAITS `_compact_session`. Returns the outcome: `"absent"`, `"reset"` (the settled verdict on the prior attempt was ineffective-and-still-critical and the promoted escalation reset the session here, awaited), `"cc_managed"` (checked before the threshold, mirroring `check_context_usage`), `"below_threshold"`, `"unconfirmed"`, `"in_progress"`, `"cooldown"`, `"ok"`, `"busy"`, `"recycled"`, `"failed"`. A `"busy"` decline means a turn holds the semaphore — the caller leaves the session alone and retries later, never falls back to a direct `provider.compact()`. |
+| `compact_if_needed(key)` | Awaitable twin of the `check_context_usage` trigger for callers that must not start their next turn while a compaction is pending (the task runner's between-steps check, #4686). Same gates in the same order — both entry points consume the shared `_compaction_gate_decision` ladder, the single owner of the gate order (its docstring documents each rung) — then AWAITS `_compact_session`. Returns the outcome: `"absent"`, `"reset"` (the settled verdict on the prior attempt was ineffective-and-still-critical and the promoted escalation reset the session here, awaited), `"cc_managed"` (checked before the threshold, mirroring `check_context_usage`), `"below_threshold"`, `"compact_unsupported"` (the provider names a backend outside `ACP_BACKENDS_COMPACT`, so no `/compact` is dispatched and no semaphore is taken — checked AFTER the threshold so a declined backend keeps its per-turn usage log, #7812), `"unconfirmed"`, `"in_progress"`, `"cooldown"`, `"ok"`, `"busy"`, `"recycled"`, `"failed"`. A `"busy"` decline means a turn holds the semaphore — the caller leaves the session alone and retries later, never falls back to a direct `provider.compact()`. |
 | `record_success(key)` / `record_failure(key)` | Circuit breaker tracking. |
 | `release(key)` | Release per-session semaphore (must call in `finally`). |
 | `cancel_current(key, *, wait_ack_timeout=0.0)` | Cancel in-flight operation without destroying session. Returns `CancelOutcome`. Default `wait_ack_timeout=0.0` preserves fire-and-forget behavior for internal callers (taskrunner, subagent, llm_helpers). |
@@ -353,7 +361,7 @@ send time.
 | `remove_if_unclaimed(key)` | Conditional `remove` for the resume-prefetch TTL: removes the session only if the one-shot `first_turn` observation is still armed (not `NOTHING_ARMED` — no real turn claimed it) AND the per-session semaphore is unheld, checked atomically under the manager lock. Preserves the session map (mirrors `remove`'s revivable shape), so the next focus or first message resumes normally. Returns `True` iff a session was removed. A claimant handed the session object but not yet holding the semaphore loses benignly: its re-validate fails and it cold-starts. |
 | `close_all(drain_timeout=None)` | Pre-shutdown **drain** of in-flight turns (via `drain_active_turns`), then save all active session mappings, shut down every session, and drain the warm pool. `drain_timeout` bounds that drain (`None` = full default budget); a caller wrapping `close_all()` in its own hard deadline (Slack's restart wraps it in `wait_for(..., 5s)`) passes a smaller budget (e.g. `2.0`) so the kill path still fits inside the deadline. A cancel that fires mid-drain (outer deadline) **propagates** (CancelledError is deliberately not caught) so the caller's hard deadline stays honest; recovery of a still-held native-session lock is the next-startup orphan reaper's job. |
 | `drain_active_turns(timeout=None)` | Best-effort co-operative drain that brings in-flight prompts to a safe turn boundary **before** teardown, so kiro-cli closes its native turn and releases its session lock (`~/.kiro/sessions/cli/<uuid>.json`) on the subsequent SIGTERM — otherwise the next gateway's `session/load` hits "active in another process" and the slot returns empty completions (the Make-Live empty-response incident, #200). For each registered session with an **unfinished** turn (native turn-done not yet acked — independent of cancel state, so an already-cancelled-but-not-acked turn is still drained), it issues a graceful `session/cancel` and waits (bounded) for the ack; a turn already cancelled (`cancel()` → `"no_turn"`) is waited on directly via `wait_turn_done`. The whole operation is bounded by `timeout` (`None` → `_DRAIN_ACTIVE_TURNS_TIMEOUT_SECS`, default 5.0s; internal cap is `timeout+1.0`); on timeout it logs and returns so the caller falls through to the SIGTERM-first kill path — never hangs teardown, never raises. `timeout <= 0` disables the drain. Returns the count of unfinished turns (observability/tests). Only registered user sessions are drained; the warm pool holds never-prompted processes. |
-| `begin_turn(key)` | **Synchronous** pre-dispatch gate against the lease-dispatch race (#200 / Codex HIGH). A caller holds the per-session semaphore *lease* from `get_or_create` through the whole turn, but the native turn only opens on the first `provider.stream(...)` iteration; the `get_or_create` `_closing` gate cannot revoke a lease already issued before `close_all` set `_closing`. Callers (dashboard `chat_runner`, Slack handler) MUST call `begin_turn` synchronously — **no `await` between it and the `async for` stream drive** — so the `_closing` read and the stream's turn registration (`AcpClient.stream_events` clears `_turn_done` before its first `await`) form one yield-free span, strictly ordered w.r.t. `close_all`'s `_closing` set: the turn is either registered before the drain snapshot (and drained) or the caller aborts. Raises `SessionClosingError` (a `RuntimeError`) when closing; the caller's `finally` releases the lease. Deliberately NOT `async`/lock-guarded (an `await` would reopen the race). |
+| `begin_turn(key)` | **Synchronous** pre-dispatch gate against the lease-dispatch race (#200 / Codex HIGH). A caller holds the per-session semaphore *lease* from `get_or_create` through the whole turn, but the native turn only opens on the first `provider.stream(...)` iteration; the `get_or_create` `_closing` gate cannot revoke a lease already issued before `close_all` set `_closing`. Callers (dashboard `chat_runner`, Slack handler, and structured Slack/Discord monitor adapters through `TurnDriver.closing_gate`) MUST call `begin_turn` synchronously — **no `await` between it and the `async for` stream drive** — so the `_closing` read and the stream's turn registration (`AcpClient.stream_events` clears `_turn_done` before its first `await`) form one yield-free span, strictly ordered w.r.t. `close_all`'s `_closing` set: the turn is either registered before the drain snapshot (and drained) or the caller aborts. Raises `SessionClosingError` (a `RuntimeError`) when closing; the caller's `finally` releases the lease. Deliberately NOT `async`/lock-guarded (an `await` would reopen the race). |
 | `warm_pool_size` | Property: number of warm sessions available. |
 
 ## Stop Orchestration
@@ -377,6 +385,24 @@ success. The next prompt handler (dashboard `_run_chat`, Slack
 re-inject the cancelled user prompt and partial assistant output. This is
 necessary because kiro-cli discards cancelled turns from its own ACP
 conversation log, so the LLM has no memory of the interrupted request.
+
+### Edit rewind context boundary
+
+Dashboard Edit + Send replaces the ACP session and rebuilds context from the
+retained canonical history. The discarded suffix is excluded from session
+replay, stop recovery, and persisted-history context; stable memory, rules,
+skills, and project context remain available.
+
+The native conversation is discarded before the retained history rewrite, and
+the cleared resume pointer is flushed durably before the rewrite is committed,
+so a gateway restart cannot resurrect the discarded native session. If the
+rewrite fails -- or the slot was concurrently rebound to another transcript
+while it was in flight -- Edit + Send returns a 503 and restores the dashboard
+slot, but it cannot restore the discarded native session; a later turn
+cold-starts from the original persisted history instead of resuming it.
+App-authenticated requests may rewind only a slot's own dashboard session:
+a channel-linked slot is refused, because its effective session is a
+conversation the app does not own.
 
 ### Eager Respawn
 
@@ -475,9 +501,16 @@ Three properties the route holds, each of which fails silently if broken:
   turn on the session with no dashboard task behind it (an inbound channel
   message, which `slot.running` cannot see), a turn mid-write, a plan between
   stages, and children still running after their parent's turn ended.
-  `has_active_turn` inherits the reload route's edge: a turn holding the
-  per-session semaphore before its prompt is in flight is not seen. Matching the
-  sibling is deliberate — two notions of "busy" for one teardown drift apart.
+  The four probes above are best-effort fast paths; the authoritative guard is
+  the fifth, `discard_conversation(..., skip_if_busy=True)`, which probes the
+  per-session SEMAPHORE atomically with the session pop and refuses with the
+  same `turn_in_flight` 409. It closes the edge the fast paths share: a turn
+  holding the semaphore before its prompt is in flight is invisible to
+  `has_active_turn`. This is the same contract the sibling reload route rests
+  on, so the two teardowns keep one notion of "busy". Of the route's refusal
+  paths, only the atomic one emits a SEL `denied` record — it is the sole
+  refusal that occurs after the route has committed to the teardown; the
+  fast-path 409s are pre-checks and stay unlogged, as they are on the sibling.
 
 Authorization is `_app_cancel_denied`, not a slot-ownership check, and that
 distinction is load-bearing: `get_or_create_slot` resolves `linked_session_key`
@@ -847,6 +880,61 @@ start_pool()
   ├── _spawn_warm() × pool_size   → warm pool queue (instant assignment)
   └── _ensure_background()        → BACKGROUND_KEY session (persistent)
 ```
+
+## Removing a session from the registry: record the end
+
+**Every path that removes an entry from `_sessions` must report that removal to
+`metrics/sessions.py`** — with `await record_session_ended(key, end_reason=...)` for
+a session that lived, `await record_sessions_ended(keys, end_reason=...)` for a path
+that drains many at once, or `await discard_session_start(key)` for a registration
+being rolled back before it ever became one. All three are coroutines: the
+breadcrumb unlink is a filesystem syscall and must not run on the event loop, where
+a slow or network-backed data home would park every gateway task behind one closing
+session. This is a correctness requirement on lifecycle code, not a telemetry
+nicety, and it is documented here rather than only in the metrics module because the
+people who can break it are editing this subsystem.
+
+The reason it matters more than a missing sample: a session start writes a
+breadcrumb file that survives process death, which is what lets a session killed
+with its gateway be counted at all. A removal that reports nothing leaves that
+breadcrumb behind, and the next boot reads a surviving breadcrumb as a crash. So
+an unrecorded removal does not lose a data point — it **fabricates a crash that
+never happened**, inside the one population the instrument exists to expose.
+
+Practical rules when you add or change a removal path:
+
+- Report it while you still hold the session registry lock, in the same tick as the
+  `pop` / `del` / `clear`. The call's own pop and histogram record happen before its
+  single suspension point, and holding the lock across that point is what keeps a
+  racing cold start from registering a successor under the same key and having its
+  record consumed by the predecessor's teardown. Reporting AFTER the path's other
+  awaits is the bug this rule exists to prevent.
+- Drain many keys with ONE `record_sessions_ended` call, never a loop of
+  `record_session_ended` awaits. A per-key await puts a cancellation point between
+  two keys, so every key after it is popped but unrecorded — and on `close_all`,
+  which a cancellation reaches by design, that fabricates a crash per remaining
+  session.
+- Keep your MANDATORY post-pop cleanup reachable. All three recording coroutines
+  absorb a cancellation at their crumb hop for exactly this reason, so the call
+  itself will not abort you — but the rule that makes that safe is yours to hold:
+  once you have popped the registry you are past the point of no return, so the
+  session-map mutation that finishes the teardown (`destroy`'s `delete`,
+  `discard_conversation`'s and `reset`'s `clear_sid`) must not sit behind a
+  suspension point that can be skipped. Put it in a `finally` that covers every
+  await after the pop, and never add a bare `await` between the pop and it.
+- Give it its own `end_reason` if it is genuinely a different event. The enum is
+  closed and lives in `metrics/sessions.py`; reusing a label merges two
+  populations, and a metric is not a good reason to grow a lifecycle signature.
+- A registration cancelled mid-flight is NOT an end. Use `discard_session_start`,
+  which consumes the breadcrumb without emitting a lifetime.
+
+`test/metrics/test_session_duration.py::TestEveryRegistryRemovalRecordsAnEnd`
+enforces this. It is fail-closed and discovers its own scope: an AST walk over
+every module under `src/kiro_crew` that mentions `_sessions`, recognising the
+`pop`, `del` and `clear` spellings, so a new removal path anywhere fails the gate
+the day it lands rather than waiting to be added to a list. A container that
+merely shares the attribute name can be exempted with a stated reason, and the
+exemption self-voids if that module ever starts writing breadcrumbs.
 
 ## Security: PreToolUse Command Enforcement
 

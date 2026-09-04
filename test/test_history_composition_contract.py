@@ -31,6 +31,7 @@ def test_history_facade_keeps_composed_entrypoints_callable(tmp_path: Path) -> N
         "HistoryConsolidator",
         "append_off_loop",
         "append_if_absent_off_loop",
+        "append_rows_if_absent_off_loop",
         "update_metadata_off_loop",
         "parse_search_query",
         "snippet_needles",

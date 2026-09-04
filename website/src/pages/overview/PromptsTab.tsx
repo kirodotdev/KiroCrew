@@ -7,9 +7,10 @@ import { setPendingInput, switchSlot } from '../../store/chatSlice'
 import { api, ApiError } from '../../api/client'
 import { Card, CardTitle, Btn, Badge, SearchInput, EmptyState } from '../../components/ui'
 import Modal from '../../components/Modal'
-import PromptForm, { assemblePromptContent, parsePromptContent, type PromptFormData, type PromptScope } from '../../components/PromptForm'
+import PromptForm, { PROMPT_FILENAME_MAX_BYTES, assemblePromptContent, parsePromptContent, promptNameProblem, type PromptFormData, type PromptScope } from '../../components/PromptForm'
 import InfoTip from '../../components/InfoTip'
 import ListDetailBack from '../../components/ListDetailBack'
+import { useSidePanelLeaveGuard } from '../../components/SidePanelLayout'
 import { parseErrorCode } from '../../utils/errorReport'
 import { useListDetailView } from '../../hooks/useListDetailView'
 import { useProvider } from '../../providers'
@@ -108,13 +109,23 @@ export default function PromptsTab() {
   const [detailLoading, setDetailLoading] = useState(false)
   const [mutationError, setMutationError] = useState('')
 
-  // A write's own error text is the server's, and two codes need translating
-  // before a user can act on them: `no_active_project` says "no active project
-  // for local scope", but the control they chose is labelled "This project" and
-  // the word "local" appears nowhere in this UI; `content_conflict` names a
-  // compare-and-swap the user never saw. Every other code's prose is already
-  // actionable, so this maps the exceptions rather than building a table that
-  // would drift from the handler.
+  // A write's own error text is the server's, and four codes need translating
+  // before a user can act on them. Two name the mechanism rather than the
+  // control: `no_active_project` says "no active project for local scope", but
+  // the control they chose is labelled "This project" and the word "local"
+  // appears nowhere in this UI; `content_conflict` names a compare-and-swap the
+  // user never saw. The other two are the create path's own refusals of a
+  // typed name -- `invalid_name` when nothing survives sanitizing,
+  // `name_too_long` when the filename exceeds the byte cap -- and both answer
+  // in English without saying which rule was broken. A name of characters
+  // outside a-z0-9 earns the first and a multi-byte name earns the second at a
+  // third of the length an ASCII one would, so the user least likely to read
+  // the English prose is the one most likely to be shown it. The form now
+  // catches both client-side, but that sanitizer is a mirror rather than the
+  // authority, so these stay the honest answer for a name the preview accepted
+  // and the server did not. Every other code's prose is already actionable, so
+  // this maps the exceptions rather than building a table that would drift from
+  // the handler.
   const writeError = (e: Error) => {
     const code = e instanceof ApiError ? parseErrorCode(e.body) : undefined
     // The conflict copy tells the user to reopen the prompt, so the same-row
@@ -124,7 +135,11 @@ export default function PromptsTab() {
       ? i18nT('pages.overview.promptsTab.no_active_project_hint')
       : code === 'content_conflict'
         ? i18nT('pages.overview.promptsTab.content_conflict_hint')
-        : e.message)
+        : code === 'invalid_name'
+          ? i18nT('pages.overview.promptsTab.invalid_name_hint')
+          : code === 'name_too_long'
+            ? i18nT('pages.overview.promptsTab.name_too_long_hint', { max: PROMPT_FILENAME_MAX_BYTES })
+            : e.message)
   }
 
   // Prefix-invalidates the list AND every cached detail (['prompts', <key>]).
@@ -285,8 +300,9 @@ export default function PromptsTab() {
    *  after the fence, the spacing of the description field), so a prompt whose
    *  on-disk shape differs from that would read as dirty with zero edits and
    *  pop a discard-confirm the user never earned. */
-  const editDirty = () =>
-    detailEditing && assemblePromptContent(editForm) !== editBaselineRef.current
+  const editDirty = useCallback(() =>
+    detailEditing && assemblePromptContent(editForm) !== editBaselineRef.current,
+  [detailEditing, editForm])
 
   /** True when the create form holds anything typed. Unlike editDirty there is
    *  no baseline to compare against — the form always opens empty, so any
@@ -294,6 +310,53 @@ export default function PromptsTab() {
    *  choice, not content, and alone it is not worth an "are you sure". */
   const createDirty = () =>
     !!(createForm.name.trim() || createForm.description.trim() || createForm.body.trim())
+
+  // The host page renders this tab conditionally (`{tab === 'prompts' &&
+  // <PromptsTab />}`), so clicking another tab in the rail UNMOUNTS the pane and
+  // takes the open editor with it. Every in-pane exit already asks before
+  // destroying typed work — the editor's Cancel, the modal's Cancel and X, and
+  // selecting a different row — but the rail click belongs to the shell, so
+  // until it consults this guard it was the one exit that discarded a draft in
+  // silence. Same copy as those confirms, because it is the same question.
+  //
+  // Deliberately `editDirty()` alone, NOT the create form: the create modal
+  // renders a full-viewport backdrop above the rail, so while a create draft is
+  // open no rail tab (and no mobile back bar) can be clicked at all — measured,
+  // not assumed: a capture run driving the rail with the modal open cannot reach
+  // the button, the backdrop takes the click. Adding `createDirty()` here would
+  // guard an unreachable path, and unqualified it would be actively wrong, since
+  // discarding a create leaves `createForm` holding the abandoned text (only
+  // OPENING the modal resets it) and every later tab switch would ask about a
+  // draft the user already threw away. If the modal ever stops covering the
+  // rail, the create form needs this same guard.
+  useSidePanelLeaveGuard(() =>
+    !editDirty() || confirm(i18nT('pages.overview.promptsTab.discard_unsaved_changes')))
+
+  // The guard above is consulted by every exit that has been wired to ask: this
+  // layout's own rail and mobile back bar, the global sidebar, and the command
+  // palette. A reload, a tab close, or navigating the browser off the dashboard
+  // entirely destroys the same draft, and `beforeunload` is the only thing the
+  // platform offers there — the same idiom, for the same reason, as
+  // ArtifactDetailPage, PapyrusPage, MdNotebook and ChatPage.
+  //
+  // NOT covered, and deliberately named rather than implied: the browser's own
+  // Back/Forward button, and in-app `navigate()` callers that have not been
+  // wired (notification jumps, and any future one). `beforeunload` does not fire
+  // for Back (the document never unloads) and react-router's `useBlocker` needs
+  // a data router the dashboard does not mount, so vetoing Back means pushing
+  // sentinel history entries under a router that owns the stack. The structural
+  // retirement of this per-caller wiring is tracked in #8010; until then a new
+  // navigation surface has to opt in, and forgetting fails silently.
+  useEffect(() => {
+    if (!editDirty()) return
+    const warn = (e: BeforeUnloadEvent) => { e.preventDefault(); e.returnValue = '' }
+    window.addEventListener('beforeunload', warn)
+    return () => window.removeEventListener('beforeunload', warn)
+    // `editDirty` is a useCallback over detailEditing + editForm, which is what
+    // it reads; the baseline is a ref, so it cannot be a dependency and does not
+    // need to be — it is only written when the editor OPENS, which flips
+    // detailEditing in the same commit.
+  }, [editDirty])
 
   const select = (p: Prompt) => {
     // A write in flight owns the panes it is about to update. Switching now
@@ -545,7 +608,13 @@ export default function PromptsTab() {
         if (createDirty() && !confirm(i18nT('pages.overview.promptsTab.discard_unsaved_changes'))) return
         setCreating(false); setMutationError('')
       }}>{i18nT('pages.overview.promptsTab.cancel')}</Btn>
-      <Btn primary disabled={!createForm.name.trim() || !createForm.body.trim() || createPrompt.isPending} onClick={() => createPrompt.mutate(createForm)}>{i18nT('pages.overview.promptsTab.create')}</Btn>
+      {/* Gated on the rule the SERVER applies, not on `.trim()`: a name whose
+          every character is outside a-z0-9 is non-empty here but empty there,
+          and a multi-byte name can exceed the filename byte cap while looking
+          short — both used to be sent as requests that could only 400. The
+          form's hint says which rule the name broke, which is what keeps a
+          disabled button from being a dead end. */}
+      <Btn primary disabled={!createForm.name.trim() || promptNameProblem(createForm.name) !== null || !createForm.body.trim() || createPrompt.isPending} onClick={() => createPrompt.mutate(createForm)}>{i18nT('pages.overview.promptsTab.create')}</Btn>
     </>}>
       <PromptForm data={createForm} onChange={setCreateForm} />
       {mutationError && <p className="text-danger text-[12px] mt-2">{mutationError}</p>}

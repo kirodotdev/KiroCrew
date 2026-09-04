@@ -27,6 +27,7 @@ from urllib.parse import quote
 
 from kiro_crew import github_runner
 
+from . import github_normalization, github_queries, github_transport
 from .errors import (
     ProviderCliError,
     ProviderInvalidInputError,
@@ -100,7 +101,7 @@ parse_github_repo_url = github_runner.parse_github_repo_url
 # unrelated secrets (AWS/Slack/SSH) can never leak to a substituted or
 # compromised gh.
 
-_GH_OVERRIDE_ENV = "KIROCREW_ISSUE_RADAR_GH"
+_GH_OVERRIDE_ENV = github_transport.GH_OVERRIDE_ENV
 
 
 def _gh_bin() -> str:
@@ -112,14 +113,7 @@ def _gh_bin() -> str:
     ``KIROCREW_ISSUE_RADAR_GH`` to an absolute path to override (still
     validated), or ``KIROCREW_PROVIDER_BIN_STRICT=1`` to require a root-owned
     ``gh``. Raises :class:`GhSetupError` if no acceptable executable is found."""
-    try:
-        return github_runner.resolve_gh(override_env=_GH_OVERRIDE_ENV)
-    except github_runner.SetupError as exc:
-        # A host-setup problem the user must fix (gh absent, wrong override
-        # path, a binary owned by another user), not a transient API failure —
-        # surface it as a GhSetupError so the connect dialog offers
-        # instructions.
-        raise GhSetupError(str(exc), reason="not_installed") from exc
+    return github_transport.resolve_binary(override_env=_GH_OVERRIDE_ENV)
 
 
 def _stderr_tail(proc: subprocess.CompletedProcess) -> str:
@@ -129,7 +123,7 @@ def _stderr_tail(proc: subprocess.CompletedProcess) -> str:
     paths and private hosts are stripped while the actionable phrasing (auth,
     not-found, 403, timeout) is preserved.
     """
-    return sanitize_cli_stderr(" ".join((proc.stderr or "").strip().splitlines()[-3:]))
+    return github_transport.stderr_tail(proc, sanitize=sanitize_cli_stderr)
 
 
 def _gh_run(
@@ -141,29 +135,12 @@ def _gh_run(
     success, failure, and timeout. This wrapper keeps Issue Radar's error
     taxonomy (GhSetupError/GhCliError) so routes and the connect dialog are
     untouched."""
-    gh = _gh_bin()
-    try:
-        # pin_host: Issue Radar is github.com-only by design (its connect
-        # validation rejects every other host) and its API paths never pass
-        # --hostname, so an ambient GH_HOST must not be able to steer them to
-        # an enterprise instance.
-        return github_runner.run_gh(
-            [gh, *argv[1:]],
-            timeout=timeout,
-            input_text=input_text,
-            audit_caller="core:issue-radar",
-            pin_host="github.com",
-        )
-    except FileNotFoundError as exc:  # pragma: no cover — _gh_bin guards first
-        raise GhSetupError(
-            "the `gh` CLI is not installed on this host", reason="not_installed"
-        ) from exc
-    except subprocess.TimeoutExpired as exc:
-        raise GhCliError(f"`gh` timed out after {timeout}s") from exc
-    except github_runner.SetupError as exc:
-        # Audit-or-deny refusal (SEL unavailable): a transient host problem,
-        # not a connect-dialog setup issue — surface as the retryable class.
-        raise GhCliError(str(exc)) from exc
+    return github_transport.run(
+        argv,
+        timeout=timeout,
+        input_text=input_text,
+        gh_bin=_gh_bin,
+    )
 
 
 def _run_gh_api(
@@ -177,41 +154,22 @@ def _run_gh_api(
     ``paginate=False`` to cap at a single ``per_page`` page (used for closed
     issues, which can number in the thousands).
     """
-    argv = ["gh", "api", path]
-    if paginate:
-        argv.append("--paginate")
-    argv += ["--jq", jq_filter]
-    proc = _gh_run(argv, timeout=timeout)
-
-    if proc.returncode != 0:
-        tail = _stderr_tail(proc)
-        _raise_if_auth_failure(tail)
-        raise GhCliError(f"gh api {path} failed (exit {proc.returncode}): {tail}")
-
-    out: list[dict] = []
-    for line in (proc.stdout or "").splitlines():  # --jq emits JSONL, one object per line
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            out.append(json.loads(line))
-        except json.JSONDecodeError:
-            continue
-    return out
+    return github_transport.run_api(
+        path,
+        jq_filter,
+        timeout=timeout,
+        paginate=paginate,
+        gh_run=_gh_run,
+        auth_classifier=_raise_if_auth_failure,
+        sanitize=sanitize_cli_stderr,
+    )
 
 
 # Markers `gh` prints when the CLI itself has no usable credentials (as opposed
 # to a repo simply being out of reach for an authenticated user). Matched
 # case-insensitively against the stderr tail so the connect dialog can offer
 # `gh auth login` instead of echoing an opaque exit code.
-_GH_AUTH_MARKERS = (
-    "gh auth login",
-    "not logged in",
-    "authentication required",
-    "requires authentication",
-    "bad credentials",
-    "http 401",
-)
+_GH_AUTH_MARKERS = github_transport.GH_AUTH_MARKERS
 
 
 def _raise_if_auth_failure(stderr_tail: str) -> None:
@@ -220,12 +178,7 @@ def _raise_if_auth_failure(stderr_tail: str) -> None:
     No-op for every other failure, so the caller still raises its own, more
     specific ``GhCliError`` with the full context.
     """
-    low = (stderr_tail or "").lower()
-    if any(m in low for m in _GH_AUTH_MARKERS):
-        raise GhSetupError(
-            "the `gh` CLI is not authenticated — run `gh auth login`",
-            reason="not_authenticated",
-        )
+    github_transport.raise_if_auth_failure(stderr_tail, markers=_GH_AUTH_MARKERS)
 
 
 def verify_repo_access(owner: str, repo: str, *, timeout: float = GH_TIMEOUT_SEC) -> dict:
@@ -510,12 +463,7 @@ def list_contributed_repos(
 def _parse_gh_timestamp(value: object) -> datetime | None:
     """Parse a GitHub ISO-8601 UTC stamp (``2026-07-25T20:57:01Z``) to an aware
     datetime, or None when absent/malformed."""
-    if not isinstance(value, str) or not value:
-        return None
-    try:
-        return datetime.fromisoformat(value.replace("Z", "+00:00"))
-    except ValueError:
-        return None
+    return github_normalization.parse_gh_timestamp(value)
 
 
 def get_current_login(*, timeout: float = GH_TIMEOUT_SEC) -> str | None:
@@ -565,7 +513,7 @@ def list_repo_labels(owner: str, repo: str, *, timeout: float = GH_TIMEOUT_SEC) 
 # available to any reader. Callers cache whichever result they get (with a
 # ``source`` marker) so the detail badge and the "created by member" filter read
 # it instantly.
-_MEMBER_ASSOC_RANK = {"OWNER": 3, "MEMBER": 2, "COLLABORATOR": 1}
+_MEMBER_ASSOC_RANK = github_normalization.MEMBER_ASSOC_RANK
 
 
 def list_repo_collaborators(
@@ -604,16 +552,7 @@ def derive_members(issues: list[dict]) -> list[dict]:
     author-less issues are ignored. This only ever sees members who happened to
     open an issue — hence it is a fallback, not the primary source.
     """
-    best: dict[str, str] = {}
-    for iss in issues:
-        login = iss.get("author")
-        assoc = iss.get("author_association")
-        if not login or assoc not in _MEMBER_ASSOC_RANK:
-            continue
-        current = best.get(login)
-        if current is None or _MEMBER_ASSOC_RANK[assoc] > _MEMBER_ASSOC_RANK[current]:
-            best[login] = assoc
-    return [{"login": login, "association": assoc} for login, assoc in sorted(best.items())]
+    return github_normalization.derive_members(issues)
 
 
 # ── single-issue detail + timeline (powers the detail pane) ──────────────────
@@ -721,26 +660,11 @@ def get_ref_summary(owner: str, repo: str, number: int, *, timeout: float = GH_T
 def _norm_reactions(r: dict | None) -> dict | None:
     """Normalize a GitHub reactions object; ``None`` when there are none (so the
     UI only renders a reactions strip when it carries signal)."""
-    if not r:
-        return None
-    total = r.get("total_count") or 0
-    if total <= 0:
-        return None
-    return {
-        "total": total,
-        "plus1": r.get("+1", 0),
-        "minus1": r.get("-1", 0),
-        "laugh": r.get("laugh", 0),
-        "hooray": r.get("hooray", 0),
-        "confused": r.get("confused", 0),
-        "heart": r.get("heart", 0),
-        "rocket": r.get("rocket", 0),
-        "eyes": r.get("eyes", 0),
-    }
+    return github_normalization.norm_reactions(r)
 
 
 def _actor_login(ev: dict) -> str | None:
-    return (ev.get("actor") or {}).get("login")
+    return github_normalization.actor_login(ev)
 
 
 def _normalize_timeline_event(ev: dict) -> dict | None:
@@ -753,114 +677,11 @@ def _normalize_timeline_event(ev: dict) -> dict | None:
     review_requested, head_ref_*, and similar bookkeeping — are noise here and
     are dropped.
     """
-    etype = ev.get("event")
-    created = ev.get("created_at")
-    if etype == "commented":
-        return {
-            "kind": "comment",
-            # ``id`` and ``updated_at`` are load-bearing for the crew claim
-            # protocol, not decoration. A crew keeps ONE comment as its public
-            # claim ledger and rewrites it (``update_issue_comment``), so without
-            # ``id`` it cannot address its own comment to PATCH it — and
-            # ``created_at`` on an EDITED comment is still the ORIGINAL post time,
-            # so a crew heartbeating every 20 minutes would read as days stale and
-            # lose a claim it is actively working. Both are on the timeline's
-            # ``commented`` event already, so this costs nothing.
-            "id": ev.get("id"),
-            "actor": (ev.get("user") or {}).get("login"),
-            "created_at": created,
-            "updated_at": ev.get("updated_at"),
-            "body": ev.get("body") or "",
-            "author_association": ev.get("author_association"),
-            "reactions": _norm_reactions(ev.get("reactions")),
-        }
-    if etype in ("labeled", "unlabeled"):
-        lab = ev.get("label") or {}
-        return {
-            "kind": etype,
-            "actor": _actor_login(ev),
-            "created_at": created,
-            "label": {"name": lab.get("name"), "color": lab.get("color")},
-        }
-    if etype in ("assigned", "unassigned"):
-        return {
-            "kind": etype,
-            "actor": _actor_login(ev),
-            "created_at": created,
-            "assignee": (ev.get("assignee") or {}).get("login"),
-        }
-    if etype == "closed":
-        return {
-            "kind": "closed",
-            "actor": _actor_login(ev),
-            "created_at": created,
-            "state_reason": ev.get("state_reason"),
-            "commit_id": ev.get("commit_id"),
-        }
-    if etype == "reopened":
-        return {"kind": "reopened", "actor": _actor_login(ev), "created_at": created}
-    if etype == "renamed":
-        rn = ev.get("rename") or {}
-        return {
-            "kind": "renamed",
-            "actor": _actor_login(ev),
-            "created_at": created,
-            "rename": {"from": rn.get("from"), "to": rn.get("to")},
-        }
-    if etype in ("milestoned", "demilestoned"):
-        return {
-            "kind": etype,
-            "actor": _actor_login(ev),
-            "created_at": created,
-            "milestone": (ev.get("milestone") or {}).get("title"),
-        }
-    if etype == "cross-referenced":
-        src = (ev.get("source") or {}).get("issue") or {}
-        return {
-            "kind": "cross-referenced",
-            "actor": _actor_login(ev),
-            "created_at": created,
-            "source": {
-                "number": src.get("number"),
-                "title": src.get("title"),
-                "url": src.get("html_url"),
-                "state": src.get("state"),
-                "is_pr": bool(src.get("pull_request")),
-            },
-        }
-    if etype == "referenced":
-        return {
-            "kind": "referenced",
-            "actor": _actor_login(ev),
-            "created_at": created,
-            "commit_id": ev.get("commit_id"),
-        }
-    # ── pull-request-only timeline events (never emitted for plain issues) ──
-    # A PR's timeline additionally carries code reviews and commits. They are
-    # additive here: an issue timeline never contains them, so keeping them in
-    # the shared normalizer only enriches the PR detail pane. ``reviewed`` uses
-    # ``submitted_at`` (not ``created_at``) and ``committed`` uses the commit
-    # author's date, so both fall back to those before the generic ``created``.
-    if etype == "reviewed":
-        return {
-            "kind": "reviewed",
-            "actor": (ev.get("user") or {}).get("login"),
-            "created_at": ev.get("submitted_at") or created,
-            "review_state": ev.get("state"),
-            "body": ev.get("body") or "",
-        }
-    if etype == "committed":
-        # Commit events have no ``actor`` object — the author is embedded, and
-        # the human-facing login (when present) lives on ``.author`` too.
-        author = ev.get("author") or {}
-        return {
-            "kind": "committed",
-            "actor": author.get("name") or (ev.get("committer") or {}).get("name"),
-            "created_at": author.get("date") or (ev.get("committer") or {}).get("date") or created,
-            "commit_id": ev.get("sha"),
-            "message": (ev.get("message") or "").splitlines()[0] if ev.get("message") else "",
-        }
-    return None
+    return github_normalization.normalize_timeline_event(
+        ev,
+        reaction_normalizer=_norm_reactions,
+        actor_reader=_actor_login,
+    )
 
 
 def list_issue_timeline(
@@ -977,13 +798,11 @@ def list_pr_timeline(
 
 # The dependencies API answers a list of issue objects; only the number, state,
 # title and PR-ness are needed to both draw the edge and seed the node.
-_DEP_ISSUE_JQ = (
-    ".[] | {number: .number, title: .title, state: .state, " "is_pr: (.pull_request != null)}"
-)
+_DEP_ISSUE_JQ = github_queries.DEP_ISSUE_JQ
 
 
 def _dep_node_kind(is_pr: bool) -> str:
-    return "pull" if is_pr else "issue"
+    return github_normalization.dep_node_kind(is_pr)
 
 
 def _dep_node_state(state: Any, merged_at: Any = None) -> str:
@@ -992,12 +811,7 @@ def _dep_node_state(state: Any, merged_at: Any = None) -> str:
     A PR that GitHub reports as ``closed`` but carries a ``merged_at`` is shown as
     ``merged`` — the auto-unlock semantics turn on merged-vs-closed, and the graph
     view colours by it — while everything else collapses to open/closed."""
-    if merged_at:
-        return "merged"
-    s = str(state or "").lower()
-    if s == "merged":
-        return "merged"
-    return "closed" if s == "closed" else "open"
+    return github_normalization.dep_node_state(state, merged_at)
 
 
 def _is_deps_feature_absent(exc: GhCliError) -> bool:
@@ -1012,8 +826,7 @@ def _is_deps_feature_absent(exc: GhCliError) -> bool:
     it would let a refresh overwrite the cached graph with a wrong-empty one and
     fire a false unlock (blocker count 1 -> 0) for every dependent item.
     """
-    msg = str(exc)
-    return "HTTP 404" in msg or "HTTP 410" in msg
+    return github_queries.is_deps_feature_absent(exc)
 
 
 def list_issue_blocked_by(
@@ -1028,14 +841,14 @@ def list_issue_blocked_by(
     dependencies still gets its inferred graph. ``number`` is coerced to ``int``
     before it reaches the path so it cannot inject segments.
     """
-    path = f"repos/{owner}/{repo}/issues/{int(number)}/dependencies/blocked_by?per_page=100"
-    try:
-        rows = _run_gh_api(path, _DEP_ISSUE_JQ, timeout=timeout, paginate=True)
-    except GhCliError as exc:
-        if _is_deps_feature_absent(exc):
-            return []  # feature absent for this repo/host — zero native edges
-        raise
-    return [r for r in rows if isinstance(r, dict) and isinstance(r.get("number"), int)]
+    return github_queries.list_issue_blocked_by(
+        owner,
+        repo,
+        number,
+        timeout=timeout,
+        run_api=_run_gh_api,
+        absent_classifier=_is_deps_feature_absent,
+    )
 
 
 def _inferred_blockers_from_timeline(
@@ -1050,16 +863,15 @@ def _inferred_blockers_from_timeline(
     same-repo only). Returns the compact node shape so the caller can seed
     ``nodes`` without a second read.
     """
-    try:
-        events = list_issue_timeline(owner, repo, number, timeout=timeout)
-    except GhCliError as exc:
-        # Same narrow tolerance as the native reads: only unambiguous absence
-        # (404/410) is an empty result. A 403 propagates — swallowing it would
-        # persist a wrong-empty graph and falsely unlock dependents.
-        if _is_deps_feature_absent(exc):
-            return []
-        raise
-    return _inferred_blockers_from_events(events, owner, repo, number)
+    return github_queries.inferred_blockers_from_timeline(
+        owner,
+        repo,
+        number,
+        timeout=timeout,
+        timeline_loader=list_issue_timeline,
+        absent_classifier=_is_deps_feature_absent,
+        event_filter=_inferred_blockers_from_events,
+    )
 
 
 def _inferred_blockers_from_events(
@@ -1069,155 +881,25 @@ def _inferred_blockers_from_events(
     cross-reference sources, drop self-references and anything whose URL does not
     name THIS owner/repo (an empty URL is dropped rather than assumed local, so a
     cross-repo edge can never sneak in via a missing field)."""
-    out: list[dict] = []
-    prefix = f"/{owner}/{repo}/"
-    for ev in events:
-        if not isinstance(ev, dict) or ev.get("kind") != "cross-referenced":
-            continue
-        src = ev.get("source") or {}
-        src_number = src.get("number")
-        if not isinstance(src_number, int) or src_number <= 0 or src_number == number:
-            continue
-        url = str(src.get("url") or "")
-        if prefix not in url:
-            continue
-        out.append(
-            {
-                "number": src_number,
-                "title": src.get("title"),
-                "state": src.get("state"),
-                "is_pr": bool(src.get("is_pr")),
-            }
-        )
-    return out
+    return github_queries.inferred_blockers_from_events(events, owner, repo, number)
 
 
 def _batch_dependency_graph(
     owner: str, repo: str, *, timeout: float = GH_TIMEOUT_SEC
 ) -> dict[int, dict] | None:
-    """ONE paginated GraphQL walk of the repo's open issues, carrying native
-    ``blockedBy`` and cross-referenced timeline sources per issue.
-
-    This exists because the per-issue REST path costs two ``gh`` subprocesses per
-    open issue — ~2N spawns; measured against a live repo with 561 open issues the
-    first ``/deps`` fetch did not return within five minutes. The connection query
-    reads 100 issues per call, so the same repo costs ~6 calls.
-
-    Returns ``{number: {"row": {...}, "native": [rows], "refs": [rows]}}`` in the
-    same compact row shape the per-issue helpers emit, or ``None`` when GraphQL is
-    unavailable for this host/token — the caller then falls back to the per-issue
-    REST path (which stays correct, just slow, and remains the seam the unit tests
-    stub).
-    """
-    query = (
-        "query($owner:String!,$name:String!,$after:String){"
-        "repository(owner:$owner,name:$name){"
-        "issues(states:OPEN,first:100,after:$after){"
-        "pageInfo{hasNextPage endCursor}"
-        "nodes{number title state "
-        "blockedBy(first:50){pageInfo{hasNextPage} nodes{number title state}}"
-        "timelineItems(itemTypes:[CROSS_REFERENCED_EVENT],first:100){pageInfo{hasNextPage} nodes{"
-        "... on CrossReferencedEvent{source{"
-        "... on Issue{number title state url repository{nameWithOwner}}"
-        "... on PullRequest{number title state url merged repository{nameWithOwner}}"
-        "}}}}}}}}"
-    )
-
-    def _row(node: dict) -> dict:
-        state = str(node.get("state") or "open").lower()
-        return {
-            "number": node.get("number"),
-            "title": node.get("title") or "",
-            "state": "closed" if state in ("closed", "merged") else "open",
-            "is_pr": "merged" in node,  # PullRequest fragments carry ``merged``
-            "merged_at": "merged" if node.get("merged") else None,
-        }
-
-    out: dict[int, dict] = {}
-    after: str | None = None
-    full_name = f"{owner}/{repo}".lower()
-    for _page in range(_DEPS_GRAPHQL_MAX_PAGES):
-        argv = [
-            "api",
-            "graphql",
-            "-f",
-            f"query={query}",
-            "-F",
-            f"owner={owner}",
-            "-F",
-            f"name={repo}",
-        ]
-        if after:
-            argv += ["-F", f"after={after}"]
-        proc = _gh_run(["gh", *argv], timeout=timeout)
-        if proc.returncode != 0:
-            logger.info(
-                "issue-radar: deps graphql batch unavailable for %s/%s; "
-                "falling back to per-issue reads",
-                owner,
-                repo,
-            )
-            return None
-        try:
-            conn = json.loads(proc.stdout)["data"]["repository"]["issues"]
-        except (ValueError, KeyError, TypeError):
-            logger.info("issue-radar: deps graphql batch returned an unexpected shape")
-            return None
-        for node in conn.get("nodes") or []:
-            if not isinstance(node, dict) or not isinstance(node.get("number"), int):
-                continue
-            num = node["number"]
-            native: list[dict] = []
-            for b in (node.get("blockedBy") or {}).get("nodes") or []:
-                if isinstance(b, dict) and isinstance(b.get("number"), int):
-                    native.append(_row(b))
-            refs: list[dict] = []
-            for item in (node.get("timelineItems") or {}).get("nodes") or []:
-                src = (item or {}).get("source") or {}
-                repo_name = str(((src.get("repository") or {}).get("nameWithOwner")) or "")
-                if not isinstance(src.get("number"), int) or repo_name.lower() != full_name:
-                    continue  # same-repo only, and an unnamed repo never sneaks in
-                refs.append(
-                    {
-                        "kind": "cross-referenced",
-                        "source": {
-                            **_row(src),
-                            "url": str(src.get("url") or ""),
-                        },
-                    }
-                )
-            out[num] = {
-                "row": _row(node),
-                "native": native,
-                "refs": refs,
-                # Either nested connection having another page means this
-                # issue's edge set here is INCOMPLETE — the caller must use the
-                # per-issue paginated reads for it instead of persisting a
-                # silently-partial graph.
-                "truncated": bool(
-                    ((node.get("blockedBy") or {}).get("pageInfo") or {}).get("hasNextPage")
-                    or ((node.get("timelineItems") or {}).get("pageInfo") or {}).get("hasNextPage")
-                ),
-            }
-        info = conn.get("pageInfo") or {}
-        if not info.get("hasNextPage"):
-            return out
-        after = str(info.get("endCursor") or "") or None
-        if after is None:
-            return out
-    logger.info(
-        "issue-radar: deps graphql batch exceeded %d pages for %s/%s; using partial graph",
-        _DEPS_GRAPHQL_MAX_PAGES,
+    """Read native and inferred dependency inputs in one bounded GraphQL walk."""
+    return github_queries.batch_dependency_graph(
         owner,
         repo,
+        timeout=timeout,
+        gh_run=_gh_run,
     )
-    return out
 
 
 # Hard page ceiling for the batched walk: 100 issues/page × 40 = 4000 open
 # issues, far past any repo this app realistically triages. A repo beyond it
 # still gets a graph for its first 4000 — bounded, never unbounded pagination.
-_DEPS_GRAPHQL_MAX_PAGES = 40
+_DEPS_GRAPHQL_MAX_PAGES = github_queries.DEPS_GRAPHQL_MAX_PAGES
 
 
 def fetch_dependency_edges(
@@ -1228,119 +910,21 @@ def fetch_dependency_edges(
     *,
     timeout: float = GH_TIMEOUT_SEC,
 ) -> tuple[list[dict], dict[str, dict]]:
-    """Build the repo's dependency graph for its OPEN issues.
-
-    ``open_issues`` is the issues-list cache rows (each a dict with at least
-    ``number``); the graph is scoped to these so the cost is bounded to N native
-    reads + N timeline reads for the open backlog, not the whole repo history.
-    ``node_hints`` maps ``number -> {kind, state, title}`` already known from the
-    issues/pulls caches, so a node in those caches costs NO extra API call; only
-    a number that appears in an edge yet is absent from the hints (typically a
-    closed blocker) falls back to one ``get_ref_summary`` call.
-
-    Returns ``(edges, nodes)`` in the store's shape. Dedup and native-wins are
-    left to ``store._normalize_deps`` (single source of truth), so this may emit
-    a native and an inferred edge for the same pair — the store collapses them.
-    """
-    hints = dict(node_hints or {})
-    open_rows: dict[int, dict] = {}
-    numbers: list[int] = []
-    for row in open_issues:
-        if isinstance(row, dict) and isinstance(row.get("number"), int) and row["number"] > 0:
-            n = int(row["number"])
-            numbers.append(n)
-            open_rows[n] = row
-    edges: list[dict] = []
-    # Node shape accumulator, keyed by int; serialized to str keys at the end.
-    nodes: dict[int, dict] = {}
-    # Numbers whose node entry came from a FORGE-FRESH row (batch/native/timeline
-    # result from this very fetch) rather than a possibly-stale cache row.
-    fresh: set[int] = set()
-
-    def _seed(num: int, row: dict | None, *, is_fresh: bool = False) -> None:
-        """Record a node from a compact row.
-
-        Freshness wins: a row from THIS fetch (a dependencies/timeline/batch
-        result) overwrites a seed taken from the cached open-issues list or the
-        node hints — otherwise a stale-open cache row would pin a blocker open
-        and the persisted graph could never unlock its dependents. A cache row
-        never overwrites anything, and an unseedable number is left for the
-        ref-summary fallback below.
-        """
-        if num in nodes and (num in fresh or not is_fresh):
-            return
-        if isinstance(row, dict):
-            nodes[num] = {
-                "kind": _dep_node_kind(bool(row.get("is_pr"))),
-                "state": _dep_node_state(row.get("state"), row.get("merged_at")),
-                "title": str(row.get("title") or ""),
-            }
-            if is_fresh:
-                fresh.add(num)
-        elif num in hints and num not in nodes:
-            nodes[num] = dict(hints[num])
-
-    for num in numbers:
-        # The blocked node is an open issue we already hold a row for — seed it
-        # from that row so it never costs a fallback. Cache-grade: a fresh row
-        # from the fetch below overwrites it.
-        _seed(num, open_rows.get(num))
-
-    # One batched GraphQL walk covers every open issue's native blockers AND its
-    # cross-reference events; the per-issue REST reads below are the fallback
-    # when GraphQL is unavailable (and the seam the unit tests stub).
-    batch = _batch_dependency_graph(owner, repo, timeout=timeout)
-
-    for num in numbers:
-        entry = batch.get(num) if batch is not None else None
-        if entry is not None and not entry.get("truncated"):
-            # The batch row for this issue is from THIS fetch — fresher than any
-            # cached open-issues row it was seeded from above.
-            _seed(num, entry.get("row"), is_fresh=True)
-            native_rows = entry.get("native") or []
-            inferred_rows = _inferred_blockers_from_events(
-                entry.get("refs") or [], owner, repo, num
-            )
-        else:
-            # No batch, or THIS issue's nested connections were truncated in the
-            # batch (over `first:` blockers/cross-refs): its edge set would be
-            # silently incomplete, so this issue alone pays the per-issue reads.
-            native_rows = list_issue_blocked_by(owner, repo, num, timeout=timeout)
-            inferred_rows = _inferred_blockers_from_timeline(owner, repo, num, timeout=timeout)
-
-        for blocker in native_rows:
-            b = int(blocker["number"])
-            edges.append({"blocked": num, "blocker": b, "source": "native"})
-            _seed(b, blocker, is_fresh=True)
-
-        for blocker in inferred_rows:
-            b = int(blocker["number"])
-            edges.append({"blocked": num, "blocker": b, "source": "inferred"})
-            _seed(b, blocker, is_fresh=True)
-
-    # Any number referenced by an edge but still unseeded (a blocker not in the
-    # open-issues rows and not in the hints) gets ONE ref-summary call — the only
-    # per-node fetch, and only when a cache genuinely cannot answer.
-    referenced: set[int] = {e["blocked"] for e in edges} | {e["blocker"] for e in edges}
-    for num in sorted(referenced):
-        if num in nodes:
-            continue
-        if num in hints:
-            nodes[num] = dict(hints[num])
-            continue
-        try:
-            summary = get_ref_summary(owner, repo, num, timeout=timeout)
-        except GhCliError:
-            logger.debug("issue-radar: deps node summary failed for #%s", num, exc_info=True)
-            nodes[num] = {"kind": "issue", "state": "open", "title": ""}
-            continue
-        nodes[num] = {
-            "kind": _dep_node_kind(bool(summary.get("is_pr"))),
-            "state": _dep_node_state(summary.get("state"), summary.get("merged_at")),
-            "title": str(summary.get("title") or ""),
-        }
-
-    return edges, {str(k): v for k, v in nodes.items()}
+    """Build normalized dependency edges and nodes for the open issue set."""
+    return github_queries.fetch_dependency_edges(
+        owner,
+        repo,
+        open_issues,
+        node_hints,
+        timeout=timeout,
+        batch_loader=_batch_dependency_graph,
+        blockers_loader=list_issue_blocked_by,
+        inferred_loader=_inferred_blockers_from_timeline,
+        event_filter=_inferred_blockers_from_events,
+        ref_loader=get_ref_summary,
+        node_kind=_dep_node_kind,
+        node_state=_dep_node_state,
+    )
 
 
 # ── write primitives (triage actions: label + state) ────────────────────────
@@ -1370,49 +954,21 @@ def _run_gh_write(
     HTTP 403 instead of a generic 502. ``payload`` is serialized to JSON and fed
     on stdin, never interpolated into argv.
     """
-    argv = ["gh", "api", "--method", method, path]
-    input_text: str | None = None
-    if payload is not None:
-        argv += ["--input", "-"]
-        input_text = json.dumps(payload)
-    proc = _gh_run(argv, timeout=timeout, input_text=input_text)
-
-    if proc.returncode != 0:
-        stderr = proc.stderr or ""
-        tail = sanitize_cli_stderr(" ".join(stderr.strip().splitlines()[-3:]))
-        if "HTTP 403" in stderr or "HTTP 401" in stderr:
-            raise GhPermissionError(
-                f"GitHub refused the write ({method} {path}) — your `gh` session "
-                f"lacks the required triage/push access: {tail}"
-            )
-        raise GhCliError(f"gh api {method} {path} failed (exit {proc.returncode}): {tail}")
-
-    out = (proc.stdout or "").strip()
-    if not out:
-        return None
-    try:
-        return json.loads(out)
-    except json.JSONDecodeError:
-        return None
+    return github_transport.run_write(
+        method,
+        path,
+        payload,
+        timeout=timeout,
+        gh_run=_gh_run,
+        sanitize=sanitize_cli_stderr,
+    )
 
 
 def _shape_labels(raw: object) -> list[dict]:
     """Normalize a GitHub label array (as returned by the labels endpoints) to
     the ``[{name, color, description}]`` shape the detail pane + caches use.
     Tolerates a non-list (returns ``[]``)."""
-    if not isinstance(raw, list):
-        return []
-    out: list[dict] = []
-    for lab in raw:
-        if isinstance(lab, dict) and lab.get("name"):
-            out.append(
-                {
-                    "name": lab.get("name"),
-                    "color": lab.get("color") or "888888",
-                    "description": lab.get("description") or "",
-                }
-            )
-    return out
+    return github_normalization.shape_labels(raw)
 
 
 def get_repo_permissions(owner: str, repo: str, *, timeout: float = GH_TIMEOUT_SEC) -> dict:
@@ -1824,24 +1380,9 @@ _COMMIT_STATUS_JQ = (
 
 # GitHub conclusion / state -> coarse bucket. Anything unrecognized is treated as
 # "other" (informational), never silently as success.
-_CHECK_FAILURE_CONCLUSIONS = {
-    "failure",
-    "timed_out",
-    "action_required",
-    "startup_failure",
-    "stale",
-    "error",
-}
-_CHECK_RUNNING_STATES = {
-    "queued",
-    "in_progress",
-    "pending",
-    "waiting",
-    "requested",
-    # GraphQL's rollup/context vocabulary adds this one; harmless for REST.
-    "expected",
-}
-_CHECK_OTHER_CONCLUSIONS = {"neutral", "skipped", "cancelled", "canceled"}
+_CHECK_FAILURE_CONCLUSIONS = github_normalization.CHECK_FAILURE_CONCLUSIONS
+_CHECK_RUNNING_STATES = github_normalization.CHECK_RUNNING_STATES
+_CHECK_OTHER_CONCLUSIONS = github_normalization.CHECK_OTHER_CONCLUSIONS
 
 
 def _check_bucket(status: str | None, conclusion: str | None) -> str:
@@ -1856,18 +1397,7 @@ def _check_bucket(status: str | None, conclusion: str | None) -> str:
     "a card dot and the detail sidebar can never disagree about red" true —
     parallel tables would only be edit-locked by convention.
     """
-    st = (status or "").lower()
-    cc = (conclusion or "").lower()
-    if st in _CHECK_RUNNING_STATES or cc in _CHECK_RUNNING_STATES:
-        return "running"
-    if cc in _CHECK_FAILURE_CONCLUSIONS:
-        return "failure"
-    if cc == "success":
-        return "success"
-    if cc in _CHECK_OTHER_CONCLUSIONS:
-        return "other"
-    # Completed with an unknown/absent conclusion — informational, not passing.
-    return "other"
+    return github_normalization.check_bucket(status, conclusion)
 
 
 def _check_identity(row: dict) -> tuple[str, str]:
@@ -1878,7 +1408,7 @@ def _check_identity(row: dict) -> tuple[str, str]:
     let one app's later success hide another app's failure. ``source`` is the
     publishing app's slug (or ``"status"`` for a commit status).
     """
-    return (str(row.get("source") or ""), str(row.get("name") or ""))
+    return github_normalization.check_identity(row)
 
 
 def _dedupe_checks(rows: list[dict]) -> list[dict]:
@@ -1892,23 +1422,7 @@ def _dedupe_checks(rows: list[dict]) -> list[dict]:
     run supersedes the earlier one, so latest wins.
     """
 
-    def _key(r: dict) -> tuple[str, str]:
-        # started_at first: an OLDER run that finished (completed 10:10) must not
-        # outrank a NEWER run that is still going (started 10:15, no completed_at),
-        # which is exactly what comparing completed_at first would do — the UI
-        # would show a stale pass while its replacement was still running.
-        return (str(r.get("started_at") or ""), str(r.get("completed_at") or ""))
-
-    best: dict[tuple[str, str], dict] = {}
-    for r in rows:
-        if not r.get("name"):
-            # A nameless row would render as a blank line.
-            continue
-        ident = _check_identity(r)
-        prev = best.get(ident)
-        if prev is None or _key(r) >= _key(prev):
-            best[ident] = r
-    return list(best.values())
+    return github_normalization.dedupe_checks(rows, identity=_check_identity)
 
 
 def list_pr_checks(
@@ -1994,62 +1508,26 @@ def list_pr_checks(
 # Our own lifecycle names -> GraphQL PullRequestState literals. The values are
 # interpolated into the query, so they come from THIS map only — never from
 # caller input — which keeps the query free of injection surface.
-_GRAPHQL_PR_STATES = {"open": "OPEN", "closed": "CLOSED, MERGED"}
+_GRAPHQL_PR_STATES = github_queries.GRAPHQL_PR_STATES
 
 # The bucket keys every counts dict carries, so the frontend never has to guard a
 # missing key and the render order of the card's badges is fixed.
-_CHECK_BUCKETS = ("failure", "running", "success", "other")
+_CHECK_BUCKETS = github_normalization.CHECK_BUCKETS
 
 # How many rollup contexts one GraphQL page carries. A PR with more than this has
 # a TRUNCATED tally, which the row reports so the card can fall back to the
 # aggregate rollup instead of presenting an incomplete count as complete.
-_ROLLUP_CONTEXT_PAGE = 100
+_ROLLUP_CONTEXT_PAGE = github_queries.ROLLUP_CONTEXT_PAGE
 
 # One PR's contexts, projected into the SAME row shape the REST check list uses
 # (name / source / status / conclusion / timestamps) so they can go through
-# _dedupe_checks and _check_bucket unchanged. Re-implementing either on a
-# bespoke string protocol is what previously let the card and the sidebar
-# disagree; sharing the code makes agreement structural.
-_ROLLUP_CONTEXTS_JQ = (
-    "[(.commits.nodes[0].commit.statusCheckRollup.contexts.nodes[]? | "
-    '{name: ((.name // .context) // ""), '
-    'source: ((.checkSuite.app.slug // .checkSuite.app.name) // "status"), '
-    "status: (.status // null), "
-    "conclusion: ((.conclusion // .state) // null), "
-    "started_at: ((.startedAt // .createdAt) // null), "
-    "completed_at: (.completedAt // null)})]"
-)
+# _dedupe_checks and _check_bucket unchanged, so card and sidebar classification
+# remain structurally identical.
+_ROLLUP_CONTEXTS_JQ = github_queries.ROLLUP_CONTEXTS_JQ
 
 # The GraphQL selection for one PR's card enrichment, shared by both fetchers so
 # the two paths can never drift apart in what they ask for.
-_PR_SUMMARY_SELECTION = (
-    " number additions deletions changedFiles"
-    # ``state`` + ``mergedAt`` fix the "already merged" half of the auto-merge defect: a
-    # row cached before a PR merged was still offered auto-merge, and the provider
-    # answered "Pull request is already merged". The list row has a ``state`` from its
-    # own source, but a SEARCH row's can be equally stale, and this is the read that
-    # happens closest to the action. ``mergedAt`` is required alongside ``state``
-    # because ``state`` alone cannot express the lifecycle in REST's vocabulary:
-    # GraphQL has a distinct ``MERGED`` state, REST has only ``open``/``closed`` plus a
-    # ``merged_at`` timestamp, and the row shape is REST's — correcting a stale
-    # ``state`` to ``closed`` without the timestamp would render a merged PR with the
-    # red closed-unmerged icon.
-    #
-    # These three ARE free (measured: adding them changes neither this query's latency
-    # nor its success rate). ``mergeStateStatus`` is deliberately NOT here — it is the
-    # one field that is not. See :data:`_PR_READINESS_SELECTION`.
-    " mergeable state mergedAt"
-    # ``oid`` is the head COMMIT. Free here — this selection already walks the last
-    # commit for its check rollup — and it is what gives SEARCH rows a head sha:
-    # ``_PR_SEARCH_JQ`` cannot supply one (GitHub's search API does not expose it),
-    # so without this a person-filtered selection could not be bulk-approved, since
-    # a review has to name the revision it was formed on.
-    " commits(last:1){nodes{commit{oid statusCheckRollup{state"
-    f"  contexts(first:{_ROLLUP_CONTEXT_PAGE}){{pageInfo{{hasNextPage}} nodes{{ __typename"
-    "   ... on CheckRun{name conclusion status startedAt completedAt"
-    "    checkSuite{app{slug name}}}"
-    "   ... on StatusContext{context state createdAt} }}}}}}"
-)
+_PR_SUMMARY_SELECTION = github_queries.PR_SUMMARY_SELECTION
 
 # ``mergeStateStatus`` — its OWN query, deliberately, and this is the expensive one.
 #
@@ -2077,233 +1555,88 @@ _PR_SUMMARY_SELECTION = (
 # ``first:100``. So it gets a second, LEAN call: one extra request per list fetch,
 # independently failable, and a failure costs only the readiness field rather than the
 # whole card payload.
-_PR_READINESS_SELECTION = " number mergeStateStatus"
+_PR_READINESS_SELECTION = github_queries.PR_READINESS_SELECTION
 
-_PR_READINESS_JQ_BODY = "{number: .number, merge_state_status: (.mergeStateStatus // null)}"
+_PR_READINESS_JQ_BODY = github_queries.PR_READINESS_JQ_BODY
 
 # Smaller than `_SUMMARY_BATCH` (100) on purpose: this is the field GitHub COMPUTES, and
 # the by-number form asks for N of them in one query. 50 is the largest page measured
 # comfortable; the page-size ceiling is exactly what the split exists to respect.
-_READINESS_BATCH = 50
+_READINESS_BATCH = github_queries.READINESS_BATCH
 
 # The JQ projection applied to ONE PR node (shared for the same reason).
-_PR_SUMMARY_JQ_BODY = (
-    "{number: .number, additions: .additions, deletions: .deletions, "
-    "changed_files: (.changedFiles // 0), "
-    # Carried through under GraphQL's own names; `_parse_summary_rows` lowercases them
-    # into REST's vocabulary, which is the spelling every reader already uses.
-    "mergeable_raw: (.mergeable // null), "
-    "pr_state: (.state // null), "
-    "pr_merged_at: (.mergedAt // null), "
-    "head_sha: (.commits.nodes[0].commit.oid // null), "
-    "rollup: (.commits.nodes[0].commit.statusCheckRollup.state // null), "
-    "contexts_truncated: "
-    "(.commits.nodes[0].commit.statusCheckRollup.contexts.pageInfo.hasNextPage // false), "
-    f"contexts: {_ROLLUP_CONTEXTS_JQ}}}"
-)
+_PR_SUMMARY_JQ_BODY = github_queries.PR_SUMMARY_JQ_BODY
 
 
 def fetch_pr_summaries(
     owner: str, repo: str, state: str = "open", *, timeout: float = GH_TIMEOUT_SEC
 ) -> dict[int, dict]:
-    """``{number: {additions, deletions, changed_files, checks_state, checks_counts}}``
-    for a repo's PRs, in ONE GraphQL call (see the module note above).
-
-    ``checks_state`` is the aggregate status-check rollup and ``checks_counts`` the
-    per-bucket tally of the individual checks, both bucketed the same way as
-    :func:`list_pr_checks` (``success`` / ``failure`` / ``running`` / ``other``).
-    ``checks_state`` is ``None`` when the PR has no checks at all. Raises
-    :class:`GhCliError` on a failed call — callers treat the enrichment as
-    optional and continue without it.
-    """
-    gql_state = _GRAPHQL_PR_STATES.get(state)
-    if gql_state is None:
-        raise GhCliError(f"unsupported state for PR summaries: {state!r}")
-    query = (
-        "query($owner:String!,$name:String!){"
-        " repository(owner:$owner,name:$name){"
-        f"  pullRequests(states:[{gql_state}], first:100,"
-        "   orderBy:{field:UPDATED_AT,direction:DESC}){"
-        "   nodes{" + _PR_SUMMARY_SELECTION + " } } } }"
+    """Fetch one state window of card summaries with the lean query family."""
+    return github_queries.fetch_pr_summaries(
+        owner,
+        repo,
+        state,
+        timeout=timeout,
+        gh_run=_gh_run,
+        stderr_tail=_stderr_tail,
+        parse_rows=_parse_summary_rows,
     )
-    argv = [
-        "gh",
-        "api",
-        "graphql",
-        "-f",
-        f"query={query}",
-        "-F",
-        f"owner={owner}",
-        "-F",
-        f"name={repo}",
-        "--jq",
-        f".data.repository.pullRequests.nodes[] | {_PR_SUMMARY_JQ_BODY}",
-    ]
-    proc = _gh_run(argv, timeout=timeout)
-    if proc.returncode != 0:
-        tail = _stderr_tail(proc)
-        raise GhCliError(f"gh api graphql (pr summaries) failed (exit {proc.returncode}): {tail}")
-
-    return _parse_summary_rows(proc.stdout or "")
 
 
 def fetch_pr_readiness(
     owner: str, repo: str, state: str = "open", *, timeout: float = GH_TIMEOUT_SEC
 ) -> dict[int, str | None]:
-    """``{number: mergeable_state}`` for a repo's PRs — its own LEAN GraphQL call.
-
-    Separate from :func:`fetch_pr_summaries` because ``mergeStateStatus`` is the one
-    field here GitHub has to COMPUTE (a merge commit per PR); folded into the card
-    selection the combined query 502s at this page size. See
-    :data:`_PR_READINESS_SELECTION` for the measurements.
-
-    Best-effort, like the card enrichment: raises :class:`GhCliError` and the caller
-    continues without readiness, which costs the bulk bar's merge/arm split for that
-    fetch but leaves every other field intact.
-    """
-    gql_state = _GRAPHQL_PR_STATES.get(state)
-    if gql_state is None:
-        raise GhCliError(f"unsupported state for PR readiness: {state!r}")
-    query = (
-        "query($owner:String!,$name:String!){"
-        " repository(owner:$owner,name:$name){"
-        f"  pullRequests(states:[{gql_state}], first:100,"
-        "   orderBy:{field:UPDATED_AT,direction:DESC}){"
-        "   nodes{" + _PR_READINESS_SELECTION + " } } } }"
+    """Fetch merge readiness separately from the heavier card summary query."""
+    return github_queries.fetch_pr_readiness(
+        owner,
+        repo,
+        state,
+        timeout=timeout,
+        gh_run=_gh_run,
+        stderr_tail=_stderr_tail,
+        parse_rows=_parse_readiness_rows,
     )
-    argv = [
-        "gh",
-        "api",
-        "graphql",
-        "-f",
-        f"query={query}",
-        "-F",
-        f"owner={owner}",
-        "-F",
-        f"name={repo}",
-        "--jq",
-        f".data.repository.pullRequests.nodes[] | {_PR_READINESS_JQ_BODY}",
-    ]
-    proc = _gh_run(argv, timeout=timeout)
-    if proc.returncode != 0:
-        tail = _stderr_tail(proc)
-        raise GhCliError(f"gh api graphql (pr readiness) failed (exit {proc.returncode}): {tail}")
-    return _parse_readiness_rows(proc.stdout or "")
 
 
 def fetch_pr_readiness_by_number(
     owner: str, repo: str, numbers: list[int], *, timeout: float = GH_TIMEOUT_SEC
 ) -> dict[int, str | None]:
-    """:func:`fetch_pr_readiness` for an EXPLICIT number list (the SEARCH path).
-
-    Same reason :func:`fetch_pr_summaries_by_number` exists: a person-filtered search
-    can return a PR that ranks outside the state-scoped window.
-    """
-    out: dict[int, str | None] = {}
-    wanted = [n for n in numbers if isinstance(n, int) and n > 0]
-    for start in range(0, len(wanted), _READINESS_BATCH):
-        batch = wanted[start : start + _READINESS_BATCH]
-        fields = " ".join(
-            f"p{n}: pullRequest(number:{n}){{{_PR_READINESS_SELECTION} }}" for n in batch
-        )
-        query = (
-            "query($owner:String!,$name:String!){"
-            f" repository(owner:$owner,name:$name){{ {fields} }} }}"
-        )
-        argv = [
-            "gh",
-            "api",
-            "graphql",
-            "-f",
-            f"query={query}",
-            "-F",
-            f"owner={owner}",
-            "-F",
-            f"name={repo}",
-            "--jq",
-            ".data.repository | to_entries[] | .value | select(. != null) | "
-            + _PR_READINESS_JQ_BODY,
-        ]
-        proc = _gh_run(argv, timeout=timeout)
-        if proc.returncode != 0:
-            tail = _stderr_tail(proc)
-            raise GhCliError(
-                f"gh api graphql (pr readiness by number) failed "
-                f"(exit {proc.returncode}): {tail}"
-            )
-        out.update(_parse_readiness_rows(proc.stdout or ""))
-    return out
+    """Fetch the independent readiness field for explicit PR numbers."""
+    return github_queries.fetch_pr_readiness_by_number(
+        owner,
+        repo,
+        numbers,
+        timeout=timeout,
+        gh_run=_gh_run,
+        stderr_tail=_stderr_tail,
+        parse_rows=_parse_readiness_rows,
+    )
 
 
 def _parse_readiness_rows(stdout: str) -> dict[int, str | None]:
-    """Parse the readiness JQ stream into ``{number: mergeable_state}`` (lowercased)."""
-    out: dict[int, str | None] = {}
-    for line in stdout.splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            row = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        number = row.get("number")
-        if not isinstance(number, int):
-            continue
-        out[number] = _lower_or_none(row.get("merge_state_status"))
-    return out
+    """Parse readiness rows while preserving the facade normalization seam."""
+    return github_queries.parse_readiness_rows(stdout, lower=_lower_or_none)
 
 
 # How many PR numbers to request per by-number GraphQL call. Each number costs
 # one aliased field, so this bounds the query size while keeping the call count
 # low (the search cap of 300 rows -> at most 3 calls).
-_SUMMARY_BATCH = 100
+_SUMMARY_BATCH = github_queries.SUMMARY_BATCH
 
 
 def fetch_pr_summaries_by_number(
     owner: str, repo: str, numbers: list[int], *, timeout: float = GH_TIMEOUT_SEC
 ) -> dict[int, dict]:
-    """Same payload as :func:`fetch_pr_summaries`, but for an EXPLICIT number list.
-
-    The state-scoped variant only covers the most recently updated 100 PRs, which
-    is exactly the window the search path exists to escape: a person filter can
-    legitimately return a PR that ranks 147th by update time. Addressing PRs by
-    number keeps enrichment complete for whatever the search returned.
-
-    Numbers are ints (validated by the caller's own parsing), so they carry no
-    injection surface even though they are interpolated as GraphQL aliases.
-    """
-    out: dict[int, dict] = {}
-    wanted = [n for n in numbers if isinstance(n, int) and n > 0]
-    for start in range(0, len(wanted), _SUMMARY_BATCH):
-        batch = wanted[start : start + _SUMMARY_BATCH]
-        fields = " ".join(
-            f"p{n}: pullRequest(number:{n}){{{_PR_SUMMARY_SELECTION} }}" for n in batch
-        )
-        query = (
-            "query($owner:String!,$name:String!){"
-            f" repository(owner:$owner,name:$name){{ {fields} }} }}"
-        )
-        argv = [
-            "gh",
-            "api",
-            "graphql",
-            "-f",
-            f"query={query}",
-            "-F",
-            f"owner={owner}",
-            "-F",
-            f"name={repo}",
-            "--jq",
-            ".data.repository | to_entries[] | .value | select(. != null) | " + _PR_SUMMARY_JQ_BODY,
-        ]
-        proc = _gh_run(argv, timeout=timeout)
-        if proc.returncode != 0:
-            tail = _stderr_tail(proc)
-            raise GhCliError(
-                f"gh api graphql (pr summaries by number) failed (exit {proc.returncode}): {tail}"
-            )
-        out.update(_parse_summary_rows(proc.stdout or ""))
-    return out
+    """Fetch card summaries for explicit PR numbers in bounded batches."""
+    return github_queries.fetch_pr_summaries_by_number(
+        owner,
+        repo,
+        numbers,
+        timeout=timeout,
+        gh_run=_gh_run,
+        stderr_tail=_stderr_tail,
+        parse_rows=_parse_summary_rows,
+    )
 
 
 def _count_context_buckets(contexts: object) -> dict[str, int]:
@@ -2318,11 +1651,11 @@ def _count_context_buckets(contexts: object) -> dict[str, int]:
     Every bucket key is always present so the card never has to guard a hole, and
     an unrecognized state counts as ``other`` rather than passing.
     """
-    rows = [c for c in contexts if isinstance(c, dict)] if isinstance(contexts, list) else []
-    counts = {bucket: 0 for bucket in _CHECK_BUCKETS}
-    for row in _dedupe_checks(rows):
-        counts[_check_bucket(row.get("status"), row.get("conclusion"))] += 1
-    return counts
+    return github_normalization.count_context_buckets(
+        contexts,
+        dedupe=_dedupe_checks,
+        bucket=_check_bucket,
+    )
 
 
 def _lower_or_none(value: object) -> str | None:
@@ -2334,7 +1667,7 @@ def _lower_or_none(value: object) -> str | None:
     string would compare unequal to every ready-state and so read as a confident
     "not ready".
     """
-    return value.strip().lower() or None if isinstance(value, str) else None
+    return github_normalization.lower_or_none(value)
 
 
 def _graphql_mergeable(value: object) -> bool | None:
@@ -2347,14 +1680,7 @@ def _graphql_mergeable(value: object) -> bool | None:
     Note that ``mergeable`` alone never means "ready to merge": it means "no merge
     CONFLICTS", which is why the readiness gate keys off ``mergeable_state``.
     """
-    if not isinstance(value, str):
-        return None
-    normalized = value.strip().upper()
-    if normalized == "MERGEABLE":
-        return True
-    if normalized == "CONFLICTING":
-        return False
-    return None
+    return github_normalization.graphql_mergeable(value)
 
 
 def _rest_pr_state(value: object) -> str | None:
@@ -2367,70 +1693,18 @@ def _rest_pr_state(value: object) -> str | None:
     distinguished by the accompanying ``pr_merged_at``. Returning ``"merged"`` would
     match no branch in any of those readers and paint a merged PR as open.
     """
-    normalized = _lower_or_none(value)
-    if normalized is None:
-        return None
-    return "closed" if normalized in ("closed", "merged") else normalized
+    return github_normalization.rest_pr_state(value)
 
 
 def _parse_summary_rows(stdout: str) -> dict[int, dict]:
     """Parse the shared per-PR summary JQ stream (see ``_PR_SUMMARY_JQ_BODY``)."""
-    out: dict[int, dict] = {}
-    for line in stdout.splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            row = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        number = row.get("number")
-        if not isinstance(number, int):
-            continue
-        rollup = row.get("rollup")
-        out[number] = {
-            "additions": row.get("additions") or 0,
-            "deletions": row.get("deletions") or 0,
-            "changed_files": row.get("changed_files") or 0,
-            # Deliberately NOT coerced to "" — an absent oid means "we do not know
-            # this row's head commit", and a blank string would read as a known
-            # value that then fails the caller's sha validation with a confusing
-            # error instead of simply leaving the row un-approvable in bulk.
-            "head_sha": row.get("head_sha") or None,
-            # GraphQL SHOUTS its enums (`CLEAN`, `MERGEABLE`, `OPEN`) where REST speaks
-            # lowercase (`clean`, `open`). Normalized here, at the single point where
-            # GraphQL output becomes an internal row, so no reader has to know which
-            # transport its row came from — `routes._MERGE_ALLOWED_STATES` and the
-            # frontend's `MERGE_READY_STATES` both compare lowercase, and an un-lowered
-            # `CLEAN` would silently miss both and read as "not ready".
-            #
-            # `None` stays `None`: unknown mergeability must not collapse to a value.
-            # GitHub computes it asynchronously and answers `UNKNOWN` on a cold read,
-            # and treating that as "not ready" would be a guess presented as a fact.
-            #
-            # `mergeable_state` is filled by the SEPARATE readiness call
-            # (`_PR_READINESS_SELECTION`) and is seeded None here so the key always
-            # exists — absent would be falsy, i.e. indistinguishable from "not ready".
-            "mergeable_state": None,
-            "mergeable": _graphql_mergeable(row.get("mergeable_raw")),
-            # GraphQL's MERGED/CLOSED/OPEN collapsed into REST's open|closed, because
-            # the row shape is REST's and every reader compares against those two.
-            # `MERGED` becomes `closed` and is distinguished by `pr_merged_at`, exactly
-            # as REST does it (`PrList.prStateVisual` checks `merged_at` FIRST, so
-            # reporting `merged` here would match no branch and paint a merged PR as
-            # open — the bug this normalization exists to avoid).
-            "pr_state": _rest_pr_state(row.get("pr_state")),
-            "pr_merged_at": row.get("pr_merged_at") or None,
-            # Same bucketing table as every other surface; an unrecognized rollup
-            # value lands in "other" and so must not read as passing.
-            "checks_state": _check_bucket(None, rollup) if rollup else None,
-            "checks_counts": _count_context_buckets(row.get("contexts")),
-            # More contexts than one page: the tally is incomplete, so the card
-            # must show the aggregate rollup rather than a partial count that
-            # could omit the only failing check.
-            "checks_truncated": bool(row.get("contexts_truncated")),
-        }
-    return out
+    return github_normalization.parse_summary_rows(
+        stdout,
+        mergeable_normalizer=_graphql_mergeable,
+        state_normalizer=_rest_pr_state,
+        bucket=_check_bucket,
+        context_counter=_count_context_buckets,
+    )
 
 
 def summarize_checks(checks: list[dict]) -> dict:
@@ -2443,21 +1717,7 @@ def summarize_checks(checks: list[dict]) -> dict:
     dominates, then anything still running, then passing, then informational —
     so the dot never reads greener than the list it summarizes.
     """
-    counts = {bucket: 0 for bucket in _CHECK_BUCKETS}
-    for c in checks:
-        if not isinstance(c, dict):
-            continue
-        bucket = c.get("bucket")
-        counts[bucket if isinstance(bucket, str) and bucket in counts else "other"] += 1
-    for bucket in ("failure", "running", "success", "other"):
-        if counts[bucket]:
-            state: str | None = bucket
-            break
-    else:
-        state = None  # no checks at all -> the card shows no dot
-    # Derived from the authoritative, fully-paginated detail read, so the tally is
-    # complete by construction.
-    return {"checks_counts": counts, "checks_state": state, "checks_truncated": False}
+    return github_normalization.summarize_checks(checks)
 
 
 def _enrich_summaries(owner: str, repo: str, pulls: list[dict], state: str) -> dict[int, dict]:
@@ -2588,61 +1848,7 @@ def _apply_summaries(
     applied independently of ``summaries``: either can fail on its own, and a row can
     legitimately have a diff size but unknown readiness (or the reverse).
     """
-    ready = readiness or {}
-    for pr in pulls:
-        number = pr.get("number")
-        # Readiness first, and OUTSIDE the summary branch — the two calls fail
-        # independently, so a row with no summary can still have a known merge state.
-        # Always assigned so the key exists even when unknown: absent is falsy, i.e.
-        # indistinguishable from "not ready", which would put the row back into the
-        # auto-merge batch the provider refuses.
-        pr["mergeable_state"] = ready.get(number) if isinstance(number, int) else None
-        extra = summaries.get(number) if isinstance(number, int) else None
-        if not extra:
-            pr["additions"] = None
-            pr["deletions"] = None
-            pr["changed_files"] = None
-            pr["checks_state"] = None
-            pr["checks_counts"] = None
-            pr["checks_truncated"] = False
-            # `mergeable_state` was already set above from the independent readiness
-            # call — do NOT clear it here; that call may well have succeeded.
-            pr["mergeable"] = None
-            # NOT cleared: an un-enriched row keeps whatever head sha its source
-            # gave it. The LIST path already carries one from `_PR_JQ`, and blanking
-            # it here on a failed GraphQL call would take bulk approve away from
-            # rows that never needed the enrichment for it.
-            pr.setdefault("head_sha", None)
-            continue
-        pr["additions"] = extra.get("additions", 0)
-        pr["deletions"] = extra.get("deletions", 0)
-        pr["changed_files"] = extra.get("changed_files", 0)
-        # Only fills a GAP. The list rows already have it from `_PR_JQ`; the SEARCH
-        # rows do not (GitHub's search API does not expose the head commit), and
-        # this is the one call that already walks the head commit anyway.
-        if not pr.get("head_sha"):
-            pr["head_sha"] = extra.get("head_sha")
-        # `mergeable` is "no merge CONFLICTS" — NOT "ready to merge". A PR with
-        # unsatisfied required reviews is `mergeable: true` with
-        # `mergeable_state: "blocked"`, which is why the readiness gate keys off the
-        # latter (set above, from its own call).
-        pr["mergeable"] = extra.get("mergeable")
-        # A row whose live state disagrees with its cached one is corrected HERE, which
-        # is the closest read to the action. #1265 was armed for auto-merge from a row
-        # cached while it was still open, and GitHub answered "already merged".
-        live_state = extra.get("pr_state")
-        if live_state:
-            pr["state"] = live_state
-            # Written TOGETHER with the state, never separately: the two are one fact in
-            # REST's shape, and a `closed` with no `merged_at` is the red
-            # closed-unmerged icon. Only ever fills a gap — a row that already carries a
-            # timestamp keeps it.
-            if extra.get("pr_merged_at") and not pr.get("merged_at"):
-                pr["merged_at"] = extra.get("pr_merged_at")
-        pr["checks_state"] = extra.get("checks_state")
-        pr["checks_counts"] = extra.get("checks_counts") or {b: 0 for b in _CHECK_BUCKETS}
-        pr["checks_truncated"] = bool(extra.get("checks_truncated"))
-    return pulls
+    return github_normalization.apply_summaries(pulls, summaries, readiness)
 
 
 def enrichment_complete(pulls: list[dict]) -> bool:
@@ -2653,7 +1859,7 @@ def enrichment_complete(pulls: list[dict]) -> bool:
     the on-disk list cache so the next read retries instead of serving unknowns
     forever.
     """
-    return all(pr.get("checks_counts") is not None for pr in pulls)
+    return github_normalization.enrichment_complete(pulls)
 
 
 # ── server-side PR search ("by person" filters) ──────────────────────────────
@@ -2674,43 +1880,24 @@ def enrichment_complete(pulls: list[dict]) -> bool:
 # that need them are expressed as QUALIFIERS (``review-requested:<login>``), so
 # the query itself does the work and the missing field is never read back.
 
-_PR_SEARCH_JQ = (
-    ".items[] | {number: .number, title: .title, url: .html_url, "
-    "state: .state, draft: (.draft // false), labels: [.labels[].name], "
-    "author: (.user.login // null), "
-    "author_association: (.author_association // null), "
-    "updated_at: .updated_at, created_at: .created_at, "
-    "closed_at: .closed_at, "
-    "merged_at: (.pull_request.merged_at // null), "
-    "assignees: [.assignees[].login], "
-    "requested_reviewers: [], base: null, head: null, "
-    # Present but NULL: GitHub's search API does not expose the head commit, so the
-    # key exists for row-shape parity with `_PR_JQ` and is filled in by the
-    # by-number enrichment (`_apply_summaries`), which already walks that commit.
-    "head_sha: null, "
-    'body: (.body // "")}'
-)
+_PR_SEARCH_JQ = github_queries.PR_SEARCH_JQ
 
 # Bound the search too — a person filter should never stream thousands of rows.
 # Public because the route reports it to the client: the UI has to be able to say
 # "newest 300" rather than implying completeness.
-PR_SEARCH_MAX = 300
+PR_SEARCH_MAX = github_queries.PR_SEARCH_MAX
 
 # Hard stop on pages walked, so a pathological `per_page`/`limit` combination can
 # never turn one filter toggle into an unbounded request loop.
-_SEARCH_MAX_PAGES = 10
+_SEARCH_MAX_PAGES = github_queries.SEARCH_MAX_PAGES
 
 # GitHub logins: alphanumerics and hyphens only. Validated before a login can
 # reach the search query string, so it cannot inject extra qualifiers.
-_LOGIN_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$")
+_LOGIN_RE = github_queries.LOGIN_RE
 
 # PR lifecycle -> search qualifiers. ``closed`` means closed WITHOUT being
 # merged, matching the frontend's three-way split (open / merged / closed).
-_PR_STATE_QUALIFIERS = {
-    "open": ["is:open"],
-    "merged": ["is:merged"],
-    "closed": ["is:closed", "is:unmerged"],
-}
+_PR_STATE_QUALIFIERS = github_queries.PR_STATE_QUALIFIERS
 
 
 def build_pr_search_query(
@@ -2722,34 +1909,15 @@ def build_pr_search_query(
     assignee: str | None = None,
     review_requested: str | None = None,
 ) -> str:
-    """Assemble the search ``q`` for a per-person PR query.
-
-    Scoped to one repo and to pull requests, plus the lifecycle qualifiers for
-    ``state`` and one qualifier per supplied login. Every login is charset-
-    validated (:data:`_LOGIN_RE`) BEFORE it lands in the query, so a hostile
-    value cannot smuggle in extra qualifiers. Raises :class:`PrSearchError` on an
-    unknown state, an invalid login, or when no person qualifier was given (an
-    unfiltered search would just duplicate the list endpoint).
-    """
-    if state not in _PR_STATE_QUALIFIERS:
-        raise PrSearchError(f"unsupported state for PR search: {state!r}")
-    parts = [f"repo:{owner}/{repo}", "is:pr", *_PR_STATE_QUALIFIERS[state]]
-    people = [
-        ("author", author),
-        ("assignee", assignee),
-        ("review-requested", review_requested),
-    ]
-    added = 0
-    for qualifier, login in people:
-        if not login:
-            continue
-        if not _LOGIN_RE.match(login):
-            raise PrSearchError(f"invalid GitHub login: {login!r}")
-        parts.append(f"{qualifier}:{login}")
-        added += 1
-    if added == 0:
-        raise PrSearchError("PR search needs at least one person qualifier")
-    return " ".join(parts)
+    """Build a validated, repo-scoped GitHub PR search query."""
+    return github_queries.build_pr_search_query(
+        owner,
+        repo,
+        state=state,
+        author=author,
+        assignee=assignee,
+        review_requested=review_requested,
+    )
 
 
 def search_pulls(
@@ -2763,40 +1931,19 @@ def search_pulls(
     timeout: float = GH_PAGINATE_TIMEOUT_SEC,
     limit: int = PR_SEARCH_MAX,
 ) -> list[dict]:
-    """Search a repo's PRs by person, server-side (see the module note above).
-
-    Returns rows in the SAME shape as ``list_open_pulls`` so the frontend can
-    swap data sources without a second row type — with ``base``/``head`` null and
-    ``requested_reviewers`` empty (not exposed by the search API). Paginated and
-    then capped at ``limit``.
-    """
-    q = build_pr_search_query(
+    """Search PRs by person with explicit, bounded page reads."""
+    return github_queries.search_pulls(
         owner,
         repo,
         state=state,
         author=author,
         assignee=assignee,
         review_requested=review_requested,
+        timeout=timeout,
+        limit=limit,
+        query_builder=build_pr_search_query,
+        run_api=_run_gh_api,
     )
-    cap = max(1, int(limit))
-    # Paginated EXPLICITLY, one page at a time, stopping as soon as the cap is
-    # met: `gh --paginate` would walk every page GitHub offers (up to the search
-    # maximum) before we sliced it down, so a prolific author's filter could burn
-    # a dozen extra requests — and hit the timeout — for rows nobody asked for.
-    per_page = min(100, cap)
-    rows: list[dict] = []
-    page = 1
-    while len(rows) < cap and page <= _SEARCH_MAX_PAGES:
-        path = (
-            f"search/issues?q={quote(q, safe='')}&sort=updated&order=desc"
-            f"&per_page={per_page}&page={page}"
-        )
-        batch = _run_gh_api(path, _PR_SEARCH_JQ, timeout=timeout, paginate=False)
-        rows.extend(batch)
-        if len(batch) < per_page:
-            break  # last page
-        page += 1
-    return rows[:cap]
 
 
 # ── pull-request actions (the write surface the PR pane's buttons drive) ──────
@@ -3102,32 +2249,13 @@ def _run_gh_graphql_mutation(mutation: str, variables: dict[str, str], *, timeou
     :func:`_run_gh_write` does — GraphQL reports authorization in the errors array
     with a 200 status, so the string check is on stdout as well as stderr.
     """
-    argv = ["gh", "api", "graphql", "-f", f"query={mutation}"]
-    for name, value in variables.items():
-        argv += ["-F", f"{name}={value}"]
-    proc = _gh_run(argv, timeout=timeout)
-    combined = f"{proc.stdout or ''}\n{proc.stderr or ''}"
-    if proc.returncode != 0 or '"errors"' in (proc.stdout or ""):
-        tail = sanitize_cli_stderr(" ".join(combined.strip().splitlines()[-3:]))
-        lowered = combined.lower()
-        if (
-            "HTTP 403" in combined
-            or "HTTP 401" in combined
-            or "not authorized" in lowered
-            or "must have push access" in lowered
-            or "resource not accessible" in lowered
-        ):
-            raise GhPermissionError(
-                f"GitHub refused the request — your `gh` session lacks the "
-                f"required access: {tail}"
-            )
-        raise GhCliError(f"gh api graphql failed (exit {proc.returncode}): {tail}")
-    try:
-        parsed = json.loads((proc.stdout or "").strip() or "{}")
-    except json.JSONDecodeError as exc:
-        raise GhCliError("gh returned unexpected output for a GraphQL mutation") from exc
-    data = parsed.get("data") if isinstance(parsed, dict) else None
-    return data if isinstance(data, dict) else {}
+    return github_transport.run_graphql_mutation(
+        mutation,
+        variables,
+        timeout=timeout,
+        gh_run=_gh_run,
+        sanitize=sanitize_cli_stderr,
+    )
 
 
 _ENABLE_AUTO_MERGE = (
@@ -3387,12 +2515,12 @@ def rerun_workflow_run(
 # ``<!-- kirocrew-crew-brief v1 -->`` from matching: the next character there is a
 # hyphen, not whitespace. Lazy ``[^>]*?`` stops at the marker's own ``-->`` and
 # cannot run on into later prose.
-_CREW_CLAIM_MARKER_RE = re.compile(r"<!--\s*kirocrew-crew\s+([^>]*?)\s*-->")
+_CREW_CLAIM_MARKER_RE = github_normalization.CREW_CLAIM_MARKER_RE
 
 # ``key=value`` pairs inside the marker; values are whitespace-delimited. Unknown
 # keys are simply not read, so the marker can grow a field without this parser (or
 # an older crew reading a newer marker) breaking.
-_CREW_CLAIM_FIELD_RE = re.compile(r"([A-Za-z][A-Za-z0-9_-]*)=(\S+)")
+_CREW_CLAIM_FIELD_RE = github_normalization.CREW_CLAIM_FIELD_RE
 
 # The ONLY accepted timestamp shape: ISO-8601 UTC with a trailing ``Z``.
 #
@@ -3404,7 +2532,7 @@ _CREW_CLAIM_FIELD_RE = re.compile(r"([A-Za-z][A-Za-z0-9_-]*)=(\S+)")
 # of reading as stale. Refusing it up front makes "unparseable" mean "not fresh",
 # which is the safe direction: a claim that cannot prove it is alive must not be
 # treated as alive.
-_CREW_CLAIM_ISO_Z_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$")
+_CREW_CLAIM_ISO_Z_RE = github_normalization.CREW_CLAIM_ISO_Z_RE
 
 
 def _parse_crew_marker(body: str) -> dict | None:
@@ -3418,23 +2546,7 @@ def _parse_crew_marker(body: str) -> dict | None:
     and first-wins at least makes which one is honoured deterministic rather than
     dependent on how the prose was assembled.
     """
-    match = _CREW_CLAIM_MARKER_RE.search(body or "")
-    if match is None:
-        return None
-    fields = dict(_CREW_CLAIM_FIELD_RE.findall(match.group(1)))
-    pr = fields.get("pr") or ""
-    updated = fields.get("updated") or ""
-    return {
-        # A marker with no ``id`` names nobody, so it can never be MATCHED against a
-        # crew id — but it is still reported (as ``""``) rather than dropped: it is
-        # evidence that some crew claimed this issue, and losing that evidence is
-        # how two crews end up working the same issue. Losing throughput to an
-        # over-cautious skip is the cheaper failure.
-        "crew_id": fields.get("id") or "",
-        "phase": fields.get("phase") or "",
-        "pr": int(pr) if pr.isdigit() else None,
-        "updated": updated if _CREW_CLAIM_ISO_Z_RE.match(updated) else None,
-    }
+    return github_normalization.parse_crew_marker(body)
 
 
 def find_crew_claim(timeline_rows: list[dict], crew_id: str = "") -> list[dict]:
@@ -3460,29 +2572,8 @@ def find_crew_claim(timeline_rows: list[dict], crew_id: str = "") -> list[dict]:
     whose comment id is unknown sorts LAST: it cannot demonstrate it was first, so it
     must not be able to win a collision, while still being visible as a claim.
     """
-    out: list[dict] = []
-    for row in timeline_rows or []:
-        if not isinstance(row, dict) or row.get("kind") != "comment":
-            continue
-        parsed = _parse_crew_marker(row.get("body") or "")
-        if parsed is None:
-            continue
-        raw_id = row.get("id")
-        out.append(
-            {
-                # bool is a subclass of int, so it is excluded explicitly — a truthy
-                # non-id must not become comment_id 1.
-                "comment_id": (
-                    raw_id if isinstance(raw_id, int) and not isinstance(raw_id, bool) else None
-                ),
-                **parsed,
-                "actor": row.get("actor"),
-                "created_at": row.get("created_at"),
-            }
-        )
-    if crew_id:
-        out = [e for e in out if e["crew_id"] == crew_id]
-    # Two-part key: known ids ascending, unknown ids after them (stable, so their
-    # timeline order is preserved). See the ordering note in the docstring.
-    out.sort(key=lambda e: (e["comment_id"] is None, e["comment_id"] or 0))
-    return out
+    return github_normalization.find_crew_claim(
+        timeline_rows,
+        crew_id,
+        marker_parser=_parse_crew_marker,
+    )

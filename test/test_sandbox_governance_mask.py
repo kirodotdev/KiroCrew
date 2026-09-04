@@ -153,6 +153,10 @@ class TestSecretsAreMaskedInEveryMode:
         "whatsapp",
         "apps/aws-control/data",
         "workspace/md-notebook/pat",
+        "data.sqlite3",
+        "data.sqlite3-wal",
+        "data.sqlite3-shm",
+        "data.sqlite3-journal",
     )
 
     @_POSIX_ONLY

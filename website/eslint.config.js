@@ -57,6 +57,13 @@ export default [
         }],
       }],
       'no-console': 'warn',
+      // `no-eval` is not part of eslint:recommended, so without this line eval
+      // is unlinted across the application tree. The tree is at zero eval sites
+      // in .ts/.tsx (every `eval` match under src/ is prose in comments), so
+      // like the native-<select> gate below this is a hard-zero 'error', not a
+      // 'warn' riding the ratchet. The one deliberate eval lives in the .mjs
+      // generator block below, guarded by its own reviewed directive.
+      'no-eval': 'error',
       // A native <select> renders an OS-drawn popup: it ignores every theme
       // token, cannot be styled per row, and looks nothing like the rest of the
       // dashboard. Every dropdown goes through the shared Radix components —
@@ -104,6 +111,28 @@ export default [
     files: ['src/components/ui/native-select.tsx'],
     rules: {
       'no-restricted-syntax': 'off',
+    },
+  },
+  {
+    // `.mjs` build/codegen scripts under `src/` are matched by no other block, so
+    // without this one they lint against an EMPTY rule set: the `no-eval` directive
+    // in `crew-ghost-sprite.gen.mjs` sits above a real `eval()` and is reported as
+    // unused, which is a warning that can never be burned down without deleting a
+    // true statement. Enabling the rule the directive names makes it live, so the
+    // exemption is a deliberate, reviewed one instead of an accident of config
+    // coverage — and a second `eval()` here would now be an error.
+    //
+    // This block is ONE rule wide on purpose and that is a known gap: `.mjs` here
+    // still gets no `no-unused-vars`, no `no-undef`, none of the base set the
+    // `.{ts,tsx}` block above carries. It is scoped to the rule an existing
+    // directive already named rather than guessing a rule set for a file type with
+    // exactly one member (`crew-ghost-sprite.gen.mjs`). A SECOND `.mjs` file under
+    // `src/` inherits that near-empty coverage silently, so widening this is the
+    // right move the moment one lands — a codegen script wants different rules from
+    // an application module, which is the decision being deferred, not skipped.
+    files: ['src/**/*.mjs'],
+    rules: {
+      'no-eval': 'error',
     },
   },
   {

@@ -19,6 +19,25 @@ interface ProfileEntry { name: string; region: string; account: string; verified
 interface ProfilesResp { profiles: ProfileEntry[]; default: string; available: string[] }
 interface Site { site_id: string; bucket: string; distribution_id: string; status?: string; url?: string; profile?: string }
 interface Reach { reachable: boolean; account?: string; s3_reachable?: boolean; cloudfront_reachable?: boolean; note?: string; detail?: string; profile?: string; error?: string }
+// The LIVE resources a recall/destroy preview echoes back, resolved from the
+// account by tag. Read defensively: an id the lookup could not see must degrade
+// to '' so the confirmed call sends no expectation for it, rather than binding
+// the teardown to the string "undefined".
+interface SiteResources { bucket?: string; distribution_id?: string; distribution_arn?: string }
+// One shape for both calls of the recall/destroy two-call guard: the unconfirmed
+// call answers `requires_confirm` + `resources`, the confirmed one the teardown
+// result, and `cancelled` marks the reply this page synthesizes locally when the
+// user dismisses the dialog (paired with `status: 0`, which onSuccess filters).
+interface SiteMutationResp {
+  requires_confirm?: boolean
+  action?: string
+  site_id?: string
+  resources?: SiteResources
+  destructive?: boolean
+  message?: string
+  error?: string
+  cancelled?: boolean
+}
 
 // Route all fetches through proper X-Session-Key header (client.ts pattern).
 const _sk = { 'X-Session-Key': 'dashboard:ui' }
@@ -161,17 +180,17 @@ export default function ArtifactDeployPage() {
     // Two-call guard mirroring destroy — preview resolves the
     // LIVE resources, the dialog names them, and the confirmed call binds to
     // them so a recreated site is refused (409) instead of being emptied.
-    mutationFn: async (s: Site) => {
-      const prev = await jsend<any>('/recall', { site_id: s.site_id, profile: s.profile || '' })
+    mutationFn: async (s: Site): Promise<{ status: number; data: SiteMutationResp }> => {
+      const prev = await jsend<SiteMutationResp>('/recall', { site_id: s.site_id, profile: s.profile || '' })
       if (prev.status !== 200) throw new Error(prev.data?.error || `Recall preview failed (${prev.status})`)
-      const r = prev.data.resources || {}
+      const r: SiteResources = prev.data.resources || {}
       const ok = await confirm({
         title: i18nT('pages.artifactDeployPage.recall_title'),
         body: i18nT('pages.artifactDeployPage.recall_confirm', { name: s.site_id, bucket: r.bucket || '?' }),
         confirmLabel: i18nT('pages.artifactDeployPage.recall_button'),
       })
       if (!ok) return { status: 0, data: { cancelled: true } }
-      return jsend<any>('/recall', {
+      return jsend<SiteMutationResp>('/recall', {
         site_id: s.site_id, confirm: true, profile: s.profile || '',
         expected_bucket: r.bucket || '', expected_distribution_id: r.distribution_id || '',
       })
@@ -189,17 +208,17 @@ export default function ArtifactDeployPage() {
     // Two-call guard on the irreversible path. The preview call
     // resolves the LIVE resources; the dialog names those; the confirmed
     // call binds to them so a site recreated since preview is refused (409).
-    mutationFn: async (s: Site) => {
-      const prev = await jsend<any>('/destroy', { site_id: s.site_id, profile: s.profile || '' })
+    mutationFn: async (s: Site): Promise<{ status: number; data: SiteMutationResp }> => {
+      const prev = await jsend<SiteMutationResp>('/destroy', { site_id: s.site_id, profile: s.profile || '' })
       if (prev.status !== 200) throw new Error(prev.data?.error || `Destroy preview failed (${prev.status})`)
-      const r = prev.data.resources || {}
+      const r: SiteResources = prev.data.resources || {}
       const ok = await confirm({
         title: i18nT('pages.artifactDeployPage.destroy_title'),
         body: i18nT('pages.artifactDeployPage.destroy_confirm', { name: s.site_id, bucket: r.bucket || '?', distribution: r.distribution_id || '?' }),
         confirmLabel: i18nT('pages.artifactDeployPage.destroy_button'),
       })
       if (!ok) return { status: 0, data: { cancelled: true } }
-      return jsend<any>('/destroy', {
+      return jsend<SiteMutationResp>('/destroy', {
         site_id: s.site_id, confirm: true, profile: s.profile || '',
         expected_bucket: r.bucket || '', expected_distribution_id: r.distribution_id || '',
       })
@@ -605,6 +624,7 @@ export default function ArtifactDeployPage() {
                   <td className="px-2.5 py-2 border-b border-border text-sm">{s.profile ? <span style={chip}>{s.profile}</span> : <span style={{ color: 'var(--muted)' }}>—</span>}</td>
                   <td className="px-2.5 py-2 border-b border-border text-sm" style={{ maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{s.url ? (safeHttpUrl(s.url) ? <a href={safeHttpUrl(s.url)!} target="_blank" rel="noreferrer" style={{ color: 'var(--accent)' }}>{s.url}</a> : <span style={{ color: 'var(--muted)' }}>{s.url}</span>) : '—'}</td>
                   <td className="px-2.5 py-2 border-b border-border text-sm text-muted">{i18nT('pages.artifactDeployPage.0_00_mo')}</td>
+                  {/* eslint-disable-next-line jsx-a11y/control-has-associated-label -- a cell of a plain data <table> has role `cell`, which is named by its contents and needs no name of its own (the rule reads every `td` as a grid's `gridcell` widget). Both controls inside carry their own visible text; the flex wrapper only pushes that text past the rule's 2-level scan. */}
                   <td className="px-2.5 py-2 border-b border-border text-sm">
                     <span style={{ display: 'flex', gap: 5 }}>
                       <Btn onClick={() => recall(s)}><Undo2 size={11} /> {i18nT('pages.artifactDeployPage.recall')}</Btn>

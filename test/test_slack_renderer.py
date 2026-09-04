@@ -889,3 +889,129 @@ class TestStreamRecipientRouting:
         opens = [kw for m, kw in rec.calls if m == "start_stream"]
         assert len(opens) == 2, rec.calls
         assert [kw["user_id"] for kw in opens] == ["U123", "U123"], opens
+
+
+class _DeadAppendSlack(_RecSlack):
+    """Every append_stream is rejected, rotation included."""
+
+    async def append_stream(self, channel, ts, text):
+        self.calls.append(("append_stream", {"text": text, "ok": False}))
+        return False
+
+
+class TestDeliveryLedger:
+    """``delivered_text`` records what Slack SHOWED, never what the model produced.
+
+    The dispatcher's partial-progress rescue persists this on the failure path, so
+    anything it over-claims becomes a transcript asserting the user was told
+    something they never saw.
+    """
+
+    @staticmethod
+    def _acknowledged(rec):
+        """Concatenation of every append Slack accepted — the ledger's contract."""
+        return "".join(
+            kw["text"] for m, kw in rec.calls if m == "append_stream" and kw.get("ok", True)
+        )
+
+    def test_the_ledger_is_empty_before_anything_streams(self):
+        rec = _RecSlack()
+        renderer = SlackRenderer(rec, "C1", "t1", reactions_enabled=False)
+        assert renderer.delivered_text == ""
+
+    def test_a_flushed_chunk_is_recorded(self):
+        async def scenario():
+            rec = _RecSlack()
+            # Single clamping clock value: the first chunk sees now - 0.0 >= the
+            # edit interval and flushes.
+            renderer = SlackRenderer(
+                rec, "C1", "t1", reactions_enabled=False, now=_FakeClock([1000.0])
+            )
+            await renderer.on_text_chunk("ledger A reconciles ")
+            assert self._acknowledged(rec) == "ledger A reconciles "
+            assert renderer.delivered_text == self._acknowledged(rec)
+
+        asyncio.run(scenario())
+
+    def test_a_chunk_still_inside_the_throttle_window_is_not_recorded(self):
+        """The exact defect this ledger exists for: produced is not shown.
+
+        The clock never advances, so the second chunk lands inside the edit
+        interval and the renderer buffers it WITHOUT sending. It is in
+        ``_accumulated`` — the buffer the old rescue read — and must not be in the
+        ledger.
+        """
+
+        async def scenario():
+            rec = _RecSlack()
+            renderer = SlackRenderer(
+                rec, "C1", "t1", reactions_enabled=False, now=_FakeClock([1000.0])
+            )
+            await renderer.on_text_chunk("shown to the user ")
+            await renderer.on_text_chunk("NEVER left the buffer ")
+
+            # Slack only ever saw the first chunk.
+            assert self._acknowledged(rec) == "shown to the user "
+            # The renderer is still holding the second one...
+            assert "NEVER left the buffer " in renderer._accumulated
+            # ...and the ledger refuses to claim it.
+            assert renderer.delivered_text == "shown to the user "
+            assert "NEVER" not in renderer.delivered_text
+
+        asyncio.run(scenario())
+
+    def test_a_rejected_append_is_not_recorded(self):
+        """A send Slack refused is not delivery, even after the rotation retry."""
+
+        async def scenario():
+            rec = _DeadAppendSlack()
+            renderer = SlackRenderer(
+                rec, "C1", "t1", reactions_enabled=False, now=_FakeClock([1000.0])
+            )
+            await renderer.on_text_chunk("this never landed ")
+            assert [m for m, _ in rec.calls if m == "append_stream"], rec.calls
+            assert renderer.delivered_text == ""
+
+        asyncio.run(scenario())
+
+    def test_the_no_stream_fallback_records_nothing(self):
+        """``_safe_update`` cannot confirm delivery, so the ledger stays empty.
+
+        It returns None, swallows its own exceptions and truncates at Slack's
+        message limit, and the frame it sends is a fence-safe prefix rather than the
+        whole text. Recording it would be a guess; the rescue no-ops instead.
+        """
+
+        async def scenario():
+            rec = _NoStreamSlack()
+            renderer = SlackRenderer(
+                rec, "C1", "t1", reactions_enabled=False, now=_FakeClock([1000.0])
+            )
+            await renderer.on_text_chunk("cursor fallback text ")
+            assert [m for m, _ in rec.calls if m == "update_message"], rec.calls
+            assert renderer.delivered_text == ""
+
+        asyncio.run(scenario())
+
+    def test_the_ledger_survives_the_tool_boundary_that_clears_accumulated(self):
+        """A ``wait`` boundary ends the message and clears ``_accumulated``.
+
+        Appends are final on this path, so text shown before the boundary stays
+        delivered. A ledger rebuilt from ``_accumulated`` would lose it.
+        """
+
+        async def scenario():
+            rec = _RecSlack()
+            renderer = SlackRenderer(
+                rec, "C1", "t1", reactions_enabled=False, now=_FakeClock([1000.0])
+            )
+            await renderer.on_text_chunk("before the tool ")
+            before = renderer.delivered_text
+            assert before == "before the tool "
+            await renderer.on_tool_call("tc1", "Running: wait", tool_kind="wait")
+            # The message segment was closed and its accumulator reset...
+            assert renderer._accumulated == ""
+            # ...but what the user was already shown is still on the ledger.
+            assert renderer.delivered_text.startswith(before)
+
+        asyncio.run(scenario())

@@ -35,7 +35,7 @@ import {
 import { resolveActivePackId } from '../../builtinPacks'
 import { PackEditor } from './PackEditor'
 import { PetdexImporter } from './PetdexImporter'
-import { SpriteImporter, type SpritePrefillInput } from './SpriteImporter'
+import { SpriteImporter, type SpritePackDraft, type SpritePrefillInput } from './SpriteImporter'
 import { ColorCustomizerPanel } from './ColorCustomizer'
 import { api } from '../mochiApi'
 import { i18nT } from '../../../../i18n/t'
@@ -649,8 +649,8 @@ export const GalleryPanel: React.FC = () => {
       setThumbs(thumbMap)
       setSpriteConfigs(scMap)
       setFlips(flipMap)
-    } catch (err: any) {
-      setError(err?.message || i18nT('apps.mochi.errors.load_packs'))
+    } catch (err: unknown) {
+      setError((err as Error)?.message || i18nT('apps.mochi.errors.load_packs'))
     }
   }, [])
 
@@ -680,9 +680,13 @@ export const GalleryPanel: React.FC = () => {
   // ── Broadcast listeners (task 11.6) ────────────────────────────────────
 
   useEffect(() => {
-    const offActive = api.onGalleryActiveChanged((data: any) => {
-      if (data?.packId) {
-        setActivePackId(data.packId)
+    const offActive = api.onGalleryActiveChanged((data) => {
+      // The payload is an open record because the pet's consumer also reads the
+      // pack manifest out of it, so the one field this window wants is narrowed
+      // rather than trusted; anything else falls back to re-reading the config.
+      const packId = data?.packId
+      if (typeof packId === 'string' && packId) {
+        setActivePackId(packId)
       } else {
         fetchActiveId()
       }
@@ -722,8 +726,8 @@ export const GalleryPanel: React.FC = () => {
         return
       }
       setDetail({ meta: d.meta, animations: d.animations, sprite: d.sprite, flipX: d.flipX })
-    } catch (err: any) {
-      setError(err?.message || i18nT('apps.mochi.errors.load_pack_detail'))
+    } catch (err: unknown) {
+      setError((err as Error)?.message || i18nT('apps.mochi.errors.load_pack_detail'))
       setDetail(null)
     }
   }, [selectedPackId])
@@ -742,8 +746,8 @@ export const GalleryPanel: React.FC = () => {
       // "Active" for a pack that had not been stored, which is what made a failed
       // apply look like a successful one that the pet ignored.
       setActivePackId(detail.meta.id)
-    } catch (err: any) {
-      setError(err?.message || i18nT('apps.mochi.errors.apply_pack'))
+    } catch (err: unknown) {
+      setError((err as Error)?.message || i18nT('apps.mochi.errors.apply_pack'))
     }
   }, [detail])
 
@@ -766,8 +770,8 @@ export const GalleryPanel: React.FC = () => {
       } else {
         setError(result.error || i18nT('apps.mochi.errors.export'))
       }
-    } catch (err: any) {
-      setError(err?.message || i18nT('apps.mochi.errors.export'))
+    } catch (err: unknown) {
+      setError((err as Error)?.message || i18nT('apps.mochi.errors.export'))
     }
   }, [detail])
 
@@ -791,8 +795,8 @@ export const GalleryPanel: React.FC = () => {
       setSelectedPackId(null)
       setDetail(null)
       fetchPacks()
-    } catch (err: any) {
-      setError(err?.message || i18nT('apps.mochi.errors.delete'))
+    } catch (err: unknown) {
+      setError((err as Error)?.message || i18nT('apps.mochi.errors.delete'))
     }
   }, [detail, fetchPacks])
 
@@ -805,8 +809,8 @@ export const GalleryPanel: React.FC = () => {
         return
       }
       showToast(i18nT('apps.mochi.gallery.import_success'))
-    } catch (err: any) {
-      setError(err?.message || i18nT('apps.mochi.errors.import'))
+    } catch (err: unknown) {
+      setError((err as Error)?.message || i18nT('apps.mochi.errors.import'))
     }
   }, [])
 
@@ -851,7 +855,7 @@ export const GalleryPanel: React.FC = () => {
         existingPack={editingPack}
         prefill={prefill}
         saveError={packSaveError}
-        onDone={async (result: any) => {
+        onDone={async (result: SpritePackDraft) => {
           setPackSaveError(null)
           // Save sprite pack via IPC
           const res = await api?.gallerySaveSpritePack?.(result)
@@ -865,7 +869,7 @@ export const GalleryPanel: React.FC = () => {
           }
           showToast(i18nT(editingPack ? 'apps.mochi.editor.save_success' : 'apps.mochi.editor.create_success'))
           // If overwriting the active pack, re-apply it
-          const packId = (result as any).overwriteId || res.packId
+          const packId = result.overwriteId || res.packId
           if (packId && packId === activePackId) {
             api?.gallerySetActive?.(packId)
           }

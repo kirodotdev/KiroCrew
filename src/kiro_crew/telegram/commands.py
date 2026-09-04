@@ -11,7 +11,7 @@ Commands:
   /stop        — stop the current reply and clear the queue (alias: /cancel)
   /status      — runtime stats (uptime, messages, tool decisions, sessions)
   /ping        — liveness check (answers "pong")
-  /sessions    — list the most recent conversations
+  /sessions    — list recent conversations; add words to search (alias: /session)
   /title       — rename this conversation
   /cron        — list / pause / resume / remove scheduled jobs
   /spawn       — run a task in a background subagent (alias: /bg)
@@ -68,7 +68,7 @@ _AGENT_ALIASES = frozenset(("/agent", "/agents"))
 _STATUS_ALIASES = frozenset(("/status",))
 # Liveness shortcut, matching the Slack transport path's bare ``ping``.
 _PING_ALIASES = frozenset(("/ping",))
-_SESSIONS_ALIASES = frozenset(("/sessions",))
+_SESSIONS_ALIASES = frozenset(("/session", "/sessions"))
 _TITLE_ALIASES = frozenset(("/title",))
 _CRON_ALIASES = frozenset(("/cron", "/crons"))
 # ``/bg`` mirrors Slack's ``bg <task>`` keyword form.
@@ -257,7 +257,7 @@ COMMAND_SPEC: tuple[tuple[str, str], ...] = (
     ("model", "Choose the model from a list"),
     ("agent", "Choose the agent from a list"),
     ("status", "Show runtime stats"),
-    ("sessions", "List the most recent conversations"),
+    ("sessions", "List recent conversations; add words to search"),
     ("cron", "Manage scheduled jobs (list / pause / resume / remove)"),
     ("voice", "Speak the answers here too (on / off)"),
     ("temporary", "This conversation reads and saves no memory"),

@@ -91,9 +91,52 @@ jobs:
             is_fork=true
           fi
 
+          # A permission read that FAILED is not a permission read that said
+          # "no". `2>/dev/null || true` discarded both the error text and the
+          # exit status, so a transient 5xx on GET
+          # /collaborators/{actor}/permission collapsed onto the same empty
+          # string as a genuine non-collaborator: the override was refused and
+          # the notice told the actor only a repository writer may override,
+          # sending a writer to hunt an access problem that does not exist
+          # while GitHub is degraded. Both cases still DENY -- an unreadable
+          # permission is not authorization, and this handler must never
+          # record an override it could not authorize -- but they must be
+          # DISTINGUISHABLE, so the two are split:
+          #   HTTP 404 -> the API answering "not a collaborator". A legitimate
+          #     negative; keep the writer-only notice exactly as before.
+          #   any other failure -> unknown. The common case is transient, so
+          #     absorb it here with a bounded three attempts and a short
+          #     backoff (<= 3s added), then refuse while NAMING the read, so
+          #     the actor retries instead of chasing permissions. The bound is
+          #     what keeps a fail-closed read from wedging anything: a
+          #     permanently failing API cannot hold the job open, and the
+          #     override is re-issuable by comment at any time.
           allowed=false
-          permission="$(gh api "repos/$REPO/collaborators/$ACTOR/permission" \
-            --jq '.permission' 2>/dev/null || true)"
+          permission=""
+          perm_read_ok=""
+          perm_err="$(mktemp)"
+          for attempt in 1 2 3; do
+            if permission="$(gh api "repos/$REPO/collaborators/$ACTOR/permission" \
+              --jq '.permission' 2>"$perm_err")"; then
+              perm_read_ok=1
+              break
+            fi
+            if grep -qiE 'HTTP 404|Not Found' "$perm_err"; then
+              permission=""
+              perm_read_ok=1
+              break
+            fi
+            echo "Reading $ACTOR's collaborator permission failed on attempt $attempt."
+            if [ "$attempt" -lt 3 ]; then
+              sleep "$attempt"
+            fi
+          done
+          rm -f "$perm_err"
+          if [ -z "$perm_read_ok" ]; then
+            echo "::error::Could not read $ACTOR's collaborator permission after 3 attempts, so this handler cannot tell a non-writer from an unreadable permission API. Refusing the override without recording it."
+            post_notice "AI-review override not recorded: your repository permission could not be READ (the collaborator-permission API did not answer after 3 attempts). This is not a permission denial -- re-issue the command once the API is healthy."
+            exit 1
+          fi
           case "$permission" in
             admin|maintain|write) allowed=true ;;
           esac

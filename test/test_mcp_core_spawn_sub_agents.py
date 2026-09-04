@@ -518,3 +518,78 @@ class TestSpawnList:
             result = _call_tool("spawn_list", {})
 
             assert "No subagents running" in result
+
+
+class TestSpawnSubAgentsAuditOwner:
+    """The audit trail must distinguish a LOST owner from an absent one.
+
+    ``_resolve_session_key`` returns ``""`` when every identity source fails,
+    which is the same value a spawn with genuinely no owning session carries.
+    Recording that empty string leaves the run's audit entries naming no
+    session and the two cases indistinguishable afterwards, so a failed
+    resolution is recorded under an explicit unresolved marker instead.
+    """
+
+    @staticmethod
+    def _audit_owners(mock_sel):
+        """Every ``session_key`` the tool wrote to the audit trail, in order."""
+        return [
+            call.kwargs["session_key"]
+            for call in mock_sel.return_value.log_tool_invocation.call_args_list
+        ]
+
+    def test_unresolved_owner_is_marked_in_audit_records(self):
+        with patch("kiro_crew.mcp_core._post") as mock_post, \
+             patch("kiro_crew.mcp_core._get") as mock_get, \
+             patch("kiro_crew.mcp_core._resolve_session_key", return_value=""), \
+             patch("kiro_crew.mcp_core.sel") as mock_sel:
+            mock_post.return_value = {"id": "a1"}
+            mock_get.return_value = {"done": True, "agent": "w", "result": "ok"}
+
+            _call_tool("spawn_sub_agents", {"agents": [{"prompt": "task"}]})
+
+            owners = self._audit_owners(mock_sel)
+            # Both the attempt and the outcome record are written.
+            assert len(owners) == 2
+            for owner in owners:
+                assert owner != ""
+                # Wire format an audit reader filters on. Never presented as
+                # trustworthy attribution -- the prefix says it is not.
+                assert owner.startswith("unresolved:")
+                assert owner.removeprefix("unresolved:").isdigit()
+
+    def test_resolved_owner_is_recorded_verbatim(self):
+        # The marker must not displace a real owner: attribution that resolves
+        # is still recorded exactly as resolved.
+        with patch("kiro_crew.mcp_core._post") as mock_post, \
+             patch("kiro_crew.mcp_core._get") as mock_get, \
+             patch("kiro_crew.mcp_core._resolve_session_key", return_value="dashboard:tab7"), \
+             patch("kiro_crew.mcp_core.sel") as mock_sel:
+            mock_post.return_value = {"id": "a1"}
+            mock_get.return_value = {"done": True, "agent": "w", "result": "ok"}
+
+            _call_tool("spawn_sub_agents", {"agents": [{"prompt": "task"}]})
+
+            assert self._audit_owners(mock_sel) == ["dashboard:tab7", "dashboard:tab7"]
+
+    def test_unresolved_owner_does_not_reach_the_spawn_request(self):
+        # Producer scope only: the marker is an audit value. The run's
+        # parent_session_key still carries the empty owner, because it feeds
+        # per-slot frame routing and a synthetic key there would address a
+        # slot that does not exist.
+        with patch("kiro_crew.mcp_core._post") as mock_post, \
+             patch("kiro_crew.mcp_core._get") as mock_get, \
+             patch("kiro_crew.mcp_core._resolve_session_key", return_value=""), \
+             patch("kiro_crew.mcp_core.sel"):
+            mock_post.return_value = {"id": "a1"}
+            mock_get.return_value = {"done": True, "agent": "w", "result": "ok"}
+
+            _call_tool("spawn_sub_agents", {"agents": [{"prompt": "task"}]})
+
+            spawn_bodies = [
+                call.args[1] for call in mock_post.call_args_list
+                if call.args and call.args[0] == "/api/spawn"
+            ]
+            assert spawn_bodies
+            for body in spawn_bodies:
+                assert body["parent_session"] == ""

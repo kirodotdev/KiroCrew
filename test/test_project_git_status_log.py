@@ -157,6 +157,63 @@ class TestGitStatus:
         assert c["status"] == "?"
 
     @pytest.mark.asyncio
+    async def test_staged_and_unstaged_lanes_of_one_file_both_survive(self, repo, mock_sel):
+        """A file staged AND modified again ("MM") keeps both entries.
+
+        The two rows share a path and differ only in status/staged, so the
+        redaction de-dup must key on the whole tuple. Keying on path alone
+        would drop the unstaged lane and undercount GitPanel's file total.
+        """
+        (repo / "a.txt").write_text("staged change\n")
+        _git(repo, "add", "a.txt")
+        (repo / "a.txt").write_text("and an unstaged change\n")
+
+        async with TestClient(TestServer(_make_app(str(repo)))) as client:
+            resp = await client.get(f"/api/project/git/status?path={repo}")
+            data = await resp.json()
+
+        entries = [f for f in data["files"] if f["path"] == "a.txt"]
+        assert len(entries) == 2
+        assert {(e["status"], e["staged"]) for e in entries} == {("M", True), ("M", False)}
+
+    @pytest.mark.asyncio
+    async def test_redaction_collision_files_are_deduplicated(self, repo, mock_sel):
+        """Two distinct changed files that redact() collapses to one path must
+        not both appear in ``files``.
+
+        Real collision: two untracked files whose only differing segment is a
+        credential-shaped token (distinct AKIA... ids, each 4-letter prefix + 16
+        uppercase alphanumerics) both flatten to
+        ``[REDACTED: credential]_model.txt``. Without server-side de-dup the two
+        entries would reach the dashboard tree and @pierre/trees'
+        ``appendPresortedPaths`` would throw ``Duplicate path`` on the adjacent
+        identical rows. First occurrence is kept.
+        """
+        # Two DISTINCT keys are the point: the test proves two different
+        # credential-shaped names collapse to ONE placeholder. key_a is the
+        # documented example id Semgrep allowlists; key_b must stay a split
+        # literal because detected-aws-access-key-id-value matches an
+        # AKIA-shaped literal and cannot tell a fixture from a real leak. Do
+        # not re-join it -- the runtime value is identical and CI, not the
+        # test, is what breaks.
+        key_a = "AKIAIOSFODNN7EXAMPLE"
+        key_b = "AKIA" + "JKLMNOPQRSTUVWXY"
+        (repo / f"{key_a}_model.txt").write_text("one\n")
+        (repo / f"{key_b}_model.txt").write_text("two\n")
+        async with TestClient(TestServer(_make_app(str(repo)))) as client:
+            resp = await client.get(f"/api/project/git/status?path={repo}")
+            data = await resp.json()
+        assert data["repo"] is True
+        paths = [f["path"] for f in data["files"]]
+        # Both filenames collapsed to the same redacted placeholder...
+        assert "[REDACTED: credential]_model.txt" in paths
+        # ...but only one entry survives, and the raw tokens never leak.
+        assert paths.count("[REDACTED: credential]_model.txt") == 1
+        assert len(paths) == len(set(paths))
+        assert key_a not in "\n".join(paths)
+        assert key_b not in "\n".join(paths)
+
+    @pytest.mark.asyncio
     async def test_clean_repo_empty_files(self, repo, mock_sel):
         """Clean repo returns empty files list."""
         async with TestClient(TestServer(_make_app(str(repo)))) as client:

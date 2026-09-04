@@ -211,6 +211,104 @@ def azs_offering_instance_type(instance_type: str, profile: str, region: str) ->
     return {o.get("Location", "") for o in offerings if o.get("Location")}
 
 
+# Hosts the bootstrap MUST resolve to build the box. Keep in sync with the
+# UserData in templates/kirocrew-ec2.yaml — the kiro-cli URL is pinned to
+# us-east-1 there regardless of the launch region, so it is literal here too.
+_BOOTSTRAP_DOWNLOAD_HOSTS = (
+    "desktop-release.q.us-east-1.amazonaws.com",  # kiro-cli musl build
+    "nodejs.org",  # Node >= NODE_MAJOR_MIN tarball
+)
+
+
+def _zone_shadows_host(zone: str, host: str) -> bool:
+    """True when a hosted zone named ``zone`` is authoritative for ``host``.
+
+    A private hosted zone owns its apex **and every subdomain**, so
+    ``q.us-east-1.amazonaws.com`` shadows ``desktop-release.q.us-east-1.amazonaws.com``.
+    Matching is done on label boundaries so ``xq.us-east-1.amazonaws.com`` does
+    not match — a plain ``endswith`` would produce false positives.
+    """
+    zone = zone.rstrip(".").lower()
+    host = host.rstrip(".").lower()
+    if not zone or not host:
+        return False
+    return host == zone or host.endswith("." + zone)
+
+
+def shadowed_download_hosts(
+    vpc_id: str, profile: str, region: str
+) -> list[tuple[str, str]]:
+    """``(host, zone)`` pairs where a private hosted zone hides a download host.
+
+    An interface VPC endpoint with private DNS enabled creates a private hosted
+    zone that is authoritative for its whole domain. Amazon Q's
+    ``com.amazonaws.<region>.q`` endpoint creates one for
+    ``q.<region>.amazonaws.com`` — and kiro-cli is downloaded from
+    ``desktop-release.q.us-east-1.amazonaws.com``, which sits inside it. In such
+    a VPC the lookup is answered by the private zone, finds no matching record,
+    and returns NXDOMAIN **without falling through to public DNS**, so the
+    bootstrap dies ~4 minutes in on a name that resolves fine everywhere else.
+
+    The failure is deterministic — retries do not help — and it surfaces as
+    "kiro-cli did not install", which names the wrong layer. One read-only call
+    here turns it into a pre-launch error.
+
+    Returns an empty list when the check cannot be performed (for example the
+    launch role predates ``route53:ListHostedZonesByVPC``): a missing optional
+    permission must never block a launch that would otherwise succeed.
+    """
+    try:
+        data = aws.checked_json(
+            [
+                "route53",
+                "list-hosted-zones-by-vpc",
+                "--vpc-id",
+                vpc_id,
+                "--vpc-region",
+                region,
+            ],
+            profile,
+            region,
+            action="route53:ListHostedZonesByVPC",
+        )
+    except aws.AWSError:
+        # Non-fatal by design — see the docstring.
+        logger.info("could not list private hosted zones for %s; skipping DNS preflight", vpc_id)
+        return []
+
+    summaries = data.get("HostedZoneSummaries", []) if isinstance(data, dict) else []
+    hits: list[tuple[str, str]] = []
+    for host in _BOOTSTRAP_DOWNLOAD_HOSTS:
+        for zone in summaries:
+            name = zone.get("Name", "") if isinstance(zone, dict) else ""
+            if _zone_shadows_host(name, host):
+                hits.append((host, name.rstrip(".")))
+                break
+    return hits
+
+
+def assert_download_hosts_resolvable(vpc_id: str, profile: str, region: str) -> None:
+    """Fail fast when a private hosted zone shadows a bootstrap download host.
+
+    Raises :class:`aws.AWSError` naming the zone, the host, and the ``--subnet``
+    remedy. See :func:`shadowed_download_hosts` for why this is worth a check.
+    """
+    hits = shadowed_download_hosts(vpc_id, profile, region)
+    if not hits:
+        return
+    detail = "; ".join(f"{host} is inside private zone {zone}" for host, zone in hits)
+    raise aws.AWSError(
+        f"VPC {vpc_id} has a private hosted zone that shadows a host the bootstrap "
+        f"must download from ({detail}). Inside this VPC that name resolves to "
+        "NXDOMAIN instead of falling through to public DNS, so the install would "
+        "fail several minutes from now with a misleading error. This is usually an "
+        "interface VPC endpoint with private DNS enabled (e.g. Amazon Q's "
+        "`com.amazonaws.<region>.q`). Launch into a VPC without that endpoint via "
+        "`--subnet <subnet-id>`, or disable private DNS on the endpoint, then retry.",
+        action="route53:ListHostedZonesByVPC",
+    )
+
+
 def discover_network(
     profile: str, region: str, instance_type: str = ""
 ) -> tuple[str, str, str]:
@@ -594,6 +692,10 @@ def deploy(
             vpc_id, subnet_id, egress_kind = discover_network(
                 profile, region, tier.instance_type
             )
+        # Both paths above settle on a VPC; check the resolver BEFORE provisioning
+        # anything. A private hosted zone that shadows a download host makes the
+        # bootstrap fail deterministically minutes later, blaming the wrong layer.
+        assert_download_hosts_resolvable(vpc_id, profile, region)
     except Exception:
         _cleanup_uploaded_source()
         raise

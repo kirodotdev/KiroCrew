@@ -45,6 +45,28 @@ was reachable. `dashboard/handlers/messaging.py` wraps the text:
 **How to treat it:** do the work it implies. If a cron reports a build failure,
 fix the build. There is nobody to ask.
 
+## Structured monitor wake
+
+The probe controller injects an action turn only for a newly actionable
+fingerprint. The controller constructs one envelope, and dashboard, Slack, and
+Discord pass those exact bytes through:
+
+```
+[Monitor wake]
+Monitor <id>: GitHub pull request <target>; objective: review_ready.
+Fingerprint: <fingerprint>. Classification: <reason code>.
+Head: <revision>. Changed: <allowlisted canonical facts>.
+Next action: <bounded instructions>.
+```
+
+`MONITOR_WAKE_PREFIX = '[Monitor wake]'` is defined in `dashboard/state.py`.
+The complete envelope is redacted before its 4,096-character cap and contains
+only canonical provider facts, never raw responses, logs, comments, diffs,
+stdout, or stderr. Dashboard stores it as role `nudge` with compact monitor
+identity metadata; messaging surfaces receive the same content. It is
+automation, not user speech. A raw provider completion event is the only signal
+that the resulting agent action finished.
+
 ## Sub-agent completion
 
 A background sub-agent finished. `slack/gateway.py` builds the envelope on the
@@ -304,7 +326,9 @@ next turn into the same slot:
   change the legacy `[auto-nudge cycle N]` body, delivered-cycle count, `fired`
   event, or rearm timing. When attached, dashboard and Discord report only a raw
   provider completion; Slack likewise requires the raw provider completion and
-  shares its one consumed usage result with telemetry.
+  shares its one consumed usage result with telemetry. A dispatched monitor wake
+  that reaches stream exhaustion remains in flight only until its durable,
+  bounded completion-evidence deadline; no synthetic completion is injected.
 
 **How to treat it:** it is a self-prompt. Continue the work; the operator asked for
 the loop, but is not waiting on this specific message.

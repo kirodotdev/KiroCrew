@@ -46,7 +46,7 @@ export const ChatApp: React.FC = () => {
 
   // Read initial language and listen for config updates
   useEffect(() => {
-    api?.getMochiConfig?.().then((c: any) => {
+    api?.getMochiConfig?.().then((c) => {
       // resolvePetName, not `c.petName`: an empty stored name means "use the
       // active avatar's own name" (settings.py), so reading the raw field left
       // a ghost user being told to "Ask Mochi" to watch a page.

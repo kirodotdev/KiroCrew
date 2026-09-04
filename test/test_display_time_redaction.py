@@ -435,6 +435,8 @@ def test_oauth_url_corpus_survives_the_emit_path(monkeypatch) -> None:
     """
     from oauth_url_corpus import LEGIT_OAUTH_URLS
 
+    from kiro_crew.dashboard.chat_utils import gateway_generation
+
     assert LEGIT_OAUTH_URLS, "precondition: the corpus is non-empty"
     blanked = []
     for provider, url in LEGIT_OAUTH_URLS:
@@ -444,7 +446,17 @@ def test_oauth_url_corpus_survives_the_emit_path(monkeypatch) -> None:
                     "role": "mcp_oauth",
                     "content": "authorize",
                     "cls": "msg msg-info",
-                    "meta": {"server_name": "acme", "oauth_url": url},
+                    # Stamped with the LIVE generation, which is what a banner the
+                    # user can still act on always carries: `_emit_mcp_oauth_request`
+                    # is the only producer of these rows and it always stamps. An
+                    # unstamped row means a dead flow and is withdrawn on purpose
+                    # (issue #7654) -- pinned by the next test, so this one keeps
+                    # measuring what it was written to measure: the redaction gate.
+                    "meta": {
+                        "server_name": "acme",
+                        "oauth_url": url,
+                        "gen": gateway_generation(),
+                    },
                 }
             ],
             False,
@@ -455,6 +467,32 @@ def test_oauth_url_corpus_survives_the_emit_path(monkeypatch) -> None:
         "the emit path blanked a legitimate consent URL — the Authorize banner "
         f"would silently vanish for: {blanked}"
     )
+
+
+def test_a_legitimate_url_from_a_dead_generation_is_withdrawn() -> None:
+    """The other side of the corpus test: a real URL is no longer a live one.
+
+    A banner carrying no generation stamp was persisted by an earlier build, so the
+    process that owned its loopback listener and PKCE verifier is gone. The URL is
+    still a perfectly well-formed provider URL — that is exactly why the scheme and
+    credential gates cannot catch it, and why the liveness gate has to (issue #7654).
+    """
+    from oauth_url_corpus import LEGIT_OAUTH_URLS
+
+    _, url = LEGIT_OAUTH_URLS[0]
+    out = _prepare_messages(
+        [
+            {
+                "role": "mcp_oauth",
+                "content": "authorize",
+                "cls": "msg msg-info",
+                "meta": {"server_name": "acme", "oauth_url": url},
+            }
+        ],
+        False,
+    )
+    assert out[0]["meta"]["expired"] is True
+    assert not out[0]["meta"].get("oauth_url"), "a dead flow still offered its link"
 
 
 def test_oauth_url_gate_still_blocks_a_tampered_url() -> None:

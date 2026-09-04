@@ -14,6 +14,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from aiohttp import web
 
+import kiro_crew.config.loader as loader_module
 from kiro_crew.dashboard.handlers import api_agent_config
 
 
@@ -462,8 +463,16 @@ async def test_agent_config_write_goes_through_one_shielded_offload(tmp_path):
         return False
 
     def _recording_write(path, data, **kwargs):  # noqa: ANN001 - mirrors the real signature
-        writes.append(("mc_cfg" if Path(path) == mc_cfg else "spec", inside_offload))
+        writes.append(("spec", inside_offload))
         Path(path).write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+
+    real_locked = loader_module.update_config_locked
+
+    def _recording_locked(path, **kwargs):  # noqa: ANN001 - mirrors the real signature
+        # The ``config.json`` half is now one locked read-modify-write, so this
+        # is where that durable write is observed.
+        writes.append(("mc_cfg", inside_offload))
+        return real_locked(path, **kwargs)
 
     with (
         patch("kiro_crew.dashboard.handlers._installed_agent_config", return_value=installed),
@@ -479,6 +488,10 @@ async def test_agent_config_write_goes_through_one_shielded_offload(tmp_path):
         patch(
             "kiro_crew.dashboard.handlers.agents.write_config_atomically",
             _recording_write,
+        ),
+        patch(
+            "kiro_crew.dashboard.handlers.agents.update_config_locked",
+            _recording_locked,
         ),
         patch("kiro_crew.dashboard.handlers.mcp._offload_config_write", _recording_offload),
     ):
@@ -644,8 +657,15 @@ async def test_agent_config_put_lock_releases_only_after_every_write_landed(tmp_
         return False
 
     def _recording_write(path, data, **kwargs):  # noqa: ANN001 - mirrors the real signature
-        completed.append("mc_cfg" if Path(path) == mc_cfg else "spec")
+        completed.append("spec")
         Path(path).write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+
+    real_locked = loader_module.update_config_locked
+
+    def _recording_locked(path, **kwargs):  # noqa: ANN001 - mirrors the real signature
+        result = real_locked(path, **kwargs)
+        completed.append("mc_cfg")
+        return result
 
     @contextlib.asynccontextmanager
     async def _recording_lock():
@@ -675,6 +695,10 @@ async def test_agent_config_put_lock_releases_only_after_every_write_landed(tmp_
         patch(
             "kiro_crew.dashboard.handlers.agents.write_config_atomically",
             _recording_write,
+        ),
+        patch(
+            "kiro_crew.dashboard.handlers.agents.update_config_locked",
+            _recording_locked,
         ),
     ):
         task = asyncio.ensure_future(api_agent_config(request))
@@ -767,7 +791,10 @@ async def test_agent_config_put_unreadable_config_persists_nothing(tmp_path, mon
 
     request.json = mock_json
 
-    def _unreadable(path):  # noqa: ANN001 - mirrors the real signature
+    def _unreadable(path, **kwargs):  # noqa: ANN001 - mirrors the real signature
+        # The fallible read now lives INSIDE the locked primitive, which raises
+        # it before invoking the mutate callback, so the seam moves here. The
+        # property is unchanged: the unit's first durable step refuses.
         raise ConfigReadError("config.json is corrupt")
 
     with (
@@ -784,7 +811,7 @@ async def test_agent_config_put_unreadable_config_persists_nothing(tmp_path, mon
             "kiro_crew.platform.governance.sanitize_agent_config_governance",
             lambda config: None,
         ),
-        patch("kiro_crew.dashboard.handlers.agents.read_config_for_update", _unreadable),
+        patch("kiro_crew.dashboard.handlers.agents.update_config_locked", _unreadable),
     ):
         response = await api_agent_config(request)
 
@@ -933,10 +960,11 @@ async def test_agent_config_put_failed_config_write_leaves_bookkeeping_untouched
 
     request.json = mock_json
 
-    def _config_write_fails(path, data, **kwargs):  # noqa: ANN001 - mirrors the real signature
-        if Path(path) == mc_cfg:
-            raise OSError("disk full")
-        Path(path).write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    def _config_write_fails(path, **kwargs):  # noqa: ANN001 - mirrors the real signature
+        # The ``config.json`` write is now the locked primitive, so the injected
+        # I/O failure moves there. Still the unit's FIRST durable step, which is
+        # what the assertions below pin.
+        raise OSError("disk full")
 
     with (
         patch("kiro_crew.dashboard.handlers._installed_agent_config", return_value=installed),
@@ -953,7 +981,7 @@ async def test_agent_config_put_failed_config_write_leaves_bookkeeping_untouched
             lambda config: None,
         ),
         patch(
-            "kiro_crew.dashboard.handlers.agents.write_config_atomically",
+            "kiro_crew.dashboard.handlers.agents.update_config_locked",
             _config_write_fails,
         ),
     ):
@@ -1076,7 +1104,7 @@ async def test_default_agent_write_holds_the_config_lock(tmp_path):
     """
     import contextlib
 
-    from kiro_crew.config.loader import read_config_for_update, write_config_atomically
+    from kiro_crew.config.loader import update_config_locked
     from kiro_crew.dashboard.handlers import api_default_agent
 
     mc_cfg = tmp_path / "config.json"
@@ -1103,13 +1131,23 @@ async def test_default_agent_write_holds_the_config_lock(tmp_path):
         finally:
             holding = False
 
-    def _recording_read(path):  # noqa: ANN001 - mirrors the real signature
-        observed.append(("read", holding))
-        return read_config_for_update(path)
+    def _recording_locked(path, *, mutate, **kwargs):  # noqa: ANN001 - real signature
+        """Observe both halves of the locked read-modify-write.
 
-    def _recording_write(path, data):  # noqa: ANN001 - mirrors the real signature
+        The read is no longer a separate call the handler makes: it happens
+        inside ``update_config_locked``, immediately before it invokes *mutate*.
+        Recording at the callback is therefore the read, and recording after the
+        primitive returns is the write -- the same two observations as before,
+        taken where they now happen.
+        """
+
+        def _observed_mutate(data: dict) -> dict:
+            observed.append(("read", holding))
+            return mutate(data)
+
+        result = update_config_locked(path, mutate=_observed_mutate, **kwargs)
         observed.append(("write", holding))
-        write_config_atomically(path, data)
+        return result
 
     loaded = MagicMock()
     loaded.agents = {"kirocrew": MagicMock()}
@@ -1120,8 +1158,7 @@ async def test_default_agent_write_holds_the_config_lock(tmp_path):
         patch("kiro_crew.dashboard.handlers.config_path", return_value=mc_cfg),
         patch("kiro_crew.dashboard.handlers.agents.KiroCrewConfig", fake_config_cls),
         patch("kiro_crew.dashboard.handlers.agents._get_config_lock", _recording_lock),
-        patch("kiro_crew.dashboard.handlers.agents.read_config_for_update", _recording_read),
-        patch("kiro_crew.dashboard.handlers.agents.write_config_atomically", _recording_write),
+        patch("kiro_crew.dashboard.handlers.agents.update_config_locked", _recording_locked),
     ):
         resp = await api_default_agent(request)
 
@@ -1131,6 +1168,14 @@ async def test_default_agent_write_holds_the_config_lock(tmp_path):
     # lets a sibling RMW land between this read and it, which is the whole defect.
     assert all(held for _step, held in observed), (
         f"the default-agent read-modify-write ran OUTSIDE the config lock: {observed}"
+    )
+    # And the ADVISORY lock was taken too, not just the in-process one (#8032).
+    # The asyncio lock above serializes same-loop callers only, so on its own it
+    # leaves the CLI and other processes free to interleave with this RMW.
+    assert (tmp_path / "config.json.lock").exists(), (
+        "the default-agent RMW did not route through update_config_locked: no "
+        "<config>.lock sidecar was taken, so it is still unserialized against "
+        "the CLI, worker threads and other processes"
     )
     # And the RMW itself still preserves unrelated settings.
     assert json.loads(mc_cfg.read_text(encoding="utf-8")) == {

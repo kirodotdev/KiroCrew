@@ -1385,6 +1385,8 @@ class TestResolvedIdentityReachesThePolicy:
             permit=permit,
             identity=identity,
             refuse_launched=refuse_launched,
+            window_timeout=0.02,
+            window_poll_interval=0.005,
         )
         return result, spawned, seen
 

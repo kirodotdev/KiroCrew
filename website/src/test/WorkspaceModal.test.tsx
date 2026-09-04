@@ -41,18 +41,28 @@ vi.mock('../components/SimpleSelect', () => ({
     action?: { label: string; onSelect: () => void }
     clearLabel?: string
     'aria-label'?: string
-  }) => (
-    <div>
-      <button type="button" role="combobox" aria-label={ariaLabel} aria-expanded={false}>{value || clearLabel}</button>
-      {clearLabel && (
-        <button type="button" role="option" aria-selected={value === ''} onClick={() => onChange('')}>{clearLabel}</button>
-      )}
-      {options.map(o => (
-        <button key={o} type="button" role="option" aria-selected={o === value} onClick={() => onChange(o)}>{o}</button>
-      ))}
-      {action && <button type="button" onClick={action.onSelect}>{action.label}</button>}
-    </div>
-  ),
+  }) => {
+    /* `role="combobox"` owes ARIA an `aria-controls`, so the option rows sit in a real
+       listbox the trigger names — this stub exists to keep the accessible surface the
+       tests query. The id is derived from the label because the sheet's select and the
+       modal's "Copy from" select are mounted at the same time. The action row stays
+       OUTSIDE the listbox: it is not an option. */
+    const listboxId = `zzq-listbox-${(ariaLabel ?? 'unlabelled').replace(/\W+/g, '-')}`
+    return (
+      <div>
+        <button type="button" role="combobox" aria-label={ariaLabel} aria-expanded={false} aria-controls={listboxId}>{value || clearLabel}</button>
+        <div role="listbox" id={listboxId}>
+          {clearLabel && (
+            <button type="button" role="option" aria-selected={value === ''} onClick={() => onChange('')}>{clearLabel}</button>
+          )}
+          {options.map(o => (
+            <button key={o} type="button" role="option" aria-selected={o === value} onClick={() => onChange(o)}>{o}</button>
+          ))}
+        </div>
+        {action && <button type="button" onClick={action.onSelect}>{action.label}</button>}
+      </div>
+    )
+  },
 }))
 
 vi.mock('../api/client', () => ({ api: mockApi }))
@@ -100,7 +110,7 @@ beforeEach(() => {
  *  every workspace-modal path goes through here first. */
 async function openCrewSheet(): Promise<HTMLElement> {
   fireEvent.click(screen.getByTestId('new-crew'))
-  return await screen.findByRole('dialog', { name: 'Create a new crew' })
+  return await screen.findByRole('dialog', { name: 'Create a new agent' })
 }
 
 /** Open the workspace select inside the editor panel and click the

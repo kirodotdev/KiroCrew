@@ -496,6 +496,7 @@ export default function HooksPage({ embedded }: { embedded?: boolean } = {}) {
             // redundant Tab press between every row.
             <div
               className="overflow-x-auto"
+              // eslint-disable-next-line jsx-a11y/no-noninteractive-tabindex -- the tab stop IS the a11y fix, per the note above: a scrollport whose content holds no focusable child is unreachable by keyboard in every engine but Chromium >=130, and axe/IBM still require the explicit stop. `role="region"` + `aria-label` are what keep it from announcing as an anonymous div.
               tabIndex={0}
               role="region"
               aria-label={provider.labels.hooksSection}

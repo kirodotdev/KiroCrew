@@ -49,6 +49,7 @@ from kiro_crew.events.kinds import (
     TurnUsage,
 )
 from kiro_crew.history import transcript_stems
+from kiro_crew.jsonl_util import bounded_records
 from kiro_crew.platform_compat import is_link_or_junction
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
@@ -140,8 +141,8 @@ def _as_int(value: object) -> int | None:
     return value if isinstance(value, int) and not isinstance(value, bool) else None
 
 
-def _open_no_follow(path: Path) -> "io.TextIOWrapper":
-    """Open *path* for text reading, refusing symlinks.
+def _no_follow_fd(path: Path) -> int:
+    """Open *path* read-only refusing symlinks, and return the raw fd.
 
     Every store file this validator reads is attacker-influenceable in
     principle (``--home`` may point anywhere), and parsed field values
@@ -152,12 +153,29 @@ def _open_no_follow(path: Path) -> "io.TextIOWrapper":
     failure. On platforms without O_NOFOLLOW the flag is 0 and the lstat
     guard below still refuses the link (TOCTOU-tolerant: worst case reads a
     file swapped in at the same path, never a followed link on POSIX).
+
+    The two wrappers below differ only in the layer they put on the fd, so
+    the guard is stated once here and cannot drift between them.
     """
     if is_link_or_junction(path):
         raise OSError(f"refusing symlinked store file: {path}")
     flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
-    fd = os.open(path, flags)
-    return io.TextIOWrapper(io.FileIO(fd, "r"), encoding="utf-8", errors="replace")
+    return os.open(path, flags)
+
+
+def _open_no_follow(path: Path) -> "io.TextIOWrapper":
+    """Open *path* for TEXT reading, refusing symlinks (see :func:`_no_follow_fd`)."""
+    return io.TextIOWrapper(io.FileIO(_no_follow_fd(path), "r"), encoding="utf-8", errors="replace")
+
+
+def _open_binary_no_follow(path: Path) -> "io.BufferedReader":
+    """Open *path* for BINARY reading, refusing symlinks (see :func:`_no_follow_fd`).
+
+    The record readers in :mod:`kiro_crew.jsonl_util` require a binary handle
+    so that their cap is a byte bound rather than a code-point count, and
+    buffered so one ``readline`` is not one syscall.
+    """
+    return io.BufferedReader(io.FileIO(_no_follow_fd(path), "r"))
 
 
 def _read_json_no_follow(path: Path) -> object:
@@ -246,8 +264,8 @@ def backfill_transcripts(home: Path, limit: int | None = None) -> SourceReport:
     for path, stem in paths:
         key = _resolve_session_key(stem, index)
         try:
-            with _open_no_follow(path) as fh:
-                for line in fh:
+            with _open_binary_no_follow(path) as fh:
+                for line in bounded_records(fh, path, label="backfill"):
                     if limit is not None and len(rep.events) >= limit:
                         return rep
                     line = line.strip()
@@ -326,7 +344,13 @@ def backfill_subagents(home: Path, limit: int | None = None) -> SourceReport:
         outcome: str | None = None
         died_ms: int | None = None
         readable = False
-        if tombstone.exists():
+        # Stat the tombstone once and let both decisions below read the answer.
+        # The terminal branch decides from ``readable`` / ``cause`` / ``died_ms``,
+        # which this block's parse is the only source of, so a second stat that
+        # answered differently would judge the terminal against a file no other
+        # line here ever saw.
+        has_tombstone = tombstone.exists()
+        if has_tombstone:
             try:
                 t = _read_json_no_follow(tombstone)
                 if isinstance(t, dict):
@@ -359,7 +383,7 @@ def backfill_subagents(home: Path, limit: int | None = None) -> SourceReport:
         # subagent is still STREAMING its answer, so its presence alone proves
         # nothing — a run dir with state but no tombstone is in-flight (or was
         # orphaned) and gets only the spawned event.
-        if tombstone.exists():
+        if has_tombstone:
             # A tombstone does NOT mean failure: successful delivery writes a
             # ``cause="delivered"`` tombstone instead of deleting the folder
             # (deferred-TTL cleanup). Only a non-delivered cause is abnormal —
@@ -494,8 +518,8 @@ def backfill_usage(home: Path, limit: int | None = None) -> SourceReport:
         return rep
     for path in sorted(shard_dir.glob("*.jsonl")):
         try:
-            with _open_no_follow(path) as fh:
-                for line in fh:
+            with _open_binary_no_follow(path) as fh:
+                for line in bounded_records(fh, path, label="backfill"):
                     if limit is not None and len(rep.events) >= limit:
                         return rep
                     line = line.strip()

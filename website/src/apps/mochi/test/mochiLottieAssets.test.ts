@@ -104,7 +104,7 @@ describe('built-in Lottie packs', () => {
 
   it.each(CLIPS)('%s loops on its own: the track spans the composition', (_name, clip) => {
     // Why dropping `loopOut()` was lossless rather than a behaviour change.
-    const doc = clip as { op: number; layers: Record<string, any>[] }
+    const doc = clip as { op: number; layers: { ks?: { p?: { y?: { k?: unknown } } } }[] }
     const tracks = doc.layers
       .map((l) => l.ks?.p?.y)
       .filter((p): p is { k: { t?: number; s?: number[] }[] } => Array.isArray(p?.k))

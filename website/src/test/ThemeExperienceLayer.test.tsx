@@ -1,5 +1,8 @@
+import type React from 'react'
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { render, screen, act } from '@testing-library/react'
+import { Provider } from 'react-redux'
+import { createTestStore } from './helpers'
+import { render as rtlRender, screen, act, type RenderOptions } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 
 // Controllable useTheme mock — each test sets `mockTheme` before rendering.
@@ -11,6 +14,17 @@ vi.mock('../hooks/useTheme', () => ({
 }))
 
 import ThemeExperienceLayer from '../components/ThemeExperienceLayer'
+
+// The layer reads `instances.activeId` (it unmounts when a remote Crew is active),
+// so every mount needs a Redux Provider. Shim `render` through RTL's `wrapper`
+// option — not a hand-wrapped element — so `rerender(<ThemeExperienceLayer />)`
+// in the cases below keeps the Provider instead of dropping it.
+let testStore = createTestStore()
+const StoreWrapper = ({ children }: { children: React.ReactNode }) => (
+  <Provider store={testStore}>{children}</Provider>
+)
+const render = (ui: React.ReactElement, options: Omit<RenderOptions, 'wrapper'> = {}) =>
+  rtlRender(ui, { wrapper: StoreWrapper, ...options })
 
 function mockMatchMedia(reduced: boolean) {
   const mql = {
@@ -76,6 +90,7 @@ describe('ThemeExperienceLayer', () => {
     localStorage.clear()
     setColorTheme.mockReset()
     mockMatchMedia(false)
+    testStore = createTestStore()
   })
 
   afterEach(() => {

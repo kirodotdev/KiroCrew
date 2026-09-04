@@ -828,13 +828,21 @@ async def _revoke_execution(
 
 
 async def _handle_crew_work(request: web.Request) -> web.Response:
-    """PUT /crew/work {"owner","repo","crew_id","number", ...patch, "event",
-    "event_kind"} -> {"item","event"}.
+    """PUT /crew/work {"owner","repo","crew_id","number"?, ...patch, "event",
+    "event_kind"} -> {"item","event","skip"}.
 
     THE route a crew writes its progress through, and the one the MCP write tool
     targets. It upserts the work item AND appends one ledger line in a single
     call, which is the whole point: a phase cannot change without a logged reason,
     because there is no route that changes one without the other.
+
+    ``number`` IS OPTIONAL, and omitting it is how a crew records a step that
+    belongs to no issue — today only a queue sweep that took nothing. That case
+    exists because the alternative was worse: a crew with an empty queue had no
+    way to report the cycle except by attributing it to an issue it never touched,
+    so the record either lied or was not written at all. A numberless write takes
+    the crew-level path below: one ledger line, no work item, no skip entry, and
+    no work-item fields accepted.
 
     ORDER MATTERS and is: validate the log line -> write the item -> index a skip
     -> append the line. Validating the kind and text FIRST means the store's own
@@ -887,13 +895,12 @@ async def _handle_crew_work(request: web.Request) -> web.Response:
             return early
         crew_id = routes._str_field(body, "crew_id")
 
-    # Reusing the PR field parser rather than copying its bound: the bound is the
-    # point (the number becomes a FILENAME), and a second copy is how one of them
-    # ships without it. Its out-of-range text says "pull-request number", which is
-    # cosmetically wrong here and only reachable past 1e9.
-    number, number_error = routes._pr_number_field(body)
-    if number_error is not None:
-        return number_error
+    # `number` is OPTIONAL, and its ABSENCE is what selects a crew-level line: a
+    # step that belongs to no issue, which today is only "swept the queue and took
+    # nothing". Presence, not truthiness -- a present-but-invalid number is still a
+    # 400 below rather than being silently reinterpreted as "no issue", because a
+    # crew that meant an issue must not have a typo read as a queue sweep.
+    crew_level = "number" not in body
 
     event_text, too_long = routes._pr_body_field(body, "event")
     if too_long is not None:
@@ -911,10 +918,69 @@ async def _handle_crew_work(request: web.Request) -> web.Response:
              "code": "invalid_event_kind"},
             status=400,
         )
+    # The vocabulary and the shape are paired in BOTH directions, so neither can
+    # drift into the other's meaning. A missing number with an item kind is the
+    # fabricated-number bug this route is being opened up to avoid, and accepting
+    # it would only move the fabrication into the store; a crew-level kind WITH a
+    # number would file a queue sweep under an issue it never touched, which is the
+    # same lie in the other direction.
+    _sweep = crew_store.CREW_LEVEL_EVENT_KIND
+    if crew_level and event_kind != _sweep:
+        return web.json_response(
+            {"error": (f"'number' is required for event_kind {event_kind!r} — only "
+                       f"{_sweep} records a step with no issue"),
+             "code": "number_required"},
+            status=400,
+        )
+    if not crew_level and event_kind == _sweep:
+        return web.json_response(
+            {"error": (f"event_kind {event_kind!r} is crew-level and takes no "
+                       "'number' — it records a step that belongs to no issue"),
+             "code": "unexpected_number"},
+            status=400,
+        )
 
     _crew, missing = await _require_crew(key, crew_id, must_be_live=True)
     if missing is not None:
         return missing
+
+    if crew_level:
+        # Refused rather than dropped. Every field named here patches a WORK ITEM,
+        # and this call creates none, so honouring the write while discarding them
+        # would report success for a phase move or a CI reading that was never
+        # stored anywhere. `skip_scope` is named alongside them because a pass is a
+        # decision about one issue and is indexed by that issue's number.
+        stray = sorted(
+            field for field in (*_WORK_PATCH_FIELDS, "skip_scope") if field in body
+        )
+        if stray:
+            return web.json_response(
+                {"error": (f"{', '.join(repr(f) for f in stray)} belong to a work item, "
+                           "so they cannot be sent without a 'number'"),
+                 "code": "item_fields_without_number"},
+                status=400,
+            )
+        checkpoint = await routes._st(
+            key,
+            crew_store.record_crew_checkpoint,
+            key.owner,
+            key.repo,
+            crew_id,
+            event_text,
+        )
+        return web.json_response(checkpoint)
+
+    # Parsed here rather than above so the log line is validated FIRST, which is
+    # the order this route's docstring prescribes, and so the numbered path holds a
+    # plain ``int`` with no sentinel standing in for the crew-level case.
+    #
+    # Reusing the PR field parser rather than copying its bound: the bound is the
+    # point (the number becomes a FILENAME), and a second copy is how one of them
+    # ships without it. Its out-of-range text says "pull-request number", which is
+    # cosmetically wrong here and only reachable past 1e9.
+    number, number_error = routes._pr_number_field(body)
+    if number_error is not None:
+        return number_error
 
     patch = {field: body[field] for field in _WORK_PATCH_FIELDS if field in body}
     # The route derives the pass's PROSE (only it has the request body); the store

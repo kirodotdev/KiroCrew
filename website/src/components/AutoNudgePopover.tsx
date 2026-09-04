@@ -173,6 +173,7 @@ export default function AutoNudgePopover({ slotKey, loop, open, onOpenChange, on
     if (!open || !hasEdited.current || loop) return
     const timer = setTimeout(() => saveGoalDraft(slotKey, draftToPersist(latest.current)), DRAFT_SAVE_DEBOUNCE_MS)
     return () => clearTimeout(timer)
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- `draftToPersist` is a pure transform of the ref snapshot it is handed, redeclared each render, so its identity carries no information the deps above miss. Depending on it would restart the debounce timer on every unrelated re-render — the coalescing this effect exists for.
   }, [open, slotKey, message, idleInput, maxCyclesInput, loop])
 
   async function save() {

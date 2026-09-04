@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, waitFor, fireEvent } from '@testing-library/react'
+import { render, screen, waitFor, fireEvent, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import type { McpServer } from '../types'
 
@@ -129,17 +129,22 @@ describe('McpTab needs_auth status', () => {
     expect(screen.queryByText('Unknown')).not.toBeInTheDocument()
   })
 
-  it('explains the unverifiable status on hover, naming the server', async () => {
+  it('makes the unverifiable status explanation keyboard and touch reachable', async () => {
     mockApi.mcpServers.mockResolvedValue([remote('needs_auth')])
     renderTab()
 
     const badge = await screen.findByText('Not verified')
-    const hint = badge.getAttribute('title') || ''
+    const trigger = within(badge.parentElement!).getByRole('button', { name: 'More information' })
+    const hint = trigger.getAttribute('title') || ''
     // Says who holds the token and that a working server is still working —
     // the two facts that make the badge honest instead of alarming.
     expect(hint).toContain('atlassian')
     expect(hint).toContain('Kiro CLI')
     expect(hint).toMatch(/cannot see the authorization/)
+    expect(badge).not.toHaveAttribute('title')
+
+    fireEvent.click(trigger)
+    expect(await screen.findByText(/cannot see the authorization/i)).toBeInTheDocument()
   })
 
   /**
@@ -169,8 +174,10 @@ describe('McpTab needs_auth status', () => {
    *
    * "Signed in" reports the grant kiro-cli holds, which is what was observed. It
    * deliberately does NOT claim the server answers: the probe has no token, so
-   * validity is the one thing it cannot check, and the hover says so rather than
-   * the badge over-claiming.
+   * validity is the one thing it cannot check, and the InfoTip says so rather than
+   * the badge over-claiming. The explanation rides InfoTip rather than a native
+   * `title` for the same reason as the `not_verified` case above: a hover-only
+   * tooltip is unreachable by keyboard, touch, and AT.
    */
   it('reports a held runtime grant as signed in, without claiming it still works', async () => {
     mockApi.mcpServers.mockResolvedValue([
@@ -178,17 +185,23 @@ describe('McpTab needs_auth status', () => {
     ])
     renderTab()
 
-    await waitFor(() => expect(screen.getByText('Signed in')).toBeInTheDocument())
+    const badge = await screen.findByText('Signed in')
     expect(screen.queryByText('Sign-in required')).not.toBeInTheDocument()
     expect(screen.queryByText('Not verified')).not.toBeInTheDocument()
     // Muted, and deliberately neither of the other two tones. Amber is this panel's
     // "you need to act" colour, so a resolved row wearing it is indistinguishable by
     // colour from the one still asking to be signed in; green would claim the server
     // answers, which the probe cannot check without the runtime's token.
-    expect(screen.getByText('Signed in').className).toContain('text-[var(--muted)]')
-    expect(screen.getByText('Signed in').className).not.toContain('text-warn')
-    expect(screen.getByText('Signed in').className).not.toContain('text-ok')
-    expect(screen.getByText('Signed in').title).toMatch(/cannot confirm the sign-in is still valid/)
+    expect(badge.className).toContain('text-[var(--muted)]')
+    expect(badge.className).not.toContain('text-warn')
+    expect(badge.className).not.toContain('text-ok')
+    expect(badge).not.toHaveAttribute('title')
+
+    const trigger = within(badge.parentElement!).getByRole('button', { name: 'More information' })
+    expect(trigger.getAttribute('title') || '').toMatch(/cannot confirm the sign-in is still valid/)
+
+    fireEvent.click(trigger)
+    expect(await screen.findByText(/cannot confirm the sign-in is still valid/i)).toBeInTheDocument()
   })
 
   it('keeps the not-verified wording when the gateway sent no authorization evidence', async () => {
@@ -213,7 +226,7 @@ describe('McpTab needs_auth status', () => {
     ])
     renderTab()
 
-    await waitFor(() => expect(screen.getByText('Sign-in required')).toBeInTheDocument())
+    const badge = await screen.findByText('Sign-in required')
     // The navigation step is an affordance, not an instruction: it is a link to
     // the chat route because that navigation IS something the panel can perform.
     // Session creation stays in prose because navigating to the route does not
@@ -224,15 +237,26 @@ describe('McpTab needs_auth status', () => {
     // therefore has to tell the user to create a NEW session before sending the
     // turn that raises the OAuth approval prompt.
     expect(screen.getByText(/start a new session, and send any message/)).toBeInTheDocument()
-    // The ending is VISIBLE, because a `title` reaches neither a keyboard nor a
-    // touch user — and the panel serves from the probe cache for the whole TTL, so
-    // someone returning from a completed sign-in would meet a row still reading
-    // "Sign-in required" and conclude it had failed. One clause in the cell; the
-    // longer form, naming the control and the resulting state, rides the hover.
+    // The short clause is VISIBLE in the cell, because a `title` reaches neither a
+    // keyboard nor a touch user — and the panel serves from the probe cache for the
+    // whole TTL, so someone returning from a completed sign-in would meet a row
+    // still reading "Sign-in required" and conclude it had failed. That one clause
+    // rides the cell; the longer form, naming the control and the resulting state,
+    // rides the InfoTip rather than a hover-only `title` for the same reachability
+    // reason as the `not_verified` and `signed_in` cases above.
     expect(screen.getByText(/Then probe to refresh this list/)).toBeInTheDocument()
-    expect(screen.getByText('Sign-in required').title).toMatch(
+    expect(badge).not.toHaveAttribute('title')
+
+    const trigger = within(badge.parentElement!).getByRole('button', { name: 'More information' })
+    expect(trigger.getAttribute('title') || '').toMatch(
       /use the Probe MCP servers button above this table; this row will then read Signed in/,
     )
+
+    fireEvent.click(trigger)
+    expect(
+      await screen.findByText(/use the Probe MCP servers button above this table; this row will then read Signed in/i),
+    ).toBeInTheDocument()
+
     // Still no Authorize control: starting the sign-in is not something this
     // panel can do, and a button here would claim an action it cannot perform.
     expect(screen.queryByRole('button', { name: /Authorize/ })).not.toBeInTheDocument()
@@ -376,12 +400,26 @@ describe('McpTab needs_auth status', () => {
     ).toBeInTheDocument()
   })
 
-  it('leaves every other status without a hover explanation', async () => {
+  it('explains that Online is a host check, and leaves the rest without a hover explanation', async () => {
+    // "Online" is the gateway's own probe result and reads as a stronger claim
+    // than it is — it says nothing about whether a given chat session mounted
+    // the server — so it carries the caveat two words cannot. The other statuses
+    // still get none: this stays a named exception rather than blanket hints.
     mockApi.mcpServers.mockResolvedValue([remote('ok')])
     renderTab()
 
     const badge = await screen.findByText('Online')
-    expect(badge).not.toHaveAttribute('title')
+    expect(badge).toHaveAttribute('title', expect.stringContaining('gateway started this server'))
+
+    for (const status of ['error', 'outdated', 'disabled'] as const) {
+      mockApi.mcpServers.mockResolvedValue([remote(status)])
+      const { unmount } = renderTab()
+      const other = await screen.findByText(
+        status === 'error' ? 'Error' : status === 'outdated' ? 'Outdated' : 'Disabled',
+      )
+      expect(other).not.toHaveAttribute('title')
+      unmount()
+    }
   })
 
   it('still renders a real failure as an error badge with its message', async () => {

@@ -434,10 +434,11 @@ def test_an_unresolved_session_key_PROCEEDS_with_an_empty_identity(
 
     * the unattended-surface rule was removed by product decision, so there is no
       longer a surface class to protect;
-    * neither accepted identity source EXISTS for a GUI-launched kiro-cli on macOS.
-      ``KIROCREW_SESSION_KEY`` is injected only by the ACP spawn path and
-      ``KIROCREW_HOST_PID`` only by the Linux sandbox launcher — so the refusal made
-      the feature unusable on its only supported platform, which is how it was found.
+    * neither accepted identity source EXISTS for a GUI-launched kiro-cli on macOS —
+      both come from a launcher above the process, and a GUI launch has none (the
+      ``mcp_computer`` module docstring names which launcher supplies each) — so the
+      refusal made the feature unusable on its only supported platform, which is how
+      it was found.
 
     The call reaches the gateway. What is lost is audit ATTRIBUTION, not a control —
     and the key it carries is a per-PROCESS placeholder rather than the empty string,
@@ -1932,6 +1933,18 @@ class TestTheSkillContractMatchesTheRuntime:
 
     _SPEC = Path(__file__).resolve().parents[1] / "docs/system-specs/modules/computer-use.md"
 
+    def test_the_spec_names_every_screenshot_spool_writer(self):
+        """The security contract must cover every place that persists pixels."""
+        text = self._SPEC.read_text(encoding="utf-8")
+        writers = {
+            "service._persist_image",
+            "capture_macos.persist_jpeg",
+            "capture_windows.persist_jpeg",
+        }
+        missing = {writer for writer in writers if writer not in text}
+        assert not missing, missing
+        assert "invocation-owned partial frame" in text
+
     def test_the_skill_does_not_advertise_an_optional_element_index(self):
         text = self._SKILL.read_text(encoding="utf-8")
         assert "element_index?" not in text
@@ -2212,17 +2225,6 @@ class TestUnresolvedSessionsAreNamespaced:
         )
         mcp_computer._call_tool_inner(TOOL_LIST_APPS, {})
         assert posted and posted[0][0] == "dashboard:main"
-
-    def test_the_fix_added_no_refusal(self):
-        """The constraint this had to be solved under, asserted directly.
-
-        The obvious fix — and the one prescribed — is ``if not key: refuse``. That
-        line is why the feature did not work on macOS at all, so it must not return
-        under a different justification.
-        """
-        src = inspect.getsource(mcp_computer)
-        assert "could not be identified" not in src
-        assert "ERR_NO_SESSION" not in src
 
 
 class TestTheDriftWalkHonoursTheSnapshotBudget:

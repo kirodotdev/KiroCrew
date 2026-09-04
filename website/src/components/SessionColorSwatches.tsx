@@ -138,6 +138,11 @@ export default function SessionColorSwatches({ slotKey, colorIndex, colorHex, on
   }
 
   return (
+    // Containment only: the handler performs no action, it just keeps keystrokes
+    // aimed at the swatches and the hex field from reaching the enclosing menu's
+    // key handler (which would treat them as navigation and close the popover).
+    // Every affordance inside is a real <button> or <input>.
+    // eslint-disable-next-line jsx-a11y/no-static-element-interactions -- stopPropagation barrier, not an activatable control; there is no behaviour for a keyboard to be given
     <div onKeyDown={e => e.stopPropagation()}>
       <div className="flex items-center gap-1.5 px-3 py-1.5">
         <button type="button" aria-label={i18nT('components.sessionColorSwatches.no_color')} className={`w-4 h-4 rounded-full border-[1.5px] cursor-pointer transition-transform hover:scale-125 ${colorIndex == null && !colorHex ? 'border-text-strong scale-110' : 'border-transparent'}`} style={{ background: 'var(--bg-accent)', backgroundImage: 'linear-gradient(135deg, transparent 45%, var(--danger) 45%, var(--danger) 55%, transparent 55%)' }} onClick={() => pick(null)} title={i18nT('components.sessionColorSwatches.no_color')} />

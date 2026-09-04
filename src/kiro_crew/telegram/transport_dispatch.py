@@ -13,8 +13,8 @@ which mirrors the Slack transport dispatch:
 
 ``on_callback`` resolves interactive tool approvals (``a:<rid>:<1|0>`` ->
 ``TelegramApprovalDecider.resolve_global``), applies ``/model`` picks
-(``m:<index>``) and re-injects ``[OPTIONS:]`` choices (``opt:<i>``) as fresh
-turns.
+(``m:<index>``) and re-injects provenance-tagged ``[OPTIONS:]`` choices
+(``opt:<index>:<session-tag>``) as literal fresh turns.
 
 Dependency direction is ``telegram -> messaging`` (allowed). The security
 ``tool_gate`` and spawn auto-approve are wired inline off ``ctx_builder.hooks``
@@ -36,13 +36,15 @@ from kiro_crew.acp.client import AcpError
 from kiro_crew.agent_discovery import list_agents
 from kiro_crew.config.loader import ACTIVATION_MENTION, ACTIVATION_OFF
 from kiro_crew.executors import run_in_embed_pool
-from kiro_crew.history import mint_row_mid
+from kiro_crew.history import is_incognito_transcript, mint_row_mid
 from kiro_crew.hooks import TOOL_AUTO_APPROVE, TOOL_DENY
 from kiro_crew.messaging import auto_title, privacy_mode
 from kiro_crew.messaging.attachments import IngestLimits, append_attachment_context
 from kiro_crew.messaging.attachments import cleanup as cleanup_attachments
 from kiro_crew.messaging.commands import (
     YOLO_PHRASING_PLAIN,
+    compact_unsupported_backend,
+    compact_unsupported_reply,
     cron_command_reply,
     format_ttl,
     lists_host_state,
@@ -69,7 +71,12 @@ from kiro_crew.messaging.link import (
     release_conversation_location,
     seed_generation,
 )
-from kiro_crew.messaging.renderer import SilentRenderer, display_safe
+from kiro_crew.messaging.renderer import (
+    SilentRenderer,
+    display_safe,
+    session_provenance_tag,
+)
+from kiro_crew.messaging.session_resume import SEARCH_FETCH_LIMIT, history_dashboard_key
 from kiro_crew.messaging.session_trust import add_trusted_session, is_session_trusted
 from kiro_crew.messaging.sessions_view import collect_recent_sessions_audited
 from kiro_crew.messaging.transport import InboundMessage
@@ -125,6 +132,28 @@ logger = logging.getLogger(__name__)
 # explicit override nor agent.default_agent is configured. Mirrors the Slack
 # path's _DEFAULT_KIROCREW_AGENT.
 _DEFAULT_KIROCREW_AGENT = "kirocrew"
+
+#: A pressed option is valid only while this chat still targets the session that
+#: rendered it. One constant serves both the pre-busy and post-rotation checks.
+_STALE_OPTIONS_REFUSAL = (
+    "🔘 These buttons belong to a conversation this chat has since moved away "
+    "from, so your choice was NOT applied. Type it as a message instead."
+)
+
+#: A legacy button carries no proof of which session authored its model-written
+#: label, so applying it to the current session would be a cross-session injection.
+_UNTAGGED_OPTIONS_REFUSAL = (
+    "🔘 These buttons predate a session-safety update, so which conversation "
+    "they belong to cannot be verified and your choice was NOT applied. "
+    "Type it as a message instead."
+)
+
+#: A busy-path queue or steer retains only bare text, dropping the provenance
+#: required to validate the choice when it later executes.
+_BUSY_OPTIONS_REFUSAL = (
+    "🔘 That conversation is busy with another turn, so your choice was NOT "
+    "applied. Type it as a message once the turn finishes."
+)
 
 
 # Keep queue collapse within the shared ingestion layer's per-turn file cap.
@@ -191,6 +220,7 @@ _SESSIONS_LIMIT = 10
 #: Per-row caps, so one pathological title cannot consume the whole message.
 _SESSION_TITLE_CHARS = 60
 _SESSION_AGENT_CHARS = 24
+_SESSION_QUERY_CHARS = 100
 #: ``/title`` ceiling. The dashboard sidebar row truncates well before this; the
 #: cap is here so a persisted transcript never carries an unbounded title.
 _TITLE_MAX_CHARS = 80
@@ -375,6 +405,7 @@ class TelegramDispatcher:
         drain: bool = True,
         interpret_commands: bool = True,
         privacy_request: str = "",
+        origin_tag: str = "",
     ) -> None:
         """Drive one authorized inbound message through TurnDriver end-to-end.
 
@@ -383,6 +414,11 @@ class TelegramDispatcher:
         drain path needs it: it re-enters with ``interpret_commands=False``, on text
         the modifier was already stripped from, so without it a
         ``/temporary <question>`` that had to queue would run unprotected.
+
+        *origin_tag* is the posting session encoded into an ``[OPTIONS:]``
+        button. A non-empty tag makes that button valid only while the current
+        and final post-rotation session keys still match it. The choice is never
+        queued or steered, because those paths retain text but not provenance.
         """
         assert self.client is not None, "TelegramDispatcher.client must be set"
         # Inbound channels-governance gate (off-loop) — recheck per message so a
@@ -543,7 +579,12 @@ class TelegramDispatcher:
                 cmd, route, chat_id, user_id, thread=reply_thread, subject="conversation list"
             ):
                 return
-            await self._handle_sessions(chat_id, caller=str(user_id), thread=reply_thread)
+            await self._handle_sessions(
+                chat_id,
+                parse_command_argument(text),
+                caller=str(user_id),
+                thread=reply_thread,
+            )
             return
         if cmd == "title":
             await self._handle_title(route, chat_id, parse_command_argument(text))
@@ -605,7 +646,18 @@ class TelegramDispatcher:
         # turn bypass steer/queue. Surface the message (steer or queue) instead
         # of a silent block.
         session_key = self._session_key(route)
+        if origin_tag and session_provenance_tag(session_key) != origin_tag:
+            # The button belongs to a session this route no longer targets. This
+            # gate precedes the busy read so a stale press neither queues nor
+            # reveals whether the replacement conversation is running a turn.
+            await self._reply(chat_id, _STALE_OPTIONS_REFUSAL, thread=reply_thread)
+            return
         if self.sessions.is_busy(session_key):
+            if origin_tag:
+                # Queue and steer paths store only text. Letting a tagged choice
+                # enter either path would replay it later with no tag to validate.
+                await self._reply(chat_id, _BUSY_OPTIONS_REFUSAL, thread=reply_thread)
+                return
             await self._handle_busy(
                 session_key,
                 msg,
@@ -618,6 +670,11 @@ class TelegramDispatcher:
             return
 
         session_key = self._rotated_session_key(route)
+        if origin_tag and session_provenance_tag(session_key) != origin_tag:
+            # Idle/daily rotation can change the native key after the pre-busy
+            # check. Revalidate the final key so the choice cannot cross it.
+            await self._reply(chat_id, _STALE_OPTIONS_REFUSAL, thread=reply_thread)
+            return
         # Restore a privacy mode set before a restart. The in-memory trackers are
         # empty on a cold process, so without this a session the operator marked
         # incognito yesterday reads as unrestricted today and this turn's transcript
@@ -1944,43 +2001,120 @@ class TelegramDispatcher:
     # ── /sessions, /title and the service-backed commands ──────────────────
 
     async def _handle_sessions(
-        self, chat_id: int, *, caller: str = "", thread: int | None = None
+        self,
+        chat_id: int,
+        query: str = "",
+        *,
+        caller: str = "",
+        thread: int | None = None,
     ) -> None:
-        """List the most recent conversations, newest first.
+        """List recent conversations, or search their titles and message content.
 
-        Read-only. A Resume button would need per-chat inbound rerouting (the
+        Still read-only. A Resume button would need per-chat inbound rerouting (the
         machinery Discord carries in ``discord/session_resume.py``) which this
         channel does not have, and a button that binds a session the next typed
-        message then bypasses is worse than no button — so the card points at the
-        dashboard instead of implying a capability.
+        message then bypasses is worse than no button. Search uses ConversationLog's
+        dashboard ranking rather than a Telegram-only title filter, but renders the
+        same bounded title/agent rows as the recent list.
 
         *caller* is the requesting user's id, and the audit record's subject. It was
         the constant ``"telegram"``, which is the SOURCE, not the subject: with more
-        than one entry in ``allowed_user_ids`` — the forum case this channel now
-        serves — a read of every conversation's titles could not be attributed to a
-        participant. Slack passes its own caller id for the same reason.
+        than one entry in ``allowed_user_ids`` — the forum case this channel serves —
+        a read of every conversation's titles must be attributable to a participant.
         """
-        rows = await collect_recent_sessions_audited(
-            self.sessions,
-            caller=caller or "telegram",
-            source="telegram",
-            limit=_SESSIONS_LIMIT,
-            with_messages=False,
-        )
-        if rows is None:
-            await self._reply(chat_id, "Sessions unavailable.", thread=thread)
-            return
+        normalized_query = " ".join(query.split())
+        rows: list[dict] | None
+        if normalized_query:
+            operation = "telegram.sessions_data_access"
+            if self.conv_log is None:
+                sel().log_api_access(
+                    caller=caller or "telegram",
+                    operation=operation,
+                    outcome="error",
+                    source="telegram",
+                    resources="0 sessions read (conversation log unavailable)",
+                )
+                await self._reply(chat_id, "Sessions unavailable.", thread=thread)
+                return
+            try:
+                found = await asyncio.to_thread(
+                    self.conv_log.search_sessions,
+                    query,
+                    SEARCH_FETCH_LIMIT,
+                )
+                rows = [
+                    row
+                    for row in found
+                    if isinstance(row, dict) and not is_incognito_transcript(row.get("memory_mode"))
+                ][:_SESSIONS_LIMIT]
+            except Exception as exc:
+                sel().log_api_access(
+                    caller=caller or "telegram",
+                    operation=operation,
+                    outcome="error",
+                    source="telegram",
+                    resources="0 sessions read (search failed)",
+                    error=display_safe(str(exc))[:200],
+                )
+                logger.exception("telegram: session search failed")
+                await self._reply(chat_id, "Sessions unavailable.", thread=thread)
+                return
+            sel().log_api_access(
+                caller=caller or "telegram",
+                operation=operation,
+                outcome="allowed",
+                source="telegram",
+                resources=f"{len(rows)} sessions read",
+            )
+        else:
+            rows = await collect_recent_sessions_audited(
+                self.sessions,
+                caller=caller or "telegram",
+                source="telegram",
+                limit=_SESSIONS_LIMIT,
+                with_messages=False,
+            )
+            if rows is None:
+                await self._reply(chat_id, "Sessions unavailable.", thread=thread)
+                return
+
+        query_label = display_safe(normalized_query)[:_SESSION_QUERY_CHARS]
         if not rows:
-            await self._reply(chat_id, "No recent conversations.", thread=thread)
+            if normalized_query:
+                await self._reply(
+                    chat_id,
+                    f"No conversations matched “{query_label}”. Try fewer words, "
+                    "or use /sessions to see the most recent conversations.",
+                    thread=thread,
+                )
+            else:
+                await self._reply(chat_id, "No recent conversations.", thread=thread)
             return
-        lines = ["🧵 Recent conversations:"]
+
+        if normalized_query:
+            lines = [f"🔎 Conversation search for “{query_label}”:"]
+        else:
+            lines = ["🧵 Recent conversations:"]
         for row in rows:
-            mark = "🟢" if row["active"] else "⚫"
-            title = redact(str(row["title"]))[:_SESSION_TITLE_CHARS]
-            agent = redact(str(row["agent"]))[:_SESSION_AGENT_CHARS]
+            key = str(row.get("key") or "")
+            if normalized_query:
+                logical_key = (
+                    history_dashboard_key(key) or self.sessions.channel_key_for_stem(key) or key
+                )
+                active = bool(logical_key and self.sessions.has_session(logical_key))
+            else:
+                active = bool(row["active"])
+            mark = "🟢" if active else "⚫"
+            title = redact(str(row.get("title") or key or "Untitled session"))[
+                :_SESSION_TITLE_CHARS
+            ]
+            agent = redact(str(row.get("agent") or "kirocrew"))[:_SESSION_AGENT_CHARS]
             lines.append(f"{mark} {title} — {agent}")
         lines.append("")
-        lines.append("Open one with /kirocrew dashboard.")
+        if normalized_query:
+            lines.append("Open one with /kirocrew dashboard.")
+        else:
+            lines.append("Search with /sessions <words>, or open one with /kirocrew dashboard.")
         await self._reply(chat_id, "\n".join(lines), thread=thread)
 
     async def _handle_title(self, route: tuple[str, str], chat_id: int, arg: str) -> None:
@@ -2288,8 +2422,12 @@ class TelegramDispatcher:
             )
             return
 
-        # [OPTIONS:] choice: "opt:<i>" — label recovered from the button text.
+        # [OPTIONS:] choice: ``opt:<index>:<origin-tag>``. The label is
+        # recovered from the button text; the tag binds it to the session that
+        # authored the keyboard.
         if data.startswith("opt:"):
+            parts = data.split(":", 2)
+            origin_tag = parts[2] if len(parts) == 3 else ""
             choice_text = cb.label
             # Retire the keyboard but KEEP the original answer text intact --
             # tapping an option must not overwrite the answer bubble. The choice
@@ -2297,6 +2435,16 @@ class TelegramDispatcher:
             await self.client.edit_message_reply_markup(
                 cb.chat_id, cb.message_id, {"inline_keyboard": []}
             )
+            if not origin_tag:
+                # A button created before provenance existed cannot prove which
+                # session its model-authored text belongs to. Never infer that
+                # from whatever session happens to be current now.
+                await self._reply(
+                    cb.chat_id,
+                    _UNTAGGED_OPTIONS_REFUSAL,
+                    thread=cb_thread,
+                )
+                return
             if not choice_text:
                 await self._reply(
                     cb.chat_id,
@@ -2304,10 +2452,8 @@ class TelegramDispatcher:
                     thread=cb_thread,
                 )
                 return
-            # Echo the picked option as its own block (a quoted bubble) so the
-            # user can see what they chose -- a button tap can't render as a
-            # real user message, so this stands in for it. Then re-dispatch the
-            # choice as a fresh turn whose answer streams in as a NEW message.
+            # Echo the picked option as its own block (a button tap can't
+            # render as a real user message), then re-dispatch as a fresh turn.
             echoed = await self._reply(
                 cb.chat_id,
                 f"<blockquote>{html.escape(choice_text)}</blockquote>",
@@ -2317,10 +2463,9 @@ class TelegramDispatcher:
             )
             if echoed is None:  # malformed HTML -> plain fallback
                 await self._reply(cb.chat_id, f"» {choice_text}", thread=cb_thread)
-            # Re-inject the choice as a fresh turn via the normal path, carrying
-            # the callback's ORIGINAL route (chat_type + Topic thread) so a forum
-            # [OPTIONS:] press re-dispatches under the SAME forum session key
-            # instead of a DM-shaped key.
+            # Re-inject the choice with the callback's ORIGINAL route so a forum
+            # press stays under the same Topic. ``from_widget`` bypasses forum
+            # activation because tapping this bot's own keyboard addresses it.
             synthetic = TelegramInboundMessage(
                 channel_type="telegram",
                 user_id=str(cb.user_id),
@@ -2330,13 +2475,17 @@ class TelegramDispatcher:
                     str(cb.message_thread_id) if getattr(cb, "message_thread_id", None) else None
                 ),
                 chat_type=cb.chat_type,
-                # The user tapped a keyboard THIS bot posted, so the message is
-                # addressed to it whatever the activation mode says. Without this a
-                # forum Topic on `mention` cleared the keyboard and then dropped the
-                # choice — the press looked like it worked and nothing answered.
                 from_widget=True,
             )
-            await self.handle_message(synthetic)
+            # The label is MODEL-AUTHORED. A leading command token is ordinary
+            # turn content, never permission for the model to execute `/new`,
+            # `/dashboard`, `/yolo`, or any future command. The non-empty tag
+            # still asks handle_message to validate current and final affinity.
+            await self.handle_message(
+                synthetic,
+                interpret_commands=False,
+                origin_tag=origin_tag,
+            )
 
     # ── Helpers ────────────────────────────────────────────────────────────
 
@@ -2702,6 +2851,11 @@ class TelegramDispatcher:
         """
         pct = self.sessions.check_context_usage(session_key, provider)
         soft_pct = self.cfg.telegram.soft_threshold_pct
+        if pct >= soft_pct and compact_unsupported_backend(provider):
+            # Capability gate (#8156): the nudge advises /compact, which this
+            # backend refuses — it compacts on its own as context fills, so
+            # there is nothing for the user to act on.
+            return
         if pct >= soft_pct and not self._conv.is_awaiting(route):
             self._conv.set_awaiting(route)
             assert self.client is not None
@@ -2741,6 +2895,15 @@ class TelegramDispatcher:
             provider = self.sessions.get_provider(session_key)
             if provider is None:
                 await self._reply(chat_id, "No active session to compact.", thread=thread)
+                return
+
+            # Capability gate (#8156, mirroring the dashboard's #7800 gate): a
+            # backend that cannot serve a manual /compact treats the prompt as
+            # ordinary text and never answers, so dispatching would strand the
+            # 120s wait below. Informational, never an error.
+            unsupported = compact_unsupported_backend(provider)
+            if unsupported:
+                await self._reply(chat_id, compact_unsupported_reply(unsupported), thread=thread)
                 return
 
             status_id = await self._reply(chat_id, "🔄 Compacting context…", thread=thread)

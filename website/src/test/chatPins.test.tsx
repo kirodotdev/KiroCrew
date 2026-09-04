@@ -40,17 +40,20 @@ vi.mock('../i18n/t', () => ({
   },
 }))
 
-// Mock clipboard
+// Mock clipboard — real copyToClipboard resolves `true` on success / `false`
+// on a silent fallback failure (Promise<boolean>); mirror the success contract.
 vi.mock('../utils/clipboard', () => ({
-  copyToClipboard: vi.fn().mockResolvedValue(undefined),
+  copyToClipboard: vi.fn().mockResolvedValue(true),
 }))
 
-// Mock shareUrl
+// Mock shareUrl — copySessionLink also resolves Promise<boolean>.
 vi.mock('../utils/shareUrl', () => ({
-  copySessionLink: vi.fn().mockResolvedValue(undefined),
+  copySessionLink: vi.fn().mockResolvedValue(true),
 }))
 
 import { pinsApi } from '../api/pins'
+import { copyToClipboard } from '../utils/clipboard'
+import { copySessionLink } from '../utils/shareUrl'
 
 const mockPin: ChatPin = {
   id: 'pin-1',
@@ -903,6 +906,77 @@ describe('PinnedMessagesPanel', () => {
     actionRows.forEach(row => {
       expect(row.className).toContain('focus-within:opacity-100')
     })
+  })
+
+  // === Action feedback (regression: buttons ran their side effect silently) ===
+  //
+  // The Copy and Copy-link buttons used to fire copyToClipboard / copySessionLink
+  // with no visible confirmation, so a click looked like nothing happened — unlike
+  // the in-chat message actions which swap to a green Check for 1.5s. These lock in
+  // the confirmation and its per-row + per-action isolation.
+  //
+  // The confirmation lives on the button TITLE (tooltip) and ICON only. The
+  // aria-label stays action-specific ("Copy text" / "Copy link") throughout, so a
+  // screen reader can always tell the two adjacent buttons apart — swapping the
+  // aria-label to "Copied" was a real a11y regression (GPT review on #7894), since
+  // it made Copy text and Copy link report the same accessible name mid-confirmation.
+
+  const titleOf = (btn: Element) => btn.getAttribute('title')
+
+  it('Copy button shows a title confirmation after a successful copy', async () => {
+    render(<PinnedMessagesPanel {...defaultProps} pins={[mockPin]} />)
+    const copyBtn = screen.getByLabelText('copy_preview')
+    expect(titleOf(copyBtn)).toBe('copy_preview')
+    fireEvent.click(copyBtn)
+    expect(copyToClipboard).toHaveBeenCalledWith(mockPin.preview)
+    // Title flips to the "copied" confirmation once the promise resolves...
+    await waitFor(() => expect(titleOf(copyBtn)).toBe('copied'))
+    // ...but the aria-label stays action-specific so AT can still name the control.
+    expect(copyBtn).toHaveAttribute('aria-label', 'copy_preview')
+  })
+
+  it('Copy-link button shows a title confirmation after a successful copy', async () => {
+    render(<PinnedMessagesPanel {...defaultProps} pins={[mockPin]} />)
+    const linkBtn = screen.getByLabelText('copy_link')
+    fireEvent.click(linkBtn)
+    expect(copySessionLink).toHaveBeenCalledWith(
+      'slot-abc', 'Test Chat', mockPin.message_ts, 'dashboard', mockPin.mid,
+    )
+    await waitFor(() => expect(titleOf(linkBtn)).toBe('copied'))
+    expect(linkBtn).toHaveAttribute('aria-label', 'copy_link')
+  })
+
+  it('confirmation is scoped to the clicked row, not every pin', async () => {
+    render(<PinnedMessagesPanel {...defaultProps} pins={[mockPin, mockUserPin]} />)
+    const copyBtns = screen.getAllByLabelText('copy_preview')
+    expect(copyBtns).toHaveLength(2)
+    fireEvent.click(copyBtns[0])
+    // Only the first row's title flips; the second still shows the idle title.
+    await waitFor(() => expect(titleOf(copyBtns[0])).toBe('copied'))
+    expect(titleOf(copyBtns[1])).toBe('copy_preview')
+    // aria-labels are unchanged on both rows.
+    expect(screen.getAllByLabelText('copy_preview')).toHaveLength(2)
+  })
+
+  it('Copy and Copy-link confirmations are independent on the same row', async () => {
+    render(<PinnedMessagesPanel {...defaultProps} pins={[mockPin]} />)
+    const copyBtn = screen.getByLabelText('copy_preview')
+    const linkBtn = screen.getByLabelText('copy_link')
+    fireEvent.click(copyBtn)
+    await waitFor(() => expect(titleOf(copyBtn)).toBe('copied'))
+    // The link button's title is still idle — copying text did not flip the link.
+    expect(titleOf(linkBtn)).toBe('copy_link')
+  })
+
+  it('does not confirm when the copy silently fails (resolves false)', async () => {
+    vi.mocked(copyToClipboard).mockResolvedValueOnce(false)
+    render(<PinnedMessagesPanel {...defaultProps} pins={[mockPin]} />)
+    const copyBtn = screen.getByLabelText('copy_preview')
+    fireEvent.click(copyBtn)
+    await Promise.resolve()
+    await Promise.resolve()
+    // No confirmation because the clipboard write reported failure.
+    expect(titleOf(copyBtn)).toBe('copy_preview')
   })
 })
 

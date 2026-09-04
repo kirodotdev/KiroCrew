@@ -41,6 +41,8 @@ from kiro_crew.messaging.attachments import IngestLimits
 from kiro_crew.messaging.attachments import cleanup as cleanup_attachments
 from kiro_crew.messaging.commands import (
     YOLO_PHRASING_MARKDOWN,
+    compact_unsupported_backend,
+    compact_unsupported_reply,
     format_ttl,
     parse_dashboard_ttl,
     run_yolo_command,
@@ -1066,6 +1068,14 @@ class TeamsDispatcher:
         assert self.client is not None
         email = self._identity(inbound)
         pct = self.sessions.check_context_usage(session_key, provider)
+        if pct >= self.cfg.teams.soft_threshold_pct:
+            # Capability gate (#8156): no forced compaction to run and the
+            # soft nudge's /compact advice cannot work — the backend compacts
+            # on its own as context fills.
+            unsupported = compact_unsupported_backend(provider)
+            if unsupported:
+                logger.debug("Teams: context notice skipped — %s compacts itself", unsupported)
+                return
         if pct >= self.cfg.teams.hard_threshold_pct:
             self._conv.clear_awaiting(email)
             try:
@@ -1109,6 +1119,14 @@ class TeamsDispatcher:
             provider = self.sessions.get_provider(session_key)
             if provider is None:
                 await self._reply(inbound, "ℹ️ There's no conversation to compact yet.")
+                return
+            # Capability gate (#8156, mirroring the dashboard's #7800 gate): a
+            # backend that cannot serve a manual /compact treats the prompt as
+            # ordinary text and never answers, so dispatching would strand the
+            # unbounded wait below. Informational, never an error.
+            unsupported = compact_unsupported_backend(provider)
+            if unsupported:
+                await self._reply(inbound, compact_unsupported_reply(unsupported))
                 return
             await provider.compact()
             await provider.wait_for_compaction()

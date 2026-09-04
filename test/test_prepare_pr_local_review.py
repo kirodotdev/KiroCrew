@@ -276,18 +276,32 @@ def test_gpt_prompt_is_lifted_verbatim_not_paraphrased():
 def test_gpt_two_passes_and_blocking_budget_come_from_the_workflow():
     text = _gpt_text()
     scalars = local_review.block_scalars(text)
-    block = local_review._run_block_with(scalars, "DISCOVERY PASS", "gpt")
     import tempfile
 
+    # The passes run as separate STEPS so each gets its own Bedrock session, so
+    # each instruction is located in the block that carries it. The lookup has to
+    # see through the prompt-file splices: the falsification instruction lives in
+    # a shared prompt file its step `cat`s in, not inline.
     with tempfile.TemporaryDirectory(prefix="gpt-pass-stage-") as stage_dir:
         _stage_gpt_prompts(text, stage_dir)
-        literals = local_review.prompt_segments(block, stage_dir)
-    discovery = local_review.literals_between(
-        literals, "DISCOVERY PASS", "DISCOVERY PASS", "discovery"
-    )
-    falsification = local_review.literals_between(
-        literals, "FALSIFICATION PASS", "UNTRUSTED EVIDENCE", "falsification"
-    )
+        discovery_block = local_review._run_block_with(
+            scalars, "DISCOVERY PASS", "gpt", stage_dir
+        )
+        pass_block = local_review._run_block_with(
+            scalars, "FALSIFICATION PASS", "gpt", stage_dir
+        )
+        discovery = local_review.literals_between(
+            local_review.prompt_segments(discovery_block, stage_dir),
+            "DISCOVERY PASS",
+            "DISCOVERY PASS",
+            "discovery",
+        )
+        falsification = local_review.literals_between(
+            local_review.prompt_segments(pass_block, stage_dir),
+            "FALSIFICATION PASS",
+            "UNTRUSTED EVIDENCE",
+            "falsification",
+        )
     assert len(discovery) == 1
     assert "candidate generation" in discovery[0]
     assert len(falsification) >= 2
@@ -367,6 +381,12 @@ def test_gpt_lane_is_spliced_and_opus_lane_has_no_prompt_target():
         "gpt-falsification-mandate.md",
         "gpt-falsification-verdict.md",
     ]
+    # gpt-block-adjudication.md is deliberately NOT in this list: it is the
+    # contract for the Opus stage that adjudicates GPT's blocking findings, so
+    # the workflow loads it from the base ref OUTSIDE this loop with no checkout
+    # fallback (a PR-supplied copy could authorize its own clearance). It is
+    # neither spliced into the reviewer prompt nor staged by this extractor.
+    assert "gpt-block-adjudication" not in [Path(s.src).name for s in gpt_specs]
     assert all(s.worktree_src == s.src for s in gpt_specs)
     assert local_review._prompt_target(_opus_text()) is None
     opus_specs = local_review.extract_prompt_file_specs(_opus_text())
@@ -427,10 +447,20 @@ def test_remap_joins_with_a_forward_slash_on_every_host():
 def test_model_pins_agree_with_the_bundled_profile():
     gpt_scalars = local_review.block_scalars(_gpt_text())
     opus_scalars = local_review.block_scalars(_opus_text())
-    gpt_ci = local_review._extract_ci_model(_gpt_text(), gpt_scalars)
+    gpt_ci = local_review._extract_ci_model(_gpt_text(), gpt_scalars, prefer="cli")
     opus_ci = local_review._extract_ci_model(_opus_text(), opus_scalars)
     assert local_review._model_note(gpt_ci, PROFILE_MODELS["gpt"]["model"]) == []
     assert local_review._model_note(opus_ci, PROFILE_MODELS["opus"]["model"]) == []
+
+
+def test_the_gpt_pin_is_the_reviewers_not_its_adjudicators():
+    """The GPT lane embeds a claude-code-action for the Opus stage that
+    adjudicates its blocking verdict. Reading THAT pin as the reviewer's would
+    make every local brief report drift and claim the GPT lane runs on Opus."""
+    text = _gpt_text()
+    scalars = local_review.block_scalars(text)
+    assert "us.anthropic.claude-opus-4-8" in text
+    assert local_review._extract_ci_model(text, scalars, prefer="cli") == "openai.gpt-5.6-sol"
 
 
 def test_model_drift_is_reported_not_swallowed():
@@ -1280,7 +1310,9 @@ def test_prefetched_diff_matches_git_diff(parity_repo, tmp_path):
 # --------------------------------------------------------------------------
 def _intent_run_block():
     scalars = local_review.block_scalars(_gpt_text())
-    return local_review._run_block_with(scalars, "PR INTENT", "gpt")
+    # "PR INTENT" is inline in the step that echoes it, so the lookup returns
+    # before it ever needs a staging dir to resolve a splice through.
+    return local_review._run_block_with(scalars, "PR INTENT", "gpt", "")
 
 
 def test_intent_framing_is_the_workflow_framing():
@@ -1354,9 +1386,13 @@ def test_every_staged_prompt_file_is_spliced_exactly_once_in_loop_order():
 
     The staging loop and the assembly are two lists that must agree: a file
     staged but never spliced silently loses a block of the contract while the
-    lane still publishes a verdict. The document splices must be exactly the
-    staged names in staging order, minus the two falsification files, which
-    the pass-2 step consumes as bare `cat` splices instead.
+    lane still publishes a verdict. Every loop-staged file must therefore have a
+    named consumer, in one of two shapes — a document splice into the prompt
+    target, or a bare `cat` in the step that consumes it (the two falsification
+    files). The adjudication contract is deliberately NOT loop-staged: the
+    workflow loads it from the base ref outside this loop and hands it to the
+    Opus stage, so it never appears in ``extract_prompt_file_specs`` and GPT
+    never reads its own judge.
     """
     text = _gpt_text()
     target = local_review._prompt_target(text)
@@ -1368,13 +1404,22 @@ def test_every_staged_prompt_file_is_spliced_exactly_once_in_loop_order():
         block,
         flags=re.M,
     )
-    pass_block = local_review._run_block_with(scalars, "DISCOVERY PASS", "gpt")
+    # A bare `cat` splice lives in whichever review step consumes it, and the two
+    # passes are separate steps (each needs its own Bedrock session), so scan
+    # every `run:` block instead of the one the discovery instruction is in.
     pass_spliced = [
         m.group("src").rsplit("/", 1)[-1]
-        for m in map(local_review._CAT_BARE_RE.match, pass_block.splitlines())
-        if m is not None
+        for scalar in scalars
+        if scalar.key == "run"
+        for m in map(local_review._CAT_BARE_RE.match, scalar.text.splitlines())
+        if m is not None and m.group("src").startswith(".review-prompts-gpt/")
     ]
-    assert spliced == [name for name in staged if name not in pass_spliced]
+    # The adjudication contract is handed to a LATER stage, from a base-ref load
+    # OUTSIDE this loop, so it must never be loop-staged: a PR-supplied copy
+    # could authorize its own clearance.
+    assert "gpt-block-adjudication.md" not in staged
+    consumed_elsewhere = set(pass_spliced)
+    assert spliced == [name for name in staged if name not in consumed_elsewhere]
     assert len(set(spliced)) == len(spliced), "a document splice repeats"
     assert sorted(spliced + pass_spliced) == sorted(staged)
 
@@ -1461,7 +1506,7 @@ def test_removed_model_pin_fails_loudly():
 
 def test_missing_run_block_fails_loudly():
     with pytest.raises(local_review.ParityError) as exc:
-        local_review._run_block_with([], "DISCOVERY PASS", "wf.yml")
+        local_review._run_block_with([], "DISCOVERY PASS", "wf.yml", "")
     assert "restructured" in str(exc.value)
 
 

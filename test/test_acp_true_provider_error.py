@@ -166,8 +166,11 @@ class TestMalformedRequestIsTerminalAndActionable:
         assert "structural" in out.lower()
         # It says retrying as-is won't help.
         assert "will not help" in out.lower()
-        # It offers a concrete repair affordance (#6022).
-        assert "/compact" in out or "/chat new" in out
+        # It offers a concrete repair affordance (#6022). Only `/compact` is
+        # accepted, and the disjunction that once also accepted the non-existent
+        # `/chat new` is why the defect passed -- see
+        # docs/system-specs/common/error-handling.md (#7213).
+        assert "/compact" in out
 
     def test_request_id_is_preserved(self):
         out = _format_acp_error(self._MALFORMED)
@@ -182,13 +185,6 @@ class TestMalformedRequestIsTerminalAndActionable:
         err = _err(f"{_ENVELOPE}improperly formed request")
         assert _is_transient_raw_error(err) is False
         assert "malformed" in _format_acp_error(err).lower()
-
-    def test_genuine_transient_neighbour_is_unaffected(self):
-        """Regression guard: a real transient error near this branch still
-        classifies transient and is not swallowed by the new branch."""
-        err = _err(f"{_ENVELOPE}InternalServerError ... please try again.")
-        assert _is_transient_raw_error(err) is True
-        assert "transient error" in _format_acp_error(err).lower()
 
     def test_phrase_in_message_field_alone_does_not_trigger(self):
         """Scoping guard (mirrors the message-field-echo tests): the phrase

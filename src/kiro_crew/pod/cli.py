@@ -100,9 +100,60 @@ def _resolve_or_die(cfg: PodConfig, name: str) -> Path:
 # --------------------------------------------------------------------------- #
 # verbs
 # --------------------------------------------------------------------------- #
+def _home_holds_state(cfg: PodConfig, name: str) -> bool:
+    """Return whether the pod home already contains state or is unusable."""
+    home = cfg.home_dir(name)
+    try:
+        return home.exists() and (not home.is_dir() or any(home.iterdir()))
+    except OSError:
+        return True
+
+
+def _verify_seed_landed(cfg: PodConfig, name: str, scenario: str, home_was_populated: bool) -> None:
+    """Refuse to report success when a requested scenario did not reach the home."""
+    landed = rt.seeded_scenario_in_home(cfg, name)
+    if home_was_populated:
+        held = f"scenario {landed!r}" if landed else "state from an earlier boot"
+        _audit(
+            "pod.up",
+            "failure",
+            f"name={name} seed={scenario}",
+            error="populated home seed request refused before start",
+        )
+        _die(
+            f"{name!r} already held {held}, so --seed {scenario} was NOT applied — "
+            "a populated home is never re-seeded. The pod was not started, because "
+            "cleanup after a failed start would otherwise be allowed to delete that "
+            "existing state. To restart it unchanged: "
+            f"kirocrew pod up {name}. To boot it fresh: "
+            f"kirocrew pod down {name} && kirocrew pod up {name} --seed {scenario}"
+        )
+    if landed == scenario:
+        return
+    _audit("pod.up", "failure", f"name={name} seed={scenario}", error="seed did not land")
+    found = f"it holds scenario {landed!r} instead" if landed else "its home holds no fixture"
+    _die(
+        f"{name}: the pod is up, but --seed {scenario} did NOT land — {found}.\n"
+        f"  The per-pod boot override should point systemd at this checkout: "
+        f"{rt.unit_mod.dropin_path(cfg, name)}.\n"
+        f"  Its boot log: kirocrew pod logs {name}\n"
+        f"  Then retry:   kirocrew pod down {name} && kirocrew pod up {name} "
+        f"--seed {scenario}"
+    )
+
+
 def _up(cfg: PodConfig, args: argparse.Namespace) -> None:
     name = rt.validate_name(args.name)
     checkout = _resolve_or_die(cfg, name)
+
+    scenario = ""
+    if args.seed and rt.is_scenario_ref(args.seed):
+        try:
+            rt.resolve_seed_scenario(args.seed)
+        except rt.PodError as exc:
+            _audit("pod.up", "denied", f"name={name}", error="unknown seed scenario")
+            _die(str(exc))
+        scenario = args.seed
 
     # Graduated, teaching errors + auto-provisioning. The venv is cheap and
     # idempotent so we build it on demand; the dist is the slow SPA build, so we
@@ -159,6 +210,13 @@ def _up(cfg: PodConfig, args: argparse.Namespace) -> None:
         # probing would find it taken and move a running pod out from under every
         # reader. Only a pod that is not running is choosing a port at all.
         was_active = rt.is_active(cfg, name)
+        home_was_populated = _home_holds_state(cfg, name)
+        # State that predates this command must be judged BEFORE `start_pod`:
+        # any failed health wait calls `stop_pod`, whose zero-residue cleanup is
+        # allowed to delete the pod home. Post-health verification remains for a
+        # fresh home, where the state belongs to this start transaction.
+        if scenario and home_was_populated:
+            _verify_seed_landed(cfg, name, scenario, home_was_populated=True)
         if not was_active:
             # Asked BEFORE allocating, because allocation records a claim that would
             # then look like ours. An operator's deliberate `PORT=` must not acquire
@@ -299,6 +357,9 @@ def _up(cfg: PodConfig, args: argparse.Namespace) -> None:
                 f"{name}: gateway never became healthy on :{port} within timeout "
                 f"(see journal above; check the worktree's gateway start path)."
             )
+
+        if scenario and not home_was_populated:
+            _verify_seed_landed(cfg, name, scenario, home_was_populated=False)
 
     # The pod is already booted and healthy by here, so the credential is the
     # LAST step, not the point of the command. That asymmetry decides how the two
@@ -859,6 +920,30 @@ def _cleanup_internal(cfg: PodConfig, args: argparse.Namespace) -> None:
     sys.exit(rc)
 
 
+def _scenarios(cfg: PodConfig, args: argparse.Namespace) -> None:
+    """List the named fixtures accepted by ``pod up --seed``."""
+    from kiro_crew import seed as seed_mod
+
+    rows = [
+        {"name": name, "description": seed_mod.fixture_summary(name)}
+        for name in sorted(seed_mod.available_fixtures())
+    ]
+    if getattr(args, "json", False):
+        print(json.dumps(rows))
+        return
+    if not rows:
+        print("no seed scenarios found (the packaged fixtures tree is missing)")
+        return
+
+    width = max(len("SCENARIO"), *(len(str(row["name"])) for row in rows))
+    print(f"{'SCENARIO':<{width}}  DESCRIPTION")
+    for row in rows:
+        name = str(row["name"])
+        description = str(row["description"] or "(no description)")
+        print(f"{name:<{width}}  {description}")
+    print(f"\nseed one with: kirocrew pod up <worktree> --seed {rows[0]['name']}")
+
+
 _VERBS: dict[str, PodHandler] = {
     "up": _up,
     "down": _down,
@@ -867,6 +952,7 @@ _VERBS: dict[str, PodHandler] = {
     "status": _status,
     "token": _token,
     "url": _url,
+    "scenarios": _scenarios,
     "logs": _logs,
     "install": _install,
     "provision": _provision,
@@ -881,7 +967,7 @@ def dispatch(args: argparse.Namespace) -> None:
     if not action:
         print(
             "Usage: kirocrew pod "
-            "{up|down|ls|prune|status|token|url|logs|exec|install|provision} …"
+            "{up|down|ls|prune|status|token|url|scenarios|logs|exec|install|provision} …"
         )
         sys.exit(2)
     cfg = PodConfig.load()

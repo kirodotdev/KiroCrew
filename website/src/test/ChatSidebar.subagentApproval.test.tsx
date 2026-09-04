@@ -30,21 +30,21 @@ vi.mock('framer-motion', async () => {
     'drag', 'dragConstraints', 'dragElastic', 'onAnimationComplete',
   ])
   const make = (tag: string) =>
-    React.forwardRef((props: any, ref: any) => {
-      const clean: any = {}
+    React.forwardRef((props: Record<string, unknown>, ref: React.Ref<unknown>) => {
+      const clean: Record<string, unknown> = {}
       for (const k of Object.keys(props)) {
         if (k === 'children') continue
         if (k === 'layoutId') { clean['data-layout-id'] = props[k]; continue }
         if (FRAMER_PROPS.has(k)) continue
         clean[k] = props[k]
       }
-      return React.createElement(tag, { ...clean, ref }, props.children)
+      return React.createElement(tag, { ...clean, ref }, props.children as React.ReactNode)
     })
   const motion = new Proxy({}, { get: (_t, tag: string) => make(tag) })
   return {
     motion,
-    AnimatePresence: ({ children }: any) => React.createElement(React.Fragment, null, children),
-    LayoutGroup: ({ children }: any) => React.createElement(React.Fragment, null, children),
+    AnimatePresence: ({ children }: { children?: React.ReactNode }) => React.createElement(React.Fragment, null, children),
+    LayoutGroup: ({ children }: { children?: React.ReactNode }) => React.createElement(React.Fragment, null, children),
   }
 })
 
@@ -72,14 +72,16 @@ Object.defineProperty(window, 'matchMedia', {
 })
 
 import ChatSidebar from '../pages/ChatSidebar'
+import type { RootState } from '../store'
+import type { ChatSlot, SubagentActivity } from '../types'
 
 /** Sub-agent held at the spawn gate: pending + an approval_id. */
-const awaiting = (id: string) => ({ id, status: 'pending', approval_id: `spawn:${id}` } as any)
+const awaiting = (id: string) => ({ id, status: 'pending', approval_id: `spawn:${id}` } as unknown as SubagentActivity)
 /** Sub-agent actually working. */
-const running = (id: string) => ({ id, status: 'running' } as any)
+const running = (id: string) => ({ id, status: 'running' } as unknown as SubagentActivity)
 
 function renderSidebar(
-  slots: any[],
+  slots: ChatSlot[],
   chat: Record<string, unknown>,
   activeSlotProp: string | null = null,
   unreadSlots: string[] = [],
@@ -91,8 +93,8 @@ function renderSidebar(
       slotsLoaded: true,
       subagentRunning: {}, subagentDetails: {}, subagentText: {},
       sessionDefaultColor: null, sessionColorsMode: 'tint', sessionColorsPalette: 'horizon', sessionColorsIntensity: 'clear',
-    } as any,
-    chat: { activeSlot: null, slotStatusDetail: {}, subagents: {}, slotActivity: {}, ...chat } as any,
+    } as unknown as RootState['dashboard'],
+    chat: { activeSlot: null, slotStatusDetail: {}, subagents: {}, slotActivity: {}, ...chat } as unknown as RootState['chat'],
   })
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })
   qc.setQueryData(['chat-folders'], [])
@@ -187,7 +189,7 @@ describe('chat sidebar — sub-agents awaiting spawn approval', () => {
     const slots = [{ key: 'k', title: 'p', running: false, messages: 2 }]
     const { getByText, queryByText } = renderSidebar(
       slots,
-      { activeSlot: 'k', subagents: { p1: { id: 'p1', status: 'pending' } as any } },
+      { activeSlot: 'k', subagents: { p1: { id: 'p1', status: 'pending' } as unknown as SubagentActivity } },
       'k',
     )
     expect(getByText('1 agent running')).toBeTruthy()

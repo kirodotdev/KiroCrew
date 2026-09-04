@@ -2973,6 +2973,15 @@ class TestBuiltinDeclaredResourcesActuallyRegister:
                 "setup": {"onEnable": "echo hi"},
                 "publishProvider": {"id": "p", "label": "P"},
                 "notifications": {"channels": [{"id": "n", "name": "N"}]},
+                "contributes": {
+                    "commands": [
+                        {
+                            "id": "probe-cmd",
+                            "title": "Probe",
+                            "prompt": "do the thing",
+                        }
+                    ]
+                },
             }
         )
         # Every declared field must be populated above, otherwise a conditional

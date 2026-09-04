@@ -118,20 +118,22 @@ jobs:
           echo "Nightly (semver): ${BASE}-nightly.${STAMP_DATE}t${STAMP_TIME}"
           echo "Wheel (PEP 440):  ${BASE}.dev${STAMP_FULL}"
 
-  dependency-vulnerability-gate:
-    name: Production Dependency Vulnerability Gate
-    uses: ./.github/workflows/dependency-vulnerability.yml
+  # The production dependency audit (dependency-vulnerability.yml) is NOT a
+  # nightly gate: it reaches the npm registry, whose slow hours failed the
+  # nightly for hours at a stretch and blocked every build behind it. It runs
+  # before tagged releases only (release.yml), where a vulnerable dependency
+  # would actually ship.
 
   build-wheel:
     name: Build Wheel
-    needs: [version, dependency-vulnerability-gate]
+    needs: [version]
     uses: ./.github/workflows/build-wheel.yml
     with:
       wheel_version: ${{ needs.version.outputs.wheel_version }}
 
   build-desktop:
     name: Build Desktop
-    needs: [version, dependency-vulnerability-gate]
+    needs: [version]
     uses: ./.github/workflows/build-desktop.yml
     with:
       version: ${{ needs.version.outputs.nightly_version }}
@@ -144,7 +146,7 @@ jobs:
   # sign-and-notarize via this caller's result.
   build-windows:
     name: Build Windows Desktop
-    needs: [version, dependency-vulnerability-gate]
+    needs: [version]
     permissions:
       contents: read
       id-token: write

@@ -379,7 +379,7 @@ export default function SchedulePage() {
       // Keep modal OPEN so user can correct the name — show inline error
       setFolderModalError(e instanceof Error ? e.message : i18nT('pages.schedulePage.failed'))
     }
-  }, [folderModalName, folderModal, refreshFolders])
+  }, [folderModalName, refreshFolders])
   const handleMoveJob = useCallback(async (jobId: string, folderId: string) => {
     try {
       await api.updateCron(jobId, { folder_id: folderId })

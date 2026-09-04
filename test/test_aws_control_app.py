@@ -60,6 +60,7 @@ P0_ROUTES: tuple[tuple[str, str], ...] = (
     ("POST", "/drive/{account}/bootstrap"),
     ("POST", "/drive/{account}/upload"),
     ("POST", "/drive/{account}/delete"),
+    ("POST", "/drive/{account}/move"),
     ("POST", "/drive/{account}/folder"),
     ("POST", "/drive/{account}/folder/delete"),
     ("POST", "/drive/{account}/share"),
@@ -746,6 +747,77 @@ class TestShares:
         assert record["id"] in raw
         assert shares.list_shares(ACCOUNT)[0]["key"] == "a.txt"
 
+    def test_a_read_that_failed_never_truncates_the_share_ledger(self, tmp_path, monkeypatch):
+        # `_load` collapses every failure to []. As the base of `record_share`'s
+        # whole-file rewrite that empty list means "forget every share already
+        # recorded" -- and this ledger is the only local record of live presigned
+        # URLs, which are unrevokable bearer grants. Under-reporting them is the
+        # security-visible half of the loss.
+        import contextlib
+        from pathlib import Path
+
+        from kiro_crew.apps.builtins.aws_control.backend import shares
+
+        kept = shares.record_share(
+            account=ACCOUNT, section="drive", key="live.txt", expires_secs=3600
+        )
+        store = tmp_path / "shares.json"
+        real_read_text = Path.read_text
+        broken = {"on": True}
+
+        def guarded(path_self, *args, **kwargs):
+            if broken["on"] and Path(path_self) == store:
+                raise PermissionError(13, "Permission denied")
+            return real_read_text(path_self, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "read_text", guarded)
+        with contextlib.suppress(OSError):
+            shares.record_share(
+                account=ACCOUNT, section="drive", key="second.txt", expires_secs=3600
+            )
+        with contextlib.suppress(OSError):
+            shares.forget_share(kept["id"])
+
+        # The durable harm, asserted directly: the live bearer grant recorded
+        # before the failure must still be in the ledger.
+        broken["on"] = False
+        assert [e["key"] for e in shares.list_shares(ACCOUNT)] == ["live.txt"]
+
+    def test_an_unreadable_share_store_refuses_the_mutation(self, tmp_path, monkeypatch):
+        # A mint that cannot be recorded must not answer as though it were.
+        from pathlib import Path
+
+        from kiro_crew.apps.builtins.aws_control.backend import shares
+
+        shares.record_share(account=ACCOUNT, section="drive", key="live.txt", expires_secs=3600)
+        store = tmp_path / "shares.json"
+        real_read_text = Path.read_text
+
+        def guarded(path_self, *args, **kwargs):
+            if Path(path_self) == store:
+                raise PermissionError(13, "Permission denied")
+            return real_read_text(path_self, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "read_text", guarded)
+        with pytest.raises(OSError):
+            shares.record_share(account=ACCOUNT, section="drive", key="x.txt", expires_secs=3600)
+
+    def test_a_missing_share_store_is_still_a_first_write(self, tmp_path):
+        # Absent is the one failure where [] is the truth.
+        from kiro_crew.apps.builtins.aws_control.backend import shares
+
+        assert not (tmp_path / "shares.json").exists()
+        shares.record_share(account=ACCOUNT, section="drive", key="first.txt", expires_secs=3600)
+        assert [e["key"] for e in shares.list_shares(ACCOUNT)] == ["first.txt"]
+
+    def test_a_corrupt_share_store_still_repairs_on_write(self, tmp_path):
+        # Existing tolerance, pinned alongside the new guard.
+        from kiro_crew.apps.builtins.aws_control.backend import shares
+
+        (tmp_path / "shares.json").write_text("[not json", encoding="utf-8")
+        shares.record_share(account=ACCOUNT, section="drive", key="after.txt", expires_secs=3600)
+        assert [e["key"] for e in shares.list_shares(ACCOUNT)] == ["after.txt"]
+
     def test_expired_shares_are_pruned_and_forget_removes(self):
         from kiro_crew.apps.builtins.aws_control.backend import shares
 
@@ -762,6 +834,55 @@ class TestShares:
         )
         assert shares.forget_share(live["id"]) is not None
         assert shares.list_shares() == []
+
+    def test_a_row_whose_object_is_gone_is_marked_not_dropped(self, tmp_path):
+        # The defect this fixes: a delete strands the row, and until now the
+        # only exit was the user pressing forget per row. The row STAYS -- the
+        # ledger records that an unexpired URL was minted, which a delete does
+        # not undo -- and gains the flag the Access section renders.
+        from kiro_crew.apps.builtins.aws_control.backend import shares
+
+        shares.record_share(account=ACCOUNT, section="drive", key="gone.txt", expires_secs=3600)
+        shares.record_share(
+            account=ACCOUNT, section="library", key="slug/v1.html", expires_secs=3600
+        )
+        rows = shares.list_shares(ACCOUNT)
+        marked = shares.mark_missing_objects(rows, {"artifacts/slug/v1.html"})
+
+        assert len(marked) == len(rows)
+        by_key = {row["key"]: row for row in marked}
+        assert by_key["gone.txt"]["objectMissing"] is True
+        # A row whose object IS there carries no flag at all, so "absent" and
+        # "present but unchecked" never collapse into one rendering.
+        assert "objectMissing" not in by_key["slug/v1.html"]
+        # And the ledger on disk is untouched: the mark is a render-time fact
+        # about the bucket, which would go stale the moment the key is recreated.
+        assert all("objectMissing" not in row for row in shares._load())
+
+    def test_the_key_a_row_is_matched_by_is_section_prefixed(self):
+        # The row stores a SECTION plus a key; the object is at the section's
+        # prefix. Matching on the bare key would find nothing in a listing of
+        # real keys and mark every row missing.
+        from kiro_crew.apps.builtins.aws_control.backend import shares
+
+        row = {"id": "sh-1", "section": "drive", "key": "a.txt"}
+        # Compared as WHOLE LISTS rather than indexed and subscripted. A
+        # regression that drops the row, or leaves it unmarked, then fails on an
+        # assertion naming the expected rows -- an `[0]["objectMissing"]` reads
+        # the same regression out as IndexError or KeyError, which states
+        # nothing about what the function answered.
+        assert shares.mark_missing_objects([row], {"a.txt"}) == [{**row, "objectMissing": True}]
+        assert shares.mark_missing_objects([row], {"drive/a.txt"}) == [row]
+
+    def test_a_row_naming_no_real_section_is_marked(self):
+        # A section with no prefix cannot address an object, so no listing can
+        # ever back the row. Reporting that beats rendering it as reachable.
+        from kiro_crew.apps.builtins.aws_control.backend import shares
+
+        row = {"id": "sh-1", "section": "nowhere", "key": "a.txt"}
+        assert shares.mark_missing_objects([row], {"nowhere/a.txt"}) == [
+            {**row, "objectMissing": True}
+        ]
 
 
 # ---------------------------------------------------------------------------
@@ -1689,11 +1810,13 @@ class TestRound22Hardening:
             ),
         ):
             backup.clear_stop()
-            backup._authorize_upload(ACCOUNT, "p", "us-west-2")  # no raise
+            backup._authorize_upload(
+                ACCOUNT, "p", "us-west-2", caller=backup.CALLER_OWNER
+            )  # no raise
             backup.signal_stop()
             try:
                 with pytest.raises(RuntimeError, match="shutting down"):
-                    backup._authorize_upload(ACCOUNT, "p", "us-west-2")
+                    backup._authorize_upload(ACCOUNT, "p", "us-west-2", caller=backup.CALLER_OWNER)
             finally:
                 backup.clear_stop()
 
@@ -1961,7 +2084,7 @@ class TestRound26Hardening:
         with p1, p2, p3, p4:
             backup.clear_stop()
             with pytest.raises(RuntimeError, match="does not name this account"):
-                backup._authorize_upload(ACCOUNT, "p", "us-west-2")
+                backup._authorize_upload(ACCOUNT, "p", "us-west-2", caller=backup.CALLER_OWNER)
 
     def test_grant_naming_no_account_refuses_the_upload(self):
         from kiro_crew.apps.builtins.aws_control.backend import backup
@@ -1970,7 +2093,7 @@ class TestRound26Hardening:
         with p1, p2, p3, p4:
             backup.clear_stop()
             with pytest.raises(RuntimeError, match="does not name this account"):
-                backup._authorize_upload(ACCOUNT, "p", "us-west-2")
+                backup._authorize_upload(ACCOUNT, "p", "us-west-2", caller=backup.CALLER_OWNER)
 
     def test_matching_grant_account_allows_the_upload(self):
         from kiro_crew.apps.builtins.aws_control.backend import backup
@@ -1978,7 +2101,9 @@ class TestRound26Hardening:
         p1, p2, p3, p4 = self._authorizing_env(ACCOUNT)
         with p1, p2, p3, p4:
             backup.clear_stop()
-            backup._authorize_upload(ACCOUNT, "p", "us-west-2")  # no raise
+            backup._authorize_upload(
+                ACCOUNT, "p", "us-west-2", caller=backup.CALLER_OWNER
+            )  # no raise
 
     def test_grant_withdrawn_mid_build_refuses_the_upload(self):
         from kiro_crew.apps.builtins.aws_control.backend import backup
@@ -1994,7 +2119,7 @@ class TestRound26Hardening:
         ):
             backup.clear_stop()
             with pytest.raises(RuntimeError, match="withdrawn"):
-                backup._authorize_upload(ACCOUNT, "p", "us-west-2")
+                backup._authorize_upload(ACCOUNT, "p", "us-west-2", caller=backup.CALLER_OWNER)
 
 
 class TestProfileDiscovery:

@@ -164,6 +164,20 @@ export class HeightIndex {
   }
 
   /**
+   * Retire measurements for rows that have LEFT the list, so their heights stop
+   * pricing the unmeasured rows that remain. The measurements are KEPT and only
+   * dropped from the mean, so an optimistic removal that gets rolled back
+   * restores exact geometry -- see HeightCache.retire.
+   *
+   * Deliberately does NOT sync or announce: the caller retires during the render
+   * that dropped the rows and the tree is re-synced in that same render, so the
+   * reprice lands in the commit whose shift is already compensated.
+   */
+  retire(keys: Iterable<string>): void {
+    for (const key of keys) this.cache.retire(key)
+  }
+
+  /**
    * Height getter for the O(N) free functions that still take one
    * (`getOffset` / `getTotalHeight` / `computeWindow`).
    *
@@ -172,8 +186,37 @@ export class HeightIndex {
    */
   readonly getHeight = (index: number): number => this.heightAt(index)
 
+  /**
+   * Revive every retired key whose row is LIVE again -- BEFORE anything reads a
+   * height.
+   *
+   * A key resolving from a live row index falsifies the premise of its
+   * retirement (see HeightCache.retire): the row is in the list again, an
+   * optimistically removed row the server refused and restored wholesale. This
+   * is the only available signal, because a restore has no commit shape of its
+   * own to hook -- an optimistic TAIL truncation comes back as a plain append.
+   *
+   * It runs as a PASS BEFORE the tree walk rather than inside the height read,
+   * because the walk prices rows in index order and reads the mean per row: a
+   * revive partway through would leave every row priced earlier in that same
+   * walk holding the pre-revive mean, with no later sync guaranteed to correct
+   * them (a transcript that goes idle right after the rollback gets none). One
+   * pass first makes the whole tree consistent with one mean.
+   *
+   * Skipped outright when nothing is retired, which is the overwhelmingly common
+   * case, so the ordinary sync pays one integer comparison.
+   */
+  private reviveLiveRows(itemCount: number): void {
+    if (!this.cache.hasRetired()) return
+    for (let i = 0; i < itemCount; i++) {
+      const key = this.keyAt(i)
+      if (key !== null) this.cache.reviveIfRetired(key)
+    }
+  }
+
   /** Reconcile the prefix-sum tree with the current row count and heights. */
   sync(itemCount: number): void {
+    this.reviveLiveRows(itemCount)
     this.tree.sync(itemCount, this.getHeight)
   }
 
@@ -197,6 +240,7 @@ export class HeightIndex {
    * announced, so a later sync still sees the full accumulated delta.
    */
   syncAndAnnounce(itemCount: number, beforeNotify?: () => void): void {
+    this.reviveLiveRows(itemCount)
     this.tree.sync(itemCount, this.getHeight)
     const total = this.tree.totalHeight()
     if (Math.abs(total - this.lastAnnouncedTotal) <= ANNOUNCE_EPSILON_PX) return

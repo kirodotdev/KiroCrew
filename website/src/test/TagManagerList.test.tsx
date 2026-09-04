@@ -47,6 +47,7 @@ import TagManagerList from '../components/TagManagerList'
 import SessionActionsMenu from '../components/SessionActionsMenu'
 import { TagPopoverProvider } from '../hooks/useTagPopover'
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent } from '../components/ui/dropdown-menu'
+import type { RootState } from '../store'
 
 function renderList(props: React.ComponentProps<typeof TagManagerList>) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })
@@ -209,7 +210,7 @@ describe('SessionActionsMenu — Tags… item (list-view regression)', () => {
         subagentRunning: {}, subagentDetails: {}, subagentText: {},
         sessionDefaultColor: null, sessionColorsMode: 'tint', sessionColorsPalette: 'horizon', sessionColorsIntensity: 'clear',
         slots: [{ key: 'chat-1', title: 'S1' }],
-      } as any,
+      } as unknown as RootState['dashboard'],
     })
     const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
     render(

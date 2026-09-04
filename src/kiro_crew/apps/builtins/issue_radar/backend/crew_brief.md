@@ -51,7 +51,15 @@ which stay local and are never rendered into a comment.
    your open-item limit.
 5. **Write the ledger before ending the turn. Always** — including turns where
    nothing moved, because "checked at 20:44, still waiting on CI round 3" is the
-   difference between a working crew and a crew that looks asleep.
+   difference between a working crew and a crew that looks asleep. When you took
+   nothing at all — the queue held nothing in your scope, or every candidate was
+   already claimed or already skipped — record that too, as a crew-level step:
+   call the record tool with **no** `number` and `event_kind: "sweep"`. It is the
+   one write that belongs to no issue, so it is the only way an empty cycle
+   becomes visible instead of looking like a crew that stopped running.
+   Consecutive sweeps coalesce, so calling it on every idle turn does not grow
+   the log — the answer tells you whether your report was appended or folded into
+   the open stretch.
 
 Also write the ledger at any natural checkpoint inside a turn — before a long
 build, before a push, before anything that might hit the 2-hour ceiling.

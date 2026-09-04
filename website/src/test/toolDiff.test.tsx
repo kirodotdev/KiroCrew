@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach } from 'vitest'
 import { fireEvent } from '@testing-library/react'
 import { renderWithProviders, createTestStore } from './helpers'
-import ToolCallLine from '../pages/chat/ToolCallLine'
+import ToolCallLine, { resetOpenedDiffCards } from '../pages/chat/ToolCallLine'
 import { presentToolDiff, isDiffToolMessage } from '../pages/chat/toolDiff'
 import type { RootState } from '../store'
 import type { ChatMessage } from '../types'
@@ -16,7 +16,7 @@ if (typeof globalThis.ResizeObserver === 'undefined') {
   } as unknown as typeof ResizeObserver
 }
 
-beforeEach(() => { localStorage.clear() })
+beforeEach(() => { localStorage.clear(); resetOpenedDiffCards() })
 
 const UNIFIED_DIFF = [
   '--- /home/u/proj/src/app.py',
@@ -106,7 +106,7 @@ describe('ToolCallLine diff presentation', () => {
     return { role: 'tool', content: '🔧 fs_write', cls: '', meta: { tool_call_id: 'tc_d1', purpose: 'Edit app.py' } }
   }
 
-  it('renders a DiffBlock card for an edit tool whose input is a unified diff', () => {
+  it('starts an edit tool\'s unified diff folded to its chip, and opens on click', () => {
     const store = createTestStore({
       chat: {
         messages: [editMsg()],
@@ -114,7 +114,15 @@ describe('ToolCallLine diff presentation', () => {
         slotRunning: false,
       } as unknown as ChatState,
     })
-    const { container } = renderWithProviders(<ToolCallLine message={editMsg()} running={false} />, { store })
+    const { container, getByText } = renderWithProviders(<ToolCallLine message={editMsg()} running={false} />, { store })
+    // Folded by default: a multi-edit turn would otherwise stack a full patch
+    // per file and push the answer off screen.
+    expect(container.querySelector('.diff-block')).toBeNull()
+    // Asserted by testid, not just by text: the card-opening chip and the
+    // details-panel chip look alike, and only the testid tells them apart —
+    // which is what the fold-by-default screenshot harness grabs.
+    expect(container.querySelector('[data-testid="tool-diff-chip"]')).toBeTruthy()
+    fireEvent.click(getByText('app.py'))
     expect(container.querySelector('.diff-block')).toBeTruthy()
   })
 
@@ -130,6 +138,10 @@ describe('ToolCallLine diff presentation', () => {
     expect(container.querySelector('.diff-block')).toBeNull()
     expect(getByText('big.txt')).toBeTruthy()
     expect(getByText('+410')).toBeTruthy()
+    // The summary chip expands the details panel; there is no card for it to
+    // open, so it must NOT claim the card-opening testid.
+    expect(container.querySelector('[data-testid="tool-diff-summary-chip"]')).toBeTruthy()
+    expect(container.querySelector('[data-testid="tool-diff-chip"]')).toBeNull()
   })
 
   it('does not render a card for a shell tool with diff-shaped input', () => {
@@ -154,7 +166,10 @@ describe('ToolCallLine diff presentation', () => {
     const store = createTestStore({
       chat: { messages: [msg], toolLog: [], slotRunning: false } as unknown as ChatState,
     })
-    const { container } = renderWithProviders(<ToolCallLine message={msg} running={false} />, { store })
+    const { container, getByText } = renderWithProviders(<ToolCallLine message={msg} running={false} />, { store })
+    // The promotion is what this asserts, so open the fold and check the patch
+    // came from meta.input rather than a live toolLog entry.
+    fireEvent.click(getByText('app.py'))
     expect(container.querySelector('.diff-block')).toBeTruthy()
   })
 
@@ -173,7 +188,7 @@ describe('ToolCallLine diff presentation', () => {
     expect(container.querySelector('.diff-block')).toBeNull()
   })
 
-  it('the card folds to a chip via its header control and unfolds again', async () => {
+  it('the chip opens the card and its header control folds it back', async () => {
     const store = createTestStore({
       chat: {
         messages: [editMsg()],
@@ -182,18 +197,19 @@ describe('ToolCallLine diff presentation', () => {
       } as unknown as ChatState,
     })
     const { container, getByText, findByLabelText, queryByText } = renderWithProviders(<ToolCallLine message={editMsg()} running={false} />, { store })
+    // Folded: the chip is the open handle.
+    expect(container.querySelector('.diff-block')).toBeNull()
+    fireEvent.click(getByText('app.py'))
     // An OPEN card shows no chip — its own header carries the facts.
     expect(container.querySelector('.diff-block')).toBeTruthy()
     expect(queryByText('app.py')).toBeNull()
     // Pierre's header (and the fold control slotted into it) mounts async.
     fireEvent.click(await findByLabelText('Hide diff'))
     expect(container.querySelector('.diff-block')).toBeNull()
-    // Folded: the chip is the re-open handle.
-    fireEvent.click(getByText('app.py'))
-    expect(container.querySelector('.diff-block')).toBeTruthy()
+    expect(getByText('app.py')).toBeTruthy()
   })
 
-  it('a fold survives unmount/remount (virtualized transcript)', async () => {
+  it('an expansion survives unmount/remount (virtualized transcript)', () => {
     localStorage.setItem('mc-chat-config', JSON.stringify({ collapseAllSteps: false }))
     const mkStore = () => createTestStore({
       chat: {
@@ -204,15 +220,13 @@ describe('ToolCallLine diff presentation', () => {
     })
     const msg: ChatMessage = { role: 'tool', content: '🔧 fs_write', cls: '', meta: { tool_call_id: 'tc_persist', purpose: 'Edit app.py' } }
     const first = renderWithProviders(<ToolCallLine message={msg} running={false} />, { store: mkStore() })
-    fireEvent.click(await first.findByLabelText('Hide diff'))
-    expect(first.container.querySelector('.diff-block')).toBeNull()
+    fireEvent.click(first.getByText('app.py'))
+    expect(first.container.querySelector('.diff-block')).toBeTruthy()
     first.unmount()
-    // Remount (what virtualizer recycling does): the fold is remembered.
+    // Remount (what virtualizer recycling does): the expansion is remembered,
+    // so a card being read does not snap shut on scroll.
     const second = renderWithProviders(<ToolCallLine message={msg} running={false} />, { store: mkStore() })
-    expect(second.container.querySelector('.diff-block')).toBeNull()
-    expect(second.getByText('app.py')).toBeTruthy()
-    // Unfold to leave the module registry clean for other tests.
-    fireEvent.click(second.getByText('app.py'))
     expect(second.container.querySelector('.diff-block')).toBeTruthy()
+    expect(second.queryByText('app.py')).toBeNull()
   })
 })

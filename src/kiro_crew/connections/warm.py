@@ -101,10 +101,27 @@ where a stat is unbounded -- so they are synchronous, and a coroutine reaches th
 ``test/test_connections_warm.py``, not merely described here.
 
 REQUEST PATH: :func:`warm_mint_all` is driven by ``POST /api/connections/premint``, which the
-Connections page WILL fire once on mount -- no frontend caller exists yet, so today the endpoint
-is reachable through the API only. It scans the candidates and hands them over, so the slugs it
-reports and the rows the engine claims come from one registry read. Proactive refresh attaches
-in :func:`_warm_mint_reaper` when slice N3 lands.
+Connections page fires once on mount. It scans the candidates and hands them over, so the slugs
+it reports and the rows the engine claims come from one registry read. The consumer of what it
+warms is :func:`adopt_shared_mint`, which ``POST /api/connections/mint`` tries BEFORE reserving
+a row of its own -- without it that endpoint's ``reserve_mint_row`` popped the shared row and
+disposed the very URL the click had been warmed for. A table miss re-drains the newest live
+shared session that activated the provider and retries adoption before the dedicated cold path.
+
+RESILIENCE is lifecycle-owned by the same reaper that detects process death. An explicit page
+warm arms ONE automatic replacement. The dead generation reserves one single-flight re-arm task,
+which reuses the ordinary tri-state candidate scan and ``warm_mint_all`` path without granting
+itself another attempt. Concurrent observers share that task; deliberate shutdown disarms and
+cancels it before retiring the process. No provider-level recovery state crosses the API.
+Proactive refresh attaches in :func:`_warm_mint_reaper` when its dependent slice lands.
+
+TWO AXES, and conflating them is what the handoff had to separate. ``shared`` is OWNERSHIP: an
+unclaimed premint any Connect may adopt, and the only mark a row still ``minting`` carries.
+``generation``/``activation`` is PROVENANCE: the verifier lives in the shared process, so
+:func:`_warm_row_alive` judges redeemability however the row is owned. Adoption clears the first
+and keeps the second, so every warm-side predicate keys on :func:`_warm_table_row` -- the
+disjunction -- and the cold engine's ``_mint_holder_alive`` ABSTAINS on a row carrying a
+``generation`` rather than reading its absent ``client`` as death.
 """
 
 from __future__ import annotations
@@ -120,6 +137,7 @@ from pathlib import Path
 from typing import Any
 
 from kiro_crew import agent as _agent
+from kiro_crew import hooks
 from kiro_crew.agent_discovery import _read_agent_spec
 from kiro_crew.agent_files import AGENT_FILENAME
 from kiro_crew.config.loader import data_home
@@ -174,8 +192,9 @@ _WARM_SESSION_DESTROY_TIMEOUT_SECONDS = 10.0
 #: this only buys back a session already on its way; see ``_abandon_session_creation``.
 _WARM_SESSION_REAP_TIMEOUT_SECONDS = 10.0
 _WARM_KILL_TIMEOUT_SECONDS = 20.0
-#: The oauth_request frame lands a beat AFTER set_mode returns (~0.35s measured),
-#: beyond drain_init's idle window for a slow provider. Poll rather than race it.
+#: One bounded drain window. A run stops after this many consecutive quiet windows,
+#: while each newly observed provider renews that quiet budget. The absolute cap scales by
+#: the expected roster, so unique progress cannot extend collection without bound.
 _WARM_OAUTH_SETTLE_SECONDS = 0.5
 _WARM_OAUTH_SETTLE_ROUNDS = 6
 #: A tenth of the mint TTL: long enough that reopening the gallery reuses the
@@ -184,6 +203,9 @@ _WARM_IDLE_GRACE_SECONDS = _MINT_TTL_SECONDS / 10
 #: One respawn, then the cold path -- a second death means the process cannot stay
 #: up, and a Connect is better served by its own dedicated spawn.
 _WARM_ACTIVATION_ATTEMPTS = 2
+#: One automatic replacement per explicit page warm. The replacement does not re-arm this
+#: budget, so a repeatedly dying process cannot turn the reaper into a restart loop.
+_WARM_REARM_ATTEMPTS = 1
 #: Generation key for a process that never became ``self._runtime`` -- an abandoned spawn,
 #: which owns no rows. NEGATIVE because generations only ever increment from zero, so no row
 #: can carry it: ``_generation_holds_live_rows`` reads it as needed by nobody, and the sweep
@@ -374,14 +396,74 @@ def _warm_candidate_scan() -> tuple[list[Provider], list[Provider]]:
     return universe, _warm_activation_candidates(universe)
 
 
+def _current_warm_redrain_entry(slug: str) -> dict[str, Any] | None:
+    """The current eligible authorization entry for a late-session re-drain.
+
+    Rebuild the same candidate plan activation uses rather than trusting the provider
+    snapshot retained by an older session. This rechecks visibility, enabled state, the
+    tri-state grant verdict, configured-entry compatibility, and the registry auth shape.
+    The caller runs this off the event loop because those checks read user-owned files.
+    """
+    _universe, candidates = _warm_candidate_scan()
+    provider = next((item for item in candidates if item["slug"] == slug), None)
+    if provider is None:
+        return None
+    return _warm_spec_plan([provider]).entries.get(mcp_server_alias(slug))
+
+
+_GRANT_PRESENCE_READ_ID = "connections_premint.oauth_grant_presence"
+
+
 def mintable_providers() -> list[Provider]:
     """Providers an activation should warm right now, registry order."""
     return _warm_candidate_scan()[1]
 
 
+def _audited_mintable_providers() -> tuple[list[Provider], bool]:
+    """Return candidates and whether their acted-on grant scan was SEL-audited.
+
+    The explicit page warm and its one automatic replacement are one page-owned
+    lifecycle, so both use the premint read id. An empty scan drives no action and
+    therefore owes no event.
+    """
+    candidates = mintable_providers()
+    if not candidates:
+        return candidates, True
+    recorded = hooks.emit_internal_read_audit(_GRANT_PRESENCE_READ_ID, "success")
+    return candidates, recorded
+
+
 def _wanted_aliases(providers: list[Provider]) -> frozenset[str]:
     """The server aliases an activation must produce a challenge for."""
     return frozenset(mcp_server_alias(provider["slug"]) for provider in providers)
+
+
+async def _collect_oauth_requests(handle: Any, wanted: frozenset[str]) -> list[dict[str, str]]:
+    """Collect challenges until the queue stays quiet, bounded by the expected roster."""
+    collected: dict[str, dict[str, str]] = {}
+    quiet_drains = 0
+    drains = 0
+    hard_drain_limit = max(1, len(wanted)) * _WARM_OAUTH_SETTLE_ROUNDS
+    while True:
+        before = len(collected)
+        for request in handle.pop_pending_oauth_requests():
+            name = str(request.get("serverName") or "")
+            if name and request.get("oauthUrl"):
+                collected[name] = request
+        if len(collected) > before:
+            quiet_drains = 0
+        if wanted and wanted <= collected.keys():
+            break
+        if quiet_drains >= _WARM_OAUTH_SETTLE_ROUNDS or drains >= hard_drain_limit:
+            break
+        await handle.drain_init(
+            duration=_WARM_OAUTH_SETTLE_SECONDS,
+            idle_exit=_WARM_OAUTH_SETTLE_SECONDS,
+            no_report_ceiling=0.0,
+        )
+        drains += 1
+        quiet_drains += 1
+    return list(collected.values())
 
 
 def _auth_shape(entry: dict[str, Any]) -> tuple[str, tuple[str, ...], str]:
@@ -700,12 +782,33 @@ def _runtime_alive(runtime: Any) -> bool:
         return False
 
 
+def _warm_table_row(entry: MintState) -> bool:
+    """True when the SHARED table owns this row's lifecycle -- claimed, or warm-minted.
+
+    TWO disjuncts, and both are load-bearing, because ``shared`` and ``generation``
+    answer different questions and :func:`adopt_shared_mint` moves only the first.
+
+    ``shared`` is OWNERSHIP: an unclaimed premint any Connect may adopt. It is also the
+    ONLY mark a row still ``minting`` carries, which is precisely the row a cancelled
+    activation must not leave behind -- so a generation-only test would stop counting it.
+
+    ``generation`` is PROVENANCE: the PKCE verifier lives in the shared process, so
+    redeemability is judged by :func:`_warm_row_alive` no matter who owns the row.
+    Adoption clears ``shared`` and keeps this, so an ownership-only test drops the
+    adopted row out of every count here -- and the counts are what keep its process
+    parked and its session held. The reaper would then retire the process holding the
+    URL the user is part-way through redeeming, which is the worst outcome available on
+    this path.
+    """
+    return bool(entry.get("shared")) or bool(entry.get("generation"))
+
+
 def _live_row_count(generation: int) -> int:
     """How many cards are still mid-consent on ``generation``."""
     return sum(
         1
         for entry in _mints.values()
-        if entry.get("shared")
+        if _warm_table_row(entry)
         and entry.get("generation") == generation
         and entry.get("state") in _LIVE_STATES
     )
@@ -721,7 +824,7 @@ def _activations_in_use() -> set[int]:
     return {
         int(entry["activation"])
         for entry in _mints.values()
-        if entry.get("shared") and entry.get("activation") and entry.get("state") in _LIVE_STATES
+        if _warm_table_row(entry) and entry.get("activation") and entry.get("state") in _LIVE_STATES
     }
 
 
@@ -741,6 +844,7 @@ class _WarmSession:
     handle: Any
     expires_at: float
     settled: bool = False
+    providers: tuple[Provider, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -778,6 +882,14 @@ class _WarmMintRuntime:
         self._activation_seq = 0
         self._lock = asyncio.Lock()
         self._reaper: Any = None
+        #: Armed only by an explicit page warm. A replacement inherits the lifecycle but not
+        #: another attempt, which bounds unattended recovery to one process per page request.
+        self._supervision_armed = False
+        self._rearms_remaining = 0
+        #: Strong reference and single-flight identity for a replacement activation. The
+        #: reaper can cancel itself while the child replaces its dead generation, so the task
+        #: cannot be owned only by the awaiting reaper.
+        self._rearm_task: asyncio.Task[list[str]] | None = None
 
     def is_alive(self) -> bool:
         return _runtime_alive(self._runtime)
@@ -815,6 +927,58 @@ class _WarmMintRuntime:
         current process is gone and no new mint will sweep them.
         """
         return len(self._retiring)
+
+    def arm_supervision(self) -> None:
+        """Allow one automatic replacement for the current explicit page warm."""
+        self._supervision_armed = True
+        self._rearms_remaining = _WARM_REARM_ATTEMPTS
+
+    def start_rearm(self, generation: int) -> asyncio.Task[list[str]] | None:
+        """Return the one replacement task for ``generation``, or decline recovery.
+
+        The state transition is synchronous, so concurrent observers on the event loop either
+        receive the same task or see the budget already consumed. A generation mismatch means
+        another path already replaced the dead process; a held runtime lock means an explicit
+        warm is already deciding the replacement and must not be followed by a second session.
+        """
+        task = self._rearm_task
+        if task is not None and not task.done():
+            return task
+        if task is not None:
+            self._rearm_task = None
+        if (
+            not self._supervision_armed
+            or self._rearms_remaining <= 0
+            or generation != self._generation
+            or self.is_alive()
+            or self._lock.locked()
+        ):
+            return None
+        self._rearms_remaining -= 1
+        task = asyncio.get_running_loop().create_task(_rearm_dead_warm_mint(generation))
+        self._rearm_task = task
+        task.add_done_callback(self._finish_rearm)
+        return task
+
+    def _finish_rearm(self, task: asyncio.Task[list[str]]) -> None:
+        """Release the single-flight slot and surface an otherwise-unobserved failure."""
+        if self._rearm_task is task:
+            self._rearm_task = None
+        if task.cancelled():
+            return
+        error = task.exception()
+        if error is not None:
+            logger.debug(
+                "warm mint automatic re-arm failed",
+                exc_info=(type(error), error, error.__traceback__),
+            )
+
+    def _disarm_supervision(self) -> asyncio.Task[list[str]] | None:
+        """Prevent resurrection and detach the task shutdown must settle."""
+        self._supervision_armed = False
+        self._rearms_remaining = 0
+        task, self._rearm_task = self._rearm_task, None
+        return task
 
     async def settle_activation(self, activation: int, in_use: set[int]) -> None:
         """Mark ``activation`` absorbed, then collect the sessions nothing needs."""
@@ -891,7 +1055,9 @@ class _WarmMintRuntime:
                 return None
             generation = self._generation
             try:
-                activation, requests = await self._activate_locked(agent, _wanted_aliases(wanted))
+                activation, requests = await self._activate_locked(
+                    agent, _wanted_aliases(wanted), tuple(wanted)
+                )
             except Exception as exc:
                 if self.is_alive():
                     # One activation failed but the process still serves: its other verifiers
@@ -1086,7 +1252,10 @@ class _WarmMintRuntime:
                 self._sessions.pop(activation, None)
 
     async def _activate_locked(
-        self, agent: str, wanted: frozenset[str]
+        self,
+        agent: str,
+        wanted: frozenset[str],
+        providers: tuple[Provider, ...] = (),
     ) -> tuple[int, list[dict[str, str]]]:
         """Activate ``agent`` on the shared process and return its challenges."""
         runtime = self._runtime
@@ -1121,39 +1290,10 @@ class _WarmMintRuntime:
             generation=self._generation,
             handle=handle,
             expires_at=time.monotonic() + _MINT_TTL_SECONDS,
+            providers=providers,
         )
-        collected: dict[str, dict[str, str]] = {}
         try:
-            for round_index in range(_WARM_OAUTH_SETTLE_ROUNDS):
-                for request in handle.pop_pending_oauth_requests():
-                    name = str(request.get("serverName") or "")
-                    if name and request.get("oauthUrl"):
-                        collected[name] = request
-                if wanted and wanted <= collected.keys():
-                    break
-                if round_index + 1 < _WARM_OAUTH_SETTLE_ROUNDS:
-                    # CONSUME the queue rather than sleep past it. This is the whole
-                    # mechanism: ``pop_pending_oauth_requests`` reads a list that only
-                    # ``drain_init`` appends to, and ``create_session`` runs exactly one
-                    # drain before handing the handle over -- so a bare sleep here moved
-                    # nothing, and a frame arriving after that drain's idle exit was
-                    # unreachable however many rounds elapsed. The budget was never the
-                    # binding constraint; the loop had no way to absorb a late frame at all.
-                    #
-                    # ``no_report_ceiling=0.0`` is load-bearing: it arms the idle shortcut at
-                    # entry, so this call cannot hold waiting for a "first report" that this
-                    # session already produced during ``create_session``'s own drain. That is
-                    # precisely the idle-window semantics that made an unbounded drain the
-                    # wrong tool here -- bounded per round, it is the right one. Each round is
-                    # therefore a window of at most ``_WARM_OAUTH_SETTLE_SECONDS`` that
-                    # returns as soon as the queue goes quiet, so the total budget is
-                    # unchanged and a satisfied activation still short-circuits on the pop
-                    # above without opening a window at all.
-                    await handle.drain_init(
-                        duration=_WARM_OAUTH_SETTLE_SECONDS,
-                        idle_exit=_WARM_OAUTH_SETTLE_SECONDS,
-                        no_report_ceiling=0.0,
-                    )
+            requests = await _collect_oauth_requests(handle, wanted)
         except BaseException:
             # Nothing will ever be stamped with this activation, so the session it
             # registered would leak past the sweep's settled-only rule. Marked settled and
@@ -1168,11 +1308,53 @@ class _WarmMintRuntime:
             if await _destroy_session_quietly(handle):
                 self._sessions.pop(activation, None)
             raise
-        return activation, list(collected.values())
+        return activation, requests
+
+    async def redrain_for(self, slug: str) -> _WarmMintResult | None:
+        """Drain a current-compatible live session for ``slug`` without spawning another."""
+        current_entry = await asyncio.to_thread(_current_warm_redrain_entry, slug)
+        if current_entry is None:
+            return None
+        async with self._lock:
+            for activation, record in reversed(list(self._sessions.items())):
+                if not self.generation_is_live(record.generation):
+                    continue
+                activated_provider = next(
+                    (provider for provider in record.providers if provider["slug"] == slug),
+                    None,
+                )
+                if activated_provider is None:
+                    continue
+                activated_entry = _registry_server_entry(activated_provider)
+                if activated_entry is None or _auth_shape(activated_entry) != _auth_shape(
+                    current_entry
+                ):
+                    return None
+                requests = await _collect_oauth_requests(
+                    record.handle, frozenset({mcp_server_alias(slug)})
+                )
+                if not requests:
+                    return None
+                return _WarmMintResult(
+                    generation=record.generation,
+                    activation=activation,
+                    providers=[activated_provider],
+                    requests=requests,
+                )
+        return None
 
     async def shutdown(self) -> None:
-        async with self._lock:
-            await self._retire_locked()
+        """Disarm recovery, settle its task, then retire every owned process."""
+        rearm = self._disarm_supervision()
+        try:
+            if rearm is not None and rearm is not asyncio.current_task() and not rearm.done():
+                rearm.cancel()
+                # ``return_exceptions`` consumes the CHILD cancellation. Cancellation of this
+                # shutdown still raises from gather and reaches the hard teardown in finally.
+                await asyncio.gather(rearm, return_exceptions=True)
+        finally:
+            async with self._lock:
+                await self._retire_locked()
 
     async def sweep_retiring(self) -> None:
         """Kill parked generations nothing is waiting on any more."""
@@ -1369,7 +1551,7 @@ def _warm_row_alive(entry: MintState) -> bool:
 def _shared_mints_pending() -> bool:
     """True while any card still needs the shared process alive."""
     return any(
-        entry.get("shared") and entry.get("state") in _LIVE_STATES for entry in _mints.values()
+        _warm_table_row(entry) and entry.get("state") in _LIVE_STATES for entry in _mints.values()
     )
 
 
@@ -1385,7 +1567,7 @@ async def _expire_shared_mints(reason: str, *, generation: int | None = None) ->
     flipped: list[str] = []
     async with _mints_lock:
         for slug, entry in _mints.items():
-            if not entry.get("shared") or entry.get("state") not in _LIVE_STATES:
+            if not _warm_table_row(entry) or entry.get("state") not in _LIVE_STATES:
                 continue
             if generation is not None and entry.get("generation") != generation:
                 continue
@@ -1399,11 +1581,16 @@ async def _expire_shared_mints(reason: str, *, generation: int | None = None) ->
 
 
 async def expire_dead_mints() -> list[str]:
-    """Withdraw every shared row whose holding process is gone. THE chokepoint."""
+    """Withdraw every warm-held row whose holding process is gone. THE chokepoint.
+
+    Adopted rows included, and that is not incidental: the cold engine's
+    ``_mint_holder_alive`` deliberately ABSTAINS on a row carrying a ``generation``
+    (it owns no ``client`` to read), so this is the only reader that can withdraw one.
+    """
     doomed: list[str] = []
     async with _mints_lock:
         for slug, entry in _mints.items():
-            if not entry.get("shared") or entry.get("state") != "waiting":
+            if not _warm_table_row(entry) or entry.get("state") != "waiting":
                 continue
             if _warm_row_alive(entry):
                 continue
@@ -1474,6 +1661,37 @@ async def _drain_parked_generations() -> None:
         await _warm_mint.sweep_sessions(in_use)
 
 
+async def _rearm_dead_warm_mint(generation: int) -> list[str]:
+    """Re-warm the still-unconnected eligible roster after one process death.
+
+    Candidate selection reuses the ordinary tri-state grant scan: only a confirmed absence
+    initiates consent, while a present or unreadable grant is skipped. ``arm_supervision`` is
+    false so this replacement cannot recursively earn another automatic replacement.
+    """
+    try:
+        candidates, audit_recorded = await asyncio.to_thread(_audited_mintable_providers)
+    except Exception:  # noqa: BLE001 -- the cold path remains available to every Connect
+        logger.debug("warm mint re-arm candidate scan failed", exc_info=True)
+        return []
+    if not candidates:
+        logger.info(
+            "Shared mint generation %d died; no confirmed-unconnected providers need re-arm",
+            generation,
+        )
+        return []
+    if not audit_recorded:
+        logger.warning(
+            "grant-presence audit for the automatic re-arm scan could not be recorded; "
+            "proceeding unaudited"
+        )
+    logger.warning(
+        "Shared mint generation %d died; re-arming %d eligible provider(s)",
+        generation,
+        len(candidates),
+    )
+    return await warm_mint_all(candidates, arm_supervision=False)
+
+
 async def _warm_mint_reaper(generation: int) -> None:
     """Retire the shared process once no card is waiting on it.
 
@@ -1496,6 +1714,19 @@ async def _warm_mint_reaper(generation: int) -> None:
             await _warm_mint.sweep_sessions(in_use)
             if not _warm_mint.is_alive():
                 await _expire_shared_mints("mint_process_gone", generation=generation)
+                rearm = _warm_mint.start_rearm(generation)
+                if rearm is not None:
+                    # Shielded because replacing the dead generation cancels THIS reaper.
+                    # The runtime owns the strong reference, and the replacement must finish
+                    # even after the obsolete observer exits.
+                    try:
+                        await asyncio.shield(rearm)
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception:  # noqa: BLE001 -- the cold path remains the fallback
+                        logger.debug("warm mint automatic re-arm failed", exc_info=True)
+                    if _warm_mint.is_alive():
+                        return
                 await _drain_parked_generations()
                 return
             if _shared_mints_pending():
@@ -1518,6 +1749,99 @@ async def _warm_mint_reaper(generation: int) -> None:
 def _mint_is_cold_held(entry: MintState | None) -> bool:
     """True when a dedicated client -- not the shared process -- holds this URL."""
     return entry is not None and entry.get("state") == "waiting" and entry.get("client") is not None
+
+
+def _mint_is_adopted(entry: MintState | None) -> bool:
+    """True when a caller has taken ownership of a WARM row, so it is nobody's to reclaim.
+
+    :func:`_mint_is_cold_held` cannot answer this and never could: an adopted row owns
+    no ``client`` either -- its verifier is in the shared process -- so the cold test
+    reads it as free and the claim loop below replaces a URL the user is part-way
+    through redeeming. ``shared`` is the whole distinction: it is set while the premint
+    is unclaimed and cleared by :func:`adopt_shared_mint`.
+    """
+    return (
+        entry is not None
+        and entry.get("state") == "waiting"
+        and bool(entry.get("generation"))
+        and not entry.get("shared")
+    )
+
+
+async def _adopt_shared_row(slug: str, mcp_url: str) -> str | None:
+    """Take ownership of ``slug``'s UNCLAIMED premint. Returns its new row token, or None.
+
+    THE handoff, and the reason the premint has a consumer at all. Connect used to call
+    ``reserve_mint_row`` unconditionally, which pops WHATEVER row is at the slug -- so
+    ``start_oauth_mint`` disposed the very URL the warm table had minted for that click
+    and the cold spawn it then paid was the only thing the user ever saw. ``None`` means
+    no row was adoptable at this instant; the public flow may recover a late frame from the
+    existing live session before it falls through to the dedicated cold path.
+
+    FOUR refusals, each closing a different way to hand back a URL that cannot work: no
+    row; a row that is not an unclaimed premint (``shared`` absent -- a cold flow's or
+    an already-adopted one, whose owner's token fences it); a claim still ``minting``,
+    which holds nothing to give; and a row whose holder is gone, judged by
+    :func:`_warm_row_alive` -- the SAME generation-and-activation pair the reaper uses,
+    because a URL is redeemable only while the process holds its verifier AND the
+    session still answers its redirect.
+
+    ATOMIC BY CONSTRUCTION, like :func:`_claim_shared_mints`: everything between the
+    read and the last write is synchronous, so two clicks racing one row serialize on
+    ``_mints_lock`` and the loser observes ``shared`` already cleared. Nothing is
+    disposed here, so the engine's dispose-outside-the-table-lock rule is not merely
+    respected but unreachable.
+
+    THE TOKEN IS ROTATED, and the watcher with it. A fresh token is what fences the
+    adopting tab against the premint's own rollback and against a sibling tab, but
+    every write in :func:`~kiro_crew.connections.mint._mint_watcher` is guarded on the
+    token it was started with -- so rotating alone would leave the row watched by a
+    task that can no longer touch it: nothing would flip it to ``granted``, nothing
+    would expire it, and it would hold the shared process resident for good. Re-arming
+    is therefore part of the same synchronous run, not a follow-up.
+
+    PROVENANCE IS KEPT. ``generation``/``activation`` stay exactly as the activation
+    stamped them, because ownership moved and the verifier did not: the row is still
+    judged, parked and withdrawn by the warm table (:func:`_warm_table_row`).
+    """
+    adopted: str | None = None
+    async with _mints_lock:
+        entry = _mints.get(slug)
+        if (
+            entry is not None
+            and entry.get("shared")
+            and entry.get("state") == "waiting"
+            and entry.get("oauth_url")
+            and _warm_row_alive(entry)
+        ):
+            adopted = _new_mint_token()
+            stale = entry.pop("watcher", None)
+            if stale is not None:
+                stale.cancel()
+            entry["token"] = adopted
+            entry.pop("shared", None)
+            entry["watcher"] = asyncio.get_running_loop().create_task(
+                _mint_watcher(slug, mcp_url, adopted)
+            )
+    if adopted is not None:
+        # Off the loop: the FIRST ``sel()`` of a process constructs the log, and the warm
+        # module pins every such hop with a drift guard.
+        await asyncio.to_thread(_log_warm_event, "connections_warm_mint_adopt", f"provider:{slug}")
+    return adopted
+
+
+async def adopt_shared_mint(slug: str, mcp_url: str) -> str | None:
+    """Adopt a warm row, recovering late frames from the live shared session once."""
+    adopted = await _adopt_shared_row(slug, mcp_url)
+    if adopted is not None:
+        return adopted
+    try:
+        redrained = await _warm_mint.redrain_for(slug)
+        if redrained is not None:
+            await _recover_redrained_requests(redrained)
+    except Exception:  # noqa: BLE001 -- a dedicated cold mint remains the fallback
+        logger.debug("warm mint adoption re-drain failed", exc_info=True)
+    return await _adopt_shared_row(slug, mcp_url)
 
 
 async def _claim_shared_mints(slugs: list[str]) -> tuple[dict[str, str], list[MintState]]:
@@ -1546,9 +1870,10 @@ async def _claim_shared_mints(slugs: list[str]) -> tuple[dict[str, str], list[Mi
     async with _mints_lock:
         for slug in slugs:
             prior = _mints.get(slug)
-            if _mint_is_cold_held(prior):
-                # A dedicated client owns this provider's verifier. Leave its URL on
-                # the card rather than replace a working link.
+            if _mint_is_cold_held(prior) or _mint_is_adopted(prior):
+                # A CALLER owns this provider's URL -- a dedicated client holds its
+                # verifier, or a Connect adopted the warm row this table minted. Leave
+                # its URL on the card rather than replace a working link.
                 continue
             if prior is not None:
                 # Hand it back, don't just drop it: the replaced row may own a watcher, and
@@ -1675,7 +2000,47 @@ async def _absorb_warm_requests(result: _WarmMintResult, claims: dict[str, str])
     return minted
 
 
-async def warm_mint_all(providers: list[Provider] | None = None) -> list[str]:
+def _providers_with_requests(result: _WarmMintResult) -> list[Provider]:
+    names = {
+        str(request.get("serverName") or "")
+        for request in result.requests
+        if request.get("oauthUrl")
+    }
+    return [
+        provider
+        for provider in result.providers
+        if provider["slug"] in names or mcp_server_alias(provider["slug"]) in names
+    ]
+
+
+async def _recover_redrained_requests(result: _WarmMintResult) -> list[str]:
+    """Install attributable late frames through the ordinary warm-table fences."""
+    providers = _providers_with_requests(result)
+    if not providers:
+        return []
+    claims, displaced = await _claim_shared_mints([provider["slug"] for provider in providers])
+    if not claims:
+        return []
+    try:
+        await _dispose_displaced_rows(displaced)
+        narrowed = _WarmMintResult(
+            generation=result.generation,
+            activation=result.activation,
+            providers=providers,
+            requests=result.requests,
+        )
+        minted = await _absorb_warm_requests(narrowed, claims)
+    except BaseException:
+        await _release_shared_claims(claims)
+        raise
+    if minted:
+        logger.info("Shared mint re-drain recovered late row(s): %s", ", ".join(sorted(minted)))
+    return minted
+
+
+async def warm_mint_all(
+    providers: list[Provider] | None = None, *, arm_supervision: bool = True
+) -> list[str]:
     """Warm every mintable provider's approval URL in ONE activation.
 
     Returns the slugs now holding a URL. Never raises for a mint failure -- that leaves the
@@ -1690,13 +2055,22 @@ async def warm_mint_all(providers: list[Provider] | None = None) -> list[str]:
 
     ``POST /api/connections/premint`` passes the candidates it scanned, so an explicit
     ``providers`` is the ordinary call shape; ``None`` re-scans for a caller that has no
-    list of its own.
+    list of its own. ``arm_supervision`` is false only for the automatic replacement: the
+    replacement inherits the page-owned lifecycle without recursively earning another retry.
     """
-    candidates = (
-        await asyncio.to_thread(mintable_providers) if providers is None else list(providers)
-    )
+    if providers is None:
+        candidates, audit_recorded = await asyncio.to_thread(_audited_mintable_providers)
+        if candidates and not audit_recorded:
+            logger.warning(
+                "grant-presence audit for the implicit warm scan could not be recorded; "
+                "proceeding unaudited"
+            )
+    else:
+        candidates = list(providers)
     if not candidates:
         return []
+    if arm_supervision:
+        _warm_mint.arm_supervision()
 
     claims, displaced = await _claim_shared_mints([provider["slug"] for provider in candidates])
     if not claims:

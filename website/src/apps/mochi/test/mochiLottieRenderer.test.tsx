@@ -27,6 +27,11 @@ function clip(seed: string, extra: Record<string, unknown> = {}): string {
   return JSON.stringify({ v: '5.13.0', seed, op: 60, layers: [], ...extra })
 }
 
+/** The slice of a sanitized clip these pins read back off `loadAnimation`: the
+ *  one transform property the expression strip touches. `p` stays an open bag
+ *  because the point of the assertion is whether the `x` key is still there. */
+type StrippedClip = { layers: { ks: { p: Record<string, unknown> } }[] }
+
 describe('mochi LottieRenderer', () => {
   let warnSpy: ReturnType<typeof vi.spyOn>
   let errorSpy: ReturnType<typeof vi.spyOn>
@@ -59,7 +64,7 @@ describe('mochi LottieRenderer', () => {
         height={64}
       />,
     )
-    const passed = loadAnimation.mock.calls[0][0].animationData as Record<string, any>
+    const passed = loadAnimation.mock.calls[0][0].animationData as StrippedClip
     expect(passed.layers[0].ks.p).not.toHaveProperty('x')
     expect(warnSpy).toHaveBeenCalledWith(
       expect.stringContaining('removed 1 lottie expression(s)'),
@@ -76,7 +81,7 @@ describe('mochi LottieRenderer', () => {
         height={64}
       />,
     )
-    const passed = loadAnimation.mock.calls[0][0].animationData as Record<string, any>
+    const passed = loadAnimation.mock.calls[0][0].animationData as StrippedClip
     expect(passed.layers[0].ks.p.x).toEqual([0.5])
     expect(warnSpy).not.toHaveBeenCalled()
   })

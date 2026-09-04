@@ -28,7 +28,6 @@ from kiro_crew.computer_use.types import MAX_TREE_NODES_LIMIT as _CU_MAX_TREE_NO
 from kiro_crew.computer_use.types import MIN_SCREENSHOT_MAX_PX as _CU_MIN_SCREENSHOT_MAX_PX
 from kiro_crew.config.loader import (
     _VALID_STT_PROVIDERS,
-    AUTO_INGEST_CHUNK_BUDGET_MAX,
     AUTOCOMPACT_PCT_MAX,
     AUTOCOMPACT_PCT_MIN,
     COMPLETION_KEEP_CHARS_MIN,
@@ -37,7 +36,6 @@ from kiro_crew.config.loader import (
     EXTRACTION_POOL_SIZE_MAX,
     EXTRACTION_POOL_SIZE_MIN,
     FOLDER_INGEST_CHUNK_BUDGET_MAX,
-    KNOWLEDGE_MAX_SOURCES_MAX,
     MAX_SUBAGENTS_FIXED_FLOOR,
     MCP_PROBE_TIMEOUT_MAX,
     MCP_PROBE_TIMEOUT_MIN,
@@ -68,6 +66,7 @@ from kiro_crew.effort import EFFORT_LEVELS
 from kiro_crew.executors import discovery_executor
 from kiro_crew.metrics import provider as _metrics_provider
 from kiro_crew.security_posture import build_posture_snapshot_async, posture_counts_async
+from kiro_crew.session_workspace import is_valid_id
 from kiro_crew.stt import models as stt_models
 from kiro_crew.stt.limits import (
     MAX_IDLE_EVICT_SECS,
@@ -993,20 +992,29 @@ def _stt_prereq_commands(provider: str = "local") -> list[str]:
     An empty list means "nothing to do", which is the steady state.
     """
     cmds: list[str] = []
+    # Which extra to name depends on the provider, because the two halves are
+    # separately installable and an extra resolves ATOMICALLY: advising the full
+    # `voice` set to a cloud-only user drags in the local recogniser, which has
+    # no wheel on some platforms and fails the whole install.
+    extra = ""
     if provider == PROVIDER_LOCAL:
         # Only the missing-extra case is actionable by pip. A platform with no
         # prebuilt wheel needs a C++ toolchain instead, and the availability
         # `detail` on GET /api/stt/status is what says so.
         needs_extra = stt.availability().code == stt.CODE_EXTRA_MISSING
+        extra = "voice"
     elif provider == "transcribe":
         needs_extra = not _transcribe_extra_importable()
+        extra = "voice-aws"
     else:
         needs_extra = False
     # Suppressed where no pip channel into this interpreter exists — frozen build,
     # code-signed app bundle, pip-less or PEP 668 python. The Settings page shows
     # an unsupported notice there instead of a command that cannot succeed.
     if needs_extra and _pip_install_channel_available():
-        cmds.append(pip_extra_install_command("voice"))
+        command = pip_extra_install_command(extra)
+        if command:
+            cmds.append(command)
     if not platform_compat.is_bundled_interpreter():
         cmds.extend(_ffmpeg_install_commands())
     return cmds
@@ -1741,16 +1749,10 @@ _EDITABLE_CONFIG: dict[str, dict] = {
     # require approval regardless — enforced in the generation path).
     "skills.auto_create_from_sessions": {"type": "bool"},
     "skills.approval_required": {"type": "bool"},
-    # Knowledge Library auto-ingest. Chunk budget max mirrors the point past which
+    # Knowledge Library ingestion. Chunk budget max mirrors the point past which
     # a single sweep stops being a trickle; dedup cadence max is ~a day of sweeps.
     "knowledge.auto_add_documents": {"type": "bool"},
-    "knowledge.auto_register_project_docs": {"type": "bool"},
     "knowledge.auto_ingest_artifacts": {"type": "bool"},
-    "knowledge.auto_ingest_chunk_budget": {
-        "type": "int",
-        "min": 0,
-        "max": AUTO_INGEST_CHUNK_BUDGET_MAX,
-    },
     "knowledge.folder_ingest_chunk_budget": {
         "type": "int",
         "min": 0,
@@ -1758,7 +1760,6 @@ _EDITABLE_CONFIG: dict[str, dict] = {
     },
     "knowledge.dedup_every_n_sweeps": {"type": "int", "min": 0, "max": DEDUP_EVERY_N_SWEEPS_MAX},
     "knowledge.sweep_chunk_budget": {"type": "int", "min": 0, "max": SWEEP_CHUNK_BUDGET_MAX},
-    "knowledge.max_sources": {"type": "int", "min": 0, "max": KNOWLEDGE_MAX_SOURCES_MAX},
     "knowledge.embed_rate_limit": {"type": "int", "min": 0, "max": EMBED_RATE_LIMIT_MAX},
     "knowledge.extraction_model": {"type": "str"},
     "knowledge.extraction_pool_size": {
@@ -2300,9 +2301,49 @@ async def api_token_local(request: web.Request) -> web.Response:
 # ── Session workspace (Orchestrated Chat) ────────────────────────────
 
 
+def _invalid_session_path_id(session_id: str, agent_id: str | None = None) -> web.Response | None:
+    """400 for a path id ``session_workspace`` would refuse, else ``None``.
+
+    Both ids reach a filesystem path (``sessions/{session_id}/agent-{agent_id}.md``)
+    and are validated there by ``_validate_id``, which RAISES. The raise is the
+    correct containment behaviour -- it is what stops ``..`` from escaping the
+    session root -- but an un-caught one leaves the route answering 500 to what
+    is really a malformed request, so it is translated here instead.
+
+    The predicate is imported rather than restated: this must refuse exactly the
+    set the path join refuses, no wider (a narrower guard would break the ``:``
+    in a real key like ``dashboard:slot-3``) and no narrower (a wider one puts
+    the 500 back). Shape follows ``cron.py``'s ``_invalid_path_id_response`` --
+    400 with an ``invalid_<name>`` ``code`` -- which is the contract #6301 names
+    and which AGENTS.md's code-field rule requires.
+
+    ``agent_id`` is checked second because that is the order the sinks validate
+    in, so the reported code names the half the caller must actually fix.
+
+    ``is_valid_id`` is imported at module scope per AUTOSDE ``top-level-imports``
+    -- there is no cycle, ``session_workspace`` pulling only stdlib and
+    ``config.paths``. The three ``list_results`` / ``read_result`` /
+    ``result_path`` imports below stay function-local: they are pre-existing, and
+    hoisting them would bind the names here at import time, which is exactly what
+    the existing tests' ``monkeypatch`` of ``kiro_crew.session_workspace.<fn>``
+    relies on NOT happening. That is a separate change with its own test fallout.
+    """
+    if not is_valid_id(session_id):
+        return web.json_response(
+            {"error": "invalid session id", "code": "invalid_session_id"}, status=400
+        )
+    if agent_id is not None and not is_valid_id(agent_id):
+        return web.json_response(
+            {"error": "invalid agent id", "code": "invalid_agent_id"}, status=400
+        )
+    return None
+
+
 async def api_session_agents_list(request: web.Request) -> web.Response:
     """GET /api/sessions/{id}/agents — list sub-agent results for a session."""
     session_id = request.match_info["id"]
+    if (_e := _invalid_session_path_id(session_id)) is not None:
+        return _e
     from kiro_crew.session_workspace import list_results  # noqa: F811
 
     results = list_results(session_id)
@@ -2320,6 +2361,8 @@ async def api_session_agent_result(request: web.Request) -> web.Response:
     """GET /api/sessions/{id}/agents/{agent_id} — read sub-agent result."""
     session_id = request.match_info["id"]
     agent_id = request.match_info["agent_id"]
+    if (_e := _invalid_session_path_id(session_id, agent_id)) is not None:
+        return _e
     from kiro_crew.session_workspace import read_result  # noqa: F811
 
     content = read_result(session_id, agent_id)
@@ -2343,6 +2386,11 @@ async def api_session_agent_stream(request: web.Request) -> web.StreamResponse:
     """GET /api/sessions/{id}/agents/{agent_id}/stream — SSE stream of result file."""
     session_id = request.match_info["id"]
     agent_id = request.match_info["agent_id"]
+    # Before the ok-record below as well as before prepare(): a refused request
+    # is not a stream that happened to be empty, so it must not be audited as
+    # one, and once the response is prepared the status is already on the wire.
+    if (_e := _invalid_session_path_id(session_id, agent_id)) is not None:
+        return _e
     _sel().log_api_access(
         caller=request.get("user", "dashboard"),
         operation="session.agent.stream",

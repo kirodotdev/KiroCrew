@@ -165,6 +165,55 @@ function vendorRuntimePlugin(): Plugin {
  * `vite build` only (not dev server). The public/ directory is copied
  * verbatim by Vite so `define` replacements don't apply to it.
  */
+/**
+ * Self-host Excalidraw's canvas fonts. Without `window.EXCALIDRAW_ASSET_PATH`
+ * the library resolves its lazily-loaded text-tool fonts (Excalifont, Xiaolai,
+ * …) against a third-party CDN (esm.sh) — verified by a network probe against
+ * a live pod — which breaks air-gapped dashboards and violates the same
+ * no-network rule that `lib/excalidrawScene.ts` documents for the read-only
+ * renderer. SketchDialog sets the asset path to `/vendor/excalidraw/`; this
+ * plugin makes that path real: build emits every font file from the npm
+ * package into `dist/vendor/excalidraw/fonts/**`, and the dev server serves
+ * the same files straight from node_modules.
+ */
+function excalidrawFontsPlugin(): Plugin {
+  const FONTS_ROOT = path.resolve(__dirname, 'node_modules/@excalidraw/excalidraw/dist/prod/fonts')
+  const SERVE_PREFIX = '/vendor/excalidraw/fonts/'
+  const listFonts = (): string[] => {
+    const out: string[] = []
+    for (const family of readdirSync(FONTS_ROOT)) {
+      for (const file of readdirSync(path.join(FONTS_ROOT, family))) {
+        out.push(`${family}/${file}`)
+      }
+    }
+    return out
+  }
+  return {
+    name: 'kirocrew-excalidraw-fonts',
+    configureServer(server) {
+      server.middlewares.use((req, res, next) => {
+        const url = (req.url || '').split('?')[0]
+        if (!url.startsWith(SERVE_PREFIX)) return next()
+        const rel = decodeURIComponent(url.slice(SERVE_PREFIX.length))
+        // Path-traversal guard: the joined path must stay under FONTS_ROOT.
+        const abs = path.resolve(FONTS_ROOT, rel)
+        if (!abs.startsWith(FONTS_ROOT + path.sep) || !existsSync(abs)) return next()
+        res.setHeader('Content-Type', 'font/woff2')
+        res.end(readFileSync(abs))
+      })
+    },
+    generateBundle() {
+      for (const rel of listFonts()) {
+        this.emitFile({
+          type: 'asset',
+          fileName: `vendor/excalidraw/fonts/${rel}`,
+          source: readFileSync(path.join(FONTS_ROOT, rel)),
+        })
+      }
+    },
+  }
+}
+
 function swVersionPlugin(): Plugin {
   return {
     name: 'kirocrew-sw-version',
@@ -506,7 +555,7 @@ function appWindowUrls(): Plugin {
 }
 
 export default defineConfig({
-  plugins: [react(), tokenProxyPlugin(), appImportMapPlugin(), vendorRuntimePlugin(), swVersionPlugin(), editionExtensionPlugin(), bundleReportPlugin(), appWindowUrls(), precompressPlugin()],
+  plugins: [react(), tokenProxyPlugin(), appImportMapPlugin(), vendorRuntimePlugin(), excalidrawFontsPlugin(), swVersionPlugin(), editionExtensionPlugin(), bundleReportPlugin(), appWindowUrls(), precompressPlugin()],
   resolve: {
     alias: {
       '@': path.resolve(__dirname, './src'),

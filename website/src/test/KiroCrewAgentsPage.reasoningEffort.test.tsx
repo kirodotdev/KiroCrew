@@ -154,8 +154,8 @@ async function openModelPane(crew: Record<string, unknown>): Promise<HTMLElement
   })
   renderPage()
   await waitFor(() => expect(screen.getAllByTestId('crew-card')).toHaveLength(1))
-  fireEvent.click(screen.getByRole('button', { name: 'Edit crew reviewer' }))
-  const sheet = await screen.findByRole('dialog', { name: 'Edit crew reviewer' })
+  fireEvent.click(screen.getByRole('button', { name: 'Edit agent reviewer' }))
+  const sheet = await screen.findByRole('dialog', { name: 'Edit agent reviewer' })
   fireEvent.click(within(sheet).getByTestId('crew-rail-model'))
   return sheet
 }
@@ -200,7 +200,7 @@ describe('crew editor — reasoning effort pin', () => {
     // which are different facts with different blast radius.
     const sheet = await openModelPane({})
     const line = await waitFor(() => within(sheet).getByText(/Thinking at Max/))
-    expect(line.parentElement).toHaveTextContent('chosen for this crew')
+    expect(line.parentElement).toHaveTextContent('chosen for this agent')
   })
 
   it('sends the level on save', async () => {

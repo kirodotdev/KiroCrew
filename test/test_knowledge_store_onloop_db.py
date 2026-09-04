@@ -48,9 +48,11 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 def store(tmp_path: Path) -> KnowledgeStore:
     """A store built OFF the loop.
 
-    ``__init__`` runs the schema init, the migrations and the graph load through
-    ``self.db``, so building one on the loop is itself an on-loop take. Every
-    test here builds it off-loop and then exercises the accessor deliberately.
+    Construction is the one sanctioned on-loop take (``__init__`` wraps its
+    schema init, migrations and graph load in ``allow_on_loop()`` -- see
+    ``TestConstructionOnLoopIsSanctioned``). Every test here still builds the
+    store off-loop so that what it exercises afterwards is exactly one
+    deliberate accessor take, not construction noise.
     """
     return KnowledgeStore(str(tmp_path / "knowledge.db"))
 
@@ -261,6 +263,116 @@ class TestSharedSwitchCannotArmThisStore:
         assert STORE_STRICT_ENV not in ci and STORE_STRICT_ENV not in setup_py, (
             "CI now exports the store switch -- the knowledge store's on-loop "
             "callers must be offloaded (#7019) before that can hold"
+        )
+
+
+class TestConstructionOnLoopIsSanctioned:
+    """Construction is the ONE vetted on-loop take (#8231).
+
+    ``setup_knowledge_routes()`` reads the gateway's lazy ``knowledge_store``
+    property at route registration, before the socket binds, so ``__init__``
+    -- schema init, migrations, graph load -- runs on the event-loop thread on
+    every launch, by the constructor's documented design (moving that work off
+    the boot path is #8329). Before #8231 the guard warned on every boot for
+    that deliberate take. The constructor now wraps exactly those calls in
+    ``allow_on_loop()``; these tests pin both directions -- construction is
+    silent, AND the guard stays fully armed on every path after the block ends.
+    """
+
+    @staticmethod
+    def _guard_records(caplog):
+        """Only THIS guard's records: construction runs dozens of migration
+        statements that may legitimately log through other loggers, and
+        ``caplog.records`` captures every logger at the handler."""
+        return [r for r in caplog.records if r.name == "kiro_crew.on_loop_db"]
+
+    @pytest.mark.asyncio
+    async def test_construction_on_loop_emits_no_warning(self, tmp_path, monkeypatch, caplog):
+        """The boot-time symptom itself: building the store on the loop must
+        not log the on-loop diagnostic. (The presence control proving this
+        probe is wired lives in ``test_reader_after_construction_still_warns``,
+        which sees the same logger fire for a real reader take.)"""
+        monkeypatch.setenv(STORE_STRICT_ENV, "0")
+        with caplog.at_level("WARNING", logger="kiro_crew.on_loop_db"):
+            KnowledgeStore(str(tmp_path / "k.db"))
+        assert not self._guard_records(caplog)
+
+    @pytest.mark.asyncio
+    async def test_construction_on_loop_does_not_raise_under_strict(self, tmp_path, monkeypatch):
+        """Strict mode must not turn a sanctioned constructor into a boot
+        failure -- and the guard must re-arm the instant the block ends."""
+        monkeypatch.setenv(STORE_STRICT_ENV, "1")
+        st = KnowledgeStore(str(tmp_path / "k.db"))  # must NOT raise
+        with pytest.raises(OnLoopStoreError):
+            st.db  # noqa: B018 - the accessor take is the operation under test
+
+    @pytest.mark.asyncio
+    async def test_reader_after_construction_still_warns(self, tmp_path, monkeypatch, caplog):
+        """The other mutation direction: the opt-out must not disarm the real
+        reader paths. A genuine on-loop take right after construction warns --
+        which also proves the suppression left the throttle clock untouched."""
+        monkeypatch.setenv(STORE_STRICT_ENV, "0")
+        with caplog.at_level("WARNING", logger="kiro_crew.on_loop_db"):
+            st = KnowledgeStore(str(tmp_path / "k.db"))
+            assert not self._guard_records(caplog), "construction itself must stay silent"
+            st.get_item("does-not-exist")
+        assert any("event loop" in r.message for r in self._guard_records(caplog))
+
+    def test_allow_on_loop_resets_on_exception(self, caplog):
+        """The opt-out is a ContextVar token reset in a ``finally``, so an
+        exception inside the block must not leave the guard suppressed."""
+        guard = OnLoopDBGuard(label="probe store", remedy="offload it")
+
+        async def _probe() -> None:
+            with pytest.raises(RuntimeError):
+                with guard.allow_on_loop():
+                    guard.check()  # suppressed: must not warn
+                    raise RuntimeError("boom")
+            guard.check()  # must warn: the opt-out ended with the block
+
+        with caplog.at_level("WARNING", logger="kiro_crew.on_loop_db"):
+            asyncio.run(_probe())
+        assert sum("probe store" in r.message for r in caplog.records) == 1
+
+    def test_constructor_wraps_init_in_the_scoped_opt_out(self):
+        """Mutation guard: the ``allow_on_loop()`` ``with`` block's body must be
+        EXACTLY the three init calls. Textual-order checks are not enough: they
+        stay green when the calls are dedented out of the block (the likely
+        drift in a later constructor edit), and they cannot see a FOURTH call
+        joining the block -- which the scoped exemption would silently sanction
+        against a ``blocking: true`` rule. AST nesting catches both.
+        """
+        src = textwrap.dedent(inspect.getsource(KnowledgeStore.__init__))
+        tree = ast.parse(src)
+        blocks = [
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.With)
+            and any(
+                isinstance(item.context_expr, ast.Call)
+                and isinstance(item.context_expr.func, ast.Attribute)
+                and item.context_expr.func.attr == "allow_on_loop"
+                for item in node.items
+            )
+        ]
+        assert len(blocks) == 1, "constructor must use the scoped opt-out exactly once"
+        calls = []
+        for stmt in blocks[0].body:
+            assert isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Call), (
+                "only plain self-method calls belong in the sanctioned block, "
+                f"found {ast.dump(stmt)[:80]}"
+            )
+            func = stmt.value.func
+            assert (
+                isinstance(func, ast.Attribute)
+                and isinstance(func.value, ast.Name)
+                and func.value.id == "self"
+            ), "the sanctioned block must call methods on self only"
+            calls.append(func.attr)
+        assert calls == ["_init_schema", "_migrate", "_load_graph"], (
+            "the sanctioned block's body changed -- a call moved out (re-arming "
+            "the guard for it) or joined in (sanctioning NEW on-loop work, which "
+            f"needs its own justification): {calls}"
         )
 
 

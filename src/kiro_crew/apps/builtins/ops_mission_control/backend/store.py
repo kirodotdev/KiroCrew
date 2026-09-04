@@ -51,8 +51,10 @@ from kiro_crew.apps.builtins.ops_mission_control.backend.models import (
     VALID_CLAIMANTS,
     VERIFY_NOT_CHECKABLE,
     VERIFY_STILL_FIRING,
+    CorruptDocumentError,
     Incident,
     Signal,
+    UnknownFieldError,
     proposal_digest,
     utc_now_iso,
 )
@@ -158,21 +160,235 @@ def incident_log_path(incident_id: str) -> Path:
 # ---------------------------------------------------------------------------
 
 
-def _read_index_unlocked() -> dict[str, Incident]:
-    try:
-        raw = json.loads(index_path().read_text(encoding="utf-8"))
-    except (FileNotFoundError, OSError, json.JSONDecodeError):
-        return {}
+def _lost(original: Any, roundtripped: Any) -> bool:
+    """True if a value this build UNDERSTANDS came back changed or shortened.
+
+    Only keys present in BOTH are compared, so a field this build does not know about is
+    not treated as loss here -- :func:`_unknown` handles that case separately, because the
+    two have different remedies. Compares PARSED structures rather than text, so key order
+    and formatting cannot produce a false refusal.
+    """
+    if isinstance(original, dict):
+        if not isinstance(roundtripped, dict):
+            return True
+        return any(
+            _lost(value, roundtripped[key])
+            for key, value in original.items()
+            if key in roundtripped
+        )
+    if isinstance(original, list):
+        if not isinstance(roundtripped, list) or len(original) != len(roundtripped):
+            return True
+        return any(_lost(a, b) for a, b in zip(original, roundtripped))
+    return original != roundtripped
+
+
+def _unknown(original: Any, roundtripped: Any) -> bool:
+    """True if the document holds a field this build would silently DROP on write.
+
+    That is version skew, not corruption: a newer build added a field, and this reader's
+    ``to_dict`` is ``asdict()`` over the fields it knows, so the key vanishes from the round
+    trip. The reachable path is a ROLLBACK on one machine -- ``ledger_sync`` deliberately does
+    not sync the index ("Only the ledger. NOT the dispatch index"), so this is not two
+    instances sharing a file. The mutation must still refuse, because writing would strip the
+    newer build's data, but the remedy is "move this instance forward", not "repair this file".
+    Found in review (Design Review for the case, First Principles for the wrong justification
+    I first gave it).
+
+    Note what this makes load-bearing, since it is worth knowing rather than discovering:
+    ``to_dict(from_dict(x))`` must preserve every field ``x`` already had, or a mutation
+    refuses. Serializer idempotence is now an availability property of the store, not just a
+    correctness one. The suite exercises it on every incident shape the app writes, which is
+    the check that keeps it honest.
+
+    **This rule outlaws migrate-on-write, and a future schema change must extend it rather
+    than fight it.** Renaming or dropping a field means old records carry a key the new
+    ``to_dict`` does not emit, which is indistinguishable HERE from a field written by a newer
+    build -- both are "on disk, absent from the round trip". So a migration cannot simply
+    rewrite records through the normal write path; it needs an explicit carve-out naming the
+    retired keys, added at the same time as the rename. Named in review (Design Review). The
+    error text deliberately does not claim which direction the skew runs, because this
+    function cannot tell.
+    """
+    if isinstance(original, dict):
+        if not isinstance(roundtripped, dict):
+            return False
+        return any(
+            key not in roundtripped or _unknown(value, roundtripped[key])
+            for key, value in original.items()
+        )
+    if isinstance(original, list) and isinstance(roundtripped, list):
+        return any(_unknown(a, b) for a, b in zip(original, roundtripped))
+    return False
+
+
+def _coerce_index(raw: Any, *, strict: bool = False) -> dict[str, Incident]:
+    """Normalize a parsed index document, skipping entries that will not load.
+
+    Shared by both readers below so the only thing that can differ between them is which
+    read FAILURES are allowed to answer "empty".
+
+    ``strict`` is the update path, and it refuses on a rule about CONTENT rather than a list
+    of shapes: **deserialize, re-serialize, and refuse if anything that was on disk did not
+    survive.** Three review rounds each found the same class of loss one layer deeper than
+    the last -- the document root, then a row, then a nested field like ``"signal": []``
+    coerced to an empty ``Signal`` -- because each fix enumerated a shape, and any
+    enumeration can be beaten by a deeper example. This rule cannot: it covers the root, the
+    rows, the nested fields and every layer beneath them at once, and it is the invariant the
+    docstrings were already claiming.
+
+    That is also why this reader now has FEWER checks than it did a round ago. The
+    ``isinstance`` guards for the row and the nested fields are gone, because dropping a row
+    or blanking a field is exactly what the round trip detects. A smaller diff is the honest
+    signal that this is the real rule rather than another patch on top of one.
+
+    Why it matters on the mutation path specifically: the caller rewrites the WHOLE file from
+    what this returns, so any content the coercion quietly replaced is destroyed. The display
+    read keeps coercing and renders what it can -- one unreadable row must not blank a board.
+
+    It logs the degradations that explain a THIN board: an unreadable file, an unparseable one,
+    a non-object root, and a row it had to skip. It deliberately does NOT log a nested
+    coercion (a row whose ``"signal"`` was replaced by an empty one), because detecting that
+    requires the same round trip the strict path does, and this function runs on every board
+    poll and every dispatch cycle. The mutation path catches those, which is where they cost
+    something. An earlier version of this docstring claimed it logged whenever it degraded,
+    full stop -- that was wider than the code, and review was right to say so (GPT 5.6).
+    """
     if not isinstance(raw, dict):
+        if strict:
+            raise CorruptDocumentError("index root is not a JSON object", str(raw)[:120], 0)
+        logger.warning(
+            "ops-mission-control: incident index root is not an object; the board will render empty"
+        )
         return {}
     out: dict[str, Incident] = {}
     for key, value in raw.items():
-        if isinstance(value, dict):
-            try:
-                out[str(key)] = Incident.from_dict(value)
-            except (TypeError, ValueError):
-                logger.warning("ops-mission-control: skipping malformed index entry %r", key)
+        if not isinstance(value, dict):
+            logger.warning("ops-mission-control: skipping index entry %r, not an object", key)
+            continue
+        try:
+            out[str(key)] = Incident.from_dict(value)
+        except (TypeError, ValueError):
+            logger.warning("ops-mission-control: skipping malformed index entry %r", key)
+    if strict:
+        roundtripped = {key: incident.to_dict() for key, incident in out.items()}
+        for key, original in raw.items():
+            survived = roundtripped.get(str(key))
+            if survived is None or _lost(original, survived):
+                raise CorruptDocumentError(
+                    f"index entry {key!r} would not survive a read-write cycle",
+                    str(original)[:120],
+                    0,
+                )
+            if _unknown(original, survived):
+                raise UnknownFieldError(
+                    f"index entry {key!r} holds a field this build does not serialize, so a "
+                    "write would drop it",
+                    str(original)[:120],
+                    0,
+                )
+            # Referential integrity, which the round trip structurally CANNOT see: both sides
+            # of it preserve a key/`incident_id` mismatch faithfully, so `_lost` passes. But
+            # `expire_stale_proposals` iterates `index.values()` and writes back with
+            # `index[inc.incident_id] = ...`, so a row stored under `INV-1` whose id says
+            # `INV-9` is REKEYED on the next expiry sweep -- leaving `INV-1` behind as a
+            # duplicate, or overwriting a real `INV-9`. Found in review (GPT 5.6), and it is
+            # the one hole the equivalence rule could not close on its own: the corruption
+            # manifests at WRITE time, not at read time.
+            if str(survived.get("incident_id", "")) != str(key):
+                raise CorruptDocumentError(
+                    f"index entry {key!r} carries incident_id "
+                    f"{survived.get('incident_id', '')!r}; a write would rekey it",
+                    str(original)[:120],
+                    0,
+                )
     return out
+
+
+def _read_index_unlocked() -> dict[str, Incident]:
+    """The dispatch index, or ``{}`` when there is nothing readable.
+
+    A DISPLAY read: the board, the counts and ``find_by_signal`` must answer on an
+    index they could not load rather than failing the route. See
+    :func:`_read_index_for_update` for why a mutation may not stand on the same
+    answer.
+
+    An absent file is silent -- that is a fresh install, not a fault. Anything else
+    is logged, because the failure this degrades into looks exactly like health: an
+    empty board renders as "nothing is wrong". Nothing else would prompt an
+    operator to look.
+    """
+    try:
+        raw = json.loads(index_path().read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return {}
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+        logger.warning(
+            "ops-mission-control: dispatch index unreadable; the board will render empty",
+            exc_info=True,
+        )
+        return {}
+    return _coerce_index(raw)
+
+
+def _read_index_for_update() -> dict[str, Incident]:
+    """The index a read-modify-write is allowed to publish over.
+
+    Callers hold ``_IndexLock``; this only decides what an unreadable file means.
+
+    Every mutation below rewrites the WHOLE document from what it read, so an
+    empty base is not "no incidents to carry forward" -- it is "delete every
+    incident on the board". Only a MISSING file makes that true. An unreadable
+    one (a transient EACCES/EIO, a scanner holding the handle on Windows) is an
+    index we still have.
+
+    Truncating it is worse than losing a view, because the index IS the claim
+    ledger. ``claim`` is a compare-and-set against these rows: with the board
+    emptied, every signal reads as unowned, so the next heartbeat re-claims
+    alarms that are already being worked and opens duplicate investigations of
+    each one -- and in ``act`` mode a duplicate investigation is a second real
+    write against the operator's production paging. The per-incident markdown
+    logs survive on disk but nothing indexes them any more, and an open incident
+    that is no longer listed is never swept, resolved, or answered.
+
+    Corruption propagates too, and that is a DELIBERATE divergence from the four
+    merged siblings of this idiom (``library.py``, ``shares.py``, ``secrets.py``,
+    ``policy_store.py``), which all still read an unparseable document as empty.
+    Their justification is real -- a document that failed to parse carries nothing
+    to merge into -- but "cannot merge into" is not "safe to destroy". A truncated
+    index still holds most of its records verbatim, and replacing it discards the
+    operator's only chance to recover them by hand. Refusing costs one skipped
+    mutation and a visible error; overwriting costs the records, silently. Found in
+    review (GPT 5.6). The siblings need the same treatment in a follow-up --
+    ``secrets.py`` most of all, since there the discarded bytes are credentials.
+    """
+    try:
+        raw = json.loads(index_path().read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return {}
+    except json.JSONDecodeError as exc:
+        # Re-raised as the named type so that EVERY refusal from this reader is one
+        # `CorruptDocumentError`, whatever door it came through -- a bad byte stream here, a
+        # bad shape in `_coerce_index` below. Review noted the subclass was one no catcher
+        # distinguished (First Principles), which was fair while a parse failure still
+        # arrived as the bare base class: the type described the raise site instead of being
+        # the reader's contract. Catchers written against `json.JSONDecodeError` keep working
+        # unchanged, because it still IS one.
+        raise CorruptDocumentError(exc.msg, exc.doc, exc.pos) from exc
+    except UnicodeDecodeError as exc:
+        # A file that is not valid UTF-8 never reaches `json.loads`, so it arrives as
+        # `UnicodeDecodeError` -- which is a `ValueError` but NOT a `JSONDecodeError`. Left
+        # unwrapped it slips past every corruption clause in this change and lands in the
+        # tolerant `except (KeyError, ValueError, OSError)` arms instead, silently swallowed:
+        # the exact accidental tolerance this change exists to close, reached through a
+        # sibling exception type. Found in review (GPT 5.6). Wrapped so a corrupt byte stream
+        # is one condition regardless of which decoder noticed it first.
+        raise CorruptDocumentError(
+            f"index is not valid UTF-8: {exc.reason}",
+            exc.object.decode("utf-8", "replace")[:120],
+            0,
+        ) from exc
+    return _coerce_index(raw, strict=True)
 
 
 def _write_index_unlocked(index: dict[str, Incident]) -> None:
@@ -271,7 +487,7 @@ def claim(
     the signal a responder most needs to see ("we fixed this and it came back").
     """
     with _IndexLock():
-        index = _read_index_unlocked()
+        index = _read_index_for_update()
 
         for inc in index.values():
             if inc.signal.id != signal.id:
@@ -334,7 +550,7 @@ def transition(incident_id: str, new_status: Any, **updates: Any) -> Incident:
     must not assert any status, so it cannot revert a concurrent transition.
     """
     with _IndexLock():
-        index = _read_index_unlocked()
+        index = _read_index_for_update()
         incident = index.get(incident_id)
         if incident is None:
             raise KeyError(incident_id)
@@ -443,7 +659,7 @@ def sweep_stale(stale_after_secs: int, needs_human_after_secs: int | None = None
     released: list[str] = []
     now = datetime.now(timezone.utc)
     with _IndexLock():
-        index = _read_index_unlocked()
+        index = _read_index_for_update()
         changed = False
         for incident_id, inc in index.items():
             if inc.status not in _SWEEPABLE_STATUSES:
@@ -520,7 +736,7 @@ def prune_closed(*, keep: int = MAX_CLOSED_INCIDENTS) -> int:
     long-running incident that just finished is treated as recent.
     """
     with _IndexLock():
-        index = _read_index_unlocked()
+        index = _read_index_for_update()
         closed = [inc for inc in index.values() if inc.status in TERMINAL_STATUSES]
         if len(closed) <= keep:
             return 0
@@ -738,7 +954,7 @@ def decide_proposal(incident_id: str, *, approve: bool, digest: str = "") -> dic
     and an approval are both "exactly one winner" decisions on shared JSON.
     """
     with _IndexLock():
-        index = _read_index_unlocked()
+        index = _read_index_for_update()
         incident = index.get(incident_id)
         if incident is None:
             raise KeyError(incident_id)
@@ -842,8 +1058,8 @@ def expire_stale_proposals(*, now: str = "") -> list[str]:
     cutoff = now or utc_now_iso()
     touched: list[str] = []
     with _IndexLock():
-        index = _read_index_unlocked()
-        for inc in index.values():
+        index = _read_index_for_update()
+        for key, inc in list(index.items()):
             proposal = dict(inc.proposed_action or {})
             if str(proposal.get("state", "")) != PROPOSAL_PENDING:
                 continue
@@ -854,7 +1070,14 @@ def expire_stale_proposals(*, now: str = "") -> list[str]:
             proposal["decided_at"] = cutoff
             # Mutate the record in the locked index rather than calling ``update_fields``,
             # which would take the lock again (and re-enter ``transition``).
-            index[inc.incident_id] = replace(inc, proposed_action=proposal)
+            #
+            # Written back under the key it was READ under, not under ``inc.incident_id``. On a
+            # consistent document those are the same string and this is a no-op; on an
+            # inconsistent one the old form MOVED the record, duplicating it or overwriting a
+            # real incident. The strict reader now refuses such a document, so this is
+            # belt-and-braces -- but the function that rewrites the index should not be the one
+            # relying on the reader to have checked. Found in review (GPT 5.6).
+            index[key] = replace(inc, proposed_action=proposal)
             touched.append(inc.incident_id)
         if touched:
             _write_index_unlocked(index)

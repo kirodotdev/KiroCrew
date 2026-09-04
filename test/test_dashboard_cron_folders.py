@@ -11,6 +11,7 @@ import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from body_stream_helpers import BodyStreamPayload
 
 from kiro_crew.cron import CronService
 from kiro_crew.dashboard.handlers.cron import (
@@ -51,8 +52,10 @@ def _make_state(tmp_path) -> MagicMock:
 def _request(state, body=None, match_info=None):
     request = MagicMock()
     request.app = {"state": state}
-    if body is not None:
-        request.json = AsyncMock(return_value=body)
+    raw = json.dumps(body).encode() if body is not None else b""
+    request.content = BodyStreamPayload(raw)
+    request.content_length = len(raw) or None
+    request.charset = None
     if match_info:
         request.match_info = match_info
     return request
@@ -664,14 +667,9 @@ class TestCronFoldersConcurrency:
         state._cron_folders = []
         state.push_refresh = MagicMock()
 
-        # Build mock requests
-        req_a = MagicMock()
-        req_a.app = {"state": state}
-        req_a.json = AsyncMock(return_value={"name": "FolderA"})
-
-        req_b = MagicMock()
-        req_b.app = {"state": state}
-        req_b.json = AsyncMock(return_value={"name": "FolderB"})
+        # Build mock requests (real body bytes: the handler streams request.content)
+        req_a = _request(state, body={"name": "FolderA"})
+        req_b = _request(state, body={"name": "FolderB"})
 
         # Fire both concurrently
         results = await asyncio.gather(
@@ -702,9 +700,7 @@ class TestCronFoldersConcurrency:
         state.crons.list_jobs = MagicMock(return_value=[])
         state.save_cron_folders()  # persist initial state
 
-        req_create = MagicMock()
-        req_create.app = {"state": state}
-        req_create.json = AsyncMock(return_value={"name": "NewFolder"})
+        req_create = _request(state, body={"name": "NewFolder"})
 
         req_delete = MagicMock()
         req_delete.app = {"state": state}

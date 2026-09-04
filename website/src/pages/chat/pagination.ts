@@ -36,7 +36,11 @@ export interface ForkEligibilityInput {
 }
 
 /**
- * Whether forking is safe at this row.
+ * Whether an index-only fork is safe at this row.
+ *
+ * Rows carrying a stable server `meta.mid` bypass this positional fallback: the
+ * fork endpoint resolves their cutoff against full chained history. This predicate
+ * remains the fail-closed path for legacy rows that have no server identity.
  *
  * The fork index is an index into FULL history, while the rendered index counts
  * only the loaded window, so the two agree only when the window starts at the

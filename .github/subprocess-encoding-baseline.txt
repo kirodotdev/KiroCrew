@@ -20,7 +20,6 @@
 9 src/kiro_crew/apps/builtins/auto_improvement/tests/test_pr_recipe.py
 1 src/kiro_crew/apps/builtins/auto_improvement/tests/test_pr_watchers.py
 1 src/kiro_crew/apps/builtins/auto_improvement/tests/test_runner.py
-2 src/kiro_crew/apps/builtins/design_tweak/backend/server.py
 1 src/kiro_crew/apps/builtins/dev_fleet/skills/feature-demo-recording/references/deps.py
 3 src/kiro_crew/apps/builtins/dev_fleet/skills/feature-demo-recording/references/narrate.py
 1 src/kiro_crew/apps/builtins/dev_fleet/skills/feature-demo-recording/references/record_template.py

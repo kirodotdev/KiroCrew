@@ -22,6 +22,7 @@ from chat_test_helpers import _make_state
 
 from kiro_crew.config import loader
 from kiro_crew.dashboard import chat_delivery as cd
+from kiro_crew.dashboard import create_rate_limit
 from kiro_crew.dashboard import session_control as sc
 from kiro_crew.dashboard import stop_retry
 from kiro_crew.dashboard.chat_utils import slot_history_key
@@ -51,6 +52,21 @@ def _fresh_stop_windows():
     stop_retry.reset_for_tests()
     yield
     stop_retry.reset_for_tests()
+
+
+@pytest.fixture(autouse=True)
+def _fresh_create_budget():
+    """The per-caller create-rate window is process-wide module state.
+
+    Nearly every create test here calls as the same caller (``chat-1``), so the
+    20-per-window budget is consumed by the file itself: left behind, the 21st
+    create in a worker process is refused with ``create_rate_limited`` and the
+    test that happens to be 21st fails for a reason it never asserted. Which
+    test that is depends on xdist distribution, which is what made it flaky.
+    """
+    create_rate_limit.reset_for_tests()
+    yield
+    create_rate_limit.reset_for_tests()
 
 
 def _slot(state, name: str, **kwargs):
@@ -925,21 +941,25 @@ class TestTheRoutesRequireTheInternalSecret:
 # ── The config switch ────────────────────────────────────────────────────────
 
 
-def test_the_trust_switch_needs_a_positive_grant():
-    """``agent.session_control`` must not enable itself from absence OR from junk.
+def test_the_switch_is_on_by_default_and_an_explicit_false_still_disables():
+    """``agent.session_control`` defaults ON; the agent config is the real grant.
 
-    Two independent ways this switch could grant cross-session reach without
-    anyone asking for it, and both are pinned here:
+    Who may reach a peer session is decided by the AGENT CONFIG, not by this
+    switch: the tools come from the `kirocrew-dashboard` MCP server, so an agent
+    that does not mount it never has them -- the same rule as every other MCP
+    server. A second default-off gate on top of that only made the capability
+    unreachable for an agent whose spec had already been given it deliberately.
 
-    * **Absent.** The three tools ride on the existing assignable
-      `kirocrew-dashboard` server, so an operator who assigned that server for
-      folder work would gain peer stop-and-read purely by upgrading. Both the
-      ``.get`` default and the dataclass field default must therefore be
-      ``False`` -- a grant has to be written down.
+    What the switch is still for is a single withdrawal: an operator who wants it
+    gone from every agent at once, without editing each spec. So the one direction
+    that must keep working is an EXPLICIT ``false``:
+
+    * **Absent.** Both the ``.get`` default and the dataclass field default are
+      ``True``, so a mounted server works with nothing else written down.
     * **Malformed.** ``bool("false")`` is ``True``, so a plain coercion loads a
       quoted opt-out as ENABLED and a user who wrote it in an editor that quotes
       values would keep cross-session control on while believing it off.
-      ``_safe_bool`` accepts only a real bool and falls back to ``False``.
+      ``_safe_bool`` accepts only a real bool.
 
     Asserted on the source rather than through ``KiroCrewConfig.load()``:
     ``load()`` merges the real data home's ``config.local.json`` and serves a
@@ -955,18 +975,22 @@ def test_the_trust_switch_needs_a_positive_grant():
     assert wiring.startswith(
         "_safe_bool("
     ), f"session_control must be parsed through _safe_bool, got: {wiring}"
-    assert wiring.endswith(
-        "False)"
-    ), f"the fallback must be False so a malformed value fails closed, got: {wiring}"
-    assert '"session_control", False' in wiring, (
-        "an absent setting must read as DISABLED -- otherwise an existing "
-        f"kirocrew-dashboard assignment gains peer stop/read on upgrade, got: {wiring}"
-    )
+    assert (
+        '"session_control", True' in wiring
+    ), f"an absent setting must read as ENABLED -- the mount is the grant, got: {wiring}"
     # The field default is the second absent path: it is what a config object
-    # built without going through the loader resolves to.
-    assert loader.AgentConfig().session_control is False, (
-        "the dataclass default must also be False, or a config built outside the "
-        "loader grants cross-session reach with nothing written down"
+    # built without going through the loader resolves to, and it must agree with
+    # the loader or the answer depends on which path produced the config.
+    assert loader.AgentConfig().session_control is True, (
+        "the dataclass default must also be True, or a config built outside the "
+        "loader disables a capability the agent's own spec was given"
+    )
+    # An explicit opt-out is the direction that still has to hold, including the
+    # quoted form `_safe_bool` exists for.
+    assert loader._safe_bool(False, True) is False
+    assert loader._safe_bool("false", True) is True, (
+        "a quoted value is not a bool, so it falls back rather than being coerced "
+        "-- the operator who means it writes a real false"
     )
 
 
@@ -2792,11 +2816,20 @@ def test_a_mirror_link_landing_during_the_await_still_refuses(tmp_path, monkeypa
 def test_the_slot_cap_is_re_checked_after_the_await(tmp_path, monkeypatch):
     """The ceiling is read from live state, so it can fill inside the window too.
 
+    The ceiling is lowered for this test because what is under test is WHEN it is
+    read, not what it is: minting the production 500 slots is superlinear and cost
+    ~17s of pure setup for no extra property. The caller's own slot stays under the
+    lowered cap -- asserted below -- so the refusal can only come from the fill that
+    lands inside the await.
+
     Mutation guard: checking the cap only before the await lets two concurrent
     creations land over the ceiling.
     """
     state = _make_state(tmp_path)
     caller = _slot(state, "chat-1")
+    monkeypatch.setattr(sc, "MAX_LIVE_SLOTS", 3)
+    # Without this the test could pass on a cap checked only BEFORE the await.
+    assert state.live_slot_count() < sc.MAX_LIVE_SLOTS
 
     def _resolve_then_fill(_workspace):
         for i in range(sc.MAX_LIVE_SLOTS):

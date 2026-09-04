@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { render, fireEvent, act, waitFor, screen } from '@testing-library/react'
+import { render, fireEvent, act, screen } from '@testing-library/react'
 import MarkdownRenderer from '../components/MarkdownRenderer'
 import { copyToClipboard } from '../utils/clipboard'
 

@@ -267,7 +267,16 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "meeting_agents": DEFAULT_MEETING_AGENTS,
     "stt_provider": k.DEFAULT_STT_PROVIDER,
     "task_provider": k.DEFAULT_TASK_PROVIDER,
-    "calendar": {"provider": k.DEFAULT_CALENDAR_PROVIDER, "source": ""},
+    "calendar": {
+        "provider": k.DEFAULT_CALENDAR_PROVIDER,
+        "source": "",
+        # The background poller (calendar_poller.py). It only ever runs against a
+        # configured provider, so leaving it on by default costs nothing for the
+        # default `none`.
+        "auto_sync": True,
+        "poll_interval_secs": k.CALENDAR_POLL_INTERVAL_SECS,
+        "precreate_lead_minutes": k.CALENDAR_PRECREATE_LEAD_MINUTES,
+    },
     "presets": {},
     "default_preset": "",
     "poll_interval_active": 5000,
@@ -330,6 +339,10 @@ def read_config(root: Path | None = None) -> dict[str, Any]:
         config["meeting_agents"] = _repair_builtin_agent_refs(config["meeting_agents"])
     if not isinstance(config.get("calendar"), dict):
         config["calendar"] = dict(DEFAULT_CONFIG["calendar"])
+    else:
+        # The top-level merge does not reach nested keys, so a `calendar` block
+        # written before the poller's settings existed is filled the same way.
+        config["calendar"] = {**DEFAULT_CONFIG["calendar"], **config["calendar"]}
     return config
 
 

@@ -101,7 +101,7 @@ function waitForGateway({
  * carries the Gatekeeper hint because an unsigned/quarantined nested executable
  * being killed on launch is the most common "works for me, not my friend" mode.
  *
- * @param {{code?: number|null, signal?: string|null, error?: string, disabled?: boolean, port?: number}|null} failure
+ * @param {{code?: number|null, signal?: string|null, error?: string, disabled?: boolean, port?: number, remoteHost?: string, remotePort?: string}|null} failure
  * @returns {string}
  */
 function describeGatewayFailure(failure) {
@@ -112,8 +112,31 @@ function describeGatewayFailure(failure) {
   //
   // Deliberately does NOT send the user to Settings: the page holding that
   // switch is served by a gateway, which is the thing not running. The error
-  // dialog carries a button instead.
+  // dialog carries a button instead -- except on a remote crew's port, where
+  // starting one here would shadow that crew, so this names the host to check
+  // and withholds the offer the dialog is also hiding.
   if (failure.disabled) {
+    if (failure.remoteHost) {
+      // The crew binds its own port on its own machine; this app only holds the
+      // local end of the link. Naming the local port here would send the user to
+      // check a port nothing over there was ever expected to serve.
+      const target = failure.remotePort
+        ? `${failure.remoteHost}:${failure.remotePort}, reached through local port ${failure.port},`
+        : `${failure.remoteHost} on port ${failure.port},`;
+      // The last sentence is the only exit this state has. The dialog withholds
+      // its start-a-gateway button here (that spawn would bind the crew's own
+      // port and shadow it), and the settings page that owns the choice is
+      // served by a gateway -- so without naming this the user is left with a
+      // Retry that cannot succeed. Both steps are named: an explicit port
+      // outranks stored config, but the opt-out is still in force, so that
+      // launch stops at this same state on a port where the button comes back.
+      return `Nothing is answering at ${target} and Kiro Crew is set not to `
+        + `start a gateway on this machine. Start the gateway on `
+        + `${failure.remoteHost}, or re-establish the tunnel or port-forward that `
+        + "reaches it, and retry. To run one on this machine instead, relaunch "
+        + "with KIROCREW_PORT set to a port that has no remote host configured, "
+        + "then choose Start Local Gateway when prompted.";
+    }
     return `No gateway is answering on port ${failure.port}, and Kiro Crew is set `
       + "not to start one on this machine. Start the gateway you connect to (or "
       + "the connection that reaches it) and retry, or start one here.";

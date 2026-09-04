@@ -8,7 +8,7 @@ StartLimitIntervalSec=300
 Type=simple
 ExecStart=KIROCREW_BIN gateway
 WorkingDirectory=/home/%u
-Restart=on-failure
+Restart=always
 RestartSec=10
 Environment=HOME=/home/%u
 Environment=PATH=/home/%u/.toolbox/bin:/home/%u/.local/bin:/home/%u/.nvm/versions/node/NVM_NODE_VERSION/bin:/usr/local/bin:/usr/bin:/bin

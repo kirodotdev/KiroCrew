@@ -40,16 +40,22 @@ test.describe('Fork Session E2E', { tag: '@needs-agent' }, () => {
     await messageInput.fill('reply with a single word: ready')
     await page.keyboard.press('Enter')
 
-    // A fresh chat is fully loaded, so fork is an in-place ROW button and needs no menu;
-    // its visibility is the reply signal. By test id, not title: labels are i18n-driven.
+    // The assistant reply carries a stable server id, so Fork is immediately
+    // available from one overflow trigger outside the crowded inline action row.
+    const target = page.locator('[data-role="assistant"]').last()
+    await expect(target).toBeVisible({ timeout: 60000 })
+    await target.hover({ force: true })
+    const more = target.getByTestId('assistant-more-actions')
+    await expect(more).toBeVisible()
+    await more.click({ force: true })
     const forkButton = page.getByTestId('fork-from-here')
-    await expect(forkButton).toBeVisible({ timeout: 60000 })
-    // Fresh chat has nothing older, so a DISABLED fork here would mean the bounded
-    // initial fetch regressed normal use rather than this spec drifting again.
+    await expect(forkButton).toBeVisible()
     await expect(forkButton).toBeEnabled()
-    await expect(page.getByTestId('assistant-more-actions')).toHaveCount(0)
+    await expect(page.getByTestId('fork-unavailable-reason')).toHaveCount(0)
+    // The overflow trigger is Share's permanent home, so it renders even when
+    // fork is a ROW button; fork itself must not have moved inside it.
+    await expect(page.getByTestId('assistant-more-actions')).toHaveCount(1)
 
-    await forkButton.hover()
     // GIF-only pauses: skip in normal CI to keep tests fast.
     if (process.env.PLAYWRIGHT_VIDEO === '1') await page.waitForTimeout(1500)
     await forkButton.click()
@@ -59,5 +65,82 @@ test.describe('Fork Session E2E', { tag: '@needs-agent' }, () => {
     // "Fork of " substring rather than anchoring at the start of the string.
     await expect(page.getByText(/Fork of /).first()).toBeVisible({ timeout: 10000 })
     if (process.env.PLAYWRIGHT_VIDEO === '1') await page.waitForTimeout(2000)
+  })
+})
+
+
+const HARNESS_GATEWAY = process.env.KIROCREW_E2E_EPHEMERAL === '1'
+
+test.describe('Forking from long timestamped sessions', () => {
+  test('forks immediately without loading earlier messages in the client', async ({ page, request }) => {
+    test.skip(!HARNESS_GATEWAY, 'the 1,000-message fixture requires the ephemeral E2E gateway')
+    test.setTimeout(120_000)
+
+    const messages = Array.from({ length: 1_000 }, (_, index) => ({
+      role: index % 2 === 0 ? 'user' : 'assistant',
+      content: `Long-chat fork reproduction ${String(index).padStart(4, '0')}`,
+      ts: new Date(Date.UTC(2026, 0, 1, 0, 0, 0, index)).toISOString(),
+    }))
+    const imported = await request.post('/api/chat/slots/import', {
+      data: {
+        bundle_version: 1,
+        title: 'Long timestamped fork reproduction',
+        origin: 'playwright e2e',
+        agent: '',
+        messages,
+      },
+    })
+    expect(imported.status(), `session import failed: ${await imported.text()}`).toBeLessThan(300)
+    const { key } = await imported.json() as { key: string }
+    let forkKey = ''
+
+    try {
+      const olderPageRequests: number[] = []
+      await page.route('**/api/chat/slots/**', async route => {
+        const url = new URL(route.request().url())
+        if (route.request().method() === 'GET' && url.searchParams.has('before')) {
+          olderPageRequests.push(Number(url.searchParams.get('before')))
+          await new Promise(resolve => setTimeout(resolve, 250))
+        }
+        await route.continue()
+      })
+
+      await page.goto(`/chat/long-timestamped-fork-reproduction?sid=${encodeURIComponent(key)}`, {
+        waitUntil: 'domcontentloaded',
+      })
+      const dismissUpdate = page.getByRole('button', { name: 'Dismiss' })
+      if (await dismissUpdate.isVisible({ timeout: 5_000 }).catch(() => false)) {
+        await dismissUpdate.click()
+        await expect(dismissUpdate).toBeHidden()
+      }
+      await expect(page.getByPlaceholder(/message/i)).toBeVisible({ timeout: 10_000 })
+
+      const target = page.locator('[data-role="assistant"]').last()
+      await expect(target).toBeVisible({ timeout: 10_000 })
+      await target.hover({ force: true })
+
+      // A server-issued message identity makes the target actionable immediately:
+      // one overflow trigger, no disabled countdown walk, and no client history fetch.
+      const more = target.getByTestId('assistant-more-actions')
+      await expect(more).toBeVisible()
+      await more.click({ force: true })
+      const fork = page.getByTestId('fork-from-here')
+      await expect(fork).toBeVisible()
+      await expect(fork).toBeEnabled()
+      await expect(page.getByTestId('fork-unavailable-reason')).toHaveCount(0)
+      expect(olderPageRequests).toEqual([])
+
+      const forkResponse = page.waitForResponse(response =>
+        response.request().method() === 'POST' && response.url().endsWith('/fork'),
+      )
+      await fork.click({ force: true })
+      const forkBody = await (await forkResponse).json() as { key?: string }
+      forkKey = forkBody.key || ''
+      await expect(page.getByText(/Fork of /).first()).toBeVisible({ timeout: 10_000 })
+      expect(olderPageRequests).toEqual([])
+    } finally {
+      if (forkKey) await request.delete(`/api/chat/slots/${encodeURIComponent(forkKey)}`)
+      await request.delete(`/api/chat/slots/${encodeURIComponent(key)}`)
+    }
   })
 })

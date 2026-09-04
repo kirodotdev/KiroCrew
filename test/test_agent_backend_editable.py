@@ -17,12 +17,21 @@ from typing import Any, Dict, List
 import pytest
 
 from kiro_crew import acp_backends
-from kiro_crew.acp_backends import ACP_BACKEND_CLAUDE, ACP_BACKEND_KAS, ACP_BACKEND_KIRO
+from kiro_crew.acp_backends import (
+    ACP_BACKEND_CLAUDE,
+    ACP_BACKEND_CODEX,
+    ACP_BACKEND_KAS,
+    ACP_BACKEND_KIRO,
+)
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.dashboard.handlers.agents import _supply_live_enum
 from kiro_crew.dashboard.handlers.core import _EDITABLE_CONFIG
 
 FIELD = "agent.acp_backend"
+
+#: Known ids the public baseline deliberately does not offer, each entry carrying its
+#: reason in ``test_baseline_ships_every_known_backend``. Empty is the healthy state.
+NOT_SHIPPED_SELECTABLE = frozenset({ACP_BACKEND_CODEX})
 
 
 @pytest.fixture
@@ -135,7 +144,14 @@ def test_baseline_ships_every_known_backend():
     reason belongs next to that removal — a build that cannot run a harness is a
     different claim from a machine that has not installed it, and the install probe
     already answers the second one.
+
+    ``NOT_SHIPPED_SELECTABLE`` is where that reason goes. It is an explicit list
+    rather than a relaxed assertion so a plain ``baseline != known`` still fails:
+    an id may sit outside the baseline only by being named there. Codex is the
+    only member — its spawn path is complete, but ``backend_install.py`` has no
+    probe for the adapter, so the switch would render with nothing to say about a
+    session that failed to start.
     """
     baseline: List[str] = sorted(acp_backends.BASELINE_SELECTABLE_BACKENDS)
     assert baseline == sorted([ACP_BACKEND_KIRO, ACP_BACKEND_CLAUDE, ACP_BACKEND_KAS])
-    assert baseline == sorted(acp_backends.ACP_BACKENDS_KNOWN)
+    assert baseline == sorted(acp_backends.ACP_BACKENDS_KNOWN - NOT_SHIPPED_SELECTABLE)

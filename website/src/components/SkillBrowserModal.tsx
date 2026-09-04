@@ -173,6 +173,7 @@ export default function SkillBrowserModal({ open, onClose }: Props) {
       const phase = installPhases[skillKey(selectedSkill)]
       if (!phase || phase.step === 'error') handleInstall(selectedSkill)
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- `ime` stays out on purpose: useImeGuard hands back a fresh object per render whose claimEnter closes over a ref-held latch, so any copy reads the live composition state when the key fires. Listing it would rebuild the handler (and re-prop both the search bar and every row) every render for no gain.
   }, [moveSelection, selectedSkill, installedOverride, installPhases, handleInstall])
 
   return (

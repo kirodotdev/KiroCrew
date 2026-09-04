@@ -70,6 +70,12 @@ def register(app: web.Application) -> None:
         "/api/kiro-prerequisite/repair-specs",
         handlers.api_kiro_prerequisite_repair_specs,
     )
+    # POST for the same reason as repair-specs above: it spawns `kiro-cli update`
+    # on the host, so it must be origin-checked and audited.
+    app.router.add_post(
+        "/api/kiro-prerequisite/update-cli",
+        handlers.api_kiro_prerequisite_update_cli,
+    )
 
     # KAS-mode interactive login (no kiro-cli): status is a read; the device-code
     # begin/poll/logout mutations are POSTs so they stay origin-checked and audited.

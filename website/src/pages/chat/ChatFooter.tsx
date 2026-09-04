@@ -5,6 +5,8 @@ import { motion } from 'framer-motion'
 import { i18nT } from '../../i18n/t'
 import { GHOST_POSE_ICONS } from '../../components/GhostPoses'
 import { getThemeBranding } from '../../themeBranding'
+import { resolveThemeLoaderIcons } from '../../themeLoaderIcons'
+import { useOptionalTheme } from '../../hooks/useTheme'
 import ErrorBoundary from '../../components/ErrorBoundary'
 import { useLanguageGeneration } from '../../i18n/useLanguageGeneration'
 type StopState = 'idle' | 'soft_pending' | 'killing'
@@ -89,22 +91,25 @@ function useThemeSlug(): string {
   return slug
 }
 
-/** Resolve what the footer should show while a turn runs. A theme may replace the
- *  whole loader, or just the artwork the default carousel cycles through:
- *    1. `loader`      — the theme's own component, rendered instead of everything
- *    2. `loaderIcons` — the stock carousel, cycling the theme's artwork
- *    3. the default pool (the mascot poses)
- *  An empty registered pool is ignored rather than rendering nothing. */
-export function resolveLoader(slug: string):
+/** Resolve what the footer should show while a turn runs. A compiled theme may
+ *  replace the whole loader; compiled and installed themes may select artwork:
+ *    1. `loader`               — trusted compiled component
+ *    2. manifest `loaderIcons` — stock symbols selected by an installed pack
+ *    3. compiled `loaderIcons` — trusted compiled artwork
+ *    4. the default pool (the mascot poses)
+ *  Invalid or empty pools are ignored rather than rendering nothing. */
+export function resolveLoader(slug: string, manifestIcons?: readonly string[]):
   | { kind: 'custom'; Component: ComponentType }
   | { kind: 'icons'; icons: ComponentType[] } {
   const branding = getThemeBranding(slug)
   if (branding?.loader) return { kind: 'custom', Component: branding.loader }
-  return { kind: 'icons', icons: resolveLoaderIcons(slug) }
+  return { kind: 'icons', icons: resolveLoaderIcons(slug, manifestIcons) }
 }
 
 /** The icon pool for the default carousel under a given theme. */
-export function resolveLoaderIcons(slug: string): ComponentType[] {
+export function resolveLoaderIcons(slug: string, manifestIcons?: readonly string[]): ComponentType[] {
+  const installed = resolveThemeLoaderIcons(manifestIcons)
+  if (installed.length > 0) return installed
   const registered = getThemeBranding(slug)?.loaderIcons
   if (registered && registered.length > 0) return registered
   return DEFAULT_ICONS
@@ -214,7 +219,12 @@ export function useStreamIdle(tick: number, active: boolean, ms: number = STREAM
 
 const ChatFooter = memo(function ChatFooter({ running, stopping, state, lastRole, regenerating, stopState, streamTick = 0 }: { running: boolean; stopping: boolean; state: string; lastRole: string; regenerating?: boolean; stopState?: StopState; streamTick?: number }) {
   useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
-  const loader = resolveLoader(useThemeSlug())
+  const slug = useThemeSlug()
+  const themeState = useOptionalTheme()
+  const installedTheme = slug.startsWith('custom-')
+    ? themeState?.customThemeDataMap.get(slug.slice('custom-'.length))
+    : undefined
+  const loader = resolveLoader(slug, installedTheme?.assets?.loaderIcons)
   // Text is only ACTIVELY streaming while the slot says so AND chunks keep
   // arriving. `lastRole` alone cannot tell the two apart: the trailing
   // 'streaming' message is deliberately left unfinalized across a whole tool

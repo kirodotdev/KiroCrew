@@ -6,6 +6,7 @@ import {
   Check,
   CheckCircle2,
   Copy,
+  Download,
   ExternalLink,
   LogIn,
   Package,
@@ -513,6 +514,90 @@ function SandboxUnavailable({
   )
 }
 
+function CliOutdated({
+  updateCommand,
+  updateError,
+  updating,
+  retrying,
+  onUpdate,
+  onRetry,
+}: {
+  updateCommand: string
+  updateError: string
+  updating: boolean
+  retrying: boolean
+  onUpdate: () => void
+  onRetry: () => void
+}) {
+  // The CLI is installed and signed in, but too old to expose the `acp`
+  // subcommand Kiro Crew launches every session through — so it would fail at
+  // session-create rather than here. The remedy is an UPDATE in place, not a
+  // reinstall, and unlike the install/sign-in steps Kiro Crew CAN run this one
+  // for the user (it is the CLI's own self-update). We therefore offer a button
+  // that runs it AND show the command for anyone who would rather run it on the
+  // host themselves.
+  return (
+    <SetupShell
+      asideHeadline={i18nT('components.kiroPrerequisiteGate.kiro_cli_update_needed')}
+      asideBody={i18nT('components.kiroPrerequisiteGate.this_kiro_cli_is_too_old_for_the_acp_command')}
+      footer={
+        <div className="flex items-center justify-between gap-4">
+          <SendBtn type="button" disabled={updating || retrying} onClick={onUpdate}>
+            <Download className={`lucide-inline ${updating ? 'animate-pulse' : ''}`} />
+            {updating
+              ? i18nT('components.kiroPrerequisiteGate.updating_kiro_cli')
+              : i18nT('components.kiroPrerequisiteGate.update_kiro_cli')}
+          </SendBtn>
+          <Btn type="button" disabled={updating || retrying} onClick={onRetry}>
+            <RefreshCw className={`lucide-inline ${retrying ? 'animate-spin' : ''}`} />
+            {i18nT('components.kiroPrerequisiteGate.check_again')}
+          </Btn>
+        </div>
+      }
+    >
+      <>
+        <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-accent-subtle text-accent">
+          <Download className="lucide-inline" />
+        </div>
+        <p className="mt-6 text-[12px] font-bold uppercase tracking-[0.16em] text-accent">
+          {i18nT('components.kiroPrerequisiteGate.kiro_cli_update_needed')}
+        </p>
+        <h1 className="mt-2 text-3xl font-bold tracking-tight text-text-strong">
+          {i18nT('components.kiroPrerequisiteGate.your_kiro_cli_is_out_of_date')}
+        </h1>
+        <p className="mt-3 max-w-lg text-sm leading-relaxed text-muted">
+          {i18nT('components.kiroPrerequisiteGate.kiro_cli_is_installed_and_signed_in_but_too_old')}
+        </p>
+        {/* Kiro Crew runs the update for the user via the button below, but the
+            command is shown too — some hosts prefer to run it themselves, and it
+            is the one thing a support conversation needs. Verbatim in a <code>,
+            never a catalog value: a translated command cannot be run. */}
+        <div className="mt-5 w-full max-w-lg text-left">
+          <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-muted">
+            {i18nT('components.kiroPrerequisiteGate.update_command_label')}
+          </p>
+          <CopyCommand>
+            <code>{updateCommand}</code>
+          </CopyCommand>
+        </div>
+        {/* Verbatim and untranslated: it names why the self-update did not
+            complete. role="alert" because it appears in place after the button
+            press with no route change. */}
+        {updateError ? (
+          <div className="mt-4 w-full max-w-lg text-left" role="alert">
+            <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-danger">
+              {i18nT('components.kiroPrerequisiteGate.the_update_attempt_failed')}
+            </p>
+            <pre className="mt-1 overflow-x-auto whitespace-pre-wrap break-words rounded-lg bg-danger/10 p-3 text-xs text-danger">
+              {updateError}
+            </pre>
+          </div>
+        ) : null}
+      </>
+    </SetupShell>
+  )
+}
+
 function AgentSpecsMissing({
   specs,
   repairError,
@@ -717,6 +802,13 @@ export default function KiroPrerequisiteGate({ children }: { children: ReactNode
     mutationFn: api.repairKiroPrerequisiteSpecs,
     onSuccess: updateStatus,
   })
+  // Same POST rationale as the repair above. This one runs `kiro-cli update` on
+  // the host to remedy a CLI too old for the `acp` subcommand; its response is
+  // the post-update snapshot, so it seeds the cache directly.
+  const updateCliMutation = useMutation({
+    mutationFn: api.updateKiroPrerequisiteCli,
+    onSuccess: updateStatus,
+  })
 
   // Remember that this gateway has completed first-run setup, so a later COLD
   // load can classify the user before (or without) a successful status
@@ -824,6 +916,31 @@ export default function KiroPrerequisiteGate({ children }: { children: ReactNode
         repairError={repairError}
         retrying={retrying || repairMutation.isPending}
         onRepair={() => repairMutation.mutate()}
+      />
+    )
+  }
+  // Present, signed in, but too OLD to expose the `acp` subcommand every session
+  // launches through — so it runs and authenticates yet cannot start a single
+  // turn (it would fail at session-create). `acp_supported === false` is a FRESH
+  // probe result, not a latch (a `false` default would hide the state on an older
+  // gateway that omits the field, so the strict `=== false` is deliberate), so it
+  // is safe to surface even on an established install — and its remedy is unique:
+  // update the CLI in place, which Kiro Crew runs for the user here. Ordered
+  // BEFORE the established-install bail-out for the same reason as the spec
+  // branches: this is a total failure the chat error card cannot pre-empt, and
+  // this screen is the only place that offers the update.
+  const updateError = updateCliMutation.data?.cli_update_error
+    || (updateCliMutation.error ? asSentence(updateCliMutation.error.message) : '')
+    || (status.cli_update_error ?? '')
+  if (status.acp_supported === false) {
+    return (
+      <CliOutdated
+        updateCommand={status.update_command || 'kiro-cli update'}
+        updateError={updateError}
+        updating={updateCliMutation.isPending}
+        retrying={retrying}
+        onUpdate={() => updateCliMutation.mutate()}
+        onRetry={retryStatus}
       />
     )
   }

@@ -35,7 +35,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import quote, urlencode
 
-from kiro_crew import __version__, release_channel
+from kiro_crew import __version__, platform_compat, release_channel
 from kiro_crew.config.loader import config_dir
 from kiro_crew.security import (
     is_sensitive_path,
@@ -211,8 +211,15 @@ def _usable_dir(p: Path) -> bool:
     themselves symlinks — they sail past the per-file guard and get packaged.
     The guard therefore has to sit one level up, at every directory this module
     globs.
+
+    ``is_link_or_junction``, not ``Path.is_symlink()``: a Windows junction is a
+    reparse point ``is_symlink`` does not report, and it is the only directory
+    link an unprivileged Windows user can create (a symlink needs
+    ``SeCreateSymbolicLinkPrivilege``). A symlink-only guard is therefore open
+    on exactly the platform where planting one is easiest, and what leaks
+    through it is a bundle the user then attaches to a public issue.
     """
-    return p.is_dir() and not p.is_symlink()
+    return p.is_dir() and not platform_compat.is_link_or_junction(p)
 
 
 def _kiro_cli_chat_log() -> Path | None:

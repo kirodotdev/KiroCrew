@@ -12,6 +12,9 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { screen, fireEvent, act } from '@testing-library/react'
+import { readFileSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
+import { dirname, join } from 'node:path'
 import { renderWithProviders } from './helpers'
 import { FOCUS_INSET, focusModeEnabled, setFocusModeEnabled, __resetFocusMode } from '../hooks/useFocusMode'
 
@@ -63,6 +66,11 @@ import App from '../App'
 
 const setWindowWidth = (w: number) => {
   Object.defineProperty(window, 'innerWidth', { writable: true, configurable: true, value: w })
+}
+
+const cssSource = () => {
+  const here = dirname(fileURLToPath(import.meta.url))
+  return readFileSync(join(here, '..', 'index.css'), 'utf8')
 }
 
 describe('focus mode — shared session state', () => {
@@ -170,6 +178,33 @@ describe('focus mode — shell layout', () => {
 
     expect(screen.getByTestId('focus-peek-top')).toBeTruthy()
     expect(screen.getByTestId('focus-peek-rail')).toBeTruthy()
+  })
+
+  it('reserves the native caption strip in focus mode, from CSS alone', () => {
+    // The reserve is now pure CSS: .win-electron/.linux-electron already sit on
+    // the shell root (App.tsx), so nothing has to compute a width at runtime.
+    // jsdom applies no stylesheet, so the rules are pinned against index.css
+    // source the same way the side-panel corner masks are.
+    const css = cssSource()
+    const reserve = (platform: string) => css.match(
+      new RegExp(`body\\.mc-focus-mode \\.${platform}-electron \\.focus-caption-reserve\\{padding-right:(\\d+)px\\}`),
+    )
+    const header = (platform: string) => css.match(
+      new RegExp(`\\.${platform}-electron header\\.topbar-glass\\{[\\s\\S]*?padding-right:(\\d+)px`),
+    )
+
+    for (const platform of ['win', 'linux']) {
+      const rule = reserve(platform)
+      expect(rule, `${platform}-electron focus-mode caption reserve`).not.toBeNull()
+      // Same band the DOCKED header clears: this reserve exists only because
+      // focus mode takes that header out of flow, so the two must not drift.
+      expect(rule![1]).toBe(header(platform)![1])
+    }
+
+    // Deliberately NO platform-agnostic rule. It would out-specify the strip's
+    // Tailwind px-2 (0,2,1 vs 0,1,0) and zero the gutter on macOS and in the
+    // browser, where nothing is painted over that corner to begin with.
+    expect(css).not.toContain('body.mc-focus-mode .focus-caption-reserve{')
   })
 
   it('hides the Electron chrome with the header and brings it back on peek', async () => {

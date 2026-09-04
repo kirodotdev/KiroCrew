@@ -86,6 +86,12 @@ _THEME_CSS_VARS = (
     "--shadow-sm",
     "--shadow-md",
     "--shadow-lg",
+    # Terminal ANSI hues. The other fourteen entries the built-in terminal needs
+    # are derived from --bg / --text / --danger / --ok / --warn / --info above;
+    # magenta and cyan carry no semantic meaning elsewhere in the UI, so a pack
+    # that wants its own terminal palette sets these two.
+    "--term-magenta",
+    "--term-cyan",
 )
 
 
@@ -271,6 +277,13 @@ _THEME_FONT_PIN_SELECTORS = frozenset({"body", "html", "*", ":root"})
 _THEME_MAX_OVERLAYS = 5
 _THEME_PERSONA_MAX_CHARS = 2000
 _THEME_BOTNAME_MAX = 48  # branding bot-name display cap (plain text)
+# Installed themes may select only these bundled Lucide symbols. Names cross the
+# manifest/API boundary; executable components and arbitrary SVG never do.
+_THEME_LOADER_ICONS = frozenset(
+    {"cloud", "flower", "heart", "moon", "sparkles", "star", "sun", "zap"}
+)
+_THEME_LOADER_ICONS_MIN = 4
+_THEME_LOADER_ICONS_MAX = len(_THEME_LOADER_ICONS)
 # Per-file size caps by category (bytes), §4.1.
 _THEME_FILE_CAPS = {
     "manifest": 16 * 1024,
@@ -1098,6 +1111,30 @@ def _validate_audio_manifest(theme_dir: Path) -> tuple[dict[str, Any] | None, st
     return out, None
 
 
+def _validate_loader_icons(manifest: dict[str, Any], level: int) -> str | None:
+    """Validate optional stock loader artwork selected by an installed theme."""
+    if "loaderIcons" not in manifest:
+        return None
+    icons = manifest["loaderIcons"]
+    if level < 1:
+        return "theme.json 'loaderIcons' requires level 1"
+    if not isinstance(icons, list):
+        return "theme.json 'loaderIcons' must be an array of stock symbol names"
+    if not (_THEME_LOADER_ICONS_MIN <= len(icons) <= _THEME_LOADER_ICONS_MAX):
+        return (
+            "theme.json 'loaderIcons' must contain "
+            f"{_THEME_LOADER_ICONS_MIN}..{_THEME_LOADER_ICONS_MAX} symbols"
+        )
+    if any(not isinstance(icon, str) for icon in icons):
+        return "theme.json 'loaderIcons' entries must be strings"
+    unknown = sorted(set(icons) - _THEME_LOADER_ICONS)
+    if unknown:
+        return f"theme.json 'loaderIcons' contains unknown symbol: {unknown[0]!r}"
+    if len(set(icons)) != len(icons):
+        return "theme.json 'loaderIcons' entries must be unique"
+    return None
+
+
 def _validate_theme_dir(
     path: Path, *, installing: bool = False
 ) -> tuple[dict[str, Any] | None, str | None]:
@@ -1162,6 +1199,9 @@ def _validate_theme_dir(
     emoji = manifest.get("emoji", _THEME_DEFAULT_EMOJI)
     if not isinstance(emoji, str):
         return None, "theme.json 'emoji' must be a string"
+    loader_err = _validate_loader_icons(manifest, level)
+    if loader_err:
+        return None, loader_err
 
     # Font role: reject an unrecognised value at INSTALL time only. The read
     # path (`_theme_asset_descriptor`, which this function also feeds when an
@@ -1419,6 +1459,15 @@ def _theme_asset_descriptor(
 
     if (theme_dir / "styles" / "overrides.css").is_file():
         desc["hasOverrides"] = True
+
+    loader_icons = manifest.get("loaderIcons")
+    if isinstance(loader_icons, list):
+        resolved_loader_icons = [
+            icon for icon in loader_icons
+            if isinstance(icon, str) and icon in _THEME_LOADER_ICONS
+        ]
+        if len(resolved_loader_icons) >= _THEME_LOADER_ICONS_MIN:
+            desc["loaderIcons"] = resolved_loader_icons[:_THEME_LOADER_ICONS_MAX]
 
     if level >= 2:
         overlays_dir = theme_dir / "overlays"

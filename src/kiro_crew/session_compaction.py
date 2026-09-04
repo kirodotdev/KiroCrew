@@ -20,6 +20,9 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol
 
+from kiro_crew.metrics.events import CONTEXT_COMPACTIONS, emit_counter
+from kiro_crew.metrics.sessions import END_REASON_RECYCLED, record_session_ended
+
 if TYPE_CHECKING:
     # Type-only: importing providers.base from this leaf at runtime enters the
     # providers -> acp package -> runtime -> session_pid -> providers cycle.
@@ -124,6 +127,26 @@ class _CompactionOwner(Protocol):
         skip_if_busy: bool = False,
         clear_conversation: bool = False,
     ) -> bool: ...
+
+
+def _compact_unsupported_backend(provider: LLMProvider) -> str | None:
+    """Backend id this provider names as unable to serve ``/compact``, else None.
+
+    The same capability #7800 gave the manual entry points, read for the
+    automatic one.  The property is spelled ``manual_`` because the manual
+    command was its first consumer, but its ANSWER is a property of the
+    BACKEND -- ``ACP_BACKENDS_COMPACT`` membership -- not of the entry point,
+    so it is the right question here too: a backend that cannot act on the
+    ``/compact`` prompt cannot act on it whoever sent it.
+
+    Read with the consumption contract the ABC declares: only a non-empty
+    ``str`` counts.  That guard is load-bearing rather than defensive -- the
+    compaction suite drives this gate with bare ``object()`` and ``MagicMock``
+    providers, and a truthy attribute read on either must not be mistaken for
+    a positively named unsupported backend.
+    """
+    backend = getattr(provider, "manual_compact_unsupported_backend", None)
+    return backend if isinstance(backend, str) and backend else None
 
 
 class CompactionCoordinator:
@@ -252,6 +275,17 @@ class CompactionCoordinator:
         Pending-verdict settlement is a side effect and therefore precedes
         every declining gate.  A deferred reading may arm damping, but its
         ambiguity must never trigger the destructive critical reset.
+
+        ``compact_unsupported`` is deliberately the LAST permanent gate and
+        sits BELOW the threshold check: a backend that cannot serve
+        ``/compact`` still has a context meter worth reporting, and declining
+        above the threshold check would take the per-turn usage line in
+        ``check_context_usage`` with it.  Placing it here also means the only
+        behaviour that changes for such a backend is the one that was broken --
+        the dispatch itself -- and it changes before ``_compact_session`` is
+        ever scheduled, so no ``compacting`` entry, no background task and no
+        ``session.semaphore`` acquisition happens for a compaction that could
+        only have ended in the 300s strand (#7812).
         """
         baseline = self.state.pending_verdict.get(key)
         if baseline is not None and not self._deps.context_pct_is_unknown(provider):
@@ -264,6 +298,38 @@ class CompactionCoordinator:
             return "cc_managed"
         if pct < self.effective_autocompact_pct(key):
             return "below_threshold"
+        unsupported = _compact_unsupported_backend(provider)
+        if unsupported is not None:
+            # Declining, not recycling. The one current non-member (KAS)
+            # summarizes on its own initiative and its
+            # ``summarization_completed`` frame calls
+            # ``reset_after_compaction()`` on the meter
+            # (``acp/session_handle.py``), so the reading this gate just read
+            # falls back below the threshold without us acting -- the same
+            # relationship ``cc_managed`` encodes for Claude-Code sessions.
+            # Recycling sooner would not have been the smaller harm: it
+            # destroys the live conversation, which is the second half of the
+            # reported defect and not merely its consequence.
+            #
+            # Surfaced the way the gate's own rungs are surfaced: one
+            # ``logger.info`` from HERE, as ``unconfirmed``, ``in_progress`` and
+            # ``cooldown`` already do -- rather than a branch in
+            # ``check_context_usage``, which is where ``cc_managed`` and
+            # ``below_threshold`` are phrased because those two also carry the
+            # context-meter line. This line REPLACES that per-turn meter line
+            # for a declined backend rather than adding to it (the decline
+            # matches neither branch there), and it carries strictly more than
+            # ``cc_managed``'s: the key, the reading, AND which backend
+            # answered. INFO, not WARNING: a standing correct condition is not
+            # an anomaly, and every sibling rung is INFO too.
+            self._deps.logger.info(
+                "Session %s context at %.0f%% -- %s manages compaction itself; "
+                "skipping the /compact dispatch it cannot answer",
+                key,
+                pct,
+                unsupported,
+            )
+            return "compact_unsupported"
         if self._deps.context_pct_is_unknown(provider):
             self._deps.logger.info(
                 "Session %s context %.0f%% is unconfirmed for this session — "
@@ -381,6 +447,10 @@ class CompactionCoordinator:
                 popped = None
                 if owner._sessions.get(key) is session:
                     popped = owner._sessions.pop(key, None)
+                    # Same tick as the pop. Only this branch records: on the
+                    # other one the registry already holds a SUCCESSOR under
+                    # this key, whose start must stay its own.
+                    await record_session_ended(key, end_reason=END_REASON_RECYCLED)
 
             await asyncio.to_thread(self._deps.unlink_session_queue, session)
             if popped is None:
@@ -544,6 +614,21 @@ class CompactionCoordinator:
 
     async def _fire_compact_callback(self, key: str, pct: float, *, success: bool) -> None:
         """Mark reinjection and invoke the compact callback, swallowing errors."""
+        # Every compaction that reached a verdict passes here, whether or not a
+        # callback is registered, so this is where the counter belongs: the early
+        # return below would otherwise drop the surfaces that register none.
+        #
+        # The counter's success is NOT the callback's success. ``_recycle_held``
+        # fires this with success=True because the SESSION now has headroom, which
+        # is what the callback needs to know -- but it is reached exactly when an
+        # in-place /compact FAILED and the provider had to be replaced instead.
+        # Counting that as a successful compaction would report the failure mode
+        # as the success case. The recycling marker is set for the whole of
+        # ``_recycle_held`` and popped only after this call, so it is what
+        # separates the two populations here; ``test_a_failed_compact_that_recycles
+        # _is_not_counted_successful`` pins that ordering.
+        recycled = key in self._owner._recycling
+        emit_counter(CONTEXT_COMPACTIONS, {"success": bool(success) and not recycled})
         # Recycling destroys this session, so its successor receives startup
         # context normally.  The identity guard also avoids flagging a racing
         # replacement while the old provider is being reaped.

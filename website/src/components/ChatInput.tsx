@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect, useLayoutEffect, useCallback, useMemo, useId, memo } from 'react'
-import { ArrowUpFromLine, ArrowUp, Loader2, RotateCw, Plus, Crop, Bot, Mic, Keyboard, Square, BookOpen, X, ClipboardList, CheckCircle, Ban, Sparkles, Target, Lock, Folder, FolderOpen, FileText } from 'lucide-react'
+import { ArrowUpFromLine, ArrowUp, Loader2, RotateCw, Plus, Crop, Bot, Mic, Keyboard, Square, BookOpen, X, ClipboardList, CheckCircle, Ban, Sparkles, Target, Lock, Folder, FolderOpen, FileText, FileDiff, PenLine } from 'lucide-react'
+import SketchDialog from './SketchDialog'
 import CopyBranchButton from './CopyBranchButton'
 import RejectDropdown from './RejectDropdown'
 import { usePointerDrag } from '../hooks/usePointerDrag'
@@ -71,7 +72,7 @@ const IMAGE_ACCEPT = 'image/png,image/jpeg,image/gif,image/webp,image/bmp,image/
 // test_accept_list_covers_every_accepted_extension pins this set against the
 // server's, from the Python side, since a vitest cannot read the Python constant.
 const VIDEO_ACCEPT = 'video/mp4,video/x-m4v,video/quicktime,video/webm'
-const FILE_ACCEPT = IMAGE_ACCEPT + ',' + VIDEO_ACCEPT + ',.txt,.md,.json,.har,.yaml,.yml,.xml,.csv,.log,.py,.js,.ts,.tsx,.jsx,.html,.css,.sh,.bash,.rb,.go,.rs,.java,.c,.cpp,.h,.hpp,.pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.odt,.ods,.odp,.rtf,.zip,.tar,.gz'
+const FILE_ACCEPT = IMAGE_ACCEPT + ',' + VIDEO_ACCEPT + ',.txt,.md,.json,.excalidraw,.har,.yaml,.yml,.xml,.csv,.log,.py,.js,.ts,.tsx,.jsx,.html,.css,.sh,.bash,.rb,.go,.rs,.java,.c,.cpp,.h,.hpp,.pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.odt,.ods,.odp,.rtf,.zip,.tar,.gz'
 
 // Extension per image MIME type, mirroring IMAGE_ACCEPT. Used to synthesize a
 // filename for clipboard-pasted images (see nameClipboardImage).
@@ -177,8 +178,19 @@ function sameBlocks(a: PasteBlock[], b: PasteBlock[]): boolean {
   return b.every(x => ids.has(x.id))
 }
 
+// Decisions mapped here resolve via the ONE-SHOT `api.resolveApproval`
+// endpoint, which has no trust verb: POST /api/approvals/{id}/{action} honors
+// exactly `approve`, `reject` and `reject_once` (dashboard/handlers/sessions.py),
+// and the next identical call prompts again. Any UI feeding this path must offer
+// only those decisions — mapping a trust verb to `approve` here runs the tool
+// once while the composer reports a standing grant the backend never recorded
+// (#5400 on the spawn-approval card, #5434 on the collapsed tool row, #5486
+// here). The Trust affordances are withheld from this path at their render
+// sites (`approvalTrustGrantable`); this arm stays fail-closed so a trust verb
+// that reaches it anyway is rejected rather than silently upgraded — the same
+// rule ChatPage's `toApiDecision` carries verbatim.
 function toApiDecision(d: string): 'approve' | 'reject' | 'reject_once' {
-  if (d === 'approved' || d === 'trust' || d === 'trust_reads') return 'approve'
+  if (d === 'approved') return 'approve'
   if (d === 'rejected_once') return 'reject_once'
   return 'reject'
 }
@@ -220,6 +232,24 @@ function stripTrailingBlankLines(s: string): string {
     break
   }
   return sawNewline ? s.slice(0, i + 1) : s
+}
+
+/** True when the text on the caret's line, before the caret, is ONLY markdown
+ *  blockquote markers — `>`, `> > `, optionally indented. A collapsed-paste
+ *  chip then flows on that line (`> [ Paste #1 · N lines ]`) instead of being
+ *  forced onto its own line, which strands the `>` above the chip and makes
+ *  the user delete the injected newline to quote a paste. Whitespace alone
+ *  (no `>`) is NOT a quote prefix — the own-line shape stays for those.
+ *  Linear scan, no regex. */
+function isBlockquotePrefix(linePrefix: string): boolean {
+  let sawMarker = false
+  for (let i = 0; i < linePrefix.length; i++) {
+    const c = linePrefix.charCodeAt(i)
+    if (c === 62 /* > */) { sawMarker = true; continue }
+    if (c === 32 /* space */ || c === 9 /* \t */) continue
+    return false
+  }
+  return sawMarker
 }
 
 /** Auto-size textarea to fit content (only when not manually sized).
@@ -451,6 +481,11 @@ interface ChatInputProps {
   projectBranch?: string
   /** True when the project's HEAD is detached, so the label is a commit. */
   projectDetached?: boolean
+  /** Uncommitted file count in the project's working tree (0 = clean). */
+  projectGitDirty?: number
+  /** Commits ahead of / behind the branch's upstream, when it tracks one. */
+  projectGitAhead?: number
+  projectGitBehind?: number
   memoryMode?: string
   cleanMode?: boolean
   /** User-sent messages for ↑/↓ history navigation (oldest → newest). */
@@ -783,6 +818,9 @@ function ChatInput({
   project,
   projectBranch,
   projectDetached,
+  projectGitDirty,
+  projectGitAhead,
+  projectGitBehind,
   memoryMode,
   cleanMode,
   sentMessages,
@@ -877,6 +915,17 @@ function ChatInput({
     || (pendingApproval?.content || '').match(/^(?:🔧\s*)?\[([a-z_]+)\]/)?.[1]
     || ''
   const approvalIsUnattended = UNATTENDED_APPROVAL_SOURCES.has(approvalSource)
+  /** True when a standing Trust grant can actually be RECORDED for this card.
+   *  FAIL-CLOSED: the Trust affordances are withheld unless this holds, because
+   *  the only other resolve path is the one-shot `api.resolveApproval`, which
+   *  has no trust verb — offering Trust there claims a standing grant the
+   *  backend never records (#5400, #5434, #5486).
+   *  - `activeSlot`: `api.approveChatSlot` is slot-scoped, so with no slot the
+   *    grant has nowhere to land and `handleApprovalAction` falls through to the
+   *    one-shot endpoint.
+   *  - `!approvalIsUnattended`: session trust is incoherent for a job that is
+   *    not this session (see `approvalSource` above). */
+  const approvalTrustGrantable = !!activeSlot && !approvalIsUnattended
   const simplified = useSimplifiedToolNames()
   const uiLang = useLanguage().resolved
   const approvalLabelRaw = sanitizeLlmOutput(pendingApproval?.content || '').replace(/^🔧\s*/, '')
@@ -1101,6 +1150,7 @@ function ChatInput({
   const fileInputId = useId()
   // "+" drop-up menu (upload file / image + browse toggle).
   const [plusOpen, setPlusOpen] = useState(false)
+  const [sketchOpen, setSketchOpen] = useState(false)
   const [ctxPopoverOpen, setCtxPopoverOpen] = useState(false)
   // Per-session auto-compact threshold (slider in the context popover). The
   // debounce timer collapses a slider drag into one POST; the fetch itself is
@@ -1138,6 +1188,18 @@ function ChatInput({
       ? `${base}\n${i18nT('components.chatInput.detached_head_at', { branch: projectBranch })}`
       : `${base}\n${i18nT('components.chatInput.branch', { branch: projectBranch })}`
   }, [project, projectBranch, projectDetached])
+  // Tooltip for the working-tree badge. Reuses the Git panel's catalog entry
+  // so the badge adds no i18n keys; the arrow segments are glyph+number only
+  // (script-neutral, plain concatenation — a template literal here reads as an
+  // untranslated string to the i18n gate). Empty when the tree is clean and in
+  // sync, which is also what hides the badge.
+  const gitBadgeTitle = useMemo(() => {
+    const parts: string[] = []
+    if (projectGitDirty) parts.push(i18nT('components.gitPanel.uncommitted', { count: projectGitDirty }))
+    if (projectGitAhead) parts.push('\u2191' + String(projectGitAhead))
+    if (projectGitBehind) parts.push('\u2193' + String(projectGitBehind))
+    return parts.join(' \u00b7 ')
+  }, [projectGitDirty, projectGitAhead, projectGitBehind])
   // Focus the composer when the dictation panel is up (as before) OR while a
   // batch transcript is landing (voiceTranscribing), so Enter sends and typing
   // edits the result. Deliberately NOT keyed on bare voiceRecording: focusing
@@ -2272,7 +2334,7 @@ function ChatInput({
       }
       e.preventDefault()
     }
-  }, [fireComposer, onChange, sentMessages, sendOnEnter, pasteBlocks, onPasteBlocksChange, connected, ime, optimizePrompt])
+  }, [fireComposer, onChange, sentMessages, sendOnEnter, pasteBlocks, onPasteBlocksChange, connected, ime, optimizePrompt, promptOptimizer])
 
   /** Intercept clipboard paste — files go to upload path, big text gets collapsed into a token. */
   const handlePaste = useCallback((e: React.ClipboardEvent<HTMLTextAreaElement>) => {
@@ -2333,8 +2395,13 @@ function ChatInput({
       // Surround the token with newlines so the chip lives on its own line —
       // long-form pasted content rarely flows with typed text around it.
       // Skip the leading newline when the caret is at the start of a line,
-      // and the trailing one when the caret is at the end of a line.
-      const leadingNewline = before && !before.endsWith('\n') ? '\n' : ''
+      // and the trailing one when the caret is at the end of a line. Also
+      // skip the leading one when everything before the caret on its line is
+      // a bare blockquote prefix (`> `, `> > `, optionally indented): the
+      // user is quoting the paste, and forcing the chip down a line strands
+      // the `>` above it.
+      const linePrefix = before.slice(before.lastIndexOf('\n') + 1)
+      const leadingNewline = before && !before.endsWith('\n') && !isBlockquotePrefix(linePrefix) ? '\n' : ''
       const trailingNewline = after && !after.startsWith('\n') ? '\n' : ''
       const insert = leadingNewline + token + trailingNewline
       valueFromUserRef.current = true // a paste is a real user edit, not a draft restore
@@ -3056,8 +3123,8 @@ function ChatInput({
                   )}
                   <div className="flex gap-1.5 flex-wrap items-center">
                       <button disabled={approvalSubmitting} className={approvalBtnClass} onClick={() => handleApprovalAction('approved')}><CheckCircle size={12} className="shrink-0" />{i18nT('components.chatInput.allow_once')}</button>
-                      {approvalIsReadOnly && !approvalIsUnattended && <button disabled={approvalSubmitting} className={approvalBtnClass} onClick={() => handleApprovalAction('trust_reads')}><BookOpen size={12} className="shrink-0" />{i18nT('components.chatInput.trust_reads')}</button>}
-                      {!approvalIsUnattended && approvalTrustCommandGrantable && (
+                      {approvalIsReadOnly && approvalTrustGrantable && <button disabled={approvalSubmitting} className={approvalBtnClass} onClick={() => handleApprovalAction('trust_reads')}><BookOpen size={12} className="shrink-0" />{i18nT('components.chatInput.trust_reads')}</button>}
+                      {approvalTrustGrantable && approvalTrustCommandGrantable && (
                         <TrustDropdown
                             fullCommand={approvalFullCommand}
                             baseCommand={approvalBaseCommand}
@@ -3122,6 +3189,9 @@ function ChatInput({
       )}
 
       <input id={fileInputId} ref={fileInputRef} type="file" aria-label={i18nT('components.chatInput.attach_files')} multiple accept={FILE_ACCEPT} className="sr-only" onChange={handleFileInputChange} />
+      {onUploadFiles && (
+        <SketchDialog open={sketchOpen} onOpenChange={setSketchOpen} onInsert={onUploadFiles} returnFocusRef={inputRef} />
+      )}
 
       {typedCommandMenus && <SlashCommandMenu input={value} anchorRef={inputRef as React.RefObject<HTMLElement>} open={slashMenuOpen} sendOnEnter={sendOnEnter} onSelect={cmd => { onChange(cmd); setSlashMenuOpen(false) }} onClose={() => setSlashMenuOpen(false)} />}
 
@@ -3424,6 +3494,26 @@ function ChatInput({
                         </button>
                       )}
                     </div>
+                    {/* Sketch is a full-width menu ROW, not a third tile: the
+                        tile group above is capped at two peer actions by the
+                        max-two-buttons-per-row rule, and wrapping a third onto
+                        a second grid line is the remedy that rule explicitly
+                        rejects. A stacked row (the same shape as the trigger
+                        shortcuts below) is its own row by construction. */}
+                    <div className="mt-2 flex flex-col gap-0.5">
+                      <button
+                        type="button"
+                        onClick={() => { setPlusOpen(false); setSketchOpen(true) }}
+                        title={i18nT('components.chatInput.sketch')}
+                        className="w-full flex items-center gap-2.5 px-2 py-1.5 rounded-lg bg-transparent hover:bg-bg-hover transition-colors cursor-pointer text-left"
+                      >
+                        <PenLine size={14} className="w-4 shrink-0 text-muted lucide-inline" />
+                        <div className="min-w-0">
+                          <div className="text-[12px] font-medium text-text">{i18nT('components.chatInput.sketch')}</div>
+                          <div className="text-[11px] text-muted leading-snug">{i18nT('components.chatInput.sketch_desc')}</div>
+                        </div>
+                      </button>
+                    </div>
                     {/* In-input trigger shortcuts: clicking inserts the sigil
                      *  and opens the matching picker (same as typing /, @, $). */}
                     <div className="mt-2 pt-2 border-t border-border flex flex-col gap-0.5">
@@ -3470,6 +3560,24 @@ function ChatInput({
                   document.body
                 )}
               </div>
+            )}
+            {/* Touch path: directFilePicker replaces the "+" drop-up with a
+                bare file-input label, so the menu's Sketch row never mounts
+                there. A pencil button restores the entry on exactly the
+                devices where finger/stylus drawing works best. Two peer
+                actions (label + pencil) — at the max-two-buttons-per-row cap,
+                not over it; the non-touch branch keeps Sketch in the menu. */}
+            {onUploadFiles && directFilePicker && (
+              <button
+                className="w-8 h-8 rounded-lg flex items-center justify-center cursor-pointer transition-all disabled:opacity-30 bg-transparent border-none text-muted hover:text-text hover:bg-bg-hover shrink-0"
+                onClick={() => setSketchOpen(true)}
+                disabled={uploading}
+                aria-haspopup="dialog"
+                aria-label={i18nT('components.chatInput.sketch')}
+                title={i18nT('components.chatInput.sketch')}
+              >
+                <PenLine size={17} />
+              </button>
             )}
             {/* The wrapper exists for the edge cues: absolutely-positioned
                 children of the scroller itself would travel with the scrolled
@@ -3768,6 +3876,41 @@ function ChatInput({
             </>
           )}
           </div>
+          )}
+          {!!projectBranch && !!gitBadgeTitle && (
+            /* Working-tree badge: dirty count (warn pill) plus ahead/behind
+               arrows, the Git panel's own vocabulary. Renders only when there
+               is signal, so a clean in-sync tree keeps the footer as it was.
+               A passive READOUT, not a button: the shelf row already carried
+               three actions on base (agent, picker, copy) and
+               max-two-buttons-per-row forbids growing a 3+ row, exactly like
+               the context readout on the right. The Git panel stays one click
+               away in the sidebar. NOT gated on shelfCompact: icon+digits
+               have no text label to shed, and hiding the badge at narrow
+               widths would remove the only tree-state signal
+               (narrow-viewport-required). */
+            <span
+              className="inline-flex items-center gap-1 h-7 shrink-0 text-[11px] font-mono px-1.5 text-muted"
+              role="status"
+              title={gitBadgeTitle}
+              aria-label={gitBadgeTitle}
+            >
+              {!!projectGitDirty && (
+                /* The icon makes the count read as "changed files" on a cold
+                   look — a bare warn number beside a branch name could be
+                   anything (UX review finding). */
+                <span className="inline-flex items-center gap-0.5 px-1 py-px rounded bg-warn/15 text-warn">
+                  <FileDiff size={11} className="shrink-0" />
+                  {projectGitDirty}
+                </span>
+              )}
+              {(!!projectGitAhead || !!projectGitBehind) && (
+                <span>
+                  {!!projectGitAhead && <>&#x2191;{projectGitAhead}</>}
+                  {!!projectGitBehind && <>{projectGitAhead ? ' ' : ''}&#x2193;{projectGitBehind}</>}
+                </span>
+              )}
+            </span>
           )}
           </div>
           <div className="flex items-center shrink-0">

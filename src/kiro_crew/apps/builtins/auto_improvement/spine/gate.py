@@ -33,6 +33,7 @@ import shutil
 import subprocess
 from pathlib import Path
 
+from kiro_crew.platform.context import redact_via_context
 from kiro_crew.subprocess_utf8 import UTF8_TEXT
 
 from .bug_gate import BugGate
@@ -102,7 +103,7 @@ def _changed_status_paths(worktree: Path, base_sha: str) -> list[tuple[str, str]
         # the error so the caller rejects the candidate instead of admitting it.
         raise RuntimeError(
             f"git diff failed (rc={r.returncode}) for base {base_sha!r}: "
-            f"{(r.stderr or '').strip()[:200]}"
+            f"{redact_via_context((r.stderr or '').strip())[:200]}"
         )
     out: list[tuple[str, str]] = []
     for line in r.stdout.splitlines():

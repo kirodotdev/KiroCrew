@@ -10,7 +10,8 @@ import ResizeHandle from '../components/ResizeHandle'
 import { useColumnResize, type CollapseConfig } from '../hooks/useColumnResize'
 import { useIsMobile } from '../hooks/useIsMobile'
 import AgentSelector from '../components/AgentSelector'
-import type { KiroCrewAgent } from '../components/AgentSelector'
+import { useAgents } from '../hooks/useAgents'
+import { triggerRefresh } from '../store/dashboardSlice'
 import ProjectDetailPage from './ProjectDetailPage'
 import {
   COLLAPSED_RAIL_WIDTH, MAX_RAIL_WIDTH, MIN_RAIL_WIDTH,
@@ -64,8 +65,26 @@ export default function ProjectsPage() {
   const [specText, setSpecText] = useState(() => sessionStorage.getItem('tr-spec') || '')
   const [yamlText, setYamlText] = useState(() => sessionStorage.getItem('tr-yaml') || '')
   const [agent, setAgent] = useState('')
-  const [agents, setAgents] = useState<KiroCrewAgent[]>([])
-  const [defaultAgentName, setDefaultAgentName] = useState('')
+  // The shared roster hook, not a direct `/api/agents` fetch: the hook is where
+  // a failed fetch becomes readable state (`error`) instead of a silently empty
+  // list, which #5990 showed is indistinguishable from a one-agent install.
+  // `refreshTrigger` keeps the existing behaviour of re-fetching the roster
+  // whenever the dashboard-wide refresh fires.
+  const {
+    agents, defaultAgent: defaultAgentName,
+    error: rosterError, reload: reloadRoster, reloading: rosterReloading,
+  } = useAgents(refreshTrigger)
+  // A recovered roster must not be recovered for this page alone. `useAgents`
+  // holds per-instance state and the app shell keeps its own copy, so the retry
+  // bumps the shared refresh trigger — the same shape SchedulePage ships — and
+  // one press recovers every consumer.
+  const recoverRoster = useCallback(() => {
+    reloadRoster()
+    dispatch(triggerRefresh())
+  }, [reloadRoster, dispatch])
+  // Paired at the boundary: the picker is handed a failure it can act on, or
+  // nothing at all — never an error with no way out of it.
+  const rosterFailure = rosterError ? { reloading: rosterReloading, onReload: recoverRoster } : undefined
   // The user's explicit per-run workspace override. Starts empty and is only
   // populated when the user actually types — an untouched field means "no
   // override" so the backend keeps its per-run isolated scratch dir (and
@@ -133,7 +152,7 @@ export default function ProjectsPage() {
     setSelectedRun(next)
     setEditingName(false)
     if (isMobile) rail.collapse()
-  }, [isMobile, rail.collapse])
+  }, [isMobile, rail])
 
   useEffect(() => { mountedRef.current = true; return () => { mountedRef.current = false } }, [])
 
@@ -160,7 +179,6 @@ export default function ProjectsPage() {
 
   useEffect(() => {
     load()
-    api.kirocrewAgents().then(d => { setAgents(d.agents || []); setDefaultAgentName(d.default_agent || '') }).catch(() => {})
     const iv = setInterval(load, 3000)
     return () => clearInterval(iv)
   }, [load, refreshTrigger])
@@ -450,7 +468,7 @@ export default function ProjectsPage() {
           workspace field off the right edge otherwise. */}
       <div className="flex flex-wrap gap-2 items-center mb-3">
         <span className="text-[13px] text-muted font-medium">{i18nT('pages.projectsPage.agent')}</span>
-        <AgentSelector agents={agents} defaultAgent={defaultAgentName} value={agent} onChange={(name) => setAgent(name)} />
+        <AgentSelector agents={agents} defaultAgent={defaultAgentName} value={agent} onChange={(name) => setAgent(name)} rosterFailure={rosterFailure} />
         <span className="text-[13px] text-muted font-medium ml-2">{i18nT('pages.projectsPage.workspace')}</span>
         <Input
           type="text"

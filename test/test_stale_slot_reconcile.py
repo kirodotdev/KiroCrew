@@ -31,6 +31,7 @@ async def test_resume_reconciles_stale_slot_from_disk(tmp_path, monkeypatch):
         ).json()
         assert r1["ok"] is True
         assert r1["total"] == 3
+        assert all(not (message.get("meta") or {}).get("mid") for message in r1["messages"])
 
         # Now write 2 more messages directly to disk WITHOUT going through
         # the slot's append — simulating the divergence scenario.
@@ -50,8 +51,10 @@ async def test_resume_reconciles_stale_slot_from_disk(tmp_path, monkeypatch):
         ).json()
         assert r2["ok"] is True
         assert r2["total"] == 5, f"Expected 5 messages after reconciliation, got {r2['total']}"
+        assert all(not (message.get("meta") or {}).get("mid") for message in r2["messages"])
         # The slot's in-memory window should now have all 5.
         assert len(slot.messages) == 5
+        assert all(not (message.get("meta") or {}).get("mid") for message in slot.messages)
 
 
 @pytest.mark.asyncio
@@ -85,8 +88,10 @@ async def test_detail_reconciles_stale_slot_from_disk(tmp_path, monkeypatch):
         assert (
             r["total"] == 5
         ), f"Expected 5 messages in detail after reconciliation, got {r['total']}"
+        assert all(not (message.get("meta") or {}).get("mid") for message in r["messages"])
         # The slot should also be updated in memory.
         assert len(slot.messages) == 5
+        assert all(not (message.get("meta") or {}).get("mid") for message in slot.messages)
 
 
 @pytest.mark.asyncio

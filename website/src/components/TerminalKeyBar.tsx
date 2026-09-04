@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import type { Terminal } from '@xterm/xterm'
 import { ClipboardPaste, Copy, TextSelect } from 'lucide-react'
 import { SOFT_KEYS, pressTerminalKey } from '../utils/terminalKeys'
+import { logicalLineBounds, logicalLineTop } from '../utils/terminalLogicalLine'
 import { i18nT } from '../i18n/t'
 
 /**
@@ -383,14 +384,11 @@ export default function TerminalKeyBar({ term }: { term: Terminal }) {
     // line's boundaries, then select the whole span. Same isWrapped access
     // pattern as TerminalCompletion's wrap guard (buffer.getLine(row)?.isWrapped).
     const isWrapped = (row: number): boolean => buffer.getLine(row)?.isWrapped === true
-    // Select the LOGICAL line containing `row`: walk UP while the current row is
-    // a wrapped continuation (it continues the row above), and DOWN while the
-    // row BELOW is a wrapped continuation (it continues this one).
+    // Select the LOGICAL line containing `row` via the shared wrap-walk helper
+    // (utils/terminalLogicalLine) — the single source of truth the touch
+    // range-select hook also uses, so the two can't diverge on wrap semantics.
     const selectLogicalLine = (row: number) => {
-      let top = row
-      while (top > 0 && isWrapped(top)) top--
-      let bottom = row
-      while (bottom + 1 < buffer.length && isWrapped(bottom + 1)) bottom++
+      const [top, bottom] = logicalLineBounds(row, buffer.length, isWrapped)
       term.selectLines?.(top, bottom)
     }
 
@@ -456,7 +454,7 @@ export default function TerminalKeyBar({ term }: { term: Terminal }) {
       // off-by-one).
       let cursorLineTop = cursorRow
       if (cursorRow < buffer.length) {
-        while (cursorLineTop > 0 && isWrapped(cursorLineTop)) cursorLineTop--
+        cursorLineTop = logicalLineTop(cursorRow, isWrapped)
       }
       const start = Math.min(scrolledUp ? anchorRow : cursorLineTop - 1, buffer.length - 1)
       for (let row = start; row >= 0; row--) {

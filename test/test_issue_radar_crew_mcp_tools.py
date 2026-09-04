@@ -216,11 +216,23 @@ class TestToolRegistration(unittest.TestCase):
         assert spec["inputSchema"]["properties"] == {}
         assert MCP_CORE_SCHEMAS[READ_TOOL].fields == []
 
-    def test_record_requires_only_the_issue_number(self):
+    def test_record_requires_nothing_unconditionally(self):
+        # `number` USED to be required, which left a crew that swept an empty
+        # queue no way to record the cycle without inventing an issue number. The
+        # coupling that replaced the requirement (a missing number is valid only
+        # with `sweep`, and `sweep` only without one) is a relation between two
+        # fields, which neither schema can express — it lives on the write route
+        # and in the store, so both schemas must agree that nothing is required.
         required = {f.name for f in MCP_CORE_SCHEMAS[RECORD_TOOL].fields if f.required}
-        assert required == {"number"}
+        assert required == set()
         spec = next(t for t in mcp_core._list_tools() if t["name"] == RECORD_TOOL)
-        assert spec["inputSchema"]["required"] == ["number"]
+        assert spec["inputSchema"]["required"] == []
+
+    def test_record_advertises_the_crew_level_sweep_kind(self):
+        # Advertised, or the model cannot discover the one kind that lets it
+        # report a cycle it did no work in.
+        spec = next(t for t in mcp_core._list_tools() if t["name"] == RECORD_TOOL)
+        assert "sweep" in spec["inputSchema"]["properties"]["event_kind"]["enum"]
 
     def test_record_advertises_no_identity_arguments(self):
         props = next(
@@ -491,6 +503,65 @@ class TestEmptyFieldsAreDropped(unittest.TestCase):
         assert body["worktree"] == "/home/user/src/project"
         assert body["branch"] == "fix/os-fchmod-windows"
         assert body["base_sha"] == "f2aa4c8bb"
+
+
+class TestACrewCanReportAnEmptyQueue(unittest.TestCase):
+    """The numberless call — `event_kind: sweep` with no `number`.
+
+    `number` was the tool's one required field, so a crew that checked its queue
+    and took nothing could only record the cycle by naming an issue it never
+    acted on. These assert the absence travels as an ABSENCE: the route reads a
+    missing key as "this step has no issue", and a `0` standing in for it would
+    be rejected as a malformed issue number instead.
+    """
+
+    @staticmethod
+    def _sweep(put_result: dict | None = None, **over):
+        args = {"event": "checked 42 open issues, took none", "event_kind": "sweep"}
+        args.update(over)
+        cleaned = validate_tool_args(args, MCP_CORE_SCHEMAS[RECORD_TOOL])
+        captured: dict = {}
+
+        def fake_put(path, body=None, session_key=None):
+            captured["body"] = body
+            return put_result if put_result is not None else {
+                "item": None, "skip": None,
+                "event": {"text": body.get("event") or ""},
+            }
+
+        with patch.object(
+            mcp_core, "_resolve_session_key_strict", return_value="crew-c_7f3a"
+        ):
+            with patch.object(mcp_core, "_get", return_value=CREW_PAYLOAD):
+                with patch.object(mcp_core, "_put", side_effect=fake_put):
+                    out = mcp_core._call_tool_inner(RECORD_TOOL, cleaned)
+        return captured, out
+
+    def test_a_sweep_validates_without_a_number(self):
+        cleaned = validate_tool_args(
+            {"event": "queue empty", "event_kind": "sweep"},
+            MCP_CORE_SCHEMAS[RECORD_TOOL],
+        )
+        assert "number" not in cleaned
+
+    def test_the_number_key_is_omitted_from_the_request(self):
+        captured, _ = self._sweep()
+        # Omitted, not zero: the route reads a present-but-invalid number as a
+        # 400, so sending 0 would fail the write rather than record the sweep.
+        assert "number" not in captured["body"]
+        assert set(captured["body"]) == {"owner", "repo", "crew_id", "event", "event_kind"}
+
+    def test_the_summary_names_the_crew_rather_than_a_bare_hash(self):
+        _, out = self._sweep()
+        assert "#" not in out.splitlines()[0]
+        assert "no issue" in out
+        assert "checked 42 open issues, took none" in out
+
+    def test_a_numbered_call_still_sends_and_reports_its_number(self):
+        # The guard is on presence, so the ordinary path must be untouched.
+        captured, out = _record(number=12, event="took it", event_kind="claim")
+        assert captured["body"]["number"] == 12
+        assert "#12" in out
 
 
 class TestCiStateAssembly(unittest.TestCase):

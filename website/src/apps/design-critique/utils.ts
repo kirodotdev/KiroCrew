@@ -46,12 +46,154 @@ export function recognise(det: Detected | null): { ok: boolean; text: string } |
   }
 }
 
-export function extractJson<T = Record<string, unknown>>(text: string | undefined): T | null {
+/**
+ * Every balanced `{…}` span in `t`, outermost only, in the order they appear.
+ *
+ * Quote- and escape-aware INSIDE an object, so a brace in a string value
+ * (`"fix":"drop the {primary} token"`) does not move the depth counter and
+ * cannot split a span.
+ *
+ * Outside one — at depth 0 — a quote is ignored on purpose. Prose is not JSON,
+ * so its quotes do not pair: a reply opening `Here is "the report:` leaves one
+ * unmatched quote, and tracking it there would put the scanner in string mode
+ * for everything after, swallowing the report's own braces and emitting no span
+ * at all. That is the failure this whole function exists to prevent, so string
+ * mode begins only once an object is open.
+ */
+function braceSpans(t: string): string[] {
+  const out: string[] = []
+  let depth = 0, start = -1, inStr = false, esc = false
+  for (let i = 0; i < t.length; i++) {
+    const ch = t[i]
+    if (inStr) {
+      if (esc) { esc = false; continue }
+      if (ch === '\\') { esc = true; continue }
+      if (ch === '"') inStr = false
+      continue
+    }
+    if (ch === '"') { if (depth > 0) inStr = true; continue }
+    if (ch === '{') { if (depth === 0) start = i; depth++; continue }
+    if (ch === '}' && depth > 0 && --depth === 0 && start >= 0) {
+      out.push(t.slice(start, i + 1)); start = -1
+    }
+  }
+  return out
+}
+
+/**
+ * Pull the critic's JSON out of a reply.
+ *
+ * The contract asks for JSON and nothing else, and a reply that honours it
+ * parses either way. But the tolerance this function already extends to the
+ * usual model wrapping — a ```json fence, a line of prose either side — used to
+ * break on a wrapper that merely CONTAINED a brace, because it sliced from the
+ * first `{` to the last `}` and handed whatever lay between to `JSON.parse`.
+ * A reply that closed with "tweak the `{primary}` token", or opened by naming
+ * the `{schema}` it was given, therefore threw away a complete report and the
+ * run ended on "not in a readable format".
+ *
+ * So consider every balanced span instead of one blind slice, and take the
+ * largest that parses — the report is the substantive object in the reply, not
+ * the aside next to it. This is strictly more tolerant than the slice: any text
+ * the slice accepted still parses. A reply carrying no JSON at all still returns
+ * null, which is the honest case the error message exists for.
+ *
+ * `accept` filters the candidates rather than vetoing the winner, and that
+ * distinction is the whole point of taking it here. Judging only the largest
+ * span and rejecting it outside this function would end the search at the first
+ * unrecognised object, so a reply carrying a bigger unrelated object beside a
+ * real report would lose the report — the same discard this function exists to
+ * prevent. Rejection therefore continues to the next span.
+ */
+export function extractJson<T = Record<string, unknown>>(
+  text: string | undefined,
+  accept?: (value: unknown) => boolean,
+): T | null {
   if (!text) return null
   const t = String(text).replace(/```json\s*/gi, '').replace(/```/g, '').trim()
-  const a = t.indexOf('{'); const b = t.lastIndexOf('}')
-  if (a === -1 || b === -1 || b < a) return null
-  try { return JSON.parse(t.slice(a, b + 1)) as T } catch { return null }
+  const spans = braceSpans(t).sort((a, b) => b.length - a.length)
+  for (const s of spans) {
+    let parsed: T
+    try { parsed = JSON.parse(s) as T } catch { continue }
+    if (!accept || accept(parsed)) return parsed
+  }
+  return null
+}
+
+/**
+ * Does this parsed object look like a critique report, rather than a fragment of
+ * one or something else that happens to share a key name?
+ *
+ * Needed because a JSON object is not self-identifying. A stream cut short right
+ * before a nested object leaves a continuation row that parses PERFECTLY on its
+ * own — split the schema before `{"severity":…}` and the suffix is a complete,
+ * valid finding object — so "it parsed" cannot mean "it is the report". Accepting
+ * one would be worse than the error it replaced: `normalizeReport` coerces the
+ * fragment into a report with nothing in it, `finishReport` writes that blank
+ * critique to history, and `endRun` then deletes the slot holding the real one.
+ *
+ * The test is TYPED, not a key-presence check, and that distinction carries the
+ * guarantee. A key name alone is cheap for unrelated JSON to satisfy — an object
+ * holding `findings` as a long STRING passes a presence test, and being longer
+ * than the real report it would then be preferred over it, losing the critique to
+ * exactly the blank-render path above. So each field must arrive as the type the
+ * UI renders it as, which is the same shape `normalizeReport` coerces to
+ * downstream: prose as a string, lists as arrays, the tally as an object.
+ *
+ * Any ONE correctly-typed field is enough. A real report carries several, while a
+ * sparse one should still render rather than be discarded — requiring a full
+ * schema here would reintroduce the original bug in a stricter disguise.
+ */
+export function looksLikeReport(value: unknown): boolean {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false
+  const v = value as Record<string, unknown>
+  const isText = (k: string): boolean => typeof v[k] === 'string'
+  const isList = (k: string): boolean => Array.isArray(v[k])
+  const isObj = (k: string): boolean =>
+    !!v[k] && typeof v[k] === 'object' && !Array.isArray(v[k])
+  return isText('overallRead') || isText('health') || isObj('tally')
+    || isList('screens') || isList('findings') || isList('keep') || isList('couldNotSee')
+}
+
+/**
+ * The report from a finished turn, wherever in that turn it landed.
+ *
+ * One turn is not one message. The runner finalizes a segment per text block
+ * (`_flush_segment`), so text either side of a tool group arrives as two
+ * `assistant` rows, and a stream interrupted by a transient backend error is
+ * persisted as a partial row plus a continuation row — the model is told to
+ * carry on where it stopped, which for this prompt means resuming mid-JSON.
+ * Reading only the newest row therefore discarded a report the critic really
+ * did produce: a trailing remark after the JSON, or either half of a split one,
+ * failed to parse and the run ended on "not in a readable format".
+ *
+ * So try each assistant row newest-first, then the rows joined in order, which
+ * is what reassembles a split reply. Order matters: newest-first keeps the last
+ * report authoritative when a turn somehow produced two, and the join is only
+ * reached when no single row carries one.
+ *
+ * `accept` is what makes that order safe. Without it the newest-first pass is a
+ * trap on exactly the split it exists to repair — a continuation beginning at a
+ * nested object parses alone, and would be taken for the whole report before the
+ * join ever ran. It is handed to `extractJson` rather than applied to its result,
+ * so an unrecognised candidate is skipped WITHIN a row's span search and the next
+ * span still gets its turn; vetoing the result here would abandon a row whose
+ * report merely sat behind a larger object.
+ */
+export function jsonFromMessages<T = Record<string, unknown>>(
+  messages: SlotData['messages'],
+  accept?: (value: unknown) => boolean,
+): T | null {
+  if (!Array.isArray(messages)) return null
+  const rows = messages
+    .filter(m => { const role = m.role || m.type; return role === 'assistant' || role === 'msg msg-a' })
+    .map(m => m.content || '')
+    .filter(c => !!c.trim())
+  for (let i = rows.length - 1; i >= 0; i--) {
+    const p = extractJson<T>(rows[i], accept)
+    if (p) return p
+  }
+  return rows.length > 1 ? extractJson<T>(rows.join(''), accept) : null
 }
 
 export function lastAssistant(messages: SlotData['messages']): string {

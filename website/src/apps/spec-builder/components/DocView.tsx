@@ -14,6 +14,7 @@ import TaskList from './TaskList'
 
 import { i18nT } from '../../../i18n/t'
 import { useImeGuard } from '../../../hooks/useImeGuard'
+import { containedSelectionRange } from '../../../utils/selectionContainment'
 interface Selection {
   text: string
   x: number
@@ -68,8 +69,13 @@ export default function DocView({
     const text = s ? s.toString().replace(/\s+/g, ' ').trim() : ''
     if (!text || text.length < 3 || !boxRef.current || !s || !s.rangeCount) { setSel(null); return }
     const range = s.getRangeAt(0)
-    if (!boxRef.current.contains(range.commonAncestorContainer)) { setSel(null); return }
-    const r = range.getBoundingClientRect()
+    // A triple-click of the document's LAST paragraph normalizes to a boundary
+    // point past the pane, so ancestor containment alone would dismiss it and
+    // the Comment pill would never appear (#7891). The pill is positioned from
+    // the clamped range, keeping an accepted overhang's line box out of the rect.
+    const contained = containedSelectionRange(range, boxRef.current)
+    if (!contained) { setSel(null); return }
+    const r = contained.getBoundingClientRect()
     const host = boxRef.current.getBoundingClientRect()
     setSel({ text: text.slice(0, 500), x: r.left - host.left + r.width / 2, y: r.top - host.top + boxRef.current.scrollTop, tab })
   }

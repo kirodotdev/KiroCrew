@@ -212,7 +212,14 @@ def render_unit() -> str:
         f"Group={group}\n"
         f"WorkingDirectory={home}\n"
         f"ExecStart={exec_start}\n"
-        "Restart=on-failure\n"
+        # `always`, not `on-failure`: the gateway deliberately exits on its own
+        # to be relaunched — the stale-asset watchdog shuts down cleanly when a
+        # Toolbox/package update prunes the running install, expecting the
+        # supervisor to start a fresh process. `on-failure` never restarts an
+        # exit 0, so that path left the gateway down for hours. `always` still
+        # honors an explicit `systemctl stop`/`disable` (operator actions are
+        # exempt from Restart=), and StartLimit* above caps a tight loop.
+        "Restart=always\n"
         "RestartSec=10\n"
         f"TimeoutStopSec={TOTAL_SHUTDOWN_BUDGET_SECS}\n"
         # Operator-editable overrides. systemd applies EnvironmentFile= AFTER —
@@ -668,7 +675,7 @@ def restart() -> bool:
 
     Single ``systemctl restart`` call rather than ``stop`` + ``start`` —
     smaller down-window, and the supervisor stays in charge of the
-    lifecycle the whole time. ``Restart=on-failure`` semantics in the
+    lifecycle the whole time. ``Restart=always`` semantics in the
     unit are unaffected: ``systemctl restart`` is an explicit operator
     action, so the manager honors it regardless of restart policy.
 

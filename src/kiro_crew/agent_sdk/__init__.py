@@ -5,11 +5,10 @@ boundary is enforced by ``scripts/check_agent_sdk_boundary.py`` and
 ``test/test_agent_sdk_boundary.py``, so application code cannot introduce new
 direct dependencies on the backend packages while the rest of the SDK is built.
 
-The first capability to land is :mod:`kiro_crew.agent_sdk.backend_install` --
-whether each backend's harness is actually installed on THIS machine, as a
-three-state verdict (``installed`` / ``missing`` / ``unknown``) that names the
-absent component and never reports a failed check as an absent install. Its
-contract lives above the boundary; every resolve it needs is the ACP driver's.
+Machine-local backend readiness lives in :mod:`kiro_crew.agent_sdk.backend_install`.
+Promptless structured command batches live in
+:mod:`kiro_crew.agent_sdk.native_commands`; their ACP process lifecycle and
+exception translation stay in the driver, and only plain data crosses upward.
 
 Layering::
 
@@ -60,6 +59,7 @@ from kiro_crew.agent_sdk.backend_install import (
     probe_backend,
     probe_backends,
 )
+from kiro_crew.agent_sdk.native_commands import NativeCommandBatch, run_kiro_native_commands
 
 TURN_STOP_REASON_CANCELLED = "cancelled"
 TURN_STOP_REASON_END_TURN = "end_turn"
@@ -82,9 +82,11 @@ __all__ = [
     "MISSING",
     "UNKNOWN",
     "BackendInstallState",
+    "NativeCommandBatch",
     "clear_probe_cache",
     "probe_backend",
     "probe_backends",
+    "run_kiro_native_commands",
     "TURN_STOP_REASON_CANCELLED",
     "TURN_STOP_REASON_END_TURN",
 ]

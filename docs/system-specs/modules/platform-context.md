@@ -49,6 +49,7 @@ interface, the public edition is complete standalone.
 | `agent_catalog` | adapter | `DefaultAgentCatalogProvider` (`builtin_agents()` → `[]`) | edition agent-catalog rows |
 | `prompt_sources` | adapter | `DefaultPromptSourceProvider` (`prompt_source_roots()` → `[]`) | edition prompt/SOP roots |
 | `skill_discovery` | adapter | `DefaultSkillDiscoveryProvider` (`skill_providers()` → `[]`) | edition skill discovery providers for the multi-provider search |
+| `denied_rules` | adapter | `DefaultDeniedRuleProvider` (`denied_rules()` → `[]`) | edition denied-command rules that are default-on but USER-DISABLEABLE (distinct from `security`, the un-weakenable overlay floor) |
 | `import_sources` | adapter | `DefaultImportSourceProvider` (`import_sources()` → `[]`) | edition onboarding-import sources |
 | `capability_manager` | adapter | `DefaultCapabilityManager` (`available()` → `False`) | operations-based external package manager: MCP servers, skills, agent packages, and client plugins |
 | `external_access` | adapter | `DefaultExternalAccessPolicy` (`admits_registry()` / `admits_cloud_deployment()` → `True`) | allowlist installable content to an internal registry; withhold cloud deployment |
@@ -1027,12 +1028,17 @@ new module/class names.
   section is not dropped on `save()`/PATCH. Excluded from the JSON schema
   (`build_json_schema` skips leading-underscore fields). Data-preservation half
   of the eventual `ConfigSchemaContributor`; Settings-visibility half is TODO.
-- ACP claude seam (all inside the dormant `_is_claude` path, inert on kiro-cli):
-  `AcpClient._claude_session_mcp_servers()` (Default `[]`) feeds both
-  `session/new` + `session/load` `mcpServers`; `_spawn` calls the
-  companion-attached `_write_claude_local_settings()` (via `getattr`) on the
-  PRIMARY spawn path; `AcpClient`/`AcpProvider` take a `permission_mode` kwarg
-  (Default `None`); `acp/types.py` adds `CC_PERMISSION_MODE_DEFAULT` /
+- ACP claude seam (inert on kiro-cli, and implemented in the core now that CC is
+  selectable): `AcpClient._session_mcp_servers()` translates the materialized
+  kiro agent spec (`acp/session_mcp.py`) and feeds both `session/new` +
+  `session/load` `mcpServers` — gated on membership in
+  `ACP_BACKENDS_SESSION_MCP_ARRAY`, not on `_is_claude`, since reading no agent
+  file is a property of the transport rather than of Anthropic; `_spawn` calls
+  `_write_claude_local_settings()` (still identity-gated — it writes a literal
+  `.claude/` path) on the PRIMARY
+  spawn path (permission mode, `availableModels`, resolved model — snapshotted and
+  restored by `_reset_state`); `AcpClient`/`AcpProvider` take a `permission_mode`
+  kwarg (Default `None`); `acp/types.py` adds `CC_PERMISSION_MODE_DEFAULT` /
   `CC_PERMISSION_MODE_AUTO`.
 - Slack message-gate seams (let an edition compose a fail-closed
   challenge-and-redirect posture without editing the core; `InterceptDecision`

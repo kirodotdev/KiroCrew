@@ -42,6 +42,8 @@ job's argv.
 from __future__ import annotations
 
 import configparser
+import functools
+import os
 import re
 from pathlib import Path
 
@@ -172,13 +174,71 @@ def test_run_and_report_omit_lists_agree() -> None:
     assert sorted(_cfg_omit("coverage:run")) == sorted(_cfg_omit("coverage:report"))
 
 
+#: Top-level directories the repo walk skips. Each is a heavy tree that holds no
+#: committed ``test_*.py`` (``.git``, dependency and virtualenv trees, and build /
+#: cache output), so skipping them narrows the walk to the source and test trees the
+#: omit patterns actually target. Anchored at the repo root, not matched by name at
+#: every depth: a nested ``docs/build`` or ``website/electron/build`` is a real
+#: directory the walk must still descend, and an omit target under one must still be
+#: found.
+_WALK_PRUNE_ROOTS = {
+    ".git",
+    "node_modules",
+    ".venv",
+    "build",
+    ".mypy_cache",
+    ".pytest_cache",
+    "__pycache__",
+    ".ruff_cache",
+    "htmlcov",
+}
+
+
+@functools.lru_cache(maxsize=1)
+def _all_repo_files() -> tuple[str, ...]:
+    """Every repo-relative file path (posix) outside the pruned top-level trees.
+
+    One walk serves every omit pattern; the callers filter its result in memory.
+    Cached because the tree is static within a test run, and each xdist worker builds
+    its own cache.
+    """
+    out: list[str] = []
+    for dirpath, dirnames, filenames in os.walk(REPO_ROOT):
+        if dirpath == str(REPO_ROOT):
+            dirnames[:] = [d for d in dirnames if d not in _WALK_PRUNE_ROOTS]
+        rel_dir = os.path.relpath(dirpath, REPO_ROOT)
+        for fn in filenames:
+            rel = fn if rel_dir == "." else f"{rel_dir}/{fn}"
+            out.append(rel.replace(os.sep, "/"))
+    return tuple(out)
+
+
 def _repo_files_matching(pattern: str) -> list[Path]:
-    """Every tracked test file the omit *pattern* would exclude."""
-    tail = pattern[2:] if pattern.startswith("*/") else pattern
+    """Every tracked test file the omit *pattern* would exclude.
+
+    Every committed omit basename is a glob-free literal (enforced by
+    ``test_omit_patterns_do_not_swallow_product_code``, which requires each to be a
+    specific ``test_*.py`` name), so a basename match against the cached walk selects the
+    same files a basename glob would, and the unchanged ``_matches`` suffix check then
+    applies the full pattern. A basename carrying a glob metachar falls back to ``fnmatch``.
+    """
+    basename = (pattern[2:] if pattern.startswith("*/") else pattern).rsplit("/", 1)[-1]
+    has_glob = any(ch in basename for ch in "*?[")
+    if has_glob:
+        import fnmatch
+
+        def _name_ok(name: str) -> bool:
+            return fnmatch.fnmatch(name, basename)
+
+    else:
+
+        def _name_ok(name: str) -> bool:
+            return name == basename
+
     return [
-        path
-        for path in REPO_ROOT.rglob(tail.rsplit("/", 1)[-1])
-        if _matches(pattern, path.relative_to(REPO_ROOT).as_posix())
+        REPO_ROOT / rel
+        for rel in _all_repo_files()
+        if _name_ok(rel.rsplit("/", 1)[-1]) and _matches(pattern, rel)
     ]
 
 
@@ -201,9 +261,7 @@ def test_every_omitted_test_file_carries_a_capability_guard() -> None:
         matched = _repo_files_matching(pattern)
         if not matched:
             unjustified.append(f"{pattern} (matches no file in the repo)")
-        elif not any(
-            _CAPABILITY_GUARD in path.read_text(encoding="utf-8") for path in matched
-        ):
+        elif not any(_CAPABILITY_GUARD in path.read_text(encoding="utf-8") for path in matched):
             unjustified.append(f"{pattern} (no {_CAPABILITY_GUARD} guard)")
     assert not unjustified, (
         f"these omit patterns exempt a test file with nothing to justify it: {unjustified}. "

@@ -95,6 +95,24 @@ _SPLIT_HEADROOM = 100
 #: lines explain a reply; twelve bury it.
 _MAX_REJECTION_LINES = 3
 
+#: Appended to a partially-streamed assistant row that the dispatcher rescues when
+#: a turn dies mid-flight. Without it the retry reads a reply that simply stops
+#: mid-sentence and cannot tell a truncated turn from a finished one — so it may
+#: treat the work as already reported and answer nothing. The wording addresses
+#: the next turn directly, because that turn is the only consumer.
+#:
+#: It lives here rather than in the shared ``messaging`` layer because the rescue
+#: it belongs to is Slack-only, and for the reason in ``delivered_text``: Slack is
+#: the one renderer that records WHICH appended bytes the API acknowledged, so it
+#: is the one channel where a turn that dies mid-flight can persist text the user
+#: provably saw. Other renderers on the shared path do emit mid-turn; none of them
+#: can say afterwards what the user retained.
+PARTIAL_TURN_MARKER = (
+    "\n\n_[This turn was cut off here by a transport/backend failure, not finished. "
+    "Everything above was already established — continue from this point instead of "
+    "starting the request over.]_"
+)
+
 
 def _redact_all(text: str) -> str:
     """Both outbound redactors as one callable, in the canonical order."""
@@ -332,6 +350,12 @@ class SlackRenderer(Renderer):
         # transport split, so the dispatcher passes in the one operation it owns.
         self.stamp_options: Callable[[str], Awaitable[str | None]] | None = None
         self._accumulated = ""
+        # Text Slack has actually SHOWN for this turn — the delivery ledger read by
+        # the dispatcher's partial-progress rescue (see ``delivered_text``). It is
+        # deliberately NOT ``_accumulated``: that one grows the instant a chunk
+        # arrives, while a chunk only reaches Slack when the edit throttle opens,
+        # so between flushes ``_accumulated`` holds text nobody has seen.
+        self._delivered = ""
         self._bracket_hold = ""  # held text from '[' until ']' to filter [OPTIONS:]
         self._stream_buffer = ""  # unsent text buffered between throttled flushes
         self._last_edit = 0.0  # monotonic ts of the last stream edit (throttle)
@@ -430,7 +454,15 @@ class SlackRenderer(Renderer):
         if not ok and self._use_slack_stream:
             if await self._rotate_stream():
                 assert self._stream_ts is not None
-                return await self.slack.append_stream(self.channel, self._stream_ts, text)
+                ok = await self.slack.append_stream(self.channel, self._stream_ts, text)
+        if ok:
+            # Delivery ledger. This is the ONE sink every streamed assistant string
+            # passes through, and it reports whether Slack accepted the append — so
+            # recording here, and only on success, is what makes ``delivered_text``
+            # mean "shown" rather than "produced". Appends on this path are
+            # cumulative and final, so the ledger needs no reconciliation when
+            # ``_accumulated`` is reset at a ``wait`` boundary.
+            self._delivered += text
         return ok
 
     async def _flush_stream_buffer(self) -> None:
@@ -726,6 +758,57 @@ class SlackRenderer(Renderer):
                 pass  # non-critical teardown; never raise from close()
         self._finalized = True
 
+    @property
+    def delivered_text(self) -> str:
+        """Assistant text Slack has actually SHOWN for this turn.
+
+        The dispatcher's partial-progress rescue persists this when a turn dies
+        mid-flight, so that a retry resumes from what was already established
+        instead of re-deriving it. It is a delivery ledger, not a copy of the
+        model's output, and the distinction is the whole point: ``_accumulated``
+        grows the moment a chunk arrives, but a chunk only reaches Slack when the
+        edit throttle opens, so persisting that would record text nobody saw as
+        established fact.
+
+        Only ``_append_stream`` advances it, and only when Slack accepted the
+        append. Two consequences worth knowing before relying on it:
+
+        * On the no-stream fallback (``_use_slack_stream`` False) this stays
+          empty, because that sink cannot confirm delivery — see the note at the
+          throttled ``_safe_update``. The rescue then does nothing, which is
+          correct.
+        * It holds the text as SHOWN: thinking tags stripped, ``[OPTIONS:…]``
+          markup suppressed by the bracket-hold, and image-adjacent text still
+          withheld by ``_ref_hold`` until the seal releases it. That is a subset
+          of ``_accumulated``, never a superset.
+
+        Slack is the only renderer this exists on because Slack is the only
+        renderer that can say afterwards WHICH bytes the user retained. Others on
+        the shared ``messaging/dispatch.drive_turn`` path do emit mid-turn —
+        ``telegram`` live-edits per chunk, ``wecom`` pushes stream frames,
+        ``webex`` rides the buffer tail on a status frame — but each of those
+        frames is throttled, replaced wholesale, or truncated, so none yields a
+        per-append record of acknowledged output to rescue from.
+        """
+        return self._delivered
+
+    @property
+    def turn_finalized(self) -> bool:
+        """Whether this turn already reached a normal end.
+
+        ``on_done`` sets it, so it answers exactly one question for the
+        dispatcher's partial-progress rescue: did the reply COMPLETE before the
+        exception? A failure raised after a finished stream — a footer post that
+        4xxs, say — still unwinds through the same ``except``, and marking that
+        already-complete reply as cut off would tell the next turn to resume
+        work that had in fact finished.
+
+        Read it in the ``except`` branch only. ``close()`` also sets it during
+        the dispatcher's ``finally``, which runs AFTER that branch, so by the
+        time teardown flips it the rescue has already made its decision.
+        """
+        return self._finalized
+
     async def on_text_chunk(self, text: str) -> None:
         # Reuses the native streaming machinery verbatim: bracket-hold filter,
         # edit-throttle batching (``_EDIT_INTERVAL``), and the chat.update
@@ -763,6 +846,13 @@ class SlackRenderer(Renderer):
                 # A frame shows a fence-safe prefix rather than a truncated one;
                 # the final render lands the whole answer.
                 frame = await self._split_for_slack(filtered, reserve=len(_CURSOR))
+                # The delivery ledger deliberately does NOT advance here. This sink
+                # cannot confirm anything: ``_safe_update`` returns None, swallows
+                # its own exceptions, and truncates at ``SLACK_MSG_LIMIT``, and the
+                # frame is a prefix rather than the whole text. So on the no-stream
+                # fallback ``delivered_text`` stays empty and the dispatcher's
+                # rescue is a no-op — the correct outcome, because nothing here can
+                # be shown to have reached the user.
                 await _safe_update(self.slack, self.channel, ts, frame[0] + _CURSOR)
             self._last_edit = now
 

@@ -16,7 +16,7 @@ Both flows end at the same place: a remote MCP server that needs an OAuth bearer
 
 kiro-cli reads its agent definition from `agent.json` at session start. MCP servers are declared inline in that file. From there, two paths:
 
-**Path A — no token in the agent config.** kiro-cli connects to the MCP server, gets a 401, runs OAuth itself, and surfaces the consent URL via the `_kiro.dev/mcp/oauth_request` ACP notification. Kiro Crew renders that URL as a dashboard banner; the user clicks through; the OAuth provider eventually calls back to **kiro-cli's own local callback server**; kiro-cli stores the token in **its own credential store** (macOS keychain, kiro-cli's SQLite — opaque to Kiro Crew). All subsequent calls "just work" because the bearer is injected internally by kiro-cli.
+**Path A — no token in the agent config.** kiro-cli connects to the MCP server, gets a 401, runs OAuth itself, and surfaces the consent URL via the `_kiro.dev/mcp/oauth_request` ACP notification. Kiro Crew renders that URL as a dashboard banner; the user clicks through; the OAuth provider eventually calls back to **kiro-cli's own local callback server**; kiro-cli stores the token in **its own on-disk grant store** — a pair of files under `~/.aws/sso/cache/`, keyed by `sha256(origin+path)` of the server URL: `<sha256>.token.json` holds the bearer + refresh token and `<sha256>.registration.json` holds the DCR client metadata (see [kiro-cli MCP OAuth token storage](../../reference/kiro-cli/mcp/oauth-token-storage.md) for the source-derived layout). These files survive a restart. The token **values** and their lifecycle — expiry, refresh, sign-out — are effectively opaque and unownable to Kiro Crew: it cannot read the bearer, enumerate authenticated servers from the token contents, or drive a refresh. What it *can* do is **stat** the paired files for presence (`mcp_grant.grant_presence`, which never opens them), which is how the dashboard renders "Signed in" vs "Sign-in required". All subsequent calls "just work" because the bearer is injected internally by kiro-cli.
 
 **Path B — token already written into the agent config's `headers`.** kiro-cli sees `Authorization: Bearer …` on the MCP server entry and connects without running OAuth at all.
 
@@ -71,13 +71,13 @@ That inverts the ownership model: **Kiro Crew owns the OAuth chain end-to-end.**
 
 1. **"An agent could grep and leak the token" understates it.** The instinct is right, but the real risk isn't malicious agents. It's a benign one. A GitHub MCP server with an OAuth token in `agent.json` plus a perfectly reasonable user prompt — "summarize what's in my home directory" — can leak the credential into chat output without anyone misbehaving. Lead with the **prompt-injection / accidental-leak** angle; it's more persuasive because it's harder to mitigate.
 
-2. **The "different accounts per MCP" point isn't in the original write-up but is one of the strongest.** kiro-cli's keychain is process-global — one GitHub identity per machine. With Kiro Crew owning identity, a workspace running two agents (e.g. `personal-tasks` and `team-tasks`) can hold two different GitHub tokens against the same MCP server. That's a concrete product capability we can't deliver today.
+2. **The "different accounts per MCP" point isn't in the original write-up but is one of the strongest.** kiro-cli's grant store is process-global — the paired-file cache under `~/.aws/sso/cache/` holds one identity per server per machine, so one GitHub identity per machine. With Kiro Crew owning identity, a workspace running two agents (e.g. `personal-tasks` and `team-tasks`) can hold two different GitHub tokens against the same MCP server. That's a concrete product capability we can't deliver today.
 
 3. **Use a comparison table instead of prose; reviewers process it faster:**
 
    | Concern | kiro-cli (today) | Agent SDK (proposed) |
    |---|---|---|
-   | Where does the OAuth token live? | kiro-cli's keychain (opaque) | Kiro Crew's credential store |
+   | Where does the OAuth token live? | paired `~/.aws/sso/cache/<sha256>.token.json` + `.registration.json` files (values opaque; presence stat-able) | Kiro Crew's credential store |
    | Who runs the callback server? | kiro-cli, on a port it picks | Kiro Crew, on a port we control |
    | Can we list authenticated MCP servers? | No | Yes |
    | Can we refresh proactively? | No | Yes |

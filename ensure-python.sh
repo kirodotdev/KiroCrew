@@ -1,15 +1,16 @@
 #!/bin/bash
-# Ensure a Python >= 3.10 interpreter is available for the backend venv.
+# Ensure a Python >= 3.12 interpreter is available for the backend venv.
 # Called by: Makefile (backend), setup.sh
 # Platforms: macOS, Amazon Linux 2 (system python3 is 3.7), Amazon Linux 2023
 #            (system python3 is 3.9), Linux
 #
-# The package requires Python >= 3.10 (pyproject `requires-python`; the code
-# uses stdlib features such as contextlib.aclosing that need 3.10). Amazon
+# The package requires Python >= 3.12 (pyproject `requires-python`): 3.12 is
+# what every release artifact bundles (packaging/build-desktop.sh pins a
+# CPython 3.12 python-build-standalone) and the only version CI tests. Amazon
 # Linux 2 ships Python 3.7 and Amazon Linux 2023 ships 3.9 as `python3`, so
 # `python3 -m venv` produces a too-old venv and either `pip install -e .` fails
 # to resolve modern deps (AL2/3.7) or the install "succeeds" and then crashes at
-# import (AL2023/3.9). Prefer any already-usable system Python >= 3.10;
+# import (AL2023/3.9). Prefer any already-usable system Python >= 3.12;
 # otherwise install one via mise, whose python-build-standalone binaries run on
 # AL2's glibc 2.26. On success the chosen interpreter's real path — symlinks
 # resolved, see _resolve — is recorded in "<data-home>/python-bin" so
@@ -19,7 +20,7 @@
 # which is not the data home and must not be written to.
 
 MIN_MAJOR=3
-MIN_MINOR=10
+MIN_MINOR=12
 TARGET_PY="${KIROCREW_PYTHON_VERSION:-3.12}"
 
 # True if $1 is a python that runs AND is >= MIN_MAJOR.MIN_MINOR.
@@ -32,12 +33,12 @@ _pyver() {
     "$1" -c 'import sys; print(".".join(map(str, sys.version_info[:3])))' 2>/dev/null
 }
 
-# First usable system python, preferring the newest SUPPORTED minor (3.12 is
-# the CI/build target, matching TARGET_PY above); untested 3.13 and bare
+# First usable system python, preferring the tested minor (3.12 is the
+# CI/build target, matching TARGET_PY above); untested 3.13 and bare
 # python3/python are last resorts so a bleeding-edge install still succeeds.
 _find_system_python() {
     local c resolved
-    for c in python3.12 python3.11 python3.10 python3.13 python3 python; do
+    for c in python3.12 python3.13 python3 python; do
         resolved="$(command -v "$c" 2>/dev/null)" || continue
         if _py_ok "$resolved"; then
             echo "$resolved"

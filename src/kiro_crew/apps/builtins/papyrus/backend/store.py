@@ -496,7 +496,11 @@ def list_files(project: Path) -> list[str]:
         for entry in entries:
             if entry.name.startswith("."):
                 continue
-            if entry.is_symlink():
+            # `is_reparse_link`, not `is_symlink()`: a junction is a DIRECTORY
+            # link `is_symlink()` does not report, so it fell through to the
+            # `is_dir()` arm below and the walk followed it out of the project,
+            # returning outside names under project-relative paths.
+            if is_reparse_link(entry):
                 continue
             if entry.is_dir():
                 stack.append(entry)
@@ -515,7 +519,10 @@ def list_projects(root: Path | None = None) -> list[ProjectSummary]:
     """
     out: list[ProjectSummary] = []
     for entry in sorted(projects_dir(root).iterdir()):
-        if not entry.is_dir() or entry.is_symlink() or entry.name.startswith("."):
+        # Same helper as `safe_project_dir`, which refuses a linked project entry
+        # outright: a junction under `projects/` is a directory `is_symlink()`
+        # misses, so it was enumerated here as a real project.
+        if not entry.is_dir() or is_reparse_link(entry) or entry.name.startswith("."):
             continue
         main_file = resolve_main_file(entry)
         if main_file is None:

@@ -28,7 +28,8 @@ its own state.
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from aiohttp import web
@@ -125,7 +126,7 @@ class TestTheReplayParameter:
         assert resp.status == 200
         assert body["replay"] is False
         state.sessions.discard_conversation.assert_awaited_once_with(
-            "dashboard:chat-1-foo", replay=False
+            "dashboard:chat-1-foo", replay=False, skip_if_busy=True
         )
 
     @pytest.mark.asyncio
@@ -141,7 +142,7 @@ class TestTheReplayParameter:
     def test_the_body_is_read_before_the_busy_guards(self):
         """Source-order guard: reading the body must not widen the teardown race.
 
-        ``await request.json()`` is a suspension whose duration the CLIENT
+        ``await read_bounded_json(...)`` is a suspension whose duration the CLIENT
         controls. Every busy guard below it protects work that can START during a
         suspension — a turn admitted after ``has_active_turn()`` answered False is
         then torn down mid-write by the discard. Parsing the body after the guards
@@ -159,7 +160,7 @@ class TestTheReplayParameter:
         from kiro_crew.dashboard import chat_handlers
 
         src = inspect.getsource(chat_handlers.api_chat_slot_reset_conversation)
-        body_read = src.index("await request.json()")
+        body_read = src.index("await read_bounded_json(")
         first_guard = src.index("state.sessions.get_provider(key)")
         discard = src.index("discard_conversation(key, replay=")
 
@@ -180,7 +181,7 @@ class TestItClearsTheRightThing:
         assert status == 200
         assert body["reset"] is True
         state.sessions.discard_conversation.assert_awaited_once_with(
-            "dashboard:chat-1-foo", replay=True
+            "dashboard:chat-1-foo", replay=True, skip_if_busy=True
         )
 
     @pytest.mark.asyncio
@@ -197,7 +198,9 @@ class TestItClearsTheRightThing:
         status, _ = await _post(_make_app(state), "slack_123.456")
 
         assert status == 200
-        state.sessions.discard_conversation.assert_awaited_once_with("slack:123.456", replay=True)
+        state.sessions.discard_conversation.assert_awaited_once_with(
+            "slack:123.456", replay=True, skip_if_busy=True
+        )
 
     @pytest.mark.asyncio
     async def test_it_keeps_the_entry_rather_than_deleting_it(self):
@@ -263,7 +266,7 @@ class TestItRefusesWhenItCannotBeSafe:
 
         assert status == 200
         state.sessions.discard_conversation.assert_awaited_once_with(
-            "dashboard:chat-1-foo", replay=True
+            "dashboard:chat-1-foo", replay=True, skip_if_busy=True
         )
 
     @pytest.mark.asyncio
@@ -305,8 +308,66 @@ class TestItRefusesWhenItCannotBeSafe:
 
         assert status == 200
         state.sessions.discard_conversation.assert_awaited_once_with(
-            "dashboard:chat-1-foo", replay=True
+            "dashboard:chat-1-foo", replay=True, skip_if_busy=True
         )
+
+    @pytest.mark.asyncio
+    async def test_a_semaphore_held_turn_with_no_prompt_in_flight_is_refused(self):
+        """The edge every fast path above misses, closed by the atomic guard.
+
+        The channel-message shape: an inbound message on a linked session has
+        acquired the per-session semaphore but not yet put a prompt in flight,
+        so ``has_active_turn()`` answers False and ``slot.running`` is False by
+        construction (no dashboard task exists). Only ``discard_conversation``'s
+        ``skip_if_busy`` — the semaphore probed atomically with the session
+        pop — sees it, and its False return must surface as the same
+        ``turn_in_flight`` 409 the fast paths give, not as a success.
+        """
+        state = _state(_slot("slack_123.456", linked="slack:123.456"), active_turn=False)
+        # Behave like the real primitive against a busy session: refuse when
+        # asked to skip, tear down (losing the leased turn's work) when not.
+        # A mutation dropping ``skip_if_busy=True`` then fails on the 409
+        # itself, not merely on the call signature.
+        state.sessions.discard_conversation = AsyncMock(
+            side_effect=lambda key, *, replay=True, skip_if_busy=False: not skip_if_busy
+        )
+        sel_events: list[dict] = []
+
+        with patch(
+            "kiro_crew.dashboard.chat_handlers.sel",
+            lambda: SimpleNamespace(log_api_access=lambda **kw: sel_events.append(kw)),
+        ):
+            status, body = await _post(_make_app(state), "slack_123.456")
+
+        assert status == 409
+        assert body["code"] == "turn_in_flight"
+        state.sessions.discard_conversation.assert_awaited_once_with(
+            "slack:123.456", replay=True, skip_if_busy=True
+        )
+        # The refusal is a decline, not a completed teardown: logging
+        # ``completed`` here would record a reset that never happened.
+        assert [e["outcome"] for e in sel_events] == ["denied"]
+
+    @pytest.mark.asyncio
+    async def test_an_idle_session_still_tears_down(self):
+        """The negative half of the atomic guard: an idle session (semaphore
+        free) is discarded and the route reports the reset it performed."""
+        state = _state(_slot("chat-1-foo"), active_turn=False)
+        state.sessions.discard_conversation.return_value = True
+        sel_events: list[dict] = []
+
+        with patch(
+            "kiro_crew.dashboard.chat_handlers.sel",
+            lambda: SimpleNamespace(log_api_access=lambda **kw: sel_events.append(kw)),
+        ):
+            status, body = await _post(_make_app(state), "chat-1-foo")
+
+        assert status == 200
+        assert body["reset"] is True
+        state.sessions.discard_conversation.assert_awaited_once_with(
+            "dashboard:chat-1-foo", replay=True, skip_if_busy=True
+        )
+        assert [e["outcome"] for e in sel_events] == ["completed"]
 
 
 class TestAppScope:
@@ -318,7 +379,7 @@ class TestAppScope:
 
         assert status == 200
         state.sessions.discard_conversation.assert_awaited_once_with(
-            "dashboard:acme-obj-1", replay=True
+            "dashboard:acme-obj-1", replay=True, skip_if_busy=True
         )
 
     @pytest.mark.asyncio
@@ -371,5 +432,5 @@ class TestAppScope:
 
         assert status == 200
         state.sessions.discard_conversation.assert_awaited_once_with(
-            "dashboard:acme-obj-1", replay=True
+            "dashboard:acme-obj-1", replay=True, skip_if_busy=True
         )

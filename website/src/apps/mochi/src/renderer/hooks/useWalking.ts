@@ -82,6 +82,7 @@ export function useWalking(
       startWalkTo(x, y)
     })
     return () => { off?.() }
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- subscribe-once: `cancelWalk`/`startWalkTo` are per-render closures, so listing them would re-register the `onWalk` listener on every render — and a walk calls `setPos` every frame, so the subscription would be torn down and re-added ~60x/s. Neither closure can go stale: both reach live state through refs (`posRef`, `walkQueueRef`, `walkingRef`) and stable setters.
   }, [setPos])
 
   // Walk path — queue of waypoints
@@ -93,12 +94,14 @@ export function useWalking(
       startWalkTo(points[0].x, points[0].y)
     })
     return () => { off?.() }
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- subscribe-once, same as `onWalk` above: the two per-render closures would re-register this listener on every frame of a walk. The waypoint queue lives in `walkQueueRef`, so a listener registered at mount still appends to the queue the current walk is draining.
   }, [setPos])
 
   // Cancel walk
   useEffect(() => {
     const off = api?.onWalkCancel?.(() => { cancelWalk() })
     return () => { off?.() }
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- subscribe-once: `cancelWalk` is a per-render closure but touches only refs and stable setters, so the one captured at mount cancels the CURRENT walk. Listing it would re-register a cancel listener on every render, and a cancel that arrives during the swap is a walk that never stops.
   }, [])
 
   // Append waypoints to current walk queue
@@ -113,6 +116,7 @@ export function useWalking(
       }
     })
     return () => { off?.() }
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- subscribe-once: `startWalkTo` is a per-render closure, and re-registering this listener on every render would mean re-subscribing on every frame of the very walk it appends to. `walkingRef`/`walkQueueRef` carry the live walk, so the mount-time closure appends to the right queue.
   }, [setPos])
 
   // onHide IPC listener — walk to screen edge
@@ -136,6 +140,7 @@ export function useWalking(
       startWalkTo(targetX, posRef.current.y)
     })
     return () => { off?.() }
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- subscribe-once: `setPos` is a stable `useState` setter, and `cancelWalk`/`startWalkTo` are per-render closures whose inclusion would re-register the hide listener on every render — including every frame of the walk this handler starts. The handler reads the live position through `posRef`, never through the captured `pos`.
   }, [])
 
   // Walk animation — rAF-based interpolation (no CSS transition)

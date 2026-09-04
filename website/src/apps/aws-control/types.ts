@@ -225,6 +225,17 @@ export interface Share {
   createdAt: string
   expiresAt: string
   note: string
+  /**
+   * The object this share points at was not in the drive when the row was
+   * rendered. Present ONLY when established: absent means either "the object
+   * is there" or "the drive was not read", which `SharesResponse.checked`
+   * tells apart.
+   *
+   * The row is marked rather than removed because the ledger records that an
+   * unexpired URL was minted, and deleting the object does not un-mint it —
+   * re-creating the key makes the same URL resolve again.
+   */
+  objectMissing?: boolean
 }
 
 /**
@@ -236,9 +247,17 @@ export interface ShareResult {
   share: Share
 }
 
-/** Payload of `GET /shares`. */
+/**
+ * Payload of `GET /shares`. `checked` says whether these rows were actually
+ * compared against the account's drive — without it an absent `objectMissing`
+ * would read as "the object is there" on a render where the drive was never
+ * read. WHY it was not checked is logged server-side, not sent: the reason is a
+ * backend-authored English sentence and this surface is localized, so the note
+ * the console shows is a translated string gated on this flag.
+ */
 export interface SharesResponse {
   shares: Share[]
+  checked?: boolean
 }
 
 /** One line of the cost breakdown by AWS service. */
@@ -308,22 +327,60 @@ export interface BackupRun {
 export type BackupKind = 'snapshot' | 'sessions'
 
 /**
+ * One kind's durable-job state for ONE account, as `GET /backup/{account}` serves
+ * it. Mirrors `routes._job_view`.
+ *
+ * `active` is what a fresh mount adopts: the run is the host's fact, so a reload
+ * or a navigation away and back still finds it. `lastFailed` exists because the
+ * app's own `runs` ledger only gains an entry when an upload SUCCEEDS -- without
+ * it a failed run would leave the row silent, indistinguishable from one that
+ * never started.
+ *
+ * Account-scoped deliberately. The shared `_jobs/active` surface is app-scoped by
+ * construction and withholds the account, so it cannot answer "is a backup
+ * running for THIS account" -- which is the only question this page asks.
+ */
+export interface BackupJobRun {
+  run_id: string
+  kind: BackupKind
+  status: string
+  created_at: string
+  updated_at: string
+  finished_at: string
+  error: string
+}
+
+export interface BackupJobState {
+  active: BackupJobRun | null
+  lastFailed: BackupJobRun | null
+}
+
+/**
  * Payload of `GET /backup/{account}`. `runs` holds the last local run per kind;
  * `remote` lists the archive in the bucket (null when it could not be read,
  * with the reason in `remoteError`). `nightly` is the scheduled-snapshot toggle.
+ * `jobs` carries the in-flight and last-failed run per kind for this account.
  */
 export interface BackupStatus {
   nightly: boolean
   runs: Partial<Record<BackupKind, BackupRun>>
+  jobs?: Partial<Record<BackupKind, BackupJobState>>
   remote: Record<BackupKind, DriveFile[]> | null
   remoteError?: string
 }
 
-/** Result of `POST /backup/{account}/run`. */
+/**
+ * Result of `POST /backup/{account}/run`.
+ *
+ * A HANDLE to work in flight, not an outcome: the backup is a durable host-owned
+ * job, so the response arrives while it is still running and `runId` is how the
+ * UI re-finds it after a reload. What the backup PRODUCED lands in the app's own
+ * ledger and is read back through `GET /backup/{account}` as `runs`.
+ */
 export interface BackupRunResult {
-  ran: true
+  started: true
   kind: BackupKind
-  run: BackupRun
+  runId: string
 }
 
 /**

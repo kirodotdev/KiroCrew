@@ -8,18 +8,46 @@ The babysit feature offers two current monitoring modes.
   directive is validated by `mcp_tools.control.monitor_start`, then applied by
   `dashboard.session_directive_apply._monitor_start` through
   `autonudge_authz.authorize_and_add_nudge`. `AutoNudgeService` persists and
-  schedules the loop.
+  schedules the loop. When the loop's own instruction names exactly one public
+  GitHub pull request, the service attaches a monitor and OBSERVES that pull
+  request on each tick instead of firing: a tick the probe calls quiet spends no
+  agent turn at all. That is the default for `monitor_start`, whose directive asks
+  for the gate; `gate: false` is its opt-out. Every OTHER caller defaults to
+  UNGATED and must ask for the gate explicitly -- the generic REST route included --
+  because gating is the state that can silently STOP work, so an uncertain caller
+  must resolve toward spending rather than toward a watch that deactivates itself.
 * `pr_watch.py:watch` is a script cron for a quiet pull-request waiting phase.
-  `builtin_skills/kirocrew-dev/babysit/scripts/pr_watch.py:watch` polls one
-  PR without an LLM turn and uses `irq.run` to decide whether to `Skip`,
-  `Report`, or `Done`.
+  `probes.gh_pr.PrWatchProbe` holds the GitHub knowledge and is driven two ways:
+  `builtin_skills/kirocrew-dev/babysit/scripts/pr_watch.py:watch` is a thin cron
+  adapter over it via `irq.run`, and the AutoNudge scheduler drives the same
+  probe in-process via `irq.poll`. The probe lives in the package because a
+  hyphenated skill directory is not importable, so a copy beside each driver
+  would have meant two copies of one classifier.
 
-The modes are not interchangeable. `monitor_start` re-injects an instruction
-into the same conversation on every delivered cycle; `PrWatchProbe` reports
-only a state that needs judgment. This boundary is load-bearing: repeated
-quiet CI polls do not grow the session transcript, while a wake retains the
-session that owns the work and its tools. The babysit skill documents when to
-use each mode.
+The modes are not interchangeable, but they no longer overlap for the common
+case. A gated `monitor_start` loop re-injects its instruction only on a cycle
+the probe judged worth a turn, so a manual `pr_watch` cron is now for what the
+gate cannot reach: an enterprise host, detection with no owning loop, or the
+cron's own `known_reds` / `note` / `wake_on_green` knobs. `PrWatchProbe` reports
+only a state that needs judgment. This boundary is load-bearing: repeated quiet
+CI polls do not grow the session transcript, while a wake retains the session
+that owns the work and its tools. The babysit skill documents when to use each
+mode.
+
+### What a gated loop changes about the numbers
+
+`max_cycles` counts DELIVERED cycles, so for a gated loop it bounds delivered
+TURNS rather than intervals elapsed -- one field bounding two different quantities
+depending on whether inference fired, which any budget UI or operator reasoning
+has to know. Not wakes: a wake is only one of the four things that consume the
+budget, alongside a streak-floor delivery, a gate fallback and a post-wake
+follow-up, so reading the cap as a wake count under-states what it spends.
+A gated loop is never starved: after `_MAX_QUIET_STREAK` consecutive quiet
+observations it is delivered anyway, counted apart from wakes in `floor_ticks` so
+a periodic delivery is never read as a real signal. Every uncertain path -- no
+probe, no inferable target, a probe defect, a kernel that reached no verdict --
+fires as before, because a wrongly-quiet tick is silence with half-finished work
+behind it while a wrongly-spent tick costs what every tick costs today.
 
 ## Same-session monitor contract
 
@@ -31,6 +59,20 @@ applies that directive on the user-facing session. The split prevents a cron,
 hook, or subagent from using inherited process identity to arm, rewrite, or
 stop another session's unattended loop; `test_autonudge_stop_auth.py` pins the
 binding-key-only targeting and the non-nudgeable-session refusals.
+
+A directive travels to the consumer as a marker inside the tool's own RESULT
+TEXT, and the marker's payload is the only thing that names the record the MCP
+stub parked out of band. A backend whose tool results arrive already serialised
+as JSON escapes every quote in that payload while leaving the quote-free sentinel
+intact, so the frame still looks like it carries a directive and names nothing:
+the tool answers "requested" and no loop arms. `acp/_dispatch._repair_escaped_marker`
+recovers it at every `EVENT_TOOL_RESULT` builder, `test_session_directive_transport.py`
+pins that recovery and ratchets it over any builder a new provider adds, and
+[agent-host-contract.md](agent-host-contract.md) §9 states the requirement a
+provider must declare. The consumer-side failure paths log at `warning`
+(`session-directive NOT APPLIED`, `SELECTOR UNREADABLE`, `CLAIM MISS`, `DENIED`),
+which is what makes this class of drop visible in `gateway.log` instead of
+silent.
 
 `monitor_start` binds one loop to the calling session. `AutoNudgeService._add_unserialized`
 replaces an existing loop on that binding before it persists and arms the new

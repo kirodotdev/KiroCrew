@@ -29,6 +29,7 @@ kept choices for the card as well as the body — rather than
 
 from __future__ import annotations
 
+import hashlib
 import secrets
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
@@ -184,6 +185,21 @@ def display_safe_for(text: str, capabilities: TransportCapabilities) -> str:
     return safe.replace("@", "@\u200b").replace("<!", "<\u200b!")
 
 
+def session_provenance_tag(session_key: str) -> str:
+    """A short, stable, non-reversible tag for the session that posted a widget.
+
+    Option buttons can outlive the conversation that rendered them. The tag lets
+    a dispatcher compare the posting session with the conversation's current
+    target before model-authored choice text enters a turn. A digest keeps the
+    internal key out of client-visible callback data; it is deterministic so the
+    check survives a gateway restart. This is an equality gate, not an authority
+    token: forging it grants no capability beyond typing the same text.
+    """
+    if not session_key:
+        return ""
+    return hashlib.sha256(session_key.encode("utf-8")).hexdigest()[:12]
+
+
 def new_approval_nonce() -> str:
     """A per-prompt token that makes a STALE widget's press unusable.
 
@@ -235,6 +251,44 @@ def display_safe(text: str) -> str:
     """
     safe, _ = redact_for_display(text or "", _default_redactor)
     return safe.replace("@", "@\u200b").replace("<!", "<\u200b!")
+
+
+def credential_redaction_notice(count: int) -> str:
+    """The notice a channel sends after delivering text redaction rewrote.
+
+    Lives beside :func:`display_safe` because it is the other half of the same
+    outbound contract: that function guarantees the credential does not reach the
+    channel, and this one tells the reader it happened. Shared across channels so
+    one sentence cannot drift into per-channel spellings that each have to be
+    reviewed for leaked bytes.
+
+    ``count`` is the number of redaction placeholders standing in the text that
+    actually shipped, so the wording matches what the reader can see above the
+    notice. It carries NO secret bytes: by the time it is built a tag has already
+    replaced them, and only the count is used.
+
+    Says "a redaction placeholder" rather than naming a specific tag, because the
+    redactor emits more than one (``security.CREDENTIAL_REDACTION_TAGS``) and
+    naming one would print a marker the reader cannot find whenever the
+    substitution came from a different pass.
+
+    Plain text with no markup and no emoji, so one string is correct on every
+    channel: Slack renders mrkdwn, iMessage renders nothing. "The message above"
+    holds for both, because every caller sends this as its own message BELOW the
+    answer rather than appending to it.
+
+    The second sentence is deliberately blunt: a redacted command is not a working
+    command. Saying only "a credential was removed" still leaves the reader
+    pasting text that cannot run, which is the reported failure -- an opaque
+    downstream error far from the real cause.
+    """
+    subject = "A credential" if count == 1 else f"{count} credentials"
+    verb = "was" if count == 1 else "were"
+    return (
+        f"Security notice: {subject} in the message above {verb} replaced with a "
+        "redaction placeholder. Any command shown will not work if you paste it "
+        "as-is; supply the secret yourself on the machine where you run it."
+    )
 
 
 def _choice_display_safe(text: str, capabilities: TransportCapabilities | None) -> str:

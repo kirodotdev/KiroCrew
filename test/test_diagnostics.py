@@ -23,7 +23,7 @@ from urllib.parse import parse_qs, urlsplit
 import pytest
 import yaml
 
-from conftest import requires_symlinks
+from conftest import make_dir_link, requires_symlinks
 from kiro_crew import beacon, diagnostics
 from kiro_crew.dashboard.handlers import diagnostics as dh
 from kiro_crew.diagnostics import BundleResult
@@ -612,6 +612,52 @@ def test_triage_workflow_maps_every_channel_dropdown_answer():
             f"issue-triage.yml never applies {label!r}, but the dashboard flow "
             "attaches it -- the two paths must agree on the vocabulary"
         )
+
+
+# ── collector link guard ──────────────────────────────────────────
+
+
+class TestUsableDirRejectsEveryDirLink:
+    """``_usable_dir`` is the collector's one guard against enumerating THROUGH a
+    linked log directory: ``Path.is_dir()`` follows the link, and the real files
+    found on the other side are not themselves links, so they sail past the
+    per-file check and get packaged into a bundle destined for a public issue.
+
+    ``Path.is_symlink()`` does not report a Windows junction, and a junction is
+    the only directory link an unprivileged Windows user can create — a symlink
+    needs ``SeCreateSymbolicLinkPrivilege`` — so a symlink-only guard is open on
+    exactly the platform where planting one is easiest.
+    """
+
+    def test_a_real_directory_link_is_not_usable(self, tmp_path: Path) -> None:
+        # A junction on Windows, a directory symlink on POSIX — the same
+        # traversal either way, and no privilege needed on either.
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        (outside / "id_rsa").write_text("secret", encoding="utf-8")
+        link = tmp_path / "kiro-log"
+        make_dir_link(link, outside)
+
+        assert link.is_dir()  # the link resolves — this is what makes it dangerous
+        assert list(link.glob("*"))  # and enumerating it reaches the target's files
+        assert diagnostics._usable_dir(link) is False
+
+    def test_a_plain_directory_stays_usable(self, tmp_path: Path) -> None:
+        # The guard must not reject the ordinary case it exists to allow.
+        real = tmp_path / "kiro-log"
+        real.mkdir()
+        assert diagnostics._usable_dir(real) is True
+
+    def test_guard_routes_through_the_shared_link_predicate(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Pinned at the seam as well as end to end: the junction-aware predicate
+        # is the shared one, so this guard cannot drift from the rest of the
+        # tree on which reparse types count as a link.
+        real = tmp_path / "kiro-log"
+        real.mkdir()
+        monkeypatch.setattr(diagnostics.platform_compat, "is_link_or_junction", lambda p: True)
+        assert diagnostics._usable_dir(real) is False
 
 
 # ── API handlers (mode-independent: stub request + asyncio.run) ──────────────

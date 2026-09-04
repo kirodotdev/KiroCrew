@@ -129,9 +129,48 @@ def policy_path() -> Path:
 
 
 def _read() -> dict[str, Any]:
+    """The stored ceiling, or ``{}`` when there is nothing readable.
+
+    A DISPLAY/GATE read: it must degrade to the caller's DEFAULT rather than
+    raise, because every reader here backs a security decision that has a safe
+    answer -- an unreadable ceiling reads as ``observe`` with no act-rules, which
+    is the most restrictive state, not a permissive one. See
+    :func:`_read_for_update` for why a writer may not stand on the same answer.
+    """
     try:
         raw = json.loads(policy_path().read_text(encoding="utf-8"))
     except (FileNotFoundError, OSError, json.JSONDecodeError):
+        return {}
+    return raw if isinstance(raw, dict) else {}
+
+
+def _read_for_update() -> dict[str, Any]:
+    """The ceiling a read-modify-write is allowed to publish over.
+
+    ``_PolicyLock`` documents that every writer here is a read-modify-write and
+    that ``atomic_write`` REPLACES the whole file. So an empty base is not
+    "nothing to carry forward" -- it is "discard every other operator-only key",
+    and this file holds ALL of them: the autonomy ceiling, the outbound ledger
+    remote and Slack channel, the rotation identity, the primary-instance flag.
+    Only a MISSING file makes that base true.
+
+    Losing them is not a preference reset. Each key is fenced onto the keystone
+    floor precisely because the agent must not be able to set it, and every one
+    reverts to a value the agent CAN influence: ``mode`` and ``autonomy_rules``
+    fall back to a default the route re-derives, and the destination and identity
+    keys fall back to absent, which is how the off-shift refusal and the
+    ``not_primary`` gate get their inputs. Silently dropping the operator's
+    ceiling on one transient EACCES is the failure this file exists to prevent,
+    arriving by accident instead of by attack. The error propagates and the
+    write is abandoned instead.
+
+    Corruption keeps reading as empty, matching :func:`_read`: the document
+    parsed to nothing usable, so there is no stored ceiling left to lose by
+    replacing it.
+    """
+    try:
+        raw = json.loads(policy_path().read_text(encoding="utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError):
         return {}
     return raw if isinstance(raw, dict) else {}
 
@@ -224,11 +263,15 @@ def set_ceiling(*, mode: str | None = None, rules: list[Any] | None = None) -> N
     could fix because the interleaving comes from another request.
 
     ``None`` means "leave unchanged", so this is also the single-field writer.
+
+    Raises ``OSError`` when the existing ceiling could not be read; see
+    :func:`_read_for_update` for why that is not collapsed to an empty document
+    here.
     """
     if mode is None and rules is None:  # pragma: no cover — programming error, not input
         raise ValueError("set_ceiling requires at least one of mode/rules")
     with _PolicyLock():
-        data = _read()
+        data = _read_for_update()
         if mode is not None:
             data[_MODE_KEY] = mode
         if rules is not None:
@@ -269,11 +312,15 @@ def get(key: str, default: Any = None) -> Any:
 
 
 def put(key: str, value: Any) -> None:
-    """Write one operator-only value. Dashboard-PUT only — see the module docstring."""
+    """Write one operator-only value. Dashboard-PUT only — see the module docstring.
+
+    Raises ``OSError`` when the existing ceiling could not be read, for the reason
+    :func:`_read_for_update` gives.
+    """
     if key not in OPERATOR_ONLY_KEYS:  # pragma: no cover — programming error, not input
         raise KeyError(f"{key!r} is not an operator-only key; use config.json for it")
     with _PolicyLock():
-        data = _read()
+        data = _read_for_update()
         data[key] = value
         _write(data)
 

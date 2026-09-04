@@ -632,16 +632,21 @@ Step 9 is the one most easily skipped and most expensive to omit — without it,
 serving".
 
 **The lease must cover steps 3–8, not 3–6**, and that is the difference between
-this design and what already exists. The in-tree analogue is `installingUpdate`
-(`website/electron/main.js:223`, read by the liveness monitor at `:1382`) — a
-process-local boolean, which is sufficient on desktop only because Electron
-itself survives the swap and can keep holding it. The wheel engine has no such
-survivor: its supervisor is launchd or systemd, the gateway is gone during
-step 7, and an external supervisor cannot read another process's in-memory flag.
-Generalizing §5 with a process-local lock therefore reintroduces, on the wheel
-path, precisely the respawn-during-install race the desktop path already hit and
-fixed. Hence a lease on disk, with the supervisor unit taught to honor it. This
-is the fragile seam and it gets explicit tests.
+this design and what already exists. The in-tree analogue is the private
+`installingUpdate` state owned by
+[`createGatewaySupervisor`](../../website/electron/gateway-supervisor.js):
+`onInstallDispatched()` sets it and stops the active liveness monitor,
+`startLivenessMonitor()` checks it before initiating liveness recovery for an
+unresponsive gateway, and
+`onInstallFailed()` clears it and invokes recovery if install dispatch fails.
+It is a process-local boolean, which is sufficient on desktop only because
+Electron itself survives the swap and can keep holding it. The wheel engine has
+no such survivor: its supervisor is launchd or systemd, the gateway is gone
+during step 7, and an external supervisor cannot read another process's
+in-memory flag. Generalizing §5 with a process-local lock therefore
+reintroduces, on the wheel path, precisely the respawn-during-install race the
+desktop path already hit and fixed. Hence a lease on disk, with the supervisor
+unit taught to honor it. This is the fragile seam and it gets explicit tests.
 
 ## Phases
 

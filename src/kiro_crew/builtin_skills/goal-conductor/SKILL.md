@@ -342,10 +342,12 @@ watches, and that cost grows with the loop's own history.
 
 ## Known limits of this version
 
-- **The whole surface sits behind one config switch.** `agent.session_control`
-  defaults to OFF and fails closed — every session tool answers
-  `session_control_disabled` until the user sets it to `true` in config.json.
-  If you see that error, say which switch to flip; do not retry.
+- **The grant is the agent's MCP mount, not a feature switch.** The session tools
+  come from `@kirocrew-dashboard`; an agent whose spec does not mount it never sees
+  them, exactly like any other MCP server. `agent.session_control` defaults to true
+  and exists only as a single withdrawal — if an operator set it to `false`, every
+  session tool answers `session_control_disabled`. If you see that error, say which
+  switch to flip; do not retry.
 - **Reads and creates do not prompt; anything that touches another session does.**
   Auto-approved by name: `chat_folder_tree`, `chat_folder_create`,
   `session_create`, `session_read_message` — so a patrol cycle that wakes on a

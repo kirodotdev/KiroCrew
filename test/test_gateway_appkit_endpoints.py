@@ -338,9 +338,9 @@ class TestContextInjection:
 
     @pytest.mark.asyncio
     async def test_scalar_json_body_is_a_400_not_a_500(self, tmp_path: Path):
-        """`null` is VALID json: it survives the parse and then makes `.get`
-        raise into a 500. The shape needs its own rejection. Shared with
-        /note, which reaches the same validators."""
+        """`null` is VALID json: it survives the parse and would make `.get`
+        raise into a 500. ``read_bounded_json`` refuses the shape as
+        ``body_not_object``. Shared with /note, which reads the same guard."""
         state = _make_state(tmp_path)
         state._slots["s1"] = _ChatSlot("s1")
         async with self._make_client(state) as client:
@@ -351,7 +351,7 @@ class TestContextInjection:
                     headers={"Content-Type": "application/json"},
                 )
                 assert resp.status == 400, f"{raw!r} should be a 400, got {resp.status}"
-                assert (await resp.json())["code"] == "invalid_body"
+                assert (await resp.json())["code"] == "body_not_object"
 
     @pytest.mark.asyncio
     async def test_huge_integer_max_age_is_a_400_not_a_500(self, tmp_path: Path):
@@ -1486,8 +1486,8 @@ class TestNoteEndpoint:
 
     @pytest.mark.asyncio
     async def test_note_scalar_json_body_is_a_400_not_a_500(self, tmp_path: Path):
-        """`null` is VALID json, so it survives the parse and then makes `.get`
-        raise. The shape needs its own rejection or the endpoint 500s."""
+        """`null` is VALID json, so it survives the parse and would make `.get`
+        raise. ``read_bounded_json`` refuses the shape as ``body_not_object``."""
         state = _make_state(tmp_path)
         state._slots["s1"] = _ChatSlot("s1")
         async with self._make_client(state) as client:
@@ -1498,7 +1498,7 @@ class TestNoteEndpoint:
                     headers={"Content-Type": "application/json"},
                 )
                 assert resp.status == 400, f"{raw!r} should be a 400, got {resp.status}"
-                assert (await resp.json())["code"] == "invalid_body"
+                assert (await resp.json())["code"] == "body_not_object"
 
     @pytest.mark.asyncio
     async def test_note_huge_integer_max_age_is_a_400_not_a_500(self, tmp_path: Path):

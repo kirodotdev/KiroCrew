@@ -1048,7 +1048,7 @@ describe('RemoteCrewPanel — editing a crew', () => {
     })
     await u.click(screen.getByRole('button', { name: /Set up a new one/i }))
     await u.click(screen.getByRole('button', { name: /Your instances/i }))
-    const reopened = within(await screen.findByRole('group', { name: /Edit dev-box-1/i }))
+    await screen.findByRole('group', { name: /Edit dev-box-1/i })
 
     // The port moved externally, which is a machine coordinate, so the save is
     // withheld until the user adopts the current record. The point of the test

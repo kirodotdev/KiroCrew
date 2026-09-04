@@ -45,7 +45,7 @@ import type { KiroCreditUsage, KiroUsagePayload } from './api/client'
 import { safeSetItem } from './utils/safeStorage'
 import { gcOrphanedStorage } from './utils/storageGc'
 import { isMetricNumber, metricNumber } from './utils/metrics'
-import { Rocket, Bell, Code, RefreshCw, Package, Loader2, Download, Hammer, XCircle, Check, AlertTriangle, CheckCircle, X, AudioWaveform, ChevronUp, MoreHorizontal, Coins, ArrowLeftToLine, Compass, LayoutGrid, Fullscreen, SquareTerminal, Bot, Smartphone, Search as SearchIcon } from 'lucide-react'
+import { Rocket, Bell, Code, RefreshCw, Package, Loader2, Download, Hammer, XCircle, Check, AlertTriangle, CheckCircle, X, AudioWaveform, ChevronUp, MoreHorizontal, Coins, ArrowLeftToLine, Compass, LayoutGrid, Fullscreen, Menu, SquareTerminal, Bot, Smartphone, Search as SearchIcon } from 'lucide-react'
 import { GithubIcon, DiscordIcon } from './components/BrandIcon'
 import { Toggle } from './components/ui'
 import OnboardingFlow from './components/OnboardingFlow'
@@ -54,6 +54,7 @@ import PrivacyChapter from './components/PrivacyChapter'
 import { OnboardingShellHost } from './components/OnboardingChapterShell'
 import { PREVIEW_EXPAND_EVENT } from './components/WebPreviewPanel'
 import { canRenderMobileConnectKind } from './components/mobileConnectRenderers'
+import { useMayLeaveForNavigation, useIsCurrentUrl } from './components/NavigationLeaveGuard'
 import { motion, AnimatePresence, useMotionValue, useTransform } from 'framer-motion'
 import { useDrawerSwipe, animateDrawer, registerDrawerTargets, takeOverDrawer, safeAreaLeft } from './hooks/useDrawerSwipe'
 
@@ -148,7 +149,7 @@ import WindowsTitlebarMenu from './components/WindowsTitlebarMenu'
 import { i18nT } from './i18n/t'
 import { appNavTarget } from './appNav'
 import { resolveSlotOverlays, type SlotOwners } from './apps/overlaySlots'
-import { fmtCompact, fmtPercent } from './i18n/format'
+import { fmtCompact, fmtNumber, fmtPercent, fmtUnit } from './i18n/format'
 // Static on purpose, and the tradeoff is real: the sidebar updates badge
 // needs `registryQueryFn` (its own fetch boundary — a badge that only lights
 // after a store-page visit does not do its job), and importing it pulls the
@@ -343,8 +344,17 @@ const REASONING_EFFORT_LEVELS = ['', 'low', 'medium', 'high', 'xhigh', 'max']
 // Sent to the backend and compared, never rendered — the picker has its own copy.
 const APPROVAL_MODE_LEVELS = ['normal', 'trust_reads', 'trust', 'yolo']
 
-function UpdateOverlay({ onCancel }: { onCancel: () => void }) {
+// Exported for the isolated capture harness (capture/update-overlay.tsx):
+// the overlay only mounts mid-update, a state a full-shell capture cannot
+// reach without stubbing the update endpoints end to end.
+export function UpdateOverlay({ onCancel }: { onCancel: () => void }) {
   const progress = useAppSelector(s => s.dashboard.updateProgress)
+  // The restart step kills this tab's socket BY DESIGN (the gateway execs
+  // itself), and progress events stop with it. Without naming that state the
+  // overlay freezes on whatever step last arrived — indistinguishable from a
+  // stall. `connected` is what tells "working, gateway is down on purpose"
+  // from "stuck".
+  const connected = useAppSelector(s => s.dashboard.connected)
   const dispatch = useAppDispatch()
   const step = progress?.step || ''
   const detail = progress?.detail || ''
@@ -416,11 +426,51 @@ function UpdateOverlay({ onCancel }: { onCancel: () => void }) {
               {i18nT('app.cancel_update')}
             </button>
           </div>
+        ) : !connected ? (
+          // The gateway went down mid-update — during the restart step that is
+          // the exec doing its job, and the health probe + WS backoff are
+          // already dialing. Say so, with the live elapsed count, instead of
+          // leaving a frozen step list that reads as a hang. On reconnect the
+          // restart latch (useWebSocket) reloads this tab, which is what
+          // finally clears the overlay.
+          <div className="text-[13px] text-accent flex items-center justify-center gap-1.5" role="status" data-testid="update-reconnecting">
+            <RefreshCw size={13} className="lucide-inline animate-spin" /> {i18nT('app.gateway_restarting_reconnecting')} ({elapsedStr})
+          </div>
         ) : (
           <div className="text-[13px] text-muted">{i18nT('app.page_will_reconnect_when_ready')}</div>
         )}
       </div>
     </div>
+  )
+}
+
+/** Glyph inside the mobile nav toggle: the product logo once it has actually
+ *  loaded, the Menu hamburger at every other instant. This button is the ONLY
+ *  route to the nav rail on a narrow layout, and its logo is a network-fetched
+ *  <img> with `alt=""` + `aria-hidden` — so a 404 (asset missing on a proxied
+ *  serving path), a blocked request, or a hung fetch used to render NOTHING:
+ *  an invisible button that still toggled the rail when tapped blind. The
+ *  hamburger therefore shows by default and the swap happens on the img's
+ *  `load` event, never on an assumption: `loadedSrc` records WHICH src loaded,
+ *  so a branding/theme change falls back to the hamburger until the new asset
+ *  proves itself, and an `error` clears the record. The img stays mounted
+ *  (display:none) while hidden so the browser still fetches it. The hamburger
+ *  sits in a w-6 box matching the img, keeping the 40px tap target and the
+ *  16px page-gutter alignment identical through the swap. */
+export function MobileNavGlyph({ avatar }: { avatar: string }) {
+  const [loadedSrc, setLoadedSrc] = useState<string | null>(null)
+  const showLogo = !!avatar && loadedSrc === avatar
+  return (
+    <>
+      {!showLogo && (
+        <span data-testid="mobile-nav-fallback" className="w-6 h-6 flex items-center justify-center shrink-0" aria-hidden="true">
+          <Menu size={20} />
+        </span>
+      )}
+      {!!avatar && (
+        <img src={avatar} alt="" aria-hidden="true" onLoad={() => setLoadedSrc(avatar)} onError={() => setLoadedSrc(null)} className={`w-6 h-6 rounded-md shrink-0 object-contain transition-transform duration-300 group-hover:rotate-[-8deg] ${showLogo ? '' : 'hidden'}`} />
+      )}
+    </>
   )
 }
 
@@ -580,7 +630,22 @@ function NavItem({ path, label, icon, active, collapsed, badge, onClickOverride,
   const isMobileRow = useIsMobile()
   const iconEl = <span className={`app-icon-nav w-4 h-4 flex items-center justify-center shrink-0 transition-opacity ${active ? 'opacity-100 text-accent is-lit' : 'opacity-70'}`}>{icon}</span>
   const { tip, tipOn, rowRef, showTip, hideTip } = useNavTip<HTMLDivElement>(collapsed)
-  const activate = () => { onClick?.(); (onClickOverride || (() => navigate(path)))() }
+  const mayLeave = useMayLeaveForNavigation()
+  const isCurrentUrl = useIsCurrentUrl()
+  const activate = () => {
+    // Navigating swaps the whole page, and the page leaving may hold a draft the
+    // user typed — `beforeunload` cannot defend it, because a client-side route
+    // change never unloads the document. Ask its guard first.
+    //
+    // Gated on this row actually going SOMEWHERE ELSE (see `useIsCurrentUrl` for
+    // why that test is the whole URL and not `active`). A row with an
+    // `onClickOverride` toggles a surface — the docked terminal, the phone
+    // dialog — and unmounts nothing, so it keeps its exemption; an unqualified
+    // ask would pop a discard-confirm over a click that was never going to
+    // destroy anything.
+    if (!onClickOverride && !isCurrentUrl(path) && !mayLeave()) return
+    onClick?.(); (onClickOverride || (() => navigate(path)))()
+  }
   return (
     <motion.div layout={isMobileRow ? undefined : 'position'}
       ref={rowRef}
@@ -1223,6 +1288,9 @@ export default function App() {
   const {
     colorTheme,
     theme: resolvedMode,
+    brandName,
+    brandLogo,
+    brandFavicon,
     onboarded,
     importOnboarded,
     privacyAcked,
@@ -1312,20 +1380,16 @@ export default function App() {
   useUpdateSubscription()
   const { botName: _botName, avatar: _avatar } = useBranding()
 
-  // Per-theme branding (bot name, logo, favicon, top-bar decoration, overlays,
-  // activation side-effect) comes from the theme-branding registry so the shell
-  // never hard-codes `colorTheme === 'x' ? …` chains. Falls back to the
-  // configured branding when the active theme registers none.
+  // Compiled edition branding wins when registered. Otherwise an active
+  // installed theme may supply the shell label, left-rail logo, and favicon;
+  // configured product branding remains the final fallback.
   const branding = getThemeBranding(colorTheme)
-  const botName = branding?.botName ?? _botName
-  const avatar = branding?.logo ?? _avatar
-  // Swap the browser favicon to the active theme's brand mark (falls back to
-  // the default /logo.png when the theme declares none). The core has no
-  // per-theme favicon of its own; this drives registered theme brandings.
+  const botName = branding?.botName ?? brandName ?? _botName
+  const avatar = branding?.logo ?? brandLogo ?? _avatar
   useEffect(() => {
     const link = document.querySelector<HTMLLinkElement>('link[rel~="icon"]')
-    if (link) link.href = branding?.favicon ?? '/logo.png'
-  }, [branding])
+    if (link) link.href = branding?.favicon ?? brandFavicon ?? '/logo.png'
+  }, [branding, brandFavicon])
   // Fire a theme's activation side-effect (e.g. a boot chime) on each off→on
   // switch to that theme. Generic via the branding registry; the effect itself
   // is owned by the theme's registration, so the core stays silent by default.
@@ -1427,16 +1491,25 @@ export default function App() {
   // or URL bar also exits through the top and pops the header; that false
   // positive is transient (the header closes as soon as the pointer re-enters
   // below the band) and is accepted in exchange for the slam working uniformly.
+  //
+  // Depends on the two `openNow` callbacks, NOT on the hover-intent objects that
+  // carry them: useHoverIntent returns a fresh object literal every render, so
+  // depending on the objects would tear down and re-add this document listener on
+  // every render of the whole app shell. `openNow` is a useCallback keyed on
+  // `enabled` (= focusActive), so the listener is re-subscribed exactly when focus
+  // mode flips — which is also when the effect's own guard changes answer.
+  const { openNow: openTopPeek } = topPeek
+  const { openNow: openRailPeek } = railPeek
   useEffect(() => {
     if (!focusActive) return
     const onOut = (e: MouseEvent) => {
       if (e.relatedTarget !== null) return
-      if (e.clientY <= 20) topPeek.openNow()
-      else if (e.clientX <= 20) railPeek.openNow()
+      if (e.clientY <= 20) openTopPeek()
+      else if (e.clientX <= 20) openRailPeek()
     }
     document.addEventListener('mouseout', onOut)
     return () => document.removeEventListener('mouseout', onOut)
-  }, [focusActive, topPeek.openNow, railPeek.openNow])
+  }, [focusActive, openTopPeek, openRailPeek])
   // A header-owned popover keeps the header on screen.
   //
   // The instance switcher's menu is portaled to document.body (Radix), so moving
@@ -2325,6 +2398,21 @@ export default function App() {
     ? 'failed'
     : (kiroUsage ?? null)
   const [metricsOpen, setMetricsOpen] = useState(() => localStorage.getItem('mc-topbar-metrics') === '1')
+  // The inline metric readings are dropped by a CSS container-query rung when
+  // the actions group runs out of room (the ladder in index.css, whose rungs
+  // shift while the update pill is mounted). In that band the open/closed
+  // preference has nothing to render, so the click opens an anchored popover
+  // instead of writing a setting that produces no visible change at all.
+  // Whether the inline form fits is read FROM CSS through a zero-size probe
+  // carrying the rung's own class -- never from a threshold copied out of
+  // index.css, which would drift from the ladder the moment a rung moves.
+  const [metricsInlineFits, setMetricsInlineFits] = useState(true)
+  const [metricsPopoverAnchor, setMetricsPopoverAnchor] = useState<{ top: number; right: number } | null>(null)
+  const metricsPopoverOpen = metricsPopoverAnchor !== null
+  const metricsProbeRef = useRef<HTMLSpanElement>(null)
+  const metricsGroupRef = useRef<HTMLDivElement>(null)
+  const metricsBtnRef = useRef<HTMLButtonElement>(null)
+  const metricsPopoverRef = useRef<HTMLDivElement>(null)
   // Readout capsule collapse: clicking the connection dot folds the capsule
   // down to just the dot; clicking again restores the full readout.
   const [capsuleCollapsed, setCapsuleCollapsed] = usePersistedBool('mc-topbar-capsule-collapsed', false)
@@ -2348,16 +2436,76 @@ export default function App() {
   // separate strip inset to relay to Electron — positionTrafficLights centers on
   // the header height directly. Remote panes get their own inset via `macInset`.
   const macInset = isMacElectron && !macFullscreen
-  const { data: sysMetrics, isError: sysMetricsError, dataUpdatedAt: sysMetricsUpdatedAt } = useQuery({ queryKey: ['system-metrics'], queryFn: () => api.system().then((d): SysMetricsFrame => ({ memUsed: d.mem_used_gb, memTotal: d.mem_total_gb, cpuPct: d.cpu_pct, diskTotal: d.disk_total_gb, diskFree: d.disk_free_gb, posture: d.resource_posture as 'ample' | 'tight' | 'critical' | 'unknown' | undefined, availableGb: d.resource_available_gb as number | undefined, subagentCap: d.subagent_cap as number | undefined })), refetchInterval: metricsOpen ? 30_000 : 60_000, enabled: true })
+  const { data: sysMetrics, isError: sysMetricsError, dataUpdatedAt: sysMetricsUpdatedAt } = useQuery({ queryKey: ['system-metrics'], queryFn: () => api.system().then((d): SysMetricsFrame => ({ memUsed: d.mem_used_gb, memTotal: d.mem_total_gb, cpuPct: d.cpu_pct, diskTotal: d.disk_total_gb, diskFree: d.disk_free_gb, posture: d.resource_posture as 'ample' | 'tight' | 'critical' | 'unknown' | undefined, availableGb: d.resource_available_gb as number | undefined, subagentCap: d.subagent_cap as number | undefined })), refetchInterval: metricsOpen || metricsPopoverOpen ? 30_000 : 60_000, enabled: true })
   // Tick every 10s while widget is open so `sysMetricsStale` re-evaluates even when the query stops refetching (backgrounded tab, network drop).
   const [, setStaleTick] = useState(0)
   useEffect(() => {
-    if (!metricsOpen) return
+    if (!metricsOpen && !metricsPopoverOpen) return
     const id = setInterval(() => setStaleTick(t => t + 1), 10_000)
     return () => clearInterval(id)
-  }, [metricsOpen])
+  }, [metricsOpen, metricsPopoverOpen])
   // Consider metrics stale if last successful fetch was > 90s ago (3x the 30s poll interval) while the widget is open.
-  const sysMetricsStale = metricsOpen && (sysMetricsError || (sysMetricsUpdatedAt > 0 && Date.now() - sysMetricsUpdatedAt > 90_000))
+  const sysMetricsStale = (metricsOpen || metricsPopoverOpen) && (sysMetricsError || (sysMetricsUpdatedAt > 0 && Date.now() - sysMetricsUpdatedAt > 90_000))
+  // Re-read the rung's verdict on any resize of the group -- its width is what
+  // the container query measures -- and whenever the update pill mounts or
+  // unmounts, which moves the rung without resizing anything.
+  useEffect(() => {
+    const probe = metricsProbeRef.current
+    const group = metricsGroupRef.current
+    if (!probe) return
+    const read = () => setMetricsInlineFits(getComputedStyle(probe).display !== 'none')
+    read()
+    if (typeof ResizeObserver === 'undefined' || !group) return
+    const ro = new ResizeObserver(read)
+    ro.observe(group)
+    return () => ro.disconnect()
+  }, [updateAvailable, isMobile])
+  const closeMetricsPopover = useCallback(() => setMetricsPopoverAnchor(null), [])
+  const toggleMetricsPopover = useCallback(() => {
+    setMetricsPopoverAnchor(prev => {
+      if (prev) return null
+      const r = metricsBtnRef.current?.getBoundingClientRect()
+      return r ? { top: r.bottom + 6, right: Math.max(8, window.innerWidth - r.right) } : null
+    })
+  }, [])
+  // The anchor is a snapshot of the trigger's box, so anything that can move
+  // the trigger dismisses the popover rather than leaving it pointing at empty
+  // space. The group growing back to where the readings fit is one of those
+  // moves: the trigger reverts to the inline readout in the same frame.
+  useEffect(() => {
+    if (!metricsPopoverOpen) return
+    // Move focus INTO the dialog on open. Without this the caret stays on the
+    // trigger, and a screen reader reaches the readings only by traversing to
+    // the end of the document -- the portal renders at the body's end. Not a
+    // focus trap: the popover is not modal, and Escape hands focus back.
+    metricsPopoverRef.current?.focus()
+    const onPointerDown = (e: PointerEvent) => {
+      const t = e.target as Node
+      if (metricsBtnRef.current?.contains(t) || metricsPopoverRef.current?.contains(t)) return
+      closeMetricsPopover()
+    }
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return
+      closeMetricsPopover()
+      metricsBtnRef.current?.focus()
+    }
+    document.addEventListener('pointerdown', onPointerDown)
+    document.addEventListener('keydown', onKey)
+    window.addEventListener('resize', closeMetricsPopover)
+    return () => {
+      document.removeEventListener('pointerdown', onPointerDown)
+      document.removeEventListener('keydown', onKey)
+      window.removeEventListener('resize', closeMetricsPopover)
+    }
+  }, [metricsPopoverOpen, closeMetricsPopover])
+  // Two ways the trigger stops existing under an open popover: the group widens
+  // back to where the readings fit, and the capsule collapses to its bare
+  // connection dot (which unmounts every readout, this trigger included).
+  // Either would otherwise leave the portalled dialog on screen anchored to a
+  // box that is gone.
+  useEffect(() => {
+    if (metricsInlineFits || capsuleCollapsed) closeMetricsPopover()
+  }, [metricsInlineFits, capsuleCollapsed, closeMetricsPopover])
 
   // Listen for dev mode changes from Settings > Developer
   useEffect(() => {
@@ -2849,14 +2997,17 @@ export default function App() {
 
                   A full-colour raster mark is an <img>, which is exactly what the
                   `use-lucide-icons` rule's brand-mark exception prescribes -- a CSS mask
-                  over `currentColor` would flatten the art to one colour.
+                  over `currentColor` would flatten the art to one colour. But an <img>
+                  can FAIL, and `alt=""` + `aria-hidden` means failure renders nothing --
+                  an invisible button as the page's only nav route -- so MobileNavGlyph
+                  holds the Menu hamburger up until the logo's own `load` event.
 
                   Square box, so no optical correction exists: the art is square and
                   `object-contain` fills the box, putting the ink on the 16px page gutter
                   (topbar pl-2 + this button's p-2) that the page title and every card's
                   left edge below it sit on, with the button's own box at 24 + 16 = 40px
                   for the tap target. `narrowFirstBaseline.test.ts` re-derives that sum. */}
-              <img src={avatar} alt="" aria-hidden="true" className="w-6 h-6 rounded-md shrink-0 object-contain transition-transform duration-300 group-hover:rotate-[-8deg]" />
+              <MobileNavGlyph avatar={avatar} />
             </button>
           )}
           <InstanceTabBar variant="inline" />
@@ -2970,12 +3121,20 @@ export default function App() {
         {/* `tb-has-update` shifts the collapse ladder's rungs (index.css): the
             update pill is a conditional, non-shrinking sibling of the ladder,
             so while it is mounted the group's fixed content is wider by the
-            pill's footprint and every rung must fire that much earlier. The
-            class keys off the same selector the pill itself reads, so they
-            move together; during the pill's lazy-chunk fetch the class can
-            lead the pill by a moment, which costs readout room briefly and
-            harms nothing. */}
-        <div className={`tb-right relative${updateAvailable ? ' tb-has-update' : ''}`}>
+            pill's footprint and the ≥640px rungs fire that much earlier. Below
+            640px no rung shifts (#7698): a phone hands the group ≤240px
+            routinely, so a shifted terminal rung blanked the readouts for the
+            whole time an update was pending; the nowrap backstop clips the
+            squeeze instead. The class keys off the same selector the pill
+            itself reads, so they move together; during the pill's lazy-chunk
+            fetch the class can lead the pill by a moment, which costs readout
+            room briefly and harms nothing. */}
+        <div ref={metricsGroupRef} className={`tb-right relative${updateAvailable ? ' tb-has-update' : ''}`}>
+          {/* Zero-footprint probe for the metrics rung. It carries the readings'
+              own class, so JS reads the LADDER's verdict rather than a copy of
+              its thresholds. Out of flow and 0x0, so it costs no ladder budget
+              and adds no flex gap. */}
+          <span ref={metricsProbeRef} className="tb-drop-metrics tb-metrics-probe" aria-hidden="true" />
 
           {/* Theme decoration: extra aside control (e.g. a stardate / clock). */}
           {branding?.topBarAside && !(branding?.topBarHideOnMobile && isMobile) && (
@@ -3041,10 +3200,56 @@ export default function App() {
             }
             if (!capsuleCollapsed) {
             if (!isMobile) {
-              if (!metricsOpen) {
+              if (!metricsInlineFits) {
+                // No room for the inline readings here, so the click opens the
+                // popover and the stored preference is left untouched -- it still
+                // describes what to do once the readings fit again.
+                segments.push(<button key="metrics" ref={metricsBtnRef} className={`${seg} ${metricsPopoverOpen ? 'text-accent' : 'text-muted hover:text-text'}`} title={i18nT('app.system_metrics')} aria-label={i18nT('app.system_metrics')} aria-haspopup="dialog" aria-expanded={metricsPopoverOpen} onClick={toggleMetricsPopover}><AudioWaveform size={12} /></button>)
+              } else if (!metricsOpen) {
                 segments.push(<button key="metrics" className={`${seg} text-muted hover:text-text`} onClick={() => { setMetricsOpen(true); safeSetItem('mc-topbar-metrics', '1') }} title={i18nT('app.system_metrics')} aria-label={i18nT('app.system_metrics')} aria-pressed={false}><AudioWaveform size={12} /></button>)
               } else if (!sysMetrics) {
-                if (sysMetricsError) segments.push(<button key="metrics" className={`${seg} text-danger text-[11px]`} title={i18nT('app.click_to_hide')} onClick={() => { setMetricsOpen(false); safeSetItem('mc-topbar-metrics', '0') }}><AudioWaveform size={11} /> {i18nT('app.metrics_unavailable')}</button>)
+                // Every OPEN state pushes a toggle. This branch is reached
+                // whenever the query has produced no frame, which is the whole
+                // of the first fetch AND the retry window of a failing one
+                // (`isError` is only set once react-query's retries are spent).
+                // Pushing nothing there took the toggle off screen while the
+                // readout was logically open, so the click that was aimed at it
+                // landed on the capsule's background and did nothing — the
+                // reported "the metrics doesn't open". The control has to
+                // outlive the data it displays.
+                if (sysMetricsError) {
+                  segments.push(<button key="metrics" className={`${seg} text-danger text-[11px]`} title={i18nT('app.click_to_hide')} onClick={() => { setMetricsOpen(false); safeSetItem('mc-topbar-metrics', '0') }}><AudioWaveform size={11} /> {i18nT('app.metrics_unavailable')}</button>)
+                } else {
+                  // Em dashes, not a spinner. The sibling usage segment draws the
+                  // same distinction for the same reason: a spinner asserts a
+                  // fetch is about to land, and on a host that never reports
+                  // metrics (the reporter's `kiro-cli: unavailable`) that claim
+                  // never comes true. The dashes reuse the loaded branch's own
+                  // "no valid reading" glyph, so the two open states differ in
+                  // opacity rather than in shape.
+                  //
+                  // Shape is the point, not width: the readings are narrower as
+                  // dashes and the loaded readout's own width moves anyway (9% to
+                  // 10% is a reflow). What this removes is the SEGMENT MOUNT — the
+                  // capsule used to gain a button and a divider when the frame
+                  // landed, and it now only re-renders text inside a button that
+                  // was already there. A child mounting inside a
+                  // `container-type`-contained group is what stranded the header's
+                  // backdrop (see .topbar-glass in index.css), so the two halves
+                  // of this fix meet here.
+                  segments.push(<button key="metrics" className={`${seg} gap-2 text-[11px] font-mono opacity-60`} title={`${i18nT('app.system_metrics')} — ${i18nT('app.click_to_hide')}`} aria-pressed={true} onClick={() => { setMetricsOpen(false); safeSetItem('mc-topbar-metrics', '0') }}>
+                    {/* Same two-form structure as the loaded readout: the
+                        container query picks the icon on the narrow rung, and the
+                        name is sr-only so the icon-only form is still named. */}
+                    <span className="sr-only">{i18nT('app.system_metrics')}</span>
+                    <AudioWaveform size={12} className="tb-narrow-only text-accent" />
+                    <span className="tb-drop-metrics flex items-center gap-2 text-muted">
+                    <span>{i18nT('app.cpu')} —</span>
+                    <span>{i18nT('app.mem')} —</span>
+                    <span>{i18nT('app.dsk')} —</span>
+                    </span>
+                  </button>)
+                }
               } else {
                 // Validity is decided on the RAW frame; formatting happens on a
                 // sanitized copy. A `memTotal > 0` check says nothing about
@@ -3935,8 +4140,12 @@ export default function App() {
             <Route path="/deploy" element={<ArtifactDeployPage />} />
             {/* Builtin app routes — auto-discovered from registry. React Router v6
                 ranks static paths higher than parameterized ones, so /settings, /agents
-                etc. still match first. Unrecognized paths fall through to /chat. */}
-            <Route path="/:builtinApp" element={<BuiltinAppRoute />} />
+                etc. still match first. Unrecognized paths fall through to /chat.
+                The trailing splat also matches the BARE app path (empty splat),
+                so this one arm serves /aws-control and /aws-control/usage alike —
+                an app carries sub-segments for its own path navigation, same
+                shape as /settings/<tab>. */}
+            <Route path="/:builtinApp/*" element={<BuiltinAppRoute />} />
             <Route path="*" element={<ChatRedirect />} />
           </Routes>
         </main>
@@ -3972,6 +4181,53 @@ export default function App() {
     )}
     </WsContext.Provider>
     {shortcutsOpen && <ShortcutsModal onClose={() => setShortcutsOpen(false)} />}
+    {metricsPopoverAnchor && createPortal(
+      <div
+        ref={metricsPopoverRef}
+        role="dialog"
+        aria-label={i18nT('app.system_metrics')}
+        // Programmatically focusable so the open effect above can move the
+        // caret here; -1 keeps it out of the tab ring, which is right for a
+        // transient readout.
+        tabIndex={-1}
+        className="fixed z-[70] min-w-[176px] rounded-xl bg-card border border-border shadow-xl px-3 py-2.5 flex flex-col gap-1.5"
+        style={{ top: metricsPopoverAnchor.top, right: metricsPopoverAnchor.right }}
+      >
+        <div className="text-[11px] font-semibold text-text-strong">{i18nT('app.system_metrics')}</div>
+        {(() => {
+          // Same derivation as both readouts, from the one helper, so the
+          // popover cannot disagree with the inline form about what a partial
+          // frame means.
+          if (!sysMetrics) return <div className="text-[11px] text-muted">{i18nT('app.metrics_unavailable')}</div>
+          const { cpuValid, memValid, dskValid, m } = readMetricsFrame(sysMetrics)
+          const dskUsed = m.diskTotal - m.diskFree
+          const rows = [
+            { label: i18nT('app.cpu'), valid: cpuValid, pct: cpuValid ? m.cpuPct / 100 : NaN, detail: '' },
+            // used/total carries the unit ONCE, on the total: fmtUnit localizes
+            // the digits and the unit and glues them with a non-breaking space,
+            // while the used side is a bare localized number so the pair reads as
+            // one quantity instead of repeating the unit.
+            { label: i18nT('app.mem'), valid: memValid, pct: memValid ? m.memUsed / m.memTotal : NaN, detail: memValid ? `${fmtNumber(m.memUsed, { maximumFractionDigits: 1 })}/${fmtUnit(m.memTotal, 'gigabyte', { maximumFractionDigits: 1 })}` : '' },
+            { label: i18nT('app.dsk'), valid: dskValid, pct: dskValid ? dskUsed / m.diskTotal : NaN, detail: dskValid ? `${fmtNumber(dskUsed, { maximumFractionDigits: 0 })}/${fmtUnit(m.diskTotal, 'gigabyte', { maximumFractionDigits: 0 })}` : '' },
+          ]
+          return (
+            <>
+              {rows.map(r => (
+                <div key={r.label} className="flex items-baseline justify-between gap-4 text-[11px] font-mono tabular-nums">
+                  <span className="text-muted">{r.label}</span>
+                  <span className="flex items-baseline gap-1.5">
+                    {r.detail && <span className="text-muted text-[10px]">{r.detail}</span>}
+                    <span className={r.valid ? metricColor(r.pct) : 'text-muted'}>{r.valid ? fmtPercent(r.pct) : '\u2014'}</span>
+                  </span>
+                </div>
+              ))}
+              {sysMetricsStale && <div className="text-[10px] text-warn">{i18nT('app.metrics_are_stale_latest_fetch_failed')}</div>}
+            </>
+          )
+        })()}
+      </div>,
+      document.body
+    )}
     <KiroAccountModal open={kiroUsageOpen} onClose={() => setKiroUsageOpen(false)} usage={kiroUsageState} />
     <QuickSearchSurface
       owners={slotOwners}

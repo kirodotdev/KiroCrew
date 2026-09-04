@@ -23,6 +23,7 @@ from typing import Any
 
 from aiohttp import web
 
+from kiro_crew.apps.builtins.meetings.backend import calendar_poller
 from kiro_crew.apps.builtins.meetings.backend import constants as k
 from kiro_crew.apps.builtins.meetings.backend import store
 from kiro_crew.apps.builtins.meetings.backend.domain import session as sess
@@ -265,6 +266,10 @@ def register_routes(app: web.Application) -> None:
     # so a hook-append failure can never break gateway startup.
     try:
         app.on_startup.append(_on_startup)
+        app.on_startup.append(calendar_poller.start_poller)
+        # Cleanup runs in order: stop the poller first so no tick can pre-create
+        # a meeting while the live session is being torn down.
+        app.on_cleanup.append(calendar_poller.stop_poller)
         app.on_cleanup.append(_on_cleanup)
     except Exception:  # pragma: no cover — defensive
         logger.warning("meetings: could not register lifecycle hooks", exc_info=True)

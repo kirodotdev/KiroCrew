@@ -3,6 +3,7 @@ import { render, screen, act } from '@testing-library/react'
 import ChatFooter, { pickDistinct, resolveLoader, resolveLoaderIcons, SwapCarousel, STREAM_IDLE_MS } from '../pages/chat/ChatFooter'
 import { GHOST_POSE_ICONS, GHOST_POSE_URLS } from '../components/GhostPoses'
 import { registerThemeBranding } from '../themeBranding'
+import { THEME_LOADER_ICONS } from '../themeLoaderIcons'
 
 const base = { running: false, stopping: false, state: '', lastRole: '', avatar: '/logo.png', botName: 'KiroCrew' }
 
@@ -158,6 +159,27 @@ describe('loader — theme seam', () => {
     const icons = [Mark, Mark, Mark, Mark, Mark]
     registerThemeBranding({ 'seam-loader-theme': { loaderIcons: icons } })
     expect(resolveLoaderIcons('seam-loader-theme')).toBe(icons)
+  })
+
+  it('resolves stock symbols selected by an installed theme manifest', () => {
+    const names = ['star', 'sparkles', 'moon', 'cloud'] as const
+    expect(resolveLoaderIcons('custom-pearce-crt', names)).toEqual(
+      names.map(name => THEME_LOADER_ICONS[name]),
+    )
+  })
+
+  it.each([
+    ['unknown symbol', ['star', 'sparkles', 'moon', 'unknown']],
+    ['too few symbols', ['star', 'sparkles', 'moon']],
+    ['duplicate symbols', ['star', 'sparkles', 'moon', 'star']],
+  ])('falls back safely for manifest pools with %s', (_case, names) => {
+    expect(resolveLoaderIcons('custom-broken', names)).toBe(GHOST_POSE_ICONS)
+  })
+
+  it('keeps a trusted compiled custom loader ahead of manifest symbols', () => {
+    registerThemeBranding({ 'seam-manifest-precedence': { loader: CustomLoader } })
+    const got = resolveLoader('seam-manifest-precedence', ['star', 'sparkles', 'moon', 'cloud'])
+    expect(got.kind).toBe('custom')
   })
 
   it('renders a registered theme’s icons in the footer', () => {

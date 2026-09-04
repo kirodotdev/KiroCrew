@@ -20,7 +20,7 @@ import { MemoryRouter } from 'react-router-dom'
 import { createTestStore } from './helpers'
 import { ThemeProvider } from '../hooks/useTheme'
 import { safeSetItem } from '../utils/safeStorage'
-import type { ChatFolder } from '../types'
+import type { ChatFolder, ChatSlot } from '../types'
 
 // Render framer-motion elements as plain DOM (jsdom can't run projection).
 vi.mock('framer-motion', async () => {
@@ -31,21 +31,21 @@ vi.mock('framer-motion', async () => {
     'drag', 'dragConstraints', 'dragElastic', 'onAnimationComplete',
   ])
   const make = (tag: string) =>
-    React.forwardRef((props: any, ref: any) => {
-      const clean: any = {}
+    React.forwardRef((props: Record<string, unknown>, ref: React.Ref<unknown>) => {
+      const clean: Record<string, unknown> = {}
       for (const k of Object.keys(props)) {
         if (k === 'children') continue
         if (k === 'layoutId') { clean['data-layout-id'] = props[k]; continue }
         if (FRAMER_PROPS.has(k)) continue
         clean[k] = props[k]
       }
-      return React.createElement(tag, { ...clean, ref }, props.children)
+      return React.createElement(tag, { ...clean, ref }, props.children as React.ReactNode)
     })
   const motion = new Proxy({}, { get: (_t, tag: string) => make(tag) })
   return {
     motion,
-    AnimatePresence: ({ children }: any) => React.createElement(React.Fragment, null, children),
-    LayoutGroup: ({ children }: any) => React.createElement(React.Fragment, null, children),
+    AnimatePresence: ({ children }: { children?: React.ReactNode }) => React.createElement(React.Fragment, null, children),
+    LayoutGroup: ({ children }: { children?: React.ReactNode }) => React.createElement(React.Fragment, null, children),
   }
 })
 
@@ -84,16 +84,17 @@ Object.defineProperty(window, 'matchMedia', {
 })
 
 import ChatSidebar from '../pages/ChatSidebar'
+import type { RootState } from '../store'
 
 // Sessions spread across folders + one unfoldered, with distinct recency.
 // modified is epoch seconds; higher = more recent.
-const SLOTS = [
+const SLOTS: ChatSlot[] = [
   { key: 'k-old-alpha', title: 'Old in Alpha', messages: 1, running: false, folder_id: 'f1', modified: 1000 },
   { key: 'k-new-beta', title: 'Newest in Beta', messages: 1, running: false, folder_id: 'f2', modified: 3000 },
   { key: 'k-mid-root', title: 'Middle unfoldered', messages: 1, running: false, modified: 2000, pinned: true },
-]
+] as unknown as ChatSlot[]
 
-function renderSidebar(slots: any[] = SLOTS, folders: ChatFolder[] = FOLDERS) {
+function renderSidebar(slots: ChatSlot[] = SLOTS, folders: ChatFolder[] = FOLDERS) {
   mocks.folders = folders
   const store = createTestStore({
     dashboard: {
@@ -102,8 +103,8 @@ function renderSidebar(slots: any[] = SLOTS, folders: ChatFolder[] = FOLDERS) {
       slotsLoaded: true,
       subagentRunning: {}, subagentDetails: {}, subagentText: {},
       sessionDefaultColor: null, sessionColorsMode: 'tint', sessionColorsPalette: 'horizon', sessionColorsIntensity: 'clear',
-    } as any,
-    chat: { activeSlot: null, slotStatusDetail: {}, subagents: {}, slotActivity: {} } as any,
+    } as unknown as RootState['dashboard'],
+    chat: { activeSlot: null, slotStatusDetail: {}, subagents: {}, slotActivity: {} } as unknown as RootState['chat'],
   })
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })
   qc.setQueryData(['chat-folders'], folders)

@@ -484,7 +484,7 @@ export function useVoiceInput(onText: (text: string, sessionId: string | null, o
       setError(humanizeMicError(e))
     }
     if (gen === startGenRef.current) startingRef.current = false
-  }, [streamEnabled, streamStart, acquireWarm])
+  }, [streamEnabled, streamStart, streamStop, acquireWarm])
 
   const stop = useCallback(() => {
     if (streamEnabled) { streamStop(); setSessionOwner(null); return }

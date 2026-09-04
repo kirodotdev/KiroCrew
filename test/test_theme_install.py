@@ -26,6 +26,7 @@ structure/security logic lives, so no aiohttp app is needed. Covers:
 from __future__ import annotations
 
 import json
+import re
 import shutil
 from pathlib import Path
 
@@ -38,6 +39,8 @@ from kiro_crew.dashboard.handlers.themes import (
     _copy_installed_theme,
 )
 from kiro_crew.dashboard.theme_validate import (
+    _THEME_LOADER_ICONS,
+    _THEME_LOADER_ICONS_MAX,
     _THEME_MAX_FONTS,
     _THEME_OVERLAY_DEFAULT_POSITION,
     _THEME_OVERLAY_DEFAULT_ZINDEX,
@@ -234,6 +237,47 @@ class TestValidateThemeDir:
         summary, err = _validate_theme_dir(_make_theme(tmp_path / "ok", level=2))
         assert err is None, err
         assert summary is not None and summary["level"] == 2
+
+    def test_level_one_loader_icons_are_accepted_and_described(self, tmp_path: Path) -> None:
+        d = _make_theme(tmp_path, level=1)
+        manifest = json.loads((d / "theme.json").read_text("utf-8"))
+        manifest["loaderIcons"] = ["star", "sparkles", "moon", "cloud"]
+        _write(d / "theme.json", manifest)
+        summary, err = _validate_theme_dir(d, installing=True)
+        assert err is None, err
+        assert summary is not None
+        descriptor = _theme_asset_descriptor(d, manifest, 1)
+        assert descriptor["loaderIcons"] == manifest["loaderIcons"]
+
+    @pytest.mark.parametrize(
+        ("level", "icons", "message"),
+        [
+            (0, ["star", "sparkles", "moon", "cloud"], "requires level 1"),
+            (1, None, "must be an array"),
+            (1, "star", "must be an array"),
+            (1, ["star", "moon", "cloud"], "must contain"),
+            (1, ["star", "sparkles", "moon", "unknown"], "unknown symbol"),
+            (1, ["star", "sparkles", "moon", "star"], "must be unique"),
+        ],
+    )
+    def test_invalid_loader_icons_are_rejected(
+        self, tmp_path: Path, level: int, icons: object, message: str
+    ) -> None:
+        d = _make_theme(tmp_path, level=level)
+        manifest = json.loads((d / "theme.json").read_text("utf-8"))
+        manifest["loaderIcons"] = icons
+        _write(d / "theme.json", manifest)
+        summary, err = _validate_theme_dir(d, installing=True)
+        assert summary is None
+        assert err is not None and message in err
+
+    def test_backend_loader_icon_allowlist_matches_frontend(self) -> None:
+        frontend = (
+            Path(__file__).parents[1] / "website" / "src" / "themeLoaderIcons.ts"
+        ).read_text("utf-8")
+        declared = set(re.findall(r"^  ([a-z]+): [A-Z]", frontend, re.MULTILINE))
+        assert declared == _THEME_LOADER_ICONS
+        assert _THEME_LOADER_ICONS_MAX == len(declared)
 
     def test_l2_overlay_asset_rejected(self, tmp_path: Path) -> None:
         d = _make_theme(tmp_path)  # declares level 0 but ships an overlay

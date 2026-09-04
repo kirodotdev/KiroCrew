@@ -407,6 +407,7 @@ export function BrowserPanel() {
                       i18nKey="pages.settings.browserPanel.node_how"
                       components={{
                         dl: (
+                          // eslint-disable-next-line jsx-a11y/anchor-has-content, jsx-a11y/control-has-associated-label -- <Trans> substitutes this element for the <dl> run inside the `node_how` catalog value and supplies its children from that run, so the rendered anchor always carries the localized link text; an aria-label here would instead override it
                           <a
                             href="https://nodejs.org/en/download"
                             target="_blank"

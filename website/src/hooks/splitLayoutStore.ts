@@ -35,6 +35,10 @@ function writeAll(map: LayoutMap): void {
     if (Object.keys(map).length === 0) localStorage.removeItem(KEY)
     else safeSetItem(KEY, JSON.stringify(map))
   } catch (e) {
+    // The split still renders from memory after a failed write, so a quota or
+    // serialization failure has no symptom at all until the layout fails to come
+    // back after a refresh — by which time the exception is long gone.
+    // eslint-disable-next-line no-console -- only trace of a swallowed persist
     console.warn('[splitLayoutStore] persist failed', e)
   }
 }

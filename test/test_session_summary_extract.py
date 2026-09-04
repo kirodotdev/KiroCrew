@@ -90,12 +90,13 @@ class TestTrapAutomationUnderUserRole:
                 _rec("user", "real request"),
                 _rec("user", "[Subagent completion event] Agent X completed"),
                 _rec("user", "[Cron notification from \"nightly\"] ran"),
+                _rec("user", "[Monitor wake] checks failed"),
                 _rec("user", "[Tool refusal -- automatic recovery] blocked"),
                 _rec("user", "=== Restored Context (from prior session) ==="),
             ]
         )
         assert count_user_turns(turns) == 1
-        assert [t.injected for t in turns] == [False, True, True, True, True]
+        assert [t.injected for t in turns] == [False, True, True, True, True, True]
 
     def test_injected_rows_do_not_consume_user_turn_numbers(self):
         turns = extract_turns(

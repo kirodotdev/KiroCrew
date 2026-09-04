@@ -21,7 +21,6 @@ import binascii
 import random
 import re
 import string
-import sys
 
 import pytest
 
@@ -45,15 +44,32 @@ from kiro_crew.security import (
 
 
 def _reference_redact_credentials(text: str) -> tuple[str, list[str]]:
-    """The original three-pass body, verbatim. Do not "optimise" this."""
+    """The original three-pass body. Do not "optimise" this.
+
+    Pass 1 is the ONE deliberate divergence from the pre-optimisation source.
+    The original wrote ``result.replace(matched, tag, 1)``, which replaces the
+    first occurrence of the matched *text* rather than the span the regex
+    actually matched. When an earlier, NON-matching lookalike contains the
+    matched text as a substring (``xM<jwt>`` before a boundary-anchored
+    ``M<jwt>``), the original redacted the innocent lookalike and left the real
+    credential in the output in plaintext -- a genuine leak, not a cosmetic
+    difference. See ``test_matched_span_is_redacted_not_an_earlier_lookalike``.
+
+    Passes 2 and 3 keep the ``.replace(..., 1)`` shape because they scan the
+    ORIGINAL ``text`` and select spans by value, and because production keeps
+    them as separate passes deliberately (see the comment in
+    ``security.redact_credentials``); their latent equivalent is out of scope
+    here and is NOT fixed by this oracle.
+    """
     warnings: list[str] = []
     result = text
 
-    # 1. plaintext credential patterns — ungated full scan
-    for m in _CREDENTIAL_PATTERNS.finditer(result):
-        matched = m.group()
-        result = result.replace(matched, _REDACTED_CREDENTIAL_TAG, 1)
-        warnings.append(f"Redacted credential pattern ({len(matched)} chars)")
+    # 1. plaintext credential patterns — ungated full scan, positionally exact
+    def _redact_one(m: "re.Match[str]") -> str:
+        warnings.append(f"Redacted credential pattern ({len(m.group())} chars)")
+        return _REDACTED_CREDENTIAL_TAG
+
+    result = _CREDENTIAL_PATTERNS.sub(_redact_one, result)
 
     # 2. base64-encoded credentials — own scan, decode via the generic helper
     for m in _B64_CHUNK_RE.finditer(text):
@@ -329,6 +345,26 @@ CORPUS = _corpus()
 @pytest.mark.parametrize("text", CORPUS, ids=range(len(CORPUS)))
 def test_output_is_byte_identical_to_reference(text: str) -> None:
     assert redact_credentials(text) == _reference_redact_credentials(text)
+
+
+def test_matched_span_is_redacted_not_an_earlier_lookalike() -> None:
+    """Pass 1 must redact the span that matched, not an earlier substring.
+
+    Regression for the shape ``result.replace(matched, tag, 1)``. Here the
+    boundary-anchored pattern matches only the SECOND token; the first is an
+    ``x``-prefixed lookalike that happens to contain the matched text. The old
+    shape redacted the lookalike and emitted the real credential verbatim.
+    """
+    token = "M" + "a" * 24 + ".abc123." + "b" * 27
+    text = f"x{token} {token}"
+    assert _CREDENTIAL_PATTERNS.search(text), "corpus assumption: the pattern fires"
+
+    redacted, warnings = redact_credentials(text)
+
+    # The real credential -- the standalone second token -- must be gone.
+    assert f" {token}" not in redacted, "the matched credential survived redaction"
+    assert redacted == f"x{token} {_REDACTED_CREDENTIAL_TAG}"
+    assert warnings == [f"Redacted credential pattern ({len(token)} chars)"]
 
 
 def test_corpus_actually_exercises_every_pass() -> None:
@@ -1079,13 +1115,9 @@ def test_a_length_short_circuit_would_leak_an_encoded_credential() -> None:
         if real:
             leaked += 1
 
-    if sys.version_info < (3, 12):
-        assert leaked >= 1, (
-            "expected the lenient pre-3.12 decoder to make the length guard a "
-            "redaction bypass on at least one misaligned shape"
-        )
-    else:
-        assert leaked == 0, (
-            "3.12 rejects these shapes outright, which is exactly why the bypass "
-            "was invisible when the change was tested on 3.12 alone"
-        )
+    # The base64 decoder rejects these shapes outright, so nothing leaks through
+    # them here. That is precisely why the length guard read as safe when it was
+    # only ever exercised on this interpreter: the bypass it would have opened is
+    # invisible from 3.12, and the in-loop invariant above -- a guard can never
+    # detect more than no guard -- is what actually rules the guard out.
+    assert leaked == 0

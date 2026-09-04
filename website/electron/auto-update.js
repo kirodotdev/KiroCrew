@@ -103,7 +103,9 @@ const CHECK_COMMAND_MAX_CHARS = 512;
  *
  * Lookup order: the `KIROCREW_EXTERNALLY_MANAGED` env var (a path to a marker
  * file, or any other non-empty value to mark the install managed with no
- * metadata — the test-harness seam, mirroring `KIROCREW_UPDATE_FEED`), then
+ * metadata — the test-harness seam, mirroring `KIROCREW_UPDATE_FEED`, and
+ * honored ONLY on an unpackaged build: in a packaged app one env var in the
+ * launch environment would otherwise name the file whose body we execute), then
  * `<resourcesPath>/EXTERNALLY-MANAGED`. I/O-bearing and fully injectable, like
  * resolveLinuxInstall above.
  *
@@ -119,13 +121,42 @@ const CHECK_COMMAND_MAX_CHARS = 512;
  * self-updating. Entries are `lstat`ed and only regular files are read, so a
  * symlink can never route this startup-path read into a FIFO or device.
  *
+ * INTEGRITY: the metadata is only parsed when neither the marker nor its
+ * directory is OWNED by this euid or writable by group/other (see
+ * canRewriteMarker) — `updateCommand`/`checkCommand` are SHELLED, so a marker
+ * anything running as this user could rewrite is a marker that names arbitrary
+ * code to run. A rewritable marker still means MANAGED, just with no metadata:
+ * the same degenerate shape as an empty body, which leaves the updater off and
+ * nothing to execute. Windows always takes that answer (no POSIX owner to read).
+ *
  * @param {object} [o]
  * @param {object} [o.env=process.env]
  * @param {string} [o.resourcesPath=process.resourcesPath]
+ * @param {boolean} [o.isPackaged]  packaged app? gates the env-var seam off
+ * @param {(p:string)=>boolean} [o.probeMarkerRewritable=canRewriteMarker]
  * @returns {{managedBy:string, updateCommand:string, checkCommand:string}|null} null when not managed
  */
-function readExternallyManaged({ env = process.env, resourcesPath = process.resourcesPath } = {}) {
+function readExternallyManaged({
+  env = process.env,
+  resourcesPath = process.resourcesPath,
+  // Is this a PACKAGED app? Only the env-var seam consults it, and only to
+  // refuse. Resolved lazily so the module still loads outside Electron: a
+  // runtime with no `electron.app` is by definition not the packaged desktop
+  // app, which is exactly when the harness seam is allowed.
+  isPackaged = (() => {
+    try {
+      const electronApp = require("electron").app;
+      return !!(electronApp && electronApp.isPackaged);
+    } catch {
+      return false;
+    }
+  })(),
+  // Marker-integrity probe, injected for the same reason as the other probes in
+  // this module: assertable without a real read-only install directory.
+  probeMarkerRewritable = canRewriteMarker,
+} = {}) {
   let raw = null;
+  let markerPath = "";
   try {
     const fs = require("fs");
     const path = require("path");
@@ -145,20 +176,30 @@ function readExternallyManaged({ env = process.env, resourcesPath = process.reso
         return "";
       }
     };
-    const override = (env && env.KIROCREW_EXTERNALLY_MANAGED) || "";
+    // The env seam is a DEV/TEST affordance. In a packaged app the launch
+    // environment (shell profile, launchd plist, .desktop file) is writable by
+    // the user, so honoring it there would let one env var choose the file whose
+    // body this process shells.
+    const override = (!isPackaged && env && env.KIROCREW_EXTERNALLY_MANAGED) || "";
     if (override) {
       // A value that names a marker file reads it; any other non-empty value
       // (including a dangling path) marks the install managed with no metadata.
+      markerPath = override;
       raw = readMarkerAt(override);
       if (raw === null) raw = "";
     } else {
-      raw = readMarkerAt(path.join(resourcesPath || "", EXTERNALLY_MANAGED_MARKER));
+      markerPath = path.join(resourcesPath || "", EXTERNALLY_MANAGED_MARKER);
+      raw = readMarkerAt(markerPath);
       if (raw === null) return null;
     }
   } catch {
     // fs itself unavailable (non-node runtime): nothing to read, not managed.
     return null;
   }
+  // Integrity gate: a marker this process could rewrite carries no authority,
+  // so it is read as a bare marker (managed, no metadata). Deliberately BEFORE
+  // the parse, so no attacker-chosen string reaches the fields at all.
+  if (raw && probeMarkerRewritable(markerPath)) raw = "";
   let managedBy = "";
   let updateCommand = "";
   let checkCommand = "";
@@ -179,6 +220,73 @@ function readExternallyManaged({ env = process.env, resourcesPath = process.reso
     // Presence alone is the signal; a bare marker means managed, no metadata.
   }
   return { managedBy, updateCommand, checkCommand };
+}
+
+// Can THIS process rewrite the externally-managed marker?
+//
+// The marker's `updateCommand`/`checkCommand` are handed to a shell, so the
+// marker's integrity is the whole boundary between "the packager that owns this
+// install told us how to update" and "anything that can write one file told us
+// what to run". A marker we can rewrite is one a prompt-injected agent shell
+// running as this user can rewrite, so its metadata is refused.
+//
+// The question is OWNERSHIP, not the current mode bits. `access(W_OK)` answers
+// "can I write this right now", and a POSIX owner can always `chmod +w` back —
+// so on exactly the user-owned installs this exists to defend (Homebrew,
+// `pip --user`, ~/Applications) an attacker would plant the marker, `chmod 0400`
+// it, and be handed the trusted verdict. Provenance is what the metadata's
+// authority rests on, so provenance is what is probed:
+//
+//   - a file or directory OWNED by this euid is rewritable (chmod is ours),
+//   - a group- or world-writable one is rewritable by whoever else holds it, and
+//   - one the KERNEL says we can write is rewritable however that was granted.
+//
+// The third arm is not redundant with the second: POSIX mode bits do not model
+// ACLs, so a root-owned 0755 directory carrying a macOS `chmod +a` (or Linux
+// setfacl) entry for this user is writable while every mode bit reads safe.
+// access(W_OK) is the only check that sees that grant.
+//
+// Both the marker and its directory are checked, because either one controls the
+// content: a writable directory allows replacing the file outright, and a file
+// we own is rewritable even inside a directory we do not.
+//
+// Fail-CLOSED — the OPPOSITE direction to isBundleContainerWritable below. There
+// a probe that cannot run must not disable updates; here a marker whose
+// provenance cannot be established must not be executed. The cost of the safe
+// answer is only "no metadata", which is the historical bare-marker behavior.
+// Windows takes that answer UNCONDITIONALLY and by declaration: it has no POSIX
+// owner to read, and `access(W_OK)` there does not model ACLs, so there is no
+// honest verdict to give. A Windows install therefore never honors marker
+// commands; see docs/build/desktop-app.md.
+function canRewriteMarker(markerPath) {
+  try {
+    const fs = require("fs");
+    const path = require("path");
+    // No POSIX ownership to read: declared fail-closed (see note above).
+    if (process.platform === "win32" || typeof process.geteuid !== "function") return true;
+    const euid = process.geteuid();
+    // root owns everything and can chmod anything, so nothing is un-rewritable.
+    if (euid === 0) return true;
+    for (const target of [markerPath, path.dirname(markerPath)]) {
+      let st;
+      try {
+        st = fs.lstatSync(target);
+      } catch {
+        return true; // cannot establish provenance
+      }
+      if (st.uid === euid) return true;          // ours: chmod +w is ours too
+      if ((st.mode & 0o022) !== 0) return true;  // group- or world-writable
+      try {
+        fs.accessSync(target, fs.constants.W_OK);
+        return true;                             // ACL-granted write
+      } catch {
+        // Not writable by any grant the kernel knows about.
+      }
+    }
+    return false;
+  } catch {
+    return true;
+  }
 }
 
 // Can the AppImage replace itself, i.e. is the directory HOLDING the image
@@ -916,14 +1024,18 @@ function initAutoUpdate(deps) {
     // manager), we discover and apply updates by SHELLING the marker's own
     // commands.
     //
-    // TRUST / HARDENING: the EXTERNALLY-MANAGED marker is an operator/packager
-    // file under <resourcesPath>, and — unlike the Python security_policy pins,
-    // which live in a home dir a prompt-injected agent shell cannot write — it
-    // is NOT a protected trust root; on a user-writable install its directory
-    // may be writable. So we do not lean on the marker's integrity: we HARDEN
-    // EXECUTION instead (see runManagedCommand) — a narrowed system-only PATH so
-    // a planted shim on the user's PATH cannot shadow a command, cwd="/" (never
-    // the app or an inherited dir), a timeout, and bounded retained output. The
+    // TRUST / HARDENING: reaching here means the marker's metadata already
+    // passed the integrity gate in readExternallyManaged — neither the marker nor
+    // its directory is owned by this euid or writable by group/other, so it is a
+    // genuine packager artifact rather than a file a prompt-injected agent shell
+    // could have planted. That gate is
+    // what makes the commands trustworthy at all; the hardening below is about
+    // the ENVIRONMENT they run in, not about the command string (see
+    // runManagedCommand) — a narrowed system-only PATH so a planted shim on the
+    // user's PATH cannot shadow a command, a CONSTRUCTED environment so nothing
+    // the shell reads as code is inherited at all, cwd="/" (never the app or an
+    // inherited dir), a
+    // timeout, and bounded retained output. The
     // command still runs through a shell, so the writer MUST name absolute
     // binaries (a bare name will not resolve under the narrowed PATH); we NEVER
     // interpolate untrusted input. Platform-agnostic: the same path serves
@@ -964,6 +1076,54 @@ function initAutoUpdate(deps) {
             process.env.SystemRoot || "C:\\Windows",
           ].join(";")
         : "/usr/bin:/bin:/usr/sbin:/sbin";
+    // The child's environment is CONSTRUCTED, not filtered.
+    //
+    // `shell: true` means a shell interprets the command, and a shell reads its
+    // environment as code: the loader family (LD_*/DYLD_*), the interpreter
+    // family (PYTHON*, NODE_OPTIONS), the startup files (BASH_ENV, ENV), the
+    // tracing pair (SHELLOPTS plus a command-substituting PS4), word splitting
+    // (IFS), and exported shell FUNCTIONS (BASH_FUNC_* — a function shadows a
+    // command name outright, beating managedPath() rather than evading it).
+    // That namespace is open-ended and differs by shell and by version, so no
+    // denylist over it is provably complete; successive review rounds just find
+    // the next name.
+    //
+    // Naming what the child DOES get inverts that: anything absent from this
+    // list is gone by construction, so every present and future injection
+    // variable is already handled and there is no enumeration to keep current.
+    // The list carries what a packager's own updater plausibly needs — locale,
+    // temp dir, proxy — and nothing a shell or an interpreter treats as code. A
+    // packager needing more sets it inside its own command, which is the one
+    // place that requirement is visible to whoever wrote it.
+    //
+    // HOME is deliberately NOT here. It is not shell-interpreted, but it is a
+    // path an interpreter reads code from: Python derives its user-site
+    // directory from HOME, so a planted ~/.local/lib/pythonX/site-packages/
+    // sitecustomize.py executes on every `python` start. Passing HOME would
+    // re-open the startup-injection class for any marker command that happens to
+    // be a Python program, which is the class this whole construction closes.
+    const MANAGED_ENV_PASSTHROUGH = [
+      "USER", "LOGNAME", "TZ", "TMPDIR",
+      "LANG", "LC_ALL", "LC_CTYPE",
+      "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY",
+      "http_proxy", "https_proxy", "no_proxy",
+    ];
+    // cmd.exe cannot start without these, so the win32 lane mirrors
+    // managedPath()'s win32 branch rather than handing it a shell it cannot run.
+    const MANAGED_ENV_PASSTHROUGH_WIN32 = [
+      "SystemRoot", "SystemDrive", "windir", "COMSPEC",
+      "PATHEXT", "TEMP", "TMP", "USERPROFILE", "APPDATA", "LOCALAPPDATA",
+    ];
+    const managedEnv = () => {
+      const e = { PATH: managedPath() };
+      const keys = process.platform === "win32"
+        ? [...MANAGED_ENV_PASSTHROUGH, ...MANAGED_ENV_PASSTHROUGH_WIN32]
+        : MANAGED_ENV_PASSTHROUGH;
+      for (const k of keys) {
+        if (process.env[k] !== undefined) e[k] = process.env[k];
+      }
+      return e;
+    };
 
     // Run a marker command through the platform shell, resolving to
     // {code, out} (combined stdout+stderr, capped). Never rejects: spawn errors
@@ -1007,7 +1167,7 @@ function initAutoUpdate(deps) {
         child = cp.spawn(command, { // nosemgrep: javascript.lang.security.detect-child-process.detect-child-process
           shell: true,
           cwd: "/",
-          env: { ...process.env, PATH: managedPath() },
+          env: managedEnv(),
           ...(timeout ? { timeout } : {}),
         });
       } catch (err) {
@@ -1951,6 +2111,7 @@ module.exports = {
   manualDownloadUrl,
   resolveLinuxInstall,
   readExternallyManaged,
+  canRewriteMarker,
   DEFAULT_FEED_BASE,
   DOWNLOAD_BASE,
   SUPPORTED_PLATFORMS,

@@ -173,15 +173,31 @@ export interface AutoPinResult {
  *
  * `lastWriteTop < 0` disables the scroll-up guard (used right after a slot
  * switch, before we have written anything this session).
+ *
+ * `viewportShrink` (px, default 0) is how much the SCROLLER'S OWN BOX has
+ * shrunk since that reference was recorded — chrome mounting below the
+ * transcript (a queue band, an attachment strip, a tip card), often
+ * spring-animated over several frames. Our own shrink inflates
+ * `distanceFromBottom` with no user input, so without this allowance the
+ * distance guard reads it as "meaningfully away from the bottom". Paired with
+ * a content SHRINK in the same commit window — a tail-row remount clamping
+ * scrollTop below `lastWriteTop` — that produced a full user-scroll-up
+ * signature out of two of our own layout changes: follow released mid
+ * animation and the content settled a card-height low. Judging the distance
+ * against the box we were last a bottom FOR keeps the guard measuring the
+ * user's move rather than our own. Only the shrink's own pixels are forgiven,
+ * so a genuine drag inside the same tick still releases.
  */
 export function evaluateAutoPin(args: {
   stick: boolean
   geom: ScrollGeom
   lastWriteTop: number
   epsilon?: number
+  viewportShrink?: number
 }): AutoPinResult {
   const { stick, geom, lastWriteTop } = args
   const epsilon = args.epsilon ?? SELF_SCROLL_EPSILON
+  const viewportShrink = Math.max(0, args.viewportShrink ?? 0)
   const target = bottomTarget(geom)
   if (!stick) return { pin: false, stick: false, target }
   // Release only on a genuine user scroll-UP: scrollTop dropped below our last
@@ -194,7 +210,7 @@ export function evaluateAutoPin(args: {
   if (
     lastWriteTop >= 0 &&
     geom.scrollTop < lastWriteTop - epsilon &&
-    distanceFromBottom(geom) > epsilon
+    distanceFromBottom(geom) - viewportShrink > epsilon
   ) {
     return { pin: false, stick: false, target }
   }

@@ -31,12 +31,15 @@ async def test_watchdog_shuts_down_when_assets_vanish():
         side_effect=_mock_assets_present,
     ):
         # Short interval/delay so the test is fast
-        await asyncio.wait_for(
+        fired = await asyncio.wait_for(
             run_stale_asset_watchdog(shutdown, interval=0.05, confirm_delay=0.01),
             timeout=5.0,
         )
 
     assert shutdown.is_set()
+    # The watchdog reports that IT initiated the shutdown, so the gateway can
+    # exit non-zero and a restart-on-failure supervisor relaunches it.
+    assert fired is True
     # startup check + periodic tick + confirmation re-check + post-drain re-check
     assert call_count == 4
 
@@ -63,7 +66,7 @@ async def test_watchdog_survives_transient_asset_gap():
         "kiro_crew.dashboard.stale_asset_watchdog.assets_present",
         side_effect=_mock_assets_present,
     ):
-        await asyncio.wait_for(
+        fired = await asyncio.wait_for(
             run_stale_asset_watchdog(shutdown, interval=0.05, confirm_delay=0.01),
             timeout=5.0,
         )
@@ -71,6 +74,7 @@ async def test_watchdog_survives_transient_asset_gap():
     # Shutdown was set by the test (normal-shutdown path), not the watchdog:
     # the transient gap was re-checked, found recovered, and the loop resumed.
     assert call_count == 3
+    assert fired is False
 
 
 @pytest.mark.asyncio
@@ -251,12 +255,90 @@ async def test_watchdog_exits_cleanly_on_normal_shutdown():
     ):
         # Set shutdown after a brief delay
         asyncio.get_running_loop().call_later(0.05, shutdown.set)
-        await asyncio.wait_for(
+        fired = await asyncio.wait_for(
             run_stale_asset_watchdog(shutdown, interval=60),
             timeout=5.0,
         )
 
     assert shutdown.is_set()
+    # An operator stop is NOT the watchdog's doing: the gateway must exit 0 so
+    # a restart-on-failure supervisor leaves it stopped as asked.
+    assert fired is False
+
+
+@pytest.mark.asyncio
+async def test_shutdown_exit_code_nonzero_only_when_watchdog_fired():
+    """The gateway exits non-zero iff the watchdog itself initiated shutdown.
+
+    This is the belt-and-braces for a supervisor still on `Restart=on-failure`
+    (a unit generated before `Restart=always`, or hand-edited back): a clean
+    exit 0 after an update prune left the gateway stranded, so the watchdog
+    path must NOT exit 0. Every other outcome must stay 0 so an operator's
+    `systemctl stop` is not turned into a restart.
+    """
+    from kiro_crew.dashboard.stale_asset_watchdog import (
+        STALE_ASSET_EXIT_CODE,
+        shutdown_exit_code,
+    )
+
+    assert STALE_ASSET_EXIT_CODE != 0
+
+    loop = asyncio.get_running_loop()
+
+    fired: asyncio.Future[bool] = loop.create_future()
+    fired.set_result(True)
+    assert shutdown_exit_code(fired) == STALE_ASSET_EXIT_CODE
+
+    not_fired: asyncio.Future[bool] = loop.create_future()
+    not_fired.set_result(False)
+    assert shutdown_exit_code(not_fired) == 0
+
+    # Event set by SIGTERM while the watchdog still sleeps: not done → 0.
+    pending: asyncio.Future[bool] = loop.create_future()
+    assert shutdown_exit_code(pending) == 0
+
+    cancelled: asyncio.Future[bool] = loop.create_future()
+    cancelled.cancel()
+    assert shutdown_exit_code(cancelled) == 0
+
+    # A crashed watchdog must not convert an operator stop into a restart.
+    crashed: asyncio.Future[bool] = loop.create_future()
+    crashed.set_exception(RuntimeError("boom"))
+    assert shutdown_exit_code(crashed) == 0
+
+    assert shutdown_exit_code(None) == 0
+
+
+@pytest.mark.asyncio
+async def test_real_vanish_task_maps_to_nonzero_exit():
+    """End to end through the task: a real vanish → STALE_ASSET_EXIT_CODE."""
+    from kiro_crew.dashboard.stale_asset_watchdog import (
+        STALE_ASSET_EXIT_CODE,
+        run_stale_asset_watchdog,
+        shutdown_exit_code,
+    )
+
+    shutdown = asyncio.Event()
+    call_count = 0
+
+    def _mock_assets_present() -> bool:
+        nonlocal call_count
+        call_count += 1
+        return call_count <= 1
+
+    with patch(
+        "kiro_crew.dashboard.stale_asset_watchdog.assets_present",
+        side_effect=_mock_assets_present,
+    ):
+        task = asyncio.create_task(
+            run_stale_asset_watchdog(shutdown, interval=0.05, confirm_delay=0.01)
+        )
+        await asyncio.wait_for(shutdown.wait(), timeout=5.0)
+        # Mirrors the gateway: the watchdog returns right after setting the
+        # event, so by the time the gateway reads the task it is done.
+        await asyncio.wait_for(task, timeout=1.0)
+
+    assert shutdown_exit_code(task) == STALE_ASSET_EXIT_CODE
 
 
 def test_assets_present_detects_dist_index(tmp_path: Path):

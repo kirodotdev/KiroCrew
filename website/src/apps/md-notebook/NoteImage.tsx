@@ -57,6 +57,7 @@ export function NoteImage({ src, alt, rawSrc }: { src: string | null; alt: strin
   }
   const isSvg = /\.svg([?#]|$)/i.test(rawSrc)
   return (
+    // eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions -- `onLoad`/`onError` are resource events (release the layout floor, swap in the fallback), not gestures; the image deliberately carries no click, per the note above
     <img
       src={src}
       alt={alt}

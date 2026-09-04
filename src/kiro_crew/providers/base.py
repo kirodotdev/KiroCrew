@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator
-from typing import Literal
+from typing import Literal, Protocol, runtime_checkable
 
 # Event kinds — re-exported from the single source of truth
 from kiro_crew.acp.types import (  # noqa: F401
@@ -56,6 +56,22 @@ def resolve_billing_stats(holder: object | None) -> object | None:
         if declared is not None:
             return declared
     return getattr(holder, "last_prompt_stats", None)
+
+
+@runtime_checkable
+class SessionMcpReport(Protocol):
+    """What a session's MCP registration report offers its consumers.
+
+    Declared at the provider seam rather than imported from ``kiro_crew.acp`` so
+    a dashboard consumer can name the capability without taking an ACP-layer
+    edge. The concrete ``McpSessionReport`` satisfies it structurally.
+    """
+
+    def payload(self) -> dict | None: ...
+
+    def record_event(
+        self, kind: str, server_name: str, error: str = "", *, fanout_no_owner: bool = False
+    ) -> bool: ...
 
 
 class LLMProvider(ABC):
@@ -127,6 +143,17 @@ class LLMProvider(ABC):
         have nothing to forward to, and the False getter above remains the
         (safe) truth for them."""
         return None
+
+    @property
+    def last_compaction_transient(self) -> bool:
+        """Whether that failure is worth retrying.
+
+        The default is the SAFE value: False means "treat it as permanent", so a
+        provider that reports no verdict gives up the turn exactly as it did
+        before this capability existed, rather than replaying a message against
+        a compaction that cannot succeed.
+        """
+        return False
 
     def context_window_tokens(self) -> int:
         """Return the real served context window in tokens (0 if unknown).
@@ -319,6 +346,23 @@ class LLMProvider(ABC):
         return False
 
     @property
+    def manual_compact_unsupported_backend(self) -> str | None:
+        """Backend id when this provider cannot serve a manual ``/compact``,
+        ``None`` when the command is fine to dispatch.
+
+        The manual entry points gate on this so an unsupported backend gets an
+        immediate, user-visible refusal instead of a prompt whose
+        compaction-status wait strands until ``COMPACT_WAIT_TIMEOUT_SECS``
+        (#7800). Default ``None`` — a provider that has not positively named an
+        unsupported backend passes through, because it handles ``/compact`` on
+        its own terms. Declared here with a safe default rather than probed off
+        the instance (harness-parity H14); the ACP implementations answer from
+        ``ACP_BACKENDS_COMPACT`` membership. Consumers must act only on a
+        non-empty ``str`` value, so a mocked provider's attribute never reads
+        as a refusal."""
+        return None
+
+    @property
     def uses_kiro_identity_store(self) -> bool:
         """True when this provider's child authenticates from kiro-cli's own
         identity store, so an external ``kiro-cli logout`` invalidates a process
@@ -331,10 +375,37 @@ class LLMProvider(ABC):
         layer never has to guess from private attributes."""
         return False
 
+    @property
+    def mcp_config_hot_reload(self) -> bool:
+        """True when this provider's live process reconciles agent-config and
+        ``mcp.json`` edits on its own — only the changed MCP servers restart, the
+        conversation is kept — so the dashboard's MCP sync may leave it running
+        instead of resetting it.
+
+        Default False — the reset is the safe answer, and a harness that has not
+        demonstrated the reconcile must not inherit the skip (harness-parity
+        H6/H14). Declared here rather than probed off the instance; the ACP
+        implementation answers from ``ACP_BACKENDS_MCP_CONFIG_HOT_RELOAD``
+        membership plus the version its process reported at ``initialize``.
+        Consumers must act only on a literal ``True``, so a mocked provider's
+        attribute never reads as a skip."""
+        return False
+
     def available_models(self) -> list[dict[str, str]]:
         """Backend-advertised models (``[{modelId, name, ...}]``) for the model
         picker. Default empty for a provider that advertises none."""
         return []
+
+    def mcp_session_report(self) -> SessionMcpReport | None:
+        """This session's own MCP registration report, or None if it keeps none.
+
+        Declared HERE rather than probed with ``getattr`` at the consumer: a probe
+        answers "no report" for a provider that simply spells the accessor
+        differently, which is indistinguishable from a session that reported
+        nothing — and that silence is the false all-clear the report exists to
+        remove. A provider without one returns None explicitly.
+        """
+        return None
 
     def get_valid_effort_levels(self) -> list[str]:
         """Reasoning-effort levels the provider accepts. Default empty for a

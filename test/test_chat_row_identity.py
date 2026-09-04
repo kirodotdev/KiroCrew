@@ -50,6 +50,26 @@ def test_append_preserves_a_supplied_row_id() -> None:
     assert slot.messages[-1]["meta"]["other"] == 1
 
 
+def test_disk_replay_can_preserve_a_missing_legacy_row_id() -> None:
+    """A restore must not advertise an identity absent from full history.
+
+    Legacy disk rows predate ``meta.mid``. Giving one a new id only in the live
+    window makes message-level operations send an anchor no durable reader can
+    resolve, so restore callers disable minting while ordinary appends keep it.
+    """
+    slot = _slot()
+    slot.append("assistant", "legacy restored", mint_mid=False)
+    assert "meta" not in slot.messages[-1] or "mid" not in slot.messages[-1]["meta"]
+
+    slot.append(
+        "assistant",
+        "modern restored",
+        meta={"mid": "m-fromdisk"},
+        mint_mid=False,
+    )
+    assert slot.messages[-1]["meta"]["mid"] == "m-fromdisk"
+
+
 def test_append_keeps_existing_meta_alongside_the_id() -> None:
     slot = _slot()
     slot.append("tool", "fs_read", meta={"tool_call_id": "call-A"})

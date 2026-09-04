@@ -36,7 +36,7 @@ The dashboard provides a `/artifacts` library page for browse/search and a
 
 | Field | Type | Notes |
 |---|---|---|
-| `slug` | string | URL-safe handle, derived from `name` if not given |
+| `slug` | string | URL-safe handle. Derived from `name` when not given, resolving a collision by suffixing (`-2`, `-3`, …); an explicitly-passed slug is refused — never renamed — when it is already taken or malformed |
 | `name` | string | Human-readable display name |
 | `kind` | enum | `widget`, `html`, `markdown`, `svg`, `json`, `text`, `webapp`, `image` — inferred on save when the caller omits it (see [Kind inference](#kind-inference)) |
 | `source` | enum | `chat` (default), `cron`, `subagent`, `manual`, `import` |

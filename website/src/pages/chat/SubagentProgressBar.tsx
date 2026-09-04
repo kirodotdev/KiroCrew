@@ -162,6 +162,7 @@ const SubagentProgressBar = memo(function SubagentProgressBar({ slot }: { slot: 
   // debug breadcrumb. The 30s reconcile loop below is the safety net that
   // drops any agent the backend actually stopped.
   const stopAgent = useCallback((id: string) => {
+    // eslint-disable-next-line no-console -- names which subagent refused to stop; the 30s reconcile loop hides the failure from the UI, so this is the only place a cancel that never landed is visible
     api.spawnDelete(id).catch(() => console.warn(`spawnDelete failed for subagent ${id}; reconcile loop will resync`))
   }, [])
   const stopAll = useCallback(() => {

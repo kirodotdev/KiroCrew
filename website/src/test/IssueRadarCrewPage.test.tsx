@@ -287,6 +287,82 @@ describe('CrewPageView — work log 24h boundary', () => {
     await screen.findByTestId('work-log-row-e-1h')
     expect(screen.queryByTestId('work-log-earlier')).not.toBeInTheDocument()
   })
+
+  it('renders a crew-level line with an em dash rather than a bare hash', async () => {
+    // A `sweep` line records that the crew checked the queue and took nothing, so
+    // it belongs to no issue and the backend omits `number` entirely. The Issue
+    // column is monospaced and right-aligned against real numbers, so a bare `#`
+    // would read as a number that failed to load.
+    const sweep = event('e-sweep', 1, {
+      kind: 'sweep',
+      text: 'checked 42 open issues, took none',
+      number: undefined,
+    })
+    api.crew.mockResolvedValue(payload({ events: [sweep, event('e-ci', 2)] }))
+    renderPage()
+
+    const row = await screen.findByTestId('work-log-row-e-sweep')
+    const issueCell = within(row).getAllByRole('cell')[1]
+    expect(issueCell.textContent).toBe('\u2014')
+    expect(issueCell.textContent).not.toContain('#')
+    // The numbered sibling is untouched, so the guard is on absence, not on kind.
+    const numbered = within(screen.getByTestId('work-log-row-e-ci')).getAllByRole('cell')[1]
+    expect(numbered.textContent).toBe('#2251')
+  })
+
+  it('translates the sweep kind through the catalog like every other kind', async () => {
+    const sweep = event('e-sweep', 1, { kind: 'sweep', text: 'queue empty', number: undefined })
+    api.crew.mockResolvedValue(payload({ events: [sweep] }))
+    renderPage()
+
+    const row = await screen.findByTestId('work-log-row-e-sweep')
+    expect(within(row).getByText(copy('kind_sweep'))).toBeInTheDocument()
+  })
+
+  it('renders a sweep timestamp as a past instant, making no claim about now', async () => {
+    // The WHEN column states when the line was written and nothing more. An
+    // earlier revision qualified the newest sweep as "checking since ...", which
+    // reads as a present-tense activity claim -- and nothing here evidences that a
+    // crew is alive: a crash or a lost timer leaves `enabled` true, so the row
+    // would have asserted ongoing checking for a crew that had stopped, masking
+    // the one failure mode this view exists to help an operator notice. A bare
+    // timestamp cannot make that claim, so a sweep reads like every other kind.
+    const sweep = event('e-sweep', 1, { kind: 'sweep', text: 'queue empty', number: undefined })
+    api.crew.mockResolvedValue(payload({ events: [sweep, event('e-ci', 3)] }))
+    renderPage()
+
+    const when = within(await screen.findByTestId('work-log-row-e-sweep')).getAllByRole('cell')[0]
+    // The relative string comes from the real formatter, not a hardcoded literal:
+    // its wording is locale data, so pinning "1 hour ago" would assert the
+    // formatter's current output rather than this row's own rendering.
+    const rendered = (await import('../i18n/format')).fmtRelative(ago(1), { now: NOW.getTime() })
+    expect(when.textContent).toBe(rendered)
+  })
+
+  it('renders a sweep the same whether the crew is running or paused', async () => {
+    // The rendering cannot depend on liveness, because the page has no evidence of
+    // it. Asserting both states pins that: a future qualifier gated on `!paused`
+    // would fix only the operator-pause mode and still misreport a crashed crew.
+    const sweep = event('e-sweep', 2, { kind: 'sweep', text: 'queue empty', number: undefined })
+    const expected = (await import('../i18n/format')).fmtRelative(ago(2), { now: NOW.getTime() })
+
+    api.crew.mockResolvedValue(payload({ events: [sweep] }))
+    const running = renderPage()
+    const whenRunning = within(
+      await screen.findByTestId('work-log-row-e-sweep'),
+    ).getAllByRole('cell')[0]
+    expect(whenRunning.textContent).toBe(expected)
+    running.unmount()
+
+    api.crew.mockResolvedValue(
+      payload({ crew: crew({ enabled: false, paused_reason: 'operator paused' }), events: [sweep] }),
+    )
+    renderPage()
+    const whenPaused = within(
+      await screen.findByTestId('work-log-row-e-sweep'),
+    ).getAllByRole('cell')[0]
+    expect(whenPaused.textContent).toBe(expected)
+  })
 })
 
 describe('CrewPageView — the next column', () => {

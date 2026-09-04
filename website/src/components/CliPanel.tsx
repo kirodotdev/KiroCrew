@@ -7,7 +7,9 @@ import { useMutation } from '@tanstack/react-query'
 import { MessageSquarePlus, Copy, Check, PlugZap } from 'lucide-react'
 import { ensureTerminalConnection, disposeTerminalConnection, getTerminalCwd, useTerminalConnStatus, useTerminalManualRetry, retryTerminalConnection } from '../utils/terminalRegistry'
 import { getTerminalFont, resolveTerminalFontFamily, subscribeTerminalFont } from '../hooks/useTerminalFont'
+import { ansiPaletteFromVars } from '../utils/terminalPalette'
 import { useIsTouchDevice } from '../hooks/useIsTouchDevice'
+import { useTerminalTouchSelection, type TouchSelectStatus } from '../hooks/useTerminalTouchSelection'
 import TerminalCompletion from './TerminalCompletion'
 import TerminalKeyBar from './TerminalKeyBar'
 
@@ -21,11 +23,15 @@ const termCache = new Map<string, { term: Terminal; fit: FitAddon }>()
 /* ── Terminal theme from CSS custom properties ── */
 function getTermTheme() {
   const style = getComputedStyle(document.documentElement)
+  const read = (name: string) => style.getPropertyValue(name)
   return {
     background:          style.getPropertyValue('--bg').trim()            || '#1e1e2e',
     foreground:          style.getPropertyValue('--text').trim()          || '#cdd6f4',
     cursor:              style.getPropertyValue('--accent').trim()        || '#89b4fa',
     selectionBackground: style.getPropertyValue('--accent-subtle').trim() || '#313244',
+    // The 16 ANSI entries: without them xterm renders ANSI-coloured output with
+    // its own palette, which ignores the theme entirely.
+    ...ansiPaletteFromVars(read),
   }
 }
 
@@ -221,6 +227,18 @@ export function remeasureAndFit(term: Terminal, fit: FitAddon): void {
 }
 
 /* ── Terminal view for one session ── */
+/** Literal-key lookup for the touch range-selection hint (#6834) — one compact
+ *  string per gesture stage, serving both the visible hint chip and the sr-only
+ *  live region. Literal keys (no runtime-assembled catalog keys) keep the
+ *  dead-key scan meaningful, same discipline as the key bar's label lookups. */
+function touchSelectHint(status: TouchSelectStatus): string {
+  switch (status) {
+    case 'range_anchor': return i18nT('components.cliPanel.touch_select_anchor')
+    case 'range_selected': return i18nT('components.cliPanel.touch_select_done')
+    default: return ''
+  }
+}
+
 function TerminalView({ sessionId, cwd, visible, onSendToChat }: { sessionId: string; cwd?: string; visible: boolean; onSendToChat?: (text: string) => void }) {
   const containerRef = useRef<HTMLDivElement>(null)
   const wrapperRef = useRef<HTMLDivElement>(null)
@@ -255,6 +273,14 @@ function TerminalView({ sessionId, cwd, visible, onSendToChat }: { sessionId: st
     entryRef.current = getOrCreateTerm(sessionId)
   }
   const { term, fit } = entryRef.current
+
+  // Touch range-selection (#6834): long-press a line to set the first endpoint,
+  // then tap/long-press another to select the inclusive span. xterm's own
+  // drag-selection is mouse-only and never fires on touch, so on a phone this
+  // is the only way to grab an ARBITRARY range out of the middle of scrollback
+  // (the staged Select key only reaches the last line or the whole buffer).
+  // Inert on mouse devices, where xterm's drag-selection already works.
+  const touchSelect = useTerminalTouchSelection(term, touchDevice)
 
   // Re-measure + refit, gated on pane visibility (see remeasureAndFit). Stable
   // per cached term/fit, so the effects below don't re-subscribe.
@@ -452,14 +478,52 @@ function TerminalView({ sessionId, cwd, visible, onSendToChat }: { sessionId: st
           only. The menu clamps itself inside its `offsetParent`; anchoring it to
           the outer wrapper would let it count the key bar's height as free space
           and drop over the soft keys — covering Tab on exactly the devices the
-          bar exists for. */}
-      <div className="relative w-full flex-1 min-h-0 overflow-hidden">
+          bar exists for.
+
+          The touch handlers (#6834) live on THIS div, not the outer wrapper, so
+          a touch maps to a terminal row using the terminal's own geometry. They
+          no-op on mouse devices (the hook's `enabled` gate), where xterm's own
+          drag-selection handles selection. Passive: they never preventDefault,
+          so ordinary scroll/tap still reach xterm — a long-press is recognised
+          by a still-finger timer, not by swallowing the gesture. */}
+      <div
+        className="relative w-full flex-1 min-h-0 overflow-hidden"
+        onTouchStart={touchSelect.onTouchStart}
+        onTouchMove={touchSelect.onTouchMove}
+        onTouchEnd={touchSelect.onTouchEnd}
+        onTouchCancel={touchSelect.onTouchEnd}
+      >
         <div ref={containerRef} className="w-full h-full overflow-hidden" />
         {/* Owns xterm's SINGLE `attachCustomKeyEventHandler` slot for this term
             (it reserves Tab/Enter/arrows/Escape while its menu is open). A later
             feature that attaches its own handler here would silently replace it —
             extend the handler inside TerminalCompletion instead. */}
         <TerminalCompletion term={term} sessionId={sessionId} active={visible} />
+        {/* Touch range-selection discoverability (#6834). The gesture is
+            invisible on a canvas — nothing tells the user an endpoint is set —
+            so surface it two ways: a small transient hint chip anchored top-left
+            (visual), and an sr-only live region (screen reader), the same
+            announce-through-a-status-region pattern the key bar's Copy/Select
+            use. Only rendered on touch, and only while a gesture is mid-flight
+            or just completed. */}
+        {touchDevice && touchSelect.status && (
+          <div
+            // Sits top-left over the grid. When the disconnect banner is up it
+            // occupies the top strip (z-30) and would fully cover a top-2 chip —
+            // and copying the last output of a dead session is exactly when this
+            // gesture is used — so drop the chip below the banner then (UX
+            // review #8070).
+            className={`pointer-events-none absolute left-2 z-20 rounded-md border border-border bg-bg-elevated/95 px-2 py-0.5 text-[11px] text-text shadow-sm backdrop-blur ${showBanner ? 'top-10' : 'top-2'}`}
+            aria-hidden="true"
+          >
+            {touchSelectHint(touchSelect.status)}
+          </div>
+        )}
+        {touchDevice && (
+          <span role="status" aria-live="polite" className="sr-only">
+            {touchSelect.status ? touchSelectHint(touchSelect.status) : ''}
+          </span>
+        )}
         {showBanner && (
           <div
             className="absolute inset-x-0 top-0 z-30 flex items-center gap-2 border-b border-border bg-bg-elevated/95 px-3 py-1.5 text-[12px] text-text shadow-sm backdrop-blur"

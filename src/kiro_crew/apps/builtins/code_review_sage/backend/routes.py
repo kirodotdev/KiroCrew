@@ -521,6 +521,21 @@ async def _run_review_bg(run: dict, changes: list[str]) -> None:
                 # repo-review skips it until its head changes. Only repo-review runs
                 # carry head_shas; pasted-link runs skip this (no-op).
                 await asyncio.to_thread(_record_reviewed, run)
+            if run["status"] == "error":
+                # The cause as a TOKEN, beside the sentence rather than instead of
+                # it. `_first_change_failure` collapses the token into English for
+                # `error`, so without this the payload names the cause nowhere and
+                # the dashboard's translator has to recognize causes by their
+                # wording -- which silently reverts a card to untranslated
+                # pass-through the next time a message is reworded, with no test
+                # going red. Set for BOTH error branches above: the summary-level
+                # `error` sentence and the per-change one describe the same
+                # `per_change` records, so the token is derived from those either
+                # way. Absent (never empty-string) when no record carried one, so a
+                # reader cannot mistake "no token" for a token.
+                reason = _first_change_failure(summary)[1]
+                if reason:
+                    run["reason"] = reason
     except Exception as exc:  # pragma: no cover - defensive
         run["status"] = "error"
         run["error"] = str(exc)
@@ -537,13 +552,23 @@ async def _run_review_bg(run: dict, changes: list[str]) -> None:
         await _notify_finished(run)
 
 
-def _first_change_error(summary: dict) -> str:
-    """The most useful per-change failure reason, for a run-level error message."""
+def _first_change_failure(summary: dict) -> tuple[str, str]:
+    """The most useful per-change failure, as ``(sentence, reason_token)``.
+
+    Both halves come from the SAME record in one pass, which is the whole reason
+    this is not two functions. The sentence is often built from ``deep_error`` --
+    prose from the spawn -- while the token lives in that record's
+    ``skipped_reason``; a second independent scan for the token would happily
+    return a LATER record's token and pair it with this record's sentence,
+    labelling a failure with an unrelated cause.
+
+    The token half is ``""`` when the chosen record kept no ``skipped_reason``.
+    """
     for rec in summary.get("per_change") or []:
         for key in ("deep_error", "gate_error", "skipped_reason"):
             val = str(rec.get(key) or "").strip()
             if val:
-                return {
+                sentence = {
                     "no_review_recorded": "the reviewer finished but wrote no "
                                           "findings record",
                     "review_record_incomplete": "the reviewer wrote a findings "
@@ -559,7 +584,13 @@ def _first_change_error(summary: dict) -> str:
                                            "runtime is unavailable on this host",
                     "review_failed": "the review turn failed",
                 }.get(val, val)
-    return ""
+                return sentence, str(rec.get("skipped_reason") or "").strip()
+    return "", ""
+
+
+def _first_change_error(summary: dict) -> str:
+    """The most useful per-change failure reason, for a run-level error message."""
+    return _first_change_failure(summary)[0]
 
 
 def _run_headline(run: dict) -> str:

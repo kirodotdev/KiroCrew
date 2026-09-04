@@ -339,8 +339,11 @@ export default function CrewEditor({ open, onClose, crew }: CrewEditorProps) {
 
   /** The app's own agent roster — the same `/api/agents` list the chat and
    *  schedule pickers read, so a crew can only be pointed at an agent that
-   *  actually exists. `0` = never force a refresh; `App` owns the sync. */
-  const { agents } = useAgents(0)
+   *  actually exists. `0` = never force a refresh; `App` owns the sync. Since
+   *  the trigger is constant the fetch runs once per mount, so `reload` is the
+   *  ONLY retry this dialog has — a failure with no affordance would strand the
+   *  picker on an empty list for the life of the mount (#5990's shape). */
+  const { agents, error: rosterError, reload: reloadRoster, reloading: rosterReloading } = useAgents(0)
   /** THE model list, gated on `open`: this dialog stays mounted while closed
    *  (Radix owns the exit animation), and an ungated observer would spawn
    *  kiro-cli's `--list-models` merely because the Crews view is on screen. */
@@ -740,6 +743,29 @@ export default function CrewEditor({ open, onClose, crew }: CrewEditorProps) {
                 value={draft.agent}
                 onChange={v => patch('agent', v)}
               />
+              {/* A load failure is only worth reporting while it costs the user
+                  the list — gated on the ROSTER being empty, not `agentOptions`:
+                  in edit mode the crew's own stale agent stays selectable (the
+                  preservation above), and this line composes with that rather
+                  than replacing it. The retry re-runs the hook's fetch, which a
+                  constant trigger otherwise never repeats. */}
+              {rosterError && agents.length === 0 && (
+                <div className="mt-1.5 flex flex-wrap items-center justify-between gap-2">
+                  <span role="alert" className="text-[12px] text-danger">
+                    {t('apps.issueRadar.views.crews.editor.agent_roster_failed')}
+                  </span>
+                  <Btn
+                    onClick={reloadRoster}
+                    disabled={rosterReloading}
+                    aria-busy={rosterReloading}
+                    className="text-[12px] px-2 py-1 shrink-0"
+                  >
+                    {rosterReloading
+                      ? t('apps.issueRadar.views.crews.editor.agent_roster_retrying')
+                      : t('apps.issueRadar.views.crews.editor.agent_roster_retry')}
+                  </Btn>
+                </div>
+              )}
               <p className="mt-1.5 text-[12px] leading-relaxed text-muted">
                 {t('apps.issueRadar.views.crews.editor.agent_hint')}
               </p>

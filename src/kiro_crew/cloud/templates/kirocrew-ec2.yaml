@@ -283,6 +283,17 @@ Resources:
       # EXPANDED size is guarded by test_cloud_ec2.py's UserData size test;
       # when it trips, trim the script or move knowledge here, never delete it.
       #
+      # "Reboot resume": State Manager runs wildcard associations when a new
+      #   managed node first comes online. An account-level
+      #   AWS-RunPatchBaseline association can therefore patch and reboot the
+      #   instance while npm/vite is still running, killing cloud-init itself
+      #   so an in-script retry never executes. UserData immediately persists
+      #   its already-rendered script as an enabled systemd oneshot and exits;
+      #   systemd starts it again after a reboot. Separate install-complete and
+      #   signal-complete markers make the install idempotent while still
+      #   retrying the WaitCondition handshake if the reboot lands between
+      #   those phases. A partially written gateway install is stopped before
+      #   its checkout is replaced, avoiding a resume race with its own unit.
       # "Logging": log via a plain file redirect (NOT `tee` via process
       #   substitution) and do NOT set `pipefail` -- install.sh's progress
       #   spinner writes many \r updates through a pipe, and a tee+pipefail
@@ -292,7 +303,18 @@ Resources:
       #   signal lands, destroying the setup log -- so fail() folds the last
       #   log lines INTO the signal reason (CFN allows ~1KB), letting the real
       #   error survive in the stack event where `kirocrew cloud launch` can
-      #   surface it. Quotes/backslashes are stripped because the fallback
+      #   surface it. The reason is read PREFIX-first (the CLI's streamed
+      #   progress line; a truncated stack-event display), and `tail -n 25`
+      #   starts at an uncontrolled point -- so the tail ALONE can open on
+      #   output from a step that SUCCEEDED. That is what happened on the Q
+      #   VPC-endpoint DNS failure: the visible prefix was dnf RPM names that
+      #   had installed fine, while the `curl: (6) Could not resolve host`
+      #   lines sat ~900 chars past the window, and a "transient dnf mirror
+      #   race" misdiagnosis survived three launch attempts on the strength of
+      #   it. So the LAST error-matching line is emitted first and the raw tail
+      #   second; the tail keeps its ~900-char budget because the 1KB cap clips
+      #   from the END, which is now the least valuable part.
+      #   Quotes/backslashes are stripped because the fallback
       #   curl embeds the reason in hand-built JSON; an unescaped quote would
       #   malform the body and the WaitCondition would hang to timeout instead
       #   of failing cleanly. Both the log tail and the caller's message are
@@ -334,9 +356,12 @@ Resources:
       #   suppression) -- just cheap insurance so first boot degrades to swap
       #   instead of a kill under a transient spike. Unused headroom on every
       #   tier is harmless. Best-effort: never fails on swap.
-      # "System packages": install.sh needs Python >= 3.10; AL2023's default
-      #   python3 is 3.9, so python3.11 is installed explicitly (install.sh's
-      #   _find_python prefers python3.12/3.11/3.10 over the bare python3).
+      # "System packages": install.sh needs Python >= 3.12; AL2023's default
+      #   python3 is 3.9, so python3.12 is installed explicitly (install.sh's
+      #   _find_python prefers python3.12 over the bare python3). That install
+      #   is best-effort and kept OUT of the essential set: where the AL2023
+      #   repos carry no python3.12, install.sh provisions its own pinned
+      #   interpreter instead, so a missing package must not fail the boot.
       #   ripgrep is optional and must never fail the bootstrap.
       # "Node.js": the frontend build (vite 8 + rolldown) REQUIRES Node >= 22;
       #   AL2023's default AppStream nodejs is 18, on which the build dies
@@ -375,10 +400,12 @@ Resources:
       #   which is what lets the retry actually re-run it. install.sh is
       #   retried once on a cold first boot: observed on the light tier, the
       #   very first run can be signal-killed mid-build (no clean error, no
-      #   kernel OOM) under first-boot contention (cloud-init + SSM
+      #   kernel OOM) under same-boot contention (cloud-init + SSM
       #   registration + dnf + kiro-cli install + a fresh `npm ci` all
       #   compressed together); a retry on the now-warm box (primed caches,
       #   node_modules present) reliably reaches "installed successfully".
+      #   That retry cannot survive a host reboot because its parent shell is
+      #   killed too; the persistent bootstrap oneshot above owns that case.
       #   `set -e` is relaxed only for the first attempt (the `if` guard); a
       #   failed retry still exits nonzero so the outer `|| fail` signals the
       #   WaitCondition.
@@ -417,6 +444,37 @@ Resources:
           # above UserData, keyed by the section names quoted below.
           # No pipefail + plain-file logging: see "Logging" above.
           set -u
+
+          # cloud-init runs UserData once. Persist the already-rendered script and
+          # hand off immediately so a managed patch reboot can resume it on boot.
+          BOOTSTRAP_SCRIPT=/usr/local/sbin/kirocrew-bootstrap
+          BOOTSTRAP_STATE=/var/lib/kirocrew-bootstrap
+          INSTALL_DONE=$BOOTSTRAP_STATE/install-complete
+          SIGNAL_DONE=$BOOTSTRAP_STATE/signal-complete
+          if [ "$#" -eq 0 ]; then
+            install -m 0700 "$0" "$BOOTSTRAP_SCRIPT"
+            cat > /etc/systemd/system/kirocrew-bootstrap.service <<'UNIT'
+          [Unit]
+          Description=Kiro Crew resumable bootstrap
+          After=network-online.target
+          Wants=network-online.target
+
+          [Service]
+          Type=oneshot
+          ExecStart=/usr/local/sbin/kirocrew-bootstrap --resume
+          RemainAfterExit=yes
+
+          [Install]
+          WantedBy=multi-user.target
+          UNIT
+            systemctl daemon-reload
+            systemctl enable kirocrew-bootstrap.service
+            systemctl start --no-block kirocrew-bootstrap.service
+            exit 0
+          fi
+
+          mkdir -p "$BOOTSTRAP_STATE"
+          [ -f "$SIGNAL_DONE" ] && exit 0
           exec >>/var/log/kirocrew-setup.log 2>&1
           echo "=== KiroCrew bootstrap starting $(date -u) ==="
 
@@ -424,20 +482,27 @@ Resources:
           LOG=/var/log/kirocrew-setup.log
           # Folds the log tail into the FAILURE reason: see "fail()" above.
           fail() {
+            err1=$(grep -aiE 'error|fail|cannot|denied|refused|curl: \(' "$LOG" 2>/dev/null \
+              | grep -av 'BOOTSTRAP FAILED' | tail -1 | tr -d '\r"\\' | tr -cd '\40-\176' | tail -c 200)
             echo "BOOTSTRAP FAILED: $1"
             tail_ctx=$(tail -n 25 "$LOG" 2>/dev/null | tr -d '\r"\\' \
               | grep -aviE 'Installing (npm|kirocrew and) depend|building React app' \
               | tr '\n' '|' | tr -cd '\40-\176' | tail -c 900)
             # NB: ${!tail_ctx} is the !Sub literal escape, not bash indirection.
-            reason="$(printf '%s' "$1" | tr -d '"\\' | tr '\n' '|' | tr -cd '\40-\176') :: ...${!tail_ctx}"
+            reason="$(printf '%s' "$1" | tr -d '"\\' | tr '\n' '|' | tr -cd '\40-\176') :: ${!err1} :: ...${!tail_ctx}"
             /opt/aws/bin/cfn-signal -e 1 -r "$(echo "$reason" | head -c 1000)" "$HANDLE" || \
               curl -s -X PUT -H 'Content-Type:' --data-binary \
                 "{\"Status\":\"FAILURE\",\"Reason\":\"$(echo "$reason" | head -c 1000)\",\"UniqueId\":\"kirocrew\",\"Data\":\"fail\"}" "$HANDLE" || true
             exit 1
           }
 
-          # The stock AL2023 reboot would SIGTERM the build mid-install: see
-          # "SELinux reboot" above. Best-effort, never fails the bootstrap.
+          if [ ! -f "$INSTALL_DONE" ]; then
+            # A reboot after the gateway unit was enabled but before checkpointing
+            # can queue both units. Stop it before replacing the checkout.
+            systemctl stop kirocrew.service 2>/dev/null || true
+
+            # The stock AL2023 reboot would SIGTERM the build mid-install: see
+            # "SELinux reboot" above. Best-effort, never fails the bootstrap.
           echo "--- suppressing AL2023 first-boot SELinux reboot ---"
           rm -f /run/cloud-init-selinux-reboot 2>/dev/null || true
           rm -f /etc/cloud/cloud.cfg.d/40_selinux-reboot.cfg 2>/dev/null || true
@@ -461,11 +526,15 @@ Resources:
           fi
 
           echo "--- installing system packages ---"
-          # python3.11 explicitly: install.sh needs >= 3.10, AL2023's default
-          # python3 is 3.9 (see "System packages" above).
-          dnf install -y git tmux python3.11 python3.11-pip python3 python3-pip \
+          dnf install -y git tmux python3 python3-pip \
             unzip tar gzip which \
-            || fail "essential package install failed (git/python3.11/unzip)"
+            || fail "essential package install failed (git/python3/unzip)"
+          # python3.12 explicitly: install.sh needs >= 3.12, AL2023's default
+          # python3 is 3.9 (see "System packages" above). Best-effort -- if the
+          # repos carry no python3.12, install.sh's _bootstrap_python provisions
+          # one via mise rather than failing the boot.
+          dnf install -y python3.12 python3.12-pip \
+            || echo "python3.12 unavailable from dnf; install.sh will provision one"
           dnf install -y ripgrep || echo "ripgrep unavailable (optional), continuing"
 
           echo "--- installing Node.js ---"
@@ -508,10 +577,11 @@ Resources:
           # AL2023 glibc 2.34 is too old for the standard build: musl required.
           ARCH=$(uname -m)
           if [ "$ARCH" = "aarch64" ]; then KIRO_URL="https://desktop-release.q.us-east-1.amazonaws.com/latest/kirocli-aarch64-linux-musl.zip"; else KIRO_URL="https://desktop-release.q.us-east-1.amazonaws.com/latest/kirocli-x86_64-linux-musl.zip"; fi
+          sudo -u $RUN_USER bash -lc "cd \$HOME; curl --proto '=https' --tlsv1.2 -sSf '$KIRO_URL' -o kirocli.zip" \
+            || fail "could not DOWNLOAD kiro-cli from $KIRO_URL (host unresolvable/unreachable here)"
           sudo -u $RUN_USER bash -lc "
             set -e
             cd \$HOME
-            curl --proto '=https' --tlsv1.2 -sSf '$KIRO_URL' -o kirocli.zip
             unzip -o -q kirocli.zip
             ./kirocli/install.sh --no-confirm || yes | ./kirocli/install.sh || true
           " || echo 'kiro-cli install returned nonzero (verifying the binary below)'
@@ -555,7 +625,7 @@ Resources:
           KCFETCH
           chmod +x /tmp/kcfetch.sh
           chown $RUN_USER /tmp/kcfetch.sh
-          sudo -u $RUN_USER bash /tmp/kcfetch.sh || fail "kirocrew install.sh failed"
+          sudo -u $RUN_USER bash /tmp/kcfetch.sh || fail "kirocrew source fetch or install failed"
 
           echo "--- verifying the dashboard SPA was actually built ---"
           # A missing SPA means a green stack serving a dead dashboard, so it
@@ -602,7 +672,13 @@ Resources:
           WantedBy=multi-user.target
           UNIT
           systemctl daemon-reload
-          systemctl enable --now kirocrew.service || fail "could not start kirocrew.service"
+          touch "$INSTALL_DONE"
+          fi
+
+          # This phase is safe to repeat after install completed but before the
+          # WaitCondition acknowledgement was durably recorded.
+          systemctl enable kirocrew.service || fail "could not enable kirocrew.service"
+          systemctl start kirocrew.service || fail "could not start kirocrew.service"
 
           echo "--- waiting for the gateway to answer on 127.0.0.1:${DashboardPort} ---"
           ok=0
@@ -613,9 +689,22 @@ Resources:
           [ "$ok" = "1" ] || fail "gateway did not become healthy within 5 minutes"
 
           echo "=== KiroCrew bootstrap complete $(date -u) ==="
-          /opt/aws/bin/cfn-signal -e 0 -r "kirocrew healthy" "$HANDLE" || \
-            curl -s -X PUT -H 'Content-Type:' --data-binary \
-              "{\"Status\":\"SUCCESS\",\"Reason\":\"kirocrew healthy\",\"UniqueId\":\"kirocrew\",\"Data\":\"ok\"}" "$HANDLE" || true
+          signal_ok=0
+          for attempt in 1 2 3; do
+            if /opt/aws/bin/cfn-signal -e 0 -r "kirocrew healthy" "$HANDLE"; then
+              signal_ok=1
+              break
+            fi
+            if curl -fsS -X PUT -H 'Content-Type:' --data-binary \
+              "{\"Status\":\"SUCCESS\",\"Reason\":\"kirocrew healthy\",\"UniqueId\":\"kirocrew\",\"Data\":\"ok\"}" "$HANDLE"; then
+              signal_ok=1
+              break
+            fi
+            echo "WaitCondition success signal attempt $attempt failed; retrying"
+            sleep 5
+          done
+          [ "$signal_ok" = "1" ] || { echo "could not deliver WaitCondition success"; exit 1; }
+          touch "$SIGNAL_DONE"
 
   # --- WaitCondition: `aws cloudformation deploy` blocks until the box is
   #     actually serving. cfn-signal in UserData reports success/failure.

@@ -542,6 +542,51 @@ describe('Design Critique — critiquing screenshots', () => {
       .toBeInTheDocument()
   })
 
+  // One turn is not one message: the runner finalizes a segment per text block,
+  // so a report can sit behind a later segment of the same turn. Reading only the
+  // newest row ended a finished critique on the unreadable-reply message.
+  it('renders a report the turn left behind a later segment', async () => {
+    mockApi.getSlot.mockResolvedValue({
+      running: false,
+      messages: [
+        { role: 'user', content: 'critique this' },
+        { role: 'assistant', content: JSON.stringify(ONE_SCREEN_REPORT) },
+        { role: 'tool', content: 'artifact_save' },
+        { role: 'assistant', content: 'Saved the critique for you.' },
+      ],
+    })
+    render(<DesignCritiquePage />)
+    dropFiles([imageFile('cart.png')])
+
+    fireEvent.click(screen.getByRole('button', { name: /Critique this screen/ }))
+    await tick(POLL_MS)
+
+    expect(screen.getByText(/the two blue buttons fight each other/)).toBeInTheDocument()
+    expect(screen.queryByText('The critic replied but not in a readable format.')).toBeNull()
+  })
+
+  // A stream cut short by a transient backend error is persisted as a partial plus
+  // a continuation, and the model is told to resume where it stopped — mid-JSON
+  // for this prompt. Neither half parses alone; the whole reply does.
+  it('renders a report split across a partial and its continuation', async () => {
+    const whole = JSON.stringify(ONE_SCREEN_REPORT)
+    mockApi.getSlot.mockResolvedValue({
+      running: false,
+      messages: [
+        { role: 'assistant', content: whole.slice(0, 120) },
+        { role: 'error', content: 'The previous response was interrupted.' },
+        { role: 'assistant', content: whole.slice(120) },
+      ],
+    })
+    render(<DesignCritiquePage />)
+    dropFiles([imageFile('cart.png')])
+
+    fireEvent.click(screen.getByRole('button', { name: /Critique this screen/ }))
+    await tick(POLL_MS)
+
+    expect(screen.getByText(/the two blue buttons fight each other/)).toBeInTheDocument()
+  })
+
   it('cancels a run, releases its slot, and returns to the composer', async () => {
     render(<DesignCritiquePage />)
     dropFiles([imageFile('cart.png')])

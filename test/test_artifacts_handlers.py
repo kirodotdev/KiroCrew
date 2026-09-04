@@ -457,6 +457,51 @@ class TestCreate:
         assert resp.status == 409
 
     @pytest.mark.asyncio
+    async def test_save_carries_theme_contrast_warning(
+        self, isolated_store, patch_restricted
+    ) -> None:
+        # Computed HERE at the convergence point (same relay pattern as
+        # slug_collided_with) so the CLI and MCP clients both hear the same
+        # verdict — the MCP-layer hint alone missed the CLI path.
+        body = {"name": "Perf", "content": '<div style="color:#111">x</div>', "kind": "widget"}
+        created = _json_body(await api_artifacts_create(_request(body=body)))
+        assert created["theme_contrast_warning"] is True
+
+    @pytest.mark.asyncio
+    async def test_save_warning_silent_for_theme_aware_content(
+        self, isolated_store, patch_restricted
+    ) -> None:
+        # The recommended fallback form carries a hex literal AND var(--…);
+        # theme-aware content must not flag.
+        body = {
+            "name": "Perf2",
+            "content": '<div style="color:var(--text,#111);background:var(--bg,#fff)">x</div>',
+            "kind": "widget",
+        }
+        created = _json_body(await api_artifacts_create(_request(body=body)))
+        assert created["theme_contrast_warning"] is False
+
+    @pytest.mark.asyncio
+    async def test_promoted_save_scans_persisted_content_not_body(
+        self, isolated_store, patch_restricted, linkable_project
+    ) -> None:
+        # A linked-file save persists the SERVER-read bytes (promotion), so
+        # the verdict must come from art.content -- a client body that lost
+        # the colors (stale preview / redaction) must not suppress it.
+        src = linkable_project / "page.html"
+        src.write_text('<body style="color:#111">x</body>', encoding="utf-8")
+        body = {
+            "name": "page",
+            "content": "<body>stale preview without colors</body>",
+            "kind": "html",
+            "source": "manual",
+            "source_path": str(src),
+        }
+        created = _json_body(await api_artifacts_create(_request(body=body)))
+        assert created["content"] == '<body style="color:#111">x</body>'
+        assert created["theme_contrast_warning"] is True
+
+    @pytest.mark.asyncio
     async def test_suffixed_slug_is_reported_in_the_response(
         self, isolated_store, patch_restricted
     ) -> None:
@@ -1183,6 +1228,29 @@ class TestDetail:
 
 
 class TestUpdate:
+    @pytest.mark.asyncio
+    async def test_content_update_carries_theme_contrast_warning(
+        self, isolated_store, patch_restricted
+    ) -> None:
+        # The CLI's PATCH is exactly how the motivating incident's script
+        # pushed its hardcoded-palette page — the verdict must ride the
+        # update response, not just the MCP tool's local hint.
+        isolated_store.create(name="page", content="<p>ok</p>", slug="page")
+        resp = await api_artifact_update(
+            _request(body={"content": '<body style="color:#111">x</body>'}, match={"slug": "page"})
+        )
+        assert resp.status == 200
+        assert _json_body(resp)["theme_contrast_warning"] is True
+
+    @pytest.mark.asyncio
+    async def test_metadata_only_update_stamps_warning_false(
+        self, isolated_store, patch_restricted
+    ) -> None:
+        isolated_store.create(name="page", content='<p style="color:#111">x</p>', slug="page")
+        resp = await api_artifact_update(_request(body={"name": "Renamed"}, match={"slug": "page"}))
+        assert resp.status == 200
+        assert _json_body(resp)["theme_contrast_warning"] is False
+
     @pytest.mark.asyncio
     async def test_content_change_with_snapshot_bumps_version(
         self, isolated_store, patch_restricted

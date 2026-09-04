@@ -39,6 +39,7 @@ in its docstring, and add a self-test in ``test_windows_sim.py``.
 from __future__ import annotations
 
 import datetime as _dt
+import errno
 import os
 import pathlib
 from contextlib import contextmanager
@@ -272,6 +273,64 @@ def open_sharing_violation(
         return real_open(path, flags, mode, *args, **kwargs)
 
     with mock.patch("os.open", _patched):
+        yield state
+
+
+@contextmanager
+def link_sharing_violation(
+    *, match: Optional[str] = None, times: int = 1
+) -> Iterator[dict]:
+    """Make ``os.link()`` raise a Windows-style sharing violation.
+
+    A hard link is how a writer that staged its content elsewhere PUBLISHES it
+    under the real name without clobbering a sibling's. On Windows that create
+    can hit a sharing violation (``PermissionError`` / ``WinError 32``) while
+    another handle holds the destination open, exactly as an exclusive create
+    can; POSIX permits it, so an un-retried publish passes locally and degrades
+    on Windows. Raises for the first *times* matching links, then delegates, so
+    a bounded retry loop succeeds. *match* filters on the DESTINATION path
+    (basename-equality or substring); ``None`` faults every link. Yields a
+    ``{"n": count}`` dict.
+    """
+    real_link = os.link
+    state = {"n": 0}
+
+    def _patched(src, dst, **kwargs):  # type: ignore[no-untyped-def]
+        p = str(dst)
+        if match is None or os.path.basename(p) == match or match in p:
+            state["n"] += 1
+            if state["n"] <= times:
+                raise PermissionError(
+                    f"[WinError 32] simulated sharing violation linking {p}"
+                )
+        return real_link(src, dst, **kwargs)
+
+    with mock.patch("os.link", _patched):
+        yield state
+
+
+@contextmanager
+def link_unsupported(*, match: Optional[str] = None) -> Iterator[dict]:
+    """Make ``os.link()`` fail as it does on a filesystem with no hard links.
+
+    FAT/exFAT volumes and several network mounts reject ``link`` outright with
+    ``EPERM``/``EOPNOTSUPP`` for every call, not transiently. A writer that
+    publishes by link must still leave a persisted file on such a host rather
+    than silently degrading, and this makes that path reachable from a POSIX
+    dev loop. *match* filters on the destination path as above. Yields a
+    ``{"n": count}`` dict.
+    """
+    real_link = os.link
+    state = {"n": 0}
+
+    def _patched(src, dst, **kwargs):  # type: ignore[no-untyped-def]
+        p = str(dst)
+        if match is None or os.path.basename(p) == match or match in p:
+            state["n"] += 1
+            raise OSError(errno.EPERM, "simulated: filesystem does not support links")
+        return real_link(src, dst, **kwargs)
+
+    with mock.patch("os.link", _patched):
         yield state
 
 

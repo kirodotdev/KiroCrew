@@ -15,14 +15,25 @@ from typing import Any
 # unchanged — see the "ACP Backend Identifiers" section below for why they moved.
 from kiro_crew.acp_backends import (  # noqa: F401 - re-exported for existing importers
     ACP_BACKEND_CLAUDE,
+    ACP_BACKEND_CODEX,
     ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
     ACP_BACKENDS_ACP_RUNTIME,
+    ACP_BACKENDS_ADVERTISED_MODEL_SELECTION,
+    ACP_BACKENDS_COMPACT,
+    ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION,
     ACP_BACKENDS_INTERNAL_SANDBOX,
     ACP_BACKENDS_KIRO_IDENTITY_STORE,
+    ACP_BACKENDS_KIRO_SLASH_COMMANDS,
     ACP_BACKENDS_KNOWN,
+    ACP_BACKENDS_MCP_CONFIG_HOT_RELOAD,
+    ACP_BACKENDS_MEMBER_DISPATCH,
+    ACP_BACKENDS_MODEL_VIA_CONFIG_OPTION,
+    ACP_BACKENDS_SEED_LOCAL_SETTINGS,
+    ACP_BACKENDS_SESSION_MCP_ARRAY,
     ACP_BACKENDS_SESSION_SHARING,
     ACP_BACKENDS_STEER,
+    model_registry_namespace,
     selectable_backends,
 )
 
@@ -139,13 +150,12 @@ ACP_CLIENT_CAPABILITIES: dict = {
 # snapshot here would be read before boot registration and silently miss it.
 
 # ── Capability membership ──
-# The five ``ACP_BACKENDS_*`` capability sets are DEFINED in the leaf module
+# The ``ACP_BACKENDS_*`` capability sets are DEFINED in the leaf module
 # ``kiro_crew.acp_backends`` and re-exported by the import above, so
 # ``from kiro_crew.acp.types import ACP_BACKENDS_STEER`` still resolves. They moved
 # for the same reason the backend identifiers did: a consumer outside this package
 # must be able to ask a capability question without importing ``kiro_crew.acp``,
 # whose ``__init__`` pulls in the client and runtime.
-
 
 # ── Provider labels ──
 # The backend identity key persisted in the session map. It indexes three
@@ -158,6 +168,7 @@ ACP_CLIENT_CAPABILITIES: dict = {
 PROVIDER_LABEL_DEFAULT = "acp"
 PROVIDER_LABEL_CLAUDE = "claude_code"
 PROVIDER_LABEL_KAS = "kas"
+PROVIDER_LABEL_CODEX = "codex"
 
 # KAS reads only fs.readTextFile / fs.writeTextFile / terminal from the top
 # level of clientCapabilities; every other capability it honours lives under
@@ -174,12 +185,23 @@ KAS_CLIENT_CAPABILITIES: dict = {
 # Values written into a per-session settings.local.json
 # ``permissions.defaultMode`` for the ``ACP_BACKEND_CLAUDE`` backend.
 # ``default`` = per-tool approval; ``auto`` = the SDK auto-accept mode
-# (Auto-mode / permission-UI parity). Nothing in the base client writes that file
-# today — it is an edition override — so these are defined here to give the
-# client's ``permission_mode`` kwarg and any writer one canonical vocabulary
-# rather than duplicating string literals.
+# (Auto-mode / permission-UI parity). ``AcpClient._write_claude_local_settings``
+# is the writer; these exist so it and the client's ``permission_mode`` kwarg
+# share one vocabulary rather than duplicating string literals.
 CC_PERMISSION_MODE_DEFAULT = "default"
 CC_PERMISSION_MODE_AUTO = "auto"
+# NOT a mode Crew ever selects, and never written: it is the one value the
+# adapter treats as "never call the host back at all", which would take a claude
+# session out of the host gate entirely. Named so that value has one spelling
+# here rather than a literal at each guard.
+#
+# It does NOT describe an inherited file. The settings writer is create-or-decline
+# and never READS a file it did not author, so a ``bypassPermissions`` already
+# sitting in a user's own ``settings.local.json`` (or in ``~/.claude``) is neither
+# detected nor stripped -- that session's tool calls do not reach the host gate.
+# That is the disclosed boundary recorded on ``_write_claude_local_settings``, not
+# something this constant closes.
+CC_PERMISSION_MODE_BYPASS = "bypassPermissions"
 
 # ── ACP Session Update Types ──
 
@@ -442,6 +464,10 @@ class AcpEvent:
     tool_purpose: str = ""
     context_usage_pct: float = 0.0
     stop_reason: str = ""
+    #: True when Kiro Crew fabricated this terminal event because the provider
+    #: omitted its result frame. Consumers must not treat it as raw completion
+    #: evidence even when compatibility requires ``stop_reason=end_turn``.
+    synthetic_completion: bool = False
     request_id: str | int = ""
     options: list[dict[str, str]] = field(default_factory=list)
     tool_input: str = ""
@@ -450,6 +476,19 @@ class AcpEvent:
     #: the original bytes never ride this display event.  Approval surfaces use
     #: it to refuse a durable command grant for a value the user could not see.
     tool_input_redacted: bool = False
+    #: The tool's result text, VERBATIM enough that a control marker embedded in
+    #: it still parses. Two consumers read markers out of this string rather than
+    #: out of a structured field: a session directive (``session_directive.peek``,
+    #: which arms/stops a monitor loop) and an MCP App render marker
+    #: (``mcp_apps_render.find_marker``). A builder that serialises an
+    #: unrecognised result envelope with ``json.dumps`` escapes every quote in it,
+    #: which leaves both sentinels intact while destroying the payload behind
+    #: them -- so the frame still looks like it carries a directive and names
+    #: nothing. EVERY builder must therefore run
+    #: ``acp/_dispatch._repair_escaped_marker`` over its joined output before
+    #: redaction and the head cut; a new provider's builder is pinned to that by
+    #: ``test_session_directive_transport.py``. See
+    #: docs/system-specs/features/agent-host-contract.md §9.
     tool_output: str = ""
     tool_final: bool = False  # True when this tool_result is the final (status=completed) update
     usage: TurnUsage = field(default_factory=TurnUsage)
@@ -459,13 +498,38 @@ class AcpEvent:
     # MCP OAuth notification fields (EVENT_MCP_OAUTH_REQUEST):
     server_name: str = ""
     oauth_url: str = ""
+    #: True when this text chunk is a backend CONTROL NOTICE that arrived as
+    #: ordinary assistant text -- today only the claude adapter's compaction
+    #: notices, which it emits as plain ``agent_message_chunk`` content with no
+    #: marker of any kind (see ``parse_claude_compaction_notice``).
+    #:
+    #: The chunk is still delivered, because classifying one is a GUESS about
+    #: prose and a layer that dropped it would turn any wrong guess into deleted
+    #: model output. This flag lets a consumer show the text while not counting it
+    #: as the turn's own ANSWER -- the distinction the dashboard needs to decide
+    #: whether a compacted turn still owes a reply. Recognition stays in the ACP
+    #: layer: a consumer that re-parsed the text would be re-deciding a protocol
+    #: question it does not own.
+    control_notice: bool = False
+    #: True when this event was SYNTHESIZED by the client rather than read off a
+    #: backend frame. Only the claude compaction terminal sets it: an automatic
+    #: compaction sends no terminal of its own, so one is manufactured once the
+    #: turn ends (``AcpClient._settle_claude_compaction``). A consumer that
+    #: treats a compaction terminal as a MID-TURN segment boundary must NOT do so
+    #: for a synthesized one -- it arrives after every text chunk of the turn, so
+    #: acting on it as a boundary discards whatever the backend produced after
+    #: compacting.
+    synthesized: bool = False
     # Native subagent list (EVENT_SUBAGENT_LIST) — kiro-cli per-subagent state.
     subagents: list[dict[str, Any]] | None = None
     #: True when the frame behind this event named no owner and was fanned out to
     #: several sessions on one runtime (see ``JsonRpcMessage.fanout_no_owner``).
     #: A consumer must not read such an event as ITS OWN activity -- it is
-    #: another tenant's traffic. Only the roster broadcast sets this today; the
-    #: same event kind reached through a routed ``session/update`` (the KAS
+    #: another tenant's traffic. Set by the roster broadcast (which never names
+    #: an owner) and by the MCP registration notifications when the frame did
+    #: not name this session -- a registration frame MAY carry a
+    #: ``params.sessionId``, and one that does is owned by the session it names.
+    #: The same event kind reached through a routed ``session/update`` (the KAS
     #: sub-agent lifecycle path) leaves it False, because that frame belongs to
     #: exactly one session.
     runtime_global: bool = False

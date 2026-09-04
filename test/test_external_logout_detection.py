@@ -20,6 +20,23 @@ from kiro_crew import kiro_prerequisite as kp
 from kiro_crew.session import _MAX_CONCURRENT_COLD_STARTS as _MAX_COLD_STARTS_FOR_TEST
 
 
+@pytest.fixture(autouse=True)
+def _private_sel_root_per_test(sel_private_root):
+    """Every test in this module gets its OWN SEL root (issue #7029).
+
+    ``identity_fingerprint`` is audit-or-deny: it returns "absent" unless a
+    CRITICAL SEL event lands first. On the event-loop thread the chain-lock
+    acquire is a single non-blocking attempt that refuses rather than stall the
+    loop -- correct product behaviour -- so on the worker's SHARED SEL root an
+    async test asserting a NON-EMPTY fingerprint is racing writers it never
+    created (another test still flushing, another xdist worker on the same
+    path). It then reads "" and fails on a property it never meant to test.
+    ``sel_private_root`` removes the concurrent writer: a fresh per-test,
+    per-worker directory nothing else writes.
+    """
+    yield
+
+
 def _write_store(
     path: Path,
     *,

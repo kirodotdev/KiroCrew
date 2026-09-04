@@ -47,10 +47,38 @@ export interface SpritePrefillInput {
   rowAssignments: Record<string, number>
 }
 
+/**
+ * What Save hands back: the sheet's geometry plus the confirmed row mapping,
+ * forwarded to the packs route verbatim.
+ *
+ * A `type`, not an `interface`, and that is load-bearing: the owner types its
+ * handler against the open wire shape (`Record<string, unknown>` — the route
+ * takes the whole object), and only an object-literal type alias carries the
+ * implicit index signature that makes this assignable to it.
+ */
+export type SpritePackDraft = {
+  name: string
+  author: string
+  description: string
+  frameWidth: number
+  frameHeight: number
+  fps: number
+  flipX: boolean
+  offsetY: number
+  /** The whole sheet, kept so a later re-edit can re-slice it. */
+  sourceImage?: string
+  /** slot -> the sliced row's data URI */
+  assignments: Record<string, string>
+  /** slot -> row index, so the mapping survives a re-edit */
+  rowAssignments: Record<string, number>
+  /** Set only when the user saved OVER an existing pack rather than creating one. */
+  overwriteId?: string
+}
+
 interface Props {
   existingPack?: PackMeta
   prefill?: SpritePrefillInput
-  onDone: (result: any) => void
+  onDone: (result: SpritePackDraft) => void
   onCancel: () => void
   /**
    * A save the owner attempted and failed. Rendered in the footer so this
@@ -112,7 +140,7 @@ export const SpriteImporter: React.FC<Props> = ({
   // Load existing pack
   useEffect(() => {
     if (!existingPack) return
-    api?.galleryGetPackDetail?.(existingPack.id).then(async (d: any) => {
+    api?.galleryGetPackDetail?.(existingPack.id).then(async (d) => {
       if (!d?.sprite) return
       setFrameW(d.sprite.frameWidth || 32)
       setFrameH(d.sprite.frameHeight || 32)
@@ -171,6 +199,7 @@ export const SpriteImporter: React.FC<Props> = ({
         })
       }
     })
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- mount-once: this SEEDS the draft (frame size, fps, flipX, offsetY, row assignments, sheet) from the stored pack and takes the dirty snapshot it is compared against. Re-running on a new `existingPack` identity would overwrite whatever the user has configured since and re-baseline the snapshot, so an edit in progress would silently revert and then read as unchanged. Which pack is being edited is fixed for the lifetime of this mount: the gallery unmounts the importer to leave edit mode.
   }, [])
 
   const handleSelectFile = useCallback(async () => {
@@ -275,7 +304,7 @@ export const SpriteImporter: React.FC<Props> = ({
         rowAssignments[key] = rowIdx
       }
     }
-    const data: any = { name, author, description, frameWidth: frameW, frameHeight: frameH, fps, flipX, offsetY, sourceImage: imgSrc || undefined, assignments: result, rowAssignments }
+    const data: SpritePackDraft = { name, author, description, frameWidth: frameW, frameHeight: frameH, fps, flipX, offsetY, sourceImage: imgSrc || undefined, assignments: result, rowAssignments }
     if (!asNew && existingPack) data.overwriteId = existingPack.id
     onDone(data)
   }, [name, author, description, frameW, frameH, fps, flipX, offsetY, imgSrc, assignments, rows, existingPack, onDone])

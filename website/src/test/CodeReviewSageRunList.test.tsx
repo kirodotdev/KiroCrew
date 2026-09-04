@@ -400,6 +400,73 @@ describe('why a review failed', () => {
       .toMatch(/recorded no findings/i)
   })
 
+  // ── The discriminated causes from #7233 ──
+  // Every fixture below is the string the backend really emits, copied from its
+  // source so a reader can check it: the driver's per-change wording
+  // (sage_lib/review_driver.py), the preflight's two answers
+  // (sage_lib/review_pool.py::runtime_preflight) and the run-level sentences
+  // routes.py::_first_change_error maps each reason to.
+  it('tells a record that stopped short apart from one that was never written', () => {
+    // The driver's per-change wording, and the run-level sentence for the same
+    // reason. Both must reach the incomplete-record explanation, and NEITHER may
+    // fall into the "no result record" branch — telling these apart is the whole
+    // point of the backend change.
+    for (const raw of [
+      'review wrote a result record but never completed the review',
+      'the reviewer wrote a findings record but never completed the review',
+      'review_record_incomplete',
+    ]) {
+      const reason = failureReason(failed(raw))
+      expect(reason?.text, raw).toMatch(/stopped before completing the review/i)
+      expect(reason?.text, raw).not.toMatch(/recorded no findings/i)
+      expect(reason?.raw, raw).toBe(raw)
+    }
+  })
+
+  it('explains a host with no kiro-cli, naming what to install', () => {
+    const reason = failureReason(failed(
+      'the reviewer cannot run: no kiro-cli executable was found on this host '
+      + '(the reviewer session is driven by kiro-cli — install it or add it to PATH)'))
+    expect(reason?.text).toMatch(/never started/i)
+    expect(reason?.text).toMatch(/PATH/)
+    expect(reason?.raw).toMatch(/no kiro-cli executable/)
+  })
+
+  it('explains an install whose agent runtime will not load', () => {
+    // A different remedy from the missing executable — the CLI may well be
+    // installed — so it must not share that sentence.
+    const reason = failureReason(failed(
+      'the reviewer cannot run: the ACP runtime (kiro_crew.acp.runtime) is not '
+      + 'importable in this install'))
+    expect(reason?.text).toMatch(/cannot load the agent runtime/i)
+    expect(reason?.text).not.toMatch(/PATH/)
+  })
+
+  it('explains the run-level card for a preflight-failed run', () => {
+    // `_first_change_error` renders this when the per-change record kept only the
+    // reason. It says "runtime is unavailable", never the enum, so a translator
+    // keyed on `runtime_unavailable` alone would show it verbatim.
+    for (const raw of [
+      'the reviewer never ran: its agent runtime is unavailable on this host',
+      'runtime_unavailable',
+    ]) {
+      expect(failureReason(failed(raw))?.text, raw)
+        .toMatch(/agent runtime is unavailable on this host/i)
+    }
+  })
+
+  it('leaves a missing agent spec with its own repair command', () => {
+    // This message names kiro-cli too, and it already tells the reader exactly
+    // what to run. A branch keyed on the bare word `kiro-cli` would replace it
+    // with "install kiro-cli", so it is the regression guard for the narrower
+    // pattern rather than an incidental pass-through case.
+    const raw = "Agent spec 'code-review-sage-reviewer' is not installed: kiro-cli "
+      + "found no 'code-review-sage-reviewer.json' in /home/u/.kiro/agents. Every "
+      + 'turn fails until it is restored — repair with `kirocrew setup '
+      + '--agent-only --clean`, then restart the gateway.'
+    expect(failureReason(failed(raw))?.text).toBe(raw)
+  })
+
   it('explains a timeout', () => {
     expect(failureReason(failed('review turn timed out'))?.text)
       .toMatch(/past its time limit/i)
@@ -409,6 +476,157 @@ describe('why a review failed', () => {
     // Better a raw message than a generic one that hides what happened.
     expect(failureReason(failed('gh: 502 from api.github.com'))?.text)
       .toBe('gh: 502 from api.github.com')
+  })
+
+  // ── The cause TOKEN, so a reworded backend message still translates ──
+  // Every branch above matches backend PROSE. That is the defect #7688 names:
+  // reword any of those sentences and the regex stops matching, the card silently
+  // reverts to untranslated pass-through, and nothing goes red because the
+  // fixtures here are this file's own copies of the backend's strings. The
+  // payload now carries the cause as a token beside the sentence, and the
+  // translator falls back to it exactly where it used to give up.
+
+  it('translates every cause with NO token at all, forever', () => {
+    // THE acceptance criterion, and the reason the token is a fallback rather
+    // than a replacement. `progress` lives inside a PERSISTED run record, so
+    // every run already on disk has no token and never will -- the prose path is
+    // the permanent compatibility path, not a transitional one. A fix that works
+    // for new runs and degrades old ones would be worse than the bug.
+    //
+    // Table-driven over the real backend strings so this fails if any prose
+    // branch is ever removed in favour of its token.
+    for (const [raw, expected] of [
+      ['Runtime process died during prompt', /stopped mid-review/i],
+      ['the reviewer cannot run: no kiro-cli executable was found on this host',
+        /never started/i],
+      ['the reviewer cannot run: the ACP runtime (kiro_crew.acp.runtime) is not '
+        + 'importable in this install', /cannot load the agent runtime/i],
+      ['the reviewer never ran: its agent runtime is unavailable on this host',
+        /agent runtime is unavailable on this host/i],
+      ['review produced no result record', /recorded no findings/i],
+      ['review wrote a result record but never completed the review',
+        /stopped before completing the review/i],
+      ['the reviewer wrote a findings record but never completed the review',
+        /stopped before completing the review/i],
+      ['review turn timed out', /past its time limit/i],
+    ] as const) {
+      const run = failed(raw)
+      // Belt and braces: assert the fixture really carries no token, so this
+      // cannot silently become a token test if `failed` ever grows one.
+      expect('reason' in run, raw).toBe(false)
+      expect(run.progress['GH-acme-widgets-7'], raw).not.toHaveProperty('reason')
+      expect(failureReason(run)?.text, raw).toMatch(expected)
+    }
+  })
+
+  it('translates the run-level no-record sentence, which prose alone misses', () => {
+    // Evidence that the drift this change fixes is not hypothetical: it has
+    // ALREADY happened, and is on main right now.
+    //
+    // `routes.py::_first_change_error` maps `no_review_recorded` to "the reviewer
+    // finished but wrote no findings record". No prose branch matches it -- the
+    // no-record branch keys on "no result record", which is the DRIVER's
+    // per-change wording, a different sentence for the same cause. Compare the
+    // sibling: the incomplete-record branch deliberately covers both its
+    // wordings (see the comment on it), so the gap here is an asymmetry, not a
+    // design choice.
+    const sentence = 'the reviewer finished but wrote no findings record'
+    // Untranslated without a token, exactly as on main. Asserted rather than
+    // left implicit so this test states the before and the after.
+    expect(failureReason(failed(sentence))?.text).toBe(sentence)
+    // With the token the card explains the cause instead of quoting the backend.
+    expect(failureReason(withToken(sentence, 'no_review_recorded'))?.text)
+      .toMatch(/recorded no findings/i)
+  })
+
+  /** A failed run whose payload carries the token as well as the prose. */
+  const withToken = (error: string, reason: string) => ({
+    ...failed(error),
+    reason,
+    progress: { 'GH-acme-widgets-7': { phase: 'failed', error, reason } },
+  })
+
+  it('translates a REWORDED backend message by its token', () => {
+    // The regression this closes, stated as the test: none of these sentences
+    // matches any prose branch -- they are what a reword produces -- so before
+    // the token each rendered as raw English.
+    for (const [reworded, reason, expected] of [
+      ['the reviewer stopped before it finished', 'review_record_incomplete',
+        /stopped before completing the review/i],
+      ['the reviewer left nothing behind', 'no_review_recorded',
+        /recorded no findings/i],
+      ['the review host cannot start a reviewer', 'runtime_unavailable',
+        /agent runtime is unavailable on this host/i],
+    ] as const) {
+      const reason_ = failureReason(withToken(reworded, reason))
+      expect(reason_?.text, reworded).toMatch(expected)
+      // The raw backend text is still carried for the detail notice.
+      expect(reason_?.raw, reworded).toBe(reworded)
+    }
+  })
+
+  it('reads the token from the named change, like the prose', () => {
+    // The token must resolve through the SAME per-change-then-run precedence the
+    // sentence does, or a multi-PR run labels one change with another's cause.
+    const run = {
+      ...failed('run level cause'),
+      reason: 'no_review_recorded',
+      changes: ['https://github.com/acme/widgets/pull/7',
+        'https://github.com/acme/widgets/pull/8'],
+      change_ids: ['GH-acme-widgets-7', 'GH-acme-widgets-8'],
+      progress: {
+        'GH-acme-widgets-7': { phase: 'done' },
+        'GH-acme-widgets-8': {
+          phase: 'failed', error: 'this one stopped early',
+          reason: 'review_record_incomplete',
+        },
+      },
+    }
+    expect(failureReason(run, 'GH-acme-widgets-8')?.text)
+      .toMatch(/stopped before completing the review/i)
+  })
+
+  it('lets a matching prose branch win over the token', () => {
+    // Not a style preference -- an information one. All three runtime-preflight
+    // messages carry the single token `runtime_unavailable`, so a token-FIRST
+    // lookup would replace this specific message (and the PATH remedy in it)
+    // with the generic "runtime is unavailable" sentence.
+    const reason = failureReason(withToken(
+      'the reviewer cannot run: no kiro-cli executable was found on this host '
+      + '(the reviewer session is driven by kiro-cli - install it or add it to PATH)',
+      'runtime_unavailable'))
+    expect(reason?.text).toMatch(/never started/i)
+    expect(reason?.text).toMatch(/PATH/)
+    expect(reason?.text).not.toMatch(/agent runtime is unavailable on this host/i)
+  })
+
+  it('keeps a missing agent spec verbatim even though it carries a token', () => {
+    // This arrives on the failed-dispatch path, so it now carries the token
+    // `review_failed` -- and it must STILL pass through, because it already tells
+    // the reader exactly what to run. `review_failed` is deliberately absent from
+    // the token table for this reason: it labels arbitrary spawn output, so the
+    // prose is the information and the token is not a substitute for it.
+    const raw = "Agent spec 'code-review-sage-reviewer' is not installed: kiro-cli "
+      + "found no 'code-review-sage-reviewer.json' in /home/u/.kiro/agents. Every "
+      + 'turn fails until it is restored - repair with `kirocrew setup '
+      + '--agent-only --clean`, then restart the gateway.'
+    expect(failureReason(withToken(raw, 'review_failed'))?.text).toBe(raw)
+  })
+
+  it('still passes an unrecognised cause through when no token came with it', () => {
+    // A run recorded before the backend carried the token, which is every run
+    // already on disk. The prose path must be unchanged for it.
+    expect(failureReason(failed('gh: 502 from api.github.com'))?.text)
+      .toBe('gh: 502 from api.github.com')
+    expect(failureReason(withToken('gh: 502 from api.github.com', ''))?.text)
+      .toBe('gh: 502 from api.github.com')
+  })
+
+  it('ignores a token it does not know', () => {
+    // A backend that grows a fifth reason must not blank the card; the prose it
+    // came with is still the best available answer.
+    expect(failureReason(withToken('something new went wrong', 'brand_new_reason'))?.text)
+      .toBe('something new went wrong')
   })
 
   it('says nothing for a run that did not fail', () => {

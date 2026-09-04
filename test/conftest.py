@@ -1239,3 +1239,28 @@ def healthy_host_memory(monkeypatch: pytest.MonkeyPatch) -> None:
     # Also keeps the 5s-TTL refresh thread behind the cached verdict from
     # starting, so no test leaves one probing the host after it ends.
     monkeypatch.setattr(subagent, "cached_admission_check", _admit)
+
+
+@pytest.fixture(autouse=True)
+def _reset_create_rate_limit_buckets():
+    """Clear the session/folder creation rate limiter between tests.
+
+    ``kiro_crew.dashboard.create_rate_limit`` keeps its per-(verb, caller)
+    buckets in MODULE-LEVEL state (deliberately: the production guard needs no
+    durable state), so every session-creating test in a pytest process
+    accumulates timestamps under shared caller keys. A shard whose test
+    composition performs more than the per-window budget of creates within one
+    wall-clock window then refuses a legitimate test create with
+    ``create_rate_limited`` — a pass/fail outcome decided by shard composition
+    and runner speed, not the code under test (#7836; observed twice on the
+    Windows shard in one day, on PRs touching neither the limiter nor
+    session_control). The limiter's own direct tests build their scenarios on
+    top of a clean slate, so clearing between tests changes nothing for them.
+    """
+    from kiro_crew.dashboard import create_rate_limit
+
+    with create_rate_limit._lock:
+        create_rate_limit._buckets.clear()
+    yield
+    with create_rate_limit._lock:
+        create_rate_limit._buckets.clear()

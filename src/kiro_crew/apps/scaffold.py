@@ -497,7 +497,6 @@ def scaffold_app(
     if not description:
         description = f"A Kiro Crew app: {display_name}"
     if not author:
-        import os
         author = os.environ.get("USER", "developer")
 
     app_dir = output_dir / name

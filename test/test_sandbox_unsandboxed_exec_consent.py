@@ -56,10 +56,22 @@ def _run_consent(
             if sel_raises:
                 raise OSError("audit log unwritable")
 
-    def _write(path, data, **kwargs):
+    def _locked_write(path, *, mutate, **kwargs):
+        """Stand-in for ``update_config_locked`` with the same contract.
+
+        The step now routes its read-modify-write through the advisory-locked
+        primitive, so the seam moves there. The fake keeps the part these tests
+        depend on: the mutate callback is handed the CURRENT document and the
+        file is written only when it returns one.
+        """
         if write_raises:
             raise OSError("config is locked by another process")
-        path.write_text(json.dumps(data), encoding="utf-8")
+        existing = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+        result = mutate(existing)
+        if result is None:
+            return existing
+        path.write_text(json.dumps(result), encoding="utf-8")
+        return result
 
     monkeypatch.setattr(cli_setup, "unavailable_kind", lambda *a, **k: kind)
     monkeypatch.setattr(cli_setup.sys.stdin, "isatty", lambda: tty, raising=False)
@@ -67,7 +79,7 @@ def _run_consent(
     monkeypatch.setattr(cli_setup, "sel", lambda: _FakeSel())
     monkeypatch.setattr(cli_setup, "config_path", lambda: cfg_file)
     monkeypatch.setattr(cli_setup, "config_local_path", lambda: local_file)
-    monkeypatch.setattr(cli_setup, "write_config_atomically", _write)
+    monkeypatch.setattr(cli_setup, "update_config_locked", _locked_write)
     monkeypatch.setattr(cli_setup, "_input_or_skip", lambda _prompt: answer)
 
     cli_setup._setup_sandbox_consent()

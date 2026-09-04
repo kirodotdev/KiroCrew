@@ -175,6 +175,17 @@ describe('paths, routes and URLs are exempt', () => {
   })
 })
 
+describe('the autolink template placeholder is exempt', () => {
+  it('stays quiet on the substitution token', async () => {
+    expect(await lint(`export const MATCH_TOKEN = '{match}'`)).toEqual([])
+  })
+
+  it('still reports copy that merely contains the word match', async () => {
+    const messages = await lint(`export const PROBE = ['No match found', '{matches}']`)
+    expect(messages).toHaveLength(2)
+  })
+})
+
 describe('Tailwind arbitrary-variant clusters are exempt', () => {
   it('stays quiet on the touch-target override clusters', async () => {
     // Real site: HOVER_NONE_ACTIONS_ROW_CLS / HOVER_NONE_ACTION_BTN_CLS in

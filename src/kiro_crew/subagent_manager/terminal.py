@@ -406,6 +406,17 @@ class TerminalCoordinator(ManagerComponent):
             except Exception:
                 logger.exception("Reaper: reset failed for %s", agent_id)
 
+        # Snapshot "parked on a never-answered spawn approval" BEFORE the
+        # intentional cancel below, because the flag's owner clears it in a
+        # `finally` that the cancel schedules. Reading it at the record site
+        # instead would be correct only while no `await` sits between the cancel
+        # and that site — an invariant nothing enforces, and breaking it would
+        # silently restore the misleading deadline message. Both conjuncts are
+        # load-bearing: run.py also sets `_awaiting_approval` for mid-run TOOL
+        # prompts, where `_exec_started` is already set, so `_exec_started is
+        # None` is what distinguishes "never started" from "was running".
+        approval_parked = info._awaiting_approval and info._exec_started is None
+
         task = self._manager._tasks.pop(agent_id, None)
         if task and not task.done():
             # `reaped` is set HERE — late, immediately before the intentional
@@ -428,7 +439,14 @@ class TerminalCoordinator(ManagerComponent):
             info.done = True
             if not info.error and not info.user_stopped:
                 # A user stop is neutral — never synthesize a reap error for it.
-                if reason == "startup_timeout":
+                if approval_parked:
+                    # Approval-parked reap: the run never began execution — it sat
+                    # registered behind an unanswered spawn approval and the
+                    # reaper's wall clock fired before the (longer) approval window
+                    # closed. It reached no execution deadline, so DO NOT frame it
+                    # as one. Predicate captured above the cancel; see there.
+                    info.error = f"Reaped after {int(elapsed)}s while still awaiting an unanswered spawn approval (never started) [{_timeout_context(info, include_elapsed=False, turn_limit=self._manager._effective_turn_limit(info))}]"
+                elif reason == "startup_timeout":
                     info.error = f"Failed to start within {self._manager._startup_deadline}s (no runtime launched, no turn produced) [{_timeout_context(info, include_elapsed=False, turn_limit=self._manager._effective_turn_limit(info))}]"
                 else:
                     info.error = f"Reaped after {int(elapsed)}s (exceeded {self._manager._default_timeout}s deadline) [{_timeout_context(info, include_elapsed=False, turn_limit=self._manager._effective_turn_limit(info))}]"

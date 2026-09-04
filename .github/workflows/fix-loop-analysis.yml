@@ -30,6 +30,12 @@ on:
 permissions:
   contents: read
   issues: write
+  # The harvest denominator asks which workflow RUN carried the gate, so the
+  # metrics step reads the Actions API. Without this the scheduled token gets a
+  # 403 and the metrics step aborts -- taking the whole weekly report with it,
+  # because a report that silently drops PRs understates its own denominator and
+  # so must fail loudly instead.
+  actions: read
   id-token: write # OIDC role assumption for Bedrock
 
 jobs:
@@ -161,6 +167,7 @@ jobs:
                concrete recommendation. No emojis. Percentages to one decimal.
 
       - name: File the weekly report issue
+        id: file_issue
         if: always() && steps.metrics.outcome == 'success'
         env:
           GH_TOKEN: ${{ github.token }}
@@ -187,21 +194,37 @@ jobs:
             --repo "$GITHUB_REPOSITORY" \
             --description "Weekly fix-loop analysis reports" \
             --color 5319e7 --force
+          # ONE source of truth for "the analysis half actually produced a
+          # report". The model action can exit 0 without writing the file, so a
+          # title, a body branch or a re-raise keyed on the step's outcome alone
+          # would publish a normal-looking issue and a green run over metrics-only
+          # output -- the exact silent failure this workflow is meant to surface.
+          ANALYSIS_OK=0
+          if [ "$NARRATE_OUTCOME" = "success" ] && [ -s fix-loop-report.md ]; then
+            ANALYSIS_OK=1
+          fi
+          echo "analysis_ok=$ANALYSIS_OK" >> "$GITHUB_OUTPUT"
           TITLE="Fix loop report — $(date -u +%Y-%m-%d)"
+          if [ "$ANALYSIS_OK" = "0" ]; then
+            # The issue list is where a reader actually looks. A run whose model
+            # half produced nothing still publishes real numbers, so the issue
+            # must say so in the one place that is read without opening anything.
+            TITLE="$TITLE (metrics only — no analysis)"
+          fi
           {
             echo "## Deterministic metrics (window since $SINCE_ISO)"
             echo ""
             sanitize < "$RUNNER_TEMP/metrics.md"
             echo ""
-            if [ "$NARRATE_OUTCOME" = "success" ] && [ -s fix-loop-report.md ]; then
+            if [ "$ANALYSIS_OK" = "1" ]; then
               echo "## Analysis"
               echo ""
               sanitize < fix-loop-report.md
             else
               echo "## Analysis"
               echo ""
-              echo "_The model classification step did not complete this run;"
-              echo "only the deterministic metrics above are available. Re-run"
+              echo "_The model classification step did not produce a report this"
+              echo "run; only the deterministic metrics above are available. Re-run"
               echo "via workflow_dispatch for the narrative half._"
             fi
             echo ""
@@ -212,3 +235,27 @@ jobs:
             --title "$TITLE" \
             --label fix-loop-report \
             --body-file "$RUNNER_TEMP/issue-body.md"
+
+      # The model step is fail-soft so a broken narrative can never cost the
+      # deterministic numbers -- but `continue-on-error` also made the whole run
+      # report SUCCESS, and a weekly job nobody has reason to open is exactly
+      # where a permanently broken half hides. The first scheduled run failed
+      # here and published a metrics-only issue while the Actions list stayed
+      # green.
+      #
+      # So the failure is re-raised AFTER the issue is filed: the numbers still
+      # land (that step is `if: always()`), and the run goes red, which is the
+      # only signal anyone actually receives. It keys on the filing step's
+      # `analysis_ok`, not on the model step's outcome, because the action can
+      # exit 0 having written nothing.
+      - name: Re-raise a missing analysis
+        if: always() && steps.file_issue.outputs.analysis_ok == '0'
+        run: |
+          echo "::error::The Fable 5 analysis step produced no report; the weekly" \
+            "issue was filed with the deterministic metrics only. A failure that" \
+            "assumes the Bedrock role successfully but reports num_turns 1 and zero" \
+            "cost is an IAM action mismatch, not a model or credential problem:" \
+            "claude-code-action streams, so the role needs" \
+            "bedrock:InvokeModelWithResponseStream, which a role provisioned for" \
+            "a non-streaming converse caller does not carry."
+          exit 1

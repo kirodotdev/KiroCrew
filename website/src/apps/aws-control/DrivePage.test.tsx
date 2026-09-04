@@ -1,14 +1,14 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { screen, fireEvent, waitFor, within } from '@testing-library/react'
+import { screen, fireEvent, waitFor, within, act } from '@testing-library/react'
 import { renderWithProviders } from '../../test/helpers'
 import { i18nT } from '../../i18n/t'
 import { fmtBytes } from '../../i18n/format'
 import type {
-  AwsAccount, DriveStatus, CostReport, LibraryResponse, BackupStatus, SharesResponse,
+  DriveStatus, DriveUsage, LibraryResponse, BackupStatus, SharesResponse,
 } from './types'
 
-/* The page reads only through the api client; mocking it keeps every case
- * network-free while leaving `AwsControlError` real for the page's 403/409 paths. */
+/* The sections read only through the api client; mocking it keeps every case
+ * network-free while leaving `AwsControlError` real for the 403/409 paths. */
 vi.mock('./api', async () => {
   const actual = await vi.importActual<typeof import('./api')>('./api')
   return {
@@ -22,6 +22,7 @@ vi.mock('./api', async () => {
       driveBootstrapConfirm: vi.fn(),
       driveList: vi.fn(),
       driveDownload: vi.fn(),
+      driveMove: vi.fn(),
       driveUpload: vi.fn(),
       driveDelete: vi.fn(),
       driveFolderCreate: vi.fn(),
@@ -32,6 +33,7 @@ vi.mock('./api', async () => {
       costs: vi.fn(),
       library: vi.fn(),
       libraryPush: vi.fn(),
+      libraryRemove: vi.fn(),
       backup: vi.fn(),
       backupRun: vi.fn(),
       backupNightly: vi.fn(),
@@ -40,31 +42,27 @@ vi.mock('./api', async () => {
   }
 })
 
-/* The Cost Explorer consent nudge fetches through the shared client. */
+/* Library cards lazily fetch the full artifact through the shared client. */
 vi.mock('../../api/client', () => ({
   api: {
+    artifact: vi.fn(),
     awsConsent: vi.fn(),
     grantAwsConsent: vi.fn(),
     revokeAwsConsent: vi.fn(),
   },
 }))
 
-import { awsControlApi } from './api'
+import { awsControlApi, AwsControlError } from './api'
 import { api } from '../../api/client'
-import DrivePage from './DrivePage'
+import {
+  recordError, consumeChatHandoff, installSoftNavigate,
+  __resetErrorJournalForTests, __resetNavSeamForTests,
+} from '../../utils/errorReport'
+import {
+  DriveSectionView, LibrarySection, BackupSection, AccessSection, StorageMeter,
+} from './DrivePage'
 
-const ACCOUNT: AwsAccount = {
-  account: '111122223333',
-  name: 'personal',
-  health: 'ok',
-  profiles: [
-    {
-      name: 'personal', region: 'us-west-2', kind: 'sso', identityOk: true,
-      account: '111122223333', arn: 'arn:aws:iam::111122223333:role/x', detail: '', default: true,
-    },
-  ],
-  summary: { storage: null, sites: null, tasks: null, costMonthToDate: null },
-}
+const ACCOUNT_ID = '111122223333'
 
 const driveExists: Extract<DriveStatus, { exists: true }> = {
   exists: true,
@@ -81,22 +79,40 @@ const driveExists: Extract<DriveStatus, { exists: true }> = {
   },
 }
 
-const costsFresh: CostReport = {
-  fresh: true, monthToDate: 12.5, projected: 30, currency: 'USD',
-  byService: [{ service: 'S3', amount: 12.5 }], fetchedAt: '2026-08-24T05:00:00Z',
-}
-
 const emptyLibrary: LibraryResponse = { artifacts: [] }
 const emptyBackup: BackupStatus = { nightly: false, runs: {}, remote: { snapshot: [], sessions: [] } }
 const noShares: SharesResponse = { shares: [] }
 
 function stubDrivePresent() {
-  vi.mocked(awsControlApi.drive).mockResolvedValue(driveExists)
-  vi.mocked(awsControlApi.costs).mockResolvedValue(costsFresh)
   vi.mocked(awsControlApi.library).mockResolvedValue(emptyLibrary)
   vi.mocked(awsControlApi.driveList).mockResolvedValue({ files: [], folders: [] })
   vi.mocked(awsControlApi.backup).mockResolvedValue(emptyBackup)
   vi.mocked(awsControlApi.shares).mockResolvedValue(noShares)
+}
+
+/** A `BackupStatus` whose `kind` row is running, as the server would report it. */
+function backupWithActive(kind: 'snapshot' | 'sessions'): BackupStatus {
+  return {
+    ...emptyBackup,
+    jobs: {
+      [kind]: {
+        active: {
+          run_id: 'r-live',
+          kind,
+          status: 'running',
+          created_at: '2026-08-24T00:00:00Z',
+          updated_at: '2026-08-24T00:00:00Z',
+          finished_at: '',
+          error: '',
+        },
+        lastFailed: null,
+      },
+    },
+  }
+}
+
+function stubActiveJob(kind: 'snapshot' | 'sessions') {
+  vi.mocked(awsControlApi.backup).mockResolvedValue(backupWithActive(kind))
 }
 
 beforeEach(() => {
@@ -106,24 +122,50 @@ beforeEach(() => {
   // changes what every LATER test in the file renders -- the table controls
   // vanish and the failure points at the wrong test.
   localStorage.clear()
-  vi.mocked(api.awsConsent).mockReturnValue(new Promise(() => {}) as ReturnType<typeof api.awsConsent>)
+  // Library card previews fetch the full artifact when near the viewport; a
+  // never-resolving fetch keeps every preview a placeholder without touching
+  // the network in either IntersectionObserver regime.
+  vi.mocked(api.artifact).mockReturnValue(new Promise(() => {}) as ReturnType<typeof api.artifact>)
 })
 
 /**
- * Render the drive page and, optionally, open one of its three folder rows.
+ * Mount ONE of the drive's rail panes directly.
  *
- * The four sections that used to stack on the account console now live here:
- * the page root shows the three folder rows plus the shares ledger, and each
- * folder opens the section the console used to render inline. Tests that assert
- * the file browser pass 'drive', library tests 'library', backup tests
- * 'backup', and the shares-ledger tests (which sit at the root) pass nothing.
+ * The drive ROOT page (three section cards plus the ledger, with internal
+ * section state) was removed in the flat-rail IA refactor: the four sections
+ * are now named exports rendered as their own panes. So instead of mounting
+ * the root and clicking into a section, tests mount the section under test
+ * with the props the old flow passed -- the account id, plus the bucket for
+ * the two sections that render a CLI drawer. The shares-ledger tests, which
+ * used to sit at the root, mount AccessSection.
  */
-async function renderDrive(section?: 'drive' | 'library' | 'backup') {
-  renderWithProviders(<DrivePage account={ACCOUNT} drive={driveExists} onBack={() => {}} />)
-  if (section) fireEvent.click(await screen.findByTestId(`drive-section-${section}`))
+async function renderDrive(section: 'drive' | 'library' | 'backup' | 'access') {
+  const el =
+    section === 'drive' ? <DriveSectionView account={ACCOUNT_ID} bucket={driveExists.bucket} />
+    : section === 'library' ? <LibrarySection account={ACCOUNT_ID} bucket={driveExists.bucket} />
+    : section === 'backup' ? <BackupSection account={ACCOUNT_ID} />
+    : <AccessSection account={ACCOUNT_ID} />
+  renderWithProviders(el)
 }
 
-describe('DrivePage', () => {
+/**
+ * Open a per-item overflow menu and choose one of its items.
+ *
+ * Every per-item action in both folders lives behind a `⋮`, so a test that used
+ * to click a bare button has to open the menu first. Enter on the trigger rather
+ * than a click: the menu is a portaled Radix dropdown, and a bare click does not
+ * open one in jsdom -- which is how the row-overflow tests in this file already
+ * drive theirs.
+ *
+ * `trigger` is an element rather than a test id because a listing with several
+ * rows has several triggers and the caller has to say which.
+ */
+async function chooseFromMenu(trigger: HTMLElement, itemTestId: string) {
+  fireEvent.keyDown(trigger, { key: 'Enter' })
+  fireEvent.click(await screen.findByTestId(itemTestId))
+}
+
+describe('DrivePage sections', () => {
   it('mints a share link and shows the URL exactly once in the dialog', async () => {
     stubDrivePresent()
     vi.mocked(awsControlApi.driveList).mockResolvedValue({
@@ -133,7 +175,7 @@ describe('DrivePage', () => {
     vi.mocked(awsControlApi.driveShare).mockResolvedValue({
       url: 'https://example-presigned/report.pdf?sig=x',
       share: {
-        id: 's1', account: ACCOUNT.account, section: 'drive', key: 'report.pdf',
+        id: 's1', account: ACCOUNT_ID, section: 'drive', key: 'report.pdf',
         createdAt: '2026-08-24T05:00:00Z', expiresAt: '2026-08-24T06:00:00Z', note: '',
       },
     })
@@ -178,19 +220,19 @@ describe('DrivePage', () => {
     fireEvent.keyDown(await screen.findByTestId('drive-more'), { key: 'Enter' })
     fireEvent.click(await screen.findByTestId('drive-delete'))
     fireEvent.click(await screen.findByTestId('drive-delete-confirm-action'))
-    await waitFor(() => expect(awsControlApi.driveDelete).toHaveBeenCalledWith(ACCOUNT.account, 'drive', 'report.pdf'))
+    await waitFor(() => expect(awsControlApi.driveDelete).toHaveBeenCalledWith(ACCOUNT_ID, 'drive', 'report.pdf'))
   })
 
   it('renders the shares ledger with an expires-in countdown', async () => {
     stubDrivePresent()
     vi.mocked(awsControlApi.shares).mockResolvedValue({
       shares: [{
-        id: 's1', account: ACCOUNT.account, section: 'drive', key: 'report.pdf',
+        id: 's1', account: ACCOUNT_ID, section: 'drive', key: 'report.pdf',
         createdAt: '2026-08-24T05:00:00Z', expiresAt: '2030-01-01T00:00:00Z', note: 'for review',
       }],
     })
 
-    await renderDrive()
+    await renderDrive('access')
 
     const row = await screen.findByTestId('access-row')
     expect(row).toHaveTextContent('report.pdf')
@@ -199,9 +241,71 @@ describe('DrivePage', () => {
     expect(row.textContent).not.toContain('2030-01-01')
   })
 
+  it('flags a share whose object was deleted, and keeps the row', async () => {
+    // A row that survives its object read as live exposure that is not live.
+    // The row STAYS -- the link is unexpired and would resolve again if the key
+    // were recreated -- and is marked instead.
+    stubDrivePresent()
+    vi.mocked(awsControlApi.shares).mockResolvedValue({
+      checked: true,
+      shares: [
+        {
+          id: 's1', account: ACCOUNT_ID, section: 'drive', key: 'gone.pdf',
+          createdAt: '2026-08-24T05:00:00Z', expiresAt: '2030-01-01T00:00:00Z', note: '',
+          objectMissing: true,
+        },
+        {
+          id: 's2', account: ACCOUNT_ID, section: 'drive', key: 'here.pdf',
+          createdAt: '2026-08-24T05:00:00Z', expiresAt: '2030-01-01T00:00:00Z', note: '',
+        },
+      ],
+    })
+
+    await renderDrive('access')
+
+    const rows = await screen.findAllByTestId('access-row')
+    expect(rows).toHaveLength(2)
+    expect(rows[0]).toHaveTextContent('gone.pdf')
+    expect(screen.getAllByTestId('access-object-missing')).toHaveLength(1)
+    // A checked render says nothing about verification -- the absence of a flag
+    // on the second row IS the answer.
+    expect(screen.queryByTestId('access-unchecked')).toBeNull()
+  })
+
+  it('says so when the objects behind the links were not checked', async () => {
+    // Without this line an unflagged row on an unchecked render would read as
+    // "the object is still there", which is the claim the check exists to make.
+    stubDrivePresent()
+    vi.mocked(awsControlApi.shares).mockResolvedValue({
+      checked: false,
+      shares: [{
+        id: 's1', account: ACCOUNT_ID, section: 'drive', key: 'report.pdf',
+        createdAt: '2026-08-24T05:00:00Z', expiresAt: '2030-01-01T00:00:00Z', note: '',
+      }],
+    })
+
+    await renderDrive('access')
+
+    await screen.findByTestId('access-row')
+    expect(screen.getByTestId('access-unchecked')).toBeTruthy()
+  })
+
+  it('does not qualify an EMPTY ledger as unchecked', async () => {
+    // No rows means no claim to qualify; the note there would be noise on the
+    // empty state.
+    stubDrivePresent()
+    vi.mocked(awsControlApi.shares).mockResolvedValue({ checked: false, shares: [] })
+
+    await renderDrive('access')
+
+    await screen.findByTestId('access-empty')
+    expect(screen.queryByTestId('access-unchecked')).toBeNull()
+  })
+
   it('disables the backup row and spins while a run is in flight', async () => {
     stubDrivePresent()
-    // A run that never resolves keeps the row in its busy state.
+    // A run that never resolves keeps the row busy from the moment of the click,
+    // before the server has a run to report.
     vi.mocked(awsControlApi.backupRun).mockReturnValue(new Promise(() => {}) as ReturnType<typeof awsControlApi.backupRun>)
 
     await renderDrive('backup')
@@ -211,7 +315,172 @@ describe('DrivePage', () => {
     await waitFor(() => expect((screen.getByTestId('backup-run-snapshot') as HTMLButtonElement).disabled).toBe(true))
   })
 
-  /* ── Drive: stored-usage figure, folder navigation, load-more ────────────── */
+  it('shows a backup as running on a FRESH mount, with no click in this session', async () => {
+    // The point of the migration. Nothing in this render started the run -- the
+    // host reports it. Before the durable job the indicator lived in the
+    // component, so a navigation away destroyed the only record that a backup
+    // was in flight and coming back showed an idle row mid-upload. Under the
+    // rail that unmount is what switching panes actually does.
+    stubDrivePresent()
+    stubActiveJob('snapshot')
+
+    await renderDrive('backup')
+
+    await waitFor(() =>
+      expect((screen.getByTestId('backup-run-snapshot') as HTMLButtonElement).disabled).toBe(true),
+    )
+    expect(screen.getByTestId('backup-run-snapshot').textContent).toContain(
+      i18nT('apps.awsControl.console.backup_running'),
+    )
+    // Adoption is not a side effect of having asked for one: no start was posted.
+    expect(awsControlApi.backupRun).not.toHaveBeenCalled()
+  })
+
+  it('adopts only the kind that is running, leaving the sibling row usable', async () => {
+    // The rows are independent: the host indexes a run by (kind, account), so a
+    // sessions backup in flight must not disable Back up now on snapshot.
+    stubDrivePresent()
+    stubActiveJob('sessions')
+
+    await renderDrive('backup')
+
+    await waitFor(() =>
+      expect((screen.getByTestId('backup-run-sessions') as HTMLButtonElement).disabled).toBe(true),
+    )
+    expect((screen.getByTestId('backup-run-snapshot') as HTMLButtonElement).disabled).toBe(false)
+  })
+
+  it('says a run failed instead of just stopping the spinner', async () => {
+    // The app's own ledger records only SUCCESSES, so without the durable
+    // record's status a failed backup renders exactly like one that was never
+    // started -- the row silently going quiet is itself a false statement.
+    vi.mocked(awsControlApi.backup).mockResolvedValue({
+      ...emptyBackup,
+      jobs: {
+        snapshot: {
+          active: null,
+          lastFailed: {
+            run_id: 'a'.repeat(32),
+            kind: 'snapshot',
+            status: 'failed',
+            created_at: '2026-09-01T00:00:00Z',
+            updated_at: '2026-09-01T00:00:02Z',
+            finished_at: '2026-09-01T00:00:02Z',
+            error: 'S3 consent no longer holds',
+          },
+        },
+      },
+    })
+
+    await renderDrive('backup')
+
+    const err = await screen.findByTestId('backup-error-snapshot')
+    expect(err.textContent ?? '').toContain('S3 consent no longer holds')
+    // A failure is history, not work in flight: the row must be usable again.
+    expect((screen.getByTestId('backup-run-snapshot') as HTMLButtonElement).disabled).toBe(false)
+    // And the sibling row says nothing about it.
+    expect(screen.queryByTestId('backup-error-sessions')).toBeNull()
+  })
+
+  it('offers the archive control on a first paint with no remote data', async () => {
+    // The state the bug lived in. The remote half is opt-in behind `?remote=1`,
+    // which only this control can request -- so gating the control on
+    // `data.remote` made it wait for the fetch it enables, and the archive and
+    // Restore were unreachable for the whole session. A first paint has
+    // `remote: null`, so this is the paint that matters.
+    vi.mocked(awsControlApi.backup).mockResolvedValue({ ...emptyBackup, remote: null })
+
+    await renderDrive('backup')
+
+    const toggle = await screen.findByTestId('backup-remote-toggle')
+    expect(toggle).toBeTruthy()
+    // And it must actually open, since opening is what requests the data.
+    fireEvent.click(toggle)
+    expect(await screen.findByTestId('backup-archive')).toBeTruthy()
+  })
+
+  it('does not busy the row when the payload reports no run for this account', async () => {
+    // The server answers per account now, so "another account is backing up"
+    // arrives as an EMPTY jobs block here rather than as someone else's run. This
+    // pins the client half: an absent entry must read as idle, not as unknown.
+    vi.mocked(awsControlApi.backup).mockResolvedValue({ ...emptyBackup, jobs: {} })
+
+    await renderDrive('backup')
+
+    const btn = await screen.findByTestId('backup-run-snapshot')
+    expect((btn as HTMLButtonElement).disabled).toBe(false)
+    expect(screen.queryByTestId('backup-error-snapshot')).toBeNull()
+  })
+
+  it('invites a retry only for a refusal a retry can actually clear', async () => {
+    // 502 `aws_call_failed` is a live AWS call that failed transiently -- the one
+    // refusal on this path where pressing the button again is honest advice.
+    vi.mocked(awsControlApi.backupRun).mockRejectedValue(new Error('aws_call_failed'))
+
+    await renderDrive('backup')
+    fireEvent.click(await screen.findByTestId('backup-run-snapshot'))
+
+    const err = await screen.findByTestId('backup-error-snapshot')
+    expect(err.textContent ?? '').toContain('Try again')
+  })
+
+  it('does not invite a retry for a refusal the owner must act on', async () => {
+    // An UNRECOGNISED code: still not retryable, so the generic line promises
+    // nothing rather than inviting a retry. Defaulting to "try again" and
+    // excepting one code was the wrong way round.
+    vi.mocked(awsControlApi.backupRun).mockRejectedValue(new Error('some_new_code'))
+
+    await renderDrive('backup')
+    fireEvent.click(await screen.findByTestId('backup-run-snapshot'))
+
+    const err = await screen.findByTestId('backup-error-snapshot')
+    expect(err.textContent ?? '').toContain('Could not start')
+    expect(err.textContent ?? '').not.toContain('Try again')
+  })
+
+  it('names the cause and the next step for a refusal with a known code', async () => {
+    // The route sends these codes so the UI can localise them. Collapsing them
+    // into one generic line makes the owner guess which of several repairs to
+    // attempt, so each reachable code names its own cause.
+    vi.mocked(awsControlApi.backupRun).mockRejectedValue(new Error('aws_consent_required'))
+
+    await renderDrive('backup')
+    fireEvent.click(await screen.findByTestId('backup-run-snapshot'))
+
+    const err = await screen.findByTestId('backup-error-snapshot')
+    expect(err.textContent ?? '').toContain('S3 access')
+    expect(err.textContent ?? '').not.toContain('Try again')
+  })
+
+  it('sends the owner to create a drive when there is not one yet', async () => {
+    // Reachable as a RACE past the pane gate: the pane only mounts when the drive
+    // exists, so this is the drive being deleted between that render and the
+    // click. Rare is not impossible, which is why it earns a string where
+    // `invalid_account` does not.
+    vi.mocked(awsControlApi.backupRun).mockRejectedValue(new Error('drive_missing'))
+
+    await renderDrive('backup')
+    fireEvent.click(await screen.findByTestId('backup-run-snapshot'))
+
+    expect((await screen.findByTestId('backup-error-snapshot')).textContent ?? '').toContain('no drive yet')
+  })
+
+  it('does not tell the owner to retry when the runtime is absent', async () => {
+    // 503 `jobs_unavailable` means the job runtime was never registered -- a
+    // missing manifest grant or a failed startup, not a transient blip. The
+    // string deliberately avoids "right now", which implied waiting would help.
+    vi.mocked(awsControlApi.backupRun).mockRejectedValue(new Error('jobs_unavailable'))
+
+    await renderDrive('backup')
+    fireEvent.click(await screen.findByTestId('backup-run-snapshot'))
+
+    const err = await screen.findByTestId('backup-error-snapshot')
+    expect(err.textContent ?? '').toContain('not available for this app')
+    expect(err.textContent ?? '').not.toContain('Try again')
+    expect(err.textContent ?? '').not.toContain('right now')
+  })
+
+  /* ── Drive: folder navigation and load-more ─────────────────────────────── */
 
   it('lists a folder and file with a download and a load-more control', async () => {
     stubDrivePresent()
@@ -222,10 +491,6 @@ describe('DrivePage', () => {
     })
 
     await renderDrive('drive')
-
-    // The page header carries the real stored-usage figure (drive exists).
-    const usage = await screen.findByTestId('drive-usage')
-    expect(usage.textContent ?? '').toContain(fmtBytes(driveExists.usage.bytes))
 
     // A folder row and a file row both render.
     expect(await screen.findByTestId('drive-folder')).toHaveTextContent('invoices')
@@ -262,7 +527,7 @@ describe('DrivePage', () => {
     expect(listing).toContain('alpha.txt')
     expect(listing).toContain('beta.txt')
     // The second page is fetched WITH the first page's continuation token.
-    expect(awsControlApi.driveList).toHaveBeenLastCalledWith(ACCOUNT.account, 'drive', '', 'tok-2')
+    expect(awsControlApi.driveList).toHaveBeenLastCalledWith(ACCOUNT_ID, 'drive', '', 'tok-2')
   })
 
   it('opening a folder shows that folder alone, not the accumulated parent rows', async () => {
@@ -294,7 +559,7 @@ describe('DrivePage', () => {
     expect(screen.queryByText('alpha.txt')).toBeNull()
     expect(screen.queryByText('beta.txt')).toBeNull()
     // And the navigation fetches the folder from its FIRST page, no stale token.
-    expect(awsControlApi.driveList).toHaveBeenLastCalledWith(ACCOUNT.account, 'drive', 'docs', '')
+    expect(awsControlApi.driveList).toHaveBeenLastCalledWith(ACCOUNT_ID, 'drive', 'docs', '')
   })
 
   it('drills into a folder from anywhere on the row, refetching for the new path', async () => {
@@ -311,7 +576,7 @@ describe('DrivePage', () => {
     // the name text, leaving the Kind/Size/Modified cells dead.
     fireEvent.click(await screen.findByTestId('drive-folder'))
     await waitFor(() =>
-      expect(awsControlApi.driveList).toHaveBeenCalledWith(ACCOUNT.account, 'drive', 'invoices', ''),
+      expect(awsControlApi.driveList).toHaveBeenCalledWith(ACCOUNT_ID, 'drive', 'invoices', ''),
     )
   })
 
@@ -327,7 +592,7 @@ describe('DrivePage', () => {
 
     fireEvent.click(await screen.findByTestId('drive-folder-open'))
     await waitFor(() =>
-      expect(awsControlApi.driveList).toHaveBeenCalledWith(ACCOUNT.account, 'drive', 'invoices', ''),
+      expect(awsControlApi.driveList).toHaveBeenCalledWith(ACCOUNT_ID, 'drive', 'invoices', ''),
     )
   })
 
@@ -356,31 +621,6 @@ describe('DrivePage', () => {
     expect(rows[0].nextElementSibling).toBe(confirm)
   })
 
-  it('follows the drive query, so the header totals are not the arrival snapshot', async () => {
-    // The page used to render the DriveStatus it was handed at navigation time.
-    // Every mutation here invalidates the drive key, so a frozen prop meant an
-    // upload or delete changed the listing while the header kept the old size
-    // and object count.
-    stubDrivePresent()
-    vi.mocked(awsControlApi.driveList).mockResolvedValue({ files: [], folders: ['invoices'] })
-    vi.mocked(awsControlApi.driveFolderDelete).mockResolvedValue({ deleted: true, path: 'invoices', objects: 4 })
-    // The refetch that follows the invalidation reports the smaller drive.
-    const shrunk = { ...driveExists, usage: { bytes: 1024, objects: 3 } }
-
-    await renderDrive('drive')
-    const usage = await screen.findByTestId('drive-usage')
-    await waitFor(() => expect(usage.textContent ?? '').toContain(fmtBytes(driveExists.usage.bytes)))
-
-    vi.mocked(awsControlApi.drive).mockResolvedValue(shrunk)
-    fireEvent.keyDown(await screen.findByTestId('drive-folder-more'), { key: 'Enter' })
-    fireEvent.click(await screen.findByTestId('drive-folder-delete'))
-    fireEvent.click(await screen.findByTestId('drive-folder-delete-action'))
-
-    // The header moves to the refetched figure rather than staying on the one
-    // captured when the page opened.
-    await waitFor(() => expect(screen.getByTestId('drive-usage').textContent ?? '').toContain(fmtBytes(1024)))
-  })
-
   it('reports how many objects the folder delete actually removed', async () => {
     // The count is only knowable from the RESPONSE - a figure shown before
     // consent would cost a second full recursive listing - so the page states
@@ -405,6 +645,8 @@ describe('DrivePage', () => {
     stubDrivePresent()
     await renderDrive('drive')
 
+    // The name field is a disclosure now: open it first.
+    fireEvent.click(await screen.findByTestId('drive-folder-toggle'))
     fireEvent.change(await screen.findByTestId('drive-folder-name'), { target: { value: '../escape' } })
     fireEvent.click(screen.getByTestId('drive-folder-create'))
 
@@ -413,6 +655,86 @@ describe('DrivePage', () => {
     expect(err).not.toHaveTextContent(i18nT('apps.awsControl.console.drive_bad_name'))
     // Never reached the endpoint.
     expect(awsControlApi.driveFolderCreate).not.toHaveBeenCalled()
+  })
+})
+
+describe('DrivePage sections: folder disclosure and downloads', () => {
+  it('folder disclosure swaps Upload out while open, and blurring the empty field collapses it', async () => {
+    // Expanded, the row must stay one two-button action group (Create/Cancel):
+    // Upload hides rather than becoming a third sibling. An abandoned empty
+    // field must not leave the toolbar stuck expanded — blur puts it back.
+    stubDrivePresent()
+    await renderDrive('drive')
+
+    expect(screen.getByTestId('drive-upload-btn')).toBeTruthy()
+    fireEvent.click(screen.getByTestId('drive-folder-toggle'))
+    expect(screen.queryByTestId('drive-upload-btn')).toBeNull()
+
+    const name = screen.getByTestId('drive-folder-name')
+    // Blur with TEXT keeps the disclosure open (the reader is mid-thought)...
+    fireEvent.change(name, { target: { value: 'photos' } })
+    fireEvent.blur(name)
+    expect(screen.getByTestId('drive-folder-name')).toBeTruthy()
+    // ...and blur with an EMPTY field collapses back to the toggle + Upload.
+    fireEvent.change(name, { target: { value: '' } })
+    fireEvent.blur(name)
+    expect(screen.queryByTestId('drive-folder-name')).toBeNull()
+    expect(screen.getByTestId('drive-upload-btn')).toBeTruthy()
+  })
+
+  it('collapsing after a failed create clears BOTH error rows, not just the local one', async () => {
+    // drive-folder-create-error keys on the mutation's isError and renders
+    // OUTSIDE the disclosure — without a reset, Cancel after a failed create
+    // leaves a danger row orphaned under a toolbar whose input is gone.
+    stubDrivePresent()
+    vi.mocked(awsControlApi.driveFolderCreate).mockRejectedValue(new Error('boom'))
+    await renderDrive('drive')
+
+    fireEvent.click(screen.getByTestId('drive-folder-toggle'))
+    fireEvent.change(screen.getByTestId('drive-folder-name'), { target: { value: 'photos' } })
+    fireEvent.click(screen.getByTestId('drive-folder-create'))
+    await screen.findByTestId('drive-folder-create-error')
+
+    fireEvent.click(screen.getByTestId('drive-folder-cancel'))
+    expect(screen.queryByTestId('drive-folder-name')).toBeNull()
+    expect(screen.queryByTestId('drive-folder-create-error')).toBeNull()
+    expect(screen.queryByTestId('drive-folder-error')).toBeNull()
+  })
+
+  it('refuses to collapse while a create is in flight, so a failure returns to the typed name', async () => {
+    // Escape/Cancel during a pending create must NOT erase the name being
+    // created: the request can fail, and the reader needs their input back to
+    // retry. The disclosure closes only once the mutation settles.
+    stubDrivePresent()
+    let rejectCreate: (e: Error) => void = () => {}
+    vi.mocked(awsControlApi.driveFolderCreate).mockImplementation(
+      () => new Promise((_res, rej) => { rejectCreate = rej }),
+    )
+    await renderDrive('drive')
+
+    fireEvent.click(screen.getByTestId('drive-folder-toggle'))
+    const name = screen.getByTestId('drive-folder-name')
+    fireEvent.change(name, { target: { value: 'photos' } })
+    fireEvent.click(screen.getByTestId('drive-folder-create'))
+    // The mutationFn runs on a microtask: wait until it has actually been
+    // invoked (and captured its reject) before exercising the in-flight paths —
+    // otherwise the Escape below races a not-yet-pending mutation.
+    await waitFor(() => expect(awsControlApi.driveFolderCreate).toHaveBeenCalledTimes(1))
+
+    // In flight: Escape, Cancel and blur are all refused — input and text stay.
+    fireEvent.keyDown(name, { key: 'Escape' })
+    fireEvent.click(screen.getByTestId('drive-folder-cancel'))
+    fireEvent.blur(name)
+    expect(screen.getByTestId('drive-folder-name')).toHaveValue('photos')
+
+    // The create fails: the typed name is still there to retry from, and the
+    // disclosure can now be cancelled normally.
+    await act(async () => { rejectCreate(new Error('boom')) })
+    await screen.findByTestId('drive-folder-create-error')
+    expect(screen.getByTestId('drive-folder-name')).toHaveValue('photos')
+    fireEvent.click(screen.getByTestId('drive-folder-cancel'))
+    expect(screen.queryByTestId('drive-folder-name')).toBeNull()
+    expect(screen.queryByTestId('drive-folder-create-error')).toBeNull()
   })
 
   it('deleting a folder does not also open it', async () => {
@@ -454,7 +776,7 @@ describe('DrivePage', () => {
 
     fireEvent.click(await screen.findByTestId('drive-folder-open'))
     await waitFor(() =>
-      expect(awsControlApi.driveList).toHaveBeenCalledWith(ACCOUNT.account, 'drive', 'a/b', ''),
+      expect(awsControlApi.driveList).toHaveBeenCalledWith(ACCOUNT_ID, 'drive', 'a/b', ''),
     )
 
     // The crumb group holds exactly two controls: Root and the overflow.
@@ -469,7 +791,7 @@ describe('DrivePage', () => {
     expect(menu.querySelectorAll('button')).toHaveLength(1)
     fireEvent.click(menu.querySelectorAll('button')[0])
     await waitFor(() =>
-      expect(awsControlApi.driveList).toHaveBeenCalledWith(ACCOUNT.account, 'drive', 'a', ''),
+      expect(awsControlApi.driveList).toHaveBeenCalledWith(ACCOUNT_ID, 'drive', 'a', ''),
     )
   })
 
@@ -522,10 +844,15 @@ describe('DrivePage', () => {
 
     await renderDrive('drive')
 
-    fireEvent.click(await screen.findByTestId('drive-download'))
+    await chooseFromMenu(await screen.findByTestId('drive-more'), 'drive-download')
     // The tab was opened blank inside the click, then navigated to the presign.
     // No 'noopener' feature: with it the standard makes window.open return null,
     // so requesting it would hand back no tab to navigate at all.
+    // Opening from a MENU ITEM keeps that synchronous: Radix dispatches
+    // `onSelect` from the item's own click handler, so the window.open still runs
+    // inside the user gesture and is not treated as an unattended popup. That is
+    // the non-obvious half of moving Download into the overflow, and this
+    // assertion is what proves it did not break.
     expect(openSpy).toHaveBeenCalledWith('', '_blank')
     await waitFor(() => expect(fakeTab.location.href).toBe('https://example-presigned/dl?sig=y'))
     expect(fakeTab.close).not.toHaveBeenCalled()
@@ -545,7 +872,7 @@ describe('DrivePage', () => {
 
     await renderDrive('drive')
 
-    fireEvent.click(await screen.findByTestId('drive-download'))
+    await chooseFromMenu(await screen.findByTestId('drive-more'), 'drive-download')
     await waitFor(() => expect(fakeTab.close).toHaveBeenCalled())
     // The tab was never navigated anywhere.
     expect((fakeTab as unknown as { location: { href: string } }).location.href).toBe('')
@@ -584,7 +911,7 @@ describe('DrivePage', () => {
 
     // The api is called with the section and the file, and no error strip shows.
     await waitFor(() =>
-      expect(awsControlApi.driveUpload).toHaveBeenCalledWith(ACCOUNT.account, 'drive', 'ok.txt', good),
+      expect(awsControlApi.driveUpload).toHaveBeenCalledWith(ACCOUNT_ID, 'drive', 'ok.txt', good),
     )
     expect(screen.queryByTestId('drive-upload-error')).toBeNull()
   })
@@ -609,12 +936,17 @@ describe('DrivePage', () => {
     fireEvent.click(await screen.findByTestId('drive-delete-confirm-action'))
 
     // The failure surfaces in-strip and the strip stays open (no onSuccess close).
-    expect(await screen.findByTestId('drive-delete-error')).toBeTruthy()
+    const notice = await screen.findByTestId('drive-delete-error')
     expect(screen.getByTestId('drive-delete-confirm')).toBeTruthy()
+    // The strip is a wrapping row holding Cancel and Delete; the notice (and its
+    // hand-off) takes a full line of its own rather than becoming a third action
+    // beside them.
+    expect(notice).toHaveClass('basis-full')
+    expect(within(notice).getByRole('button', { name: /ask the agent/i })).toBeTruthy()
   })
+})
 
-  /* ── Library: the cloud prefix, and the picker that fills it ─────────────── */
-
+describe('DrivePage sections: Library', () => {
   /**
    * THE assertion for this section's redesign.
    *
@@ -647,7 +979,7 @@ describe('DrivePage', () => {
     // The never-pushed local artifact does not appear in the folder at all.
     expect(screen.queryByText('Draft')).toBeNull()
     // And the listing came from the library section of the bucket.
-    expect(awsControlApi.driveList).toHaveBeenCalledWith(ACCOUNT.account, 'library', '', '')
+    expect(awsControlApi.driveList).toHaveBeenCalledWith(ACCOUNT_ID, 'library', '', '')
   })
 
   it('falls back to a cloud-only card when no local artifact backs the object', async () => {
@@ -710,7 +1042,7 @@ describe('DrivePage', () => {
 
     fireEvent.click(screen.getByTestId('library-chip-markdown'))
     fireEvent.click(screen.getByTestId('library-push'))
-    await waitFor(() => expect(awsControlApi.libraryPush).toHaveBeenCalledWith(ACCOUNT.account, 'notes'))
+    await waitFor(() => expect(awsControlApi.libraryPush).toHaveBeenCalledWith(ACCOUNT_ID, 'notes'))
   })
 
   /**
@@ -735,6 +1067,471 @@ describe('DrivePage', () => {
     expect(screen.queryByTestId('library-push')).toBeNull()
   })
 
+  /**
+   * Removal lives on the CLOUD LISTING, behind the same `⋮` the Files folder's
+   * cards use, and the confirm names the prefix it empties.
+   *
+   * The picker cannot host this control soundly: its rows are local artifacts
+   * joined to a slug-keyed ledger, so a reused slug lends a never-pushed
+   * artifact another one's push record and a removal there empties a different
+   * artifact's copy. A row of this folder comes from `driveList`, so removing it
+   * empties the object the reader was shown. The fixture makes that concrete --
+   * the bucket holds `notes` while the LOCAL artifact of that slug reports
+   * pushedVersion null, which is exactly the reused-slug shape the picker could
+   * not tell apart, and the removal still targets the listed slug.
+   *
+   * DELETE THIS TEST and a visible danger button on every browse card, or a
+   * removal keyed to local state, both pass again.
+   */
+  it('removes from the cloud listing, naming the artifacts/ prefix it empties', async () => {
+    stubDrivePresent()
+    vi.mocked(awsControlApi.driveList).mockResolvedValue({ files: [], folders: ['notes'] })
+    vi.mocked(awsControlApi.library).mockResolvedValue({
+      artifacts: [
+        { slug: 'notes', name: 'Notes', kind: 'markdown', version: 1, updatedAt: '2026-08-20T00:00:00Z', pushedVersion: null, pushedAt: null },
+      ],
+    })
+    vi.mocked(awsControlApi.libraryRemove).mockResolvedValue({ removed: true } as never)
+
+    await renderDrive('library')
+    expect(await screen.findByTestId('library-card')).toBeTruthy()
+
+    // Hidden behind the card's `⋮`. A visible danger button on every card of a
+    // browse surface is the design this replaces, so the control being a menu
+    // item rather than a button is part of the contract.
+    await chooseFromMenu(screen.getByTestId('library-more'), 'library-remove')
+    const confirm = await screen.findByTestId('library-remove-confirm')
+    // The BUCKET prefix, pinned literally: the library section maps to
+    // `artifacts/` (`SECTION_PREFIXES`), which is what the page's own "Where this
+    // lives" drawer tells the reader to `aws s3 ls`. Naming the `library/` API
+    // route segment instead prints a folder the bucket does not contain, so the
+    // one cross-check that catches a wrong-target delete comes up empty.
+    expect(confirm).toHaveTextContent('artifacts/notes/')
+    expect(confirm).not.toHaveTextContent('library/notes/')
+    expect(awsControlApi.libraryRemove).not.toHaveBeenCalled()
+
+    // Cancel closes the strip without a call.
+    fireEvent.click(screen.getByTestId('library-remove-confirm-cancel'))
+    expect(screen.queryByTestId('library-remove-confirm')).toBeNull()
+    expect(awsControlApi.libraryRemove).not.toHaveBeenCalled()
+
+    // Confirming removes the LISTED slug.
+    await chooseFromMenu(screen.getByTestId('library-more'), 'library-remove')
+    fireEvent.click(await screen.findByTestId('library-remove-confirm-action'))
+    await waitFor(() => expect(awsControlApi.libraryRemove).toHaveBeenCalledWith(ACCOUNT_ID, 'notes'))
+  })
+
+  /**
+   * A copy with no local row is removable, which is the whole reason the control
+   * moved.
+   *
+   * `list_pushable` walks the LOCAL store, so a copy pushed from another machine
+   * has no picker row to carry it -- under the old placement it was unreachable
+   * while a locally reused slug could delete the wrong one, exactly backwards
+   * from the console the spec asks for. Nothing here may be gated on local
+   * state, so the fixture gives the local library none at all.
+   *
+   * DELETE THIS TEST and gating removal on `synced` passes again, which strands
+   * every copy pushed from a second machine.
+   */
+  it('removes a cloud copy that has no local artifact behind it', async () => {
+    stubDrivePresent()
+    vi.mocked(awsControlApi.driveList).mockResolvedValue({ files: [], folders: ['from-elsewhere'] })
+    vi.mocked(awsControlApi.library).mockResolvedValue({ artifacts: [] })
+    vi.mocked(awsControlApi.libraryRemove).mockResolvedValue({ removed: true } as never)
+
+    await renderDrive('library')
+    expect(await screen.findByTestId('library-card')).toBeTruthy()
+
+    await chooseFromMenu(screen.getByTestId('library-more'), 'library-remove')
+    expect(await screen.findByTestId('library-remove-confirm')).toHaveTextContent('artifacts/from-elsewhere/')
+    fireEvent.click(screen.getByTestId('library-remove-confirm-action'))
+    await waitFor(() =>
+      expect(awsControlApi.libraryRemove).toHaveBeenCalledWith(ACCOUNT_ID, 'from-elsewhere'))
+  })
+
+  /**
+   * The list view is a way of LOOKING at this folder, not a capability tier.
+   *
+   * The view choice PERSISTS per section, so a control the grid has and the rows
+   * do not is one a reader who once switched to the list can never reach again --
+   * the same rule this folder's stale-version warning already follows.
+   */
+  it('carries the removal in list view too', async () => {
+    stubDrivePresent()
+    vi.mocked(awsControlApi.driveList).mockResolvedValue({ files: [], folders: ['notes'] })
+    vi.mocked(awsControlApi.library).mockResolvedValue({ artifacts: [] })
+    vi.mocked(awsControlApi.libraryRemove).mockResolvedValue({ removed: true } as never)
+
+    await renderDrive('library')
+    fireEvent.click(await screen.findByTitle('List view'))
+    expect(await screen.findByTestId('library-list-row')).toBeTruthy()
+
+    await chooseFromMenu(screen.getByTestId('library-more'), 'library-remove')
+    expect(await screen.findByTestId('library-remove-confirm')).toHaveTextContent('artifacts/notes/')
+    fireEvent.click(screen.getByTestId('library-remove-confirm-action'))
+    await waitFor(() => expect(awsControlApi.libraryRemove).toHaveBeenCalledWith(ACCOUNT_ID, 'notes'))
+  })
+
+  /**
+   * The picker must NOT offer removal. This is the regression guard for the
+   * defect the relocation fixes, not a test of absence for its own sake.
+   *
+   * A picker row cannot identify which cloud copy is its own: `synced` IS the
+   * possibly-inherited ledger record, and `pushedVersion === version` is
+   * satisfied by a never-pushed artifact at v1 against a pushed v1. Any Remove
+   * reachable from these cards is unsound by construction, in either form -- a
+   * button or a menu -- which is why both ids are asserted absent.
+   *
+   * DELETE THIS TEST and the wrong-target delete can be reintroduced into the
+   * dialog labelled "Add from Artifacts" without a single test going red.
+   */
+  it('does not offer removal from the picker, where identity is unprovable', async () => {
+    stubDrivePresent()
+    vi.mocked(awsControlApi.driveList).mockResolvedValue({ files: [], folders: [] })
+    vi.mocked(awsControlApi.library).mockResolvedValue({
+      artifacts: [
+        { slug: 'notes', name: 'Notes', kind: 'markdown', version: 4, updatedAt: '2026-08-20T00:00:00Z', pushedVersion: 4, pushedAt: '2026-08-20T00:00:00Z' },
+        { slug: 'draft', name: 'Draft', kind: 'markdown', version: 1, updatedAt: '2026-08-20T00:00:00Z', pushedVersion: 1, pushedAt: '2026-08-20T00:00:00Z' },
+      ],
+    })
+
+    await renderDrive('library')
+    fireEvent.click(await screen.findByTestId('library-add-open'))
+    const dialog = await screen.findByTestId('library-add-dialog')
+
+    // Both cards are synced -- the state that used to reveal the control.
+    expect(await screen.findAllByTestId('library-tile')).toHaveLength(2)
+    expect(within(dialog).queryByTestId('library-remove')).toBeNull()
+    expect(within(dialog).queryByTestId('library-more')).toBeNull()
+    expect(within(dialog).queryByTestId('library-remove-confirm')).toBeNull()
+  })
+
+  /**
+   * The COMPLEMENT of the picker guard, and the boundary between them.
+   *
+   * A local twin existing does NOT make a listed copy's identity unprovable, so
+   * Remove is offered here even when `local` is defined. The two surfaces differ
+   * in where the row comes from:
+   *
+   *   picker   a row is a LOCAL artifact, and whether any cloud object belongs to
+   *            it is inferred from a slug-keyed ledger. Nothing on that surface
+   *            observes the bucket, so the delete target is a guess -- which is
+   *            why the test above pins the absence of the control.
+   *   listing  a row exists if and only if `artifacts/<slug>/` is in the bucket
+   *            (`driveList(account, 'library')` enumerates the prefix). The
+   *            removal empties exactly the prefix the row was listed from, so the
+   *            target is the observed object, not an inference.
+   *
+   * `local` here supplies only the card's LABEL and thumbnail. This test uses the
+   * slug-reuse shape deliberately -- a listed cloud object whose local twin is a
+   * different artifact that took its slug -- and asserts the control stays and
+   * targets the LISTED slug. Deleting this test would let a later round "fix" a
+   * misread of the picker guard by hiding Remove wherever a local twin exists,
+   * which is most copies, restoring the no-way-to-remove-a-copy gap this PR
+   * exists to close.
+   */
+  it('offers removal on a listed copy with a local twin, and targets the listed prefix', async () => {
+    stubDrivePresent()
+    vi.mocked(awsControlApi.driveList).mockResolvedValue({ files: [], folders: ['notes'] })
+    // The local twin is a DIFFERENT artifact wearing the same slug: the exact
+    // case the picker cannot resolve, and the case the listing resolves by
+    // having observed the object it is about to empty.
+    vi.mocked(awsControlApi.library).mockResolvedValue({
+      artifacts: [
+        { slug: 'notes', name: 'A Later Artifact', kind: 'markdown', version: 1, updatedAt: '2026-08-20T00:00:00Z', pushedVersion: 1, pushedAt: '2026-08-20T00:00:00Z' },
+      ],
+    })
+    vi.mocked(awsControlApi.libraryRemove).mockResolvedValue(undefined as never)
+
+    await renderDrive('library')
+    const card = (await screen.findAllByTestId('library-card'))[0]
+    // The local join supplies the label, so the twin's name is what shows.
+    expect(card).toHaveTextContent('A Later Artifact')
+
+    // The control is present despite the twin.
+    await chooseFromMenu(within(card).getByTestId('library-more'), 'library-remove')
+
+    // The confirm names the folder it empties -- the identity that was observed,
+    // not the one joined from the ledger.
+    const strip = await screen.findByTestId('library-remove-confirm')
+    expect(strip).toHaveTextContent('artifacts/notes/')
+
+    // And the request targets the LISTED slug.
+    fireEvent.click(screen.getByTestId('library-remove-confirm-action'))
+    await waitFor(() =>
+      expect(awsControlApi.libraryRemove).toHaveBeenCalledWith(ACCOUNT_ID, 'notes'))
+
+    /* The LIST row carries the same guarantee, and it needs its own assertion:
+       the existing list-view test lists an ORPHAN (no local twin), so a guard
+       that hid Remove wherever a twin exists would pass it untouched. Measured --
+       without these four lines that mutant survives. */
+    fireEvent.click(await screen.findByTitle('List view'))
+    const row = await screen.findByTestId('library-list-row')
+    expect(row).toHaveTextContent('A Later Artifact')
+    await chooseFromMenu(screen.getByTestId('library-more'), 'library-remove')
+    expect(await screen.findByTestId('library-remove-confirm')).toHaveTextContent('artifacts/notes/')
+  })
+
+  /**
+   * One removal completing must not close a DIFFERENT row's confirm.
+   *
+   * The section holds one `useMutation` for every row, which is what removed the
+   * per-card confirm flag -- but its completion callback then has to prove it
+   * still owns the state it clears. A `delete_prefix` sweep over several S3
+   * objects is not instant, so the interleave needs nothing unusual: remove A,
+   * open B's confirm while A is still running, and an unconditional
+   * `setConfirmSlug(null)` closes B when A lands.
+   *
+   * DELETE the ownership guard and this reds. In user terms that redness is: a
+   * removal you were about to confirm silently vanishes, along with any pending
+   * or error state it was showing, because an unrelated removal finished.
+   */
+  it('does not close one card\'s confirm when a different removal completes', async () => {
+    stubDrivePresent()
+    vi.mocked(awsControlApi.driveList).mockResolvedValue({ files: [], folders: ['alpha', 'beta'] })
+    vi.mocked(awsControlApi.library).mockResolvedValue({ artifacts: [] })
+    // A's removal is held open, so B's confirm is opened while it is in flight.
+    let resolveAlpha: (v: unknown) => void = () => {}
+    vi.mocked(awsControlApi.libraryRemove).mockImplementation(
+      () => new Promise((res) => { resolveAlpha = res }) as never)
+
+    await renderDrive('library')
+    const triggers = await screen.findAllByTestId('library-more')
+    expect(triggers).toHaveLength(2)
+
+    // Start A's removal and leave it pending.
+    await chooseFromMenu(triggers[0], 'library-remove')
+    fireEvent.click(await screen.findByTestId('library-remove-confirm-action'))
+    await waitFor(() => expect(awsControlApi.libraryRemove).toHaveBeenCalledTimes(1))
+
+    // Open B's confirm while A is still running.
+    await chooseFromMenu(screen.getAllByTestId('library-more')[1], 'library-remove')
+    const bStrip = await screen.findByTestId('library-remove-confirm')
+    expect(bStrip).toHaveTextContent('artifacts/beta/')
+    // B is a different row, so it must not wear A's in-flight state: its own
+    // danger button still offers the action rather than reading "Removing", and
+    // Cancel stays live so the reader can back out at all.
+    expect(screen.getByTestId('library-remove-confirm-action')).not.toBeDisabled()
+    expect(screen.getByTestId('library-remove-confirm-cancel')).not.toBeDisabled()
+
+    // A lands. B's confirm must survive it.
+    resolveAlpha({ removed: true })
+    await waitFor(() => expect(awsControlApi.driveList).toHaveBeenCalled())
+    expect(screen.getByTestId('library-remove-confirm')).toHaveTextContent('artifacts/beta/')
+  })
+
+  /**
+   * A failed removal belongs to the card that asked for it, and opening another
+   * card must not erase it.
+   *
+   * This is the second direction of the shared-observer coupling. One
+   * `useMutation` has ONE slot for the outcome, so the first version of this
+   * section called `removeMut.reset()` when a confirm opened -- which threw away
+   * the in-flight state, and a removal that then FAILED had nowhere to report it:
+   * the copy was still there and nothing on screen said so. The failure is keyed
+   * by slug instead, and rendered on the card rather than inside whichever strip
+   * happens to be open.
+   *
+   * DELETE the keying (restore `reset()` in `askRemove`) and this reds. In user
+   * terms: a removal you asked for failed, and the app told you nothing because
+   * you happened to be looking at a different card while it ran.
+   */
+  it('keeps a failure on the card that owns it when another confirm is opened', async () => {
+    stubDrivePresent()
+    vi.mocked(awsControlApi.driveList).mockResolvedValue({ files: [], folders: ['alpha', 'beta'] })
+    vi.mocked(awsControlApi.library).mockResolvedValue({ artifacts: [] })
+    let failAlpha: (e: unknown) => void = () => {}
+    vi.mocked(awsControlApi.libraryRemove).mockImplementation(
+      () => new Promise((_res, rej) => { failAlpha = rej }) as never)
+
+    await renderDrive('library')
+    const cards = await screen.findAllByTestId('library-card')
+    expect(cards).toHaveLength(2)
+
+    // Start A's removal, then open B's confirm while A is still in flight.
+    await chooseFromMenu(screen.getAllByTestId('library-more')[0], 'library-remove')
+    fireEvent.click(await screen.findByTestId('library-remove-confirm-action'))
+    await waitFor(() => expect(awsControlApi.libraryRemove).toHaveBeenCalledTimes(1))
+    await chooseFromMenu(screen.getAllByTestId('library-more')[1], 'library-remove')
+    expect(await screen.findByTestId('library-remove-confirm')).toHaveTextContent('artifacts/beta/')
+
+    // A fails. Its failure must report on A's own card, not vanish and not
+    // appear on B, whose confirm is the one currently open.
+    failAlpha(new Error('boom'))
+    const err = await screen.findByTestId('library-remove-error')
+    expect(err).toHaveTextContent(i18nT('apps.awsControl.console.library_remove_failed'))
+    expect(within(screen.getAllByTestId('library-card')[0]).getByTestId('library-remove-error'))
+      .toBeTruthy()
+    expect(within(screen.getAllByTestId('library-card')[1]).queryByTestId('library-remove-error'))
+      .toBeNull()
+    // B's own strip is untouched by A's outcome and still offers its action.
+    expect(screen.getByTestId('library-remove-confirm')).toHaveTextContent('artifacts/beta/')
+    expect(screen.getByTestId('library-remove-confirm-action')).not.toBeDisabled()
+  })
+
+  /**
+   * Two failed removals each keep their own error.
+   *
+   * The third layer of the shared-slot defect, and the one a slug-keyed SCALAR
+   * still had: `errorFor` held one slug, so of two overlapping failures the later
+   * write hid the earlier card's error. Membership in `failedSlugs` gives N cards
+   * N slots.
+   *
+   * COLLAPSE `failedSlugs` to a scalar and this reds. In user terms: two removals
+   * failed and the app only admits to one, so the reader retries a card it was
+   * never told about -- or worse, believes that copy is gone.
+   */
+  it('keeps both failures when two removals fail', async () => {
+    stubDrivePresent()
+    vi.mocked(awsControlApi.driveList).mockResolvedValue({ files: [], folders: ['alpha', 'beta'] })
+    vi.mocked(awsControlApi.library).mockResolvedValue({ artifacts: [] })
+    const rejects: Record<string, (e: unknown) => void> = {}
+    vi.mocked(awsControlApi.libraryRemove).mockImplementation(
+      (_acct: string, slug: string) => new Promise((_res, rej) => { rejects[slug] = rej }) as never)
+
+    await renderDrive('library')
+    expect(await screen.findAllByTestId('library-card')).toHaveLength(2)
+
+    // Start both removals before either settles.
+    await chooseFromMenu(screen.getAllByTestId('library-more')[0], 'library-remove')
+    fireEvent.click(await screen.findByTestId('library-remove-confirm-action'))
+    await chooseFromMenu(screen.getAllByTestId('library-more')[1], 'library-remove')
+    fireEvent.click(await screen.findByTestId('library-remove-confirm-action'))
+    await waitFor(() => expect(awsControlApi.libraryRemove).toHaveBeenCalledTimes(2))
+
+    // Fail both, earlier first, so a single slot would end up holding only beta.
+    rejects['alpha'](new Error('boom'))
+    rejects['beta'](new Error('boom'))
+
+    await waitFor(() => expect(screen.getAllByTestId('library-remove-error')).toHaveLength(2))
+    const cards = screen.getAllByTestId('library-card')
+    expect(within(cards[0]).getByTestId('library-remove-error')).toBeTruthy()
+    expect(within(cards[1]).getByTestId('library-remove-error')).toBeTruthy()
+  })
+
+  /**
+   * The in-flight label belongs to the card being removed.
+   *
+   * `isPending` is one boolean for the section and `variables` holds only the most
+   * recent slug, so either would put "Removing" and a disabled Cancel on whichever
+   * card the reader opened last rather than the one actually being worked on.
+   *
+   * COLLAPSE `pendingSlugs` to `removeMut.isPending` and this reds. In user terms:
+   * the app says it is working on a card it is not touching, and disables the
+   * Cancel of a removal that has not started.
+   */
+  it('shows the in-flight label only on the card being removed', async () => {
+    stubDrivePresent()
+    vi.mocked(awsControlApi.driveList).mockResolvedValue({ files: [], folders: ['alpha', 'beta'] })
+    vi.mocked(awsControlApi.library).mockResolvedValue({ artifacts: [] })
+    let finishAlpha: () => void = () => {}
+    vi.mocked(awsControlApi.libraryRemove).mockImplementation(
+      () => new Promise((res) => { finishAlpha = () => res(undefined as never) }) as never)
+
+    await renderDrive('library')
+    expect(await screen.findAllByTestId('library-card')).toHaveLength(2)
+
+    // A is in flight; the reader then opens B's confirm.
+    await chooseFromMenu(screen.getAllByTestId('library-more')[0], 'library-remove')
+    fireEvent.click(await screen.findByTestId('library-remove-confirm-action'))
+    await waitFor(() => expect(awsControlApi.libraryRemove).toHaveBeenCalledTimes(1))
+    await chooseFromMenu(screen.getAllByTestId('library-more')[1], 'library-remove')
+
+    // B's strip is the open one and B is NOT being removed, so it must offer its
+    // action and a usable Cancel rather than A's progress.
+    const strip = await screen.findByTestId('library-remove-confirm')
+    expect(strip).toHaveTextContent('artifacts/beta/')
+    expect(strip).not.toHaveTextContent(i18nT('apps.awsControl.console.library_removing'))
+    expect(screen.getByTestId('library-remove-confirm-action')).toHaveTextContent(
+      i18nT('apps.awsControl.console.library_remove_action'))
+    expect(screen.getByTestId('library-remove-confirm-cancel')).not.toBeDisabled()
+    finishAlpha()
+  })
+
+  /**
+   * An existing failure survives another card's confirm opening.
+   *
+   * The reverse order of the interleave above, and a distinct property: there the
+   * failure arrives while a sibling's strip is already open, here it is already on
+   * screen when the reader opens one. A blanket clear on open -- which is what
+   * `removeMut.reset()` amounted to -- erases a failure for a copy that is still
+   * in the bucket, purely because the reader looked at something else.
+   *
+   * DELETE the slug scoping on the clear and this reds. In user terms: the app
+   * told you a removal failed, then quietly took the message back.
+   */
+  it('does not erase an existing failure when another confirm opens', async () => {
+    stubDrivePresent()
+    vi.mocked(awsControlApi.driveList).mockResolvedValue({ files: [], folders: ['alpha', 'beta'] })
+    vi.mocked(awsControlApi.library).mockResolvedValue({ artifacts: [] })
+    vi.mocked(awsControlApi.libraryRemove).mockRejectedValue(new Error('boom'))
+
+    await renderDrive('library')
+    expect(await screen.findAllByTestId('library-card')).toHaveLength(2)
+
+    // A fails first, so its error is on screen BEFORE any other confirm opens.
+    await chooseFromMenu(screen.getAllByTestId('library-more')[0], 'library-remove')
+    fireEvent.click(await screen.findByTestId('library-remove-confirm-action'))
+    await screen.findByTestId('library-remove-error')
+
+    // Now open B's confirm. A's failure must still be reported on A's card.
+    await chooseFromMenu(screen.getAllByTestId('library-more')[1], 'library-remove')
+    expect(await screen.findByTestId('library-remove-confirm')).toHaveTextContent('artifacts/beta/')
+    expect(within(screen.getAllByTestId('library-card')[0]).getByTestId('library-remove-error'))
+      .toBeTruthy()
+    expect(within(screen.getAllByTestId('library-card')[1]).queryByTestId('library-remove-error'))
+      .toBeNull()
+
+    // And backing out of B retires B's attempt, not A's failure. Cancel is the
+    // one place a failure is deliberately retired, so it has to be as narrowly
+    // owned as the clear on open.
+    fireEvent.click(screen.getByTestId('library-remove-confirm-cancel'))
+    await waitFor(() => expect(screen.queryByTestId('library-remove-confirm')).toBeNull())
+    expect(within(screen.getAllByTestId('library-card')[0]).getByTestId('library-remove-error'))
+      .toBeTruthy()
+  })
+
+  /**
+   * A failed removal reports, and backing out retires it.
+   *
+   * The strip stays open on failure so a retry is one click, the failure renders
+   * on the card that owns it, and Cancel retires that card's failure with the
+   * attempt it describes -- otherwise a reader who backs out keeps a standing red
+   * beside a copy that is still there.
+   *
+   * This replaces the old per-card re-arm test wholesale. That test guarded a
+   * confirm flag surviving on a card that outlived its own sync state; holding
+   * the state on the SECTION removes the flag, so there is nothing left to
+   * re-arm and the property is now structural rather than asserted.
+   */
+  it('reports a failed removal on its card and retires it on cancel', async () => {
+    stubDrivePresent()
+    vi.mocked(awsControlApi.driveList).mockResolvedValue({ files: [], folders: ['notes', 'other'] })
+    vi.mocked(awsControlApi.library).mockResolvedValue({ artifacts: [] })
+    vi.mocked(awsControlApi.libraryRemove).mockRejectedValue(new Error('boom'))
+
+    await renderDrive('library')
+    expect(await screen.findAllByTestId('library-card')).toHaveLength(2)
+
+    await chooseFromMenu(screen.getAllByTestId('library-more')[0], 'library-remove')
+    fireEvent.click(await screen.findByTestId('library-remove-confirm-action'))
+
+    // The failure renders on the card, and the strip is still there to retry.
+    expect(await screen.findByTestId('library-remove-error')).toHaveTextContent(
+      i18nT('apps.awsControl.console.library_remove_failed'))
+    expect(screen.getByTestId('library-remove-confirm')).toBeTruthy()
+
+    // Cancel retires this card's failure along with the attempt it describes.
+    fireEvent.click(screen.getByTestId('library-remove-confirm-cancel'))
+    await waitFor(() => expect(screen.queryByTestId('library-remove-error')).toBeNull())
+
+    // And the OTHER card's confirm opens clean.
+    await chooseFromMenu(screen.getAllByTestId('library-more')[1], 'library-remove')
+    expect(await screen.findByTestId('library-remove-confirm')).toBeTruthy()
+    expect(screen.queryByTestId('library-remove-error')).toBeNull()
+  })
+
   it('the picker searches by name and reports when nothing matches', async () => {
     stubDrivePresent()
     vi.mocked(awsControlApi.driveList).mockResolvedValue({ files: [], folders: [] })
@@ -752,9 +1549,9 @@ describe('DrivePage', () => {
     expect(screen.queryByTestId('library-tile')).toBeNull()
     expect(screen.getByTestId('library-add-none')).toBeTruthy()
   })
+})
 
-  /* ── Review fixes: capability parity, honest counts, no self-contradiction ── */
-
+describe('DrivePage sections: capability parity, honest counts, no self-contradiction', () => {
   /**
    * Grid mode is a way of LOOKING at a folder, not a capability tier.
    *
@@ -774,9 +1571,15 @@ describe('DrivePage', () => {
     fireEvent.click(await screen.findByTitle('Grid view'))
     await screen.findByTestId('drive-grid')
 
-    // A file tile keeps Download AND gains the overflow the list row has.
-    expect(screen.getByTestId('drive-grid-download')).toBeTruthy()
+    // ONE overflow per file tile, holding every per-item action. Download used to
+    // sit outside it as a bare button while Share and Delete were inside, so the
+    // assertion is now that there is no second control: a card must offer one
+    // grammar for "act on this item", not two.
     expect(screen.getByTestId('drive-grid-more')).toBeTruthy()
+    fireEvent.keyDown(screen.getByTestId('drive-grid-more'), { key: 'Enter' })
+    expect(await screen.findByTestId('drive-grid-download')).toBeTruthy()
+    expect(screen.getByTestId('drive-grid-share')).toBeTruthy()
+    expect(screen.getByTestId('drive-grid-delete')).toBeTruthy()
     // A folder tile is no longer action-less.
     expect(screen.getByTestId('drive-grid-folder-more')).toBeTruthy()
   })
@@ -802,7 +1605,7 @@ describe('DrivePage', () => {
     fireEvent.click(await screen.findByTestId('drive-grid-delete'))
     expect(await screen.findByTestId('drive-grid-confirm')).toBeTruthy()
     fireEvent.click(screen.getByTestId('drive-grid-confirm-action'))
-    await waitFor(() => expect(awsControlApi.driveDelete).toHaveBeenCalledWith(ACCOUNT.account, 'drive', 'a.txt'))
+    await waitFor(() => expect(awsControlApi.driveDelete).toHaveBeenCalledWith(ACCOUNT_ID, 'drive', 'a.txt'))
   })
 
   /**
@@ -914,9 +1717,6 @@ describe('DrivePage', () => {
     expect(tiles).toHaveLength(BACKEND_KINDS.length)
   })
 
-
-
-
   /**
    * "Nothing left to add" is a FALSE claim for a library that is all images.
    *
@@ -1017,15 +1817,14 @@ describe('DrivePage', () => {
     // ...but it is a label, not a locked door.
     expect((push as HTMLButtonElement).disabled).toBe(false)
     fireEvent.click(push)
-    await waitFor(() => expect(awsControlApi.libraryPush).toHaveBeenCalledWith(ACCOUNT.account, 'notes'))
+    await waitFor(() => expect(awsControlApi.libraryPush).toHaveBeenCalledWith(ACCOUNT_ID, 'notes'))
   })
 
   /**
    * The WHOLE grid folder tile navigates, not just its name.
    *
    * The tile carries a hover affordance, so a click on its icon or its body being
-   * a silent no-op is the same defect the table rows already fix -- and the root
-   * SectionCard in this change makes the whole card the control.
+   * a silent no-op is the same defect the table rows already fix.
    */
   it('opens a grid folder from anywhere on the tile, not just the name', async () => {
     stubDrivePresent()
@@ -1038,7 +1837,7 @@ describe('DrivePage', () => {
     // Click the TILE (not a name button -- there isn't one any more).
     fireEvent.click(tile)
     await waitFor(() =>
-      expect(awsControlApi.driveList).toHaveBeenCalledWith(ACCOUNT.account, 'drive', 'invoices', ''),
+      expect(awsControlApi.driveList).toHaveBeenCalledWith(ACCOUNT_ID, 'drive', 'invoices', ''),
     )
   })
 
@@ -1085,7 +1884,9 @@ describe('DrivePage', () => {
     fireEvent.keyDown(cancel, { key: ' ' })
     expect(awsControlApi.driveList).not.toHaveBeenCalled()
   })
+})
 
+describe('DrivePage sections: Library integrity and view modes', () => {
   /**
    * A failed add must not be swallowed by a later one.
    *
@@ -1150,12 +1951,23 @@ describe('DrivePage', () => {
     const cards = await screen.findAllByTestId('library-card')
     expect(cards).toHaveLength(2)
 
-    const linked = cards.filter((c) => c.tagName === 'A')
+    // The card SHELL is a plain container and the link is inside it, which is
+    // what lets the overflow trigger be a real button: interactive content inside
+    // an anchor is invalid, and a trigger that had to `preventDefault` its way
+    // out of the surrounding navigation is the nested-control hijack this page
+    // avoids. So these assert the link WITHIN a card, and the last one pins the
+    // trigger out of it.
+    const linked = cards.filter((c) => c.querySelector('a') !== null)
     expect(linked).toHaveLength(1)
-    expect(linked[0].getAttribute('href')).toBe('/artifacts/notes')
-    expect(linked[0].getAttribute('aria-label')).toContain('Notes')
-    // The orphan stays a plain container: no link to a page that does not exist.
-    expect(cards.filter((c) => c.tagName === 'DIV')).toHaveLength(1)
+    const anchor = linked[0].querySelector('a') as HTMLAnchorElement
+    expect(anchor.getAttribute('href')).toBe('/artifacts/notes')
+    expect(anchor.getAttribute('aria-label')).toContain('Notes')
+    // The orphan stays inert: no link to a page that does not exist.
+    expect(cards.filter((c) => c.querySelector('a') === null)).toHaveLength(1)
+    // Both cards offer the actions menu, and on neither is its trigger inside
+    // the link -- which is what lets it be a real button at all.
+    expect(screen.getAllByTestId('library-more')).toHaveLength(2)
+    expect(anchor.querySelector('[data-testid="library-more"]')).toBeNull()
   })
 
   /**
@@ -1245,14 +2057,16 @@ describe('DrivePage', () => {
   })
 
   /**
-   * The no-removal disclosure must reach the person doing the adding.
+   * The cost disclosure must reach the person doing the adding.
    *
-   * Adding fills storage the user pays for and there is no in-app removal yet.
-   * The folder's own hint was the only place that said so -- and the empty
-   * state's button opens this dialog directly, so a first-time user skipped it
-   * entirely. A warning on a path the reader never takes is not a warning.
+   * Adding fills storage the account pays for, and the empty state's button
+   * opens this dialog directly, so a first-time user never passes the folder's
+   * own copy. A warning on a path the reader never takes is not a warning.
+   *
+   * COST only: the picker's cards carry a Remove control, so a banner claiming
+   * removal is unavailable would be disproved by a button in the same dialog.
    */
-  it('states inside the picker that adding cannot be undone here', async () => {
+  it('states the storage cost inside the picker', async () => {
     stubDrivePresent()
     vi.mocked(awsControlApi.driveList).mockResolvedValue({ files: [], folders: [] })
     vi.mocked(awsControlApi.library).mockResolvedValue({
@@ -1262,16 +2076,16 @@ describe('DrivePage', () => {
     })
 
     await renderDrive('library')
-    // Open from the EMPTY STATE button, the path that bypassed the folder hint.
+    // Open from the EMPTY STATE button, the path that bypasses the folder blurb.
     fireEvent.click(await screen.findByTestId('library-empty-add'))
     const dialog = await screen.findByTestId('library-add-dialog')
-    expect(screen.getByTestId('library-add-oneway').textContent)
-      .toBe(i18nT('apps.awsControl.console.library_add_oneway'))
-    // Scoped to the DIALOG: the folder behind the overlay still shows its own
-    // hint, and should. What must not appear in here is that hint's pointer at
-    // the "Where this lives" drawer, which the reader cannot reach from this
-    // dialog.
-    expect(within(dialog).queryByText(i18nT('apps.awsControl.console.library_remove_hint'))).toBeNull()
+    const banner = within(dialog).getByTestId('library-add-oneway')
+    expect(banner.textContent).toBe(i18nT('apps.awsControl.console.library_add_oneway'))
+    // Pinned as a SUBSTRING guard rather than only as an equality, so it keeps
+    // biting through a reword: what this banner must never say again is that
+    // removal is unavailable, because Remove sits one card below it in the very
+    // same overlay.
+    expect(banner.textContent).not.toMatch(/remov/i)
   })
 
   /**
@@ -1393,16 +2207,16 @@ describe('DrivePage', () => {
     // The api was called with the chosen expiry seconds + note; on failure the
     // dialog keeps its form (no result panel) so the owner can retry.
     await waitFor(() =>
-      expect(awsControlApi.driveShare).toHaveBeenCalledWith(ACCOUNT.account, 'drive', 'report.pdf', 604800, 'quarterly'),
+      expect(awsControlApi.driveShare).toHaveBeenCalledWith(ACCOUNT_ID, 'drive', 'report.pdf', 604800, 'quarterly'),
     )
     expect(screen.queryByTestId('share-result')).toBeNull()
     // The close button dismisses the dialog entirely.
     fireEvent.click(screen.getByTestId('share-close'))
     await waitFor(() => expect(screen.queryByTestId('share-dialog')).toBeNull())
   })
+})
 
-  /* ── Backup: run success, nightly toggle, stored-archive disclosure, restore ─ */
-
+describe('DrivePage sections: backup, access, CLI drawer', () => {
   it('runs a backup, toggles nightly, and both invalidate through the api', async () => {
     stubDrivePresent()
     vi.mocked(awsControlApi.backup).mockResolvedValue({
@@ -1411,7 +2225,7 @@ describe('DrivePage', () => {
       remote: { snapshot: [], sessions: [] },
     })
     vi.mocked(awsControlApi.backupRun).mockResolvedValue({
-      ran: true, kind: 'snapshot', run: { key: 'snap-2', bytes: 2048, at: '2026-08-25T00:00:00Z' },
+      started: true, kind: 'snapshot', runId: 'a'.repeat(32),
     })
     vi.mocked(awsControlApi.backupNightly).mockResolvedValue({ nightly: true } as never)
 
@@ -1420,7 +2234,7 @@ describe('DrivePage', () => {
     // The snapshot row shows its last-run line, then Run now calls the api.
     await screen.findByTestId('backup-row-snapshot')
     fireEvent.click(screen.getByTestId('backup-run-snapshot'))
-    await waitFor(() => expect(awsControlApi.backupRun).toHaveBeenCalledWith(ACCOUNT.account, 'snapshot'))
+    await waitFor(() => expect(awsControlApi.backupRun).toHaveBeenCalledWith(ACCOUNT_ID, 'snapshot'))
 
     // The sessions row carries its extra scope caveat.
     expect(screen.getByTestId('backup-sessions-scope')).toBeTruthy()
@@ -1428,7 +2242,7 @@ describe('DrivePage', () => {
     // Flipping the nightly toggle calls the api with the new value.
     const toggle = within(screen.getByTestId('backup-nightly')).getByRole('switch')
     fireEvent.click(toggle)
-    await waitFor(() => expect(awsControlApi.backupNightly).toHaveBeenCalledWith(ACCOUNT.account, true))
+    await waitFor(() => expect(awsControlApi.backupNightly).toHaveBeenCalledWith(ACCOUNT_ID, true))
   })
 
   it('discloses the stored-backups archive and restores a file, showing the staged path', async () => {
@@ -1456,7 +2270,7 @@ describe('DrivePage', () => {
 
     // Restore stages the archive locally and echoes the landed path.
     fireEvent.click(within(archive).getByTestId('backup-restore'))
-    await waitFor(() => expect(awsControlApi.backupRestore).toHaveBeenCalledWith(ACCOUNT.account, 'backup/snapshot/2026-08-24.tar'))
+    await waitFor(() => expect(awsControlApi.backupRestore).toHaveBeenCalledWith(ACCOUNT_ID, 'backup/snapshot/2026-08-24.tar'))
     expect(await screen.findByTestId('backup-restored')).toHaveTextContent('/home/u/.kiro/restore/2026-08-24')
   })
 
@@ -1468,9 +2282,16 @@ describe('DrivePage', () => {
 
     await renderDrive('backup')
 
-    // A null remote with a reason renders the muted error note and NO disclosure.
+    // The note still renders. The disclosure NO LONGER hides, and that change is
+    // deliberate: since the remote half became opt-in behind `?remote=1`, a
+    // `remoteError` can only exist because this control already requested it, so
+    // "errored AND control hidden" is unreachable in the running app. Asserting
+    // the old invariant is what produced the regression -- the control that
+    // enables the fetch rendered only once the fetch had succeeded, leaving the
+    // archive and Restore unreachable. Keeping it visible also lets the owner
+    // collapse and retry instead of being stuck with the note.
     expect(await screen.findByTestId('backup-remote-error')).toBeTruthy()
-    expect(screen.queryByTestId('backup-remote-toggle')).toBeNull()
+    expect(screen.queryByTestId('backup-remote-toggle')).not.toBeNull()
   })
 
   /* ── Access: forget a share ──────────────────────────────────────────────── */
@@ -1479,13 +2300,13 @@ describe('DrivePage', () => {
     stubDrivePresent()
     vi.mocked(awsControlApi.shares).mockResolvedValue({
       shares: [{
-        id: 's1', account: ACCOUNT.account, section: 'library', key: 'w/notes',
+        id: 's1', account: ACCOUNT_ID, section: 'library', key: 'w/notes',
         createdAt: '2026-08-24T05:00:00Z', expiresAt: '2030-01-01T00:00:00Z', note: '',
       }],
     })
     vi.mocked(awsControlApi.shareForget).mockResolvedValue({ forgotten: true } as never)
 
-    await renderDrive()
+    await renderDrive('access')
 
     fireEvent.click(await screen.findByTestId('access-forget'))
     await waitFor(() => expect(awsControlApi.shareForget).toHaveBeenCalledWith('s1'))
@@ -1499,8 +2320,7 @@ describe('DrivePage', () => {
 
     // The drawer is collapsed by default; opening it shows the aws s3 ls line
     // scoped to the artifacts/ prefix of the account's bucket.
-    const drawers = await screen.findAllByTestId('cli-drawer-toggle')
-    fireEvent.click(drawers[0])
+    fireEvent.click(await screen.findByTestId('cli-drawer-toggle'))
     const body = await screen.findByTestId('cli-drawer-body')
     expect(body).toHaveTextContent('aws s3 ls s3://kirocrew-drive-abc123/artifacts/')
   })
@@ -1526,9 +2346,11 @@ describe('download tab: the noopener trap', () => {
     const fakeTab = { location: { href: '' }, close: vi.fn(), opener: {} } as unknown as Window
     const openSpy = vi.spyOn(window, 'open').mockReturnValue(fakeTab)
 
-    renderWithProviders(<DrivePage account={ACCOUNT} drive={driveExists} onBack={() => {}} />)
-    fireEvent.click(await screen.findByTestId('drive-section-drive'))
-    fireEvent.click(await screen.findByTestId('drive-download'))
+    await renderDrive('drive')
+    // Download moved into the row's overflow, so the gesture now starts from the
+    // menu item. It still survives: Radix dispatches onSelect synchronously from
+    // the item's own click handler, so window.open keeps the user gesture.
+    await chooseFromMenu(await screen.findByTestId('drive-more'), 'drive-download')
 
     const firstArgs = openSpy.mock.calls[0]
     expect(firstArgs[0]).toBe('')
@@ -1541,5 +2363,438 @@ describe('download tab: the noopener trap', () => {
       ),
     )
     openSpy.mockRestore()
+  })
+})
+
+describe('StorageMeter', () => {
+  /**
+   * The meter is now an exported unit rendered by the usage pane, so its
+   * semantics are pinned here directly: a section that exists gets a legend
+   * row even at zero bytes (a 0-width segment alone would silently drop it),
+   * and only non-zero sections paint a bar segment.
+   */
+  it('renders a legend row for every section, including a zero-byte one', () => {
+    const usage: DriveUsage = {
+      bytes: 3_001_000_000,
+      objects: 40,
+      sections: {
+        library: { objects: 10, bytes: 1_000_000 },
+        drive: { objects: 30, bytes: 3_000_000_000 },
+        backup: { objects: 0, bytes: 0 },
+      },
+    }
+    renderWithProviders(<StorageMeter usage={usage} />)
+
+    // Every section is named in the legend, with its own size...
+    expect(screen.getByTestId('drive-meter-legend-drive').textContent).toContain(fmtBytes(3_000_000_000))
+    expect(screen.getByTestId('drive-meter-legend-library').textContent).toContain(fmtBytes(1_000_000))
+    // ...and the empty section keeps its row rather than vanishing.
+    expect(screen.getByTestId('drive-meter-legend-backup').textContent).toContain(fmtBytes(0))
+    // But only sections WITH bytes paint a segment in the bar.
+    expect(screen.getByTestId('drive-meter-segment-drive')).toBeTruthy()
+    expect(screen.getByTestId('drive-meter-segment-library')).toBeTruthy()
+    expect(screen.queryByTestId('drive-meter-segment-backup')).toBeNull()
+  })
+
+  it('renders a single muted track (no segments) when the drive is empty', () => {
+    const empty: DriveUsage = {
+      bytes: 0,
+      objects: 0,
+      sections: {
+        library: { objects: 0, bytes: 0 },
+        drive: { objects: 0, bytes: 0 },
+        backup: { objects: 0, bytes: 0 },
+      },
+    }
+    renderWithProviders(<StorageMeter usage={empty} />)
+
+    // The bar itself renders (never a bare outline), holding zero segments.
+    const bar = screen.getByTestId('drive-meter-bar')
+    expect(bar.querySelector('[data-testid^="drive-meter-segment-"]')).toBeNull()
+    // The legend still names all three sections.
+    expect(screen.getByTestId('drive-meter-legend-drive')).toBeTruthy()
+    expect(screen.getByTestId('drive-meter-legend-library')).toBeTruthy()
+    expect(screen.getByTestId('drive-meter-legend-backup')).toBeTruthy()
+  })
+})
+
+describe('DrivePage sections: drag and drop', () => {
+  const listing = { files: [{ key: 'report.pdf', size: 10, modified: '2026-09-01T00:00:00Z' }], folders: ['docs'] }
+  const dt = (over: Partial<DataTransfer>): DataTransfer => ({
+    types: [], files: [] as unknown as FileList, getData: () => '', setData: () => {},
+    effectAllowed: 'none', ...over,
+  }) as unknown as DataTransfer
+
+  it('dragging a file onto a folder row moves it into that folder', async () => {
+    vi.mocked(awsControlApi.driveList).mockResolvedValue(listing)
+    vi.mocked(awsControlApi.driveMove).mockResolvedValue({ moved: true })
+    await renderDrive('drive')
+
+    // A real gesture: OUR row's dragStart records the key, the folder row's
+    // drop reads the recorded key (never the attacker-writable payload).
+    fireEvent.dragStart(await screen.findByTestId('drive-file'), {
+      dataTransfer: dt({ setData: () => {} }),
+    })
+    fireEvent.drop(await screen.findByTestId('drive-folder'), {
+      dataTransfer: dt({
+        types: ['application/x-drive-object-key'],
+        getData: () => 'report.pdf',
+      }),
+    })
+    await waitFor(() =>
+      expect(awsControlApi.driveMove).toHaveBeenCalledWith(ACCOUNT_ID, 'drive', 'report.pdf', 'docs/report.pdf'),
+    )
+  })
+
+  it('a drop carrying the move MIME without OUR dragStart is inert', async () => {
+    // Drag data is attacker-writable: any external page can start a drag
+    // whose DataTransfer carries our MIME and a REAL key. Landing it on a
+    // folder here must not run an authenticated move — only a key recorded
+    // by this component's own dragStart is trusted.
+    vi.mocked(awsControlApi.driveList).mockResolvedValue(listing)
+    await renderDrive('drive')
+
+    fireEvent.drop(await screen.findByTestId('drive-folder'), {
+      dataTransfer: dt({
+        types: ['application/x-drive-object-key'],
+        getData: () => 'report.pdf',
+      }),
+    })
+    await waitFor(() => expect(screen.queryByTestId('drive-move-error')).toBeNull())
+    expect(awsControlApi.driveMove).not.toHaveBeenCalled()
+  })
+
+  it('a drop onto the folder the file already lives in is a no-op', async () => {
+    vi.mocked(awsControlApi.driveList).mockResolvedValue({
+      files: [{ key: 'docs/inner.pdf', size: 10, modified: '2026-09-01T00:00:00Z' }], folders: ['docs'],
+    })
+    await renderDrive('drive')
+
+    fireEvent.dragStart(await screen.findByTestId('drive-file'), {
+      dataTransfer: dt({ setData: () => {} }),
+    })
+    fireEvent.drop(await screen.findByTestId('drive-folder'), {
+      dataTransfer: dt({
+        types: ['application/x-drive-object-key'],
+        getData: () => 'docs/inner.pdf',
+      }),
+    })
+    // Same directory: no mutation, no error strip.
+    await waitFor(() => expect(screen.queryByTestId('drive-move-error')).toBeNull())
+    expect(awsControlApi.driveMove).not.toHaveBeenCalled()
+  })
+
+  it('a 409 destination conflict surfaces its own sentence', async () => {
+    vi.mocked(awsControlApi.driveList).mockResolvedValue(listing)
+    vi.mocked(awsControlApi.driveMove).mockRejectedValue(new AwsControlError('destination_exists', 409))
+    await renderDrive('drive')
+
+    fireEvent.dragStart(await screen.findByTestId('drive-file'), {
+      dataTransfer: dt({ setData: () => {} }),
+    })
+    fireEvent.drop(await screen.findByTestId('drive-folder'), {
+      dataTransfer: dt({
+        types: ['application/x-drive-object-key'],
+        getData: () => 'report.pdf',
+      }),
+    })
+    expect(await screen.findByTestId('drive-move-error')).toBeTruthy()
+  })
+
+  it('moving a file with a live share link surfaces the share-specific refusal', async () => {
+    // The backend refuses (409 share_active) because the presigned URL is
+    // bound to the source key. The generic "same name at destination" text
+    // would send the user hunting for a duplicate that does not exist.
+    vi.mocked(awsControlApi.driveList).mockResolvedValue(listing)
+    vi.mocked(awsControlApi.driveMove).mockRejectedValue(new AwsControlError('share_active', 409))
+    await renderDrive('drive')
+
+    fireEvent.dragStart(await screen.findByTestId('drive-file'), {
+      dataTransfer: dt({ setData: () => {} }),
+    })
+    fireEvent.drop(await screen.findByTestId('drive-folder'), {
+      dataTransfer: dt({
+        types: ['application/x-drive-object-key'],
+        getData: () => 'report.pdf',
+      }),
+    })
+    const strip = await screen.findByTestId('drive-move-error')
+    expect(strip).toHaveTextContent(i18nT('apps.awsControl.console.move_shared'))
+    expect(strip).not.toHaveTextContent(i18nT('apps.awsControl.console.move_conflict'))
+  })
+
+  it('OS files dropped on a folder row upload into that folder', async () => {
+    vi.mocked(awsControlApi.driveList).mockResolvedValue(listing)
+    vi.mocked(awsControlApi.driveUpload).mockResolvedValue({ uploaded: true } as never)
+    await renderDrive('drive')
+
+    const file = new File(['x'], 'notes.md', { type: 'text/markdown' })
+    fireEvent.drop(await screen.findByTestId('drive-folder'), {
+      dataTransfer: dt({ types: ['Files'], files: [file] as unknown as FileList }),
+    })
+    await waitFor(() =>
+      expect(awsControlApi.driveUpload).toHaveBeenCalledWith(ACCOUNT_ID, 'drive', 'docs/notes.md', file),
+    )
+  })
+
+  it('OS files dropped on the listing upload into the open folder', async () => {
+    vi.mocked(awsControlApi.driveList).mockResolvedValue(listing)
+    vi.mocked(awsControlApi.driveUpload).mockResolvedValue({ uploaded: true } as never)
+    await renderDrive('drive')
+
+    const file = new File(['x'], 'root.md', { type: 'text/markdown' })
+    fireEvent.drop(screen.getByTestId('drive-section'), {
+      dataTransfer: dt({ types: ['Files'], files: [file] as unknown as FileList }),
+    })
+    await waitFor(() =>
+      expect(awsControlApi.driveUpload).toHaveBeenCalledWith(ACCOUNT_ID, 'drive', 'root.md', file),
+    )
+  })
+
+  it('a bad name in a multi-file drop is called out BY NAME, the rest still upload', async () => {
+    // The picker's anonymous "that file name" is useless after a 10-file
+    // drop: the user cannot tell which file was refused while the others
+    // uploaded. The drop path interpolates the offending name.
+    vi.mocked(awsControlApi.driveList).mockResolvedValue(listing)
+    vi.mocked(awsControlApi.driveUpload).mockResolvedValue({ uploaded: true } as never)
+    await renderDrive('drive')
+
+    const bad = new File(['x'], 'bad\u0000name.md', { type: 'text/markdown' })
+    const good = new File(['x'], 'good.md', { type: 'text/markdown' })
+    fireEvent.drop(screen.getByTestId('drive-section'), {
+      dataTransfer: dt({ types: ['Files'], files: [bad, good] as unknown as FileList }),
+    })
+    const strip = await screen.findByTestId('drive-upload-error')
+    expect(strip.textContent).toContain('bad\u0000name.md')
+    await waitFor(() =>
+      expect(awsControlApi.driveUpload).toHaveBeenCalledWith(ACCOUNT_ID, 'drive', 'good.md', good),
+    )
+    expect(awsControlApi.driveUpload).toHaveBeenCalledTimes(1)
+  })
+
+  it('a drop-upload that fails on the wire surfaces an error naming the file', async () => {
+    // Without this, a failed put shows nothing: the dropped file silently
+    // never appears and the user believes it uploaded.
+    vi.mocked(awsControlApi.driveList).mockResolvedValue(listing)
+    vi.mocked(awsControlApi.driveUpload).mockRejectedValue(new AwsControlError('aws_failed', 502))
+    await renderDrive('drive')
+
+    const file = new File(['x'], 'doomed.md', { type: 'text/markdown' })
+    fireEvent.drop(screen.getByTestId('drive-section'), {
+      dataTransfer: dt({ types: ['Files'], files: [file] as unknown as FileList }),
+    })
+    const strip = await screen.findByTestId('drive-upload-error')
+    expect(strip.textContent).toContain('doomed.md')
+  })
+})
+
+/**
+ * Every failure this app can show renders through the shared error notice, and
+ * every notice offers the agent hand-off with the REAL failure attached — not
+ * the localised sentence the reader saw. The cases below are the ones that used
+ * to render nothing at all; the migrated ones keep their test ids and are
+ * covered by the assertions above.
+ */
+describe('DrivePage sections: error surfaces reach the agent', () => {
+  /** An `AwsControlError` exactly as `request` would build it: code + journaled report. */
+  function failure(code: string, status: number, endpoint: string, body: string): AwsControlError {
+    const report = recordError({ source: 'api', message: body, status, code, endpoint, detail: body })
+    return new AwsControlError(code, status, report)
+  }
+
+  const navigated: string[] = []
+  beforeEach(() => {
+    __resetErrorJournalForTests()
+    __resetNavSeamForTests()
+    navigated.length = 0
+    sessionStorage.clear()
+    installSoftNavigate((to) => { navigated.push(to) })
+    stubDrivePresent()
+  })
+
+  it('a failed Files listing is a notice with Retry, not an empty folder', async () => {
+    vi.mocked(awsControlApi.driveList)
+      .mockRejectedValueOnce(new AwsControlError('aws_call_failed', 502))
+      .mockResolvedValue({ files: [], folders: [] })
+    await renderDrive('drive')
+
+    const notice = await screen.findByTestId('drive-list-error')
+    expect(notice).toHaveTextContent(i18nT('apps.awsControl.console.files_list_failed'))
+    expect(notice).toHaveAttribute('role', 'alert')
+    // The empty state must NOT have claimed the folder is empty.
+    expect(screen.queryByTestId('drive-empty')).toBeNull()
+
+    fireEvent.click(screen.getByTestId('drive-list-error-retry'))
+    expect(await screen.findByTestId('drive-empty')).toBeTruthy()
+    expect(awsControlApi.driveList).toHaveBeenCalledTimes(2)
+  })
+
+  it('the hand-off carries the endpoint, status and code — not only the sentence on screen', async () => {
+    vi.mocked(awsControlApi.driveList).mockRejectedValue(
+      failure('aws_call_failed', 502, '/api/apps/aws-control/drive/111122223333/list', 'AccessDenied: s3:ListBucket'),
+    )
+    await renderDrive('drive')
+
+    const notice = await screen.findByTestId('drive-list-error')
+    fireEvent.click(within(notice).getByRole('button', { name: /ask the agent/i }))
+
+    expect(navigated).toEqual(['/chat'])
+    const staged = consumeChatHandoff() ?? ''
+    expect(staged).toContain('/api/apps/aws-control/drive/111122223333/list')
+    expect(staged).toContain('HTTP 502')
+    expect(staged).toContain('aws_call_failed')
+    expect(staged).toContain('AccessDenied: s3:ListBucket')
+  })
+
+  it('a refused share link is said in the dialog instead of re-enabling the button silently', async () => {
+    vi.mocked(awsControlApi.driveList).mockResolvedValue({
+      files: [{ key: 'report.pdf', size: 2048, modified: '2026-08-20T00:00:00Z' }],
+      folders: [],
+    })
+    vi.mocked(awsControlApi.driveShare).mockRejectedValue(new AwsControlError('publish_denied', 403))
+    await renderDrive('drive')
+
+    fireEvent.keyDown(await screen.findByTestId('drive-more'), { key: 'Enter' })
+    fireEvent.click(await screen.findByTestId('drive-share'))
+    fireEvent.change(await screen.findByTestId('share-note'), { target: { value: 'for the Q3 review' } })
+    fireEvent.click(await screen.findByTestId('share-create'))
+
+    const notice = await screen.findByTestId('share-error')
+    expect(notice).toHaveTextContent(i18nT('apps.awsControl.console.share_failed'))
+    // No hand-off here: the note field still holds the typed text, and the
+    // hand-off would navigate away from it. The draft survives the refusal.
+    expect(within(notice).queryByRole('button', { name: /ask the agent/i })).toBeNull()
+    expect(screen.getByTestId('share-note')).toHaveValue('for the Q3 review')
+    // Still no result: nothing was shared.
+    expect(screen.queryByTestId('share-result')).toBeNull()
+  })
+
+  it('a failed backup-status read and a refused nightly toggle each get their own line', async () => {
+    vi.mocked(awsControlApi.backup)
+      .mockRejectedValueOnce(new AwsControlError('http_500', 500))
+      .mockResolvedValue(emptyBackup)
+    await renderDrive('backup')
+    const notice = await screen.findByTestId('backup-status-error')
+    expect(notice).toHaveTextContent(i18nT('apps.awsControl.console.backup_status_failed'))
+    // No rows were invented for a status we do not have.
+    expect(screen.queryByTestId('backup-row-snapshot')).toBeNull()
+
+    // A read the reader can re-issue offers Retry, and Retry re-reads.
+    fireEvent.click(screen.getByTestId('backup-status-error-retry'))
+    expect(await screen.findByTestId('backup-row-snapshot')).toBeTruthy()
+    expect(screen.queryByTestId('backup-status-error')).toBeNull()
+  })
+
+  it('a refused nightly toggle says so under the toggle it failed to move', async () => {
+    vi.mocked(awsControlApi.backup).mockResolvedValue(emptyBackup)
+    vi.mocked(awsControlApi.backupNightly).mockRejectedValue(new AwsControlError('restricted_session', 403))
+    await renderDrive('backup')
+
+    const toggle = within(await screen.findByTestId('backup-nightly')).getByRole('switch')
+    fireEvent.click(toggle)
+    const notice = await screen.findByTestId('backup-nightly-error')
+    expect(notice).toHaveTextContent(i18nT('apps.awsControl.console.backup_nightly_failed'))
+    // Adjacent to the row it explains: the notice is the nightly row's next sibling.
+    expect(screen.getByTestId('backup-nightly').nextElementSibling).toContainElement(notice)
+  })
+
+  it('a rejected folder name is a notice WITHOUT the hand-off — nothing reached AWS', async () => {
+    vi.mocked(awsControlApi.driveList).mockResolvedValue({ files: [], folders: [] })
+    await renderDrive('drive')
+
+    fireEvent.click(await screen.findByTestId('drive-folder-toggle'))
+    fireEvent.change(await screen.findByTestId('drive-folder-name'), { target: { value: 'bad/name' } })
+    fireEvent.click(screen.getByTestId('drive-folder-create'))
+
+    const notice = await screen.findByTestId('drive-folder-error')
+    expect(notice).toHaveTextContent(i18nT('apps.awsControl.console.folder_bad_name'))
+    expect(within(notice).queryByRole('button', { name: /ask the agent/i })).toBeNull()
+    expect(awsControlApi.driveFolderCreate).not.toHaveBeenCalled()
+  })
+
+  it('a refused restore is reported next to the caveat that predicts it', async () => {
+    vi.mocked(awsControlApi.backup).mockResolvedValue({
+      nightly: true,
+      runs: {},
+      remote: {
+        snapshot: [{ key: 'backup/snapshot/2026-08-24.tar', size: 4096, modified: '2026-08-24T00:00:00Z' }],
+        sessions: [],
+      },
+    })
+    vi.mocked(awsControlApi.backupRestore).mockRejectedValue(new AwsControlError('aws_call_failed', 502))
+    await renderDrive('backup')
+
+    fireEvent.click(await screen.findByTestId('backup-remote-toggle'))
+    const archive = await screen.findByTestId('backup-archive')
+    fireEvent.click(within(archive).getByTestId('backup-restore'))
+
+    expect(await screen.findByTestId('backup-restore-error')).toHaveTextContent(
+      i18nT('apps.awsControl.console.backup_restore_failed'),
+    )
+    expect(screen.queryByTestId('backup-restored')).toBeNull()
+  })
+
+  it('the remote-archive reason the backend reports inside a 200 travels as the message', async () => {
+    vi.mocked(awsControlApi.backup).mockResolvedValue({
+      ...emptyBackup,
+      remote: null,
+      remoteError: 'AccessDenied: s3:ListBucket on backup/',
+    })
+    await renderDrive('backup')
+
+    const notice = await screen.findByTestId('backup-remote-error')
+    expect(notice).toHaveTextContent(i18nT('apps.awsControl.console.backup_remote_error'))
+    expect(notice).toHaveTextContent('AccessDenied: s3:ListBucket on backup/')
+    fireEvent.click(within(notice).getByRole('button', { name: /ask the agent/i }))
+    expect(consumeChatHandoff() ?? '').toContain('AccessDenied: s3:ListBucket on backup/')
+  })
+
+  it('a failed share-ledger read is a notice, never "no links"', async () => {
+    vi.mocked(awsControlApi.shares).mockRejectedValue(new AwsControlError('http_500', 500))
+    await renderDrive('access')
+
+    expect(await screen.findByTestId('access-list-error')).toHaveTextContent(
+      i18nT('apps.awsControl.console.access_list_failed'),
+    )
+    expect(screen.queryByTestId('access-empty')).toBeNull()
+  })
+
+  it('a refused Forget keeps the row and says why', async () => {
+    vi.mocked(awsControlApi.shares).mockResolvedValue({
+      shares: [{
+        id: 's1', account: ACCOUNT_ID, section: 'drive', key: 'report.pdf',
+        createdAt: '2026-08-24T05:00:00Z', expiresAt: '2099-01-01T00:00:00Z', note: '',
+      }],
+    })
+    vi.mocked(awsControlApi.shareForget).mockRejectedValue(new AwsControlError('http_500', 500))
+    await renderDrive('access')
+
+    fireEvent.click(await screen.findByTestId('access-forget'))
+    expect(await screen.findByTestId('access-forget-error')).toHaveTextContent(
+      i18nT('apps.awsControl.console.access_forget_failed'),
+    )
+    expect(screen.getByTestId('access-row')).toBeTruthy()
+  })
+
+  it('while the folder-name field is open, no Files notice offers the hand-off — the typed name survives', async () => {
+    // Every notice on the pane shares the screen with that one draft, so the
+    // gate is the disclosure, not the individual notice.
+    vi.mocked(awsControlApi.driveList).mockResolvedValue({
+      files: [{ key: 'report.pdf', size: 2048, modified: '2026-08-20T00:00:00Z' }],
+      folders: [],
+    })
+    vi.mocked(awsControlApi.driveDelete).mockRejectedValue(new AwsControlError('aws_call_failed', 502))
+    await renderDrive('drive')
+
+    fireEvent.click(await screen.findByTestId('drive-folder-toggle'))
+    fireEvent.change(await screen.findByTestId('drive-folder-name'), { target: { value: 'quarterly' } })
+
+    fireEvent.keyDown(await screen.findByTestId('drive-more'), { key: 'Enter' })
+    fireEvent.click(await screen.findByTestId('drive-delete'))
+    fireEvent.click(await screen.findByTestId('drive-delete-confirm-action'))
+
+    const notice = await screen.findByTestId('drive-delete-error')
+    expect(within(notice).queryByRole('button', { name: /ask the agent/i })).toBeNull()
+    expect(screen.getByTestId('drive-folder-name')).toHaveValue('quarterly')
   })
 })

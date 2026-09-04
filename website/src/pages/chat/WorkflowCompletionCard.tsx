@@ -70,11 +70,19 @@ const WorkflowCompletionCard = memo(function WorkflowCompletionCard({
   message,
   onFileOpen,
   onFolderOpen,
+  onSessionOpen,
+  sessions,
+  activeSession,
   disclosureKey,
 }: {
   message: ChatMessage
   onFileOpen?: (path: string, opts?: { line?: number; endLine?: number }) => void
   onFolderOpen?: (path: string) => void
+  /** Session switching for a `/chat?sid=` link in the result body, same triple
+   *  the assistant row passes. Omitted by hosts with no slot roster. */
+  onSessionOpen?: (key: string) => void
+  sessions?: ReadonlyMap<string, string>
+  activeSession?: string
   disclosureKey?: string
 }) {
   useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
@@ -163,9 +171,10 @@ const WorkflowCompletionCard = memo(function WorkflowCompletionCard({
           data-testid="workflow-completion-body"
           role="region"
           aria-labelledby={headlineId}
+          // eslint-disable-next-line jsx-a11y/no-noninteractive-tabindex -- WCAG 2.1.1: this max-h scroller's only descendant is rendered markdown with no guaranteed focusable node, so removing tabIndex makes an overflowing workflow result impossible to scroll by keyboard; role=region + aria-labelledby keep it announced as a named landmark, not a control
           tabIndex={0}
         >
-          <MarkdownRenderer content={body} onFileOpen={onFileOpen} onFolderOpen={onFolderOpen} />
+          <MarkdownRenderer content={body} onFileOpen={onFileOpen} onFolderOpen={onFolderOpen} onSessionOpen={onSessionOpen} sessions={sessions} activeSession={activeSession} />
         </div>
       )}
     </div>

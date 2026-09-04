@@ -199,9 +199,10 @@ def parse(line: str) -> Parsed | None:
     """Parse one log line. Returns ``None`` only for non-JSON / non-object input.
 
     Guarantees for well-formed envelopes: never raises. A ``kind`` this build
-    does not know — or a known kind whose required fields are absent — yields
-    a :class:`RawEvent` carrying the payload verbatim. Unknown fields inside
-    ``data`` for a known kind are ignored (additive evolution).
+    does not know — or a known kind whose payload violates a field's declared
+    type, or leaves a required field absent — yields a :class:`RawEvent`
+    carrying the payload verbatim. Unknown fields inside ``data`` for a known
+    kind are ignored (additive evolution).
     """
     try:
         rec = json.loads(line)
@@ -236,21 +237,22 @@ def parse(line: str) -> Parsed | None:
         return None
     data: dict[str, Any] = data_val
     cls = REGISTRY.get(kind)
-    event: Event
+    typed: Event | None = None
     if cls is not None:
         allowed = {f.name for f in dc_fields(cls)} - _BASE_FIELDS
         kwargs = {k: val for k, val in data.items() if k in allowed}
         # A retained value that violates the field's declared type must not
         # reach consumers as a typed event — that would make the dataclass
         # schema a lie. Such lines degrade to RawEvent like unknown kinds.
-        if not _payload_matches(cls, kwargs):
-            event = RawEvent(key=key, ts_ms=ts_ms, kind=kind, payload=data)
-        else:
+        if _payload_matches(cls, kwargs):
             try:
-                event = cls(key=key, ts_ms=ts_ms, **kwargs)
+                typed = cls(key=key, ts_ms=ts_ms, **kwargs)
             except TypeError:
-                # Required typed field missing — fall back rather than fail.
-                event = RawEvent(key=key, ts_ms=ts_ms, kind=kind, payload=data)
-    else:
-        event = RawEvent(key=key, ts_ms=ts_ms, kind=kind, payload=data)
+                # Required typed field missing — leave ``typed`` at ``None`` so
+                # the fallback below applies, rather than failing the parse.
+                pass
+    # One fallback for all three degrade paths: unknown kind, a payload whose
+    # value violates the field's declared type, and a payload missing a
+    # required typed field.
+    event = typed if typed is not None else RawEvent(key=key, ts_ms=ts_ms, kind=kind, payload=data)
     return Parsed(event=event, kind=kind, src=src, v=v)

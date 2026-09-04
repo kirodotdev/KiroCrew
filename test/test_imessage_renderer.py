@@ -387,3 +387,74 @@ class TestFlattenedCredentialIsRedacted:
         renderer = _renderer(client)
         await renderer.on_text_chunk("Deployed **build 42** to staging.")
         assert renderer.delivery_text() == "Deployed build 42 to staging."
+
+
+class TestRedactionWarning:
+    """When redaction rewrites the delivered answer, the reader must be told.
+
+    A sent iMessage cannot be edited, so the notice is an ADDITIONAL follow-up
+    message sent after the answer chunks. These cover this renderer's delivery
+    behaviour; the shared notice wording is pinned in
+    ``test_credential_redaction_notice.py``.
+    """
+
+    _SECRET_URI = "postgresql://user:SuperSecret123@db.example.com:5432/prod"
+
+    @pytest.mark.asyncio
+    async def test_redacted_answer_appends_a_warning_message(self) -> None:
+        client = FakeClient()
+        renderer = _renderer(client)
+        await renderer.on_text_chunk(f"Run: psql {self._SECRET_URI}")
+        await renderer.on_done()
+
+        # The answer shipped and an extra warning message followed it.
+        assert len(client.sent) >= 2
+        answer = "".join(client.sent[:-1])
+        warning = client.sent[-1]
+        # The credential never reaches the wire, in the answer or the warning.
+        assert "SuperSecret123" not in answer
+        assert "SuperSecret123" not in warning
+        assert "[REDACTED: credential]" in answer
+        # The warning names the alteration and the paste hazard, no secret bytes.
+        assert "Security notice" in warning
+        assert "paste it as-is" in warning
+
+    @pytest.mark.asyncio
+    async def test_clean_answer_sends_no_warning(self) -> None:
+        client = FakeClient()
+        renderer = _renderer(client)
+        await renderer.on_text_chunk("All green, deploy finished.")
+        await renderer.on_done()
+
+        assert client.sent == ["All green, deploy finished."]
+        assert not any("Security notice" in m for m in client.sent)
+
+    @pytest.mark.asyncio
+    async def test_warning_never_contains_the_secret(self) -> None:
+        client = FakeClient()
+        renderer = _renderer(client)
+        await renderer.on_text_chunk(f"connect with {self._SECRET_URI}")
+        await renderer.on_done()
+
+        for message in client.sent:
+            assert "SuperSecret123" not in message
+
+    @pytest.mark.asyncio
+    async def test_warning_send_failure_does_not_fail_a_delivered_turn(self) -> None:
+        # The answer is out; a failure to deliver the follow-up notice must be
+        # best-effort and must NOT re-raise into a failed turn.
+        client = FakeClient()
+        sent: list[str] = []
+
+        async def send_then_fail_on_warning(to: str, text: str) -> str:
+            sent.append(text)
+            if "Security notice" in text:
+                raise RpcTransportError("bridge exited before the notice")
+            return f"G-{len(sent)}"
+
+        client.send = send_then_fail_on_warning  # type: ignore[method-assign]
+        renderer = _renderer(client)
+        await renderer.on_text_chunk(f"Run: psql {self._SECRET_URI}")
+        await renderer.on_done()  # must not raise
+        # The answer was delivered and the warning was attempted.
+        assert any("Security notice" in m for m in sent)

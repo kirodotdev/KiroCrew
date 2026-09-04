@@ -11,18 +11,22 @@ Every test patches ``sel`` so nothing is written to the real security event log.
 
 from __future__ import annotations
 
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
+from unittest.mock import AsyncMock
 
 import pytest
 
 from kiro_crew import autonudge_authz
+from kiro_crew.autonudge import MonitorUpdateConflict
 from kiro_crew.autonudge_authz import (
     MAX_RUNTIME_SECS_CEILING,
     authorize_and_add_nudge,
     authorize_and_update_nudge,
 )
+from kiro_crew.monitoring.models import MAX_MONITOR_WAKE_INSTRUCTIONS_CHARS, MonitorState
 
 pytestmark = pytest.mark.asyncio
 
@@ -42,6 +46,9 @@ class RecordingSvc:
         self._update_error = update_error
         self.added: list[dict] = []
         self.updated: list[dict] = []
+
+    def get_by_slot(self, slot_key: str) -> Any:
+        return self._loop
 
     async def add(self, **kw: Any) -> Any:
         if self._add_error is not None:
@@ -169,6 +176,72 @@ async def test_add_requires_both_slot_key_and_message(audits: list[dict]) -> Non
     )
     assert loop is None and status == 400 and "required" in error
     assert svc.added == []
+
+
+@pytest.mark.parametrize("mode", ["crew", "member"])
+async def test_add_rejects_dashboard_modes_without_direct_turn_ingress(
+    audits: list[dict], mode: str
+) -> None:
+    svc = RecordingSvc()
+    slot = SimpleNamespace(workspace="default", mode=mode, memory_mode="persistent")
+
+    loop, error, status = await authorize_and_add_nudge(
+        svc=svc,
+        state=_state(slots={"chat-1-1": slot}),
+        slot_key="chat-1-1",
+        message="watch",
+        source="dashboard",
+    )
+
+    assert loop is None and status == 409
+    assert f"{mode}-mode" in error
+    assert svc.added == []
+
+
+@pytest.mark.parametrize("memory_mode", ["incognito", "temporary"])
+async def test_add_rejects_restricted_dashboard_sessions(
+    audits: list[dict], memory_mode: str
+) -> None:
+    svc = RecordingSvc()
+    slot = SimpleNamespace(workspace="default", mode="", memory_mode=memory_mode)
+
+    loop, error, status = await authorize_and_add_nudge(
+        svc=svc,
+        state=_state(slots={"chat-1-1": slot}),
+        slot_key="chat-1-1",
+        message="watch",
+        source="dashboard",
+    )
+
+    assert loop is None and status == 403
+    assert "incognito and temporary" in error
+    assert svc.added == []
+
+
+async def test_dashboard_admission_rechecks_mode_and_memory_boundary(
+    audits: list[dict], tmp_path: Path
+) -> None:
+    svc = RecordingSvc()
+    slot = SimpleNamespace(workspace="default", mode="", memory_mode="persistent")
+    state = _state(slots={"chat-1-1": slot})
+
+    loop, error, status = await authorize_and_add_nudge(
+        svc=svc,
+        state=state,
+        slot_key="chat-1-1",
+        message="watch",
+        stop_sentinel_path=str(tmp_path / "stop"),
+        source="dashboard",
+    )
+
+    assert loop is not None and error is None and status == 200
+    admission_check = svc.added[0]["admission_check"]
+    assert admission_check()
+    slot.mode = "crew"
+    assert not admission_check()
+    slot.mode = ""
+    slot.memory_mode = "temporary"
+    assert not admission_check()
 
 
 async def test_add_rejects_a_non_integer_runtime_budget(audits: list[dict]) -> None:
@@ -463,6 +536,313 @@ async def test_add_audits_then_reraises_a_service_failure(audits: list[dict]) ->
     outcomes = [a["outcome"] for a in audits]
     assert outcomes == ["invoked", "error"]  # audited BEFORE the attempt, then the failure
     assert "svc.add failed: OSError" in audits[-1]["error"]
+
+
+async def test_add_monitor_returns_conflict_when_a_wake_is_inflight(
+    audits: list[dict],
+) -> None:
+    class ConflictingSvc:
+        async def add_monitor(self, **kw: Any) -> Any:
+            raise MonitorUpdateConflict("existing monitor wake is in flight")
+
+    loop, error, status = await authorize_and_add_nudge(
+        svc=ConflictingSvc(),
+        state=_state(slots={"chat-1-1": SimpleNamespace(workspace="default")}),
+        slot_key="chat-1-1",
+        message="watch",
+        source="dashboard",
+        monitor=MonitorState(
+            kind="github_pull_request",
+            target="owner/repo#456",
+            objective="review_ready",
+            created_ts=1_000.0,
+        ),
+    )
+
+    assert loop is None and status == 409
+    assert error == "existing monitor wake is in flight"
+    assert [event["outcome"] for event in audits] == ["invoked", "denied"]
+
+
+async def test_update_monitor_conflict_records_a_denied_audit(
+    audits: list[dict],
+) -> None:
+    class ConflictingSvc:
+        async def update_monitor(self, *_args: Any, **_kwargs: Any) -> Any:
+            raise MonitorUpdateConflict("existing monitor wake is in flight")
+
+    loop, error, status = await autonudge_authz.authorize_and_update_monitor(
+        svc=ConflictingSvc(),
+        state=_state(slots={"chat-1-1": SimpleNamespace(mode="", memory_mode="persistent")}),
+        loop_id="monitor-1",
+        session_key="chat-1-1",
+        patch={"target": "owner/repo#456"},
+        source="dashboard",
+    )
+
+    assert loop is None and status == 409
+    assert error == "existing monitor wake is in flight"
+    assert [event["outcome"] for event in audits] == ["invoked", "denied"]
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "status"),
+    [("mode", "crew", 409), ("memory_mode", "temporary", 403)],
+)
+async def test_update_monitor_rechecks_current_dashboard_admission(
+    audits: list[dict], field: str, value: str, status: int
+) -> None:
+    svc = SimpleNamespace(update_monitor=AsyncMock(return_value=SimpleNamespace(id="monitor-1")))
+    slot = SimpleNamespace(mode="", memory_mode="persistent")
+    setattr(slot, field, value)
+
+    loop, error, actual_status = await autonudge_authz.authorize_and_update_monitor(
+        svc=svc,
+        state=_state(slots={"chat-1-1": slot}),
+        loop_id="monitor-1",
+        session_key="chat-1-1",
+        patch={"cadence_secs": 300},
+        source="dashboard",
+    )
+
+    assert loop is None and actual_status == status and error
+    svc.update_monitor.assert_not_awaited()
+    assert [event["outcome"] for event in audits] == ["invoked", "denied"]
+
+
+async def test_update_monitor_rejects_redaction_expansion_over_limit(
+    audits: list[dict], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class RecordingMonitorSvc:
+        def __init__(self) -> None:
+            self.patches: list[dict[str, Any]] = []
+
+        async def update_monitor(self, _loop_id: str, **patch: Any) -> Any:
+            self.patches.append(patch)
+            return SimpleNamespace(id="monitor-1")
+
+    svc = RecordingMonitorSvc()
+    expanded = "x" * (MAX_MONITOR_WAKE_INSTRUCTIONS_CHARS + 1)
+    monkeypatch.setattr(
+        autonudge_authz,
+        "redact_exfiltration_urls",
+        lambda _value: (expanded, ["expanded"]),
+    )
+
+    loop, error, status = await autonudge_authz.authorize_and_update_monitor(
+        svc=svc,
+        state=_state(slots={"chat-1-1": SimpleNamespace(mode="", memory_mode="persistent")}),
+        loop_id="monitor-1",
+        session_key="chat-1-1",
+        patch={"wake_instructions": "short"},
+        source="dashboard",
+    )
+
+    assert loop is None and status == 400
+    assert error == (
+        "wake_instructions too long after redaction "
+        f"(max {MAX_MONITOR_WAKE_INSTRUCTIONS_CHARS} chars)"
+    )
+    assert svc.patches == []
+
+
+async def test_add_monitor_rejects_redaction_expansion_over_limit(
+    audits: list[dict], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class RecordingMonitorSvc:
+        def __init__(self) -> None:
+            self.added: list[dict[str, Any]] = []
+
+        def get_by_slot(self, _slot_key: str) -> None:
+            return None
+
+        async def add_monitor(self, **values: Any) -> Any:
+            self.added.append(values)
+            return SimpleNamespace(id="monitor-1")
+
+    svc = RecordingMonitorSvc()
+    expanded = "x" * (MAX_MONITOR_WAKE_INSTRUCTIONS_CHARS + 1)
+    monkeypatch.setattr(
+        autonudge_authz,
+        "redact_exfiltration_urls",
+        lambda _value: (expanded, ["expanded"]),
+    )
+
+    loop, error, status = await authorize_and_add_nudge(
+        svc=svc,
+        state=_state(slots={"chat-1-1": SimpleNamespace(workspace="default")}),
+        slot_key="chat-1-1",
+        message="watch",
+        source="dashboard",
+        monitor=MonitorState(
+            kind="github_pull_request",
+            target="owner/repo#456",
+            objective="review_ready",
+            created_ts=1_000.0,
+            wake_instructions="short",
+        ),
+    )
+
+    assert loop is None and status == 400
+    assert error == (
+        "wake_instructions too long after redaction "
+        f"(max {MAX_MONITOR_WAKE_INSTRUCTIONS_CHARS} chars)"
+    )
+    assert svc.added == []
+
+
+async def test_add_monitor_conflict_preserves_existing_legacy_stop_sentinel(
+    audits: list[dict], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A rejected structured replacement cannot disable the legacy loop's kill switch."""
+    sentinel = tmp_path / "stop-chat-1-1"
+    sentinel.write_text("stop", encoding="utf-8")
+    monkeypatch.setattr(
+        autonudge_authz,
+        "resolve_stop_sentinel",
+        lambda key, *args, **kwargs: str(sentinel),
+    )
+
+    class ConflictingSvc:
+        async def add_monitor(self, **kw: Any) -> Any:
+            raise MonitorUpdateConflict("existing loop is not a structured monitor")
+
+    loop, error, status = await authorize_and_add_nudge(
+        svc=ConflictingSvc(),
+        state=_state(slots={"chat-1-1": SimpleNamespace(workspace="default")}),
+        slot_key="chat-1-1",
+        message="watch",
+        source="dashboard",
+        monitor=MonitorState(
+            kind="github_pull_request",
+            target="owner/repo#456",
+            objective="review_ready",
+            created_ts=1_000.0,
+        ),
+        replace_existing=False,
+    )
+
+    assert loop is None and status == 409
+    assert error == "existing loop is not a structured monitor"
+    assert sentinel.read_text(encoding="utf-8") == "stop"
+
+
+async def test_add_monitor_forwards_conditional_restart_identity(
+    audits: list[dict],
+) -> None:
+    captured: dict[str, Any] = {}
+    expected = SimpleNamespace(id="new-monitor", slot_key="chat-1-1")
+
+    class RecordingMonitorSvc:
+        async def add_monitor(self, **kw: Any) -> Any:
+            captured.update(kw)
+            return expected
+
+    loop, error, status = await authorize_and_add_nudge(
+        svc=RecordingMonitorSvc(),
+        state=_state(slots={"chat-1-1": SimpleNamespace(workspace="default")}),
+        slot_key="chat-1-1",
+        message="watch",
+        source="dashboard",
+        monitor=MonitorState(
+            kind="github_pull_request",
+            target="owner/repo#456",
+            objective="review_ready",
+            created_ts=1_000.0,
+        ),
+        expected_existing_monitor_id="old-monitor",
+        expected_existing_config_generation=4,
+    )
+
+    assert loop is expected and error is None and status == 200
+    assert captured["expected_existing_monitor_id"] == "old-monitor"
+    assert captured["expected_existing_config_generation"] == 4
+
+
+async def test_legacy_add_cannot_replace_a_structured_wake_in_flight(
+    audits: list[dict],
+) -> None:
+    monitor = MonitorState(
+        kind="github_pull_request",
+        target="https://github.com/acme/widgets/pull/7",
+        objective="review_ready",
+        created_ts=1_000.0,
+        wake_in_flight=True,
+    )
+    existing = SimpleNamespace(id="mon-1", monitor=monitor)
+    svc = RecordingSvc(loop=existing)
+
+    loop, error, status = await authorize_and_add_nudge(
+        svc=svc,
+        state=_state(slots={"chat-1-1": SimpleNamespace(workspace="default")}),
+        slot_key="chat-1-1",
+        message="legacy replacement",
+        source="dashboard",
+    )
+
+    assert loop is None and status == 409
+    assert error == "existing monitor cannot be replaced while a wake is in flight"
+    assert svc.added == []
+    assert svc.get_by_slot("chat-1-1") is existing
+
+
+async def test_legacy_create_only_reaches_the_service_lock(audits: list[dict]) -> None:
+    svc = RecordingSvc()
+
+    loop, error, status = await authorize_and_add_nudge(
+        svc=svc,
+        state=_state(slots={"chat-1-1": SimpleNamespace(workspace="default")}),
+        slot_key="chat-1-1",
+        message="legacy fallback",
+        source="dashboard",
+        replace_existing=False,
+    )
+
+    assert loop is not None and error is None and status == 200
+    assert svc.added[0]["replace_existing"] is False
+
+
+@pytest.mark.parametrize("operation", ["update", "stop"])
+async def test_monitor_audit_sink_is_resolved_off_the_event_loop(
+    monkeypatch: pytest.MonkeyPatch, operation: str
+) -> None:
+    loop_thread = threading.get_ident()
+    factory_threads: list[int] = []
+    sink_threads: list[int] = []
+    sink = SimpleNamespace(
+        log_tool_invocation=lambda **kw: sink_threads.append(threading.get_ident())
+    )
+
+    def _sel() -> Any:
+        factory_threads.append(threading.get_ident())
+        return sink
+
+    monkeypatch.setattr(autonudge_authz, "sel", _sel)
+    svc = SimpleNamespace(
+        update_monitor=lambda *args, **kwargs: None,
+        stop_monitor=lambda *args, **kwargs: None,
+    )
+    if operation == "update":
+        svc.update_monitor = AsyncMock(return_value=None)
+        await autonudge_authz.authorize_and_update_monitor(
+            svc=svc,
+            state=_state(slots={"chat-1-1": SimpleNamespace(mode="", memory_mode="persistent")}),
+            loop_id="mon-1",
+            session_key="chat-1-1",
+            patch={"cadence_secs": 300},
+            source="dashboard",
+        )
+    else:
+        svc.stop_monitor = AsyncMock(return_value=None)
+        await autonudge_authz.authorize_and_stop_monitor(
+            svc=svc,
+            loop_id="mon-1",
+            session_key="chat-1-1",
+            source="dashboard",
+        )
+
+    assert factory_threads and factory_threads[0] != loop_thread
+    assert sink_threads and sink_threads[0] != loop_thread
 
 
 # ── update(): the remaining payload-shape denials ──

@@ -694,8 +694,19 @@ def run(
                     "watch is blind until this is fixed; it will re-alert "
                     "every few hours while the failure persists."
                 )
-            raise Skip(f"probe failed ({errors} consecutive; blind alert deduped)")
-        raise Skip(f"probe failed ({errors} consecutive)")
+            blind = Skip(f"probe failed ({errors} consecutive; blind alert deduped)")
+            blind.blind = True  # type: ignore[attr-defined]
+            raise blind
+        # BLIND, not unchanged. A cron driver treats every Skip the same -- sleep
+        # until the next tick -- so this distinction never had to exist. A driver
+        # that decides whether to SPEND on the strength of a Skip does need it: a
+        # failed fetch means the subject was not observed at all, and reading that
+        # as "nothing changed" is how an expired credential or a network outage
+        # turns into silence. The flag rides the exception so no caller has to
+        # match on the message text.
+        failed = Skip(f"probe failed ({errors} consecutive)")
+        failed.blind = True  # type: ignore[attr-defined]
+        raise failed
 
     if state.get("errors"):
         state["errors"] = 0
@@ -780,7 +791,15 @@ def run(
     terminal = [o for o in tick.observations if o.severity is Severity.TERMINAL]
     if terminal:
         persist()
-        raise Done(with_warning(body([o.brief for o in terminal if o.brief])))
+        done = Done(with_warning(body([o.brief for o in terminal if o.brief])))
+        # The KEYS travel with the exception, because "the watch ended" and "it
+        # ended well" are different facts and only the probe knows which. A
+        # driver that records a durable outcome has to tell a merged subject from
+        # one closed without merging, and the alternative -- matching on the
+        # delivered human text -- would break the first time that wording is
+        # edited. Additive: the cron driver ignores it.
+        done.keys = tuple(o.key for o in terminal)  # type: ignore[attr-defined]
+        raise done
 
     for obs in tick.observations:
         if obs.severity is Severity.NMI and should_alert(_dedupe_key(obs)):
@@ -983,3 +1002,126 @@ def run(
         f"coalescing window open {int(oldest)}s/{int(coalesce_secs)}s, "
         f"{len(window)} anomaly(ies) coalescing, {tick.pending} pending"
     )
+
+
+# --------------------------------------------------------------- driver front door
+
+
+class Outcome(Enum):
+    """What one tick tells a non-cron driver to do."""
+
+    #: Nothing to service. The driver must not spend a model turn.
+    QUIET = "quiet"
+    #: Service this now; :attr:`Verdict.body` is the wake text.
+    WAKE = "wake"
+    #: The subject is finished. Stop watching it.
+    TERMINAL = "terminal"
+    #: The kernel could not reach a verdict. The driver keeps whatever
+    #: schedule it already had, so behaviour is unchanged rather than silent.
+    FALLBACK = "fallback"
+
+
+@dataclass(frozen=True)
+class Verdict:
+    """One tick's instruction to a driver, as a value rather than an exception."""
+
+    outcome: Outcome
+    #: Delivered text for WAKE and TERMINAL; a log-only reason otherwise.
+    body: str = ""
+    #: For TERMINAL only: the probe's own keys for why the watch ended, so a
+    #: driver can record an outcome without parsing the delivered prose. Empty
+    #: whenever the kernel could not attribute the end to a probe observation --
+    #: an unusable target, say -- which a driver must treat as "ended, not
+    #: necessarily well" rather than assuming success.
+    keys: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class _DriverJob:
+    id: str
+
+
+@dataclass(frozen=True)
+class _DriverCtx:
+    """The whole context the kernel needs, for a driver that has no cron job.
+
+    The kernel reads exactly two things off a ctx -- ``job.id`` for the state
+    identity and (through the probe) ``message`` for configuration -- both via
+    ``getattr`` with a default, and :func:`run` types its parameter as a bare
+    ``object``. So the kernel was never cron-specific; this makes that a named,
+    tested entry point instead of a property a caller has to rediscover.
+    """
+
+    job: _DriverJob
+    message: str
+
+
+def poll(
+    identity: str,
+    message: str,
+    probe: Probe,
+) -> Verdict:
+    """Run ONE tick and return its verdict instead of raising it.
+
+    This is the entry point for a driver that is not a script cron -- an
+    in-process scheduler that owns its own wake mechanism and only needs the
+    kernel's *decision*. :func:`run` stays exactly as it is: its raise-based
+    contract is what the cron runner consumes, and rewriting it would churn the
+    one shipped probe for no gain.
+
+    ``identity`` replaces the cron job id in the state digest, so two drivers
+    watching one subject keep independent dedupe memories. Pass something stable
+    for the life of the watch (a loop id), never something regenerated per tick
+    -- a fresh identity is a fresh memory, which re-wakes on signals already
+    serviced.
+
+    ``message`` is the probe's configuration, in the same shape the probe already
+    parses off a cron message, so a probe needs no change to be driven here.
+
+    The kernel's bounds are deliberately NOT forwarded from here. A probe already
+    declares what it needs through :meth:`Probe.tuning`, no caller of this
+    function passes a bound, and a passthrough with no producer is a contract
+    nobody exercises -- the second driver would then build on a shape that was
+    never tested. Add the parameter when a driver needs it.
+
+    **Failure direction is deliberate.** Anything unexpected -- a probe bug, a
+    kernel contract break -- resolves to :attr:`Outcome.FALLBACK`, which tells
+    the driver to keep the schedule it already had. The alternative default,
+    QUIET, would convert a bug into silence: the driver would stop waking and
+    the work it was watching would stall with nothing to show why. A redundant
+    cycle costs tokens; a lost wake costs the task.
+    """
+    ctx = _DriverCtx(job=_DriverJob(id=str(identity or "")), message=str(message or ""))
+    try:
+        run(ctx, probe)  # type: ignore[arg-type]
+    except Skip as exc:
+        if getattr(exc, "blind", False):
+            # The subject was NOT observed -- the probe could not reach it. QUIET
+            # would assert "nothing changed", which is a claim this tick has no
+            # standing to make, and it is how an expired credential becomes an
+            # indefinitely silent watch. Failure resolves toward spending.
+            return Verdict(Outcome.FALLBACK, str(exc))
+        return Verdict(Outcome.QUIET, str(exc))
+    except Report as exc:
+        return Verdict(Outcome.WAKE, str(exc))
+    except Done as exc:
+        keys = getattr(exc, "keys", ())
+        return Verdict(
+            Outcome.TERMINAL,
+            str(exc),
+            tuple(str(k) for k in keys) if isinstance(keys, tuple) else (),
+        )
+    except Exception:
+        # A probe is documented as not raising for an expected failure (it
+        # returns Tick(fetch_ok=False) and lets the kernel own the backstop), so
+        # arriving here means a defect. Log it once per tick and degrade.
+        logger.warning(
+            "irq: poll(%s) raised; falling back to the driver's own schedule",
+            identity,
+            exc_info=True,
+        )
+        return Verdict(Outcome.FALLBACK, "probe raised")
+    # run() raises on every path; a plain return is a contract break, not a
+    # quiet tick. Degrade the same way rather than inventing a decision.
+    logger.warning("irq: poll(%s) returned without a verdict", identity)
+    return Verdict(Outcome.FALLBACK, "no verdict")

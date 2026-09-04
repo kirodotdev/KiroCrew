@@ -126,7 +126,6 @@ class TestTurnDriverTranslation:
         "stop_reason",
         [
             "",
-            "end_turn",
             "timeout",
             "stale_recover",
             "error: cancel unacked",
@@ -154,6 +153,128 @@ class TestTurnDriverTranslation:
         _run(p, r, monitor_completion=hook)
 
         assert completions == []
+
+    def test_real_end_turn_reports_monitor_success(self):
+        r = _RecordingRenderer()
+        p = _ScriptedProvider(
+            [
+                AcpEvent(
+                    kind=EVENT_COMPLETE,
+                    stop_reason="end_turn",
+                    usage=TurnUsage(input_tokens=20, output_tokens=5),
+                )
+            ]
+        )
+        completions: list[MonitorActionCompletion] = []
+
+        async def _capture(completion: MonitorActionCompletion) -> None:
+            completions.append(completion)
+
+        _run(p, r, monitor_completion=MonitorCompletionHook("monitor1", "failure-a", _capture))
+
+        assert len(completions) == 1
+        assert completions[0].disposition is MonitorActionDisposition.SUCCESS
+
+    def test_synthesized_end_turn_does_not_report_monitor_action(self):
+        r = _RecordingRenderer()
+        p = _ScriptedProvider(
+            [
+                AcpEvent(
+                    kind=EVENT_COMPLETE,
+                    stop_reason="end_turn",
+                    synthetic_completion=True,
+                    usage=TurnUsage(input_tokens=20, output_tokens=5),
+                )
+            ]
+        )
+        completions: list[MonitorActionCompletion] = []
+
+        async def _capture(completion: MonitorActionCompletion) -> None:
+            completions.append(completion)
+
+        _run(p, r, monitor_completion=MonitorCompletionHook("monitor1", "failure-a", _capture))
+
+        assert completions == []
+
+    def test_monitor_authorization_is_rechecked_before_provider_stream(self):
+        r = _RecordingRenderer()
+        p = _ScriptedProvider([AcpEvent(kind=EVENT_COMPLETE, stop_reason="end_turn")])
+        completions: list[MonitorActionCompletion] = []
+        authorizations: list[tuple[str, str]] = []
+
+        async def _capture(completion: MonitorActionCompletion) -> None:
+            completions.append(completion)
+
+        async def _authorize(monitor_id: str, fingerprint: str) -> bool:
+            authorizations.append((monitor_id, fingerprint))
+            return False
+
+        hook = MonitorCompletionHook(
+            "monitor1",
+            "failure-a",
+            _capture,
+            authorization_callback=_authorize,
+        )
+        out = _run(p, r, monitor_completion=hook)
+
+        assert out == ""
+        assert authorizations == [("monitor1", "failure-a")]
+        assert not hook.accepted
+        assert completions == []
+        assert r.events == []
+
+    def test_monitor_closing_gate_runs_before_acceptance_and_provider_stream(self):
+        r = _RecordingRenderer()
+        order: list[str] = []
+
+        class _OrderedProvider(_ScriptedProvider):
+            async def stream(self, message):
+                order.append("stream")
+                for event in self._events:
+                    yield event
+
+        p = _OrderedProvider([AcpEvent(kind=EVENT_COMPLETE, stop_reason="end_turn")])
+
+        async def _capture(_completion: MonitorActionCompletion) -> None:
+            return None
+
+        async def _authorize(_monitor_id: str, _fingerprint: str) -> bool:
+            order.append("authorize")
+            return True
+
+        hook = MonitorCompletionHook(
+            "monitor1",
+            "failure-a",
+            _capture,
+            authorization_callback=_authorize,
+        )
+
+        def _guard() -> None:
+            order.append("guard")
+            assert not hook.accepted
+
+        _run(p, r, monitor_completion=hook, closing_gate=_guard)
+
+        assert order == ["authorize", "guard", "stream"]
+        assert hook.accepted
+
+    def test_monitor_closing_gate_refusal_never_accepts_or_streams(self):
+        r = _RecordingRenderer()
+        p = _ScriptedProvider([AcpEvent(kind=EVENT_COMPLETE, stop_reason="end_turn")])
+
+        async def _capture(_completion: MonitorActionCompletion) -> None:
+            return None
+
+        hook = MonitorCompletionHook("monitor1", "failure-a", _capture)
+
+        def _guard() -> None:
+            raise RuntimeError("gateway closing")
+
+        with pytest.raises(RuntimeError, match="gateway closing"):
+            _run(p, r, monitor_completion=hook, closing_gate=_guard)
+
+        assert not hook.accepted
+        assert r.events == []
 
     def test_safe_complete_reports_monitor_action_before_renderer_finalization(self):
         class _CancellingDoneRenderer(_RecordingRenderer):

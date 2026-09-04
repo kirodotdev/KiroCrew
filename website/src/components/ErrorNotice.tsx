@@ -32,6 +32,7 @@ export default function ErrorNotice({
   variant = 'block',
   askAgent = false,
   className = '',
+  testId,
 }: {
   /** Human error text. Falsy renders nothing, so `<ErrorNotice message={err} />` needs no `&&` guard. */
   message?: string | null
@@ -65,12 +66,19 @@ export default function ErrorNotice({
    */
   askAgent?: boolean
   className?: string
+  /**
+   * `data-testid` for the root element. Several notices can share one surface
+   * (a page-level read failure above a row's own mutation failure), and a
+   * shared `role="alert"` makes a lookup ambiguous — a call site that migrates
+   * an existing `<p data-testid="…">` keeps its id here.
+   */
+  testId?: string
 }) {
   if (!message) return null
 
   if (variant === 'inline') {
     return (
-      <span role="alert" className={`inline-flex items-center gap-1.5 text-[12px] text-danger ${className}`}>
+      <span role="alert" className={`inline-flex items-center gap-1.5 text-[12px] text-danger ${className}`} data-testid={testId}>
         <AlertTriangle size={14} className="shrink-0" aria-hidden="true" />
         {title && <strong className="font-semibold">{title}</strong>}
         <span className="min-w-0" style={{ overflowWrap: 'anywhere' }}>{message}</span>
@@ -98,6 +106,7 @@ export default function ErrorNotice({
     <div
       role="alert"
       className={`rounded-lg border border-danger/40 bg-danger/10 px-3 py-2 flex items-start gap-2 text-[13px] text-danger ${className}`}
+      data-testid={testId}
     >
       <AlertTriangle size={14} className="mt-[2px] shrink-0" aria-hidden="true" />
       <div className="min-w-0 flex-1 whitespace-pre-wrap" style={{ overflowWrap: 'anywhere' }}>

@@ -84,36 +84,118 @@ security invariants:
 ## The harness
 
 The `pipeline-conductor` skill is the operating procedure: idempotent pickup, the work-order brief
-(one item / one worktree / one PR, six-word report protocol), the probe cycle and its action
-table, independent green verification, the intervention ladder, the adjudication and override
-protocol, the resource-posture table, the credit budget rules, steering-as-mode-change, and merge
-cleanup. Two subprocess-free scripts do the bookkeeping:
+(one item / one worktree / one PR, six-prefix report protocol), the probe cycle and its action
+table, independent green verification, the intervention ladder, outage recovery and loop liveness,
+the adjudication and override protocol, the admission table, the credit budget rules,
+steering-as-mode-change, and merge cleanup. The design puts the bookkeeping in three
+subprocess-free scripts:
 
-- `scripts/fleet_probe.py` — one call per cycle: tail-classifies every worker session, computes
-  idle age, flags error tails, scans for banned processes, reads host load. Handled signals live
-  in a state file the script owns. All paths are derived, never configurable: transcripts only
-  from this gateway's own session store (keys are validated stems; a candidate resolving outside
-  the store — a symlink — reads as missing), state only beside the config file.
+- `scripts/claim_preflight.py` — one deterministic verdict per candidate item, from five checks in
+  one invocation: open PRs (fork PRs included), merged PRs tested for having actually landed on the
+  default branch, prose self-claims and closure requests in the body and last comment (a closure
+  request counting only from the reporter or a repository insider, since closing an item is a write
+  driven by ingested text), the named symbol's presence on the default branch, and a
+  recency/authorship risk flag. The verdict is a pure function of the checks, so every branch is
+  unit-testable, and the exit codes are the interface: `CLAIM` / `SKIP` / `CLOSE` / `UNKNOWN`, where
+  `UNKNOWN` is never reported as `CLAIM`. Two of those checks are deliberately non-vetoing: symbol
+  absence downgrades to a high-risk claim unless the item is corroborated as bug-class, because a
+  feature request names the symbol it proposes to add, and `risk=high` routes the item out of the
+  batch to its own live recheck rather than merely annotating the line.
+- `scripts/fleet_probe.py` — one call per cycle: tail-classifies every worker session, emits the
+  tail's message index, computes idle age, flags error tails, distinguishes a terminal report from
+  an idle one, scans for banned processes scoped to the fleet's own worktrees, and reads host load
+  plus per-cycle delivery counters. Handled signals live in a state file the script owns. All paths
+  are derived, never configurable: transcripts only from this gateway's own session store (keys are
+  validated stems; a candidate resolving outside the store — a symlink — reads as missing), state
+  only beside the config file.
 - `scripts/credit_spend.py` — per-item credit rollup with budget verdicts `within` / `exhausted` /
   `truncated` (a bounded scan never claims `within`) / `unmetered` (absent metering is unknown,
   not zero).
 
+The design rule the three share: **a decision expressed as prose in the skill rots silently, and a
+decision computed by a script can be tested.** Each script exists because a predicate the skill
+used to state in prose was found to be answering one question and treating an empty answer as
+permission.
+
 Decisions worth naming, in the skill's own sections:
 
+- **Claim**: the preflight's verdict plus a four-way collision check (open PR, merged PR already on
+  the base, branch, worktree), then an atomic claim — lock label and assignee in ONE call, because
+  two calls leave a window another operator dispatches into. A batch preflight orders the queue; a
+  per-item live recheck immediately before the claim is what authorizes it. An item that is open,
+  claimed and already fixed is triage debt: the verdict is close-with-evidence, not dispatch.
 - **Verification**: a worker's GREEN is never trusted — check-runs collapsed per lane (newest run
   wins), head SHA pinned, reviewer verdicts read from job logs and marker comments.
+- **Progress vs liveness**: the probe reports an absolute per-session message counter, and an
+  unchanged counter across two probes is no progress whether or not a turn is open. It is the one
+  discriminator a self-deadlocked worker cannot fake, and it moves the next step from checking
+  liveness to checking effect (did the artifact appear, did the remote head move). Absolute rather
+  than window-relative on purpose: a window-relative index saturates once a session outgrows the
+  tail bound and then reads as precisely the frozen counter the field exists to detect. It is also
+  free, because the bundled probe's tail read slices a file it has already loaded whole — so
+  `tail_bytes` caps how much is PARSED, not how much is read, which is worth stating because the
+  name and the setting's own description both suggest otherwise.
 - **Intervention**: nudge → a read-only inspector subagent (enforced via `allowed_tools`) →
   ruling: sharpened re-dispatch, adjudicate, open-issue descope, or reclaim. Two sessions on one
-  item: decide ownership once.
+  item: decide ownership once. A terminal report is closed out, never nudged — a monitor loop is
+  only correct while something external can still change.
 - **Adjudication**: overrides only when every lane is settled, the finding is the sole red, the
   head SHA is pinned, the rationale is public, and the branch is push-frozen after. A base-owned
-  red is proven three ways and fixed once for the whole fleet.
-- **Governance**: posture ladder ample/tight/critical → dispatch / hold admission / stop the
-  expensive items; banned-operation response is stop + cooldown + directive re-injection, acting
-  only on fleet-owned processes.
+  red is proven three ways and fixed once for the whole fleet. When review rounds keep reopening in
+  one function span, the convergent ruling is subtraction — consecutive rounds in one place indicate
+  one unwritten contract, not N mistakes.
+- **Governance**: delivery capacity is the primary admission instrument (below); the load/memory
+  ladder ample/tight/critical is secondary; banned-operation response is stop + cooldown +
+  directive re-injection, acting only on processes whose cwd is inside the fleet's worktree set.
 - **Budgets**: a per-item credit allowance (default 100). Exhaustion triggers a burn review —
   progressing items get a recorded top-up, thrashing items get stopped, not refilled; past the
   top-up ceiling the decision escalates to the human with the burn history.
+
+## Admission is sized on delivery, not on load
+
+The obvious instrument for admission is the host's load average and free memory, and at fleet scale
+it is the wrong one: the skill's admission section carries the causal claim and the posture table.
+What belongs here is the design consequence. Because the saturating resource is invisible to the
+instruments an operator reaches for first, the fix is not a better threshold on load but a DIFFERENT
+counter, which is why the probe had to grow one: an admission rule can only be as good as the
+cheapest signal that actually correlates with the ceiling. Load and memory stay in the ladder as a
+secondary check, because a memory-starved host is a real condition too; they are simply not the
+ceiling the fleet hits first.
+
+The same reasoning caps the conductor's own forge calls. A dozen worker babysit loops and the
+conductor all poll one account, so the conductor bounds its own PR sweeps per cycle, staggers them,
+prefers REST over GraphQL and search, and runs the greens sweep only when the human is actually
+approving. Rate limit is a shared, invisible resource, and the conductor is the only participant in
+a position to see the aggregate.
+
+## Conductor-owned state: `conductor-status/v1`
+
+The session ledger records the work items. It does not record the conductor's own obligations, and
+those turn out to be the ones that go missing, for a structural reason rather than a careless one:
+the probe deliberately does not re-fire a signal already marked handled, and that suppression is
+what keeps a quiet cycle at one line of output. A worker waiting on an adjudication therefore goes
+silent BY DESIGN, and the debt the conductor owes it becomes invisible. The probe tracks the fleet;
+nothing tracked the conductor.
+
+`conductor-status/v1` is that store. The skill defines its fields — as a schema, so a rewrite cannot
+quietly drop one; this document carries only why the two load-bearing ones exist. **`open_rulings`**
+(`{worker, pr, question, asked_at}`) is reviewed every cycle independently of what the probe fired,
+and an entry clears when the ruling is DELIVERED rather than when it is decided, because the silence
+it covers is the probe working correctly. **`last_index`** holds the previous cycle's probe index, so
+the no-progress test is a comparison against a recorded value rather than something the agent has to
+remember across a compaction. The rest of the file is bookkeeping the human's "where are the other N"
+question is answered from, plus the conductor's own task list; where it restates per-item state the
+ledger already holds, the ledger is authoritative and the status file is a one-cycle cache.
+
+Merge reconciliation follows from the same principle. It runs every cycle and **unfiltered** — one
+`gh pr list --author <me> --state all` call, explicitly limited and listing merges since a
+timestamp — rather than on a schedule against a hand-maintained set of PR numbers, because
+filtering the reconcile to the PRs already tracked reproduces the original defect one level down: a
+merge of a fleet PR that never made the watchlist cannot be seen by construction. The explicit
+limit matters for the same reason the filter does: the default page is 30 and an over-long list is
+trimmed silently, so a full page has to be read as truncation rather than as an answer.
+`mergeable=UNKNOWN` fanning out across the open PRs stays useful as a secondary trigger meaning
+"the base moved", never as the detector.
 
 ## The template: PipelineSpec
 
@@ -144,8 +226,10 @@ invariant stays out of the template: the forge is the cross-operator lock (claim
 
 - **M0** — the agent and the harness: the generated `kirocrew-pipeline-conductor` spec (installer,
   filename constant, roster hiding, docs registry, installer tests mirroring the existing
-  conductor's) and the `pipeline-conductor` builtin skill with its two scripts, behavior pinned by
-  tests (probe classification, handled-set suppression, key containment, budget verdicts).
+  conductor's) and the `pipeline-conductor` builtin skill with its three scripts, behavior pinned by
+  tests (claim verdict precedence, probe classification, handled-set suppression, key containment,
+  budget verdicts) and the skill's own contract pinned by tests over its text, so a rewrite cannot
+  silently drop a clause the scripts depend on.
 - **M1** — `PipelineSpec` file consumed by the scripts; SQLite event store (append-only `events`,
   `issues` as a fold, `decisions` first-class, `dispatch_id UNIQUE`); the board becomes a
   generated view.
@@ -168,3 +252,9 @@ invariant stays out of the template: the forge is the cross-operator lock (claim
    per-request token metrics work; budgets meanwhile bind what the shards see.
 4. **Digest surface**: chat today; a merge-queue/proposal-queue report page is an Auto Triage
    Pipeline app extension once the event store exists.
+5. **External watchdog on loop liveness.** An approval or transport outage kills every monitor loop
+   on the host, the conductor's patrol loop included, and the skill states that limit and closes what
+   procedure can close: recovery is a fleet-wide resume-and-re-arm sweep, and the re-arm is
+   conditional on there being something external left to watch. The residual hole needs a watcher
+   OUTSIDE the loop, which is a product capability rather than a skill clause — hence a decision
+   rather than a documentation gap.

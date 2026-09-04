@@ -11,6 +11,14 @@ Think **`kubectl` for local worktree test rigs.** This is the *test line*
 (multi-active, burn-on-evict); it is orthogonal to the *live line* (a single
 gateway serving real data on the canonical port) and refuses to bind the live port.
 
+Pod separation is **operational and state isolation**, not an adversarial security
+boundary against arbitrary processes already running as the same Unix UID. Such a
+process can modify user-owned pod storage directly; descriptor pinning prevents
+path/symlink substitution from accidentally redirecting an approved operation, but
+it does not add per-pod UIDs or mount isolation. Controller v1 runs pod operations
+host-side (`main/live Kiro Crew -> target test pod`); a pod does not create or control
+a child pod.
+
 ## Interface
 
 ```bash
@@ -20,6 +28,8 @@ kirocrew pod up   <wt> [--json]   # bring up an isolated pod → {base_url, toke
 kirocrew pod up   <wt> --provision# provision (if needed) then bring it up
 kirocrew pod up   <wt> --approval reads  # boot its gateway in an approval mode
 kirocrew pod up   <wt> --crons          # boot its gateway with the cron scheduler on
+kirocrew pod up   <wt> --seed minimal  # pre-populate its HOME from a named scenario
+kirocrew pod scenarios [--json]        # list named scenarios and their descriptions
 kirocrew pod ls                   # what's running (≈ kubectl get pods) + orphaned HOMEs (with age)
 kirocrew pod prune [--all] [--dry-run]  # bulk-reclaim orphaned HOMEs (default: older than 3d; --all for every age)
 kirocrew pod status <wt>          # up/down + health
@@ -52,6 +62,45 @@ dist is missing — pointing you at the slow build — while `pod up <wt> --prov
 (or `pod provision <wt>`) runs the full chain: venv + `npm run build` in
 `website/` staged into the served `static/dist`.
 
+## Seed the isolated home
+
+```bash
+kirocrew pod scenarios
+kirocrew pod scenarios --json
+kirocrew pod up my-wt --seed minimal
+kirocrew pod up my-wt --seed ~/.kiro/crew
+```
+
+`pod scenarios` reads the packaged fixture registry and lists names in sorted
+order with the first description line from each `fixture.yaml`. The default is a
+human-readable table; `--json` emits a stable array of `{name, description}`
+objects. Description extraction uses the fixture manifest's narrow scalar format
+and does not require PyYAML at runtime.
+
+A bare name selects a fixture shipped under `kiro_crew/tests_fixtures/<name>/`
+and populates the whole isolated home. Anything with a path separator or a
+leading `~` or `.` stays the directory form, which contributes only a sanitized
+`config.json`. The split is syntactic, so an unknown bare name is refused with
+the available names instead of being mistaken for a directory and booting a
+blank pod. Spell a bare relative directory as a path, for example
+`--seed ./my-state`.
+
+Named fixtures are copied directly into the final home with both fixture and
+home traversals pinned by directory descriptors. Config sanitization and
+workspace setup run through the same held home descriptor, then the fixture
+manifest is copied last as the completion marker. A failed partial copy or
+setup therefore stays non-bootable even on systemd's automatic retry, and a
+symlink or path-name substitution during the operation cannot redirect writes.
+This does not confine an already-open inode against arbitrary same-UID host
+processes; that limit is part of the operational-isolation boundary above.
+Seeded config forces tunnel/channel enablement off and restores the agent
+sandbox floor. A populated home is never overwritten or re-seeded: a
+`pod up --seed` request against one refuses before start even when its marker
+already matches. Use plain `pod up` to restart that home unchanged. Service
+restarts keep the sessions and logs already present. After health succeeds,
+`pod up` reads the fixture marker back and fails if the requested scenario did
+not land.
+
 ## A pod IS the worktree's gateway (control plane vs payload)
 
 - **Control plane** — the `kirocrew pod` verbs (resolution, port derivation, unit
@@ -67,8 +116,12 @@ dist is missing — pointing you at the slow build — while `pod up <wt> --prov
 
 `kirocrew pod install` writes a template unit `kirocrew-pod@.service` whose
 `ExecStart` re-enters `kirocrew pod _run <wt>` (boot logic lives in
-`kiro_crew.pod.runtime.boot`). `MemoryMax`/`CPUQuota` cap a runaway pod;
-`Restart=on-failure` self-heals.
+`kiro_crew.pod.runtime.boot`). Before each start, `pod up` writes a per-instance
+drop-in that replaces the template's `ExecStart` with the resolved checkout's
+own `.venv/bin/kirocrew`; it refuses to fall back to a global install that may
+not understand the requested seed. `pod down` removes that drop-in and reloads
+systemd as part of its zero-residue guarantee. `MemoryMax`/`CPUQuota` cap a
+runaway pod; `Restart=on-failure` self-heals.
 
 The unit has **no `ExecStopPost` teardown hook**, on purpose. systemd runs
 `ExecStopPost` *before* the final kill of the unit's cgroup, so a hook that

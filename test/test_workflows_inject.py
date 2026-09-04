@@ -23,17 +23,29 @@ class _FakeSlot:
         self.messages: list[dict] = []
         self.linked_session_key = ""
         self.title = ""
+        # Mirror the delivery seam append_and_surface reads: append's own
+        # broadcast callback (the SSE door, mid-carrying) and the reader flag
+        # that suppresses it. Deliveries land in ``delivered`` so tests can
+        # assert the row went out exactly once, with identity.
+        self._has_reader = False
+        self.delivered: list[dict] = []
 
-    def append(self, role, content, cls="", ts="", *, broadcast=True, meta=None):
-        # Mirror the real ``_ChatSlot.append`` contract: mint ``meta.mid`` and
-        # hand the appended row back — the injector reads the id off the return
-        # to stamp the durable transcript copy with the same identity.
+    def _on_message(self, _key, msg) -> None:
+        self.delivered.append(msg)
+
+    def append(self, role, content, cls="", ts="", *, broadcast=True, broadcast_user=False, meta=None):
+        # Mirror the real ``_ChatSlot.append`` contract: mint ``meta.mid``, hand
+        # the appended row back, and deliver ONE live copy via ``_on_message``
+        # when no reader is draining (the injector reads the id off the return
+        # to stamp the durable transcript copy with the same identity).
         msg = {
             "role": role,
             "content": content,
             "meta": {**(meta or {}), "mid": f"m-test-{len(self.messages)}"},
         }
         self.messages.append(msg)
+        if broadcast and (role != "user" or broadcast_user) and not self._has_reader:
+            self._on_message(self.key, msg)
         return msg
 
 
@@ -147,10 +159,12 @@ def test_inject_routes_to_originating_slot_and_broadcasts_live() -> None:
     assert state.created == []  # never created a fallback slot
     assert len(origin.messages) == 1
     assert "pizza" in origin.messages[0]["content"]
-    # Live chat_message broadcast to that slot so it shows without a manual fetch.
-    chat_msgs = [p for k, p in state.broadcasts if k == "chat_message"]
-    assert chat_msgs and chat_msgs[0]["slot"] == "chat-2-123"
-    assert chat_msgs[0]["role"] == "assistant"
+    # Live delivery goes through append's OWN mid-carrying door exactly once
+    # (no reader active). A second hand-built broadcast_ws frame would be
+    # mid-less and render as a duplicate bubble (#5981 family).
+    assert len(origin.delivered) == 1
+    assert origin.delivered[0]["meta"]["mid"] == origin.messages[0]["meta"]["mid"]
+    assert [p for k, p in state.broadcasts if k == "chat_message"] == []
 
 
 def test_inject_falls_back_when_origin_slot_gone() -> None:

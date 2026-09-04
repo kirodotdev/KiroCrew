@@ -6,6 +6,7 @@ import json
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from body_stream_helpers import attach_body
 
 from kiro_crew.cron import CronSchedule
 from kiro_crew.dashboard.handlers import api_crons, api_crons_create
@@ -23,7 +24,7 @@ class TestCronCreateApprovalMode:
         mock_state.crons.add_job_async = AsyncMock(return_value=mock_job)
         request = MagicMock()
         request.app = {"state": mock_state}
-        request.json = AsyncMock(return_value=body)
+        attach_body(request, body)
         return request
 
     @pytest.mark.asyncio
@@ -89,7 +90,7 @@ class TestCronCreateTimezonePersistenceOwner:
         mock_state.crons.add_job_async = AsyncMock(return_value=mock_job)
         request = MagicMock()
         request.app = {"state": mock_state}
-        request.json = AsyncMock(return_value=body)
+        attach_body(request, body)
         return request, mock_state
 
     @pytest.mark.asyncio
@@ -142,7 +143,7 @@ class TestCronCreateModel:
         mock_state.crons.add_job_async = AsyncMock(return_value=mock_job)
         request = MagicMock()
         request.app = {"state": mock_state}
-        request.json = AsyncMock(return_value=body)
+        attach_body(request, body)
         return request
 
     @pytest.mark.asyncio

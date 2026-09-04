@@ -61,8 +61,53 @@ jobs:
           else
             valid=""
             for n in $refs; do
-              issue_json="$(gh api "repos/$REPO/issues/$n" 2>/dev/null || true)"
-              [ -z "$issue_json" ] && continue
+              # An issue this loop could not READ is not an invalid reference.
+              # `2>/dev/null || true` collapsed a transient API failure onto
+              # the same empty string as "this number is not an issue here",
+              # so a network blip made every referenced follow-up look
+              # unresolvable and the author was blamed for an untracked
+              # deferral they had in fact tracked. Only HTTP 404 means the
+              # reference does not resolve; any other failure is retried and
+              # then fails this check closed -- re-runnable -- instead of
+              # posting a false refusal.
+              issue_json=""
+              read_ok=""
+              for attempt in 1 2 3; do
+                gh_err="$(mktemp)"
+                if issue_json="$(gh api "repos/$REPO/issues/$n" 2>"$gh_err")"; then
+                  read_ok=1
+                  rm -f "$gh_err"
+                  break
+                fi
+                if grep -q "HTTP 404" "$gh_err"; then
+                  rm -f "$gh_err"
+                  read_ok=404
+                  break
+                fi
+                echo "Reading issue #$n failed on attempt $attempt:"
+                cat "$gh_err" >&2
+                rm -f "$gh_err"
+                if [ "$attempt" -lt 3 ]; then
+                  sleep "$attempt"
+                fi
+              done
+              if [ -z "$read_ok" ]; then
+                echo "::error::Could not read issue #$n from the API after 3 attempts, so this check cannot tell whether the deferral is tracked. This is a read failure, not an untracked deferral -- re-run this job."
+                # This lane is advisory by design (an issue_comment run has no
+                # PR-visible check row), so a silent red run in the Actions tab
+                # is a signal nobody sees. Leave the unverified state where the
+                # promise was made -- best-effort: if the API is down enough
+                # that this post also fails, the exit 1 below is still the
+                # ground truth.
+                reply="${RUNNER_TEMP:-${TMPDIR:-/tmp}}/reply.md"
+                {
+                  echo "<!-- deferred-finding-check -->"
+                  echo "**Could not verify this deferral.** Reading issue #$n from the API failed after 3 attempts, so this check could not tell whether the deferral is tracked. This is a read failure, not a judgement about the deferral -- re-run the deferral check. Checked disposition: ${COMMENT_URL}"
+                } > "$reply"
+                gh api "repos/$REPO/issues/$PR_NUMBER/comments" -f body="$(cat "$reply")" >/dev/null || true
+                exit 1
+              fi
+              [ "$read_ok" = "404" ] && continue
               # Skip refs that are PRs, not issues.
               if printf '%s' "$issue_json" | jq -e '.pull_request' >/dev/null 2>&1; then
                 continue
@@ -96,6 +141,16 @@ jobs:
           fi
 
           echo "Deferral promise is incomplete — replying with requirements."
+          # The reply is staged under the runner's temp dir (not a hardcoded
+          # /tmp path) so the behavioural test's TMPDIR containment binds and
+          # no artifact outlives a local run.
+          reply="${RUNNER_TEMP:-${TMPDIR:-/tmp}}/reply.md"
+          # Markdown emphasis next to an expansion MUST be braced: bash treats a
+          # trailing `_` as part of the variable name, so `$COMMENT_URL_` is a
+          # different, unset variable and `set -u` kills this script before the
+          # reply is posted. That failure is invisible from the outside — the
+          # refusal simply never arrives — so `test_fix_loop_discipline.py`
+          # pins every expansion in these workflows to a defined name.
           {
             echo "<!-- deferred-finding-check -->"
             echo "**This deferral is not yet tracked.** An \`accepted-and-deferred\` disposition must name an open follow-up issue that has:"
@@ -107,6 +162,6 @@ jobs:
             echo "What is missing:"
             echo "$problems"
             echo ""
-            echo "_An untracked deferral is how flagged findings ship anyway — 63% of this repo's traceable escaped bugs were flagged and then deferred without follow-through. Checked disposition: $COMMENT_URL_"
-          } > /tmp/reply.md
-          gh api "repos/$REPO/issues/$PR_NUMBER/comments" -f body="$(cat /tmp/reply.md)" >/dev/null
+            echo "_An untracked deferral is how flagged findings ship anyway — 63% of this repo's traceable escaped bugs were flagged and then deferred without follow-through. Checked disposition: ${COMMENT_URL}_"
+          } > "$reply"
+          gh api "repos/$REPO/issues/$PR_NUMBER/comments" -f body="$(cat "$reply")" >/dev/null

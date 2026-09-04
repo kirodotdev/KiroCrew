@@ -8,6 +8,7 @@ finalization itself fails.
 
 from __future__ import annotations
 
+import ast
 import asyncio
 from pathlib import Path
 from typing import Any
@@ -217,9 +218,9 @@ def test_every_turn_open_site_is_gated_on_the_shutdown_state() -> None:
     the stream, so the gate lives there and each dispatcher passes it in.
 
     So: every ``TurnDriver(...)`` construction must pass ``closing_gate``, and in
-    the driver the gate call must be the nearest preceding statement to the
-    provider stream, comments only in between. Any other statement fails -- an
-    await there is exactly the race this closes.
+    the driver no await may occur between the gate and provider stream. A
+    structured monitor may synchronously mark its claim accepted in that span;
+    because it cannot yield, shutdown still cannot take a drain snapshot there.
     """
     src = Path(D.__file__).resolve().parent.parent
 
@@ -230,22 +231,17 @@ def test_every_turn_open_site_is_gated_on_the_shutdown_state() -> None:
         text = path.read_text(encoding="utf-8")
         if "TurnDriver(" not in text:
             continue
-        lines = text.splitlines()
-        for idx, line in enumerate(lines):
-            if "TurnDriver(" not in line or line.lstrip().startswith("#"):
+        tree = ast.parse(text)
+        for node in ast.walk(tree):
+            if not (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name)
+                and node.func.id == "TurnDriver"
+            ):
                 continue
             sites += 1
-            # Scan the construction's argument list to its closing paren.
-            probe, wired = idx, False
-            while probe < len(lines) and probe < idx + 40:
-                if "closing_gate" in lines[probe]:
-                    wired = True
-                    break
-                if lines[probe].strip() == ")":
-                    break
-                probe += 1
-            if not wired:
-                unwired.append(f"{path.relative_to(src)}:{idx + 1}")
+            if not any(keyword.arg == "closing_gate" for keyword in node.keywords):
+                unwired.append(f"{path.relative_to(src)}:{node.lineno}")
     assert not unwired, "TurnDriver built without a shutdown gate:\n" + "\n".join(unwired)
     assert sites >= 4, f"expected the known TurnDriver sites, found {sites}"
 
@@ -254,15 +250,13 @@ def test_every_turn_open_site_is_gated_on_the_shutdown_state() -> None:
     opens = [i for i, ln in enumerate(driver_lines) if "self.provider.stream(" in ln]
     assert opens, "could not find the provider stream in the driver"
     for idx in opens:
-        probe = idx - 1
-        while probe >= 0 and (
-            not driver_lines[probe].strip() or driver_lines[probe].lstrip().startswith("#")
-        ):
-            probe -= 1
-        assert "closing_gate" in driver_lines[probe], (
-            f"messaging/driver.py:{idx + 1} opens a turn without the gate "
-            f"immediately before it; found: {driver_lines[probe].strip()!r}"
-        )
+        window = driver_lines[max(0, idx - 12) : idx]
+        gates = [i for i, line in enumerate(window) if "self.closing_gate()" in line]
+        assert gates, f"messaging/driver.py:{idx + 1} opens a turn without the gate"
+        after_gate = window[gates[-1] + 1 :]
+        assert not any(
+            "await " in line for line in after_gate
+        ), f"messaging/driver.py:{idx + 1} yields between the gate and stream"
 
 
 def test_a_shutdown_between_the_claim_and_the_dispatch_never_opens_the_turn(

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import json
 import os
 import pathlib
 import re
@@ -4733,6 +4734,7 @@ def _app(
     app.router.add_post("/api/source/pull-request/auto-merge", source.api_pull_request_auto_merge)
     app.router.add_post("/api/source/pull-request/ready", source.api_pull_request_ready)
     app.router.add_post("/api/source/issue", source.api_issue_source)
+    app.router.add_post("/api/source/contributors", source.api_app_contributors)
     return app
 
 
@@ -7762,6 +7764,35 @@ class TestAdfToMarkdown:
         adf = self._doc(self._para(self._text(" foo", [{"type": "code"}])))
         assert source._adf_to_markdown(adf) == "` foo`"
 
+    def test_newline_in_a_code_span_cannot_break_out_of_the_fence(self):
+        """A code span is inline, so a newline in its content ends the paragraph
+        and everything after it is parsed as fresh markdown -- outside the fence,
+        and so past the inline escape and the link-target scan."""
+        payload = "safe\n\n# Injected\n[x](javascript:alert(1))"
+        node = self._text(payload, [{"type": "code"}])
+        out = source._adf_to_markdown(self._doc(self._para(node)))
+        assert "\n" not in out
+        assert out == "`safe  # Injected [x](javascript:alert(1))`"
+
+    def test_carriage_return_in_a_code_span_is_collapsed_too(self):
+        """CommonMark ends a line on a bare CR and on CRLF, not only on LF."""
+        for raw in ("a\rb", "a\r\nb"):
+            out = source._adf_to_markdown(
+                self._doc(self._para(self._text(raw, [{"type": "code"}])))
+            )
+            assert out == "`a b`", raw
+
+    def test_folding_a_long_whitespace_run_is_linear(self):
+        """A provider-controlled newline-FREE whitespace run, bounded only by the
+        8MiB fetch cap, used to be folded by a pattern whose whitespace runs and
+        newline anchor competed for the same characters: 200k spaces took ~45s of
+        backtracking, per heading and per table cell. The budget is ~100x the
+        linear cost, so this fails only on a return to quadratic scanning."""
+        payload = " " * 200_000 + "x"
+        start = time.monotonic()
+        assert source._md_one_line(payload) == "x"
+        assert time.monotonic() - start < 2.0
+
     def test_empty_marked_text_emits_nothing(self):
         """A marked empty text node must not leave its bare delimiters behind."""
         for mark in ("strong", "em", "strike", "code"):
@@ -9627,6 +9658,259 @@ class TestJiraLinkedChanges:
         assert result[1]["state"] == "closed"
 
 
+# --- Jira fix versions as the milestone equivalent (issue #2585) ---
+
+
+class TestJiraFixVersionMilestone:
+    """Tests for _jira_fix_versions and _jira_fix_version_milestone."""
+
+    def test_unreleased_version_maps_to_open_milestone(self) -> None:
+        """name -> title, releaseDate -> dueOn, unreleased -> open."""
+        fields = {
+            "fixVersions": [
+                {"name": "2.4.0", "releaseDate": "2026-09-30", "released": False},
+            ]
+        }
+        versions = source._jira_fix_versions(fields)
+        assert len(versions) == 1
+        assert source._jira_fix_version_milestone(versions[0]) == {
+            "title": "2.4.0",
+            "state": "open",
+            "dueOn": "2026-09-30",
+        }
+
+    def test_released_version_maps_to_closed(self) -> None:
+        """A shipped release is a closed milestone."""
+        version = {"name": "2.3.0", "releaseDate": "2026-06-30", "released": True}
+        assert source._jira_fix_version_milestone(version)["state"] == "closed"
+
+    def test_archived_version_maps_to_closed(self) -> None:
+        """An archived version no longer takes work, so it is not open."""
+        version = {"name": "1.0.0", "released": False, "archived": True}
+        assert source._jira_fix_version_milestone(version)["state"] == "closed"
+
+    def test_missing_release_date_keeps_the_name(self) -> None:
+        """A version with no release date still carries its target release."""
+        version = {"name": "Next", "released": False}
+        assert source._jira_fix_version_milestone(version) == {
+            "title": "Next",
+            "state": "open",
+            "dueOn": "",
+        }
+
+    def test_locale_formatted_release_date_is_not_used(self) -> None:
+        """userReleaseDate is locale-formatted, so only releaseDate feeds dueOn."""
+        version = {"name": "3.0", "releaseDate": "2026-12-01", "userReleaseDate": "01/Dec/26"}
+        assert source._jira_fix_version_milestone(version)["dueOn"] == "2026-12-01"
+
+    def test_first_usable_version_wins_over_malformed_head(self) -> None:
+        """A malformed or nameless leading entry does not hide a usable one."""
+        fields = {
+            "fixVersions": [
+                "not a dict",
+                None,
+                {"name": "   "},
+                {"name": "", "releaseDate": "2026-01-01"},
+                {"name": "4.1", "releaseDate": "2026-11-05"},
+            ]
+        }
+        versions = source._jira_fix_versions(fields)
+        assert len(versions) == 1
+        assert source._jira_fix_version_milestone(versions[0])["title"] == "4.1"
+
+    def test_name_is_trimmed(self) -> None:
+        """Surrounding whitespace in a version name is not rendered."""
+        version = {"name": "  2.5.0  "}
+        assert source._jira_fix_version_milestone(version)["title"] == "2.5.0"
+
+    def test_no_fix_versions_yields_nothing_usable(self) -> None:
+        """Missing, empty, and non-list fixVersions all yield no milestone."""
+        assert source._jira_fix_versions({}) == []
+        assert source._jira_fix_versions({"fixVersions": []}) == []
+        assert source._jira_fix_versions({"fixVersions": None}) == []
+        assert source._jira_fix_versions({"fixVersions": "1.0"}) == []
+
+    def test_multiple_versions_are_all_returned(self) -> None:
+        """The filter keeps every usable version so the caller can flag partial."""
+        fields = {
+            "fixVersions": [
+                {"name": "2.4.0"},
+                {"name": "2.5.0"},
+            ]
+        }
+        assert [v["name"] for v in source._jira_fix_versions(fields)] == ["2.4.0", "2.5.0"]
+
+    def test_milestone_keys_match_the_frontend_contract(self) -> None:
+        """The mapped shape is exactly IssueMilestone: title, state, dueOn."""
+        version = {"name": "2.4.0", "releaseDate": "2026-09-30"}
+        assert set(source._jira_fix_version_milestone(version)) == {"title", "state", "dueOn"}
+
+
+class TestJiraPickFixVersion:
+    """Tests for _jira_pick_fix_version (issue #7595)."""
+
+    def test_mixed_versions_prefer_the_unreleased_one(self) -> None:
+        """A pending release wins over an already-shipped one ahead of it."""
+        fix_versions = [
+            {"name": "2.3.0", "released": True},
+            {"name": "2.4.0", "released": False},
+        ]
+        chosen = source._jira_pick_fix_version(fix_versions)
+        assert chosen is not None
+        assert chosen["name"] == "2.4.0"
+
+    def test_all_released_falls_back_to_the_first(self) -> None:
+        """A ticket whose versions all shipped still shows one milestone."""
+        fix_versions = [
+            {"name": "2.2.0", "released": True},
+            {"name": "2.3.0", "archived": True},
+        ]
+        chosen = source._jira_pick_fix_version(fix_versions)
+        assert chosen is not None
+        assert chosen["name"] == "2.2.0"
+
+    def test_empty_list_yields_none(self) -> None:
+        """No usable fix versions means no milestone."""
+        assert source._jira_pick_fix_version([]) is None
+
+    def test_archived_is_not_pending(self) -> None:
+        """An archived-but-unreleased version does not count as pending."""
+        fix_versions = [
+            {"name": "1.0.0", "released": False, "archived": True},
+            {"name": "1.1.0", "released": False},
+        ]
+        chosen = source._jira_pick_fix_version(fix_versions)
+        assert chosen is not None
+        assert chosen["name"] == "1.1.0"
+
+
+class _JiraFakeContent:
+    """Minimal ``StreamReader`` stand-in for the capped-response reader."""
+
+    def __init__(self, body: bytes) -> None:
+        self._body = body
+
+    async def iter_chunked(self, _n: int):
+        if self._body:
+            yield self._body
+
+
+class _JiraFakeResponse:
+    def __init__(self, body: bytes) -> None:
+        self.status = 200
+        self.content = _JiraFakeContent(body)
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *_exc):
+        return False
+
+
+class _JiraRecordingSession:
+    """Fake ``aiohttp.ClientSession`` that records the URL it was asked for."""
+
+    def __init__(self, body: bytes, seen: list[str]) -> None:
+        self._body = body
+        self._seen = seen
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *_exc):
+        return False
+
+    def get(self, url, **_kwargs):
+        self._seen.append(url)
+        return _JiraFakeResponse(self._body)
+
+
+def _jira_recording_session(monkeypatch, fields: dict) -> list[str]:
+    """Arm a fake Jira endpoint serving *fields*; return the recorded URL list."""
+    body = json.dumps({"fields": fields}).encode("utf-8")
+    seen: list[str] = []
+    monkeypatch.setattr(
+        source.aiohttp, "ClientSession", lambda *a, **kw: _JiraRecordingSession(body, seen)
+    )
+    monkeypatch.setattr(source, "_get_jira_auth", lambda host: ("e@example.com", "tok"))
+    return seen
+
+
+async def _jira_fetch(monkeypatch, fields: dict) -> tuple[dict, list[str]]:
+    """Drive ``_fetch_jira_issue`` over a canned payload; return it and the URLs."""
+    seen = _jira_recording_session(monkeypatch, fields)
+    ref = source.parse_source_url("https://acme.atlassian.net/browse/PROJ-123")
+    return await source._fetch_jira_issue(ref), seen
+
+
+class TestJiraFixVersionInPayload:
+    """End-to-end pins: the field is requested and reaches the payload."""
+
+    @pytest.mark.asyncio
+    async def test_fix_versions_is_requested_from_the_rest_api(self, monkeypatch) -> None:
+        """An unrequested field is absent from the response, so it must be asked for."""
+        _issue, seen = await _jira_fetch(monkeypatch, {"summary": "x"})
+        assert len(seen) == 1
+        assert "fixVersions" in seen[0]
+
+    @pytest.mark.asyncio
+    async def test_milestone_carries_the_fix_version(self, monkeypatch) -> None:
+        """The Issues panel milestone chip is fed by the first fix version."""
+        issue, _seen = await _jira_fetch(
+            monkeypatch,
+            {
+                "summary": "Ship it",
+                "fixVersions": [{"name": "2.4.0", "releaseDate": "2026-09-30"}],
+            },
+        )
+        assert issue["milestone"] == {
+            "title": "2.4.0",
+            "state": "open",
+            "dueOn": "2026-09-30",
+        }
+        assert "fix versions" not in issue["partialSections"]
+
+    @pytest.mark.asyncio
+    async def test_multiple_fix_versions_are_declared_partial(self, monkeypatch) -> None:
+        """Dropping the tail of a multi-release ticket is disclosed, not silent."""
+        issue, _seen = await _jira_fetch(
+            monkeypatch,
+            {
+                "summary": "Ship it twice",
+                "fixVersions": [{"name": "2.4.0"}, {"name": "2.5.0"}],
+            },
+        )
+        assert issue["milestone"]["title"] == "2.4.0"
+        assert "fix versions" in issue["partialSections"]
+
+    @pytest.mark.asyncio
+    async def test_pending_version_wins_over_a_shipped_one(self, monkeypatch) -> None:
+        """A released version ahead of a pending one does not steal the chip (#7595)."""
+        issue, _seen = await _jira_fetch(
+            monkeypatch,
+            {
+                "summary": "Fixed in the next release",
+                "fixVersions": [
+                    {"name": "2.3.0", "releaseDate": "2026-06-30", "released": True},
+                    {"name": "2.4.0", "releaseDate": "2026-09-30", "released": False},
+                ],
+            },
+        )
+        assert issue["milestone"] == {
+            "title": "2.4.0",
+            "state": "open",
+            "dueOn": "2026-09-30",
+        }
+        assert "fix versions" in issue["partialSections"]
+
+    @pytest.mark.asyncio
+    async def test_no_fix_version_leaves_milestone_null(self, monkeypatch) -> None:
+        """A ticket with no fix version keeps the panel's 'no milestone' state."""
+        issue, _seen = await _jira_fetch(monkeypatch, {"summary": "Unscheduled"})
+        assert issue["milestone"] is None
+        assert "fix versions" not in issue["partialSections"]
+
+
 class _ReapProbe:
     """A PIPE-stdio child double that records how it is reaped.
 
@@ -9684,3 +9968,198 @@ async def test_terminate_process_reaps_via_communicate_not_wait(monkeypatch):
     assert proc.communicate_calls == 1
     assert proc.wait_calls == 0
     assert tree_kills and tree_kills[0][0] == proc.pid
+
+
+def test_parse_repo_url_accepts_github_repo() -> None:
+    ref = source.parse_repo_url("https://github.com/acme/console")
+    assert ref.provider == "github"
+    assert ref.host == "github.com"
+    assert ref.owner == "acme"
+    assert ref.repo == "console"
+
+
+def test_parse_repo_url_strips_git_suffix_and_trailing_slash() -> None:
+    ref = source.parse_repo_url("https://github.com/acme/repo.git/")
+    assert (ref.owner, ref.repo) == ("acme", "repo")
+
+
+def test_parse_repo_url_rejects_pull_request_url() -> None:
+    # A pull URL has extra path segments and is not a repository root.
+    with pytest.raises(ValueError):
+        source.parse_repo_url("https://github.com/acme/repo/pull/12")
+
+
+def test_parse_repo_url_rejects_userinfo() -> None:
+    with pytest.raises(ValueError):
+        source.parse_repo_url("https://user:pass@github.com/acme/repo")
+
+
+def test_parse_repo_url_rejects_non_https() -> None:
+    with pytest.raises(ValueError):
+        source.parse_repo_url("http://github.com/acme/repo")
+
+
+def test_parse_repo_url_rejects_non_allowlisted_host(monkeypatch) -> None:
+    # Cold allowlist snapshot: a self-managed host is not recognized (fails closed).
+    monkeypatch.setattr(source, "_gitlab_hosts_snapshot", frozenset())
+    with pytest.raises(ValueError):
+        source.parse_repo_url("https://git.internal.example.com/acme/repo")
+
+
+def test_parse_repo_url_accepts_public_gitlab() -> None:
+    ref = source.parse_repo_url("https://gitlab.com/group/subgroup/project")
+    assert ref.provider == "gitlab"
+    assert ref.owner == "group/subgroup"
+    assert ref.repo == "project"
+
+
+@pytest.mark.asyncio
+async def test_fetch_app_contributors_uses_profile_name(monkeypatch) -> None:
+    source._contributors_cache.clear()
+    monkeypatch.setattr(source, "ensure_gitlab_hosts_loaded", AsyncMock(return_value=frozenset()))
+
+    async def fake_run(*argv: str, **kwargs: int):
+        command = " ".join(argv)
+        if "/contributors?" in command:
+            return [
+                {"login": "octocat", "avatar_url": "https://avatars.example/1"},
+                {"login": "hubot", "avatar_url": "https://avatars.example/2"},
+            ]
+        if command.endswith("users/octocat"):
+            return {"name": "The Octocat"}
+        if command.endswith("users/hubot"):
+            return {"name": None}
+        raise AssertionError(command)
+
+    monkeypatch.setattr(source, "_run_json", fake_run)
+    result = await source.fetch_app_contributors("https://github.com/acme/repo")
+
+    assert result == [
+        {
+            "login": "octocat",
+            "name": "The Octocat",
+            "avatarUrl": "https://avatars.example/1",
+            "profileUrl": "https://github.com/octocat",
+        },
+        {
+            "login": "hubot",
+            "name": "hubot",  # null profile name falls back to the login
+            "avatarUrl": "https://avatars.example/2",
+            "profileUrl": "https://github.com/hubot",
+        },
+    ]
+
+
+@pytest.mark.asyncio
+async def test_fetch_app_contributors_non_github_returns_empty(monkeypatch) -> None:
+    source._contributors_cache.clear()
+    monkeypatch.setattr(source, "ensure_gitlab_hosts_loaded", AsyncMock(return_value=frozenset()))
+    run = AsyncMock()
+    monkeypatch.setattr(source, "_run_json", run)
+
+    assert await source.fetch_app_contributors("https://gitlab.com/group/project") == []
+    run.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_fetch_app_contributors_coalesces_concurrent_calls(monkeypatch) -> None:
+    source._contributors_cache.clear()
+    source._contributors_inflight.clear()
+    monkeypatch.setattr(source, "ensure_gitlab_hosts_loaded", AsyncMock(return_value=frozenset()))
+    calls = {"n": 0}
+
+    async def fake_run(*argv: str, **kwargs: int):
+        command = " ".join(argv)
+        if "/contributors?" in command:
+            calls["n"] += 1
+            await asyncio.sleep(0.02)
+            return [{"login": "octocat", "avatar_url": "a"}]
+        if command.endswith("users/octocat"):
+            return {"name": "Octo"}
+        raise AssertionError(command)
+
+    monkeypatch.setattr(source, "_run_json", fake_run)
+    first, second = await asyncio.gather(
+        source.fetch_app_contributors("https://github.com/acme/repo"),
+        source.fetch_app_contributors("https://github.com/acme/repo"),
+    )
+
+    assert first == second
+    assert calls["n"] == 1  # one shared provider fanout for both callers
+    # A second identical read is served from cache without another provider call.
+    await source.fetch_app_contributors("https://github.com/acme/repo")
+    assert calls["n"] == 1
+
+
+@pytest.mark.asyncio
+async def test_fetch_app_contributors_skips_profile_for_unsafe_login(monkeypatch) -> None:
+    source._contributors_cache.clear()
+    monkeypatch.setattr(source, "ensure_gitlab_hosts_loaded", AsyncMock(return_value=frozenset()))
+    seen: list[str] = []
+
+    async def fake_run(*argv: str, **kwargs: int):
+        command = " ".join(argv)
+        seen.append(command)
+        if "/contributors?" in command:
+            return [{"login": "../etc", "avatar_url": "a"}]
+        raise AssertionError(f"unexpected profile lookup: {command}")
+
+    monkeypatch.setattr(source, "_run_json", fake_run)
+    result = await source.fetch_app_contributors("https://github.com/acme/repo")
+
+    # A malformed login never reaches the users/<login> path; name falls back.
+    assert result == [
+        {
+            "login": "../etc",
+            "name": "../etc",
+            "avatarUrl": "a",
+            "profileUrl": "https://github.com/../etc",
+        }
+    ]
+    assert not any("users/" in c for c in seen)
+
+
+@pytest.mark.asyncio
+async def test_app_contributors_endpoint_requires_owner_claim(monkeypatch) -> None:
+    fetch = AsyncMock()
+    monkeypatch.setattr(source, "fetch_app_contributors", fetch)
+
+    async with TestClient(TestServer(_app(user="U_OTHER"))) as client:
+        response = await client.post(
+            "/api/source/contributors", json={"url": "https://github.com/acme/repo"}
+        )
+        assert response.status == 403
+        assert await response.json() == {"error": "forbidden"}
+    fetch.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_app_contributors_endpoint_returns_list_for_owner(monkeypatch) -> None:
+    payload = [
+        {
+            "login": "octocat",
+            "name": "Octo",
+            "avatarUrl": "https://a/1",
+            "profileUrl": "https://github.com/octocat",
+        }
+    ]
+    monkeypatch.setattr(source, "fetch_app_contributors", AsyncMock(return_value=payload))
+
+    async with TestClient(TestServer(_app())) as client:
+        response = await client.post(
+            "/api/source/contributors", json={"url": "https://github.com/acme/repo"}
+        )
+        assert response.status == 200
+        assert await response.json() == {"contributors": payload}
+
+
+@pytest.mark.asyncio
+async def test_app_contributors_endpoint_maps_bad_url_to_400(monkeypatch) -> None:
+    monkeypatch.setattr(
+        source, "fetch_app_contributors", AsyncMock(side_effect=ValueError("bad url"))
+    )
+
+    async with TestClient(TestServer(_app())) as client:
+        response = await client.post("/api/source/contributors", json={"url": "nope"})
+        assert response.status == 400
+        assert (await response.json())["error"] == "bad url"

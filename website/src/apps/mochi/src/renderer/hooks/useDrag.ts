@@ -121,7 +121,7 @@ export function useDrag(
     optionsRef.current.clearPersistentMood()
     if (optionsRef.current.displayState === 'offline') optionsRef.current.setDisplayState('idle')
     e.preventDefault()
-  }, [pos])
+  }, [pos, armStuckTimer])
 
   // Listen for position updates from main process during drag
   useEffect(() => {
@@ -219,7 +219,7 @@ export function useDrag(
       if (stuckTimer.current) { clearTimeout(stuckTimer.current); stuckTimer.current = null }
       endDragRef.current = null
     }
-  }, [])
+  }, [armStuckTimer])
 
   return { pos, setPos, onMouseDown, dragging, dragPollingStarted, posReady }
 }

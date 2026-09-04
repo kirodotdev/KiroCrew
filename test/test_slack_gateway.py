@@ -7,6 +7,7 @@ import asyncio
 import json
 import logging
 import os
+import subprocess
 import sys
 import threading
 import time
@@ -2036,6 +2037,32 @@ class TestNotifyNudgeExpired:
             cycle_count=24,
         )
 
+    def test_a_merged_subject_says_no_action_needed_and_a_closed_one_does_not(self):
+        """Both are terminal; only one is good news.
+
+        A pull request closed WITHOUT merging stopped on a question the operator has
+        to answer -- reopen, or abandon -- so telling them "no action needed" would
+        be false about the one outcome that needs them. The wording follows the
+        monitor's recorded outcome rather than lumping both under a finish.
+        """
+        import kiro_crew.autonudge as _an
+        from kiro_crew.monitoring.models import MonitorOutcome
+
+        for outcome, expect_no_action in ((MonitorOutcome.SUCCESS, True), (MonitorOutcome.BLOCKED, False)):
+            loop = self._loop()
+            # NOT capped: the cap branch outranks the terminal one, so a 24-of-24
+            # loop would exercise the wrong case entirely.
+            loop.cycle_count = 3
+            loop.stopped_reason = _an.MONITOR_TERMINAL_REASON
+            loop.monitor = SimpleNamespace(outcome=outcome)
+            state = MagicMock()
+            GatewayOrchestrator._notify_nudge_expired(self._orch(state), loop)
+            _args, _kwargs = state.notify.call_args
+            body = _args[2]
+            assert ("No action needed" in body) is expect_no_action, (outcome, body)
+            if not expect_no_action:
+                assert "reopen" in body.lower(), body
+
     def test_notifies_with_cycle_counts_and_slot_link(self):
         state = MagicMock()
         GatewayOrchestrator._notify_nudge_expired(self._orch(state), self._loop())
@@ -2391,6 +2418,36 @@ class TestInitAutonudge:
         with patch("kiro_crew.slack.gateway.autonudge_enabled", return_value=False):
             await orch._init_autonudge()
         assert not hasattr(orch, "autonudge_svc") or orch.autonudge_svc is None  # noqa: E501
+
+    def test_disabled_gateway_import_does_not_load_monitor_runtime(self, tmp_path):
+        env = os.environ.copy()
+        env["KIROCREW_AUTONUDGE"] = "0"
+        env["KIROCREW_HOME"] = str(tmp_path / "crew")
+        env["KIRO_HOME"] = str(tmp_path / "kiro")
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                (
+                    "import sys; import kiro_crew.slack.gateway; "
+                    "print(sorted(name for name in sys.modules if name in {"
+                    "'kiro_crew.monitoring.controller',"
+                    "'kiro_crew.monitoring.github_pull_request',"
+                    "'kiro_crew.monitoring.gitlab_merge_request',"
+                    "'kiro_crew.monitoring.azure_devops_pull_request',"
+                    "'kiro_crew.monitoring.bitbucket_pull_request'}))"
+                ),
+            ],
+            cwd=tmp_path,
+            env=env,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=120,
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.strip() == "[]"
 
     @pytest.mark.asyncio
     async def test_enabled_creates_service(self):

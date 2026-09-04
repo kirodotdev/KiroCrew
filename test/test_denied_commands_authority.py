@@ -152,11 +152,23 @@ class TestIsDeniedForwarding:
         assert authority.is_denied("aws ec2 terminate-instances i-x") is not None
         assert authority.is_denied("ls -la") is None
 
-    def test_empty_denied_regexes_still_blocks_git_publish(self) -> None:
-        # git-publish is an always-on floor inside security.is_denied, so an
-        # empty regex tier (disable_all + no pins) does not weaken it.
+    def test_empty_denied_regexes_honours_the_git_publish_opt_out(self) -> None:
+        # The git-publish floor's GATED branches are consulted against the
+        # effective set, so an empty regex tier (disable_all + no pins) disables
+        # them too — a toggle the UI offers must not be a silent no-op.
         authority = PolicyAuthority()
-        assert authority.is_denied("git push origin main", denied_regexes=[]) is not None
+        assert authority.is_denied("git push origin main", denied_regexes=[]) is None
+        # ``None`` fails closed to all built-ins enabled, so the default denies.
+        assert authority.is_denied("git push origin main") is not None
+
+    def test_empty_denied_regexes_still_blocks_unverifiable_push(self) -> None:
+        # The anti-obfuscation branch carries no per-rule gate: a push target the
+        # shell fuses together cannot be checked against a branch name at all, so
+        # no opt-out may reach it.
+        authority = PolicyAuthority()
+        assert (
+            authority.is_denied("git push origin ma$(echo)in", denied_regexes=[]) is not None
+        )
 
     def test_overlay_never_filtered_by_denied_regexes(self) -> None:
         # The ADD-only overlay flows through extra_patterns and is applied even

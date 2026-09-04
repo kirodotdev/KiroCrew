@@ -14,7 +14,7 @@ import { ProviderLogo } from './ProviderBadge'
 import SettingsSection from './SettingsSection'
 import ReadOnlyTag, { isReadOnly } from './ReadOnlyTag'
 import RepoSwitcher from './RepoSwitcher'
-import { providerTerms } from '../lib/links'
+import { providerTerms, sameRepoRef } from '../lib/links'
 
 import { i18nT } from '../../../i18n/t'
 /** The left rail: a prominent repo switcher pinned at the top, then a
@@ -55,12 +55,7 @@ export default function LeftRail({
     // Matched on the FULL identity, not just owner/repo: on a mixed install the
     // same slug can exist on two providers, and a loose match would badge the
     // collapsed rail with the other repo's write access.
-    const activeEntry = repos.find(
-      (r) => r.owner === active.owner
-        && r.repo === active.repo
-        && (r.provider || 'github') === (active.provider || 'github')
-        && (r.host || 'github.com') === (active.host || 'github.com'),
-    )
+    const activeEntry = repos.find((r) => sameRepoRef(r, active))
     return (
       <CollapsedRail
         width={width}

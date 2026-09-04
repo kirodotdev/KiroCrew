@@ -27,6 +27,7 @@ from typing import Any, Optional
 
 from aiohttp import web
 
+from kiro_crew.dashboard.handlers._shared import read_bounded_json
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
@@ -161,12 +162,10 @@ async def api_workflow_definitions_create(request: web.Request) -> web.Response:
     svc = _svc(request)
     if svc is None:
         return _error("workflows not available", "workflows_unavailable", 503)
-    try:
-        body = await request.json()
-    except Exception:
-        return _error("invalid JSON", "invalid_json", 400)
-    if not isinstance(body, dict):
-        return _error("JSON body must be an object", "invalid_json", 400)
+    body, body_err = await read_bounded_json(request, max_bytes=None)
+    if body_err is not None:
+        return body_err
+    assert body is not None  # read_bounded_json returns (dict, None) on success
     source = body.get("source")
     if not isinstance(source, str) or not source.strip():
         return _error("source is required", "workflow_source_required", 400)
@@ -229,12 +228,10 @@ async def api_workflow_definition_update(request: web.Request) -> web.Response:
     svc = _svc(request)
     if svc is None:
         return _error("workflows not available", "workflows_unavailable", 503)
-    try:
-        body = await request.json()
-    except Exception:
-        return _error("invalid JSON", "invalid_json", 400)
-    if not isinstance(body, dict):
-        return _error("JSON body must be an object", "invalid_json", 400)
+    body, body_err = await read_bounded_json(request, max_bytes=None)
+    if body_err is not None:
+        return body_err
+    assert body is not None  # read_bounded_json returns (dict, None) on success
     source = body.get("source")
     expected_revision = body.get("expected_revision")
     if not isinstance(source, str) or not source.strip():
@@ -289,12 +286,10 @@ async def api_workflow_definition_run(request: web.Request) -> web.Response:
     svc = _svc(request)
     if svc is None:
         return _error("workflows not available", "workflows_unavailable", 503)
-    try:
-        body = await request.json()
-    except Exception:
-        return _error("invalid JSON", "invalid_json", 400)
-    if not isinstance(body, dict):
-        return _error("JSON body must be an object", "invalid_json", 400)
+    body, body_err = await read_bounded_json(request, max_bytes=None)
+    if body_err is not None:
+        return body_err
+    assert body is not None  # read_bounded_json returns (dict, None) on success
     input_text = body.get("input", "")
     if not isinstance(input_text, str):
         return _error("input must be a string", "workflow_input_invalid", 400)
@@ -336,12 +331,10 @@ async def api_workflow_author(request: web.Request) -> web.Response:
     svc = _svc(request)
     if svc is None:
         return web.json_response({"error": "workflows not available"}, status=503)
-    try:
-        body = await request.json()
-    except Exception:
-        return web.json_response({"error": "invalid JSON"}, status=400)
-    if not isinstance(body, dict):
-        return _error("JSON body must be an object", "invalid_json", 400)
+    body, body_err = await read_bounded_json(request, max_bytes=None)
+    if body_err is not None:
+        return body_err
+    assert body is not None  # read_bounded_json returns (dict, None) on success
     intent = (body.get("intent") or "").strip()
     if not intent:
         return web.json_response({"error": "intent is required"}, status=400)
@@ -366,12 +359,10 @@ async def api_workflow_run(request: web.Request) -> web.Response:
     svc = _svc(request)
     if svc is None:
         return web.json_response({"error": "workflows not available"}, status=503)
-    try:
-        body = await request.json()
-    except Exception:
-        return web.json_response({"error": "invalid JSON"}, status=400)
-    if not isinstance(body, dict):
-        return _error("JSON body must be an object", "invalid_json", 400)
+    body, body_err = await read_bounded_json(request, max_bytes=None)
+    if body_err is not None:
+        return body_err
+    assert body is not None  # read_bounded_json returns (dict, None) on success
     source = body.get("source", "")
     if not isinstance(source, str) or not source.strip():
         return web.json_response({"error": "source is required"}, status=400)
@@ -401,12 +392,10 @@ async def api_workflow_run_intent(request: web.Request) -> web.Response:
     svc = _svc(request)
     if svc is None:
         return web.json_response({"error": "workflows not available"}, status=503)
-    try:
-        body = await request.json()
-    except Exception:
-        return web.json_response({"error": "invalid JSON"}, status=400)
-    if not isinstance(body, dict):
-        return _error("JSON body must be an object", "invalid_json", 400)
+    body, body_err = await read_bounded_json(request, max_bytes=None)
+    if body_err is not None:
+        return body_err
+    assert body is not None  # read_bounded_json returns (dict, None) on success
     intent = (body.get("intent") or "").strip()
     if not intent:
         return web.json_response({"error": "intent is required"}, status=400)
@@ -454,12 +443,12 @@ async def api_workflow_run_promote(request: web.Request) -> web.Response:
     svc = _svc(request)
     if svc is None:
         return _error("workflows not available", "workflows_unavailable", 503)
-    try:
-        body = await request.json()
-    except Exception:
-        return _error("invalid JSON", "invalid_json", 400)
-    if not isinstance(body, dict):
-        return _error("JSON body must be an object", "invalid_json", 400)
+    # Default cap: the body is fixed metadata fields (name, description, slug);
+    # the promoted source comes from the completed run, not this request.
+    body, body_err = await read_bounded_json(request)
+    if body_err is not None:
+        return body_err
+    assert body is not None  # read_bounded_json returns (dict, None) on success
     run_id = request.match_info.get("run_id", "")
     try:
         out = await svc.promote_run_definition(
@@ -511,12 +500,11 @@ async def api_workflow_run_rerun(request: web.Request) -> web.Response:
     if svc is None:
         return web.json_response({"error": "workflows not available"}, status=503)
     run_id = request.match_info.get("run_id", "")
-    try:
-        body = await request.json()
-    except Exception:
-        body = {}
-    if not isinstance(body, dict):
-        return _error("JSON body must be an object", "invalid_json", 400)
+    # allow_absent: every field defaults, so a bodyless rerun replays from index 0.
+    body, body_err = await read_bounded_json(request, max_bytes=None, allow_absent=True)
+    if body_err is not None:
+        return body_err
+    assert body is not None  # read_bounded_json returns (dict, None) on success
     from_index = body.get("from_index", 0)
     if not isinstance(from_index, int):
         from_index = 0

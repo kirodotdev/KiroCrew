@@ -35,7 +35,8 @@
       "/api/apps/aws-control/*"
     ],
     "storage": true,
-    "network": true
+    "network": true,
+    "jobs": true
   },
   "tags": [
     "aws",

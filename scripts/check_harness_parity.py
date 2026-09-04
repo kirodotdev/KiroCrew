@@ -2,7 +2,7 @@
 """check_harness_parity.py — keep the Kiro harness first-class on lines a change adds.
 
 Kiro Crew drives one first-class agent harness, ``kiro-cli``
-(``ACP_BACKEND_KIRO``, spelled ``""``), plus adapted ones: the dormant
+(``ACP_BACKEND_KIRO``, spelled ``""``), plus adapted ones: the
 ``ACP_BACKEND_CLAUDE`` seam, KAS, and whatever a bring-your-own adapter
 registers next. An added harness may only adapt itself to the seams the Kiro
 harness already runs through; it may not move, widen, or generalize them.
@@ -22,7 +22,7 @@ the structural invariants are pinned by ``test/test_harness_parity.py``.
 ## Why diff-scoped and not whole-tree
 
 The tree carries eleven pre-existing negative identity tests, most of them in
-the dormant claude seam, and converting them all is a separate change with its
+the claude seam, and converting them all is a separate change with its
 own review. A whole-tree gate would fail every PR until that lands and charge
 the break to whoever pushed next. Added lines are complete for regression — a
 line only reaches ``main`` through a diff that added it — and the whole-tree

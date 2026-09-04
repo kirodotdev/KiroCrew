@@ -29,6 +29,18 @@ export interface EditableFields {
 
 export const EDITABLE_FIELD_KEYS: ReadonlySet<string> = new Set(['notes', 'priority', 'checkIntervalMins'])
 
+/**
+ * Ids of the two visible field captions in the detail view, referenced by the
+ * matching control's `aria-labelledby`.
+ *
+ * The captions are styled `<div>`s, so nothing associates them with the notes box
+ * or the interval spinner: both are announced with no name at all. Pointing at the
+ * caption names them without a second copy of the string, which an `aria-label`
+ * would introduce and the catalog would then have to keep in step.
+ */
+const NOTES_LABEL_ID = 'mochi-watch-notes-label'
+const INTERVAL_LABEL_ID = 'mochi-watch-interval-label'
+
 // ── Pure helper functions (exported for testing) ───────────────────────────
 
 /**
@@ -69,7 +81,7 @@ export function formatStatusSummary(
 export function buildEditPayload(draft: Partial<EditableFields>): Partial<EditableFields> {
   const payload: Partial<EditableFields> = {}
   for (const [k, v] of Object.entries(draft)) {
-    if (EDITABLE_FIELD_KEYS.has(k) && v !== undefined) (payload as any)[k] = v
+    if (EDITABLE_FIELD_KEYS.has(k) && v !== undefined) (payload as Record<string, unknown>)[k] = v
   }
   return payload
 }
@@ -543,16 +555,17 @@ export const WatchlistPanel: React.FC<WatchlistPanelProps> = ({ visible, onClose
         {divider}
 
         {/* Notes */}
-        <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 4, opacity: 0.5, fontWeight: 500 }}>
+        <div id={NOTES_LABEL_ID} style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 4, opacity: 0.5, fontWeight: 500 }}>
           {i18nT('apps.mochi.watchPanel.field.notes')}
         </div>
         <textarea
           value={currentNotes}
           onChange={(e) => updateDraft('notes', e.target.value)}
           placeholder="..."
+          aria-labelledby={NOTES_LABEL_ID}
           style={{
             width: '100%', minHeight: 48, maxHeight: 200,
-            fieldSizing: 'content' as any,
+            fieldSizing: 'content',
             background: inputBg,
             border: '1px solid rgba(255,255,255,0.08)', borderRadius: 6,
             padding: '8px 10px', color: 'var(--text)', fontSize: 12,
@@ -584,12 +597,13 @@ export const WatchlistPanel: React.FC<WatchlistPanelProps> = ({ visible, onClose
           </div>
           {selectedItem.kind !== 'reminder' && selectedItem.kind !== 'meeting' && (
           <div style={{ flex: 1 }}>
-            <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 4, opacity: 0.5, fontWeight: 500 }}>
+            <div id={INTERVAL_LABEL_ID} style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 4, opacity: 0.5, fontWeight: 500 }}>
               {i18nT('apps.mochi.watchPanel.field.interval')}
             </div>
             <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
               <input
                 type="number"
+                aria-labelledby={INTERVAL_LABEL_ID}
                 min={intervalUnit === 'min' ? MIN_CHECK_INTERVAL_MINS : 1}
                 value={
                   intervalUnit === 'day' ? Math.round(currentInterval / 1440) || 1

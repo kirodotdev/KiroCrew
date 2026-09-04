@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useId } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { motion, AnimatePresence } from 'framer-motion'
 import { CheckCircle, ChevronRight, MessageSquare, X } from 'lucide-react'
@@ -124,6 +124,14 @@ export default function SessionPulseSurveyCard({
   onLayoutChange,
 }: SessionPulseSurveyCardProps) {
   const { t } = useTranslation()
+  // Per-instance ids for the two labelled fields. A literal id would be unique
+  // only for as long as at most one card is mounted, which today holds because
+  // ChatPage gates the card on `!embedded && !popout`; the moment a second
+  // surface may render one, duplicate ids would make each `htmlFor` /
+  // `aria-labelledby` point at whichever copy mounted first. useId makes that
+  // uniqueness structural instead of a property of the gate.
+  const feedbackId = useId()
+  const emailId = useId()
   const [visible, setVisible] = useState(false)
   // One-time latch: set the first time the card is shown, and never cleared
   // for the life of this mount. The eligibility query result (isEligible) is
@@ -331,6 +339,10 @@ export default function SessionPulseSurveyCard({
                       <div
                         className="mb-4 flex gap-2 flex-wrap"
                         role="radiogroup"
+                        // The group owns the arrow keys, so it has to be able to
+                        // hold focus; -1 keeps it out of the tab order, which
+                        // belongs to the roving radio below.
+                        tabIndex={-1}
                         aria-label={t('components.sessionPulseSurveyCard.rating_question')}
                         onKeyDown={(e) => {
                           const arrows = ['ArrowRight', 'ArrowDown', 'ArrowLeft', 'ArrowUp']
@@ -390,10 +402,19 @@ export default function SessionPulseSurveyCard({
 
                       {/* Open feedback */}
                       <div className="mb-4">
-                        <p className="text-[13px] text-text mb-2">
+                        {/* The question above IS the field's name: `htmlFor` makes
+                            it click-to-focus, `aria-labelledby` makes it the
+                            accessible name, so no second copy of the string. */}
+                        <label
+                          id={`${feedbackId}-label`}
+                          htmlFor={feedbackId}
+                          className="block text-[13px] text-text mb-2"
+                        >
                           {t('components.sessionPulseSurveyCard.feedback_question')}
-                        </p>
+                        </label>
                         <textarea
+                          id={feedbackId}
+                          aria-labelledby={`${feedbackId}-label`}
                           value={feedback}
                           onChange={(e) => setFeedback(e.target.value)}
                           placeholder={t('components.sessionPulseSurveyCard.optional')}
@@ -403,10 +424,16 @@ export default function SessionPulseSurveyCard({
 
                       {/* Email */}
                       <div className="mb-4">
-                        <p className="text-[13px] text-text mb-2">
+                        <label
+                          id={`${emailId}-label`}
+                          htmlFor={emailId}
+                          className="block text-[13px] text-text mb-2"
+                        >
                           {t('components.sessionPulseSurveyCard.email_prompt')}
-                        </p>
+                        </label>
                         <input
+                          id={emailId}
+                          aria-labelledby={`${emailId}-label`}
                           type="email"
                           value={email}
                           onChange={(e) => setEmail(e.target.value)}

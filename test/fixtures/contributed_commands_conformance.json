@@ -1,0 +1,450 @@
+{
+  "$comment": [
+    "Conformance cases for the contributed-command contract, consumed by BOTH validators:",
+    "  test/test_app_contribution_conformance.py  (Contributes.validate)",
+    "  website/src/apps/command-bar/contributedCommands.conformance.test.ts",
+    "",
+    "It exists because the two rulebooks are written twice, in two languages, and were",
+    "mirrored only by comment -- which failed twice in review on the branch that added",
+    "them: the title cap and the per-app command cap each shipped on one side only, and",
+    "both had the same consequence (a manifest that installs clean, then loses rows in",
+    "the launcher with no error its author can see). A comment cannot fail a build.",
+    "",
+    "Each case is a WHOLE `contributes` block plus whether the contract accepts it.",
+    "`accept: false` means the command does not reach the launcher -- refused by the",
+    "manifest, skipped by the frontend, or both. The two sides report differently (a",
+    "list of errors vs a console warning and a dropped row), so each harness asserts in",
+    "its own idiom; what this file pins is the VERDICT, which must agree.",
+    "",
+    "`commands` counts how many survive, so a case can pin partial acceptance -- one bad",
+    "entry dropped while its siblings load.",
+    "",
+    "Add a case here FIRST when adding a kind, a cap or a refusal. A rule with no case",
+    "is a rule that exists on one side."
+  ],
+  "cases": [
+    {
+      "name": "a minimal well-formed command",
+      "accept": true,
+      "commands": 1,
+      "contributes": {
+        "commands": [{ "id": "do-it", "title": "Do it", "prompt": "Do the thing." }]
+      }
+    },
+    {
+      "name": "a url argument with a host allowlist",
+      "accept": true,
+      "commands": 1,
+      "contributes": {
+        "commands": [
+          {
+            "id": "approve-all",
+            "title": "Approve all PRs",
+            "prompt": "Approve every PR behind {argument}.",
+            "autoSend": true,
+            "argument": { "kind": "url", "hosts": ["github.com"] }
+          }
+        ]
+      }
+    },
+    {
+      "name": "a text argument",
+      "accept": true,
+      "commands": 1,
+      "contributes": {
+        "commands": [
+          {
+            "id": "ask",
+            "title": "Ask",
+            "prompt": "Answer: {argument}",
+            "argument": { "kind": "text" }
+          }
+        ]
+      }
+    },
+    {
+      "name": "an argument with no kind defaults to text",
+      "accept": true,
+      "commands": 1,
+      "contributes": {
+        "commands": [
+          {
+            "id": "ask",
+            "title": "Ask",
+            "prompt": "Answer: {argument}",
+            "argument": { "placeholder": "Type something" }
+          }
+        ]
+      }
+    },
+    {
+      "name": "exactly the per-app command cap",
+      "accept": true,
+      "commands": 20,
+      "generate": { "commands": 20 }
+    },
+    {
+      "name": "a title exactly at the cap",
+      "accept": true,
+      "commands": 1,
+      "generate": { "titleLength": 120 }
+    },
+    {
+      "name": "an id that is not a kebab slug",
+      "accept": false,
+      "commands": 0,
+      "contributes": {
+        "commands": [{ "id": "Do_It", "title": "Do it", "prompt": "Do the thing." }]
+      }
+    },
+    {
+      "name": "a missing title",
+      "accept": false,
+      "commands": 0,
+      "contributes": {
+        "commands": [{ "id": "do-it", "title": "", "prompt": "Do the thing." }]
+      }
+    },
+    {
+      "name": "a missing prompt",
+      "accept": false,
+      "commands": 0,
+      "contributes": { "commands": [{ "id": "do-it", "title": "Do it", "prompt": "" }] }
+    },
+    {
+      "name": "a prompt that interpolates but declares no argument",
+      "accept": false,
+      "commands": 0,
+      "contributes": {
+        "commands": [{ "id": "do-it", "title": "Do it", "prompt": "Do it to {argument}" }]
+      }
+    },
+    {
+      "name": "an argument the prompt never interpolates",
+      "accept": false,
+      "commands": 0,
+      "contributes": {
+        "commands": [
+          {
+            "id": "do-it",
+            "title": "Do it",
+            "prompt": "Do the thing.",
+            "argument": { "kind": "text" }
+          }
+        ]
+      }
+    },
+    {
+      "name": "autoSend with no argument, so no preview can be shown",
+      "accept": false,
+      "commands": 1,
+      "asymmetric": {
+        "why": [
+          "The one DELIBERATE difference between the two validators, spelled out here so",
+          "neither side is later 'fixed' into matching the other by mistake.",
+          "",
+          "The manifest REFUSES it: an app author who wrote this believes their command",
+          "auto-sends, and it never will, so silence would leave them debugging a row",
+          "that works but does nothing they asked for.",
+          "",
+          "The frontend KEEPS the row and clamps autoSend off. It has to: an unknown",
+          "manifest key reaches the dashboard through `extra` having passed no schema, so",
+          "the frontend sees manifests the validator never saw. Dropping the row would",
+          "remove a command that is perfectly usable as a prefill; clamping keeps it and",
+          "removes only the capability that had no consent path."
+        ],
+        "manifest": "refuse",
+        "frontend": "accept-with-autosend-clamped"
+      },
+      "contributes": {
+        "commands": [
+          { "id": "do-it", "title": "Do it", "prompt": "Do the thing.", "autoSend": true }
+        ]
+      }
+    },
+    {
+      "name": "an argument still carrying the retired pattern key",
+      "accept": false,
+      "commands": 0,
+      "contributes": {
+        "commands": [
+          {
+            "id": "do-it",
+            "title": "Do it",
+            "prompt": "Do it to {argument}",
+            "argument": { "pattern": "^https://github\\.com/\\S+$" }
+          }
+        ]
+      }
+    },
+    {
+      "name": "an unknown argument kind",
+      "accept": false,
+      "commands": 0,
+      "contributes": {
+        "commands": [
+          {
+            "id": "do-it",
+            "title": "Do it",
+            "prompt": "Do it to {argument}",
+            "argument": { "kind": "regex" }
+          }
+        ]
+      }
+    },
+    {
+      "name": "hosts on a kind with no notion of them",
+      "accept": false,
+      "commands": 0,
+      "contributes": {
+        "commands": [
+          {
+            "id": "do-it",
+            "title": "Do it",
+            "prompt": "Do it to {argument}",
+            "argument": { "kind": "text", "hosts": ["github.com"] }
+          }
+        ]
+      }
+    },
+    {
+      "name": "an argument value that is not an object",
+      "accept": false,
+      "commands": 0,
+      "$why": [
+        "The prompt deliberately does NOT interpolate: with a token present, the older",
+        "'interpolates but declares no argument' error already rejects this, so the case",
+        "would pass whether or not the non-object shape is caught. Without the token,",
+        "nothing else fires -- this is the input that installed clean and then rendered",
+        "no row, because the frontend tells 'no argument' apart from 'argument broken'."
+      ],
+      "contributes": {
+        "commands": [
+          {
+            "id": "review-all",
+            "title": "Review all",
+            "prompt": "Review the open pull requests",
+            "argument": "yes"
+          }
+        ]
+      }
+    },
+    {
+      "name": "a commands value that is not an array",
+      "accept": false,
+      "commands": 0,
+      "$why": [
+        "The frontend already refused this; the manifest coerced it to an empty list, so",
+        "the declaration passed validation and then vanished from to_dict -- no error and",
+        "no rows. Same fail-open shape as a non-array hosts."
+      ],
+      "contributes": { "commands": "approve-all" }
+    },
+    {
+      "name": "a hosts value that is not an array",
+      "accept": false,
+      "commands": 0,
+      "$why": [
+        "Coercing a non-array to [] does not mean 'no opinion' -- an empty allowlist",
+        "means ANY host, so the restriction the author wrote would be erased silently",
+        "while autoSend stayed on. Both validators must refuse it, not normalize it."
+      ],
+      "contributes": {
+        "commands": [
+          {
+            "id": "do-it",
+            "title": "Do it",
+            "prompt": "Do it to {argument}",
+            "argument": { "kind": "url", "hosts": "github.com" }
+          }
+        ]
+      }
+    },
+    {
+      "name": "exactly the keyword cap",
+      "accept": true,
+      "commands": 1,
+      "generate": { "keywords": 30 }
+    },
+    {
+      "name": "one past the keyword cap",
+      "accept": false,
+      "commands": 1,
+      "asymmetric": {
+        "why": [
+          "Same shape as the autoSend case: the manifest tells the author, the frontend",
+          "keeps the row. A keyword is ADDITIVE by definition -- dropping the overflow",
+          "costs a match the reader probably was not typing, while dropping the row costs",
+          "them the command itself. The frontend also sees manifests that never passed the",
+          "validator (the `extra` path), so it cannot assume the count was checked.",
+          "",
+          "The bound exists at all because ranking walks every keyword on every keystroke."
+        ],
+        "manifest": "refuse",
+        "frontend": "accept-with-keywords-trimmed"
+      },
+      "generate": { "keywords": 31 }
+    },
+    {
+      "name": "a keyword exactly at the length cap",
+      "accept": true,
+      "commands": 1,
+      "generate": { "keywordLength": 60 }
+    },
+    {
+      "name": "a keyword one past the length cap",
+      "accept": false,
+      "commands": 1,
+      "asymmetric": {
+        "why": [
+          "The same asymmetry as the keyword COUNT case, and it belongs here for the",
+          "reason this file's header gives: a rule with no case is a rule that exists on",
+          "one side. Review found it missing, which is the fixture working as intended --",
+          "the gap was in the cases, not in the code.",
+          "",
+          "Manifest refuses so the author is told. Frontend filters the offending alias and",
+          "keeps the row, because a keyword is additive: losing one costs a match, losing",
+          "the row costs the command.",
+          "",
+          "Review also proposed deleting the manifest refusal instead, on the grounds that",
+          "the per-keystroke cost is a frontend cost the frontend already bounds. Kept",
+          "deliberately: without it a manifest with 500-character aliases installs clean",
+          "and is silently trimmed, which is the 'passes install, then degrades with no",
+          "error the author ever sees' shape that this same review made us fix for the",
+          "title and command-count caps. The refusal is what makes the trim visible."
+        ],
+        "manifest": "refuse",
+        "frontend": "accept-with-keywords-trimmed"
+      },
+      "generate": { "keywordLength": 61 }
+    },
+    {
+      "name": "a host entry that is not a hostname",
+      "accept": false,
+      "commands": 0,
+      "contributes": {
+        "commands": [
+          {
+            "id": "do-it",
+            "title": "Do it",
+            "prompt": "Do it to {argument}",
+            "argument": { "kind": "url", "hosts": ["https://github.com"] }
+          }
+        ]
+      }
+    },
+    {
+      "name": "duplicate ids",
+      "accept": false,
+      "commands": 1,
+      "contributes": {
+        "commands": [
+          { "id": "do-it", "title": "First", "prompt": "One." },
+          { "id": "do-it", "title": "Second", "prompt": "Two." }
+        ]
+      }
+    },
+    {
+      "name": "an argument hint longer than the title cap",
+      "accept": false,
+      "commands": 0,
+      "$why": [
+        "hint, placeholder and patternError were the last app-supplied strings with no",
+        "bound on either side. They are not searched, so they cost layout rather than",
+        "per-keystroke work -- an outsized one pushes the resolved-prompt preview and the",
+        "footer around, and that preview is the consent surface for autoSend."
+      ],
+      "contributes": {
+        "commands": [
+          {
+            "id": "review-all",
+            "title": "Review all",
+            "prompt": "Review {argument}",
+            "argument": {
+              "kind": "url",
+              "hint": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "a subtitle longer than the title cap",
+      "accept": false,
+      "commands": 0,
+      "$why": [
+        "The subtitle is SEARCHED -- rankRootRows runs fuzzyMatch over it on every",
+        "keystroke -- so it belongs with the title and keyword bounds. It was the last",
+        "searchable string left unbounded on either side, which made the other caps",
+        "incomplete rather than wrong."
+      ],
+      "contributes": {
+        "commands": [
+          {
+            "id": "review-all",
+            "title": "Review all",
+            "subtitle": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+            "prompt": "Review the open pull requests"
+          }
+        ]
+      }
+    },
+    {
+      "name": "a non-object entry beside a good one",
+      "accept": false,
+      "commands": 1,
+      "$why": [
+        "Same split as the bad-id case, and deliberate: the manifest REFUSES so the app",
+        "author is told an entry vanished, while the launcher keeps the good rows so one",
+        "typo cannot empty the array at runtime. Before this the manifest filtered the",
+        "entry out silently and validated clean -- five declared commands could install",
+        "as four with no warning."
+      ],
+      "contributes": {
+        "commands": [
+          {
+            "id": "good",
+            "title": "Good",
+            "prompt": "Fine."
+          },
+          "approve-all"
+        ]
+      }
+    },
+    {
+      "name": "one bad entry does not take its siblings down",
+      "accept": false,
+      "commands": 1,
+      "contributes": {
+        "commands": [
+          { "id": "good", "title": "Good", "prompt": "Fine." },
+          { "id": "Bad_Id", "title": "Bad", "prompt": "Also fine otherwise." }
+        ]
+      }
+    },
+    {
+      "name": "one past the per-app command cap",
+      "accept": false,
+      "commands": 20,
+      "generate": { "commands": 21 }
+    },
+    {
+      "name": "a title one past the cap",
+      "accept": false,
+      "commands": 0,
+      "generate": { "titleLength": 121 }
+    },
+    {
+      "name": "a prompt one past the cap",
+      "accept": false,
+      "commands": 0,
+      "generate": { "promptLength": 4001 }
+    },
+    {
+      "name": "a host allowlist one past the cap",
+      "accept": false,
+      "commands": 0,
+      "generate": { "hosts": 21 }
+    }
+  ]
+}

@@ -212,6 +212,10 @@ _SLOT_SCOPED_EVENTS = frozenset({
     "steer_push",
     # Slot metadata / lifecycle
     "slot_title", "slot_clear", "slot_agent_switch", "todo_update",
+    # The slot's own MCP session report. Slot-scoped like todo_update and for the
+    # same reason: it carries ``slot`` and describes only that slot's session, so
+    # a token already scoped to the slot learns nothing wider from it.
+    "mcp_report_update",
     "activity_event", "session_summary",
     # Voice
     "voice_chunk", "voice_complete", "voice_error",

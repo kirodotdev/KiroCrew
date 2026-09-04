@@ -18,15 +18,24 @@
 import { describe, it, expect, vi } from 'vitest'
 import { render, fireEvent, within } from '@testing-library/react'
 import type { ChatSlot } from '../types'
-import SessionFlyout, { FLYOUT_MAX_ROWS, TOGGLE_RECT, toggleClip, FULL_CLIP } from '../pages/chat/SessionFlyout'
+import SessionFlyout, { FLYOUT_MAX_ROWS, toggleClip, FULL_CLIP } from '../pages/chat/SessionFlyout'
+
+/** The framer-motion props this mock READS; every other prop is copied through
+ *  to the plain DOM element untouched, which is what the index signature is for. */
+interface MotionMockProps {
+  [prop: string]: unknown
+  children?: React.ReactNode
+  animate?: { clipPath?: string | string[] }
+  transition?: { duration?: number }
+}
 
 // Render framer-motion elements as plain DOM (jsdom can't run projection).
 vi.mock('framer-motion', async () => {
   const React = await import('react')
   const FRAMER_PROPS = new Set(['layout', 'layoutId', 'initial', 'animate', 'exit', 'transition', 'variants'])
   const make = (tag: string) =>
-    React.forwardRef((props: any, ref: any) => {
-      const clean: any = {}
+    React.forwardRef((props: MotionMockProps, ref: React.Ref<unknown>) => {
+      const clean: Record<string, unknown> = {}
       for (const k of Object.keys(props)) {
         if (k === 'children' || FRAMER_PROPS.has(k)) continue
         clean[k] = props[k]
@@ -43,7 +52,7 @@ vi.mock('framer-motion', async () => {
     })
   return {
     motion: new Proxy({}, { get: (_t, tag: string) => make(tag) }),
-    AnimatePresence: ({ children }: any) => React.createElement(React.Fragment, null, children),
+    AnimatePresence: ({ children }: { children?: React.ReactNode }) => React.createElement(React.Fragment, null, children),
     useReducedMotion: () => false,
   }
 })
@@ -87,7 +96,7 @@ describe('SessionFlyout ordering', () => {
 
   it('puts a pinned session first even when it is the least recent', () => {
     const { container } = mount({
-      slots: [...SLOTS.slice(0, 2), slot({ ...SLOTS[2], pinned: true } as any)],
+      slots: [...SLOTS.slice(0, 2), slot({ ...SLOTS[2], pinned: true })],
     })
     expect(rowKeys(container)).toEqual(['k-mid', 'k-new', 'k-old'])
   })

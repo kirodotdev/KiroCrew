@@ -187,6 +187,83 @@ def test_realpath_dir_collapses_dotdot_in_a_missing_tail(symlinked_home):
 
 
 # --------------------------------------------------------------------------
+# args: a documented flag must be accepted AND reach the driver
+#
+# SKILL.md tells the operator to "pass --no-suppress-first-run" when testing the
+# onboarding flow itself, and pod-playwright.py accepts it — but the runner's
+# arg loop hit its `-*)` catch-all and exited 64, so the documented spelling
+# aborted the run before a single phase. Accepting it without appending it to
+# PW_ARGS would be just as broken (a silent no-op), so both halves are driven
+# out of the shipped script here.
+# --------------------------------------------------------------------------
+
+ARGS = _fragment('NAME="" ; KEEP=0', "\ndone")
+PW_BUILD = _fragment('PW_ARGS=("$PW_RUNNER"', 'PW_CMD=("$PW_PY" -u "${PW_ARGS[@]}")')
+
+
+def _driver_argv(tmp_path: Path, *argv: str) -> subprocess.CompletedProcess:
+    """Parse *argv* with the real loop, then build the real driver command.
+
+    Coupling the two fragments is the point: a flag the parser accepts but the
+    builder drops is the defect, and only the end-to-end argv shows it.
+    """
+    snippet = "\n".join(
+        [
+            "set -uo pipefail",
+            ARGS,
+            # Minimum context the construction block reads. MANIFEST is empty so
+            # the --spec branch stays out of the way.
+            "PW_RUNNER=/drv/pod-playwright.py ; PW_PY=/usr/bin/python3",
+            "BASE_URL=http://127.0.0.1:7811 ; ARTIFACT_DIR=/art ; CHECKOUT=/wt",
+            'MANIFEST=""',
+            PW_BUILD,
+            'printf "%s\\n" "${PW_CMD[@]}"',
+        ]
+    )
+    return subprocess.run(
+        ["bash", "-c", snippet, "pod-e2e.sh", *argv],
+        cwd=tmp_path,
+        env={"HOME": str(tmp_path), "PATH": "/usr/bin:/bin"},
+        capture_output=True,
+        encoding="utf-8",
+    )
+
+
+def test_no_suppress_first_run_is_accepted_and_forwarded(tmp_path):
+    """The regression: the documented flag exited 64 instead of reaching the driver."""
+    res = _driver_argv(tmp_path, "smoke", "--no-suppress-first-run")
+    assert res.returncode == 0, res.stdout + res.stderr
+    assert "unknown flag" not in res.stderr, res.stderr
+    argv = res.stdout.split()
+    assert "--no-suppress-first-run" in argv, f"never forwarded to the driver: {argv}"
+    # It must not be mistaken for the worktree NAME by the loop's `*)` arm.
+    assert "NAME=--no-suppress-first-run" not in res.stdout
+
+
+def test_first_run_suppression_stays_the_default(tmp_path):
+    """Absent the flag, nothing is appended — suppression is the documented default."""
+    res = _driver_argv(tmp_path, "smoke")
+    assert res.returncode == 0, res.stdout + res.stderr
+    assert "--no-suppress-first-run" not in res.stdout, res.stdout
+
+
+def test_unknown_flags_are_still_rejected(tmp_path):
+    """The catch-all must survive: a typo may not be silently swallowed."""
+    res = _driver_argv(tmp_path, "smoke", "--no-supress-first-run")
+    assert res.returncode == 64, res.stdout + res.stderr
+    assert "unknown flag" in res.stderr, res.stderr
+
+
+def test_usage_text_lists_the_flag():
+    """A flag the parser takes but the usage line hides is undiscoverable."""
+    lines = SCRIPT.read_text(encoding="utf-8").splitlines()
+    header = next(ln for ln in lines if ln.startswith("# pod-e2e.sh <worktree-name>"))
+    usage = next(ln for ln in lines if ln.lstrip().startswith('[ -n "$NAME" ]'))
+    for where, text in (("header", header), ("usage message", usage)):
+        assert "--no-suppress-first-run" in text, f"{where} omits the flag: {text}"
+
+
+# --------------------------------------------------------------------------
 # resolver: must mirror pod/runtime.py resolve_checkout() exactly
 # --------------------------------------------------------------------------
 
@@ -381,3 +458,59 @@ def test_health_accepts_a_valid_timeout_override(stub_cli, tmp_path, good):
     assert "HEALTHY=1" in res.stdout, res.stdout
     assert "ignoring POD_E2E_HEALTH_TIMEOUT" not in res.stderr, res.stderr
     assert "value too great for base" not in res.stderr, res.stderr
+
+
+@pytest.fixture()
+def ticking_date(tmp_path: Path) -> str:
+    """A `date` whose clock advances one whole second on every single call.
+
+    The real flake needed a genuine second boundary to fall in the one-fork gap
+    between the deadline assignment and the loop's own clock read -- a few
+    milliseconds in 1000, so it surfaced as an unreproducible macOS CI failure
+    rather than anything a test could pin. This shim makes that boundary land
+    there every time: call one returns N, call two returns N+1. Nothing else on
+    PATH is replaced, so the stub CLI and python3 still run normally.
+    """
+    bindir = tmp_path / "clockshim"
+    bindir.mkdir()
+    counter = tmp_path / "clock-counter"
+    shim = bindir / "date"
+    shim.write_text(textwrap.dedent(f"""\
+            #!/bin/sh
+            n=$(cat '{counter}' 2>/dev/null || echo 1000)
+            echo $((n + 1)) > '{counter}'
+            echo "$n"
+            """))
+    shim.chmod(0o755)
+    return str(bindir)
+
+
+def test_health_probes_at_least_once_when_the_clock_ticks_past_the_deadline(
+    stub_cli, tmp_path, ticking_date
+):
+    """The poll must be a do-while: probe, THEN judge the deadline.
+
+    `date +%s` is whole-second, so the pre-test form read a clock that could have
+    already ticked past a deadline computed one fork earlier and skipped its body
+    entirely. The body is the only place HEALTHY is set, so a healthy pod was
+    reported as "never became healthy" -- a false red whose message points the
+    operator at a boot log that shows a perfectly healthy boot.
+    """
+    res = _run(_health_snippet(stub_cli("200")), str(tmp_path), extra_path=ticking_date)
+    assert res.returncode == 0, res.stdout + res.stderr
+    assert "HEALTHY=1" in res.stdout, f"zero probes performed: {res.stdout}"
+    assert "FAIL:" not in res.stdout, res.stdout
+
+
+def test_health_still_gives_up_when_the_clock_runs_away(stub_cli, tmp_path, ticking_date):
+    """Probing first must not cost the deadline -- an unhealthy pod still ends.
+
+    Guards the other side of the same change: a do-while whose exit test was
+    dropped would hang an unattended harness forever on a pod that never answers.
+    With this clock every iteration burns a second, so the 1s deadline is past
+    immediately after the first probe.
+    """
+    res = _run(_health_snippet(stub_cli("0")), str(tmp_path), extra_path=ticking_date)
+    assert res.returncode == 0, res.stdout + res.stderr
+    assert "HEALTHY=0 FOREIGN=0" in res.stdout, res.stdout
+    assert "never became healthy" in res.stdout, res.stdout

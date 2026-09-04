@@ -313,7 +313,8 @@ test("stopGatewayGracefully: a HUNG tree kill still resolves, and never pre-empt
   // A tree kill is AWAITED, not raced against a timer. Pre-empting it would kill
   // the parent alone and orphan exactly the descendants it exists to reap -- the
   // bug, dressed up as a mitigation. So the contract is: the caller sizes the tree
-  // kill's own timeouts to fit this deadline (pinned by the main.js test below),
+  // kill's own timeouts to fit this deadline (pinned by the
+  // gateway-supervisor.js source test below),
   // and this function must not resolve a moment later than it otherwise would.
   //
   // Asserted with a kill that NEVER settles, the pathological case: the hard timer
@@ -359,15 +360,22 @@ test("wedge recovery kills the gateway TREE, not just the wedged pid", () => {
   // kiro-cli / MCP children survive holding the data home's locks and race the
   // gateway that is about to be respawned.
   //
-  // Source-asserted because main.js requires electron at load time. The
-  // requirement is that the wedge kill go through a tree-scoped path on win32,
-  // not that it use any particular helper name.
-  const main = fs.readFileSync(path.join(__dirname, "..", "main.js"), "utf8");
+  // Source-asserted at the supervisor ownership boundary. The requirement is
+  // that the wedge kill go through a tree-scoped path on win32, not that it use
+  // any particular helper name.
+  const supervisor = fs.readFileSync(
+    path.join(__dirname, "..", "gateway-supervisor.js"),
+    "utf8",
+  );
   const marker = "liveness: backend unresponsive — force-killing wedged gateway";
-  const at = main.indexOf(marker);
-  assert.notStrictEqual(at, -1, "expected the wedge-recovery force-kill path in main.js");
+  const at = supervisor.indexOf(marker);
+  assert.notStrictEqual(
+    at,
+    -1,
+    "expected the wedge-recovery force-kill path in gateway-supervisor.js",
+  );
   // The kill happens within the next few dozen lines of that log line.
-  const region = main.slice(at, at + 2000);
+  const region = supervisor.slice(at, at + 2000);
   assert.match(
     region,
     /killGatewayProcessTree|windowsTaskkill|IS_WIN/,
@@ -379,10 +387,14 @@ test("wedge recovery kills the gateway TREE, not just the wedged pid", () => {
   // deadline to fit inside. Wedge recovery has none, so inheriting them would time
   // the identity probe out early on a slow box, fall back to the parent-only kill,
   // and respawn beside the very orphans this path exists to reap.
-  const helper = main.indexOf("async function killGatewayProcessTree");
-  assert.notStrictEqual(helper, -1, "expected the shared tree-kill helper in main.js");
+  const helper = supervisor.indexOf("async function killGatewayProcessTree");
+  assert.notStrictEqual(
+    helper,
+    -1,
+    "expected the shared tree-kill helper in gateway-supervisor.js",
+  );
   assert.doesNotMatch(
-    main.slice(helper, helper + 1200),
+    supervisor.slice(helper, helper + 1200),
     /killGatewayTreeOnWindowsBounded/,
     "the wedge-recovery tree kill must not reuse the shutdown-BOUNDED helper: it " +
       "has no deadline to fit, so the shortened probe timeouts only make an early " +
@@ -390,7 +402,7 @@ test("wedge recovery kills the gateway TREE, not just the wedged pid", () => {
   );
 });
 
-test("main.js bounds the shutdown tree kill so it fits inside the hard deadline", () => {
+test("the gateway supervisor bounds the shutdown tree kill to the hard deadline", () => {
   // windowsTaskkill's DEFAULTS are sized for the interactive port sweep: identity
   // revalidation via PowerShell (8s) then WMIC (5s), then taskkill itself (10s) --
   // 23s worst case, which is longer than stopGatewayGracefully's whole deadline of
@@ -401,19 +413,26 @@ test("main.js bounds the shutdown tree kill so it fits inside the hard deadline"
   // Rather than pre-empting the kill (which would defeat its purpose by killing
   // the parent alone and orphaning the tree it exists to reap), the call site
   // passes TIGHTER timeouts so the whole tree kill provably completes first.
-  const main = fs.readFileSync(path.join(__dirname, "..", "main.js"), "utf8");
-  const start = main.indexOf("function killGatewayTreeOnWindowsBounded");
-  assert.notStrictEqual(start, -1, "main.js must define the bounded Windows tree kill");
+  const supervisor = fs.readFileSync(
+    path.join(__dirname, "..", "gateway-supervisor.js"),
+    "utf8",
+  );
+  const start = supervisor.indexOf("function killGatewayTreeOnWindowsBounded");
+  assert.notStrictEqual(
+    start,
+    -1,
+    "gateway-supervisor.js must define the bounded Windows tree kill",
+  );
   // Brace-match to the end of the function rather than regex-scanning to the first
   // "})," -- the call nests one options object inside another, so a lazy pattern
   // stops early and silently misses the outer timeout.
   let depth = 0;
   let end = start;
-  for (; end < main.length; end += 1) {
-    if (main[end] === "{") depth += 1;
-    else if (main[end] === "}") { depth -= 1; if (depth === 0) break; }
+  for (; end < supervisor.length; end += 1) {
+    if (supervisor[end] === "{") depth += 1;
+    else if (supervisor[end] === "}") { depth -= 1; if (depth === 0) break; }
   }
-  const call = main.slice(start, end + 1);
+  const call = supervisor.slice(start, end + 1);
   const budget = ["powershellTimeoutMs", "wmicTimeoutMs", "timeoutMs"]
     .map((k) => Number((new RegExp(`${k}:\\s*(\\d+)`).exec(call) || [])[1]));
   assert.ok(

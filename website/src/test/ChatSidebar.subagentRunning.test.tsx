@@ -24,21 +24,21 @@ vi.mock('framer-motion', async () => {
     'drag', 'dragConstraints', 'dragElastic', 'onAnimationComplete',
   ])
   const make = (tag: string) =>
-    React.forwardRef((props: any, ref: any) => {
-      const clean: any = {}
+    React.forwardRef((props: Record<string, unknown>, ref: React.Ref<unknown>) => {
+      const clean: Record<string, unknown> = {}
       for (const k of Object.keys(props)) {
         if (k === 'children') continue
         if (k === 'layoutId') { clean['data-layout-id'] = props[k]; continue }
         if (FRAMER_PROPS.has(k)) continue
         clean[k] = props[k]
       }
-      return React.createElement(tag, { ...clean, ref }, props.children)
+      return React.createElement(tag, { ...clean, ref }, props.children as React.ReactNode)
     })
   const motion = new Proxy({}, { get: (_t, tag: string) => make(tag) })
   return {
     motion,
-    AnimatePresence: ({ children }: any) => React.createElement(React.Fragment, null, children),
-    LayoutGroup: ({ children }: any) => React.createElement(React.Fragment, null, children),
+    AnimatePresence: ({ children }: { children?: React.ReactNode }) => React.createElement(React.Fragment, null, children),
+    LayoutGroup: ({ children }: { children?: React.ReactNode }) => React.createElement(React.Fragment, null, children),
   }
 })
 
@@ -66,11 +66,13 @@ Object.defineProperty(window, 'matchMedia', {
 })
 
 import ChatSidebar from '../pages/ChatSidebar'
+import type { RootState } from '../store'
+import type { ChatSlot, SubagentActivity } from '../types'
 
 /** Minimal SubagentActivity — subagentCounts only reads `.status`. */
-const sa = (status: string) => ({ id: `id-${status}-${Math.random()}`, status } as any)
+const sa = (status: string) => ({ id: `id-${status}-${Math.random()}`, status } as unknown as SubagentActivity)
 
-function renderSidebar(slots: any[], chat: Record<string, unknown>, activeSlotProp: string | null = null) {
+function renderSidebar(slots: ChatSlot[], chat: Record<string, unknown>, activeSlotProp: string | null = null) {
   const store = createTestStore({
     dashboard: {
       status: {}, connected: true, slots, approvalMode: 'normal',
@@ -78,8 +80,8 @@ function renderSidebar(slots: any[], chat: Record<string, unknown>, activeSlotPr
       slotsLoaded: true,
       subagentRunning: {}, subagentDetails: {}, subagentText: {},
       sessionDefaultColor: null, sessionColorsMode: 'tint', sessionColorsPalette: 'horizon', sessionColorsIntensity: 'clear',
-    } as any,
-    chat: { activeSlot: null, slotStatusDetail: {}, subagents: {}, slotActivity: {}, ...chat } as any,
+    } as unknown as RootState['dashboard'],
+    chat: { activeSlot: null, slotStatusDetail: {}, subagents: {}, slotActivity: {}, ...chat } as unknown as RootState['chat'],
   })
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })
   qc.setQueryData(['chat-folders'], [])
@@ -105,7 +107,7 @@ afterEach(() => vi.clearAllMocks())
 describe('chat sidebar — "N agents running" subtitle', () => {
   it('shows the indicator for a BACKGROUND slot whose turn has ended (running=false), over the last message', () => {
     // The core case: parent turn is done but a spawned subagent is still working.
-    const slots = [{ key: 'k-bg', title: 'bg', running: false, messages: 3, last_message: 'stale last message' }]
+    const slots = [{ key: 'k-bg', title: 'bg', running: false, messages: 3, last_message: 'stale last message' }] as unknown as ChatSlot[]
     const { getByText, queryByText } = renderSidebar(
       slots,
       { activeSlot: null, slotActivity: { 'k-bg': { toolLog: [], subagents: { s1: sa('running') } } } },
@@ -115,7 +117,7 @@ describe('chat sidebar — "N agents running" subtitle', () => {
   })
 
   it('pluralizes and counts running + tool + pending as active for the ACTIVE slot', () => {
-    const slots = [{ key: 'k-act', title: 'act', running: false, messages: 2 }]
+    const slots = [{ key: 'k-act', title: 'act', running: false, messages: 2 }] as unknown as ChatSlot[]
     const { getByText } = renderSidebar(
       slots,
       { activeSlot: 'k-act', subagents: { a: sa('running'), b: sa('tool'), c: sa('pending') } },
@@ -125,7 +127,7 @@ describe('chat sidebar — "N agents running" subtitle', () => {
   })
 
   it('outranks the generic running "Thinking…" line', () => {
-    const slots = [{ key: 'k', title: 'r', running: true, messages: 1 }]
+    const slots = [{ key: 'k', title: 'r', running: true, messages: 1 }] as unknown as ChatSlot[]
     const { getByText, queryByText } = renderSidebar(
       slots,
       { activeSlot: 'k', subagents: { a: sa('running') }, slotStatusDetail: { k: { text: 'Thinking…' } } },
@@ -136,7 +138,7 @@ describe('chat sidebar — "N agents running" subtitle', () => {
   })
 
   it('is outranked by a pending approval', () => {
-    const slots = [{ key: 'k', title: 'a', running: false, messages: 2, pending_approval: true }]
+    const slots = [{ key: 'k', title: 'a', running: false, messages: 2, pending_approval: true }] as unknown as ChatSlot[]
     const { getByText, queryByText } = renderSidebar(
       slots,
       { activeSlot: null, slotActivity: { k: { toolLog: [], subagents: { a: sa('running') } } } },
@@ -146,7 +148,7 @@ describe('chat sidebar — "N agents running" subtitle', () => {
   })
 
   it('does not count terminal (done/error) subagents', () => {
-    const slots = [{ key: 'k', title: 'd', running: false, messages: 2, last_message: 'final answer' }]
+    const slots = [{ key: 'k', title: 'd', running: false, messages: 2, last_message: 'final answer' }] as unknown as ChatSlot[]
     const { getByText, queryByText } = renderSidebar(
       slots,
       { activeSlot: null, slotActivity: { k: { toolLog: [], subagents: { a: sa('done'), b: sa('error') } } } },
@@ -163,7 +165,7 @@ describe('chat sidebar — "N agents running" subtitle', () => {
  */
 describe('chat sidebar — queued subagents', () => {
   it('surfaces a wave that is entirely queued, and says queued (not running)', () => {
-    const slots = [{ key: 'k-q', title: 'q', running: false, messages: 2, last_message: 'stale last message' }]
+    const slots = [{ key: 'k-q', title: 'q', running: false, messages: 2, last_message: 'stale last message' }] as unknown as ChatSlot[]
     const { getByText, queryByText } = renderSidebar(
       slots,
       { activeSlot: null, subagentQueued: { 'k-q': 3 } },
@@ -173,7 +175,7 @@ describe('chat sidebar — queued subagents', () => {
   })
 
   it('splits the label when a staggered ramp has both started and queued agents', () => {
-    const slots = [{ key: 'k-mix', title: 'mix', running: false, messages: 2 }]
+    const slots = [{ key: 'k-mix', title: 'mix', running: false, messages: 2 }] as unknown as ChatSlot[]
     const { getByText } = renderSidebar(
       slots,
       { activeSlot: 'k-mix', subagents: { a: sa('running') }, subagentQueued: { 'k-mix': 2 } },
@@ -183,7 +185,7 @@ describe('chat sidebar — queued subagents', () => {
   })
 
   it('a zero queue depth changes nothing', () => {
-    const slots = [{ key: 'k-z', title: 'z', running: false, messages: 2, last_message: 'final answer' }]
+    const slots = [{ key: 'k-z', title: 'z', running: false, messages: 2, last_message: 'final answer' }] as unknown as ChatSlot[]
     const { getByText } = renderSidebar(slots, { activeSlot: null, subagentQueued: { 'k-z': 0 } })
     expect(getByText('final answer')).toBeTruthy()
   })

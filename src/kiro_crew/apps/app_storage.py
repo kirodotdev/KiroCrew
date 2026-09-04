@@ -72,7 +72,10 @@ class AppStorage:
         """Delete a key. Returns True if existed."""
         path = self._key_path(key)
         if path.is_file():
-            path.unlink()
+            try:
+                path.unlink()
+            except FileNotFoundError:
+                return False
             sel().log_api_access(
                 caller=f"app:{self._app_name}",
                 operation="app_storage.delete",

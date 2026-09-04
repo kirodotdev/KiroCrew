@@ -994,10 +994,13 @@ export const CREW_PHASES = [
 export type CrewPhase = typeof CREW_PHASES[number]
 
 /** Mirrors `crew_store.EVENT_KINDS`. The store REFUSES an unknown kind, so this
- * union is enforced server-side rather than merely documented. */
+ * union is enforced server-side rather than merely documented.
+ *
+ * `sweep` is the one kind that belongs to no issue — a crew reporting that it
+ * checked the queue and took nothing — so its lines carry no `number`. */
 export const CREW_EVENT_KINDS = [
   'claim', 'investigate', 'reply', 'implement', 'ci',
-  'review', 'conflict', 'merge', 'handback', 'skip', 'yield',
+  'review', 'conflict', 'merge', 'handback', 'skip', 'yield', 'sweep',
 ] as const
 
 export type CrewEventKind = typeof CREW_EVENT_KINDS[number]
@@ -1124,7 +1127,10 @@ export interface CrewEvent {
   id: string
   ts: string
   crew_id: string
-  number: number
+  /** ABSENT on a crew-level line (`kind: 'sweep'`), which belongs to no issue.
+   *  Optional rather than nullable because the backend omits the key entirely —
+   *  a `0` would be indistinguishable from a real issue number. */
+  number?: number
   kind: CrewEventKind
   text: string
 }

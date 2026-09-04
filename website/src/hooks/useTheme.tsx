@@ -27,6 +27,7 @@ import {
 } from './themeCss'
 
 import { i18nT } from '../i18n/t'
+import type { ThemeLoaderIconName } from '../themeLoaderIcons'
 
 export type ModePreference = 'dark' | 'light' | 'system'
 export type ResolvedMode = 'dark' | 'light'
@@ -126,6 +127,8 @@ export interface ThemeAssets {
   branding?: ThemeBranding
   fonts?: ThemeFontFace[]
   hasOverrides?: boolean
+  /** Stock symbol names for the chat loader's existing carousel. */
+  loaderIcons?: ThemeLoaderIconName[]
   // L2 assets: overlays, topbar, audio, persona.
   overlays?: ThemeOverlayDecl[]
   topbar?: ThemeTopbar
@@ -294,26 +297,36 @@ function applyThemeOverrides(theme: CustomThemeData | undefined): Promise<Overri
     })
 }
 
-/** Apply/revert the active installed theme's branding (favicon + logo var). */
-function applyThemeBranding(theme: CustomThemeData | undefined) {
+interface ResolvedThemeBranding {
+  logo: string | null
+  favicon: string | null
+}
+
+/** Apply/revert an installed theme's branding and return shell-safe asset URLs. */
+function applyThemeBranding(theme: CustomThemeData | undefined): ResolvedThemeBranding {
   const root = document.documentElement
   document.getElementById('mc-theme-favicon')?.remove()
   root.style.removeProperty('--theme-logo')
   const b = theme?.assets?.branding
   const slug = theme ? safeSlug(theme.slug) : ''
-  if (!b || !slug) return
+  if (!b || !slug) return { logo: null, favicon: null }
+
   const fav = b.favicon ? safeAssetPath(b.favicon) : ''
-  if (fav) {
+  const favicon = fav ? `${assetBase(slug)}/${fav}` : null
+  if (favicon) {
     const link = document.createElement('link')
     link.id = 'mc-theme-favicon'
     link.rel = 'icon'
-    link.href = `${assetBase(slug)}/${fav}`
+    link.href = favicon
     document.head.appendChild(link)
   }
-  const logo = b.logo ? safeAssetPath(b.logo) : ''
-  if (logo) {
-    root.style.setProperty('--theme-logo', assetUrlValue(slug, logo))
+
+  const logoPath = b.logo ? safeAssetPath(b.logo) : ''
+  const logo = logoPath ? `${assetBase(slug)}/${logoPath}` : null
+  if (logoPath) {
+    root.style.setProperty('--theme-logo', assetUrlValue(slug, logoPath))
   }
+  return { logo, favicon }
 }
 
 /**
@@ -468,6 +481,10 @@ export interface ThemeContextValue {
   allThemes: ThemeEntry[]
   /** Active installed theme's branding bot-name, or null for built-ins / L0. */
   brandName: string | null
+  /** Active installed theme's shell logo URL, or null for built-ins / L0. */
+  brandLogo: string | null
+  /** Active installed theme's browser favicon URL, or null for built-ins / L0. */
+  brandFavicon: string | null
   customThemes: ThemeEntry[]
   customThemeDataMap: Map<string, CustomThemeData>
   themeVersion: number
@@ -515,6 +532,11 @@ export function useTheme(): ThemeContextValue {
   return ctx
 }
 
+/** Read theme state when available without requiring standalone consumers to mount the provider. */
+export function useOptionalTheme(): ThemeContextValue | null {
+  return useContext(ThemeContext)
+}
+
 /**
  * Internal state hook — ONLY called once, by ThemeProvider. All theme state,
  * effects, listeners, and API calls live here. Consumers reach this via
@@ -540,8 +562,10 @@ function useThemeState(): ThemeContextValue {
   const [themeVersion, setThemeVersion] = useState(0)
   const bumpThemeVersion = useCallback(() => setThemeVersion(v => v + 1), [])
   const [onboarded, setOnboarded] = useState(() => !!localStorage.getItem('mc-onboarded'))
-  // Active installed theme's branding bot-name (null for built-ins / L0 themes).
+  // Active installed theme's branding for shell text, left-rail logo, and favicon.
   const [brandName, setBrandName] = useState<string | null>(null)
+  const [brandLogo, setBrandLogo] = useState<string | null>(null)
+  const [brandFavicon, setBrandFavicon] = useState<string | null>(null)
   // Lightweight "Applying…" indicator: true only while an INSTALLED theme's
   // async assets settle after a switch (built-ins/editor-customs are instant).
   const [themeSwitching, setThemeSwitching] = useState(false)
@@ -819,12 +843,16 @@ function useThemeState(): ThemeContextValue {
       ? customThemeDataMap.get(colorTheme.slice('custom-'.length))
       : undefined
     try {
-      applyThemeBranding(active)
+      const appliedBranding = applyThemeBranding(active)
       setBrandName(active?.assets?.branding?.botName ?? null)
+      setBrandLogo(appliedBranding.logo)
+      setBrandFavicon(appliedBranding.favicon)
     } catch {
       // A branding-application throw must not skip the overrides settle below,
       // which is what clears the "Applying…" indicator — otherwise it wedges.
       setBrandName(null)
+      setBrandLogo(null)
+      setBrandFavicon(null)
     }
     let cancelled = false
     applyThemeOverrides(active)
@@ -974,6 +1002,8 @@ function useThemeState(): ThemeContextValue {
     overridesDropReport,
     allThemes,
     brandName,
+    brandLogo,
+    brandFavicon,
     customThemes,
     customThemeDataMap,
     themeVersion,

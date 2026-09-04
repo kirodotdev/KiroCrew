@@ -337,7 +337,7 @@ class ScriptContext:
         safe_args = json.loads(args_str)
         client = None
         try:
-            client = McpToolClient(server)
+            client = McpToolClient(server, session_key=f"cron:{self.job.id}")
             result = client.call_tool(tool, safe_args)
             self._audit_tool_call(server, tool, "ok")
             return result
@@ -396,8 +396,9 @@ class ScriptContext:
 class McpToolClient:
     """Minimal MCP JSON-RPC client. Spawns server subprocess, calls tool, closes."""
 
-    def __init__(self, server_name: str):
+    def __init__(self, server_name: str, session_key: str = ""):
         self._server_name = server_name
+        self._session_key = session_key
         resolved = _resolve_mcp_server(server_name)
         if not resolved:
             raise RuntimeError(f"MCP server '{server_name}' not found in agent config")
@@ -454,6 +455,16 @@ class McpToolClient:
         proc_env.update(
             sanitize_spec_env((k, v) for k, v in spec_env.items() if k not in _CRON_ENV_DENY)
         )
+        if self._session_key:
+            # Hard-assigned (not setdefault) AFTER both overlays, for the same
+            # reason ScriptContext.notify() hard-assigns ``caller_session``: the
+            # inherited env is the script child's own ``os.environ``, which user
+            # code can rewrite before calling ``ctx.call_tool``. The identity the
+            # spawned server sees must be the one the launcher gave THIS job, not
+            # whatever the script put there. Best-effort friction against
+            # in-process forgery, on the same footing as the rest of the env-
+            # based identity contract (see session_pid_sig's threat model).
+            proc_env["KIROCREW_SESSION_KEY"] = self._session_key
         # Capture stderr to a tempfile instead of DEVNULL so spawn/handshake
         # failures are legible. DEVNULL hid the real cause -- wrong
         # Node version, expired auth cookies, OOM kill, sandbox failure -- behind
@@ -846,6 +857,23 @@ def run_script_sandboxed(
         # The child must dial the gateway the credential above was minted for:
         # same dial_port, resolved once above, not a second resolution here.
         clean_env["_KIROCREW_DIAL_PORT"] = str(dial_port)
+        # Give the child the SAME identity the gateway hands every agent
+        # subprocess (acp/client.py injects KIROCREW_SESSION_KEY for agent crons
+        # too): the strict resolver behind every state-mutating MCP tool
+        # (mcp_core._resolve_session_key_strict) accepts exactly three sources --
+        # the gateway-injected caller block, this env var, or KIROCREW_HOST_PID
+        # plus its signed sidecar. A script cron had NONE of them: nothing routes
+        # its direct MCP spawns through gatewayd, nobody publishes a sidecar for
+        # its launcher pid, and this env was never set -- so on Linux the sandbox
+        # launcher's KIROCREW_HOST_PID pointed at an unsigned pid and every write
+        # was refused with "the signed pid mapping did not verify", while on
+        # macOS/Windows there was no channel at all. Read-only calls were
+        # unaffected, so the refusal surfaced only as a script that silently did
+        # nothing. `cron:<job id>` is the key ScriptContext already presents to
+        # the gateway over HTTP (X-Session-Key / caller_session) and the key
+        # agent-cron sessions run under, so ownership and audit see one
+        # principal per job regardless of which surface the job uses.
+        clean_env["KIROCREW_SESSION_KEY"] = f"cron:{job_id}"
         # Pre-resolve gh OUTSIDE the sandbox and pin its identity for the
         # child: the sandbox's single-uid user namespace maps every root-owned
         # path component to the overflow uid, so the child's own ownership

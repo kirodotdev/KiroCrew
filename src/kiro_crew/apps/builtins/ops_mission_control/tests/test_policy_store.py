@@ -10,6 +10,7 @@ write. Found in review; fixed by moving them to `ops_mission_control_policy.json
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import shutil
@@ -746,3 +747,107 @@ class TestPolicyLockdownOrdering(_HomeIsolated):
             policy_store.read_mode("unset"), models.MODE_OBSERVE,
             "a transient write failure destroyed the previously recorded ceiling",
         )
+
+
+class TestTheCeilingIsNeverPublishedOverAFailedRead(_HomeIsolated):
+    """The BASE read of a read-modify-write may not fail open.
+
+    ``_read`` collapses every failure to ``{}``, which is right for the gate
+    readers — an unreadable ceiling resolves to ``observe`` with no act-rules,
+    the most restrictive answer, not a permissive one. It is wrong as the base of
+    ``set_ceiling``/``put``, which rewrite the WHOLE file: there ``{}`` means
+    "discard every other operator-only key", and this one file holds ALL of them
+    — the ceiling, the ledger remote, the Slack channel, the rotation identity,
+    the primary-instance flag.
+
+    Every one of those falls back to a value the agent CAN influence, so a
+    transient EACCES reproduces by accident the exact bypass the keystone floor
+    exists to prevent. The class above proved a failed WRITE cannot reach the
+    previous ceiling; a failed READ went around it, because the write that
+    followed succeeded — it just wrote a document with everything missing.
+    """
+
+    def _unreadable_policy(self):
+        """Fail ONLY the policy file's read, as a transient EACCES would.
+
+        Scoped by path: a blanket ``read_text`` failure would also break home
+        resolution and ``config.json``, and the test would pass for the wrong
+        reason.
+        """
+        from kiro_crew.apps.builtins.ops_mission_control.backend import policy_store
+
+        target = policy_store.policy_path()
+        real_read_text = Path.read_text
+
+        def _guarded(path_self, *args, **kwargs):
+            if Path(path_self) == target:
+                raise PermissionError(13, "Permission denied")
+            return real_read_text(path_self, *args, **kwargs)
+
+        return mock.patch.object(Path, "read_text", _guarded)
+
+    def test_a_read_that_failed_never_truncates_the_ceiling(self):
+        """The durable harm, asserted directly: every OTHER operator-only key
+        the operator set must still be on the fenced floor afterwards."""
+        from kiro_crew.apps.builtins.ops_mission_control.backend import policy_store
+
+        policy_store.set_ceiling(mode="observe", rules=[])
+        policy_store.put("slack_channel", "#ops-the-operator-chose")
+        policy_store.put("ledger_sync_remote", "https://git.example/ops-ledger.git")
+        before = policy_store.policy_path().read_bytes()
+
+        with self._unreadable_policy():
+            with contextlib.suppress(OSError):
+                policy_store.set_ceiling(mode="act")
+            with contextlib.suppress(OSError):
+                policy_store.put("primary_instance", True)
+
+        self.assertEqual(
+            policy_store.policy_path().read_bytes(), before,
+            "a failed read was published back over the ceiling",
+        )
+        self.assertEqual(
+            policy_store.get("slack_channel"), "#ops-the-operator-chose",
+            "a failed read dropped the operator's outbound destination",
+        )
+        self.assertEqual(
+            policy_store.get("ledger_sync_remote"), "https://git.example/ops-ledger.git",
+            "a failed read dropped the operator's ledger remote",
+        )
+
+    def test_an_unreadable_ceiling_refuses_the_write(self):
+        """The operator must be told, rather than being handed a 200 for a
+        ceiling change that did not happen."""
+        from kiro_crew.apps.builtins.ops_mission_control.backend import policy_store
+
+        with self._unreadable_policy():
+            with self.assertRaises(OSError):
+                policy_store.set_ceiling(mode="act")
+
+    def test_an_unreadable_ceiling_refuses_a_single_key_write(self):
+        """``put`` is the generic setter for the destination and identity keys,
+        and rewrites the same whole file, so it needs the same refusal."""
+        from kiro_crew.apps.builtins.ops_mission_control.backend import policy_store
+
+        with self._unreadable_policy():
+            with self.assertRaises(OSError):
+                policy_store.put("slack_channel", "#somewhere-else")
+
+    def test_a_missing_ceiling_is_still_a_first_write(self):
+        """Absent is the one failure where ``{}`` is the truth. The guard must
+        not turn the operator's very first settings save into an error."""
+        from kiro_crew.apps.builtins.ops_mission_control.backend import policy_store
+
+        self.assertFalse(policy_store.policy_path().exists())
+        policy_store.set_ceiling(mode="act")
+        self.assertEqual(policy_store.read_mode("observe"), "act")
+
+    def test_a_corrupt_ceiling_still_repairs_on_write(self):
+        """Existing tolerance, pinned so the unreadable-file guard is not
+        mistaken for a licence to start failing on corruption too."""
+        from kiro_crew.apps.builtins.ops_mission_control.backend import policy_store
+
+        policy_store.policy_path().parent.mkdir(parents=True, exist_ok=True)
+        policy_store.policy_path().write_text("{ not json", encoding="utf-8")
+        policy_store.set_ceiling(mode="act")
+        self.assertEqual(policy_store.read_mode("observe"), "act")

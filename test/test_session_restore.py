@@ -106,6 +106,7 @@ class TestRestoreRecentSessions:
         assert len(slot.messages) == 2
         assert slot.messages[0]["content"] == "hello"
         assert slot.messages[1]["content"] == "hi there"
+        assert all(not (message.get("meta") or {}).get("mid") for message in slot.messages)
         assert slot._dirty is False
         assert slot._resumed_count == 2
 

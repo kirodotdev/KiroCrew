@@ -154,6 +154,9 @@ function useNotifier(): (message: string, opts?: { type?: 'info' | 'success' | '
   )
 }
 
+/** How often the list re-reads the calendar cache and the meetings on disk. */
+const LIST_REFRESH_MS = 60_000
+
 export default function MeetingsPage() {
   const notify = useNotifier()
   const queryClient = useQueryClient()
@@ -161,8 +164,19 @@ export default function MeetingsPage() {
   const [filter, setFilter] = useState('')
 
   const configQuery = useQuery({ queryKey: ['meetings', 'config'], queryFn: meetingsApi.config })
-  const calendarQuery = useQuery({ queryKey: ['meetings', 'calendar'], queryFn: meetingsApi.calendar })
-  const meetingsQuery = useQuery({ queryKey: ['meetings', 'list'], queryFn: meetingsApi.meetings })
+  // The backend's calendar poller refreshes the cache and pre-creates the meeting
+  // that is about to start while this page sits open, so both lists re-read on a
+  // cadence: without it a pre-created meeting appears only after a remount.
+  const calendarQuery = useQuery({
+    queryKey: ['meetings', 'calendar'],
+    queryFn: meetingsApi.calendar,
+    refetchInterval: LIST_REFRESH_MS,
+  })
+  const meetingsQuery = useQuery({
+    queryKey: ['meetings', 'list'],
+    queryFn: meetingsApi.meetings,
+    refetchInterval: LIST_REFRESH_MS,
+  })
 
   const sync = useMutation({
     mutationFn: meetingsApi.syncCalendar,

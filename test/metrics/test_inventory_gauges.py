@@ -159,7 +159,7 @@ def test_unparseable_crons_publishes_the_failure_series_and_no_count(tmp_path, m
         (tmp_path / "crons.json").write_text("{not json", encoding="utf-8")
         metrics = _collect()
         assert ig.GAUGE_CRONS_ACTIVE not in metrics or not metrics[ig.GAUGE_CRONS_ACTIVE]
-        failures = {dp.attributes["probe"]: dp.value for dp in metrics[ig.COUNTER_PROBE_FAILURES]}
+        failures = {dp.attributes["probe"]: dp.value for dp in metrics[ig.GAUGE_PROBE_FAILURES]}
         assert failures.get(ig.PROBE_CRONS) == 1, f"crons fault not published: {failures}"
     finally:
         ig.reset_for_testing()
@@ -549,7 +549,7 @@ def test_collection_yields_every_instrument_with_the_expected_shape():
         metrics = _collect()
 
     for name in ig.ALL_METRIC_NAMES:
-        if name == ig.COUNTER_PROBE_FAILURES:
+        if name == ig.GAUGE_PROBE_FAILURES:
             # Absent by design on a healthy install: it publishes only once a probe
             # has failed, so a healthy host adds no series. Covered positively by
             # test_probe_failure_publishes_a_counter_series.
@@ -643,7 +643,7 @@ def test_probe_failure_publishes_a_counter_series():
         with patch.object(ig, "read_active_crons", side_effect=RuntimeError("boom")):
             metrics = _collect()
         assert ig.GAUGE_CRONS_ACTIVE not in metrics or not metrics[ig.GAUGE_CRONS_ACTIVE]
-        points = metrics.get(ig.COUNTER_PROBE_FAILURES) or []
+        points = metrics.get(ig.GAUGE_PROBE_FAILURES) or []
         assert points, "a failed probe published no failure series"
         counts = {p.attributes["probe"]: p.value for p in points}
         assert counts == {ig.PROBE_CRONS: 1}

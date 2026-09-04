@@ -2039,6 +2039,7 @@ class TestNoStoreCallRunsOnTheEventLoop:
     )
 
     def _route_modules(self) -> list:
+        from kiro_crew.apps.builtins.meetings.backend import calendar_poller, calendar_sync
         from kiro_crew.apps.builtins.meetings.backend.routes import (
             agents,
             calendar,
@@ -2047,7 +2048,9 @@ class TestNoStoreCallRunsOnTheEventLoop:
             tasks,
         )
 
-        return [agents, calendar, meeting_lifecycle, settings, tasks]
+        # The poller is not a route, but a periodic task is exactly as
+        # loop-reachable as a handler, so it is held to the same rule.
+        return [agents, calendar, meeting_lifecycle, settings, tasks, calendar_sync, calendar_poller]
 
     def _inline_blocking_calls(self, module) -> list[str]:
         """`file:line handler -> callee()` for every blocking call in an `async def`.

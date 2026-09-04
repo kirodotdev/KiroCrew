@@ -23,20 +23,40 @@ import: the skill editor's frontmatter splicer
 (``website/src/components/SkillForm.tsx``) MIRRORS :data:`SKILL_LOADER`'s
 grammar in TypeScript, because it must never write a value this reader would
 decode differently than it wrote it. ``readerCannotDecode`` and
-``backendReadsValue`` there encode this dialect's two quirks that matter to a
-writer -- quote characters are stripped off both ends rather than unquoted,
-and nothing is unescaped -- and its refusal rules are derived from them. That
+``backendReadsValue`` there encode this dialect's quirks that matter to a
+writer -- quote characters are stripped off both ends rather than unquoted, and
+nothing is unescaped -- and its refusal rules are derived from them. That
 mirror was measured against this module, not inferred, but nothing in the
 build enforces it: change the quote handling, the block-scalar folding, or the
 unescaping here and the editor will keep writing for the old dialect, which is
 silent corruption of a user's skill file. Update that file in the same change,
-and see https://github.com/kirodotdev/KiroCrew/issues/7097 for the shared
-fixture corpus that would turn this comment into a failing test.
+and see ``test_frontmatter.py``'s corpus test for the pin that now fails when
+a repo-tracked SKILL.md starts reading differently.
 
-This is deliberately NOT a YAML parser and must not grow into one: values are
-single-line strings apart from the minimal block-scalar folding below, and no
-YAML library is involved. Swapping the parsing technology would change every
-caller's accepted-input surface at once and needs its own review.
+BLOCK SCALARS follow YAML: the full header grammar (explicit indentation
+indicator, either modifier ordering, a trailing comment) is resolved by
+:func:`parse_block_scalar_header`, and :func:`fold_block_scalar` honours real
+chomping. That half of the dialect IS a YAML subset and is pinned differentially
+against ``yaml`` in the tests.
+
+PLAIN SCALARS are deliberately NOT YAML, and this is not a gap waiting to be
+closed. This reader splits a field on its first colon and keeps the remainder
+verbatim, so it accepts a value a YAML parser REFUSES OUTRIGHT -- an unquoted
+``": "`` inside the text::
+
+    description: Three capture backends: playwright-cli (the session ...)
+
+A YAML parser rejects that document whole ("mapping values are not allowed
+here"), not just the field. Two skills this repo SHIPS are written that way and
+are read correctly only because of it:
+
+- ``builtin_skills/kirocrew-dev/prepare-pr/SKILL.md``
+- ``builtin_skills/web-verify/SKILL.md``
+
+So the two accepted-input surfaces CROSS rather than nest, and swapping this
+scanner for a YAML parse is not a strict improvement: measured over the 56
+fenced repo-tracked SKILL.md files it would break those two outright. The
+quoting and unescaping rows of #7097 are tracked separately in #7063.
 """
 
 from __future__ import annotations
@@ -45,52 +65,82 @@ import re
 from dataclasses import dataclass
 from typing import Literal
 
-# YAML block-scalar indicators recognized as frontmatter values: folded (>) or
-# literal (|), each with an optional chomping modifier. Explicit indentation
-# indicators (e.g. ">2") are not supported by this minimal parser.
-BLOCK_SCALAR_INDICATORS = frozenset({">", "|", ">-", "|-", ">+", "|+"})
+# Any valid YAML block-scalar HEADER, matched everywhere one is recognized.
+#
+# There used to be a second recognizer beside this one -- a frozenset of the six
+# BARE indicators (``>``, ``|``, ``>-``, ``|-``, ``>+``, ``|+``) -- and the module
+# disagreed with itself about what a block scalar is: the read path tested set
+# membership, the write path matched this regex, and the onboarding activation gate
+# imported the set. Widening one recognizer and not the others is what turned that
+# gate fail-OPEN (see ``_column0_activation_declared``). One matcher now, so a
+# change to the grammar reaches every caller at once.
+#
+# The two halves of the alternation are YAML's two orderings of the optional
+# indentation indicator and chomping modifier (``|2-`` and ``|-2``), and the
+# second matches empty, which is the bare ``|`` case. A trailing ``# comment``
+# is allowed because YAML allows one there: it belongs to the header line, not
+# to the value.
+_BLOCK_SCALAR_HEADER_RE = re.compile(
+    r"^(?P<style>[|>])"
+    r"(?:(?P<indent_first>[0-9])(?P<chomp_last>[+-]?)"
+    r"|(?P<chomp_first>[+-]?)(?P<indent_last>[0-9]?))"
+    r"(?:[ \t]+#.*)?$"
+)
 
-# Any valid YAML block-scalar HEADER, including the explicit-indentation forms
-# (``|2``, ``>2-``, ...) this module's READER still does not fold — see the
-# limitation noted above. Used only on the WRITE path, to decide whether an
-# indented tail belongs to the value being replaced. Without this, an explicit-
-# indent scalar's `#`-shaped continuation line is mistaken for a real YAML
-# comment (the ordinary rule a plain scalar's tail follows) and left orphaned
-# in the document by a rewrite of an unrelated line above it — not invalid
-# YAML, since a lone indented `#` still parses as a floating comment, but the
-# author's content silently detaches from the field it was written under.
-_BLOCK_SCALAR_HEADER_RE = re.compile(r"^[|>](?:[0-9][+-]?|[+-]?[0-9]?)$")
+
+def parse_block_scalar_header(value: str) -> tuple[str, int | None] | None:
+    """Split a block-scalar header into ``(style_with_chomp, explicit_indent)``.
+
+    Returns ``None`` when *value* is not a block-scalar header, so a caller can
+    treat it as an ordinary plain scalar. ``explicit_indent`` is the declared
+    indentation indicator, or ``None`` when the header omits it and the content
+    indentation is inferred from the first non-blank line.
+
+    An explicit ``0`` is refused (``None``): YAML forbids it, and accepting it
+    would hand :func:`fold_block_scalar` a zero-width indent that silently
+    turns the whole block into content.
+    """
+    match = _BLOCK_SCALAR_HEADER_RE.match(value)
+    if match is None:
+        return None
+    digits = match.group("indent_first") or match.group("indent_last") or ""
+    if digits == "0":
+        return None
+    chomp = match.group("chomp_first") or match.group("chomp_last") or ""
+    return match.group("style") + chomp, (int(digits) if digits else None)
+
 
 # Fence extraction for the "column0_fence" dialect: the opener must be exactly
 # ``---`` at position 0 followed by a newline; the closer is the next line
 # that *starts with* ``---`` (trailing text after the closer is tolerated).
-_COLUMN0_BLOCK_RE = re.compile(r"^---\n(.*?)\n---", re.DOTALL)
+# An optional CR before each fence newline is tolerated. Most SKILL.md reads
+# fold CRLF to LF before parsing (``Path.read_text``'s universal newlines,
+# ``skills._decode_skill_text``), but the grammar must not depend on callers
+# pre-folding: text reaches it VERBATIM too — the Agent SOP description
+# reader decodes raw bytes, so a Windows-authored document showed no
+# description at all — and through :func:`set_frontmatter_fields` a fence
+# this pattern cannot see makes a field edit PREPEND a brand-new block above
+# the existing one instead of rewriting it. Interior lines may still carry a
+# trailing ``\r``; the line parser strips it, so a resolved value is equal to
+# its LF twin's — the same break normalisation a YAML reader applies.
+_COLUMN0_BLOCK_RE = re.compile(r"^---\r?\n(.*?)\r?\n---", re.DOTALL)
 
-# As above, but tolerating CRLF. A steering file authored on Windows has
-# ``---\r\n``, which the LF-only fence above does not match at all — so its
-# declaration was invisible (the tab reported the default mode and the
-# runtime skipped the document entirely) and an edit PREPENDED a second
-# front-matter block instead of rewriting the first.
-#
-# The inner group is OPTIONAL: an opener immediately followed by a closer
-# (``---\n---``, an empty block) has no line between them for ``(.*?)\n`` to
-# consume, so the non-optional form never matched it at all — the extractor
-# reported "no fence", and a mode edit then PREPENDED a brand-new fence in
-# front of the empty one instead of populating it, doubling the block. A
-# match with the group absent (``None``, distinct from the empty string a
-# real-but-blank line would capture) is exactly that zero-line case.
+# As above, and ADDITIONALLY matching the EMPTY block. The inner group is
+# OPTIONAL: an opener immediately followed by a closer (``---\n---``) has no
+# line between them for ``(.*?)\n`` to consume, so the non-optional form
+# never matched it at all — the extractor reported "no fence", and a mode
+# edit then PREPENDED a brand-new fence in front of the empty one instead of
+# populating it, doubling the block. A match with the group absent (``None``,
+# distinct from the empty string a real-but-blank line would capture) is
+# exactly that zero-line case. Whether an empty block counts as a fence is a
+# per-dialect accepted-input decision — steering opts in, the skill dialects
+# keep their non-optional group — which is why this stays a separate pattern.
 _COLUMN0_BLOCK_CRLF_RE = re.compile(r"^---\r?\n(?:(.*?)\r?\n)?---", re.DOTALL)
 
-# DEFERRED, deliberately: ``column0_fence`` (``SKILL_LOADER``) and
-# ``leading_ws_fence`` (``SKILL_UPDATE``) keep the LF-only grammar, so a
-# Windows-authored SKILL.md still has invisible front matter. Widening them
-# changes what the skills catalog and the update merge ACCEPT — a behaviour
-# change with its own review surface and its own snapshot corpus, which is
-# why each dialect is a separate constant. Steering was fixed here because
-# its own feature depends on the declaration being read at all.
-# Fence extraction for the "leading_ws_fence" dialect: identical, except any
-# whitespace (including blank lines) may precede the opening fence.
-_LEADING_WS_BLOCK_RE = re.compile(r"^\s*---\n(.*?)\n---", re.DOTALL)
+# Fence extraction for the "leading_ws_fence" dialect: as "column0_fence"
+# (CR tolerance included), except any whitespace (including blank lines) may
+# precede the opening fence.
+_LEADING_WS_BLOCK_RE = re.compile(r"^\s*---\r?\n(.*?)\r?\n---", re.DOTALL)
 
 # How the frontmatter block is located within the document. Each mode is the
 # fence grammar of the dialects that name it; they are not interchangeable.
@@ -123,9 +173,9 @@ class FrontmatterDialect:
     # True: the first occurrence of a duplicate key wins (single-value lookup
     # semantics). False: the last occurrence wins (dict-overwrite semantics).
     first_key_wins: bool = False
-    # Resolve a bare block-scalar indicator value (see
-    # BLOCK_SCALAR_INDICATORS) from the blank-or-indented lines that follow
-    # it, via fold_block_scalar. Dialects without this store the indicator
+    # Resolve a block-scalar header value (see
+    # :func:`parse_block_scalar_header`) from the blank-or-indented lines that
+    # follow it, via fold_block_scalar. Dialects without this store the header
     # character verbatim and leave the continuation lines to the indent
     # policy.
     resolve_block_scalars: bool = False
@@ -191,35 +241,95 @@ SKILL_UPDATE = FrontmatterDialect(
 )
 
 
-def fold_block_scalar(indicator: str, block: list[str]) -> str:
+def fold_block_scalar(
+    indicator: str,
+    block: list[str],
+    *,
+    indent: int | None = None,
+) -> str:
     """Resolve a YAML block scalar's indented lines into a single value.
 
-    ``indicator`` is one of ``BLOCK_SCALAR_INDICATORS``; ``block`` holds the
-    raw continuation lines (still carrying their indentation). Literal (``|``)
-    scalars keep one line per newline. Folded (``>``) scalars fold a single
-    break between plain lines to a space and keep blank lines as newlines
-    (k blanks -> k newlines plain-to-plain, k+1 next to a more-indented line,
-    where the separator break stays literal), and never fold a break adjacent
-    to a more-indented line, so nested indentation survives. Indentation is
-    stripped relative to the first non-blank line, and the result is trimmed,
-    so the chomping modifier (``-``/``+``) has no residual effect on the
-    stored value.
+    ``indicator`` is a block-scalar header's style and chomping modifier (``|``,
+    ``>-``, ``|+``, ...); ``block`` holds the raw continuation lines, still
+    carrying their indentation. ``indent`` is the header's explicit indentation
+    indicator when it declared one, and ``None`` when the content indentation is
+    inferred from the first non-blank line.
+
+    Literal (``|``) scalars keep one line per newline. Folded (``>``) scalars
+    fold a single break between plain lines to a space and keep blank lines as
+    newlines (k blanks -> k newlines plain-to-plain, k+1 next to a more-indented
+    line, where the separator break stays literal), and never fold a break
+    adjacent to a more-indented line, so nested indentation survives.
+
+    Chomping follows YAML, and is the reason this function does not trim its
+    result: ``-`` (strip) drops every trailing break, ``+`` (keep) preserves all
+    of them, and the default (clip) keeps exactly one. A LEADING break is
+    content under all three -- no chomping mode removes it -- so it is preserved
+    too. The previous ``.strip()`` did both, which is what made agreement with a
+    YAML parser depend on a block's content rather than on its header, and
+    therefore what forced the skill editor to simulate this function and compare
+    instead of reading the header. See #7097.
+
+    Note that EVERY line the frontmatter fence hands over is newline-terminated in
+    the document: the fence's closing ``---`` sits on its own line, so the newline
+    the extractor drops before it is the last content line's own terminator. The
+    break count therefore always includes it. Feeding a YAML parser the captured
+    text WITHOUT that newline is what makes the two look like they disagree here --
+    reconstitute it and they do not.
     """
-    # Trim trailing blank lines without mutating the caller's list and
-    # without per-iteration copies (a pathological blank run stays linear).
-    end = len(block)
-    while end and not block[end - 1].strip():
-        end -= 1
-    if not end:
-        return ""
-    block = block[:end]
-    first = next(ln for ln in block if ln.strip())
-    indent = len(first) - len(first.lstrip())
+    style = indicator[:1]
+    chomp = indicator[1:2] if indicator[1:2] in ("+", "-") else ""
+    all_breaks = "\n" * len(block) if chomp == "+" else ""
+    if indent is None:
+        # Without an explicit indicator the block's indentation IS its first content
+        # line's, so a block with no content line has no indent to derive from and
+        # every line really is a break. Measured against the parser: ``|+`` over one
+        # blank line is one break, over two is two.
+        #
+        # Indentation in YAML is SPACES, never tabs, so "is this line content?" is
+        # decided with ``lstrip(" ")`` rather than ``strip()``: under ``|`` a line of two
+        # spaces then a tab is two columns of indent followed by a TAB OF CONTENT, and
+        # a parser reads ``"\t"``. Judging it with ``strip()`` counted the tab as
+        # indentation, found no content line at all, and returned "" for the scalar.
+        first = next((ln for ln in block if ln.lstrip(" ")), None)
+        if first is None:
+            return all_breaks
+        indent = len(first) - len(first.lstrip(" "))
     dedented = [
         ln[indent:] if ln[:indent].isspace() or not ln.strip() else ln.lstrip() for ln in block
     ]
-    if indicator.startswith("|"):
-        return "\n".join(dedented).strip()
+    if not any(dedented):
+        # An EXPLICIT indicator can still leave nothing behind, and deciding that
+        # BEFORE the dedent is what erased authored whitespace: under ``|2-`` a line of
+        # three spaces is one space of CONTENT, not an empty line, because the header
+        # -- not the content -- fixes where the block starts. Judged on the raw line it
+        # looked blank and the whole scalar came back "". This is the same
+        # whitespace-is-content rule the trailing-break classifier below already
+        # applies; this early exit simply predates it.
+        return all_breaks
+    # Classify the trailing breaks AFTER dedenting, not before. A line holding only
+    # whitespace is not necessarily blank: whitespace BEYOND the block's indent is
+    # content, so ``|-`` over ``  body`` then three spaces is ``body\n `` to a YAML
+    # parser and was ``body`` here -- authored content silently dropped. Judged on the
+    # raw line, ``"   ".strip()`` is empty and the line looks like a break; judged after
+    # dedent it is the one-space content line it actually is. A whitespace-only line at
+    # or inside the indent still dedents to ``""`` and is still a break.
+    end = len(dedented)
+    while end and not dedented[end - 1]:
+        end -= 1
+    # The +1 is the last line's own terminator, per the note above.
+    trailing_breaks = len(dedented) - end + 1
+    content = dedented[:end]
+    if chomp == "-":
+        suffix = ""
+    elif chomp == "+":
+        suffix = "\n" * trailing_breaks
+    else:
+        # Clip keeps exactly one break, and there is always one to keep: the
+        # count includes the last line's own terminator, so it is never zero.
+        suffix = "\n"
+    if style == "|":
+        return "\n".join(content) + suffix
     # Folded: a single line break between two plain lines becomes a space;
     # blank lines are preserved as line breaks (k blanks -> k newlines); and
     # breaks adjacent to a more-indented line are kept, so indented structure
@@ -227,12 +337,17 @@ def fold_block_scalar(indicator: str, block: list[str]) -> str:
     parts: list[str] = []
     pending_blanks = 0
     prev_more_indented = False
-    for ln in dedented:
-        if not ln.strip():
+    started = False
+    for ln in content:
+        # Judged on the DEDENTED line, an empty string is a blank and a whitespace-only
+        # line is not: the whitespace it still holds sits beyond the block's indent, so
+        # it is content, and a more-indented line at that. Testing ``.strip()`` here
+        # folded such a line away entirely.
+        if not ln:
             pending_blanks += 1
             continue
         more_indented = ln[:1].isspace()
-        if parts:
+        if started:
             if pending_blanks:
                 # The separator break folds to nothing between plain lines,
                 # but stays literal next to a more-indented line: k blanks
@@ -243,10 +358,22 @@ def fold_block_scalar(indicator: str, block: list[str]) -> str:
                 parts.append("\n")
             else:
                 parts.append(" ")
-        parts.append(ln.rstrip() if more_indented else ln.strip())
+        elif pending_blanks:
+            # Leading blank lines are content, not a separator: they precede the
+            # first line rather than joining two, so they are emitted verbatim.
+            parts.append("\n" * pending_blanks)
+        # The dedent above already removed the block's indentation, so a plain line
+        # arrives flush and a more-indented one keeps only its extra depth -- there is
+        # nothing left to trim on the left. Nothing is trimmed on the RIGHT either: a
+        # folded scalar's trailing spaces are content, and the break folds to a space
+        # AFTER them, so ``>`` over ``a  `` then ``b`` is ``a   b`` to a YAML parser.
+        # Stripping here silently deleted whatever the author wrote at the end of every
+        # folded line.
+        parts.append(ln)
         prev_more_indented = more_indented
         pending_blanks = 0
-    return "".join(parts)
+        started = True
+    return "".join(parts) + suffix
 
 
 def parse_frontmatter(text: str, dialect: FrontmatterDialect) -> dict[str, str]:
@@ -484,12 +611,27 @@ def set_frontmatter_fields(
         # to the document rather than to this field.
         continuation: list[str] = []
         if is_field:
-            is_block = dialect.resolve_block_scalars and bool(
-                _BLOCK_SCALAR_HEADER_RE.match(line.partition(":")[2].strip())
+            header = (
+                parse_block_scalar_header(line.partition(":")[2].strip())
+                if dialect.resolve_block_scalars
+                else None
             )
+            is_block = header is not None
+            # The declared indentation indicator when the header carries one, so the
+            # walk's boundary below matches the read path's for the same document.
+            block_indent = header[1] if header is not None else None
+            blank_floor = 0
             while index < len(lines):
                 nxt = lines[index]
-                blank = not nxt.strip()
+                # Judged on the CR-STRIPPED line, and in SPACES for a block scalar, so
+                # this walk keeps agreeing with the read path: there, a line of spaces then
+                # a tab is a content line whose content is the tab, and a CRLF blank line
+                # is still a blank. If only one of the two paths counted the tab as
+                # indentation, or saw ``"\r"`` as content, they would disagree about where
+                # the block ends and a rewrite of an unrelated field would move the
+                # author's lines.
+                probe = nxt.rstrip("\r")
+                blank = not probe.strip() if not is_block else not probe.lstrip(" ")
                 if blank and not is_block:
                     # A blank line does NOT end a plain multi-line scalar: YAML keeps
                     # folding while an indented line follows, so `a\n\n  b` is one
@@ -517,6 +659,30 @@ def set_frontmatter_fields(
                 # of each line rather than just its indentation.
                 if not is_block and nxt.lstrip().startswith("#"):
                     break
+                # Inside a block scalar, "indented" is not enough: the scalar ends at
+                # the first non-blank line indented LESS than its content, so a
+                # less-indented line is not the field's to consume. Without this the
+                # walk stayed on the READ path's old rule and swallowed a
+                # less-indented trailing comment when the block's own field was
+                # replaced — the same silent note deletion the rule above prevents for
+                # a plain value. The boundary is the declared indent when the header
+                # gives one, and otherwise the first content line's own indent -- with a
+                # leading all-space line's own depth as a floor on that, because YAML
+                # detects the indent from the leading blanks too and ends the scalar
+                # rather than accept a shallower content line. Kept identical to the read
+                # path's walk: if only one of them applied the floor they would disagree
+                # about where the block ends, and rewriting the field would delete a line
+                # the reader had left in the surrounding document.
+                if is_block and not blank:
+                    nxt_indent = len(probe) - len(probe.lstrip(" "))
+                    if block_indent is None:
+                        if nxt_indent < blank_floor:
+                            break
+                        block_indent = nxt_indent
+                    if nxt_indent < block_indent:
+                        break
+                elif is_block and block_indent is None:
+                    blank_floor = max(blank_floor, len(probe))
                 # Strip the CR here too: these lines are re-joined with the
                 # document's newline, so a retained CR would be written back
                 # doubled.
@@ -636,19 +802,63 @@ def _parse_block_lines(lines: list[str], dialect: FrontmatterDialect) -> dict[st
         key, _, raw = line.partition(":")
         key = key.strip()
         value = raw.strip()
-        if dialect.resolve_block_scalars and value in BLOCK_SCALAR_INDICATORS:
-            # Blank or indented lines up to the next column-0 line are the
-            # scalar's content; trailing blanks between fields are trimmed by
-            # the folder. Under a reject_indented dialect (every preset that
-            # resolves scalars) consuming them hides no key — those lines
-            # could not have been fields anyway. A custom dialect combining
-            # resolution with accept_indented trades indented-key visibility
-            # for scalar content, which is what the indicator means in YAML.
+        header = parse_block_scalar_header(value) if dialect.resolve_block_scalars else None
+        if header is not None:
+            style_chomp, explicit_indent = header
+            # Blank or indented lines are the scalar's content, but only DOWN TO the
+            # block's indentation: YAML ends a block scalar at the first non-blank line
+            # indented less than its content, so a less-indented ``#`` line is a comment
+            # in the surrounding document, not part of the value. Collecting purely on
+            # "is it indented" absorbed one -- ``|- `` + ``  body`` + `` # note`` read
+            # back as ``body\n# note`` -- and the explicit-indicator support added here
+            # would have widened that to every declared-indent block. The boundary is
+            # the declared indent when the header gives one, and otherwise the first
+            # non-blank line's own indent, which is what the folder infers too.
+            #
+            # Trailing blank lines are still collected: they are the block's trailing
+            # breaks, and chomping is what decides their fate.
+            #
+            # "Blank" and "indented" are both judged in SPACES, never tabs, because that
+            # is what YAML counts as indentation. A line of two spaces then a tab is a
+            # content line whose content is the tab, so it is what fixes the block's
+            # indent; judging it with ``strip()`` made it look blank, let a following
+            # more-indented line set a deeper boundary, and silently truncated the
+            # scalar at the next line that sat at the real indent.
             block: list[str] = []
-            while i < len(lines) and (not lines[i].strip() or lines[i][:1].isspace()):
-                block.append(lines[i])
+            content_indent = explicit_indent
+            # Leading BLANK lines take part in detecting the block's indentation: YAML
+            # sets the content indent from the first non-empty line, but a leading
+            # all-space line may not be deeper than that line, and a parser resolves the
+            # conflict by ending the scalar rather than by taking the shallower line as
+            # content. So a blank line's own depth is a floor. Without it, `description:
+            # |` over three spaces then ` # note` read the note as CONTENT where a parser
+            # reads an empty scalar and a document comment -- and the write path then
+            # replaced the note away with the field.
+            blank_floor = 0
+            while i < len(lines):
+                # Drop the trailing CR before classifying. A CRLF document's blank line is
+                # ``"\r"``, which is not empty once "blank" is judged in SPACES, so it
+                # counted as a content line at indent 0 and ENDED the scalar -- truncating
+                # a steering description at its first interior blank, or losing it whole
+                # when the blank came first. Stripping it also puts the value where a YAML
+                # parser puts it: line breaks are normalised, so a CRLF document resolves
+                # to exactly what its LF twin does, with no stray CR left inside.
+                nxt = lines[i].rstrip("\r")
+                if nxt.lstrip(" "):
+                    nxt_indent = len(nxt) - len(nxt.lstrip(" "))
+                    if nxt_indent == 0:
+                        break
+                    if content_indent is None:
+                        if nxt_indent < blank_floor:
+                            break
+                        content_indent = nxt_indent
+                    if nxt_indent < content_indent:
+                        break
+                elif content_indent is None:
+                    blank_floor = max(blank_floor, len(nxt))
+                block.append(nxt)
                 i += 1
-            value = fold_block_scalar(value, block)
+            value = fold_block_scalar(style_chomp, block, indent=explicit_indent)
         else:
             if dialect.strip_inline_comments:
                 value, _ = split_inline_comment(value)

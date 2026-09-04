@@ -21,9 +21,9 @@ import SessionPulseSurveyCard from '../components/SessionPulseSurveyCard'
 // suite down -- same substitution TipCard.test.tsx uses.
 vi.mock('framer-motion', () => ({
   motion: {
-    div: ({ children, ...props }: any) => <div {...props}>{children}</div>,
+    div: ({ children, ...props }: { children?: React.ReactNode } & Record<string, unknown>) => <div {...props}>{children}</div>,
   },
-  AnimatePresence: ({ children }: any) => <>{children}</>,
+  AnimatePresence: ({ children }: { children?: React.ReactNode }) => <>{children}</>,
 }))
 
 const RATING_QUESTION = 'How would you rate your experience with Kiro Crew today?'

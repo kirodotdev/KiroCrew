@@ -308,6 +308,182 @@ class TestPathListIgnored:
         assert foreign[0].dead[0].path == dead_home
 
 
+# ── identifier operands of non-path flags ────────────────────────────────────
+
+
+class TestIdentifierOperandIgnored:
+    """A slash-prefixed identifier is not a path, and only position says so.
+
+    ``--scope /spaces/nsp_x`` names a remote namespace. The operand is absolute,
+    single, and absent from every filesystem by design, so it is byte-for-byte the
+    shape of a genuinely removed directory. Nothing about the VALUE can separate the
+    two; the discriminator is which flag it follows.
+    """
+
+    def test_scope_operand_is_not_flagged(self, agents_dir: Path) -> None:
+        _write_spec(
+            agents_dir,
+            "foreign.json",
+            {
+                "policy-scope-server": {
+                    "command": str(agents_dir),  # live command
+                    "args": ["mcp", "start", "--scope", "/spaces/ns_abc123"],
+                }
+            },
+        )
+
+        report = dp.check_dead_paths(repair=lambda: None)
+
+        assert report.foreign_dead == []
+        assert report.has_findings is False
+
+    def test_identifier_operand_is_never_stat_ed(self, agents_dir: Path, monkeypatch) -> None:
+        """The operand must not reach the filesystem probe at all.
+
+        This is the assertion the REPORT cannot make. Deciding the skip after
+        ``_path_is_dead`` produces an identical ``foreign_dead`` while still stat-ing
+        an opaque remote identifier, so a report-only test passes either way and the
+        module docstring's "must not be stat-ed" goes unenforced. Spying on the probe
+        is what separates the two orderings.
+        """
+        probed: list[str] = []
+        real = dp._path_is_dead
+
+        def spy(path: str) -> bool:
+            probed.append(path)
+            return real(path)
+
+        monkeypatch.setattr(dp, "_path_is_dead", spy)
+        _write_spec(
+            agents_dir,
+            "foreign.json",
+            {
+                "policy-scope-server": {
+                    "command": str(agents_dir),
+                    "args": ["mcp", "start", "--scope", "/spaces/ns_abc123"],
+                }
+            },
+        )
+
+        report = dp.check_dead_paths(repair=lambda: None)
+
+        assert report.foreign_dead == []
+        assert "/spaces/ns_abc123" not in probed, (
+            "the identifier operand was stat-ed; the screen must be read BEFORE "
+            f"_path_is_dead, not after it. probed={probed}"
+        )
+
+    @pytest.mark.parametrize("flag", ["--scope", "--namespace", "--space"])
+    def test_every_identifier_flag_operand_is_not_flagged(
+        self, agents_dir: Path, flag: str
+    ) -> None:
+        _write_spec(
+            agents_dir,
+            "foreign.json",
+            {"srv": {"command": str(agents_dir), "args": ["run", flag, "/spaces/nsp_zz"]}},
+        )
+
+        report = dp.check_dead_paths(repair=lambda: None)
+
+        assert report.foreign_dead == []
+
+    def test_attached_operand_spelling_is_not_flagged(self, agents_dir: Path) -> None:
+        # ``--scope=/spaces/nsp_x`` is not absolute as a whole string, so it never
+        # reached the stat anyway. Pinned so the two spellings cannot diverge if the
+        # arg walk is ever changed to split on ``=``.
+        _write_spec(
+            agents_dir,
+            "foreign.json",
+            {"srv": {"command": str(agents_dir), "args": ["--scope=/spaces/nsp_zz"]}},
+        )
+
+        report = dp.check_dead_paths(repair=lambda: None)
+
+        assert report.foreign_dead == []
+
+    def test_dead_path_after_an_ordinary_flag_is_still_flagged(self, agents_dir: Path) -> None:
+        # The load-bearing half: skipping identifier operands must not blind the
+        # check to a real dead path that merely happens to follow some flag.
+        dead = str(agents_dir / "gone")
+        _write_spec(
+            agents_dir,
+            "foreign.json",
+            {"srv": {"command": str(agents_dir), "args": ["--config", dead]}},
+        )
+
+        report = dp.check_dead_paths(repair=lambda: None)
+
+        foreign = report.foreign_dead
+        assert len(foreign) == 1
+        assert foreign[0].dead[0].where == "args[1]"
+        assert foreign[0].dead[0].path == dead
+
+    def test_dead_path_two_positions_after_an_identifier_flag_is_flagged(
+        self, agents_dir: Path
+    ) -> None:
+        # Only the IMMEDIATELY following arg is the flag's operand. A later path
+        # argument is unrelated and must keep being checked.
+        dead = str(agents_dir / "gone")
+        _write_spec(
+            agents_dir,
+            "foreign.json",
+            {
+                "srv": {
+                    "command": str(agents_dir),
+                    "args": ["--scope", "/spaces/nsp_zz", dead],
+                }
+            },
+        )
+
+        report = dp.check_dead_paths(repair=lambda: None)
+
+        foreign = report.foreign_dead
+        assert len(foreign) == 1
+        assert [d.path for d in foreign[0].dead] == [dead]
+
+    def test_identifier_flag_as_the_last_arg_does_not_index_past_the_end(
+        self, agents_dir: Path
+    ) -> None:
+        # A trailing flag with no operand must not raise, and the flag itself is
+        # relative so it was never a path candidate.
+        _write_spec(
+            agents_dir,
+            "foreign.json",
+            {"srv": {"command": str(agents_dir), "args": ["run", "--scope"]}},
+        )
+
+        report = dp.check_dead_paths(repair=lambda: None)
+
+        assert report.foreign_dead == []
+
+    def test_absolute_first_arg_is_still_checked(self, agents_dir: Path) -> None:
+        # index 0 has no preceding arg; the guard must not swallow it.
+        dead = str(agents_dir / "gone")
+        _write_spec(
+            agents_dir,
+            "foreign.json",
+            {"srv": {"command": str(agents_dir), "args": [dead]}},
+        )
+
+        report = dp.check_dead_paths(repair=lambda: None)
+
+        assert [d.path for d in report.foreign_dead[0].dead] == [dead]
+
+    def test_non_string_preceding_arg_does_not_crash_the_walk(self, agents_dir: Path) -> None:
+        # Spec JSON is foreign input: a non-string arg is possible and must not
+        # make the positional lookup explode.
+        dead = str(agents_dir / "gone")
+        _write_spec(
+            agents_dir,
+            "foreign.json",
+            {"srv": {"command": str(agents_dir), "args": [7, dead]}},
+        )
+
+        report = dp.check_dead_paths(repair=lambda: None)
+
+        assert [d.path for d in report.foreign_dead[0].dead] == [dead]
+
+
 # ── malformed JSON tolerated ─────────────────────────────────────────────────
 
 

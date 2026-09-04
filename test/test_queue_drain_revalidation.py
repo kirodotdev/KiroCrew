@@ -639,6 +639,11 @@ _NON_CONTAINMENT_REFUSALS = {
     "linked_session_caller",
     "mirrored_caller",
     "caller_gone",
+    # Caller-relative ownership: fires only for member callers, comparing the
+    # caller's key to the target's created_by. Both are written once at birth
+    # and never mutate, so the relation that admitted an entry cannot flip
+    # while it waits -- and the drain has no caller left to re-evaluate.
+    "not_creator",
     # Not containment: global config state, a resolution failure, and the
     # self-target guard. None of the three can change while an entry waits in a
     # queue in a way the drain could act on.

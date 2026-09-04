@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useId, useState } from 'react'
 import { Document, isAlias, isMap, isScalar, isSeq, parseDocument, Scalar, visit } from 'yaml'
 import type { Node, Pair, YAMLSeq } from 'yaml'
 import { Input } from './ui'
@@ -108,27 +108,77 @@ function everyTopKeyAtColumnZero(block: string, doc: Document.Parsed): boolean {
 /** Reproduce the reader's fold for a BARE LITERAL block scalar, from the source lines
  *  after its header.
  *
- *  Mirrors `fold_block_scalar` in `src/kiro_crew/frontmatter.py` for the `|` family only:
- *  it drops trailing blank lines, dedents by the first non-blank line's indent, joins with
- *  newlines and strips. The strip is the part no YAML chomping mode performs, and it is
- *  why comparing beats predicting -- a leading blank line survives in the parser and not
- *  here, and nothing about the indicator says so. */
-function backendFoldsLiteral(block: string, headerEnd: number): string {
+ *  Mirrors `fold_block_scalar` in `src/kiro_crew/frontmatter.py` for the `|` family: it
+ *  separates the trailing blank lines from the content, dedents by the first non-blank
+ *  line's indent, joins with newlines, and applies the header's chomping modifier --
+ *  `-` drops every trailing break, `+` keeps them all, and the default keeps exactly one.
+ *
+ *  It no longer trims. Until #7097 the backend fold ended in `.strip()`, which removed a
+ *  LEADING break and every trailing one -- neither of which any chomping mode does -- so
+ *  whether the two readers agreed depended on the block's CONTENT. They now agree on the
+ *  whole `|` family, which is why the comparison below stops refusing the leading-blank
+ *  and keep-chomped shapes. The comparison itself stays: it is what catches the next
+ *  drift, and a dedent rule is still not derivable from the indicator. */
+function backendFoldsLiteral(block: string, headerEnd: number, header: string): string {
   const rest = block.slice(headerEnd + 1).split('\n')
   const body: string[] = []
+  /* The same boundary the reader's own walk uses, judged in SPACES because that is what
+     YAML counts as indentation: a line with content at column 0 ends the scalar (so a
+     bare tab ends it, having no space indent at all), and so does a content line
+     indented LESS than the block's. Breaking only on "non-blank and unindented" let this
+     mirror keep lines the reader stops at, and it then predicted a value the reader
+     never returns. */
+  let contentIndent: number | null = null
+  /* A leading all-space line's own depth is a floor on the detected indent, because YAML
+     detects from the leading blanks too and ends the scalar rather than accept a
+     shallower content line after them. The reader applies the same floor; without it this
+     mirror kept lines the reader leaves in the surrounding document. */
+  let blankFloor = 0
   for (const line of rest) {
-    // The scalar ends at the first non-blank line that is not indented.
-    if (line.trim() !== '' && !/^\s/.test(line)) break
+    const stripped = line.replace(/^ +/, '')
+    if (stripped !== '') {
+      const lineIndent = line.length - stripped.length
+      if (lineIndent === 0) break
+      if (contentIndent === null) {
+        if (lineIndent < blankFloor) break
+        contentIndent = lineIndent
+      }
+      if (lineIndent < contentIndent) break
+    } else if (contentIndent === null) {
+      blankFloor = Math.max(blankFloor, line.length)
+    }
     body.push(line)
   }
   let end = body.length
   while (end && body[end - 1].trim() === '') end -= 1
-  if (!end) return ''
-  const kept = body.slice(0, end)
-  const first = kept.find(l => l.trim() !== '') ?? ''
-  const indent = first.length - first.replace(/^\s+/, '').length
-  const dedented = kept.map(l => (l.slice(0, indent).trim() === '' ? l.slice(indent) : l.replace(/^\s+/, '')))
-  return dedented.join('\n').trim()
+  const chomp = header.slice(1, 2)
+  /* The +1 is the last line's OWN terminating newline. Every line inside the fence has
+     one, including the last: the closing `---` is on its own line. Omitting it made a
+     clip-chomped scalar read one break short of what both parsers give. So a block that
+     is nothing but breaks has exactly as many as it has lines. */
+  const allBreaks = chomp === '+' ? '\n'.repeat(body.length) : ''
+  /* Indentation is SPACES, never tabs, so under `|` a line of two spaces then a tab is
+     two columns of indent followed by a TAB OF CONTENT -- which is how the backend
+     counts it. Matching on \s treated the tab as indentation, found no content line at
+     all, and made this mirror disagree with the reader it exists to predict. */
+  const first = body.find(l => l.replace(/^ +/, '') !== '')
+  if (first === undefined) return allBreaks
+  const indent = first.length - first.replace(/^ +/, '').length
+  const dedented = body.map(l =>
+    /^ *$/.test(l.slice(0, indent)) || l.trim() === '' ? l.slice(indent) : l.replace(/^\s+/, ''),
+  )
+  if (!dedented.some(l => l !== '')) return allBreaks
+  /* Classify the trailing breaks AFTER dedenting, as the backend does: whitespace
+     BEYOND the block's indent is content, so a trailing line of three spaces under a
+     two-space block is a one-space content line and not a break at all. Judging the raw
+     lines dropped it and reported a divergence against a reader that had kept it. */
+  end = dedented.length
+  while (end && dedented[end - 1] === '') end -= 1
+  const trailingBreaks = dedented.length - end + 1
+  /* Clip keeps exactly one break, and there is always one to keep: the count includes
+     the last line's own terminator, so it is never zero. */
+  const suffix = chomp === '-' ? '' : chomp === '+' ? '\n'.repeat(trailingBreaks) : '\n'
+  return dedented.slice(0, end).join('\n') + suffix
 }
 
 /** What the BACKEND reader would take a managed field's value to be, from its own
@@ -150,18 +200,23 @@ function backendReadsValue(block: string, pair: Pair<unknown, unknown>): string 
   if (colon === -1) return null
   const rhs = line.slice(colon + 1).trim()
   /* Block scalars. Three attempts at deciding agreement from the INDICATOR were all
-     wrong -- six (the reader's resolvable set), then four, then the realisation that the
-     reader's fold ends in `.strip()`, which eats LEADING whitespace too, so
-     `always: |-` with a blank first line reads `true` on the backend and
-     newline-then-true in the parser. Agreement depends on the CONTENT.
-     So stop predicting and SIMULATE, exactly as the single-line branch below does.
-     For a bare LITERAL indicator the reader's fold is short enough to reproduce
-     faithfully: drop trailing blank lines, dedent by the first non-blank line's indent,
-     join with newlines, strip. Verified against the real `fold_block_scalar`.
-     A FOLDED (`>`) form is NOT reproduced -- its blank-line and indentation folding rules
-     are intricate, and duplicating them is the cross-language coupling this change exists
-     to avoid -- so it falls through and is refused, as does an explicit indicator. */
-  if (/^\|[+-]?$/.test(rhs)) return backendFoldsLiteral(block, lineEnd)
+     wrong, and the reason has now been removed at the source: until #7097 the reader's
+     fold ended in `.strip()`, so `always: |-` with a blank first line read `true` on the
+     backend and newline-then-true in the parser, and agreement depended on the CONTENT.
+     The backend fold now follows YAML chomping and keeps a leading break, so the `|`
+     family agrees outright.
+     The SIMULATION stays anyway, exactly as the single-line branch below does: it is what
+     catches the next drift between the two implementations, and the dedent rule still is
+     not derivable from the indicator.
+     A FOLDED (`>`) form is still NOT reproduced -- its blank-line and indentation folding
+     rules are intricate, and duplicating them is the cross-language coupling #7187 chose
+     to avoid -- so it falls through and is refused. An EXPLICIT indicator (`|2-`) is now
+     resolved by the backend, but stays refused here for the same reason: relaxing that is
+     a capability change, not a correctness one, and refusing it merely declines an edit
+     the reader could have taken. Every remaining gap between this mirror and the backend
+     is in that safe direction -- it can only refuse a block both sides agree on, never
+     accept one they read differently. */
+  if (/^\|[+-]?$/.test(rhs)) return backendFoldsLiteral(block, lineEnd, rhs)
   return rhs.replace(/^["']+/, '').replace(/["']+$/, '')
 }
 
@@ -191,7 +246,15 @@ function backendDisagreesOnManagedField(block: string, doc: Document.Parsed): bo
     if (typeof (pair.value as { comment?: unknown }).comment === 'string') continue
     const backend = backendReadsValue(block, pair)
     if (backend === null) continue
-    if (backend !== scalarText(pair.value)) return true
+    /* Compare the two in the SAME space. `scalarText` drops one trailing newline from a
+       block node, because that break is the block's own terminator and the form's text
+       field does not show it -- re-emitting as `|` puts it back. Since #7097 the backend
+       fold keeps that break too (it is what a YAML parser returns), so comparing the raw
+       fold against the stripped parser text would report a disagreement on every block
+       scalar in the file and refuse them all. Normalise the backend side identically. */
+    const isBlockNode = pair.value.type === 'BLOCK_LITERAL' || pair.value.type === 'BLOCK_FOLDED'
+    const backendText = isBlockNode ? backend.replace(/\n$/, '') : backend
+    if (backendText !== scalarText(pair.value)) return true
   }
   return false
 }
@@ -440,16 +503,24 @@ function managedText(key: string, data: SkillFormData): string {
  *  which case the field is copied verbatim rather than re-rendered.
  *
  *  `always` needs its own comparison, and it must be an INVERSION rather than a
- *  list of false-like spellings. The form reads the flag as `meta.always ===
- *  'true'`, so the field is unchanged exactly when the checkbox still agrees with
- *  that same test applied to the original text. Enumerating `''` and `'false'`
- *  missed every other non-`true` spelling -- `always: yes` and `always: no` parse
- *  as STRINGS under the YAML 1.2 core schema, `always: 0` as a number -- and each
- *  one was silently deleted on an unrelated edit. Enumerating shapes is the exact
- *  mistake this whole change exists to stop making. */
+ *  list of false-like spellings. The form reads the flag as
+ *  `meta.always.trim().toLowerCase() === 'true'`, so the field is unchanged
+ *  exactly when the checkbox still agrees with that same test applied to the
+ *  original text. Enumerating `''` and `'false'` missed every other non-`true`
+ *  spelling -- `always: yes` and `always: no` parse as STRINGS under the YAML 1.2
+ *  core schema, `always: 0` as a number -- and each one was silently deleted on an
+ *  unrelated edit. Enumerating shapes is the exact mistake this whole change
+ *  exists to stop making.
+ *
+ *  The normalisation is load-bearing and must stay in step with the backend, which
+ *  reads this flag as `meta.get("always", "").strip().lower() == "true"`. Since
+ *  #7097 the reader honours YAML chomping, so `always: |+` followed by blank lines
+ *  legitimately reads `true\n\n`; and `always: "TRUE"` reaches here uppercased.
+ *  Without `.trim().toLowerCase()` on BOTH sides the form would show such a skill
+ *  as off while the loader treated it as on. */
 function managedUnchanged(key: string, data: SkillFormData, original: Record<string, string>): boolean {
   const was = original[key] ?? ''
-  if (key === 'always') return data.always === (was === 'true')
+  if (key === 'always') return data.always === (was.trim().toLowerCase() === 'true')
   return managedText(key, data) === was
 }
 
@@ -787,12 +858,129 @@ export function parseSkillContent(raw: string, key: string): SkillFormData {
     description: meta.description || '',
     triggers: meta.triggers || '',
     tags: meta.tags || '',
-    always: meta.always === 'true',
+    // `.trim().toLowerCase()` keeps this in step with the backend's
+    // `meta.get("always", "").strip().lower() == "true"`: a chomping-preserved
+    // trailing newline must not read as "not always-on" here while the loader
+    // reads it as on, and neither must `always: "TRUE"`, which the loader
+    // activates. See `managedUnchanged`, which inverts this exact test.
+    always: (meta.always ?? '').trim().toLowerCase() === 'true',
     body: split.body,
   }
 
   if (!split.block.trim()) return parsed
   return isRewritable(split.block, doc) ? { ...parsed, frontmatter: split.block } : { ...parsed, raw }
+}
+
+/** The name the skills create handler will store this under, mirrored from
+ *  `api_skills_create` in `src/kiro_crew/dashboard/handlers/prompts.py`.
+ *
+ *  This is NOT `sanitizePromptName`, and the difference is deliberate: the skills
+ *  rule PERMITS `/` so a name can nest (`utils/code`), it strips leading and
+ *  trailing SLASHES as well as hyphens, and it collapses runs of `/` to a single
+ *  separator. The handler applies, in this exact order:
+ *
+ *    safe_name = re.sub(r"[^a-z0-9\-/]", "-", name.lower()).strip("-").strip("/")
+ *    safe_name = re.sub(r"/+", "/", safe_name)
+ *
+ *  so the order matters and is reproduced faithfully: replace every character
+ *  outside [a-z0-9-/] with `-`, then Python's `.strip("-")` (leading/trailing
+ *  hyphens) BEFORE `.strip("/")` (leading/trailing slashes), then collapse `/`
+ *  runs. Hyphen-then-slash is the order Python runs, and it can change the result
+ *  (`-/` strips to `` while `/` first would leave a `-`), so it is not swapped.
+ *
+ *  The `u` flag is load-bearing. Without it the class matches UTF-16 code UNITS,
+ *  so one astral character -- an emoji, a rare CJK ideograph -- becomes TWO
+ *  hyphens where the server writes one, and the preview would disagree with the
+ *  saved name for every name containing one. A drift guard
+ *  (website/src/test/SkillFormName.test.tsx) pins this to the handler expression. */
+export function sanitizeSkillName(raw: string): string {
+  return raw
+    .toLowerCase()
+    .replace(/[^a-z0-9/-]/gu, '-')
+    .replace(/^-+/, '')
+    .replace(/-+$/, '')
+    .replace(/^\/+/, '')
+    .replace(/\/+$/, '')
+    .replace(/\/+/g, '/')
+}
+
+/** The `name` the tab POSTs for these two fields: category-then-name, joined by
+ *  the slash the sanitizer preserves.
+ *
+ *  Shared rather than spelled out at each site because THREE things have to agree
+ *  on it -- the Create gate, the filename preview, and the request itself -- and a
+ *  gate reading a different path from the one being sent is the whole defect class
+ *  this file guards. */
+export function skillPostPath(name: string, category: string): string {
+  return category ? `${category}/${name}` : name
+}
+
+/** Why the server would refuse to save under this name, or null when it would.
+ *
+ *  Skills have NO name byte cap in the handler (unlike prompts), so the only
+ *  refusal a name can earn is `no-stem`: everything sanitized away and nothing
+ *  survives. There is deliberately no `too-long` branch to mirror -- inventing
+ *  one would predict a refusal the server never makes. */
+export function skillNameProblem(raw: string): 'no-stem' | null {
+  if (!raw.trim()) return null
+  return sanitizeSkillName(raw) ? null : 'no-stem'
+}
+
+/** Why the server would not store the skill the user described, or null when it
+ *  would store it faithfully. This is the predicate the Create gate and the red
+ *  hint both read, and it is deliberately NOT `skillNameProblem(combined)`.
+ *
+ *  The combined `category/name` path is what the server sanitizes, so it is the
+ *  right thing to PREVIEW -- but it is the wrong thing to GATE on, because a
+ *  surviving sibling segment hides one that vanished. The unit of judgment is the
+ *  SEGMENT, not the field: both fields may nest (`Name` accepts `utils/code`, and
+ *  the hint advertises slashes), so checking each field whole has the same blind
+ *  spot one level down. `utils/<non-Latin>` typed into Name alone sanitizes to
+ *  `utils` -- non-empty, so a whole-field check passes -- and the server stores a
+ *  skill named `utils` with the word the user typed gone.
+ *
+ *  The rule is therefore: every populated segment must keep a stem of its own.
+ *  That is SOUND, in the direction that matters. A segment holding at least one
+ *  `[a-z0-9]` character survives replacement (which is 1 char to 1 char), and the
+ *  handler's `.strip("-")` / `.strip("/")` only eat the ends of the whole string
+ *  and stop at that character -- so it can never be the segment that disappears.
+ *  Vanishing needs a segment reduced entirely to hyphens, which is exactly what
+ *  this refuses. It over-refuses only on a segment with no representable
+ *  character at all (`a/-/b`, or a middle segment that would be stored as the
+ *  unreadable `---`), which is the answer worth giving anyway.
+ *
+ *  A segment the user left blank is skipped rather than reported: `a//b` is stored
+ *  as `a/b` by the handler's `/+` collapse, a normalization that loses nothing, and
+ *  the preview shows it. An empty NAME is likewise not reported -- it is not a name
+ *  the server would mangle, it is a form the user has not finished, and the caller
+ *  gates it separately so the field does not turn red before anything is typed. A
+ *  blank CATEGORY counts as absent for the same reason.
+ *
+ *  That skip leaves two residuals, and they are why there are three checks below
+ *  rather than one loop:
+ *
+ *  - A NAME built only from separators and blanks (`/`, `//`, `  /  `) is nothing
+ *    BUT skipped segments, so the loop finds nothing to object to. Alone that earns
+ *    a server 400, but with a category filled the server stores the skill under the
+ *    CATEGORY alone (`utils` for `utils//`) and the name the user typed is gone. So
+ *    the name must keep a stem of its own before its segments are judged.
+ *  - The handler only collapses a LITERALLY empty segment. A segment of blanks
+ *    becomes hyphens instead, and end-stripping reaches only one segment at each
+ *    end of the whole path -- so a blank segment anywhere else is STORED, as `---`.
+ *    Judging the STORED path (rather than modelling which end-strip absorbs what)
+ *    refuses that without refusing the leading blank category the server really
+ *    does drop. It also makes `a/ /b` and `a/-/b` agree, which they must: they are
+ *    the same file. */
+export function skillPathProblem(name: string, category: string): 'no-stem' | null {
+  if (!name.trim()) return null
+  if (!sanitizeSkillName(name)) return 'no-stem'
+  for (const segment of [category, name].flatMap(field => field.split('/'))) {
+    if (!segment.trim()) continue
+    if (skillNameProblem(segment) !== null) return 'no-stem'
+  }
+  const stored = sanitizeSkillName(skillPostPath(name, category))
+  if (stored.split('/').some(segment => !/[a-z0-9]/.test(segment))) return 'no-stem'
+  return null
 }
 
 export default function SkillForm({ data, onChange, hideIdentity, allowRaw = true }: SkillFormProps) {
@@ -804,6 +992,31 @@ export default function SkillForm({ data, onChange, hideIdentity, allowRaw = tru
 
   const set = <K extends keyof SkillFormData>(key: K, value: SkillFormData[K]) =>
     onChange({ ...data, [key]: value })
+
+  // useId keeps the hint's id unique even when two SkillForms are mounted at
+  // once (create modal + an open inline editor).
+  const nameHintId = `${useId()}-skill-name-hint`
+  // The FILENAME PREVIEW is computed from the path the tab actually POSTs, not
+  // from `name` alone, or the name shown would disagree with what the server
+  // sanitizes.
+  const stem = sanitizeSkillName(skillPostPath(data.name, data.category))
+  // The two judgments read `name` and `category` separately, because the combined
+  // path answers neither. "Has the user named this yet?" is about `name`: a
+  // category alone makes the posted path non-empty (`utils/`) and would otherwise
+  // promise a filename for a skill with no name. And "would the server store what
+  // was typed?" needs every filled segment to survive on its own -- see
+  // skillPathProblem.
+  const typed = data.name.trim() !== ''
+  const nameProblem = skillPathProblem(data.name, data.category)
+  // ONE sentence for the valid/empty state, plus the refusal string for the
+  // no-stem case. The empty state passes the literal `<name>` placeholder so
+  // there is no second catalog string that would rot the moment a translator
+  // improved one of the pair.
+  const nameHint = !typed
+    ? i18nT('components.skillForm.name_preview', { filename: '<name>' })
+    : nameProblem === 'no-stem'
+      ? i18nT('components.skillForm.invalid_name_hint')
+      : i18nT('components.skillForm.name_preview', { filename: stem })
 
   const switchToRaw = () => {
     const assembled = assembleSkillContent({ ...data, raw: undefined })
@@ -875,7 +1088,21 @@ export default function SkillForm({ data, onChange, hideIdentity, allowRaw = tru
           {/* label-has-for can't resolve the control through the custom <Input>
               component; the runtime association via htmlFor + id + aria-label is correct. */}
           <label htmlFor="skill-name" className="text-[13px] font-semibold text-text mb-1 block">{i18nT('components.skillForm.name')}</label>
-          <Input id="skill-name" aria-label={i18nT('components.skillForm.name')} placeholder={i18nT('components.skillForm.e_g_my_tool')} value={data.name} onChange={e => set('name', e.target.value)} className="w-full" />
+          <Input id="skill-name" aria-label={i18nT('components.skillForm.name')} aria-describedby={nameHintId} placeholder={i18nT('components.skillForm.e_g_my_tool')} value={data.name} onChange={e => set('name', e.target.value)} className="w-full" />
+          {/* The hint carries the one fact only the server knows: the name the
+              file gets, computed from category-then-name as the server sees it.
+              It is associated (aria-describedby) rather than merely adjacent,
+              and announced on change (aria-live) so a screen-reader user learns
+              the name was rewritten, or that Create is disabled because the server
+              would refuse it. `polite` waits for a pause, so it does not speak on
+              every keystroke. */}
+          <p
+            id={nameHintId}
+            aria-live="polite"
+            className={`text-[11px] mt-1 ${nameProblem ? 'text-danger' : 'text-muted'}`}
+          >
+            {nameHint}
+          </p>
         </div>
         <div>
           <label htmlFor="skill-category" className="text-[13px] font-semibold text-text mb-1 block">{i18nT('components.skillForm.category')} <span className="text-muted font-normal">{i18nT('components.skillForm.optional')}</span></label>

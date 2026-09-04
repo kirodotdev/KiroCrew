@@ -152,6 +152,19 @@ describe('PierreWorkspaceTreeImpl — data loading', () => {
     )
   })
 
+  it('de-duplicates a workspace payload before it reaches the model', async () => {
+    // Egress redaction can collapse two different paths to the same string, so
+    // the API list may carry a duplicate. @pierre/trees throws 'Duplicate path'
+    // on adjacent identical entries — uncaught inside the resetPaths layout
+    // effect, it crashes the route — so the wrapper must de-dup, preserving
+    // first occurrence, before handing the set to the model.
+    vi.mocked(api.projectTree).mockResolvedValue(mkTree({ paths: ['README.md', 'src/a.ts', 'README.md'] }))
+    renderTree()
+    await waitForTree()
+
+    expect(treeMock.last().calls.resetPaths).toEqual([['README.md', 'src/a.ts']])
+  })
+
   it('reports an empty workspace instead of an empty tree', async () => {
     vi.mocked(api.projectTree).mockResolvedValue(mkTree({ paths: [] }))
     renderTree()

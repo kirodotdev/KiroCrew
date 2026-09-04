@@ -115,7 +115,7 @@ export function useMouseForward(params: UseMouseForwardParams): void {
       }, 50)
     })
     return () => { off?.() }
-  }, [visualPos.x, visualPos.y])
+  }, [visualPos.x, visualPos.y, dragging, isActiveRef])
 
   // Fallback: after any mouseup, if we're not dragging, ensure hitbox is valid.
   // This catches short drags where drag polling never started (so onDragEnded

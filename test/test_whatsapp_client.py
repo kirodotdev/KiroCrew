@@ -106,9 +106,12 @@ def test_session_exists_true_and_false(tmp_path):
 def test_connect_raises_without_extra(monkeypatch):
     monkeypatch.setattr(wac, "neonize_available", lambda: False)
     c = WhatsAppClient("/tmp/none.db")
-    with pytest.raises(RuntimeError, match="whatsapp"):
+    # Matches the DISTRIBUTION name: the message names neonize rather than the
+    # `kirocrew[whatsapp]` extra, which pip cannot resolve from any index.
+    with pytest.raises(RuntimeError, match="neonize"):
         asyncio.run(c.connect())
-    assert MISSING_EXTRA_HINT
+    assert "neonize" in MISSING_EXTRA_HINT
+    assert "kirocrew[" not in MISSING_EXTRA_HINT
 
 
 # ── connect(): fake neonize wiring ──────────────────────────────────────────

@@ -82,6 +82,10 @@ export function ConfirmDialog({
         background: 'rgba(0,0,0,0.55)',
       }}
     >
+      {/* The card's only handler shields it from the scrim's dismiss-on-click, so
+          it adds no gesture of its own: Confirm and Cancel are real <button>s,
+          and the window Escape bound above dismisses without the pointer. */}
+      {/* eslint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-noninteractive-element-interactions -- stopPropagation only: keeps a click inside the dialog from reaching the scrim's dismiss */}
       <div
         role="dialog"
         aria-modal="true"

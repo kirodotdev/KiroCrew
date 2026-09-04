@@ -87,6 +87,20 @@ rollback, one-command `delete-stack` teardown. AMI resolves from the public
 `WaitCondition` + `cfn-signal` blocks the deploy until the gateway is healthy; a
 failed bootstrap folds the on-box setup-log tail into the signal reason so the cause survives the rollback. Bootstrap failure reasons are normalized to printable ASCII before CloudFormation receives them; otherwise CloudFormation replaces the setup error with a charset error and masks it during rollback (`test_cloud_ec2.py::test_failure_reason_is_filtered_to_printable_ascii`).
 
+Bootstrap is reboot-resilient. UserData performs no package or build work directly:
+it first copies its already-rendered script to
+`/usr/local/sbin/kirocrew-bootstrap`, installs and enables the
+`kirocrew-bootstrap.service` systemd oneshot, starts it without blocking, and
+exits. If an account-level State Manager association such as
+`AWS-RunPatchBaseline` reboots a newly-online managed node during npm/Vite,
+systemd starts the same rendered script again on the next boot. Durable markers
+under `/var/lib/kirocrew-bootstrap/` checkpoint installation separately from
+successful WaitCondition delivery: a reboot after installation retries gateway
+health and the success signal without replacing the checkout, while a reboot
+before installation completes stops any partially enabled gateway and safely
+reruns the idempotent install. Once `signal-complete` exists, later host reboots
+skip bootstrap and only the normal gateway service starts.
+
 The instance bootstrap runs `install.sh --voice` on both its initial attempt and
 retry. This installs the existing `voice` extra (`boto3` and
 `amazon-transcribe`) before the gateway first imports its Transcribe provider;

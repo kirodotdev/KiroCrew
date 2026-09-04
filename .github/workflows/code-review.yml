@@ -273,11 +273,14 @@ jobs:
           fi
 
   # ── Production Dependency Vulnerability Gate ─────────────────────────
-  # The reusable gate audits every lockfile-backed Node project and fails
-  # closed on high/critical production vulnerabilities or audit failures.
-  dep-audit:
-    name: Dependency Audit
-    uses: ./.github/workflows/dependency-vulnerability.yml
+  # NOT run per pull request. The reusable gate (dependency-vulnerability.yml)
+  # audits every lockfile-backed Node project against the npm registry, and a
+  # registry that answers slowly -- which it does for hours at a stretch -- made
+  # it the one red X on otherwise-green PRs, re-run by hand until it passed. A
+  # gate people learn to re-run until green is not a gate. It runs where a
+  # vulnerable dependency would actually ship: release.yml, before any wheel or
+  # desktop build. A PR that adds or bumps a dependency is checked by the
+  # release that would carry it.
 
   # ── Coverage Gate ────────────────────────────────────────────────────
   # MOVED to ci.yml. It now consumes the coverage-backend / coverage-frontend

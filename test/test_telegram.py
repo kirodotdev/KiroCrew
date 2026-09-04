@@ -32,6 +32,7 @@ from kiro_crew.messaging.renderer import (
     TEXT_CHUNK,
     TOOL_CALL,
     OutputEvent,
+    session_provenance_tag,
 )
 from kiro_crew.messaging.transport import InboundMessage
 from kiro_crew.session import BACKGROUND_KEY, _opt_out_key
@@ -435,6 +436,9 @@ class FakeSessions:
     def has_session(self, key: str) -> bool:
         return self._has
 
+    def channel_key_for_stem(self, stem: str) -> str:
+        return ""
+
     async def try_acquire(self, key: str) -> bool:
         # Mirror the real atomic acquire-if-idle: refuse if a turn holds the
         # semaphore or no session exists; otherwise "acquire" and record it.
@@ -629,6 +633,7 @@ class TestBotMentionSuffix:
 
     def test_parse_command_with_mention_and_trailing_args(self) -> None:
         assert parse_command("/yolo@KiroCrewBot on", "KiroCrewBot") == "yolo"
+        assert parse_command("/session@KiroCrewBot launch", "KiroCrewBot") == "sessions"
 
     def test_parse_command_mention_is_case_insensitive(self) -> None:
         assert parse_command("/NEW@KiroCrewBot", "kirocrewbot") == "new"
@@ -1185,20 +1190,26 @@ class TestRenderedBudget:
 
 
 class TestInlineKeyboard:
-    def test_none_when_no_options(self) -> None:
-        assert build_inline_keyboard([]) is None
+    _SESSION_KEY = "telegram:kirocrew:direct:7"
 
-    def test_callback_data_is_index_only_and_byte_safe(self) -> None:
-        # Multi-byte (CJK) labels must not blow the 64-byte callback_data cap.
-        kb = build_inline_keyboard(["开始实现 Tier 0 的完整方案很长的选项文字", "B"])
+    def test_none_when_no_options(self) -> None:
+        assert build_inline_keyboard([], self._SESSION_KEY) is None
+
+    def test_callback_data_is_session_tagged_and_byte_safe(self) -> None:
+        # Multi-byte (CJK) labels never enter callback_data. The compact digest
+        # binds each index to the session that posted it while staying below the
+        # Bot API's 64-byte ceiling.
+        kb = build_inline_keyboard(
+            ["开始实现 Tier 0 的完整方案很长的选项文字", "B"], self._SESSION_KEY
+        )
         assert kb is not None
-        for row in kb["inline_keyboard"]:
-            for btn in row:
-                assert btn["callback_data"].startswith("opt:")
-                assert len(btn["callback_data"].encode("utf-8")) <= 64
+        tag = session_provenance_tag(self._SESSION_KEY)
+        data = [btn["callback_data"] for row in kb["inline_keyboard"] for btn in row]
+        assert data == [f"opt:0:{tag}", f"opt:1:{tag}"]
+        assert all(len(value.encode("utf-8")) <= 64 for value in data)
 
     def test_two_buttons_per_row(self) -> None:
-        kb = build_inline_keyboard(["a", "b", "c"])
+        kb = build_inline_keyboard(["a", "b", "c"], self._SESSION_KEY)
         assert kb is not None
         assert len(kb["inline_keyboard"][0]) == 2
         assert len(kb["inline_keyboard"][1]) == 1
@@ -1753,7 +1764,10 @@ class TestRenderer:
         final_kb = cli.final_markup()
         assert final_text == "Hello. Pick."  # [OPTIONS:] stripped
         labels = [b["text"] for row in final_kb["inline_keyboard"] for b in row]
+        data = [b["callback_data"] for row in final_kb["inline_keyboard"] for b in row]
+        tag = session_provenance_tag("telegram:1:0")
         assert labels == ["A", "B"]
+        assert data == [f"opt:0:{tag}", f"opt:1:{tag}"]
 
     def test_streams_live_via_send_then_edit(self) -> None:
         # Edit-streaming (OpenClaw-style): send one real message, then edit it in
@@ -1912,7 +1926,10 @@ class TestRenderer:
 
         markups = [m for _, m in cli.sent if m] + [m for _, _, m in cli.edits if m]
         labels = [b["text"] for row in markups[0]["inline_keyboard"] for b in row]
+        data = [b["callback_data"] for row in markups[0]["inline_keyboard"] for b in row]
+        tag = session_provenance_tag("telegram:1:0")
         assert labels == ["Alpha", "Bravo", "Charlie"]
+        assert data == [f"opt:{index}:{tag}" for index in range(3)]
         visible = "\n".join([t for t, _ in cli.sent] + [t for _, t, _ in cli.edits])
         assert "[OPTIONS" not in visible
         assert "[STEERING" not in visible
@@ -2870,6 +2887,47 @@ class TestDispatcher:
         assert sess.released == ["telegram:kirocrew:direct:7"]  # and released it in finally
         assert any("Compact" in s[0] for s in cli.sent) or any("Compact" in e[1] for e in cli.edits)
 
+    def test_compact_declined_on_auto_managed_backend(self) -> None:
+        # A backend that cannot serve /compact gets the informational reply and
+        # compact() is NEVER dispatched (#8156).
+        d, cli, sess = _dispatcher({7})
+        calls: list[int] = []
+
+        async def _compact(context: str = "") -> None:
+            calls.append(1)
+
+        sess._gp.compact = _compact
+        sess._gp.manual_compact_unsupported_backend = "kas"
+
+        async def _go() -> None:
+            await d.handle_message(
+                InboundMessage(
+                    channel_type="telegram", user_id="7", conversation_id="7", text="/compact"
+                )
+            )
+
+        asyncio.run(_go())
+        visible = " ".join([text for text, _ in cli.sent] + [text for _, text, _ in cli.edits])
+        assert "manages compaction automatically" in visible
+        assert calls == []
+        assert sess.released == ["telegram:kirocrew:direct:7"]  # semaphore still handed back
+
+    def test_compact_none_capability_preserves_dispatch(self) -> None:
+        # The ABC's None (supported) default keeps the existing dispatch.
+        d, cli, sess = _dispatcher({7})
+        sess._gp.manual_compact_unsupported_backend = None
+
+        async def _go() -> None:
+            await d.handle_message(
+                InboundMessage(
+                    channel_type="telegram", user_id="7", conversation_id="7", text="/compact"
+                )
+            )
+
+        asyncio.run(_go())
+        visible = " ".join([text for text, _ in cli.sent] + [text for _, text, _ in cli.edits])
+        assert "Context compacted" in visible
+
     def test_compact_summary_body_is_not_sent(self) -> None:
         d, cli, sess = _dispatcher({7})
 
@@ -2914,20 +2972,24 @@ class TestDispatcher:
         )
         assert sess.destroyed == [] and sess.discarded == []  # healthy session preserved
 
-    def test_callback_option_echoes_choice_and_redispatches(self) -> None:
-        d, cli, sess = _dispatcher({7})
-        cb = SimpleNamespace(
+    @staticmethod
+    def _option_callback(data: str, label: str = "Say Hi") -> Any:
+        return SimpleNamespace(
             callback_query_id="q1",
             user_id=7,
             chat_id=7,
             message_id=99,
-            data="opt:0",
-            label="Say Hi",
+            data=data,
+            label=label,
             chat_type="private",
         )
 
+    def test_callback_option_echoes_choice_and_redispatches(self) -> None:
+        d, cli, sess = _dispatcher({7})
+        tag = session_provenance_tag(d._session_key(("direct", "7")))
+
         async def _go() -> None:
-            await d.on_callback(cb)  # type: ignore[arg-type]
+            await d.on_callback(self._option_callback(f"opt:0:{tag}"))  # type: ignore[arg-type]
 
         asyncio.run(_go())
         # Tapping an option retires the keyboard on the original message WITHOUT
@@ -2937,6 +2999,101 @@ class TestDispatcher:
         assert all(mid != 99 for mid, _, _ in cli.edits)  # original text never clobbered
         assert "Say Hi" in cli.sent[0][0]  # choice echoed as its own block first
         assert cli.final_text() == "Answer: Say Hi"  # answer streamed as a NEW message
+        assert sess.successes == ["telegram:kirocrew:direct:7"]
+
+    def test_callback_option_label_is_literal_not_a_command(self) -> None:
+        d, cli, sess = _dispatcher({7})
+        route = ("direct", "7")
+        tag = session_provenance_tag(d._session_key(route))
+        before = d._conv.current_gen(route)
+
+        asyncio.run(
+            d.on_callback(  # type: ignore[arg-type]
+                self._option_callback(f"opt:0:{tag}", label="/new")
+            )
+        )
+
+        assert d._conv.current_gen(route) == before
+        assert sess.successes == ["telegram:kirocrew:direct:7"]
+        assert not any("New conversation started" in text for text, _ in cli.sent)
+        assert "Answer: /new" in (cli.final_text() or "")
+
+    def test_untagged_option_press_is_refused_fail_closed(self) -> None:
+        d, cli, sess = _dispatcher({7})
+
+        asyncio.run(d.on_callback(self._option_callback("opt:0")))  # type: ignore[arg-type]
+
+        assert cli.markup_edits[-1] == (99, {"inline_keyboard": []})
+        assert any("predate" in text for text, _ in cli.sent)
+        assert not any("Say Hi" in text for text, _ in cli.sent)
+        assert sess.successes == [] and sess.queued == [] and sess._gp.steered == []
+
+    def test_pre_new_option_press_is_refused_before_busy_path(self) -> None:
+        d, cli, sess = _dispatcher({7})
+        route = ("direct", "7")
+        old_tag = session_provenance_tag(d._session_key(route))
+        asyncio.run(d.handle_message(_dm("/new")))
+        cli.sent.clear()
+        sess._busy = True
+
+        asyncio.run(
+            d.on_callback(  # type: ignore[arg-type]
+                self._option_callback(f"opt:0:{old_tag}", label="Choice A")
+            )
+        )
+
+        assert any("moved away" in text for text, _ in cli.sent)
+        assert not any("busy" in text.lower() for text, _ in cli.sent)
+        assert sess.successes == [] and sess.queued == [] and sess._gp.steered == []
+
+    def test_option_press_after_agent_switch_is_refused(self) -> None:
+        d, cli, sess = _dispatcher({7})
+        route = ("direct", "7")
+        old_tag = session_provenance_tag(d._session_key(route))
+        d._agent_pref[route] = "research-agent"
+
+        asyncio.run(
+            d.on_callback(  # type: ignore[arg-type]
+                self._option_callback(f"opt:0:{old_tag}", label="Choice A")
+            )
+        )
+
+        assert any("moved away" in text for text, _ in cli.sent)
+        assert sess.successes == []
+
+    def test_tagged_option_press_is_revalidated_after_idle_rotation(self) -> None:
+        d, cli, sess = _dispatcher({7})
+        route = ("direct", "7")
+        tag = session_provenance_tag(d._session_key(route))
+
+        def _rotate_now(*_args: Any, **_kwargs: Any) -> bool:
+            d._conv.bump_gen(route)
+            return True
+
+        d._conv.maybe_rotate = _rotate_now  # type: ignore[method-assign]
+
+        asyncio.run(
+            d.on_callback(  # type: ignore[arg-type]
+                self._option_callback(f"opt:0:{tag}", label="Choice A")
+            )
+        )
+
+        assert any("moved away" in text for text, _ in cli.sent)
+        assert sess.successes == []
+
+    def test_valid_tagged_option_press_while_busy_is_not_queued_or_steered(self) -> None:
+        d, cli, sess = _dispatcher({7})
+        tag = session_provenance_tag(d._session_key(("direct", "7")))
+        sess._busy = True
+
+        asyncio.run(
+            d.on_callback(  # type: ignore[arg-type]
+                self._option_callback(f"opt:0:{tag}", label="Choice A")
+            )
+        )
+
+        assert any("busy" in text.lower() and "NOT applied" in text for text, _ in cli.sent)
+        assert sess.successes == [] and sess.queued == [] and sess._gp.steered == []
 
     def test_callback_approval_resolves_decider(self) -> None:
         d, cli, _ = _dispatcher({7})
@@ -4344,13 +4501,14 @@ class TestForumCallbackGate:
     group. DM callbacks are unchanged (covered by TestDispatcher)."""
 
     @staticmethod
-    def _opt_cb() -> Any:
+    def _opt_cb(tag: str = "") -> Any:
+        data = f"opt:0:{tag}" if tag else "opt:0"
         return SimpleNamespace(
             callback_query_id="qf",
             user_id=7,
             chat_id=-1001234567890,
             message_id=50,
-            data="opt:0",
+            data=data,
             label="Say Hi",
             chat_type="supergroup",
             message_thread_id=5,
@@ -4358,7 +4516,8 @@ class TestForumCallbackGate:
 
     def test_forum_callback_processed_when_allowlisted(self) -> None:
         d, cli, sess = _dispatcher({7}, allow_forum=True, allowed_forum_chat_ids=[-1001234567890])
-        asyncio.run(d.on_callback(self._opt_cb()))  # type: ignore[arg-type]
+        tag = session_provenance_tag(d._session_key(("forum", "-1001234567890:5")))
+        asyncio.run(d.on_callback(self._opt_cb(tag)))  # type: ignore[arg-type]
         # Acked, and the [OPTIONS:] choice re-dispatched under the FORUM key.
         assert cli.answered == ["qf"]
         assert sess.successes == ["telegram:kirocrew:forum:-1001234567890:5"]
@@ -5022,6 +5181,17 @@ class TestContextThresholdNotices:
         asyncio.run(d._maybe_notice(7, ("direct", "7"), "key", object()))
 
         assert any("/compact" in s[0] for s in cli.sent)
+
+    def test_soft_nudge_suppressed_on_auto_managed_backend(self) -> None:
+        # The nudge advises /compact, which this backend refuses — it compacts
+        # on its own, so there is nothing for the user to act on (#8156).
+        d, cli, sess = _dispatcher({7})
+        sess.check_context_usage = lambda key, provider: 85.0
+        provider = SimpleNamespace(manual_compact_unsupported_backend="kas")
+
+        asyncio.run(d._maybe_notice(7, ("direct", "7"), "key", provider))
+
+        assert cli.sent == []
 
     def test_below_soft_threshold_stays_silent(self) -> None:
         d, cli, sess = _dispatcher({7})

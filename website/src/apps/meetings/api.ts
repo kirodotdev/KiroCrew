@@ -52,6 +52,11 @@ export interface Preset {
 export interface CalendarConfig {
   provider: string
   source: string
+  /** Background poll (backend `calendar_poller`): sync on a cadence and pre-create the meeting about to start. */
+  auto_sync?: boolean
+  poll_interval_secs?: number
+  /** Minutes before an event's start its meeting directory is created; 0 turns pre-creation off. */
+  precreate_lead_minutes?: number
 }
 
 export interface MeetingsConfig {

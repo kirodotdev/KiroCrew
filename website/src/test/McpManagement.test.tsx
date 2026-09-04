@@ -1388,4 +1388,21 @@ describe('state chip honours the rewriter, not just the allowlist', () => {
     expect(await screen.findByText('direct', { selector: 'span' })).toBeTruthy()
     expect(screen.getByText('no stdio', { selector: 'span' })).toBeTruthy()
   })
+
+  it('gaps the servers panel cards the same way the assessment view does', async () => {
+    // The lede header, the two inline banners and the three cards are SIBLINGS
+    // inside the servers tab panel. The `space-y-4` on the <Tabs> root only gaps
+    // the tab rail from the panel; it cannot reach inside the panel, so without a
+    // gap class ON the panel the cards render flush against each other -- the
+    // inconsistency this fix removes. Assert the panel carries the spacing class
+    // so a later refactor that drops it fails here rather than only on screen.
+    vi.spyOn(api, 'mcpGatewayStatus').mockResolvedValue(status() as never)
+    vi.spyOn(api, 'mcpGatewayServers').mockResolvedValue({ servers: [server()] } as never)
+
+    mount()
+    // The active tab panel is the servers view (the default). Radix renders it
+    // with role="tabpanel"; the inactive assessment panel is not in the DOM.
+    const panel = await screen.findByRole('tabpanel')
+    expect(panel.className).toContain('space-y-4')
+  })
 })

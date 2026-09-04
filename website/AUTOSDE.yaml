@@ -522,3 +522,96 @@ custom-rules:
       <span><AlertTriangle className="lucide-inline" /> {error}</span>
       icon: <Inbox className="lucide-inline" />
       ```
+
+  - id: errors-use-error-notice
+    blocking: true
+    file-patterns:
+      - "src/**/*.tsx"
+    rule: |
+      An error surfaced to the user renders through `ErrorNotice`
+      (`src/components/ErrorNotice.tsx`), and turns on its `askAgent` hand-off
+      wherever the hand-off cannot destroy anything. Never a hand-written
+      `<div className="text-danger">{err}</div>`, a bare `role="alert"` box, or an
+      error string dropped into a `<p>`.
+
+      Why: this is an AI agent app. An error the user cannot fix themselves is
+      usually one the agent can, so an error surface without the hand-off is a
+      dead end. `ErrorNotice` is the ONE place that recovers the structured
+      context (route, failed endpoint, HTTP status, backend `code`) from the
+      error journal and offers it to the agent; a hand-written red div throws
+      that context away and re-implements the visual (icon, `role="alert"`,
+      design tokens, dismiss) slightly differently every time.
+
+      "Error" here means the outcome of something that FAILED: a rejected
+      request, a caught exception, a `useQuery` / `useMutation` `error`, a
+      backend `{ error, code }` body, a job's `last_error`, a boundary fallback.
+      Decide by where the VALUE comes from, not by how it is rendered — a
+      string that originates in one of those is an error however it is shown.
+      It does NOT cover client-side validation hints ("name is required"),
+      empty states, warnings, or status text about something that has not
+      failed — those are not errors and must not be dressed as one.
+
+      `askAgent` is opt-in, and the direction of that default is the safety
+      property (the prop's doc comment says why). The hand-off NAVIGATES to the
+      chat and unmounts the tree that rendered the banner, destroying any
+      unsaved local state in it. The AUTHOR decides per surface:
+      - `askAgent` MUST be on when there is nothing to lose: crash fallbacks,
+        read / list / load failures, action failures on a surface whose inputs
+        are already persisted, log and status panels.
+      - `askAgent` MUST stay off next to an editable field whose value is not
+        yet saved somewhere durable (a half-filled form, a comment draft, a
+        setup wizard) — AND the omission carries a `{/* No hand-off: … */}`
+        comment naming the draft it protects, the established form in
+        `src/pages/settings/RemoteCrewPanel.tsx`.
+      - `onHandoff` lets a dialog close itself before the navigation (the
+        `App.tsx` update-modal form). It does NOT make the navigation safe:
+        the tree beneath the dialog still unmounts, so over an unsaved draft
+        the no-hand-off form applies, `onHandoff` or not.
+
+      On the `askAgent` choice, the REVIEWER blocks on the missing decision,
+      never on the direction of it: an added or touched `ErrorNotice` carrying
+      neither `askAgent` nor a `No hand-off` comment, or a comment that names
+      no concrete draft. (The hand-written-surface ban above is its own
+      blocking trigger.) Whether a subtree holds unsaved state is not visible
+      in a hunk, so a reviewer never demands `askAgent` be turned on — a wrong
+      demand causes exactly the data loss the default prevents. Doubt a
+      comment's claim in a thread; do not overrule it.
+
+      Applies to what the diff ADDS or TOUCHES. The ~100 pre-existing
+      hand-written sites are grandfathered, but a diff that edits one (its
+      message, styling, or condition) migrates it. This is deliberately
+      stricter than `max-two-buttons-per-row`'s growth-only grandfather: the
+      migration is one line — pass the same string the site already had and
+      `ErrorNotice` recovers the structured context by message match — so
+      touch-it-migrate-it is the cheapest way the backlog ever shrinks, where
+      growth-only would leave every site a dead end forever.
+
+      Does NOT flag:
+      - `ErrorBoundary` / `MessageErrorBoundary` fallbacks that mount
+        `AskAgentButton` directly — they are the component's other consumer.
+      - `role: 'error'` rows inside the chat transcript (`ErrorCard`) — the
+        agent is already in that conversation, so a hand-off would be circular.
+      - A `useNotify(msg, { type: 'error' })` toast — the app-sdk seam carries
+        only message + type, so it cannot host the hand-off and is out of this
+        rule's reach. It is transient feedback, not the error surface: when
+        the failure leaves the user in a failed state (a load that did not
+        happen, a save that did not persist), that state is ALSO rendered
+        in-page through `ErrorNotice`; a toast as the ONLY report of it is a
+        violation.
+
+      Bad:
+      ```tsx
+      {err && <div className="text-danger text-sm">{err}</div>}
+      {mutation.error && <p role="alert" className="text-danger">{String(mutation.error)}</p>}
+      <ErrorNotice message={loadErr} />   // neither askAgent nor a No hand-off comment: the decision is missing
+      ```
+
+      Good:
+      ```tsx
+      <ErrorNotice message={err} askAgent />
+      <ErrorNotice message={mutation.error instanceof Error ? mutation.error.message : undefined} variant="inline" askAgent />
+
+      {/* No hand-off: the add-crew form shares this panel — a failed refresh
+          must not offer a navigation that discards it. */}
+      <ErrorNotice message={loadErr} />
+      ```

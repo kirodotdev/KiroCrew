@@ -63,7 +63,9 @@ interface RunResponse {
 interface ValidateResponse {
   ok: boolean
   errors: string[]
-  meta: Record<string, any> | null
+  /** The script's own `META` dict, echoed back unparsed. Arbitrary author-supplied
+   *  JSON, so it stays opaque rather than claiming a shape nothing checks. */
+  meta: Record<string, unknown> | null
 }
 
 interface ExampleScript {
@@ -82,6 +84,10 @@ async def workflow(ctx):
 `
 
 type WorkflowsView = 'author' | 'runs'
+
+/** Stable stand-in for "no run yet". A fresh `[]` per render would give every
+ *  hook keyed on the event list a new identity on every render. */
+const NO_EVENTS: WfEvent[] = []
 
 export default function WorkflowsPage() {
   const [view, setView] = useState<WorkflowsView>('author')
@@ -129,7 +135,7 @@ export default function WorkflowsPage() {
   // The run view is driven by the events the synchronous /run returned.
   // Phase-tree folding happens inside <WorkflowRunTree>; here we only need the
   // budget badge for the header.
-  const events = run?.events ?? []
+  const events = run?.events ?? NO_EVENTS
   const budget = useMemo(() => latestBudget(events), [events])
 
   return (

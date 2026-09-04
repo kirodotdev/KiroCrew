@@ -9,7 +9,7 @@
 import { describe, it, expect } from 'vitest'
 import { groupByPhase, latestBudget } from '../apps/workflows/WorkflowsPage'
 
-function ev(type: string, data: Record<string, any> = {}, seq = 0) {
+function ev(type: string, data: Record<string, unknown> = {}, seq = 0) {
   return { run_id: 'wf_t', seq, ts: 't', type, data }
 }
 

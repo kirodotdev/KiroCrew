@@ -78,6 +78,12 @@ export default function HookSkillsDropdown({
 
   if (!rect) return null
   return createPortal(
+    // The panel's only listener is keyboard-only Escape-to-dismiss (plus the
+    // focus restore the trigger needs), delegated to the container because focus
+    // can be on the filter Input or on any row. Nothing activates the panel
+    // itself — every affordance inside it is a <button> or an <Input> — and it
+    // cannot take an interactive role: `menu` forbids the text input it holds.
+    // eslint-disable-next-line jsx-a11y/no-static-element-interactions -- container-level Escape dismissal, which IS the keyboard path, not a mouse-only affordance
     <div
       ref={dropdownRef}
       className="fixed z-50 bg-bg-elevated border border-border rounded-lg shadow-xl p-1 w-72 max-h-60 overflow-y-auto"

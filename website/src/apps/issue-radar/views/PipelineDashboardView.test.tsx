@@ -44,6 +44,9 @@ function makeStub(name: string) {
     const [open, setOpen] = React.useState(false)
     React.useEffect(() => {
       mounts.push(`${name}:${repo.owner}/${repo.repo}`)
+      // Re-running this on a repo change would append without a remount, and a remount
+      // would stop being distinguishable from a plain re-render.
+      // eslint-disable-next-line react-hooks/exhaustive-deps -- mount-once on purpose: this log IS the mount counter every assertion in this file reads
     }, [])
     return (
       <div>

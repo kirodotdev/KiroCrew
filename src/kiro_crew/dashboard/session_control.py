@@ -82,6 +82,26 @@ MAX_READ_CONTENT_CHARS = 4000
 # (``send_message``), not session control.
 UNATTENDED_SLOT_PREFIXES = ("cron-", "workflow-")
 
+
+def _member_caller(caller_key: str) -> bool:
+    """Whether *caller_key* is a crew member's pinned DM slot.
+
+    A member DM session dispatches its real work into worker sessions it
+    creates and patrols — that is the member operating model, not an optional
+    capability — so the surface authorizes it WITHOUT the global
+    ``agent.session_control`` opt-in. What bounds it instead is ownership:
+    :func:`authorize_target` restricts a member caller to slots it created
+    itself, so the automatic grant never reaches the user's own sessions.
+
+    Spelled through the members module's own prefix constant (imported
+    lazily — members imports validation which sits below this module in the
+    layering) rather than a restated literal, so the two cannot drift.
+    """
+    from kiro_crew.members import DM_SLOT_KEY_PREFIX
+
+    return caller_key.startswith(DM_SLOT_KEY_PREFIX)
+
+
 # Roles a read must not count, taken from the persistence layer's own list rather
 # than restated here: those are exactly the rows rehydration DROPS, so any cursor
 # that counted them would name a different position after a restart than before
@@ -629,15 +649,21 @@ async def create_session(
     already refused above it -- an app-scoped caller cannot create a session at
     all (`app_scoped_caller`).
     """
-    if not session_control_enabled():
-        raise SessionControlError(
-            "session control is disabled in config (agent.session_control)",
-            code="session_control_disabled",
-        )
     caller_key = caller_slot_key(state, caller_session_key)
     if not caller_key:
         raise SessionControlError(
             "caller session could not be identified", code="caller_unidentified"
+        )
+    # The caller is resolved BEFORE the config gate so a member DM session —
+    # for which dispatching work into workers is the operating model, not an
+    # opt-in — passes without `agent.session_control`. Every other caller
+    # still needs the switch. The member's automatic grant is bounded by
+    # ownership in `authorize_target`, not here: creation makes the caller
+    # the owner by construction.
+    if not session_control_enabled() and not _member_caller(caller_key):
+        raise SessionControlError(
+            "session control is disabled in config (agent.session_control)",
+            code="session_control_disabled",
         )
     if caller_key.startswith(UNATTENDED_SLOT_PREFIXES):
         raise SessionControlError(
@@ -929,6 +955,11 @@ async def create_session(
                     # the filing would not survive a restart: for an idle newborn
                     # THIS dict is the only record of the placement on disk.
                     **({"folder_id": slot.folder_id} if slot.folder_id else {}),
+                    # Creator attribution, only when this entry point set it. The
+                    # member ownership boundary in `authorize_target` reads it, so
+                    # losing it on restart would strand every worker a member
+                    # dispatched — controllable in memory, orphaned after reboot.
+                    **({"created_by": slot._created_by} if slot._created_by else {}),
                 },
             )
         except Exception:
@@ -1040,18 +1071,21 @@ def authorize_target(
         )
         return SessionControlError(reason, status=status, code=code)
 
-    if not skip_enabled_check and not session_control_enabled():
-        raise deny(
-            "session control is disabled in config (agent.session_control)",
-            "session_control_disabled",
-        )
-
     caller_key = caller_slot_key(state, caller_session_key)
     if not caller_key:
         # Without a resolved caller the self-target guard is blind, and a session
         # that can reach every peer while being unidentifiable is exactly the
         # shape this surface must not have.
         raise deny("caller session could not be identified", "caller_unidentified")
+    # Resolved before the config gate: a member DM session is authorized
+    # WITHOUT `agent.session_control` — dispatching and patrolling workers is
+    # its operating model — and is bounded instead by the ownership check
+    # below, which restricts it to slots it created itself.
+    if not skip_enabled_check and not session_control_enabled() and not _member_caller(caller_key):
+        raise deny(
+            "session control is disabled in config (agent.session_control)",
+            "session_control_disabled",
+        )
     if caller_key.startswith(UNATTENDED_SLOT_PREFIXES):
         raise deny(
             "unattended sessions (scheduled runs) cannot control other sessions",
@@ -1151,6 +1185,16 @@ def authorize_target(
         # Workspaces are the memory boundary; reaching across one would let a
         # session act on work it cannot see.
         raise deny("target session belongs to a different workspace", "workspace_mismatch")
+    if _member_caller(caller_key) and getattr(slot, "_created_by", "") != caller_key:
+        # The member's automatic authorization reaches ONLY the workers it
+        # created itself (`created_by` is written at birth and rehydrated on
+        # restart). Always enforced for member callers — even when the global
+        # switch is on — so a member's reach never silently widens to the
+        # user's own sessions because of an unrelated opt-in.
+        raise deny(
+            "a crew member can only control worker sessions it created itself",
+            "not_creator",
+        )
 
     return slot
 

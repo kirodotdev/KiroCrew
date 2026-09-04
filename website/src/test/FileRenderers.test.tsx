@@ -1,8 +1,39 @@
-import { describe, it, expect, vi, afterEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import type { ReactNode } from 'react'
 import { columnLetter, detectFileType, JsonlViewer, OfficeViewer, SheetViewer } from '../components/FileRenderers'
+
+// `useCanOpenFile` reads both of these, and it is the gate deciding whether the
+// Open button exists at all. Drive them explicitly: on the test host they would
+// otherwise resolve from a live /api/branding call.
+const brandingEnv = vi.hoisted(() => ({ directLocal: true }))
+const platformEnv = vi.hoisted(() => ({ value: 'other' as 'other' | 'darwin' | 'windows' }))
+
+vi.mock('../hooks/useBranding', () => ({
+  useBranding: () => ({ botName: 'Test', avatar: '', directLocal: brandingEnv.directLocal }),
+}))
+
+vi.mock('../hooks/useGatewayPlatform', () => ({
+  useGatewayPlatform: () => platformEnv.value,
+}))
+
+// Only `revealPath` is stubbed: the other viewers in this file talk to the
+// server through `fetch`, so a partial mock keeps their paths real.
+vi.mock('../api/client', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../api/client')>()
+  return { ...actual, api: { ...actual.api, revealPath: vi.fn() } }
+})
+
+// Resolves TRUE by default: the real signature is `Promise<boolean>` and a bare
+// `vi.fn()` returns undefined, which would read as a FAILED clipboard write.
+vi.mock('../utils/clipboard', () => ({
+  copyToClipboard: vi.fn().mockResolvedValue(true),
+}))
+
+import { api } from '../api/client'
+import { copyToClipboard } from '../utils/clipboard'
+import { ApiError } from '../api/apiError'
 
 describe('detectFileType', () => {
   it('returns jsonl for .jsonl files', () => {
@@ -197,6 +228,121 @@ describe('OfficeViewer', () => {
       expect(screen.getByText('report.docx')).toBeInTheDocument()
     })
     expect(screen.queryByText(/C:\\Users/)).not.toBeInTheDocument()
+  })
+
+  describe('open with default app', () => {
+    const revealPath = vi.mocked(api.revealPath)
+    const copy = vi.mocked(copyToClipboard)
+    let alertSpy: ReturnType<typeof vi.spyOn>
+
+    beforeEach(() => {
+      revealPath.mockReset()
+      copy.mockReset()
+      copy.mockResolvedValue(true)
+      brandingEnv.directLocal = true
+      platformEnv.value = 'other'
+      alertSpy = vi.spyOn(window, 'alert').mockImplementation(() => {})
+    })
+
+    it('leads the download card with Open, and keeps Download beside it', async () => {
+      // Card state: the format has no preview, so the file can only be reached
+      // by handing it to its application or by downloading a copy.
+      stubPreview({}, false, 415)
+      revealPath.mockResolvedValue({ ok: true })
+      renderWithQuery(<OfficeViewer filePath="/home/user/docs/legacy.doc" />)
+      const open = await screen.findByRole('button', { name: /open with default app/i })
+      fireEvent.click(open)
+      // The EXISTING file, not a second copy in ~/Downloads.
+      await waitFor(() => expect(revealPath).toHaveBeenCalledWith('/home/user/docs/legacy.doc', 'open'))
+      // Download stays available for the user who wants their own copy anyway.
+      expect(screen.getByRole('link', { name: /legacy\.doc/i })).toBeInTheDocument()
+    })
+
+    it('offers the same action under the plaintext preview', async () => {
+      // Preview state: the extracted text is not the document — its formatting,
+      // images and layout are only in the real file.
+      stubPreview({ text: 'Introduction\n\nBody.', truncated: false })
+      revealPath.mockResolvedValue({ ok: true })
+      renderWithQuery(<OfficeViewer filePath="/home/user/docs/quarterly-report.docx" />)
+      fireEvent.click(await screen.findByRole('button', { name: /open with default app/i }))
+      await waitFor(() => expect(revealPath).toHaveBeenCalledWith('/home/user/docs/quarterly-report.docx', 'open'))
+      expect(screen.getByText(/Download original/i)).toBeInTheDocument()
+    })
+
+    it('actually writes the clipboard when the gateway degrades to a copy', async () => {
+      // The regression this locks: announcing "path copied" while the clipboard
+      // is untouched makes the user paste whatever was there before. Only
+      // `revealOrOpen` performs the write, so the button must route through it
+      // rather than calling `api.revealPath` (side-effect-free) on its own.
+      stubPreview({}, false, 415)
+      revealPath.mockResolvedValue({ ok: true, copy: '/srv/agent/report.doc' })
+      renderWithQuery(<OfficeViewer filePath="/srv/agent/report.doc" />)
+      fireEvent.click(await screen.findByRole('button', { name: /open with default app/i }))
+      await waitFor(() => expect(copy).toHaveBeenCalledWith('/srv/agent/report.doc'))
+    })
+
+    it('acknowledges the degrade inline so the button is not a dead click', async () => {
+      // Same host as above: the open silently became a clipboard copy. Without
+      // the swap the primary control looks like it did nothing at all.
+      stubPreview({}, false, 415)
+      revealPath.mockResolvedValue({ ok: true, copy: '/srv/agent/report.doc' })
+      renderWithQuery(<OfficeViewer filePath="/srv/agent/report.doc" />)
+      fireEvent.click(await screen.findByRole('button', { name: /open with default app/i }))
+      // The shared useCopyAck swap, the same wording the file-path menu shows.
+      await screen.findByRole('button', { name: /path copied/i })
+    })
+
+    it('leads the hint with Open when Open is the action', async () => {
+      // The hint is the card's only instruction: pointing a local user at
+      // Download points them at the duplicate-file divergence this card exists
+      // to avoid.
+      stubPreview({}, false, 415)
+      renderWithQuery(<OfficeViewer filePath="/home/user/docs/legacy.doc" />)
+      expect(await screen.findByText(/Open it in its app/i)).toBeInTheDocument()
+      expect(screen.queryByText(/Download to open in Word/i)).not.toBeInTheDocument()
+    })
+
+    it('keeps the Download wording on a remote session, where Download is the action', async () => {
+      brandingEnv.directLocal = false
+      stubPreview({}, false, 415)
+      renderWithQuery(<OfficeViewer filePath="/srv/agent/report.doc" />)
+      expect(await screen.findByText(/Download to open in Word/i)).toBeInTheDocument()
+      expect(screen.queryByText(/Open it in its app/i)).not.toBeInTheDocument()
+    })
+
+    it('translates a policy refusal instead of leaking the server string', async () => {
+      // A sensitive path (SEL guard) answers 403. Raw backend prose is English
+      // on a 13-locale UI, so the shared funnel maps it to a catalog key.
+      stubPreview({}, false, 415)
+      revealPath.mockRejectedValue(new ApiError(403, 'access denied to /home/user/private'))
+      renderWithQuery(<OfficeViewer filePath="/home/user/private/notes.doc" />)
+      fireEvent.click(await screen.findByRole('button', { name: /open with default app/i }))
+      await waitFor(() => expect(alertSpy).toHaveBeenCalledTimes(1))
+      expect(alertSpy.mock.calls[0][0]).not.toContain('access denied')
+    })
+
+    it('hides Open on a remote session and promotes Download instead', async () => {
+      // No desktop to open on: the document would open on the gateway machine,
+      // which nobody is looking at. Download is the only action that works, so
+      // it takes the primary styling back rather than sitting beside a dead
+      // button.
+      brandingEnv.directLocal = false
+      stubPreview({}, false, 415)
+      renderWithQuery(<OfficeViewer filePath="/srv/agent/report.doc" />)
+      const download = await screen.findByRole('link', { name: /report\.doc/i })
+      expect(download.className).toContain('bg-accent')
+      expect(screen.queryByRole('button', { name: /open with default app/i })).not.toBeInTheDocument()
+    })
+
+    it('hides Open when the gateway runs Windows', async () => {
+      // files.py degrades an `open` to a clipboard copy there, so every other
+      // Open surface suppresses the row; this card must not be the exception.
+      platformEnv.value = 'windows'
+      stubPreview({}, false, 415)
+      renderWithQuery(<OfficeViewer filePath="C:\\Users\\dev\\report.doc" />)
+      await screen.findByRole('link', { name: /report\.doc/i })
+      expect(screen.queryByRole('button', { name: /open with default app/i })).not.toBeInTheDocument()
+    })
   })
 })
 

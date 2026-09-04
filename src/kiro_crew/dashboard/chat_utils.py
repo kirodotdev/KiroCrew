@@ -25,6 +25,7 @@ if TYPE_CHECKING:
 from kiro_crew.context_blocks import attributable_user_chars
 from kiro_crew.dashboard.state import (
     BUSY_RECOVERY_PREFIX,
+    COMPACTION_RECOVERY_PREFIX,
     CONN_RECOVERY_PREFIX,
     CRON_NOTIFY_PREFIX,
     EMPTY_RESPONSE_RECOVERY_PREFIX,
@@ -35,6 +36,7 @@ from kiro_crew.dashboard.state import (
     DashboardState,
     _ChatSlot,
     _normalize_slot_key,
+    append_and_surface,
     parse_cls_meta,
 )
 from kiro_crew.history import transcript_sort_key
@@ -404,16 +406,8 @@ def _append_compaction_notice(
     msg_text, _ = redact_credentials(msg_text)
     msg_text, _ = redact_exfiltration_urls(msg_text)
     meta = {"kind": "compaction"}
-    slot.append("assistant", msg_text, "msg msg-a", meta=meta)
-    state.broadcast_ws(
-        "chat_message",
-        {
-            "slot": slot.key,
-            "role": "assistant",
-            "content": msg_text,
-            "kind": "compaction",
-            "meta": meta,
-        },
+    append_and_surface(
+        state, slot, "assistant", msg_text, "msg msg-a", meta=meta, extra={"kind": "compaction"}
     )
 
 
@@ -1542,12 +1536,23 @@ _PROMISE_ONLY_CONTINUE_MSG = (
     "and what you need instead — do NOT just restate the intention. Do NOT re-run "
     "any tool that already completed successfully above."
 )
+_COMPACTION_CONTINUE_MSG = (
+    f"{COMPACTION_RECOVERY_PREFIX}\n"
+    "The conversation above was summarized mid-turn because the context window "
+    "filled up, and your previous turn then ended without finishing the request. "
+    "The summary is authoritative — earlier messages are gone, so work from what "
+    "remains above. Continue the pending request now and respond. Do NOT restart "
+    "from scratch, and do NOT re-run any tool or step that already completed "
+    "successfully — the summary records what was done. If the summary left you "
+    "without something you need, say what is missing instead of guessing."
+)
 _SYNTHETIC_RECOVERY_MSGS = (
     _CONN_RECOVER_MSG,
     _BUSY_RECOVER_MSG,
     _POSTTOKEN_RECOVER_MSG,
     _EMPTY_AUTO_CONTINUE_MSG,
     _PROMISE_ONLY_CONTINUE_MSG,
+    _COMPACTION_CONTINUE_MSG,
 )
 
 # High-confidence "I will do it right now" endings. Kept deliberately NARROW: a
@@ -1852,9 +1857,12 @@ def has_leaked_tool_call(text: str) -> bool:
 
     Quoted syntax is excluded structurally: fenced code blocks and inline code
     spans are stripped before the scan, so a pasted bug report or an explained
-    example never matches. The caller must additionally require
-    ``turn_tool_calls == 0`` — a turn that executed tools and ALSO printed a
-    block is not the leak shape.
+    example never matches. Callers decide what to DO with a match, and the two
+    turn shapes differ: :func:`should_notice_leaked_tool_call` requires
+    ``turn_tool_calls == 0`` because it un-lands the turn, which would
+    misdescribe a turn whose earlier calls had side effects, while
+    :func:`should_notice_mixed_turn_leak` handles that shape notice-only. A
+    tool-heavy turn IS a leak — it is just not un-landable.
     """
     if not text:
         return False
@@ -1901,8 +1909,11 @@ def should_notice_leaked_tool_call(
     layer can fix honestly.
 
     Gates: the turn ended NORMALLY (cancel/refusal/error paths own their own
-    reporting), made ZERO tool calls (a turn that executed tools and also
-    printed a block is not the leak shape), is top-level, is NOT a
+    reporting), made ZERO tool calls — not because a tool-heavy turn is a
+    different shape (it is the same leak) but because THIS path un-lands the
+    turn, and a turn whose earlier calls had real side effects must not be
+    marked unacted; that shape is noticed without un-landing by
+    :func:`should_notice_mixed_turn_leak` — is top-level, is NOT a
     stage-execution turn (the orchestrator's stage loop reads the turn result
     for stage accounting, and un-landing a stage turn from here would let the
     loop record an unfinished stage as complete — same exclusion as the
@@ -1916,6 +1927,66 @@ def should_notice_leaked_tool_call(
     if turn_tool_calls != 0:
         return False
     if in_stage_execution:
+        return False
+    if stop_reason != end_turn_reason:
+        return False
+    if prompt_depth != 0:
+        return False
+    return has_leaked_tool_call(final_segment_text)
+
+
+def should_notice_mixed_turn_leak(
+    *,
+    stop_reason: str,
+    end_turn_reason: str,
+    final_segment_text: str,
+    prompt_depth: int,
+    turn_tool_calls: int,
+) -> bool:
+    """Decide whether to surface the MIXED-TURN leak notice.
+
+    The shape :func:`should_notice_leaked_tool_call` deliberately declines: the
+    turn dispatched tool calls and THEN leaked a final one as text. Its
+    ``turn_tool_calls == 0`` gate exists to protect UN-LANDING — earlier calls
+    in the turn may already have taken effect, so marking it unacted could
+    misdescribe it — and that reasoning is untouched here. This predicate
+    governs only the user-visible NOTICE, which carries no such hazard: nothing
+    is queued, nothing is un-landed, nothing executes.
+
+    Why the notice is worth a card on a shape that lands normally: the mixed
+    turn hides the gap BETTER than the zero-call one, not worse. The model
+    reads state, announces the write, leaks the write, and the reply lands
+    looking like a completed action — some of the work may already have
+    happened, so there is no stall to notice and no missing output to explain.
+    Before this the only trace was a gateway log line, which the person in the
+    chat does not read.
+
+    Conditions are EXACTLY the ones the runner already used for its diagnostic
+    log, so the set of diagnosed turns does not move — only their visibility:
+    at least one dispatched tool call, a NORMAL end-turn (which excludes the
+    cancelled stop reason), top-level, and a final segment carrying the
+    machine-shaped leak (:func:`has_leaked_tool_call`).
+
+    Deliberately NOT gated on ``in_stage_execution``, unlike its sibling: that
+    exclusion exists so the orchestrator's stage loop cannot read an unfinished
+    stage as complete, and a notice-only card changes no turn result the loop
+    reads. One mismatch follows and is accepted: the card's guidance ("check
+    what landed before re-sending") addresses a human driving the chat, not the
+    stage loop, so on a stage-execution turn it offers advice its reader cannot
+    act on — harmless, and better than hiding the leak on those turns.
+
+    The card says the earlier calls were ATTEMPTED rather than ran, and never
+    "nothing was run" as the sibling does, because ``turn_tool_calls`` counts
+    dispatches at the tool-call event, before approval — a refused call
+    increments it too. The count bounds what may have landed rather than
+    asserting any of it did, and a reader who took "nothing was run" literally
+    here would redo work that already took effect.
+
+    ``turn_tool_calls`` is REQUIRED, unlike the sibling's defaulted parameter:
+    zero is that one's firing shape but this one's refusing shape, so a default
+    here would silently disable the predicate rather than exercise it.
+    """
+    if turn_tool_calls <= 0:
         return False
     if stop_reason != end_turn_reason:
         return False
@@ -2019,6 +2090,99 @@ def should_recover_promise_only(
     if prompt_depth != 0 or promise_only_retries >= 1:
         return False
     return is_promise_only_terminal(final_segment_text)
+
+
+def should_continue_after_compaction(
+    *,
+    compaction_started: bool,
+    compaction_settled: bool,
+    user_requested_compaction: bool,
+    final_segment_text: str,
+    stop_reason: str,
+    end_turn_reason: str,
+    prompt_depth: int,
+    compaction_continue_retries: int,
+    is_cancelled: bool,
+    refusal_reasons: list,
+    in_stage_execution: bool = False,
+    stop_in_progress: bool = False,
+    stop_generation_unchanged: bool = True,
+    queue_empty: bool = True,
+    no_pending_steers: bool = True,
+) -> bool:
+    """Decide whether to inject ONE post-compaction continuation.
+
+    The scenario: the backend hit its context ceiling PART WAY THROUGH a turn,
+    summarized the conversation in place, and then ended the turn without
+    finishing the work it was doing. The compaction succeeded, so nothing
+    reports an error and the turn lands as a clean ``end_turn`` with a settled
+    footer — the request is simply abandoned, and the chat appears to stop dead.
+    kiro-cli re-sends the pending request itself after compacting; the Claude
+    backend does not, so the recovery has to live here.
+
+    Unlike :func:`should_recover_promise_only` this needs no text detector and
+    is deliberately NOT gated on ``turn_tool_calls == 0``: a mid-turn compaction
+    is a hard fact reported by the backend, not a guess about what prose meant,
+    and the turns that overflow the window are precisely the long tool-heavy
+    ones. Re-dispatch safety comes from the continuation's own wording, which
+    tells the model the summary records completed work and not to re-run it.
+
+    All must hold:
+      * a compaction STARTED and COMPLETED inside this turn
+        (``compaction_started``/``compaction_settled``) — the turn really was
+        interrupted by one, rather than merely following one. ``compaction_settled``
+        means the COMPLETED terminal specifically, not any terminal: a compaction
+        that FAILED also ends, and continuing after one would assert a summary
+        exists when the context was never summarized;
+      * the user did NOT ask for it (``user_requested_compaction`` is False for
+        anything but an explicit ``/compact``). A deliberate ``/compact`` has
+        done exactly what was asked and must land quietly; auto-continuing it
+        would turn a housekeeping command into an unrequested turn;
+      * the turn produced NO answer of its own after the compaction
+        (``final_segment_text`` is blank). A backend that DID resume and finish
+        leaves text here, so this is also what keeps the fix from double-
+        prompting a backend that self-heals. A compaction NOTICE does not count
+        as such an answer: the Claude adapter ships it as ordinary assistant text
+        and nothing deletes the chunk, so the ACP layer flags it
+        (``AcpEvent.control_notice``) and the caller SUBTRACTS the flagged chunks
+        from the segment text it passes here. Subtracting at this one call rather
+        than suppressing the chunk upstream is deliberate: the notice must still
+        stream and persist, so the text path stays untouched and only this gate —
+        the one reader that asks "did the turn answer?" — discounts it;
+      * the turn ended NORMALLY (``end_turn``), was not cancelled, and carried
+        no tool refusals — those have their own paths;
+      * no Stop is in progress, no Stop was pressed at any point in the turn,
+        no user follow-up is queued, and no mid-turn steer is pending. Same four
+        user-intent gates every sibling recovery path uses, for the same reason:
+        a queued continuation must never jump ahead of, or act against, input
+        the user has already given;
+      * this is NOT a stage-execution turn, it IS top-level
+        (``prompt_depth == 0``), and the one-shot budget is unspent
+        (``compaction_continue_retries < 1``) — one attempt, never a loop. The
+        bound matters more here than elsewhere: if the continuation itself
+        overflows the window again, an unbounded version would compact and
+        continue forever.
+    Model-agnostic and backend-agnostic: nothing here keys on a model id or a
+    backend name — it reads the normalized compaction status every backend's
+    adapter now produces.
+    """
+    if not compaction_started or not compaction_settled:
+        return False
+    if user_requested_compaction:
+        return False
+    if stop_in_progress or not stop_generation_unchanged or not queue_empty:
+        return False
+    if not no_pending_steers:
+        return False
+    if is_cancelled or refusal_reasons:
+        return False
+    if in_stage_execution:
+        return False
+    if stop_reason != end_turn_reason:
+        return False
+    if final_segment_text.strip():
+        return False
+    return prompt_depth == 0 and compaction_continue_retries < 1
 
 
 # Injected when the USER presses Continue on an interrupted turn. Worded to be
@@ -2318,6 +2482,69 @@ def _collapse_wire_rows(messages: list[dict]) -> list[dict]:
     return out
 
 
+# One opaque id for THIS gateway process, minted at import and never written to
+# disk. That is the entire mechanism behind the gate below: an `mcp_oauth` banner
+# records the generation that minted it, and a generation that is not this one is
+# provably gone. Every ACP child is a subprocess of the gateway, so the loopback
+# listener and the PKCE verifier that made the banner's URL redeemable died with it.
+#
+# In-memory ON PURPOSE, and random rather than sequential. `connections.warm`
+# documents where a counter leads: its generation restarts at 0 every boot, so a
+# stored `generation=1` compares equal to a different boot's `generation=1` and the
+# row is judged live when it is dead -- that bug already withdrew a URL whose
+# process and session were both alive. A fresh random id cannot collide with a
+# previous boot's, so the comparison stays correct with no bookkeeping and no
+# persisted state to migrate.
+_GATEWAY_GENERATION = uuid.uuid4().hex[:16]
+
+
+def gateway_generation() -> str:
+    """The generation id of the running gateway process."""
+    return _GATEWAY_GENERATION
+
+
+def _expire_stale_generation_oauth_meta(role: str, meta: dict) -> dict:
+    """Present an `mcp_oauth` banner minted by a dead generation as terminal.
+
+    A read-time gate, and it has to be read-time. The case it exists for is a hard
+    gateway restart: no code of ours runs at the moment the flow dies, so nothing
+    can write the terminal state when it becomes true. Revalidating on every read
+    is the same discipline `connections.mint.expire_dead_holder` already applies to
+    the mint feed, instead of trying to catch every way a flow can end.
+
+    Withdraws the link only when ALL of these hold:
+
+    * the row still carries an `oauth_url` -- there is a live-looking button to take
+      away. A row without one has nothing to withdraw and is left untouched, which
+      is what keeps the two rejected-URL banners and an already-retired row alone.
+    * the row is not already terminal. `completed` / `failed` / `superseded` are
+      authoritative outcomes recorded by the process that observed them, and a
+      later read must not reinterpret them.
+    * the row's `gen` is not this process's.
+
+    A row carrying NO `gen` is treated as stale, and that is a deduction rather than
+    a guess: the stamp is written by the same build that reads it, so an unstamped
+    row was persisted by an older build -- and running this build means this process
+    replaced the one that wrote that row. Its child cannot still be alive. The
+    effect is that the fix also retires banners that went stale before it shipped.
+
+    Returns the input dict unchanged when nothing applies, so the caller can use the
+    result unconditionally; only the withdrawing path copies.
+    """
+    if role != "mcp_oauth":
+        return meta
+    if not meta.get("oauth_url"):
+        return meta
+    if meta.get("completed") or meta.get("failed") or meta.get("superseded"):
+        return meta
+    if meta.get("gen") == gateway_generation():
+        return meta
+    out = dict(meta)
+    out.pop("oauth_url", None)
+    out["expired"] = True
+    return out
+
+
 def _prepare_messages(messages: list[dict], running: bool) -> list[dict]:
     """Prepare messages for API response."""
     out: list[dict] = []
@@ -2361,13 +2588,17 @@ def _prepare_messages(messages: list[dict], running: bool) -> list[dict]:
             ]
         meta = parse_cls_meta(m.get("cls", ""))
         if meta is not None:
-            msg_out["meta"] = _redact_meta_for_role(role, meta)
+            msg_out["meta"] = _expire_stale_generation_oauth_meta(
+                role, _redact_meta_for_role(role, meta)
+            )
         elif isinstance(msg_out.get("meta"), dict):
             # Redact the STORED meta too. Without this branch the stored dict
             # passes through by reference (dict(m) is shallow), so it would
             # reach the client exactly as loaded. This is the only guard on
             # meta for the slot-detail response (the load path does not
             # redact meta).
-            msg_out["meta"] = _redact_meta_for_role(role, msg_out["meta"])
+            msg_out["meta"] = _expire_stale_generation_oauth_meta(
+                role, _redact_meta_for_role(role, msg_out["meta"])
+            )
         out.append(msg_out)
     return out

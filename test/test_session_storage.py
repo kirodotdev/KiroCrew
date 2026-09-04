@@ -1093,6 +1093,16 @@ class TestSidecarFiles:
         _cli_half(kiro_home, "aaaa1111", log_bytes=8, age_days=40)
         sidecar = kiro_home / "sessions" / "cli" / "aaaa1111.lock"
         sidecar.write_bytes(b"lock")
+        # Age it with the rest of its session. The unit's age comes from the
+        # .json/.jsonl pair alone, but the move loop's revival check stats EVERY
+        # file it stages against a wall-clock instant, so a sidecar left stamped
+        # "now" is a file written after this batch was certified -- the state the
+        # check exists to refuse. Leaving it fresh passed only on the microseconds
+        # between this write and that instant, and a backward CLOCK_REALTIME step
+        # inside that window inverted it: "all 1 selected session(s) were resumed
+        # while being staged". An idle session's sidecar is as old as its logs.
+        aged = _NOW - 40 * _DAY
+        os.utime(sidecar, (aged, aged))
 
         batch = session_storage.move_to_trash(
             ["aaaa1111"], reason="manual", index=_index(), now=_NOW

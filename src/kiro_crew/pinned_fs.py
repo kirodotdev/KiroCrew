@@ -82,6 +82,7 @@ __all__ = [
     "stage_tree_pinned",
     "supports_pinned_tree_walk",
     "supports_pinned_walk",
+    "unlink_verified",
 ]
 
 
@@ -1307,7 +1308,7 @@ def remove_dir_verified(
     return StagedRemoval(removed=True)
 
 
-def _unlink_verified(holder_fd: int, name: str, expect: tuple[int, int]) -> bool:
+def unlink_verified(holder_fd: int, name: str, expect: tuple[int, int]) -> bool:
     """Unlink *name* under *holder_fd*, only if it is still ``(st_dev, st_ino)`` *expect*.
 
     The residual is irreducible and better stated than implied: POSIX has no
@@ -1468,7 +1469,7 @@ def put_back_no_clobber(
             # tell from a corrupted one and a later retry cannot overwrite.
             with suppress(OSError):
                 os.ftruncate(dst, 0)
-            _unlink_verified(dst_dir_fd, dst_name, (created.st_dev, created.st_ino))
+            unlink_verified(dst_dir_fd, dst_name, (created.st_dev, created.st_ino))
             return PUT_BACK_FAILED
         finally:
             os.close(dst)
@@ -1585,7 +1586,7 @@ def remove_tree_pinned(
                         )
                     except OSError:
                         continue
-                    _unlink_verified(holder, key[-1], (device, ino))
+                    unlink_verified(holder, key[-1], (device, ino))
                 for key, ino in tree.files.items():
                     if key == deferred_key:
                         # Held back on purpose - see `keep_until_empty`. Removing it now and
@@ -1598,7 +1599,7 @@ def remove_tree_pinned(
                         )
                     except OSError:
                         continue
-                    _unlink_verified(holder, key[-1], (device, ino))
+                    unlink_verified(holder, key[-1], (device, ino))
                 # Dropped FIRST, so the directory phase re-opens every directory and
                 # re-checks its inode. Reusing a descriptor cached during the file phase
                 # would satisfy the check with the identity the directory had THEN, and
@@ -1746,5 +1747,5 @@ def _remove_with_deferred_entry(
             # retained copy is left unmentioned.
             staged_name=outcome.staged_name or debris,
         )
-    _unlink_verified(parent_fd, debris, (expect[0], landed))
+    unlink_verified(parent_fd, debris, (expect[0], landed))
     return TreeRemoval(removed=True)

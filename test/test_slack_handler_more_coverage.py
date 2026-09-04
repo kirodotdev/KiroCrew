@@ -1208,8 +1208,17 @@ class _Slot:
         self.appended: list[tuple[str, str]] = []
         self.queued: list[str] = []
 
-    def append(self, role, text, cls):
+    def append(self, role, text, cls="", *, broadcast_user=False, meta=None):
+        # Mirror the real ``_ChatSlot.append`` contract enough for
+        # append_and_surface: accept the delivery kwargs and return the
+        # appended row with a minted ``meta.mid``.
         self.appended.append((role, text))
+        return {
+            "role": role,
+            "content": text,
+            "ts": "",
+            "meta": {**(meta or {}), "mid": f"m-slot-{len(self.appended)}"},
+        }
 
     def queue_append(self, text, *, meta=None, directive_user_origin):
         assert directive_user_origin is True

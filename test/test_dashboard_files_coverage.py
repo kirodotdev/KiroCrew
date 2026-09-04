@@ -44,7 +44,8 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 from tmpdir_helpers import short_tmp_base
 
-from kiro_crew import platform_compat
+from kiro_crew import atomic_write as atomic_write_mod
+from kiro_crew import pinned_fs, platform_compat
 from kiro_crew.dashboard.handlers import files as files_mod
 
 # ``api_file_raw`` and ``api_file_download`` open with ``os.O_NOFOLLOW``, which
@@ -52,6 +53,23 @@ from kiro_crew.dashboard.handlers import files as files_mod
 posix_only = pytest.mark.skipif(
     sys.platform == "win32",
     reason="os.O_NOFOLLOW does not exist on Windows, so this handler cannot run there",
+)
+
+# The pinned-publish branch needs a real parent descriptor, which the handler can
+# only produce where the descriptor-relative walk exists -- forcing a capability
+# probe cannot conjure ``os.O_DIRECTORY``. Derived from the probe rather than from
+# ``sys.platform`` so the Windows-simulation tests that delete ``os.O_NOFOLLOW`` at
+# runtime are covered by the same guard.
+needs_pinned_walk = pytest.mark.skipif(
+    not pinned_fs.supports_pinned_walk(),
+    reason="platform without a descriptor-relative directory walk",
+)
+
+# ``pinned`` parametrization shared by the two publish-failure tests below.
+_PUBLISH_BRANCHES = pytest.mark.parametrize(
+    "pinned",
+    [pytest.param(True, marks=needs_pinned_walk), pytest.param(False)],
+    ids=["pinned", "by-name"],
 )
 
 
@@ -268,14 +286,14 @@ class TestFileWrite:
                 "/api/file-write", data="not json", headers={"Content-Type": "application/json"}
             )
             assert resp.status == 400
-            assert (await resp.json())["error"] == "invalid JSON body"
+            assert (await resp.json())["error"] == "invalid JSON"
 
     @pytest.mark.asyncio
     async def test_non_object_body_is_400(self, mock_sel):
         async with TestClient(TestServer(self._client_app())) as client:
             resp = await client.post("/api/file-write", json=["a", "list"])
             assert resp.status == 400
-            assert (await resp.json())["error"] == "invalid JSON body"
+            assert (await resp.json())["error"] == "body must be a JSON object"
 
     @pytest.mark.asyncio
     async def test_schema_violation_is_400(self, mock_sel):
@@ -321,32 +339,85 @@ class TestFileWrite:
         assert f.read_text(encoding="utf-8") == "kept"
 
     @pytest.mark.asyncio
-    async def test_replace_failure_is_500_and_cleans_up_temp(self, tmp_path, mock_sel):
+    @_PUBLISH_BRANCHES
+    async def test_replace_failure_is_500_and_cleans_up_temp(self, tmp_path, mock_sel, pinned):
+        """A failed publish is a 500 that leaves the original intact and no temp.
+
+        Run over BOTH publish branches, because they are different syscalls with
+        different cleanup: with a pinned parent descriptor ``atomic_write``
+        publishes with ``renameat`` (``os.rename`` plus ``src_dir_fd``/
+        ``dst_dir_fd``) and reclaims the temp with ``os.unlink(name, dir_fd=)``,
+        while the by-name floor publishes with ``os.replace`` and unlinks by path.
+
+        The capability probe is FORCED rather than left to the host, and that is
+        load-bearing in both directions. ``pinned_parent_replace_supported()``
+        answers ``os.rename in os.supports_dir_fd``, and a patched ``os.rename``
+        is a mock that is not in that frozenset — so patching the syscall alone
+        would flip the probe to False and quietly exercise the by-name floor
+        twice. It is forced in BOTH modules that ask it, because they ask about
+        different things: the handler's binding decides whether a descriptor is
+        produced at all, and ``atomic_write``'s own decides whether it accepts the
+        one it is handed (it refuses rather than falling back to a by-name write).
+        The ``_mkstemp_at`` spy asserts which stager really ran, so neither case
+        can drift onto the other's branch unnoticed.
+
+        The pinned case SKIPS where the platform has no descriptor-relative walk:
+        forcing a probe cannot conjure ``os.O_DIRECTORY``, so on Windows the
+        handler has no descriptor to pass and the by-name floor is all there is.
+        """
         f = tmp_path / "doomed.md"
         f.write_text("original", encoding="utf-8")
-        with patch.object(os, "replace", side_effect=OSError("replace failed")):
+        doomed = "rename" if pinned else "replace"
+        with patch.object(
+            files_mod, "pinned_parent_replace_supported", lambda: pinned
+        ), patch.object(
+            atomic_write_mod, "pinned_parent_replace_supported", lambda: pinned
+        ), patch.object(
+            atomic_write_mod, "_mkstemp_at", wraps=atomic_write_mod._mkstemp_at
+        ) as staged_at, patch.object(
+            os, doomed, side_effect=OSError(f"{doomed} failed")
+        ):
             async with TestClient(TestServer(self._client_app())) as client:
                 resp = await client.post(
                     "/api/file-write", json={"path": str(f), "content": "never lands"}
                 )
                 assert resp.status == 500
                 assert (await resp.json())["error"] == "failed to write file"
+        assert staged_at.call_count == (1 if pinned else 0)
         assert f.read_text(encoding="utf-8") == "original"
         assert [p.name for p in tmp_path.iterdir()] == ["doomed.md"]
 
     @pytest.mark.asyncio
-    async def test_temp_unlink_failure_still_reports_500(self, tmp_path, mock_sel):
+    @_PUBLISH_BRANCHES
+    async def test_temp_unlink_failure_still_reports_500(self, tmp_path, mock_sel, pinned):
         """The cleanup ``os.unlink`` is itself wrapped: its OSError is swallowed
-        so the caller still gets the real 500 rather than an unhandled error."""
+        so the caller still gets the real 500 rather than an unhandled error.
+
+        Both branches again: the pinned cleanup passes ``dir_fd=`` and the
+        by-name one does not, so a swallowed failure has to be proven on each.
+        See the sibling above for why the probe is forced in both modules and why
+        the pinned case skips without a descriptor-relative walk.
+        """
         f = tmp_path / "twice.md"
         f.write_text("original", encoding="utf-8")
-        with patch.object(os, "replace", side_effect=OSError("replace failed")), \
-             patch.object(os, "unlink", side_effect=OSError("unlink failed")):
+        doomed = "rename" if pinned else "replace"
+        with patch.object(
+            files_mod, "pinned_parent_replace_supported", lambda: pinned
+        ), patch.object(
+            atomic_write_mod, "pinned_parent_replace_supported", lambda: pinned
+        ), patch.object(
+            atomic_write_mod, "_mkstemp_at", wraps=atomic_write_mod._mkstemp_at
+        ) as staged_at, patch.object(
+            os, doomed, side_effect=OSError(f"{doomed} failed")
+        ), patch.object(
+            os, "unlink", side_effect=OSError("unlink failed")
+        ):
             async with TestClient(TestServer(self._client_app())) as client:
                 resp = await client.post(
                     "/api/file-write", json={"path": str(f), "content": "nope"}
                 )
                 assert resp.status == 500
+        assert staged_at.call_count == (1 if pinned else 0)
         # The scratch file survives here precisely because unlink was blocked.
         leftovers = [p for p in tmp_path.iterdir() if p.name != "twice.md"]
         for p in leftovers:
@@ -725,7 +796,7 @@ class TestRevealPath:
                 "/api/reveal", data="{", headers={"Content-Type": "application/json"}
             )
             assert resp.status == 400
-            assert (await resp.json())["error"] == "invalid JSON body"
+            assert (await resp.json())["error"] == "invalid JSON"
 
     @pytest.mark.asyncio
     async def test_traversal_in_path_is_400(self, mock_sel):

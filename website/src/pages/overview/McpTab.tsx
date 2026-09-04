@@ -191,6 +191,14 @@ function mcpStatusVariant(status: string, auth: McpAuthState): 'ok' | 'err' | 'w
  * done, and an always-visible cell in a dense table pays for every sentence.
  */
 function mcpStatusHint(status: string, serverName: string, auth: McpAuthState): string | undefined {
+  // "Online" is the gateway's OWN probe result: it started the server in the
+  // gateway process, under the gateway's client identity. It says nothing about
+  // whether any particular agent session mounted it, and reading it as if it did
+  // is a documented divergence (a server can probe fine and still fail in a
+  // session, and the reverse). The badge cannot carry that caveat in two words,
+  // so it carries it here rather than leaving the reader to assume the stronger
+  // claim.
+  if (status === 'ok') return i18nT('pages.overview.mcpTab.online_help')
   if (status !== 'needs_auth') return undefined
   if (auth === 'sign_in_required') return i18nT('pages.overview.mcpTab.sign_in_required_next')
   if (auth === 'signed_in') return i18nT('pages.overview.mcpTab.signed_in_help', { provider: serverName })
@@ -575,9 +583,28 @@ export default function McpTab({ onManagedProviderClick }: McpTabProps = {}) {
                       {i18nT('pages.overview.mcpTab.declared')}
                     </Badge>
                   ) : (
-                    <Badge variant={mcpStatusVariant(s.status, mcpAuthState(s))} title={mcpStatusHint(s.status, s.name, mcpAuthState(s))}>
-                      {mcpStatusLabel(s.status, mcpAuthState(s))}
-                    </Badge>
+                    /* The needs_auth hint is the only default-reachable
+                       explanation of the OAuth probe limitation, so it cannot
+                       live in `title` alone: a native tooltip is hover-only and
+                       so unreachable by keyboard, touch, and AT (#3626). For
+                       needs_auth the badge carries no `title` — InfoTip is the
+                       sole, focusable and tappable affordance for the hint, so
+                       pointer and AT users get the same one path to it rather
+                       than a native tooltip duplicating (and outrunning) it.
+                       Every other status keeps its `title` hint (today that is
+                       only 'ok', whose host-check caveat mcpStatusHint returns;
+                       the rest get undefined and thus no attribute). */
+                    <span className="inline-flex items-center gap-1.5">
+                      <Badge
+                        variant={mcpStatusVariant(s.status, mcpAuthState(s))}
+                        title={s.status === 'needs_auth' ? undefined : mcpStatusHint(s.status, s.name, mcpAuthState(s))}
+                      >
+                        {mcpStatusLabel(s.status, mcpAuthState(s))}
+                      </Badge>
+                      {s.status === 'needs_auth' && (
+                        <InfoTip text={mcpStatusHint(s.status, s.name, mcpAuthState(s)) || ''} placement="top" />
+                      )}
+                    </span>
                   )}
                   {s.probeFailing && (
                     /* A SECOND badge rather than a replacement status: the probe

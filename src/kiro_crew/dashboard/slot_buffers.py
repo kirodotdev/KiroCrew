@@ -12,6 +12,17 @@ from typing import Any
 from kiro_crew.sel import sel
 
 
+def _apply_message_patch(slot: Any, message: dict, content: str | None, meta: dict | None) -> dict:
+    """Write a resolved row's new content/meta and mark the slot for persistence."""
+    if content is not None:
+        message["content"] = content
+        slot.invalidate_source_links()
+    if meta is not None:
+        message["meta"] = meta
+    slot._dirty = True
+    return message
+
+
 class SlotBufferCoordinator:
     """Operate on the current facade-owned slot containers without aliasing them."""
 
@@ -205,17 +216,24 @@ class SlotBufferCoordinator:
         *,
         content: str | None,
         meta: dict | None,
+        mid: str | None = None,
     ) -> dict | None:
+        # `mid` is the row's server-minted identity, stamped once per row by
+        # _ChatSlot.append. Prefer it: `ts` is NOT an identity -- an explicitly
+        # supplied one is preserved verbatim for a row replayed from a channel
+        # transcript, and a coarse OS clock stamps two same-tick rows identically
+        # -- so a ts lookup resolves the FIRST match and can patch the wrong row.
+        # `ts` remains the fallback for a legacy row written before the id existed,
+        # where it is the only handle available.
+        if mid:
+            for message in slot.messages:
+                if (message.get("meta") or {}).get("mid") == mid:
+                    return _apply_message_patch(slot, message, content, meta)
+            return None
         if not ts:
             return None
         for message in slot.messages:
             if message.get("ts") != ts:
                 continue
-            if content is not None:
-                message["content"] = content
-                slot.invalidate_source_links()
-            if meta is not None:
-                message["meta"] = meta
-            slot._dirty = True
-            return message
+            return _apply_message_patch(slot, message, content, meta)
         return None

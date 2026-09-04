@@ -62,7 +62,7 @@ def test_no_refusal_in_this_module_is_prose_only() -> None:
 def test_the_ratchet_can_actually_fail() -> None:
     """Self-check: a scan matching nothing would pass the assertion above vacuously."""
     coded = [f for f in _findings() if f.bucket == "compliant"]
-    assert len(coded) == 24, f"scanner reached {len(coded)} coded sites, expected 24"
+    assert len(coded) == 27, f"scanner reached {len(coded)} coded sites, expected 27"
     assert all(f.code_value for f in coded)
 
 
@@ -180,6 +180,38 @@ async def test_a_boolean_index_is_refused_as_a_type(tmp_path, monkeypatch) -> No
     status, body = await _fork(_seeded_state(tmp_path), "forkable", {"at_message_index": True})
     assert status == 400
     assert body["code"] == "invalid_field_type"
+
+
+@pytest.mark.asyncio
+async def test_a_non_string_message_id_is_refused(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+    status, body = await _fork(_seeded_state(tmp_path), "forkable", {"at_message_id": 7})
+    assert status == 400
+    assert body["code"] == "invalid_field_type"
+
+
+@pytest.mark.asyncio
+async def test_an_unknown_message_id_is_a_stale_anchor(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+    status, body = await _fork(
+        _seeded_state(tmp_path),
+        "forkable",
+        {"at_message_id": "missing-row"},
+    )
+    assert status == 409
+    assert body["code"] == "fork_message_not_found"
+
+
+@pytest.mark.asyncio
+async def test_a_duplicate_message_id_is_refused_as_ambiguous(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+    state = _seeded_state(tmp_path)
+    slot = state._slots["forkable"]
+    slot.messages[0]["meta"]["mid"] = "duplicate-row"
+    slot.messages[1]["meta"]["mid"] = "duplicate-row"
+    status, body = await _fork(state, "forkable", {"at_message_id": "duplicate-row"})
+    assert status == 409
+    assert body["code"] == "fork_message_ambiguous"
 
 
 @pytest.mark.asyncio

@@ -21,7 +21,7 @@ import re
 from pathlib import Path
 from typing import Any
 
-from kiro_crew import mcp_apps_render
+from kiro_crew import mcp_apps_render, session_directive
 from kiro_crew.acp.types import (
     EVENT_PERMISSION_REQUEST,
     EVENT_TEXT_CHUNK,
@@ -56,6 +56,7 @@ from kiro_crew.acp.types import (
     AcpEvent,
     JsonRpcMessage,
 )
+from kiro_crew.metrics.tool_calls import note_tool_call_started, record_tool_call_finished
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
 logger = logging.getLogger(__name__)
@@ -118,6 +119,21 @@ def attach_kas_custom_agents(
 def set_mode_params(session_id: str, agent: str) -> dict[str, Any]:
     """Params for ``session/set_mode`` (activate an agent on a session)."""
     return {"sessionId": session_id, "modeId": agent}
+
+
+def agent_version_from_init(resp: dict[str, Any]) -> str:
+    """``agentInfo.version`` from an ``initialize`` result, ``""`` when absent.
+
+    Shared by both clients so the two handshakes read the same field the same
+    way: kiro-cli reports ``{"agentInfo": {"name": ..., "version": "2.21.0"}}``.
+    A missing or non-string value reads as unknown rather than raising — the
+    handshake must not fail over a field only a capability gate consults.
+    """
+    info = resp.get("agentInfo") if isinstance(resp, dict) else None
+    if not isinstance(info, dict):
+        return ""
+    version = info.get("version")
+    return version.strip() if isinstance(version, str) else ""
 
 
 def parse_session_modes(resp: dict[str, Any]) -> tuple[list[str], str, bool]:
@@ -558,6 +574,77 @@ def parse_text_chunk(update: dict[str, Any]) -> tuple[str | None, bool]:
     return None, False
 
 
+# claude-agent-acp has no out-of-band compaction notification: where kiro-cli
+# sends ``_kiro.dev/compaction/status`` and KAS sends its summarization kinds
+# under ``_meta.kiro``, the Claude adapter reports compaction as PLAIN
+# ``agent_message_chunk`` TEXT, indistinguishable from model prose to any
+# client.  Verbatim from the shipped adapter (``dist/acp-agent.js``, the
+# ``status`` case of its SDK-message switch):
+#
+#   status === "compacting"          -> "Compacting..."
+#   compact_result === "success"     -> "\n\nCompacting completed."
+#   compact_result === "failed"      -> "\n\nCompacting failed{reason}"
+#
+# where ``reason`` is ``": " + compact_error`` or ``"."``.  Recognising these
+# here makes the Claude backend the third producer of EVENT_COMPACTION_STATUS,
+# so every consumer that already handles the kiro-cli and KAS shapes (the
+# dashboard notice + context-meter reset, the messaging drivers, and
+# ``wait_for_compaction``) works on Claude with no per-surface change.
+#
+# The notice TEXT is still forwarded on every path: classifying one of these
+# literals is a guess about bare prose, so a layer that dropped the chunk would
+# turn any wrong guess into deleted model output. Structured consumers get the
+# chunk flagged ``AcpEvent.control_notice`` instead, which lets them show it
+# without counting it as the turn's own answer.
+#
+# Only ``compact_result`` carries a terminal, and per the adapter's own comment
+# the SDK sends it for MANUAL ``/compact`` only: an AUTOMATIC mid-turn
+# compaction takes the adapter's ``compact_boundary`` case, which emits a
+# ``usage_update`` and no text at all.  So an auto-compaction produces a
+# ``started`` with no terminal, and callers must settle it at turn end rather
+# than waiting for one (see ``AcpClient._dispatch_events``).
+_CLAUDE_COMPACTION_STARTED_MARKER = "Compacting..."
+_CLAUDE_COMPACTION_COMPLETED_MARKER = "Compacting completed."
+_CLAUDE_COMPACTION_FAILED_MARKER = "Compacting failed"
+
+
+def parse_claude_compaction_notice(chunk: str) -> tuple[str, str] | None:
+    """Classify a claude-agent-acp compaction notice chunk.
+
+    Returns ``(status_type, detail)`` with ``status_type`` in
+    ``started``/``completed``/``failed`` — the same vocabulary kiro-cli's
+    ``_kiro.dev/compaction/status`` and KAS's summarization kinds already use —
+    or ``None`` when *chunk* is not one of the adapter's notices.
+
+    Matched on the STRIPPED chunk (the adapter prefixes the two terminals with
+    ``\\n\\n``), and every arm is anchored to a WHOLE chunk.  ``started`` and
+    ``completed`` are exact equality; ``failed`` accepts only the two shapes the
+    adapter actually emits — bare ``Compacting failed.`` or
+    ``Compacting failed: <reason>`` — rather than any chunk merely STARTING with
+    the marker.  Anchoring is the point, and it has to hold on all three arms: a
+    model that opens a real answer with "Compacting failed because…" would
+    otherwise be reclassified as a control notice and have its output erased
+    from the transcript.
+
+    The returned detail is NOT redacted: it is backend-echoed text, so callers
+    that surface it must pass it through their own redaction the same way they
+    already do for the kiro-cli/KAS compaction summaries.
+    """
+    text = chunk.strip()
+    if not text:
+        return None
+    if text == _CLAUDE_COMPACTION_STARTED_MARKER:
+        return "started", ""
+    if text == _CLAUDE_COMPACTION_COMPLETED_MARKER:
+        return "completed", ""
+    if text in (_CLAUDE_COMPACTION_FAILED_MARKER, f"{_CLAUDE_COMPACTION_FAILED_MARKER}."):
+        return "failed", ""
+    reason_prefix = f"{_CLAUDE_COMPACTION_FAILED_MARKER}: "
+    if text.startswith(reason_prefix):
+        return "failed", text[len(reason_prefix) :].strip().rstrip(".")
+    return None
+
+
 _ACP_SHELL_KIND = "execute"
 
 
@@ -565,11 +652,16 @@ def reject_option_id(params: dict) -> str | None:
     """The least-destructive reject optionId a permission request advertises.
 
     Used when auto-answering a ``session/request_permission`` for a session
-    this client never registered (a backend-internal subagent). Prefer the
-    request's own ``reject_once``-kind option; fall back to a legacy id that
-    names reject. ``None`` means the caller must answer with the ``cancelled``
-    outcome instead — kiro-cli maps that to cancelling the child's turn, which
-    is strictly worse than a per-tool reject, so this is the last resort.
+    this client never registered (a backend-internal subagent), and by
+    :meth:`AcpClient.reject_tool` for a user's explicit deny. Prefer the
+    request's own ``reject_once``-kind option; fall back to a ``behavior``
+    that names deny, then to a legacy id that names reject. ``None`` means
+    the caller must answer with the ``cancelled`` outcome instead — kiro-cli
+    maps that to cancelling the TURN, which auto-denies every later tool call
+    in it without prompting (#7681), so recognition here is deliberately
+    broad: any deny-shaped option beats the cancelled fallback. What it must
+    never do is pick an ALLOW option, so every branch matches deny-naming
+    values exactly rather than by substring.
     """
     raw = params.get("options")
     if not isinstance(raw, list):
@@ -580,11 +672,35 @@ def reject_option_id(params: dict) -> str | None:
             opt_id = opt.get("optionId") or opt.get("id")
             if opt.get("kind") == want_kind and isinstance(opt_id, str) and opt_id:
                 return opt_id
-    # Legacy kiro payloads omit `kind` — match well-known reject ids only, so
-    # an allow option can never be picked by accident.
+    # Adapters that speak `behavior` instead of `kind`: an exact deny/reject
+    # behavior is unambiguous whatever the id is called. Same vocabulary as
+    # build_permission_event's branch (_DENY_BEHAVIORS) by construction.
+    # An option carrying a VALID spec `kind` is classified by that kind alone:
+    # a contradictory {kind:"allow_once", behavior:"deny"} must never be
+    # selected as a reject — answering with an allow optionId APPROVES the
+    # tool, the exact inversion this function exists to prevent.
     for opt in options:
         opt_id = opt.get("optionId") or opt.get("id")
-        if isinstance(opt_id, str) and opt_id in ("reject_once", "reject_always", "reject"):
+        if opt.get("kind") in _SPEC_OPTION_KINDS:
+            continue
+        behavior = opt.get("behavior")
+        if (
+            isinstance(behavior, str)
+            and behavior.lower() in _DENY_BEHAVIORS
+            and isinstance(opt_id, str)
+            and opt_id
+        ):
+            return opt_id
+    # Legacy payloads omit `kind` and `behavior` — match well-known deny ids
+    # only (exact, lowercased), so an allow option can never be picked by
+    # accident. Derived from _LEGACY_OPTION_KIND so this list and the event
+    # builder's classification cannot drift apart. Same kind-wins precedence
+    # as the behavior branch above.
+    for opt in options:
+        opt_id = opt.get("optionId") or opt.get("id")
+        if opt.get("kind") in _SPEC_OPTION_KINDS:
+            continue
+        if isinstance(opt_id, str) and opt_id.lower() in _DENY_OPTION_IDS:
             return opt_id
     return None
 
@@ -603,7 +719,36 @@ _LEGACY_OPTION_KIND: dict[str, str] = {
     OPTION_ALLOW_ALWAYS: "allow_always",
     "reject_once": "reject_once",
     "reject_always": "reject_always",
+    # Deny-naming ids without a `kind`: recognising them is what keeps a user
+    # denial on the per-tool reject path. Missing them meant reject_tool fell
+    # back to the `cancelled` outcome, which kiro-cli treats as cancelling the
+    # TURN — every later tool call in it was auto-denied unprompted (#7681).
+    "reject": "reject_once",
+    "deny": "reject_once",
+    "deny_once": "reject_once",
+    "decline": "reject_once",
+    "deny_always": "reject_always",
 }
+
+#: The four ACP-spec permission-option kinds. An option carrying one of these
+#: is classified by its kind ALONE — later deny-recognition branches
+#: (behavior, legacy id) must not override it, or a contradictory
+#: {kind:"allow_once", behavior:"deny"} could be answered as a reject with an
+#: ALLOW optionId, approving the tool the caller meant to deny.
+_SPEC_OPTION_KINDS = frozenset({"allow_once", "allow_always", "reject_once", "reject_always"})
+
+#: `behavior` values that mark an option as a deny, for adapters that speak
+#: behavior instead of kind (behavior:"deny" appears as the selection RESULT in
+#: claude-agent-acp; recognising it on an advertised option is defensive).
+#: Exact-match only — an allow option must never be classified as a reject.
+_DENY_BEHAVIORS = frozenset({"deny", "reject"})
+
+#: Deny-naming option ids, DERIVED from the one table above so the auto-answer
+#: path (`reject_option_id`) and the event builder (`build_permission_event`)
+#: cannot drift on the vocabulary a second time (#7681 was exactly that drift).
+_DENY_OPTION_IDS: frozenset[str] = frozenset(
+    k for k, v in _LEGACY_OPTION_KIND.items() if v in ("reject_once", "reject_always")
+)
 
 
 def build_permission_event(
@@ -671,6 +816,14 @@ def build_permission_event(
         options.append({"id": opt_id, "label": opt_label})
         if not opt_kind:
             opt_kind = _LEGACY_OPTION_KIND.get(opt_id.lower(), "")
+        if not opt_kind:
+            # Adapters that speak `behavior` instead of `kind`: an exact deny
+            # behavior classifies the option as a per-tool reject whatever the
+            # id is called, keeping a user denial off the turn-cancelling
+            # `cancelled` fallback (#7681).
+            behavior = o.get("behavior")
+            if isinstance(behavior, str) and behavior.lower() in _DENY_BEHAVIORS:
+                opt_kind = "reject_once"
         if opt_kind:
             kind_to_id.setdefault(opt_kind, opt_id)
     if not options:
@@ -685,8 +838,11 @@ def build_permission_event(
     # reject option (for a clean reject) was advertised. claude-agent-acp offers
     # a {kind:"reject_once", optionId:"reject"} whose selection yields
     # behavior:"deny" — far better than a "cancelled" outcome, which the adapter
-    # turns into a cryptic "Tool use aborted". kiro-cli advertises no reject
-    # option, so reject_tool falls back to "cancelled" (a clean rejection there).
+    # turns into a cryptic "Tool use aborted". A payload advertising no
+    # deny-shaped option at all leaves reject_tool on the "cancelled" fallback,
+    # which kiro-cli maps to cancelling the TURN — auto-denying every later
+    # tool call in it (#7681); that is why recognition above is deliberately
+    # broad and why both fallback sites log a warning.
     any_allow = kind_to_id.get("allow_once") or kind_to_id.get("allow_always")
     any_reject = kind_to_id.get("reject_once") or kind_to_id.get("reject_always")
     recorded: dict[str, str] | None = None
@@ -879,6 +1035,16 @@ def _build_tool_call_event(
     _mcp_server_name = _kiro_mcp_server_name(update)
     if tool_call_id and mcp_server_name_cache is not None:
         mcp_server_name_cache[_ck] = _mcp_server_name
+    # Round-trip clock for kirocrew.tool.call.duration. Placed after the trusted
+    # MCP identity is resolved so an MCP call is classified by its transport
+    # rather than by the kind it reported; the terminal status is stamped in
+    # _build_tool_result_event. Keyed by the SAME origin scope as the caches
+    # above, because one runtime hosts many sessions and a backend-assigned
+    # toolCallId is unique only within one of them. Idempotent per scoped id, so
+    # the tool_call_update refinements that follow cannot restart the clock.
+    note_tool_call_started(
+        tool_call_id, kind=kind, mcp_server_name=_mcp_server_name, scope=cache_scope
+    )
     # Same lifecycle for the trusted tool name (_meta.kiro.toolName) so the
     # permission event can reconstruct the canonical mcp__<server>__<tool> for
     # per-tool governance in the app-own-server auto-approve.
@@ -992,17 +1158,184 @@ def _mcp_content_text(payload: dict[str, Any]) -> str | None:
     return "\n".join(parts)
 
 
-def _build_tool_result_event(update: dict[str, Any]) -> AcpEvent | None:
+def _marker_bearing_text(payload: dict[str, Any], _max_nodes: int = 512) -> str | None:
+    """Return the ONE string inside *payload* that carries the directive sentinel.
+
+    The last-resort companion to :func:`_mcp_content_text`, for a tool-result
+    envelope this module does not recognise as a pure text envelope. Such a
+    payload currently reaches the consumer through ``json.dumps``, which escapes
+    every quote in it -- so a directive marker embedded in one of its string
+    values arrives with ``\"kind\"`` instead of ``"kind"`` and
+    ``session_directive.peek`` can no longer parse the selector. The sentinel
+    itself survives that escaping unchanged, so the frame still LOOKS like it
+    carries a directive while naming no record: observed on the KAS backend as
+    ``json-unparseable (JSONDecodeError)`` with the envelope's own ``"}`` still
+    attached to the payload's tail.
+
+    Keyed on the SENTINEL rather than on any envelope field name, because the
+    field differs per backend and the sentinel is a fixed control token this
+    process emitted itself. Requires EXACTLY ONE match: zero means there is no
+    directive here and the caller should keep dumping the envelope, while two or
+    more means the frame is ambiguous about which string is the directive, and
+    guessing between them could apply the wrong payload. Bounded walk
+    (``_max_nodes``, depth 6) so a pathological envelope cannot spin here.
+    """
+    hits: list[str] = []
+    budget = [_max_nodes]
+
+    def _walk(node: Any, depth: int) -> None:
+        if budget[0] <= 0 or depth > 6 or len(hits) > 1:
+            return
+        budget[0] -= 1
+        if isinstance(node, str):
+            if session_directive.has_marker(node):
+                hits.append(node)
+        elif isinstance(node, dict):
+            for value in node.values():
+                _walk(value, depth + 1)
+        elif isinstance(node, list):
+            for value in node:
+                _walk(value, depth + 1)
+
+    _walk(payload, 0)
+    return hits[0] if len(hits) == 1 else None
+
+
+ELIDED_MARKER_VALUE = "[[directive marker emitted on its own line above]]"
+
+
+def _elide_marker_value(payload: Any, marker: str) -> Any:
+    """Copy *payload* with the one *marker*-bearing string replaced by a note.
+
+    The marker has to leave the envelope on its OWN line for
+    ``session_directive.peek`` to read it, but the envelope's other fields are
+    real tool output the user is owed -- dropping them to make room for the
+    marker loses transcript content (an exit status, a second text block). So
+    the marker goes out verbatim and this copy carries everything ELSE, with the
+    one value that already went out replaced by a short note instead of
+    duplicated.
+    """
+    if isinstance(payload, str):
+        return ELIDED_MARKER_VALUE if payload == marker else payload
+    if isinstance(payload, dict):
+        return {k: _elide_marker_value(v, marker) for k, v in payload.items()}
+    if isinstance(payload, list):
+        return [_elide_marker_value(v, marker) for v in payload]
+    return payload
+
+
+def _repair_escaped_marker(text: str) -> str | None:
+    """Recover a directive marker whose payload arrived JSON-ESCAPED, or None.
+
+    Some backends (observed on KAS) hand the whole tool result back already
+    serialised as JSON, so the text this module receives is the DUMP of an
+    envelope rather than the envelope itself. Every quote in the embedded
+    directive is then ``\\"`` and the envelope's own ``"}`` is glued to the
+    payload's tail, so the sentinel still arrives intact while
+    ``session_directive.peek`` can no longer read a selector out of it -- the
+    frame names a directive it cannot identify, and the parked record is never
+    claimed.
+
+    Two recoveries, tried in order, because the escaping can wrap the WHOLE text
+    or just reach the marker:
+
+    1. The whole text parses as JSON -- take the one string inside it that
+       carries the sentinel (:func:`_marker_bearing_text` for a container, the
+       value itself for a bare string).
+    2. Only the marker line is escaped -- unescape it and ``raw_decode`` the
+       first JSON value, which ignores the envelope's trailing punctuation.
+
+    ACCEPTANCE IS THE TEST, not the shape: a candidate is returned only when
+    ``peek`` actually reads a selector from it, so a wrong guess degrades to
+    None and leaves the original text untouched rather than substituting
+    something worse.
+    """
+    if not text or not session_directive.has_marker(text):
+        return None
+    if session_directive.peek(text) is not None:
+        return None  # already readable -- nothing to repair
+    if text.count(session_directive.SENTINEL) > 1:
+        # Ambiguous: recovery (2) below reads the FIRST marker line, which would
+        # be a GUESS about which directive the frame meant. Applying the wrong
+        # directive is worse than applying none, and a real frame carries one
+        # marker (a second directive arrives under its own toolCallId), so refuse.
+        return None
+
+    # (1) the entire text is a JSON dump.
+    try:
+        outer = json.loads(text)
+    except (ValueError, TypeError):
+        outer = None
+    if isinstance(outer, str):
+        if session_directive.peek(outer) is not None:
+            return outer
+    elif isinstance(outer, (dict, list)):
+        inner = _marker_bearing_text(outer if isinstance(outer, dict) else {"_": outer})
+        if inner is not None and session_directive.peek(inner) is not None:
+            # Siblings FIRST, marker LAST. Both placements keep peek working, but
+            # only this one survives display: session_directive.strip_marker cuts
+            # from the sentinel to the END of the string, so anything after the
+            # marker is dropped from the transcript the user actually reads.
+            siblings = json.dumps(_elide_marker_value(outer, inner), default=str)
+            return siblings + "\n" + inner
+
+    # (2) The escaped dump is only PART of the text -- another output part, or a
+    # line of prose, sits beside it -- so (1) cannot parse the whole thing. Undo
+    # the escaping on the marker's own line by decoding it AS the JSON string it
+    # came from: prepend the opening quote the dump's own key/colon consumed and
+    # raw_decode, which stops at that string's real closing quote and therefore
+    # ignores whatever the envelope glued onto the tail.
+    #
+    # A plain str.replace of \\" -> " CANNOT do this: a quote that was already
+    # escaped inside the directive (a message quoting a word) arrives as \\\\"
+    # and collapses to a dangling \\" that terminates the JSON string early, so
+    # every directive whose text contains a quote failed to recover.
+    idx = text.find(session_directive.SENTINEL)
+    if idx < 0:
+        return None
+    head = text[:idx]
+    rest = text[idx + len(session_directive.SENTINEL) :]
+    line, newline, following = rest.partition("\n")
+    try:
+        unescaped, _end = json.JSONDecoder().raw_decode('"' + line)
+    except (ValueError, TypeError):
+        return None
+    if not isinstance(unescaped, str):
+        return None
+    # Whatever the envelope glued on after the marker's own string (its closing
+    # `"}`, or real trailing text) is preserved BEFORE the marker, not after it.
+    # Two constraints pin that position: peek parses the marker's line as one
+    # JSON value, so the bytes cannot stay on that line; and strip_marker cuts
+    # from the sentinel to the END of the string, so a later line would be
+    # dropped from the transcript. Ahead of the marker satisfies both.
+    # `_end` indexes the quote-prefixed copy, so one char of it is our prefix.
+    suffix = line[_end - 1 :]
+    preserved = head + "".join(
+        part + "\n" for part in (suffix, following if newline else "") if part
+    )
+    candidate = preserved + session_directive.SENTINEL + unescaped
+    return candidate if session_directive.peek(candidate) is not None else None
+
+
+def _build_tool_result_event(update: dict[str, Any], cache_scope: str = "") -> AcpEvent | None:
     """Build an ``EVENT_TOOL_RESULT`` from a ``tool_call_update`` carrying output.
 
     Two output shapes: ``content[].content.text`` blocks (stream mid-turn), or
     ``rawOutput.items[]`` (``Text`` / ``Json.stdout``) on ``status=completed``.
     Returns None when the update carries no output (refinement-only updates are
     handled by :func:`_build_tool_refinement_event`).
+
+    ``cache_scope`` is the emitting session's origin scope, forwarded only so the
+    duration histogram closes the same registry entry its start opened.
     """
     tool_use_id = update.get("toolCallId", "")
     if not tool_use_id:
         return None
+    # Before the output parsing below, which returns None for an output-less
+    # update: a tool that completed with no output is still a completed
+    # round-trip. A non-terminal status is a no-op here, so a mid-stream update
+    # leaves the clock running for the real completion.
+    record_tool_call_finished(tool_use_id, status=update.get("status"), scope=cache_scope)
     # Parts are collected RAW and redaction runs once over their JOIN, before
     # the single 8000-char bound. Both orderings matter: bounding first can
     # split a credential at a cut into fragments no redaction regex matches,
@@ -1042,13 +1375,70 @@ def _build_tool_result_event(update: dict[str, Any]) -> AcpEvent | None:
                             output_parts.append(str(j["stdout"]))
                         else:
                             _mcp_text = _mcp_content_text(j)
+                            # Track provenance explicitly. Re-deriving it by
+                            # object identity (`_mcp_text is _mcp_content_text(j)`)
+                            # is wrong: a recognised text envelope with >=2 blocks
+                            # returns a FRESH join each call, so the identity test
+                            # reports "marker-bearing" for an ordinary result and
+                            # emits its whole envelope a second time.
+                            _marker_envelope = False
+                            if _mcp_text is None:
+                                # Not a recognised text envelope. Before dumping
+                                # it -- which would escape every quote and
+                                # destroy an embedded directive payload -- check
+                                # whether one of its strings IS the directive.
+                                _mcp_text = _marker_bearing_text(j)
+                                if _mcp_text is not None:
+                                    _marker_envelope = True
+                                    logger.warning(
+                                        "tool-result envelope is not a text envelope but "
+                                        "carries a session-directive marker; using that "
+                                        "string verbatim instead of json.dumps, which "
+                                        "would escape its payload. Envelope keys: %s",
+                                        sorted(j.keys()),
+                                    )
                             if _mcp_text is not None:
+                                if _marker_envelope:
+                                    # The envelope's other fields are real output.
+                                    # They go BEFORE the marker: strip_marker cuts
+                                    # from the sentinel to the end of the string,
+                                    # so anything after it is lost from display.
+                                    output_parts.append(
+                                        json.dumps(_elide_marker_value(j, _mcp_text), default=str)
+                                    )
                                 output_parts.append(_mcp_text)
                             else:
                                 output_parts.append(json.dumps(j, default=str))
     if not output_parts:
         return None
     joined = "\n".join(output_parts)
+    # Repair a marker that arrived JSON-escaped, BEFORE redaction and the head
+    # cut: the consumer reads its selector out of this exact string, and an
+    # escaped payload names no parked record (see _repair_escaped_marker).
+    _repaired = _repair_escaped_marker(joined)
+    if _repaired is not None:
+        # No payload excerpt: this text is PRE-redaction (redaction runs on the
+        # join below) and these warnings land in the persistent log ring that
+        # /api/logs serves, so an excerpt here would publish credentials that
+        # the transcript itself never shows. Length is the diagnostic.
+        logger.warning(
+            "tool-result text carried a JSON-ESCAPED session-directive marker; "
+            "repaired it so the selector is readable (payload %d chars).",
+            len(joined),
+        )
+        joined = _repaired
+    elif session_directive.has_marker(joined) and session_directive.peek(joined) is None:
+        # The frame names a directive whose selector cannot be read and the
+        # repair could not recover it either. Logged HERE because a silent None
+        # from the repair is indistinguishable downstream from a transport that
+        # never carried a marker at all -- which is what made this class of
+        # failure invisible.
+        logger.warning(
+            "tool-result carries a session-directive marker whose selector is "
+            "UNREADABLE and could not be repaired: %s (payload %d chars).",
+            session_directive.peek_failure_reason(joined),
+            len(joined),
+        )
     final_output = _redact(joined)[:8000]
     # An MCP App render marker lives at offset 0 of its own text part, but the
     # 8000-char join cut is applied to the CONCATENATION of all parts: when the
@@ -1340,7 +1730,7 @@ def parse_session_update(
         )
         return events
     if kind == UPDATE_TOOL_CALL_UPDATE:
-        result = _build_tool_result_event(update)
+        result = _build_tool_result_event(update, cache_scope)
         if result is not None:
             events.append(result)
         refine = _build_tool_refinement_event(
@@ -1490,6 +1880,7 @@ __all__ = [
     "parse_usage_cost",
     "parse_prompt_token_usage",
     "parse_text_chunk",
+    "parse_claude_compaction_notice",
     "make_unified_diff",
     "select_tool_title",
     "is_shell_kind",

@@ -262,8 +262,13 @@ class TestLinkedThreadIntercept:
                 "msg1",
                 "U1",
             )
-            # UI gets redacted text
-            slot.append.assert_called_once_with("user", "[REDACTED]", "msg msg-u")
+            # UI gets redacted text — via append_and_surface, which passes
+            # broadcast_user=True so the channel-typed row (never rendered
+            # optimistically here) still reaches open dashboard windows through
+            # append's own mid-carrying delivery.
+            slot.append.assert_called_once_with(
+                "user", "[REDACTED]", "msg msg-u", broadcast_user=True, meta=None
+            )
             # LLM gets original text
             assert mock_run_chat.call_args[0][2] == "hello http://evil.com"
 

@@ -317,6 +317,79 @@ class TestBuildSeatbeltProfile:
 
         sandbox_mod.assert_voice_runtime_outside_agent_workspace(sibling)
 
+    def test_voice_runtime_workspace_conflict_preflight(self, monkeypatch, tmp_path):
+        """#7392: the non-raising pre-flight mirrors the lexical guard and
+        names both paths, the data home, and the remedy."""
+        monkeypatch.setattr(sandbox_mod.sys, "platform", "darwin")
+        runtime = tmp_path / "data" / "run" / "voice-runtime"
+        sibling = tmp_path / "workspace"
+        runtime.mkdir(parents=True)
+        sibling.mkdir()
+        monkeypatch.setattr(
+            sandbox_mod,
+            "_voice_runtime_sandbox_paths",
+            lambda: (str(runtime),),
+        )
+
+        contains = sandbox_mod.voice_runtime_workspace_conflict(tmp_path)
+        assert contains is not None and "contains" in contains
+        assert "protected voice runtime" in contains
+        assert str(tmp_path) in contains
+        assert str(runtime) in contains
+        # Same remedy sentence as the spawn-time refusal (#7407's shared formatter).
+        assert "Pick a project subdirectory" in contains
+
+        inside = sandbox_mod.voice_runtime_workspace_conflict(runtime / "nested")
+        assert inside is not None and "inside it" in inside
+
+        assert sandbox_mod.voice_runtime_workspace_conflict(sibling) is None
+
+    def test_voice_runtime_workspace_conflict_passes_off_darwin(self, monkeypatch, tmp_path):
+        """The pre-flight matches the guards it mirrors: every spawn-time
+        guard early-returns off macOS, so an overlapping workspace spawns
+        fine on Linux/Windows today — the pre-flight must not 400 a working
+        configuration there (Design/FP review round 1)."""
+        monkeypatch.setattr(sandbox_mod.sys, "platform", "linux")
+        runtime = tmp_path / "data" / "run" / "voice-runtime"
+        runtime.mkdir(parents=True)
+        monkeypatch.setattr(
+            sandbox_mod,
+            "_voice_runtime_sandbox_paths",
+            lambda: (str(runtime),),
+        )
+        assert sandbox_mod.voice_runtime_workspace_conflict(tmp_path) is None
+
+    def test_preflight_and_spawn_guard_refuse_with_the_same_message(self, monkeypatch, tmp_path):
+        """Drift pin (Design/FP review round 2): the pre-flight and the
+        spawn-time guard share ONE containment scan and ONE formatter, so the
+        same overlapping workspace must produce byte-identical refusal text on
+        both surfaces. If either ever grows its own copy again, this fails."""
+        monkeypatch.setattr(sandbox_mod.sys, "platform", "darwin")
+        runtime = tmp_path / "data" / "run" / "voice-runtime"
+        runtime.mkdir(parents=True)
+        monkeypatch.setattr(
+            sandbox_mod,
+            "_voice_runtime_sandbox_paths",
+            lambda: (str(runtime),),
+        )
+        preflight = sandbox_mod.voice_runtime_workspace_conflict(tmp_path)
+        assert preflight is not None
+        with pytest.raises(RuntimeError) as exc:
+            sandbox_mod.assert_voice_runtime_outside_agent_workspace(tmp_path)
+        assert str(exc.value) == preflight
+
+    def test_voice_runtime_workspace_conflict_fails_open_on_prime_error(
+        self, monkeypatch, tmp_path
+    ):
+        """Pre-flight passes when runtime paths cannot resolve; the spawn-time
+        guard (fail-closed) stays authoritative."""
+
+        def _boom() -> tuple[str, ...]:
+            raise OSError("no data home")
+
+        monkeypatch.setattr(sandbox_mod, "_voice_runtime_sandbox_paths", _boom)
+        assert sandbox_mod.voice_runtime_workspace_conflict(tmp_path) is None
+
     def test_delegated_macos_agent_workspace_checks_canonical_alias(self, monkeypatch, tmp_path):
         runtime = tmp_path / "real-data" / "run" / "voice-runtime"
         alias = tmp_path / "linked-runtime"
@@ -2893,16 +2966,13 @@ class TestKiroInternalSandboxExclusion:
         mock_ns.assert_called_once()
 
     def test_windows_explicit_kiro_backend_delegates_before_backend_probe(self, monkeypatch):
-        """Fresh Windows installs use the positively identified Kiro sandbox."""
+        """Windows delegates only when the Kiro sandbox it delegates TO is on."""
         monkeypatch.setattr("kiro_crew.sandbox.sys.platform", "win32")
         launch = r"C:\Program Files\Kiro\kiro-cli.exe"
         with (
             patch("kiro_crew.sel.sel", return_value=MagicMock()),
             patch("kiro_crew.sandbox.detect_backend") as mock_detect,
-            patch(
-                "kiro_crew.sandbox.kiro_internal_sandbox_enabled",
-                side_effect=AssertionError("Windows delegation must not depend on macOS settings"),
-            ),
+            patch("kiro_crew.sandbox.kiro_internal_sandbox_enabled", return_value=True) as mock_cap,
         ):
             argv, cleanup = wrap_argv(
                 [launch, "acp"],
@@ -2913,6 +2983,51 @@ class TestKiroInternalSandboxExclusion:
         assert argv == [launch, "acp"]
         assert cleanup is None
         mock_detect.assert_not_called()
+        # The capability is CONSULTED, not assumed: the unwrapped argv above is
+        # only safe because the layer it defers to actually exists.
+        mock_cap.assert_called()
+
+    def test_windows_kiro_sandbox_disabled_fails_closed(self, monkeypatch):
+        """Classification alone cannot buy the Windows delegation.
+
+        A classified Kiro spawn on a host whose internal sandbox is OFF has no
+        isolation layer to delegate to, so it must fall through to the normal
+        no-backend policy and fail closed — not return an unwrapped argv while
+        the audit trail claims a delegated sandbox.
+        """
+        monkeypatch.setattr("kiro_crew.sandbox.sys.platform", "win32")
+        monkeypatch.setattr("kiro_crew.sandbox._allow_unsandboxed_exec", lambda: False)
+        with (
+            patch("kiro_crew.sandbox.kiro_internal_sandbox_enabled", return_value=False),
+            patch("kiro_crew.sandbox.detect_backend", return_value="none") as mock_detect,
+            patch("kiro_crew.sel.sel", return_value=MagicMock()),
+            pytest.raises(sandbox_mod.SandboxUnavailableError),
+        ):
+            wrap_argv(
+                [r"C:\Program Files\Kiro\kiro-cli.exe", "acp"],
+                mode="auto",
+                is_kiro_cli=True,
+            )
+        # Fall-through reached the ordinary backend decision rather than
+        # short-circuiting into the delegation.
+        mock_detect.assert_called_once_with(config_mode="auto")
+
+    def test_windows_kiro_sandbox_disabled_honours_explicit_opt_in(self, monkeypatch):
+        """The fall-through is the NORMAL path, opt-in included — not a crash."""
+        monkeypatch.setattr("kiro_crew.sandbox.sys.platform", "win32")
+        monkeypatch.setattr("kiro_crew.sandbox._allow_unsandboxed_exec", lambda: True)
+        launch = r"C:\Program Files\Kiro\kiro-cli.exe"
+        with (
+            patch("kiro_crew.sandbox.kiro_internal_sandbox_enabled", return_value=False),
+            patch("kiro_crew.sandbox.detect_backend", return_value="none") as mock_detect,
+            patch("kiro_crew.sel.sel", return_value=MagicMock()),
+        ):
+            argv, cleanup = wrap_argv([launch, "acp"], mode="auto", is_kiro_cli=True)
+        assert argv[-2:] == [launch, "acp"]
+        assert cleanup is None
+        # Distinguishes the opted-in FALL-THROUGH from the delegation, which
+        # returns the same argv but short-circuits before any backend decision.
+        mock_detect.assert_called_once_with(config_mode="auto")
 
     @pytest.mark.parametrize("classification", [None, False])
     def test_windows_nonclassified_spawn_still_fails_closed(self, monkeypatch, classification):

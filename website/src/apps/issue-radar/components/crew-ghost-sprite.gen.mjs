@@ -170,7 +170,14 @@ const browser = await chromium.launch()
 const page = await browser.newPage()
 const { dataUrl, problems, report } = await page.evaluate(
   ({ program, geo, outfits, pixels }) => {
-    // eslint-disable-next-line no-eval
+    // `program` is the drawing source built as a template literal in THIS file,
+    // handed to the page so the browser context can call `drawCrewGhost`.
+    // Nothing here is remote or user-supplied.
+    //
+    // `eslint.config.js` turns `no-eval` on for `src/**/*.mjs` precisely so this
+    // exemption is a reviewed one: the directive below is live, and a SECOND
+    // `eval()` in this file would be an error rather than a silent pass.
+    // eslint-disable-next-line no-eval -- `program` is a template literal built in this file; nothing remote or user-supplied reaches it
     eval(program)
     const canvas = document.createElement('canvas')
     canvas.width = geo.CELL_W * outfits.length * geo.SCALE

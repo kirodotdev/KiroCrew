@@ -560,7 +560,12 @@ export default function SidePanel({
           (-mb-px on the GROUPS, not the chips — the tablist scrolls and would
           clip an overflowing chip) so the active chip's opaque background
           covers the line across its own span, keeping the mouth open. */}
-      <div className="side-panel-strip flex items-end gap-1.5 shrink-0 px-2 pt-2 pb-0 min-h-10 rounded-tl-xl bg-bg-elevated border-b border-border">
+      {/* focus-caption-reserve (right dock only): in focus mode this strip is
+          the surface at the window's top-trailing corner, where Windows and
+          frameless Linux paint their caption controls — the panel chrome below
+          would sit under them, covered and unclickable. Bottom-docked the strip
+          is nowhere near that corner, so it takes no reserve. */}
+      <div className={`side-panel-strip flex items-end gap-1.5 shrink-0 px-2 pt-2 pb-0 min-h-10 rounded-tl-xl bg-bg-elevated border-b border-border${isBottom ? '' : ' focus-caption-reserve'}`}>
         {/* Pinned views (Changes / Files / Artifacts): always present, fixed at
             the front, non-closable, not draggable, compact. The group's 8px gap
             matches the active chip's corner-piece width, so a piece lands in the

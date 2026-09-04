@@ -428,10 +428,14 @@ function PreferenceRow({
           }
         }}
       >
+        {/* Named after the row it replaces: the inline form has no visible label,
+            and the pencil that opened it is gone while it is open, so the field
+            has to say which preference it is editing. */}
         <input
           value={editText}
           onChange={(e) => setEditText(e.target.value)}
-          className="flex-1 text-sm bg-transparent outline-none text-[var(--text)]"
+          aria-label={i18nT('apps.personalShopper.preferencesTab.edit_named_preference', { text: pref.text })}
+          className="flex-1 text-sm bg-transparent text-[var(--text)]"
           autoFocus
           onKeyDown={(e) => { if (e.key === 'Escape') setEditing(false) }}
         />

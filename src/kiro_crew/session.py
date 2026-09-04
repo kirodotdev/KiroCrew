@@ -13,8 +13,10 @@ lightweight background work (heartbeat, lesson extraction).  It
 stays alive between uses, serialized by the per-session semaphore.
 
 At >= ``cfg.session.autocompact_pct`` context usage, fires a background
-compaction task. Both backends compact **in place** so the session — and
-any queued or agentic work on it — continues without a user nudge:
+compaction task. A backend that can serve ``/compact`` compacts **in
+place** so the session — and any queued or agentic work on it —
+continues without a user nudge; one that cannot is declined before any
+dispatch:
 
 * **kiro-cli:** run ``/compact`` in place under the session semaphore
   (native command execute + ``_kiro.dev/compaction/status`` wait). The
@@ -29,6 +31,13 @@ any queued or agentic work on it — continues without a user nudge:
   semaphore. The SDK preserves the same session ID across the
   compact_boundary; the session keeps its summary and continues without
   a recycle.
+* **KAS:** nothing is dispatched. KAS treats the ``/compact`` prompt as
+  ordinary text and never answers it with a compaction status, so the
+  gate declines (``compact_unsupported``) before the compaction task is
+  scheduled: an ungated dispatch stranded the wait for the full budget
+  while holding the semaphore and then recycled the session (#7812). KAS
+  summarizes on its own initiative, the same way ``cc_managed`` leaves
+  Claude-Code sessions to compact themselves.
 
 A failed compact records a per-key cooldown so a broken /compact does
 not fire on every subsequent turn. The compact callback fires on both
@@ -134,6 +143,9 @@ from kiro_crew.session_allocation import (
     AllocationConstants,
     AllocationDeps,
     SessionAllocationService,
+)
+from kiro_crew.session_allocation import SessionBusyError as SessionBusyError  # noqa: F401
+from kiro_crew.session_allocation import (
     SessionClosingError,
     SessionRegistryState,
 )
@@ -1712,9 +1724,19 @@ class SessionManager:
             parent_session_key, agent=agent, cwd=cwd
         )
 
-    async def _reacquire_and_validate(self, key: str, sess: "_Session") -> bool:
+    async def _reacquire_and_validate(
+        self,
+        key: str,
+        sess: "_Session",
+        *,
+        wait_if_busy: bool = True,
+    ) -> bool:
         """Acquire outside the registry lock and revalidate identity."""
-        return await self._allocation_boundary()._reacquire_and_validate(key, sess)
+        return await self._allocation_boundary()._reacquire_and_validate(
+            key,
+            sess,
+            wait_if_busy=wait_if_busy,
+        )
 
     async def _evict_stale_session(self, key: str, sess: "_Session") -> None:
         """Evict and close the exact stale session."""
@@ -1947,6 +1969,7 @@ class SessionManager:
         extra_env: dict[str, str] | None = None,
         speculative: bool = False,
         speculative_resume: bool = False,
+        wait_if_busy: bool = True,
         _won_race_retries: int = 0,
         **extra_factory_kwargs: Any,
     ) -> tuple[LLMProvider, bool, bool]:
@@ -1961,6 +1984,7 @@ class SessionManager:
             extra_env=extra_env,
             speculative=speculative,
             speculative_resume=speculative_resume,
+            wait_if_busy=wait_if_busy,
             _won_race_retries=_won_race_retries,
             **extra_factory_kwargs,
         )
@@ -2564,6 +2588,10 @@ class SessionManager:
     async def drain_warm_pool(self) -> list:
         """Remove and return all queued warm providers."""
         return await self._pool.drain_warm_pool()
+
+    def warm_providers(self) -> list[LLMProvider]:
+        """Snapshot the queued warm providers without consuming them."""
+        return self._pool.warm_providers()
 
     # ── Idle cleanup ──
 

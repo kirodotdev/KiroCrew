@@ -3,7 +3,7 @@
  * All changes are staged locally. Only applied on Save.
  * Closing without saving prompts the user and reverts if discarded.
  */
-import React, { useCallback, useEffect, useState } from 'react'
+import React, { useCallback, useEffect, useId, useState } from 'react'
 import type { AppConfig } from '../shared/config'
 import { ELECTRON_MAP, MODIFIER_GLYPHS, MODIFIER_ORDER } from '../shared/config'
 import type { CompanionStats, McpServerInfo } from '../shared/types'
@@ -96,6 +96,29 @@ const SETTINGS_SECTIONS: {
   { id: 'about', Icon: Info },
 ]
 
+/**
+ * Id of the visible caption inside one option row, referenced by that row's
+ * `role="radio"` wrapper through `aria-labelledby`.
+ *
+ * The rows are `<div role="radio">`s whose name would otherwise be computed from
+ * every descendant, so the caption and its explanatory sub-line ran together into
+ * one announcement. Pointing at the caption alone names the row exactly, and
+ * needs no second copy of the string that an `aria-label` would introduce.
+ */
+const optionLabelId = (group: string, value: string) => `mochi-${group}-${value}-label`
+
+/**
+ * Id of the explanatory sub-line inside one option row, referenced by that row's
+ * `role="radio"` wrapper through `aria-describedby`.
+ *
+ * `role="radio"` is "Children Presentational: True" in ARIA, so once the row is
+ * named from its caption alone the sub-line is exposed nowhere at all — a
+ * regression on the run-together announcement it replaced. Naming it as the
+ * row's DESCRIPTION keeps it reachable, and in the slot a screen reader speaks
+ * after the name rather than inside it.
+ */
+const optionDescId = (group: string, value: string) => `mochi-${group}-${value}-desc`
+
 export const SettingsPanel: React.FC<{ onClose: () => void }> = ({ onClose }) => {
   const [original, setOriginal] = useState<AppConfig | null>(null)
   const [config, setConfig] = useState<AppConfig | null>(null)
@@ -137,6 +160,15 @@ export const SettingsPanel: React.FC<{ onClose: () => void }> = ({ onClose }) =>
       handleClose()
     })
     return () => { off?.() }
+    // `handleClose` IS the dependency: it is rebuilt whenever `isDirty` or
+    // `onClose` changes, which is exactly when this listener's answer could
+    // differ, so the subscription is already replaced at every point that
+    // matters. `config`/`original` are read only as the pre-load null guard, and
+    // while either is null `isDirty` is false — so the guard and `handleClose`
+    // reach the same `onClose()`, and listing them would tear down and
+    // re-register the shell's close listener on every keystroke in a settings
+    // field to change no outcome.
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- handleClose already tracks isDirty/onClose; config/original are only the pre-load null guard, where both branches call onClose()
   }, [handleClose])
 
   useEffect(() => {
@@ -371,7 +403,7 @@ export const SettingsPanel: React.FC<{ onClose: () => void }> = ({ onClose }) =>
             { value: 'normal' as const, Icon: Cat, label: i18nT('apps.mochi.settingsPanel.mode_normal'), desc: i18nT('apps.mochi.settingsPanel.mode_normal_desc') },
             { value: 'quiet' as const, Icon: Moon, label: i18nT('apps.mochi.settingsPanel.mode_quiet'), desc: i18nT('apps.mochi.settingsPanel.mode_quiet_desc') },
           ]).map((opt) => (
-            <div key={opt.value} role="radio" aria-checked={config.mochi.activityMode === opt.value} tabIndex={0} onClick={() => editMochi({ activityMode: opt.value })}
+            <div key={opt.value} role="radio" aria-checked={config.mochi.activityMode === opt.value} tabIndex={0} aria-labelledby={optionLabelId('mode', opt.value)} aria-describedby={optionDescId('mode', opt.value)} onClick={() => editMochi({ activityMode: opt.value })}
               onKeyDown={(e) => {
                 if (e.key === ' ' || e.key === 'Enter') { e.preventDefault(); editMochi({ activityMode: opt.value }) }
               }} style={{
@@ -386,8 +418,8 @@ export const SettingsPanel: React.FC<{ onClose: () => void }> = ({ onClose }) =>
                 background: 'var(--bg)',
               }} />
               <div>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: 'var(--text)', fontWeight: config.mochi.activityMode === opt.value ? 600 : 400 }}><opt.Icon size={13} /> {opt.label}</div>
-                <div style={{ fontSize: 10, color: 'var(--text-muted)' }}>{opt.desc}</div>
+                <div id={optionLabelId('mode', opt.value)} style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: 'var(--text)', fontWeight: config.mochi.activityMode === opt.value ? 600 : 400 }}><opt.Icon size={13} /> {opt.label}</div>
+                <div id={optionDescId('mode', opt.value)} style={{ fontSize: 10, color: 'var(--text-muted)' }}>{opt.desc}</div>
               </div>
             </div>
           ))}
@@ -432,7 +464,7 @@ export const SettingsPanel: React.FC<{ onClose: () => void }> = ({ onClose }) =>
             { value: 'trust_reads', label: i18nT('apps.mochi.settingsPanel.trust_reads'), desc: i18nT('apps.mochi.settingsPanel.trust_reads_desc') },
             { value: 'trust', label: i18nT('apps.mochi.settingsPanel.trust_trust'), desc: i18nT('apps.mochi.settingsPanel.trust_trust_desc') },
           ] as const).map((opt) => (
-            <div key={opt.value} role="radio" aria-checked={trustMode === opt.value} tabIndex={0} onClick={() => setTrustMode(opt.value)}
+            <div key={opt.value} role="radio" aria-checked={trustMode === opt.value} tabIndex={0} aria-labelledby={optionLabelId('trust', opt.value)} aria-describedby={optionDescId('trust', opt.value)} onClick={() => setTrustMode(opt.value)}
               onKeyDown={(e) => {
                 if (e.key === ' ' || e.key === 'Enter') { e.preventDefault(); setTrustMode(opt.value) }
               }} style={{
@@ -447,8 +479,8 @@ export const SettingsPanel: React.FC<{ onClose: () => void }> = ({ onClose }) =>
                 background: 'var(--bg)',
               }} />
               <div>
-                <div style={{ fontSize: 12, color: 'var(--text)', fontWeight: trustMode === opt.value ? 600 : 400 }}>{opt.label}</div>
-                <div style={{ fontSize: 10, color: 'var(--text-muted)' }}>{opt.desc}</div>
+                <div id={optionLabelId('trust', opt.value)} style={{ fontSize: 12, color: 'var(--text)', fontWeight: trustMode === opt.value ? 600 : 400 }}>{opt.label}</div>
+                <div id={optionDescId('trust', opt.value)} style={{ fontSize: 10, color: 'var(--text-muted)' }}>{opt.desc}</div>
               </div>
             </div>
           ))}
@@ -607,14 +639,21 @@ const Section: React.FC<{ title: React.ReactNode; children: React.ReactNode }> =
 )
 
 
-const Field: React.FC<{ label: string; desc?: string; value: string; onChange: (v: string) => void }> = ({ label, desc, value, onChange }) => (
-  <div style={{ marginBottom: 8 }}>
-    <div style={{ fontSize: 12, color: 'var(--text)', marginBottom: 1 }}>{label}</div>
-    {desc && <div style={{ fontSize: 10, color: 'var(--text-muted)', marginBottom: 3 }}>{desc}</div>}
-    <input value={value} onChange={(e) => onChange(e.target.value)}
-      style={{ width: '100%', background: 'var(--bg-input)', border: '1px solid var(--border)', borderRadius: 6, padding: '5px 8px', color: 'var(--text)', fontSize: 12, outline: 'none' }} />
-  </div>
-)
+const Field: React.FC<{ label: string; desc?: string; value: string; onChange: (v: string) => void }> = ({ label, desc, value, onChange }) => {
+  // The caption above the box IS the field's name, so it is pointed at rather
+  // than copied into an `aria-label`: the box would otherwise be announced with
+  // no name. `useId`, not a constant — Field renders once per setting, so a fixed
+  // id would repeat in the document and every box would claim the first caption.
+  const labelId = useId()
+  return (
+    <div style={{ marginBottom: 8 }}>
+      <div id={labelId} style={{ fontSize: 12, color: 'var(--text)', marginBottom: 1 }}>{label}</div>
+      {desc && <div style={{ fontSize: 10, color: 'var(--text-muted)', marginBottom: 3 }}>{desc}</div>}
+      <input value={value} onChange={(e) => onChange(e.target.value)} aria-labelledby={labelId}
+        style={{ width: '100%', background: 'var(--bg-input)', border: '1px solid var(--border)', borderRadius: 6, padding: '5px 8px', color: 'var(--text)', fontSize: 12, outline: 'none' }} />
+    </div>
+  )
+}
 
 
 const SelectField: React.FC<{ label: string; desc?: string; value: string; options: (string | { value: string; label: string })[]; onChange: (v: string) => void; disabled?: boolean }> = ({ label, desc, value, options, onChange, disabled }) => (
@@ -745,28 +784,35 @@ const ShortcutField: React.FC<{ label: string; desc?: string; value: string; onC
     </div>
   )
 }
-const Toggle: React.FC<{ label: string; desc?: string; value: boolean; onChange: (v: boolean) => void }> = ({ label, desc, value, onChange }) => (
-  <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: 8, gap: 12 }}>
-    <div>
-      <span style={{ fontSize: 12 }}>{label}</span>
-      {desc && <div style={{ fontSize: 10, color: 'var(--text-muted)', marginTop: 1 }}>{desc}</div>}
+const Toggle: React.FC<{ label: string; desc?: string; value: boolean; onChange: (v: boolean) => void }> = ({ label, desc, value, onChange }) => {
+  // The switch is the track+knob pair, which carries no text of its own, and the
+  // label sits in a SIBLING column — so it has no accessible name at all until it
+  // points at that label. `useId`, not a constant: Toggle renders once per
+  // setting, and a fixed id would make every switch claim the first one's label.
+  const labelId = useId()
+  return (
+    <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: 8, gap: 12 }}>
+      <div>
+        <span id={labelId} style={{ fontSize: 12 }}>{label}</span>
+        {desc && <div style={{ fontSize: 10, color: 'var(--text-muted)', marginTop: 1 }}>{desc}</div>}
+      </div>
+      <div role="switch" aria-checked={value} tabIndex={0} aria-labelledby={labelId}
+        onClick={() => onChange(!value)}
+        onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onChange(!value) } }}
+        style={{
+        width: 36, height: 20, borderRadius: 10, cursor: 'pointer', flexShrink: 0,
+        background: value ? 'var(--accent)' : 'var(--bg-input)',
+        border: value ? 'none' : '1px solid var(--border)',
+        position: 'relative', transition: 'background 200ms',
+      }}>
+        <div style={{
+          width: 16, height: 16, borderRadius: '50%', background: 'white',
+          position: 'absolute', top: 2, left: value ? 18 : 2, transition: 'left 200ms',
+        }} />
+      </div>
     </div>
-    <div role="switch" aria-checked={value} tabIndex={0}
-      onClick={() => onChange(!value)}
-      onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onChange(!value) } }}
-      style={{
-      width: 36, height: 20, borderRadius: 10, cursor: 'pointer', flexShrink: 0,
-      background: value ? 'var(--accent)' : 'var(--bg-input)',
-      border: value ? 'none' : '1px solid var(--border)',
-      position: 'relative', transition: 'background 200ms',
-    }}>
-      <div style={{
-        width: 16, height: 16, borderRadius: '50%', background: 'white',
-        position: 'absolute', top: 2, left: value ? 18 : 2, transition: 'left 200ms',
-      }} />
-    </div>
-  </div>
-)
+  )
+}
 
 /* ── EditableField (edit-confirm pattern) ──────────────────── */
 
@@ -1032,12 +1078,12 @@ const McpSection: React.FC<{
   }
 
   const extras = config.mochi.extraMcpServers || []
-  const extrasNames = new Set(extras.map((e: any) => typeof e === 'string' ? e : e.name))
+  const extrasNames = new Set(extras.map((e) => typeof e === 'string' ? e : e.name))
   const enabled = servers.filter(s => s.core || extrasNames.has(s.name))
   const available = servers.filter(s => !s.core && !extrasNames.has(s.name))
 
   const toggleServer = (name: string, enable: boolean) => {
-    const current = extras.filter((e: any) => (typeof e === 'string' ? e : e.name) !== name)
+    const current = extras.filter((e) => (typeof e === 'string' ? e : e.name) !== name)
     if (enable) {
       const staged = stagedConfigs[name]
       current.push(staged ? { name, ...staged } : { name, agents: ['chat'], autoApprove: [], disabledTools: [] })
@@ -1053,7 +1099,7 @@ const McpSection: React.FC<{
     const current = getStaged(name, server || { agents: ['chat'], autoApprove: [], disabledTools: [] } as unknown as McpServerInfo)
     const newStaged = { ...current, ...update }
     setStagedConfigs(prev => ({ ...prev, [name]: newStaged }))
-    const updated = extras.map((e: any) => {
+    const updated = extras.map((e) => {
       const eName = typeof e === 'string' ? e : e.name
       return eName === name ? { name, ...newStaged } : e
     })
@@ -1341,7 +1387,7 @@ const BackgroundActivitySection: React.FC<{
       </div>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 8 }}>
         {tiers.map((opt) => (
-          <div key={opt.value} role="radio" aria-checked={tier === opt.value} tabIndex={0} onClick={() => editMochi({ activityTier: opt.value })}
+          <div key={opt.value} role="radio" aria-checked={tier === opt.value} tabIndex={0} aria-labelledby={optionLabelId('tier', opt.value)} aria-describedby={optionDescId('tier', opt.value)} onClick={() => editMochi({ activityTier: opt.value })}
             onKeyDown={(e) => {
               if (e.key === ' ' || e.key === 'Enter') { e.preventDefault(); editMochi({ activityTier: opt.value }) }
             }} style={{
@@ -1356,8 +1402,8 @@ const BackgroundActivitySection: React.FC<{
               background: 'var(--bg)',
             }} />
             <div>
-              <div style={{ fontSize: 12, color: 'var(--text)', fontWeight: tier === opt.value ? 600 : 400 }}>{opt.label}</div>
-              <div style={{ fontSize: 10, color: 'var(--text-muted)' }}>{opt.desc}</div>
+              <div id={optionLabelId('tier', opt.value)} style={{ fontSize: 12, color: 'var(--text)', fontWeight: tier === opt.value ? 600 : 400 }}>{opt.label}</div>
+              <div id={optionDescId('tier', opt.value)} style={{ fontSize: 10, color: 'var(--text-muted)' }}>{opt.desc}</div>
             </div>
           </div>
         ))}
@@ -1374,11 +1420,20 @@ const BackgroundActivitySection: React.FC<{
 }
 
 
+/**
+ * One row of core's `/api/models` payload, as this picker consumes it.
+ *
+ * The route is a passthrough of kiro-cli's own list and has shipped both objects
+ * and bare model-name strings, which is why the read below normalizes rather than
+ * trusting the shape it is handed.
+ */
+type ModelRow = { model_name: string; model_id?: string; description?: string }
+
 const ModelSelector: React.FC<{
   config: AppConfig
   editMochi: (patch: Record<string, unknown>) => void
 }> = ({ config, editMochi }) => {
-  const [models, setModels] = React.useState<Array<{ model_name: string; model_id?: string; description?: string }>>([])
+  const [models, setModels] = React.useState<ModelRow[]>([])
   const [current, setCurrent] = React.useState('')
   const [loading, setLoading] = React.useState(true)
   const [switching, setSwitching] = React.useState(false)
@@ -1387,10 +1442,10 @@ const ModelSelector: React.FC<{
   const touchedRef = React.useRef(false)
 
   React.useEffect(() => {
-    api?.getModels?.().then((list: any) => {
+    api?.getModels?.().then((list) => {
       if (Array.isArray(list) && list.length > 0) {
         // Normalize: API may return objects or strings
-        const normalized = list.map((m: any) =>
+        const normalized = list.map((m: string | ModelRow) =>
           typeof m === 'string' ? { model_name: m } : m
         )
         setModels(normalized)

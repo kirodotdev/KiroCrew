@@ -88,7 +88,7 @@ that is out of bounds is visible after the fact even though nothing happened.
 
 | Refusal | Status | Why |
 |---------|--------|-----|
-| Config switch off (`agent.session_control`) | 403 | Operator opted out |
+| Config switch off (`agent.session_control` explicitly `false`) | 403 | Operator withdrew the capability from every agent at once. Defaults to true — the agent's `kirocrew-dashboard` mount is the grant. **Exception:** a crew-member DM slot (`member-*` caller key) bypasses this switch — see "Member callers" below |
 | Caller session cannot be identified | 403 | An unidentifiable caller makes the self-target guard blind |
 | Caller is an unattended session (`cron-*`, `workflow-*`) | 403 | A scheduled job acting on live conversations is not a handoff |
 | Caller is itself incognito, temporary, or app-scoped | 403 | Caller-side isolation — the direction the target-side checks cannot see |
@@ -106,6 +106,54 @@ that is out of bounds is visible after the fact even though nothing happened.
 | Target is in another workspace | 403 | Workspaces are the memory boundary |
 | Target names no open session | 404 | A mistake, not an authorization failure |
 | Title matches more than one session | 409 | Guessing means acting on the wrong conversation |
+
+### Member callers: switch bypass, bounded by creator ownership
+
+A crew member's pinned DM slot (caller key prefixed `member-`, created only by
+`POST /api/members/{slug}/thread`) is a **conductor by design**: it dispatches
+work into worker sessions it creates, patrols them, and reports back, with no
+operator configuration. Two rules give it that shape:
+
+- **The `agent.session_control` switch does not gate a member caller.** Members
+  work out of the box — this is the zero-configuration contract, and it is a
+  deliberate trade-off: an operator who turned session control off has NOT
+  thereby disabled member dispatch. There is currently no separate switch for
+  it; disabling a member disables its dispatch.
+- **A member caller may only act on sessions it created.** Slot creation records
+  `created_by` (the creator's caller key) in the slot's birth metadata; it is
+  persisted with the session and rehydrated on restart (both restore paths).
+  `authorize_target` refuses a member caller whose key does not match the
+  target's `created_by` (`not_creator`, 403) — and this ownership boundary binds
+  **even when the global switch is enabled**, so a member never widens to the
+  ordinary caller's reach. Every other refusal in the table above still applies
+  to member callers unchanged.
+
+Ordinary (non-member) callers are untouched: they still require the switch.
+The member-facing tool surface is the ordinary `kirocrew-dashboard` `session_*`
+tool set, mounted **per session** rather than through the on-disk agent
+template: a member DM session's ACP `session/new` **and `session/load`** carry
+the dashboard server as a session-level `mcpServers` entry (built by
+`members.member_dispatch_session_server`, identity via `KIROCREW_SESSION_KEY`
+in the entry's env) — both establishment paths, because `session/load`
+re-initializes the session's MCP servers, so a resume that skipped the
+injection would strip a member thread of its tools mid-conversation. On the
+KAS backend the wire agent projection additionally grants the server in
+`tools` plus the member's approval-free dashboard verbs in `allowedTools`
+(ceiling-filtered like every other grant): `_MEMBER_DASHBOARD_GRANTS`, the
+conductor's read/create set plus `session_send` and `session_stop` — the
+write verbs are safe to auto-approve for a member *specifically* because the
+`created_by` ownership fence above bounds them to worker sessions the member
+itself opened. Member sessions also bypass the provider warm pool
+(`bypass_member`): a pooled child was spawned with no session key on the
+default backend, so a warm hit would skip both the member backend route and
+the mount. The member backend is `agent.member_acp_backend` (default `kas`),
+and requires a wire-capable backend (`ACP_BACKENDS_MEMBER_DISPATCH`: the
+claude seam and KAS); kiro-cli v2 reads its template from disk and exposes no
+per-session channel, so a member session on it runs as plain chat — the tools
+are simply not mounted, never mounted-and-refused. Because the mount is
+session-scoped, no other session on the same agent template gains the tools,
+preserving the two-part grant for ordinary agents (the switch AND the
+per-agent server assignment).
 
 Two notes on scope:
 
@@ -285,25 +333,39 @@ no check — the person owns the tab and closes it unconditionally.
 
 ## Configuration
 
-`agent.session_control` (bool, default **false**). Off makes every tool refuse
-with a message naming the switch, so an agent that has not been granted it
-reports why rather than failing silently.
+`agent.session_control` (bool, default **true**). The grant that decides who may
+reach a peer session is the **agent config**, not this switch: the five tools come
+from the `kirocrew-dashboard` MCP server, so an agent whose spec does not mount it
+never has them — the same rule as every other MCP server. A second default-off
+gate on top of that only made the capability unreachable for an agent that had
+already been given it deliberately, and `_install_conductor_agent()` shipping that
+mount is what an explicit grant looks like.
 
-Default-off is the deliberate part. The tools ride on the existing
-assignable `kirocrew-dashboard` server rather than a new one, so an operator who
-had already assigned that server to an agent for folder organization would
-otherwise find that agent able to read peer transcripts and stop peer turns purely
-by upgrading. Every target is still one of the user's own sessions on their own
-machine, reached over loopback with an audited internal secret -- the objection is
-not that the capability is dangerous but that it would arrive without anyone
-granting it. Making it an explicit switch costs one setting and buys a grant that
-matches what the operator actually chose.
+What the switch is still for is a single withdrawal: an operator who wants the
+capability gone from every agent at once, without editing each spec. So the
+direction that must keep working is an explicit `false`, and `_safe_bool` is what
+keeps a quoted `"false"` from loading as enabled — `bool("false")` is `True`, so a
+plain coercion would give a user who wrote it in an editor that quotes values the
+opposite of what they read.
 
-Both absent and malformed values resolve to disabled. `_safe_bool(..., False)`
-handles the malformed case -- `bool("false")` is `True`, so a user who wrote the
-value in an editor that quotes it would otherwise get the opposite of what they
-read -- and the lookup now supplies `False` for the absent case, so nothing has to
-infer a grant from silence.
+A config read that RAISES still resolves to disabled rather than to the default.
+That is deliberately not symmetric with the absent case: an unreadable config is a
+transient fault the operator can diagnose from the log line, and refusing during it
+costs a retry, while assuming the default during it would let unrelated corruption
+decide an authorization question.
+
+One consequence worth stating, because it is what the default-off gate was
+protecting: the same server carries the `chat_folder_*` tools, so an agent assigned
+it for folder organization has the session verbs too. Whether they prompt depends on
+that agent's `allowedTools` — naming individual tools leaves the session verbs to
+`hooks.on_tool_call`, while naming the whole server auto-approves them, because
+`_mcp_pattern` maps a bare `@server` entry to a one-level glob and
+`is_tool_in_allowlist` checks `@server` before `@server/<tool>`. The shipped
+conductor is in the second class for `session_create` and `session_read_message`
+(`_CONDUCTOR_DASHBOARD_GRANTS`), which is its stated operating model: its patrol
+loop runs with nobody at the keyboard and must not block on an approval no one is
+there to give. An operator who wants folder tools without session control names the
+folder tools individually.
 
 ## What is deliberately not here
 

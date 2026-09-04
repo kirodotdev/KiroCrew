@@ -69,7 +69,11 @@ from kiro_crew.apps.builtins.mochi.petdex_import import (
     list_installed,
     read_installed,
 )
-from kiro_crew.apps.builtins.mochi.pinned_files_service import DATA_FILE_NAME, pins_mutation
+from kiro_crew.apps.builtins.mochi.pinned_files_service import (
+    DATA_FILE_NAME,
+    PinsCorruptError,
+    pins_mutation,
+)
 from kiro_crew.apps.builtins.mochi.queue_file import QUEUE_FILE as _QUEUE_FILE
 from kiro_crew.apps.builtins.mochi.queue_file import queue_mutation
 from kiro_crew.apps.builtins.mochi.redact import redact_tree
@@ -287,6 +291,28 @@ async def _handle_bg_usage(request: web.Request) -> web.Response:
 # ── Pinned files ────────────────────────────────────────────────────────────
 
 
+def _pins_corrupt() -> web.Response:
+    """Map the pin store's corruption refusal to a coded response.
+
+    The update reader refuses a corrupt pin list rather than replacing it
+    (#8088, mirroring #7805), so these handlers can now see a
+    ``PinsCorruptError`` that previously could not happen. Letting it escape
+    gives aiohttp's bare 500 with no ``code`` for the UI to branch on, and
+    reporting ``{"ok": false}`` instead would be read as "no such pin" -- for
+    mark-seen, as outright success. 500 rather than 503: corruption does not
+    clear on retry, a person has to repair the file, and the bytes it still
+    holds are exactly why the mutation refused.
+
+    The exception text is deliberately not echoed: pin labels and paths are
+    agent-authored (they are redacted on the way out of ``_handle_pinned_get``),
+    and the fixed message already says everything the caller can act on.
+    """
+    return web.json_response(
+        {"error": "the pin list is unreadable and must be repaired", "code": "pins_corrupt"},
+        status=500,
+    )
+
+
 async def _handle_pinned_get(request: web.Request) -> web.Response:
     # Pin labels are agent-authored (pin_file) — redact before the browser.
     return web.json_response({"pins": _redact_plan_tree(_rt().pinned.get_pins())})
@@ -305,7 +331,10 @@ async def _handle_pinned_unpin(request: web.Request) -> web.Response:
     # makes this a blocking wait — on the loop that would stall chat streaming and
     # the heartbeat for as long as the other side holds it. Same reason the pack
     # and queue writes are offloaded.
-    ok = await asyncio.to_thread(_rt().pinned.remove_pin, path)
+    try:
+        ok = await asyncio.to_thread(_rt().pinned.remove_pin, path)
+    except PinsCorruptError:
+        return _pins_corrupt()
     return web.json_response({"ok": ok})
 
 
@@ -318,7 +347,10 @@ async def _handle_pinned_mark_seen(request: web.Request) -> web.Response:
             {"error": "body must contain path", "code": "path_required"}, status=400
         )
     # Same cross-process lock as unpin above — see there.
-    await asyncio.to_thread(_rt().pinned.mark_seen, path)
+    try:
+        await asyncio.to_thread(_rt().pinned.mark_seen, path)
+    except PinsCorruptError:
+        return _pins_corrupt()
     return web.json_response({"ok": True})
 
 

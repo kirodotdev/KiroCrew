@@ -350,6 +350,7 @@ export default function SessionsTab({ planeStateRef }: Props) {
           >
             {hideable.map(col => (
               <label key={col.id} className="flex items-center gap-2 px-1.5 py-1 text-[12px] cursor-pointer">
+                {/* eslint-disable-next-line jsx-a11y/control-has-associated-label -- the wrapping <label> IS the association, and its text is the column's own header: every `header` in the column defs above is a translated string, so the name is never empty. Only `flexRender` resolving it at runtime hides it from static analysis */}
                 <input
                   type="checkbox"
                   checked={col.getIsVisible()}

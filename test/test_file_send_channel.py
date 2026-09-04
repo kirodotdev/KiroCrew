@@ -314,9 +314,17 @@ class TestFileUploadSlotThreading:
     """Behaviour: file_send resolves thread_ts from session_map when not explicitly provided."""
 
     def _make_state_with_link(self, slack, thread_ts=None, channel=None):
-        """Create state with a sessions mock that returns slack link data."""
+        """Create state with a sessions mock that returns slack link data.
+
+        The slot is explicitly UNRESTRICTED. These are all ordinary
+        (non-incognito) dashboard sessions, and the leg's restricted-session
+        ceiling reads the live slot for a ``dashboard:`` key — an auto-attribute
+        mock answers that with a truthy stand-in and would deny the upload for a
+        reason none of these cases is about.
+        """
         state = MagicMock()
         state.slack_client = slack
+        state.get_slot.return_value.is_restricted = False
         sessions = MagicMock()
         sessions.get_slack_link = MagicMock(
             return_value=(thread_ts, channel)
@@ -1000,6 +1008,278 @@ class TestChannelUploadEndpoint:
         assert body["error"] == "channel delivery failed"
 
 
+class TestSlackUploadAuthorizationRungs:
+    """The two ceilings the Slack leg shares with the channel leg (issue #7290).
+
+    Slack is deliberately absent from ``channel_transports``, so it reaches
+    neither the send ladder's ``channels`` governance vet nor the ceiling the
+    ladder's caller applies. Both are direct calls in the oracle. Pinned here:
+    that they are reached, that a denial is a REFUSAL the caller sees rather than
+    a silent skip, that they run before any destination work, and that a caller
+    with no session of its own is not muted by them.
+    """
+
+    @staticmethod
+    def _state(slack, *, restricted=False):
+        state = MagicMock()
+        state.slack_client = slack
+        state.get_slot.return_value.is_restricted = restricted
+        return state
+
+    @staticmethod
+    def _decision(permitted):
+        return MagicMock(permitted=permitted, rule="", layer="", reason="")
+
+    async def _post(self, app, payload, *, headers=None):
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post("/api/slack/upload-file", json=payload, headers=headers)
+            return resp, await resp.json()
+
+    @pytest.mark.asyncio
+    async def test_a_restricted_session_is_denied_the_slack_upload(
+        self, tmp_path, outbox_file
+    ):
+        # An incognito/temporary session refuses to write a transcript, read
+        # memory or save a title; shipping its local file bytes into a Slack
+        # channel or DM is the same disclosure with a different destination.
+        slack = MagicMock()
+        slack.upload_file = AsyncMock()
+        app = _make_app(slack, tmp_path, state=self._state(slack, restricted=True))
+
+        with patch(
+            "kiro_crew.config.loader.outbox_dir", return_value=outbox_file.parent
+        ), patch(
+            "kiro_crew.config.loader.workspace_root", return_value=tmp_path
+        ), patch(
+            "kiro_crew.dashboard.handlers.files.is_tracked_channel", return_value=True
+        ):
+            resp, body = await self._post(
+                app,
+                {
+                    "file_path": str(outbox_file),
+                    "filename": "report.txt",
+                    "channel": "C0TRACKED123",
+                },
+                headers={"X-Session-Key": "dashboard:chat-1"},
+            )
+
+        assert resp.status == 403
+        assert body["code"] == "restricted_session"
+        slack.upload_file.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_a_governance_denied_channels_scope_denies_the_slack_leg(
+        self, tmp_path, outbox_file
+    ):
+        # The vet the channel leg inherits from its send ladder. A profile that
+        # denies the ``channels`` scope refused a Telegram upload and allowed a
+        # Slack one; one denial now answers for both.
+        slack = MagicMock()
+        slack.upload_file = AsyncMock()
+        app = _make_app(slack, tmp_path, state=self._state(slack))
+        sel = MagicMock()
+
+        with patch(
+            "kiro_crew.config.loader.outbox_dir", return_value=outbox_file.parent
+        ), patch(
+            "kiro_crew.config.loader.workspace_root", return_value=tmp_path
+        ), patch(
+            "kiro_crew.dashboard.handlers.files.is_tracked_channel", return_value=True
+        ), patch(
+            "kiro_crew.dashboard.handlers.files._sel", return_value=sel
+        ), patch(
+            "kiro_crew.dashboard.upload_destination.vet_and_audit",
+            return_value=self._decision(False),
+        ):
+            resp, body = await self._post(
+                app,
+                {
+                    "file_path": str(outbox_file),
+                    "filename": "report.txt",
+                    "channel": "C0TRACKED123",
+                },
+                headers={"X-Session-Key": "dashboard:chat-1"},
+            )
+
+        assert resp.status == 403
+        assert body["code"] == "channels_governance_denied"
+        slack.upload_file.assert_not_called()
+        # The audit lane an operator greps for refused sends, same shape as every
+        # other refusal on this leg.
+        denied = [
+            r for r in (c.kwargs for c in sel.log_tool_invocation.call_args_list)
+            if r.get("outcome") == "denied"
+        ]
+        assert [r["error"] for r in denied] == ["channels_governance_denied"]
+        assert denied[0]["downstream_service"] == "slack"
+
+    @pytest.mark.asyncio
+    async def test_the_vet_names_the_slack_transport_and_the_channels_scope(
+        self, tmp_path, outbox_file
+    ):
+        # The scope/item pair is the authorization content of the rung: vetting
+        # anything but the transport the file actually leaves over would evaluate
+        # one channel's rule against another's egress.
+        slack = MagicMock()
+        slack.upload_file = AsyncMock()
+        app = _make_app(slack, tmp_path, state=self._state(slack))
+
+        with patch(
+            "kiro_crew.config.loader.outbox_dir", return_value=outbox_file.parent
+        ), patch(
+            "kiro_crew.config.loader.workspace_root", return_value=tmp_path
+        ), patch(
+            "kiro_crew.dashboard.handlers.files.is_tracked_channel", return_value=True
+        ), patch(
+            "kiro_crew.dashboard.upload_destination.vet_and_audit",
+            return_value=self._decision(True),
+        ) as vet:
+            resp, _ = await self._post(
+                app,
+                {
+                    "file_path": str(outbox_file),
+                    "filename": "report.txt",
+                    "thread_ts": "999.888",
+                    "channel": "C0TRACKED123",
+                },
+                headers={"X-Session-Key": "dashboard:chat-1"},
+            )
+
+        assert resp.status == 200
+        assert vet.call_args[0] == ("channels", "slack")
+        assert vet.call_args[1]["session_key"] == "dashboard:chat-1"
+        # Fail-closed: a degraded evaluation on an egress chokepoint must deny.
+        assert vet.call_args[1]["fail_closed"] is True
+
+    @pytest.mark.asyncio
+    async def test_a_degraded_governance_evaluation_denies(self, tmp_path, outbox_file):
+        # Fail-closed at the point the error is caught: an unusable gate answer
+        # must not read as permission on the broadest-audience leg.
+        slack = MagicMock()
+        slack.upload_file = AsyncMock()
+        app = _make_app(slack, tmp_path, state=self._state(slack))
+
+        with patch(
+            "kiro_crew.config.loader.outbox_dir", return_value=outbox_file.parent
+        ), patch(
+            "kiro_crew.config.loader.workspace_root", return_value=tmp_path
+        ), patch(
+            "kiro_crew.dashboard.handlers.files.is_tracked_channel", return_value=True
+        ), patch(
+            "kiro_crew.dashboard.upload_destination.vet_and_audit",
+            side_effect=RuntimeError("profile store unreadable"),
+        ):
+            resp, body = await self._post(
+                app,
+                {
+                    "file_path": str(outbox_file),
+                    "filename": "report.txt",
+                    "channel": "C0TRACKED123",
+                },
+                headers={"X-Session-Key": "dashboard:chat-1"},
+            )
+
+        assert resp.status == 403
+        assert body["code"] == "channels_governance_denied"
+        slack.upload_file.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_a_sessionless_owner_dm_caller_is_not_muted(self, tmp_path, outbox_file):
+        # The owner-DM fallback serves callers with no session of their own (a
+        # cron, the heartbeat, an out-of-band host action). Neither ceiling may
+        # mute them on an ungoverned host: governance runs for real here, and the
+        # ceiling has no slot and no channel privacy mode to read.
+        slack = MagicMock()
+        slack.upload_file = AsyncMock()
+        slack.open_dm = AsyncMock(return_value="D_OWNER_DM")
+        app = _make_app(slack, tmp_path, state=self._state(slack))
+
+        with patch(
+            "kiro_crew.config.loader.outbox_dir", return_value=outbox_file.parent
+        ), patch(
+            "kiro_crew.config.loader.workspace_root", return_value=tmp_path
+        ), patch(
+            "kiro_crew.config.loader.KiroCrewConfig.load"
+        ) as mock_cfg:
+            mock_cfg.return_value.load_credentials.return_value = {
+                "KIROCREW_OWNER_ID": "U_OWNER"
+            }
+            resp, body = await self._post(
+                app,
+                {"file_path": str(outbox_file), "filename": "report.txt", "channel": ""},
+            )
+
+        assert resp.status == 200
+        assert body.get("ok") is True
+        assert slack.upload_file.call_args[0][0] == "D_OWNER_DM"
+
+    @pytest.mark.asyncio
+    async def test_a_sessionless_caller_is_vetted_under_the_host_sentinel(
+        self, tmp_path, outbox_file
+    ):
+        # An EMPTY key classifies as ``unknown`` and matches no profile at all, so
+        # vetting under it would make host-side governance inert on this leg.
+        # ``_host`` is the bind target operators actually attach it to.
+        from kiro_crew.platform.governance_profiles import HOST_SESSION_KEY
+
+        slack = MagicMock()
+        slack.upload_file = AsyncMock()
+        slack.open_dm = AsyncMock(return_value="D_OWNER_DM")
+        app = _make_app(slack, tmp_path, state=self._state(slack))
+
+        with patch(
+            "kiro_crew.config.loader.outbox_dir", return_value=outbox_file.parent
+        ), patch(
+            "kiro_crew.config.loader.workspace_root", return_value=tmp_path
+        ), patch(
+            "kiro_crew.config.loader.KiroCrewConfig.load"
+        ) as mock_cfg, patch(
+            "kiro_crew.dashboard.upload_destination.vet_and_audit",
+            return_value=self._decision(True),
+        ) as vet:
+            mock_cfg.return_value.load_credentials.return_value = {
+                "KIROCREW_OWNER_ID": "U_OWNER"
+            }
+            resp, _ = await self._post(
+                app,
+                {"file_path": str(outbox_file), "filename": "report.txt", "channel": ""},
+            )
+
+        assert resp.status == 200
+        assert vet.call_args[1]["session_key"] == HOST_SESSION_KEY
+
+    @pytest.mark.asyncio
+    async def test_both_ceilings_precede_any_destination_work(self, tmp_path, outbox_file):
+        # A caller that may not egress here never opens an owner DM and never
+        # reads the session map, so a denial leaks nothing about where the file
+        # would have gone — the same ordering rule the admission gate follows.
+        slack = MagicMock()
+        slack.upload_file = AsyncMock()
+        slack.open_dm = AsyncMock(return_value="D_OWNER_DM")
+        state = self._state(slack)
+        state.sessions = MagicMock()
+        state.sessions.get_slack_link = MagicMock(return_value=("111.222", "D0SLOTDM01"))
+        app = _make_app(slack, tmp_path, state=state)
+
+        with patch(
+            "kiro_crew.config.loader.outbox_dir", return_value=outbox_file.parent
+        ), patch(
+            "kiro_crew.config.loader.workspace_root", return_value=tmp_path
+        ), patch(
+            "kiro_crew.dashboard.upload_destination.vet_and_audit",
+            return_value=self._decision(False),
+        ):
+            resp, _ = await self._post(
+                app,
+                {"file_path": str(outbox_file), "filename": "report.txt", "channel": ""},
+                headers={"X-Session-Key": "dashboard:chat-1"},
+            )
+
+        assert resp.status == 403
+        state.sessions.get_slack_link.assert_not_called()
+        slack.open_dm.assert_not_called()
+
+
 class TestDestinationOracleEquivalence:
     """The rungs the destination oracle must keep answering exactly as the two
     inline ladders did (issue #6060).
@@ -1016,6 +1296,10 @@ class TestDestinationOracleEquivalence:
     def _state(slack, *, thread_ts=None, channel=None):
         state = MagicMock()
         state.slack_client = slack
+        # Unrestricted slot: these cases are about destination resolution, and an
+        # auto-attribute mock reads as a restricted session, which the ceiling
+        # ahead of resolution would answer first.
+        state.get_slot.return_value.is_restricted = False
         sessions = MagicMock()
         sessions.get_slack_link = MagicMock(return_value=(thread_ts, channel))
         state.sessions = sessions
@@ -1290,6 +1574,13 @@ class TestDestinationOracleEquivalence:
         ), patch(
             "kiro_crew.config.loader.KiroCrewConfig.load",
             side_effect=RuntimeError("credential store unreadable"),
+        ), patch(
+            # An unreadable config also breaks the governance evaluation this leg
+            # runs first, and THAT rung is fail-closed — so without pinning it
+            # permitted, its 403 would answer before the owner-DM fallback this
+            # case is about ever ran.
+            "kiro_crew.dashboard.upload_destination.vet_and_audit",
+            return_value=MagicMock(permitted=True, rule="", layer="", reason=""),
         ):
             resp, body = await self._post_slack(
                 app,

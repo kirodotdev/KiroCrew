@@ -20,6 +20,7 @@ from skill_script_helpers import load_skill_script
 
 from kiro_crew import irq
 from kiro_crew.cron_script import Done, Report, Skip
+from kiro_crew.probes import gh_pr
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = (
@@ -120,13 +121,27 @@ def module(monkeypatch, tmp_path) -> ModuleType:
     return mod
 
 
-def _wire(monkeypatch, module: ModuleType, payload: dict | None) -> None:
-    def _fake_run_gh(args):
+def _wire(monkeypatch, module: ModuleType, payload: dict | None) -> list:
+    """Fake the probe's gh seam. Returns the list it records its calls in.
+
+    ``pin_host`` is accepted (and recorded) because the probe forwards it to the
+    real runner: an inferred subject is pinned to github.com so a bare
+    ``owner/name`` slug cannot drift to an ambient enterprise ``GH_HOST``.
+    """
+    calls: list = []
+
+    def _fake_run_gh(args, pin_host=""):
+        calls.append((args, pin_host))
         if payload is None:
             return 1, ""
         return 0, json.dumps(payload)
 
-    monkeypatch.setattr(module, "_run_gh", _fake_run_gh)
+    # The gh chokepoint belongs to the PROBE, which is packaged and shared with
+    # the in-process scheduler; the skill script is a thin cron driver that
+    # holds no gh call of its own. Patching the driver would silently fake
+    # nothing and let every case here exercise the real subprocess.
+    monkeypatch.setattr(gh_pr, "_run_gh", _fake_run_gh)
+    return calls
 
 
 def _msg(**overrides) -> str:
@@ -137,6 +152,49 @@ def _msg(**overrides) -> str:
     base = {"repo": "acme/widgets", "pr": 42, "coalesce_secs": 0}
     base.update(overrides)
     return json.dumps(base)
+
+
+def test_the_configured_host_is_pinned_on_the_gh_call(monkeypatch, module):
+    """A subject that names its host must not be resolvable to another server.
+
+    The probe addresses its subject as a bare ``owner/name`` slug and never
+    passes ``--hostname``, and ``GH_HOST`` is forwarded from the ambient
+    environment -- so on a machine configured for an enterprise host the same
+    slug reaches a DIFFERENT repository, where a same-numbered pull request could
+    be merged and stop a watch on a live one.
+    """
+    calls = _wire(monkeypatch, module, {"state": "OPEN", "headRefOid": "a" * 40})
+    with pytest.raises((Skip, Report)):
+        _tick(module, _msg(host="github.com"))
+    assert calls, "the probe must have called gh"
+    assert calls[0][1] == "github.com", "the host must reach the runner"
+
+
+def test_an_unpinned_subject_keeps_todays_resolution(monkeypatch, module):
+    """Absent host means "resolve as gh would".
+
+    The cron path predates the pin and its user may deliberately be watching an
+    enterprise pull request, so silently pinning it to github.com would break a
+    working watch.
+    """
+    calls = _wire(monkeypatch, module, {"state": "OPEN", "headRefOid": "b" * 40})
+    with pytest.raises((Skip, Report)):
+        _tick(module, _msg())
+    assert calls and calls[0][1] == "", "no host configured means no pin"
+
+
+def test_a_host_other_than_the_pinnable_one_is_refused(monkeypatch, module):
+    """The key pins the public host; it does not choose a host.
+
+    This module's rule is that an enterprise host comes from the operator's own
+    trusted gh configuration and never from data, so a free-form value here would
+    reopen that door to whoever can write a watch message.
+    """
+    _wire(monkeypatch, module, {"state": "OPEN", "headRefOid": "c" * 40})
+    with pytest.raises(Done):
+        _tick(module, _msg(host="evil host/../x"))
+    with pytest.raises(Done):
+        _tick(module, _msg(host="ghe.internal.example"))
 
 
 def _tick(module: ModuleType, message: str):
@@ -740,10 +798,10 @@ def test_deeply_nested_gh_response_reads_as_unobservable(monkeypatch, module):
     """A pathologically nested API response must read as 'could not observe',
     which feeds the error backstop, rather than raise out of the tick."""
 
-    def _nested_run_gh(args):
+    def _nested_run_gh(args, pin_host=""):
         return 0, "[" * 20000 + "]" * 20000
 
-    monkeypatch.setattr(module, "_run_gh", _nested_run_gh)
+    monkeypatch.setattr(gh_pr, "_run_gh", _nested_run_gh)
     with pytest.raises(Skip):
         _tick(module, _msg())
 
@@ -836,7 +894,7 @@ def test_a_comment_older_than_the_horizon_never_wakes(monkeypatch, module):
         module,
         _payload(
             [_check("A", "SUCCESS")],
-            comments=[_comment(age_secs=module.DEFAULT_COMMENT_HORIZON_SECS + 600)],
+            comments=[_comment(age_secs=gh_pr.DEFAULT_COMMENT_HORIZON_SECS + 600)],
         ),
     )
     with pytest.raises(Skip):
@@ -986,7 +1044,7 @@ def test_the_horizon_is_asserted_below_the_kernel_realert_window(module):
     """Three doc comments claimed this invariant and nothing checked it, which is
     how the value drifted. Importing the script now asserts it; this pins the
     relationship so a future edit to either constant reds here."""
-    assert module.DEFAULT_COMMENT_HORIZON_SECS < irq.DEFAULT_REALERT_SECS
+    assert gh_pr.DEFAULT_COMMENT_HORIZON_SECS < irq.DEFAULT_REALERT_SECS
 
 
 def test_the_horizon_is_not_a_cron_parameter(monkeypatch, module):
@@ -1000,7 +1058,7 @@ def test_the_horizon_is_not_a_cron_parameter(monkeypatch, module):
         module,
         _payload(
             [_check("A", "SUCCESS")],
-            comments=[_comment(age_secs=module.DEFAULT_COMMENT_HORIZON_SECS + 3600)],
+            comments=[_comment(age_secs=gh_pr.DEFAULT_COMMENT_HORIZON_SECS + 3600)],
         ),
     )
     # A horizon wide enough to include that comment, if the key were honoured.
@@ -1020,7 +1078,7 @@ def test_the_note_and_tail_live_on_the_wake_not_on_every_brief(monkeypatch, modu
     the waste grew with every signal folded in. On a measured six-observation
     wake that was 56% of the delivered bytes.
     """
-    probe = module.PrWatchProbe()
+    probe = gh_pr.PrWatchProbe()
     probe.identity(_Ctx(_msg(note="watching for the rebase")))
 
     brief = probe._brief("abc123456789", "new failing check(s)", "detail line")
@@ -1028,20 +1086,20 @@ def test_the_note_and_tail_live_on_the_wake_not_on_every_brief(monkeypatch, modu
     assert "detail line" in brief
     # Neither paragraph may ride along on a per-observation brief.
     assert "watching for the rebase" not in brief
-    assert module._WAKE_TAIL not in brief
+    assert gh_pr._WAKE_TAIL not in brief
 
     suffix = probe.wake_suffix()
     assert "Context: watching for the rebase" in suffix
-    assert module._WAKE_TAIL in suffix
+    assert gh_pr._WAKE_TAIL in suffix
 
 
 def test_a_watch_with_no_note_still_carries_the_tail(monkeypatch, module):
     """The note is optional, the standing instructions are not -- an empty note
     must not leave the wake without them, nor emit a bare `Context:` line."""
-    probe = module.PrWatchProbe()
+    probe = gh_pr.PrWatchProbe()
     probe.identity(_Ctx(_msg()))
     suffix = probe.wake_suffix()
-    assert suffix == module._WAKE_TAIL
+    assert suffix == gh_pr._WAKE_TAIL
     assert "Context:" not in suffix
 
 
@@ -1061,5 +1119,5 @@ def test_a_coalesced_probe_wake_pays_for_the_tail_once(monkeypatch, module):
         _tick(module, message)
     body = str(caught.value)
     assert "A" in body and "B" in body
-    assert body.count(module._WAKE_TAIL) == 1
+    assert body.count(gh_pr._WAKE_TAIL) == 1
     assert body.count("Context: two reds") == 1

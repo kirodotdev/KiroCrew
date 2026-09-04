@@ -17,6 +17,7 @@ from __future__ import annotations
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from body_stream_helpers import attach_body
 
 from kiro_crew.vector_memory import (
     LessonWriteOutcome,
@@ -354,7 +355,8 @@ class TestLessonsRouteReportsTheOutcome:
         state._background_tasks = set()
         request.app = {"state": state}
         request.headers = {"X-Session-Key": "dashboard:ui"}
-        request.json = AsyncMock(return_value={"rule": "a real rule", "category": "knowledge"})
+        body = {"rule": "a real rule", "category": "knowledge"}
+        attach_body(request, body)
         return request, state
 
     async def _post(self, result):

@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING, AbstractSet, Any, Literal, overload
 
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.history_cache import _FileChangeCacheEntry
+from kiro_crew.jsonl_util import bounded_raw_records
 
 if TYPE_CHECKING:
     from kiro_crew.history import ConversationLog
@@ -203,7 +204,7 @@ class TranscriptReadProjection:
 
         messages: list[dict] = []
         with open(path, "rb") as handle:
-            for raw in handle:
+            for raw in bounded_raw_records(handle, path, label="history_projection"):
                 if b'"file_changes"' not in raw:
                     continue
                 try:

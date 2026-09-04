@@ -40,6 +40,7 @@ from kiro_crew.apps.official_catalog import (
     _resolve_ref,
     fetch_document,
 )
+from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.loader import config_dir
 
 logger = logging.getLogger(__name__)
@@ -104,8 +105,7 @@ def _read_cache() -> dict[str, Any] | None:
 def _write_cache(doc: dict[str, Any]) -> None:
     path = _cache_path()
     try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(doc), encoding="utf-8")
+        atomic_write(path, json.dumps(doc))
     except OSError:
         logger.debug("could not cache the editorial document", exc_info=True)
 

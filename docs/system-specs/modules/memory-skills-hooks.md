@@ -147,6 +147,11 @@ through `run_in_embed_pool` (the bounded `mc-embed` bulkhead) because
 `_consolidate` runs on the gateway event loop, and a slow or hung embed inline
 would stall heartbeats, Slack, and the dashboard.
 
+Structured `[Monitor wake]` turns never call `maybe_consolidate()`: their prompt
+and resulting action are automation evidence, not user-authored memory. Monitor
+admission also refuses restricted dashboard sessions, so a persisted loop cannot
+outlive the incognito or temporary boundary that prohibits derived memory.
+
 ### Lesson Extraction from Chat
 
 The history consolidation prompt includes a `"lessons"` key that extracts only implicit correction patterns — corrections the user made without explicitly saying "remember" (those are already saved immediately via `learn_add`). All lesson writes go through `write_lesson()` which provides substring dedup and topic-overlap dedup (>50% keyword overlap → newer replaces older). When vector memory is not active, falls back to `lessons.jsonl` via `LessonStore.save()`.
@@ -393,6 +398,8 @@ Model: `Qwen/Qwen3-Embedding-0.6B` Q8_0 GGUF (610MB). Apache-2.0 licensed. Serve
 ### Keyword search over the markdown layer
 
 **Query escaping.** The query is treated as literal words, not FTS5 expression syntax. Tokens are quoted by `fts5_quote_tokens` in `_sqlite_compat.py`, the single escaping dialect shared with knowledge retrieval. Unquoted, `-` and `.` and a bare `AND` are FTS5 operators, so `PROJ-123` or `hooks.py` raises inside the driver and `MemoryStore.search`'s `except` turns it into `[]`, a silent "never written" for the likeliest queries. The join differs by surface on purpose: memory ANDs every token (a hand-typed query is deliberate), knowledge drops stopwords and ORs (natural-language recall).
+
+**CJK segmentation is a knowledge-only behaviour today.** `_sqlite_compat.py` also exports `fts5_segment_for_index` and `fts5_cjk_match_groups`, the pair that makes a word inside a spaceless CJK run addressable (see `knowledge.md` §4), plus the two primitives both search surfaces share: `is_cjk_char` (the character ranges) and `script_runs` (the same-script split). Those two live there because session search needs them as well, and the hand-maintained second copies had already drifted apart -- `history_search.py` now re-uses both rather than restating them. Three product FTS5 tables share the root cause and only `items_fts` is fixed. `memory_fts` does **not** use them: it is created `tokenize='porter unicode61'` and still matches through `fts5_quote_tokens`, so a spaceless CJK memory query is one token matched against one token and recalls only an exact whole-run hit. `preferences_fts` (`apps/builtins/personal_shopper/backend/store.py`) has the same gap and is likewise unfixed. The helpers live in the shared module rather than under `knowledge/` precisely so these surfaces can adopt them; each needs its own index rebuild and its own decision about AND-vs-OR semantics, which is why neither is done here.
 
 **Empty index is not absence.** `MemoryStore.index_row_count()` returns the FTS row count, or `None` when the index cannot be read, so a caller can separate three states that `search` collapses into one empty list: unreadable, empty, genuinely no match. An unbuilt or unreadable index is reported as such rather than as "no match".
 
@@ -1341,8 +1348,129 @@ set so repeat calls don't re-resolve.
 
 **CRUD operations** (via `SkillsLoader`):
 - `create_skill(name, content)` — creates `{name}/SKILL.md`, supports nested paths
-- `update_skill(name, content)` — overwrites existing SKILL.md
+- `update_skill(name, content)` — REPLACES the SKILL.md inode via `atomic_write()`
+  rather than writing through the existing one, so the document survives a write
+  that fails part-way. A hardlink to the old inode, or a handle already open on
+  it, therefore keeps seeing the pre-update bytes.
+  **What the replacement does NOT reproduce**, stated because an inode-replacing
+  write is where these get lost silently and the same limits apply to the steering
+  and `/api/file-write` update surfaces that adopted `atomic_write` first:
+  - **Ownership.** The fresh inode belongs to the gateway's own uid/gid. An
+    unprivileged writer cannot give a file away (`chown` to another user needs
+    `CAP_CHOWN`), so a *cross-owned* SKILL.md that the gateway can write changes
+    owner on save. Permission bits and the POSIX ACL are carried, so the effective
+    grant does not widen — the previous owner loses access rather than a new
+    principal gaining it — but the change is real and irreversible by this process.
+  - **A Windows DACL.** The carry is POSIX xattrs only
+    (`ACCESS_CONTROL_XATTRS_SUPPORTED` requires `os.listxattr`/`getxattr`/`setxattr`,
+    which Windows lacks), so on Windows the replacement lands on the DACL it
+    inherits from the containing directory rather than the one the replaced file
+    carried. A file the operator had tightened *below* its directory's inheritance
+    is therefore widened back to it. Closing this needs a `platform_compat`
+    primitive to READ a DACL — `restrict_to_owner` only writes one — and it belongs
+    to `atomic_write`, so it must land for all three surfaces at once rather than
+    by reverting one of them to an in-place write that a mid-write failure or a full
+    disk would turn into data loss.
 - `delete_skill(name)` — removes entire skill directory
+- All three address the leaf relative to a descriptor pinning the parent chain
+  (`pinned_fs`) where the platform has the descriptor-relative syscalls, so an
+  ancestor swapped for a link after resolution cannot redirect the write. Windows
+  keeps the by-name floor. `_DIR_FD_SUPPORTED` names exactly the extra
+  descriptor-relative calls these branches issue — `os.mkdir` (create, under the
+  parent descriptor `create_skill` already walked), `os.unlink` (update, via
+  `atomic_write`'s staging cleanup) and `os.stat` (delete, via `stat_at`) — on top of
+  `pinned_fs.supports_pinned_walk()`. `os.rmdir` is NOT probed: delete's removal is
+  a by-name `shutil.rmtree`, the residual noted below. `update_skill` additionally
+  requires `atomic_write.pinned_parent_replace_supported()` (the descriptor-relative
+  rename) and takes the by-name floor without it, because `atomic_write` refuses a
+  `parent_dir_fd` it cannot publish through rather than quietly writing by name.
+- Once the skill directory is pinned, `SKILL.md` is never addressed by name again —
+  including the metadata read. `_write_skill_md` passes the descriptor as
+  `open_access_control_source(skill_file, dir_fd=…)`, so the mode and the ACL come
+  from the inode inside the pinned directory. A by-name open there would let a
+  directory replaced at the skill's name supply both while the rename published
+  into the pinned original, handing the real skill back with permissions chosen by
+  whoever did the replacing.
+- `create_skill` resolves the parent chain **once** and addresses everything below it
+  through that one descriptor — the leaf directory (`os.mkdir(name, dir_fd=)`), its
+  `SKILL.md`, and the rollback that removes both. It deliberately does NOT route the
+  leaf through `pinned_fs.create_and_open_dir_pinned`: that helper resolves
+  `skill_dir.parent` with its own `realpath` and pins it again, which is a second
+  chance for an ancestor swapped since the first resolution to be followed, and which
+  would leave the create and the rollback addressing two different directories — the
+  skill landing outside the skills root while the rollback reports an identity mismatch
+  on an unrelated one. The helper's other two jobs are reproduced at the call site: a
+  name that already exists is refused because `os.mkdir` under the pinned parent raises
+  `FileExistsError` — the exclusivity is the syscall's, not a flag on a helper — and a
+  link or non-directory at the leaf becomes a refusal rather than a raw errno.
+- These paths use `open_dir_pinned`, not `pin_parent`, because `self._dir / name` is
+  a lexical join nothing canonicalized — so that walk's own `realpath` is the first
+  resolution of the chain, not a second one. `pin_parent` is for a caller that
+  already holds a `realpath`ed path (the steering and file-write update surfaces);
+  used here it would refuse the ordinary symlinks that legitimately sit above the
+  skills root, a symlinked `$HOME` being the common one.
+- `create_skill` lands `SKILL.md` at the **umask default on both branches**: the
+  pinned `O_CREAT` passes `0o666` precisely because that is what the by-name floor's
+  `write_text` produces, so the pin changes no permission default and the two
+  branches cannot diverge per platform. It is also the mode `prompts.py`'s own
+  pinned `O_EXCL` create of user content passes, through the same `pinned_fs` walk.
+  A tighter default for user-authored skill bodies is a policy change that has to
+  cover both branches and both platforms, so it does not ride this migration.
+  The skill DIRECTORY does land at `0o700` on the pinned branch against the floor's
+  umask default: the mode is passed at the call site, on `create_skill`'s own
+  `os.mkdir`, and it is the same `0o700` `pinned_fs.create_and_open_dir_pinned` gives
+  every caller, so the two cannot diverge if a later surface does borrow the helper.
+  It is strictly tighter than the floor. `update_skill` preserves the target's
+  existing bits either way.
+- `update_skill` / `delete_skill` return `False` for a REFUSED target as well as a
+  missing one — a parent that cannot be pinned, or an access-control source that
+  cannot be opened `O_NOFOLLOW` — which the dashboard reports as its existing 404.
+  Callers must not read `False` as "the name does not exist".
+- `create_skill`'s `exists()` guard is a by-name check with a window after it, and
+  **both branches refuse a rival that wins that window** rather than writing through
+  it — the pinned branch because `os.mkdir` under the pinned parent raises
+  `FileExistsError`, the by-name floor via `mkdir(parents=True, exist_ok=False)`.
+  Both refusals are `mkdir(2)`'s own, which cannot succeed on a name that already
+  exists; neither depends on a flag a helper happens to offer. Without the second, two
+  concurrent creates on a platform without `openat` would both `write_text` the same
+  `SKILL.md` and both report success, losing one submitted body and never producing
+  the documented 409.
+- `create_skill` is **all-or-nothing**: a failure mid-body (a short write, ENOSPC, an
+  interrupt) rolls back the `SKILL.md` *and* the directory the call created, both
+  through descriptors, and **both halves verify identity** because both address a NAME
+  under a descriptor: the leaf via `pinned_fs.unlink_verified`, which stats through the
+  directory's own fd and unlinks only if the inode is still the one the create made, and
+  the directory via `pinned_fs.remove_dir_verified`, which stages it aside under the
+  pinned parent and re-checks `(st_dev, st_ino)` before removing it. A rival that
+  replaced either name inside the failure window therefore keeps its own object, and the
+  rollback removes this object or nothing — a bare `unlink`/`rmdir` would delete whatever
+  answers to the name, turning a cleanup arm into a data loss.
+  Capturing those identities is itself a syscall that can fail (EIO/ESTALE on a network
+  filesystem), so **both `os.fstat` probes sit inside the guarded region**: a failure to
+  capture is rolled back like any other rather than escaping with a half-made skill that
+  answers every retry with 409. The leaf's identity is then asked for **once more through
+  the descriptor the call still holds**, because that descriptor is what the close at the
+  end of the guarded region takes away and an EIO on a network filesystem is usually
+  transient; the re-probe addresses a descriptor rather than a name, so it can never
+  answer with another object. **No unlink runs without an identity.** With both probes
+  failed the leaf name STAYS: removing it would be removing whatever answers to that
+  name, and that is a file this code has never read. The cost is bounded — the identity
+  probe precedes the first `os.write`, so a rollback with no identity is one where nothing
+  was written, and what is left is a skill with an EMPTY body rather than a truncated one.
+  It is listed, and both `update_skill` and `delete_skill` reach it, so the recovery is a
+  save rather than a shell. (`remove_dir_verified`'s `rmdir` refuses the now non-empty
+  directory and puts the name back, which is what keeps it findable.) Without the
+  rollback a half-made skill is permanent rather than untidy: the leftover directory
+  makes the `exists()` guard answer False forever, so every retry is a 409 over a
+  truncated body `list_skills()` still serves. A rollback that cannot finish is logged
+  (with the staging name when one was left) and never masks the original error.
+  One arm is deliberately outside that rule, and it is an `os.rmdir` rather than an
+  `unlink`: where the DIRECTORY's own `os.fstat` failed there is no identity to verify
+  and the `rmdir` under the pinned parent runs anyway. `rmdir(2)` cannot remove a file
+  and refuses a non-empty directory, so the most it can destroy is a rival's EMPTY
+  directory, while skipping it would strand this call's own directory behind a
+  permanent 409 — the harm the whole arm exists to prevent. That bound is what makes
+  it the one place a name is removed unverified.
 - Path traversal protection: `_safe_name()` rejects `..` and `\` (allows `/` for nesting)
 
 **Foreign-agent import:** only user-authored skills are eligible. Imported

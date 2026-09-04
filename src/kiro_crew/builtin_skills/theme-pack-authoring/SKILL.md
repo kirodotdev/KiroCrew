@@ -1,6 +1,6 @@
 ---
 name: theme-pack-authoring
-description: Build, validate, and install Kiro Crew theme packs -- pack anatomy, the 54-variable palette, role-tagged fonts, the overrides.css allowlist (what installs vs what actually renders), and the install-verify cycle. Use when the user wants to create or edit a theme pack.
+description: Build, validate, and install Kiro Crew theme packs -- pack anatomy, the 56-variable palette, role-tagged fonts, the overrides.css allowlist (what installs vs what actually renders), and the install-verify cycle. Use when the user wants to create or edit a theme pack.
 triggers: theme pack, custom theme, theme.json, variables.json, overrides.css, install theme, theme font, dashboard theme, build a theme
 ---
 
@@ -16,7 +16,7 @@ real debugging time.
 ```
 my-theme/
 ├── theme.json          # manifest: slug, name, emoji, level, formatVersion, fonts[]
-├── variables.json      # dark + light palettes (54 allowlisted CSS vars)
+├── variables.json      # dark + light palettes (56 allowlisted CSS vars)
 ├── readme.md           # optional; attribution and notes
 ├── styles/
 │   ├── overrides.css   # optional; scoped structural CSS (see allowlist below)
@@ -37,6 +37,7 @@ a level-0 pack shipping a font is refused.
   "emoji": "🎨",
   "level": 1,
   "formatVersion": 1,
+  "loaderIcons": ["star", "sparkles", "moon", "cloud"],
   "fonts": [
     { "family": "My Sans", "file": "my-sans-400.woff2", "weight": 400, "role": "sans" },
     { "family": "My Sans", "file": "my-sans-500.woff2", "weight": 500, "role": "sans" },
@@ -45,6 +46,12 @@ a level-0 pack shipping a font is refused.
   ]
 }
 ```
+
+`loaderIcons` is optional and requires Level 1 or 2. Supply 4–8 distinct names
+from: `cloud`, `flower`, `heart`, `moon`, `sparkles`, `star`, `sun`, `zap`.
+Kiro Crew maps these names to bundled Lucide symbols and keeps the stock
+cross-fading carousel; packs cannot inject loader code or SVG through this field.
+Omit it to retain the default Kiro ghost poses.
 
 ## Fonts — the role system (the ONLY supported route)
 
@@ -71,7 +78,7 @@ a level-0 pack shipping a font is refused.
 
 ## variables.json — the palette
 
-Two blocks, `dark` and `light`, each holding up to **54 allowlisted variables**.
+Two blocks, `dark` and `light`, each holding up to **56 allowlisted variables**.
 Required minimum per block: `--bg`, `--text`, `--accent`. Unknown keys are
 REJECTED (install fails), so do not invent variables; the allowlist is
 `_THEME_CSS_VARS` in `kiro_crew/dashboard/theme_validate.py`.

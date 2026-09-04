@@ -441,6 +441,7 @@ def _rebuild_window(slot: "_ChatSlot", messages: list[dict[str, Any]]) -> None:
             ts=msg.get("ts", ""),
             broadcast=False,
             meta=(msg["meta"] if isinstance(msg.get("meta"), dict) else None),
+            mint_mid=False,
         )
         # This transcript is the CHANNEL's, so most of these lines arrived from
         # Slack/Discord and carry a real origin. Provenance is not a
@@ -547,6 +548,7 @@ def refresh_channel_window(slot: "_ChatSlot", messages: list[dict[str, Any]], mt
             # the message that prompted it.
             broadcast_user=True,
             meta=(msg["meta"] if isinstance(msg.get("meta"), dict) else None),
+            mint_mid=False,
         )
         # See the equivalent call in _rebuild_window.
         carry_provenance(slot.messages[-1], msg)

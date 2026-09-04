@@ -9,6 +9,7 @@ import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from body_stream_helpers import BodyStreamPayload
 
 
 class _FakeSlot:
@@ -174,6 +175,92 @@ class TestInterruptHandlerIdempotent:
         assert body.get("info") == "stop already in progress"
         # Queue unchanged
         assert len(slot._queue) == 1
+
+    @pytest.mark.asyncio
+    async def test_refused_body_restores_auto_run(self):
+        """A 400-refused body rolls back BOTH claimed fields.
+
+        The handler claims ``_stop_state`` and disables ``_auto_run`` before
+        the body await; a request refused by the body guard must restore both,
+        or a malformed /interrupt permanently disables orchestrator auto-run
+        without interrupting anything.
+        """
+        from aiohttp import web
+
+        from kiro_crew.dashboard.chat_handlers import api_chat_slot_interrupt
+
+        slot = _FakeSlot()
+        slot.running = True
+        slot._queue = [{"id": "q1", "content": "hello"}]
+        slot._auto_run = True
+
+        state = _FakeState(slot)
+        app = web.Application()
+        app["state"] = state
+
+        request = MagicMock()
+        request.get = lambda key, default="": default
+        request.app = app
+        request.match_info = {"slot": "test-slot"}
+        raw = b'["not", "an", "object"]'
+        request.content = BodyStreamPayload(raw)
+        request.content_length = len(raw)
+        request.can_read_body = True
+        request.charset = None
+
+        resp = await api_chat_slot_interrupt(request)
+
+        assert resp.status == 400
+        assert slot._stop_state == "idle"
+        assert slot._auto_run is True
+
+    @pytest.mark.asyncio
+    async def test_refused_body_does_not_erase_a_concurrent_hard_stop(self):
+        """A rollback must not overwrite a stop escalated during the body await.
+
+        The handler claims ``_stop_state = "soft_pending"`` before awaiting the
+        body. A concurrent /stop landing during that await escalates the state
+        (e.g. to ``"killing"``). When the body is then refused, rolling back to
+        ``"idle"`` would erase the escalation and admit another stop while the
+        hard kill still runs -- so the rollback fires only while the handler's
+        own claim is intact, and the escalated stop keeps ``_auto_run`` too.
+        """
+        from aiohttp import web
+
+        from kiro_crew.dashboard.chat_handlers import api_chat_slot_interrupt
+
+        slot = _FakeSlot()
+        slot.running = True
+        slot._queue = [{"id": "q1", "content": "hello"}]
+        slot._auto_run = True
+
+        class EscalatingPayload(BodyStreamPayload):
+            """Body stream that simulates a concurrent /stop mid-read."""
+
+            async def iter_chunked(self, n: int):
+                slot._stop_state = "killing"
+                async for chunk in super().iter_chunked(n):
+                    yield chunk
+
+        state = _FakeState(slot)
+        app = web.Application()
+        app["state"] = state
+
+        request = MagicMock()
+        request.get = lambda key, default="": default
+        request.app = app
+        request.match_info = {"slot": "test-slot"}
+        raw = b'["not", "an", "object"]'
+        request.content = EscalatingPayload(raw)
+        request.content_length = len(raw)
+        request.can_read_body = True
+        request.charset = None
+
+        resp = await api_chat_slot_interrupt(request)
+
+        assert resp.status == 400
+        assert slot._stop_state == "killing"
+        assert slot._auto_run is False
 
 
 def _seed_stop_card(slot, stop_id="stop-race"):
@@ -531,6 +618,9 @@ class TestStopCancelsTheSessionTheTurnRunsOn:
 
         request = self._request(state)
         request.content_length = 0
+        # No body sent: read_bounded_json branches on can_read_body, which a
+        # bare MagicMock answers truthy — model the absent body explicitly.
+        request.can_read_body = False
 
         with patch("kiro_crew.dashboard.chat_handlers.sel"), patch(
             "kiro_crew.dashboard.chat_handlers._reject_pending_approvals"

@@ -120,6 +120,22 @@ class TestAbstract:
         assert t.authorize(None) is False
 
 
+class TestSessionProvenanceTag:
+    def test_tag_is_stable_short_and_keyed(self):
+        from kiro_crew.messaging.renderer import session_provenance_tag
+
+        first = session_provenance_tag("dashboard:chat-1")
+        assert first == session_provenance_tag("dashboard:chat-1")
+        assert len(first) == 12
+        assert set(first) <= set("0123456789abcdef")
+        assert first != session_provenance_tag("dashboard:chat-2")
+
+    def test_empty_key_has_no_tag(self):
+        from kiro_crew.messaging.renderer import session_provenance_tag
+
+        assert session_provenance_tag("") == ""
+
+
 class TestChunkText:
     def test_empty(self):
         assert chunk_text("", 10) == []

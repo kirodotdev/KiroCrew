@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Trans } from 'react-i18next'
 import { RefreshCw, Scale, CheckCircle2, AlertCircle, Bug, GitBranch, GitCommitHorizontal, ExternalLink, ArrowUp, History, Package, X, Download, Copy } from 'lucide-react'
-import { Link } from 'react-router-dom'
+import { SettingsLink } from '../../components/SettingsLink'
 import { Progress } from '@/components/ui/progress'
 import { Card, CardTitle, Btn, Toggle } from '../../components/ui'
 import { SettingsToggle } from '../../components/settings'
@@ -886,7 +886,7 @@ export function AboutPanel() {
   const [autoUpdate, setAutoUpdate] = useState(true)
   const { data: mcCfg } = useQuery({ queryKey: ['mc-config-autoupdate'], queryFn: () => api.kirocrewConfig() })
   useEffect(() => {
-    const v = (mcCfg as any)?.auto_update
+    const v = (mcCfg as { auto_update?: boolean } | undefined)?.auto_update
     if (typeof v === 'boolean') setAutoUpdate(v)
   }, [mcCfg])
   const gwCheck = useMutation({
@@ -1131,6 +1131,7 @@ export function AboutPanel() {
       <Card style={HERO_BG}>
         {/* Identity hero */}
         <div className="flex items-center gap-4">
+          {/* eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions -- `onError` is the image's own load-failure hook (hide a broken avatar so the row keeps its layout), not a user interaction; the img is decorative (`alt=""`) and there is nothing here for a keyboard to reach */}
           <img
             src={avatar}
             alt=""
@@ -1781,21 +1782,23 @@ export function AboutPanel() {
             its own Releases panel and this is the link to it. See
             pages/settings/ReleasesPanel.tsx. */}
         <div className="mt-3 pt-3 border-t border-border">
-          <Link
-            to="/settings/releases"
+          <SettingsLink
+            tab="releases"
             className="text-[13px] text-accent hover:underline inline-flex items-center gap-1.5"
           >
             <History size={13} className="lucide-inline" aria-hidden="true" />
             {i18nT('pages.settings.aboutPanel.view_all_releases')}
-          </Link>
+          </SettingsLink>
         </div>
       </Card>
 
       {/* Web update confirm — shows the changelog, then applies (which restarts the gateway). */}
       {showConfirm && (
+        // eslint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-noninteractive-element-interactions -- backdrop click-to-dismiss is a supplementary mouse affordance; the keyboard path is the document-level Escape listener above plus the Close button, and making the dialog surface itself a tab stop would put a stop in front of its own content
         <div className="fixed inset-0 z-[100] flex items-center justify-center bg-bg/60 backdrop-blur-sm animate-rise"
              role="dialog" aria-modal="true" aria-label={i18nT('pages.settings.aboutPanel.update')}
              onClick={() => { if (!gwApply.isPending && !restarting) setShowConfirm(false) }}>
+          {/* eslint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-noninteractive-element-interactions -- the only handler is a propagation guard keeping a click inside the panel from reaching the backdrop's dismiss; it performs no action, so there is no keyboard equivalent to provide */}
           <div role="document" className="bg-card border border-border rounded-xl p-6 max-w-md w-full mx-4 shadow-xl" onClick={e => e.stopPropagation()}>
             <div className="flex justify-between items-center mb-3">
               {/* Whole-sentence key, not "Update" + " to vX": the version does

@@ -616,7 +616,19 @@ export default function WidgetFrame({ html, title = 'Widget', slug, messageTs, w
           onLoad={() => setIframeLoaded(true)}
           sandbox="allow-scripts allow-popups allow-popups-to-escape-sandbox"
           className="w-full border-none bg-card transition-opacity duration-200 ease-out motion-reduce:transition-none"
-          style={{ height: expanded ? '100%' : height, opacity: iframeLoaded ? 1 : 0 }}
+          style={{
+            height: expanded ? '100%' : height,
+            // Same compositing promotion the artifact frame carries, for the same
+            // reason: an engine can lay this document out, run its scripts and
+            // report a correct height while never rasterizing it, which presents
+            // as an empty box rather than an error. Promoting the frame to its
+            // own layer is the one remedy that needs no timing — the others have
+            // to be fired after load, which races a slow document. This frame was
+            // left out when the artifact frame was promoted, so the inline-widget
+            // surface still had the gap.
+            transform: 'translateZ(0)',
+            opacity: iframeLoaded ? 1 : 0,
+          }}
           title={title}
         />
       </div>}

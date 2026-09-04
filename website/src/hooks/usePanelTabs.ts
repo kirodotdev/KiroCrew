@@ -554,7 +554,7 @@ export function usePanelTabs(slotKey: string | null = null) {
         ...(opts?.diffMode != null ? { diffMode: opts.diffMode } : {}),
       }, opts?.replaceId)
     })
-  }, [upsert])
+  }, [update])
 
   const openDiff = useCallback((path: string, modified: string, original = '') => {
     upsert({ id: `diff:${path}`, kind: 'diff', title: i18nT('hooks.usePanelTabs.diff', { name: basename(path) }), path, modified, original })

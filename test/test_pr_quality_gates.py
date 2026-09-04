@@ -451,6 +451,129 @@ class TestPrScope:
         assert ":(exclude)temp-screenshots/**" in wf
 
 
+@pytest.mark.skipif(
+    os.name == "nt" or shutil.which("bash") is None,
+    reason="the measure step runs under bash on ubuntu-latest",
+)
+class TestPrScopeMeasureLogic:
+    """Execute the real scope-measurement step with ``git`` stubbed.
+
+    The step is advisory by contract (it never exits nonzero), which is
+    exactly why a swallowed read failure was invisible: a failed ``git diff``
+    used to collapse onto the same empty string as "no files changed", and
+    the step reported a verdict -- "No reviewable files changed." -- about a
+    diff it never obtained. These cases pin which of the two empty results
+    produced the answer, without loosening the advisory contract.
+    """
+
+    def _run_measure(
+        self,
+        tmp_path: Path,
+        files_out: str = "",
+        numstat_out: str = "",
+        git_status: int = 0,
+        numstat_status: int = 0,
+    ):
+        wf = yaml.safe_load(_read("pr-scope.yml"))
+        steps = wf["jobs"]["pr-scope"]["steps"]
+        step = next((s for s in steps if s.get("name") == "Measure diff breadth"), None)
+        assert step is not None, "step 'Measure diff breadth' not found"
+        files_file = tmp_path / "files.txt"
+        files_file.write_text(files_out, encoding="utf-8")
+        numstat_file = tmp_path / "numstat.txt"
+        numstat_file.write_text(numstat_out, encoding="utf-8")
+        git = tmp_path / "git"
+        if git_status:
+            body = f'echo "fatal: bad object" >&2\nexit {git_status}\n'
+        else:
+            # The step reads the same range twice (`--name-only`, then
+            # `--numstat`); serve each call the matching fixture.
+            numstat_body = (
+                f'echo "fatal: bad object" >&2; exit {numstat_status}'
+                if numstat_status
+                else f'cat "{numstat_file}"'
+            )
+            body = (
+                'case "$*" in\n'
+                f"  *--numstat*) {numstat_body} ;;\n"
+                f'  *) cat "{files_file}" ;;\n'
+                "esac\n"
+            )
+        git.write_text(f"#!/bin/sh\n{body}", encoding="utf-8", newline="\n")
+        git.chmod(0o755)
+        summary = tmp_path / "summary.md"
+        summary.touch()
+        env = {
+            # tmp_path first so the `git` stub wins the lookup.
+            "PATH": f"{tmp_path}{os.pathsep}/usr/local/bin{os.pathsep}/usr/bin{os.pathsep}/bin",
+            "LC_ALL": "C",
+            "BASE_SHA": "1111111111111111111111111111111111111111",
+            "HEAD_SHA": "2222222222222222222222222222222222222222",
+            # Thresholds come from the step's own env stanza so the test
+            # exercises the values the workflow actually ships.
+            "MAX_AREAS": str(step["env"]["MAX_AREAS"]),
+            "MAX_LINES": str(step["env"]["MAX_LINES"]),
+            "GITHUB_STEP_SUMMARY": str(summary),
+            "TMPDIR": str(tmp_path),
+        }
+        result = subprocess.run(
+            ["bash", "-c", step["run"]],
+            cwd=tmp_path,
+            env=env,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=30,
+        )
+        return result, summary.read_text(encoding="utf-8")
+
+    def test_measured_diff_reports_scope(self, tmp_path):
+        result, summary = self._run_measure(
+            tmp_path,
+            files_out="src/kiro_crew/session/state.py\n",
+            numstat_out="10\t2\tsrc/kiro_crew/session/state.py\n",
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert "distinct areas: 1" in result.stdout, result.stdout
+        assert "### PR scope" in summary, summary
+
+    def test_empty_diff_is_a_real_verdict(self, tmp_path):
+        # A diff that READS successfully and is empty keeps its existing
+        # meaning: nothing reviewable changed.
+        result, _ = self._run_measure(tmp_path, files_out="", numstat_out="")
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert "No reviewable files changed." in result.stdout, result.stdout
+
+    def test_uncomputable_diff_refuses_the_verdict_but_stays_advisory(self, tmp_path):
+        # The failure this pins: a failed `git diff` used to be swallowed into
+        # the same empty string as "no files changed", so the step claimed
+        # "No reviewable files changed." having measured nothing. The step must
+        # now refuse to report any scope claim -- while still exiting 0,
+        # because this gate's advisory contract (test_never_exits_nonzero)
+        # is deliberate.
+        result, summary = self._run_measure(tmp_path, git_status=128)
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert "read failure" in result.stdout, result.stdout
+        assert "::warning::" in result.stdout, result.stdout
+        assert "No reviewable files changed." not in result.stdout, result.stdout
+        assert "Scope looks self-contained." not in result.stdout, result.stdout
+        assert "NOT measured" in summary, summary
+
+    def test_uncomputable_line_count_also_refuses(self, tmp_path):
+        # The second read of the same range has the same failure mode, and its
+        # old form additionally piped the failure into `awk`, which summed
+        # nothing into a legitimate-looking 0.
+        result, summary = self._run_measure(
+            tmp_path,
+            files_out="src/kiro_crew/session/state.py\n",
+            numstat_status=128,
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert "read failure" in result.stdout, result.stdout
+        assert "Scope looks self-contained." not in result.stdout, result.stdout
+        assert "NOT measured" in summary, summary
+
+
 class TestDesignReviewBlocks:
     """A BLOCK verdict must reach the required `PR Readiness` status.
 

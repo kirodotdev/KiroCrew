@@ -797,7 +797,7 @@ class TestTheDatabaseRestageChecksAndOpensTheSameFile:
             return real_check(root, rel_parts)
 
         monkeypatch.setattr(snap, "_chain_is_link_free", swap_then_check)
-        snap._restage_databases(real, stage)
+        snap._restage_databases(real, stage, bundle_root=stage)
         assert swapped["done"], "the swap never fired; the test proves nothing"
 
         staged = stage / "workspace" / "notes.db"
@@ -851,7 +851,7 @@ class TestTheDatabaseRestageChecksAndOpensTheSameFile:
         monkeypatch.setattr(snap.os, "open", refuse_dir_fd)
 
         try:
-            snap._restage_databases(real, stage)
+            snap._restage_databases(real, stage, bundle_root=stage)
         finally:
             active["on"] = False
 
@@ -882,7 +882,7 @@ class TestTheDatabaseRestageChecksAndOpensTheSameFile:
         conn.commit()
         conn.close()
 
-        snap._restage_databases(real, stage)
+        snap._restage_databases(real, stage, bundle_root=stage)
 
         conn = redact.sqlite3.connect(str(stage / "notes.db"))
         rows = [r[0] for r in conn.execute("SELECT v FROM t")]

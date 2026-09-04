@@ -23,7 +23,7 @@ Four parts, in the order you will need them:
 - **OS**: any modern Linux distribution (Ubuntu 22.04+, Debian 12+, Fedora,
   CentOS Stream / RHEL 8+, CentOS 7, Amazon Linux 2 / 2023). macOS works too,
   with launchd instead of systemd.
-- **Python**: 3.10 or newer (`setup.cfg` sets `python_requires = >=3.10`).
+- **Python**: 3.12 or newer (`setup.cfg` sets `python_requires = >=3.12`).
 - **Node.js**: needed to build the dashboard bundle. `website/package.json`
   declares `"node": ">=22"`; `kirocrew doctor` warns below Node 22.
 - **RAM**: there is no single published floor, because the footprint scales with
@@ -44,8 +44,8 @@ Four parts, in the order you will need them:
 sudo apt-get update && sudo apt-get install -y git tmux python3 python3-pip python3-venv
 
 # Fedora / CentOS Stream / RHEL 8+ / Amazon Linux 2023 (python3 may be 3.9;
-# python3.11 gives the 3.10+ the backend needs)
-sudo dnf install -y git tmux python3.11 python3.11-pip
+# python3.12 gives the 3.12+ the backend needs)
+sudo dnf install -y git tmux python3.12 python3.12-pip
 
 # CentOS 7 / RHEL 7 (yum; base repos ship only Python 3.6, which is too old —
 # install a newer interpreter yourself first, e.g. mise; see below)
@@ -54,7 +54,7 @@ curl https://mise.run | sh && mise use -g python@3.12
 ```
 
 The `curl … | sh` installer performs this distro Python bootstrap for you. On
-CentOS 7 and older Ubuntu, where no base-repo package supplies Python 3.10+, it
+CentOS 7 and older Ubuntu, where no base-repo package supplies Python 3.12+, it
 uses an already-installed [mise](https://mise.jdx.dev/) if you have one and
 otherwise stops with instructions — the signed installer does not pipe an
 unsigned script into a shell, so install mise yourself first
@@ -864,7 +864,7 @@ StartLimitIntervalSec=300
 Type=simple
 User=$(whoami)
 ExecStart=$KIROCREW_BIN gateway
-Restart=on-failure
+Restart=always
 RestartSec=10
 LimitNOFILE=65536
 WorkingDirectory=$HOME

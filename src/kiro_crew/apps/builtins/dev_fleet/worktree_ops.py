@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import functools
+import hashlib
 import json
 import os
 import shutil
@@ -1402,6 +1403,31 @@ def _venv_python(repo: str) -> Path | None:
     return None
 
 
+#: Trusted loader for the sync-runner snapshot. A FIXED literal — nothing is
+#: ever interpolated into it — so unlike the pre-extraction inline script it
+#: carries no program logic beyond verify-and-exec. It exists because a file
+#: on disk is mutable between staging and exec while argv is not: a sandboxed
+#: same-UID process could rewrite the staged snapshot in that window and have
+#: its code run UNSANDBOXED as the runner. The bootstrap travels in argv
+#: (immutable once this process exists) together with the snapshot's expected
+#: sha256, reads the file ONCE, hashes and compiles the SAME buffer (no
+#: re-read between check and use), and refuses on mismatch. The runner's own
+#: argv follows and is re-exposed as ``sys.argv``.
+_SYNC_RUNNER_BOOTSTRAP = (
+    "import hashlib, sys\n"
+    "path, digest = sys.argv[1], sys.argv[2]\n"
+    "with open(path, 'rb') as fh:\n"
+    "    raw = fh.read()\n"
+    "if hashlib.sha256(raw).hexdigest() != digest:\n"
+    "    print('sync runner: snapshot does not match the staged source '\n"
+    "          '(refusing to execute)', flush=True)\n"
+    "    sys.exit(1)\n"
+    "code = compile(raw, path, 'exec')\n"
+    "sys.argv = [path] + sys.argv[3:]\n"
+    "exec(code, {'__name__': '__main__', '__file__': path})\n"
+)
+
+
 async def _sync_start_locked() -> dict:
     """Start the sync run. Caller holds _SYNC_LOCK."""
     global _SYNC_RID  # noqa: F824 (assigned below after await)
@@ -1819,175 +1845,90 @@ async def _sync_start_locked() -> dict:
             # instead of damage. A separate "restore" step could not do this: the
             # runner is fail-fast, so anything after a failed step never runs.
             step["stash"] = str(Path(repo) / "website" / "node_modules")
-    script = (
-        "import os, shutil, subprocess, sys, json\n"
-        # Align the writer with the reader. `_start_run` decodes this stream as
-        # UTF-8 (`line.decode(errors="replace")`), but a piped stdout on Windows
-        # encodes with the process locale codepage — so any non-ASCII that ever
-        # reaches a print here would be mangled at best and raise
-        # UnicodeEncodeError at worst, killing the runner before its first step.
-        # errors="replace" additionally guarantees no print can be fatal.
-        "sys.stdout.reconfigure(encoding='utf-8', errors='replace')\n"
-        f"steps = json.loads({json.dumps(json.dumps(wrapped_steps))})\n"
-        f"cwd = {json.dumps(repo)}\n"
-        # The reserved diagnosis codes, and the ONE step label allowed to assert
-        # one. Inlined as literals because this script is stdlib-only by design:
-        # it must not import kiro_crew, so what it does cannot change with the
-        # revision being merged underneath it.
-        f"RESERVED = {sorted(npm_preflight.RESERVED_EXIT_CODES)!r}\n"
-        f"PREFLIGHT = {json.dumps(runtime._PREFLIGHT_LABEL)}\n"
-        # reconfigure() above rebinds only THIS process's stdout object. Each
-        # step is a separate process that inherits the same pipe and re-derives
-        # its own encoding from the locale, so the Python steps — pip, and the
-        # build-and-stage child — would still encode a non-ASCII checkout path
-        # with the codepage and die on it. Set it in the environment, which is
-        # the only channel that reaches a child, so the whole pipe is UTF-8 from
-        # every writer the reader has to decode. Non-Python steps (git, npm)
-        # ignore the variable and are unaffected. Assigned rather than
-        # defaulted: the reader's encoding is fixed, so a divergent inherited
-        # value would be the defect, not a preference to preserve.
-        "def run(st):\n"
-        "    env = dict(st['env'])\n"
-        "    env['PYTHONIOENCODING'] = 'utf-8:replace'\n"
-        "    return subprocess.run(st['argv'], cwd=cwd, env=env).returncode\n"
-        # `rmtree(..., ignore_errors=True)` alone is not safe HERE, even though
-        # it is the right default elsewhere: every deletion below decides what
-        # the next rename does, so a partial removal that is silently ignored
-        # leaves a directory in place, makes the following rename fail, and ends
-        # with the transaction restoring a PARTIAL tree over a good one. So the
-        # deletions whose outcome is load-bearing are CONFIRMED, and one that
-        # will not complete stops the step with both trees intact -- a refused
-        # sync is recoverable, a half-restored node_modules is not.
-        "def gone(p):\n"
-        # rmtree REFUSES a symlink ("Cannot call rmtree on a symbolic link"),
-        # and ignore_errors=True swallows that refusal -- so a symlinked
-        # node_modules left its backup undeletable, the next sync saw both paths,
-        # and every Pull + Build from then on refused as ambiguous. A permanent
-        # wedge escapable only by hand. Unlink the link, rmtree only real trees.
-        "    if os.path.islink(p):\n"
-        "        try:\n"
-        "            os.unlink(p)\n"
-        "        except OSError:\n"
-        "            pass\n"
-        "    else:\n"
-        "        shutil.rmtree(p, ignore_errors=True)\n"
-        # lexists, not exists: a DANGLING symlink is still something at this
-        # path, and reporting it as gone would let the runner proceed as though
-        # the slot were clear.
-        "    return not os.path.lexists(p)\n"
-        # Leftover state from an earlier run is reconciled BEFORE any step runs,
-        # and BOTH halves of that belong here. Splitting them was a defect: with
-        # adoption left on the `npm ci` step, a run killed just after stashing
-        # left node_modules absent and its intact backup unclaimed, and the next
-        # run's recovery sat behind every earlier step succeeding -- so a still
-        # failing preflight meant the tree stayed missing with the copy right
-        # there. Both paths are knowable from disk with nothing applied, so both
-        # decisions are made here.
-        "for st in steps:\n"
-        "    stash = st.get('stash')\n"
-        "    if not stash:\n"
-        "        continue\n"
-        "    backup = stash + '.kirocrew-sync-backup'\n"
-        # lexists, not isdir, for every presence gate. isdir FOLLOWS a symlink,
-        # so a DANGLING node_modules reads as absent -- and then the backup-only
-        # branch below calls os.rename(<dir>, <dangling link>), which fails
-        # ENOTDIR and crashes the runner on every sync, with the tree never
-        # recovered. lexists asks the only question these gates actually mean: is
-        # there anything at this path.
-        "    have_tree = os.path.lexists(stash)\n"
-        "    have_backup = os.path.lexists(backup)\n"
-        # BOTH present is genuinely AMBIGUOUS and no rule can be right:
-        #
-        #   * killed DURING npm ci -> stash is the partial tree npm was
-        #     writing, backup is the last good one.
-        #   * a backup that outlived a SUCCESSFUL sync (its cleanup failed) ->
-        #     stash is the good tree and backup is stale.
-        #
-        # Nothing on disk tells those apart, so either choice destroys the good
-        # copy in one of them. The only move that cannot lose data is to touch
-        # NEITHER and stop -- and to say what to do next, because otherwise
-        # every later press refuses identically and the operator has to deduce
-        # that a directory needs removing.
-        "    if have_tree and have_backup:\n"
-        # The paths are LOG text; the diagnosis is the exit code, which the
-        # gateway maps. Nothing here is promoted out of stdout.
-        "        print('a previous sync left a dependency-tree backup beside the '\n"
-        "              'tree', flush=True)\n"
-        "        print('tree: %s' % stash, flush=True)\n"
-        "        print('backup: %s' % backup, flush=True)\n"
-        f"        sys.exit({npm_preflight.EXIT_TREE_AMBIGUOUS})\n"
-        # Backup only: unambiguous recovery, so claim it now rather than on the
-        # step that happens to own the transaction.
-        "    if have_backup:\n"
-        "        print('restoring a dependency tree left stashed by an earlier '\n"
-        "              'run', flush=True)\n"
-        "        os.rename(backup, stash)\n"
-        "for i, st in enumerate(steps):\n"
-        "    print(f'::step::{i}::{st[\"label\"]}', flush=True)\n"
-        # node_modules transaction. `npm ci` empties the directory before it
-        # installs, so it is moved aside first: on success the backup is
-        # dropped, and on ANY non-zero outcome (including the step raising) it
-        # is put back. rc is pre-seeded non-zero so an exception restores rather
-        # than discards.
-        "    stash = st.get('stash')\n"
-        "    backup = (stash + '.kirocrew-sync-backup') if stash else None\n"
-        # Leftover state was reconciled before this loop, so a backup cannot
-        # exist here: move the tree aside and let the step install into a clean
-        # directory, which is what `npm ci` requires anyway.
-        # lexists here too: with isdir a SYMLINKED node_modules would not be
-        # moved aside at all, so the step would run with no backup to restore --
-        # the transaction silently absent on exactly the layouts that most need
-        # it (a link into a shared store).
-        "    if backup and os.path.lexists(stash):\n"
-        "        os.rename(stash, backup)\n"
-        "    rc = 1\n"
-        "    try:\n"
-        "        rc = run(st)\n"
-        # An exit code is only trustworthy from the step whose binary is OURS.
-        # Every other step runs worktree-controlled code -- an npm lifecycle
-        # script, a vite config -- and can exit any number it likes, so a forged
-        # 41 would make the dashboard assert a registry-credential failure, with
-        # a remedy, for what was actually a build error. Reserved codes from
-        # those steps are therefore reported as a plain failure, with the true
-        # code kept in the log rather than believed.
-        "        if rc in RESERVED and st['label'] != PREFLIGHT:\n"
-        "            print('step %s exited %d, which is a reserved diagnosis '\n"
-        "                  'code; reporting it as a plain failure because only '\n"
-        "                  'the %s step may assert one'\n"
-        "                  % (st['label'], rc, PREFLIGHT), flush=True)\n"
-        "            rc = 1\n"
-        "    finally:\n"
-        # lexists: the backup is whatever `os.rename` moved here, so if the tree
-        # was a symlink the backup is one too. With isdir a DANGLING one skipped
-        # this whole block -- the tree stayed moved aside and was never restored
-        # nor dropped, which is the data loss the transaction exists to prevent.
-        "        if backup and os.path.lexists(backup):\n"
-        "            if rc == 0:\n"
-        # A backup that will not delete on the SUCCESS path is not dangerous:
-        # the tree on disk is the new good one, and the next run's both-exist
-        # branch handles the leftover. Say so rather than failing a sync that
-        # already worked.
-        "                if not gone(backup):\n"
-        "                    print('note: a dependency-tree backup could not be '\n"
-        "                          'removed and was left at %s' % backup,\n"
-        "                          flush=True)\n"
-        "            elif gone(stash):\n"
-        "                os.rename(backup, stash)\n"
-        "                print('restored %s after a failed step' % stash,\n"
-        "                      flush=True)\n"
-        "            else:\n"
-        # The rename would fail anyway, and forcing it is how a partial tree
-        # ends up installed over a good backup. Leave BOTH, name them in the
-        # log, and REPLACE the step's exit code: "the tree could not be put
-        # back" outranks whatever the step itself failed with, because it is the
-        # part the operator has to act on.
-        "                print('partial: %s' % stash, flush=True)\n"
-        "                print('backup: %s' % backup, flush=True)\n"
-        f"                rc = {npm_preflight.EXIT_RESTORE_FAILED}\n"
-        "    if rc != 0:\n"
-        "        sys.exit(rc)\n"
-    )
-    cmd = [sys.executable, "-c", script]
+    # The runner is a SNAPSHOT of :mod:`sync_runner`, staged into a private
+    # mkdtemp and run BY PATH with `-I`. Running `-m kiro_crew...sync_runner`
+    # would import it from the working tree AFTER the merge has landed (and drag
+    # the package __init__ chain in with it), and interpolating source into a
+    # `-c` string is what this module replaced. mkdtemp is unguessable and
+    # 0o700; the steps JSON lives in the SAME dir and is passed as a PATH
+    # argument, never interpolated into source.
+    if runtime._SYNC_RUNNER_SOURCE is None:
+        return {
+            "ok": False,
+            "error": (
+                "the sync runner's own source could not be read at startup, so "
+                "there is nothing trustworthy to run it from — reinstall the "
+                "gateway from a source checkout"
+            ),
+        }
+    runner_dir: Path | None = None
+    try:
+        runner_dir = Path(tempfile.mkdtemp(prefix="kirocrew-sync-runner-"))
+        runner_snap = runner_dir / "sync_runner.py"
+        # The BYTES captured at import, not a copy of the file as it is now.
+        runner_snap.write_bytes(runtime._SYNC_RUNNER_SOURCE)
+        # Pinned in argv below (same contract as the steps digest): the staged
+        # file is mutable between now and exec, argv is not, so the bootstrap
+        # can refuse a snapshot rewritten in that window.
+        runner_sha256 = hashlib.sha256(runtime._SYNC_RUNNER_SOURCE).hexdigest()
+        steps_json_path = runner_dir / "steps.json"
+        # The step list travels as a FILE, not embedded in argv or source: a
+        # non-ASCII checkout path in a step's argv or env then cannot break the
+        # program that reads it, and nothing worktree-controlled is interpolated
+        # into code.
+        steps_payload = json.dumps(wrapped_steps).encode("utf-8")
+        steps_json_path.write_bytes(steps_payload)
+        # Pinned in argv below: argv is immutable once the runner process
+        # exists, so the runner can verify the file it reads is the manifest
+        # THIS gateway staged -- a rewrite of steps.json between staging and
+        # startup fails the digest check and nothing runs.
+        steps_sha256 = hashlib.sha256(steps_payload).hexdigest()
+    except OSError as exc:
+        # A full or unwritable TMPDIR must not escape as a 500, and nothing has
+        # registered this dir for the run's cleanup yet -- remove it here or a
+        # failed sync leaks one temp dir every time. Refusing is also the SAFE
+        # outcome: without a runner there is nothing to drive the steps.
+        if runner_dir is not None:
+            shutil.rmtree(runner_dir, ignore_errors=True)
+        return {
+            "ok": False,
+            "error": (
+                "could not stage the sync runner: "
+                f"{exc.strerror or exc} — free space in the temporary directory "
+                "and press Pull + Build again"
+            ),
+        }
+    # Files before their directory: the run's cleanup unlinks each entry and
+    # falls back to rmdir, which only succeeds on an empty one.
+    cleanups += [str(runner_snap), str(steps_json_path), str(runner_dir)]
+    # `-I` isolates the interpreter (drops cwd from sys.path and ignores env
+    # vars that alter it), the same hardening the preflight snapshot uses; the
+    # snapshot dir itself is removed from sys.path by `-I` too. The runner is
+    # executed THROUGH the fixed bootstrap above, which verifies the staged
+    # snapshot's bytes against the argv-pinned digest before compiling them —
+    # closing the staging→exec mutation window. The reserved set and the one
+    # trusted label are passed IN so the runner imports nothing from
+    # kiro_crew -- what it does cannot change with the revision merged under it.
+    cmd = [
+        sys.executable,
+        "-I",
+        "-c",
+        _SYNC_RUNNER_BOOTSTRAP,
+        str(runner_snap),
+        runner_sha256,
+        str(steps_json_path),
+        str(repo),
+        "--reserved",
+        ",".join(str(c) for c in sorted(npm_preflight.RESERVED_EXIT_CODES)),
+        "--preflight-label",
+        runtime._PREFLIGHT_LABEL,
+        "--exit-tree-ambiguous",
+        str(npm_preflight.EXIT_TREE_AMBIGUOUS),
+        "--exit-restore-failed",
+        str(npm_preflight.EXIT_RESTORE_FAILED),
+        "--steps-sha256",
+        steps_sha256,
+    ]
     rid = await runtime._start_run(
         runtime._SYNC_RUN_LABEL, cmd, env=runtime._build_env(), cleanup_paths=cleanups
     )

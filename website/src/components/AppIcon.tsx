@@ -236,6 +236,7 @@ export default function AppIcon({
   // from theme tokens, which is the whole reason ``iconUrlDark`` exists.
   if (url && !imgFailed) {
     return (
+      // eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions -- onError is an image-load lifecycle handler (degrade to the fallback URL, then the glyph), not a user interaction; there is nothing here for a keyboard to reach
       <img
         src={url}
         alt=""

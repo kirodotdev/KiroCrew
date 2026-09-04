@@ -1,4 +1,4 @@
-import { render, screen, fireEvent, waitFor } from '@testing-library/react'
+import { screen, fireEvent, waitFor } from '@testing-library/react'
 import { renderWithProviders } from '../test/helpers'
 import SendToInstanceSubmenu from './SendToInstanceSubmenu'
 import { api } from '../api/client'

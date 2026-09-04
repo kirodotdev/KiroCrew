@@ -46,13 +46,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterator, NamedTuple
 
-from opentelemetry.sdk.metrics import (
-    Counter,
-    Histogram,
-    UpDownCounter,
-)
 from opentelemetry.sdk.metrics.export import (
-    AggregationTemporality,
     MetricExporter,
     MetricExportResult,
     MetricsData,
@@ -60,6 +54,7 @@ from opentelemetry.sdk.metrics.export import (
 
 from kiro_crew import platform_compat
 from kiro_crew.metrics.schema import RESOURCE_ATTR_PROCESS_START_TIME
+from kiro_crew.metrics.temporality import delta_preference
 
 logger = logging.getLogger(__name__)
 
@@ -155,23 +150,11 @@ class JsonlMetricExporter(MetricExporter):
         # restarts and day boundaries (cumulative snapshots would double-count
         # and misattribute a PID's counts to the wrong day).
         #
-        # OBSERVABLE counters are deliberately ABSENT from this map and keep the
-        # SDK default (CUMULATIVE). DELTA was tried and reverted: the delta
-        # baseline lives in the provider, and the recorder is rebuilt in-process
-        # whenever telemetry consent changes (see provider._maybe_rebuild), so
-        # the first post-rebuild collection would re-emit the entire
-        # process-lifetime total as one giant delta and inflate daily sums. A
-        # cumulative snapshot is idempotent under the aggregator's
-        # keep-newest-per-PID rule (handlers/telemetry.py classifies temporality
-        # from the record itself), so provider rebuilds are harmless. Gauges
-        # carry no temporality and never belong here.
-        super().__init__(
-            preferred_temporality={
-                Counter: AggregationTemporality.DELTA,
-                UpDownCounter: AggregationTemporality.DELTA,
-                Histogram: AggregationTemporality.DELTA,
-            }
-        )
+        # The map itself lives in metrics.temporality, which owns the rule for
+        # BOTH sinks -- including why observable counters are deliberately absent
+        # from it. Declaring it inline here is what let the OTLP leg ship
+        # CUMULATIVE for the same instruments with nothing failing.
+        super().__init__(preferred_temporality=delta_preference())
         self._dir = Path(directory)
         # Negative values are meaningless; clamp to 0 (disabled) defensively so a
         # mis-wired caller can never request "prune everything".

@@ -26,13 +26,31 @@ concurrency:
 
 jobs:
   design-review:
-    name: Design Review
+    # BRANCH-PROTECTION NAME COLLISION -- keep this conditional. Two workflows
+    # publish the protected check name "Design Review": this same-repo lane and the
+    # privileged Stage-2 fork-design-review.yml. GitHub resolves a required status
+    # check to the NEWEST check-run carrying that name, so on a fork PR -- where
+    # this lane reviews nothing -- any `pull_request` event firing AFTER the fork
+    # lane published its verdict (a reopen, and for codex-review an `edited`
+    # title/body) would make THIS lane the newest run under the protected name
+    # and satisfy the gate on a review that never ran. Naming this job
+    # differently on a fork PR leaves exactly ONE publisher of the protected
+    # name per PR type: this lane for same-repo PRs, the Stage-2 lane for forks.
+    # `pr-readiness.yml` is unaffected -- it already collapses every check-run of
+    # the name for forks and treats a name with no completed run as pending,
+    # never as passed.
+    #
+    # The fork guard sits on EVERY step rather than on the job, and that
+    # placement is what makes the name above render. GitHub never evaluates a
+    # skipped job's `name:` expression, so while the guard was a job-level `if:`
+    # every fork PR published the raw expression source as its check name.
+    # Letting the job start with all steps gated costs seconds of runner time and
+    # reports the intended name instead. `test_ai_review_workflows.py` asserts
+    # the guard is on every step, so a step added later cannot quietly run
+    # against fork content.
+    name: "${{ github.event.pull_request.head.repo.full_name == github.repository && 'Design Review' || 'Design Review (same-repo lane, not applicable to forks)' }}"
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    # Same-repo PRs only (not forks): fork PRs have no OIDC/secrets access, and
-    # this keeps budget abuse / prompt-injection / secret-exfil out — mirrors
-    # the fork guard in codex-review.yml.
-    if: github.event.pull_request.head.repo.full_name == github.repository
     steps:
       # persist-credentials:false stops actions/checkout from writing the
       # GITHUB_TOKEN into .git/config, where the agentic reviewer — which reads
@@ -40,11 +58,13 @@ jobs:
       # still works (history is fetched via depth 0); the posting step uses its
       # own scoped GH_TOKEN. Mirrors codex-review.yml.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: github.event.pull_request.head.repo.full_name == github.repository
         with:
           fetch-depth: 0
           persist-credentials: false
 
       - name: Resolve human override
+        if: github.event.pull_request.head.repo.full_name == github.repository
         id: human_override
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -54,11 +74,37 @@ jobs:
         run: |
           exact="<!-- ai-review-human-override target=design head=$HEAD "
           all="<!-- ai-review-human-override target=all head=$HEAD "
-          record="$(gh api "repos/$REPO/issues/$PR/comments" --paginate 2>/dev/null \
+          # A comments feed this step could not READ is not a PR with no
+          # override recorded. `2>/dev/null || true` discarded both the error
+          # text and the exit status, so a transient API failure collapsed
+          # onto the same empty string as "no override recorded" and the lane
+          # re-gated a verdict a human had already cleared with
+          # /ai-review override. The common case is transient, so absorb it
+          # here: up to three attempts with a short backoff. A read that never
+          # succeeds fails this run CLOSED while naming the read as the cause;
+          # a PR genuinely carrying no override still reads successfully and
+          # resolves to inactive, as before.
+          comments=""
+          read_ok=""
+          for attempt in 1 2 3; do
+            if comments="$(gh api "repos/$REPO/issues/$PR/comments" --paginate)"; then
+              read_ok=1
+              break
+            fi
+            echo "Reading the PR comments failed on attempt $attempt."
+            if [ "$attempt" -lt 3 ]; then
+              sleep "$attempt"
+            fi
+          done
+          if [ -z "$read_ok" ]; then
+            echo "::error::Could not read this PR's comments after 3 attempts, so this lane cannot tell whether a human override is recorded for $HEAD. Failing closed rather than re-gating a verdict a human may have cleared -- re-run this job."
+            exit 1
+          fi
+          record="$(printf '%s' "$comments" \
             | jq -sr --arg exact "$exact" --arg all "$all" \
               'add // [] | [.[] | select(.user.login == "github-actions[bot]")
               | select((.body | startswith($exact)) or (.body | startswith($all)))]
-              | (last.body // "")' 2>/dev/null || true)"
+              | (last.body // "")')"
           actor="$(printf '%s\n' "$record" | sed -nE '1s/^.* actor=([^ ]+) source=([0-9]+) -->$/\1/p')"
           source="$(printf '%s\n' "$record" | sed -nE '1s/^.* actor=([^ ]+) source=([0-9]+) -->$/\2/p')"
           if [ -n "$actor" ] && [ -n "$source" ]; then
@@ -77,7 +123,11 @@ jobs:
       # PR content. Also skip when a human override is recorded, so an OIDC
       # failure can never keep the override from clearing the lane.
       - uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6.2.3
-        if: github.actor != 'dependabot[bot]' && steps.human_override.outputs.active != 'true'
+        if: >-
+          github.event.pull_request.head.repo.full_name == github.repository
+          && (
+          github.actor != 'dependabot[bot]' && steps.human_override.outputs.active != 'true'
+          )
         with:
           role-to-assume: ${{ secrets.AWS_BEDROCK_ROLE_ARN }}
           aws-region: us-west-2
@@ -92,7 +142,11 @@ jobs:
         # required checks; merge is gated by human review), so a red result is
         # override-able. The always()-run steps below still post a leak-safe
         # comment and log the outcome regardless.
-        if: github.actor != 'dependabot[bot]' && steps.human_override.outputs.active != 'true'
+        if: >-
+          github.event.pull_request.head.repo.full_name == github.repository
+          && (
+          github.actor != 'dependabot[bot]' && steps.human_override.outputs.active != 'true'
+          )
         uses: anthropics/claude-code-action@24dcd50c0568f0fc9e9211213a4fd2d9eb15c4e0 # v1
         with:
           # Inference via Amazon Bedrock (region from the AWS creds step above).
@@ -337,7 +391,11 @@ jobs:
       # + per-page jq lookup, mirroring claude-review.yml.
       - name: Post design review summary
         id: post
-        if: always()
+        if: >-
+          github.event.pull_request.head.repo.full_name == github.repository
+          && (
+          always()
+          )
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
@@ -484,7 +542,11 @@ jobs:
       # infrastructure noise can never block a merge. Do NOT widen the failing
       # branch beyond BLOCK.
       - name: Design review status (gates on BLOCK)
-        if: always()
+        if: >-
+          github.event.pull_request.head.repo.full_name == github.repository
+          && (
+          always()
+          )
         env:
           HEAD: ${{ github.event.pull_request.head.sha }}
           ACTOR: ${{ github.actor }}

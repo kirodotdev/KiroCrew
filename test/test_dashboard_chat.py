@@ -5791,13 +5791,17 @@ class TestRunChatCompactDeferredWait:
         compaction_msgs = [m for m in assistant_msgs if "Conversation compacted" in m["content"]]
         assert compaction_msgs
         assert all(m.get("meta", {}).get("kind") == "compaction" for m in compaction_msgs)
+        # The appended row carries a minted ``meta.mid``: the live copy is
+        # delivered through append's own identity-carrying door (_on_message),
+        # so no hand-built duplicate ``chat_message`` frame may fire — a
+        # mid-less manual frame rendered the notice twice (#5981 family).
+        assert all(m.get("meta", {}).get("mid") for m in compaction_msgs)
         assistant_broadcasts = [
             c
             for c in state.broadcast_ws.call_args_list
             if c.args and c.args[0] == "chat_message" and c.args[1].get("role") == "assistant"
         ]
-        assert assistant_broadcasts
-        assert all(c.args[1].get("kind") == "compaction" for c in assistant_broadcasts)
+        assert assistant_broadcasts == []
         # Updated context% must be broadcast so the dashboard bar refreshes.
         ws_kinds = [c.args[0] for c in state.broadcast_ws.call_args_list]
         assert "context_usage" in ws_kinds
@@ -6077,7 +6081,7 @@ class TestTokenPersistenceBackfill:
             LLMEvent(kind=EVENT_TEXT_CHUNK, text="done"),
             LLMEvent(
                 kind=EVENT_COMPLETE,
-                stop_reason="max_tokens",
+                stop_reason="end_turn",
                 usage=TurnUsage(input_tokens=12, output_tokens=4),
             ),
         ]
@@ -6104,7 +6108,7 @@ class TestTokenPersistenceBackfill:
         )
 
         assert len(completions) == 1
-        assert completions[0].disposition is MonitorActionDisposition.FAILURE
+        assert completions[0].disposition is MonitorActionDisposition.SUCCESS
         assert completions[0].input_tokens == 12
         assert completions[0].output_tokens == 4
 
@@ -6145,6 +6149,102 @@ class TestTokenPersistenceBackfill:
         )
 
         assert completions == []
+
+    @pytest.mark.asyncio
+    async def test_synthesized_end_turn_does_not_report_monitor_usage(self, tmp_path, monkeypatch):
+        from kiro_crew.dashboard.chat import _run_chat
+        from kiro_crew.monitoring.completion import MonitorCompletionHook
+        from kiro_crew.monitoring.models import MonitorActionCompletion
+        from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_TEXT_CHUNK, LLMEvent
+
+        event = LLMEvent(
+            kind=EVENT_COMPLETE,
+            stop_reason="end_turn",
+            synthetic_completion=True,
+            usage=TurnUsage(input_tokens=12, output_tokens=4),
+        )
+        state = self._make_state_for_run_chat(tmp_path, monkeypatch)
+        slot = state.get_or_create_slot("s1")
+        client = self._make_mock_client([LLMEvent(kind=EVENT_TEXT_CHUNK, text="done"), event])
+        client.context_used_tokens = MagicMock(return_value=0)
+        client.context_window_tokens = MagicMock(return_value=0)
+        state.sessions.get_or_create = AsyncMock(return_value=(client, True, False))
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.chat_runner.generate_session_summary",
+            AsyncMock(return_value=None),
+        )
+        completions: list[MonitorActionCompletion] = []
+
+        async def _capture(completion: MonitorActionCompletion) -> None:
+            completions.append(completion)
+
+        await _run_chat(
+            state,
+            slot,
+            "hello",
+            monitor_completion=MonitorCompletionHook("monitor1", "failure-a", _capture),
+        )
+
+        assert completions == []
+
+    @pytest.mark.asyncio
+    async def test_monitor_reauthorizes_at_provider_entry(self, tmp_path, monkeypatch):
+        """A stopped claim cannot cross the runner's final provider boundary."""
+        from kiro_crew.dashboard.chat import _run_chat
+        from kiro_crew.monitoring.completion import MonitorCompletionHook
+
+        state = self._make_state_for_run_chat(tmp_path, monkeypatch)
+        slot = state.get_or_create_slot("s1")
+        client = self._make_mock_client([])
+        client.context_used_tokens = MagicMock(return_value=0)
+        client.context_window_tokens = MagicMock(return_value=0)
+        stream = MagicMock(side_effect=client.stream)
+        client.stream = stream
+        state.sessions.get_or_create = AsyncMock(return_value=(client, True, False))
+        authorize = AsyncMock(return_value=False)
+        completion = MonitorCompletionHook(
+            "monitor1",
+            "failure-a",
+            AsyncMock(),
+            authorization_callback=authorize,
+        )
+
+        await _run_chat(state, slot, "hello", monitor_completion=completion)
+
+        authorize.assert_awaited_once_with("monitor1", "failure-a")
+        assert completion.accepted is False
+        stream.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_monitor_shutdown_gate_precedes_acceptance(self, tmp_path, monkeypatch):
+        """A closing session cannot acknowledge a wake that never entered the provider."""
+        from kiro_crew.dashboard.chat import _run_chat
+        from kiro_crew.monitoring.completion import MonitorCompletionHook
+        from kiro_crew.session import SessionClosingError
+
+        state = self._make_state_for_run_chat(tmp_path, monkeypatch)
+        slot = state.get_or_create_slot("s1")
+        client = self._make_mock_client([])
+        client.context_used_tokens = MagicMock(return_value=0)
+        client.context_window_tokens = MagicMock(return_value=0)
+        stream = MagicMock(side_effect=client.stream)
+        client.stream = stream
+        state.sessions.get_or_create = AsyncMock(return_value=(client, True, False))
+        state.sessions.begin_turn = MagicMock(side_effect=SessionClosingError("closing"))
+        accepted = MagicMock()
+        completion = MonitorCompletionHook(
+            "monitor1",
+            "failure-a",
+            AsyncMock(),
+            authorization_callback=AsyncMock(return_value=True),
+            acceptance_callback=accepted,
+        )
+
+        await _run_chat(state, slot, "hello", monitor_completion=completion)
+
+        assert completion.accepted is False
+        accepted.assert_not_called()
+        stream.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_raw_complete_survives_cancellation_during_token_persistence(
@@ -7963,7 +8063,7 @@ class TestRuntimeWiring:
         build_message_calls: list[dict] = []
 
         def mock_build_message(self_ctx, text, is_new, session_key=None, **kwargs):
-            build_message_calls.append({"text": text, "kwargs": kwargs})
+            build_message_calls.append({"text": text, "session_key": session_key, "kwargs": kwargs})
             return text, MagicMock(action=None, text="")
 
         # Mock config loading
@@ -8001,14 +8101,34 @@ class TestRuntimeWiring:
 
         state = _make_state(tmp_path, context_builder=ctx_builder)
 
-        # Create a slot with an agent
+        # Create a slot with retained history, then verify a cold start replays it.
         slot = state.get_or_create_slot("mem-test", agent="oncall")
+        conversation_log = ConversationLog(base_dir=tmp_path / "sessions")
+        conversation_log.init()
+        await asyncio.to_thread(
+            conversation_log.append, "dashboard:mem-test", "user", "frozen retained question"
+        )
+        await asyncio.to_thread(
+            conversation_log.append,
+            "dashboard:mem-test",
+            "assistant",
+            "frozen retained answer",
+        )
+        await asyncio.to_thread(
+            conversation_log.append, "dashboard:mem-test", "user", "test message"
+        )
+        ctx_builder.conversation_log = conversation_log
+        state.conversation_log = conversation_log
+        slot.append("user", "retained question", "msg msg-u")
+        slot.append("assistant", "retained answer", "msg msg-a")
+        slot.append("user", "test message", "msg msg-u")
 
         # Mock session manager to return a mock client
         mock_client = MagicMock()
         mock_client.stream = MagicMock(return_value=AsyncIterator([]))
         state.sessions.get_or_create = AsyncMock(return_value=(mock_client, True, False))
         state.sessions.get_pid = MagicMock(return_value=None)
+        state.sessions.consume_replay_suppression = MagicMock(return_value=False)
 
         # Import and run _run_chat
         from kiro_crew.dashboard.chat import _run_chat
@@ -8018,6 +8138,10 @@ class TestRuntimeWiring:
         # Verify build_message was called with memory_store
         assert len(build_message_calls) == 1
         assert build_message_calls[0]["kwargs"].get("memory_store") == "oncall-mem"
+        assert build_message_calls[0]["session_key"] == "dashboard:mem-test"
+        replay = build_message_calls[0]["kwargs"].get("compressed_history")
+        assert "frozen retained question" in replay
+        assert "frozen retained answer" in replay
 
     @pytest.mark.asyncio
     async def test_run_chat_forwards_and_clears_the_reinjection_flag(self, tmp_path, monkeypatch):
@@ -12244,6 +12368,22 @@ class TestFolderCRUD:
             assert state._slots["myslot"].pinned is False
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("value", ["false", "true", 0, 1, None, []])
+    async def test_pin_slot_rejects_non_boolean_values(self, tmp_path, monkeypatch, value):
+        """The API must not apply Python truthiness to JSON metadata."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("myslot")
+        app = _make_folder_app(state)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.patch("/api/chat/slots/myslot/pin", json={"pinned": value})
+            assert resp.status == 400
+            payload = await resp.json()
+            assert payload["error"] == "pinned must be a boolean"
+            assert payload["code"] == "pinned_not_bool"
+        assert slot.pinned is False
+
+    @pytest.mark.asyncio
     async def test_slots_include_pinned(self, tmp_path, monkeypatch):
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = _make_state(tmp_path)
@@ -13316,6 +13456,52 @@ class TestForkSlot:
         assert len(visible) == 4
 
     @pytest.mark.asyncio
+    async def test_fork_at_message_id(self, tmp_path):
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("src")
+        slot.append("user", "msg1", "msg msg-u")
+        slot.append("assistant", "reply1", "msg msg-a")
+        slot.append("user", "msg2", "msg msg-u")
+        slot.append("assistant", "reply2", "msg msg-a")
+        slot.drain()
+        target_id = slot.messages[1]["meta"]["mid"]
+
+        app = _make_app(state)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post(
+                "/api/chat/slots/src/fork",
+                json={"at_message_id": target_id},
+            )
+            assert resp.status == 200
+            data = await resp.json()
+            assert data["messages"] == 2
+
+        new_slot = state._slots.get(data["key"])
+        visible = [m for m in new_slot.messages if m["role"] in ("user", "assistant")]
+        assert [m["content"] for m in visible] == ["msg1", "reply1"]
+
+    @pytest.mark.asyncio
+    async def test_fork_at_message_id_takes_precedence_over_window_index(self, tmp_path):
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("src")
+        slot.append("user", "msg1", "msg msg-u")
+        slot.append("assistant", "reply1", "msg msg-a")
+        slot.append("user", "msg2", "msg msg-u")
+        slot.append("assistant", "reply2", "msg msg-a")
+        slot.drain()
+        target_id = slot.messages[3]["meta"]["mid"]
+
+        app = _make_app(state)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post(
+                "/api/chat/slots/src/fork",
+                json={"at_message_id": target_id, "at_message_index": 0},
+            )
+            assert resp.status == 200
+            data = await resp.json()
+            assert data["messages"] == 4
+
+    @pytest.mark.asyncio
     async def test_fork_at_index(self, tmp_path):
         state = _make_state(tmp_path)
         slot = state.get_or_create_slot("src")
@@ -13486,6 +13672,49 @@ class TestForkSlot:
         assert new_slot.workspace == "my-ws"
         assert new_slot.model == "custom-model"
         assert new_slot.mode == "custom-mode"
+
+    @pytest.mark.asyncio
+    async def test_fork_of_member_slot_is_not_member_mode(self, tmp_path):
+        """A fork of a member DM thread must be an ordinary chat, never a second
+        "member" slot: the fork mints a chat-* key, so member mode would make it
+        invisible everywhere (excluded from Sessions by surface mode, and absent
+        from the roster, whose threads live only on member-<slug> keys)."""
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("src")
+        slot.mode = "member"
+        slot.append("user", "hi", "msg msg-u")
+        slot.drain()
+
+        app = _make_app(state)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post("/api/chat/slots/src/fork", json={})
+            assert resp.status == 200
+            data = await resp.json()
+
+        new_slot = state._slots.get(data["key"])
+        assert new_slot is not None
+        assert new_slot.mode == ""
+
+    @pytest.mark.asyncio
+    async def test_fork_mode_override_wins_over_inheritance(self, tmp_path):
+        """An allowlisted ``mode`` in the body overrides the source slot's mode.
+        The empty string is a legal override, so the override arm is selected on
+        ``is not None``, not on truthiness."""
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("src")
+        slot.mode = "orchestrator"
+        slot.append("user", "hi", "msg msg-u")
+        slot.drain()
+
+        app = _make_app(state)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post("/api/chat/slots/src/fork", json={"mode": ""})
+            assert resp.status == 200
+            data = await resp.json()
+
+        new_slot = state._slots.get(data["key"])
+        assert new_slot is not None
+        assert new_slot.mode == ""
 
     @pytest.mark.asyncio
     async def test_fork_inherits_folder(self, tmp_path):
@@ -14655,6 +14884,28 @@ class TestStopReasonCancelled:
         state.consolidator.maybe_consolidate.assert_called_once()
 
     @pytest.mark.asyncio
+    async def test_monitor_wake_turn_does_not_write_user_memory(self, tmp_path, monkeypatch):
+        from kiro_crew.acp.types import STOP_REASON_END_TURN
+        from kiro_crew.dashboard.chat import _run_chat
+        from kiro_crew.dashboard.state import MONITOR_WAKE_PREFIX
+        from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_TEXT_CHUNK, LLMEvent
+
+        events = [
+            LLMEvent(kind=EVENT_TEXT_CHUNK, text="monitor action complete"),
+            LLMEvent(kind=EVENT_COMPLETE, stop_reason=STOP_REASON_END_TURN),
+        ]
+        state = self._make_state_for_run_chat(tmp_path, monkeypatch)
+        slot = state.get_or_create_slot("s1")
+        client = self._make_mock_client(events)
+        state.sessions.get_or_create = AsyncMock(return_value=(client, True, False))
+        state.sessions.record_success = MagicMock()
+
+        await _run_chat(state, slot, f"{MONITOR_WAKE_PREFIX}\nChecks failed.")
+
+        state.sessions.record_success.assert_called_once()
+        state.consolidator.maybe_consolidate.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_handler_stop_reason_cancelled_flushes_partial_text(self, tmp_path, monkeypatch):
         """Partial text chunks before cancel must be flushed to the slot."""
         from kiro_crew.acp.types import STOP_REASON_CANCELLED
@@ -15142,6 +15393,38 @@ class TestStopDuringSessionPrep:
             "the turn was dispatched despite a Stop during session prep — "
             "the full response would stream behind a [Stopped] card (#5464)"
         )
+
+    @pytest.mark.asyncio
+    async def test_stop_during_get_or_create_does_not_accept_monitor_wake(
+        self, tmp_path: Path
+    ) -> None:
+        """A stopped pre-stream wake stays retryable instead of becoming DISPATCHED."""
+        from kiro_crew.monitoring.completion import MonitorCompletionHook
+
+        state, slot, _run_chat = self._make_state_and_slot(tmp_path)
+        stream_calls: list[str] = []
+        client = self._make_client(stream_calls)
+
+        async def _slow_create(*args, **kwargs):
+            slot._stop_state = "soft_pending"
+            slot._stop_state = "idle"
+            return client, True, False
+
+        state.sessions.get_or_create = AsyncMock(side_effect=_slow_create)
+        accepted = MagicMock()
+        completion = MonitorCompletionHook(
+            "monitor1",
+            "failure-a",
+            AsyncMock(),
+            authorization_callback=AsyncMock(return_value=True),
+            acceptance_callback=accepted,
+        )
+
+        await _run_chat(state, slot, "hello", monitor_completion=completion)
+
+        assert completion.accepted is False
+        accepted.assert_not_called()
+        assert stream_calls == []
 
     @pytest.mark.asyncio
     async def test_no_stop_dispatches_normally(self, tmp_path: Path) -> None:
@@ -18978,6 +19261,28 @@ class TestForkSlotTail:
         mock_cfg = MagicMock()
         mock_cfg.dashboard.tail_fork_enabled = True
         monkeypatch.setattr("kiro_crew.dashboard.chat_fork.KiroCrewConfig.load", lambda: mock_cfg)
+
+    @pytest.mark.asyncio
+    async def test_tail_fork_keeps_messages_after_message_id(self, tmp_path):
+        state = _make_state(tmp_path)
+        slot = _make_tail_fork_slot(state)
+        target_id = slot.messages[1]["meta"]["mid"]
+
+        app = _make_app(state)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post(
+                "/api/chat/slots/src/fork",
+                json={"at_message_id": target_id, "direction": "tail"},
+            )
+
+            assert resp.status == 200
+            data = await resp.json()
+            assert data["messages"] == 2
+            assert data["direction"] == "tail"
+
+        new_slot = state._slots.get(data["key"])
+        visible = [m for m in new_slot.messages if m["role"] in ("user", "assistant")]
+        assert [m["content"] for m in visible] == ["msg2", "reply2"]
 
     @pytest.mark.asyncio
     async def test_tail_fork_keeps_messages_after_index(self, tmp_path):

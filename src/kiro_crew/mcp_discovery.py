@@ -1234,6 +1234,19 @@ def list_servers() -> list[McpServerInfo]:
                 info = _server_from_spec(name, spec, "mcp.json")
                 info.disabled = True
                 servers[name] = info
+            elif spec.get("disabled") and name not in servers and name in disabled_in_agent:
+                # Switched off from the dashboard: ``/api/mcp/toggle`` writes
+                # ``disabled: true`` into the scope that holds the server AND
+                # onto the agent entry — the agent-side marker is what stops a
+                # running kiro-cli session's server. Step 1 skipped that agent
+                # entry, so without this arm the row would vanish the moment the
+                # user disabled it, leaving nothing to re-enable from. The row is
+                # built from the agent entry, which holds the full spec: the
+                # scope's copy may be the bare ``{"disabled": true}`` stub the
+                # toggle creates for a server it found nowhere else.
+                info = _server_from_spec(name, agent_cfg["mcpServers"][name], "agent")
+                info.disabled = True
+                servers[name] = info
 
             # Per-tool disables: first-scope-wins.  Use "disabledTools" in
             # spec (key presence) rather than truthiness so an explicit

@@ -94,6 +94,7 @@ from kiro_crew.dashboard.handlers.connections import (  # noqa: E402, F401
     api_connections_mint_state,
     api_connections_premint,
     api_connections_status,
+    api_connections_test,
     api_mcp_oauth_relay,
 )
 from kiro_crew.dashboard.handlers.cron import (  # noqa: E402, F401
@@ -187,6 +188,7 @@ from kiro_crew.dashboard.handlers.hooks import (  # noqa: E402, F401
 from kiro_crew.dashboard.handlers.kiro_prerequisite import (  # noqa: E402, F401
     api_kiro_prerequisite_repair_specs,
     api_kiro_prerequisite_status,
+    api_kiro_prerequisite_update_cli,
 )
 from kiro_crew.dashboard.handlers.mcp import (  # noqa: E402, F401
     _bg_mcp_probe,

@@ -308,6 +308,7 @@ class FakeNudgeSvc:
         stop_sentinel_path="",
         max_runtime_secs=0,
         admission_check=None,
+        gate=True,
     ):
         if admission_check is not None and not admission_check():
             raise AssertionError("test admission unexpectedly changed")

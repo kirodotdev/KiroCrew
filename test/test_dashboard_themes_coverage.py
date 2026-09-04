@@ -1171,15 +1171,19 @@ class TestApiThemeDetailGet:
     async def test_installed_pack_detail_carries_level_and_assets(
         self, themes_dir: Path
     ) -> None:
-        _make_pack(themes_dir / "lcars")
+        pack = _make_pack(themes_dir / "lcars", level=1)
+        manifest_path = pack / "theme.json"
+        manifest = json.loads(manifest_path.read_text("utf-8"))
+        manifest["loaderIcons"] = ["star", "sparkles", "moon", "cloud"]
+        _write_json(manifest_path, manifest)
         resp = await th.api_theme_detail(_detail("GET", "lcars"))
         assert resp.status == 200
         payload = _body(resp)
         assert payload["slug"] == "lcars"
         assert payload["source"] == "installed"
-        assert payload["level"] == 0
+        assert payload["level"] == 1
         assert payload["dark"]["--bg"] == "#000000"
-        assert "assets" in payload
+        assert payload["assets"]["loaderIcons"] == manifest["loaderIcons"]
 
     @pytest.mark.asyncio
     async def test_invalid_installed_pack_is_500(self, themes_dir: Path) -> None:

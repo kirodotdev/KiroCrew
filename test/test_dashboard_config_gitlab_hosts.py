@@ -103,10 +103,13 @@ async def test_put_cannot_add_a_gitlab_host(handler_app, cfg_file):
     cfg = KiroCrewConfig.load()
     assert cfg.dashboard.quick_send is True
     assert cfg.dashboard.gitlab_hosts == []
-    # cfg.save() serializes every dataclass field, so the key is present -- what
-    # matters is that the caller-supplied host was never adopted.
+    # Asserted on the stored VALUE, not on the key being present: nothing in the
+    # write path is obliged to materialize a field the caller never legitimately
+    # set, and the loader resolves a missing key to the dataclass default -- which
+    # is exactly what the assertion above proves. What matters is that the
+    # caller-supplied host was never adopted.
     raw = json.loads(cfg_file.read_text(encoding="utf-8"))
-    assert raw["dashboard"]["gitlab_hosts"] == []
+    assert raw.get("dashboard", {}).get("gitlab_hosts", []) == []
 
 
 @pytest.mark.asyncio

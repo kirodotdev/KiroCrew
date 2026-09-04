@@ -76,6 +76,7 @@ vi.mock('../api/client', () => ({
     chatMode: vi.fn().mockResolvedValue({}),
     listInstances: vi.fn().mockResolvedValue({ instances: [], warm_set_cap: 5 }),
     themes: vi.fn().mockResolvedValue({ themes: [] }),
+    themeDetail: vi.fn().mockResolvedValue({}),
     themeBoot: vi.fn().mockResolvedValue({
       mode: '',
       color: '',
@@ -817,6 +818,54 @@ describe('App routing', () => {
     localStorage.removeItem('mc-nav')
   })
 
+  it('uses installed theme branding in the left rail and browser favicon', async () => {
+    const { api } = await import('../api/client')
+    localStorage.removeItem('mc-nav')
+    localStorage.setItem('mc-color-theme', 'custom-pearce')
+    vi.mocked(api.themes).mockResolvedValueOnce({
+      themes: [{ slug: 'pearce', name: 'Pearce CRT', emoji: 'PC', source: 'installed' }],
+    } as never)
+    vi.mocked(api.themeDetail).mockResolvedValueOnce({
+      slug: 'pearce',
+      name: 'Pearce CRT',
+      emoji: 'PC',
+      level: 1,
+      source: 'installed',
+      dark: { '--bg': '#000', '--text': '#fff', '--accent': '#fc0' },
+      light: { '--bg': '#fff', '--text': '#000', '--accent': '#840' },
+      assets: {
+        branding: {
+          botName: 'KIRO CREW',
+          logo: 'branding/logo.svg',
+          favicon: 'branding/favicon.svg',
+        },
+      },
+    } as never)
+
+    const view = renderWithProviders(<App />, { route: '/chat' })
+    try {
+      const nav = screen.getByRole('navigation', { name: 'Main navigation' })
+      const brand = within(nav).getByRole('button', { name: 'Collapse sidebar' })
+      await waitFor(() => expect(brand).toHaveTextContent('KIRO CREW'))
+      expect(brand.querySelector('img')).toHaveAttribute(
+        'src',
+        '/api/theme/pearce/assets/branding/logo.svg',
+      )
+      const favicon = document.getElementById('mc-theme-favicon') as HTMLLinkElement | null
+      expect(favicon).not.toBeNull()
+      expect(favicon).toHaveAttribute(
+        'href',
+        '/api/theme/pearce/assets/branding/favicon.svg',
+      )
+    } finally {
+      view.unmount()
+      document.getElementById('mc-theme-favicon')?.remove()
+      document.documentElement.style.removeProperty('--theme-logo')
+      localStorage.removeItem('mc-color-theme')
+      localStorage.removeItem('mc-nav')
+    }
+  })
+
   it('opens Search Everywhere from the theme-aware shadowless header trigger', () => {
     renderWithProviders(<App />, { route: '/chat' })
     const trigger = screen.getByRole('button', { name: 'Search sessions, files, and commands' })
@@ -938,10 +987,14 @@ describe('App routing', () => {
     // The update pill is a conditional sibling of the ladder: it never shrinks
     // and only exists while an update does, so the rung budget has extra bases
     // while it is mounted — and the pill's own label is viewport-gated
-    // (`hidden sm:inline`, 640px), so the footprint itself has TWO values:
-    // the widest shipped-locale label form at ≥640px, the bare icon below.
-    // A single unconditional shift measured at the labeled width would blank
-    // the whole capsule on phones for nothing. Constants are measured in
+    // (`hidden sm:inline`, 640px), so the shift exists ONLY where the label
+    // does: the widest shipped-locale label form at ≥640px, and NOTHING below.
+    // A phone hands the right group ≤240px routinely, so ANY shifted terminal
+    // rung there blanks the CPU/MEM/DSK and credits readouts for the whole
+    // time an update is pending (#7698); the 200–240px squeeze band with the
+    // icon-only pill degrades to the segments' nowrap leading-edge clip
+    // instead, which is the recoverable harm.
+    // Constants are measured in
     // capture/topbar-search-variants.tsx (?update=on&updatelabel=…); the
     // dev-only en-XA pseudolocale is excluded (nowrap backstop covers it).
     // Re-measure and update BOTH the constants here and the index.css rungs
@@ -986,10 +1039,8 @@ describe('App routing', () => {
       return Number(match![1])
     }
     const PILL_WIDEST_LABELED = 201.7 // de downloading_percent "Wird heruntergeladen 100 %"
-    const PILL_ICON_ONLY = 34
     const GROUP_GAP = 6
     const SHIFT_LABELED = Math.ceil(PILL_WIDEST_LABELED + GROUP_GAP)
-    const SHIFT_ICON = Math.ceil(PILL_ICON_ONLY + GROUP_GAP)
     const TERMINAL = '.tb-capsule > *:not(:first-child)'
     // ≥640px (label visible): every rung, terminal included, shifts by the
     // labeled footprint, inside the media gate.
@@ -999,13 +1050,19 @@ describe('App routing', () => {
         `labeled shift for ${sel}`
       ).toBe(SHIFT_LABELED)
     }
-    // <640px (icon-only): only the terminal rung shifts, by the icon footprint,
-    // OUTSIDE the media gate. The named readout rungs render desktop-only
-    // elements, so they need no icon-base form.
+    // <640px: NO `.tb-has-update` rung of any kind outside the media gate.
+    // THE regression guard for #7698: an unscoped shifted terminal rung
+    // (240px) applied on phones, where the right group is routinely ≤240px,
+    // so it blanked the CPU/MEM/DSK and credits readouts the whole time an
+    // update was pending. Below 640px the icon-only pill's footprint is
+    // absorbed by the segments' nowrap leading-edge clip and the base 200px
+    // terminal rung bounds the capsule.
     expect(
-      rung(rest, TERMINAL, true, 'icon-base shifted') - rung(rest, TERMINAL, false, 'base'),
-      'icon-only terminal shift'
-    ).toBe(SHIFT_ICON)
+      rest.match(/@container \([^)]*\)\{\s*\.tb-has-update /),
+      'no tb-has-update rung may exist outside the ≥640px media gate'
+    ).toBeNull()
+    // …and the base terminal rung must still bound the phone form.
+    expect(rung(rest, TERMINAL, false, 'base')).toBeGreaterThan(0)
     // The metric readout's icon stand-in must stay visible through the shifted
     // band, inside the same media gate: the base rule hides it from 531px up,
     // so the counterpart re-shows it between the base metrics rung and the

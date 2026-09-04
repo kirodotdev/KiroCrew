@@ -7,8 +7,7 @@
  * exercise the component's actual branching, not just bump statement counts.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { screen, waitFor, fireEvent, within, act } from '@testing-library/react'
-import userEvent from '@testing-library/user-event'
+import { screen, waitFor, fireEvent } from '@testing-library/react'
 import DesignTweak from '../apps/design-tweak/DesignTweakPage'
 import { renderWithProviders } from './helpers'
 import { i18nT } from '../i18n/t'

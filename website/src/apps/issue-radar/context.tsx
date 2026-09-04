@@ -20,7 +20,7 @@ import type {
 } from './lib/types'
 import { type ListDetailView, useListDetailView } from '../../hooks/useListDetailView'
 import { CREW_FILTERS, CREW_SORT_KEYS, CREW_VIEW_KINDS } from './lib/types'
-import { repoScopeKey } from './lib/links'
+import { repoScopeKey, sameRepoRef } from './lib/links'
 import { DEFAULT_BULK_CHUNK } from './lib/prActions'
 import {
   asArray, coerceAiLanguage, coerceDashboardTab, coerceRefreshPrefs, coerceSortKey, consumeAutoSelectFirstIssue,
@@ -33,6 +33,12 @@ import type { RepoRef } from './lib/refLinks'
  * in sync with the backend's ``_MEMBER_ASSOC_RANK`` and the detail badge's
  * "maintainer" grouping. */
 const MEMBER_ASSOCS = new Set(['OWNER', 'MEMBER', 'COLLABORATOR'])
+
+/** Tallies to show before the crews query answers. Module-level so the fallback
+ * is one identity for the app's lifetime: inlined, it is a fresh object on every
+ * render where the roster has not loaded, which rebuilds the context value and
+ * re-renders every consumer for nothing. */
+const NO_CREW_COUNTS: CrewCounts = { on_duty: 0, working: 0, paused: 0 }
 
 /* ── Persisted crews UI state ──────────────────────────────────────────────
  *
@@ -395,10 +401,18 @@ export function IssueRadarProvider({
   // The active repo's GitHub permissions, used to gate the write UI (label
   // edits + close/reopen). Sourced from the connected-repo list (populated at
   // connect + self-healed by /repos), so no extra call is needed.
+  //
+  // Matched on the FULL identity. This was the one lookup of its four that
+  // compared the slug alone, while the rail badge, the repo switcher and the repo
+  // settings page each spelled out the forge comparison — and it is the lookup
+  // with teeth, because `canWrite` below gates the label-edit and close/reopen
+  // controls. On a mixed install holding `acme/widget` on two forges, a loose
+  // match could read the OTHER repository's permissions and either hide writes the
+  // user has or offer writes they do not.
   const activePermissions = useMemo<RepoPermissions | null>(() => {
-    const r = repos.find((x) => x.owner === owner && x.repo === repo)
+    const r = repos.find((x) => sameRepoRef(x, active))
     return r?.permissions ?? null
-  }, [repos, owner, repo])
+  }, [repos, active])
   const canWrite = !!(
     activePermissions &&
     (activePermissions.triage || activePermissions.push || activePermissions.maintain || activePermissions.admin)
@@ -750,8 +764,7 @@ export function IssueRadarProvider({
     staleTime: refreshPrefs.staleTimeMs,
   })
   const crews = useMemo(() => asArray<Crew>(crewsQuery.data?.crews), [crewsQuery.data])
-  const crewCounts: CrewCounts = crewsQuery.data?.counts
-    ?? { on_duty: 0, working: 0, paused: 0 }
+  const crewCounts: CrewCounts = crewsQuery.data?.counts ?? NO_CREW_COUNTS
 
   // Keep the selected page pointing at a crew that exists in THIS repo, and open
   // the first crew when nothing valid is selected.
@@ -1393,7 +1406,12 @@ export function IssueRadarProvider({
     pullsQuery.isLoading, prPersonFilterActive, pullsSearchQuery.error, pullsQuery.error,
     refreshPullsMutation.error, refreshPulls, pullsSearchQuery.isFetching, refreshPullsMutation.isPending,
     pullsSearchQuery.dataUpdatedAt, pullsQuery.dataUpdatedAt, pullsSearchQuery.data, pullsQuery.data,
-    pullsPartial, pullsFirstPageQuery.data,
+    // `pullsFirstPageQuery.data` is deliberately absent: the context value does
+    // not read it. `pullsPartial` and `pulls` are both recomputed from it in
+    // render scope and both are listed, so listing the query object too would
+    // rebuild the whole context — and re-render every consumer — on each poll
+    // that returns an identical first page under a new object identity.
+    pullsPartial,
     refreshPrefs, setRefreshPrefs, countByPrLabel, prQuery, setPrQuery,
     aiLanguage, setAiLanguage,
     prSelectedLabels, togglePrLabel, prAuthoredByMe, togglePrAuthoredByMe,

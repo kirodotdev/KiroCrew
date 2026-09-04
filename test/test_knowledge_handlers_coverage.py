@@ -1029,7 +1029,7 @@ class TestRebuildEmbeddingsJob:
     async def test_completed_job_records_processed_count(self, store, monkeypatch):
         job_id = _add_job(store, "reb-1")
 
-        async def _fake_rebuild(_store, _emb, *, job_id, force):
+        async def _fake_rebuild(_store, _emb, *, job_id, force, pace):
             return 5
 
         monkeypatch.setattr(f"{MODULE}.rebuild_embeddings", _fake_rebuild)
@@ -1460,32 +1460,29 @@ class TestDeleteSourceBranches:
             assert (await client.delete("/api/knowledge/sources/ghost")).status == 404
 
     @pytest.mark.asyncio
-    async def test_auto_added_source_is_tombstoned(self, store, monkeypatch):
-        sid = store.add_source("auto", "local_folder", "/tmp/auto",
-                               properties={kh.AUTO_ADDED_PROP: True})
-        seen = {}
+    async def test_delete_never_tombstones_any_source(self, store, monkeypatch):
+        """No source is recorded as dismissed, auto-added or not.
 
-        def _cascade(source_id, dismiss_uri=None):
-            seen["source_id"] = source_id
-            seen["dismiss_uri"] = dismiss_uri
-
-        monkeypatch.setattr(store, "delete_source_cascade", _cascade)
+        The tombstone existed so a recurring discovery sweep could not re-create the
+        auto source a user had just deleted. Both discovery loops are gone, so a
+        deletion is final on its own and recording it would be a write nothing reads.
+        """
+        auto = store.add_source("auto", "local_folder", "/tmp/auto",
+                                properties={"auto_added": True})
+        manual = store.add_source("manual", "local_folder", "/tmp/manual")
+        seen: list[tuple] = []
+        monkeypatch.setattr(store, "delete_source_cascade",
+                            lambda source_id: seen.append((source_id,)))
         async with _client(_make_app(store)) as client:
-            resp = await client.delete(f"/api/knowledge/sources/{sid}")
-            assert resp.status == 200
-            assert (await resp.json())["status"] == "deleted"
-        assert seen == {"source_id": sid, "dismiss_uri": "/tmp/auto"}
-
-    @pytest.mark.asyncio
-    async def test_hand_added_source_gets_no_tombstone(self, store, monkeypatch):
-        sid = store.add_source("manual", "local_folder", "/tmp/manual")
-        seen = {}
-        monkeypatch.setattr(
-            store, "delete_source_cascade",
-            lambda source_id, dismiss_uri=None: seen.update(uri=dismiss_uri))
-        async with _client(_make_app(store)) as client:
-            assert (await client.delete(f"/api/knowledge/sources/{sid}")).status == 200
-        assert seen == {"uri": None}
+            for sid in (auto, manual):
+                resp = await client.delete(f"/api/knowledge/sources/{sid}")
+                assert resp.status == 200
+                assert (await resp.json())["status"] == "deleted"
+        # One positional argument each: the cascade has no dismissal parameter left
+        # for a caller to pass, so neither row can be tombstoned by mistake.
+        assert seen == [(auto,), (manual,)]
+        assert not store.db.execute(
+            "SELECT 1 FROM dismissed_auto_sources").fetchall()
 
     @pytest.mark.asyncio
     async def test_unreadable_properties_do_not_block_the_delete(self, store,
@@ -1494,8 +1491,7 @@ class TestDeleteSourceBranches:
         store.db.execute("UPDATE sources SET properties = ? WHERE id = ?",
                          ("{not json", sid))
         store.db.commit()
-        monkeypatch.setattr(store, "delete_source_cascade",
-                            lambda source_id, dismiss_uri=None: None)
+        monkeypatch.setattr(store, "delete_source_cascade", lambda source_id: None)
         async with _client(_make_app(store)) as client:
             assert (await client.delete(f"/api/knowledge/sources/{sid}")).status == 200
 
@@ -1503,7 +1499,7 @@ class TestDeleteSourceBranches:
     async def test_cascade_failure_is_500(self, store, monkeypatch):
         sid = store.add_source("s", "local_folder", "/tmp/s")
 
-        def _boom(source_id, dismiss_uri=None):
+        def _boom(source_id):
             raise RuntimeError("locked")
 
         monkeypatch.setattr(store, "delete_source_cascade", _boom)
@@ -1655,8 +1651,8 @@ class TestStartWatcherAsync:
         started = asyncio.Event()
 
         class _FakeWatcher:
-            def __init__(self, *, store, pipeline, project_dirs):
-                self.project_dirs = project_dirs
+            def __init__(self, *, store, pipeline):
+                self.store = store
 
             async def start(self):
                 started.set()
@@ -1665,7 +1661,6 @@ class TestStartWatcherAsync:
                 return None
 
         monkeypatch.setattr(f"{MODULE}.KnowledgeWatcher", _FakeWatcher)
-        monkeypatch.setattr(f"{MODULE}._slot_project_snapshot", lambda _s: ["/proj"])
 
         app = _make_app(store, pipeline=MagicMock(), watcher=old)
         await kh._start_watcher_async(app)
@@ -1673,8 +1668,10 @@ class TestStartWatcherAsync:
             await asyncio.wait_for(started.wait(), timeout=5)
             old.stop.assert_awaited_once()
             assert isinstance(app["knowledge_watcher"], _FakeWatcher)
-            # The dirs callback reads live chat-slot projects, not recents.
-            assert app["knowledge_watcher"].project_dirs() == ["/proj"]
+            # The watcher is constructed with the store and pipeline only: it no
+            # longer receives a project-dirs callback, because nothing registers a
+            # project directory on its own.
+            assert app["knowledge_watcher"].store is store
         finally:
             task = app["_knowledge_watcher_task"]
             task.cancel()

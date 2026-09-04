@@ -360,6 +360,30 @@ class TestContextBuilder:
         assert "lobsters" in msg
         assert "hello" in msg
 
+    def test_build_message_resumed_session_slim_injection(self, tmp_path):
+        """A resumed session (ACP session/load restored native history) must
+        NOT re-inject the full session context — the restored transcript
+        already contains the original session-start injection. Only the
+        minimal header (date/identity) plus a resume marker is injected."""
+        ws = tmp_path / "ws"
+        store = MemoryStore(workspace=ws)
+        store.write("# Memory\n\nUser likes lobsters.")
+        builder = ContextBuilder(
+            memory=store,
+            skills=SkillsLoader(skills_path=tmp_path / "skills", install_builtins=False),
+        )
+        msg, _ = builder.build_message("hello", is_new_session=True, resumed=True)
+        assert "[SESSION RESUMED" in msg, "resume marker missing"
+        assert "[AGENT SYSTEM PROMPT]" not in msg, "persona must not be re-injected"
+        assert "lobsters" not in msg, "memory must not be re-injected"
+        assert "[CURRENT DATE]" in msg, "minimal date header missing"
+        assert "[CRITICAL RULES" in msg, "UI-contract rules must be re-anchored on resume"
+        assert "hello" in msg
+        # Control: a genuinely new (non-resumed) session keeps the full injection.
+        msg_full, _ = builder.build_message("hello", is_new_session=True, resumed=False)
+        assert "lobsters" in msg_full
+        assert "[SESSION RESUMED" not in msg_full
+
     def test_build_message_injects_folder_breadcrumb(self, tmp_path):
         builder = ContextBuilder(
             memory=MemoryStore(workspace=tmp_path / "ws"),
@@ -1018,8 +1042,9 @@ class TestCurrentDateTimezone:
 
     def test_current_date_uses_configured_timezone(self, tmp_path):
         builder = self._make_builder(tmp_path)
-        with patch("kiro_crew.cron.KiroCrewConfig.load") as mock_load:
-            mock_load.return_value.timezone = "Asia/Tokyo"
+        # The PUBLISHED default, not a config load: get_local_tz reads the
+        # snapshot so prompt assembly does no config I/O on the event loop.
+        with patch("kiro_crew.cron.published_config_timezone", return_value="Asia/Tokyo"):
             ctx = builder.build_session_context()
         # Tokyo is JST/UTC+9; %Z renders "JST"
         assert "[CURRENT DATE]" in ctx
@@ -1028,8 +1053,7 @@ class TestCurrentDateTimezone:
 
     def test_current_date_falls_back_to_utc_when_config_empty(self, tmp_path):
         builder = self._make_builder(tmp_path)
-        with patch("kiro_crew.cron.KiroCrewConfig.load") as mock_load:
-            mock_load.return_value.timezone = ""
+        with patch("kiro_crew.cron.published_config_timezone", return_value=""):
             ctx = builder.build_session_context()
         date_line = [ln for ln in ctx.splitlines() if ln.startswith("[CURRENT DATE]")][0]
         assert "UTC" in date_line

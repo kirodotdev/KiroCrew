@@ -13,7 +13,10 @@ export interface WfEvent {
   seq: number
   ts: string
   type: string
-  data: Record<string, any>
+  /** Unvalidated wire payload: the backend sends a different set of fields per
+   *  `type`, and nothing here parses it, so every read is asserted at the point
+   *  the `type` check has already picked the shape. */
+  data: Record<string, unknown>
 }
 
 export interface AgentRow {
@@ -40,17 +43,21 @@ export function groupByPhase(events: WfEvent[]): PhaseGroup[] {
   }
   for (const e of events) {
     if (e.type === 'phase_started') {
-      current = e.data.title || ''
+      current = (e.data.title as string | undefined) || ''
       ensure(current)
     } else if (e.type === 'agent_started') {
-      const row: AgentRow = { agent_id: e.data.agent_id, label: e.data.label }
-      byId.set(e.data.agent_id, row)
-      ensure(e.data.phase ?? current).agents.push(row)
+      // Asserted, not coerced: the backend sends a different field set per `type`
+      // and nothing here validates it, so these reads carry exactly the trust the
+      // `any` did. Narrowing at runtime would change what a malformed event
+      // renders, which a lint pass has no business deciding.
+      const row: AgentRow = { agent_id: e.data.agent_id as string, label: e.data.label as string | undefined }
+      byId.set(e.data.agent_id as string, row)
+      ensure((e.data.phase as string | undefined) ?? current).agents.push(row)
     } else if (e.type === 'agent_progress') {
-      const row = byId.get(e.data.agent_id)
-      if (row) row.last_tool = e.data.last_tool
+      const row = byId.get(e.data.agent_id as string)
+      if (row) row.last_tool = e.data.last_tool as string | undefined
     } else if (e.type === 'agent_finished') {
-      const row = byId.get(e.data.agent_id)
+      const row = byId.get(e.data.agent_id as string)
       if (row) row.ok = !!e.data.ok
     }
   }
@@ -91,10 +98,10 @@ export function normalizeRunSessionKey(s: string): string {
 export function latestBudget(events: WfEvent[]): { spent: number; total: number | null } | null {
   let out: { spent: number; total: number | null } | null = null
   for (const e of events) {
-    if (e.type === 'run_started') out = { spent: 0, total: e.data.budget_total ?? null }
+    if (e.type === 'run_started') out = { spent: 0, total: (e.data.budget_total as number | null | undefined) ?? null }
     else if (e.type === 'budget_update') {
       const prevTotal: number | null = out ? out.total : null
-      out = { spent: e.data.spent, total: prevTotal }
+      out = { spent: e.data.spent as number, total: prevTotal }
     }
   }
   return out
