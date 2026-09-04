@@ -555,6 +555,12 @@ async def get_entity_graph(request: web.Request) -> web.Response:
         depth = min(5, max(1, int(request.query.get("depth", 2) or 2)))
     except ValueError:
         return web.json_response({"error": "invalid depth"}, status=400)
+    # Materialise the graph off-loop before touching it. The store defers the
+    # load to its first reader (#8329), and every `.graph` read below runs on
+    # the event loop, where the loop-stall watchdog is armed -- so the scan has
+    # to happen on a worker thread, the same way this module already offloads
+    # the store's SQL.
+    await asyncio.to_thread(store.ensure_graph_loaded)
     if not store.graph.has_node(entity_id):
         return web.json_response({"error": "entity not found"}, status=404)
     return web.json_response(store.get_entity_subgraph(entity_id, depth))
@@ -635,6 +641,12 @@ async def get_full_graph(request: web.Request) -> web.Response:
         limit = min(200, max(1, int(request.query.get("limit", 100) or 100)))
     except ValueError:
         return web.json_response({"error": "invalid limit"}, status=400)
+
+    # Materialise the graph off-loop before any `.graph` read below. The store
+    # defers the load to its first reader (#8329); this handler already offloads
+    # its SQL for the same reason, and the graph reads were only safe inline
+    # while the graph was built during construction.
+    await asyncio.to_thread(store.ensure_graph_loaded)
 
     # Source filter: restrict to entities mentioned in items from specific sources
     source_id_param = request.query.get("source_id", "").strip()

@@ -1701,7 +1701,7 @@ Searches the Knowledge Library for relevant content. Escalated from App Store to
 - **Output format**: source + content only, no score metadata (~2500 token budget)
 - **Graceful degradation**: returns helpful message when knowledge DB not configured
 - **Security**: credentials/exfiltration URL redaction on all results; SEL audit events for all outcomes (`success`, `no_results`, `not_configured`)
-- **Store/embedder cache**: the `KnowledgeStore` (schema DDL + orphan-cleanup migration + in-memory graph load) and the embedder are cached process-wide in `mcp_core.py` (`_get_knowledge_search`) instead of rebuilt per call. Keyed on a signature of `knowledge.db`, its `-wal` sidecar, and `config.json`, so out-of-band dashboard ingestion (which writes the DB/WAL) or a config change triggers a rebuild on the next search; the prior connection is closed on rebuild. Avoids the per-call DDL/migrate/graph-load and the embedder availability probe (which may lazily load the ~700MB in-process model).
+- **Store/embedder cache**: the `KnowledgeStore` (schema DDL + orphan-cleanup migration; the in-memory graph is materialised by the first graph reader, not by construction — see `ensure_graph_loaded`, #8329) and the embedder are cached process-wide in `mcp_core.py` (`_get_knowledge_search`) instead of rebuilt per call. Keyed on a signature of `knowledge.db`, its `-wal` sidecar, and `config.json`, so out-of-band dashboard ingestion (which writes the DB/WAL) or a config change triggers a rebuild on the next search; the prior connection is closed on rebuild. Avoids the per-call DDL/migrate/graph-load and the embedder availability probe (which may lazily load the ~700MB in-process model).
 
 #### Knowledge De-duplication (`knowledge/dedup.py`)
 
