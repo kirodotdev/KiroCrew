@@ -2803,7 +2803,9 @@ class KiroCrewConfig:
                 ),
                 semantic_keys=memory_data.get("semantic_keys", []),
                 history_idle_hours=memory_data.get("history_idle_hours", 3.0),
-                history_max_days=memory_data.get("history_max_days", 365),
+                history_max_days=_safe_nonnegative_int(
+                    memory_data.get("history_max_days", 365), 365
+                ),
                 migrated=memory_data.get("migrated", False),
             ),
             knowledge=KnowledgeConfig(
