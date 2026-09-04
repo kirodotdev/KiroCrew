@@ -14166,7 +14166,19 @@
       "driving_none": "Сейчас не управляет ни одним сеансом.",
       "driving_idle": "Простой",
       "driving_show_all": "Показать все ({{count}})",
-      "driving_show_less": "Свернуть"
+      "driving_show_less": "Свернуть",
+      "webview_heading": "Панель",
+      "webview_collapse": "Свернуть панель",
+      "webview_open": "Открыть панель",
+      "webview_value_yes": "да",
+      "webview_value_no": "нет",
+      "webview_contained": "Изолировано",
+      "webview_contained_detail": "заполнено этой командой, изолировано от этой страницы, отправка данных заблокирована",
+      "webview_empty": "Эта команда ещё не заполнила свою панель. Добавьте её сервер панели в разделе «Инструменты и MCP» в менеджере команд, чтобы она смогла её опубликовать.",
+      "webview_error": "Не удалось отобразить панель этой команды.",
+      "webview_frame_title": "Панель, заполненная командой {{crew}}",
+      "webview_rendering": "Отображение панели…",
+      "webview_retry": "Повторить"
     }
   },
   "privacyDisclosure": {

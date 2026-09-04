@@ -13987,7 +13987,19 @@
       "driving_none": "Al momento non guida nessuna sessione.",
       "driving_idle": "Inattivo",
       "driving_show_all": "Mostra tutte ({{count}})",
-      "driving_show_less": "Mostra meno"
+      "driving_show_less": "Mostra meno",
+      "webview_heading": "Dashboard",
+      "webview_collapse": "Comprimi la dashboard",
+      "webview_open": "Apri la dashboard",
+      "webview_value_yes": "sì",
+      "webview_value_no": "no",
+      "webview_contained": "Isolato",
+      "webview_contained_detail": "compilata da questa crew, isolata da questa pagina e impossibilitata a inviare dati",
+      "webview_empty": "Questa crew non ha ancora compilato la sua dashboard. Aggiungi il suo server pannello in «Strumenti e MCP» nel gestore delle crew per consentirle di pubblicarne una.",
+      "webview_error": "Non è stato possibile rendere la dashboard di questa crew.",
+      "webview_frame_title": "Dashboard compilata da {{crew}}",
+      "webview_rendering": "Rendering della dashboard…",
+      "webview_retry": "Riprova"
     }
   },
   "privacyDisclosure": {

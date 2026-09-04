@@ -1105,6 +1105,26 @@ _MANAGED_MCP_SERVERS: dict[str, dict] = {
         "invocation_fn": lambda: _kirocrew_mcp_invocation("mcp-dashboard"),
         "opt_in": True,
     },
+    # Agent panels (an agent publishes DATA describing its own state; the
+    # dashboard renders it with a human-authored template in a sandboxed frame).
+    # ``opt_in`` for the same reason the dashboard set is: this is an assignable
+    # capability for long-running agents, and a default session must spend no
+    # context on a tool it will never call.
+    #
+    # Its own server rather than a tool added to ``kirocrew-dashboard``, because
+    # assignment is per server and that set is ratcheted to folder organization
+    # plus session control. Publishing a document is neither, and folding it in
+    # would widen a set the user granted for something else.
+    #
+    # No ``autoApprove`` key, for the reason the two sets above have none: an
+    # autoApproved MCP tool is approved inside kiro-cli and never reaches
+    # ``hooks.on_tool_call``, so the deny floor and governance ceiling would be
+    # bypassed -- and this tool's input is derived from text the agent read
+    # unattended.
+    "kirocrew-panel": {
+        "invocation_fn": lambda: _kirocrew_mcp_invocation("mcp-panel"),
+        "opt_in": True,
+    },
 }
 
 

@@ -1179,6 +1179,22 @@ export function useWebSocket() {
             }
             break
           }
+          case 'panel_published': {
+            // A crew replaced its webview. The drawer's query sets no finite
+            // staleTime (the client's default is Infinity, freshness by push), so
+            // without this the operator kept looking at the first snapshot read
+            // when the drawer opened -- and the "23m ago" chip froze with it.
+            //
+            // Invalidated by SLUG PREFIX, so it reaches the ['member-panel', slug,
+            // member] key without the frame having to carry the crew's name. The
+            // frame is slug-only on purpose: the ownership digest must not reach a
+            // client, and the refetch re-asks the server, which re-checks ownership.
+            const slug = String((data as { slug?: unknown }).slug || '')
+            if (slug) {
+              queryClient.invalidateQueries({ queryKey: ['member-panel', slug] })
+            }
+            break
+          }
           case 'notification_ack':
             dispatch(ackNotificationByTs(data.ts))
             break

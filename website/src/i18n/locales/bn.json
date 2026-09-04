@@ -13810,7 +13810,19 @@
       "driving_none": "এই মুহূর্তে কোনো সেশন পরিচালনা করছে না।",
       "driving_idle": "নিষ্ক্রিয়",
       "driving_show_all": "সব দেখুন ({{count}})",
-      "driving_show_less": "কম দেখুন"
+      "driving_show_less": "কম দেখুন",
+      "webview_heading": "ড্যাশবোর্ড",
+      "webview_collapse": "ড্যাশবোর্ড সংকুচিত করুন",
+      "webview_open": "ড্যাশবোর্ড খুলুন",
+      "webview_value_yes": "হ্যাঁ",
+      "webview_value_no": "না",
+      "webview_contained": "সীমাবদ্ধ",
+      "webview_contained_detail": "এই ক্রু দ্বারা পূরণ করা, এই পৃষ্ঠা থেকে বিচ্ছিন্ন এবং ডেটা পাঠাতে বাধাপ্রাপ্ত",
+      "webview_empty": "এই ক্রু এখনও তার ড্যাশবোর্ড পূরণ করেনি। ক্রু ম্যানেজারের «টুল ও MCP»-এ এর প্যানেল সার্ভার যোগ করুন, তখন এটি প্রকাশ করতে পারবে।",
+      "webview_error": "এই ক্রুর ড্যাশবোর্ড রেন্ডার করা যায়নি।",
+      "webview_frame_title": "{{crew}} দ্বারা পূরণ করা ড্যাশবোর্ড",
+      "webview_rendering": "ড্যাশবোর্ড রেন্ডার করা হচ্ছে…",
+      "webview_retry": "আবার চেষ্টা করুন"
     }
   },
   "privacyDisclosure": {

@@ -6,8 +6,7 @@ import { useScrollMemory } from '../hooks/useScrollMemory'
 import { useCommentBridge, type IframeSelection } from '../hooks/useCommentBridge'
 import { InlineCommentOverlay } from './InlineCommentOverlay'
 import { Btn } from './ui'
-import { sanitizeCssValue } from '../lib/cssSanitize'
-import { THEME_VAR_NAMES, buildSrcdoc } from '../lib/widgetSrcdoc'
+import { buildSrcdoc, readThemeVars } from '../lib/widgetSrcdoc'
 import {
   widgetHeightKey, getWidgetHeight, setWidgetHeight, estimateWidgetHeight,
   clampFrameHeight,
@@ -59,16 +58,6 @@ const NO_DOCUMENT_BOX_HEIGHT = 480
  * rather than the `failed` state's failure claim. */
 const DOC_REPORT_GRACE_MS = 3000
 
-function readThemeVars(): Record<string, string> {
-  if (typeof window === 'undefined' || typeof document === 'undefined') return {}
-  const computed = getComputedStyle(document.documentElement)
-  const out: Record<string, string> = {}
-  for (const name of THEME_VAR_NAMES) {
-    const v = sanitizeCssValue(computed.getPropertyValue(name))
-    if (v) out[name] = v
-  }
-  return out
-}
 
 /** Map an artifact `kind` to the FileType the ContentRenderer expects.
  * Only used for non-iframe kinds (widget/html still go through the iframe). */

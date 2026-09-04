@@ -13809,7 +13809,19 @@
       "driving_none": "Steuert derzeit keine Sitzungen.",
       "driving_idle": "Inaktiv",
       "driving_show_all": "Alle anzeigen ({{count}})",
-      "driving_show_less": "Weniger anzeigen"
+      "driving_show_less": "Weniger anzeigen",
+      "webview_heading": "Dashboard",
+      "webview_collapse": "Dashboard einklappen",
+      "webview_open": "Dashboard öffnen",
+      "webview_value_yes": "ja",
+      "webview_value_no": "nein",
+      "webview_contained": "Isoliert",
+      "webview_contained_detail": "von dieser Crew gefüllt, von dieser Seite isoliert und am Senden von Daten gehindert",
+      "webview_empty": "Diese Crew hat ihr Dashboard noch nicht gefüllt. Füge ihren Panel-Server unter „Tools und MCP“ in der Crew-Verwaltung hinzu, damit sie eines veröffentlichen kann.",
+      "webview_error": "Das Dashboard dieser Crew konnte nicht gerendert werden.",
+      "webview_frame_title": "Von {{crew}} gefülltes Dashboard",
+      "webview_rendering": "Dashboard wird gerendert…",
+      "webview_retry": "Erneut versuchen"
     }
   },
   "privacyDisclosure": {

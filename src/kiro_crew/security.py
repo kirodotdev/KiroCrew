@@ -7502,6 +7502,22 @@ _SENSITIVE_HOME_DIRS: list[str] = [
 _CREW_HOME_PREFIXES: tuple[str, ...] = (".kiro/crew", ".kirocrew")
 _CREW_SECRET_LEAVES: list[str] = [
     ".env",
+    # Operator-authored panel templates (agent_panel.py). Fenced for a stronger
+    # reason than privacy: a crew's webview is a human-authored TEMPLATE filled
+    # with crew-published DATA, and that split is the whole containment story --
+    # layout is reviewed, only data is untrusted, so data can be escaped at one
+    # boundary. An agent's auto-approved file tools could otherwise drop a .html
+    # in here and author markup directly, collapsing the split and handing a
+    # hostile issue body a path into a rendered document.
+    "panel-templates",
+    # Published crew webview RECORDS (agent_panel.py). Fenced because the record
+    # is an OWNERSHIP claim the store reads back to refuse a colliding write, and
+    # because it is the REDACTED copy of untrusted text: a direct write would
+    # forge another crew's panel past both the ownership check and the redactors
+    # in one step, and the drawer would render the result. The sandbox masks the
+    # same leaf (sandbox._CREW_HIDDEN_LEAVES) so a runtime-constructed path inside
+    # a sandboxed command cannot reach around this gate either.
+    "crew-panels",
     # Owner-authored meetings edits are deliberately outside the meeting
     # directories agents write. They are returned verbatim to the owner and may
     # contain credential-shaped examples or private corrections, so an agent must

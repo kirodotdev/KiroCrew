@@ -53,7 +53,10 @@ ALWAYS_ON_BIN_MCP_SERVERS = (
     "kirocrew-core",
     "kirocrew-computer",
 )
-OPT_IN_BIN_MCP_SERVERS = ("kirocrew-dashboard",)
+OPT_IN_BIN_MCP_SERVERS = (
+    "kirocrew-dashboard",
+    "kirocrew-panel",
+)
 
 # Every managed-binary server name, regardless of how it reaches a spec. This is
 # the cleanup view: Kiro Crew never legitimately writes any of them into the

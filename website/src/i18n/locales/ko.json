@@ -13631,7 +13631,19 @@
       "driving_none": "현재 구동 중인 세션이 없습니다.",
       "driving_idle": "유휴",
       "driving_show_all": "모두 보기({{count}})",
-      "driving_show_less": "접기"
+      "driving_show_less": "접기",
+      "webview_heading": "대시보드",
+      "webview_collapse": "대시보드 접기",
+      "webview_open": "대시보드 열기",
+      "webview_value_yes": "예",
+      "webview_value_no": "아니요",
+      "webview_contained": "격리됨",
+      "webview_contained_detail": "이 크루가 채웠으며, 이 페이지와 격리되어 데이터 전송이 차단됩니다",
+      "webview_empty": "이 크루는 아직 대시보드를 채우지 않았습니다. 크루 관리 페이지의 '도구 및 MCP'에서 패널 서버를 추가하면 게시할 수 있습니다.",
+      "webview_error": "이 크루의 대시보드를 렌더링할 수 없습니다.",
+      "webview_frame_title": "{{crew}}이(가) 채운 대시보드",
+      "webview_rendering": "대시보드를 렌더링하는 중…",
+      "webview_retry": "다시 시도"
     }
   },
   "privacyDisclosure": {

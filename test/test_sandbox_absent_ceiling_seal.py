@@ -26,6 +26,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import stat
 import sys
 import tempfile
@@ -135,15 +136,68 @@ class TestSealAppliesToAPreviouslyAbsentCeiling:
             assert path.is_dir()
             assert stat.S_IMODE(path.stat().st_mode) == 0o700
 
-    def test_created_ceilings_are_in_the_launcher_readonly_list(self, crew_home):
-        """Creating a path is only useful if the seal loop is handed it."""
-        created = sandbox._materialize_sealable_ceilings()
-        script = sandbox._build_launcher_script("strict")
-        match = re.search(r"READONLY_DIRS = (\[.*?\])\n", script, re.S)
-        assert match
-        readonly = set(json.loads(match.group(1)))
+    def test_the_hidden_records_dir_is_materialised(self, crew_home):
+        """The MASK's counterpart to the ceiling case above.
 
-        assert set(created) <= readonly
+        A hidden leaf has the same existence requirement as a read-only ceiling and
+        the opposite reason for it: on Linux the mask is a bind mount whose loop
+        guards on ``isdir``, so an ABSENT directory is silently skipped -- and
+        skipped precisely on the fresh install where the agent could create it
+        first and write what the gateway later reads back as authoritative.
+
+        Derived from the tuple, so a second hidden leaf is covered without editing
+        this test.
+        """
+        created = set(sandbox._materialize_sealable_ceilings())
+
+        assert sandbox._CREW_PRECREATE_HIDDEN_DIR_LEAVES, "empty tuple would be vacuous"
+        for leaf in sandbox._CREW_PRECREATE_HIDDEN_DIR_LEAVES:
+            path = crew_home / leaf
+            assert str(path) in created, f"{leaf} was not materialised, so its mask is skipped"
+            assert path.is_dir()
+            assert stat.S_IMODE(path.stat().st_mode) == 0o700
+
+    def test_created_ceilings_are_in_the_launcher_readonly_list(self, crew_home):
+        """Creating a path is only useful if the seal loop is handed it.
+
+        Reconciled PER DISPOSITION rather than against one list, because two kinds
+        of path are materialised for opposite reasons and each has its own loop:
+
+        * a read-only ceiling is created so the SEAL can apply -> ``READONLY_DIRS``;
+        * a hidden leaf is created so the MASK can -> ``SENSITIVE_DIRS``.
+
+        Asserting every created path against ``READONLY_DIRS`` alone would demand
+        that a directory meant to be invisible in the sandbox be exposed read-only
+        instead -- the exact inversion of its purpose. Derived from the two
+        precreate tuples, so a leaf added to either one must appear in the matching
+        launcher list rather than in whichever list this test happened to name.
+        """
+        created = set(sandbox._materialize_sealable_ceilings())
+        script = sandbox._build_launcher_script("strict")
+
+        def _launcher_list(name: str) -> set[str]:
+            match = re.search(rf"{name} = (\[.*?\])\n", script, re.S)
+            assert match, f"{name} is not emitted by the launcher script"
+            return set(json.loads(match.group(1)))
+
+        readonly = _launcher_list("READONLY_DIRS")
+        masked = _launcher_list("SENSITIVE_DIRS")
+
+        # Every created path is handed to exactly the loop its disposition needs.
+        for leaf in sandbox._CREW_PRECREATE_HIDDEN_DIR_LEAVES:
+            path = str(crew_home / leaf)
+            if path not in created:
+                continue  # covered by test_the_hidden_records_dir_is_materialised
+            assert path in masked, f"{leaf} is created to be masked but is not in SENSITIVE_DIRS"
+            assert path not in readonly, (
+                f"{leaf} is exposed READ-ONLY as well as masked; a hidden leaf that "
+                "is also readable is not hidden"
+            )
+
+        # And nothing created is left with no disposition at all -- the original
+        # invariant, widened rather than weakened.
+        unaccounted = created - readonly - masked
+        assert not unaccounted, f"created but handed to no seal loop: {sorted(unaccounted)}"
 
     def test_namespace_argv_materializes_before_the_launcher_runs(self, crew_home):
         """The production wiring, not just the helper.
@@ -181,6 +235,74 @@ class TestSealAppliesToAPreviouslyAbsentCeiling:
         sandbox._materialize_sealable_ceilings()
 
         assert list(legacy.iterdir()) == []
+
+
+@_POSIX_ONLY
+class TestALinkedProtectedLeafRefusesTheSpawn:
+    """A disposition attaches to a NAME; following a link voids it.
+
+    The fourth probe of the same fence, and the same shape as the other three: the
+    path the launcher covers and the path the bytes reach diverged. Here
+    ``.resolve()`` followed the link, so the store wrote through to the target while
+    the bind-mask -- which guards on ``isdir`` of the leaf -- attached to the link.
+    The link name stays in the writable data home, so a sandboxed process can unlink
+    it and drop a directory of its own.
+
+    Refused rather than warned, unlike every other ceiling: see
+    ``sandbox._CREW_NO_ALIAS_LEAVES`` for why the chezmoi/stow argument that earns
+    the warning elsewhere does not apply to these two.
+    """
+
+    @pytest.mark.parametrize("leaf", sorted(sandbox._CREW_NO_ALIAS_LEAVES))
+    def test_a_symlinked_leaf_refuses(self, crew_home, tmp_path, leaf):
+        elsewhere = tmp_path / f"elsewhere-{leaf}"
+        elsewhere.mkdir()
+        link = crew_home / leaf
+        if link.exists() or link.is_symlink():
+            link.unlink() if link.is_symlink() else shutil.rmtree(link)
+        link.symlink_to(elsewhere, target_is_directory=True)
+
+        with pytest.raises(sandbox.SandboxCeilingUnsealable) as caught:
+            sandbox._materialize_sealable_ceilings()
+        assert "SYMLINK" in str(caught.value)
+        assert leaf in str(caught.value)
+
+    @pytest.mark.parametrize("leaf", sorted(sandbox._CREW_NO_ALIAS_LEAVES))
+    def test_the_refusal_beats_the_warning_path(self, crew_home, tmp_path, leaf, caplog):
+        """It must REFUSE, not log that the path was covered and continue.
+
+        Warning and continuing is what made this silent: the log claimed a seal that
+        the bytes never got.
+        """
+        elsewhere = tmp_path / f"elsewhere2-{leaf}"
+        elsewhere.mkdir()
+        link = crew_home / leaf
+        if link.exists() or link.is_symlink():
+            link.unlink() if link.is_symlink() else shutil.rmtree(link)
+        link.symlink_to(elsewhere, target_is_directory=True)
+
+        with pytest.raises(sandbox.SandboxCeilingUnsealable):
+            sandbox._materialize_sealable_ceilings()
+        # Nothing was written through the link either.
+        assert not list(elsewhere.iterdir())
+
+    @pytest.mark.parametrize("leaf", sorted(sandbox._CREW_NO_ALIAS_LEAVES))
+    def test_a_real_directory_is_accepted(self, crew_home, leaf):
+        """The refusal must not reject the ordinary case."""
+        (crew_home / leaf).mkdir(parents=True, exist_ok=True)
+        sandbox._materialize_sealable_ceilings()  # does not raise
+
+    def test_the_no_alias_set_covers_both_panel_leaves(self):
+        """Derived, so a third protected leaf has to be added here too."""
+        assert "crew-panels" in sandbox._CREW_NO_ALIAS_LEAVES
+        assert "panel-templates" in sandbox._CREW_NO_ALIAS_LEAVES
+        # Every no-alias leaf is actually materialised, or the guard never runs.
+        materialised = set(sandbox._CREW_PRECREATE_READONLY_DIR_LEAVES) | set(
+            sandbox._CREW_PRECREATE_HIDDEN_DIR_LEAVES
+        )
+        assert (
+            sandbox._CREW_NO_ALIAS_LEAVES <= materialised
+        ), "a no-alias leaf that is never materialised is never checked"
 
 
 @_POSIX_ONLY

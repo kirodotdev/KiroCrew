@@ -151,6 +151,9 @@ const WS_GLOBAL_EVENT_TO_SCOPE: Record<string, string> = {
   'skills.pending_changed': 'skills',
   // Declared by its own literal name (already the correct per-event shape).
   workflow_run_event: 'workflow_run_event',
+  // Same scope name the gateway declares in ws_event_scope.py, so an app author
+  // gets the real permission to ask for instead of an "unknown event" hint.
+  panel_published: 'panels',
   log: 'log',
   browser_event: 'browser',
   // NOTE: `slots` is deliberately absent — the list re-push is always

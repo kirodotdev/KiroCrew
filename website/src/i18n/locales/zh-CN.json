@@ -13631,7 +13631,19 @@
       "driving_none": "当前没有正在驱动的会话。",
       "driving_idle": "空闲",
       "driving_show_all": "查看全部（{{count}}）",
-      "driving_show_less": "收起"
+      "driving_show_less": "收起",
+      "webview_heading": "仪表板",
+      "webview_collapse": "收起仪表板",
+      "webview_open": "打开仪表板",
+      "webview_value_yes": "是",
+      "webview_value_no": "否",
+      "webview_contained": "已隔离",
+      "webview_contained_detail": "由该小队填写，与本页面隔离，且数据发送被阻止",
+      "webview_empty": "该小队尚未填写其仪表板。在团队管理页的“工具与 MCP”中为它添加面板服务器，它便可发布。",
+      "webview_error": "无法渲染该小队的仪表板。",
+      "webview_frame_title": "由 {{crew}} 填写的仪表板",
+      "webview_rendering": "正在渲染仪表板…",
+      "webview_retry": "重试"
     }
   },
   "privacyDisclosure": {

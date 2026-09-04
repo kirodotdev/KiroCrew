@@ -13631,7 +13631,19 @@
       "driving_none": "現在操作中のセッションはありません。",
       "driving_idle": "アイドル",
       "driving_show_all": "すべて表示（{{count}}）",
-      "driving_show_less": "折りたたむ"
+      "driving_show_less": "折りたたむ",
+      "webview_heading": "ダッシュボード",
+      "webview_collapse": "ダッシュボードを折りたたむ",
+      "webview_open": "ダッシュボードを開く",
+      "webview_value_yes": "はい",
+      "webview_value_no": "いいえ",
+      "webview_contained": "隔離済み",
+      "webview_contained_detail": "このクルーが記入し、このページから隔離され、データの送信はブロックされています",
+      "webview_empty": "このクルーはまだダッシュボードを記入していません。クルー管理ページの「ツールと MCP」でパネルサーバーを追加すると公開できます。",
+      "webview_error": "このクルーのダッシュボードを描画できませんでした。",
+      "webview_frame_title": "{{crew}} が記入したダッシュボード",
+      "webview_rendering": "ダッシュボードを描画しています…",
+      "webview_retry": "再試行"
     }
   },
   "privacyDisclosure": {

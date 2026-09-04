@@ -3091,6 +3091,32 @@ MCP_DASHBOARD_SCHEMAS: dict[str, ToolSchema] = {
     "chat_folder_move_session": CHAT_FOLDER_MOVE_SESSION_SCHEMA,
 }
 
+# ── Tool Schemas (MCP Panel — server ``kirocrew-panel``) ──
+#
+# Its own registry for the same reason the dashboard one is separate: the panel
+# tools ship in an opt-in server, and a tool absent from its server's registry
+# has its args passed through raw.
+PANEL_PUBLISH_SCHEMA = ToolSchema(
+    tool_name="panel_publish",
+    fields=[
+        # No max_len on the object itself — the store enforces the byte and
+        # depth ceilings, because a character count over a nested structure is
+        # not the bound that matters and would pass a deeply nested payload.
+        FieldSpec("data", dict, required=True),
+        FieldSpec("template", str, max_len=64),
+        FieldSpec("title", str, max_len=200),
+    ],
+)
+# Empty on purpose and registered on purpose: the tool takes no arguments, and
+# an empty registered schema REJECTS an unexpected one, where no schema at all
+# would pass it through unvalidated.
+PANEL_TEMPLATES_SCHEMA = ToolSchema(tool_name="panel_templates")
+
+MCP_PANEL_SCHEMAS: dict[str, ToolSchema] = {
+    "panel_publish": PANEL_PUBLISH_SCHEMA,
+    "panel_templates": PANEL_TEMPLATES_SCHEMA,
+}
+
 MCP_COMPUTER_SCHEMAS: dict[str, ToolSchema] = {
     _cu_types.TOOL_LIST_APPS: ToolSchema(tool_name=_cu_types.TOOL_LIST_APPS, fields=[]),
     _cu_types.TOOL_LAUNCH_APP: ToolSchema(
