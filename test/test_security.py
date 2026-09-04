@@ -11574,12 +11574,51 @@ class TestFindTraversalReachesFence:
         assert security.is_sensitive_bash_command(deep)
         # a realistic amount of nesting is far below the ceiling and still judged normally
         assert security._find_substitution_openers("cat $(find ~ -type f)") == 1
-        # a backtick PAIR counts twice, since both ends match; that halves the effective
-        # ceiling for backtick spellings, which is the conservative direction
-        assert security._find_substitution_openers("echo `date` $(pwd) <(sort a)") == 4
+        # a backtick substitution is delimited by TWO backticks, so a PAIR counts once
+        # -- `date`, $(pwd) and <(sort a) are three substitutions. Counting each end
+        # halved the effective ceiling for backtick spellings, which cost a real refusal
+        # once a source body's docstrings became subjects (a markdown code span is a
+        # pair) and bought nothing measurable: backticks are the cheap character here.
+        assert security._find_substitution_openers("echo `date` $(pwd) <(sort a)") == 3
+        # An unbalanced backtick opens an unterminated substitution, so ceil keeps it.
+        assert security._find_substitution_openers("echo `date") == 1
+        # Flat markdown-style spans no longer approach the ceiling: 66 backticks are 33
+        # substitutions, which is what a prose docstring actually carries.
+        assert security._find_substitution_openers("`x` " * 33) == 33
         nested = "cat $(bash -c 'find ~/.kiro/crew -type f -exec cat {} +')"
         assert security.is_sensitive_bash_command(nested)
         assert security.is_sensitive_bash_command("echo $(date) $(pwd) $(whoami)") is None
+
+    def test_flat_backtick_spans_are_not_refused_for_the_budget(self) -> None:
+        """66 backticks are 33 substitutions, so prose full of code spans is judged.
+
+        This is the shape that made the double-count expensive: a source body's
+        docstrings are subjects of this pass (``_source_traversal_subjects``), and a
+        markdown code span is a backtick PAIR, so an ordinary docstring with 33 spans
+        read as 66 nested substitutions and refused the whole script on every fire.
+
+        The ceiling itself is unmoved -- the ``$(`` depth it exists for still refuses,
+        and a traversal hiding among the spans is still denied.
+        """
+        prose = "Mint a URL. " + " ".join(f"`field{i}`" for i in range(33))
+        assert prose.count("`") == 66
+        assert security._find_substitution_openers(prose) == 33
+        assert security.is_sensitive_bash_command(prose) is None
+
+        # The budget still refuses what it was built for: `$(` nesting is the quadratic
+        # dimension (measured 3.9 ms at depth 32, 57.1 ms at 128).
+        deep = "echo " + "$(" * 200 + "find /tmp -type f" + ")" * 200
+        assert security.is_sensitive_bash_command(deep) is not None
+
+        # And a real traversal among the spans is not laundered by them.
+        hidden = prose + " ; find ~/.kiro/crew -name '.env' -exec cat {} +"
+        assert security.is_sensitive_bash_command(hidden) is not None
+
+        # A backtick count high enough to reach the ceiling on PAIRS still refuses, so
+        # the bound is preserved rather than removed.
+        very_wide = "echo " + "`x`" * 65
+        assert security._find_substitution_openers(very_wide) == 65
+        assert security.is_sensitive_bash_command(very_wide) is not None
 
     def test_the_store_clause_still_holds_across_many_roots(self) -> None:
         """The store forms are resolved once for the whole call, not once per root.

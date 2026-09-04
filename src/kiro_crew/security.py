@@ -12124,9 +12124,38 @@ _FIND_SUBSTITUTION_BUDGET = 64
 
 
 def _find_substitution_openers(command: str) -> int:
-    """How many substitution openers the command carries, counted in one pass."""
+    """How many substitution openers the command carries, counted in one pass.
+
+    A backtick substitution is delimited by TWO backticks -- an open and a close --
+    while ``$(``, ``<(`` and ``>(`` are one opener per substitution. Counting each
+    backtick as an opener therefore double-counts by construction, which halved the
+    effective ceiling for backtick spellings; that was accepted as "the conservative
+    direction" while the only subject was a shell command line, where nobody writes 33
+    of them.
+
+    It stopped being free once a SOURCE body's literals became subjects
+    (``_source_traversal_subjects``): a markdown code span in a docstring IS a backtick
+    pair, so a docstring with 66 code spans read as 66 nested substitutions and the
+    script was refused on every fire. Counting pairs is both accurate and still
+    conservative -- ``ceil`` keeps an unbalanced trailing backtick, which opens an
+    unterminated substitution, from rounding away, so the result never UNDER-states how
+    many substitutions a shell could see.
+
+    The direction is also the one the measurements support. The budget exists because
+    the view walk is quadratic in ``$(`` NESTING depth, and that is what it measures as:
+    depth 32 costs 3.9 ms, 64 costs 13.6 ms, 128 costs 57.1 ms. Backticks are nowhere
+    near it -- genuinely nested (escaped) backticks stay at ~0.2 ms to depth 32, and 512
+    FLAT backticks cost 19 ms, linear. So the character this halved the ceiling for is
+    the cheap one.
+    """
+    # ``+ 1`` before the floor divide is ceil: an odd count means one unterminated
+    # substitution, which must still be counted rather than rounded away.
+    backtick_substitutions = (command.count("`") + 1) // 2
     return (
-        command.count("$(") + command.count("`") + command.count("<(") + command.count(">(")
+        command.count("$(")
+        + backtick_substitutions
+        + command.count("<(")
+        + command.count(">(")
     )
 
 
