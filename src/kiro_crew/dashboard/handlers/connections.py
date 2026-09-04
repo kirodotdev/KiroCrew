@@ -16,6 +16,7 @@ from kiro_crew.connections import get_provider
 from kiro_crew.connections.ownership import remove_provider_entry
 from kiro_crew.connections.registry import Provider
 from kiro_crew.dashboard.handlers.mcp import _is_valid_mcp_name
+from kiro_crew.loop_lock import LoopBoundLock
 from kiro_crew.sel import sel
 
 logger = logging.getLogger(__name__)
@@ -468,6 +469,31 @@ async def api_connections_status(request: web.Request) -> web.Response:
     return web.json_response({"schema_version": _STATUS_SCHEMA_VERSION, "connections": statuses})
 
 
+#: The slug currently running a Connections Test, or ``None`` when the endpoint
+#: is idle. Each click spawns its own promptless kiro-cli ACP session
+#: (``test_connection_tools``, ~10-100s), and two running together both contend
+#: for host resources and -- because the frontend tracked only one global busy
+#: slot -- made a second click's spinner silently replace the first card's,
+#: reading as a cancelled test that had actually completed (its SEL record
+#: still shows the earlier finish). This guard makes running two at once
+#: impossible on the server regardless of what any client renders.
+#:
+#: Guarded by :data:`_TEST_SLUG_GUARD`, a :class:`LoopBoundLock`, rather than a
+#: bare check-then-set: two POSTs handled back-to-back on the loop can each run
+#: up to the read of this variable before either writes it, so an unguarded
+#: "if None: set it" has a window where both readers see ``None`` and both
+#: proceed. The guard's own acquire never blocks a caller's request in a way
+#: that would turn a refusal into a queued wait -- read-and-write below is a
+#: synchronous critical section with no ``await`` inside it, so once acquired
+#: it commits its verdict (proceed or refuse) before yielding the loop at all.
+_testing_slug: str | None = None
+_TEST_SLUG_GUARD = LoopBoundLock()
+
+
+def _conflict(error: str, code: str, *, slug: str) -> web.Response:
+    return web.json_response({"error": error, "code": code, "slug": slug}, status=409)
+
+
 async def api_connections_test(request: web.Request) -> web.Response:
     """POST /api/connections/test — enumerate this provider through kiro-cli.
 
@@ -475,6 +501,12 @@ async def api_connections_test(request: web.Request) -> web.Response:
     server, performs its MCP ``tools/list``, and reports the final agent-exposed
     tools through native structured commands. The endpoint never receives token
     material and never invokes a provider tool.
+
+    Single-flight (:data:`_testing_slug`): a POST arriving while another test is
+    already running -- for the same provider or a different one -- is refused
+    immediately with 409 ``test_in_flight`` naming the slug currently running,
+    rather than starting a second concurrent kiro-cli session or queuing behind
+    the first.
     """
     from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
 
@@ -485,13 +517,33 @@ async def api_connections_test(request: web.Request) -> web.Response:
     if isinstance(parsed, web.Response):
         return parsed
     _body, provider = parsed
+    slug = str(provider["slug"])
 
-    # Function-local by design: the handlers package is imported at gateway
-    # boot, while this path imports the ACP client and should be paid only when
-    # the owner explicitly clicks Test.
-    from kiro_crew.connections.tool_test import test_connection_tools
+    global _testing_slug
+    async with _TEST_SLUG_GUARD:
+        # No `await` between the read and the write: on one event loop this is
+        # the whole critical section, so no other coroutine can observe
+        # `_testing_slug` between them regardless of the lock -- the lock
+        # exists for the OTHER event loop a LoopBoundLock covers (a gateway
+        # restart-in-process, or two independent test loops in one process),
+        # never to make this caller wait for one already running.
+        if _testing_slug is not None:
+            return _conflict(
+                f"a connection test for {_testing_slug} is already running",
+                "test_in_flight",
+                slug=_testing_slug,
+            )
+        _testing_slug = slug
 
-    return web.json_response(await test_connection_tools(provider))
+    try:
+        # Function-local by design: the handlers package is imported at
+        # gateway boot, while this path imports the ACP client and should be
+        # paid only when the owner explicitly clicks Test.
+        from kiro_crew.connections.tool_test import test_connection_tools
+
+        return web.json_response(await test_connection_tools(provider))
+    finally:
+        _testing_slug = None
 
 
 async def api_connections_cancel(request: web.Request) -> web.Response:

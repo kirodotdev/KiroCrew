@@ -41,6 +41,20 @@ const connectionsDisconnect = vi.fn()
 const connectionsTest = vi.fn()
 
 vi.mock('../api/client', () => ({
+  // A real-shaped class, not a stub: `testConnection`'s 409 handling narrows
+  // with `e instanceof ApiError` before it may read `.status`/`.body`, so a
+  // bare object would make every rejection fall through to the generic
+  // action_failed message and the single-flight branch would never run.
+  ApiError: class ApiError extends Error {
+    status: number
+    body: string
+    constructor(status: number, message: string, body = '') {
+      super(message)
+      this.name = 'ApiError'
+      this.status = status
+      this.body = body
+    }
+  },
   api: {
     mcpServers: (...a: unknown[]) => mcpServers(...a),
     mcpProbe: (...a: unknown[]) => mcpProbe(...a),
@@ -71,6 +85,7 @@ import ConnectionsPage from '../pages/connections/ConnectionsPage'
 import { CONNECTION_PROVIDERS } from '../pages/connections/registry'
 import { i18next } from '../i18n'
 import { createTestStore, renderWithProviders } from './helpers'
+import { ApiError } from '../api/client'
 
 const NOTION_URL = 'https://mcp.notion.com/mcp'
 const STRIPE_URL = 'https://mcp.stripe.com'
@@ -548,6 +563,10 @@ describe('a connected provider', () => {
 
     const warning = await screen.findByRole('alert')
     expect(warning).toHaveTextContent('Offered no tools to inspect')
+    // A no_tools verdict is NOT a failed request -- the call succeeded and
+    // returned a verdict -- so it keeps this page's plain feedback line (a
+    // <div>) rather than being dressed as an error through ErrorNotice.
+    expect(warning.tagName).toBe('DIV')
     expect(card('notion')).toHaveAttribute('data-state', 'connected')
     expect(screen.queryByText('Connection is healthy.')).toBeNull()
   })
@@ -609,6 +628,15 @@ describe('a connected provider', () => {
 
     const failure = await screen.findByRole('alert')
     expect(failure).toHaveTextContent('Action failed: The provider did not pass the connection test.')
+    // A generic action failure is a FAILED request, so it renders through the
+    // shared error surface (`ErrorNotice`) rather than a hand-written alert box
+    // -- its inline variant is a <span role="alert">, while this page's plain
+    // feedback line is a <div>, so the tag names which surface rendered it.
+    expect(failure.tagName).toBe('SPAN')
+    expect(screen.getAllByRole('alert')).toHaveLength(1)
+    // No hand-off beside the return-address paste-back input, whose typed value
+    // survives a failed relay and would be discarded by navigating to the chat.
+    expect(within(failure).queryByRole('button', { name: /ask.*agent/i })).toBeNull()
   })
 
   it('shows the busy label while authenticated enumeration is in flight', async () => {
@@ -625,6 +653,111 @@ describe('a connected provider', () => {
 
     pending.resolve({ verdict: 'usable' })
     await waitFor(() => expect(screen.getByRole('button', { name: 'Test' })).toBeEnabled())
+  })
+
+  it('disables every OTHER card\'s Test button while one card is testing, with an explanation', async () => {
+    const pending = deferred<{ verdict: string }>()
+    mcpServers.mockResolvedValue([
+      server({ accountLabel: 'ada@example.com' }),
+      server({ name: 'stripe', url: STRIPE_URL }),
+    ])
+    connectionsStatus.mockResolvedValue({
+      schema_version: 1,
+      connections: [
+        { slug: 'notion', status: 'connected', grantPresent: true },
+        { slug: 'stripe', status: 'connected', grantPresent: true },
+      ],
+    })
+    connectionsTest.mockImplementation((slug: string) => slug === 'notion' ? pending.promise : Promise.resolve({ verdict: 'usable' }))
+    mount()
+
+    await waitFor(() => expect(card('stripe')).toHaveAttribute('data-state', 'connected'))
+    fireEvent.click(within(card('notion')).getByRole('button', { name: 'Test' }))
+
+    // The sibling's button is disabled and explains itself; it is NOT relabeled
+    // "Testing…" -- that label is reserved for the card that owns the request.
+    // aria-label overrides the visible "Test" text for the accessible name, so
+    // the disabled sibling's true accessible name IS the explanation.
+    const explanation = 'One connection test runs at a time — Notion is testing'
+    const stripeTest = await waitFor(() => within(card('stripe')).getByRole('button', { name: explanation }))
+    expect(stripeTest).toBeDisabled()
+    expect(stripeTest).toHaveTextContent('Test')
+    expect(stripeTest).toHaveAttribute('title', 'One connection test runs at a time — Notion is testing')
+    // Every OTHER action on the sibling card stays enabled -- only Test is blocked.
+    expect(within(card('stripe')).getByRole('button', { name: /Disconnect/ })).toBeEnabled()
+    // The testing card's own label is still the busy spinner label, not the
+    // sibling-disable text -- the two must never collide on one card.
+    expect(within(card('notion')).getByRole('button', { name: 'Testing…' })).toBeInTheDocument()
+
+    pending.resolve({ verdict: 'usable' })
+    await waitFor(() => expect(within(card('stripe')).getByRole('button', { name: 'Test' })).toBeEnabled())
+  })
+
+  it('never disables a testing card\'s OWN button against its own name', async () => {
+    const pending = deferred<{ verdict: string }>()
+    mcpServers.mockResolvedValue(connected)
+    connectionsTest.mockReturnValue(pending.promise)
+    mount()
+
+    fireEvent.click(await waitFor(() => within(card('notion')).getByRole('button', { name: 'Test' })))
+
+    // The busy spinner label covers this card's own in-flight state; it must
+    // never ALSO carry the sibling-disable title naming itself.
+    const testing = within(card('notion')).getByRole('button', { name: 'Testing…' })
+    expect(testing).not.toHaveAttribute('title')
+
+    pending.resolve({ verdict: 'usable' })
+  })
+
+  it('renders a 409 test_in_flight refusal as a named warning, never an opaque error', async () => {
+    mcpServers.mockResolvedValue([
+      server({ accountLabel: 'ada@example.com' }),
+      server({ name: 'stripe', url: STRIPE_URL }),
+    ])
+    connectionsStatus.mockResolvedValue({
+      schema_version: 1,
+      connections: [
+        { slug: 'notion', status: 'connected', grantPresent: true },
+        { slug: 'stripe', status: 'connected', grantPresent: true },
+      ],
+    })
+    // The server is the ground truth for the refusal: the client's own busy
+    // state disables the sibling button, but this proves the CARD reacts
+    // correctly to a 409 arriving regardless of what disabled it client-side --
+    // a stale disabled state, a second tab, or a race all reach this path.
+    connectionsTest.mockRejectedValue(
+      new ApiError(409, 'a connection test for notion is already running', JSON.stringify({
+        error: 'a connection test for notion is already running',
+        code: 'test_in_flight',
+        slug: 'notion',
+      })),
+    )
+    mount()
+
+    await waitFor(() => expect(card('stripe')).toHaveAttribute('data-state', 'connected'))
+    // Directly invoking the click handler bypasses the client-side `disabled`
+    // attribute, isolating the response-handling path from the button-state path.
+    fireEvent.click(within(card('stripe')).getByRole('button', { name: 'Test' }))
+
+    const warning = await screen.findByRole('alert')
+    expect(warning).toHaveTextContent('A connection test for Notion is already running')
+    expect(warning).not.toHaveTextContent('Unknown error')
+    expect(warning).not.toHaveTextContent('Action failed')
+    // A rejected request renders through the SHARED error surface, so the
+    // structured context (endpoint, status, backend `code`) is recoverable
+    // rather than thrown away by a hand-written line. ErrorNotice's inline
+    // variant owns the role="alert", so exactly one alert exists -- a nested
+    // pair would announce twice.
+    expect(screen.getAllByRole('alert')).toHaveLength(1)
+    // ErrorNotice's inline variant is a <span role="alert">, while this page's
+    // plain feedback line is a <div> -- so the tag proves WHICH surface rendered
+    // it without reaching into the component's internals.
+    expect(warning.tagName).toBe('SPAN')
+    // No hand-off beside the return-address paste-back field: the button
+    // navigates to the chat and unmounts this gallery.
+    expect(within(warning).queryByRole('button', { name: /ask.*agent/i })).toBeNull()
+    // The card stays connected -- a single-flight refusal is not a test failure.
+    expect(card('stripe')).toHaveAttribute('data-state', 'connected')
   })
 
   it('uninstalls the entry on Disconnect and keeps pointing at the provider revoke page', async () => {
@@ -662,7 +795,14 @@ describe('a connected provider', () => {
     expect(alert).toHaveTextContent(
       'Part of the stored grant could not be removed. Revoke access at the provider.',
     )
-    expect(within(alert).getByRole('link', { name: /Revoke at Notion/ })).toBeInTheDocument()
+    // The error TEXT is owned by ErrorNotice (which carries the role), so the
+    // revoke affordance is its sibling in the feedback slot rather than inside
+    // the announced region -- supplemental guidance, not part of the error
+    // string. The message itself already says to revoke at the provider.
+    expect(alert.tagName).toBe('SPAN')
+    const slot = alert.closest('[data-slot="connection-feedback"]')
+    expect(slot).not.toBeNull()
+    expect(within(slot as HTMLElement).getByRole('link', { name: /Revoke at Notion/ })).toBeInTheDocument()
   })
 
   it('says the grant was kept when another entry shares the endpoint', async () => {
