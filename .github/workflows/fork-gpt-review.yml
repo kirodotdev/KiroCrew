@@ -1139,65 +1139,116 @@ jobs:
                 echo "- **$rid** \`$rloc\` — $rtxt"
               done < "${RUNNER_TEMP:-/tmp}/codex-adjudication-flags.md"
             fi
-          } > /tmp/fork-codex-comment.md
-          # Find the bot's existing marker comment (first match wins) and
-          # capture its id. Guards:
-          #   - author filter: only a github-actions[bot] comment can match, so a
-          #     PR commenter cannot plant the marker and have this step PATCH
-          #     their comment with the write-scoped token.
-          #   - per-page jq: with --paginate the --jq filter runs PER PAGE.
-          # An incomplete run never modifies an existing comment (see below), so
-          # only the id is needed here: no body capture, no PATCH decision that
-          # depends on the current body.
-          # Capture the paginated query's FULL output first so its own exit
-          # status alone decides lookup_ok. Piping straight into `head -n1`
-          # would let `head` close the pipe after the first of several matches
-          # (a marker duplicated across API pages) and, under `set -o pipefail`,
-          # make the whole pipeline non-zero -- misreading a successful lookup as
-          # a failure. So select the first id in a second step off the captured
-          # value.
-          lookup_ok=1
-          all_matches="$(gh api "repos/$REPO/issues/$PR/comments" --paginate \
-            --jq ".[] | select(.user.login == \"github-actions[bot]\" and (.body | startswith(\"$MARKER\"))) | .id" 2>/dev/null)" || lookup_ok=0
-          existing="$(printf '%s\n' "$all_matches" | head -n1)"
-          if [ "$kind" = "incomplete" ]; then
-            # Stale-read race (#8292): an incomplete run NEVER modifies an
-            # existing comment, whether or not it carries [GPT-REVIEWED].
-            # Overlapping runs for different SHAs can read this comment before a
-            # newer run PATCHes its verdict in; an incomplete run that read first
-            # would otherwise clobber the newer run's just-published verdict with
-            # its own "review incomplete" body, and even a PATCH that only
-            # preserved the verdict and prepended a notice would restore the
-            # stale body it read. So when a comment already exists -- OR the
-            # lookup could not confirm one does not (a transient API error must
-            # not be read as "no comment", which would send this incomplete run
-            # to the create path and post a spurious marker over a live verdict)
-            # -- leave it untouched and emit a diagnostic only. Only when the
-            # lookup SUCCEEDED and found nothing does an incomplete run create
-            # the first "review incomplete" placeholder. The fail-closed
-            # "Finalize check-run" step still gates merge, so an incomplete run
-            # is never mistaken for an approval; the fork lane has no override.
-            if [ "$lookup_ok" -eq 0 ]; then
-              echo "Incomplete run for $HEAD; lookup failed, skipping to avoid posting a spurious marker over a possibly-live verdict"
-            elif [ -n "$existing" ] && [ "$existing" != "null" ]; then
-              echo "Incomplete run for $HEAD; left existing comment #$existing untouched to avoid overwriting a newer verdict"
+          } > "${RUNNER_TEMP:-/tmp}/fork-codex-comment.md"
+          # Guarded upsert (#8292, #8344): the shared function below is defined
+          # byte-identically in every review lane; test_ai_review_workflows.py
+          # pins all copies to one canonical body so the invariant cannot
+          # drift lane by lane.
+          guarded_comment_upsert() {
+            local marker="$1" stamp="$2" lane="$3" out_file="$4"
+            local matches existing lookup_ok pr_head="" attempt withhold=""
+            # Find the bot's existing marker comment (first match wins) and
+            # capture its id. Author filter: only a github-actions[bot]
+            # comment can match, so a PR commenter cannot plant the marker and
+            # have this step PATCH their comment with the write-scoped token.
+            # Only the id is read: no decision below inspects the current
+            # body, so this function has no read-modify-write window on it.
+            # Capture the paginated query's FULL output first and select the
+            # first id off the captured value -- a `... | head -n1` inside the
+            # pipeline lets head's early exit SIGPIPE the api call and misread
+            # a successful lookup as a failure under pipefail (#8350).
+            # Retry a transient failure: whether a comment exists is a gating
+            # input here, and one blip is not evidence that none does.
+            lookup_ok=0
+            for attempt in 1 2 3; do
+              if matches="$(gh api "repos/$REPO/issues/$PR/comments" --paginate \
+                --jq ".[] | select(.user.login == \"github-actions[bot]\" and (.body | startswith(\"$marker\"))) | .id" 2>/dev/null)"; then
+                lookup_ok=1
+                break
+              fi
+              matches=""
+              echo "Reading this PR's comments failed on attempt $attempt."
+              if [ "$attempt" -lt 3 ]; then
+                sleep "$attempt"
+              fi
+            done
+            existing="$(printf '%s\n' "$matches" | awk 'NR == 1')"
+            # This lane's marker comment is ONE slot shared by every run on the
+            # PR, and the REST comments API has no If-Match, so a write to it
+            # is last-writer-wins with no way to detect the loss afterwards --
+            # it exposes no edit history either (#8292). Exactly one kind of
+            # run may therefore claim the slot: a COMPLETED verdict for the
+            # PR's CURRENT head. Every other case leaves an existing comment
+            # untouched, because each of them can lose a live verdict.
+            if ! grep -Fq "$stamp $HEAD" "$out_file"; then
+              # No "<stamp> $HEAD" proof marker: this is a review FAILURE
+              # notice, and PATCHing one over a completed verdict buries that
+              # verdict -- blocking findings included -- where no reader or
+              # tool looks. Note that PRESERVING the verdict and prepending a
+              # staleness notice is not a safe alternative: it reads the body
+              # and writes a merge of it back, so a verdict published between
+              # the read and the write is restored away.
+              withhold="run for $HEAD produced no completed verdict"
             else
-              gh pr comment "$PR" --body-file /tmp/fork-codex-comment.md || true
+              # A completed verdict for a SUPERSEDED head is the same loss
+              # arriving late: an older run can finish after a newer one has
+              # already published, and the fork lanes' concurrency group is
+              # keyed per head so they are not cancelled -- while a cancelled
+              # same-repo run still executes this if:always() step. So confirm
+              # this run is still the PR's head before claiming the slot.
+              # Retry a transient read the way this lane's other gating reads
+              # do, then treat an unreadable head as NOT confirmed: writing is
+              # the destructive half, so it must not proceed on an unknown.
+              for attempt in 1 2 3; do
+                if pr_head="$(gh api "repos/$REPO/pulls/$PR" --jq '.head.sha')" \
+                  && [ -n "$pr_head" ]; then
+                  break
+                fi
+                pr_head=""
+                echo "Reading this PR's head sha failed on attempt $attempt."
+                if [ "$attempt" -lt 3 ]; then
+                  sleep "$attempt"
+                fi
+              done
+              if [ -z "$pr_head" ]; then
+                withhold="this PR's head was unreadable after 3 attempts, so $HEAD cannot be confirmed current"
+              elif [ "$pr_head" != "$HEAD" ]; then
+                withhold="$HEAD is no longer this PR's head ($pr_head)"
+              fi
             fi
-          else
-            # A completed verdict (blocked/clear) must become visible. If the
-            # lookup succeeded and found the marker, PATCH it in place; otherwise
-            # -- no existing comment, OR the lookup failed so we cannot confirm
-            # one -- create. A duplicate comment on a transient error is far more
-            # recoverable than a real verdict that never posts, so a completed
-            # run always publishes rather than staying silent.
+            if [ -n "$withhold" ]; then
+              # A lookup that ERRORED is not "no comment exists": taking the
+              # create path there plants a second marker comment over a
+              # possibly-live verdict, which no later run undoes.
+              if [ "$lookup_ok" -eq 0 ]; then
+                echo "Withholding $lane comment for $HEAD ($withhold); the comment lookup also failed, so nothing was posted"
+                return 0
+              fi
+              if [ -n "$existing" ] && [ "$existing" != "null" ]; then
+                echo "Withholding $lane comment for $HEAD ($withhold); left existing comment #$existing untouched"
+                return 0
+              fi
+              # The lookup SUCCEEDED and found nothing, so there is no verdict
+              # to lose: posting the body as a NEW comment buries nothing.
+              gh pr comment "$PR" --body-file "$out_file" || true
+              echo "Created new $lane comment"
+              return 0
+            fi
             if [ "$lookup_ok" -eq 1 ] && [ -n "$existing" ] && [ "$existing" != "null" ]; then
               gh api --method PATCH "repos/$REPO/issues/comments/$existing" \
-                --field body="$(cat /tmp/fork-codex-comment.md)" >/dev/null || true
+                --field body="$(cat "$out_file")" >/dev/null || true
+              echo "Updated existing $lane comment #$existing"
             else
-              gh pr comment "$PR" --body-file /tmp/fork-codex-comment.md || true
+              # No existing comment -- or a lookup that could not confirm one
+              # -- falls through to CREATE either way: a completed verdict for
+              # the confirmed current head must never be dropped because the
+              # comment lookup failed, since a duplicate comment is
+              # recoverable and an unposted verdict is not (#8350).
+              gh pr comment "$PR" --body-file "$out_file" || true
+              echo "Created new $lane comment"
             fi
-          fi
+          }
+          guarded_comment_upsert "$MARKER" "[GPT-REVIEWED]" "Fork GPT 5.6 Review" "${RUNNER_TEMP:-/tmp}/fork-codex-comment.md"
 
       # Fail-CLOSED finalize of the required "GPT 5.6 Review" check-run, keyed to
       # head_sha; posts a failing check-run if the job died before opening one.
