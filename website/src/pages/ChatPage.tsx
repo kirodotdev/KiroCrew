@@ -4455,8 +4455,11 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // above are deferred, fire a false "Session not found", clear initialSidRef,
   // and the resolve never happens once the gateway comes back. Re-runs the
   // effect when connected flips so the timer starts fresh on reconnect.
+  // Also gated on `slotsLoaded`: firing is one-way (it clears `initialSidRef`),
+  // so arming before the list lands makes a late arrival unresolvable.
+  const slotsLoaded = useAppSelector(s => s.dashboard.slotsLoaded)
   useEffect(() => {
-    if (!connected) return
+    if (!connected || !slotsLoaded) return
     const urlSlot = initialSidRef.current
     if (!urlSlot) return
     const timer = setTimeout(() => {
@@ -4475,7 +4478,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
       }
     }, 5000)
     return () => clearTimeout(timer)
-  }, [connected])
+  }, [connected, slotsLoaded])
   // Sync activeSlot → ?sid= in URL (persistent deep-link)
   // Skip entirely when embedded — URL belongs to the host app
   const basePath = popout ? '/popout/chat' : embedMode === 'chat' || embedMode === 'sessions' ? '/embed/chat' : '/chat'
@@ -4569,7 +4572,6 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   }, [activeSlot, slots.length, filteredSlots, dispatch])
   // Auto-select slot after refresh — restore from localStorage or pick first
   // If no slots exist at all, auto-create one so the user lands in a ready chat
-  const slotsLoaded = useAppSelector(s => s.dashboard.slotsLoaded)
   const autoCreatedRef = useRef(false)
   useEffect(() => {
     if (activeSlot) return
