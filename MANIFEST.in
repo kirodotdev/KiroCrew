@@ -18,6 +18,7 @@ include setup.py
 
 # --- Top-level package data files (mirror [options.package_data]) ------------
 include src/kiro_crew/py.typed
+include src/kiro_crew/BUILD_VERSION
 include src/kiro_crew/slack-manifest.yaml
 include src/kiro_crew/model_tokens.json
 

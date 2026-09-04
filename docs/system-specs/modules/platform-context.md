@@ -348,6 +348,60 @@ dependencies = ["kirocrew"]
 The `kirocrew-enterprise` binary sets `KIROCREW_PROFILE=enterprise` and delegates to the
 core `main` — the explicit composition-root path that a security review reads.
 
+### Distribution build version
+
+A distribution that repackages one core release as several builds of its own
+(an enterprise bundle vending `0.6.0.10`, `0.6.0.11`, … of the same `0.6.0`)
+names the build it shipped in a `BUILD_VERSION` file placed **beside
+`kiro_crew/__init__.py`** at packaging time (declared as optional package data;
+absent in this repo and in the wheels it publishes). `kiro_crew/__init__`
+resolves it **at import**, replacing `__version__` for every reader — the About
+page's version chip (`version_display`), `/api/status`, `/api/health`,
+`kirocrew --version`, the diagnostics report, and the governance minimum-version
+floor (`update_required`), which a fleet writes in the distribution's build
+numbers. Two readers deliberately do not change: the anonymous usage beacon
+(`beacon.release` clamps to `major.minor.patch` for cardinality, so a stamped
+build sends the same value as its base), and the About page's changelog, where
+`changelog.running_release` folds the stamp back onto its three-segment release
+so the build marks the `0.6.0` row rather than opening an empty `0.6.0.12` row. Import time is the only point that works:
+`dashboard/handlers/updates.py`, `dashboard/ws.py`, `config/loader.py` and
+`cli_server.py` bind `from kiro_crew import __version__` copies that nothing
+later can reach, so this is deliberately not a `PlatformContext` field — a
+context is composed after those imports.
+
+A file in the package rather than an environment variable, on purpose: the
+version feeds an enterprise ceiling (the minimum-version floor) that the local
+operator must not be able to weaken, and an env var is theirs to set. The file
+sits in the same site-packages tree as the code and carries exactly its trust —
+whoever can write it can write `__init__.py` — so it adds no bypass the bytes did
+not already have, and it is the same model the release lanes use when they
+rewrite the version literal for a nightly or insider build. Being in the bytes,
+it is also what a shadow-venv probe or any fresh interpreter naturally reports.
+
+Fail-closed on shape: only the core base itself, or the base followed by exactly
+one `.N` ASCII-numeric segment over a bare numeric base, is honoured (the read is
+capped, and an oversized, undecodable or unreadable file falls back to the base).
+A different base, a prerelease stamp, a non-numeric or second segment, or a
+suffix over an `rc` / nightly base is a build this core is not; it is ignored
+with one warning and the base stays, so a process can never claim bytes it does
+not run. The contract is the file — its name and that shape — not a Python API;
+the helpers in `kiro_crew/__init__` are private. The accepted shape parses as a
+PEP 440 release wherever the version is compared (`_is_newer` orders `0.6.0.12`
+above `0.6.0` and below `0.6.1`; `release_channel.channel` still reads
+`stable`), and `base_version` — the stable-channel display fold — preserves the
+stamped string, which is what lets the chip show it.
+
+Update lane. A distribution owns its own update path, normally the command
+provider selected by `check_command` / `apply_command` update pins, which never
+consults the public release feed. Should a stamped build reach the feed check,
+`channel_move_pending` compares by **release** (`changelog.release_of_build`
+folds `0.6.0.12` to `0.6.0`), so a stamped build on the lane that shipped its
+release is on that lane, not permanently "ahead" of it; the `update_available`
+verdict needs no fold (`0.6.0` is not newer than `0.6.0.12`). The wheel's
+dist-info metadata is not touched by the stamp — `pip` and `importlib.metadata`
+still report the base — so a downstream that builds its own wheel and needs
+those to differ must bump its own project version as well.
+
 ## Consumption-site wiring
 
 Core consumption sites read the context rather than the module global they

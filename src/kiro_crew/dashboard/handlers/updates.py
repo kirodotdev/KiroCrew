@@ -19,7 +19,7 @@ from aiohttp.client_exceptions import ClientConnectionResetError
 
 from kiro_crew import __version__ as _local_version
 from kiro_crew import dep_sync, shutdown_event
-from kiro_crew.changelog import Release, base_version, build_release_list
+from kiro_crew.changelog import Release, base_version, build_release_list, release_of_build
 from kiro_crew.config.loader import (
     ConfigReadError,
     KiroCrewConfig,
@@ -1167,7 +1167,15 @@ async def _check_release_feed(capability: UpdateCapability) -> None:
         # lane publishes, so the lane never shipped it. Written from the same
         # response as the verdict so a consumer can never pair one channel's
         # move state with another channel's version.
-        channel_move_pending=_is_newer(_local_version, remote_version) is True,
+        #
+        # Compared by RELEASE: a distribution build stamp (``0.6.0.12``, see
+        # ``kiro_crew/__init__``) is a build OF ``0.6.0``, which the lane did
+        # ship. Comparing the raw stamp would read every stamped build as
+        # permanently ahead of its own lane and pin a standing "re-run the
+        # installer" affordance on the About panel, pointing at the bare wheel
+        # that would un-stamp it. The ``available`` verdict above needs no fold:
+        # ``0.6.0`` is not newer than ``0.6.0.12`` either way.
+        channel_move_pending=_is_newer(release_of_build(_local_version), remote_version) is True,
         check_status=CHECK_SUCCEEDED,
         **extra,
     )
