@@ -44,12 +44,18 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-def _redact_memory_field(val: object) -> object:
+def _redact_memory_field(val: object, *, redact_keys: bool = False) -> object:
     """Redact credentials and exfiltration URLs from a memory field.
 
     Lives here (not in ``memory.py``) so handlers that ``memory.py`` itself
     imports from -- e.g. ``cron.py`` -- can share the chain without an import
     cycle.
+
+    ``redact_keys`` additionally scrubs the KEYS of nested dicts — keys
+    serialize into JSON exactly like values, so a serializer feeding a browser
+    surface must cover both. It is opt-in (default off) so the existing
+    memory/cron callers keep their exact behavior; the roster record
+    chokepoint (``redact_record_strings``) is the caller that needs it.
     """
     if isinstance(val, (bytes, memoryview)):
         return None
@@ -58,10 +64,59 @@ def _redact_memory_field(val: object) -> object:
         val, _ = redact_credentials(val)
         return val
     if isinstance(val, list):
-        return [_redact_memory_field(item) for item in val]
+        return [_redact_memory_field(item, redact_keys=redact_keys) for item in val]
     if isinstance(val, dict):
+        if redact_keys:
+            return {
+                (
+                    _redact_memory_field(k, redact_keys=True) if isinstance(k, str) else k
+                ): _redact_memory_field(v, redact_keys=True)
+                for k, v in val.items()
+            }
         return {k: _redact_memory_field(v) for k, v in val.items()}
     return val
+
+
+def redact_record_strings(record: dict) -> dict:
+    """Field-generic redaction chokepoint for a serialized config record.
+
+    Applies the credential + exfiltration-URL chain to every ``str`` value in
+    ``record``, recursing into nested dicts/lists; non-string values pass
+    through untouched. Delegates to ``_redact_memory_field`` (above), the
+    shared recursive scrubber, so the two stay one implementation.
+
+    Callers are the roster serializers — ``GET /api/agents``
+    (``agents.api_kirocrew_agents``) and ``GET /api/members``
+    (``members.api_members``). Free-text record fields (``description``,
+    ``triggers``, ``workspace``, ...) are agent-writable through
+    ``config.json`` and reached dashboard JSON verbatim (#8447). Being
+    field-generic is the point: a field added to the record later — including
+    a nested structure under a record key — is covered here with no second
+    patch at either call site. Dict KEYS are scrubbed too
+    (``redact_keys=True``), at every level: a key serializes into the JSON
+    exactly like a value, so a credential-shaped key in an object-valued
+    field would otherwise ship verbatim.
+    """
+    out = _redact_memory_field(record, redact_keys=True)
+    return out if isinstance(out, dict) else {}
+
+
+def redact_record_strings_marked(record: dict) -> dict:
+    """``redact_record_strings`` plus a manifest of WHICH fields it changed.
+
+    The extra ``redacted_fields`` key (response metadata, not a record field)
+    lists the top-level keys whose value was altered by redaction, in record
+    order. It is what lets an edit client implement
+    don't-echo-what-you-didn't-edit: a form prefilled from a redacted roster
+    can omit an untouched redacted field from its save, which is the only
+    complete fix for the stale-save race — a server-side echo comparison
+    necessarily runs against the value stored at SAVE time, so it cannot
+    tell a stale marker echo from a deliberate edit once a concurrent write
+    has changed the stored value (#8465 round 3).
+    """
+    out = redact_record_strings(record)
+    out["redacted_fields"] = [k for k in record if out.get(k) != record[k]]
+    return out
 
 
 # Shared body cap for the small JSON-object endpoints that must bound the

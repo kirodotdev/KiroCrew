@@ -33,6 +33,11 @@ import { EFFORT_LEVELS, effortLabel, modelSupportsEffort } from '../lib/effort'
 
 import { i18nT } from '../i18n/t'
 import ErrorNotice from '../components/ErrorNotice'
+import {
+  omitUntouchedRedactedPrefills,
+  snapshotRedactedPrefills,
+  type RedactedPrefillSnapshot,
+} from '../utils/redactedPrefillGuard'
 /** Common shape returned by the agent/workspace mutation endpoints. */
 interface AgentMutationResult {
   error?: string
@@ -804,6 +809,7 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
     setName(''); setKiroAgent(''); setWorkspace('default'); setMemoryStore('default')
     setTriggers('')
     setSessionColor('')
+    editPrefillSnapshot.current = null
     setSheet({ mode: 'create' })
   }, [])
 
@@ -816,10 +822,15 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
     setSessionColor(a.session_color || '')
     setEditModel(a.model || INHERIT_MODEL)
     setEditEffort(a.reasoning_effort || '')
+    // Snapshot which fields arrived redacted and their exact prefills NOW:
+    // the save keys its omission on this, never on the live row, because a
+    // mid-edit roster refresh can swap in a clean manifest while the form
+    // still holds the stale marker (#8447).
+    editPrefillSnapshot.current = snapshotRedactedPrefills(a)
     setSheet({ mode: 'edit', name: a.name })
   }, [])
 
-  const closeSheet = useCallback(() => { sheetEpoch.current += 1; setSheet(null); setError(''); setConfirmDelete(false) }, [])
+  const closeSheet = useCallback(() => { sheetEpoch.current += 1; setSheet(null); setError(''); setConfirmDelete(false); editPrefillSnapshot.current = null }, [])
 
   /**
    * Identity of the CURRENT panel opening, bumped on every open and every
@@ -831,6 +842,11 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
    * cannot tell those two apart. A per-opening counter can.
    */
   const sheetEpoch = useRef(0)
+  /** What the edit sheet was OPENED with: the redacted-field manifest and
+   *  marker prefills, frozen at open. The save's omission consults THIS, not
+   *  the live roster row — a refetch mid-edit can clear the live manifest
+   *  while the form still holds the stale marker (#8447). */
+  const editPrefillSnapshot = useRef<RedactedPrefillSnapshot | null>(null)
 
   /**
    * Apply a finished write's outcome ONLY if the panel it was fired from is
@@ -858,7 +874,7 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
     onError: (e: Error, vars) => settleFor(vars.epoch, e.message || i18nT('pages.kiroCrewAgentsPage.failed_to_create_agent')),
   })
   const updateMut = useMutation({
-    mutationFn: ({ name, data }: { name: string; data: AgentUpdatePayload; epoch: number }) => api.updateKirocrewAgent(name, data),
+    mutationFn: ({ name, data }: { name: string; data: Partial<AgentUpdatePayload>; epoch: number }) => api.updateKirocrewAgent(name, data),
     onSuccess: (r: AgentMutationResult, vars) => { settleFor(vars.epoch, r.error); refetchAgents() },
     onError: (e: Error, vars) => settleFor(vars.epoch, e.message || i18nT('pages.kiroCrewAgentsPage.failed_to_update_agent')),
   })
@@ -892,20 +908,31 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
     updateMut.mutate({
       name: editing,
       epoch: sheetEpoch.current,
-      data: {
-        kiro_agent: kiroAgent,
-        workspace,
-        memory_store: memoryStore,
-        triggers,
-        // INHERIT_MODEL is normalized to '' server-side; send it verbatim so
-        // clearing a pin is a real write rather than a skipped field.
-        model: editModel,
-        // Sent unconditionally for the same reason as `model`: '' is a real
-        // value (clear the pin), so a skipped field would make clearing
-        // impossible.
-        reasoning_effort: editEffort,
-        session_color: sessionColor,
-      },
+      // A field the server REDACTED (per the manifest SNAPSHOTTED at sheet
+      // open) whose form value is still the untouched marker prefill is
+      // omitted: echoing it back would write the marker over the real stored
+      // value — and after a concurrent edit, over a NEWER value the backend
+      // echo guard cannot recognise (#8447). Keyed on the opening snapshot,
+      // not the live row, so a mid-edit roster refresh cannot clear the
+      // manifest out from under the form. Edited fields, including cleared
+      // ones, always send.
+      data: omitUntouchedRedactedPrefills(
+        {
+          kiro_agent: kiroAgent,
+          workspace,
+          memory_store: memoryStore,
+          triggers,
+          // INHERIT_MODEL is normalized to '' server-side; send it verbatim so
+          // clearing a pin is a real write rather than a skipped field.
+          model: editModel,
+          // Sent unconditionally for the same reason as `model`: '' is a real
+          // value (clear the pin), so a skipped field would make clearing
+          // impossible.
+          reasoning_effort: editEffort,
+          session_color: sessionColor,
+        },
+        editPrefillSnapshot.current ?? { redacted_fields: [], prefills: {} },
+      ),
     })
   }
 

@@ -24,6 +24,12 @@ export interface KiroCrewAgent {
   /** Free-text routing intent read by the orchestrator's select_crew. Optional:
    *  older payloads predate the field, and it falls back to `description`. */
   triggers?: string
+  /** Names the record fields whose value the server REDACTED before serving
+   *  (#8447) — e.g. a credential-shaped `workspace` arrives as
+   *  `[REDACTED: credential]` and is listed here. An edit form must omit an
+   *  untouched field in this list from its save, or it would echo the marker
+   *  back over the real stored value. Optional: older payloads predate it. */
+  redacted_fields?: string[]
   source: string
   /** Default session color (#rrggbb hex) applied to new sessions using this
    *  agent. Empty or absent means no agent color. */

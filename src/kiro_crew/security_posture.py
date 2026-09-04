@@ -1300,8 +1300,10 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # file is not the egress boundary the panel counts.
         "apps/job_sdk.py",
         # Same shape: hosts _redact_memory_field, the shared recursive scrubber
-        # for memory fields. It owns no output of its own — the handler modules
-        # that call it (memory.py, cron.py) are the covered surfaces.
+        # for memory fields, and redact_record_strings, the roster-record
+        # chokepoint delegating to it (#8447). It owns no output of its own —
+        # the handler modules that call them (memory.py, cron.py, agents.py,
+        # members.py) are the covered surfaces.
         "dashboard/handlers/_shared.py",
         # Same shape: applies a redactor the CALLER injects, to scan the form a
         # platform will actually render (markup collapsed, ANSI stripped). It owns
@@ -1442,9 +1444,11 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         "dashboard/ws.py",
         "dashboard/server.py",
         "dashboard/handlers/sessions.py",
-        # Roster last-message previews: same preview + redaction chain as
-        # handlers/sessions.py, feeding the same dashboard HTTP surface the
-        # registered sink already covers.
+        # Roster last-message previews (same preview + redaction chain as
+        # handlers/sessions.py) AND the roster record values themselves
+        # (redact_record_strings over the /api/members allowlisted fields,
+        # #8447) — both feeding the same dashboard HTTP surface the registered
+        # sink already covers.
         "dashboard/handlers/members.py",
         "dashboard/handlers/artifacts.py",
         "dashboard/handlers/core.py",
@@ -1597,6 +1601,10 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # user-facing surfaces that consume them are registered sinks above.
         "platform/context.py",
         "mcp_shared.py",
+        # Provider-sourced strings via _redact_external, plus the /api/agents
+        # roster records via redact_record_strings (#8447) — both feed the
+        # dashboard HTTP surface the registered sink already covers, same
+        # classification as handlers/members.py above.
         "dashboard/handlers/agents.py",
         # Pre-publish content scanning (a scan, not an egress of agent output).
         "deploy/handlers.py",

@@ -27,6 +27,7 @@ import kiro_crew.dashboard.handlers as _h
 from kiro_crew import members as members_mod
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.dashboard.chat_persistence import rehydrate_slot_from_history_async
+from kiro_crew.dashboard.handlers._shared import redact_record_strings
 from kiro_crew.dashboard.state import DashboardState, request_slot_origin
 from kiro_crew.members import MemberSlugError
 from kiro_crew.validation import _AGENT_NAME_RE
@@ -113,10 +114,13 @@ async def api_members(request: web.Request) -> web.Response:
 
     One row per GLOBAL crew (project-scoped crews are out of V1's scope: the
     per-member space is keyed off the global registry). Status fields are
-    limited to what costs no IO and no redaction pass — ``running`` is an O(1)
-    property read; everything richer (last message, waiting states) rides the
+    limited to what costs no IO — ``running`` is an O(1) property read;
+    everything richer (last message, waiting states) rides the
     already-subscribed WS ``slots`` frames on the frontend, so this endpoint
-    only fills the cold-start gap.
+    only fills the cold-start gap. The allowlisted record values DO get a
+    redaction pass (``redact_record_strings``, CPU-only): they are
+    agent-writable ``config.json`` strings, so they are scrubbed for
+    credentials / exfiltration URLs before they leave (#8447).
     """
     denied = _deny_app_caller(request, "members.list")
     if denied is not None:
@@ -133,19 +137,23 @@ async def api_members(request: web.Request) -> web.Response:
         except MemberSlugError:
             continue
         rows.append(
-            {
-                # Explicit allowlist — never a dataclass spread. The response
-                # is a network-boundary contract: spreading `AgentConfig`
-                # would ship every future field (including a credential-shaped
-                # one) to the roster endpoint automatically. These four are
-                # exactly what the detail drawer renders.
-                "name": name,
-                "slug": slug,
-                "kiro_agent": agent_cfg.kiro_agent,
-                "workspace": agent_cfg.workspace,
-                "memory_store": agent_cfg.memory_store,
-                "model": agent_cfg.model,
-            }
+            # Explicit allowlist — never a dataclass spread. The response
+            # is a network-boundary contract: spreading `AgentConfig`
+            # would ship every future field (including a credential-shaped
+            # one) to the roster endpoint automatically. These four are
+            # exactly what the detail drawer renders. The VALUES still get
+            # the credential/exfiltration-URL pass: they are agent-writable
+            # config.json strings (#8447).
+            redact_record_strings(
+                {
+                    "name": name,
+                    "slug": slug,
+                    "kiro_agent": agent_cfg.kiro_agent,
+                    "workspace": agent_cfg.workspace,
+                    "memory_store": agent_cfg.memory_store,
+                    "model": agent_cfg.model,
+                }
+            )
         )
 
     # Binding reads are file IO — one thread hop for the whole roster, not one

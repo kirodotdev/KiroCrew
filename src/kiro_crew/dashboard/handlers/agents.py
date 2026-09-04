@@ -74,11 +74,13 @@ from kiro_crew.dashboard.handlers._shared import (
     MAX_AGENT_SKILLS,
     _capability_manager,
     _read_session_key,
+    _redact_memory_field,
     active_project_dir,
     agent_skill_keys,
     agent_skill_views,
     apply_skill_mapping,
     read_bounded_json,
+    redact_record_strings_marked,
 )
 from kiro_crew.dashboard.handlers.discover import _redact_external
 from kiro_crew.dashboard.kiro_readiness import reject_if_kiro_unverified
@@ -2629,8 +2631,19 @@ async def api_kirocrew_agents(request: web.Request) -> web.Response:
 
     return web.json_response(
         {
-            "agents": agents,
-            "default_agent": cfg.default_agent,
+            # One serialization chokepoint for BOTH row sources (the
+            # ``cfg.agents`` spread and the project-scope rows), applied after
+            # the usage sort so ordering reads the raw names: the dataclass
+            # spread above ships every record field — free-text strings are
+            # agent-writable via config.json, so each row is scrubbed for
+            # credentials / exfiltration URLs before it leaves (#8447). The
+            # ``redacted_fields`` manifest each row gains is what lets the
+            # edit sheet omit untouched redacted prefills from its save.
+            "agents": [redact_record_strings_marked(row) for row in agents],
+            # Same class of agent-writable config string as the row fields
+            # (config.json's default_agent key) — must not ship raw beside
+            # redacted rows (#8447).
+            "default_agent": _redact_memory_field(cfg.default_agent),
         }
     )
 
@@ -3068,8 +3081,79 @@ async def api_kirocrew_agents_create(request: web.Request) -> web.Response:
     return web.json_response({"ok": True, "name": name})
 
 
+_REDACTION_MARKER = "[REDACTED"
+
+
+def _is_pure_marker(text: str) -> bool:
+    """True when ``text`` is NOTHING BUT one redaction marker.
+
+    Such a value is never a deliberate stored value — it can only be a
+    redacted prefill echoed back — so the update path refuses it even when it
+    no longer exact-matches the redaction of the CURRENT stored value (the
+    stale-save race: a concurrent write changed the value between the form's
+    GET and its save).
+
+    Anchored ONLY on the marker prefix/suffix with non-empty inner text:
+    exfil markers can carry an interior ``]`` (a bracketed IPv6 host renders
+    as ``[REDACTED: suspicious URL to [2001:db8::1]]``), so a no-interior-``]``
+    clause would false-negative exactly there and reopen the stale-save hole.
+    The wider match errs toward NOT writing (the newer stored value survives),
+    which is the fail-safe direction; text merely containing a marker
+    alongside other leading text still writes normally.
+
+    Plain string ops, deliberately not a regex: the input is caller-supplied,
+    and CodeQL flagged the equivalent pattern as potentially super-linear
+    under backtracking on adversarial marker-prefixed input.
+    """
+    text = text.strip()
+    return text.startswith("[REDACTED: ") and text.endswith("]") and len(text) > len("[REDACTED: ]")
+
+
+def _strip_redacted_echoes(body: dict, current: KiroCrewAgentConfig) -> dict:
+    """Drop update fields that merely echo a ROSTER-REDACTED stored value.
+
+    ``GET /api/agents`` serves record strings through ``redact_record_strings``
+    (#8447), so an edit form prefilled from the roster shows
+    ``[REDACTED: ...]`` for any field whose stored value redacts. The crew
+    edit sheet PUTs its prefill fields back unconditionally on save, so
+    without this guard a save that never TOUCHED such a field would overwrite
+    the real ``config.json`` value with the marker — silent data loss.
+
+    Two drop rules, both scoped to marker-bearing strings that differ from
+    the stored value:
+
+    - EXACT ECHO: the incoming value is exactly what the roster serves for
+      the CURRENT stored value. That shape can only be the redacted echo.
+    - PURE MARKER: the incoming value is nothing but one redaction marker.
+      A bare marker is never a deliberate stored value, so this holds even
+      when a concurrent write changed the stored value between the form's
+      GET and its save (the stale-save race) — the newer value wins.
+
+    A deliberately typed new value (including clearing to ``""``, and
+    including pasted text that merely CONTAINS a marker alongside other
+    text) matches neither rule and is written normally. The row's
+    ``redacted_fields`` manifest additionally lets the sheet omit untouched
+    redacted prefills client-side; these rules are the server-side floor for
+    clients that do not.
+    """
+    out: dict = {}
+    for key, incoming in body.items():
+        stored = getattr(current, key, None)
+        if isinstance(incoming, str) and isinstance(stored, str) and incoming != stored:
+            if _is_pure_marker(incoming):
+                continue
+            if _REDACTION_MARKER in incoming and _redact_memory_field(stored) == incoming:
+                continue
+        out[key] = incoming
+    return out
+
+
 async def api_kirocrew_agent_update(request: web.Request) -> web.Response:
-    """PUT /api/agents/{name} — update a KiroCrew agent."""
+    """PUT /api/agents/{name} — update a KiroCrew agent.
+
+    Body string fields that merely ECHO a roster-redacted value are dropped
+    before anything reads them — see ``_strip_redacted_echoes``.
+    """
 
     denied = await _require_owner(request, "agent.update")
     if denied is not None:
@@ -3083,6 +3167,17 @@ async def api_kirocrew_agent_update(request: web.Request) -> web.Response:
         return web.json_response(
             {"error": "body must be an object", "code": "body_not_object"}, status=400
         )
+    # Read-only probe so the echo strip runs before the model/effort
+    # validations below — a redacted echo in a validated field would otherwise
+    # 400 the whole save. Off the event loop (asyncio.to_thread, the
+    # api_members shape): the load is file IO + validation, and running it
+    # inline would stall every dashboard request behind slow storage.
+    # Re-stripped against the authoritative record inside the lock; this
+    # probe only pre-cleans.
+    _probe_cfg = await asyncio.to_thread(KiroCrewConfig.load)
+    _probe = _probe_cfg.agents.get(name)
+    if _probe is not None:
+        body = _strip_redacted_echoes(body, _probe)
     if "model" in body:
         pending_model = normalize_agent_model(body["model"])
     # Rejected before the config is even loaded: the check is pure, and every
@@ -3107,6 +3202,10 @@ async def api_kirocrew_agent_update(request: web.Request) -> web.Response:
                     {"error": model_reason, "code": "invalid_model"}, status=400
                 )
         agent = cfg.agents[name]
+        # Re-strip against the AUTHORITATIVE record: the pre-lock probe above
+        # could race a concurrent write, and this locked record is what the
+        # field assignments below read.
+        body = _strip_redacted_echoes(body, agent)
         # Captured BEFORE any mutation: what the effort chain reads today.
         effort_inputs_before = _effort_inputs(agent)
         changed: list[str] = []
