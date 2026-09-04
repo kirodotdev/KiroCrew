@@ -5390,6 +5390,8 @@
       "touch_select_done": "範囲を選択 — コピーをタップ"
     },
     "codeBlock": {
+      "add_comment": "コメントを追加",
+      "comment_thread": "コメントスレッド（{{count}}）",
       "copied": "コピーしました！",
       "copy": "コピー",
       "generating": "生成中…"

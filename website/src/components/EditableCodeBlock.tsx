@@ -23,7 +23,13 @@ function contentHash(text: string): string {
  *  is written back to the message), useful for tweaking a snippet before
  *  copying or running it. */
 const EditableCodeBlock = memo(function EditableCodeBlock(
-  { code, lang, complete }: { code: string; lang?: string; complete: boolean },
+  { code, lang, complete, sourceStartLine }: {
+    code: string; lang?: string; complete: boolean
+    /** Forwarded to `CodeBlock` — the block's first content line in the raw
+     *  markdown source, the handle for line-anchored code commenting (see
+     *  codeComments.ts). Only set on sourcepos surfaces (artifact pages). */
+    sourceStartLine?: number
+  },
 ) {
   useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
   const [editing, setEditing] = useState(false)
@@ -61,7 +67,7 @@ const EditableCodeBlock = memo(function EditableCodeBlock(
   ) : undefined
 
   if (!editing) {
-    return <CodeBlock code={code} lang={lang} complete={complete} headerActions={headerActions} />
+    return <CodeBlock code={code} lang={lang} complete={complete} headerActions={headerActions} sourceStartLine={sourceStartLine} />
   }
 
   return (

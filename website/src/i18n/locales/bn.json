@@ -5479,6 +5479,8 @@
       "touch_select_done": "পরিসর নির্বাচিত — কপি ট্যাপ করুন"
     },
     "codeBlock": {
+      "add_comment": "মন্তব্য যোগ করুন",
+      "comment_thread": "মন্তব্যের থ্রেড ({{count}})",
       "copied": "কপি হয়েছে!",
       "copy": "কপি",
       "generating": "তৈরি হচ্ছে…"

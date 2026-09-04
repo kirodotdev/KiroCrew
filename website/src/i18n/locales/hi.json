@@ -5479,6 +5479,8 @@
       "touch_select_done": "श्रेणी चयनित — कॉपी टैप करें"
     },
     "codeBlock": {
+      "add_comment": "टिप्पणी जोड़ें",
+      "comment_thread": "टिप्पणी थ्रेड ({{count}})",
       "copied": "कॉपी हो गया!",
       "copy": "कॉपी करें",
       "generating": "जेनरेट हो रहा है…"

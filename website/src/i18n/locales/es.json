@@ -5568,6 +5568,8 @@
       "touch_select_done": "Rango seleccionado: toca Copiar"
     },
     "codeBlock": {
+      "add_comment": "Añadir comentario",
+      "comment_thread": "Hilo de comentarios ({{count}})",
       "copied": "¡Copiado!",
       "copy": "Copiar",
       "generating": "generando…"

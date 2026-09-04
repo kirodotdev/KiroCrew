@@ -5479,6 +5479,8 @@
       "touch_select_done": "Bereich ausgewählt — tippe auf Kopieren"
     },
     "codeBlock": {
+      "add_comment": "Kommentar hinzufügen",
+      "comment_thread": "Kommentar-Thread ({{count}})",
       "copied": "Kopiert!",
       "copy": "Kopieren",
       "generating": "wird erstellt…"

@@ -5390,6 +5390,8 @@
       "touch_select_done": "已选择范围 — 点按复制"
     },
     "codeBlock": {
+      "add_comment": "添加评论",
+      "comment_thread": "评论会话（{{count}}）",
       "copied": "已复制！",
       "copy": "复制",
       "generating": "生成中…"

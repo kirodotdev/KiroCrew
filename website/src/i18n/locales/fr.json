@@ -5568,6 +5568,8 @@
       "touch_select_done": "Plage sélectionnée — touchez Copier"
     },
     "codeBlock": {
+      "add_comment": "Ajouter un commentaire",
+      "comment_thread": "Fil de commentaires ({{count}})",
       "copied": "Copié !",
       "copy": "Copier",
       "generating": "génération…"

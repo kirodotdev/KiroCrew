@@ -30,6 +30,7 @@ import { CommentsSidebar } from '../components/CommentsSidebar'
 import { ArtifactChatPanel } from '../components/ArtifactChatPanel'
 import { CommentThreadPopover } from '../components/CommentThreadPopover'
 import { findCoords, resolveSourcePos } from '../components/MarkdownPanel'
+import { CodeCommentContext, codeFenceSpans, routeCodeComments, buildCodeCommentAnchor, type CodeCommentContextValue } from '../components/codeComments'
 // Artifact body renderers, extracted here so the chat side panel shares them.
 import { ArtifactBodyNative, ArtifactBodyIframe, ArtifactBodyImage, artifactAssetUrl, isEditableKind } from '../components/ArtifactBody'
 import { useArtifactPopouts } from '../hooks/useArtifactPopouts'
@@ -1352,6 +1353,59 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
     }
   }, [markThreadRead, usesIframe])
 
+  // ── Line-anchored code-block comments ─────────────────────────────────────
+  // Code fences render in Pierre's shadow DOM, unreachable by the light-DOM
+  // selection capture above and by the highlight overlay's text walk — so code
+  // comments ride Pierre's own line-selection / gutter / annotation primitives
+  // instead (see codeComments.ts for the anchor convention and routing rules).
+  // The context below is what a rendered CodeBlock consumes; it is only
+  // mounted for the markdown kind on the current version.
+  const codeSpans = useMemo(
+    () => (commentable && isMarkdown ? codeFenceSpans(sourceContent) : []),
+    [commentable, isMarkdown, sourceContent],
+  )
+  const codeRouting = useMemo(
+    () => routeCodeComments(sourceContent, codeSpans, durableComments, unreadRootIds),
+    [sourceContent, codeSpans, durableComments, unreadRootIds],
+  )
+  // Threads a fence claimed are excluded from the light-DOM overlay: a short
+  // code quote (`}` and friends) could otherwise mis-highlight an incidental
+  // prose occurrence of the same text.
+  const overlayComments = useMemo(
+    () => (codeRouting.claimedThreadIds.size === 0
+      ? durableComments
+      : durableComments.filter(c => !codeRouting.claimedThreadIds.has(c.thread_id))),
+    [durableComments, codeRouting],
+  )
+  const codeCommentCtx = useMemo<CodeCommentContextValue | null>(() => {
+    if (!commentable || !isMarkdown) return null
+    return {
+      annotationsFor: fenceStartLine => codeRouting.byFence.get(fenceStartLine) ?? [],
+      activeId: activeCommentId,
+      onActivate: openThreadHandler,
+      onCommentRange: ({ blockStartLine, start, end, x, y }) => {
+        const span = codeSpans.find(s => s.contentStartLine === blockStartLine)
+        if (!span) return
+        const anchor = buildCodeCommentAnchor(sourceContent, span, start, end)
+        if (!anchor) return
+        // Feeds the same popover/addComment path as a prose selection. The
+        // offsets are SOURCE offsets (the code-comment anchor convention) —
+        // addComment stores them verbatim, and routeCodeComments' slice
+        // equality is what routes the comment back to this fence.
+        setPopover({
+          x, y,
+          anchor: anchor.quote,
+          line: anchor.line,
+          column: 1,
+          prefix: anchor.prefix,
+          suffix: anchor.suffix,
+          startOffset: anchor.startOffset,
+          endOffset: anchor.endOffset,
+        })
+      },
+    }
+  }, [commentable, isMarkdown, codeRouting, codeSpans, sourceContent, activeCommentId, openThreadHandler])
+
   // ── Copy raw content ──────────────────────────────────────────────────────
   // Copies the stored source (markdown/HTML/JSON/text as-is) of the version
   // currently on screen — `artifact` already resolves to the selected
@@ -1938,22 +1992,24 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
                 onMouseDown={() => { selectingRef.current = true }}
                 onMouseUp={() => { selectingRef.current = false; handleMouseUp() }}
               >
-                <ArtifactBodyNative
-                  kind={artifact.kind}
-                  content={editing ? editedContent : (artifact.content ?? '')}
-                  // SVG shows preview AND source together while editing, so the
-                  // preview toggle does not apply to it — and must not gate it:
-                  // the toggle is hidden for SVG, so honoring a stale `true`
-                  // here would strand the editor with no control to restore it.
-                  editing={editing && (artifact.kind === 'svg' || !previewDuringEdit)}
-                  onChange={setEditedContent}
-                  previewRef={previewRef}
-                  comments={durableComments}
-                  activeCommentId={activeCommentId}
-                  scrollNonce={bodyScrollNonce}
-                  onActivateComment={openThreadHandler}
-                  unreadRootIds={unreadRootIds}
-                />
+                <CodeCommentContext.Provider value={codeCommentCtx}>
+                  <ArtifactBodyNative
+                    kind={artifact.kind}
+                    content={editing ? editedContent : (artifact.content ?? '')}
+                    // SVG shows preview AND source together while editing, so the
+                    // preview toggle does not apply to it — and must not gate it:
+                    // the toggle is hidden for SVG, so honoring a stale `true`
+                    // here would strand the editor with no control to restore it.
+                    editing={editing && (artifact.kind === 'svg' || !previewDuringEdit)}
+                    onChange={setEditedContent}
+                    previewRef={previewRef}
+                    comments={overlayComments}
+                    activeCommentId={activeCommentId}
+                    scrollNonce={bodyScrollNonce}
+                    onActivateComment={openThreadHandler}
+                    unreadRootIds={unreadRootIds}
+                  />
+                </CodeCommentContext.Provider>
                 {popover && (
                   <CommentPopover
                     x={popover.x}

@@ -1491,6 +1491,8 @@
       "touch_select_done": "Range selected — tap Copy"
     },
     "codeBlock": {
+      "add_comment": "Add comment",
+      "comment_thread": "Comment thread ({{count}})",
       "copied": "Copied!",
       "copy": "Copy"
     },

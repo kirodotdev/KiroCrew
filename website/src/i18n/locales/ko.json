@@ -5390,6 +5390,8 @@
       "touch_select_done": "범위 선택됨 — 복사를 탭하세요"
     },
     "codeBlock": {
+      "add_comment": "댓글 추가",
+      "comment_thread": "댓글 스레드 ({{count}})",
       "copied": "복사했습니다!",
       "copy": "복사",
       "generating": "생성 중…"

@@ -21,6 +21,10 @@ import { i18nT } from '../i18n/t'
 
 const CARD_W = 360
 const GAP = 8
+/** Effective card width: the fixed 360px card shrinks on viewports too narrow
+ * to hold it (e.g. 320px phones), so the close/reply controls stay reachable
+ * for BOTH prose and code threads — the popover is shared by both surfaces. */
+const cardW = (vw: number) => Math.min(CARD_W, vw - GAP * 2)
 
 interface Props {
   comments: ArtifactComment[]
@@ -63,7 +67,7 @@ export function CommentThreadPopover({
       aTop = rect.y; aBottom = rect.y + rect.h; aLeft = rect.x
     } else {
       const el = document.querySelector(`[data-mc-cid="${CSS.escape(rootId)}"]`) as HTMLElement | null
-      if (!el) { setPos({ top: Math.max(GAP, (vh - cardH) / 2), left: Math.max(GAP, vw - CARD_W - 24) }); return }
+      if (!el) { setPos({ top: Math.max(GAP, (vh - cardH) / 2), left: Math.max(GAP, vw - cardW(vw) - 24) }); return }
       const r = el.getBoundingClientRect()
       aTop = r.top; aBottom = r.bottom; aLeft = r.left
     }
@@ -72,7 +76,7 @@ export function CommentThreadPopover({
       const above = aTop - cardH - GAP
       top = above >= GAP ? above : Math.max(GAP, vh - cardH - GAP)
     }
-    const left = Math.min(Math.max(GAP, aLeft), vw - CARD_W - GAP)
+    const left = Math.min(Math.max(GAP, aLeft), Math.max(GAP, vw - cardW(vw) - GAP))
     setPos({ top, left })
   }, [rect, rootId])
 
@@ -119,7 +123,7 @@ export function CommentThreadPopover({
   return (
     <div
       ref={cardRef}
-      className="fixed z-[1000] w-[360px] max-h-[70vh] flex flex-col rounded-xl border-2 border-border-strong bg-bg-elevated shadow-2xl ring-1 ring-accent/30 overflow-hidden"
+      className="fixed z-[1000] w-[360px] max-w-[calc(100vw-16px)] max-h-[70vh] flex flex-col rounded-xl border-2 border-border-strong bg-bg-elevated shadow-2xl ring-1 ring-accent/30 overflow-hidden"
       style={{ top: pos?.top ?? -9999, left: pos?.left ?? -9999 }}
       role="dialog"
       aria-label={i18nT('components.commentThreadPopover.comment_thread')}

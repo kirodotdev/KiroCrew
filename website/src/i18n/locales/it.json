@@ -5568,6 +5568,8 @@
       "touch_select_done": "Intervallo selezionato — tocca Copia"
     },
     "codeBlock": {
+      "add_comment": "Aggiungi commento",
+      "comment_thread": "Discussione commenti ({{count}})",
       "copied": "Copiato!",
       "copy": "Copia",
       "generating": "generazione…"
