@@ -38,19 +38,48 @@ function buildGatewayEnvironment(baseEnv) {
 }
 
 /**
- * Keep runtime bytecode outside signed/read-only POSIX app bundles.
+ * Decide where a packaged gateway's bytecode may go — and on macOS, that it may
+ * not be written at all.
  *
- * The Windows bundle instead ships checked-hash pycs beside its sources. PE
- * Authenticode does not seal resource trees the way macOS code signing does,
- * and using those build-time caches avoids a thousand-file first-launch write
- * burst. A per-machine install may be read-only to the user; Python can still
- * consume the shipped caches without needing to update them.
+ * Both desktop bundles ship checked-hash pycs beside their sources, so a
+ * packaged runtime finds its modules already compiled and has no reason to write
+ * one. That is what lets this consume adjacent `__pycache__` instead of
+ * redirecting to a per-user cache the first launch would have to populate.
+ * macOS compiles the WHOLE tree (`compileall --invalidation-mode checked-hash`
+ * in `packaging/build-desktop.sh`); Windows ships the narrower traced startup
+ * closure, which is enough there because a later write is harmless.
+ *
+ * macOS additionally FORBIDS the write. `codesign` seals every file under a
+ * `.app`'s `Contents/`, so bytecode written there after signing invalidates the
+ * signature and Gatekeeper refuses the app as "damaged" — reported on managed
+ * Macs, whose policy re-evaluates instead of reusing a cached accept verdict.
+ * Redirecting the cache elsewhere would also prevent that, but at a real price:
+ * a set prefix makes CPython ignore the adjacent caches entirely, so the shipped
+ * caches become dead weight and every version's first launch recompiles them
+ * (measured 3.95s cold vs 0.84s warm). Forbidding the write keeps the shipped
+ * caches readable — `PYTHONDONTWRITEBYTECODE` disables writing only — so a
+ * module inside the closure loads from disk and one outside it compiles in
+ * memory and leaves no file behind.
+ *
+ * Windows is not locked down, deliberately: Authenticode does not seal resource
+ * trees, so a write there is harmless, and letting modules outside the traced
+ * closure cache themselves helps later launches. A per-machine install may be
+ * read-only to the user; Python still consumes the shipped caches either way.
+ *
+ * Unpackaged and Linux keep the redirect: a dev tree has no shipped closure, and
+ * a Linux package may be read-only with no signature to protect.
  */
 function gatewayBytecodeEnvironment(platform, cachePath, isPackaged) {
-  if (platform === "win32" && isPackaged) {
+  if (isPackaged && (platform === "win32" || platform === "darwin")) {
     // An empty value makes CPython use adjacent __pycache__ files and, unlike
     // omitting the key, overrides a hostile/inherited cache prefix.
-    return { PYTHONPYCACHEPREFIX: "" };
+    const env = { PYTHONPYCACHEPREFIX: "" };
+    if (platform === "darwin") {
+      // Not merely a default: an inherited empty/unset value means "write next
+      // to the source", which inside a signed bundle is the corruption itself.
+      env.PYTHONDONTWRITEBYTECODE = "1";
+    }
+    return env;
   }
   return { PYTHONPYCACHEPREFIX: cachePath };
 }

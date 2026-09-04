@@ -335,6 +335,52 @@ describe("first-download installer design contract", () => {
     );
   });
 
+  it("compiles the whole macOS tree, so the signed bundle is never written to", () => {
+    // codesign seals every file under a .app's Contents/, so bytecode written
+    // there after signing makes Gatekeeper refuse the app as "damaged". The
+    // desktop shell forbids the write (gatewayBytecodeEnvironment); shipping a
+    // cache for EVERY module is what removes the reason to want one.
+    //
+    // Whole tree, not the traced closure the Windows lane ships: Authenticode
+    // seals no resource tree so a later write on Windows is harmless, while on
+    // macOS any uncovered module is a latent signature break.
+    const buildScript = fs.readFileSync(
+      path.join(REPO_ROOT, "packaging", "build-desktop.sh"),
+      "utf8"
+    );
+    const macStart = buildScript.indexOf("build_backend() {");
+    const macEnd = buildScript.indexOf("build_backend_windows() {", macStart);
+    assert.ok(macStart >= 0 && macEnd > macStart, "could not locate build_backend()");
+    const macBuilder = buildScript.slice(macStart, macEnd);
+
+    assert.match(
+      macBuilder,
+      /-m compileall -q -f \\\r?\n\s*--invalidation-mode checked-hash "\$out\/lib"/,
+      "the macOS backend ships no precompiled tree, so the runtime would have to " +
+        "compile on first use — the write that breaks the signature"
+    );
+    assert.doesNotMatch(
+      macBuilder,
+      /--invalidation-mode timestamp/,
+      "a timestamp pyc records the source mtime, and ditto restamps sources at " +
+        "extraction, so every shipped timestamp pyc is rewritten on first use"
+    );
+    // It must run AFTER the prune that deletes pip's timestamp pycs, or its
+    // output is deleted.
+    assert.ok(
+      macBuilder.indexOf("-name __pycache__ -prune") <
+        macBuilder.indexOf("-m compileall"),
+      "compiling before the prune would have its output deleted"
+    );
+    // And the coverage has to be gated, or a silent compileall failure ships a
+    // tree the runtime wants to write to.
+    assert.match(
+      macBuilder,
+      /shipped without a bytecode cache/,
+      "nothing asserts the tree actually shipped with caches"
+    );
+  });
+
   it("bundles the voice runtime, downloads models on demand, and gates supported targets", () => {
     const buildScript = fs.readFileSync(
       path.join(REPO_ROOT, "packaging", "build-desktop.sh"),
