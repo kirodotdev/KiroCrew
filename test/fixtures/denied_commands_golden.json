@@ -886,5 +886,23 @@
     "pattern": "(?:(?:os\\.system|os\\.popen|os\\.exec\\w*|(?:asyncio\\.)?create_subprocess_\\w*|(?:\\w+\\.)?(?:run|call|check_call|check_output|popen|Popen|getoutput|getstatusoutput)|commands\\.getoutput|popen\\d?|system|shell_exec|passthru|proc_open|child_process\\.exec\\w*|exec\\w*sync|spawn\\w*|kernel\\.system|io\\.popen)(?:\\s*\\(?\\s*[a-z]{0,2}['\"][^'\"]*\\b(?:pkill|killall)\\b[^'\"]*\\b(?:kiro[-.]?crew|irocrew)\\b|[\\s\\(\\[]*['\"][\\w.:/\\\\-]*(?:pkill|killall)['\"][\\s,\\[\\]\\(\\)+*'\"=\\w-]*['\"][^'\"]*(?:kiro[-.]?crew|irocrew))|(?:os\\.kill(?:pg)?|process\\.kill|\\bkillpg)\\s*\\([^)]*irocrew)",
     "category": "self-protection",
     "description": "Blocks an interpreter payload that terminates a kirocrew process through a library call rather than as a shell command -- a pkill/killall command and the product name inside one quoted string passed to an executing sink such as `os.system(...)` or `execSync(...)`. Sink-qualified so prose, a commit message or a regex literal naming both is not a kill."
+  },
+  {
+    "id": "network-exposure-tailscale-serve",
+    "pattern": ".*tailscale(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+serve(?!\\s+status)\\b.*",
+    "category": "network-exposure",
+    "description": "Blocks `tailscale serve` mutations, which publish or withdraw a handler on this machine's tailnet and would widen the agent's own network exposure outside the governed, owner-only publish path. `tailscale serve status` (the read) stays allowed."
+  },
+  {
+    "id": "network-exposure-tailscale-funnel",
+    "pattern": ".*tailscale(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+funnel(?!\\s+status)\\b.*",
+    "category": "network-exposure",
+    "description": "Blocks `tailscale funnel`, which exposes a local service to the PUBLIC internet. The agent must never be able to make a service publicly reachable. `tailscale funnel status` (the read) stays allowed."
+  },
+  {
+    "id": "network-exposure-tailscale-node-mutate",
+    "pattern": ".*tailscale(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+(?:up|set|login|logout|switch|cert)\\b.*",
+    "category": "network-exposure",
+    "description": "Blocks `tailscale up`, `set`, `login`, `logout`, `switch`, and `cert` — node-state and identity mutations that can enable an SSH server, advertise this node as an exit node or subnet router, change which tailnet it is on, or provision a serve certificate. Read subcommands (`status`, `netcheck`, `ping`, `whois`) stay allowed."
   }
 ]

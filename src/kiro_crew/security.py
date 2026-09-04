@@ -1732,6 +1732,68 @@ BUILTIN_DENIED_RULES: list[DeniedCommandRule] = [
             "can cause irreversible data loss."
         ),
     ),
+    # ── Tailscale network-exposure family ──────────────────────────────────
+    # The agent must never be able to widen its own network exposure. Putting
+    # the dashboard on the tailnet is a GOVERNED action (`tailnet_serve.publish`
+    # is owner-only, SEL-audited, and honours `capabilities.tailnet_origin`),
+    # but that governance lives at the dashboard/CLI seam — the raw `tailscale`
+    # CLI sits below it. From bash the agent could otherwise run
+    # `tailscale serve` to publish, `tailscale funnel` to expose a service to
+    # the PUBLIC internet, or `tailscale up`/`set` to enable an SSH server or
+    # advertise routes, all bypassing `publish()` and its pin. These rules
+    # close that path at the same PreToolUse gate as every other denied command.
+    # They do NOT affect Kiro Crew's own publish path: `tailnet_serve._run`
+    # spawns `tailscale` via `subprocess.run` directly, never through the hooks
+    # gate. Reads stay allowed: `status`, `serve status`, `netcheck`, `ping`,
+    # `whois`. The flag-run idiom is byte-identical to the aws/self-protection
+    # rules so `_linearize_deny_pattern` keeps it ReDoS-safe.
+    DeniedCommandRule(
+        id="network-exposure-tailscale-serve",
+        # `serve` with anything other than the `status` read is a mutation that
+        # publishes (or withdraws) a handler on the tailnet. `(?!\s+status)`
+        # keeps `serve status` and `serve status --json` — the reads Kiro Crew's
+        # own status path and any doctor tool use — allowed; bare `serve` (a
+        # config dump) is over-blocked in the safe direction.
+        pattern=".*tailscale(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+serve(?!\\s+status)\\b.*",
+        category="network-exposure",
+        description=(
+            "Blocks `tailscale serve` mutations, which publish or withdraw a handler on this "
+            "machine's tailnet and would widen the agent's own network exposure outside the "
+            "governed, owner-only publish path. `tailscale serve status` (the read) stays "
+            "allowed."
+        ),
+    ),
+    DeniedCommandRule(
+        id="network-exposure-tailscale-funnel",
+        # Funnel exposes a service to the PUBLIC internet — strictly more
+        # dangerous than serve. Same status carve-out.
+        pattern=".*tailscale(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+funnel(?!\\s+status)\\b.*",
+        category="network-exposure",
+        description=(
+            "Blocks `tailscale funnel`, which exposes a local service to the PUBLIC internet. "
+            "The agent must never be able to make a service publicly reachable. "
+            "`tailscale funnel status` (the read) stays allowed."
+        ),
+    ),
+    DeniedCommandRule(
+        id="network-exposure-tailscale-node-mutate",
+        # Node-state and identity mutations: `up`/`set` can enable an SSH
+        # server (`--ssh`), advertise this node as an exit node or subnet
+        # router, or accept routes; `login`/`logout`/`switch` change which
+        # tailnet (and thus which ACLs) this node is on; `cert` provisions the
+        # TLS cert that HTTPS serve depends on.
+        pattern=(
+            ".*tailscale(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*"
+            "\\s+(?:up|set|login|logout|switch|cert)\\b.*"
+        ),
+        category="network-exposure",
+        description=(
+            "Blocks `tailscale up`, `set`, `login`, `logout`, `switch`, and `cert` — node-state "
+            "and identity mutations that can enable an SSH server, advertise this node as an "
+            "exit node or subnet router, change which tailnet it is on, or provision a serve "
+            "certificate. Read subcommands (`status`, `netcheck`, `ping`, `whois`) stay allowed."
+        ),
+    ),
 ]
 
 _RULES_BY_ID: dict[str, DeniedCommandRule] = {r.id: r for r in BUILTIN_DENIED_RULES}
