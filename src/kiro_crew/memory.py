@@ -286,10 +286,28 @@ class MemoryStore:
 
     # ── Preferences ──
 
+    def _read_markdown_utf8(self, path: Path) -> str:
+        """Read a memory markdown file, degrading an undecodable file to empty.
+
+        Mirrors the ``_guarded_entry`` precedent: a single non-UTF-8 byte (a
+        crash-mid-write, an editor encoding slip, a synced file) must not raise
+        ``UnicodeDecodeError`` up through every reader -- and, critically, the
+        repair path (``add_preference``/``write_preferences`` read the file
+        first), which would otherwise deadlock, since the API cannot fix what
+        the API cannot read. Log a warning and return "" so the file reads as
+        empty (the same shape as a missing file) and the next write can
+        overwrite it cleanly.
+        """
+        try:
+            return path.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            logger.warning("memory file is not valid UTF-8, reading as empty: %s", path)
+            return ""
+
     def read_preferences(self) -> str:
         """Read user preferences markdown file."""
         if self._preferences_file.exists():
-            return self._preferences_file.read_text(encoding="utf-8")
+            return self._read_markdown_utf8(self._preferences_file)
         return ""
 
     def write_preferences(self, content: str, *, expected_baseline: str | None = None) -> bool:
@@ -345,7 +363,7 @@ class MemoryStore:
     def read_projects(self) -> str:
         """Read active projects markdown file."""
         if self._projects_file.exists():
-            return self._projects_file.read_text(encoding="utf-8")
+            return self._read_markdown_utf8(self._projects_file)
         return ""
 
     def write_projects(self, content: str, *, expected_baseline: str | None = None) -> bool:
