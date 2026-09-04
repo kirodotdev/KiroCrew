@@ -743,6 +743,40 @@ class TestModelMatchesPoolDefault:
         pooled.client.set_model.assert_not_awaited()
         assert provider is pooled
 
+    @pytest.mark.asyncio
+    async def test_namespaced_pin_resolves_on_claim_like_a_cold_start(self):
+        """#8521: a warm claim must run exactly what a cold start of the pin runs.
+
+        The pin carries a stale `<namespace>::` qualifier while the pooled
+        session advertises the bare id. The cold-start spawn resolves it via
+        resolve_pin_spelling and sends the advertised spelling; withholding it
+        here instead would make whether the pinned model runs depend on whether
+        a pooled process happened to exist — the exact failure class the
+        withhold test above guards from the other direction.
+        """
+        from kiro_crew.providers.acp import AcpProvider
+
+        mgr, factory = _make_manager(pool_agent="kirocrew")
+        pooled = _make_provider()
+        pooled.__class__ = AcpProvider
+        pooled.client = MagicMock()
+        pooled.client.set_model = AsyncMock()
+        pooled.client.resumed = False
+        pooled.client._session_id = "fake-sid"
+        pooled.available_models = MagicMock(return_value=[{"modelId": "z-ai/glm-5.3-flash"}])
+        mgr._drain_and_claim = AsyncMock(return_value=pooled)
+        mgr._schedule_replenish = MagicMock()
+
+        with patch.object(type(mgr), "_resolve_agent_model", return_value="claude-sonnet-4.6"):
+            provider, _is_new, _resumed = await mgr.get_or_create(
+                "test-key", agent="kirocrew", model="openrouter::z-ai/glm-5.3-flash"
+            )
+
+        # Resolved to the ADVERTISED spelling and sent — not withheld, and not
+        # sent under the qualified spelling the backend never advertised.
+        pooled.client.set_model.assert_awaited_once_with("z-ai/glm-5.3-flash")
+        assert provider is pooled
+
 
 # ---------------------------------------------------------------------------
 # Stateless sessions must not claim from pool

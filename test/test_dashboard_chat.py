@@ -6792,6 +6792,57 @@ class TestPinnedModelWithheld:
         client.available_models = MagicMock(side_effect=RuntimeError("boom"))
         assert _pinned_model_verdict(client, "claude-opus-5", "acp") is None
 
+    def test_namespaced_pin_matches_bare_advertised(self):
+        from kiro_crew.dashboard.chat_runner import _pinned_model_verdict
+
+        # Regression #8521: a persisted pin can carry a `<namespace>::<bare-id>`
+        # qualifier from the catalog that advertised it when it was stored,
+        # while the session being judged advertises the BARE id. The literal
+        # comparison missed for every such pin and the banner claimed a fully
+        # supported model "isn't offered right now". The verdict must peel the
+        # qualifier and resolve to runnable — for ANY namespace vocabulary, not
+        # just `agent.provider` (a fixed enum that no catalog qualifies ids
+        # with, so keying on it would leave the fold unreachable).
+        client = self._client(["auto", "z-ai/glm-5.3-flash"])
+        assert _pinned_model_verdict(client, "openrouter::z-ai/glm-5.3-flash", "acp") is False
+
+    def test_namespaced_pin_judged_even_when_provider_unreadable(self):
+        from kiro_crew.dashboard.chat_runner import _pinned_model_verdict
+
+        # _run_chat passes provider_name="" when the config could not be read.
+        # The fold keys on the pin's own qualifier, not on the provider string,
+        # so an unreadable config must not degrade the verdict back to the
+        # false withhold (nor is it needed for the peel to fire).
+        client = self._client(["auto", "z-ai/glm-5.3-flash"])
+        assert _pinned_model_verdict(client, "openrouter::z-ai/glm-5.3-flash", "") is False
+
+    def test_pin_absent_after_peel_is_still_withheld(self):
+        from kiro_crew.dashboard.chat_runner import _pinned_model_verdict
+
+        # The peel must not turn the verdict into a rubber stamp: a pin the
+        # backend serves under NEITHER spelling still answers withheld.
+        client = self._client(["auto", "z-ai/glm-5.3-flash"])
+        assert _pinned_model_verdict(client, "openrouter::no-such-model", "acp") is True
+
+    def test_only_one_qualifier_level_is_peeled(self):
+        from kiro_crew.dashboard.chat_runner import _pinned_model_verdict
+
+        # The fold peels exactly ONE leading qualifier. A doubly-qualified pin
+        # whose innermost tail happens to be advertised is not a spelling of
+        # that model — unbounded stripping would rubber-stamp arbitrary junk
+        # around any advertised id.
+        client = self._client(["auto", "glm-5.3-flash"])
+        assert _pinned_model_verdict(client, "a::b::glm-5.3-flash", "acp") is True
+
+    def test_pin_advertised_verbatim_needs_no_peel(self):
+        from kiro_crew.dashboard.chat_runner import _pinned_model_verdict
+
+        # A backend that advertises the qualified spelling itself matches on
+        # the first (full) comparison — the peel is a miss-only retry, so it
+        # can only clear a false withhold, never create one.
+        client = self._client(["openrouter::z-ai/glm-5.3-flash"])
+        assert _pinned_model_verdict(client, "openrouter::z-ai/glm-5.3-flash", "acp") is False
+
     def test_slot_reports_no_verdict_until_one_is_recorded(self):
         slot = _ChatSlot("s1")
         slot.model = "claude-opus-5"

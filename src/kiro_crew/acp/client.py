@@ -1759,11 +1759,61 @@ def model_is_unusable(model_id: str, advertised: Sequence[str] | None) -> bool:
     namespaces would call every legitimate model unusable; that backend
     announces its own substitutions through the ``session/new`` advisory
     instead (see ``_new_session_following_substitution``).
+
+    A pin carrying a stale ``<namespace>::<bare-id>`` qualifier (stored when a
+    catalog advertised the qualified spelling, judged against one advertising
+    the bare id) is the one comparable mismatch, and it is deliberately NOT
+    folded here: this predicate's permissive answer feeds the wire sites, and
+    a still-qualified id on the wire is a spelling the backend never
+    advertised. :func:`resolve_pin_spelling` is the shared fold for that case —
+    it answers with the advertised spelling, so a caller can compare AND send
+    one consistent id.
     """
     if not advertised:
         return False
     wanted = model_id.strip().lower()
     return wanted not in {m.strip().lower() for m in advertised if m and m.strip()}
+
+
+def resolve_pin_spelling(model_id: str, advertised: Sequence[str] | None) -> str:
+    """The advertised spelling *model_id* resolves to, or ``""`` when none.
+
+    The companion to :func:`model_is_unusable` for values that arrive from
+    storage rather than from the live picker: a persisted pin can carry a
+    ``<namespace>::<bare-id>`` qualifier from the catalog that advertised it
+    (issue #8521's ``openrouter::z-ai/glm-5.3-flash``), while the session being
+    judged advertises the BARE id. The literal membership test then misses for
+    a model the backend fully serves. This fold recovers the match without
+    per-provider exemptions: the full id is tried first, and only on a miss is
+    ONE leading ``<namespace>::`` qualifier peeled and the tail retried — so a
+    pin the backend genuinely does not serve still resolves to ``""`` under
+    either spelling, and an id advertised verbatim (qualifier and all) never
+    gets peeled at all.
+
+    Returns the ADVERTISED spelling of the match, not the caller's: the result
+    is meant to be sent on the wire (``session/set_model`` accepts advertised
+    ids), and it keeps the display verdict and the wire withhold answering from
+    one fold so the two cannot disagree about what "usable" means. Matching is
+    case/whitespace-insensitive on both sides, mirroring
+    :func:`model_is_unusable`.
+
+    An empty/unknown *advertised* set returns ``""`` — NOT as a "withheld"
+    answer, but as "nothing to resolve against": callers must keep routing the
+    withhold decision itself through :func:`model_is_unusable`, whose
+    empty-set-means-allow contract (harness-parity H12) this function does not
+    replace.
+    """
+    ids = [m.strip() for m in (advertised or []) if m and m.strip()]
+    if not ids:
+        return ""
+    by_key = {m.lower(): m for m in ids}
+    wanted = model_id.strip().lower()
+    if wanted in by_key:
+        return by_key[wanted]
+    namespace, sep, bare = wanted.partition("::")
+    if sep and namespace and bare in by_key:
+        return by_key[bare]
+    return ""
 
 
 def resolve_usable_model(preferred: str, advertised: Sequence[str] | None) -> str:
@@ -3555,21 +3605,37 @@ class AcpClient:
             logger.info("ACP model: %s (from agent config)", self._model or "auto")
             return
         if self._is_kiro and self._model_is_unusable(self._model):
-            _withheld_log, _ = redact_exfiltration_urls(str(self._model))
-            _withheld_log, _ = redact_credentials(_withheld_log)
-            logger.warning(
-                "ACP model %s is not available to this account; staying on the "
-                "backend default %s (advertised: %s)",
-                _withheld_log,
-                self._resolved_model_id or DEFAULT_MODEL,
-                ", ".join(self._advertised_model_ids()),
-            )
-            # Record the session as running the default rather than the value we
-            # declined: the "!= DEFAULT_MODEL" test above is also what the
-            # warm-pool re-apply path reads (session_provider), so leaving the
-            # unusable id here would re-offer it on every claim.
-            self._model = DEFAULT_MODEL
-            return
+            # A literal miss can be a stale ``<namespace>::`` qualifier on a
+            # model the backend fully serves (#8521): resolve to the advertised
+            # spelling and send THAT, so the session runs the model the pin
+            # names instead of silently dropping to the default. Same fold the
+            # display verdict uses (chat_runner._pinned_model_verdict), so the
+            # chip and the wire cannot disagree about what "usable" means. A
+            # pin absent under either spelling still takes the withhold below.
+            _resolved = resolve_pin_spelling(self._model, self._advertised_model_ids())
+            if _resolved:
+                logger.info(
+                    "ACP model %s resolves to advertised %s; sending the advertised spelling",
+                    self._model,
+                    _resolved,
+                )
+                self._model = _resolved
+            else:
+                _withheld_log, _ = redact_exfiltration_urls(str(self._model))
+                _withheld_log, _ = redact_credentials(_withheld_log)
+                logger.warning(
+                    "ACP model %s is not available to this account; staying on the "
+                    "backend default %s (advertised: %s)",
+                    _withheld_log,
+                    self._resolved_model_id or DEFAULT_MODEL,
+                    ", ".join(self._advertised_model_ids()),
+                )
+                # Record the session as running the default rather than the value we
+                # declined: the "!= DEFAULT_MODEL" test above is also what the
+                # warm-pool re-apply path reads (session_provider), so leaving the
+                # unusable id here would re-offer it on every claim.
+                self._model = DEFAULT_MODEL
+                return
         if self.backend in ACP_BACKENDS_MODEL_VIA_CONFIG_OPTION:
             await self.set_config_option("model", self._model)
         else:

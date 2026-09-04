@@ -18,6 +18,7 @@ from kiro_crew.acp.client import (
     AcpError,
     advertised_model_ids,
     model_is_unusable,
+    resolve_pin_spelling,
 )
 from kiro_crew.acp.runtime import AcpRuntime, AcpRuntimeError
 from kiro_crew.acp.session_handle import AcpSessionHandle
@@ -950,7 +951,15 @@ class AcpProvider(LLMProvider):
                 # Leaving it unset keeps the session on the backend's own
                 # default, so the turn succeeds.
                 _advertised = advertised_model_ids(handle.available_models)
+                _send_model = configured_model
                 if model_is_unusable(configured_model, _advertised):
+                    # A literal miss can be a stale `<namespace>::` qualifier on
+                    # a model the backend fully serves (#8521): resolve to the
+                    # advertised spelling and send THAT — same fold the display
+                    # verdict uses, so chip and wire agree. A pin absent under
+                    # either spelling still takes the withhold.
+                    _send_model = resolve_pin_spelling(configured_model, _advertised)
+                if not _send_model:
                     logger.warning(
                         "Configured model %s is not available to this account; "
                         "leaving the session on the backend default (advertised: %s)",
@@ -960,12 +969,12 @@ class AcpProvider(LLMProvider):
                 else:
                     _t_model = time.monotonic()
                     try:
-                        await handle.set_model(configured_model)
-                        logger.info("Kiro runtime model set: %s", configured_model)
+                        await handle.set_model(_send_model)
+                        logger.info("Kiro runtime model set: %s", _send_model)
                     except Exception:
                         logger.warning(
                             "Failed to set model %s on kiro runtime session",
-                            configured_model,
+                            _send_model,
                             exc_info=True,
                         )
                     finally:

@@ -42,8 +42,26 @@ __all__ = [
     "claude_components_resolve",
     "derived_agent_permissions",
     "kiro_cli_resolves",
+    "resolve_pin_spelling",
     "run_kiro_native_commands",
 ]
+
+
+def resolve_pin_spelling(model_id: str, advertised: object) -> str:
+    """The advertised spelling *model_id* resolves to, or ``""`` when none.
+
+    Thin delegation to :func:`kiro_crew.acp.client.resolve_pin_spelling` — the
+    namespace fold for persisted pins carrying a stale ``<namespace>::``
+    qualifier (#8521) — so application code (``session.py``'s
+    ``AllocationDeps`` wiring) reaches it through the SDK surface instead of
+    importing the ACP layer (the agent-sdk-boundary gate refuses a new edge).
+    Plain data in, plain data out: a string and a sequence of strings, a string
+    back — no ACP type crosses the boundary. Function-local import for the same
+    reason as every other runtime-machinery import in this module.
+    """
+    from kiro_crew.acp.client import resolve_pin_spelling as _impl
+
+    return _impl(model_id, advertised)  # type: ignore[arg-type]
 
 
 def derived_agent_permissions(allowed_tools: object, agent_filename: str) -> dict:

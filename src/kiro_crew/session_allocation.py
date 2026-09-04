@@ -100,6 +100,7 @@ class AllocationDeps:
     load_watchdog_settings: Callable[[str], object]
     advertised_model_ids: Callable[[Any], list[str]]
     model_is_unusable: Callable[[str, list[str]], bool]
+    resolve_pin_spelling: Callable[[str, list[str]], str]
     to_provider_id: Callable[[str, str], str]
     to_acp_id: Callable[[str], str]
     inc_session_created: Callable[[], None]
@@ -1319,9 +1320,22 @@ class SessionAllocationService:
                                 )
                             except Exception:  # pragma: no cover - defensive
                                 advertised = []
+                            _send_model = switch_model
                             if advertised and self._deps.model_is_unusable(
                                 switch_model, advertised
                             ):
+                                # A literal miss can be a stale `<namespace>::`
+                                # qualifier on a model the backend fully serves
+                                # (#8521): resolve to the advertised spelling and
+                                # send THAT — the same fold the cold-start spawn
+                                # and the display verdict use, so a warm claim
+                                # runs exactly what a cold start of the same pin
+                                # runs. A pin absent under either spelling still
+                                # takes the withhold below.
+                                _send_model = self._deps.resolve_pin_spelling(
+                                    switch_model, advertised
+                                )
+                            if not _send_model:
                                 self._deps.logger.warning(
                                     "Pool post-claim: model %s is not available to this "
                                     "account; leaving the claimed process on %s",
@@ -1329,10 +1343,10 @@ class SessionAllocationService:
                                     pool_model,
                                 )
                             else:
-                                await cast(Any, provider).client.set_model(switch_model)
+                                await cast(Any, provider).client.set_model(_send_model)
                                 self._deps.logger.info(
                                     "Pool post-claim: switched model to %s",
-                                    switch_model,
+                                    _send_model,
                                 )
                 self._deps.logger.info(
                     "Claimed warm-pool process for %s (agent=%s)",

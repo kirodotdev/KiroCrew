@@ -22,6 +22,7 @@ from kiro_crew.acp.client import (
     _is_safe_oauth_url,
     advertised_model_ids,
     model_is_unusable,
+    resolve_pin_spelling,
 )
 from kiro_crew.acp.types import (
     EVENT_AGENT_SWITCHED,
@@ -936,12 +937,28 @@ def _pinned_model_verdict(client: Any, model: str, provider: str) -> bool | None
     succeeds -- but nothing told the user, and the composer chip plus the picker
     went on reporting a model no turn would ever use (observed after a plan
     downgrade: the chip still read ``claude-opus-5`` while every turn ran on
-    auto). This is the read side of that withhold, using the SAME predicate so
-    the two cannot disagree about what "usable" means.
+    auto). This is the read side of that withhold, using the SAME predicate and
+    the SAME namespace fold (:func:`resolve_pin_spelling`) the wire sites use,
+    so the two cannot disagree about what "usable" means.
 
     A ``True`` verdict is REPORTED, never acted on: the caller does not clear the
     pin. The withhold already keeps the model off the wire, so a stale pin is
     inert and recovers by itself if entitlement returns.
+
+    A pin can carry a stale ``<namespace>::<bare-id>`` qualifier from the
+    catalog that advertised it when it was stored, while the session being
+    judged advertises the BARE id (#8521) -- the same class of namespace
+    mismatch the ``claude_code`` exemption above acknowledges, except here the
+    two spellings ARE comparable once the qualifier is peeled. So a literal
+    miss is retried through :func:`resolve_pin_spelling` (full id first, then
+    one peeled qualifier): the retry can only clear a false withhold, never
+    create one, and a pin the backend genuinely does not serve still answers
+    withheld under either spelling. The qualifier is deliberately NOT matched
+    against ``agent.provider`` -- that config value is a fixed enum (``acp``)
+    and never the vocabulary a catalog qualifies its ids with, so keying on it
+    would leave the fold unreachable. And when this verdict clears, the wire
+    sites clear the same way (they resolve and send the advertised spelling),
+    so a ``False`` here still answers "will a turn use this pin?" truthfully.
     """
     if not model or model == "auto" or is_claude_code(provider):
         return None
@@ -956,7 +973,10 @@ def _pinned_model_verdict(client: Any, model: str, provider: str) -> bool | None
         return None
     if not advertised:
         return None
-    return model_is_unusable(model, advertised)
+    verdict = model_is_unusable(model, advertised)
+    if verdict and resolve_pin_spelling(model, advertised):
+        verdict = False
+    return verdict
 
 
 def _agent_fallback_chain() -> tuple[str, ...]:

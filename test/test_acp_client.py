@@ -10804,6 +10804,42 @@ class TestModelEntitlementPreflight:
         assert client._model == "claude-opus-4.8"
 
     @pytest.mark.asyncio
+    async def test_startup_resolves_namespaced_pin_to_advertised_spelling(self):
+        """#8521: a stale `<namespace>::` qualifier on a fully served model.
+
+        The pin was stored when a catalog advertised the qualified spelling;
+        this session advertises the bare id. The wire must send the ADVERTISED
+        spelling — running the model the pin names — rather than withholding
+        and silently dropping to the backend default.
+        """
+        client = self._client(["z-ai/glm-5.3-flash"], "openrouter::z-ai/glm-5.3-flash")
+        sent = []
+        client._send_request = _record(sent)
+
+        await client._apply_startup_model()
+
+        assert len(sent) == 1
+        assert sent[0][1]["modelId"] == "z-ai/glm-5.3-flash"
+        # _model records what the session actually runs (the warm-pool re-apply
+        # path reads it), so it must hold the resolved spelling, not the
+        # qualified pin.
+        assert client._model == "z-ai/glm-5.3-flash"
+
+    @pytest.mark.asyncio
+    async def test_startup_still_withholds_namespaced_pin_absent_when_peeled(self):
+        """The resolve is not a rubber stamp: absent under BOTH spellings withholds."""
+        from kiro_crew.acp.client import DEFAULT_MODEL
+
+        client = self._client(["z-ai/glm-5.3-flash"], "openrouter::no-such-model")
+        sent = []
+        client._send_request = _record(sent)
+
+        await client._apply_startup_model()
+
+        assert sent == []
+        assert client._model == DEFAULT_MODEL
+
+    @pytest.mark.asyncio
     async def test_startup_leaves_claude_backend_alone(self):
         """The claude backend advertises BARE ids while _model is prefixed.
 
