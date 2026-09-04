@@ -413,15 +413,26 @@ pinned SHA.
 
 ### Production npm Vulnerability Gate (`scripts/check_npm_audit.py`)
 
-Tagged releases run one blocking production-dependency control in
-`.github/workflows/dependency-vulnerability.yml`. It deliberately does NOT run per pull request or
-per nightly: the audit reaches the npm registry, whose slow hours made it the one red X on
-otherwise-green PRs (re-run by hand until it passed) and then failed the nightly for hours at a
-stretch, blocking every build behind it — and a gate people learn to re-run until green is not a
-gate. It runs where a vulnerable dependency would actually ship: before every release build, so
-nothing vulnerable is published, and a PR that adds or bumps a dependency is checked by the release
-that would carry it. Release wheel and desktop builds depend directly on the gate; all publish,
-sign, and GitHub Release jobs are therefore transitively unreachable when it fails.
+Every publication runs one blocking production-dependency control in
+`.github/workflows/dependency-vulnerability.yml`. It deliberately does NOT run per pull request: the
+audit reaches the npm registry, whose slow hours made it the one red X on otherwise-green PRs
+(re-run by hand until it passed) — and a gate people learn to re-run until green is not a gate. It
+runs where a vulnerable dependency would actually ship, so nothing vulnerable is published, and a PR
+that adds or bumps a dependency is checked by the release or nightly that would carry it.
+
+The two callers hang it off different layers on purpose:
+
+- **`release.yml`** — the release wheel and desktop builds depend directly on the gate, so all
+  publish, sign, and GitHub Release jobs are transitively unreachable when it fails.
+- **`nightly.yml`** — every job that ships bytes to a nightly-channel user (`publish-cli`, the six
+  `publish-linux-*` callers, `publish-windows-x64`, `publish-docker`, `sign-and-notarize`) depends on
+  the gate; no build job does. main has no dependency gate of its own, so without this a
+  high/critical production vulnerability landing on main shipped to nightly users unaudited until
+  the next tagged release. Gating the builds instead is what once failed the nightly for hours at a
+  stretch — hanging it off publication means a slow registry delays publishing an already-built
+  nightly, and a re-run publishes the same artifacts once the audit answers.
+  `test_dependency_vulnerability_gate.py` pins both halves: every publish job gated, no build job
+  gated.
 
 The gate audits all lockfile-backed Node applications independently:
 

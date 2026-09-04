@@ -289,10 +289,13 @@ of the AUTOSDE rules; the semantic half is delegated to the line reviewers.
 - The production dependency audit (`dependency-vulnerability.yml`, which runs
   `scripts/check_npm_audit.py` over every lockfile-backed Node project and fails
   closed on **high or critical production** vulnerabilities) is **not** a PR
-  job, nor a nightly one. It reaches the npm registry, whose slow hours made it
-  the one red X on otherwise-green PRs and then failed nightlies for hours at a
-  stretch; it runs before every release build instead, where a vulnerable
-  dependency would actually ship. Time-boxed exceptions live in
+  job. It reaches the npm registry, whose slow hours made it the one red X on
+  otherwise-green PRs and then failed nightlies for hours at a stretch. It runs
+  where a vulnerable dependency would actually ship: before every release build,
+  and — since main carries no dependency gate of its own — before every nightly
+  **publish**. On the nightly it gates the publish jobs only, never the builds,
+  so a slow registry delays publication of an already-built nightly instead of
+  failing the build. Time-boxed exceptions live in
   `.vulnerability-exceptions.json`, and a registry stall or connection fault is
   retried inside one shared time budget before it fails (see the
   transient-failure contract in the security spec).
