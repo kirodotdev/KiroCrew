@@ -3463,10 +3463,15 @@ def _hook_subprocess_env(hook: "ScriptHook", context: str) -> dict[str, str]:
 class ScriptHook:
     """Executable hook that runs a shell command on a trigger event.
 
-    Aligned with Kiro CLI hook semantics:
-    - Exit 0: success (stdout → context for AgentSpawn/UserPromptSubmit)
-    - Exit 2: block tool (PreToolUse only, stderr → LLM)
-    - Other: warning (stderr shown to user)
+    Exit-code contract:
+    - Exit 0: success (stdout → context for AgentSpawn/UserPromptSubmit;
+      a delivered "allow" for PreToolUse)
+    - Exit 2: deny tool (PreToolUse only, stderr → LLM)
+    - Any other exit — including timeout, crash, or an unexecutable command:
+      PreToolUse BLOCKS the tool (fail closed; the block detail prefers
+      ``ScriptHookResult.error``, then stderr, then "exited with code N").
+      Every other event stays warn-only (stderr shown to user). There is no
+      per-hook advisory/fail-open opt-out yet (#7547).
     """
 
     id: str = ""
