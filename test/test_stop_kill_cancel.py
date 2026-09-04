@@ -7,6 +7,7 @@ Covers:
 - Scope C: conservative shutdown for session-sharing subagents
 - Scope E: stop_turn outcome logging, late response logging
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -31,23 +32,26 @@ pytestmark = pytest.mark.xdist_group("mcp_gateway")
 
 # --- Helpers ----------------------------------------------------------------
 
+
 def _make_pool_key(server: str = "test-mcp") -> PoolKey:
-    return PoolKey.from_register({
-        "type": "register",
-        "stub_uuid": "test-stub",
-        "server_name": server,
-        "agent_name": "test-agent",
-        "command_args_hash": "a" * 64,
-        "effective_env_hash": "b" * 64,
-        "work_dir": "/tmp",
-        "binary_version": "deadbeef",
-        "os_uid": 1000,
-        "sandbox_mode": "standard",
-        "autoapprove_set_hash": "c" * 64,
-        "approval_mode": "interactive",
-        "trust_all_tools": False,
-        "config_snapshot_hash": "d" * 64,
-    })
+    return PoolKey.from_register(
+        {
+            "type": "register",
+            "stub_uuid": "test-stub",
+            "server_name": server,
+            "agent_name": "test-agent",
+            "command_args_hash": "a" * 64,
+            "effective_env_hash": "b" * 64,
+            "work_dir": "/tmp",
+            "binary_version": "deadbeef",
+            "os_uid": 1000,
+            "sandbox_mode": "standard",
+            "autoapprove_set_hash": "c" * 64,
+            "approval_mode": "interactive",
+            "trust_all_tools": False,
+            "config_snapshot_hash": "d" * 64,
+        }
+    )
 
 
 def _make_mock_backend(pool_key: Optional[PoolKey] = None) -> Backend:
@@ -78,6 +82,7 @@ def _make_mock_backend(pool_key: Optional[PoolKey] = None) -> Backend:
 
 
 # --- Scope A: cancel_in_flight_for_stub tests --------------------------------
+
 
 class TestCancelInFlight:
     """Tests for Backend.cancel_in_flight_for_stub."""
@@ -162,6 +167,7 @@ class TestCancelInFlight:
 
 # --- Scope B: recycle_if_idle tests ------------------------------------------
 
+
 class TestRecycleIfIdle:
     """Tests for Backend.recycle_if_idle."""
 
@@ -183,8 +189,7 @@ class TestRecycleIfIdle:
                 return 99999  # our own pgid — must differ from target
             return pid  # target process pgid
 
-        with patch("os.getpgid", side_effect=fake_getpgid), \
-             patch("os.killpg") as mock_killpg:
+        with patch("os.getpgid", side_effect=fake_getpgid), patch("os.killpg") as mock_killpg:
             result = await backend.recycle_if_idle()
 
         assert result is True
@@ -218,8 +223,7 @@ class TestRecycleIfIdle:
         backend.refcount = 0
         backend.process.pid = 1
 
-        with patch("os.killpg") as mock_killpg, \
-             patch("os.kill") as mock_kill:
+        with patch("os.killpg") as mock_killpg, patch("os.kill") as mock_kill:
             result = await backend.recycle_if_idle()
 
         assert result is False
@@ -444,6 +448,7 @@ class TestOrphanReapIsPlatformCorrect:
 
 # --- Scope A (gatewayd): abort frame handler tests ---------------------------
 
+
 class TestDetachOnCancelFailure:
     """cancel_in_flight_for_stub raising must not skip detach_stub —
     otherwise the backend's refcount leaks and it can never be recycled."""
@@ -456,7 +461,8 @@ class TestDetachOnCancelFailure:
 
         monkeypatch.setattr(socketsec, "PEER_IDENTITY_SUPPORTED", True)
         monkeypatch.setattr(
-            socketsec, "check_peer_is_self",
+            socketsec,
+            "check_peer_is_self",
             lambda _w: socketsec.PeerCredResult.MATCH,
         )
 
@@ -549,13 +555,15 @@ class TestDetachOnCancelFailure:
             "principal_id": "",
         }
 
-        call = {"jsonrpc": "2.0", "id": 1, "method": "tools/call",
-                "params": {"name": "x"}}
+        call = {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "x"}}
 
         await asyncio.wait_for(
             gw._handle_connection(
-                _FakeReader([register, call]), _FakeWriter(), pool=_FakePool(),
-                resolver=object(), socket_path=Path("/tmp/leak.sock"),
+                _FakeReader([register, call]),
+                _FakeWriter(),
+                pool=_FakePool(),
+                resolver=object(),
+                socket_path=Path("/tmp/leak.sock"),
                 hot_keys=None,
             ),
             timeout=5.0,
@@ -606,6 +614,7 @@ class TestApplyAbort:
 
 # --- Scope A: abort module tests ---------------------------------------------
 
+
 class TestAbortModule:
     """Tests for mcp_gateway.abort module."""
 
@@ -632,13 +641,12 @@ class TestAbortModule:
     @pytest.mark.asyncio
     async def test_send_abort_timeout(self):
         """Timeout returns empty dict gracefully."""
-        result = await abort_mod.send_abort(
-            "/nonexistent/path.sock", [100], "test"
-        )
+        result = await abort_mod.send_abort("/nonexistent/path.sock", [100], "test")
         assert result == {}
 
 
 # --- Scope C: conservative shutdown for session-sharing subagents -------------
+
 
 class TestConservativeShutdown:
     """Tests for subagent._force_reap conservative shutdown (session-sharing)."""
@@ -647,6 +655,8 @@ class TestConservativeShutdown:
     async def test_session_sharing_never_kills_runtime(self):
         """Session-sharing subagent reap → conservative shutdown only, NEVER SIGKILL."""
         from kiro_crew.subagent import SubagentInfo, SubagentManager
+        from kiro_crew.subagent_lifecycle import SubagentLifecycle
+        from kiro_crew.subagent_scheduler import SubagentScheduler
 
         info = SubagentInfo(
             id="agent-001",
@@ -658,15 +668,11 @@ class TestConservativeShutdown:
         )
 
         mgr = SubagentManager.__new__(SubagentManager)
+        mgr._scheduler = SubagentScheduler(max_concurrent=3, stagger_seconds=0.0)
+        mgr._scheduler.running_count = 1
+        mgr._lifecycle = SubagentLifecycle()
         mgr._agents = {"agent-001": info}
         mgr._tasks = {}
-        mgr._report_tasks = set()
-        mgr._report_owners = {}
-        # Fork adaptation: _force_reap pumps the spawn queue after freeing a
-        # slot (a1933a4b, ported earlier in this branch); an empty queue makes
-        # _drain_queue return immediately without touching other attrs.
-        mgr._queue = []
-        mgr._running_count = 1
         mgr._default_timeout = 300
         mgr._default_turn_limit = 100
         mgr._write_tombstone = MagicMock()
@@ -679,9 +685,11 @@ class TestConservativeShutdown:
 
         mgr._fire_event = noop_fire
 
-        with patch("os.kill") as mock_kill, \
-             patch("kiro_crew.subagent.sel") as mock_sel, \
-             patch("kiro_crew.subagent.Stats") as mock_stats:
+        with (
+            patch("os.kill") as mock_kill,
+            patch("kiro_crew.subagent.sel") as mock_sel,
+            patch("kiro_crew.subagent.Stats") as mock_stats,
+        ):
             mock_sel.return_value = MagicMock()
             mock_sel.return_value.log_tool_invocation = MagicMock()
             mock_stats.return_value = MagicMock()
@@ -694,7 +702,8 @@ class TestConservativeShutdown:
         info._shared_provider.shutdown.assert_called_once()
         # SEL audit records conservative-shutdown
         audit_calls = [
-            c for c in mock_sel.return_value.log_tool_invocation.call_args_list
+            c
+            for c in mock_sel.return_value.log_tool_invocation.call_args_list
             if c.kwargs.get("tool_name") == "smart_hard_kill"
         ]
         assert len(audit_calls) == 1
@@ -704,6 +713,8 @@ class TestConservativeShutdown:
     async def test_session_sharing_with_co_tenants_still_conservative(self):
         """Even with co-tenants, session-sharing → conservative shutdown (same path)."""
         from kiro_crew.subagent import SubagentInfo, SubagentManager
+        from kiro_crew.subagent_lifecycle import SubagentLifecycle
+        from kiro_crew.subagent_scheduler import SubagentScheduler
 
         shared_pid = 2**22 + 88888
         info_a = SubagentInfo(
@@ -724,13 +735,11 @@ class TestConservativeShutdown:
         )
 
         mgr = SubagentManager.__new__(SubagentManager)
+        mgr._scheduler = SubagentScheduler(max_concurrent=3, stagger_seconds=0.0)
+        mgr._scheduler.running_count = 2
+        mgr._lifecycle = SubagentLifecycle()
         mgr._agents = {"agent-001": info_a, "agent-002": info_b}
         mgr._tasks = {}
-        mgr._report_tasks = set()
-        mgr._report_owners = {}
-        # Fork adaptation: see test_session_sharing_never_kills_runtime.
-        mgr._queue = []
-        mgr._running_count = 2
         mgr._default_timeout = 300
         mgr._default_turn_limit = 100
         mgr._write_tombstone = MagicMock()
@@ -743,9 +752,11 @@ class TestConservativeShutdown:
 
         mgr._fire_event = noop_fire
 
-        with patch("os.kill") as mock_kill, \
-             patch("kiro_crew.subagent.sel") as mock_sel, \
-             patch("kiro_crew.subagent.Stats") as mock_stats:
+        with (
+            patch("os.kill") as mock_kill,
+            patch("kiro_crew.subagent.sel") as mock_sel,
+            patch("kiro_crew.subagent.Stats") as mock_stats,
+        ):
             mock_sel.return_value = MagicMock()
             mock_sel.return_value.log_tool_invocation = MagicMock()
             mock_stats.return_value = MagicMock()
@@ -759,6 +770,7 @@ class TestConservativeShutdown:
 
 
 # --- Scope E: stop_turn outcome logging test ---------------------------------
+
 
 class TestAbortAckLogging:
     """Tests for abort.send_abort acknowledgment handling and logging."""
@@ -776,8 +788,7 @@ class TestAbortAckLogging:
             assert frame["type"] == "abort"
             assert frame["pids"] == [100]
             writer.write(
-                json.dumps({"type": "aborted", "cancelled": 3, "stubs": 1}).encode("utf-8")
-                + b"\n"
+                json.dumps({"type": "aborted", "cancelled": 3, "stubs": 1}).encode("utf-8") + b"\n"
             )
             await writer.drain()
             writer.close()
@@ -787,9 +798,7 @@ class TestAbortAckLogging:
             with caplog.at_level(logging.INFO, logger=abort_mod.logger.name):
                 resp = await abort_mod.send_abort(socket_path, [100], "test stop")
             assert resp == {"type": "aborted", "cancelled": 3, "stubs": 1}
-            assert any(
-                "abort-push acknowledged" in rec.getMessage() for rec in caplog.records
-            )
+            assert any("abort-push acknowledged" in rec.getMessage() for rec in caplog.records)
         finally:
             server.close()
             await server.wait_closed()
@@ -812,15 +821,14 @@ class TestAbortAckLogging:
             with caplog.at_level(logging.WARNING, logger=abort_mod.logger.name):
                 resp = await abort_mod.send_abort(socket_path, [100], "test stop")
             assert resp == {"type": "unexpected"}
-            assert any(
-                "abort-push not acknowledged" in rec.getMessage() for rec in caplog.records
-            )
+            assert any("abort-push not acknowledged" in rec.getMessage() for rec in caplog.records)
         finally:
             server.close()
             await server.wait_closed()
 
 
 # --- Pool.all_backends test --------------------------------------------------
+
 
 class TestPoolAllBackends:
     """Tests for BackendPool.all_backends."""

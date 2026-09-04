@@ -375,7 +375,7 @@ class TestQueueRoundTrip:
 
     def test_queue_entry_carries_the_value(self):
         mgr = _mgr()
-        mgr._should_stagger_queue = MagicMock(return_value=(True, False))  # type: ignore[method-assign]
+        mgr._running_count = mgr.max_concurrent
         info = mgr.spawn("read these files", reasoning_effort="max")
         assert info is not None and info.queued is True
         assert len(mgr._queue) == 1
@@ -383,7 +383,7 @@ class TestQueueRoundTrip:
 
     def test_drained_spawn_receives_the_value(self):
         mgr = _mgr()
-        mgr._should_stagger_queue = MagicMock(return_value=(True, False))  # type: ignore[method-assign]
+        mgr._running_count = mgr.max_concurrent
         mgr.spawn("validate this finding", reasoning_effort="high")
         captured: dict[str, object] = {}
 

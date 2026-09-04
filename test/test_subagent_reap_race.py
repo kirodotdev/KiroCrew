@@ -563,6 +563,20 @@ async def test_recovery_failure_still_reports_when_it_owns_the_claim():
 
 
 @pytest.mark.asyncio
+async def test_recovery_observing_shutdown_finalizes_instead_of_returning() -> None:
+    mgr = _make_manager()
+    info = _info(_session_sharing=False, started=time.time() - 5.0)
+    mgr._shutting_down = True
+
+    await _schedule_recovery(mgr, info)
+
+    assert info.done is True
+    assert info.error == "cancelled (recovery failed)"
+    assert len(_done_events(mgr)) == 1
+    mgr._on_done.assert_awaited_once_with(info)
+
+
+@pytest.mark.asyncio
 async def test_reap_suppression_marker_is_set_before_the_teardown_await():
     """The RESPAWN-suppression marker must be visible during teardown.
 

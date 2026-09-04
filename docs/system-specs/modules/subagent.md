@@ -24,6 +24,25 @@ restart store. During this pre-authority phase it accepts executable `spawn` and
 `continue` submissions; control operations fail closed until their target and
 fencing semantics land.
 
+### Execution boundaries
+
+`SubagentScheduler` owns the local capacity counter, stagger clock, FIFO spawn
+queue, admission decisions, and one-shot slot release. `SubagentManager` retains
+only effectful queue pumping: timers, lifecycle events, calling `spawn()`, and
+announcing a drained rejection. Queue payload dictionaries stay opaque so every
+existing spawn option survives a queue round trip unchanged.
+
+`SubagentLifecycle` owns terminal claim arbitration, strong ownership of
+shielded report tasks, report-to-agent lookup during bounded shutdown, and
+teardown gates that outlive manager registries. It uses a structural protocol
+instead of importing `SubagentInfo`, keeping the manager dependency one-way.
+The effectful delivery coroutine remains on `SubagentManager` until the durable
+outbox migration.
+
+Private manager views for the old counter, queue, report-task, and teardown-gate
+fields remain as compatibility adapters. They delegate to these boundaries and
+must not regain independent state.
+
 ## Constants
 
 | Constant | Value | Purpose |

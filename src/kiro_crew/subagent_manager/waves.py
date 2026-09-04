@@ -41,7 +41,7 @@ class WaveDigestCoordinator(ManagerComponent):
             return True  # submissions still in flight
         if any(a.batch_id == batch_id and not a.done for a in self._manager._agents.values()):
             return True
-        return any(p.get("batch_id") == batch_id for p in self._manager._queue)
+        return self._manager._scheduler.contains_batch(batch_id)
 
     def finalize_batch_impl(self, batch_id: str) -> None:
         """Prune per-wave bookkeeping once the wave digest has fired.
@@ -134,7 +134,7 @@ class WaveDigestCoordinator(ManagerComponent):
             members = [a for a in self._manager._agents.values() if a.batch_id == batch_id]
             if any(not a.done for a in members):
                 continue  # live members will re-evaluate the wave on completion
-            if any(p.get("batch_id") == batch_id for p in self._manager._queue):
+            if self._manager._scheduler.contains_batch(batch_id):
                 continue  # queued members still pending — not stuck
             parent = members[0].parent_session_key if members else ""
             logger.warning(
@@ -300,7 +300,7 @@ class WaveDigestCoordinator(ManagerComponent):
         gateway event loop.
         """
         for agent_id in agent_ids:
-            gate = self._manager._teardown_gates.get(agent_id)
+            gate = self._manager._lifecycle.gate_for(agent_id)
             if gate is not None and not gate.is_set():
                 try:
                     await asyncio.wait_for(gate.wait(), timeout=_RESET_TIMEOUT + 30)
