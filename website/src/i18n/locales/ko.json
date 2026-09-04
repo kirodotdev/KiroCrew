@@ -5374,7 +5374,10 @@
       "reset_to_global": "전역 설정으로 재설정 ({{pct}}%)",
       "following_global": "전역 설정 따름 ({{pct}}%)",
       "sketch": "스케치",
-      "sketch_desc": "스케치를 그리기. 이미지와 편집 가능한 원본을 첨부합니다"
+      "sketch_desc": "스케치를 그리기. 이미지와 편집 가능한 원본을 첨부합니다",
+      "session_control_needs_attention": "확인 필요",
+      "session_control_ready": "준비됨",
+      "session_control_chip_label": "{{label}} — {{detail}}"
     },
     "chatPane": {
       "agent_list": "에이전트 목록",
@@ -7616,6 +7619,15 @@
       "confirm_discard": "그림 삭제",
       "already_attached": "첨부됨 — 캔버스를 편집하면 다시 스케치할 수 있습니다",
       "load_failed": "스케치 패드를 불러오지 못했습니다. 연결을 확인하고 다시 열어 주세요"
+    },
+    "sessionControlHost": {
+      "failed": "{{label}} 실패",
+      "chat_unaffected": "채팅에는 영향이 없습니다 — 이 컨트롤만 작동을 멈췄습니다.",
+      "retry": "다시 시도",
+      "retry_loading": "{{label}} 다시 로드",
+      "could_not_load": "{{label}}을(를) 로드할 수 없습니다",
+      "loading": "{{label}} 로드 중…",
+      "dialog_label": "{{label}} — {{appName}}"
     }
   },
   "hooks": {

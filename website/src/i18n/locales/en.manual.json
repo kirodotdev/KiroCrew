@@ -1470,7 +1470,10 @@
       "auto_compact_threshold": "Auto-compact threshold",
       "auto_compact_load_failed": "Couldn't load the auto-compact setting",
       "reset_to_global": "Reset to global ({{pct}}%)",
-      "following_global": "Following global ({{pct}}%)"
+      "following_global": "Following global ({{pct}}%)",
+      "session_control_needs_attention": "Needs attention",
+      "session_control_ready": "Ready",
+      "session_control_chip_label": "{{label}} — {{detail}}"
     },
     "chatPane": {
       "earlier_messages_load_failed": "Couldn't load earlier messages. Scroll to the top of the session to try again.",
@@ -2628,6 +2631,15 @@
       "copy_failed_select_the_link_and_copy_it_manually": "Copy failed — select the link and copy it manually.",
       "could_not_create_a_link_try_again": "Could not create a link — try again.",
       "phone_connection_is_disabled_by_policy_on_this_dep": "Phone connection is disabled by policy on this deployment."
+    },
+    "sessionControlHost": {
+      "failed": "{{label}} failed",
+      "chat_unaffected": "Your chat is unaffected — only this control stopped working.",
+      "retry": "Retry",
+      "retry_loading": "Retry loading {{label}}",
+      "could_not_load": "Could not load {{label}}",
+      "loading": "Loading {{label}}…",
+      "dialog_label": "{{label}} — {{appName}}"
     }
   },
   "hooks": {

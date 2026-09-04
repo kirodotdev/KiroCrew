@@ -501,6 +501,98 @@ class UISidebar:
         )
 
 
+#: Hard cap on session controls per app. A control here renders inside the
+#: composer, on the path of every turn — an app must not be able to crowd the
+#: bar out. Apps needing more configuration have a page for it.
+MAX_SESSION_CONTROLS_PER_APP = 2
+
+#: Control ids are kebab-case like app names: they appear in a React key, in
+#: per-control persistence, and potentially in a URL, so the charset is bounded.
+_SESSION_CONTROL_ID_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
+
+#: A status route is a path *within* the app's own backend, so it is deliberately
+#: not a URL: no scheme, no host, no query. The dashboard appends the session
+#: identity itself, which stops an app from pointing the poll at another origin.
+_SESSION_CONTROL_STATUS_PATH_RE = re.compile(r"^[a-z0-9][a-z0-9/_-]{0,63}$")
+
+
+def _normalize_status_path(raw: Any) -> str:
+    """Normalize a declared ``statusPath`` without laundering a cross-origin URL.
+
+    A single leading slash is a harmless way to write a relative route, so it is
+    stripped. A ``//`` prefix is not: that is a protocol-relative URL naming
+    another host, and stripping its slashes would turn ``//evilhost/x`` into
+    ``evilhost/x`` — which satisfies the route allowlist and reads like an
+    ordinary relative path. Such a value is returned unchanged so that
+    validation refuses it and the install fails with the real reason, rather
+    than silently accepting a rewritten one.
+
+    A host containing a dot happened to be refused anyway, because ``.`` is
+    outside the allowlist. A dotless one was not, which is why the guard has to
+    be explicit rather than incidental.
+    """
+    text = str(raw)
+    if text.startswith("//"):
+        return text
+    return text.lstrip("/")
+
+
+@dataclass
+class UISessionControl:
+    """A compact control an app contributes to the session (composer) bar.
+
+    The slot exists because per-session app configuration previously had nowhere
+    to live: an app could contribute a sidebar page and nothing else, so a
+    setting scoped to "this chat" had to be set on a separate page against an
+    opaque session key the app cannot even discover.
+
+    Rendered by the dashboard as a lazily-imported ESM module, exactly like a
+    page, so the existing import map (react, the app SDK) and the single-React
+    guarantee apply unchanged. The component is handed the active session's
+    identity as props — that is the whole point of the slot.
+
+    ``statusPath`` is optional and lets the chip carry state *before* it is
+    opened. Without it a control can only report anything once its module is
+    lazily imported, which is on first click — so a per-session setting looks
+    unset until you go looking for it. The dashboard GETs
+    ``<the app's own route base>/<statusPath>?session_key=…`` and reads
+    ``{state, tooltip}``, where state is ``ok`` | ``warn`` | ``none``.
+
+    That base depends on how the app serves its backend, because the two are
+    mounted at different prefixes: an app with in-gateway hook routes answers
+    under ``/api/apps/<app>/``, while an app running its own backend PROCESS is
+    reverse-proxied at ``/apps/<app>/api/``. The dashboard picks the prefix from
+    the manifest rather than trusting a declared one, so a control does not have
+    to know which it is.
+    """
+
+    id: str = ""  # stable per-app identifier, e.g. "env-picker"
+    entryPoint: str = ""  # ESM bundle path relative to ui/  # noqa: N815
+    label: str = ""  # accessible name; also the tooltip
+    icon: str = ""  # lucide icon name
+    statusPath: str = ""  # optional backend route reporting per-session chip state  # noqa: N815
+
+    def to_dict(self) -> dict[str, Any]:
+        d: dict[str, Any] = {"id": self.id, "entryPoint": self.entryPoint}
+        if self.label:
+            d["label"] = self.label
+        if self.icon:
+            d["icon"] = self.icon
+        if self.statusPath:
+            d["statusPath"] = self.statusPath
+        return d
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> UISessionControl:
+        return cls(
+            id=str(data.get("id", "")),
+            entryPoint=str(data.get("entryPoint", "")),  # noqa: N815
+            label=str(data.get("label", "")),
+            icon=str(data.get("icon", "")),
+            statusPath=_normalize_status_path(data.get("statusPath", "")),  # noqa: N815
+        )
+
+
 @dataclass
 class UIConfig:
     """Frontend configuration for an app."""
@@ -509,6 +601,7 @@ class UIConfig:
     pages: list[UIPage] = field(default_factory=list)
     overlays: list[UIOverlay] = field(default_factory=list)
     sidebar: UISidebar = field(default_factory=UISidebar)
+    sessionControls: list[UISessionControl] = field(default_factory=list)  # noqa: N815
 
     def to_dict(self) -> dict[str, Any]:
         d: dict[str, Any] = {}
@@ -521,6 +614,8 @@ class UIConfig:
         sidebar_d = self.sidebar.to_dict()
         if sidebar_d:
             d["sidebar"] = sidebar_d
+        if self.sessionControls:
+            d["sessionControls"] = [c.to_dict() for c in self.sessionControls]
         return d
 
     @classmethod
@@ -537,11 +632,20 @@ class UIConfig:
         )
         sidebar_raw = data.get("sidebar", {})
         sidebar = UISidebar.from_dict(sidebar_raw) if isinstance(sidebar_raw, dict) else UISidebar()
+        # Same defensive shape-guard as overlays: a present-but-non-list
+        # `sessionControls` must not raise out of install validation.
+        raw_controls = data.get("sessionControls", [])
+        controls = (
+            [UISessionControl.from_dict(c) for c in raw_controls if isinstance(c, dict)]
+            if isinstance(raw_controls, list)
+            else []
+        )
         return cls(
             entry=str(data.get("entry", "")),
             pages=pages,
             overlays=overlays,
             sidebar=sidebar,
+            sessionControls=controls,
         )
 
 
@@ -1828,6 +1932,47 @@ class AppManifest:
                 errors.append(
                     f"ui overlay {overlay.id!r}: replaces must be kebab-case: "
                     f"{overlay.replaces!r}"
+                )
+
+        # Session control validation.
+        #
+        # Stricter than page validation on purpose: a control renders inside the
+        # composer on the path of every turn, so a malformed one must be refused
+        # at install time rather than discovered as a broken chat.
+        if len(self.ui.sessionControls) > MAX_SESSION_CONTROLS_PER_APP:
+            errors.append(
+                f"ui.sessionControls: at most {MAX_SESSION_CONTROLS_PER_APP} per app "
+                f"(declared {len(self.ui.sessionControls)}) — use a page for further config"
+            )
+        seen_control_ids: set[str] = set()
+        for ctl in self.ui.sessionControls:
+            if not ctl.id:
+                errors.append("ui session control missing required field: id")
+            elif not _SESSION_CONTROL_ID_RE.fullmatch(ctl.id):
+                errors.append(f"ui session control id must be kebab-case: {ctl.id!r}")
+            elif ctl.id in seen_control_ids:
+                # Duplicate ids would make the rendered controls indistinguishable
+                # to React's key and to any per-control persistence.
+                errors.append(f"ui session control id is duplicated: {ctl.id!r}")
+            else:
+                seen_control_ids.add(ctl.id)
+            if not ctl.entryPoint:
+                errors.append(
+                    f"ui session control {ctl.id or '<unnamed>'} missing required field: entryPoint"
+                )
+            elif _path_escapes_app_root(ctl.entryPoint, app_root):
+                errors.append(
+                    f"ui session control entryPoint contains path traversal: {ctl.entryPoint!r}"
+                )
+            if ctl.statusPath and not _SESSION_CONTROL_STATUS_PATH_RE.fullmatch(
+                ctl.statusPath
+            ):
+                # Refused rather than ignored: a status route the dashboard
+                # declines to call would leave the chip permanently stateless
+                # with nothing saying why.
+                errors.append(
+                    f"ui session control {ctl.id or '<unnamed>'} statusPath must be a relative "
+                    f"backend route (lowercase, no scheme, host or query): {ctl.statusPath!r}"
                 )
 
         # Cron validation

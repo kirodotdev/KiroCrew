@@ -142,6 +142,11 @@ installed against:
 | `ui.sidebar.order` | number | `10` | Sort order within section |
 | `ui.overlays[].id` | string | | Overlay id; must match a bundled overlay component (see below) |
 | `ui.overlays[].replaces` | string | | Host overlay slot this app takes over while enabled |
+| `ui.sessionControls[].id` | string | | Control id, kebab-case; addressed as `<appName>:<id>` |
+| `ui.sessionControls[].entryPoint` | string | | ESM bundle path for the control (relative to ui/) |
+| `ui.sessionControls[].label` | string | | Accessible name, and the chip's tooltip |
+| `ui.sessionControls[].icon` | string | | Icon name. Only `Shield`, `Bot`, `Search`, `Tag`, `Users`, `Zap`, `Star`, `Package` and `Cat` are rendered; any other name falls back to `Package` |
+| `ui.sessionControls[].statusPath` | string | | Optional backend route reporting per-session chip state (see below) |
 
 ### `ui.overlays` — Replacing a Host Overlay Surface
 
@@ -301,6 +306,81 @@ the error will not obviously point here, so declare the floor and the install re
 for a legible reason instead. Unsigned apps are unaffected, as are signed apps that
 contribute nothing: the key is only added to the payload when non-empty, so every
 signature issued before this existed still verifies.
+
+### `ui.sessionControls` — A Per-Chat Control in the Composer
+
+A session control is a compact chip the dashboard renders in the composer bar,
+beside the agent, model and project chips. Opening it mounts the app's own ESM
+module and hands it **the identity of the chat the user is currently in** -- which
+is the reason the slot exists, because nothing else in the app surface reports
+that. `ui.pages` is routed and session-blind, so a per-chat setting placed there
+makes the user leave the conversation to configure it.
+
+```json
+{
+  "ui": {
+    "sessionControls": [
+      {
+        "id": "env-picker",
+        "entryPoint": "dist/session-control.mjs",
+        "label": "Environment",
+        "icon": "Tag",
+        "statusPath": "session-status"
+      }
+    ]
+  }
+}
+```
+
+Unlike `ui.overlays`, this **is** a third-party extension point: an installed app
+may declare it, and the control is loaded through the same lazy `import()` and
+import map `ui.pages` uses, so React stays a single instance.
+
+**What the control is handed.** The module's default export is rendered as
+`<Control session={…} onClose={…} />`, where `session` is:
+
+| Prop | Type | Meaning |
+|------|------|---------|
+| `session.sessionKey` | string | Session key, e.g. `dashboard:chat-2-1787502679`. Empty before a slot exists |
+| `session.folderId` | string? | Folder the chat is filed in, `''` at top level. A dashboard grouping with its own id -- **not** a directory, so key per-folder state on this and not on `cwd` |
+| `session.folderName` | string? | Folder's display name, to name it back to the user |
+| `session.cwd` | string | Working directory recorded for the session, when known |
+| `onClose` | function | Dismiss the control, e.g. after committing a change |
+
+The control is remounted when the session changes, so per-chat state cannot leak
+across a switch, and a control that throws renders an inline notice instead of
+disturbing the chat.
+
+**Two caps, and the second one drops.** The backend allows at most **2** controls
+per app. The dashboard renders at most **2** across all apps, and controls past
+that are dropped rather than moved into an overflow menu -- the bar shares one row
+with the message input. With three or more contributing apps, a declared control
+can therefore be absent.
+
+**`statusPath` — reporting state before the chip is opened.** Without it a control
+can only report anything once its module loads on first click, so a configured
+setting looks unset. When declared, the dashboard GETs the route under the app's
+own route base, with `session_key` always and `folder_id` / `folder_name`
+when the chat is in a folder, and reads:
+
+```json
+{ "state": "ok", "tooltip": "Bound to production" }
+```
+
+`state` is `ok`, `warn` or `none`; the chip tints for the first two and the
+tooltip is length-bounded. The path is charset-bounded at install and re-checked
+in the dashboard, and one that would leave the app's own route prefix is refused
+before any request rather than sanitized -- so a control with an invalid
+`statusPath` is simply never polled. Polling fails closed: an app that is down is
+not retried, and an unrecognized payload is treated as `none`.
+
+The route base follows how the app serves its backend, and the dashboard derives
+it -- an app declaring `backend.entryPoint` runs its own process and is
+reverse-proxied at `/apps/<app>/api/`, while one declaring only
+`backend.hooks.routes` is registered in-gateway under `/api/apps/<app>/`. Both
+prefixes are built by the host from the app name, so `statusPath` stays the only
+app-authored part of the URL. Declaring the wrong one is not possible: an app
+does not choose.
 
 ### App Icon
 

@@ -5552,7 +5552,10 @@
       "reset_to_global": "Ripristina il valore globale ({{pct}}%)",
       "following_global": "Segue il valore globale ({{pct}}%)",
       "sketch": "Schizzo",
-      "sketch_desc": "Disegna uno schizzo; allega un’immagine e la sua origine modificabile"
+      "sketch_desc": "Disegna uno schizzo; allega un’immagine e la sua origine modificabile",
+      "session_control_needs_attention": "Richiede attenzione",
+      "session_control_ready": "Pronto",
+      "session_control_chip_label": "{{label}} — {{detail}}"
     },
     "chatPane": {
       "agent_list": "Elenco degli agenti",
@@ -7828,6 +7831,15 @@
       "confirm_discard": "Elimina disegno",
       "already_attached": "Allegato — modifica la tela per disegnare di nuovo",
       "load_failed": "Impossibile caricare il blocco schizzi: controlla la connessione e riapri"
+    },
+    "sessionControlHost": {
+      "failed": "{{label}} non riuscito",
+      "chat_unaffected": "La tua chat non è interessata: solo questo controllo ha smesso di funzionare.",
+      "retry": "Riprova",
+      "retry_loading": "Riprova a caricare {{label}}",
+      "could_not_load": "Impossibile caricare {{label}}",
+      "loading": "Caricamento di {{label}}…",
+      "dialog_label": "{{label}} — {{appName}}"
     }
   },
   "hooks": {

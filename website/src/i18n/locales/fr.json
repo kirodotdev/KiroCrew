@@ -5552,7 +5552,10 @@
       "reset_to_global": "Rétablir la valeur globale ({{pct}} %)",
       "following_global": "Suit la valeur globale ({{pct}} %)",
       "sketch": "Croquis",
-      "sketch_desc": "Dessinez un croquis ; joint une image et sa source modifiable"
+      "sketch_desc": "Dessinez un croquis ; joint une image et sa source modifiable",
+      "session_control_needs_attention": "Attention requise",
+      "session_control_ready": "Prêt",
+      "session_control_chip_label": "{{label}} — {{detail}}"
     },
     "chatPane": {
       "agent_list": "Liste des agents",
@@ -7828,6 +7831,15 @@
       "confirm_discard": "Abandonner le dessin",
       "already_attached": "Joint — modifiez le canevas pour dessiner à nouveau",
       "load_failed": "Impossible de charger le bloc de croquis — vérifiez votre connexion et rouvrez-le"
+    },
+    "sessionControlHost": {
+      "failed": "Échec de {{label}}",
+      "chat_unaffected": "Votre conversation reste intacte — seul ce contrôle a cessé de fonctionner.",
+      "retry": "Réessayer",
+      "retry_loading": "Réessayer de charger {{label}}",
+      "could_not_load": "Impossible de charger {{label}}",
+      "loading": "Chargement de {{label}}…",
+      "dialog_label": "{{label}} — {{appName}}"
     }
   },
   "hooks": {

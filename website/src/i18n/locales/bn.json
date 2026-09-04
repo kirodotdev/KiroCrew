@@ -5463,7 +5463,10 @@
       "reset_to_global": "গ্লোবালে রিসেট করুন ({{pct}}%)",
       "following_global": "গ্লোবাল অনুসরণ করছে ({{pct}}%)",
       "sketch": "স্কেচ",
-      "sketch_desc": "স্কেচ আঁকুন; ছবি এবং সম্পাদনাযোগ্য উৎস সংযুক্ত করে"
+      "sketch_desc": "স্কেচ আঁকুন; ছবি এবং সম্পাদনাযোগ্য উৎস সংযুক্ত করে",
+      "session_control_needs_attention": "নজর দেওয়া দরকার",
+      "session_control_ready": "প্রস্তুত",
+      "session_control_chip_label": "{{label}} — {{detail}}"
     },
     "chatPane": {
       "agent_list": "এজেন্ট তালিকা",
@@ -7722,6 +7725,15 @@
       "confirm_discard": "আঁকা বাতিল করুন",
       "already_attached": "সংযুক্ত — আবার স্কেচ করতে ক্যানভাস সম্পাদনা করুন",
       "load_failed": "স্কেচ প্যাড লোড করা যায়নি — সংযোগ পরীক্ষা করে আবার খুলুন"
+    },
+    "sessionControlHost": {
+      "failed": "{{label}} ব্যর্থ হয়েছে",
+      "chat_unaffected": "আপনার চ্যাট অপ্রভাবিত — শুধু এই নিয়ন্ত্রণটি কাজ করা বন্ধ করেছে।",
+      "retry": "পুনরায় চেষ্টা করুন",
+      "retry_loading": "{{label}} লোড করার পুনরায় চেষ্টা করুন",
+      "could_not_load": "{{label}} লোড করা যায়নি",
+      "loading": "{{label}} লোড হচ্ছে…",
+      "dialog_label": "{{label}} — {{appName}}"
     }
   },
   "hooks": {

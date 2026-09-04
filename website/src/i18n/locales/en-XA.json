@@ -5348,7 +5348,10 @@
       "auto_compact_threshold": "[Àùţø-çøɱþàçţ ţĥŕèşĥøĺð ···············]",
       "auto_compact_load_failed": "[Çøùĺðñ'ţ ĺøàð ţĥè àùţø-çøɱþàçţ şèţţìñğ ···················]",
       "reset_to_global": "[Ŕèşèţ ţø ğĺøƀàĺ ({{pct}}%) ·················]",
-      "following_global": "[Ƒøĺĺøẁìñğ ğĺøƀàĺ ({{pct}}%) ··················]"
+      "following_global": "[Ƒøĺĺøẁìñğ ğĺøƀàĺ ({{pct}}%) ··················]",
+      "session_control_needs_attention": "[Ñèèðş àţţèñţìøñ ··············]",
+      "session_control_ready": "[Ŕèàðý ········]",
+      "session_control_chip_label": "[{{label}} — {{detail}} ·····]"
     },
     "chatPane": {
       "agent_list": "[Àğèñţ ĺìşţ ···············]",
@@ -7629,6 +7632,15 @@
       "copy_failed_select_the_link_and_copy_it_manually": "[Çøþý ƒàìĺèð — şèĺèçţ ţĥè ĺìñķ àñð çøþý ìţ ɱàñùàĺĺý. ··················]",
       "could_not_create_a_link_try_again": "[Çøùĺð ñøţ çŕèàţè à ĺìñķ — ţŕý àğàìñ. ··················]",
       "phone_connection_is_disabled_by_policy_on_this_dep": "[Þĥøñè çøññèçţìøñ ìş ðìşàƀĺèð ƀý þøĺìçý øñ ţĥìş ðèþĺøýɱèñţ. ····················]"
+    },
+    "sessionControlHost": {
+      "failed": "[{{label}} ƒàìĺèð ···········]",
+      "chat_unaffected": "[Ýøùŕ çĥàţ ìş ùñàƒƒèçţèð — øñĺý ţĥìş çøñţŕøĺ şţøþþèð ẁøŕķìñğ. ·····················]",
+      "retry": "[Ŕèţŕý ········]",
+      "retry_loading": "[Ŕèţŕý ĺøàðìñğ {{label}} ·············]",
+      "could_not_load": "[Çøùĺð ñøţ ĺøàð {{label}} ··············]",
+      "loading": "[Ĺøàðìñğ {{label}}… ··············]",
+      "dialog_label": "[{{label}} — {{appName}} ·····]"
     }
   },
   "hooks": {
