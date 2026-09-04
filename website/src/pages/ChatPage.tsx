@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback, useDeferredValue, useEffect, useLayoutEffect, useMemo } from 'react'
+import { useState, useRef, useCallback, useEffect, useLayoutEffect, useMemo } from 'react'
 import { createPortal } from 'react-dom'
 import { useLocation, useNavigate, useNavigationType, useSearchParams } from 'react-router-dom'
 import { useQuery, useQueries, useMutation, useQueryClient } from '@tanstack/react-query'
@@ -218,6 +218,7 @@ import { useAvailableModels } from '../hooks/useAvailableModels'
 import { useListboxKeyboard } from '../hooks/useListboxKeyboard'
 import { useAgents } from '../hooks/useAgents'
 import { useRemoteCapabilities } from '../hooks/useRemoteCapabilities'
+import { useSlotDeferredValue } from '../hooks/useSlotDeferredValue'
 import type { KiroCrewAgent } from '../components/AgentSelector'
 import type { ModelInfo } from '../providers/types'
 import AgentDropdownList, { DefaultAgentRow, ManageAgentsFooter } from '../components/AgentDropdownList'
@@ -6438,7 +6439,15 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // when the main thread has room. Everything that must agree with the
   // RENDERED rows (the DOM-index ref, row keys, the prefetch index) reads the
   // deferred value, so index spaces stay consistent.
-  const renderedDisplayItems = useDeferredValue(displayItems)
+  //
+  // Scoped to the active slot: a plain useDeferredValue keeps returning the
+  // PREVIOUS list until the background render lands, and under the page's
+  // urgent churn that is hundreds of ms -- long enough that a session switch
+  // painted the outgoing tab's transcript under the incoming tab's URL, and a
+  // new chat's first send briefly showed the previous session's messages
+  // (#8526). Only same-slot updates (streaming flushes, history landings) are
+  // deferred; a switch renders the right transcript in its first commit.
+  const renderedDisplayItems = useSlotDeferredValue(activeSlot, displayItems)
 
   // Keep the ref in sync so handleRangeChanged / updatePinnedPrompt
   // read the latest displayItems. useLayoutEffect (not useEffect): the DOM's
