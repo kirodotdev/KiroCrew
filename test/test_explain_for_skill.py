@@ -359,14 +359,23 @@ class TestOnlyACleanCallIsAnAnswer:
 
 class TestSkillContent:
     def test_names_the_verbosity_exception(self):
-        """The terseness levels would otherwise compress the explanation away.
+        """The terse levels would otherwise compress the explanation away.
 
-        An explanation request is the documented exception to answer-only /
-        concise, and an agent under one of those levels needs the skill to say so
-        or it clips the very output the user asked to be expansive.
+        An agent under answer-only or concise needs the skill to say that an
+        explanation request is the exception, or it clips the very output the
+        user asked to be expansive.
+
+        The exception is scoped to ONE axis, though. It lifts the ban on
+        explaining, not the length bound -- an unscoped "terseness is suspended"
+        contradicts answer_only's own length rules, and when two documents
+        disagree about length the model takes the longer reading, which is the
+        verbosity that mode exists to prevent.
         """
         body = SKILL_FILE.read_text(encoding="utf-8").lower()
-        assert "verbosity" in body and "terseness" in body
+        assert "verbosity" in body
+        assert "lifts the ban on explaining, not the length bound" in body
+        # The register survives every level; length stays with the active one.
+        assert "answer_only" in body and "unless the user asked" in body
 
     def test_requires_ground_truth_before_simplifying(self):
         body = SKILL_FILE.read_text(encoding="utf-8").lower()
