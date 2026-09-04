@@ -531,6 +531,23 @@ def test_all_names_pass_core_namespace_validation():
         assert validate_name(name) == name
 
 
+def test_lifetime_totals_are_declared_for_the_consumer_that_must_know():
+    """A lifetime-total gauge is not interchangeable with a state gauge.
+
+    Its newest sample is "since this process started", so a consumer that reports
+    the newest sample as a reading shows a number that only grows. The dashboard
+    aggregator differences them instead, and it finds them through this tuple —
+    which must therefore name exactly the one whose reading accumulates, and
+    must stay a subset of the roster. Adding a lifetime-total gauge without
+    listing it here — or leaving a stale name in the tuple after a roster
+    change — would silently demote the series to newest-sample, with nothing
+    failing; this is the inventory half of the guard the process family already
+    has in ``test_process_gauges``.
+    """
+    assert set(ig.LIFETIME_TOTAL_METRICS) == {ig.GAUGE_PROBE_FAILURES}
+    assert set(ig.LIFETIME_TOTAL_METRICS) <= set(ig.ALL_METRIC_NAMES)
+
+
 def test_collection_yields_every_instrument_with_the_expected_shape():
     with (
         patch.object(ig, "read_active_crons", return_value=3),
