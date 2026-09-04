@@ -15,6 +15,7 @@ import asyncio
 import dataclasses
 import re
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -613,14 +614,43 @@ def test_scheduled_target_is_refused(tmp_path):
     assert "unattended" in exc.value.message
 
 
-def test_scheduled_caller_cannot_control_anyone(tmp_path):
+def test_scheduled_caller_cannot_control_a_session_it_did_not_create(tmp_path):
+    """A cron caller is admitted but fenced to its own children (issue #8332).
+
+    The refusal it used to get was ``unattended_caller``, keyed on the slot-key
+    prefix. That was replaced by the ``created_by`` fence, which refuses the case
+    the prefix check existed for -- a scheduled job reaching the user's own
+    conversation -- while letting it drive the sessions it dispatched. The
+    positive half, and a cron's other gates, are in
+    ``test_cron_session_control.py``.
+    """
     state = _make_state(tmp_path)
     caller = _slot(state, "cron-abc123")
+    # Ownership is read from the JOB, and an unfindable one fails closed, so the
+    # fence is only reached once the registry can produce a non-app owner.
+    state.crons.list_jobs.return_value = [SimpleNamespace(id="abc123", created_by="U0123ABCD")]
     _slot(state, "chat-2")
     with pytest.raises(sc.SessionControlError) as exc:
         sc.authorize_target(
             state, caller_session_key=_key(caller), target="chat-2", operation="read"
         )
+    assert exc.value.code == "not_creator"
+
+
+def test_workflow_caller_cannot_control_anyone(tmp_path):
+    """The unattended refusal still stands for the caller class with no fence.
+
+    A ``workflow-<run_id>`` slot is minted only once its originating tab is gone,
+    so there is no owning session to bound it to.
+    """
+    state = _make_state(tmp_path)
+    caller = _slot(state, "workflow-run7")
+    _slot(state, "chat-2")
+    with pytest.raises(sc.SessionControlError) as exc:
+        sc.authorize_target(
+            state, caller_session_key=_key(caller), target="chat-2", operation="read"
+        )
+    assert exc.value.code == "unattended_caller"
     assert "cannot control other sessions" in exc.value.message
 
 

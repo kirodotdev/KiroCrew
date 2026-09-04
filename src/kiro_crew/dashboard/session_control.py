@@ -72,15 +72,47 @@ DEFAULT_READ_MESSAGES = 20
 # a multi-megabyte tool payload verbatim.
 MAX_READ_CONTENT_CHARS = 4000
 
-# Slot-key prefixes for sessions no human is watching: a cron run's own slot
-# (``cron-<job_id>``) and a background workflow's result slot
-# (``workflow-<run_id>``, created by ``workflow_inject`` only when the
-# originating tab is gone). They are refused as BOTH source and target. As a
-# target, a message would start a fresh agent turn in a display-only slot nobody
-# reads; as a source, a scheduled job would be able to type into the user's live
-# conversations unattended. Notifications are the supported path for those
-# (``send_message``), not session control.
-UNATTENDED_SLOT_PREFIXES = ("cron-", "workflow-")
+# A cron run's own slot (``cron-<job_id>``, minted by ``inject_cron_result_to_dashboard``).
+CRON_SLOT_PREFIX = "cron-"
+
+# A background workflow's result slot (``workflow-<run_id>``, minted by
+# ``workflow_inject`` only when the originating tab is gone).
+WORKFLOW_SLOT_PREFIX = "workflow-"
+
+# Slot-key prefixes for sessions no human is watching. As a TARGET both are
+# always refused: a message would start a fresh agent turn in a display-only slot
+# nobody reads.
+#
+# As a SOURCE the two differ, and the difference is ownership. What must not
+# happen is a scheduled job reaching the user's OWN conversations, which is a
+# question about scope rather than about attendance -- an unattended job already
+# starts turns in the session that owns it every time it delivers with
+# ``send_message(session="origin")``. A cron slot can be held to that scope,
+# because `authorize_target` fences it to slots carrying its own
+# ``_created_by`` (see :func:`_cron_caller`), so it is admitted as a source. A
+# workflow result slot cannot: it exists only when the originating tab is already
+# gone, so there is no owning session to fence it to and nothing it would
+# legitimately dispatch. It stays refused.
+#
+# Membership here is the fail direction for a prefix added later: a new
+# unattended surface is refused as a source until it is given a fence of its own.
+UNATTENDED_SLOT_PREFIXES = (CRON_SLOT_PREFIX, WORKFLOW_SLOT_PREFIX)
+
+# The ``linked_session_key`` a cron slot carries (``cron:<job_id>``), written by
+# ``inject_cron_result_to_dashboard`` to bind the run's transcript to the tab.
+# It is NOT a channel link, and the caller-side linked refusals exist for channel
+# links: they keep a session whose conversation is mirrored to Slack/Telegram from
+# reading a peer's transcript into that thread. A cron link mirrors nothing and
+# has no audience, so it is exempted where the caller is judged. The TARGET-side
+# refusal is deliberately not exempted -- a cron tab is already unreachable as a
+# target by prefix, and the exemption would otherwise widen to every linked slot.
+CRON_LINK_PREFIX = "cron:"
+
+# The ``created_by`` tag an app's own cron job carries (``app:<app_name>``,
+# written by ``apps/cron_sdk.py``). Spelled here rather than imported: this
+# module sits below the apps package, and the value is a persisted data format
+# rather than something that package exports.
+APP_CRON_OWNER_PREFIX = "app:"
 
 
 def _member_caller(caller_key: str) -> bool:
@@ -100,6 +132,148 @@ def _member_caller(caller_key: str) -> bool:
     from kiro_crew.members import DM_SLOT_KEY_PREFIX
 
     return caller_key.startswith(DM_SLOT_KEY_PREFIX)
+
+
+def _cron_caller(caller_key: str) -> bool:
+    """Whether *caller_key* is a cron job's own slot.
+
+    A cron caller is admitted to the surface DESPITE being unattended, and is
+    bounded the same way a crew member is: :func:`authorize_target` refuses it on
+    any slot it did not create itself, so its reach covers the sessions it
+    dispatched and never the user's own conversations.
+
+    It differs from a member caller in one way that matters. A member bypasses
+    the global ``agent.session_control`` switch, because dispatching into workers
+    is the member operating model rather than an opt-in. A cron does NOT: the
+    switch is the user's statement that agents may open and drive sessions at
+    all, and a job running while they are asleep is the last caller that should
+    be exempt from it.
+
+    Keyed on the slot-key prefix rather than on the slot's ``linked_session_key``
+    or its ``SlotOrigin``, so the answer is available before the slot is resolved
+    and cannot change under a caller: a slot key is immutable, while both of the
+    others are fields a later write could alter.
+    """
+    return caller_key.startswith(CRON_SLOT_PREFIX)
+
+
+def _caller_is_ownership_fenced(state: "DashboardState", caller_key: str) -> bool:
+    """Whether *caller_key* may only reach slots it created itself.
+
+    Three populations, one predicate, so the fence and the admissions that depend
+    on it cannot drift apart:
+
+    * a crew member's DM slot, which bypasses the config switch;
+    * a cron job's own slot, which bypasses the unattended refusal;
+    * **anything either of them created**, which is the part a key prefix cannot
+      see. A created child is minted with a plain ``chat-`` key and INHERITS the
+      creator's agent, so a fenced caller running a session-control agent would
+      otherwise get an unfenced deputy for free: create a child, seed it, and the
+      child -- an ordinary caller by key -- reads any same-workspace session and
+      reports back through the transcript its creator is allowed to read. The
+      fence has to follow authority, not spelling.
+
+    ``_created_by`` is the marker for that third population and needs no lineage
+    walk: :func:`create_session` is its ONLY writer (a person's own tab and a fork
+    reach ``get_or_create_slot`` directly and stay unattributed), so a non-empty
+    value means "an agent made this session" at any depth. A grandchild carries
+    its parent's key there and is fenced by the same test, and a chain whose
+    middle slot has been closed cannot fail open because no chain is walked.
+
+    There is deliberately NO attendance exemption. ``_ChatSlot._human_seen`` looks
+    like the right hatch and is not: it records that a human has EVER driven the
+    slot, is monotonic and persisted, and says nothing about who authored the turn
+    running now. Releasing the fence on it would hand the creator its deputy back
+    for the price of the user glancing at the tab once -- cron creates the child,
+    the user types into it, and from then on every cron-authored turn in that child
+    runs unfenced. The question this predicate can answer is "whose authority is
+    this session", not "is a person at the keyboard", so a person working in an
+    agent-created session keeps that session's reach rather than their own.
+    """
+    if _member_caller(caller_key) or _cron_caller(caller_key):
+        return True
+    slot = state.get_slot(caller_key)
+    if slot is None:
+        return False
+    return bool(getattr(slot, "_created_by", ""))
+
+
+def _app_owned_cron_refusal(state: "DashboardState", caller_key: str) -> tuple[str, str] | None:
+    """``(message, code)`` when *caller_key* is an APP's cron, else ``None``.
+
+    An app-scoped SESSION is refused by the ``_app`` check that sits beside every
+    call site of this one, but a cron tab does not carry that tag:
+    ``inject_cron_result_to_dashboard`` mints it without ``app=``, so an app's own
+    scheduled job reaches this surface with ``_app == ""`` and would pass. Left
+    unchecked, an app could create a persistent, sidebar-visible session that is
+    NOT app-scoped -- precisely the confinement escape the ``_app`` refusal exists
+    to prevent, reached through the app's scheduled job instead of its session.
+
+    App ownership therefore has to be read from the JOB, and it has TWO spellings
+    there because two writers record it differently: the app cron SDK tags
+    ``created_by = "app:{app_name}"``, while ``mcp_cron``'s own ``cron_add``
+    records the calling session in ``session_key`` and never writes ``created_by``
+    at all -- so an app-scoped session's job carries its authority only in the
+    second. Both are checked, and the second delegates to ``_app`` on the owning
+    slot rather than re-deriving app-ness, so there is one definition of "is this
+    an app" and not a third. **A new field on the job that can name a principal is
+    a hole here until it is added to this function.**
+
+    Known residual, deliberately not closed by refusing: when ``session_key``
+    names a session that is no longer open, its ``_app`` cannot be read, and this
+    returns ``None`` for it. Refusing instead would disable dispatch for the
+    ordinary case -- a user-created job whose authoring tab has since been closed,
+    which is most of them -- so the fail-closed direction is wrong here in a way it
+    is not for the missing-job case below. What bounds the exposure is that the
+    slot has to be gone: while an app's session is live, its jobs are refused.
+
+    Fail-CLOSED on a job that cannot be found, or a registry that cannot answer:
+    "could not verify the owner" must not read as "has no owner", the same
+    direction ``agent_unverifiable`` takes on its own unreadable input. Nothing
+    legitimate is refused by it, because a cron whose job is gone is not running.
+
+    Returns rather than raises so each call site keeps its own idiom -- the create
+    path raises ``SessionControlError`` directly, while ``authorize_target`` must
+    go through its ``deny`` closure to get the audit record and the 403.
+    """
+    if not _cron_caller(caller_key):
+        return None
+    job_id = caller_key[len(CRON_SLOT_PREFIX) :]
+    found: Any = None
+    try:
+        for job in state.crons.list_jobs(include_disabled=True):
+            if str(getattr(job, "id", "")) == job_id:
+                found = job
+                break
+    except Exception:
+        logger.warning(
+            "session_control: cron owner lookup failed for %s -- refusing",
+            caller_key,
+            exc_info=True,
+        )
+        found = None
+    if found is None:
+        return (
+            "the scheduled job behind this session could not be found, so its "
+            "ownership cannot be verified",
+            "cron_owner_unverifiable",
+        )
+    refusal = (
+        "app-owned scheduled jobs cannot create or control sessions",
+        "app_owned_cron_caller",
+    )
+    if str(getattr(found, "created_by", "") or "").startswith(APP_CRON_OWNER_PREFIX):
+        return refusal
+    owning_key = str(getattr(found, "session_key", "") or "")
+    if owning_key:
+        # Resolved through this module's own :func:`caller_slot_key` rather than a
+        # ``removeprefix("dashboard:")``: chat_utils documents that the naive strip
+        # is wrong for every non-dashboard session key, and the resolver already
+        # matches on the identity each slot actually writes.
+        owning_slot = state.get_slot(caller_slot_key(state, owning_key))
+        if owning_slot is not None and str(getattr(owning_slot, "_app", None) or ""):
+            return refusal
+    return None
 
 
 # Roles a read must not count, taken from the persistence layer's own list rather
@@ -544,6 +718,11 @@ def _refuse_ineligible_creator(state: "DashboardState", caller_slot: "_ChatSlot"
         raise SessionControlError(
             "app-scoped sessions cannot create sessions", code="app_scoped_caller"
         )
+    if (refusal := _app_owned_cron_refusal(state, getattr(caller_slot, "key", ""))) is not None:
+        # The same confinement, reached through an app's cron rather than its
+        # session -- a cron tab carries no ``_app`` tag for the check above to
+        # read. See :func:`_app_owned_cron_refusal`.
+        raise SessionControlError(refusal[0], code=refusal[1])
     if getattr(caller_slot, "memory_mode", "persistent") != "persistent":
         # An incognito/temporary caller is defined by leaving nothing behind.
         # A persistent child it owns would outlive it, carrying its work into
@@ -552,7 +731,10 @@ def _refuse_ineligible_creator(state: "DashboardState", caller_slot: "_ChatSlot"
             "incognito and temporary sessions cannot create sessions",
             code="ephemeral_caller",
         )
-    if getattr(caller_slot, "linked_session_key", ""):
+    caller_link = getattr(caller_slot, "linked_session_key", "")
+    if caller_link and not caller_link.startswith(CRON_LINK_PREFIX):
+        # A cron tab's link is its own run transcript, not a channel thread, and
+        # is exempt -- see CRON_LINK_PREFIX. Everything else is a channel link.
         raise SessionControlError(
             "channel-linked sessions cannot create sessions",
             code="linked_session_caller",
@@ -665,7 +847,7 @@ async def create_session(
             "session control is disabled in config (agent.session_control)",
             code="session_control_disabled",
         )
-    if caller_key.startswith(UNATTENDED_SLOT_PREFIXES):
+    if caller_key.startswith(UNATTENDED_SLOT_PREFIXES) and not _cron_caller(caller_key):
         raise SessionControlError(
             "unattended sessions (scheduled runs) cannot create sessions",
             code="unattended_caller",
@@ -783,6 +965,32 @@ async def create_session(
     # ordinary session, because the point of creating it here is that the user
     # can see and take over the work. SYSTEM-origin slots fall outside the
     # `slots:user` WS scope, which would hide it from the sidebar.
+    #
+    # A CRON caller is the exception, and it is the one case where USER would be
+    # wrong rather than merely coarse. `inject_cron_result_to_dashboard` tags a
+    # cron's own slot CRON precisely so its output stays out of `slots:user` ("a
+    # USER label would expose it to any app holding `slots:user`"), and the trust
+    # model states the same rule from the other side: inferring USER for a
+    # background caller "put cron output inside `slots:user`". Minting a
+    # USER-labelled child would hand a cron the exposure its own slot is denied,
+    # by the simple route of creating a session and writing there instead.
+    #
+    # The tag therefore follows the caller's AUTHORITY, not its key prefix, and
+    # for the same reason the ownership fence does: a created child INHERITS its
+    # creator's agent, so a cron's child can itself call this verb, and a
+    # prefix-only test mints that grandchild USER (its caller key is a plain
+    # `chat-`) -- the two-hop version of the very route this comment says must be
+    # denied. Reading the caller slot's own ``_origin`` closes it transitively: the
+    # child carries CRON, so ITS children do too, at any depth.
+    #
+    # Nothing is lost by the narrower tag: only APP tokens are filtered by origin
+    # (`_serialize_for_client` returns the unfiltered payload to a dashboard
+    # user), so a CRON-origin descendant stays in the sidebar exactly as today's
+    # cron tabs do -- which is the property the paragraph above is protecting.
+    #
+    # Computed from the RE-RESOLVED caller below rather than here, because it is a
+    # decision input to the allocation and everything above this point was read
+    # before the coroutine suspended.
 
     if folder_id:
         # Confirmed under the folder-store lock -- the only place existence
@@ -837,6 +1045,14 @@ async def create_session(
             code="caller_workspace_changed",
         )
     _refuse_ineligible_creator(state, live_caller)
+    # The child's origin tag, read off the caller that is live NOW -- see the
+    # reasoning above the folder gate. `_cron_caller` covers a cron's own tab;
+    # `_origin` carries the tag onward to every descendant of one.
+    child_origin = (
+        SlotOrigin.CRON
+        if _cron_caller(caller_key) or getattr(live_caller, "_origin", "") == SlotOrigin.CRON
+        else SlotOrigin.USER
+    )
     # The RATE guard, ahead of the capacity ceilings below. Those bound how many
     # sessions can exist; this bounds how fast one caller may open them, which is
     # the property an auto-approved verb loses -- a waived prompt leaves a loop
@@ -884,7 +1100,7 @@ async def create_session(
     # move path uses ("file the slot before the coalesced broadcast").
     with state.suspend_slots_push():
         slot = state.get_or_create_slot(
-            None, agent=agent_name, workspace=workspace, origin=SlotOrigin.USER
+            None, agent=agent_name, workspace=workspace, origin=child_origin
         )
         # Attribute the slot to the caller that asked for it, which is what makes the
         # per-creator ceiling above countable. Written here, inside the synchronous
@@ -1086,11 +1302,25 @@ def authorize_target(
             "session control is disabled in config (agent.session_control)",
             "session_control_disabled",
         )
-    if caller_key.startswith(UNATTENDED_SLOT_PREFIXES):
+    if caller_key.startswith(UNATTENDED_SLOT_PREFIXES) and not _cron_caller(caller_key):
         raise deny(
             "unattended sessions (scheduled runs) cannot control other sessions",
             "unattended_caller",
         )
+    if (refusal := _app_owned_cron_refusal(state, caller_key)) is not None:
+        # The app-confinement refusal, reached through an app's cron rather than
+        # its session -- a cron tab carries no ``_app`` tag for the check further
+        # down to read. See :func:`_app_owned_cron_refusal`.
+        #
+        # Placed BEFORE `_resolve_slot`, unlike the other caller-side refusals: a
+        # caller refused for its own identity must not learn anything from the
+        # attempt, and resolving first makes the refusal an existence oracle -- a
+        # guessed target answers `target_not_found` (404) when it does not exist
+        # and this refusal (403) when it does, so a caller allowed to touch
+        # NOTHING could enumerate the user's session keys and titles by the shape
+        # of the error. The prefix gate above is already on this side of the
+        # resolution for the same reason.
+        raise deny(refusal[0], refusal[1])
 
     try:
         slot = _resolve_slot(state, target)
@@ -1158,7 +1388,8 @@ def authorize_target(
             "incognito and temporary sessions cannot control other sessions",
             "ephemeral_caller",
         )
-    if getattr(caller_slot, "linked_session_key", ""):
+    caller_link = getattr(caller_slot, "linked_session_key", "")
+    if caller_link and not caller_link.startswith(CRON_LINK_PREFIX):
         # The exfiltration direction, and the reason this is not merely the
         # mirror of the target-side check: a linked caller's own conversation is
         # a channel thread, so anything it reads lands in front of whoever is in
@@ -1168,6 +1399,11 @@ def authorize_target(
         # `CHANNEL_AGENT_BLOCKED_TOOLS` already blocks these tools for channel
         # AGENTS, but that guard keys on the agent identity; a linked SLOT is a
         # second route to the same surface and has to be closed on its own.
+        #
+        # A cron tab's link is exempt because it is not a channel: it names the
+        # job's own run transcript and republishes to nobody, so a read through it
+        # reaches no audience the caller did not already have. See
+        # CRON_LINK_PREFIX.
         raise deny(
             "channel-linked sessions cannot control other sessions",
             "linked_session_caller",
@@ -1185,14 +1421,31 @@ def authorize_target(
         # Workspaces are the memory boundary; reaching across one would let a
         # session act on work it cannot see.
         raise deny("target session belongs to a different workspace", "workspace_mismatch")
-    if _member_caller(caller_key) and getattr(slot, "_created_by", "") != caller_key:
-        # The member's automatic authorization reaches ONLY the workers it
-        # created itself (`created_by` is written at birth and rehydrated on
-        # restart). Always enforced for member callers — even when the global
-        # switch is on — so a member's reach never silently widens to the
-        # user's own sessions because of an unrelated opt-in.
+    if (
+        _caller_is_ownership_fenced(state, caller_key)
+        and getattr(slot, "_created_by", "") != caller_key
+    ):
+        # The fence every exempted caller class is bounded by, plus anything they
+        # created. It reaches ONLY the sessions the caller made itself
+        # (`created_by` is written at birth and rehydrated on restart). Always
+        # enforced -- even when the global switch is on -- so no exemption
+        # silently widens to the user's own sessions because of an unrelated
+        # opt-in.
+        #
+        # For a cron caller this is the whole of what replaced the old
+        # `unattended_caller` refusal: a scheduled job reaches the sessions it
+        # dispatched and nothing else. Fail-closed on an unowned slot, which is
+        # what an ownerless rehydrate looks like.
         raise deny(
-            "a crew member can only control worker sessions it created itself",
+            (
+                "a scheduled run can only control sessions it created itself"
+                if _cron_caller(caller_key)
+                else (
+                    "a crew member can only control worker sessions it created itself"
+                    if _member_caller(caller_key)
+                    else "an agent-created session can only control sessions it " "created itself"
+                )
+            ),
             "not_creator",
         )
 
