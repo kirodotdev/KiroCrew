@@ -1,8 +1,20 @@
-"""Structural contracts for promote-what-was-tested stable releases.
+"""Structural contracts for stable releases, in both of their modes.
 
 The executable manifest tests prove digest and archive handling. These tests
-pin the GitHub Actions wiring so a future simplification cannot route a bare
-stable tag back through source builds or accidentally attest rebuilt bytes.
+pin the GitHub Actions wiring for the two ways a bare stable tag can ship:
+
+* REBUILD (the default) builds fresh from the cleared commit on the stable
+  channel, so the shipped bytes carry a bare ``X.Y.Z``.
+* PROMOTE (opt in per version via the ``STABLE_PROMOTE_BYTES`` repo variable)
+  republishes the soaked candidate's exact bytes, so stable runs the identical
+  binary insiders validated -- at the cost of shipping that candidate's
+  ``-insider.N`` / ``rcN`` stamp, which nothing downstream can re-stamp.
+
+Rebuild is the default because the version a stable user sees must not carry a
+prerelease suffix, and promotion can never deliver that. The modes are mutually
+exclusive and every downstream "promotion or fresh?" choice reads
+``promote_mode``, never ``channel``, so neither mode can half-apply and leave
+one lane disagreeing with the rest of the release.
 """
 
 from __future__ import annotations
@@ -30,6 +42,9 @@ PROMOTION_ARTIFACT = "KiroCrew-notarized-stable-${{ needs.version.outputs.versio
 PROMOTION_ARTIFACT_FORMAT = (
     "format('KiroCrew-notarized-stable-{0}', needs.version.outputs.version)"
 )
+#: Every lane's ``promote`` input reads promote_mode, never channel, so an
+#: opt-in stable rebuild flips all of them together or none of them.
+PROMOTE_EXPRESSION = "${{ needs.version.outputs.promote_mode == 'true' }}"
 
 
 def _workflow(path: Path) -> dict:
@@ -54,13 +69,20 @@ def test_release_base_requires_exact_three_component_numeric_version() -> None:
 def test_stable_tag_resolves_candidate_and_never_enters_build_jobs() -> None:
     jobs = _workflow(RELEASE)["jobs"]
 
-    assert jobs["resolve-promotion"]["if"] == "needs.version.outputs.channel == 'stable'"
+    # promote_mode, not channel: a stable REBUILD also runs on the stable
+    # channel, and it must take the fresh/insider-shaped branch instead.
+    assert jobs["resolve-promotion"]["if"] == "needs.version.outputs.promote_mode == 'true'"
     assert jobs["resolve-promotion"]["permissions"] == {
         "actions": "read",
         "contents": "read",
     }
-    assert jobs["build-wheel"]["if"] == "needs.version.outputs.channel == 'insider'"
-    assert jobs["build-desktop"]["if"] == "needs.version.outputs.channel == 'insider'"
+    # The build lanes stay off the PROMOTION path. They gain exactly one extra
+    # entrance -- an opt-in rebuild -- and nothing else may widen them.
+    build_gate = (
+        "needs.version.outputs.channel == 'insider' || needs.version.outputs.rebuild == 'true'"
+    )
+    assert jobs["build-wheel"]["if"] == build_gate
+    assert jobs["build-desktop"]["if"] == build_gate
 
     resolve = _step(RELEASE, "resolve-promotion", "Resolve and verify immutable candidate bundle")[
         "run"
@@ -75,6 +97,77 @@ def test_stable_tag_resolves_candidate_and_never_enters_build_jobs() -> None:
     assert handoff["with"]["if-no-files-found"] == "error"
 
 
+def test_stable_rebuild_is_the_default_and_promotion_is_opt_in_per_version() -> None:
+    """Stable must not be able to ship an RC-stamped version by omission.
+
+    Promotion republishes the candidate's own bytes, which carry its ``rcN``
+    stamp in the wheel name, the feed, ``pip show`` and ``kirocrew --version``.
+    That mode still exists -- it is the only one where stable runs the exact
+    binary insiders validated -- but it cannot be the default, because then
+    forgetting a setting silently ships a prerelease-looking version to stable
+    users. So rebuild is what a bare stable tag does with no configuration, and
+    byte reuse has to NAME the base version being released (mirroring
+    ``STABLE_GATE_OVERRIDE``) so it cannot be left switched on.
+    """
+    jobs = _workflow(RELEASE)["jobs"]
+    outputs = jobs["version"]["outputs"]
+    assert outputs["rebuild"] == "${{ steps.channel.outputs.rebuild }}"
+    assert outputs["promote_mode"] == "${{ steps.channel.outputs.promote_mode }}"
+
+    derive = _step(RELEASE, "version", "Derive version + channel from tag")
+    assert derive["env"]["STABLE_PROMOTE_BYTES"] == "${{ vars.STABLE_PROMOTE_BYTES }}"
+    run = derive["run"]
+
+    # Byte reuse is scoped to one exact base version, and only on stable.
+    assert '[ "$CHANNEL" = "stable" ] && [ "${STABLE_PROMOTE_BYTES:-}" = "$BASE" ]' in run
+    # Rebuild is the fallthrough: stable-and-not-promoting. Mutually exclusive,
+    # and no stable tag can end up taking neither path.
+    assert '[ "$CHANNEL" = "stable" ] && [ "$PROMOTE_MODE" != "true" ]' in run
+    assert 'echo "rebuild=$REBUILD" >> "$GITHUB_OUTPUT"' in run
+    assert 'echo "promote_mode=$PROMOTE_MODE" >> "$GITHUB_OUTPUT"' in run
+    # The old spelling must not linger anywhere: a leftover STABLE_REBUILD would
+    # read as the switch that turns rebuild ON, when rebuild is now the default.
+    assert "STABLE_REBUILD" not in run
+
+    # A rebuild publishes freshly built artifacts, so it must NOT reach for the
+    # promotion handoff on any lane.
+    for name in ("publish-cli", "publish-docker"):
+        assert jobs[name]["with"]["wheel_artifact"].startswith(
+            "${{ needs.version.outputs.promote_mode == 'true' &&"
+        ), name
+    for lane in LINUX_LANES:
+        assert jobs[lane]["with"]["build_artifact"].startswith(
+            "${{ needs.version.outputs.promote_mode == 'true' &&"
+        ), lane
+
+
+def test_stable_gate_requires_the_three_version_files_to_declare_the_bare_version() -> None:
+    """The branch must agree with the tag, not just the artifact.
+
+    A rebuild re-stamps the version at build time, so the ARTIFACT is right even
+    when the release branch still declares the RC spelling. That is exactly how
+    the 0.4.0 promotion was nearly tagged on a commit still declaring
+    ``0.4.0-rc.9``: only the tag name was checked. This gate compares the tag to
+    all three declarations so a missing drop-RC-suffix PR fails the release
+    instead of leaving source installs on a stale version.
+    """
+    gate = _step(RELEASE, "stable-gate", "Verify stable publication preconditions")
+    assert gate["env"]["PROMOTE_MODE"] == "${{ needs.version.outputs.promote_mode }}"
+    run = gate["run"]
+    for path in (
+        "src/kiro_crew/__init__.py",
+        "pyproject.toml",
+        "website/electron/package.json",
+    ):
+        assert path in run, path
+    # Compared against the tag's own version, and a mismatch is a failure rather
+    # than a warning.
+    assert 'if [ "$declared" = "$VERSION" ]; then' in run
+    assert "Land the drop-RC-suffix PR on the release branch before tagging." in run
+    # Promotion is allowed but must announce the cost in the run log.
+    assert "will ship an RC-stamped version" in run
+
+
 def test_every_stable_lane_consumes_the_verified_handoff() -> None:
     jobs = _workflow(RELEASE)["jobs"]
     for name in ("publish-cli", *LINUX_LANES, "publish-docker", "sign-and-notarize"):
@@ -83,21 +176,21 @@ def test_every_stable_lane_consumes_the_verified_handoff() -> None:
         assert "needs.resolve-promotion.result == 'success'" in job["if"]
 
     assert PROMOTION_ARTIFACT_FORMAT in jobs["publish-cli"]["with"]["wheel_artifact"]
-    assert jobs["publish-cli"]["with"]["promote"].endswith(" == 'stable' }}")
+    assert jobs["publish-cli"]["with"]["promote"] == PROMOTE_EXPRESSION
 
     for lane in LINUX_LANES:
         assert PROMOTION_ARTIFACT_FORMAT in jobs[lane]["with"]["build_artifact"], lane
         assert "resolve-promotion.outputs.source_version" in jobs[lane]["with"]["version"], lane
-        assert jobs[lane]["with"]["promote"].endswith(" == 'stable' }}"), lane
+        assert jobs[lane]["with"]["promote"] == PROMOTE_EXPRESSION, lane
 
     docker_inputs = jobs["publish-docker"]["with"]
-    assert docker_inputs["promote"].endswith(" == 'stable' }}")
+    assert docker_inputs["promote"] == PROMOTE_EXPRESSION
     assert "resolve-promotion.outputs.docker_digest" in docker_inputs["promote_digest"]
 
     mac_inputs = jobs["sign-and-notarize"]["with"]
     assert PROMOTION_ARTIFACT_FORMAT in mac_inputs["promotion_artifact"]
     assert "resolve-promotion.outputs.source_version" in mac_inputs["version"]
-    assert mac_inputs["promote"].endswith(" == 'stable' }}")
+    assert mac_inputs["promote"] == PROMOTE_EXPRESSION
 
 
 def test_github_release_selects_explicit_versioned_macos_handoff() -> None:

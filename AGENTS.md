@@ -249,10 +249,15 @@ One logical change per commit.
 
 > **Releasing or promoting a version? Read `docs/build/release.md` first.** It is
 > the authority on the channel model, version stamping, and the **RC → stable
-> promotion runbook** — including why anything a stable user will see (a clean
-> version number, a finalized changelog) must be baked into the RC bytes *before
-> the RC is cut*, since promotion never rebuilds. This section covers only the
-> changelog rules.
+> runbook**. The one rule to carry in before reading it: **a stable release must
+> never ship a version number carrying a prerelease suffix.** Stable is therefore
+> BUILT fresh from the cleared commit under the bare `X.Y.Z`, not published by
+> reusing the candidate's bytes — those bytes are stamped from the prerelease tag
+> and nothing downstream can re-stamp them without invalidating the recorded
+> digests and macOS signatures. Byte-for-byte reuse survives as an escape hatch
+> (`vars.STABLE_PROMOTE_BYTES`, named per version) for when stable must run the
+> identical binary insiders validated, and its cost is exactly that RC-stamped
+> version. This section covers only the changelog rules.
 
 `CHANGELOG.md` is written **only when a version is bumped**, and everything
 already in it is immutable. Two halves enforce that: the
