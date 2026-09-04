@@ -3,15 +3,18 @@
 The executable manifest tests prove digest and archive handling. These tests
 pin the GitHub Actions wiring for the two ways a bare stable tag can ship:
 
-* PROMOTE (the default) republishes the soaked candidate's exact bytes, which
-  carry that candidate's ``-insider.N`` / ``rcN`` stamp.
-* REBUILD (opt in per version via the ``STABLE_REBUILD`` repo variable) builds
-  fresh from source on the stable channel so the shipped bytes carry a bare
-  ``X.Y.Z``, which promotion can never produce because it never re-stamps.
+* REBUILD (the default) builds fresh from the cleared commit on the stable
+  channel, so the shipped bytes carry a bare ``X.Y.Z``.
+* PROMOTE (opt in per version via the ``STABLE_PROMOTE_BYTES`` repo variable)
+  republishes the soaked candidate's exact bytes, so stable runs the identical
+  binary insiders validated -- at the cost of shipping that candidate's
+  ``-insider.N`` / ``rcN`` stamp, which nothing downstream can re-stamp.
 
-The modes are mutually exclusive and every downstream "promotion or fresh?"
-choice reads ``promote_mode``, never ``channel``, so a rebuild cannot half-apply
-and leave one lane republishing candidate bytes into a rebuilt release.
+Rebuild is the default because the version a stable user sees must not carry a
+prerelease suffix, and promotion can never deliver that. The modes are mutually
+exclusive and every downstream "promotion or fresh?" choice reads
+``promote_mode``, never ``channel``, so neither mode can half-apply and leave
+one lane disagreeing with the rest of the release.
 """
 
 from __future__ import annotations
@@ -94,14 +97,17 @@ def test_stable_tag_resolves_candidate_and_never_enters_build_jobs() -> None:
     assert handoff["with"]["if-no-files-found"] == "error"
 
 
-def test_stable_rebuild_is_opt_in_per_version_and_excludes_promotion() -> None:
-    """A rebuild must be impossible to enable by accident, or for the wrong version.
+def test_stable_rebuild_is_the_default_and_promotion_is_opt_in_per_version() -> None:
+    """Stable must not be able to ship an RC-stamped version by omission.
 
-    Shipping rebuilt bytes to stable gives up the promote-what-was-tested
-    guarantee that stable runs byte-identical to what insiders received, so it
-    is deliberately not a default and not a boolean: the repo variable has to
-    NAME the base version being released. That is what stops it from being left
-    switched on and silently rebuilding every future stable tag.
+    Promotion republishes the candidate's own bytes, which carry its ``rcN``
+    stamp in the wheel name, the feed, ``pip show`` and ``kirocrew --version``.
+    That mode still exists -- it is the only one where stable runs the exact
+    binary insiders validated -- but it cannot be the default, because then
+    forgetting a setting silently ships a prerelease-looking version to stable
+    users. So rebuild is what a bare stable tag does with no configuration, and
+    byte reuse has to NAME the base version being released (mirroring
+    ``STABLE_GATE_OVERRIDE``) so it cannot be left switched on.
     """
     jobs = _workflow(RELEASE)["jobs"]
     outputs = jobs["version"]["outputs"]
@@ -109,16 +115,19 @@ def test_stable_rebuild_is_opt_in_per_version_and_excludes_promotion() -> None:
     assert outputs["promote_mode"] == "${{ steps.channel.outputs.promote_mode }}"
 
     derive = _step(RELEASE, "version", "Derive version + channel from tag")
-    assert derive["env"]["STABLE_REBUILD"] == "${{ vars.STABLE_REBUILD }}"
+    assert derive["env"]["STABLE_PROMOTE_BYTES"] == "${{ vars.STABLE_PROMOTE_BYTES }}"
     run = derive["run"]
 
-    # Scoped to one exact base version, and only ever on the stable channel.
-    assert '[ "$CHANNEL" = "stable" ] && [ "${STABLE_REBUILD:-}" = "$BASE" ]' in run
-    # Mutually exclusive: promote_mode is stable-and-not-rebuild, so no tag can
-    # take both paths and no tag can take neither.
-    assert '[ "$CHANNEL" = "stable" ] && [ "$REBUILD" != "true" ]' in run
+    # Byte reuse is scoped to one exact base version, and only on stable.
+    assert '[ "$CHANNEL" = "stable" ] && [ "${STABLE_PROMOTE_BYTES:-}" = "$BASE" ]' in run
+    # Rebuild is the fallthrough: stable-and-not-promoting. Mutually exclusive,
+    # and no stable tag can end up taking neither path.
+    assert '[ "$CHANNEL" = "stable" ] && [ "$PROMOTE_MODE" != "true" ]' in run
     assert 'echo "rebuild=$REBUILD" >> "$GITHUB_OUTPUT"' in run
     assert 'echo "promote_mode=$PROMOTE_MODE" >> "$GITHUB_OUTPUT"' in run
+    # The old spelling must not linger anywhere: a leftover STABLE_REBUILD would
+    # read as the switch that turns rebuild ON, when rebuild is now the default.
+    assert "STABLE_REBUILD" not in run
 
     # A rebuild publishes freshly built artifacts, so it must NOT reach for the
     # promotion handoff on any lane.
@@ -131,11 +140,32 @@ def test_stable_rebuild_is_opt_in_per_version_and_excludes_promotion() -> None:
             "${{ needs.version.outputs.promote_mode == 'true' &&"
         ), lane
 
-    # The soak evidence check is NOT waived for a rebuild: stable still only
-    # ships a commit that already produced a successful prerelease run, so what
-    # a rebuild gives up is byte identity, never the soak itself.
-    gate = _step(RELEASE, "stable-gate", "Verify stable publication preconditions")["run"]
-    assert "startswith(\"v\" + env.VERSION" in gate
+
+def test_stable_gate_requires_the_three_version_files_to_declare_the_bare_version() -> None:
+    """The branch must agree with the tag, not just the artifact.
+
+    A rebuild re-stamps the version at build time, so the ARTIFACT is right even
+    when the release branch still declares the RC spelling. That is exactly how
+    the 0.4.0 promotion was nearly tagged on a commit still declaring
+    ``0.4.0-rc.9``: only the tag name was checked. This gate compares the tag to
+    all three declarations so a missing drop-RC-suffix PR fails the release
+    instead of leaving source installs on a stale version.
+    """
+    gate = _step(RELEASE, "stable-gate", "Verify stable publication preconditions")
+    assert gate["env"]["PROMOTE_MODE"] == "${{ needs.version.outputs.promote_mode }}"
+    run = gate["run"]
+    for path in (
+        "src/kiro_crew/__init__.py",
+        "pyproject.toml",
+        "website/electron/package.json",
+    ):
+        assert path in run, path
+    # Compared against the tag's own version, and a mismatch is a failure rather
+    # than a warning.
+    assert 'if [ "$declared" = "$VERSION" ]; then' in run
+    assert "Land the drop-RC-suffix PR on the release branch before tagging." in run
+    # Promotion is allowed but must announce the cost in the run log.
+    assert "will ship an RC-stamped version" in run
 
 
 def test_every_stable_lane_consumes_the_verified_handoff() -> None:

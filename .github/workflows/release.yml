@@ -5,10 +5,13 @@ on:
     tags: ["v*"]
 
 # Prerelease tags build, sign, publish, and record one immutable promotion
-# bundle. A bare stable tag never rebuilds source: it resolves the newest
-# successful prerelease run for this exact commit/release line, verifies the
-# GitHub artifact archive by its API-recorded digest, and promotes those exact
-# bytes. Reusable workflows own the per-lane publish details.
+# bundle. A bare stable tag REBUILDS that same commit under the bare version, so
+# the shipped bytes advertise "X.Y.Z" rather than the candidate's stamp; it still
+# requires a successful prerelease run for this exact commit, so stable only ever
+# ships code that soaked. Setting vars.STABLE_PROMOTE_BYTES to that base version
+# switches to republishing the candidate's exact bytes instead, at the cost of
+# shipping its prerelease version. Reusable workflows own the per-lane publish
+# details.
 
 # Serialize release runs: insider/stable feed writes are last-writer-wins;
 # two tags pushed close together must publish in order or the channel feed
@@ -32,16 +35,16 @@ jobs:
       base_version: ${{ steps.channel.outputs.base_version }}
       channel: ${{ steps.channel.outputs.channel }}
       wheel_version: ${{ steps.channel.outputs.wheel_version }}
-      # rebuild: "true" only when this is a stable tag AND the opt-in repo
-      # variable STABLE_REBUILD names exactly this base version. Then stable is
-      # BUILT fresh from source (like insider, but on the stable channel with a
-      # bare version) instead of PROMOTED, so the shipped bytes carry the clean
-      # "X.Y.Z" stamp rather than the candidate's "-insider.N". Default stable
-      # (variable unset or mismatched) is unchanged: promotion of soaked bytes.
+      # rebuild: "true" for an ordinary stable release. Stable is BUILT fresh
+      # from the cleared commit under the bare "X.Y.Z" the tag names, because
+      # republishing the candidate's bytes would ship its "-insider.N"/"rcN"
+      # stamp to stable users and nothing downstream can re-stamp them.
       rebuild: ${{ steps.channel.outputs.rebuild }}
-      # promote_mode: "true" for the ordinary stable path (promote soaked bytes).
-      # Every downstream "stable ? promotion : fresh" choice keys off THIS, so a
-      # rebuild takes the fresh/insider-shaped branch on the stable channel.
+      # promote_mode: "true" only when STABLE_PROMOTE_BYTES names this exact base
+      # version -- the escape hatch that republishes the candidate's own bytes so
+      # stable runs the exact binary insiders validated, at the cost of an
+      # RC-stamped version number. Every downstream "promotion or fresh?" choice
+      # keys off THIS, never off channel, so the two modes cannot half-apply.
       promote_mode: ${{ steps.channel.outputs.promote_mode }}
     steps:
       - name: Derive version + channel from tag
@@ -50,7 +53,7 @@ jobs:
           # Scoped to ONE version on purpose (mirrors STABLE_GATE_OVERRIDE): it
           # must equal the base being released, so it cannot be left switched on
           # for every future stable tag.
-          STABLE_REBUILD: ${{ vars.STABLE_REBUILD }}
+          STABLE_PROMOTE_BYTES: ${{ vars.STABLE_PROMOTE_BYTES }}
         run: |
           set -euo pipefail
           VERSION="${GITHUB_REF_NAME#v}"
@@ -86,20 +89,27 @@ jobs:
           echo "channel=$CHANNEL" >> "$GITHUB_OUTPUT"
           echo "wheel_version=$WHEEL_VERSION" >> "$GITHUB_OUTPUT"
 
-          # Opt-in stable REBUILD lane. A bare stable tag normally promotes the
-          # soaked prerelease bytes (which carry the candidate's -insider.N
-          # stamp). When STABLE_REBUILD names this exact base version, stable is
-          # instead built fresh from source so the shipped app advertises the
-          # clean "$BASE" -- the only way a promoted client can display a bare
-          # stable version, since promotion never re-stamps. Everything else on
-          # the stable channel keys off promote_mode.
-          REBUILD="false"
-          if [ "$CHANNEL" = "stable" ] && [ "${STABLE_REBUILD:-}" = "$BASE" ]; then
-            REBUILD="true"
-          fi
+          # A stable release ships a BARE "$BASE" version, so it REBUILDS from
+          # the cleared commit by default. Promotion -- republishing the
+          # candidate's own bytes -- cannot do that: those bytes were stamped
+          # from the prerelease tag, so a promoted stable ships "0.5.0rc9" in
+          # the wheel name, the feed, `pip show` and `kirocrew --version`, and
+          # nothing downstream can re-stamp them without invalidating the
+          # recorded digests and macOS signatures.
+          #
+          # Byte-for-byte promotion stays reachable, because it is the only mode
+          # that guarantees stable runs the exact binary insiders validated. It
+          # is an escape hatch rather than the default precisely because that
+          # guarantee costs an RC-stamped version number: it must NAME the base
+          # version being released (mirroring STABLE_GATE_OVERRIDE), so it
+          # cannot be left switched on and silently stamp every later release.
           PROMOTE_MODE="false"
-          if [ "$CHANNEL" = "stable" ] && [ "$REBUILD" != "true" ]; then
+          if [ "$CHANNEL" = "stable" ] && [ "${STABLE_PROMOTE_BYTES:-}" = "$BASE" ]; then
             PROMOTE_MODE="true"
+          fi
+          REBUILD="false"
+          if [ "$CHANNEL" = "stable" ] && [ "$PROMOTE_MODE" != "true" ]; then
+            REBUILD="true"
           fi
           echo "rebuild=$REBUILD" >> "$GITHUB_OUTPUT"
           echo "promote_mode=$PROMOTE_MODE" >> "$GITHUB_OUTPUT"
@@ -250,6 +260,9 @@ jobs:
         env:
           CHANNEL: ${{ needs.version.outputs.channel }}
           VERSION: ${{ needs.version.outputs.version }}
+          # Which of the two stable modes this run took, so the gate can say in
+          # the log whether the shipped bytes will carry a bare version.
+          PROMOTE_MODE: ${{ needs.version.outputs.promote_mode }}
           # Scoped to ONE version on purpose: it must equal the version being
           # released, so it cannot be left switched on for every future tag.
           OVERRIDE: ${{ vars.STABLE_GATE_OVERRIDE }}
@@ -325,8 +338,53 @@ jobs:
             fi
           fi
 
+          # ── 3. Source declares the BARE stable version ──────────────────
+          # A stable release must declare "$VERSION" in all three version files,
+          # with no RC spelling left over from the line it soaked under. This is
+          # the 0.4.0 near-miss made mechanical: that promotion was nearly tagged
+          # on a commit still declaring `0.4.0-rc.9`, because only the tag name
+          # was checked and nothing compared the declarations to it.
+          #
+          # It matters even though a rebuild re-stamps these files at build time.
+          # The stamp makes the ARTIFACT right; this check makes the BRANCH right.
+          # A mismatch means the drop-RC-suffix PR the runbook requires never
+          # landed, so a source install, a `pip install -e .` and every later
+          # RC on this branch still advertise the stale spelling.
+          for spec in \
+            "src/kiro_crew/__init__.py:^__version__ = \"\\(.*\\)\"$" \
+            "pyproject.toml:^version = \"\\(.*\\)\"$" \
+            "website/electron/package.json:^  \"version\": \"\\(.*\\)\",$"
+          do
+            file="${spec%%:*}"
+            pattern="${spec#*:}"
+            # Guarded rather than left to `set -e`: an absent file would abort
+            # the script on sed's own error, skipping both the failure summary
+            # and the override path -- the same trap the tag lookup above avoids.
+            if [ ! -f "$file" ]; then
+              echo "::error::$file is missing from the tagged tree, so its version declaration cannot be verified."
+              failures=$((failures + 1))
+              continue
+            fi
+            declared="$(sed -n "s/${pattern}/\\1/p" "$file" | head -n 1)"
+            if [ "$declared" = "$VERSION" ]; then
+              echo "version stamp: $file declares $VERSION"
+            else
+              echo "::error::$file declares '${declared:-<no version line matched>}', not the bare '$VERSION' this stable tag names. Land the drop-RC-suffix PR on the release branch before tagging."
+              failures=$((failures + 1))
+            fi
+          done
+
+          # Not a failure, but it must be visible in the log which mode shipped:
+          # promotion republishes the candidate's bytes, so a promoted stable
+          # advertises that candidate's RC-stamped version to stable users.
+          if [ "$PROMOTE_MODE" = "true" ]; then
+            echo "::warning::STABLE_PROMOTE_BYTES names $VERSION, so this release republishes the candidate's bytes and will ship an RC-stamped version (wheel name, feed, pip show, kirocrew --version). Unset the variable to rebuild and ship a bare $VERSION instead."
+          else
+            echo "mode: rebuilding from source so the shipped bytes carry the bare $VERSION"
+          fi
+
           if [ "$failures" -eq 0 ]; then
-            echo "stable gate: both preconditions satisfied for $VERSION"
+            echo "stable gate: all preconditions satisfied for $VERSION"
             exit 0
           fi
 
