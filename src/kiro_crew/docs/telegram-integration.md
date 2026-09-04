@@ -65,9 +65,12 @@ At startup the bot publishes the menu commands from `COMMAND_SPEC` through `setM
 - `/model` (or `/models`) — pick the model from an inline-button list. Button-only on purpose:
   the choices are what this account's backend actually advertised, so there is
   no model name to guess and no typo to reject mid-conversation. The pick is
-  applied to the running session in place when one is idle, and is remembered
-  for the conversation's later sessions (it outlives `/new`, and is held in
-  memory, so a gateway restart returns to the configured default).
+  applied to the running session in place when one is idle. In a native Telegram
+  conversation it is also remembered for later sessions (it outlives `/new`, and
+  is held in memory, so a gateway restart returns to the configured default). In
+  a resumed dashboard session it changes only that session, and the button is
+  refused if `/new`, `/unlink`, or another binding change moved the chat before
+  the press.
 - `/yolo [on|off|renew]` — report or change the auto-approve grant. This is the
   SAME process-wide grant the dashboard toggle and Slack's `/kirocrew yolo`
   drive, so it expires on one clock everywhere. There is deliberately no
@@ -92,16 +95,18 @@ At startup the bot publishes the menu commands from `COMMAND_SPEC` through `setM
 - `/status` — uptime, message counts, tool decisions, sessions
 - `/ping` — answers `pong`. Answered by the gateway itself, never by the model,
   so it still works when the thing that is wedged is the model.
-- `/sessions [search words]` (or `/session [search words]`) — with no words, the ten
-  most recent conversations, newest first, with a mark for whichever is live. Add
-  words to use the same title-and-message-content ranking as dashboard history search;
-  incognito and temporary transcripts stay excluded. Results remain read-only and
-  open through `/kirocrew dashboard`. **Direct message only**, like `/kirocrew
-  dashboard`: either form can name conversations from across the host, and a forum
-  Topic is readable by the whole supergroup, so answering there would show titles to
-  members who are not on `allowed_user_ids` at all. In a Topic it refuses and points
-  you to a DM. It also refuses when `allowed_user_ids` contains several people,
-  because the bot cannot tell which one owns the host-wide history.
+- `/session [search words]` (or `/sessions [search words]`) — with no words,
+  show the ten most recent eligible conversations; with words, use the same ranked
+  title-and-message-content search as dashboard history. Results are inline buttons:
+  tap one and ordinary messages in this DM immediately continue that dashboard
+  conversation. The bot replaces its outbound-only native mirror automatically, so
+  no preparatory `/unlink` is required. `/new` leaves the resumed session and starts
+  a fresh Telegram conversation; `/unlink` returns to the existing Telegram
+  conversation. Incognito and temporary transcripts stay excluded. **Direct message
+  only**: a forum Topic is readable by the whole supergroup, so listing or resuming
+  there would expose host-wide titles to members outside `allowed_user_ids`. It also
+  refuses when `allowed_user_ids` contains several people, because the bot cannot
+  tell which one owns the host-wide history.
 - `/title <text>` — rename this conversation, so its dashboard sidebar row reads
   as something other than the first forty characters you happened to type.
 - `/cron` (or `/crons`) `list | pause <id> | resume <id> | remove <id>|all` — manage scheduled

@@ -64,7 +64,7 @@ Slack's transport path is gated behind the `messaging.use_transport` config flag
 | `messaging/session_trust.py` | The per-session tool-Trust grant store: `is_session_trusted`, `add_trusted_session(key, sessions=)`, `clear_trusted_sessions`. In memory only, so an ad-hoc auto-approve grant dies with the process. The grant has TWO halves and both are load-bearing: the in-memory mapping the driver reads, and the session's approval policy set to `auto`, because a spawned subagent reads its parent's policy and never this mapping. So it is a `key -> SessionManager` MAPPING rather than a set, which is what lets `clear_trusted_sessions` undo the policy half too (back to `""`, the same value the dashboard's untrust toggle writes) without its caller having to hand a manager back. **Every mutation goes through the API**: reaching the container directly is how a revoke came to drop one half and leave subagents trusted, and a mapping has no `.add`, so a half-grant is not expressible either. Named `session_trust`, not `trust`, so it cannot be confused with a connection-admission roster: this grant is about what ONE session's tools may skip, not about which principals may attach. Consumed only through `TurnDriver`'s `auto_approve_session` predicate, which runs BEHIND the keystone, governance and deny-list gates, so a hard DENY still refuses |
 | `messaging/link.py` | **Layer 3** — session-key namespacing (`session_key`/`canonical_key`/`legacy_key`/`is_legacy_slack_key`) + `ChannelLink` + DM-scope key derivation / `should_rotate_generation`, plus the in-channel `/link` ⇄ `/unlink` pair (`rebind_conversation_location` / `release_conversation_location`) |
 | `messaging/conversation.py` | `ConversationState` — per-conversation rotating *generation* bookkeeping (advanced by `/new` and idle/daily reset), seeded from the persisted session map |
-| `messaging/session_resume.py` | **Layer 3** — the channel-neutral half of dashboard-session resume. `SessionResumeController` consumes a bound `ResumeSurface` (including its exact durable expectation identity, which may be narrower than `ChannelLink.channel_id`) and owns the complete SHOW-PICKER flow (eligibility/search, audit, nonce/TTL/owner/message scoping, and registration only after a successful post) plus the CHOOSE/BIND transaction (history existence, conflict checks around the awaited settlement, durable expectation before success, atomic inbound claim, lost-claim/storage outcomes, dashboard push, and audit). `SessionBinder` owns inbound routing, settlement, and release. Discord and Teams retain only address/identity derivation, widgets/cards, exact wording and display redaction, callback parsing, and channel-local replay. |
+| `messaging/session_resume.py` | **Layer 3** — the channel-neutral half of dashboard-session resume. `SessionResumeController` consumes a bound `ResumeSurface` (including its exact durable expectation identity, which may be narrower than `ChannelLink.channel_id`) and owns the complete SHOW-PICKER flow (eligibility/search, audit, nonce/TTL/owner/message scoping, and registration only after a successful post) plus the CHOOSE/BIND transaction (history existence, conflict checks around the awaited settlement, durable expectation before success, atomic inbound claim, lost-claim/storage outcomes, dashboard push, and audit). `SessionBinder` owns inbound routing, settlement, and release. Discord, Telegram, and Teams retain only address/identity derivation, widgets/cards, exact wording and display redaction, callback parsing, and channel-local replay. |
 | `messaging/resume_expectation.py` | The durable conversation-keyed shadow of those bindings, ONE file per channel (`store_filename`), because a Discord channel id and a Teams conversation id are unrelated address spaces |
 | `teams/service_urls.py` | `ServiceUrlStore` — durable `conversation_id -> serviceUrl` (plus the authorized identity owning each conversation), because the Bot Framework offers no lookup and a lost reference leaves every proactive path with nowhere to send. `forget` drops a route the Connector permanently refuses |
 | `teams/cards.py` | Adaptive Card construction + `parse_submit` — the strict, total validation of an untrusted card payload. Mints no nonce of its own: every clickable widget's token comes from `messaging.renderer.new_approval_nonce` |
@@ -84,6 +84,7 @@ Channel-neutral inbound/outbound contract. A new channel = implement this interf
 - **Lifecycle (default no-op, override as needed)**: `connect()` (lazy-import client libs HERE), `maintain()` (poll/heartbeat), `disconnect()`.
 - **Inbound adapter (abstract)**: `receive(raw_envelope)` (ack → filter → authorize → normalize → dispatch) and `authorize(msg) -> bool`. `authorize` MUST be **deny-by-default** — an unconfigured transport authorizes nobody.
 - **Outbound authorization**: `may_send_to(conversation_id, thread_id=None, *, principal="") -> bool` re-decides recipient authorization for a **proactive** send. `authorize` gates a turn the user drove; this gates the messages nobody asked for (a cron result, a compaction notice, a subagent completion), which resolve their destination from a *persisted* `ChannelLink`. A link records a conversation but **not the principal that authorized it**, so without this a recipient removed from a channel's allow-list kept receiving proactive traffic after a restart: the roster changed and nothing re-read it. Only the transport can answer, because the roster holds principals while the link holds a conversation id and whether those are the same string is a per-platform fact. `principal` carries the peer's platform id when the session key names one, which is what lets a transport with an opaque conversation id (Discord, Webex) reach its roster at all; empty means the key names no single person (a room route, a unified bucket), NOT that nobody is authorized. MUST stay **synchronous and in-memory**, because it runs on every proactive send: a network round trip there is unbounded work on the send path, and a check that can time out is a check that fails open under load. See § Proactive sends for where it is enforced and which channels answer how.
+- **Resume-target authorization**: `may_resume_from(conversation_id, thread_id=None) -> bool` applies target- and roster-specific ownership after `supports_session_resume` proves the transport has a correct inbound resolver. The default follows the capability. Telegram narrows it to exactly one configured operator's private DM, so a multi-user allow-list can still receive an outbound dashboard mirror without granting either user inbound control of that dashboard session. The dashboard asks this once after resolving the configured target and threads the answer unchanged through both its occupancy precheck and binding write. It is synchronous and in-memory for the same reason as `may_send_to`.
 
 ### `TransportCapabilities`
 
@@ -849,6 +850,53 @@ Four properties are load-bearing:
   `test_channel_transport_outbound_authz.py` requires every shipped transport to
   override the method rather than inherit the permissive ABC default, so a new
   channel cannot skip the question.
+
+## Telegram dashboard-session resume
+
+A private Telegram DM can take over an existing dashboard conversation without
+opening the dashboard:
+
+- `/session <words>` (plural `/sessions` remains an alias) runs the dashboard's
+  ranked title-and-content search and posts up to ten owner-scoped inline buttons.
+  The command is exposed in Telegram's command menu under its singular spelling.
+- A button carries only a bounded nonce and index. The shared
+  `SessionResumeController` rechecks owner, picker, message, history existence and
+  binding conflicts before marking the selected session's `ChannelLink` as
+  `accepts_inbound=True`. Telegram declares `supports_session_resume=True` because
+  every ordinary inbound message resolves that binding before choosing a native
+  Telegram session key.
+- The common native Telegram session may already hold an **outbound-only** mirror
+  to the DM. Selection replaces that mirror transactionally so the first click is
+  sufficient; a live inbound owner or a selected session active on another channel
+  is never displaced. A failed claim restores the outbound mirror.
+- Session-scoped commands (`/stop`, `/compact`, `/model`, `/title`, `/spawn`,
+  `/task`, and privacy modifiers) use the resolved dashboard key. `/link` also
+  resolves first, but refuses while a resumed session owns the conversation and
+  directs the user to `/unlink`. Recovery and host-level commands stay native so
+  a stale or ambiguous binding cannot block `/new`, `/unlink`, `/session`, `/help`,
+  `/status`, `/ping`, `/cron`, `/yolo`, `/kirocrew dashboard`, `/voice`, or
+  `/agent`.
+- `/new` and `/unlink` call `SessionBinder.release`, which atomically clears the
+  inbound link and retires its durable expectation. `/new` then advances the native
+  Telegram generation; `/unlink` returns to the existing native conversation. A
+  durability failure changes nothing and is reported instead of silently splitting
+  history.
+- A message queued while a native Telegram turn is busy keeps native affinity when
+  it drains (`interpret_commands=False` skips resume resolution). A `/session` bind
+  created after enqueue therefore cannot redirect already-queued text into the
+  selected dashboard conversation. Busy resumed sessions refuse a second message
+  instead of queuing it, so the exception cannot strand resumed work.
+- Every `/model` picker records its exact target session and re-resolves the current
+  binding on press. `/new`, `/unlink`, an agent switch, or any rebind invalidates the
+  old picker before `session/set_model`; only a native picker stores the route-level
+  preference used by later Telegram generations.
+- Listing and selection are limited to exactly one configured operator in a private
+  DM. Dashboard-created Telegram links apply the same rule through
+  `may_resume_from`: with several allowed users they remain outbound-only. The
+  dispatcher rechecks ownership on every inbound route and callback, so a binding
+  written under an earlier single-owner configuration cannot survive a roster
+  change as an authorization bypass. Forum Topics cannot enumerate or resume
+  dashboard history.
 
 ## Telegram forum topics (per-Topic sessions)
 
@@ -1986,14 +2034,12 @@ worse than one clean bubble followed by its pictures. The picture send is
   text bubble has already landed, so re-posting the source would deliver the
   answer twice. The markup is rebuilt from each `OutboundFile`'s own alt and path
   and sent as one short follow-up, display-redacted.
-- **Two gates, one of them not yet reachable.** `files_outbound` is read before
-  extracting. The second is `messaging/upload_gate.uploads_restricted`, which
-  denies an incognito or temporary dashboard session — and today it cannot fire
-  on this channel: it keys on a `dashboard:` session key, and Telegram derives
-  its key from the route alone (`supports_session_resume` is False), so no
-  Telegram turn ever carries one. It is wired anyway, because the gate is shared
-  with Discord where it DOES fire, and because the day inbound resume lands here
-  the ceiling has to already be in the path rather than be remembered.
+- **Two gates, both reachable.** `files_outbound` is read before extracting.
+  The second is `messaging/upload_gate.uploads_restricted`, which denies an
+  incognito or temporary dashboard session. Telegram session resume can carry a
+  `dashboard:` key, so the gate applies to those turns exactly as it does on
+  Discord; native Telegram session keys remain outside that restricted-dashboard
+  branch.
 
 ### Telegram's display-form redaction
 

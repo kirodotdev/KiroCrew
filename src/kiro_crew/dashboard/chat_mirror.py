@@ -97,23 +97,32 @@ async def api_channel_targets(request: web.Request) -> web.Response:
     return web.json_response(targets)
 
 
-def _resumes_inbound(transport: Any) -> bool:
-    """Does a binding on this transport actually route replies back to the session?
+def _resumes_inbound(
+    transport: Any,
+    conversation_id: str,
+    thread_id: str | None,
+) -> bool:
+    """Whether this resolved target may route replies back to the session.
 
-    Only a transport whose inbound path resolves the mirror binding may claim
-    ``accepts_inbound``. Discord's dispatcher looks the conversation up; the
-    others build a session key from the route and never consult the binding, so
-    a reply there runs in a SEPARATE session no matter what the binding says.
-    Claiming inbound for them would not make replies come back — it would only
-    make the dashboard say they do, and the slot row would report
-    ``direction: both`` on a promise nothing keeps.
-
-    Reads the capability rather than testing ``channel_type == "discord"``, so a
-    transport earns the claim by declaring it next to its own inbound path. The
-    ``getattr`` chain is the conservative branch: a transport with no capability
-    object at all degrades to outbound-only.
+    The capability proves the transport has an inbound binding resolver. The
+    transport's target hook then applies roster- and topology-specific ownership
+    policy; Telegram, for example, permits only its single configured owner DM.
+    A missing hook keeps legacy test doubles capability-driven, while a real hook
+    error fails closed to outbound-only.
     """
-    return bool(getattr(getattr(transport, "capabilities", None), "supports_session_resume", False))
+    capable = bool(
+        getattr(getattr(transport, "capabilities", None), "supports_session_resume", False)
+    )
+    if not capable:
+        return False
+    check = getattr(transport, "may_resume_from", None)
+    if not callable(check):
+        return True
+    try:
+        return bool(check(conversation_id, thread_id))
+    except Exception:
+        logger.warning("mirror-link: target resume policy failed", exc_info=True)
+        return False
 
 
 async def api_chat_slot_mirror_link(request: web.Request) -> web.Response:
@@ -290,6 +299,7 @@ async def api_chat_slot_mirror_link(request: web.Request) -> web.Response:
         channel_id=conversation_id,
         thread_id=thread_id,
     )
+    accepts_inbound = _resumes_inbound(transport, conversation_id, thread_id)
 
     # Refuse an occupied conversation BEFORE anything is posted into it. The
     # authoritative check is the atomic one inside ``set_mirror_link`` at the
@@ -314,7 +324,7 @@ async def api_chat_slot_mirror_link(request: web.Request) -> web.Response:
     # refusal would look like a real conflict. Only an actual list is an answer.
     try:
         rivals = state.sessions.mirror_claim_blockers(
-            session_key, link, accepts_inbound=_resumes_inbound(transport)
+            session_key, link, accepts_inbound=accepts_inbound
         )
     except Exception:
         logger.debug("mirror-link: occupancy precheck unavailable", exc_info=True)
@@ -504,7 +514,7 @@ async def api_chat_slot_mirror_link(request: web.Request) -> web.Response:
                 # writes an outbound-only binding, ``resumed_session`` skips it,
                 # and the user's reply starts a brand-new session with none of
                 # this transcript.
-                accepts_inbound=_resumes_inbound(transport),
+                accepts_inbound=accepts_inbound,
             )
     except ConversationOwnershipConflict:
         # The precheck above covers the common case; this is the genuine race —

@@ -34,7 +34,11 @@ from dataclasses import dataclass
 from typing import Any, Protocol
 
 from kiro_crew.history import is_incognito_transcript, needles_match_text, parse_search_query
-from kiro_crew.messaging.link import UNBIND_REASON_USER_UNLINK, ChannelLink
+from kiro_crew.messaging.link import (
+    UNBIND_REASON_ORIGIN_REBIND,
+    UNBIND_REASON_USER_UNLINK,
+    ChannelLink,
+)
 from kiro_crew.messaging.renderer import new_approval_nonce
 from kiro_crew.messaging.resume_expectation import (
     ExpectationStoreError,
@@ -69,6 +73,30 @@ SETTLE_ADOPT = "adopt"  # link moved; adopt the new session
 #: Re-decide budget for ``route``. A conversation whose owner keeps changing under us
 #: is refused rather than routed on a guess.
 _MAX_ROUTE_ATTEMPTS = 3
+
+#: Dashboard metadata values that delegate agent selection to the current surface.
+#: They are not kiro-cli agent names and must never reach ``session/set_mode``.
+_AGENT_SENTINELS = frozenset({"default", "auto"})
+
+
+def persisted_session_agent(conv_log: Any | None, session_key: str) -> str:
+    """Return a resumed session's recorded agent, or ``""`` to use the route agent.
+
+    Metadata access is blocking; async callers run this helper off the event loop. Missing,
+    unreadable, blank, and dashboard-sentinel values all degrade to the caller's route agent
+    rather than failing the turn or forwarding a non-agent mode to ACP.
+    """
+    if conv_log is None:
+        return ""
+    try:
+        meta = conv_log.get_metadata(session_key)
+    except Exception:
+        logger.debug("resume: could not read persisted agent for %s", session_key, exc_info=True)
+        return ""
+    recorded = str((meta or {}).get("agent") or "").strip()
+    if recorded.casefold() in _AGENT_SENTINELS:
+        return ""
+    return recorded
 
 
 class ResumeReleaseError(RuntimeError):
@@ -782,6 +810,7 @@ class SessionResumeController:
         nonce: str,
         index: int,
         link: ChannelLink,
+        replace_outbound_keys: frozenset[str] = frozenset(),
     ) -> SessionChoice | None:
         """Consume one picker press and atomically claim its inbound binding."""
         if not is_owner:
@@ -806,13 +835,32 @@ class SessionResumeController:
             return None
 
         async with self.binder.lock:
-            conflict = self.binder.binding_conflict(choice.key, choice.title, link)
+
+            def conflict_and_displaced() -> tuple[str | None, list[str]]:
+                conflict = self.binder.binding_conflict(choice.key, choice.title, link)
+                if conflict is None or not replace_outbound_keys:
+                    return conflict, []
+                existing = self.sessions.get_mirror_link(choice.key)
+                inbound = self.sessions.find_mirror_sessions(link, inbound_only=True)
+                occupants = [
+                    key for key in self.sessions.find_mirror_sessions(link) if key != choice.key
+                ]
+                # A channel adapter may identify its own native session generations
+                # as replaceable. Every occupant must be in that explicit set: an
+                # unrelated dashboard mirror is deliberate user state and cannot be
+                # inferred from sharing the same destination.
+                replaceable = occupants and set(occupants) <= replace_outbound_keys
+                if (existing is None or existing == link) and not inbound and replaceable:
+                    return None, occupants
+                return conflict, []
+
+            conflict, displaced = conflict_and_displaced()
             if conflict is not None:
                 await surface.settle_picker(message_id, conflict)
                 return None
 
             try:
-                await self.binder.expectations.record(
+                expectation = await self.binder.expectations.record(
                     surface.expectation_id,
                     choice.key,
                     choice.title,
@@ -830,26 +878,82 @@ class SessionResumeController:
                 await surface.settle_picker(message_id, surface.choice_expectation_failed)
                 return None
 
+            async def retire_failed_expectation() -> None:
+                try:
+                    await self.binder.expectations.retire_if(
+                        surface.expectation_id, expectation.version
+                    )
+                except Exception:
+                    logger.warning(
+                        "%s resume: could not retire failed expectation for %s",
+                        self.channel_type,
+                        choice.key,
+                        exc_info=True,
+                    )
+
             if not await surface.settle_picker(message_id, surface.choice_success(choice)):
+                await retire_failed_expectation()
                 return None
 
-            conflict = self.binder.binding_conflict(choice.key, choice.title, link)
+            conflict, displaced = conflict_and_displaced()
             if conflict is not None:
+                await retire_failed_expectation()
                 await surface.settle_picker(message_id, conflict)
                 return None
 
+            cleared: list[str] = []
+            claimed = False
+            selected_original = self.sessions.get_mirror_link(choice.key)
+            selected_was_inbound = choice.key in self.sessions.find_mirror_sessions(
+                link, inbound_only=True
+            )
             try:
-                self.sessions.set_mirror_link(choice.key, link, accepts_inbound=True)
-            except ConversationOwnershipConflict:
-                logger.debug(
-                    "%s resume: lost the claim race for this conversation",
-                    self.channel_type,
-                )
-                await surface.settle_picker(message_id, surface.choice_claim_lost)
-                return None
-            except Exception:
-                logger.exception("%s resume: failed to persist binding", self.channel_type)
-                await surface.settle_picker(message_id, surface.choice_binding_failed)
+                with self.sessions.batched_save():
+                    for displaced_key in displaced:
+                        if self.sessions.clear_mirror_link(
+                            displaced_key, reason=UNBIND_REASON_ORIGIN_REBIND
+                        ):
+                            cleared.append(displaced_key)
+                    self.sessions.set_mirror_link(choice.key, link, accepts_inbound=True)
+                    claimed = True
+            except Exception as exc:
+                try:
+                    with self.sessions.batched_save():
+                        if claimed:
+                            self.sessions.clear_mirror_link(
+                                choice.key, reason=UNBIND_REASON_ORIGIN_REBIND
+                            )
+                            if selected_original == link:
+                                self.sessions.set_mirror_link(
+                                    choice.key,
+                                    link,
+                                    accepts_inbound=selected_was_inbound,
+                                    reason=UNBIND_REASON_ORIGIN_REBIND,
+                                )
+                        for displaced_key in cleared:
+                            self.sessions.set_mirror_link(
+                                displaced_key,
+                                link,
+                                accepts_inbound=False,
+                                reason=UNBIND_REASON_ORIGIN_REBIND,
+                            )
+                except Exception:
+                    logger.warning(
+                        "%s resume: could not roll back failed binding for %s",
+                        self.channel_type,
+                        choice.key,
+                        exc_info=True,
+                    )
+                await retire_failed_expectation()
+                if isinstance(exc, ConversationOwnershipConflict):
+                    logger.debug(
+                        "%s resume: lost the claim race for this conversation",
+                        self.channel_type,
+                    )
+                    await surface.settle_picker(message_id, surface.choice_claim_lost)
+                else:
+                    logger.exception("%s resume: failed to persist binding", self.channel_type)
+                    await surface.settle_picker(message_id, surface.choice_binding_failed)
                 return None
             self.push_slots()
 

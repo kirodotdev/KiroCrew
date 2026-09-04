@@ -270,6 +270,131 @@ class TestDiscordMirroredBranchStaysIdempotent:
         assert len(set(mids)) == 2
 
 
+class TestTelegramResumedDurability:
+    @staticmethod
+    def _telegram_cls():
+        module = __import__("kiro_crew.telegram.transport_dispatch", fromlist=["_"])
+        return _dispatcher_class(module)
+
+    @staticmethod
+    def _state_and_slot(tmp_path):
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot(
+            name="chat-1",
+            linked_session_key="dashboard:chat-1",
+        )
+        return state, slot
+
+    @pytest.mark.parametrize("save_first", [True, False], ids=["save-first", "write-first"])
+    def test_projected_pair_is_exactly_once_under_both_writer_orderings(
+        self, tmp_path, save_first
+    ) -> None:
+        from kiro_crew.dashboard.chat_persistence import _save_slot_to_history
+
+        state, slot = self._state_and_slot(tmp_path)
+        key = "dashboard:chat-1"
+        project = getattr(channel_slots, "project_channel_turn_live")
+        mids = project(state, key, "hello", "world", broadcast_user=True)
+        assert mids is not None
+
+        if save_first:
+            assert _save_slot_to_history(state, slot, force=True)
+        self._telegram_cls()._persist_turn(
+            SimpleNamespace(conv_log=state.conversation_log),
+            key,
+            "hello",
+            "world",
+            False,
+            agent="research-agent",
+            mirror_mids=mids,
+        )
+        if not save_first:
+            assert _save_slot_to_history(state, slot, force=True)
+
+        rows = _rows_on_disk(state.conversation_log, key)
+        assert [(row["role"], row["content"]) for row in rows] == [
+            ("user", "hello"),
+            ("assistant", "world"),
+        ]
+        assert [row_mid(row) for row in rows] == list(mids)
+
+    @pytest.mark.parametrize(
+        "mirror_mids, expected_method",
+        [
+            pytest.param(None, "append", id="no-live-slot"),
+            pytest.param(
+                ("m-1111111111111111", "m-2222222222222222"),
+                "append_if_absent",
+                id="projected-slot",
+            ),
+        ],
+    )
+    def test_durable_pair_is_atomic_and_uses_the_right_write_path(
+        self, mirror_mids, expected_method
+    ) -> None:
+        from contextlib import contextmanager
+
+        class _AtomicLog:
+            def __init__(self) -> None:
+                self.depth = 0
+                self.calls: list[tuple[str, str, str]] = []
+
+            @contextmanager
+            def atomic_appends(self, key: str):
+                self.depth += 1
+                try:
+                    yield
+                finally:
+                    self.depth -= 1
+
+            def append(
+                self,
+                key: str,
+                role: str,
+                content: str,
+                *,
+                agent: str | None = None,
+                mid: str | None = None,
+            ) -> None:
+                assert self.depth == 1
+                self.calls.append(("append", role, mid or ""))
+
+            def append_if_absent(
+                self,
+                key: str,
+                role: str,
+                content: str,
+                *,
+                agent: str | None = None,
+                mid: str | None = None,
+            ) -> bool:
+                assert self.depth == 1
+                self.calls.append(("append_if_absent", role, mid or ""))
+                return True
+
+            def set_title(self, key: str, title: str) -> None:
+                assert self.depth == 1
+
+        log = _AtomicLog()
+        self._telegram_cls()._persist_turn(
+            SimpleNamespace(conv_log=log),
+            "dashboard:chat-1",
+            "hello",
+            "world",
+            False,
+            agent="research-agent",
+            mirror_mids=mirror_mids,
+        )
+
+        assert [method for method, _role, _mid in log.calls] == [
+            expected_method,
+            expected_method,
+        ]
+        assert [role for _method, role, _mid in log.calls] == ["user", "assistant"]
+        assert all(mid for _method, _role, mid in log.calls)
+        assert len({mid for _method, _role, mid in log.calls}) == 2
+
+
 class TestIdentitySurvivesMaterialization:
     """The load-bearing half: a persisted id is PRESERVED, not re-minted.
 

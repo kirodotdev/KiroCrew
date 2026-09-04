@@ -1418,20 +1418,35 @@ class TestInboundClaimFollowsTheCapability:
         assert state.sessions.set_mirror_link.call_args.kwargs["accepts_inbound"] is True
 
     @pytest.mark.asyncio
-    async def test_a_transport_that_cannot_resume_stays_outbound_only(self, tmp_path, monkeypatch):
-        """Degrade, never over-promise.
-
-        Telegram builds its session key from the route and never consults the
-        binding, so claiming inbound would not make replies come back — it would
-        only make the slot row say they do.
-        """
+    async def test_target_policy_can_keep_capable_transport_outbound_only(
+        self, tmp_path, monkeypatch
+    ):
+        transport = _fake_transport("telegram", session_resume=True)
+        transport.may_resume_from = MagicMock(return_value=False)
         state = _prep(tmp_path, monkeypatch)
-        state.register_channel_transport(_fake_transport("telegram", session_resume=False))
+        state.register_channel_transport(transport)
         state.sessions.set_mirror_link = MagicMock()
+
         async with TestClient(TestServer(_make_mirror_app(state))) as client:
             resp = await client.post(
                 "/api/chat/slots/s1/mirror-link",
                 json={"channel_type": "telegram", "target_id": "user:123"},
+            )
+            assert resp.status == 200
+
+        transport.may_resume_from.assert_called_once_with("123", None)
+        assert state.sessions.set_mirror_link.call_args.kwargs["accepts_inbound"] is False
+
+    @pytest.mark.asyncio
+    async def test_a_transport_that_cannot_resume_stays_outbound_only(self, tmp_path, monkeypatch):
+        """A transport without an inbound resolver must never receive the marker."""
+        state = _prep(tmp_path, monkeypatch)
+        state.register_channel_transport(_fake_transport("synthetic", session_resume=False))
+        state.sessions.set_mirror_link = MagicMock()
+        async with TestClient(TestServer(_make_mirror_app(state))) as client:
+            resp = await client.post(
+                "/api/chat/slots/s1/mirror-link",
+                json={"channel_type": "synthetic", "target_id": "user:123"},
             )
             assert resp.status == 200
         assert state.sessions.set_mirror_link.call_args.kwargs["accepts_inbound"] is False

@@ -134,6 +134,65 @@ def _redact_assistant(content: str) -> str:
     return content
 
 
+def project_channel_turn_live(
+    dashboard_state: Any,
+    session_key: str,
+    user_text: str,
+    reply_text: str,
+    *,
+    broadcast_user: bool = False,
+) -> tuple[str, str] | None:
+    """Append one resumed turn to its open dashboard slot and return both row ids.
+
+    This is loop-side by contract: user then assistant append without an await between
+    them, so the live window observes one ordered pair. ``broadcast_user`` is explicit
+    because Telegram has no optimistic dashboard copy for its channel-originated row,
+    while Discord's established projection path does not broadcast that row.
+    """
+    from kiro_crew.dashboard.state import row_mid
+    from kiro_crew.messaging.upload_gate import live_dashboard_slot
+
+    slot = live_dashboard_slot(dashboard_state, session_key)
+    if slot is None:
+        return None
+    try:
+        user_mid = (
+            row_mid(
+                slot.append(
+                    "user",
+                    user_text,
+                    "msg msg-u",
+                    broadcast_user=broadcast_user,
+                )
+            )
+            or ""
+        )
+    except Exception:
+        logger.debug(
+            "channel turn projection: user append failed for %s", session_key, exc_info=True
+        )
+        return None
+
+    assistant_mid = ""
+    if reply_text:
+        try:
+            assistant_mid = row_mid(slot.append("assistant", reply_text, "msg msg-a")) or ""
+        except Exception:
+            logger.debug(
+                "channel turn projection: assistant append failed for %s",
+                session_key,
+                exc_info=True,
+            )
+
+    push = getattr(dashboard_state, "push_slots_update", None)
+    if callable(push):
+        try:
+            push()
+        except Exception:
+            logger.debug("channel turn projection: slot push failed", exc_info=True)
+    return user_mid, assistant_mid
+
+
 def _close_time(meta: dict[str, Any], file_mtime: float | None) -> float | None:
     """Best-known epoch instant *meta*'s ``closed`` flag was written.
 
