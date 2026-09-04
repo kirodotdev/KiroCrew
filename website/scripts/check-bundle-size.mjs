@@ -61,7 +61,11 @@ export const CHUNK_BUDGETS = {
   // ~60 KB stale, which left main sitting a few hundred bytes under its own
   // ceiling, so any PR adding an English string tripped this gate rather than
   // the new library or surface it exists to catch.
-  t: 740 * KB, // measured 702 KB
+  // Re-measured 2026-09-04 at 740 KB (4 B over the 740 KB ceiling) after the
+  // inline crew schedule, agent-picker roster failure, and aws-control notice
+  // strings landed on main together; same stale-headroom shape as 08-27, so
+  // the ceiling moves with the measurement again.
+  t: 780 * KB, // measured 740 KB
 
   // Pierre editor implementation (PR #4072 replaced Monaco, whose
   // 'editor.api2' chunk this entry set used to carry) -- the code-editor
