@@ -6072,3 +6072,33 @@ class TestPolynomialBacktrackingStaysBounded:
         matcher.match(subject)
         elapsed = time.perf_counter() - start
         assert elapsed < 1.0, f"deny evaluation took {elapsed:.1f}s — gate would stall"
+
+
+class TestRmHomeEnvSpellingsStayDenied:
+    """$HOME / ${HOME} expand to ~, so the home rule must cover them (#8387)."""
+
+    def test_home_env_spellings_denied(self):
+        from kiro_crew import security
+
+        for cmd in [
+            "rm -rf $HOME",
+            "rm -rf $HOME/docs",
+            "rm -rf ${HOME}",
+            "rm -rf ${HOME}/docs",
+            'rm -rf "$HOME"',
+            'rm -rf "$HOME"/docs',
+            "rm -rf ~",
+            "rm -rf ~/docs",
+        ]:
+            assert security.is_denied(cmd), f"should deny {cmd!r}"
+
+    def test_lookalikes_stay_allowed(self):
+        from kiro_crew import security
+
+        for cmd in ["rm -f ~", "rm ~", "rm -rf", "rm -rf ./rel"]:
+            assert not security.is_denied(cmd), f"should allow {cmd!r}"
+
+    def test_legacy_home_pin_still_resolves(self):
+        from kiro_crew import security
+
+        assert security._rule_id_for_pattern("rm -rf ~.*") == "local-destructive-rm-rf-home"
