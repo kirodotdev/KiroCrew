@@ -30,6 +30,20 @@ on:
   workflow_run:
     workflows: ["CI"]
     types: [completed]
+  # Re-dispatch entrypoint for the self-heal sweep (fork-review-heal.yml). When
+  # CI concludes success on a fork head but the `workflow_run: completed` event
+  # that would start this lane is dropped, the check-run is never posted and the
+  # fork PR's readiness freezes pending forever with no event able to recompute
+  # it. The sweep re-fires this lane keyed ONLY to the head SHA; the resolver
+  # below re-derives the PR from that SHA using the SAME open-PR-by-head-SHA
+  # match the trigger path uses, so this adds no new trust surface -- the head
+  # SHA is the only input the workflow_run path takes either.
+  workflow_dispatch:
+    inputs:
+      head_sha:
+        description: "Fork PR head SHA to review (resolved to its open PR)."
+        required: true
+        type: string
 
 permissions:
   actions: read
@@ -49,7 +63,7 @@ concurrency:
     fork-first-principles-review-${{
       github.event.workflow_run.head_repository.full_name
     }}-${{ github.event.workflow_run.head_branch }}-${{
-      github.event.workflow_run.head_sha
+      github.event.workflow_run.head_sha || inputs.head_sha
     }}
   cancel-in-progress: true
 
@@ -58,11 +72,14 @@ jobs:
     name: Fork First Principles Review
     runs-on: ubuntu-latest
     timeout-minutes: 60
-    # Only for a SUCCESSFUL Stage 1 run that was itself a fork pull_request.
+    # Only for a SUCCESSFUL Stage 1 run that was itself a fork pull_request, OR a
+    # heal re-dispatch (which supplies the head SHA directly; the resolver still
+    # validates the SHA maps to an OPEN fork PR before any review runs).
     if: >-
-      github.event.workflow_run.event == 'pull_request'
+      github.event_name == 'workflow_dispatch'
+      || (github.event.workflow_run.event == 'pull_request'
       && github.event.workflow_run.conclusion == 'success'
-      && github.event.workflow_run.head_repository.full_name != github.repository
+      && github.event.workflow_run.head_repository.full_name != github.repository)
     steps:
       # MUST be first: block egress except the endpoints the reviewer needs, so
       # an injection-driven exfil attempt fails at the network layer.
@@ -87,14 +104,20 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
-          WR_HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          WR_HEAD_SHA: ${{ github.event.workflow_run.head_sha || inputs.head_sha }}
           # Set by GitHub on every workflow_run, fork heads included; used below to
-          # disambiguate two open PRs that share a head commit.
+          # disambiguate two open PRs that share a head commit. Empty on a heal
+          # re-dispatch (which supplies only the head SHA), in which case the
+          # resolver falls back to a SHA-only match -- one open PR per source
+          # repository and branch is then the only remaining constraint.
           WR_HEAD_REPO: ${{ github.event.workflow_run.head_repository.full_name }}
           WR_HEAD_REF: ${{ github.event.workflow_run.head_branch }}
         run: |
           set -uo pipefail
-          # head_sha from the triggering run is set by GitHub and is authoritative.
+          # head_sha from the triggering run is set by GitHub and is authoritative;
+          # on a heal re-dispatch it comes from the workflow_dispatch input, which
+          # is only ever a head SHA -- the resolver below still validates it maps
+          # to an OPEN fork PR, so a bad or superseded SHA fails closed.
           head_sha="$WR_HEAD_SHA"
           if [ -z "$head_sha" ]; then echo "::error::no workflow_run head_sha"; exit 1; fi
 

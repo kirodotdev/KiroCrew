@@ -765,6 +765,40 @@ Nothing the fork controls can influence these reviews:
   allowlist, plus short-lived Bedrock-only OIDC credentials, bound the blast radius
   of any prompt injection.
 
+**A fork-review lane that never fired is re-dispatched, so readiness cannot freeze
+pending forever.** Each Stage-2 reviewer starts only on the `workflow_run: completed`
+event of CI, and GitHub does not guarantee delivery of that event -- it is silently
+dropped under Actions load. When it is dropped after CI concludes success on a fork
+head, no fork-review check-run is ever posted, `pr-readiness.yml` reads the lane as
+"(not started)" / "the real review has not posted yet" and counts it pending, and no
+future event can create the missing run -- so the fork PR is frozen pending and can
+never merge. `fork-review-heal.yml` closes that gap: it sweeps open fork PRs on a
+schedule, and for a PR whose latest CI run for the head SHA concluded `success` it
+re-dispatches only the review lanes that never fired, via each reviewer's
+`workflow_dispatch` entrypoint keyed to the head SHA. The reviewer resolves its own PR
+from that SHA with the same open-PR-by-head-SHA match its trigger path uses, so the
+heal adds no new trust surface and never checks out or executes fork code. A lane
+counts as missing only when it has no check-run that is in progress or completed with
+a real (non-`skipped`) conclusion, and each reviewer opens an in-progress check-run
+the instant it starts, so the sweep is self-terminating: a lane that is still running
+or has already completed is never re-dispatched, and each never-fired lane is
+dispatched at most once per sweep (bounded by a dispatch cap). This mirrors
+`pr-readiness-sweep.yml`, which rescues the same dropped-event class for the aggregator
+but can only re-read existing check-runs; it cannot manufacture a never-fired review,
+which is what this sweep supplies.
+
+**A fork PR whose CI has not passed stays pending by design.** Stage 2 is gated on a
+successful CI run, so until CI passes the fork-review lanes are correctly not eligible.
+The heal sweep does not dispatch such a PR and never forces it to a pass; it reports
+the pending as attributed to CI, distinct from a review that is missing though CI
+passed. Two boundaries remain outside the sweep's reach and are handled by attribution
+rather than by a forced pass. A fork run that GitHub holds at `action_required`
+("Approve and run") can be released only by a maintainer, so `pr-readiness.yml` keeps
+that condition in its `awaiting_approval` verdict -- blocking but attributed, and never
+auto-cleared, since re-dispatching a lane whose run awaits approval would only queue
+another approval-gated run. GitHub may also decline to deliver a `workflow_dispatch`;
+the sweep is scheduled, so a dispatch that does not land is retried on the next pass.
+
 **`fork-workflow-guard.yml`** blocks a fork PR that modifies anything under
 `.github/**`, the vector a fork would use to fake basic-CI results (rewrite `ci.yml`
 to pass) or tamper with CODEOWNERS. It is deterministic on purpose: "does the diff
@@ -776,6 +810,71 @@ cannot disable it, and a fork's own `pull_request` runs have no `checks: write` 
 forge its verdict. A maintainer who has reviewed a legitimate workflow change applies
 the `allow-fork-workflow-change` label and the guard re-evaluates green; the label is
 stripped on a new revision, so the override cannot carry over.
+
+## Duplicate and overlap detection
+
+Two PRs can quietly solve the same issue by editing the same files, which wastes the
+second author's effort and makes a reviewer read two solutions to one problem.
+`pr-duplicate-detect.yml` surfaces that, in two advisory, visibility-only lanes that
+share one detection engine and never gate a PR.
+
+**One engine, two triggers.** `scripts/detect_pr_overlap.py` answers a single question
+about a PR: which OTHER open pull requests reference the same issue AND touch at least
+one of the same files? A candidate PR is reported only when BOTH hold -- same issue
+reference and a non-empty intersection of changed-file sets. Both are required on
+purpose: a shared issue alone is too noisy, since one issue legitimately hosts stacked
+or companion PRs that touch different files, and a shared file alone is too noisy, since
+unrelated PRs routinely edit a common file. The rule is intersection, not exact-set
+equality, so two PRs that edit the same file plus different neighbours still match; an
+exact set match is carried through as a stronger signal that the comment phrases more
+firmly, but it is not required to flag. Each overlap also carries a coverage fraction
+(how much of the subject PR's changed files the overlap shares) and a strong flag, which
+the on-merge lane uses to decide whether to close. A PR's referenced issues are the union of
+GitHub's `closingIssuesReferences` linkage and a closing-keyword parse of the PR body
+(`Fixes`/`Closes`/`Resolves #N`), because the linkage may not be populated on an
+unmerged PR. The triggering PR is never matched against itself, and only OPEN PRs are
+considered as candidates. The engine is pure and network-free -- it takes materialized
+PR records and returns overlaps -- so its `--fetch` mode does all `gh` I/O and the core
+is unit-tested against canned JSON. To keep the API cost bounded on a busy repo, the
+`--fetch` path materializes every open PR's number, body, state, changed files and
+closing-issue linkage in a single `gh pr list` call, rather than a per-PR view plus a
+GraphQL call for each open PR.
+
+**On open (visibility, the higher-value lane).** On `opened`, `reopened` and
+`synchronize`, the workflow runs the engine for the triggering PR and, when it overlaps
+one or more earlier open PRs, upserts a single marker-keyed comment naming those PRs and
+the specific shared files and count, so the duplication is caught before review time is
+spent twice. The comment is keyed on a hidden marker, so a re-run updates it in place
+rather than posting a second, and when a corrected revision no longer overlaps, the
+stale comment is removed. The tone is a non-accusatory heads-up, matching
+CONTRIBUTING.md and acknowledging that companion PRs are legitimate; it is advisory only
+and never blocks merge.
+
+**On merge (close the superseded PR).** On a `closed` event where the PR merged, the
+same engine finds the open same-issue PRs whose overlap with the merge is strong -- an
+exact changed-file match, or the shared files cover at least half of the merged PR's
+files -- points each at the merge with a comment, and closes it as superseded, leaving
+non-overlapping and weakly-overlapping open PRs untouched. Requiring a strong overlap,
+not a single shared file, keeps the close from ending legitimately-distinct companion
+work that happens to touch one common file for the same issue; a weaker overlap still
+surfaces in the on-open advisory. The pointer comment is always posted before the close.
+An open PR that carries the `no-auto-close-duplicate` label is never auto-closed: it
+still receives the pointer comment, but the author or a maintainer keeps control of the
+close. Attribution has a hard boundary: this repository squash-merges using the
+PR title as the commit message, and GitHub composes that commit at merge time, so a
+workflow -- which runs after the merge -- cannot rewrite it to add a `Co-authored-by:`
+trailer. The trailer would have to be present in the message GitHub builds, which only
+the merging maintainer or the PR title controls. What the workflow can place, and does,
+is a durable co-authorship-recording comment on the merged PR naming the overlapping
+author's PRs, so the shared work is attributed where a human and the daily contributor
+sweep can see it. That comment lists the PRs it closed and the PRs it left open under the
+opt-out label separately, so it never reports a close that did not happen. The workflow
+records the overlap; it does not adjudicate credit.
+
+Both lanes run from the trusted base context via `pull_request_target`, so they hold the
+write token even for a fork PR, and neither checks out or executes PR head code -- they
+read PR metadata and write comments or close PRs, the same trust posture as
+`fork-pr-label.yml`.
 
 ## Over-engineering resistance
 
