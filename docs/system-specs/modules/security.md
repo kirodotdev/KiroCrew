@@ -60,6 +60,39 @@ Hides credential paths from kiro-cli subprocess tree using platform-native isola
 
 **Standard mode** (new default) enables git-over-SSH, AWS CLI via `credential_process`, and kubectl while maintaining OS-level isolation on non-workflow credential stores. Env vars are scrubbed in ALL modes — `credential_process` reads from `~/.aws/config`, not env vars.
 
+**Narrow Docker-registry opt-in** — disabled by default and stored in the
+operator-only `docker_registry_access.json` keystone. On the Linux namespace
+backend only, enabling it in Settings pre-reads
+`~/.docker/config.json` before the normal `.docker` mask is mounted, then bind-mounts
+an initially `0444` anonymous-memory snapshot into the otherwise-empty masked directory.
+No credential-bearing backing file survives outside the namespace. The host inode and
+every other file under `~/.docker` remain hidden. The owner chooses either a six-hour
+grant or an explicit grant that remains active until it is turned off. Expired grants
+fail closed on every read. Like the computer-use keystone, this operator authorization
+is deliberately independent of the sandbox ordinal: `sandbox.min_level` chooses how
+the process is confined, not which credentials the owner may deliberately supply to it.
+The option is threaded into every ACP agent spawn (`AcpClient` and `AcpRuntime`),
+including adapted harnesses whose file reads do not pass through Kiro's tool hook, but not
+unrelated sandboxed app, document, hook, or discovery processes. Existing
+sessions retain their original mount namespace, so a setting change applies to
+new sessions without requiring a gateway restart. Revocation remains available
+on unsupported hosts so moving a data home cannot strand a stored grant.
+The keystone itself is sealed read-only inside every sandbox mode, so an agent
+cannot mint or extend its own grant through a shell command.
+
+This is a credential grant, not a redaction feature: Docker can use registry
+credentials only because code in the agent subprocess can read the snapshot.
+The normal tool/path policy still blocks straightforward attempts to print the
+file, but arbitrary code running in that namespace may recover it. Enable the
+option only when the operator accepts that prompt-injected or malicious agent
+code could use or disclose the configured registry credentials. macOS and
+non-namespace backends ignore the option rather than widening their sandbox.
+The dashboard exposes the opt-in under **Settings → Security → Docker registry
+credentials**. Its dedicated owner-only PUT handler writes the protected keystone rather
+than agent-writable `config.json`, requires an explicit duration plus acknowledgement,
+and states the credential-disclosure and new-session consequence in place. SEL writes
+for this boundary are offloaded from the gateway event loop.
+
 **Pooled-backend declared-env forwarding (`mcp_gateway.forward_declared_env`, default ON)** — an agent spec may declare `mcpServers.<name>.env`. Under pooling one backend serves many sessions, so the rewriter expands any `${VAR}`/`${env:VAR}` placeholder the block declares — kiro-cli cannot, because the broker spawns the stub rather than the server — writes the resolved block to a `0600` sidecar, and the stub folds it into the `effective_env_hash` PoolKey dimension. Resolving once at write time keeps that sidecar the single source both the stub's hash and `gatewayd`'s coherence re-check read; an unresolved reference is left as a literal `${VAR}`, matching kiro-cli's expander. Placeholders dereference a **filtered view** of the gateway environment, not the raw one: names matching `is_secret_env_key`, `is_credential_env_key`, or the channel-credential scrub (`scrub_agent_denied_env`) are misses. Agent specs are agent-writable, so without that filter `{"TOKEN": "${env:AWS_SECRET_ACCESS_KEY}"}` would smuggle a credential *value* past the key-name filters below — the dereference view mirrors them, so a value the forwarder would refuse under its own name cannot ride in under another (and channel tokens, which the ACP spawn scrub hides from kiro-cli's own expander, are equally invisible here). With the flag ON, `gatewayd` reads the sidecar at **cold spawn only** and applies the surviving keys, filtered twice:
 
 1. `hashing.non_secret_env` drops `ENV_SCRUB_PREFIXES` (`AWS_SECRET*`, `AWS_SESSION*`, `OAUTH*`). These are excluded from `effective_env_hash` **by design** so a credential rotation does not split the pool — which makes the hash non-injective over them, so two sessions with *different* secret values share one backend and no single value is correct to apply.

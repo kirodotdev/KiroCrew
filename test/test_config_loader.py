@@ -229,6 +229,39 @@ def test_max_stop_hook_nudges_loads_from_config_and_round_trips() -> None:
     assert _load_from_dict(pinned.to_dict()).agent.max_stop_hook_nudges == 7
 
 
+def test_sandbox_expose_docker_config_uses_operator_keystone(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    state_path = tmp_path / "docker_registry_access.json"
+    monkeypatch.setattr(loader_module, "docker_registry_access_state_path", lambda: state_path)
+
+    assert loader_module.docker_registry_access_enabled() is False
+    # Ordinary config is agent-writable and therefore cannot even advertise a
+    # second spelling of the grant.
+    configured = _load_from_dict({"agent": {"sandbox_expose_docker_config": True}})
+    assert not hasattr(configured.agent, "sandbox_expose_docker_config")
+    assert "sandbox_expose_docker_config" not in configured.to_dict()["agent"]
+
+    monkeypatch.setattr(loader_module.time, "time", lambda: 1_000.0)
+    state_path.write_text('{"enabled": true, "expires_at": 1001}', encoding="utf-8")
+    assert loader_module.docker_registry_access_enabled() is True
+    state_path.write_text('{"enabled": true, "expires_at": 999}', encoding="utf-8")
+    assert loader_module.docker_registry_access_enabled() is False
+    state_path.write_text('{"enabled": true, "permanent": true}', encoding="utf-8")
+    assert loader_module.docker_registry_access_enabled() is True
+
+    from kiro_crew import security
+
+    assert state_path.name in security._CREW_SECRET_LEAVES
+    assert security.is_sensitive_path("~/.kiro/crew/docker_registry_access.json") is True
+    assert (
+        security.is_sensitive_bash_command(
+            "echo '{\"enabled\":true}' > ~/.kiro/crew/docker_registry_access.json"
+        )
+        is not None
+    )
+
+
 def test_dashboard_tailscale_hydrates_and_survives_a_round_trip() -> None:
     """The opt-in must survive ``load()`` and a later ``save()``.
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import runpy
+import stat
 import textwrap
 from pathlib import Path
 from unittest.mock import patch
@@ -87,6 +88,24 @@ class TestCcFilesList:
 
 
 class TestBuildLauncherScriptCcMode:
+    def test_docker_config_stays_hidden_by_default(self):
+        script = _build_launcher_script("standard")
+        docker_line = next(
+            line for line in script.splitlines() if line.startswith("DOCKER_CONFIG_PATH = ")
+        )
+        assert docker_line == "DOCKER_CONFIG_PATH = None"
+
+    @pytest.mark.parametrize("sandbox_level", ["standard", "cc", "strict"])
+    def test_docker_config_is_selectively_exposed_when_enabled(self, sandbox_level):
+        script = _build_launcher_script(sandbox_level, expose_docker_config=True)
+        docker_line = next(
+            line for line in script.splitlines() if line.startswith("DOCKER_CONFIG_PATH = ")
+        )
+        assert ".docker/config.json" in docker_line
+        assert "os.memfd_create(" in script
+        assert '"/proc/self/fd/%d" % docker_snapshot_fd' in script
+        assert '"sealing Docker registry config %s" % DOCKER_CONFIG_PATH' in script
+
     def test_extra_hidden_directory_is_bound_over(self):
         script = _build_launcher_script(
             "strict",
@@ -305,6 +324,19 @@ class TestAgentDeniedEnvKeys:
         finally:
             os.unlink(cleanup)
 
+    @patch("kiro_crew.sandbox.detect_backend", return_value="namespace")
+    def test_namespace_wrapper_threads_docker_config_opt_in(self, _mock_backend):
+        wrapped, cleanup = wrap_argv(["echo", "hi"], mode="auto", expose_docker_config=True)
+        assert cleanup is not None
+        try:
+            content = open(cleanup).read()
+            docker_line = next(
+                line for line in content.splitlines() if line.startswith("DOCKER_CONFIG_PATH = ")
+            )
+            assert ".docker/config.json" in docker_line
+        finally:
+            os.unlink(cleanup)
+
 
 # Sentinel values only; never use real credentials in these tests.
 _FAKE_CHANNEL_ENV = {
@@ -436,7 +468,7 @@ class TestChannelCredentialIsolation:
 # launcher source rather than a copy, so they cannot drift from what the child
 # actually executes.
 _EXPOSE_BLOCK_START = "expose_data = {}"
-_EXPOSE_BLOCK_END = "# Bind-mount empty dirs over credential paths"
+_EXPOSE_BLOCK_END = "# Docker credentials are a separate, stricter exposure path"
 #: Structural landmarks the slice must contain, so an edit that moves either
 #: marker and shrinks the block fails HERE rather than leaving the assertions
 #: below vacuously green against a fragment that no longer holds the read.
@@ -641,6 +673,66 @@ class TestCcExposePreReadIsNonFatal:
         assert expose_data[str(good)] == b"kept\n"
         assert str(bad) in stderr
         assert str(good) not in stderr
+
+
+# ── Docker config pre-read ──
+
+_DOCKER_BLOCK_START = "docker_config_data = None"
+_DOCKER_BLOCK_END = "# Bind-mount empty dirs over credential paths"
+
+
+def _docker_pre_read_source() -> str:
+    script = _build_launcher_script("standard", expose_docker_config=True)
+    start = script.rindex("\n", 0, script.index(_DOCKER_BLOCK_START)) + 1
+    end = script.rindex("\n", 0, script.index(_DOCKER_BLOCK_END, start)) + 1
+    block = textwrap.dedent(script[start:end])
+    for landmark in ("os.O_NOFOLLOW", "os.fstat(docker_fd)", "docker_config_data = fh.read()"):
+        assert landmark in block
+    return block
+
+
+def _run_docker_pre_read(path: Path, tmp_path: Path) -> tuple[bytes | None, str]:
+    written: list[str] = []
+
+    class _Stderr:
+        def write(self, text: str) -> int:
+            written.append(text)
+            return len(text)
+
+    block = tmp_path / "_docker_pre_read.py"
+    block.write_text(_docker_pre_read_source(), encoding="utf-8")
+    result = runpy.run_path(
+        str(block),
+        init_globals={
+            "os": os,
+            "stat": stat,
+            "sys": type("_sys", (), {"stderr": _Stderr()})(),
+            "DOCKER_CONFIG_PATH": str(path),
+        },
+    )
+    return result["docker_config_data"], "".join(written)
+
+
+class TestDockerConfigPreRead:
+    def test_regular_file_is_read(self, tmp_path: Path) -> None:
+        source = tmp_path / "config.json"
+        source.write_bytes(b'{"auths":{}}')
+
+        data, stderr = _run_docker_pre_read(source, tmp_path)
+
+        assert data == b'{"auths":{}}'
+        assert stderr == ""
+
+    def test_symlink_is_refused_without_reading_target(self, tmp_path: Path) -> None:
+        target = tmp_path / "unrelated-secret"
+        target.write_bytes(b"must-not-be-exposed")
+        source = tmp_path / "config.json"
+        source.symlink_to(target)
+
+        data, stderr = _run_docker_pre_read(source, tmp_path)
+
+        assert data is None
+        assert str(source) in stderr
 
 
 # ── The known_hosts pre-read: same shape as the expose read, OPPOSITE remedy ──

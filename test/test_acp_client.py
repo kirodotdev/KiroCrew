@@ -10410,7 +10410,10 @@ class TestSpawnEnvScrub:
         monkeypatch.setattr(
             acp_client,
             "wrap_argv",
-            lambda argv, mode, strip_python_env=False, is_kiro_cli=None: (argv, None),
+            lambda argv, mode, strip_python_env=False, expose_docker_config=False, is_kiro_cli=None: (
+                argv,
+                None,
+            ),
         )
         monkeypatch.setattr(acp_client, "cgroup_scope_argv", lambda argv: argv)
         monkeypatch.setattr(acp_client, "augmented_path", lambda p: p)

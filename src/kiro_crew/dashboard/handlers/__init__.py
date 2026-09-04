@@ -663,6 +663,14 @@ from kiro_crew.dashboard.handlers.core import (  # noqa: E402, F401
     logo,
     pwa_file,
 )
+
+# Docker registry credentials — the owner-only keystone control surface. This
+# is deliberately separate from generic config PATCH so an agent cannot mint
+# the grant through an ordinary config write.
+from kiro_crew.dashboard.handlers.docker_registry_access import (  # noqa: E402, F401
+    api_docker_registry_access_get,
+    api_docker_registry_access_put,
+)
 from kiro_crew.dashboard.handlers.notifications_push import (  # noqa: E402, F401
     api_push_notification,
 )

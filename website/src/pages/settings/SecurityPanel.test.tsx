@@ -37,6 +37,10 @@ vi.mock('../../api/client', () => ({
     // YoloDurationCard, which tolerates an unresolved read.
     kirocrewConfig: vi.fn(),
     patchConfig: vi.fn(),
+    getDockerRegistryAccess: vi.fn().mockResolvedValue({
+      enabled: false, supported: true,
+    }),
+    saveDockerRegistryAccess: vi.fn(),
     // Read by the rail on every mount to summarise the tailnet-origin section.
     // Present here so the rail's own read is a resolved query rather than a
     // crash on an undefined queryFn; the section's behaviour is covered in
@@ -283,6 +287,157 @@ function trusted(overrides: Partial<TrustedAppsData> = {}): TrustedAppsData {
 /** Stored names the gate IGNORES: a capital and a traversal-ish token, both
  *  outside the app-name charset, so neither can ever admit anything. */
 const INEFFECTIVE = ['LD-App', '..']
+
+describe('SecurityPanel — Docker registry access', () => {
+  const LABEL = () => i18nT('pages.settings.securityPanel.docker_access')
+  const DESCRIPTION = () => i18nT('pages.settings.securityPanel.docker_access_description')
+  const UNAVAILABLE = () => i18nT('pages.settings.securityPanel.docker_access_unavailable')
+  const linuxStore = () => createTestStore({
+    dashboard: { status: { platform: 'linux' } } as never,
+  })
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    ;(api.deniedCommands as ReturnType<typeof vi.fn>).mockResolvedValue(snapshot())
+    ;(api.tailnetStatus as ReturnType<typeof vi.fn>).mockResolvedValue(TAILNET_OFF)
+    ;(api.kirocrewConfig as ReturnType<typeof vi.fn>).mockResolvedValue({})
+    ;(api.saveDockerRegistryAccess as ReturnType<typeof vi.fn>).mockResolvedValue({
+      enabled: true,
+      supported: true,
+    })
+  })
+
+  it('requires acknowledgement before the dedicated endpoint grants access', async () => {
+    ;(api.getDockerRegistryAccess as ReturnType<typeof vi.fn>).mockResolvedValue({
+      enabled: false,
+      supported: true,
+    })
+    renderWithProviders(<SecurityPanel />, { route: '/?section=docker', store: linuxStore() })
+
+    const toggle = await screen.findByRole('switch', { name: LABEL() })
+    await waitFor(() => expect(toggle).not.toHaveAttribute('aria-disabled'))
+    expect(toggle).toHaveAttribute('aria-checked', 'false')
+    expect(screen.getByText(DESCRIPTION())).toBeInTheDocument()
+
+    fireEvent.click(toggle)
+    expect(api.saveDockerRegistryAccess).not.toHaveBeenCalled()
+
+    const confirm = screen.getByRole('button', {
+      name: i18nT('pages.settings.securityPanel.docker_access_confirm_action'),
+    })
+    expect(confirm).toBeDisabled()
+    fireEvent.click(screen.getByRole('checkbox'))
+    expect(confirm).toBeEnabled()
+    fireEvent.click(confirm)
+
+    await waitFor(() => {
+      expect(api.saveDockerRegistryAccess).toHaveBeenCalledWith(true, false)
+    })
+  })
+
+  it('shows the owner-only reason when the server rejects the grant', async () => {
+    ;(api.getDockerRegistryAccess as ReturnType<typeof vi.fn>).mockResolvedValue({
+      enabled: false,
+      supported: true,
+    })
+    ;(api.saveDockerRegistryAccess as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
+      new ApiError(403, 'Forbidden', '{"code":"owner_only"}'),
+    )
+    renderWithProviders(<SecurityPanel />, { route: '/?section=docker', store: linuxStore() })
+
+    fireEvent.click(await screen.findByRole('switch', { name: LABEL() }))
+    fireEvent.click(screen.getByRole('checkbox'))
+    fireEvent.click(screen.getByRole('button', {
+      name: i18nT('pages.settings.securityPanel.docker_access_confirm_action'),
+    }))
+
+    expect(await screen.findByText(
+      i18nT('pages.settings.securityPanel.docker_access_owner_only'),
+    )).toBeInTheDocument()
+  })
+
+  it('shows an enabled switch when Docker registry access is already opted in', async () => {
+    ;(api.getDockerRegistryAccess as ReturnType<typeof vi.fn>).mockResolvedValue({
+      enabled: true,
+      supported: true,
+    })
+    renderWithProviders(<SecurityPanel />, { route: '/?section=docker', store: linuxStore() })
+
+    const toggle = await screen.findByRole('switch', { name: LABEL() })
+    await waitFor(() => expect(toggle).toHaveAttribute('aria-checked', 'true'))
+    expect(screen.getByText(
+      i18nT('pages.settings.securityPanel.docker_access_enabled_warning'),
+    )).toBeInTheDocument()
+  })
+
+  it('fails closed when the current config cannot be read', async () => {
+    ;(api.getDockerRegistryAccess as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('offline'))
+    renderWithProviders(<SecurityPanel />, { route: '/?section=docker', store: linuxStore() })
+
+    expect(await screen.findByText(UNAVAILABLE())).toBeInTheDocument()
+    expect(screen.getByRole('button', {
+      name: i18nT('pages.settings.securityPanel.docker_access_retry'),
+    })).toBeInTheDocument()
+    expect(screen.queryByRole('switch', { name: LABEL() })).not.toBeInTheDocument()
+  })
+
+  it('allows a stored grant to be revoked on a non-Linux gateway', async () => {
+    ;(api.getDockerRegistryAccess as ReturnType<typeof vi.fn>).mockResolvedValue({
+      enabled: true,
+      supported: false,
+    })
+    const store = createTestStore({
+      dashboard: { status: { platform: 'win32' } } as never,
+    })
+    renderWithProviders(<SecurityPanel />, { route: '/?section=docker', store })
+
+    const toggle = await screen.findByRole('switch', { name: LABEL() })
+    await waitFor(() => expect(toggle).toHaveAttribute('aria-checked', 'true'))
+    expect(toggle).not.toHaveAttribute('aria-disabled')
+    expect(screen.getByText(
+      i18nT('pages.settings.securityPanel.docker_access_unsupported'),
+    )).toBeInTheDocument()
+    fireEvent.click(toggle)
+    await waitFor(() => expect(api.saveDockerRegistryAccess).toHaveBeenCalledWith(false, false))
+  })
+
+  it('can explicitly grant access until it is turned off', async () => {
+    ;(api.getDockerRegistryAccess as ReturnType<typeof vi.fn>).mockResolvedValue({
+      enabled: false,
+      supported: true,
+    })
+    renderWithProviders(<SecurityPanel />, { route: '/?section=docker', store: linuxStore() })
+
+    const toggle = await screen.findByRole('switch', { name: LABEL() })
+    fireEvent.click(toggle)
+    fireEvent.click(screen.getByRole('radio', {
+      name: i18nT('pages.settings.securityPanel.docker_access_until_disabled'),
+    }))
+    fireEvent.click(screen.getByRole('checkbox'))
+    fireEvent.click(screen.getByRole('button', {
+      name: i18nT('pages.settings.securityPanel.docker_access_confirm_action'),
+    }))
+
+    await waitFor(() => expect(api.saveDockerRegistryAccess).toHaveBeenCalledWith(true, true))
+  })
+
+  it('renders a loading skeleton instead of a false off switch', () => {
+    ;(api.getDockerRegistryAccess as ReturnType<typeof vi.fn>).mockReturnValue(new Promise(() => {}))
+    renderWithProviders(<SecurityPanel />, { route: '/?section=docker', store: linuxStore() })
+
+    expect(screen.queryByRole('switch', { name: LABEL() })).not.toBeInTheDocument()
+  })
+
+  it('reports an active grant in the section rail without relying on colour', async () => {
+    ;(api.getDockerRegistryAccess as ReturnType<typeof vi.fn>).mockResolvedValue({
+      enabled: true,
+      supported: true,
+    })
+    renderWithProviders(<SecurityPanel />, { route: '/?section=docker', store: linuxStore() })
+
+    await screen.findByText(i18nT('pages.settings.securityPanel.state_allowed'))
+  })
+})
 
 describe('SecurityPanel — denied commands', () => {
   beforeEach(() => {
@@ -1671,6 +1826,7 @@ describe('SecurityPanel — inspector rail', () => {
       expect.stringContaining('Live Security Posture'),
       expect.stringContaining('YOLO (auto-approve)'),
       expect.stringContaining('Denied Commands'),
+      expect.stringContaining(i18nT('pages.settings.securityPanel.docker_access')),
       expect.stringContaining('Tailnet origin'),
       expect.stringContaining('Third-party apps'),
       expect.stringContaining('Defense-in-Depth Architecture'),

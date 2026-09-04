@@ -148,7 +148,12 @@ class TestWrapArgv:
             "kiro-cli",
         ]
         result, cleanup = wrap_argv(["kiro-cli"], mode="strict")
-        mock_ns_argv.assert_called_once_with(["kiro-cli"], "strict", strip_python_env=False)
+        mock_ns_argv.assert_called_once_with(
+            ["kiro-cli"],
+            "strict",
+            strip_python_env=False,
+            expose_docker_config=False,
+        )
 
     @patch("kiro_crew.sandbox.detect_backend", return_value="sandbox-exec")
     @patch("kiro_crew.sandbox.sandbox_exec_argv")
@@ -1459,6 +1464,72 @@ class TestSignalBroadcastGuard:
         ), f"kill(-1, 0) not denied: stdout={result.stdout!r} stderr={result.stderr!r}"
         assert "TARGETED_OK" in result.stdout, result.stdout
         assert "HOSTPID_SET" in result.stdout, result.stdout
+
+    def test_docker_config_snapshot_is_readable_but_host_file_is_unchanged_e2e(
+        self, tmp_path
+    ):
+        """The opt-in exposes a copy, never the host Docker config inode."""
+        if sys.platform != "linux":
+            pytest.skip("sandbox launcher is Linux-only")
+        import kiro_crew.sandbox as _sb
+
+        if not _sb._probe_unshare():
+            pytest.skip("user+mount namespaces unavailable on this host")
+
+        fake_home = tmp_path / "home"
+        docker_dir = fake_home / ".docker"
+        docker_dir.mkdir(parents=True)
+        host_config = docker_dir / "config.json"
+        original = '{"auths":{"registry.example":{"auth":"FAKE"}}}'
+        host_config.write_text(original, encoding="utf-8")
+
+        probe = tmp_path / "docker_probe.py"
+        probe.write_text(
+            "from pathlib import Path\n"
+            f"p = Path({str(host_config)!r})\n"
+            "print(p.read_text(encoding='utf-8'))\n"
+            "try:\n"
+            "    p.chmod(0o600)\n"
+            "except OSError:\n"
+            "    print('CHMOD_BLOCKED')\n"
+            "try:\n"
+            "    p.write_text('namespace-only change', encoding='utf-8')\n"
+            "except OSError:\n"
+            "    print('WRITE_BLOCKED')\n",
+            encoding="utf-8",
+        )
+        mount_sources = tmp_path / "mount-sources"
+        mount_sources.mkdir()
+        launcher = tmp_path / "docker_launcher.py"
+        with patch("kiro_crew.sandbox.Path.home", return_value=fake_home):
+            script = _build_launcher_script("standard", expose_docker_config=True)
+        candidate_loop = 'for _candidate in (f"/run/user/{REAL_UID}", "/dev/shm"):'
+        assert script.count(candidate_loop) == 1
+        launcher.write_text(
+            script.replace(candidate_loop, "for _candidate in ():"),
+            encoding="utf-8",
+        )
+
+        env = dict(
+            os.environ,
+            HOME=str(fake_home),
+            TMPDIR=str(mount_sources),
+        )
+        result = subprocess.run(
+            [sys.executable, str(launcher), sys.executable, str(probe)],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=60,
+            env=env,
+        )
+        if "unshare(NEWUSER) failed" in result.stderr or "unshare(NEWNS) failed" in result.stderr:
+            pytest.skip("namespaces unavailable on this host")
+        assert result.returncode == 0, result.stderr
+        assert original in result.stdout
+        assert "CHMOD_BLOCKED" in result.stdout
+        assert "WRITE_BLOCKED" in result.stdout
+        assert host_config.read_text(encoding="utf-8") == original
 
 
 class TestSandboxExecArgv:

@@ -44,6 +44,8 @@ test.describe('Fork Session E2E', { tag: '@needs-agent' }, () => {
     // available from one overflow trigger outside the crowded inline action row.
     const target = page.locator('[data-role="assistant"]').last()
     await expect(target).toBeVisible({ timeout: 60000 })
+    // The footer belongs to a completed turn, not the initial streaming row.
+    await expect(page.getByTestId('stop-button-armed')).toBeHidden({ timeout: 60000 })
     await target.hover({ force: true })
     const more = target.getByTestId('assistant-more-actions')
     await expect(more).toBeVisible()

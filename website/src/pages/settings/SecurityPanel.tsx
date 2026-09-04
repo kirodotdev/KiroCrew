@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react'
+import React, { lazy, Suspense, useEffect, useMemo, useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { ShieldCheck, ShieldAlert, Lock, Eye, EyeOff, FileWarning, Terminal, Globe, Fingerprint, KeyRound, ScanLine, Layers, AlertTriangle, CheckCircle2, Circle, Clock, ExternalLink, ChevronRight, ChevronDown, Plus, Trash2, Gavel, Building2, Gauge, ToggleRight, MessageSquare, ListChecks, Boxes, BookOpen, Network, Copy, Check, Package } from 'lucide-react'
 import { useAppSelector } from '../../store'
@@ -8,13 +8,15 @@ import { Badge, Btn, Input, Toggle, Checkbox } from '../../components/ui'
 import { SettingsSection, SettingsCard, SettingsToggle } from '../../components/settings'
 import Modal from '../../components/Modal'
 import InfoTip from '../../components/InfoTip'
-import { api, ApiError, type DeniedCommandsData, type DeniedCommandRule, type DeniedUserRule, type GovernanceDistributionData, type GovernancePolicyData, type GovernanceScope, type GovernanceScopeDetail, type SecurityPostureData, type TailnetStatusData, type TrustedAppsData } from '../../api/client'
+import { api, ApiError, type DeniedCommandsData, type DeniedCommandRule, type DeniedUserRule, type DockerRegistryAccessData, type GovernanceDistributionData, type GovernancePolicyData, type GovernanceScope, type GovernanceScopeDetail, type SecurityPostureData, type TailnetStatusData, type TrustedAppsData } from '../../api/client'
 import { PostureDisclosureRow, CODE_BASE as POSTURE_CODE_BASE } from './PostureDisclosure'
 import { MobileLoginCard } from './MobileLoginCard'
 
 import { i18nT } from '../../i18n/t'
 import { fmtDateFields, fmtDuration, fmtList, fmtTime, fmtTimeNumeric, fmtUnit, toDate, compareText } from '../../i18n/format'
 import ErrorNotice from '../../components/ErrorNotice'
+
+const DockerRegistryAccessCard = lazy(() => import('./DockerRegistryAccessCard'))
 /* ── Security feature registry ──
  *
  * Qualitative layer descriptions ONLY. Every control whose posture is a COUNT
@@ -2207,7 +2209,7 @@ function DocsSection() {
  * The rail states which is which before any row is read, and the two large
  * tables (137 rules, ~20 governed scopes) get a pane instead of a fold.
  */
-type SecuritySectionKey = 'posture' | 'approval' | 'rules' | 'tailnet' | 'apps' | 'layers' | 'governance' | 'docs'
+type SecuritySectionKey = 'posture' | 'approval' | 'rules' | 'docker' | 'tailnet' | 'apps' | 'layers' | 'governance' | 'docs'
 type SecuritySectionGroup = 'status' | 'yours' | 'enforced' | 'reference'
 
 interface SecuritySectionDef {
@@ -2231,6 +2233,7 @@ export const SECTION_LABEL_KEY: Record<SecuritySectionKey, string> = {
   posture: 'pages.settings.securityPanel.live_security_posture',
   approval: 'pages.settings.securityPanel.yolo_auto_approve',
   rules: 'pages.settings.securityPanel.denied_commands',
+  docker: 'pages.settings.securityPanel.docker_access',
   tailnet: 'pages.settings.securityPanel.tailnet_section',
   apps: 'pages.settings.securityPanel.third_party_apps_section',
   layers: 'pages.settings.securityPanel.defense_in_depth_architecture',
@@ -2252,6 +2255,7 @@ const SECURITY_SECTIONS: readonly SecuritySectionDef[] = [
   { key: 'posture', icon: <ShieldCheck size={15} />, group: 'status' },
   { key: 'approval', icon: <Gauge size={15} />, group: 'yours' },
   { key: 'rules', icon: <Terminal size={15} />, group: 'yours' },
+  { key: 'docker', icon: <KeyRound size={15} />, group: 'yours' },
   { key: 'tailnet', icon: <Network size={15} />, group: 'yours' },
   { key: 'apps', icon: <Boxes size={15} />, group: 'yours' },
   { key: 'layers', icon: <Layers size={15} />, group: 'enforced' },
@@ -2312,6 +2316,10 @@ export function SecurityPanel({ basePath }: { basePath?: string } = {}) {
   const status = useAppSelector(s => s.dashboard.status)
   const { data: dc } = useQuery<DeniedCommandsData>({ queryKey: ['denied-commands'], queryFn: api.deniedCommands })
   const { data: cfg, isError: cfgError } = useQuery<KirocrewCfgShape>({ queryKey: ['kirocrewConfig'], queryFn: api.kirocrewConfig })
+  const { data: dockerAccess } = useQuery<DockerRegistryAccessData>({
+    queryKey: ['docker-registry-access'],
+    queryFn: api.getDockerRegistryAccess,
+  })
   // Same key and staleTime the card uses, so the rail adds no second request.
   const { data: tailnet, isError: tailnetError } = useQuery<TailnetStatusData>({
     queryKey: ['tailnet-status'],
@@ -2342,6 +2350,10 @@ export function SecurityPanel({ basePath }: { basePath?: string } = {}) {
         return status == null ? undefined : i18nT('pages.settings.securityPanel.interactive')
       case 'rules':
         return dc ? String(dc.builtins.filter(r => r.enabled).length) : undefined
+      case 'docker':
+        return dockerAccess?.enabled === true
+          ? i18nT('pages.settings.securityPanel.state_allowed')
+          : undefined
       case 'tailnet':
         // An unread state gets no summary, never the reassuring one. The label
         // is the server-owned `state`, so the rail cannot disagree with the
@@ -2367,7 +2379,9 @@ export function SecurityPanel({ basePath }: { basePath?: string } = {}) {
     return {
       key: section.key,
       label: i18nT(SECTION_LABEL_KEY[section.key]),
-      icon: section.icon,
+      icon: section.key === 'docker' && dockerAccess?.enabled === true && dockerAccess.supported
+        ? <KeyRound size={15} className="text-warn" />
+        : section.icon,
       group: i18nT(SECTION_GROUP_KEY[section.group]),
       summary: summary ? (
         <span className="block text-[11px] text-muted tabular-nums truncate mt-px">{summary}</span>
@@ -2411,6 +2425,18 @@ export function SecurityPanel({ basePath }: { basePath?: string } = {}) {
               </SettingsSection>
             )}
             {key === 'rules' && <DeniedCommandsSection draft={denyDraft} onDraftChange={setDenyDraft} noteDraft={denyNoteDraft} onNoteDraftChange={setDenyNoteDraft} />}
+            {key === 'docker' && (
+              <SettingsSection title={i18nT('pages.settings.securityPanel.docker_access')}>
+                <Suspense fallback={
+                  <SettingsCard>
+                    <div className="h-4 w-48 rounded bg-border/60 animate-pulse" />
+                    <div className="h-3 w-72 max-w-full rounded bg-border/40 animate-pulse mt-2" />
+                  </SettingsCard>
+                }>
+                  <DockerRegistryAccessCard />
+                </Suspense>
+              </SettingsSection>
+            )}
             {key === 'tailnet' && (
               <SettingsSection title={i18nT('pages.settings.securityPanel.tailnet_section')}>
                 <TailnetOriginCard />

@@ -965,8 +965,9 @@ class TestLauncherStagingSitesArePrefixed:
         tree = ast.parse(script)  # string-template edits must keep it parseable
 
         staging = self._staging_calls(tree)
-        # The template always emits all three staging sites (per-dir empties,
-        # per-file empties, SSH shadow); the level varies the DATA, not the code.
+        # The template always emits all three named staging sites (per-dir
+        # empties, per-file empties, SSH shadow). Exposed credential snapshots
+        # use anonymous memfds and therefore never appear here.
         assert len(staging) == 3
         for call in staging:
             prefix_kw = next((k for k in call.keywords if k.arg == "prefix"), None)

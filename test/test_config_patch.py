@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
+from dashboard_owner_helpers import as_owner
 
 
 def _make_app() -> web.Application:
@@ -16,7 +17,7 @@ def _make_app() -> web.Application:
 
     app = web.Application()
     app.router.add_patch("/api/config/kirocrew", api_kirocrew_config_patch)
-    return app
+    return as_owner(app)
 
 
 _UNSET: object = object()
