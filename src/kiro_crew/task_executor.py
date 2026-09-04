@@ -16,7 +16,12 @@ from kiro_crew import git_coord, name_grant, platform_compat, shutdown_event
 from kiro_crew.acp.client import AcpProcessDied
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.executors import run_in_embed_pool
-from kiro_crew.hooks import TOOL_AUTO_APPROVE, TOOL_DENY, fire_tool_hooks, get_global_hook_store
+from kiro_crew.hooks import (
+    HOOK_EVENT_PRE_TOOL_USE,
+    TOOL_AUTO_APPROVE,
+    TOOL_DENY,
+    get_global_hook_store,
+)
 from kiro_crew.llm_helpers import provider_last_turn_usage, stream_and_collect_json
 from kiro_crew.messaging.link import telemetry_channel_of
 from kiro_crew.providers.base import (
@@ -394,6 +399,72 @@ async def execute_task(
                                 error="hook_deny",
                             )
                             continue
+                        # PreToolUse script-hook gate (autonomous, fail-closed).
+                        # Shared has_verdict predicate with dashboard so the two
+                        # surfaces cannot drift (issue #7547). Per-hook
+                        # fail_open is the escape hatch, default closed.
+                        _store = get_global_hook_store()
+                        if _store is not None:
+                            try:
+                                _hook_results = await _store.fire(
+                                    HOOK_EVENT_PRE_TOOL_USE,
+                                    tool_name=event.title or "",
+                                    tool_input=event.raw_tool_params,
+                                    parent_session_key=session_key or None,
+                                    agent_role=agent or None,
+                                )
+                                _blocked = False
+                                _detail = ""
+                                for _hr in _hook_results:
+                                    _ec = getattr(_hr, "exit_code", -1)
+                                    if _ec == 2:
+                                        _blocked = True
+                                        _detail = _hr.stderr[:200] if _hr.stderr else "hook denied"
+                                        break
+                                    if _ec not in (0, 2):
+                                        _hook = (
+                                            _store.get(_hr.hook_id)
+                                            if getattr(_hr, "hook_id", None)
+                                            else None
+                                        )
+                                        _fail_open_val = (
+                                            getattr(_hook, "fail_open", False) if _hook else False
+                                        )
+                                        _fail_open = _fail_open_val is True
+                                        if not _fail_open:
+                                            _blocked = True
+                                            _detail = (
+                                                _hr.error
+                                                or _hr.stderr
+                                                or f"exited with code {_hr.exit_code}"
+                                            )[:200]
+                                            break
+                                if _blocked:
+                                    await client.reject_tool(event.request_id)
+                                    sel().log_tool_invocation(
+                                        session_key=session_key,
+                                        agent=agent or "kirocrew",
+                                        source="taskrunner",
+                                        tool_name=event.title,
+                                        tool_kind=event.tool_kind,
+                                        outcome="hook_blocked",
+                                        request_id=event.request_id,
+                                        error=_detail,
+                                    )
+                                    continue
+                            except Exception as exc:  # noqa: BLE001 - fail-closed
+                                await client.reject_tool(event.request_id)
+                                sel().log_tool_invocation(
+                                    session_key=session_key,
+                                    agent=agent or "kirocrew",
+                                    source="taskrunner",
+                                    tool_name=event.title,
+                                    tool_kind=event.tool_kind,
+                                    outcome="hook_error",
+                                    request_id=event.request_id,
+                                    error=str(exc)[:200],
+                                )
+                                continue
                         if tool_result.action == TOOL_AUTO_APPROVE:
                             # The hook granted this by NAME (its
                             # `auto_approve_tools` globs, or the read-only
@@ -535,7 +606,81 @@ async def execute_task(
                         },
                     )
                 elif event.kind == EVENT_TOOL_CALL:
-                    # Fire PreToolUse hooks for auto-approved tools (informational only)
+                    # Enforce governance (POLICY ∩ PROFILE, tightest-wins, no
+                    # new scope) and PreToolUse script hooks AHEAD of the
+                    # tool. Previously informational-only (fire_tool_hooks
+                    # discarded, outcome auto_approved) so no hook could deny
+                    # (issue #7547). Now uses shared has_verdict predicate
+                    # and per-hook fail_open (H13: adapt autonomous onto the
+                    # Kiro gate, don't widen it).
+                    _governance_blocked = False
+                    _hook_blocked = False
+                    _hook_detail = ""
+                    if ctx and getattr(ctx, "hooks", None):
+                        try:
+                            _gr = ctx.hooks.on_tool_call(
+                                event.title,
+                                session_key=session_key,
+                                agent=agent or "kirocrew",
+                                tool_kind=event.tool_kind,
+                                raw_params=event.raw_tool_params,
+                                command=event.shell_command,
+                                is_shell=event.is_shell,
+                            )
+                            if _gr.action == TOOL_DENY:
+                                _governance_blocked = True
+                                _hook_detail = _gr.reason or "blocked by governance"
+                        except Exception:
+                            pass
+                    _store = get_global_hook_store()
+                    if not _governance_blocked and _store is not None:
+                        try:
+                            _hook_results = await _store.fire(
+                                HOOK_EVENT_PRE_TOOL_USE,
+                                tool_name=event.title or "",
+                                tool_input=event.raw_tool_params,
+                                parent_session_key=session_key or None,
+                                agent_role=agent or None,
+                            )
+                            for _hr in _hook_results:
+                                _ec = getattr(_hr, "exit_code", -1)
+                                if _ec == 2:
+                                    _hook_blocked = True
+                                    _hook_detail = _hr.stderr[:200] if _hr.stderr else "hook denied"
+                                    break
+                                if _ec not in (0, 2):
+                                    _hook = (
+                                        _store.get(_hr.hook_id)
+                                        if getattr(_hr, "hook_id", None)
+                                        else None
+                                    )
+                                    _fail_open_val = (
+                                        getattr(_hook, "fail_open", False) if _hook else False
+                                    )
+                                    _fail_open = _fail_open_val is True
+                                    if not _fail_open:
+                                        _hook_blocked = True
+                                        _hook_detail = (
+                                            _hr.error
+                                            or _hr.stderr
+                                            or f"exited with code {_hr.exit_code}"
+                                        )[:200]
+                                        break
+                        except Exception as exc:  # noqa: BLE001 - fail-closed
+                            _hook_blocked = True
+                            _hook_detail = str(exc)[:200]
+                    if _governance_blocked or _hook_blocked:
+                        sel().log_tool_invocation(
+                            session_key=session_key,
+                            agent=agent or "kirocrew",
+                            source="taskrunner",
+                            tool_name=event.title,
+                            tool_kind=event.tool_kind,
+                            outcome="hook_blocked" if _hook_blocked else "denied",
+                            error=_hook_detail,
+                            metadata={"task": task.index, "task_id": run.task_id, "blocked": True},
+                        )
+                        continue
                     sel().log_tool_invocation(
                         session_key=session_key,
                         agent=agent or "kirocrew",
@@ -544,13 +689,6 @@ async def execute_task(
                         tool_kind=event.tool_kind,
                         outcome="auto_approved",
                         metadata={"task": task.index, "task_id": run.task_id},
-                    )
-                    await fire_tool_hooks(
-                        get_global_hook_store(),
-                        event.title,
-                        event.tool_input,
-                        parent_session_key=session_key or None,
-                        agent_role=(agent or "kirocrew"),
                     )
                 elif event.kind == EVENT_COMPLETE:
                     _complete_event = event

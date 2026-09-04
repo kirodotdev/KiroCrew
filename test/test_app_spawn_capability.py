@@ -445,9 +445,12 @@ class TestChildGateInheritsTheApp:
             and isinstance(node.func, ast.Attribute)
             and node.func.attr == "on_tool_call"
         ]
-        assert len(calls) == 1
-        app_arg = next(keyword.value for keyword in calls[0].keywords if keyword.arg == "app")
+        # Two gates since #7547: the permission-request gate and the tool-call
+        # gate. Both must forward the spawning app to the per-tool-call gate.
+        assert len(calls) == 2
         expected = ast.parse('info.app or ""', mode="eval").body
-        assert ast.dump(app_arg, include_attributes=False) == ast.dump(
-            expected, include_attributes=False
-        )
+        for call in calls:
+            app_arg = next(keyword.value for keyword in call.keywords if keyword.arg == "app")
+            assert ast.dump(app_arg, include_attributes=False) == ast.dump(
+                expected, include_attributes=False
+            )

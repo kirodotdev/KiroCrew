@@ -3324,7 +3324,14 @@ def _normalize_hook_timeout(value: object) -> int:
 
 
 def validate_hook_fields(
-    *, event: str, timeout: object, command: str, skills: list, matcher: str, matcher_mode: str
+    *,
+    event: str,
+    timeout: object,
+    command: str,
+    skills: list,
+    matcher: str,
+    matcher_mode: str,
+    fail_open: object = False,
 ) -> None:
     """Enforce the script-hook invariants at a WRITE boundary, raising on any breach.
 
@@ -3374,6 +3381,8 @@ def validate_hook_fields(
             re.compile(matcher)
         except re.error as exc:
             raise ValueError(f"invalid regex: {exc}") from None
+    if not isinstance(fail_open, bool):
+        raise ValueError("fail_open must be a boolean")
 
 
 # Env keys a script-hook subprocess may inherit from the gateway. A script hook
@@ -3482,6 +3491,11 @@ class ScriptHook:
     )  # skill keys to inject when matched (no subprocess needed)
     timeout: int = 30  # seconds (Kiro CLI default is 30s)
     enabled: bool = True
+    # Per-hook direction for a non-verdict PreToolUse result (timeout/crash/
+    # missing binary → exit not 0/2). False = fail-closed (block), True =
+    # fail-open (warn). Default False so PreToolUse gates fail closed without
+    # an explicit opt-out (issue #7547 escape hatch). Other events ignore it.
+    fail_open: bool = False
     last_run: float = 0.0
     last_status: str = ""  # "ok", "error", "timeout", "blocked"
     last_error: str = ""  # human-readable reason for the most recent non-ok status
@@ -3526,7 +3540,8 @@ class ScriptHook:
             command=data.get("command", ""),
             skills=[str(s) for s in skills if isinstance(s, str)],
             timeout=timeout,
-            enabled=data.get("enabled", True),
+            enabled=_coerce_bool(data.get("enabled", True), default=True),
+            fail_open=_coerce_bool(data.get("fail_open", False), default=False),
             last_run=data.get("last_run", 0.0),
             last_status=data.get("last_status", ""),
             last_error=last_error,
@@ -3666,6 +3681,115 @@ class ScriptHookResult:
     @property
     def succeeded(self) -> bool:
         return self.exit_code == 0
+
+    # Shared 0/2-verdict predicate hoisted from the dashboard chat gate
+    # so the autonomous paths cannot drift (issue #7547). A PreToolUse hook
+    # has a two-valued contract — 0 allow, 2 deny — every other code means
+    # the gate did not decide.
+    @property
+    def has_verdict(self) -> bool:
+        """True when the hook delivered a verdict (exit 0 allow or 2 deny)."""
+        return self.exit_code in (0, 2)
+
+    @property
+    def verdict(self) -> str | None:
+        """Canonical verdict string, or None when no verdict was delivered."""
+        if self.exit_code == 0:
+            return "allow"
+        if self.exit_code == 2:
+            return "deny"
+        return None
+
+
+def pretooluse_should_block(
+    result: "ScriptHookResult",
+    *,
+    event: str,
+    fail_open: bool = False,
+) -> bool:
+    """Shared PreToolUse deny predicate (tightest-wins, fail-closed default).
+
+    A PreToolUse hook has a two-valued contract — exit 0 allow, exit 2 deny
+    (``ScriptHookResult.has_verdict``). Any other exit means the gate did not
+    decide (timeout, crash, missing binary → -1/126/127/1) and — for a gating
+    event — must resolve to deny unless the hook explicitly opts to fail open.
+    Other events never block on a non-verdict (warn-only).
+
+    Hoisted from the dashboard chat ``_fire`` closure so the autonomous
+    subagent/task-runner gates cannot drift (issue #7547). Per-hook
+    ``fail_open`` is the escape hatch with fail-closed default for
+    PreToolUse; non-PreToolUse ignores it (H13 harness-parity: no new scope).
+
+    MagicMock-compatible: tests drive the gate with MagicMock results whose
+    ``blocked``/``has_verdict`` are MagicMocks (truthy), so the predicate
+    falls back to ``exit_code`` when those attributes are not real bools.
+    """
+    ec = getattr(result, "exit_code", -1)
+    # Real ScriptHookResult has bool-typed blocked/has_verdict; a MagicMock
+    # test double has MagicMock-typed ones (truthy) which would mis-evaluate,
+    # so fall back to exit_code when not a real bool.
+    blocked = result.blocked if isinstance(getattr(result, "blocked", None), bool) else (ec == 2)
+    has_verdict = (
+        result.has_verdict
+        if isinstance(getattr(result, "has_verdict", None), bool)
+        else (ec in (0, 2))
+    )
+    if blocked:
+        return True
+    if has_verdict:
+        return False
+    if event == HOOK_EVENT_PRE_TOOL_USE:
+        return not fail_open
+    return False
+
+
+def _hook_fail_open(store: "ScriptHookStore | None", hook_id: str) -> bool:
+    """Best-effort lookup of a hook's ``fail_open`` flag, defaulting closed.
+
+    Strict bool check: only an explicit ``True`` opts in; a MagicMock test
+    double (whose every attribute is a truthy MagicMock) must not be read as
+    an opt-in and must stay fail-closed.
+    """
+    if not store or not hook_id:
+        return False
+    try:
+        hook = store.get(hook_id)
+        val = getattr(hook, "fail_open", False)
+        return val is True
+    except Exception:
+        return False
+
+
+def _pretooluse_block_reason(result: "ScriptHookResult") -> str:
+    """Preferred block detail for a non-verdict PreToolUse result (redacted)."""
+    return (result.error or result.stderr or f"exited with code {result.exit_code}")[:200]
+
+
+def _should_block_results(
+    results: list["ScriptHookResult"],
+    *,
+    event: str,
+    store: "ScriptHookStore | None" = None,
+) -> tuple[bool, str]:
+    """Evaluate a batch of hook results with the shared predicate.
+
+    Returns (should_block, detail) where detail is the first blocking reason.
+    Used by both the dashboard chat gate and the autonomous gates (subagent,
+    task-runner) so the verdict logic has one definition (tightest-wins, fail-
+    closed PreToolUse). ``store`` is consulted only for per-hook ``fail_open``
+    when a result has no verdict; absent store → fail-closed.
+    """
+    for r in results:
+        fail_open = _hook_fail_open(store, r.hook_id)
+        if pretooluse_should_block(r, event=event, fail_open=fail_open):
+            # Prefer the hook-authored message, falling back to exit code.
+            detail = (
+                _pretooluse_block_reason(r)
+                if not r.blocked
+                else (r.stderr[:200] if r.stderr else "hook denied")
+            )
+            return True, detail
+    return False, ""
 
 
 def _script_hooks_capability_denied(session_key: str = "") -> str | None:
@@ -4113,6 +4237,7 @@ class ScriptHookStore:
             skills=hook.skills,
             matcher=hook.matcher,
             matcher_mode=hook.matcher_mode,
+            fail_open=data.get("fail_open", hook.fail_open),
         )
         with self._mutex, self._atomic_mutation():
             self._hooks[hook.id] = hook
@@ -4124,7 +4249,16 @@ class ScriptHookStore:
             hook = self._hooks.get(hook_id)
             if not hook:
                 return None
-            for k in ("name", "event", "matcher", "matcher_mode", "command", "timeout", "enabled"):
+            for k in (
+                "name",
+                "event",
+                "matcher",
+                "matcher_mode",
+                "command",
+                "timeout",
+                "enabled",
+                "fail_open",
+            ):
                 if k in data:
                     setattr(hook, k, data[k])
             if "skills" in data:
@@ -4149,6 +4283,7 @@ class ScriptHookStore:
                 skills=hook.skills,
                 matcher=hook.matcher,
                 matcher_mode=hook.matcher_mode,
+                fail_open=hook.fail_open,
             )
             self._save()
         return hook

@@ -4,6 +4,9 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from kiro_crew.hooks import HOOK_EVENT_POST_TOOL_USE, HOOK_EVENT_PRE_TOOL_USE
+from kiro_crew.sel import sel
+
 from ._component import ManagerComponent
 
 if TYPE_CHECKING:
@@ -24,7 +27,6 @@ if TYPE_CHECKING:
         EVENT_TOOL_RESULT,
         FALLBACK_CANDIDATE_ATTEMPTS,
         FALLBACK_STORY_ATTR,
-        HOOK_EVENT_POST_TOOL_USE,
         TOOL_AUTO_APPROVE,
         TOOL_DENY,
         TRANSIENT_RETRIES,
@@ -56,12 +58,10 @@ if TYPE_CHECKING:
         configured_fallback_chain,
         evict_completed_agents,
         extract_options,
-        fire_tool_hooks,
         logger,
         name_grant,
         provider_fallback_active,
         run_in_embed_pool,
-        sel,
         time,
         transient_retry_delay,
         update_state,
@@ -1268,6 +1268,79 @@ class RunEventCoordinator(ManagerComponent):
                         client, event.request_id, session_key, event, error="hook_deny"
                     )
                     continue
+                # PreToolUse script-hook gate (autonomous, fail-closed).
+                # Hoists the shared 0/2 verdict predicate (has_verdict) from
+                # hooks.ScriptHookResult so dashboard and autonomous gates
+                # cannot drift (issue #7547). Tightest-wins with the
+                # HookManager governance above (effective = POLICY ∩ PROFILE,
+                # no new scope, H13). Per-hook fail_open is the escape hatch,
+                # default closed for PreToolUse.
+                if self._manager.hook_store is not None:
+                    try:
+                        _hook_results = await self._manager.hook_store.fire(
+                            HOOK_EVENT_PRE_TOOL_USE,
+                            tool_name=event.title or "",
+                            tool_input=event.raw_tool_params,
+                            subagent_id=info.id,
+                            parent_session_key=info.parent_session_key or None,
+                            agent_role=info.agent or None,
+                        )
+                        _blocked = False
+                        _detail = ""
+                        for _hr in _hook_results:
+                            _ec = getattr(_hr, "exit_code", -1)
+                            if _ec == 2:
+                                _blocked = True
+                                _detail = _hr.stderr[:200] if _hr.stderr else "hook denied"
+                                break
+                            if _ec not in (0, 2):
+                                _hook = (
+                                    self._manager.hook_store.get(_hr.hook_id)
+                                    if getattr(_hr, "hook_id", None)
+                                    else None
+                                )
+                                _fail_open_val = (
+                                    getattr(_hook, "fail_open", False) if _hook else False
+                                )
+                                _fail_open = _fail_open_val is True
+                                if not _fail_open:
+                                    _blocked = True
+                                    _detail = (
+                                        _hr.error
+                                        or _hr.stderr
+                                        or f"exited with code {_hr.exit_code}"
+                                    )[:200]
+                                    break
+                        if _blocked:
+                            await self._manager._reject_and_log(
+                                client, event.request_id, session_key, event, error="hook_blocked"
+                            )
+                            sel().log_tool_invocation(
+                                session_key=session_key,
+                                source="subagent",
+                                tool_name=event.title or "",
+                                tool_kind=event.tool_kind,
+                                outcome="hook_blocked",
+                                request_id=event.request_id,
+                                error=_detail,
+                                metadata={"subagent_id": info.id},
+                            )
+                            continue
+                    except Exception as exc:  # noqa: BLE001 - fail-closed
+                        await self._manager._reject_and_log(
+                            client, event.request_id, session_key, event, error="hook_error"
+                        )
+                        sel().log_tool_invocation(
+                            session_key=session_key,
+                            source="subagent",
+                            tool_name=event.title or "",
+                            tool_kind=event.tool_kind,
+                            outcome="hook_error",
+                            request_id=event.request_id,
+                            error=str(exc)[:200],
+                            metadata={"subagent_id": info.id},
+                        )
+                        continue
                 if event.child_low_fidelity:
                     # UNCONDITIONAL parent grant: parent_policy=auto approves
                     # regardless of event content, so it may honor a request
@@ -1474,11 +1547,104 @@ class RunEventCoordinator(ManagerComponent):
                     )
                     continue
             elif event.kind == EVENT_TOOL_CALL:
-                # Auto-allowed (kiro-internal) tools surface here as informational
-                # tool_call updates and NEVER as EVENT_PERMISSION_REQUEST, so this
-                # is the only progress signal a simple/read-only subagent task emits.
-                # Count it, record it, and broadcast the same subagent_tool event
-                # the permission path uses so the running-card shows live activity.
+                # Enforce governance (POLICY ∩ PROFILE, tightest-wins, no new
+                # scope) and PreToolUse script hooks AHEAD of execution. The
+                # previous informational-only path (fire_tool_hooks discarded,
+                # outcome hardcoded auto_approved) meant no hook — exit 2, slow,
+                # crash, or missing binary — could ever deny on the autonomous
+                # path (issue #7547). Now the same shared 0/2 verdict predicate
+                # (has_verdict) and per-hook fail_open that the dashboard gate
+                # uses applies here (H13 harness-parity: adapt autonomous onto
+                # the Kiro gate, don't widen it).
+                _governance_blocked = False
+                _hook_blocked = False
+                _hook_detail = ""
+                if self._manager._ctx_builder and getattr(
+                    self._manager._ctx_builder, "hooks", None
+                ):
+                    try:
+                        _gr = self._manager._ctx_builder.hooks.on_tool_call(
+                            event.title,
+                            session_key=session_key,
+                            agent=info.agent or "",
+                            app=info.app or "",
+                            tool_kind=event.tool_kind,
+                            raw_params=event.raw_tool_params,
+                            command=event.shell_command,
+                            is_shell=event.is_shell,
+                            mcp_server_name=event.mcp_server_name,
+                            mcp_tool_name=event.tool_name,
+                        )
+                        if _gr.action == TOOL_DENY:
+                            _governance_blocked = True
+                            _hook_detail = _gr.reason or "blocked by governance"
+                    except Exception:
+                        pass
+                if not _governance_blocked and self._manager.hook_store is not None:
+                    try:
+                        _hook_results = await self._manager.hook_store.fire(
+                            HOOK_EVENT_PRE_TOOL_USE,
+                            tool_name=(event.title or "").removeprefix("Running: "),
+                            tool_input=event.raw_tool_params,
+                            subagent_id=info.id,
+                            parent_session_key=info.parent_session_key or None,
+                            agent_role=info.agent or None,
+                        )
+                        for _hr in _hook_results:
+                            _ec = getattr(_hr, "exit_code", -1)
+                            if _ec == 2:
+                                _hook_blocked = True
+                                _hook_detail = _hr.stderr[:200] if _hr.stderr else "hook denied"
+                                break
+                            if _ec not in (0, 2):
+                                _hook = (
+                                    self._manager.hook_store.get(_hr.hook_id)
+                                    if getattr(_hr, "hook_id", None)
+                                    else None
+                                )
+                                _fail_open_val = (
+                                    getattr(_hook, "fail_open", False) if _hook else False
+                                )
+                                _fail_open = _fail_open_val is True
+                                if not _fail_open:
+                                    _hook_blocked = True
+                                    _hook_detail = (
+                                        _hr.error
+                                        or _hr.stderr
+                                        or f"exited with code {_hr.exit_code}"
+                                    )[:200]
+                                    break
+                    except Exception as exc:  # noqa: BLE001 - fail-closed
+                        _hook_blocked = True
+                        _hook_detail = str(exc)[:200]
+                # Cache tool name so PostToolUse can recover it on EVENT_TOOL_RESULT.
+                # Strip "Running: " prefix to match the name passed to PreToolUse hooks.
+                _raw = event.title or ""
+                if _raw.startswith("Running: "):
+                    _raw = _raw[9:]
+                if event.tool_call_id:
+                    _pending_tools[event.tool_call_id] = _raw
+                if _governance_blocked or _hook_blocked:
+                    sel().log_tool_invocation(
+                        session_key=session_key,
+                        source="subagent",
+                        tool_name=event.title,
+                        tool_kind=event.tool_kind,
+                        outcome="hook_blocked" if _hook_blocked else "denied",
+                        error=_hook_detail,
+                        metadata={"subagent_id": info.id, "blocked": True},
+                    )
+                    await self._manager._fire_event(
+                        "subagent_tool",
+                        info,
+                        {
+                            "tool": _redact(event.title or "") + " (blocked)",
+                            "tool_kind": event.tool_kind,
+                            "turns": info.turns,
+                            "tool_count": info.tool_count,
+                        },
+                    )
+                    continue
                 info.tool_count += 1
                 info.last_tool = event.title or info.last_tool
                 self._manager._note_tool_dispatch(info, event)
@@ -1492,7 +1658,6 @@ class RunEventCoordinator(ManagerComponent):
                         "tool_count": info.tool_count,
                     },
                 )
-                # Fire PreToolUse hooks for auto-approved tools (informational only)
                 sel().log_tool_invocation(
                     session_key=session_key,
                     source="subagent",
@@ -1500,21 +1665,6 @@ class RunEventCoordinator(ManagerComponent):
                     tool_kind=event.tool_kind,
                     outcome="auto_approved",
                     metadata={"subagent_id": info.id},
-                )
-                # Cache tool name so PostToolUse can recover it on EVENT_TOOL_RESULT.
-                # Strip "Running: " prefix to match the name passed to PreToolUse hooks.
-                _raw = event.title or ""
-                if _raw.startswith("Running: "):
-                    _raw = _raw[9:]
-                if event.tool_call_id:
-                    _pending_tools[event.tool_call_id] = _raw
-                await fire_tool_hooks(
-                    self._manager.hook_store,
-                    event.title,
-                    event.tool_input,
-                    subagent_id=info.id,
-                    parent_session_key=info.parent_session_key or None,
-                    agent_role=info.agent or None,
                 )
             elif event.kind == EVENT_TOOL_RESULT:
                 # A FINAL result means the tool is done: drop the attribution

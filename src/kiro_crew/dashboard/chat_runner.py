@@ -5280,7 +5280,12 @@ async def _run_chat(
                 hook_continuation_count=hook_continuation_count,
             )
             for r in results:
-                if r.exit_code == 0 and r.stdout:
+                # Shared predicate via hooks.pretooluse_should_block (has_verdict
+                # on ScriptHookResult) so dashboard and autonomous gates cannot
+                # drift (issue #7547). Per-hook fail_open remains the escape
+                # hatch, default closed.
+                _exit = getattr(r, "exit_code", -1)
+                if _exit == 0 and r.stdout:
                     injected.append(r.stdout)
                     logger.info("Hook %s stdout: %s", r.hook_name, r.stdout[:200])
                     state.broadcast_ws(
@@ -5291,48 +5296,32 @@ async def _run_chat(
                             "text": f"Hook {r.hook_name}: injected {len(r.stdout)} chars",
                         },
                     )
-                elif r.exit_code == 2:
-                    injected.append(
-                        f"BLOCKED:{r.hook_name}:{r.stderr[:200] if r.stderr else 'hook denied'}"
-                    )
-                    logger.warning(
-                        "Hook %s blocked tool: %s",
-                        r.hook_name,
-                        r.stderr[:200] if r.stderr else "exit 2",
-                    )
-                    state.broadcast_ws(
-                        "activity_event",
-                        {
-                            "slot": slot.key,
-                            "kind": "hook",
-                            "text": f"Hook {r.hook_name} BLOCKED: {r.stderr[:100] if r.stderr else 'denied'}",
-                        },
-                    )
-                elif r.exit_code not in (0, 2):
-                    detail = (r.error or r.stderr or f"exited with code {r.exit_code}")[:200]
-                    if event == HOOK_EVENT_PRE_TOOL_USE:
-                        # Fail closed. A PreToolUse hook has a two-valued
-                        # contract — exit 0 is a delivered allow, exit 2 a
-                        # delivered deny — so every other code means the gate
-                        # did not decide, and for a gate that resolves to deny.
-                        # Treating it as a pass would mean breaking, slowing, or
-                        # deleting the deny hook silently disables the policy it
-                        # enforces. Same shape as the hook-store and
-                        # fire()-raised denials on this path.
-                        #
-                        # This deliberately covers more than the undelivered
-                        # shapes (timeout and crash → -1, unexecutable → 126/127):
-                        # a hook that runs to completion and exits 1 also blocks
-                        # here, where it previously only warned. A hook's own
-                        # uncaught error surfaces as exit 1 too and is
-                        # indistinguishable from a deliberate one, and the exit
-                        # code a failed exec produces is shell- and
-                        # platform-specific (cmd /c yields 9009 or 1 where
-                        # /bin/sh yields 127), so an allowlist of "real" failure
-                        # codes would fail open on Windows for exactly this
-                        # class. The hook store already calls every nonzero
-                        # non-2 exit an error (``last_status = "error"``); this
-                        # branch gives the gate the matching direction.
+                    continue
+                # Evaluate block via the shared helper (handles MagicMock test
+                # doubles and real ScriptHookResult uniformly).
+                from kiro_crew.hooks import _hook_fail_open, pretooluse_should_block
+
+                _fail_open = _hook_fail_open(state._hook_store, getattr(r, "hook_id", ""))
+                if pretooluse_should_block(r, event=event, fail_open=_fail_open):
+                    if _exit == 2:
+                        injected.append(
+                            f"BLOCKED:{r.hook_name}:{r.stderr[:200] if r.stderr else 'hook denied'}"
+                        )
+                        logger.warning(
+                            "Hook %s blocked tool: %s",
+                            r.hook_name,
+                            r.stderr[:200] if r.stderr else "exit 2",
+                        )
+                        state.broadcast_ws(
+                            "activity_event",
+                            {
+                                "slot": slot.key,
+                                "kind": "hook",
+                                "text": f"Hook {r.hook_name} BLOCKED: {r.stderr[:100] if r.stderr else 'denied'}",
+                            },
+                        )
+                    else:
+                        detail = (r.error or r.stderr or f"exited with code {r.exit_code}")[:200]
                         injected.append(f"BLOCKED:{r.hook_name}:{detail}")
                         logger.error(
                             "Hook %s could not deliver a verdict (%s) - blocking tool",
@@ -5347,9 +5336,9 @@ async def _run_chat(
                                 "text": f"Hook {r.hook_name} BLOCKED (no verdict): {detail[:100]}",
                             },
                         )
-                    elif r.stderr:
-                        # Non-zero, non-block on a non-gating event: warn only.
-                        logger.warning("Hook %s warning: %s", r.hook_name, r.stderr[:200])
+                    continue
+                elif _exit not in (0, 2) and r.stderr:
+                    logger.warning("Hook %s warning: %s", r.hook_name, r.stderr[:200])
         except Exception as exc:
             if event == HOOK_EVENT_PRE_TOOL_USE:
                 logger.warning("Hook fire error during blocking event %s: %s", event, exc)
