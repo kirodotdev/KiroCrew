@@ -26,6 +26,7 @@
         "mcp_quarantine_after_failures": 3,
         "acp_backend": "",
         "member_acp_backend": "kas",
+        "default_harness": "",
         "default_agent": "",
         "sweep_agents_backups": false,
         "sandbox": "auto",
@@ -286,6 +287,20 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": "kas"
+    },
+    {
+      "path": "agent.default_harness",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Default Harness",
+      "help": "Harness id new sessions start on when no explicit selection is made. Empty means kiro-cli. A value naming a harness that is unknown or unavailable degrades to kiro-cli with a logged reason, so a typo never stops the gateway. Bundled ids: 'kiro', 'kas', 'codex', 'claude'; an operator harness uses its id from harnesses.json.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": ""
     },
     {
       "path": "agent.default_agent",

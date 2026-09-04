@@ -7,6 +7,14 @@ import re as _re
 from dataclasses import dataclass, field
 from typing import Any
 
+# The bundled-harness ids (our wave-2 registry vocabulary) still live in
+# ``harness_registry`` and back the ``_HARNESS_BACKENDS`` bridge below.
+from kiro_crew.acp.harness_registry import (
+    HARNESS_CLAUDE,
+    HARNESS_KAS,
+    HARNESS_KIRO,
+)
+
 # Backend identifiers, the capability sets and the selectable registry live in the
 # leaf module
 # ``kiro_crew.acp_backends`` (it imports nothing from this package, which is what
@@ -148,14 +156,104 @@ ACP_CLIENT_CAPABILITIES: dict = {
 # The selectable set is no longer a constant either: it is a REGISTRY an edition
 # extends (``register_selectable_backend``). A frozen ``ACP_BACKENDS_SELECTABLE``
 # snapshot here would be read before boot registration and silently miss it.
+# Consumers that need the selectable set call ``selectable_backends()``;
+# the wave-2 ``ACP_BACKENDS_SELECTABLE`` snapshot has been dropped.
 
-# ── Capability membership ──
+# ── Capability membership (harness-parity H6, H7) ──
+# Every capability a backend may claim is an OPT-IN grant, never a negation at
+# the call site. ``not is_claude_backend`` reads correctly with two backends and
+# then silently hands the capability to the third, so a harness that has never
+# demonstrated the capability inherits it — and the operator who never opted into
+# that harness is the one who finds out. Adding a member is a deliberate edit
+# with evidence; inheriting a default is not a decision. See
+# docs/system-specs/modules/harness-parity.md.
+#
 # The ``ACP_BACKENDS_*`` capability sets are DEFINED in the leaf module
 # ``kiro_crew.acp_backends`` and re-exported by the import above, so
-# ``from kiro_crew.acp.types import ACP_BACKENDS_STEER`` still resolves. They moved
-# for the same reason the backend identifiers did: a consumer outside this package
-# must be able to ask a capability question without importing ``kiro_crew.acp``,
-# whose ``__init__`` pulls in the client and runtime.
+# ``from kiro_crew.acp.types import ACP_BACKENDS_STEER`` still resolves. They live
+# in the leaf for the same reason the backend identifiers do: a consumer outside
+# this package must be able to ask a capability question without importing
+# ``kiro_crew.acp``, whose ``__init__`` pulls in the client and runtime.
+#
+# Two disciplines meet here and both hold:
+#
+# * PER-SESSION behavior gates read the session's BOUND DESCRIPTOR
+#   (``binding.descriptor.capabilities``), never a set keyed on the legacy
+#   ``acp_backend`` spelling — an operator harness has no such spelling, so a
+#   set lookup would silently mis-gate it (harness-parity H5/H6).
+# * OUTSIDE-ACP consumers with no session in hand (readiness, prerequisites,
+#   ``session._bg_runtime_backends``) read the leaf sets, whose membership is
+#   the ``acp_backend`` vocabulary — bundled harnesses only, by construction.
+#
+# The leaf sets and the bundled descriptors' ``CapabilitySet`` grants are two
+# spellings of the SAME facts, pinned in agreement by
+# ``test_harness_capability_views.py``: a capability cannot be claimed in one
+# vocabulary and withheld in the other. WHY a harness claims a capability — or
+# deliberately does not — is recorded on its descriptor in
+# ``acp/harness_registry.py``.
+#
+# A bundled harness with no legacy identifier (Codex), and every operator
+# harness, contributes no member to any leaf set: those sets are keyed by the
+# ``acp_backend`` vocabulary, and a harness outside it has nothing to
+# contribute. Such a harness is reached through the registry's capability read
+# instead, which is where every per-session consumer ends up.
+
+#: The legacy ``acp_backend`` spelling of each bundled harness that has one.
+_HARNESS_BACKENDS: dict[str, str] = {
+    HARNESS_KIRO: ACP_BACKEND_KIRO,
+    HARNESS_KAS: ACP_BACKEND_KAS,
+    HARNESS_CLAUDE: ACP_BACKEND_CLAUDE,
+}
+
+
+def legacy_backend_for(harness_id: str) -> str | None:
+    """The ``acp_backend`` spelling of ``harness_id``, or None when it has none.
+
+    The bridge a session binding needs while the provider is still keyed on
+    ``acp_backend``: a surface resolves a harness id, and this says which backend
+    identifier constructs a provider for it. ``None`` is a real answer — Codex and
+    every operator harness have no legacy spelling — and it must NOT be collapsed
+    to ``ACP_BACKEND_KIRO``, which is the empty string: a caller that treated a
+    missing spelling as kiro-cli's would hand a foreign harness kiro's capability
+    answers (session sharing, the identity-store sweep, the cli.json overlays)
+    without it having declared any of them. Callers refuse instead.
+
+    Reading it through a function rather than exporting the dict keeps the mapping
+    one-directional at the seam: consumers ask about one harness and cannot
+    enumerate or mutate the table.
+    """
+    return _HARNESS_BACKENDS.get(harness_id)
+
+
+#: :data:`_HARNESS_BACKENDS` read the other way: which harness a live process's
+#: backend spelling IS. Built from the same table so the two directions cannot
+#: drift, and one-to-one today — a spelling that ever names two harnesses needs
+#: an explicit tie-break here rather than whichever row was written last.
+_BACKEND_HARNESSES: dict[str, str] = {
+    backend: harness_id for harness_id, backend in _HARNESS_BACKENDS.items()
+}
+
+
+def harness_for_backend(acp_backend: str) -> str | None:
+    """The harness id whose legacy spelling is ``acp_backend``, else None.
+
+    The IDENTITY question — "which harness is this running process?" — and it is
+    deliberately not the registry's ``resolve_alias``, which answers the CONFIG
+    question "which harness did the operator's stored key select?". The two differ
+    for any harness that is known but not selectable: ``resolve_alias("codex")``
+    degrades to kiro-cli (with a WARNING naming ``agent.acp_backend``) because
+    selecting the dormant seam must not start a session on it. Read as an identity
+    that is a misattribution — a codex-seam session's usage rows would be
+    credited to kiro-cli, and its auth message would send the user to
+    ``kiro-cli login`` for a harness that never refused — plus a config warning on
+    a read that touched no config.
+
+    ``None`` means the spelling carries no bundled row at all, which provider
+    construction already rejects (``ACP_BACKENDS_KNOWN``); a caller that wants a
+    total answer falls back to the alias table for exactly that case.
+    """
+    return _BACKEND_HARNESSES.get(acp_backend)
+
 
 # ── Provider labels ──
 # The backend identity key persisted in the session map. It indexes three

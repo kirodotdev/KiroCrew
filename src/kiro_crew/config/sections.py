@@ -476,8 +476,30 @@ DEFAULT_CWD_ALLOWED_ROOTS = [
 ]
 
 
+class _StoredBackendSpelling:
+    """Non-field carrier for the ``acp_backend`` value as it was STORED.
+
+    A plain (non-dataclass) base, which is what keeps this attribute out of
+    ``dataclasses.fields(AgentConfig)``: the dataclass machinery collects
+    annotations from the class itself and from DATACLASS bases only, so an
+    annotation declared here is a normal class attribute and nothing else. That
+    matters because ``fields()`` is what ``asdict``, ``to_dict``, the JSON-schema
+    walker, and every published section default enumerate — and this value records
+    HOW a value was read, never what the operator set, so a key nobody configured
+    must not appear in ``config.json`` or in the settings schema.
+
+    A ``ClassVar`` would have the same effect on ``fields()`` and cannot be
+    assigned per instance (mypy refuses it, correctly — the loader needs one value
+    per loaded config, not one per process).
+    """
+
+    #: The pre-clamp ``agent.acp_backend`` spelling; assigned by the loader after
+    #: construction, "" for any programmatically built config.
+    _acp_backend_stored: str = ""
+
+
 @dataclass
-class AgentConfig:
+class AgentConfig(_StoredBackendSpelling):
     approval_mode: str = field(
         default="auto",
         metadata=_meta("Approval Mode", "Tool approval mode.", enum=["auto", "interactive"]),
@@ -601,6 +623,30 @@ class AgentConfig:
             # Same no-enum reasoning as acp_backend above: the live selectable
             # set comes from the registry via resolve_selected_backend, never a
             # frozen literal.
+        ),
+    )
+    #: The ``acp_backend`` value as STORED, before the selectable clamp above,
+    #: lives on :class:`_StoredBackendSpelling` rather than here so it is not a
+    #: dataclass field — see that class for why.
+    #:
+    #: It exists because the clamp is lossy in a way that matters to harness
+    #: selection: ``codex`` is a KNOWN-but-unselectable backend, so a stored
+    #: ``acp_backend: "codex"`` reads back as ``""`` — kiro-cli. A surface
+    #: resolving a harness from the clamped field would therefore start the
+    #: session on kiro-cli and report success, never telling the operator their
+    #: value was ignored. Alias resolution reads it instead (see
+    #: :attr:`acp_backend_alias`) so the registry's alias table decides what the
+    #: stored spelling means, and a harness with no binary refuses rather than
+    #: silently degrading.
+    default_harness: str = field(
+        default="",
+        metadata=_meta(
+            "Default Harness",
+            "Harness id new sessions start on when no explicit selection is made. "
+            "Empty means kiro-cli. A value naming a harness that is unknown or "
+            "unavailable degrades to kiro-cli with a logged reason, so a typo "
+            "never stops the gateway. Bundled ids: 'kiro', 'kas', 'codex', "
+            "'claude'; an operator harness uses its id from harnesses.json.",
         ),
     )
     default_agent: str = field(
@@ -1113,6 +1159,23 @@ class AgentConfig:
         effect on reasoning-capable models; on others it is ignored downstream.
         """
         return self.role_efforts.get(role, "")
+
+    @property
+    def acp_backend_alias(self) -> str:
+        """The stored ``acp_backend`` spelling, for harness alias resolution.
+
+        Read this — never :attr:`acp_backend` — when asking the harness registry
+        "which harness does the operator's legacy key name?". The field itself has
+        been clamped to a SELECTABLE backend, which silently turns a stored
+        ``codex`` into kiro-cli; the alias table has to see what was written or
+        that operator's harness is ignored without a word.
+
+        Falls back to the clamped field so a directly-constructed
+        ``AgentConfig(acp_backend="kas")`` — every test double and every
+        programmatic caller — still resolves its backend, rather than answering
+        "unset" because it never went through the loader.
+        """
+        return self._acp_backend_stored or self.acp_backend
 
 
 @dataclass
@@ -3641,6 +3704,72 @@ def _normalize_acp_backend(value: object) -> str:
     module) that the old local import of ``acp.types`` existed to dodge.
     """
     return resolve_selected_backend(value)
+
+
+#: Where the pre-validation ``agent.acp_backend`` spelling is stashed inside the
+#: validated data dict. Leading underscore so both the JSON-schema walker and
+#: ``to_dict`` skip it: it is a record of HOW a value was read, never a setting,
+#: and emitting it would write a key nobody configured into ``config.json``.
+_RAW_ACP_BACKEND_KEY = "_acp_backend_stored"
+
+
+def _stash_raw_acp_backend(data: dict) -> None:
+    """Record ``agent.acp_backend`` as WRITTEN, before validation rewrites it.
+
+    Schema validation replaces an out-of-enum value with the field default, and
+    ``agent.acp_backend``'s enum is the SELECTABLE set — so a stored ``codex``
+    (known to the harness registry, not selectable as a provider key) is gone
+    before any consumer sees it, and the operator is never told their harness was
+    ignored. Stashing the raw spelling here is what lets alias resolution refuse by
+    name instead of silently starting sessions on kiro-cli.
+
+    Written into the same dict the loader caches, so a cache hit answers with the
+    stored spelling too rather than only the first read after a config change.
+
+    Shape-only and total: a non-string (a hand-edited config can hold anything)
+    stashes nothing, and an absent section is left absent rather than created —
+    creating it would turn "unconfigured" into a configured empty section.
+    """
+    agent = data.get("agent")
+    if not isinstance(agent, dict):
+        return
+    raw = agent.get("acp_backend")
+    if isinstance(raw, str) and raw.strip():
+        agent[_RAW_ACP_BACKEND_KEY] = raw.strip()
+
+
+def _stored_acp_backend(agent_data: dict) -> str:
+    """The ``agent.acp_backend`` value as written, for harness alias resolution.
+
+    Reads the stash :func:`_stash_raw_acp_backend` placed before validation, then
+    falls back to the section's own (post-validation) value so a caller that built
+    the dict itself — a test double, a programmatic construction — still resolves
+    its backend rather than answering "unset".
+
+    Deliberately NOT clamped: :func:`_normalize_acp_backend` degrades a
+    known-but-unselectable value like ``codex`` to kiro-cli, which is the right
+    posture for the provider key and the wrong one for "which harness did the
+    operator name". Both are kept, so the provider stays safe and the harness
+    surfaces can refuse by name instead of silently running somewhere else.
+    """
+    for key in (_RAW_ACP_BACKEND_KEY, "acp_backend"):
+        value = agent_data.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
+
+
+def _normalize_harness_id(value: object) -> str:
+    """Coerce a persisted ``agent.default_harness`` to a string, never raising.
+
+    Shape only: whether the id names a REGISTERED and AVAILABLE harness is the
+    registry's question, answered when the value is used rather than when it is
+    read, because a harness can become available after the config is loaded (the
+    operator installs the binary) and a boot-time verdict would outlive that.
+    A non-string — which a hand-edited ``config.json`` can hold — reads as
+    absent, which means the default harness.
+    """
+    return value.strip() if isinstance(value, str) else ""
 
 
 def _validate_activation(value: str) -> str:

@@ -6782,6 +6782,9 @@ _WRITE_PROTECTED_HOME_PATHS: list[str] = [
     f"{prefix}/{leaf}"
     for prefix in _CREW_HOME_PREFIXES
     # config.json / config.local.json: security-relevant resource ceilings.
+    # harnesses.json: operator ACP harness descriptors — each row names an
+    # executable the gateway spawns as itself, with no downstream clamp. Paired
+    # with the same leaf in _WRITE_PROTECTED_BASH_LEAVES; reads stay allowed.
     # playwright-cli-config.json: the browse launch config
     # (browser_cli/launch.py). It holds no secret and the CLI must READ it on
     # every invocation, so it is write-protected rather than sensitive. But it is
@@ -6792,7 +6795,7 @@ _WRITE_PROTECTED_HOME_PATHS: list[str] = [
     # directly and does NOT route through this gate, so its own write still works.
     # Paired with the same leaf in _WRITE_PROTECTED_BASH_LEAVES — protected on one
     # path only is not protected.
-    for leaf in ("config.json", "config.local.json", "playwright-cli-config.json")
+    for leaf in ("config.json", "config.local.json", "harnesses.json", "playwright-cli-config.json")
 ] + [
     # Ops Mission Control's on-call schedule. WRITE-protected, not read+write
     # sensitive: it holds no secret and every teammate's instance must READ it to
@@ -7007,13 +7010,15 @@ _WRITE_PROTECTED_HOME_PATHS += [_KIRO_AGENTS_DIR]
 # losing game. Widen this only via the SHARED matcher (so
 # credentials benefit too), not with per-leaf special cases.
 #
-# ONE ENTRY IS EXEMPT from that anchoring limit, and the exemption is about
-# severity rather than parser completeness: the alias ownership record's residual
-# threat is the DELETION of a user-authored alias by Kiro
-# Crew's own trusted writer, so its filename is additionally matched
-# anchor-independently as a bare path segment (see
+# TWO ENTRIES ARE EXEMPT from that anchoring limit, and the exemption is about
+# severity rather than parser completeness: for the alias ownership record the
+# residual threat is the DELETION of a user-authored alias by Kiro
+# Crew's own trusted writer, and for the harness-definition file it is the
+# gateway EXECUTING a planted descriptor's binary, so those filenames are
+# additionally matched
+# anchor-independently as bare path segments (see
 # ``_BARE_TOKEN_PROTECTED_LEAVES`` below). That widening is affordable only
-# because the name is globally distinctive; it is NOT a template for the other
+# because each name is globally distinctive; it is NOT a template for the other
 # leaves, and the anchoring limit above still describes them.
 #
 # ``rotation.yaml`` is the first entry, and it meets the bar the scope note sets rather than
@@ -7055,6 +7060,18 @@ _WRITE_PROTECTED_BASH_LEAVES: tuple[str, ...] = (
     "apps/ops-mission-control/data/rotation.yaml",
     "apps/ops-mission-control/data/incidents/index.json",
     "connections-tool-aliases.json",
+    # Operator ACP harness descriptors (acp/harness_registry.py), paired with the
+    # same leaf in _WRITE_PROTECTED_HOME_PATHS so the file-edit and shell paths
+    # agree. A descriptor names an executable the GATEWAY spawns as itself, and
+    # no loader clamp bounds that value — an agent that could plant a shape-valid
+    # row would have the gateway persistently exec its bytes outside deny rules
+    # and the SEL audit. Reads stay allowed on both paths: the file holds no
+    # secret and the registry must read it on every listing. Same relocation
+    # pattern as playwright-cli-config.json below, for the same class of value —
+    # but unlike that leaf it is ALSO matched anchor-independently (see
+    # ``_BARE_TOKEN_PROTECTED_LEAVES``): the file is the execution grant, so a
+    # ``cd``-relative spelling must not walk around the anchored forms here.
+    "harnesses.json",
     # The browse launch config (browser_cli/launch.py), paired with the same leaf
     # in _WRITE_PROTECTED_HOME_PATHS so the file-edit and shell paths agree — a
     # leaf on only one of the two is reachable through the other.
@@ -7094,15 +7111,28 @@ _WRITE_PROTECTED_BASH_LEAVES: tuple[str, ...] = (
 # of the contract — relative, ``cd``-prefixed, subdir-relative, either
 # separator, quoted or not, all refused identically.
 #
-# SCOPE: bare-token matching is for THIS filename ONLY, because it is globally
-# distinctive — a long hyphenated name that occurs nowhere in ordinary command
+# SCOPE: bare-token matching is only for a filename that passes BOTH tests the
+# alias record set — (1) severity: the FILENAME is itself the grant, with no
+# downstream clamp, so anchoring cannot be part of the contract; and
+# (2) distinctiveness: the name occurs nowhere in ordinary command
 # lines, so the false-positive cost is confined to commands that genuinely mean
 # this record. A generic leaf must NEVER be added here: unanchored
 # ``index.json`` or ``config.json`` would refuse a large fraction of routine
 # commands in any repository. The other write-protected leaves are not
 # distinctive at all (their distinguishing part is the ``apps/.../data/``
 # subpath) and must stay anchored.
-_BARE_TOKEN_PROTECTED_LEAVES: tuple[str, ...] = ("connections-tool-aliases.json",)
+#
+# ``harnesses.json`` passes both tests: a shape-valid descriptor row names an
+# executable the gateway spawns as itself (the file IS the execution grant, so
+# a ``cd``-relative redirect walking around the anchored spellings is not a
+# residual to accept), and unlike playwright-cli-config.json there is no
+# env-var override that already concedes the fence, so the wider blast radius
+# buys a real closure. The name is a coined leaf that ordinary command lines
+# do not utter.
+_BARE_TOKEN_PROTECTED_LEAVES: tuple[str, ...] = (
+    "connections-tool-aliases.json",
+    "harnesses.json",
+)
 
 # Whisper weight files, matched as a NAME with no anchor, for the same reason as the
 # alias record above: the filename IS the grant. `stt.models` verifies a file's sha256

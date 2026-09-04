@@ -54,6 +54,17 @@ from kiro_crew.computer_use.types import MAX_TREE_DEPTH_LIMIT as _CU_MAX_TREE_DE
 from kiro_crew.computer_use.types import MAX_TREE_NODES_LIMIT as _CU_MAX_TREE_NODES
 from kiro_crew.computer_use.types import MIN_SCREENSHOT_MAX_PX as _CU_MIN_SCREENSHOT_MAX_PX
 
+# Section DTOs and their field-level coercion live in a one-way sibling module.
+# Re-export every historical loader name so existing imports keep working while
+# KiroCrewConfig remains the compatibility facade and owns read/merge/save.
+# The three harness-config helpers (_stash_raw_acp_backend, _stored_acp_backend,
+# _normalize_harness_id) are called QUALIFIED through this module
+# import rather than added to the from-import above: that import list is the
+# loader's frozen compatibility re-export surface, pinned by identity in
+# test_config_module_boundaries — new internals the loader merely CONSUMES must
+# not widen what the facade re-exports.
+from kiro_crew.config import sections as _config_sections
+
 # Pure path primitives live in the leaf module ``config.paths`` (stdlib-only,
 # no ``kiro_crew`` imports) so the modules that only need ``config_dir()`` can
 # import them from there without transitively pulling in the full loader (DTOs,
@@ -93,10 +104,6 @@ from kiro_crew.config.resolution import (  # noqa: F401
     tailnet_effective_allowed_logins,
     tailnet_identity_unknown,
 )
-
-# Section DTOs and their field-level coercion live in a one-way sibling module.
-# Re-export every historical loader name so existing imports keep working while
-# KiroCrewConfig remains the compatibility facade and owns read/merge/save.
 from kiro_crew.config.sections import (  # noqa: F401
     _BOT_NAME_MAX,
     _BOT_NAME_RE,
@@ -2353,7 +2360,14 @@ class KiroCrewConfig:
 
             # Preserve fail-closed security semantics before advisory schema
             # validation can replace malformed input with a missing-field default.
-            # Normalize resource_limits FIRST, for exactly that reason. Its
+            # Record the stored ``agent.acp_backend`` spelling FIRST: validation
+            # blanks a value outside the field's enum, and the harness alias table
+            # is the thing that decides what a stored spelling means. Without this
+            # the enum clamp happens twice over — once here, once in
+            # ``_normalize_acp_backend`` — and the operator's value is gone before
+            # anything can refuse by name (see ``_stash_raw_acp_backend``).
+            _config_sections._stash_raw_acp_backend(data)
+            # Normalize resource_limits next, for exactly that reason. Its
             # fields are declared ``int | None``, so jsonschema reads a
             # hand-edited ``512.5`` as a type violation and
             # ``_apply_field_default`` POPS the key -- deleting a ceiling the
@@ -2561,6 +2575,9 @@ class KiroCrewConfig:
                 acp_backend=_normalize_acp_backend(agent_data.get("acp_backend")),
                 member_acp_backend=_normalize_acp_backend(
                     agent_data.get("member_acp_backend", "kas")
+                ),
+                default_harness=_config_sections._normalize_harness_id(
+                    agent_data.get("default_harness")
                 ),
                 default_agent=agent_data.get("default_agent", ""),
                 sweep_agents_backups=_safe_bool(
@@ -3602,6 +3619,15 @@ class KiroCrewConfig:
         except Exception as e:
             # Migration write-back is best-effort; never block startup.
             logger.warning("Config write-back failed: %s", e)
+
+        # The stored ``acp_backend`` spelling, assigned rather than constructed:
+        # it lives on the non-dataclass base ``_StoredBackendSpelling``, so it is
+        # not a field and cannot travel through __init__. Assigned AFTER the
+        # write-back above for the same reason it is not a field — it is not part
+        # of what gets serialized, so it must not be able to influence it.
+        stored_backend = _config_sections._stored_acp_backend(agent_data)
+        if stored_backend:
+            cfg.agent._acp_backend_stored = stored_backend
 
         return cfg, ticket
 
