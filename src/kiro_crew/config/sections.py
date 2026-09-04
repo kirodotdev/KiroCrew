@@ -935,18 +935,21 @@ class AgentConfig:
         ),
     )
     session_control: bool = field(
-        default=False,
+        default=True,
         metadata=_meta(
             "Session Control",
-            "Let one chat session open a new session, and stop or read another "
-            "session of yours. No session writes into another session's "
-            "conversation: reading returns a transcript tail, stopping cancels an "
-            "in-flight turn, and a created session starts empty for you to type "
-            "into. Off by default: the three tools ride on a server you may "
-            "already have assigned for other work, so reaching another session "
-            "waits for you to grant it here rather than arriving with an upgrade. "
-            "Sessions can only reach peers in the same workspace; incognito, "
-            "app-scoped and scheduled sessions are never addressable.",
+            "Let one chat session open a new session, and stop, read or send to "
+            "another session of yours. Reading returns a transcript tail, stopping "
+            "cancels an in-flight turn, a created session starts empty for you to "
+            "type into, and a send runs text as the target's next turn. On by "
+            "default, because the grant that decides who can do this is the agent "
+            "config: the tools come from the kirocrew-dashboard MCP server, so an "
+            "agent that does not mount it never has them, exactly like any other "
+            "MCP server. Turn this off to withdraw the capability from every agent "
+            "at once without editing each spec. Sessions can only reach peers in "
+            "the same workspace; incognito, app-scoped and scheduled sessions are "
+            "never addressable, and a crew member or a scheduled run reaches only "
+            "sessions it created itself.",
         ),
     )
     subagent_cost_gb: float = field(

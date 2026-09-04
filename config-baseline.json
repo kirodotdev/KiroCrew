@@ -56,7 +56,7 @@
         "chat_turn_timeout_secs": 7200,
         "session_start_timeout_secs": 90,
         "tool_approval_timeout_secs": 600,
-        "session_control": false,
+        "session_control": true,
         "subagent_cost_gb": 0.5,
         "subagent_cpu_cost_cores": 1.0,
         "subagent_auto_max": 32,
@@ -772,10 +772,10 @@
       "sensitive": false,
       "tags": [],
       "label": "Session Control",
-      "help": "Let one chat session open a new session, and stop or read another session of yours. No session writes into another session's conversation: reading returns a transcript tail, stopping cancels an in-flight turn, and a created session starts empty for you to type into. Off by default: the three tools ride on a server you may already have assigned for other work, so reaching another session waits for you to grant it here rather than arriving with an upgrade. Sessions can only reach peers in the same workspace; incognito, app-scoped and scheduled sessions are never addressable.",
+      "help": "Let one chat session open a new session, and stop, read or send to another session of yours. Reading returns a transcript tail, stopping cancels an in-flight turn, a created session starts empty for you to type into, and a send runs text as the target's next turn. On by default, because the grant that decides who can do this is the agent config: the tools come from the kirocrew-dashboard MCP server, so an agent that does not mount it never has them, exactly like any other MCP server. Turn this off to withdraw the capability from every agent at once without editing each spec. Sessions can only reach peers in the same workspace; incognito, app-scoped and scheduled sessions are never addressable, and a crew member or a scheduled run reaches only sessions it created itself.",
       "hasChildren": false,
       "enumValues": null,
-      "defaultValue": false
+      "defaultValue": true
     },
     {
       "path": "agent.subagent_cost_gb",

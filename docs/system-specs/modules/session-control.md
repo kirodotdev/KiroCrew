@@ -88,7 +88,7 @@ that is out of bounds is visible after the fact even though nothing happened.
 
 | Refusal | Status | Why |
 |---------|--------|-----|
-| Config switch off (`agent.session_control`) | 403 | Operator opted out. **Exception:** a crew-member DM slot (`member-*` caller key) bypasses this switch — see "Member callers" below |
+| Config switch off (`agent.session_control` explicitly `false`) | 403 | Operator withdrew the capability from every agent at once. Defaults to true — the agent's `kirocrew-dashboard` mount is the grant. **Exception:** a crew-member DM slot (`member-*` caller key) bypasses this switch — see "Member callers" below |
 | Caller session cannot be identified | 403 | An unidentifiable caller makes the self-target guard blind |
 | Caller is an unattended session (`cron-*`, `workflow-*`) | 403 | A scheduled job acting on live conversations is not a handoff |
 | Caller is itself incognito, temporary, or app-scoped | 403 | Caller-side isolation — the direction the target-side checks cannot see |
@@ -333,25 +333,39 @@ no check — the person owns the tab and closes it unconditionally.
 
 ## Configuration
 
-`agent.session_control` (bool, default **false**). Off makes every tool refuse
-with a message naming the switch, so an agent that has not been granted it
-reports why rather than failing silently.
+`agent.session_control` (bool, default **true**). The grant that decides who may
+reach a peer session is the **agent config**, not this switch: the five tools come
+from the `kirocrew-dashboard` MCP server, so an agent whose spec does not mount it
+never has them — the same rule as every other MCP server. A second default-off
+gate on top of that only made the capability unreachable for an agent that had
+already been given it deliberately, and `_install_conductor_agent()` shipping that
+mount is what an explicit grant looks like.
 
-Default-off is the deliberate part. The tools ride on the existing
-assignable `kirocrew-dashboard` server rather than a new one, so an operator who
-had already assigned that server to an agent for folder organization would
-otherwise find that agent able to read peer transcripts and stop peer turns purely
-by upgrading. Every target is still one of the user's own sessions on their own
-machine, reached over loopback with an audited internal secret -- the objection is
-not that the capability is dangerous but that it would arrive without anyone
-granting it. Making it an explicit switch costs one setting and buys a grant that
-matches what the operator actually chose.
+What the switch is still for is a single withdrawal: an operator who wants the
+capability gone from every agent at once, without editing each spec. So the
+direction that must keep working is an explicit `false`, and `_safe_bool` is what
+keeps a quoted `"false"` from loading as enabled — `bool("false")` is `True`, so a
+plain coercion would give a user who wrote it in an editor that quotes values the
+opposite of what they read.
 
-Both absent and malformed values resolve to disabled. `_safe_bool(..., False)`
-handles the malformed case -- `bool("false")` is `True`, so a user who wrote the
-value in an editor that quotes it would otherwise get the opposite of what they
-read -- and the lookup now supplies `False` for the absent case, so nothing has to
-infer a grant from silence.
+A config read that RAISES still resolves to disabled rather than to the default.
+That is deliberately not symmetric with the absent case: an unreadable config is a
+transient fault the operator can diagnose from the log line, and refusing during it
+costs a retry, while assuming the default during it would let unrelated corruption
+decide an authorization question.
+
+One consequence worth stating, because it is what the default-off gate was
+protecting: the same server carries the `chat_folder_*` tools, so an agent assigned
+it for folder organization has the session verbs too. Whether they prompt depends on
+that agent's `allowedTools` — naming individual tools leaves the session verbs to
+`hooks.on_tool_call`, while naming the whole server auto-approves them, because
+`_mcp_pattern` maps a bare `@server` entry to a one-level glob and
+`is_tool_in_allowlist` checks `@server` before `@server/<tool>`. The shipped
+conductor is in the second class for `session_create` and `session_read_message`
+(`_CONDUCTOR_DASHBOARD_GRANTS`), which is its stated operating model: its patrol
+loop runs with nobody at the keyboard and must not block on an approval no one is
+there to give. An operator who wants folder tools without session control names the
+folder tools individually.
 
 ## What is deliberately not here
 

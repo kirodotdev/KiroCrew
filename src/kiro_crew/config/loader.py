@@ -2639,14 +2639,16 @@ class KiroCrewConfig:
                     TOOL_APPROVAL_TIMEOUT_MIN,
                     TOOL_APPROVAL_TIMEOUT_MAX,
                 ),
-                # Absent means OFF, and a malformed value falls to False too. This
-                # switch grants one session reach into another, and the three tools
-                # ride on the `kirocrew-dashboard` server an operator may already
-                # have assigned for folder work -- so an upgrade must not hand an
-                # existing assignment stop-and-read over peer sessions that nobody
-                # granted. Both directions fail closed: `{"session_control":
-                # "false"}` is a truthy string and must not load as enabled either.
-                session_control=_safe_bool(agent_data.get("session_control", False), False),
+                # Absent means ON. The grant that decides who may reach a peer
+                # session is the AGENT CONFIG, not this switch: the tools come
+                # from the `kirocrew-dashboard` MCP server, so an agent that does
+                # not mount it never has them -- the same rule as every other MCP
+                # server. This stays as a single withdrawal for an operator who
+                # wants the capability gone from every agent at once without
+                # editing each spec, so an EXPLICIT `false` must still disable it:
+                # `bool("false")` is `True`, and `_safe_bool` is what keeps a
+                # quoted opt-out from loading as enabled.
+                session_control=_safe_bool(agent_data.get("session_control", True), True),
                 subagent_cost_gb=_safe_float(agent_data.get("subagent_cost_gb", 0.5), 0.5),
                 subagent_cpu_cost_cores=_safe_float(
                     agent_data.get("subagent_cpu_cost_cores", 1.0), 1.0
