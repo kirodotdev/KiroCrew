@@ -831,6 +831,44 @@ class KiroCrewConfig:
     slack_dm_activation: str = "always"       # activation mode for DMs (D-prefix channels)
 ```
 
+### Per-crew avatar override (`agents.*.avatar`)
+
+`KiroCrewAgentConfig.avatar` is a sparse override, exactly like the per-crew
+`model` and `session_color` fields: absent or `{}` means the face is derived from
+the crew's name (zero migration). `_safe_avatar` (`config/sections.py`) is the
+total coercer applied on load, in the create/update endpoints, and nowhere else,
+and it is deliberately NOT re-exported from `loader.py` — the loader's
+`from kiro_crew.config.sections import (...)` list is a frozen pre-split snapshot
+(`test_config_module_boundaries`), so post-split internals are reached through the
+`sections` module. Two accepted shapes:
+
+- `{"kind": "ghost", "traits": {eyes, brows, mouth, accessory, prop: str; blush,
+  flip: bool; tile: "#rrggbb"}}` — string traits are truncated to 32 chars and
+  are NOT checked against the frontend's trait vocabulary (the renderer resolves
+  an unknown option to "absent", so a new hat needs no backend release);
+  booleans must be real JSON booleans (`bool("false")` is `True`, so a
+  string-typed value is read as `False`); `tile` is the one pinned value — it is
+  interpolated into SVG markup, so it goes through the same `#rrggbb` validator
+  as `session_color`. An all-empty trait set collapses to `{}` (the one canonical
+  "reset" spelling) rather than storing a featureless third state.
+- `{"kind": "image", "v": <int>, "file": "<16-hex>.<png|jpg|webp>"}` — the crew
+  wears an uploaded picture served from `GET /api/agents/{name}/avatar`; the
+  file itself lives under `<data home>/run/avatars/` and the record only marks
+  the choice. `v` (a positive real int; `True` is rejected) is the cache-busting
+  mtime stamp the frontend appends as `?v=`; `file` pins the exact committed,
+  content-addressed variant and must match `^[0-9a-f]{16}\.(png|jpg|webp)$`.
+  Wire-only keys (`promote`, `token`) never reach the record.
+
+Anything else — a non-dict, an unknown `kind`, a ghost override without a
+`traits` dict — collapses to `{}` on load (config.json is hand-editable and
+agent-writable, so junk must never crash the load), while the endpoints answer a
+non-empty raw value the coercer collapses with 400 `invalid_avatar` — except a
+well-formed ghost override whose traits all coerce to absent, which is the
+validator's own all-empty → reset rule rather than caller junk and so stores as
+the canonical reset. The staging
+and commit protocol behind the image tier is specified in
+`learn-cron-dashboard.md` (*Crew avatars*).
+
 ### Computer use: no `enabled` field here
 
 `ComputerUseConfig` carries display and limits only. The switch for native desktop

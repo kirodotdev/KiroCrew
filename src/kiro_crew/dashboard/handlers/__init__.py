@@ -76,6 +76,8 @@ from kiro_crew.dashboard.handlers.agents import (  # noqa: E402, F401
     api_config_schema,
     api_default_agent,
     api_effort_levels,
+    api_kirocrew_agent_avatar_get,
+    api_kirocrew_agent_avatar_upload,
     api_kirocrew_agent_delete,
     api_kirocrew_agent_resolved_model,
     api_kirocrew_agent_update,

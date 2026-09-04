@@ -7150,6 +7150,20 @@
       "defaultValue": ""
     },
     {
+      "path": "agents.*.avatar",
+      "kind": "core",
+      "type": "object",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Avatar",
+      "help": "Per-crew avatar override. Empty means the face is derived from the crew's name. {'kind': 'ghost', 'traits': {...}} pins explicit ghost traits chosen in the avatar builder; {'kind': 'image'} means an uploaded picture served from the per-crew avatar endpoint.",
+      "hasChildren": true,
+      "enumValues": null,
+      "defaultValue": {}
+    },
+    {
       "path": "default_agent",
       "kind": "core",
       "type": "string",

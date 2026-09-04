@@ -1164,6 +1164,29 @@ describe('sttTranscribe', () => {
   })
 })
 
+describe('uploadCrewAvatar', () => {
+  // Same happy-dom caveat as sttTranscribe: the filename the client chose is
+  // read off the append call, not out of the FormData.
+  it('stages the picture as multipart under the field the handler reads', async () => {
+    const calls: unknown[][] = []
+    const spy = vi.spyOn(FormData.prototype, 'append').mockImplementation(function (
+      this: FormData,
+      ...args: unknown[]
+    ) {
+      calls.push(args)
+    })
+    const blob = new Blob(['png'], { type: 'image/png' })
+    try {
+      await api.uploadCrewAvatar('my crew', blob)
+    } finally { spy.mockRestore() }
+    const { url, init } = call()
+    expect(url).toBe('/api/agents/my%20crew/avatar')
+    expect(init?.method).toBe('POST')
+    expect(init?.body).toBeInstanceOf(FormData)
+    expect(calls).toEqual([['file', blob, 'avatar.png']])
+  })
+})
+
 describe('uploadFiles', () => {
   const png = (name: string) => new File(['x'], name, { type: 'image/png' })
 
@@ -1405,7 +1428,7 @@ describe('every api method issues one well-formed /api request', () => {
   // ReadableStream, a File list, an object-URL download).
   // `skills` and `slashCommands` join them because each wraps its fetch in a
   // deadline, so it USES the signal argument rather than forwarding it.
-  const HAND_TESTED = new Set(['sttTranscribe', 'uploadFiles', 'installFromRegistryStream', 'exportPlanYaml', 'skills', 'slashCommands'])
+  const HAND_TESTED = new Set(['sttTranscribe', 'uploadFiles', 'uploadCrewAvatar', 'installFromRegistryStream', 'exportPlanYaml', 'skills', 'slashCommands'])
 
   type AnyFn = (...args: unknown[]) => unknown
   const methods = Object.entries(api as unknown as Record<string, AnyFn>)

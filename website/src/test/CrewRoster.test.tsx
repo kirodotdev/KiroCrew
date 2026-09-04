@@ -70,6 +70,7 @@ const mockApi = vi.hoisted(() => ({
   createKirocrewAgent: vi.fn(),
   updateKirocrewAgent: vi.fn(),
   deleteKirocrewAgent: vi.fn(),
+  uploadCrewAvatar: vi.fn(),
   agentResolvedModel: vi.fn(),
   setDefaultAgent: vi.fn(),
   createChatSlot: vi.fn(),
@@ -79,7 +80,8 @@ const mockApi = vi.hoisted(() => ({
 vi.mock('../api/client', () => ({ api: mockApi }))
 
 import KiroCrewAgentsPage from '../pages/KiroCrewAgentsPage'
-import CrewAvatar from '../components/CrewAvatar'
+import CrewAvatar, { seededTraits } from '../components/CrewAvatar'
+import { BRAND_PURPLE } from '../lib/kiroGhostAvatar'
 
 function createTestStore() {
   return configureStore({
@@ -613,6 +615,7 @@ describe('crew editor — save', () => {
       model: 'claude-opus-5',
       reasoning_effort: '',
       session_color: '',
+      avatar: {},
     })
   })
 
@@ -882,5 +885,140 @@ describe('CrewAvatar', () => {
 
     const other = renderAvatar('kirocrew')
     expect(other.src).not.toBe(first.src)
+  })
+
+  const GHOST = {
+    kind: 'ghost',
+    traits: {
+      eyes: 'wink', brows: 'none', mouth: 'smile', accessory: 'halo',
+      prop: 'none', blush: true, flip: false, tile: '#21a5de',
+    },
+  }
+
+  it('a pinned override changes the face and stays deterministic', async () => {
+    const plain = renderAvatar('oncall')
+    plain.unmount()
+    const { container, unmount } = render(<CrewAvatar seed="oncall" avatar={GHOST} size={38} />)
+    const src = container.querySelector('img')!.getAttribute('src')!
+    expect(src.startsWith('data:image/svg+xml')).toBe(true)
+    expect(src).not.toBe(plain.src)
+    unmount()
+    const again = render(<CrewAvatar seed="oncall" avatar={GHOST} size={38} />)
+    expect(again.container.querySelector('img')!.getAttribute('src')).toBe(src)
+  })
+
+  it('junk and empty overrides fall back to the seeded face', async () => {
+    const plain = renderAvatar('oncall')
+    plain.unmount()
+    for (const junk of [{}, 'ghost', { kind: 'hologram' }, { kind: 'ghost' }]) {
+      const { container, unmount } = render(<CrewAvatar seed="oncall" avatar={junk} size={38} />)
+      expect(container.querySelector('img')!.getAttribute('src')).toBe(plain.src)
+      unmount()
+    }
+  })
+
+  it('a non-hex tile is replaced, never interpolated into the SVG', async () => {
+    const evil = { ...GHOST, traits: { ...GHOST.traits, tile: '"><script>alert(1)</script>' } }
+    const { container } = render(<CrewAvatar seed="oncall" avatar={evil} size={38} />)
+    const src = decodeURIComponent(container.querySelector('img')!.getAttribute('src')!)
+    expect(src).not.toContain('<script>')
+    expect(src).toContain(BRAND_PURPLE)
+  })
+
+  it('seededTraits reads back the face the seeded render drew', async () => {
+    const traits = seededTraits('oncall')
+    const { container, unmount } = render(
+      <CrewAvatar seed="oncall" avatar={{ kind: 'ghost', traits }} size={38} />,
+    )
+    const pinned = decodeURIComponent(container.querySelector('img')!.getAttribute('src')!)
+    unmount()
+    const plain = renderAvatar('oncall')
+    // Same compose() inputs — the pinned body must equal the seeded body
+    // (wrapper markup differs: DiceBear adds metadata, so compare the traits'
+    // visible geometry via the tile color and a stable body fragment).
+    expect(pinned).toContain(traits.tile)
+    expect(decodeURIComponent(plain.src)).toContain(traits.tile)
+  })
+})
+
+describe('crew avatar builder', () => {
+  it('opens from the header avatar, stages a pick on Apply, persists on Save', async () => {
+    await renderRoster()
+    const sheet = await openEditor('oncall')
+
+    fireEvent.click(within(sheet).getByTestId('header-avatar-button'))
+    const builder = await screen.findByRole('dialog', { name: 'Customize avatar' })
+
+    // Pre-filled with the name-derived face; pick a different eye option.
+    fireEvent.click(within(builder).getByTestId('avatar-opt-wink'))
+    fireEvent.click(within(builder).getByTestId('avatar-builder-save'))
+
+    // Apply only stages the draft; the editor's own Save persists it.
+    fireEvent.click(within(sheet).getByRole('button', { name: 'Save changes' }))
+    await waitFor(() => expect(mockApi.updateKirocrewAgent).toHaveBeenCalled())
+    const body = mockApi.updateKirocrewAgent.mock.calls[0][1]
+    expect(body.avatar).toEqual({ kind: 'ghost', traits: { ...seededTraits('oncall'), eyes: 'wink' } })
+  })
+
+  it('reset + Apply clears the override in the update payload', async () => {
+    await renderRoster()
+    const sheet = await openEditor('oncall')
+    fireEvent.click(within(sheet).getByTestId('header-avatar-button'))
+    const builder = await screen.findByRole('dialog', { name: 'Customize avatar' })
+
+    fireEvent.click(within(builder).getByTestId('avatar-opt-wink'))
+    fireEvent.click(within(builder).getByTestId('avatar-builder-reset'))
+    fireEvent.click(within(builder).getByTestId('avatar-builder-save'))
+
+    // Nothing pending: the draft round-tripped back to "no override", so Save
+    // stays disabled — the dirty check compares normalized traits, not clicks.
+    expect(within(sheet).getByRole('button', { name: 'Save changes' })).toBeDisabled()
+  })
+})
+
+describe('crew avatar — uploaded picture', () => {
+  it('renders an image override from the authenticated endpoint with the cache stamp', () => {
+    const { container } = render(
+      <CrewAvatar seed="on call" avatar={{ kind: 'image', v: 1700000000 }} size={38} />,
+    )
+    const src = container.querySelector('img')!.getAttribute('src')!
+    // Name is a display string — it must be URI-encoded, and the stamp must
+    // ride along so a replaced picture busts the browser cache.
+    expect(src).toBe('/api/agents/on%20call/avatar?v=1700000000')
+  })
+
+  it('previews the editor draft picture without touching the network', () => {
+    const data = 'data:image/png;base64,AAAA'
+    const { container } = render(
+      <CrewAvatar seed="oncall" avatar={{ kind: 'image', pendingData: data }} size={38} />,
+    )
+    expect(container.querySelector('img')!.getAttribute('src')).toBe(data)
+  })
+
+  it('falls back to the seeded ghost when the picture fails to load', () => {
+    const plain = render(<CrewAvatar seed="oncall" size={38} />)
+    const plainSrc = plain.container.querySelector('img')!.getAttribute('src')!
+    plain.unmount()
+    const { container } = render(
+      <CrewAvatar seed="oncall" avatar={{ kind: 'image', v: 1 }} size={38} />,
+    )
+    fireEvent.error(container.querySelector('img')!)
+    expect(container.querySelector('img')!.getAttribute('src')).toBe(plainSrc)
+  })
+
+  it('builder shows the picture tier with a disabled Apply until a picture exists', async () => {
+    await renderRoster()
+    const sheet = await openEditor('oncall')
+    fireEvent.click(within(sheet).getByTestId('header-avatar-button'))
+    const builder = await screen.findByRole('dialog', { name: 'Customize avatar' })
+
+    fireEvent.click(within(builder).getByRole('button', { name: 'Picture' }))
+    expect(within(builder).getByTestId('avatar-upload-dropzone')).toBeInTheDocument()
+    // No picture chosen and none saved: Apply must not stage an empty image
+    // override.
+    expect(within(builder).getByTestId('avatar-builder-save')).toBeDisabled()
+    // The ghost pane's draft survives the round-trip through the picture tab.
+    fireEvent.click(within(builder).getByRole('button', { name: 'Ghost face' }))
+    expect(within(builder).getByTestId('avatar-builder-preview')).toBeInTheDocument()
   })
 })

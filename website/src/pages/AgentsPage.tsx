@@ -919,7 +919,7 @@ export default function AgentsPage({ embedded }: { embedded?: boolean } = {}) {
                         <div className="flex flex-wrap gap-1.5">
                           {usedBy.map(c => (
                             <span key={c.name} className="inline-flex items-center gap-1.5 rounded-full border border-border-strong py-[2px] pl-[3px] pr-2.5 text-[11.5px] text-text">
-                              <CrewAvatar seed={c.name} size={18} />{c.name}
+                              <CrewAvatar seed={c.name} avatar={c.avatar} size={18} />{c.name}
                             </span>
                           ))}
                         </div>

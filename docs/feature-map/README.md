@@ -92,7 +92,7 @@ is a `?tab=` value on `/capabilities` (`pages/CapabilitiesPage.tsx`).
 
 | Tab | What it is | Reach it | Page | Handler | Endpoints |
 |---|---|---|---|---|---|
-| Crews | Named agent bindings — which agent, model and workspace | `/capabilities?tab=crews` | `pages/KiroCrewAgentsPage.tsx` | `handlers/agents.py` | `GET /api/agent/config`, `GET,PUT /api/config/default-agent` |
+| Crews | Named agent bindings — which agent, model and workspace; per-crew custom avatar (hand-picked ghost traits or an uploaded picture, edited in the crew editor's avatar builder) | `/capabilities?tab=crews` | `pages/KiroCrewAgentsPage.tsx`, `components/CrewAvatarBuilder.tsx`, `components/CrewAvatar.tsx` | `handlers/agents.py` | `GET /api/agent/config`, `GET,PUT /api/config/default-agent`, `POST /api/agents`, `PUT,DELETE /api/agents/{name}`, `GET,POST /api/agents/{name}/avatar` |
 | Agent Templates | The harness-level agent definitions crews bind to | `?tab=templates` | `pages/AgentsPage.tsx` | `handlers/agents.py` | `GET /api/agent/config`, `GET /api/config/schema` |
 | Connections | MCP servers: install, sign in, enable, scope tools | `?tab=mcp` | `pages/connections/ConnectionsPage.tsx` | `handlers/mcp.py`, `handlers/connections.py`, `handlers/mcp_discover.py` | `GET /api/mcp`, `GET /api/mcp/discover`, `POST /api/connections/mint`, `POST /api/mcp/custom` |
 | Skills | Installed skills, the public registry, pending candidates | `?tab=skills` | `pages/overview/SkillsTab.tsx` | `handlers/prompts.py`, `handlers/discover.py`, `handlers/skill_budget.py` | `GET,POST /api/skills`, `GET /api/skills/-/discover`, `GET /api/skills/-/pending` |

@@ -413,6 +413,89 @@ def _safe_color(value: object) -> str:
     return ""
 
 
+#: String-valued ghost trait axes accepted in a per-crew avatar override.
+_AVATAR_GHOST_STR_TRAITS = ("eyes", "brows", "mouth", "accessory", "prop")
+#: Boolean-valued ghost trait axes.
+_AVATAR_GHOST_BOOL_TRAITS = ("blush", "flip")
+#: Cap on a single trait value, so hand-written junk cannot bloat config.json.
+_AVATAR_TRAIT_MAX_LEN = 32
+#: Formats an uploaded crew picture may be stored in. Shared with the avatar
+#: endpoints: the config's ``file`` pin and the files on disk speak this set.
+_AVATAR_IMAGE_EXTS = ("png", "jpg", "webp")
+#: The config's committed-picture pin: ``<16-hex content digest>.<ext>``.
+#: Each install lands at a digest-named path that never collides with the
+#: currently committed file, so nothing overwrites a committed picture before
+#: the config save that commits its replacement.
+_AVATAR_FILE_PIN_RE = _re.compile(r"^[0-9a-f]{16}\.(?:png|jpg|webp)$")
+
+
+def _safe_avatar(value: object) -> dict:
+    """Return a validated per-crew avatar override, or ``{}`` on junk.
+
+    Accepted shapes:
+
+    - ``{"kind": "ghost", "traits": {...}}`` — pins the ghost face
+      trait-by-trait instead of deriving it from the crew name.
+    - ``{"kind": "image"}`` (optional int ``v``, optional ``file``) — the crew
+      wears an uploaded picture, served from ``GET /api/agents/{name}/avatar``.
+      The file itself lives under the data home's agent-fenced
+      ``run/avatars/`` dir; the config
+      field only marks the choice. ``v`` is the upload's cache-busting stamp
+      (file mtime, nanoseconds): the frontend appends it as ``?v=`` so a
+      replaced picture is re-fetched without waiting out the browser cache.
+      ``file`` pins the exact committed file — a ``<digest>.<ext>`` suffix
+      under the crew's stem. Every install lands at a digest-named path, so a
+      replacement never overwrites the committed file before the config save
+      commits it, and serving resolves only the pinned file.
+
+    Empty means "no override" — the frontend keeps rendering the name-seeded
+    face. config.json is hand-editable (and agent-writable), so junk collapses
+    to ``{}`` rather than crashing the load.
+
+    Trait *values* are deliberately not checked against the frontend's trait
+    vocabulary: the renderer resolves an unknown option to "absent"
+    (``EYES[k] ?? ''``), and keeping the vocabulary in one place (the style
+    module) means a new hat needs no backend release. ``tile`` is the one
+    exception — it is interpolated into SVG markup, so it is pinned to a hex
+    color by the same validator session_color uses.
+    """
+    if not isinstance(value, dict):
+        return {}
+    if value.get("kind") == "image":
+        out: dict[str, object] = {"kind": "image"}
+        v = value.get("v")
+        # bool is an int subclass; a hand-written `"v": true` must not pass.
+        if isinstance(v, int) and not isinstance(v, bool) and v > 0:
+            out["v"] = v
+        f = value.get("file")
+        if isinstance(f, str) and _AVATAR_FILE_PIN_RE.fullmatch(f):
+            out["file"] = f
+        return out
+    if value.get("kind") != "ghost":
+        return {}
+    raw = value.get("traits")
+    if not isinstance(raw, dict):
+        return {}
+    traits: dict[str, object] = {}
+    for key in _AVATAR_GHOST_STR_TRAITS:
+        v = raw.get(key, "")
+        traits[key] = v[:_AVATAR_TRAIT_MAX_LEN] if isinstance(v, str) else ""
+    for key in _AVATAR_GHOST_BOOL_TRAITS:
+        # `is True`, not bool(): config.json is hand-editable and
+        # bool("false") is True, so a string-typed value would render the
+        # opposite of what its author wrote. Only a real boolean counts.
+        traits[key] = raw.get(key, False) is True
+    traits["tile"] = _safe_color(raw.get("tile", ""))
+    # An all-empty trait set (every axis absent) is indistinguishable in
+    # intent from "no override" but would render a featureless ghost. The
+    # builder cannot produce it (Apply always carries the seeded defaults), so
+    # it only arrives via hand-written config or direct API use — collapse it
+    # to the one canonical "reset" spelling instead of storing a third state.
+    if all(not v for v in traits.values()):
+        return {}
+    return {"kind": "ghost", "traits": traits}
+
+
 def _meta(label: str, help: str, **kwargs: object) -> dict:
     """Helper to build field metadata dicts with safe defaults."""
     return {"label": label, "help": help, **kwargs}
@@ -2764,6 +2847,17 @@ class KiroCrewAgentConfig:
             "bot. Preserved on load and save so an existing config is not "
             "rewritten out from under the operator.",
             deprecated=True,
+        ),
+    )
+    avatar: dict = field(
+        default_factory=dict,
+        metadata=_meta(
+            "Avatar",
+            "Per-crew avatar override. Empty means the face is derived from "
+            "the crew's name. {'kind': 'ghost', 'traits': {...}} pins explicit "
+            "ghost traits chosen in the avatar builder; {'kind': 'image'} "
+            "means an uploaded picture served from the per-crew avatar "
+            "endpoint.",
         ),
     )
 

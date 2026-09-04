@@ -179,6 +179,9 @@ class TestMemberRoutes:
         # (the page never trusts it), no top-level default_agent.
         assert "bound" not in rows[CREW]
         assert "default_agent" not in data
+        # The avatar override IS allowlisted (presentation-only, validated at
+        # load) — without it every Members surface shows the name-derived face.
+        assert rows[CREW]["avatar"] == {}
         # Unbound members have never talked: last activity reads as 0.
         assert rows[CREW]["last_active_ts"] == 0.0
 

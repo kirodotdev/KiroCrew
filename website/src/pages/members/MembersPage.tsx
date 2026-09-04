@@ -437,6 +437,7 @@ export default function MembersPage() {
                 <span className="relative shrink-0">
                   <CrewAvatar
                     seed={m.name}
+                    avatar={m.avatar}
                     size={36}
                     working={isRunning(m) ? 'subtle' : undefined}
                   />
@@ -517,6 +518,7 @@ export default function MembersPage() {
               </button>
               <CrewAvatar
                 seed={active.name}
+                avatar={active.avatar}
                 size={30}
                 working={isRunning(active) ? 'full' : undefined}
               />
@@ -745,7 +747,7 @@ export default function MembersPage() {
             </div>
           )
           const panelProps = {
-            icon: <CrewAvatar seed={active.name} size={22} />,
+            icon: <CrewAvatar seed={active.name} avatar={active.avatar} size={22} />,
             title: active.name,
             onClose: () => setDrawerOpen(false),
             initialWidth: DRAWER_DEFAULT,

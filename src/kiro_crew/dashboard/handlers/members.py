@@ -137,7 +137,7 @@ async def api_members(request: web.Request) -> web.Response:
                 # Explicit allowlist — never a dataclass spread. The response
                 # is a network-boundary contract: spreading `AgentConfig`
                 # would ship every future field (including a credential-shaped
-                # one) to the roster endpoint automatically. These four are
+                # one) to the roster endpoint automatically. These are
                 # exactly what the detail drawer renders.
                 "name": name,
                 "slug": slug,
@@ -145,6 +145,10 @@ async def api_members(request: web.Request) -> web.Response:
                 "workspace": agent_cfg.workspace,
                 "memory_store": agent_cfg.memory_store,
                 "model": agent_cfg.model,
+                # Presentation-only and validated by _safe_avatar at load, so
+                # it cannot carry a credential-shaped value. Without it every
+                # Members surface silently falls back to the name-derived face.
+                "avatar": agent_cfg.avatar,
             }
         )
 
