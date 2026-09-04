@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useLayoutEffect, useCallback, useMemo, useId, memo } from 'react'
+import { Component, useState, useRef, useEffect, useLayoutEffect, useCallback, useMemo, useId, memo, lazy, Suspense } from 'react'
 import { ArrowUpFromLine, ArrowUp, Loader2, RotateCw, Plus, Crop, Bot, Mic, Keyboard, Square, BookOpen, X, ClipboardList, CheckCircle, Ban, Sparkles, Target, Lock, Folder, FolderOpen, FileText, FileDiff, PenLine } from 'lucide-react'
 import SketchDialog from './SketchDialog'
 import CopyBranchButton from './CopyBranchButton'
@@ -59,6 +59,33 @@ import {
 } from '../utils/pasteTokens'
 import type { SendMode } from '../pages/chat/ChatSettings'
 import { useLanguageGeneration } from '../i18n/useLanguageGeneration'
+import type { ComposerControl } from './composerControl'
+import {
+  clipboardFiles,
+  hasPlainClipboardText,
+  stripTrailingBlankLines,
+} from './composerPastePolicy'
+
+const LexicalComposerInput = lazy(() => import('./LexicalComposerInput'))
+
+class ComposerLoadBoundary extends Component<
+  { children: React.ReactNode; onError: () => void },
+  { failed: boolean }
+> {
+  state = { failed: false }
+
+  static getDerivedStateFromError() {
+    return { failed: true }
+  }
+
+  componentDidCatch() {
+    this.props.onError()
+  }
+
+  render() {
+    return this.state.failed ? null : this.props.children
+  }
+}
 
 // Upload picker accept hints. Client-side ONLY (UX) — the server validates type
 // (magic bytes), size, and runs malware scanning per input-validation guidance.
@@ -73,44 +100,6 @@ const IMAGE_ACCEPT = 'image/png,image/jpeg,image/gif,image/webp,image/bmp,image/
 // server's, from the Python side, since a vitest cannot read the Python constant.
 const VIDEO_ACCEPT = 'video/mp4,video/x-m4v,video/quicktime,video/webm'
 const FILE_ACCEPT = IMAGE_ACCEPT + ',' + VIDEO_ACCEPT + ',.txt,.md,.json,.excalidraw,.har,.yaml,.yml,.xml,.csv,.log,.py,.js,.ts,.tsx,.jsx,.html,.css,.sh,.bash,.rb,.go,.rs,.java,.c,.cpp,.h,.hpp,.pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.odt,.ods,.odp,.rtf,.zip,.tar,.gz'
-
-// Extension per image MIME type, mirroring IMAGE_ACCEPT. Used to synthesize a
-// filename for clipboard-pasted images (see nameClipboardImage).
-const IMAGE_MIME_EXT: Record<string, string> = {
-  'image/png': 'png',
-  'image/jpeg': 'jpg',
-  'image/gif': 'gif',
-  'image/webp': 'webp',
-  'image/bmp': 'bmp',
-  'image/svg+xml': 'svg',
-}
-
-/** Give a clipboard-pasted image a distinguishable filename.
- *
- *  Clipboard image blobs arrive unnamed or with the browser's fixed
- *  placeholder (Chrome/Firefox hand every pasted screenshot to us as
- *  "image.png"): an unnamed file has no extension so the server's extension
- *  allowlist rejects it outright, and repeated pastes in one message all
- *  render identical attachment-chip labels. Synthesize
- *  `pasted-image-<timestamp>[-<n>].<ext>` for those; a file that carries a
- *  real name (e.g. a file copied from the OS file manager) keeps it, so
- *  pasted and picked files stay indistinguishable downstream.
- *
- *  `batchIndex` disambiguates multiple images arriving in a SINGLE paste
- *  (same-millisecond timestamp). The timestamp is a technical identifier
- *  embedded in a filename, not display text, so it is deliberately not
- *  locale-formatted. */
-function nameClipboardImage(f: File, batchIndex: number): File {
-  const ext = IMAGE_MIME_EXT[f.type]
-  if (!ext) return f // not an image type: never rename (spec: images only)
-  const generic = !f.name || f.name === `image.${ext}` || f.name === 'image.png'
-  if (!generic) return f
-  const d = new Date()
-  const pad = (n: number, w = 2) => String(n).padStart(w, '0')
-  const stamp = `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}${pad(d.getMilliseconds(), 3)}`
-  const suffix = batchIndex > 0 ? `-${batchIndex + 1}` : ''
-  return new File([f], `pasted-image-${stamp}${suffix}.${ext}`, { type: f.type, lastModified: f.lastModified })
-}
 
 import ApprovalModePicker, { APPROVAL_MODE_ADJUSTED_LS_KEY } from './ApprovalModePicker'
 // Effort vocabulary lives in lib/effort.ts (mirrors backend effort.py).
@@ -214,24 +203,6 @@ const APPROVAL_NUDGE_THRESHOLD = 3
  *  pixels through innerHeight, so no compensation var is needed. */
 function effectiveVh(): number {
   return window.innerHeight
-}
-
-/** Remove a trailing run of blank lines from pasted text: strips trailing
- *  spaces/tabs/newlines, but ONLY when that run contains at least one newline
- *  (so a paste ending in plain spaces is left untouched); interior content is
- *  never modified. A single linear backward scan over the trailing whitespace
- *  run — no regex backtracking, so it stays linear even on adversarial input
- *  (e.g. a huge run of spaces followed by a non-whitespace character). */
-function stripTrailingBlankLines(s: string): string {
-  let i = s.length - 1
-  let sawNewline = false
-  while (i >= 0) {
-    const c = s.charCodeAt(i)
-    if (c === 10 /* \n */ || c === 13 /* \r */) { sawNewline = true; i--; continue }
-    if (c === 32 /* space */ || c === 9 /* \t */) { i--; continue }
-    break
-  }
-  return sawNewline ? s.slice(0, i + 1) : s
 }
 
 /** True when the text on the caret's line, before the caret, is ONLY markdown
@@ -520,6 +491,9 @@ interface ChatInputProps {
   pasteBlocks?: PasteBlock[]
   /** Replace the current list of paste blocks (add/remove). */
   onPasteBlocksChange?: (next: PasteBlock[]) => void
+  /** Opt into the first Lexical composer migration slice. Defaults off so the
+   *  established textarea path remains the production fallback until parity is complete. */
+  lexicalComposer?: boolean
   /** Optional knowledge chip rendered above the input */
   knowledgeChip?: React.ReactNode
   /** When this key changes, focus the textarea (e.g. on chat session switch). */
@@ -838,6 +812,7 @@ function ChatInput({
   followUpSourceKey,
   pasteBlocks = [],
   onPasteBlocksChange,
+  lexicalComposer = false,
   knowledgeChip,
   autoFocusKey,
   inputAriaLabel,
@@ -1081,15 +1056,54 @@ function ChatInput({
 
   const approvalBtnClass = 'inline-flex items-center gap-1 px-2 py-1 rounded-md bg-[color-mix(in_srgb,var(--warn)_12%,transparent)] border border-border text-text text-[12px] cursor-pointer font-body hover:bg-[color-mix(in_srgb,var(--warn)_25%,transparent)] hover:text-text hover:border-border-strong transition-colors disabled:opacity-50'
 
-  const inputRef = useRef<HTMLTextAreaElement>(null)
+  const inputRef = useRef<HTMLTextAreaElement | null>(null)
+  const composerAnchorRef = useRef<HTMLElement | null>(null)
+  const lexicalControlRef = useRef<ComposerControl | null>(null)
+  const [lexicalLoadFailed, setLexicalLoadFailed] = useState(false)
+  const [lexicalControlRevision, setLexicalControlRevision] = useState(0)
+  const markLexicalReady = useCallback(() => {
+    composerAnchorRef.current = lexicalControlRef.current?.getRootElement() ?? null
+    setLexicalControlRevision(value => value + 1)
+  }, [])
+  const publishLexicalSelection = useCallback((selection: { start: number; end: number }) => {
+    if (voiceCaretRef) voiceCaretRef.current = selection
+  }, [voiceCaretRef])
+  const textareaControl = useMemo<ComposerControl>(() => ({
+    focus: () => inputRef.current?.focus(),
+    getRootElement: () => inputRef.current,
+    getSelection: () => {
+      const textarea = inputRef.current
+      if (!textarea) return null
+      return {
+        start: textarea.selectionStart ?? 0,
+        end: textarea.selectionEnd ?? textarea.selectionStart ?? 0,
+      }
+    },
+    setSelection: (start, end = start, options) => {
+      const textarea = inputRef.current
+      if (!textarea) return
+      const boundedStart = Math.min(start, textarea.value.length)
+      const boundedEnd = Math.min(end, textarea.value.length)
+      textarea.setSelectionRange(boundedStart, boundedEnd)
+      if (options?.focus) textarea.focus()
+    },
+  }), [])
+  const composerControl = useCallback(
+    () => lexicalComposer && !lexicalLoadFailed ? lexicalControlRef.current : textareaControl,
+    [lexicalComposer, lexicalLoadFailed, textareaControl],
+  )
   // Publish the live caret so ChatPage's dictation handler can splice a
   // transcript in at the cursor instead of appending. Written on every caret
   // move (typing, click, selection); the value persists through blur (clicking
   // the mic button), which is exactly when a batch transcript needs it.
+  const setTextareaRef = useCallback((textarea: HTMLTextAreaElement | null) => {
+    inputRef.current = textarea
+    if (textarea || !lexicalComposer || lexicalLoadFailed) composerAnchorRef.current = textarea
+  }, [lexicalComposer, lexicalLoadFailed])
   const recordCaret = useCallback(() => {
-    const ta = inputRef.current
-    if (ta && voiceCaretRef) voiceCaretRef.current = { start: ta.selectionStart ?? 0, end: ta.selectionEnd ?? 0 }
-  }, [voiceCaretRef])
+    const selection = composerControl()?.getSelection()
+    if (selection && voiceCaretRef) voiceCaretRef.current = selection
+  }, [composerControl, voiceCaretRef])
   // Restore the caret after a dictation transcript lands in `value`. The update
   // arrives via the parent (onChange → ChatPage setInput → value prop), so the
   // parent can't set the DOM selection itself. rAF mirrors applyPickedToken:
@@ -1105,27 +1119,24 @@ function ChatInput({
       // existing draft doesn't publish offset 0 here (which would make the next
       // batch transcript prepend at 0 instead of using the append fallback that
       // a null ref provides).
-      const el = inputRef.current
-      if (el && voiceCaretRef && voiceCaretRef.current) voiceCaretRef.current = { start: el.selectionStart ?? 0, end: el.selectionEnd ?? 0 }
+      const control = composerControl()
+      const selection = control?.getSelection()
+      if (selection && voiceCaretRef && voiceCaretRef.current) voiceCaretRef.current = selection
       return
     }
     pendingRef.current = null
     const raf = requestAnimationFrame(() => {
-      const el = inputRef.current
-      if (!el) return
-      const p = Math.min(pos, el.value.length)
-      // Restore the caret WITHOUT taking focus: a batch transcript can land while
-      // the user is focused in another field/session, and stealing focus would
-      // corrupt their typing there. setSelectionRange works on an unfocused
-      // element, so the caret is correct the moment the composer is (re)focused.
-      el.setSelectionRange(p, p)
+      const control = composerControl()
+      if (!control) return
+      const p = Math.min(pos, value.length)
+      control.setSelection(p, p)
       if (voiceCaretRef) voiceCaretRef.current = { start: p, end: p }
     })
     // Cancel the frame if the slot switches (autoFocusKey) or value changes
     // again before it fires — otherwise the callback would stamp this slot's
     // caret onto whatever composer is mounted next.
     return () => cancelAnimationFrame(raf)
-  }, [value, voicePendingCaretRef, voiceCaretRef, autoFocusKey])
+  }, [value, voicePendingCaretRef, voiceCaretRef, autoFocusKey, composerControl])
   // Dictation-panel gate. Three independent conditions must hold: the setting
   // is on, the browser has WebGL2, and the OS is not asking for reduced motion
   // (the hook covers the latter two). A mic error always falls through to
@@ -1207,8 +1218,8 @@ function ChatInput({
   // next partial rebuilds away — the panel (showDictation) already handles the
   // visible streaming case, where the user watches rather than types.
   useEffect(() => {
-    if (showDictation || voiceTranscribing) inputRef.current?.focus()
-  }, [showDictation, voiceTranscribing])
+    if (showDictation || voiceTranscribing) composerControl()?.focus()
+  }, [showDictation, voiceTranscribing, composerControl])
 
   // Escape CANCELS dictation (discards the audio), from ANYWHERE. Deliberately a
   // document-level listener rather than the textarea's onKeyDown: starting a
@@ -1372,20 +1383,25 @@ function ChatInput({
   //  sigil at a word boundary, opens the matching picker, then refocuses the box.
   const openTrigger = (sigil: '/' | '@' | '$') => {
     setPlusOpen(false)
+    let nextValue = '/'
+    let nextCaret = 1
     if (sigil === '/') {
-      onChange('/')
+      onChange(nextValue)
       setSlashMenuOpen(true); setFilePickerOpen(false); setSkillPickerOpen(false)
     } else {
-      const sep = value === '' || /\s$/.test(value) ? '' : ' '
-      onChange(value + sep + sigil)
+      const selection = composerControl()?.getSelection() ?? { start: value.length, end: value.length }
+      const before = value.slice(0, selection.start)
+      const after = value.slice(selection.end)
+      const sep = before === '' || /\s$/.test(before) ? '' : ' '
+      const insert = sep + sigil
+      nextValue = before + insert + after
+      nextCaret = before.length + insert.length
+      onChange(nextValue)
       setSlashMenuOpen(false)
       if (sigil === '@') { setFilePickerOpen(true); setFileQuery(''); setSkillPickerOpen(false) }
       else { setSkillPickerOpen(true); setSkillQuery(''); setFilePickerOpen(false) }
     }
-    requestAnimationFrame(() => {
-      const el = inputRef.current
-      if (el) { el.focus(); const n = el.value.length; el.setSelectionRange(n, n) }
-    })
+    requestAnimationFrame(() => composerControl()?.setSelection(nextCaret, nextCaret, { focus: true }))
   }
   // Warm the per-slot-and-project skills cache when the input gains focus so the first
   // `$` trigger renders the picker instantly (the fetch is the only latency).
@@ -1507,11 +1523,11 @@ function ChatInput({
   // sigil-token ending at the caret with `token`, commit, and restore the caret
   // just after it. One copy keeps the two onSelect handlers duplication-free.
   const applyPickedToken = useCallback((tokenRe: RegExp, token: string) => {
-    const el = inputRef.current
-    const next = replaceTokenAtCaret(value, el?.selectionStart ?? value.length, tokenRe, token)
+    const selection = composerControl()?.getSelection()
+    const next = replaceTokenAtCaret(value, selection?.start ?? value.length, tokenRe, token)
     onChange(next.value)
-    requestAnimationFrame(() => { const e2 = inputRef.current; if (e2) { e2.focus(); e2.setSelectionRange(next.caret, next.caret) } })
-  }, [value, onChange])
+    requestAnimationFrame(() => composerControl()?.setSelection(next.caret, next.caret, { focus: true }))
+  }, [value, onChange, composerControl])
   const chatMessages = useAppSelector(s => s.chat.messages)
   /** The persisted drag-to-resize preference. Read `manualHeight` below instead —
    *  this is the raw stored value and is not what the composer renders at. */
@@ -1564,6 +1580,32 @@ function ChatInput({
   valueRef.current = value
   // Mirror the paste blocks so the undo-recording effect (keyed on
   // [value, autoFocusKey], not pasteBlocks) always snapshots the freshest set.
+
+  const handleLexicalChange = useCallback((nextValue: string) => {
+    valueFromUserRef.current = true
+    onChange(nextValue)
+    const selection = lexicalControlRef.current?.getSelection()
+    const caret = selection?.start ?? nextValue.length
+    const before = nextValue.slice(0, caret)
+    setSlashMenuOpen(typedCommandMenus && nextValue.startsWith('/'))
+    const fileQueryAtCaret = onFileSelect ? matchFileToken(before) : null
+    if (fileQueryAtCaret !== null) {
+      setFilePickerOpen(true)
+      setFileQuery(fileQueryAtCaret)
+    } else {
+      setFilePickerOpen(false)
+      setFileQuery('')
+    }
+    const skillQueryAtCaret = fileQueryAtCaret === null ? matchSkillToken(before) : null
+    if (typedCommandMenus && skillQueryAtCaret !== null) {
+      setSkillPickerOpen(true)
+      setSkillQuery(skillQueryAtCaret)
+    } else {
+      setSkillPickerOpen(false)
+      setSkillQuery('')
+    }
+    if (selection && voiceCaretRef) voiceCaretRef.current = selection
+  }, [onChange, onFileSelect, typedCommandMenus, voiceCaretRef])
   const pasteBlocksRef = useRef(pasteBlocks)
   pasteBlocksRef.current = pasteBlocks
   // --- Prompt undo/redo history (per slot) ---
@@ -1646,11 +1688,13 @@ function ChatInput({
       return
     }
     if (disabled || isMobile || isTouchDevice()) return
+    const control = composerControl()
+    if (!control) return
     prevAutoFocusKeyRef.current = autoFocusKey
     const ae = document.activeElement as HTMLElement | null
     if (ae && (ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA' || ae.isContentEditable)) return
-    inputRef.current?.focus()
-  }, [autoFocusKey, disabled, isMobile])
+    control.focus()
+  }, [autoFocusKey, disabled, isMobile, composerControl, lexicalControlRevision])
 
   // Global "/" shortcut to focus chat input (like GitHub, YouTube, Slack).
   // Only the primary command composer claims it: with a second instance
@@ -1663,11 +1707,11 @@ function ChatInput({
       const tag = (e.target as HTMLElement)?.tagName
       if (tag === 'INPUT' || tag === 'TEXTAREA' || (e.target as HTMLElement)?.isContentEditable) return
       e.preventDefault()
-      inputRef.current?.focus()
+      composerControl()?.focus()
     }
     document.addEventListener('keydown', onSlashFocus)
     return () => document.removeEventListener('keydown', onSlashFocus)
-  }, [typedCommandMenus])
+  }, [typedCommandMenus, composerControl])
 
   const inputResize = usePointerDrag({
     threshold: 0,
@@ -1775,15 +1819,15 @@ function ChatInput({
 
   // Record undo snapshots as the controlled value changes.
   useEffect(() => {
-    const el = inputRef.current
+    const selection = composerControl()?.getSelection()
     // Consume the "this change came from a DOM edit" flag exactly once per run.
     const fromUser = valueFromUserRef.current
     valueFromUserRef.current = false
     const seed = () => {
       undoHistoryRef.current = [{
         value,
-        selStart: el?.selectionStart ?? value.length,
-        selEnd: el?.selectionEnd ?? value.length,
+        selStart: selection?.start ?? value.length,
+        selEnd: selection?.end ?? value.length,
         blocks: pasteBlocksRef.current,
       }]
       undoPointerRef.current = 0
@@ -1834,8 +1878,8 @@ function ChatInput({
     if (prev === value) return // selection-only re-render, no text change
     const snap: UndoSnap = {
       value,
-      selStart: el?.selectionStart ?? value.length,
-      selEnd: el?.selectionEnd ?? value.length,
+      selStart: selection?.start ?? value.length,
+      selEnd: selection?.end ?? value.length,
       blocks: pasteBlocksRef.current,
     }
     const now = Date.now()
@@ -1857,13 +1901,19 @@ function ChatInput({
       undoPointerRef.current = hist.length - 1
     }
     undoLastEditRef.current = now
-  }, [value, autoFocusKey])
+  }, [value, autoFocusKey, composerControl])
 
   const handleInput = useCallback((e: React.FormEvent<HTMLTextAreaElement>) => {
     if (!dragging.current) applyHeight(e.target as HTMLTextAreaElement, manualHeight, prefillHint, parkedRef.current)
   }, [manualHeight, prefillHint])
 
   const setTextUndoable = useCallback((text: string) => {
+    if (lexicalComposer && !lexicalLoadFailed) {
+      valueFromUserRef.current = true
+      onChange(text)
+      requestAnimationFrame(() => composerControl()?.setSelection(text.length, text.length, { focus: true }))
+      return
+    }
     const el = inputRef.current
     if (!el) { onChange(text); return }
     el.readOnly = false
@@ -1893,7 +1943,7 @@ function ChatInput({
     requestAnimationFrame(() => {
       if (el && document.activeElement === el) el.setSelectionRange(text.length, text.length)
     })
-  }, [onChange])
+  }, [onChange, lexicalComposer, lexicalLoadFailed, composerControl])
 
   const optimizeMutation = useMutation({
     mutationFn: async (
@@ -1984,9 +2034,9 @@ function ChatInput({
         const hist = undoHistoryRef.current
         const ptr = undoPointerRef.current
         if (hist[ptr]?.value !== v) {
-          const el = inputRef.current
+          const selection = composerControl()?.getSelection()
           hist.splice(ptr + 1)
-          hist.push({ value: v, selStart: el?.selectionStart ?? v.length, selEnd: el?.selectionEnd ?? v.length, blocks: pasteBlocksRef.current })
+          hist.push({ value: v, selStart: selection?.start ?? v.length, selEnd: selection?.end ?? v.length, blocks: pasteBlocksRef.current })
           if (hist.length > UNDO_MAX_HISTORY) hist.shift()
           undoPointerRef.current = hist.length - 1
           undoLastEditRef.current = Date.now()
@@ -1994,7 +2044,7 @@ function ChatInput({
       }
     }
     wasOptimizingRef.current = optimizePending
-  }, [optimizePending, slotId])
+  }, [optimizePending, slotId, composerControl])
   const { mutate: runOptimize } = optimizeMutation
 
   const optimizePrompt = useCallback(() => {
@@ -2351,20 +2401,8 @@ function ChatInput({
     // macOS Office TEXT copies do include text/plain alongside their junk
     // image rendering of the selection, so real text pastes still win over
     // the image (see ChatInput.paste.test.tsx).
-    const clipTypes = e.clipboardData.types || []
-    const hasText = clipTypes.includes('text/plain')
-    let renamedCount = 0
-    const files = Array.from(e.clipboardData.items)
-      .filter(i => i.kind === 'file')
-      .map(i => i.getAsFile())
-      .filter((f): f is File => f !== null)
-      .map(f => {
-        // Count only files actually renamed, so a paste of [real-name.png,
-        // image.png] synthesizes an unsuffixed name (no orphan "-2").
-        const named = nameClipboardImage(f, renamedCount)
-        if (named !== f) renamedCount += 1
-        return named
-      })
+    const hasText = hasPlainClipboardText(e.clipboardData)
+    const files = clipboardFiles(e.clipboardData)
     if (files.length && onUploadFiles && !hasText) {
       e.preventDefault()
       onUploadFiles(files)
@@ -3190,15 +3228,15 @@ function ChatInput({
 
       <input id={fileInputId} ref={fileInputRef} type="file" aria-label={i18nT('components.chatInput.attach_files')} multiple accept={FILE_ACCEPT} className="sr-only" onChange={handleFileInputChange} />
       {onUploadFiles && (
-        <SketchDialog open={sketchOpen} onOpenChange={setSketchOpen} onInsert={onUploadFiles} returnFocusRef={inputRef} />
+        <SketchDialog open={sketchOpen} onOpenChange={setSketchOpen} onInsert={onUploadFiles} returnFocusRef={composerAnchorRef} />
       )}
 
-      {typedCommandMenus && <SlashCommandMenu input={value} anchorRef={inputRef as React.RefObject<HTMLElement>} open={slashMenuOpen} sendOnEnter={sendOnEnter} onSelect={cmd => { onChange(cmd); setSlashMenuOpen(false) }} onClose={() => setSlashMenuOpen(false)} />}
+      {typedCommandMenus && <SlashCommandMenu input={value} anchorRef={composerAnchorRef} open={slashMenuOpen} sendOnEnter={sendOnEnter} onSelect={cmd => { onChange(cmd); setSlashMenuOpen(false) }} onClose={() => setSlashMenuOpen(false)} />}
 
       {onFileSelect && (
         <FilePickerMenu
           query={fileQuery}
-          anchorRef={inputRef as React.RefObject<HTMLElement>}
+          anchorRef={composerAnchorRef}
           open={filePickerOpen}
           project={project}
           sendOnEnter={sendOnEnter}
@@ -3217,7 +3255,7 @@ function ChatInput({
 
       {typedCommandMenus && <SkillPickerMenu
         query={skillQuery}
-        anchorRef={inputRef as React.RefObject<HTMLElement>}
+        anchorRef={composerAnchorRef}
         open={skillPickerOpen}
         sendOnEnter={sendOnEnter}
         slotKey={skillSlotKey}
@@ -3349,9 +3387,42 @@ function ChatInput({
 
         {optimizing && <span className="absolute inset-0 flex items-start px-4 pt-3 text-sm text-white font-medium pointer-events-none z-10 bg-black/60 rounded-2xl"><Sparkles size={14} className="inline mr-1 text-yellow-400" /> {i18nT('components.chatInput.optimizing_prompt')}</span>}
         <div className={`relative ${showDictation || voiceHoldMode ? 'sr-only' : ''} ${manualHeight !== null ? 'flex-1 min-h-0 flex flex-col' : ''}`}>
+        {lexicalComposer && !lexicalLoadFailed ? (
+          <ComposerLoadBoundary onError={() => setLexicalLoadFailed(true)}>
+            <Suspense fallback={
+              <div
+                role="status"
+                aria-label={inputAriaLabel ?? i18nT('components.chatInput.message_input')}
+                aria-busy="true"
+                className={`relative flex w-full min-h-[44px] items-center px-4 text-muted ${INPUT_TYPO}`}
+              >
+                <Loader2 className="lucide-inline animate-spin" aria-hidden="true" />
+              </div>
+            }>
+              <LexicalComposerInput
+                value={value}
+                blocks={pasteBlocks}
+                onChange={handleLexicalChange}
+                onBlocksChange={onPasteBlocksChange}
+                onSend={fireComposer}
+                onUploadFiles={onUploadFiles}
+                controlRef={lexicalControlRef}
+                onReady={markLexicalReady}
+                onSelectionChange={publishLexicalSelection}
+                sentMessages={sentMessages}
+                ariaLabel={inputAriaLabel ?? i18nT('components.chatInput.message_input')}
+                placeholder={!connected ? i18nT('components.chatInput.gateway_offline_message_will_not_send') : disabledProp ? i18nT('components.chatInput.stopping') : voiceRecording ? i18nT('components.chatInput.recording_click_mic_to_stop') : voiceTranscribing ? i18nT('components.chatInput.transcribing_please_wait') : continuePlaceholder || voiceModePlaceholder || resolvedPlaceholder}
+                disabled={disabled}
+                readOnly={optimizing}
+                sendOnEnter={sendOnEnter}
+                className={manualHeight !== null ? 'flex-1 min-h-0' : ''}
+              />
+            </Suspense>
+          </ComposerLoadBoundary>
+        ) : (<>
         <PasteHighlightLayer ref={mirrorRef} value={value} blocks={pasteBlocks} />
         <textarea
-          ref={inputRef}
+          ref={setTextareaRef}
           aria-label={inputAriaLabel ?? i18nT('components.chatInput.message_input')}
           data-composer-input=""
           aria-describedby={pastePreviewPanelId ?? undefined}
@@ -3402,6 +3473,7 @@ function ChatInput({
           onMouseLeave={() => { if (hoverRef.current) hoverRef.current.handleMouseLeave() }}
         />
         {pasteBlocks.length > 0 && <PasteHoverLayer ref={hoverRef} value={value} blocks={pasteBlocks} mirrorRef={mirrorRef} onActivePanelChange={setPastePreviewPanelId} />}
+        </>)}
         </div>
 
         {/* The hold target. A real <button>, not the textarea: a long press on a
