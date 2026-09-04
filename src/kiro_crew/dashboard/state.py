@@ -8201,18 +8201,34 @@ def _load_notifications() -> list[dict[str, Any]]:
 
 # Notification file I/O runs exclusively on this single-worker executor when
 # an event loop is running: appends (from the delivery sink) and rewrites
-# (from delete/ack/clear) execute strictly in submission order, so no lock is
-# needed and the loop never blocks on file I/O.
+# (from delete/ack/clear) execute strictly in submission order, so the QUEUE
+# needs no lock and the loop never blocks on file I/O. Creating the executor
+# does need one -- see _notification_io_executor.
 _notification_io_pool: concurrent.futures.ThreadPoolExecutor | None = None
+_notification_io_pool_lock = threading.Lock()
 
 
 def _notification_io_executor() -> concurrent.futures.ThreadPoolExecutor:
-    """Lazily create the single-worker executor for notification persistence."""
+    """Lazily create the single-worker executor for notification persistence.
+
+    The creation is locked, not just the queue. An unlocked check-then-set let two
+    threads each observe ``None``, each construct a pool, and each proceed: one
+    assignment won the global while the loser's worker was already live with its job
+    already queued, so the two callers were not serialised against one another at all
+    -- which is the single guarantee this executor exists to provide. Narrow window
+    (the first notification I/O of the process, twice at once) and unbounded harm: an
+    append landing inside a ``_rewrite_notifications`` whole-file write is simply gone,
+    because the rewrite did not include it and overwrote the bytes.
+
+    Double-checked so the lock is paid once rather than on every call. Issue #8788.
+    """
     global _notification_io_pool
     if _notification_io_pool is None:
-        _notification_io_pool = concurrent.futures.ThreadPoolExecutor(
-            max_workers=1, thread_name_prefix="notif-io"
-        )
+        with _notification_io_pool_lock:
+            if _notification_io_pool is None:
+                _notification_io_pool = concurrent.futures.ThreadPoolExecutor(
+                    max_workers=1, thread_name_prefix="notif-io"
+                )
     return _notification_io_pool
 
 
